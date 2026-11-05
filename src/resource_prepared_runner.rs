@@ -111,11 +111,24 @@ pub fn run_prepared_offline(
         run: ram_directory,
     })));
     let mut events = Vec::new();
-    let mut environment = OfflineOwningEnvironment::observe_and_require(
+    let observed_environment = OfflineOwningEnvironment::observe_and_require(
         request.source.clone(),
         request.observation_budget,
         &mut events,
-    )?;
+    );
+    let mut environment = match observed_environment {
+        Ok(value) => value,
+        Err(error) => {
+            // Preserve actual constructor events on RAM even when the first
+            // positive-owner checkpoint was never reached. No source/J writer
+            // has been issued; this does not turn a failure into admission.
+            let closing = observer.checkpoint("offline-RAM-environment-observation-failed", &mut events);
+            return match closing {
+                Ok(()) => Err(error).context("observe actual RAM-Windows/source environment"),
+                Err(close) => Err(anyhow::Error::from(error).context(format!("environment observation failed; RAM event preservation also failed: {close}"))),
+            };
+        }
+    };
     observer.checkpoint("offline-positive-RAM-source-environment", &mut events)?;
     let mut bootstrap_observer = observer.clone();
     let volume = environment.open_independent_journal_for_recovery(

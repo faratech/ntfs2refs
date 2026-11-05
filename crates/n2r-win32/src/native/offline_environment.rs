@@ -1,5 +1,6 @@
 //! Read-only environment facts for a future offline boot lane. No constructor
 //! here issues source admission, exclusion, restoration or write authority.
+pub use super::partition_isolation::offline::{OfflineOwningEnvironment,OfflineOwningFacts,OfflineSourcePhysicalFacts};
 use super::{NativeEvent, control, device_file};
 use crate::general_layout::GeneralDiskBinding;
 use serde::{Deserialize, Serialize};

@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "kind": "opaque-native-offline-environment-build",
+  "status": "compiled-native-execution-pending",
+  "focused_check_exit_code": 0,
+  "focused_check_wall_seconds": 27.4921117,
+  "check_receipt_sha256": "ae1ba74a0e16065f9f6fa86492401ee8fdf6b193793e2e52fbcf080b75f47c12",
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "shared_build_directory_reused": true,
+  "unit_tests_run": false,
+  "native_run": false,
+  "source_FSD_opened_by_offline_owner": false,
+  "source_exclusion_or_writer_authority_issued": false,
+  "legacy_source_guards_unchanged": true,
+  "native_RAM_Windows_MiniNT_loaded_kernel_boot_and_paging_required": true,
+  "exported_JSON_is_authority": false,
+  "readonly_observer_emits_refusal_before_nonzero_exit": true,
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/native/offline_environment.rs",
+      "bytes": 21805,
+      "sha256": "6c648c2589a40761a81e91201e19292f696b2949644900ab5eba17726de5235e"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_isolation.rs",
+      "bytes": 35323,
+      "sha256": "68cbdd26e4d240ef465273dfa1a66b5b35b0246c38fdffc30cb0afeb14c4e11b"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline.rs",
+      "bytes": 22400,
+      "sha256": "dc8a4c2306fb2bfa6ebbf0b2e088cf900276fa2e42532fc81e454fb4d9ac9b24"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_dump_locations.rs",
+      "bytes": 23197,
+      "sha256": "5bd4f0dde65886c2d9086786cb3bb5e315be55dc21a80cb2c71ff90ca8404c6b"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_dump_locations/offline.rs",
+      "bytes": 12599,
+      "sha256": "02eb4d32057231fb0b06cf056570635295934375f8271914afca13d92e95b0d4"
+    },
+    {
+      "path": "src/bin/lab-offline-environment.rs",
+      "bytes": 8214,
+      "sha256": "4b285f93a0a2b53c0fb09683c9c2acaec684a17814239e03d58fa14bc1937bac"
+    }
+  ],
+  "critical_RAM_effective_path_volume_bookended": true
+}

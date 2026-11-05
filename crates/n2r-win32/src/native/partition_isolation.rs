@@ -1,6 +1,7 @@
 //! Experimental, read-only observation of one data partition, including a
 //! partition sharing the running Windows disk. This module has no writer,
 //! offline setter, availability transition, or conversion-admission issuer.
+pub(in crate::native) mod offline;
 use super::{
     ALIGNMENT, DEVICE, LAYOUT, LENGTH, NativeEvent, VOLUME_EXTENTS, attributes, control,
     device_file,

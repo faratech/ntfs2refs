@@ -40,12 +40,16 @@ fn run() -> anyhow::Result<()> {
         maximum_component_bytes: u64,
         #[arg(long)]
         source_volume: Option<String>,
-        #[arg(long,requires_all=["source_volume","source_binding_sha256"])]
+        #[arg(long, requires = "source_binding_sha256")]
         source_binding: Option<PathBuf>,
         #[arg(long, requires = "source_binding")]
         source_binding_sha256: Option<String>,
         #[arg(long)]
         query_vss: bool,
+        /// Require a current native RAM-Windows owner proof. This does not
+        /// open the selected source filesystem or issue write authority.
+        #[arg(long, requires = "source_binding")]
+        require_offline_owner: bool,
     }
     let args = Args::parse();
     const STACKS: u64 = 9 * 1024 * 1024;
@@ -53,11 +57,19 @@ fn run() -> anyhow::Result<()> {
         args.ram_bytes <= offline_environment::available_ram_bytes()?,
         "total probe RAM exceeds current sampled availability"
     );
+    let workspace = args
+        .ram_bytes
+        .checked_sub(STACKS)
+        .context("RAM must cover8MiBworker+1MiBlauncher")?;
+    // Facts and proof remain alive together through serialization. Reserve
+    // distinct workspaces rather than admitting both against the same RAM.
+    let facts_workspace = if args.require_offline_owner {
+        workspace / 2
+    } else {
+        workspace
+    };
     let budget = ProbeBudget {
-        ram_bytes: args
-            .ram_bytes
-            .checked_sub(STACKS)
-            .context("RAM must cover8MiBworker+1MiBlauncher")?,
+        ram_bytes: facts_workspace,
         maximum_json_bytes: args.maximum_output_bytes,
         maximum_component_bytes: args.maximum_component_bytes,
     };
@@ -114,9 +126,36 @@ fn run() -> anyhow::Result<()> {
     }
     let selected = args.source_volume.map(|volume_path| SourceQuery {
         volume_path,
-        expected_binding: binding,
+        expected_binding: binding.clone(),
     });
     let observed = offline_environment::observe(budget, selected.as_ref(), args.query_vss)?;
+    let mut owner_events = Vec::new();
+    let mut owner_error = None;
+    let mut owner = None;
+    if args.require_offline_owner {
+        use n2r_win32::partition_isolation::{PartitionObservationBudget, PartitionSourceBinding};
+        let proof_budget = PartitionObservationBudget {
+            ram_bytes: workspace - facts_workspace,
+            native_layout_bytes: 65536,
+            gpt_entry_bytes: 131072,
+            read_buffer_bytes: 4096,
+        };
+        let result = offline_environment::OfflineOwningEnvironment::observe_and_require(
+            PartitionSourceBinding {
+                storage: binding.context("offline owner requires an exact source binding")?,
+            },
+            proof_budget,
+            &mut owner_events,
+        )
+        .and_then(|mut actual| {
+            actual.require_current(&mut owner_events)?;
+            Ok(actual)
+        });
+        match result {
+            Ok(actual) => owner = Some(actual),
+            Err(error) => owner_error = Some((error.raw_os_error(), error.to_string())),
+        }
+    }
     #[derive(Serialize)]
     struct Output<'a> {
         kind: &'static str,
@@ -126,6 +165,11 @@ fn run() -> anyhow::Result<()> {
         observation: &'a offline_environment::Observation,
         stdout_destination_owned_by_caller: bool,
         source_or_output_file_writes: u64,
+        offline_owner_requested: bool,
+        offline_owner_facts: Option<&'a offline_environment::OfflineOwningFacts>,
+        offline_owner_error: Option<&'a (Option<i32>, String)>,
+        offline_owner_events: &'a [n2r_win32::NativeEvent],
+        exported_facts_grant_write_authority: bool,
     }
     let value = Output {
         kind: "lab-offline-environment-observation-v1",
@@ -135,6 +179,11 @@ fn run() -> anyhow::Result<()> {
         observation: &observed,
         stdout_destination_owned_by_caller: true,
         source_or_output_file_writes: 0,
+        offline_owner_requested: args.require_offline_owner,
+        offline_owner_facts: owner.as_ref().map(|actual| actual.facts()),
+        offline_owner_error: owner_error.as_ref(),
+        offline_owner_events: &owner_events,
+        exported_facts_grant_write_authority: false,
     };
     struct Count(u64);
     impl Write for Count {
@@ -163,5 +212,9 @@ fn run() -> anyhow::Result<()> {
     serde_json::to_writer(&mut output, &value)?;
     output.write_all(b"\n")?;
     output.flush()?;
+    ensure!(
+        !args.require_offline_owner || owner.is_some(),
+        "native offline owning environment was not established; inspect the emitted refusal"
+    );
     Ok(())
 }

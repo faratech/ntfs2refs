@@ -9,6 +9,7 @@
 //! https://learn.microsoft.com/windows/win32/wer/wer-settings
 //! https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-getvolumepathnamew
 //! https://learn.microsoft.com/windows/win32/api/winioctl/ni-winioctl-ioctl_volume_get_volume_disk_extents
+pub(in crate::native) mod offline;
 use super::partition_isolation::{PartitionObservationBudget, PartitionSourceBinding};
 use super::{NativeEvent, VOLUME_EXTENTS, control, device_file};
 use serde::Serialize;

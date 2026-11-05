@@ -762,3 +762,5 @@ Root process-local direct-rustc config `.lab/development/direct-rustc-check-conf
 Rustfmt only owned files with `--edition 2024 --config skip_children=true`, never workspace/main. Record cache reuse, never infer reproducibility from compilation.
 PowerShell: do not repurpose Host/HOME/PID. Preserve DateTime.Kind (PS7 JSON may auto-parse); parse UInt64 serials from exact decimal strings/raw tokens,
 not PS5 JSON Double. Canonicalize GUIDs by casting. Use -g for rg globs; filesystem deletes/moves need resolved workspace bounds and one shell end-to-end.
+
+Latest PUBLIC7f2 native3404/birth1793852295297 exited1/2.1802668s at partition-preparation-basic-baseline: Storage role catalog budget invalid. Archive30f6d4b9ad95fe2e6d4ffe774498b2b751ad7d6447e831c7060d628e93d66743 preserves34files/all25pins. VM remains Running/sameboot1793849950708/current07ca/all18; originalabsolute329102331170 unchanged. No retry/power/source intervention. Root fixes capacity derivation to min(resource limits, existing8192workspace); full enumeration and actual-row overflow refusal remain. New exact build/GO required; BasicRO closed-terminal draft reviewed but not applied.

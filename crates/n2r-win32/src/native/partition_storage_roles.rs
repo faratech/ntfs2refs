@@ -736,7 +736,9 @@ pub(super) fn observe_partition_storage_roles(
     binding.validate()?;
     budget.validate()?;
     need(events.len() < 112, "Storage role event workspace exhausted")?;
-    let maximum = usize::try_from((budget.gpt_entry_bytes / 128).min(budget.ram_bytes / 8192))
+    // A larger resource allowance must not invalidate a small, complete catalog.
+    // Bound the workspace, then let query() refuse any additional actual row.
+    let maximum = usize::try_from((budget.gpt_entry_bytes / 128).min(budget.ram_bytes / 8192).min(8192))
         .map_err(io::Error::other)?;
     need(
         maximum > 0 && maximum <= 8192,

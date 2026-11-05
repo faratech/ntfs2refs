@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "kind": "storage-role-catalog-resource-capacity-fix",
+  "status": "focused-check-passed-native-pending",
+  "source_path": "crates/n2r-win32/src/native/partition_storage_roles.rs",
+  "source_bytes": 28908,
+  "source_sha256": "cf43dcf0a8f2ee39ef6d671acabbd3c8c2cb73fd74da47b75b6d8e5c3e975d8e",
+  "prior_native": {
+    "source_commit": "7f2bd21c1785c61abdfad00b971a5f89ce3f3fde",
+    "pid": 3404,
+    "birth_ms": 1793852295297,
+    "exit_code": 1,
+    "wall_seconds": 2.1802668,
+    "error": "Storage role catalog budget invalid",
+    "derived_capacity": 13658,
+    "workspace_ceiling": 8192,
+    "archive_sha256": "30f6d4b9ad95fe2e6d4ffe774498b2b751ad7d6447e831c7060d628e93d66743"
+  },
+  "change": "Clamp admitted workspace capacity to min(GPT bytes/128,RAM bytes/8192,8192); query still requires complete enumeration and refuses actual rows above capacity. Larger admitted budgets no longer invalidate a small catalog.",
+  "unit_tests_run": false,
+  "native_qualification_pending": true,
+  "original_case_absolute_bytes": 329102331170,
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "focused_check": {
+    "wall_seconds": 32.5667587,
+    "kind": "public-partition-dispatch-focused-check",
+    "exit_code": 0,
+    "unit_tests_run": false,
+    "native_run": false,
+    "shared_target_reused": true,
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+    "capacity": {
+      "actual_bytes": 322917774845,
+      "free_bytes": 84480753664,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 2147483648,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    }
+  }
+}

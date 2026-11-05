@@ -499,14 +499,27 @@ impl JournalObservation<'_> {
                         )?;
                     } else {
                         sj::read_before(self.journal, &record, done, &mut buffers.before[..count])?;
-                        ensure!(
-                            sj::bytes_are_old_or_new(
-                                &buffers.current[..count],
-                                &buffers.before[..count],
-                                &buffers.after[..count]
-                            ),
-                            "replay target contains a foreign byte"
-                        );
+                        if !sj::bytes_are_old_or_new(
+                            &buffers.current[..count],
+                            &buffers.before[..count],
+                            &buffers.after[..count],
+                        ) {
+                            let foreign = buffers.current[..count].iter()
+                                .zip(&buffers.before[..count]).zip(&buffers.after[..count])
+                                .position(|((current, old), new)| current != old && current != new)
+                                .context("foreign-byte comparison has no differing position")?;
+                            let start = foreign / GRANULE as usize * GRANULE as usize;
+                            let end = (start + GRANULE as usize).min(count);
+                            let hash = |bytes: &[u8]| hex::encode(
+                                <sha2::Sha256 as sha2::Digest>::digest(bytes));
+                            anyhow::bail!(
+                                "replay target contains a foreign byte: descriptor={ordinal}, range_offset={}, range_length={}, byte_offset={}, granule_offset={}, old_kind={}, new_kind={}, current_sha256={}, old_sha256={}, new_sha256={}",
+                                row.offset, row.length, add(add(row.offset, done)?, foreign as u64)?,
+                                add(add(row.offset, done)?, start as u64)?, row.old_kind, row.new_kind,
+                                hash(&buffers.current[start..end]), hash(&buffers.before[start..end]),
+                                hash(&buffers.after[start..end]),
+                            );
+                        }
                     }
                 }
                 digest.update(&buffers.current[..count])?;

@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "kind": "mixed-source-foreign-range-diagnostics",
+  "status": "focused-check-passed-native-pending",
+  "source": {
+    "path": "src/selected_journal/resource_domain/reopen/replay.rs",
+    "sha256": "439e6e15bdc352de29b8fc2c0c6aadb1911b4fcd024165818801389f3ba80059",
+    "bytes": 49029
+  },
+  "focused_check": {
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+    "exit_code": 0,
+    "kind": "public-partition-dispatch-focused-check",
+    "wall_seconds": 21.1787979,
+    "capacity": {
+      "actual_bytes": 323294810833,
+      "free_bytes": 84084383744,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 2147483648,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "shared_target_reused": true,
+    "native_run": false,
+    "unit_tests_run": false
+  },
+  "prior_native": {
+    "error": "replay target contains a foreign byte",
+    "archive_sha256": "75f2ba0a9c3ca36d4456a6bd5c45f03d73543fa02302a86010de450f3a106bec",
+    "source_commit": "e5ce7e4c6974bfcbea6d0903978621a2f2ca8582",
+    "exit_code": 1,
+    "wall_seconds": 7.3081505,
+    "birth_ms": 1793858558316,
+    "pid": 4584,
+    "failure_stage": "observe_partition_mixed before replay_partition source writer issuance"
+  },
+  "diagnostics": "Only on existing old-or-new check failure, report descriptor, volume-relative range/first foreign byte and <=4KiB granule current/OLD/NEW SHA256. No plaintext payload or additional device read. Validation and writer authority unchanged.",
+  "source_and_original_journal_preserved": true,
+  "foreign_bytes_accepted_or_ignored": false,
+  "unit_tests_run": false,
+  "native_qualification_pending": true
+}

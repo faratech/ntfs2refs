@@ -642,6 +642,15 @@ Do not buildnextcandidate untilthatminimalterminalfix reviewed; no more broadref
 OperatorOff63262 alreadyauthorized/active; doNOTrepeatStop. LatestsourceAfterCancel8/sourceNTFS0verified, all18 unchanged; currentSource reuse(noRestore) planned.
 Nextcase shouldqualify ACTUALpublicntfs2refs --drive D --partition6 --minimize-scratch (ONEinteractivey), notanotherlab-onlyrun;
 operatorpreparingDRAFTpublicharness with actualdynamicrunpath/nativePID/result/HND/retirement/After8, no executeuntilRootGO+exactnewbuild.
+60b8f002bb8739e854bafaa0ada3fb7153838231 exactPUBLIC+3labsbuild75078 COMPLETED0/160s/426heldsourcefilesunchanged,
+manifest5a2efd3316cd725f4775a847bae2171c6c4182746cb32b7ef352c93078e80270. PUBLICexe19341824B/SHAca426cbc13674675687f768911cc3ff43ce72df0cef03390cdf50089a14ad97b.
+RootreviewedPUBLICworker3a8d32018bae3b899398ad389d96dd68002b94f73a5788eaea7d31f584aad445/host1ed40206e8157386095b63227bc05a7857ae4287d25730a8b4ec7d7789dee773.
+Workerhandlesoptional'> 'promptprefix whenparsingactualclosedConversionrecords path; actualnewnamespace+stdoutmustuniquelymatch; no pathnamegrantswriteauthority.
+RootONEPUBLICGO actual --drive D --partition6 --minimize-scratch, SAMEownedstdin yLFONCEclose, no cancel/pause/recovery/probe/2ndnative/retry/restore/CP/SET.
+Freshcase0055d0b593fe431d83592dc4e161a189 controller31799 ACTIVE; freshALLprogramme6GiB/Off07ca18+Before8 precede actualnative.
+No NativePIDyetreported. UseCURRENTrestoredNTFS0source(no baselineRestore/no repeatCancel). All18incl3cbprotected, fixedepoch/max/reserveunchanged.
+Evidence/public-shared-candidate-60b8f00-build-20261105.json bindsall4exactbinaries. Nativepublicqualificationstillpending; boot/fullcoverage/faultmatrixincomplete.
+Privateclosed-terminalHND/ABTno-raw-replay andpubliccontrolledpauseflags areAGENTDRAFTS only; doNOTinjectintocurrent60b8case.
 Terminalheld-reader NOWAPPLIED/CHECKEDsingleSDKfile: self.fileSome→sameactualreadonlyHeldSourceRead/tokenmutex; fileNone retainsindependentunlockedreader.
 Allclosed.revalidate_reader J/body/index/lifecycle/NEW/OLD/COPY/zero/boot proofbody unchanged. Actualeventbookends/sixcontrols fitunchanged128.
 Combinedlib+public+3labscheck0/29.3570361s/sharedtarget/no units, evidence/terminal-held-read-build-20261105.json. Nativequalificationpending.

@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "kind": "exact-public-shared-data-candidate-build",
+  "status": "build-passed-public-native-case-dispatched-results-pending",
+  "source_commit": "60b8f002bb8739e854bafaa0ada3fb7153838231",
+  "source_tree": "7f7c576a7ef56385aa8597f9cb9aeda7ba5ad3ec",
+  "build_directory": ".lab/development/release-candidates/partition-public-60b8f00",
+  "build_manifest_sha256": "5a2efd3316cd725f4775a847bae2171c6c4182746cb32b7ef352c93078e80270",
+  "actual_build_exit_code": 0,
+  "cargo_reported_release_seconds": 160,
+  "held_source_files": 426,
+  "source_before_after_verified": true,
+  "unit_tests_run": false,
+  "shared_target_reused": true,
+  "binaries": [
+    {"name":"ntfs2refs","bytes":19341824,"sha256":"ca426cbc13674675687f768911cc3ff43ce72df0cef03390cdf50089a14ad97b"},
+    {"name":"lab-partition-alpha","bytes":8665088,"sha256":"1614ba0e939172d44d3efc2ba8547721176e6db96812beb27d3cbb49f4d3ea86"},
+    {"name":"lab-partition-recovery","bytes":3875840,"sha256":"7b522a28e66b5e85157d07f805f39a0d5f0e8044d8b56851a5ef5229cb924c46"},
+    {"name":"lab-offline-environment","bytes":1072640,"sha256":"2d74eac945e93ad0174440f15b3cf2cf993778b94886ea5001713c1026c78855"}
+  ],
+  "public_case": {
+    "controller_run_id": "0055d0b593fe431d83592dc4e161a189",
+    "maximum_native_launches": 1,
+    "argv": ["--drive","D","--partition","6","--minimize-scratch"],
+    "stdin_hex": "790a",
+    "host_helper_sha256": "1ed40206e8157386095b63227bc05a7857ae4287d25730a8b4ec7d7789dee773",
+    "worker_sha256": "3a8d32018bae3b899398ad389d96dd68002b94f73a5788eaea7d31f584aad445",
+    "current_restored_ntfs_source_reused": true,
+    "baseline_restore_or_cancel_retest": false,
+    "conversion_success_claimed": false
+  },
+  "recovery_and_probe_not_executed": true,
+  "qualification_inherited": false,
+  "public_frozen_alpha_package_changed": false
+}

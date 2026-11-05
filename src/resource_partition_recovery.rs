@@ -154,7 +154,7 @@ pub fn run_recovery(
             request.source.clone(),
             request.observation_budget,
             &mut events,
-        )?;
+        ).context("partition recovery currently supports an actual PRIVATE source only; BasicRO/operational Basic0 terminal reconciliation is not implemented; no fallback/replay was attempted")?;
         let mut owner = owner.attach_recovery_observer(Box::new(observer.clone()), &mut events)?;
         ensure!(
             owner.binding().storage.disk_number
@@ -183,7 +183,7 @@ pub fn run_recovery(
         let group = arena.reserve_group(ArtifactGroup::RecoveryCopy, budget.scratch_bytes)?;
         let scratch = SourceScratch::new_auxiliary_in_arena(budget, group.clone())?;
         let stable = owner.owner_token();
-        let mut recovery = ReopenedPartitionResourceRecovery::open_restarted(
+        let observed = ReopenedPartitionResourceRecovery::open_observed_restarted(
             &request.publication,
             publication_sha,
             budget.record_bytes,
@@ -202,6 +202,19 @@ pub fn run_recovery(
             "partition-recovery-authenticated-original-artifacts",
             &mut events,
         )?;
+        let mut recovery=match observed{
+            crate::selected_journal::resource_domain::reopen::envelope::ReopenedPartitionRestart::Closed(terminal)=>{
+                let expected=match request.direction{
+                    PartitionRecoveryDirection::Resume=>n2r_win32::PartitionTerminalKind::Handoff,
+                    PartitionRecoveryDirection::Rollback=>n2r_win32::PartitionTerminalKind::Aborted,
+                };
+                ensure!(terminal.kind()==expected,"requested direction conflicts with actual closed HND/ABT; opposite replay remains closed");
+                let mut restoration=observer.clone();
+                return terminal.finalize(owner,&mut restoration,&mut events,|phase,events|
+                    observer.checkpoint(phase,events).map_err(anyhow::Error::from));
+            }
+            crate::selected_journal::resource_domain::reopen::envelope::ReopenedPartitionRestart::Replay(recovery)=>recovery,
+        };
         let direction = match request.direction {
             PartitionRecoveryDirection::Resume => PagedRecoveryDirection::Resume,
             PartitionRecoveryDirection::Rollback => PagedRecoveryDirection::Rollback,

@@ -82,9 +82,22 @@ fn native_windows_route() -> Result<(PathBuf, GeneralDiskBinding)> {
 }
 fn require_parent_windows(path: &Path, windows: &GeneralDiskBinding) -> Result<()> {
     ordinary_existing(path)?;
-    let text = path.to_str().context("Unicode metadata parent required")?;
+    // Discovery accepts exact mounted volume roots, not ordinary directories.
+    // Bind the actual held directory to its GUID volume instead of passing
+    // its path spelling (which may contain forward separators) as a root.
+    let directory = OpenOptions::new()
+        .access_mode(0x80)
+        .share_mode(3)
+        .custom_flags(0x0220_0000)
+        .open(path)?;
+    let metadata = directory.metadata()?;
+    ensure!(metadata.is_dir() && metadata.file_attributes() & 0x400 == 0,
+        "held metadata parent must be an ordinary directory");
+    let identity = n2r_win32::file_storage::file_id_info(&directory)?;
+    let guid_path = n2r_win32::file_storage::final_path_guid(&directory)?;
+    let root_end = guid_path.find("}\\").context("held parent GUID volume root absent")? + 2;
     let route = discovery::discover(
-        &format!("{}\\", text.trim_end_matches('\\')),
+        &guid_path[..root_end],
         Role::Journal {
             allow_additional_partitions: true,
         },
@@ -96,6 +109,8 @@ fn require_parent_windows(path: &Path, windows: &GeneralDiskBinding) -> Result<(
             && &route.binding == windows,
         "metadata parent is not the actual current Windows volume; no directories were authorized"
     );
+    ensure!(n2r_win32::file_storage::file_id_info(&directory)? == identity,
+        "held metadata parent identity changed during volume discovery");
     Ok(())
 }
 fn ordinary_existing(path: &Path) -> Result<()> {
@@ -119,7 +134,7 @@ fn parent_route(scratch: Option<&Path>) -> Result<(PathBuf, PathBuf, GeneralDisk
     let (os, windows) = native_windows_route()?;
     let parent = scratch
         .map(Path::to_path_buf)
-        .unwrap_or_else(|| os.join("ProgramData/ntfs2refs/runs"));
+        .unwrap_or_else(|| os.join("ProgramData").join("ntfs2refs").join("runs"));
     let text = parent.to_str().context("Unicode working path required")?;
     ensure!(
         parent.is_absolute()

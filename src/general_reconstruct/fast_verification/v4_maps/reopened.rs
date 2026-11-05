@@ -182,6 +182,22 @@ impl ReopenedVerificationMetadata {
         owner: &n2r_win32::PartitionOwnerToken,
     ) -> Result<Self> {
         witness.require_owner(owner)?;
+        Self::open_partition_actual(recovery,owner)
+    }
+    /// Actual closed-HND witness, never a fabricated spent replay capability.
+    pub(crate) fn open_closed_partition(
+        recovery:&crate::selected_journal::resource_domain::reopen::envelope::ReopenedPartitionResourceRecovery,
+        closed:&n2r_win32::PartitionClosedJournalObservation,
+        owner:&n2r_win32::PartitionOwnerToken,
+    )->Result<Self>{
+        closed.require_owner(owner)?;
+        ensure!(closed.kind()==n2r_win32::PartitionTerminalKind::Handoff,"closed metadata requires actual HND");
+        Self::open_partition_actual(recovery,owner)
+    }
+    fn open_partition_actual(
+        recovery:&crate::selected_journal::resource_domain::reopen::envelope::ReopenedPartitionResourceRecovery,
+        owner:&n2r_win32::PartitionOwnerToken,
+    )->Result<Self>{
         let scratch = recovery.runtime_scratch();
         let group = scratch.artifact_group().context("recovery arena absent")?;
         let arena = group.arena();

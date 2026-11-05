@@ -5,6 +5,9 @@
 //! replay operation. In particular, a successful scan does not prove that an
 //! earlier fresh-source admission or writable handoff occurred.
 use super::{BoundJournalObservation, BoundNativeRecoveryJournal, SelectedLifecycle};
+#[path = "partition_closed.rs"]
+mod partition_closed;
+pub(crate) use partition_closed::{PartitionClosedTerminal,ReopenedPartitionRestart};
 use crate::{
     artifact_arena::{ArtifactGroup, ArtifactGroupPermit},
     ntfs_inspect::paged_storage::{SourceRamLease, SourceScratch},
@@ -635,6 +638,29 @@ impl ReopenedPartitionResourceRecovery {
     }
 
     #[allow(clippy::too_many_arguments)]
+    pub(crate) fn open_closed_terminal(
+        path: &Path,
+        independently_supplied_sha256: [u8; 32],
+        maximum_publication_bytes: u64,
+        owner: &mut n2r_win32::PartitionScopedOwner,
+        stable: &n2r_win32::PartitionOwnerToken,
+        observation_budget: n2r_win32::partition_isolation::PartitionObservationBudget,
+        expected_shadow: &GeneralDiskBinding,
+        expected_journal: &GeneralJournalStorageBinding,
+        group: &ArtifactGroupPermit,
+        scratch: &SourceScratch,
+        index_path: &Path,
+        maximum_index_bytes: u64,
+        kind:n2r_win32::PartitionTerminalKind,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<PartitionClosedTerminal> {
+        match Self::open_observed_restarted(path,independently_supplied_sha256,maximum_publication_bytes,owner,stable,
+            observation_budget,expected_shadow,expected_journal,group,scratch,index_path,maximum_index_bytes,events)?{
+            ReopenedPartitionRestart::Closed(value) if value.kind()==kind=>Ok(value),
+            _=>anyhow::bail!("actual closed lifecycle conflicts with terminal-only request; no raw replay attempted"),
+        }
+    }
+
     pub(crate) fn open_restarted(
         path: &Path,
         independently_supplied_sha256: [u8; 32],
@@ -650,6 +676,27 @@ impl ReopenedPartitionResourceRecovery {
         maximum_index_bytes: u64,
         events: &mut Vec<NativeEvent>,
     ) -> Result<Self> {
+        match Self::open_observed_restarted(path,independently_supplied_sha256,maximum_publication_bytes,owner,stable,observation_budget,expected_shadow,expected_journal,group,scratch,index_path,maximum_index_bytes,events)?{
+            ReopenedPartitionRestart::Replay(value)=>Ok(value),
+            ReopenedPartitionRestart::Closed(_)=>anyhow::bail!("closed HND/ABT requires terminal finalization, never raw replay"),
+        }
+    }
+
+    pub(crate) fn open_observed_restarted(
+        path: &Path,
+        independently_supplied_sha256: [u8; 32],
+        maximum_publication_bytes: u64,
+        owner: &mut n2r_win32::PartitionScopedOwner,
+        stable: &n2r_win32::PartitionOwnerToken,
+        observation_budget: n2r_win32::partition_isolation::PartitionObservationBudget,
+        expected_shadow: &GeneralDiskBinding,
+        expected_journal: &GeneralJournalStorageBinding,
+        group: &ArtifactGroupPermit,
+        scratch: &SourceScratch,
+        index_path: &Path,
+        maximum_index_bytes: u64,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<ReopenedPartitionRestart> {
         ensure!(
             group.group() == ArtifactGroup::RecoveryCopy
                 && maximum_publication_bytes > 0
@@ -912,16 +959,27 @@ impl ReopenedPartitionResourceRecovery {
             index_path,
             maximum_index_bytes,
         )?;
-        ensure!(
-            matches!(
-                observation.lifecycle()?,
-                SelectedLifecycle::ApplyIntent | SelectedLifecycle::RollbackIntent
-            ),
-            "clear/foreign/closed HND-ABT cannot issue partition recovery binding"
-        );
-        observation.retire()?;
+        let lifecycle=observation.lifecycle()?;
+        let closed=match lifecycle{
+            SelectedLifecycle::ApplyIntent|SelectedLifecycle::RollbackIntent=>None,
+            SelectedLifecycle::Handoff|SelectedLifecycle::Aborted=>{
+                let kind=if lifecycle==SelectedLifecycle::Handoff{n2r_win32::PartitionTerminalKind::Handoff}else{n2r_win32::PartitionTerminalKind::Aborted};
+                let policy=observation.observation.index.clone();
+                let index=observation.observation.index_lease.clone();
+                let ticket=observation.observation.ticket;
+                let facts=&observation.facts;
+                let pins=n2r_win32::PagedRecoveryPins{journal_binding:facts.binding,journal_identity:facts.identity,journal_path:facts.path,
+                    journal_profile:facts.profile,immutable_sha256:ticket.immutable_sha256,old_selected_sha256:ticket.old_selected_sha256,
+                    old_restored_selected_sha256:ticket.old_restored_selected_sha256,new_selected_sha256:ticket.new_selected_sha256};
+                let witness=n2r_win32::authenticate_partition_closed_journal(owner,&policy,
+                    observation.observation.journal.markerless_recovery_file()?,&pins,kind,events)?;
+                Some((witness,policy,index))
+            }
+            _=>anyhow::bail!("clear/foreign lifecycle cannot issue private AP replay or closed terminal finalization"),
+        };
+        if closed.is_none(){observation.retire()?;}else{drop(observation);}
 
-        Ok(Self {
+        let recovery=Self {
             publication,
             publication_file,
             expected,
@@ -932,6 +990,10 @@ impl ReopenedPartitionResourceRecovery {
             scratch: scratch.clone(),
             _memory: memory,
             restarted_origin: Some(actual_origin),
+        };
+        Ok(match closed{
+            Some((closed,policy,index))=>ReopenedPartitionRestart::Closed(PartitionClosedTerminal::from_actual(recovery,closed,policy,index)),
+            None=>ReopenedPartitionRestart::Replay(recovery),
         })
     }
 

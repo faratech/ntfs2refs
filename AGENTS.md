@@ -659,6 +659,21 @@ ActualDirectoryInfo.Parent lacksprovider-addedPSIsContainer. OperatorpreparingNE
 Rootmustreviewnewpins/diffbeforeexecute. Candidate60b8binaryunchanged; originalfailedhelpers/receiptskept.
 VMstillRunning/sameboot/sourceNTFS0. NextnarrowSAMEBOOTcontinuation underORIGINALbaseline322659880226+6GiB absolute329102331170,
 global329374052988/reserve17179869184, no secondStart/capreset/restore/CP/extraNative. StillmaxONEpublicexe/yLF; no GOforv2yet.
+Rootreviewedv2DirectoryInfo-typeonlydiff worker10984afb6ee3e1eb046d2e21c690af236b6ad17cbad5b83a636c795adcad5ad0;
+reviewedSAMEBOOTresumev3 0db698fb41b6b6d196e0b86e15abce18fb64d5a6ed0fbdd9340205fc156ff74a (NOTv2Off/Start host),
+actualboot1793849950708/originalcase0055budgetbaseline322659880226/absolute329102331170/global+reserve unchanged.
+Resumecontroller38786 case6460162b56884e88aba62bcfaf7d92f7 ACTUAL PUBLIC3892/birth1793850407256 OS1/0.0366187s/stdout0,
+stderr'expl bounded local volume root required' (exactfull inarchive); no newpublicnamespace/Conversionrecords, no prepare/sourcewrite.
+Archive25file/220472B/all17pins SHA c9f19e887bdf8bc85828db28d241c92396cb8aee66253fb4bf83d861fc834bc4;
+Before8stillNTFS0/full8pass5e86..., original3892/208birthsabsent/tasksidle proofb7623319d11936e23a759e0507f60a84f59ae9b7f21d5f8456e53eaa0d7c0582.
+VMCURRENT RUNNING/sameboot, no power/restore/newnativeauthorized. Currentactual322727514889/free84675739648; originalcaseabsolute329102331170 retained.
+
+RootFIXEDpublicparentguard: held ordinaryDIR handle+FileID→actualGUIDrootONLY→strictdiscovery→exactWindowsbinding→closingFileID;
+defaultparent native-componentjoins. Previouslyordinaryfolder/forwardseparatorpath wasincorrectlypassedasmountedvolumeroot. No discoveryguardrelaxation.
+Also APPLIEDprivate CLOSED HND/ABT rootfinalization4files: actualheldJ/index lifecycle→SDKclosedcapability+origin, no replay/witness/marker/gate fabrication,
+HNDreadonlyknowncontents/fullmaps beforeRW, ABTclosedOLD/NTFS proof. BasicRO/operationalBasic0remainexplicitlyunsupported.
+Combinedlib+public+3labcheck0/20.3513475s/sharedtarget/no units; evidence/public-parent-closed-terminal-build-20261105.json. Nativequalificationpending.
+NEWexactcandidatebuildrequired forparentfix; retain60b8failedcase/zero-launchproofs, no rerunoldbinary. Samebootbudgetcontinuation requiresnewRootGO/pins.
 Terminalheld-reader NOWAPPLIED/CHECKEDsingleSDKfile: self.fileSome→sameactualreadonlyHeldSourceRead/tokenmutex; fileNone retainsindependentunlockedreader.
 Allclosed.revalidate_reader J/body/index/lifecycle/NEW/OLD/COPY/zero/boot proofbody unchanged. Actualeventbookends/sixcontrols fitunchanged128.
 Combinedlib+public+3labscheck0/29.3570361s/sharedtarget/no units, evidence/terminal-held-read-build-20261105.json. Nativequalificationpending.

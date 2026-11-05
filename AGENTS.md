@@ -515,6 +515,19 @@ Normaldefault no pause; extra512KiBRAM/1MiBevidence charged onlypausemode. No fa
 Combinedlib+labalpha+labrecovery focusedcheck0/28.1635596s/sharedtarget/no units. evidence/partition-fresh-relock-checkpoints-build-20261104.json.
 Newcode NOT natively qualified; exactcommittedbuild pending. OperatorpreparingDRAFT oneboot cancel→independentNTFSoracle→normalconvert→ReFSoracle case.
 Sourceprivate-preAP livecancel still missing; separateagentdraft only. Rootmain unchanged. Boot control/inactiveOS path not enabled from research.
+ONEarchive-onlyrestore07ca COMPLETED Off/RAM0/current07ca/all18, receipt5ee3173201d6f4cd73d09ef0ad99a5fbdd736920a00abf344e46e271aff21aae.
+Census320606827530/free86756507648, actualreclaim1352646753B; no newCP/native/sourceSET/manualdelete.
+f777885ca505ca6dcdd9227d31162c601c32b134 exact BOTH-binbuild33308 completed0/146s/417heldfilesunchanged;
+manifest93c1c9e9fbc72dd8bcdeb829c34d90d079325ad9331fb23dc8f18068af20efb9.
+labalpha8602624B/SHA4b34661d13aa247d197ab718ff4187fd8f7109e67ff52e0b61b6e1c5c6a0f949;
+labrecovery3858432B/SHA05e70cc29adf63658f76451ebff2bb7b972ddf2bab70aac569e3840668ad375c. NOT executed.
+Static count found freshPRIVATEowner lackedactualeventsink: guard/adopt/revalidations could overflow128 beforeoutercheckpoint.
+Applied tiny actualguard.observer.clone transfer INTO ownerconstructor, storedSome beforeFIRSTowner.revalidate; checks/cap/authorityunchanged.
+Focusedcheck0/28.0627397s/sharedtarget/no units; evidence/partition-fresh-owner-event-sink-build-20261104.json. Newexactbuild requiredbeforeGO.
+Frozen TWO-rolehelperdraft host2a246df5787072d0149c7e32a27527723196e1cd2023f3948da391e22fc6bf1b,
+worker717e9b67c8b9a8298d56d78c5c5d5cb61447cd9ba7eeac45ba8d5aef507e7325,
+definitions-only rolerunnerfd2f4d1377481d9922707aecebcc2c465796099d2edb97fbdccab5a846e9f109.
+Root reviewedserialcancel→independentNTFSoracle→ONE normalconversion andactualtwoPID/terminal handling; noGOyet; baselineOff18.
 
 - Fresh writes require original live opaque source certificate and actual source/target/J/arena owners. Saved JSON/paths/flags are routes, never authority.
 - Revalidate device/file identities, journal/index/ticket/lifecycle and recovery files. Recovery must not require thin-pool reattachment.

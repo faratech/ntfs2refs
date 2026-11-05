@@ -1431,6 +1431,7 @@ pub fn freeze_mounted_ntfs_partition(
             .physical
             .take()
             .ok_or_else(|| invalid("original readonly physical owner absent"))?,
+        guard.observer.clone(),
         events,
     )?;
     let admission = PartitionNtfsAdmission {

@@ -385,6 +385,7 @@ impl PartitionScopedOwner {
         budget: PartitionObservationBudget,
         file: File,
         mut physical_readonly: File,
+        events_sink:super::partition_lifecycle::PartitionNativeEventSink,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<Self> {
         binding.validate()?;
@@ -418,7 +419,7 @@ impl PartitionScopedOwner {
             storage_current_partition_roles:storage_roles,
                 source_admission_issued: false, loaded_dump_exclusion_qualified: false,
             },
-            buffer: AlignedBuffer::new()?, position: 0, poisoned: false, recovery_events:None,
+            buffer: AlignedBuffer::new()?, position: 0, poisoned: false, recovery_events:Some(events_sink),
         };
         owner.revalidate(events)?;
         Ok(owner)

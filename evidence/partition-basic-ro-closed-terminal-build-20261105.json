@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "kind": "actual-basic-readonly-closed-terminal-recovery",
+  "status": "focused-check-passed-native-pending",
+  "files": [
+    {
+      "bytes": 57030,
+      "sha256": "a64da41ca570ddf1751ce63e61ebea5cfc6fec1618a5bdff81a4d2b594772d69",
+      "path": "crates/n2r-win32/src/native/paged_recovery.rs"
+    },
+    {
+      "bytes": 26369,
+      "sha256": "8f8bfad9ea6c4e3ef1e61cc76fa643b126522472037beecc9a95cf67a913c58a",
+      "path": "crates/n2r-win32/src/native/paged_recovery/partition_scope.rs"
+    },
+    {
+      "bytes": 46130,
+      "sha256": "8c9246b14f6e4f892d5381a46c3bc1cc8c68ff7e4b874e3ad60b91f25f800785",
+      "path": "crates/n2r-win32/src/native/partition_owner.rs"
+    },
+    {
+      "bytes": 80570,
+      "sha256": "5877896a4929dcbcdf92464836a418526ae82e969260a4fbfe99cce7b99a7ff9",
+      "path": "crates/n2r-win32/src/native/partition_restoration.rs"
+    },
+    {
+      "bytes": 14119,
+      "sha256": "1af09bab0fdc0720cd15843e95f7cb65b2626cafc381c1b818a5f1b7eb827f9a",
+      "path": "crates/n2r-win32/src/native/partition_restoration/basic_ro.rs"
+    },
+    {
+      "bytes": 28930,
+      "sha256": "3edf3306adc3369fce88c8f39216b8874ba1041d572a43142b4731494d866ffb",
+      "path": "crates/n2r-win32/src/native/partition_storage_roles.rs"
+    },
+    {
+      "bytes": 14511,
+      "sha256": "580eca91dc3789fdbf884aea38c643f76a1b64429149f1ce112faf103d23b898",
+      "path": "src/resource_partition_recovery.rs"
+    },
+    {
+      "bytes": 117971,
+      "sha256": "553fa3a0439f6542589db1ad513704503b2484464aba72173ebd8f42faf060eb",
+      "path": "src/selected_journal/resource_domain/reopen/envelope.rs"
+    },
+    {
+      "bytes": 22198,
+      "sha256": "95f22066a6af722cc8f3f8a69ba0f17761359ae6b6c19133e49793a5cb738125",
+      "path": "src/selected_journal/resource_domain/reopen/partition_basic_ro.rs"
+    }
+  ],
+  "reviewed_sdk_patch_sha256": "846cac2f836074a06b5823c937303403a802b357a0eba478419f3cabc6dbd24d",
+  "reviewed_root_patch_sha256": "4f17b5faa9d576a7a080819883c0c21c0eaf90970f8f9533e95ddbe766e89e86",
+  "focused_check": {
+    "wall_seconds": 33.8981438,
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+    "exit_code": 0,
+    "kind": "public-partition-dispatch-focused-check",
+    "shared_target_reused": true,
+    "native_run": false,
+    "capacity": {
+      "actual_bytes": 322961405710,
+      "free_bytes": 84431990784,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 2147483648,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "unit_tests_run": false
+  },
+  "behavior": "Positive native BasicRO/GPT/DEVICE/extents/C/page/dump/critical/filesystem protection plus authenticated original publication, held journal/index and actual closed HND/ABT. HND native content/maps and ABT OLD/NTFS validated before writable restoration. No private owner/admission/lock fabricated, no raw replay/source gate/lifecycle marker issued.",
+  "operational_basic0_supported": false,
+  "native_qualification_pending": true,
+  "running_candidate_unchanged": "32f86943cdaf3abbf7e357fdb7f28b13e923f794",
+  "unit_tests_run": false
+}

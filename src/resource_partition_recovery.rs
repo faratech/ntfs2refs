@@ -56,7 +56,7 @@ fn digest(value: &str) -> Result<[u8; 32]> {
         .try_into()
         .map_err(|_| anyhow::anyhow!("publication checksum width differs"))
 }
-/// AP/RB only. PreparedClear/no-publication/process-death cancellation is not
+/// Private AP/RB or closed private/BasicRO finalization. PreparedClear restart is not
 /// inferred from absent files, an intent flag or the original primary sector.
 pub fn run_recovery(
     request: PartitionRecoveryRequest,
@@ -94,6 +94,12 @@ pub fn run_recovery(
                     || matches!(c, ':' | '/' | '\\' | '"' | '<' | '>' | '|' | '?' | '*'))),
         "ordinary recovery output leaf required"
     );
+    let mut routing_events = Vec::new();
+    n2r_win32::partition_isolation::metadata_destination_outside_source(
+        &request.source,
+        parent,
+        &mut routing_events,
+    )?;
     let available = n2r_win32::resource_native::observe_available_resources(parent)?;
     let evidence = request
         .maximum_evidence_bytes
@@ -148,13 +154,40 @@ pub fn run_recovery(
   "actual_available":available,"runtime_arena":resources,"independently_reserved_sdk_ram_bytes":sdk_ram,
   "ledger_ram_bytes":ledger_ram,"thread_stack_reservation_bytes":RECOVERY_THREAD_STACK_RESERVATION,
   "pre_ap_restart_cancel_supported":false,"request_grants_authority":false}))?;
-    let mut events = Vec::<NativeEvent>::new();
+    let mut events = routing_events;
     let operation = (|| -> Result<serde_json::Value> {
+        // This is positive native state routing, not an error fallback. None
+        // is issued only for the observed project-private0 row; Basic0 refuses.
+        let mut basic_observer = observer.clone();
+        if let Some(source)=n2r_win32::partition_restoration::PartitionBasicReadonlyTerminal::open_if_actual_basic_ro(
+            request.source.clone(),request.observation_budget,&mut basic_observer,&mut events)?{
+            ensure!(source.binding().storage.disk_number==source.windows_volume().disk_number,
+                "BasicRO terminal route requires same running Windows disk");
+            let destination=n2r_win32::partition_isolation::metadata_destination_outside_source(&request.source,parent,&mut events)?;
+            let windows=source.windows_volume();
+            ensure!(destination.disk_number==windows.disk_number&&destination.offset==windows.offset&&destination.length==windows.length,
+                "BasicRO recovery controls must reside on actual Windows volume outside selected partition");
+            observer.checkpoint("partition-basic-ro-terminal-source",&mut events)?;
+            let arena=ArtifactArena::new(&output.join("arena"),resources,&[request.source.storage.clone(),request.shadow.clone()])?;
+            let budget=SourceMetadataBudget::from_resource_budget(resources)?;
+            let group=arena.reserve_group(ArtifactGroup::RecoveryCopy,budget.scratch_bytes)?;
+            let scratch=SourceScratch::new_auxiliary_in_arena(budget,group.clone())?;
+            let terminal=crate::selected_journal::resource_domain::reopen::envelope::PartitionBasicRoClosedTerminal::open(
+                source,&request.publication,publication_sha,budget.record_bytes,&request.shadow,&request.journal,
+                &group,&scratch,&output.join("arena/basic-ro-closed-journal.index"),budget.scratch_bytes,&mut basic_observer,&mut events)?;
+            let expected=match request.direction{
+                PartitionRecoveryDirection::Resume=>n2r_win32::PartitionTerminalKind::Handoff,
+                PartitionRecoveryDirection::Rollback=>n2r_win32::PartitionTerminalKind::Aborted,
+            };
+            ensure!(terminal.kind()==expected,"requested direction conflicts with actual closed BasicRO HND/ABT; no raw replay");
+            return terminal.finalize(&mut basic_observer,&mut events,|phase,events|
+                observer.checkpoint(phase,events).map_err(anyhow::Error::from));
+        }
         let owner = PartitionScopedOwner::open_private(
             request.source.clone(),
             request.observation_budget,
             &mut events,
-        ).context("partition recovery currently supports an actual PRIVATE source only; BasicRO/operational Basic0 terminal reconciliation is not implemented; no fallback/replay was attempted")?;
+        ).context("private AP/replay route requires actual private0 state; operational Basic0 reconciliation remains unsupported; no fallback/replay was attempted")?;
         let mut owner = owner.attach_recovery_observer(Box::new(observer.clone()), &mut events)?;
         ensure!(
             owner.binding().storage.disk_number

@@ -585,7 +585,7 @@ fn metadata_file(
 // Opening a new GLOBALROOT selected-volume object is not that authority. This
 // query therefore obtains selected partition metadata from the already-live
 // physical disk's readonly layout, never from a newly opened target volume.
-fn selected_from_physical_layout(
+pub(in crate::native) fn selected_from_physical_layout(
     binding: &PartitionSourceBinding,
     budget: PartitionObservationBudget,
     events: &mut Vec<NativeEvent>,

@@ -12,6 +12,21 @@ use std::{
     os::windows::fs::OpenOptionsExt,
 };
 
+mod basic_ro;
+pub use basic_ro::PartitionBasicReadonlyTerminal;
+
+// Actual terminal metadata only: no private-owner/admission/loaded flags.
+struct TerminalMetadataBaseline{
+    partition:partition_isolation::PartitionIsolationObservation,
+    configured_dump_locations:partition_dump_locations::ConfiguredDumpObservation,
+    storage_current_partition_roles:super::partition_storage_roles::PartitionStorageRoleObservation,
+}
+impl From<PartitionOwnerState> for TerminalMetadataBaseline{
+    fn from(value:PartitionOwnerState)->Self{Self{partition:value.partition,
+        configured_dump_locations:value.configured_dump_locations,
+        storage_current_partition_roles:value.storage_current_partition_roles}}
+}
+
 const RO: u64 = 0x1000_0000_0000_0000;
 const BASIC: &str = "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7";
 const PRIVATE: &str = "b627aadb-a893-48b6-aa0b-71e5f30ee370";
@@ -425,7 +440,7 @@ impl PartitionRecoveredOrigin {
             physical: parts.physical_readonly,
             binding: parts.binding.clone(),
             budget: parts.budget,
-            baseline: parts.state,
+            baseline: parts.state.into(),
             token: parts.token,
             origin: self.origin,
             closed,
@@ -806,7 +821,7 @@ pub struct PartitionTerminalRestorationGuard<'journal, 'pins> {
     physical: File,
     binding: PartitionSourceBinding,
     budget: PartitionObservationBudget,
-    baseline: PartitionOwnerState,
+    baseline: TerminalMetadataBaseline,
     token: PartitionOwnerToken,
     origin: Origin,
     closed: PartitionClosedJournalObservation,
@@ -875,7 +890,7 @@ impl PartitionTerminalRestorationGuard<'static, 'static> {
             physical: parts.physical_readonly,
             binding: parts.binding.clone(),
             budget: parts.budget,
-            baseline: parts.state,
+            baseline: parts.state.into(),
             token: parts.token,
             origin,
             closed,
@@ -923,7 +938,7 @@ impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
             physical: parts.physical_readonly,
             binding: parts.binding.clone(),
             budget: parts.budget,
-            baseline: parts.state,
+            baseline: parts.state.into(),
             token: parts.token,
             origin,
             closed,
@@ -946,6 +961,7 @@ impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
     pub fn owner_token(&self) -> PartitionOwnerToken {
         self.token.clone()
     }
+    pub fn closed_journal_observation(&self)->&PartitionClosedJournalObservation{&self.closed}
     pub fn original_label(&self) -> &crate::volume_label::VolumeLabel {
         &self.origin.original_label
     }
@@ -1549,7 +1565,7 @@ impl super::ProtectedReadonlyRefsAccess for PartitionTerminalReadonlyVolume<'_, 
         Some(&self.guard.token)
     }
 }
-struct TerminalRawReader {
+pub(in crate::native) struct TerminalRawReader {
     file: TerminalReadBacking,
     buffer: AlignedBuffer,
     position: u64,

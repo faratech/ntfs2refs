@@ -484,3 +484,23 @@ impl PartitionHandoffWitness {
         self.closed.revalidate(source, &self.policy, &mut self.journal, &pins, events)
     }
 }
+
+/// Closed-J/source authentication from an actual BasicRO capability only.
+/// No private owner, old FS lock or source write gate is reconstructed.
+pub(in crate::native) fn authenticate_basic_ro_closed(
+ source:&mut crate::native::partition_restoration::PartitionBasicReadonlyTerminal,
+ policy:&HeldPagedWritePolicy,j:&mut File,pins:&PagedRecoveryPins<'_>,kind:PartitionTerminalKind,
+ observer:&mut impl crate::native::partition_restoration::PartitionRestorationObserver,
+ events:&mut Vec<NativeEvent>,
+)->io::Result<PartitionClosedJournalObservation>{
+ source.revalidate(observer,events)?;
+ let binding=source.binding().clone();let token=source.owner_token().clone();
+ let witness=PartitionClosedJournalObservation{owner:token,binding:binding.clone(),
+  pins:OwnedPartitionJournalPins::capture(pins),index_sha256:policy.facts()?.index_sha256,kind};
+ {
+  let mut reader=source.reader(events)?;
+  authenticate_scoped_partition_reader(&mut reader,binding.storage.identity.partition_bytes,&binding,policy,j,pins,
+   if kind==PartitionTerminalKind::Handoff{PartitionJournalPhase::Handoff}else{PartitionJournalPhase::Aborted})?;
+ }
+ source.revalidate(observer,events)?;Ok(witness)
+}

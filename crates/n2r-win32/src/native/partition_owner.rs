@@ -57,6 +57,11 @@ struct PartitionOwnerIdentity {
 #[derive(Clone)]
 pub struct PartitionOwnerToken(Arc<PartitionOwnerIdentity>);
 impl PartitionOwnerToken {
+    // Metadata-only terminal capabilities mint equality identity only. They
+    // cannot construct PartitionScopedOwner or any source-write gate.
+    pub(in crate::native) fn readonly_terminal_identity()->Self{
+        Self(Arc::new(PartitionOwnerIdentity{data_cursor:std::sync::Mutex::new(())}))
+    }
     pub fn same_owner(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }

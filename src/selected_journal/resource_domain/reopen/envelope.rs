@@ -8,6 +8,9 @@ use super::{BoundJournalObservation, BoundNativeRecoveryJournal, SelectedLifecyc
 #[path = "partition_closed.rs"]
 mod partition_closed;
 pub(crate) use partition_closed::{PartitionClosedTerminal,ReopenedPartitionRestart};
+#[path = "partition_basic_ro.rs"]
+mod partition_basic_ro;
+pub(crate) use partition_basic_ro::PartitionBasicRoClosedTerminal;
 use crate::{
     artifact_arena::{ArtifactGroup, ArtifactGroupPermit},
     ntfs_inspect::paged_storage::{SourceRamLease, SourceScratch},

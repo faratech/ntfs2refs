@@ -707,6 +707,26 @@ fn observe_with_type(
     events: &mut Vec<NativeEvent>,
     target_type: [u8; 16],
 ) -> io::Result<PartitionIsolationObservation> {
+    observe_with_route(file,binding,budget,events,target_type,true)
+}
+/// Full physical GPT/C/page facts without opening the SELECTED volume. This
+/// deliberately makes no namespace, mounted-FSD or isolation authority claim.
+pub(in crate::native) fn observe_physical_only(
+    file:&mut File,binding:&PartitionSourceBinding,budget:PartitionObservationBudget,
+    events:&mut Vec<NativeEvent>,target_type:[u8;16],
+)->io::Result<PartitionIsolationObservation> {
+    let mut value=observe_with_route(file,binding,budget,events,target_type,false)?;
+    value.profile="partition_physical_metadata_no_source_volume_open_v1";
+    Ok(value)
+}
+fn observe_with_route(
+    file: &mut File,
+    binding: &PartitionSourceBinding,
+    budget: PartitionObservationBudget,
+    events: &mut Vec<NativeEvent>,
+    target_type: [u8; 16],
+    query_source_volume_route: bool,
+) -> io::Result<PartitionIsolationObservation> {
     binding.validate()?;
     budget.validate()?;
     let storage = &binding.storage;
@@ -748,7 +768,7 @@ fn observe_with_type(
     let native = native_layout(file, budget, events)?;
     let gpt = gpt(file, storage, budget, native, target_type)?;
     let mode = PartitionObservationMode::from_attributes(gpt.target_attributes);
-    let (volume, volume_error) = match device_file(&storage.volume_path()?, false, false) {
+    let (volume, volume_error) = if query_source_volume_route { match device_file(&storage.volume_path()?, false, false) {
         Ok(volume) => {
             let value = extent(&volume, "partition-observer-source-volume-extents", events)?;
             require(
@@ -762,7 +782,7 @@ fn observe_with_type(
         // An offline provider can remove the volume namespace without setting
         // the GPT offline bit. Missing volume proof never admits isolation.
         Err(error) => (None, error.raw_os_error()),
-    };
+    }} else { (None, None) }; // Explicitly NOT queried, never inferred absent.
     let paging = paging(storage, budget, events)?;
     require(
         !paging.source_hosts_active_pagefile,

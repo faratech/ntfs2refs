@@ -16,6 +16,7 @@ use super::super::partition_storage_roles::{PartitionStorageRoleObservation,obse
 use super::super::{AlignedBuffer, MAX_IO, NativeEvent, control, device_file};
 use crate::attestation_partition::PartitionPagedNtfsObservation;
 mod live_cancel;
+mod physical_window;
 pub use live_cancel::PartitionLiveCancellationReceipt;
 use serde::Serialize;
 use sha2::{Digest, Sha256};

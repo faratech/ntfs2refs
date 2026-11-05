@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "kind": "locked-physical-partition-read-window-foundation",
+  "status": "focused-check-passed-native-not-enabled",
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/native/partition_lifecycle/staged.rs",
+      "sha256": "49e03dd4607182165b10244f8aab7a0e8aea5a49c01b50789cf3b12ae01ef603",
+      "bytes": 58621
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_lifecycle/staged/physical_window.rs",
+      "sha256": "ab4a8815400581567838a626cd672348c280163e1eb34e7ba4680e3a47e4e82f",
+      "bytes": 10967
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_isolation.rs",
+      "sha256": "a08a5d0c5ef1dc6dd49da7518caf4c55698e3b4142b4970566c454850a407153",
+      "bytes": 35288
+    }
+  ],
+  "focused_check": {
+    "exit_code": 0,
+    "shared_target_reused": true,
+    "wall_seconds": 32.5284505,
+    "unit_tests_run": false,
+    "public_library_and_three_lab_binaries_checked": true
+  },
+  "behavior": "Private readonly physical reader borrows the actual live volume-lock owner, accounts for aligned workspace, accepts volume-relative offsets only, checks translated partition/disk bounds, and preserves physical/GPT/C/page/dump/current-role opening and closing checks. Source volume namespace is not opened for payload reads.",
+  "source_write_interface_added": false,
+  "public_profile_or_default_changed": false,
+  "legacy_guards_or_schema_changed": false,
+  "persistent_exclusion_qualified": false,
+  "actual_io_not_yet_integrated": true,
+  "root_main_unchanged": true
+}

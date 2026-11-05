@@ -1,12 +1,14 @@
 //! Explicit experimental owning-machine runner. Inputs route/budget work;
 //! only actual native owners can authorize conversion of the selected source.
+#[path = "resource_partition_prepare_only.rs"]
+mod prepare_only;
 use crate::{
     artifact_arena::ArtifactArena,
     general_shadow::source_backed::CaptureBudget,
     resource_preparation::{
         partition_preparation::{
             PartitionExecutionRequest, PartitionPreparationRequest, finalize_partition_handoff,
-            prepare_partition_resources,
+            prepare_partition_resources, prepare_partition_resources_readonly_physical,
         },
         partition_target::PartitionTargetRequest,
     },
@@ -28,6 +30,8 @@ use n2r_win32::{
     partition_restoration::PartitionRestorationObserver,
     tree_resources::ResourceBudget,
 };
+use prepare_only::RunPurpose;
+pub use prepare_only::{WindowsPreparedOfflineApplyReceipt, prepare_for_offline_apply};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
@@ -272,7 +276,14 @@ pub fn run(
     output: &Path,
     acknowledge_source_conversion: bool,
 ) -> Result<()> {
-    run_inner(request, output, acknowledge_source_conversion, None, false)
+    run_inner(
+        request,
+        output,
+        acknowledge_source_conversion,
+        None,
+        false,
+        RunPurpose::Convert,
+    )
 }
 /// Exercise the real mounted-BasicRO cancellation path without creating a
 /// shadow, source admission or payload writer. The guard closes before return.
@@ -282,7 +293,14 @@ pub fn run_cancel_before_private(
     output: &Path,
     acknowledge_source_conversion: bool,
 ) -> Result<()> {
-    run_inner(request, output, acknowledge_source_conversion, None, true)
+    run_inner(
+        request,
+        output,
+        acknowledge_source_conversion,
+        None,
+        true,
+        RunPurpose::Convert,
+    )
 }
 /// Explicit hidden-lab fault control. The nonce/command never authorizes I/O.
 #[doc(hidden)]
@@ -304,6 +322,7 @@ pub fn run_with_controlled_post_flush_pause(
         acknowledge_source_conversion,
         Some(nonce),
         false,
+        RunPurpose::Convert,
     )
 }
 fn run_inner(
@@ -312,7 +331,13 @@ fn run_inner(
     acknowledge_source_conversion: bool,
     pause_nonce: Option<String>,
     cancel_readonly: bool,
+    mut purpose: RunPurpose<'_>,
 ) -> Result<()> {
+    let prepare_only = matches!(&purpose, RunPurpose::Prepare(_));
+    ensure!(
+        !prepare_only || (pause_nonce.is_none() && !cancel_readonly),
+        "prepare-only cannot enable pause/cancel/execution controls"
+    );
     ensure!(
         acknowledge_source_conversion && request.schema_version == 1,
         "explicit disposable source conversion acknowledgement required"
@@ -365,12 +390,43 @@ fn run_inner(
         parent,
         &mut events,
     )?;
-    ensure!(
-        destination.disk_number == windows.disk_number
-            && destination.offset == windows.offset
-            && destination.length == windows.length,
-        "alpha controls/intent must be on the actual Windows volume outside selected source"
-    );
+    if prepare_only {
+        ensure!(
+            destination.disk_number != binding.storage.disk_number,
+            "offline apply bundle/control/intent/J must use another physical disk"
+        );
+        let parent_guid = n2r_win32::file_storage::final_path_guid(
+            _parent_owners
+                .first()
+                .context("held external parent absent")?,
+        )?;
+        let end = parent_guid
+            .find('}')
+            .context("external parent has no volume GUID")?
+            + 1;
+        let external = n2r_win32::discovery::discover(
+            &format!("{}\\", &parent_guid[..end]),
+            n2r_win32::discovery::Role::Journal {
+                allow_additional_partitions: true,
+            },
+        )?;
+        ensure!(
+            external.read_only
+                && external.observed_twice_unchanged
+                && external.source_write_requests == 0
+                && external.binding.disk_number != binding.storage.disk_number
+                && n2r_win32::layout::guid_bytes(&external.binding.identity.disk_guid)?
+                    != n2r_win32::layout::guid_bytes(&binding.storage.identity.disk_guid)?,
+            "actual external preparation parent aliases source disk"
+        );
+    } else {
+        ensure!(
+            destination.disk_number == windows.disk_number
+                && destination.offset == windows.offset
+                && destination.length == windows.length,
+            "alpha controls/intent must be on the actual Windows volume outside selected source"
+        );
+    }
     drop(reader);
     let available = n2r_win32::resource_native::observe_available_resources(parent)?;
     ensure!(
@@ -394,7 +450,7 @@ fn run_inner(
     };
     let control_quota = request
         .maximum_evidence_bytes
-        .checked_mul(2)
+        .checked_mul(if prepare_only { 3 } else { 2 })
         .and_then(|n| n.checked_add(intent_quota))
         .and_then(|n| n.checked_add(pause_evidence))
         .context("control reservation overflow")?;
@@ -408,7 +464,7 @@ fn run_inner(
             .scratch_available_bytes
             .checked_sub(independent)
             .is_some_and(|n| n >= request.arena_scratch_bytes),
-        "actual C storage cannot cover staging, intent/evidence, arena and free reserve"
+        "actual working storage cannot cover staging, intent/evidence, arena and free reserve"
     );
     let ledger_ram = 5 * 1024 * 1024u64;
     let sdk_ram = request
@@ -452,7 +508,7 @@ fn run_inner(
     observer.lock()?.record(
         &serde_json::json!({"kind":"partition-alpha-admitted-resources","request":request,
         "actual_source":binding,"arena":resources,"intent_maximum_including_slack":intent_quota,
-        "cancel_before_private_requested":cancel_readonly,
+        "cancel_before_private_requested":cancel_readonly,"windows_prepare_for_offline_apply":prepare_only,
         "intent_outside_arena":true,"evidence_outside_arena":true,"provider_outside_arena":true,
         "independently_reserved_sdk_ram_bytes":sdk_ram,"ledger_ram_bytes":ledger_ram,
         "worker_stack_reservation_bytes":WORKER_STACK_BYTES,
@@ -583,7 +639,7 @@ fn run_inner(
             .scratch_available_bytes
             .checked_sub(remaining_independent)
             .is_some_and(|n| n >= resources.scratch_bytes),
-        "formatting consumed reserved C conversion capacity"
+        "formatting consumed reserved working-volume conversion capacity"
     );
     let intent = OpenOptions::new()
         .create_new(true)
@@ -608,13 +664,24 @@ fn run_inner(
         source: binding.storage.clone(),
         shadow: shadow.binding.clone(),
     };
-    let guard = PartitionPreparationGuard::begin(
-        binding.clone(),
-        request.observation_budget,
-        intent,
-        Box::new(observer.clone()),
-        &mut events,
-    )?;
+    let guard = if prepare_only {
+        PartitionPreparationGuard::begin_external_journal(
+            binding.clone(),
+            request.observation_budget,
+            intent,
+            &journal,
+            Box::new(observer.clone()),
+            &mut events,
+        )?
+    } else {
+        PartitionPreparationGuard::begin(
+            binding.clone(),
+            request.observation_budget,
+            intent,
+            Box::new(observer.clone()),
+            &mut events,
+        )?
+    };
     let capture = align(resources.scratch_bytes / 3);
     let journal_bytes = align(resources.scratch_bytes - resources.scratch_bytes / 3);
     let combined = align(resources.scratch_bytes - resources.scratch_bytes / 6);
@@ -649,21 +716,40 @@ fn run_inner(
         target,
     };
     let result = (|| -> Result<serde_json::Value> {
-        let prepared_result = prepare_partition_resources(
-            prepared,
-            &arena_root,
-            &arena,
-            guard,
-            &mut events,
-            |phase, events| {
-                observer
-                    .checkpoint(phase, events)
-                    .map_err(anyhow::Error::from)
-            },
-        );
+        let prepared_result = if prepare_only {
+            prepare_partition_resources_readonly_physical(
+                prepared,
+                &arena_root,
+                &arena,
+                guard,
+                &mut events,
+                |phase, events| {
+                    observer
+                        .checkpoint(phase, events)
+                        .map_err(anyhow::Error::from)
+                },
+            )
+        } else {
+            prepare_partition_resources(
+                prepared,
+                &arena_root,
+                &arena,
+                guard,
+                &mut events,
+                |phase, events| {
+                    observer
+                        .checkpoint(phase, events)
+                        .map_err(anyhow::Error::from)
+                },
+            )
+        };
         let mut owned = match prepared_result {
             Ok(owned) => owned,
             Err(failure) => {
+                if prepare_only {
+                    return Err(anyhow::anyhow!(format!("{:#}",failure.cause())).context(
+                    "Windows prepare-only refused; preserve actual source protection and all artifacts"));
+                }
                 let original = anyhow::anyhow!(format!("{:#}", failure.cause()));
                 let mut cancellation_observer = observer.clone();
                 let cancelled = failure.cancel_if_live(&mut cancellation_observer, &mut events);
@@ -682,6 +768,30 @@ fn run_inner(
             maximum_index_bytes: resources.scratch_bytes / 16,
             recovery_arena_bytes: resources.scratch_bytes / 16,
         };
+        if prepare_only {
+            let core = owned.prepare_for_offline_apply(
+                &execution,
+                &arena_root,
+                &mut events,
+                |phase, events| {
+                    observer
+                        .checkpoint(phase, events)
+                        .map_err(anyhow::Error::from)
+                },
+            )?;
+            // The arena owns a SAME-FILE_OBJECT readonly J allocation witness.
+            // Close the LAST arena clone before any ordinary J reopen/readback.
+            drop(arena);
+            let receipt =
+                prepare_only::finish_prepared(core, output, &request, &observer, &mut events)?;
+            let result = serde_json::to_value(&receipt)?;
+            if let RunPurpose::Prepare(slot) = &mut purpose {
+                **slot = Some(receipt);
+            } else {
+                anyhow::bail!("prepare-only result has no owning return slot");
+            }
+            return Ok(result);
+        }
         let mut pause_publication = None;
         let pending_result =
             owned.execute_and_handoff(&execution, &arena_root, &mut events, |phase, events| {

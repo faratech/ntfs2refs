@@ -30,6 +30,7 @@ mod paged_recovery;
 mod isolation_restore;
 pub mod partition_isolation;
 pub mod offline_environment;
+pub mod recovery_image;
 pub use paged_write_policy::{
     HeldPagedWritePolicy, PagedPolicyIndexBuilder, PagedPolicyIndexFacts, PagedPolicyIndexRow,
 };

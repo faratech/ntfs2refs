@@ -474,6 +474,132 @@ pub struct FingerprintPins {
     pub omitted_bytes: u64,
     pub raw_extent_identity_streams: u64,
 }
+/// Serializable metadata for a cold reader. Reopening this does not recreate
+/// the original inspector, a live source certificate, or write authority.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ReopenedFingerprintPins {
+    pub schema_version: u32,
+    pub kind: String,
+    pub partition_bytes: u64,
+    pub source_inspection_sha256: String,
+    pub policy: VerificationPolicy,
+    pub allocated: RecordStorePin,
+    pub covered: RecordStorePin,
+    pub omitted: RecordStorePin,
+    pub allocated_bytes: u64,
+    pub covered_bytes: u64,
+    pub omitted_bytes: u64,
+    pub raw_extent_identity_streams: u64,
+}
+impl ReopenedFingerprintPins {
+    pub(crate) fn open(self, scratch: &SourceScratch) -> Result<PagedSourceFingerprint> {
+        let kind = if self.policy.is_fast() {
+            EXTENT_KIND
+        } else {
+            FULL_KIND
+        };
+        ensure!(
+            self.schema_version == 1
+                && self.kind == kind
+                && self.partition_bytes >= GRANULE
+                && self.partition_bytes.is_multiple_of(GRANULE)
+                && self.source_inspection_sha256.len() == 64
+                && self
+                    .source_inspection_sha256
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            "cold fingerprint schema, geometry or inspection pin differs"
+        );
+        let allocated = SortedRecordStore::open(&self.allocated, scratch)?;
+        let covered = SortedRecordStore::open(&self.covered, scratch)?;
+        let omitted = SortedRecordStore::open(&self.omitted, scratch)?;
+        let check = |store: &SortedRecordStore, expected: u64| -> Result<()> {
+            let mut bytes = 0u64;
+            let mut prior_end = None;
+            for ordinal in 0..store.len() {
+                let range: Range = store.get(ordinal)?;
+                let range = span(range.offset, range.length, self.partition_bytes)?;
+                ensure!(
+                    store.key(ordinal)?[..8] == range.offset.to_be_bytes()
+                        && prior_end.is_none_or(|end| end < range.offset),
+                    "cold fingerprint ranges are not canonical and disjoint"
+                );
+                bytes = bytes
+                    .checked_add(range.length)
+                    .context("cold fingerprint byte overflow")?;
+                prior_end = Some(range.end()?);
+            }
+            ensure!(bytes == expected, "cold fingerprint range total differs");
+            Ok(())
+        };
+        check(&allocated, self.allocated_bytes)?;
+        check(&covered, self.covered_bytes)?;
+        check(&omitted, self.omitted_bytes)?;
+        ensure!(
+            allocated.len() > 0
+                && covered.len() > 0
+                && self.covered_bytes.checked_add(self.omitted_bytes) == Some(self.allocated_bytes)
+                && self.allocated_bytes <= self.partition_bytes
+                && (self.policy.is_fast() || self.omitted_bytes == 0),
+            "cold fingerprint allocation classification is incomplete"
+        );
+        let (mut ci, mut oi) = (0, 0);
+        for ai in 0..allocated.len() {
+            let allocation: Range = allocated.get(ai)?;
+            let mut cursor = allocation.offset;
+            let end = allocation.end()?;
+            while cursor < end {
+                let c: Option<Range> = (ci < covered.len()).then(|| covered.get(ci)).transpose()?;
+                let o: Option<Range> = (oi < omitted.len()).then(|| omitted.get(oi)).transpose()?;
+                let take_covered = match (c, o) {
+                    (Some(c), Some(o)) => c.offset <= o.offset,
+                    (Some(_), None) => true,
+                    (None, Some(_)) => false,
+                    _ => anyhow::bail!("cold fingerprint leaves allocated bytes unclassified"),
+                };
+                let range = if take_covered {
+                    ci += 1;
+                    c.unwrap()
+                } else {
+                    oi += 1;
+                    o.unwrap()
+                };
+                ensure!(
+                    range.offset == cursor && range.end()? <= end,
+                    "cold fingerprint covered/omitted union differs from allocation"
+                );
+                cursor = range.end()?;
+            }
+        }
+        ensure!(
+            ci == covered.len() && oi == omitted.len(),
+            "cold fingerprint has extra classified ranges"
+        );
+        let value = PagedSourceFingerprint {
+            pins: FingerprintPins {
+                schema_version: self.schema_version,
+                kind,
+                partition_bytes: self.partition_bytes,
+                source_inspection_sha256: self.source_inspection_sha256,
+                policy: self.policy,
+                allocated: self.allocated,
+                covered: self.covered,
+                omitted: self.omitted,
+                allocated_bytes: self.allocated_bytes,
+                covered_bytes: self.covered_bytes,
+                omitted_bytes: self.omitted_bytes,
+                raw_extent_identity_streams: self.raw_extent_identity_streams,
+            },
+            allocated,
+            covered,
+            omitted,
+            scratch: scratch.clone(),
+        };
+        value.revalidate()?;
+        Ok(value)
+    }
+}
 #[derive(Serialize)]
 pub struct FingerprintReport {
     pub kind: &'static str,
@@ -927,7 +1053,11 @@ impl PagedSourceFingerprint {
     }
     /// Same canonical fingerprint with a bounded partition reader. Its caller
     /// brackets the actual phase/owner; generic bytes cannot issue admission.
-    pub(crate) fn hash_partition_reader<R: Read + Seek>(&self, source: &mut R, partition_bytes:u64) -> Result<String> {
+    pub(crate) fn hash_partition_reader<R: Read + Seek>(
+        &self,
+        source: &mut R,
+        partition_bytes: u64,
+    ) -> Result<String> {
         use crate::parallel_digest::{Chunk, MAX_CHUNK_BYTES, digest_chunks};
         ensure!(
             partition_bytes == self.pins.partition_bytes,

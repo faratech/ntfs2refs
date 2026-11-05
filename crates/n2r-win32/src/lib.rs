@@ -59,6 +59,8 @@ pub mod observation_pages;
 pub mod preparation_shadow;
 #[cfg(windows)]
 pub mod process_io;
+#[cfg(windows)]
+pub use native::recovery_image;
 pub mod reference_file;
 #[cfg(windows)]
 pub mod reference_import;

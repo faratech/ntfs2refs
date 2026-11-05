@@ -111,6 +111,8 @@ pub mod resource_diagnostic;
 #[doc(hidden)]
 pub mod resource_partition_alpha;
 #[cfg(windows)]
+pub(crate) mod resource_prepared_bundle;
+#[cfg(windows)]
 pub(crate) mod resource_preparation;
 #[cfg(windows)]
 pub(crate) mod resource_recovery;

@@ -4,6 +4,7 @@ mod source;
 use super::*;
 use crate::journal_file::GeneralJournalStorageBinding;
 pub use source::{
+    OfflinePreparedSource, OfflinePreparedJournalQualification, OfflinePreparedBootGuardRequirements,
     OfflineFreshWitness, OfflineFrozenSource, OfflinePagedNtfsObservation,
     OfflineReadonlyNtfsPhase, OfflineRecoverySource, OfflineSourceIntentPin,
     OfflineSourceOwnerToken, OfflineSourceState,

@@ -676,3 +676,88 @@ impl PartitionApplyOutcome {
         self.verification.verify_terminal_report(expected, observed)
     }
 }
+
+
+/// Getter-derived prepared bundle facts only. No deserializer, apply issuer,
+/// source certificate, native replay grant or AP/HND claim is supplied here.
+use std::path::PathBuf;
+#[derive(Clone,Serialize)]
+pub(crate) struct WindowsPreparedArtifact {
+    pub role:&'static str,pub path:PathBuf,pub bytes:u64,pub sha256:String,
+    pub snapshot:Option<n2r_win32::reference_file::ReferenceFileSnapshot>,
+}
+#[derive(Serialize)]
+pub(crate) struct WindowsPreparedBundleCore {
+    pub schema_version:u32,pub kind:&'static str,
+    pub source:n2r_win32::general_layout::GeneralDiskBinding,
+    pub shadow:n2r_win32::general_layout::GeneralDiskBinding,
+    pub source_preparation:n2r_win32::partition_lifecycle::PartitionPreparationPin,
+    pub source_readonly_gpt_sha256:String,
+    pub journal_binding:n2r_win32::journal_file::GeneralJournalStorageBinding,
+    pub journal_identity:n2r_win32::journal_file::JournalFileIdentity,
+    pub journal_path:PathBuf,pub journal_profile_version:u32,pub journal_profile_max_bytes:u64,
+    pub ticket:crate::selected_journal::SelectedTicket,
+    pub publication_path:PathBuf,pub publication_sha256:String,pub locator_path:String,pub locator_sha256:[u8;32],
+    pub artifacts:Vec<WindowsPreparedArtifact>,pub source_resource_admission:n2r_win32::tree_resources::SourceResourceAdmission,
+    pub source_sha256:String,pub source_inspection_sha256:String,pub source_views_sha256:String,
+    pub source_fingerprint:crate::source_fingerprint::resource::FingerprintPins,
+    pub journal_contains_source_free_rows:bool,pub native_journal_body_sealed:bool,pub journal_prepared_clear:bool,
+    pub source_payload_write_calls:u64,pub source_apply_intent_attempted:bool,pub source_certificate_issued:bool,
+    pub sealed_bundle_grants_writer_permission:bool,pub requires_new_pe_bootguard_and_actual_apply_gate:bool,
+}
+fn prepared_artifact(role:&'static str,lease:&crate::artifact_arena::ArtifactLease)->WindowsPreparedArtifact{
+    WindowsPreparedArtifact{role,path:lease.path().to_owned(),bytes:lease.wire_bytes(),sha256:lease.sha256().into(),snapshot:Some(lease.snapshot().clone())}
+}
+impl PartitionResourcePreparedConversion<'_,'_,'_,'_,'_,'_> {
+    /// This function stops at clear J/publication. It never calls the root
+    /// source-certificate issuer, into_fresh_apply or any SDK source writer.
+    pub(crate) fn snapshot_for_offline_apply(&mut self,events:&mut Vec<NativeEvent>)->Result<WindowsPreparedBundleCore>{
+        self.revalidate(events)?;
+        let p=&mut self.prepared;
+        let source=p.context.binding().storage.clone();
+        let token=p.context.owner_token();
+        let (owner,admission,_)=p.context.source_admission_and_inspection();
+        owner.revalidate(events)?;
+        ensure!(owner.data_profile()==n2r_win32::partition_lifecycle::PartitionDataProfile::BasicReadonlyPhysicalV3
+            &&token.same_owner(&owner.owner_token())&&!owner.state().source_admission_issued
+            &&owner.state().partition.gpt.target_attributes==0x1000_0000_0000_0000,
+            "prepare-only requires actual unactivated BASIC+READONLY source");
+        let actual_journal=admission.external_intent_journal().context("actual external-journal intent enrollment absent")?;
+        ensure!(actual_journal==p.facts.native.binding&&actual_journal.disk.disk_number!=source.disk_number
+            &&n2r_win32::layout::guid_bytes(&actual_journal.disk.identity.disk_guid)?!=n2r_win32::layout::guid_bytes(&source.identity.disk_guid)?,
+            "prepared source intent/J must remain on the same independently enrolled external disk");
+        let source_preparation=admission.durable_preparation_pin()?;
+        let gpt=&owner.state().partition.gpt;let mut hash=sha2::Sha256::new();
+        hash.update(&gpt.primary_header);hash.update(&gpt.entries);hash.update(&gpt.backup_header);hash.update(&gpt.native_layout);
+        let source_readonly_gpt_sha256=hex::encode(hash.finalize());
+        ensure!(p.ticket.marker_profile.is_none()&&crate::selected_journal::classify(p.journal,&p.ticket)?==crate::selected_journal::SelectedLifecycle::PreparedClear,
+            "offline preparation must retain actual zero completion/intent before AP");
+        p.write_index.require_same_sealed_journal(p.journal,&p.ticket)?;
+        let mut artifacts=vec![
+            prepared_artifact("publication",self.metadata.publication_lease()),
+            prepared_artifact("publication-checksum",self.metadata.checksum_lease()),
+            prepared_artifact("native-write-index",p.write_index.artifact_lease()),
+            prepared_artifact("expected-tree",self.expected.artifact_lease().context("actual expected artifact absent")?),
+        ];
+        artifacts.push(WindowsPreparedArtifact{role:"recovery-locator",path:PathBuf::from(&self.locator.snapshot().final_path),
+            bytes:self.locator.snapshot().file_bytes,sha256:hex::encode(self.locator.external_sha256()),snapshot:Some(self.locator.snapshot().clone())});
+        let domain=p.context.native().domain();
+        artifacts.push(WindowsPreparedArtifact{role:"source-native-pages",path:PathBuf::from(domain.final_path()),bytes:domain.byte_len(),sha256:domain.sha256().into(),snapshot:None});
+        artifacts.push(WindowsPreparedArtifact{role:"source-preparation-intent",path:PathBuf::from(&source_preparation.intent_file.final_path),
+            bytes:source_preparation.intent_file.file_bytes,sha256:source_preparation.intent_prefix_sha256.clone(),snapshot:Some(source_preparation.intent_file.clone())});
+        if let Some(maps)=&self.maps{artifacts.push(prepared_artifact("recovery-maps",maps.artifact_lease()));}
+        let result=WindowsPreparedBundleCore{schema_version:1,kind:"windows-native-prepared-offline-apply-core-v1",source,
+            shadow:p.facts.native.shadow.clone(),source_preparation,source_readonly_gpt_sha256,
+            journal_binding:p.facts.native.binding.clone(),journal_identity:p.facts.native.identity.clone(),journal_path:p.facts.native.path.to_owned(),
+            journal_profile_version:p.facts.native.profile.version(),journal_profile_max_bytes:p.facts.native.profile.max_journal_bytes(),
+            ticket:p.ticket.clone(),publication_path:self.metadata.publication_lease().path().to_owned(),publication_sha256:self.metadata.publication_lease().sha256().into(),
+            locator_path:self.locator.snapshot().final_path.clone(),locator_sha256:self.locator.external_sha256(),artifacts,
+            source_resource_admission:p.context.resource_admission(),source_sha256:p.context.source_sha256().into(),
+            source_inspection_sha256:p.context.inspection_sha256().into(),source_views_sha256:p.context.source_views_sha256().into(),
+            source_fingerprint:p.context.fingerprint().pins().clone(),
+            journal_contains_source_free_rows:p.domain.facts().source_free_bytes>0,native_journal_body_sealed:true,journal_prepared_clear:true,
+            source_payload_write_calls:0,source_apply_intent_attempted:false,source_certificate_issued:false,sealed_bundle_grants_writer_permission:false,
+            requires_new_pe_bootguard_and_actual_apply_gate:true};
+        self.revalidate(events)?;Ok(result)
+    }
+}

@@ -275,14 +275,24 @@ impl PartitionPreparedResources {
 /// The arena already owns its ordinary external root. Source collection,
 /// expected projection and target construction all use children of that same
 /// root, preserving the actual native disjoint-volume checks and quotas.
+#[derive(Clone,Copy)]
+enum PreparationSourceMode {Private,ReadonlyPhysical}
 pub(crate) fn prepare_partition_resources(
-    request: PartitionPreparationRequest,
-    arena_root: &Path,
-    arena: &ArtifactArena,
-    guard: PartitionPreparationGuard,
-    events: &mut Vec<NativeEvent>,
-    mut checkpoint: impl FnMut(&'static str, &mut Vec<NativeEvent>) -> Result<()>,
-) -> std::result::Result<PartitionPreparedResources,PartitionPreparationFailure> {
+    request:PartitionPreparationRequest,arena_root:&Path,arena:&ArtifactArena,guard:PartitionPreparationGuard,events:&mut Vec<NativeEvent>,
+    checkpoint:impl FnMut(&'static str,&mut Vec<NativeEvent>)->Result<()>,
+)->std::result::Result<PartitionPreparedResources,PartitionPreparationFailure>{
+    prepare_partition_resources_with_mode(request,arena_root,arena,guard,events,checkpoint,PreparationSourceMode::Private)
+}
+pub(crate) fn prepare_partition_resources_readonly_physical(
+    request:PartitionPreparationRequest,arena_root:&Path,arena:&ArtifactArena,guard:PartitionPreparationGuard,events:&mut Vec<NativeEvent>,
+    checkpoint:impl FnMut(&'static str,&mut Vec<NativeEvent>)->Result<()>,
+)->std::result::Result<PartitionPreparedResources,PartitionPreparationFailure>{
+    prepare_partition_resources_with_mode(request,arena_root,arena,guard,events,checkpoint,PreparationSourceMode::ReadonlyPhysical)
+}
+fn prepare_partition_resources_with_mode(
+    request:PartitionPreparationRequest,arena_root:&Path,arena:&ArtifactArena,guard:PartitionPreparationGuard,events:&mut Vec<NativeEvent>,
+    mut checkpoint:impl FnMut(&'static str,&mut Vec<NativeEvent>)->Result<()>,mode:PreparationSourceMode,
+)->std::result::Result<PartitionPreparedResources,PartitionPreparationFailure>{
     let mut context=(||->Result<PartitionResourceSourceContext>{
     request.binding.validate()?;
     request.observation_budget.validate()?;
@@ -300,16 +310,12 @@ pub(crate) fn prepare_partition_resources(
         .open(arena_root)?;
     arena.require_root_directory(&root)?;
     checkpoint("partition-source-preparation", events)?;
-    ResourceSourceContext::prepare_partition(
-        request.binding,
-        request.observation_budget,
-        request.resources,
-        request.verification_policy,
-        &arena_root.join("source-evidence"),
-        arena,
-        guard,
-        events,
-    )
+    match mode {
+        PreparationSourceMode::Private=>ResourceSourceContext::prepare_partition(request.binding,request.observation_budget,request.resources,
+            request.verification_policy,&arena_root.join("source-evidence"),arena,guard,events),
+        PreparationSourceMode::ReadonlyPhysical=>ResourceSourceContext::prepare_partition_readonly_physical(request.binding,request.observation_budget,
+            request.resources,request.verification_policy,&arena_root.join("source-evidence"),arena,guard,events),
+    }
     })().map_err(PartitionPreparationFailure::before_context)?;
     let prepared=(||->Result<_>{
     context.require_source_evidence()?;
@@ -378,5 +384,56 @@ pub(crate) fn prepare_partition_resources(
             _expected_seal:expected_seal,_projection_directory:projection_directory,
         }),
         Err(cause)=>Err(PartitionPreparationFailure{cause,context:Some(context)}),
+    }
+}
+
+
+/// Windows-only prepare/publish result, not an apply authorization. All body,
+/// index, expected/maps and native preservation checks already ran on real owners.
+impl PartitionPreparedResources {
+    pub(crate) fn prepare_for_offline_apply(mut self,request:&PartitionExecutionRequest,arena_root:&Path,
+        events:&mut Vec<NativeEvent>,mut checkpoint:impl FnMut(&'static str,&mut Vec<NativeEvent>)->Result<()>)
+        ->Result<crate::selected_journal::resource_domain::prepare::WindowsPreparedBundleCore>{
+        use crate::{general_reconstruct::selected_native_journal::BoundPartitionCreationJournal,
+            selected_journal::resource_domain::prepare::{PartitionResourcePreparedConversion,prepare_native_partition_from_protected_capture}};
+        request.journal.validate()?;
+        ensure!(request.journal.disk.disk_number!=self.context.binding().storage.disk_number
+            &&n2r_win32::layout::guid_bytes(&request.journal.disk.identity.disk_guid)?!=n2r_win32::layout::guid_bytes(&self.context.binding().storage.identity.disk_guid)?,
+            "Windows prepare-only journal/metadata must be on another physical disk");
+        let profile=JournalProfile::from_schema_and_capacity(3,Some(request.maximum_journal_bytes))?;
+        let arena=self.context.arena().clone();let admission=self.context.resource_admission();
+        let source_budget=SourceMetadataBudget::from_resource_budget(admission.budget)?;
+        let capture_group=self.target.capture_group().clone();let expected=&self.expected;
+        let bundle=self.target.with_journal_domain(&mut self.context,ResourceJournalBudget{
+            max_selected_bytes:request.maximum_selected_bytes,max_journal_bytes:request.maximum_journal_bytes,marker_profile:None},
+            &arena_root.join("journal-layout.index"),events,|domain,context,shadow,candidate,events|{
+                let _capture_seal=capture_group.seal()?;
+                let recovery=arena.reserve_group(ArtifactGroup::RecoveryCopy,request.recovery_arena_bytes)?;
+                let recovery_scratch=SourceScratch::new_auxiliary_in_arena(source_budget,recovery.clone())?;
+                checkpoint("windows-offline-prepare-native-journal-create",events)?;
+                let mut creation=BoundPartitionCreationJournal::create_new(context,shadow,&arena,domain.facts().journal_length,
+                    &arena_root.join("selected.journal"),&request.journal,profile,events)?;
+                let prepared=prepare_native_partition_from_protected_capture(domain,context,shadow,candidate,&mut creation,
+                    &recovery,&recovery_scratch,&arena_root.join("native-write.index"),request.maximum_index_bytes,events)?;
+                checkpoint("windows-offline-prepare-native-journal-closed",events)?;
+                let required=prepared.recovery_maps_required(expected)?;
+                let maps=if required{Some(arena.reserve_group(ArtifactGroup::Map,admission.map_page_budget()?.max_file_bytes)?)}else{None};
+                let map_scratch=SourceScratch::new_auxiliary_in_arena(source_budget,recovery.clone())?;
+                let map_path=arena_root.join("recovery-maps.pages");
+                let mut published=PartitionResourcePreparedConversion::publish(prepared,expected,maps.as_ref(),&map_scratch,
+                    required.then_some(map_path.as_path()),&recovery,&recovery_scratch,&arena_root.join("recovery.locator"),
+                    &arena_root.join("recovery.json"),events,|events|checkpoint("windows-offline-prepare-sealed-publication",events))?;
+                let bundle=published.snapshot_for_offline_apply(events)?;
+                checkpoint("windows-offline-prepare-clear-bundle-snapshotted",events)?;
+                // No into_fresh_apply, root certificate or SDK write gate here.
+                Ok(bundle)
+            })?;
+        self.context.recheck_source(events)?;
+        checkpoint("windows-offline-prepare-source-clear-closing",events)?;
+        // Close all query duplicates before the original volume LOCK owner.
+        // Persistent BASIC+RO remains; no cleanup/restore/retirement is called.
+        let Self{context,expected,target,_projection_seal,_expected_seal,_projection_directory}=self;
+        drop(target);drop(expected);drop(_projection_directory);drop(_projection_seal);drop(_expected_seal);drop(context);
+        Ok(bundle)
     }
 }

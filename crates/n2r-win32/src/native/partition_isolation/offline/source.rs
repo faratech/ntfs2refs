@@ -2,6 +2,8 @@
 //! changes and no source writer or online/repair operation is exposed here.
 mod native_observation;
 mod paged;
+mod prepared;
+pub use prepared::{OfflinePreparedSource, OfflinePreparedJournalQualification, OfflinePreparedBootGuardRequirements};
 use super::*;
 use crate::native::{
     AlignedBuffer, MAX_IO, close_file,

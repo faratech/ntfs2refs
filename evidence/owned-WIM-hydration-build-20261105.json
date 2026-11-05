@@ -1,0 +1,57 @@
+{
+  "primary_contract": "https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_attribute_tag_info",
+  "new_or_existing_unit_tests_run": false,
+  "focused_check": {
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+    "capacity": {
+      "actual_bytes": 244603363637,
+      "free_bytes": 162729799680,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 2147483648,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "exit_code": 0,
+    "native_run": false,
+    "unit_tests_run": false,
+    "wall_seconds": 31.9877254,
+    "kind": "public-partition-dispatch-focused-check",
+    "shared_target_reused": true
+  },
+  "native_fix_qualified": false,
+  "file": {
+    "bytes": 17454,
+    "path": "crates/n2r-win32/src/native/recovery_image/payload_replace.rs",
+    "sha256": "ddf76bfec132a26fab7b1c770513850991cd7158c177dcda57d8f705956634fa"
+  },
+  "kind": "observed-owned-WIM-hydration-transition-build-v1",
+  "implementation": [
+    "Actual pre-open WIM tag proof before delete/data handle can hydrate it",
+    "Known 1568 WIM placeholder to 544 ordinary-sparse transition clears only reparse comparison bit inside proved owned context",
+    "Same complete native identity/creation/write/links/EOF/path required across transition",
+    "Ordinary classification uses attributes; reparse tag only interpreted when reparse attribute set",
+    "Durable backup/hash/readback/same-owner deletion remain; failure-only diagnostics identify exact phase/raw attributes/tag/NTname"
+  ],
+  "actual_native_attempt": {
+    "failure": "mounted payload classification rejected a hydrated sparse file",
+    "birth": 1793913491937,
+    "wall_seconds": 17.336258,
+    "exit_code": 1,
+    "source_commit": "7fc0ae260971135e1630043d38c15657ef0eacaa",
+    "pid": 4704,
+    "source_apply_or_reboot": 0
+  },
+  "base_commit": "91d13ab21e806cd3c4d6e57ab825ea89e7ce3607",
+  "actual_readonly_views": {
+    "pid": 1552,
+    "wall_seconds": 0.5225677,
+    "exit_code": 0,
+    "legacy52_and_tag_info_attributes": 544,
+    "open_count": 3,
+    "same_identity_eof_and_exact_owned_NT_path": true,
+    "reparse_tag": 0,
+    "data_reads_or_sets": 0,
+    "receipt_sha256": "85727c04e6bde471fdb3581d911ca473af80a39cd3d4c60e40ba1aa4c962807d"
+  }
+}

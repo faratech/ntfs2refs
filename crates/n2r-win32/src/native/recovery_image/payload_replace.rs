@@ -8,7 +8,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 // Actual five-path receipt fe787754... proved this provider, not WOF/links.
 const WIM_TAG: u32 = 0x8000_0008;
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Kind {
     Ordinary,
     Wim,
@@ -87,33 +87,98 @@ fn require_name(file: &File, expected: &str) -> io::Result<()> {
     )
 }
 
-fn identity(file: &File, kind: Kind) -> io::Result<Vec<u32>> {
+fn identity_failure(
+    file: &File,
+    kind: Kind,
+    phase: &str,
+    raw: Option<&[u32]>,
+    observed: Option<[u32; 2]>,
+    error: io::Error,
+) -> io::Error {
+    // Failure-only native name query: do not add controls or event traffic to
+    // successful backup/replacement paths and never read file content here.
+    let name = crate::native::offline_environment::kernel_ram_backing::object_name(file);
+    io::Error::new(
+        error.kind(),
+        format!(
+            "mounted payload identity failure: phase={phase}, kind={kind:?}, raw52_attributes_decimal={:?}, raw52_attributes_hex={:?}, FileAttributeTagInfo_attributes_decimal={:?}, FileAttributeTagInfo_attributes_hex={:?}, FileAttributeTagInfo_reparse_tag={:?}, raw52={raw:?}, NTname={:?}, NTSTATUS=0x{:08x}, NTname_error={:?}, native_error={:?}: {error}",
+            raw.and_then(|v| v.first()).copied(),
+            raw.and_then(|v| v.first()).map(|v| format!("0x{v:08x}")),
+            observed.map(|v| v[0]),
+            observed.map(|v| format!("0x{:08x}", v[0])),
+            observed.map(|v| format!("0x{:08x}", v[1])),
+            name.name,
+            name.ntstatus as u32,
+            name.failure,
+            error.raw_os_error()
+        ),
+    )
+}
+fn identity(file: &File, kind: Kind, phase: &str) -> io::Result<Vec<u32>> {
     let observed = crate::native::offline_environment::kernel_ram_backing::legacy52(file);
     if !observed.succeeded {
-        return Err(observed
+        let error = observed
             .native_error
             .map(io::Error::from_raw_os_error)
-            .unwrap_or_else(|| bad("mounted payload native52 identity unavailable")));
+            .unwrap_or_else(|| bad("mounted payload native52 identity unavailable"));
+        return Err(identity_failure(file, kind, phase, None, None, error));
     }
-    let raw = observed
-        .raw_u32
-        .ok_or_else(|| bad("mounted payload native52 response absent"))?;
-    need(raw.len() == 13, "mounted payload native52 width differs")?;
-    let observed = tag(file)?;
-    need(
-        observed[0] == raw[0]
-            && match kind {
-                Kind::Ordinary => raw[0] & 0x410 == 0 && observed[1] == 0,
-                Kind::Wim => raw[0] == 1568 && observed[1] == WIM_TAG,
-            },
-        "actual mounted payload is neither ordinary nor the exact proven WIM placeholder",
-    )?;
+    let raw = observed.raw_u32.ok_or_else(|| {
+        identity_failure(
+            file,
+            kind,
+            phase,
+            None,
+            None,
+            bad("mounted payload native52 response absent"),
+        )
+    })?;
+    if raw.len() != 13 {
+        return Err(identity_failure(
+            file,
+            kind,
+            phase,
+            Some(&raw),
+            None,
+            bad("mounted payload native52 width differs"),
+        ));
+    }
+    let observed =
+        tag(file).map_err(|error| identity_failure(file, kind, phase, Some(&raw), None, error))?;
+    // Actual metadata85727c04... showed a WIM placeholder becoming ordinary
+    // sparse544 at open. Compare that provider transition only in Kind::Wim,
+    // which requires the exact tag/identity/name proof before the open.
+    let accepted = observed[0] == raw[0]
+        && match kind {
+            // ReparseTag is meaningful only with REPARSE_POINT:
+            // https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_attribute_tag_info
+            Kind::Ordinary => raw[0] & 0x410 == 0,
+            // Only a real pre-open WIM-tag observation below issues this
+            // comparison context. Actual85727c04 proved hydration1568->544.
+            Kind::Wim => (raw[0] == 1568 && observed[1] == WIM_TAG) || raw[0] == 544,
+        };
+    if !accepted {
+        return Err(identity_failure(
+            file,
+            kind,
+            phase,
+            Some(&raw),
+            Some(observed),
+            bad("actual mounted payload is neither ordinary nor the exact proven WIM placeholder"),
+        ));
+    }
     // Access time can change during reads; identity/creation/write time,
     // attributes, EOF, links and actual file index must remain exact.
-    Ok([0usize, 1, 2, 5, 6, 7, 8, 9, 10, 11, 12]
+    let mut result: Vec<_> = [0usize, 1, 2, 5, 6, 7, 8, 9, 10, 11, 12]
         .iter()
         .map(|i| raw[*i])
-        .collect())
+        .collect();
+    // Comparison only: clear exactly the observed provider REPARSE flag,
+    // preserving SPARSE and all other fields. Native diagnostics stay raw.
+    if matches!(kind, Kind::Wim) {
+        result[0] &= !0x400;
+    }
+    Ok(result)
 }
 fn context(error: io::Error, phase: &str, target: &Path) -> io::Error {
     io::Error::new(
@@ -162,36 +227,59 @@ pub(super) fn replace(
                     && metadata.len() <= maximum,
                 "existing copied-WIM payload must be ordinary/nonempty/bounded",
             )?;
-            // DELETE belongs only to this exact opened copied-WIM file. Its
-            // sharing excludes other ordinary writers/deleters during backup.
-            let mut old = OpenOptions::new()
-                .access_mode(0x0011_0081)
-                .share_mode(1)
-                .custom_flags(0x0020_0000)
-                .open(&to)
-                .map_err(|e| context(e, "open exact old payload", &to))?;
-            let observed_tag = tag(&old)?;
-            let kind = if observed_tag[0] & 0x400 == 0 {
-                Kind::Ordinary
-            } else {
-                need(
-                    observed_tag == [1568, WIM_TAG],
-                    "unknown copied-WIM reparse provider; no follow/delete",
-                )?;
-                Kind::Wim
-            };
             let directory = OpenOptions::new()
                 .access_mode(0x0010_0080)
                 .share_mode(3)
                 .custom_flags(0x0220_0000)
                 .open(&sys)?;
             let expected_name = format!("{}\\{name}", nt_name(&directory)?.trim_end_matches('\\'));
+            // Capture actual provider identity BEFORE the delete/data open
+            // can hydrate it. No tag is inferred from attribute hints alone.
+            let placeholder = if metadata.file_attributes() == 1568 {
+                let probe = OpenOptions::new()
+                    .access_mode(0x0010_0080)
+                    .share_mode(7)
+                    .custom_flags(0x0020_0000)
+                    .open(&to)
+                    .map_err(|e| context(e, "open pre-hydration WIM metadata owner", &to))?;
+                require_name(&probe, &expected_name)?;
+                need(
+                    tag(&probe)? == [1568, WIM_TAG],
+                    "actual pre-open WIM provider proof absent; no hydration waiver",
+                )?;
+                let stable =
+                    identity(&probe, Kind::Wim, "metadata-placeholder-before-delete-open")?;
+                Some((probe, stable))
+            } else {
+                None
+            };
+            let mut old = OpenOptions::new()
+                .access_mode(0x0011_0081)
+                .share_mode(1)
+                .custom_flags(0x0020_0000)
+                .open(&to)
+                .map_err(|e| context(e, "open exact old payload", &to))?;
+            let kind = if placeholder.is_some() {
+                Kind::Wim
+            } else {
+                Kind::Ordinary
+            };
             require_name(&old, &expected_name)?;
-            let before = identity(&old, kind)?;
+            let before = identity(&old, kind, "metadata-owner-opening")?;
+            if let Some((_, initial)) = &placeholder {
+                need(
+                    &before == initial,
+                    "WIM hydration changed native identity/EOF/creation/write/links",
+                )?;
+            }
+            drop(placeholder);
             let n = old.metadata()?.len();
             need(
                 n == metadata.len()
-                    && old.metadata()?.file_attributes() == metadata.file_attributes(),
+                    && (old.metadata()?.file_attributes() == metadata.file_attributes()
+                        || (matches!(kind, Kind::Wim)
+                            && metadata.file_attributes() == 1568
+                            && old.metadata()?.file_attributes() == 544)),
                 "mounted payload changed across actual open",
             )?;
             let mut followed = match kind {
@@ -207,14 +295,14 @@ pub(super) fn replace(
                         .map_err(|e| context(e, "open proven WIM-provider content", &to))?;
                     require_name(&data, &expected_name)?;
                     let observed = tag(&data)?;
-                    let observed_kind = if observed == [32, 0] {
-                        Kind::Ordinary
-                    } else {
-                        Kind::Wim
-                    };
-                    let data_id = identity(&data, observed_kind)?;
                     need(
-                        data_id[1..] == before[1..] && data.metadata()?.len() == n,
+                        observed[0] & 0x410 == 0 || observed == [1568, WIM_TAG],
+                        "unknown provider-read file view",
+                    )?;
+                    let observed_kind = Kind::Wim;
+                    let data_id = identity(&data, observed_kind, "provider-read-opening")?;
+                    need(
+                        data_id == before && data.metadata()?.len() == n,
                         "provider-followed WIM content is not same exact held namespace file/EOF",
                     )?;
                     Some(data)
@@ -250,19 +338,19 @@ pub(super) fn replace(
             )?;
             require_name(&old, &expected_name)?;
             need(
-                identity(&old, kind)? == before,
+                identity(&old, kind, "metadata-owner-post-backup")? == before,
                 "same WIM deletion owner changed during provider backup",
             )?;
             if let Some(data) = followed.as_ref() {
                 require_name(data, &expected_name)?;
                 let observed = tag(data)?;
-                let observed_kind = if observed == [32, 0] {
-                    Kind::Ordinary
-                } else {
-                    Kind::Wim
-                };
                 need(
-                    identity(data, observed_kind)?[1..] == before[1..],
+                    observed[0] & 0x410 == 0 || observed == [1568, WIM_TAG],
+                    "unknown provider-read closing file view",
+                )?;
+                let observed_kind = Kind::Wim;
+                need(
+                    identity(data, observed_kind, "provider-read-post-backup")? == before,
                     "same provider data identity changed during backup",
                 )?;
             }
@@ -279,7 +367,7 @@ pub(super) fn replace(
             drop(backup);
             image_subdir(&sys, mount)?;
             need(
-                identity(&old, kind)? == before,
+                identity(&old, kind, "metadata-owner-pre-delete")? == before,
                 "old payload changed before exact held deletion",
             )?;
             // Same FILE_OBJECT deletion, after durable backup. No pathname
@@ -289,7 +377,7 @@ pub(super) fn replace(
                 Kind::Ordinary => crate::file_storage::mark_delete_on_close(&old)?,
                 Kind::Wim => {
                     need(
-                        identity(&old, Kind::Wim)? == before,
+                        identity(&old, Kind::Wim, "metadata-owner-pre-disposition")? == before,
                         "actual WIM owner changed before disposition",
                     )?;
                     let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };

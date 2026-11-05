@@ -418,6 +418,15 @@ log `.lab/development/partition-alpha-353ce91-build.log`; fresh2GiBprogrammeadmi
 OperatorcanREUSEunchangedOffv4hostbdfa... (externalbuildpins) with UTF8worker60d47/oraclea4a575/support40e8 once353buildclosed.
 No converterGOfor353yet. Verifyactualmanifest+EXE+sourceclosure thenRootone-runGO; VMstillOff07ca/all17.
 
+353 BUILD CLOSED0/source353ce91/tree4e845f22877b1b826cf6eac2f263fef48037053b,
+manifest18bdf733893703750f80a5cebe12565ead640c44679f36942c86dc71c57a3230;
+EXE8483840B/SHA87d62d1c48e3b93e96f72ec00e9ba4f00950c4ae83071ed5b79682f851863afd freshRootrehashmatches,
+sourceZIP2038129B/SHAf9ac9ff9bf5a9f29a018456b7d6a274dc503d55943cf3b986ab1b0b91d74a9f0, sourcebeforeafterverified/no units.
+Host57244terminal0/Cargo2m31s/sharedtarget+staging. evidence/partition-alpha-353ce91-exact-build-20261104.json.
+ROOT ISSUED ONE353normalGO tooperator withunchangedOffv4hostbdfa/UTF8worker60d47/oraclea4a575/support40e8 +exactnewpinsabove,
+fresh6GiBwholeprogrambudget/Off07ca17+actualsource8fileBeforefirst. NoSourceprep/restore/replay/repair/retry/providerdelete/extraCP.
+ObserveactualoperatorPID/birth/exit/ledger/sourceclosure forcurrentstate; GOisnotdispatch/success. RootdoesnotcompeteVM.
+
 - Fresh writes require original live opaque source certificate and actual source/target/J/arena owners. Saved JSON/paths/flags are routes, never authority.
 - Revalidate device/file identities, journal/index/ticket/lifecycle and recovery files. Recovery must not require thin-pool reattachment.
 - Preserve full phase snapshots and native metadata/allocation/namespace/ACL/full retrieval checks, opening/closing boundaries and final allocation checks.

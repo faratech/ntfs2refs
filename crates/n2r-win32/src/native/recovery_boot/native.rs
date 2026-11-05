@@ -663,8 +663,12 @@ impl Tool {
         let text=decode(&bytes)?.replace("\r\n","\n");
         let mut objects=BTreeMap::new();
         for block in text.split("\n\n").filter(|s|!s.trim().is_empty()) {
-            let fields=parse(block)?;
+            let section=parse_section(block)?;
+            let mut fields=section.fields;
             let id=canonical_guid(one(&fields,"identifier")?)?;
+            // Internal semantic metadata, not a BCD element. This key cannot
+            // collide with native element syntax and is never sent to /set.
+            fields.insert("__bcd_section_header".into(),vec![section.heading]);
             need(objects.insert(id,fields).is_none(),"duplicate actual native BCD object")?;
         }
         need(objects.contains_key(BOOTMGR),"complete native BCD object domain omits BootMgr")?;
@@ -716,44 +720,53 @@ fn decode(bytes: &[u8]) -> io::Result<String> {
     )?;
     String::from_utf16(&out).map_err(io::Error::other)
 }
-pub(super) fn parse(text: &str) -> io::Result<BTreeMap<String, Vec<String>>> {
-    let mut fields = BTreeMap::<String, Vec<String>>::new();
-    let mut last = None;
-    for line in text.lines() {
-        if line.trim().is_empty() || line.trim().chars().all(|c| c == '-') {
-            continue;
-        }
-        if line.len() < 24 {
-            continue;
-        }
-        let (key, value) = line.split_at(24);
-        let key = key.trim();
-        let value = value.trim();
-        if value.is_empty() {
-            continue;
-        }
-        let key = if key.is_empty() {
-            last.clone()
-                .ok_or_else(|| bad("BCD continuation has no element"))?
-        } else {
-            need(
-                key.bytes().all(|b| b.is_ascii_alphanumeric()),
-                "unsupported/localized BCD key",
-            )?;
-            let key = key.to_ascii_lowercase();
-            last = Some(key.clone());
-            key
+struct ParsedBcdSection {
+    heading:String,
+    fields:BTreeMap<String,Vec<String>>,
+}
+fn supported_section_heading(heading:&str)->bool {
+    matches!(heading,"Firmware Boot Manager"|"Windows Boot Manager"|"Windows Boot Loader"
+        |"Resume from Hibernate"|"Windows Memory Tester"|"EMS Settings"|"Debugger Settings"
+        |"RAM Defects"|"Global Settings"|"Boot Loader Settings"|"Hypervisor Settings"
+        |"Resume Loader Settings"|"Device options"|"Device Options"|"Setup Ramdisk Options")
+    ||heading.strip_prefix("Firmware Application (")
+        .and_then(|s|s.strip_suffix(')'))
+        .is_some_and(|s|s.len()==8&&s.bytes().all(|b|b.is_ascii_hexdigit()))
+}
+fn bcd_element_key(key:&str)->bool {
+    !key.is_empty()&&(key.bytes().all(|b|b.is_ascii_alphanumeric())
+        ||key.strip_prefix("custom:").is_some_and(|s|s.len()==8&&s.bytes().all(|b|b.is_ascii_hexdigit())))
+}
+fn parse_section(text:&str)->io::Result<ParsedBcdSection> {
+    let mut lines=text.lines().map(|s|s.trim_end_matches('\r')).filter(|s|!s.trim().is_empty());
+    let heading=lines.next().ok_or_else(||bad("native BCD section heading absent"))?;
+    need(heading==heading.trim()&&supported_section_heading(heading),
+        "unsupported/localized native BCD section heading")?;
+    let divider=lines.next().ok_or_else(||bad("native BCD section divider absent"))?;
+    need(divider.len()==heading.len()&&divider.bytes().all(|b|b==b'-'),
+        "native BCD heading/divider framing differs")?;
+    let mut fields=BTreeMap::<String,Vec<String>>::new();let mut last:Option<String>=None;
+    for line in lines {
+        need(line.len()>=24&&line.is_char_boundary(24),"native BCD element column framing differs")?;
+        let (column,value)=line.split_at(24);let raw_key=column.trim();let value=value.trim();
+        let key=if raw_key.is_empty(){
+            let prior=last.clone().ok_or_else(||bad("BCD continuation has no preceding element"))?;
+            need(prior!="identifier","native BCD identifier may not have continuation values")?;prior
+        }else{
+            let key=raw_key.to_ascii_lowercase();
+            need(bcd_element_key(&key),"unsupported/localized or malformed native BCD element key")?;
+            need(!fields.contains_key(&key),"duplicate native BCD element key")?;
+            if fields.is_empty(){need(key=="identifier","native BCD first element is not en-US identifier")?;}
+            last=Some(key.clone());key
         };
-        let value = if value.len() == 38 && value.starts_with('{') {
-            canonical_guid(value)?
-        } else {
-            value.to_owned()
-        };
+        // Preserve every element, including an explicit empty value. GUID
+        // references stay complete and continuation ordering is unchanged.
+        let value=if value.len()==38&&value.starts_with('{'){canonical_guid(value)?}else{value.to_owned()};
         fields.entry(key).or_default().push(value);
     }
-    need(
-        fields.contains_key("identifier"),
-        "en-US explicit native BCD object absent",
-    )?;
-    Ok(fields)
+    canonical_guid(one(&fields,"identifier")?)?;
+    Ok(ParsedBcdSection{heading:heading.into(),fields})
+}
+pub(super) fn parse(text:&str)->io::Result<BTreeMap<String,Vec<String>>> {
+    parse_section(text).map(|section|section.fields)
 }

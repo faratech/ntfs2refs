@@ -446,7 +446,10 @@ fn capture_store_inner(
             let raw_before=raw_hash(efi,&pin,budget.maximum_control_bytes,events)?;
             pin.sha256=raw_before;
             phase="active-hive-bound-raw-copy-capacity";
-            let mut used=bytes;
+            // Pre-admit immutable A plus a full maximum-store window for
+            // disposable B. Existing .bcd copies share the same two-store cap.
+            let mut used=bytes.checked_add(budget.maximum_store_bytes)
+                .ok_or_else(||bad("pristine/query BCD reservation overflow"))?;
             for entry in std::fs::read_dir(directory)?{
                 let path=entry?.path();let metadata=std::fs::symlink_metadata(&path)?;
                 need(metadata.is_file()&&metadata.file_attributes()&0x400==0,"ordinary owned active-BCD capture directory required")?;
@@ -456,23 +459,62 @@ fn capture_store_inner(
             }
             need(used<=budget.maximum_store_bytes.checked_mul(2).ok_or_else(||bad("BCD metadata reserve overflow"))?,
                 "actual raw/backup BCD copies exceed existing two-store metadata reservation")?;
-            let copy=directory.join(format!("active-hive-raw-{ordinal:04}.bcd"));
-            phase="active-hive-current-FAT-namespace-bound-raw-copy";
-            need(raw_copy(efi,&pin,&copy,budget.maximum_store_bytes,budget.maximum_control_bytes,events)?==raw_before,
-                "active hive raw copy differs from opening actual physical hash")?;
-            // The raw file is ordinary bounded J metadata. Attribute-only
-            // source handle is NEVER read for data and is not claimed to be.
-            let mut copied=OpenOptions::new().read(true).share_mode(3).custom_flags(0x00200000).open(&copy)?;
-            let copy_before=crate::reference_file::observe_reference_file_handle_with_limit(&copied,budget.maximum_store_bytes)?;
+            let copy_a=directory.join(format!("active-hive-pristine-{ordinal:04}.bcd"));
+            let copy_b=directory.join(format!("active-hive-query-{ordinal:04}.bcd"));
+            phase="active-hive-current-FAT-namespace-bound-pristine-A-copy";
+            need(raw_copy(efi,&pin,&copy_a,budget.maximum_store_bytes,budget.maximum_control_bytes,events)?==raw_before,
+                "active hive pristine A differs from opening actual physical hash")?;
+            // A remains immutable and is NEVER passed to BcdEdit. A normal
+            // read handle with share-read only denies ordinary write/delete.
+            let mut pristine=OpenOptions::new().read(true).share_mode(1)
+                .custom_flags(0x00200000).open(&copy_a)?;
+            let pristine_snapshot=crate::reference_file::observe_reference_file_handle_with_limit(&pristine,budget.maximum_store_bytes)?;
+            need(pristine_snapshot.file_bytes==bytes&&pristine_snapshot.number_of_links==1
+                &&crate::sha256_native::hash_range(&mut pristine,0,bytes)?==raw_before,
+                "held pristine A native identity/bytes differ")?;
+            phase="active-hive-pristine-A-to-disposable-query-B-copy";
+            pristine.seek(SeekFrom::Start(0))?;
+            {
+                let mut query=OpenOptions::new().read(true).write(true).share_mode(1)
+                    .create_new(true).open(&copy_b)?;
+                let mut buffer=[0u8;65536];let mut left=bytes;
+                while left>0{let n=left.min(buffer.len()as u64)as usize;
+                    pristine.read_exact(&mut buffer[..n])?;query.write_all(&buffer[..n])?;left-=n as u64;}
+                query.sync_all()?;
+                need(query.metadata()?.len()==bytes
+                    &&crate::sha256_native::hash_range(&mut query,0,bytes)?==raw_before,
+                    "disposable B durable copy differs from immutable A")?;
+            }
+            // B is deliberately mutable scratch for Microsoft's query API.
+            // Do not retain a sharing-excluding handle across its hive load.
+            let mut query=OpenOptions::new().read(true).share_mode(3)
+                .custom_flags(0x00200000).open(&copy_b)?;
+            let query_before=crate::reference_file::observe_reference_file_handle_with_limit(&query,budget.maximum_store_bytes)?;
+            let query_before_sha256=crate::sha256_native::hash_range(&mut query,0,query_before.file_bytes)?;
+            need(query_before.file_bytes==bytes&&query_before_sha256==raw_before,
+                "query B did not start as the exact pristine snapshot")?;
+            drop(query);
             phase="active-hive-native-complete-current-system-enum-all";
             let current=tool.enum_system_all(directory)?;
-            phase="active-hive-native-complete-durable-raw-copy-enum-all";
-            let raw_semantics=tool.enum_all(&copy,directory)?;
-            need(current==raw_semantics,"current SYSTEM BCD and durable FAT-bound raw copy differ in complete native semantics")?;
-            phase="active-hive-raw-copy-native-identity-and-content-bookend";
-            need(crate::reference_file::observe_reference_file_handle_with_limit(&copied,budget.maximum_store_bytes)?==copy_before
-                &&crate::sha256_native::hash_range(&mut copied,0,bytes)?==raw_before,
-                "native semantic query changed actual raw-copy identity/content")?;
+            phase="active-hive-native-complete-disposable-B-enum-all";
+            let raw_semantics=tool.enum_all(&copy_b,directory)?;
+            need(current==raw_semantics,"current SYSTEM BCD and pristine-derived query B differ in complete native semantics")?;
+            phase="active-hive-disposable-query-B-native-identity-and-hash-observation";
+            let mut query=OpenOptions::new().read(true).share_mode(3)
+                .custom_flags(0x00200000).open(&copy_b)?;
+            let query_after=crate::reference_file::observe_reference_file_handle_with_limit(&query,budget.maximum_store_bytes)?;
+            need(query_after.file_id_128==query_before.file_id_128
+                &&query_after.volume_serial_number==query_before.volume_serial_number
+                &&query_after.final_path==query_before.final_path
+                &&query_after.file_bytes==query_before.file_bytes&&query_after.number_of_links==1,
+                "native query replaced B or changed its bounded file identity/EOF")?;
+            let query_after_sha256=crate::sha256_native::hash_range(&mut query,0,query_after.file_bytes)?;
+            // Native /enum may update B's REGF bytes. Such mutation is data
+            // about disposable B, never a source/pristine hash equality claim.
+            phase="active-hive-pristine-A-immutable-native-and-byte-bookend";
+            need(crate::reference_file::observe_reference_file_handle_with_limit(&pristine,budget.maximum_store_bytes)?==pristine_snapshot
+                &&crate::sha256_native::hash_range(&mut pristine,0,bytes)?==raw_before,
+                "held pristine A changed during native semantic query")?;
             phase="active-hive-current-FAT-raw-hash-closing";
             need(raw_hash(efi,&pin,budget.maximum_control_bytes,events)?==raw_before
                 &&legacy_identity(&file)?==(pin.identity.clone(),bytes),
@@ -481,7 +523,13 @@ fn capture_store_inner(
                 &serde_json::json!({"kind":"actual-active-BCD-attribute-only-raw-capture-v1",
                     "actual_EFI_BCD_path":efi.bcd_path,"metadata_desired_access":128,"share_mode":3,
                     "source_file_read_data_available":false,"source_file_data_read_calls":0,
-                    "raw_copy_path":copy,"raw_store":pin,"complete_native_system_and_raw_copy_semantics_equal":true,
+                    "pristine_A_path":copy_a,"pristine_A_snapshot":pristine_snapshot,
+                    "pristine_A_sha256":raw_before,"pristine_A_share_read_only_held":true,
+                    "query_B_path":copy_b,"query_B_before":query_before,"query_B_after":query_after,
+                    "query_B_sha256_before":query_before_sha256,"query_B_sha256_after":query_after_sha256,
+                    "query_B_mutated_by_native_query":query_before_sha256!=query_after_sha256,
+                    "query_B_never_used_as_pristine_source_bytes":true,
+                    "raw_store":pin,"complete_native_system_and_pristine_derived_B_semantics_equal":true,
                     "native_objects_compared":current.len(),"physical_raw_hashes_and_current_FAT_map_equal":true,
                     "actual_held_legacy52_EOF_identity_equal":true,"record_grants_authority":false}),
                 budget.maximum_control_bytes)?;

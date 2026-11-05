@@ -490,6 +490,32 @@ fn run_inner(
         .and_then(|n| n.checked_sub(ledger_ram))
         .context("total RAM cannot cover execution stacks and independent SDK lifecycle/owner/intent/evidence")?;
     let resources = derive_budget(arena_ram, align(request.arena_scratch_bytes))?;
+    let capture = align(resources.scratch_bytes / 3);
+    let journal_bytes = align(resources.scratch_bytes - resources.scratch_bytes / 3);
+    let combined = align(resources.scratch_bytes - resources.scratch_bytes / 6);
+    let partition_bytes = align(binding.storage.identity.partition_bytes);
+    let max_changed_bytes = if request.selected_capacity_policy.is_conservative() {
+        align(
+            partition_bytes.min(
+                journal_bytes
+                    .checked_sub(n2r_win32::journal_file::JOURNAL_OVERHEAD_RESERVE)
+                    .context("selected journal cannot reserve its metadata")?,
+            ),
+        )
+    } else {
+        partition_bytes
+    };
+    let mut capture_budget = CaptureBudget {
+        max_changed_bytes,
+        max_journal_bytes: journal_bytes,
+        max_literal_backing_bytes: capture,
+        max_combined_backing_and_journal_bytes: combined,
+        minimum_free_bytes: request.minimum_free_bytes,
+        selected_capacity_policy: request.selected_capacity_policy,
+    };
+    // Bound changed bytes by admitted journal capacity, not by volume size.
+    // Reject inconsistent budgets before acquiring source protection or staging.
+    capture_budget.validate(binding.storage.identity.partition_bytes)?;
     fs::create_dir(output)?;
     let _run_owners = ordinary_directory(output)?;
     for name in ["control", "provider", "arena"] {
@@ -673,6 +699,7 @@ fn run_inner(
         source: binding.storage.clone(),
         shadow: shadow.binding.clone(),
     };
+    capture_budget.minimum_free_bytes = remaining_independent;
     let guard = if prepare_only {
         PartitionPreparationGuard::begin_external_journal(
             binding.clone(),
@@ -691,9 +718,6 @@ fn run_inner(
             &mut events,
         )?
     };
-    let capture = align(resources.scratch_bytes / 3);
-    let journal_bytes = align(resources.scratch_bytes - resources.scratch_bytes / 3);
-    let combined = align(resources.scratch_bytes - resources.scratch_bytes / 6);
     let placement = binding
         .storage
         .identity
@@ -708,14 +732,7 @@ fn run_inner(
         maximum_materialized_bytes: capture,
         maximum_source_read_bytes: i64::MAX as u64,
         capture_arena_bytes: capture,
-        capture_budget: CaptureBudget {
-            max_changed_bytes: binding.storage.identity.partition_bytes,
-            max_journal_bytes: journal_bytes,
-            max_literal_backing_bytes: capture,
-            max_combined_backing_and_journal_bytes: combined,
-            minimum_free_bytes: remaining_independent,
-            selected_capacity_policy: request.selected_capacity_policy,
-        },
+        capture_budget,
     };
     let prepared = PartitionPreparationRequest {
         binding,

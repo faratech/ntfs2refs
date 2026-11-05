@@ -7,6 +7,14 @@ This record supersedes historical LIVE/keeper/next-action statements. Full previ
 [history](docs/history/AGENTS-through-20261105-shared-AP.md), SHA256 `8973ba9a024dffffc88d82a332afc7dab76d008609cf63970a7a0279fa18c91e`.
 Read specific historical sections only when needed; do not restart finished investigations or repeat unchanged cases.
 
+## Actual public preparation failed; conservative capacity fix compiled
+
+SAME native4312/birth1793922649258 ACTUAL OWNEDexit1/wall71.177512s; worker2604 absent. No restart. Actual error `encoded capture capacity bounds differ` during Windows preparation, last phase `partition-shadow-source-phase-closing`. Preserve actual source/protection/J; no inferred independent source-byte/AP result. Archive19files/2009737bytes manifestcfd6573cade96af0101626906d99b12b7567df376c7e1ae97ecc0359bc101f7a in public case1530. Actual request defaults ConservativeV1; arena2245193728 derives journal1496793088 but maxChanged incorrectly55834574848 (whole partition), exceeding journal minus16MiB. Prior manual preparation defaulted SourceFreeActualBytesV1, explaining different outcome.
+
+Root fixed `resource_partition_alpha.rs` using existing `general_conversion::maximum_selected_changed_bytes` rule: conservative maxChanged=aligned min(partition,journal-overhead), actual request now1480015872; SourceFree behavior unchanged. CaptureBudget prevalidation moved before output/staging/source protection. All actual literal/combined/journal/free-space/policy checks retained. Focusedcheck22858 CLOSED0/22.5954065s/no tests/mainunchanged. Native qualification pending. Evidence `evidence/public-conservative-capture-budget-fix-20261105.json`.
+
+No existing post-process intent-only cancellation: SDK `cancel_pre_ap` is Unsupported; live cancellation needs original actual guard. Root authorized ONLY preservation next: ONE ordinary Windows shutdown→actualOff/RAM0→ONE offline checkpoint named `shared52-public-aa8-capture-budget-refusal-20261105`, actual newGUID/parent07ca, preserve original5. Reserve128MiB from SAME case249768418354, no restore/start/retry yet. Operator aef_postcut_operator exclusively owns action/actual status. Current last confirmed VM Running/sameWindowsboot1793921925901/current07ca/five until actual preservation completes. No diagnosis/source-query helper executed. Frozen alpha and failed462 stay preserved. Goal incomplete.
+
 ## Corrected ONE public conversion is actually running
 
 Actual native **PID4312/birth1793922649258**, owned SYSTEM worker2604/birth1793922646843, Windows boot1793921925901. Source runtime aa8acbf public049d092... and sibling recoveryb7a868... verified. EXACT public argv: `--drive D --scratch-directory J:\n2r-public-aa8acbf-326b3ce2744b437e8d36100db1cdfdc8 --offline-media E:\`; ONE yLF was flushed and stdin closed. Host dispatch79027 CLOSED0 after queueing task (hostPID19568 absence is expected); do NOT redispatch or confuse parent exit with native completion.

@@ -1638,12 +1638,12 @@ fn candidate_volume(
 fn wide_terminal(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(Some(0)).collect()
 }
-struct TerminalVolumeInfo {
-    label: crate::volume_label::VolumeLabel,
-    filesystem: String,
-    flags: u32,
+pub(in crate::native) struct TerminalVolumeInfo {
+    pub(in crate::native) label: crate::volume_label::VolumeLabel,
+    pub(in crate::native) filesystem: String,
+    pub(in crate::native) flags: u32,
 }
-fn terminal_volume_info(file: &File) -> io::Result<TerminalVolumeInfo> {
+pub(in crate::native) fn terminal_volume_info(file: &File) -> io::Result<TerminalVolumeInfo> {
     use std::os::windows::io::AsRawHandle;
     let mut label = [0u16; 33];
     let mut filesystem = [0u16; 32];
@@ -1797,7 +1797,7 @@ fn preflight_mounts(
     }
     Ok(())
 }
-fn restore_terminal_mounts(
+pub(in crate::native) fn restore_terminal_mounts(
     paths: &[String],
     binding: &crate::general_layout::GeneralDiskBinding,
     info: &[u8],
@@ -1833,7 +1833,7 @@ fn restore_terminal_mounts(
     }
     Ok(())
 }
-fn find_terminal_volume(
+pub(in crate::native) fn find_terminal_volume(
     source: &PartitionSourceBinding,
     expected: &[u8],
     budget: PartitionObservationBudget,
@@ -1922,6 +1922,9 @@ fn find_terminal_volume(
 // native/observer NotFound error, authorizes another publication attempt.
 #[derive(Debug)]
 struct NoTerminalTargetYet;
+pub(in crate::native) fn terminal_publication_pending(error:&io::Error)->bool{
+    error.kind()==io::ErrorKind::NotFound&&error.get_ref().is_some_and(|inner|inner.is::<NoTerminalTargetYet>())
+}
 impl std::fmt::Display for NoTerminalTargetYet {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("no actual terminal target volume is published yet")

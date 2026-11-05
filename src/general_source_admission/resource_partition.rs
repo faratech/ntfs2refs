@@ -2,6 +2,10 @@
 //! manufactures GeneralDiskState/GeneralFreezeObservation or enables a CLI.
 #[path = "resource_partition_terminal.rs"]
 mod terminal;
+#[path = "resource_partition_cancel.rs"]
+mod live_cancel;
+#[path = "resource_partition_cancel_journal.rs"]
+pub(crate) mod cancel_journal;
 use super::*;
 use n2r_win32::{
     PartitionOwnerState, PartitionOwnerToken, PartitionScopedOwner,
@@ -25,6 +29,8 @@ pub(crate) struct PartitionResourceSourceContext {
     native_artifact: ArtifactLease,
     output_basis: ArenaOutputBasis,
     binding: PartitionSourceBinding,
+    cancel_journal:cancel_journal::LiveCancellationJournal,
+    cancel_journal_memory:Option<crate::artifact_arena::ArenaRamLease>,
 }
 struct CollectedPartitionSource {
     raw: PagedInspection,
@@ -501,20 +507,30 @@ impl ResourceSourceContext {
                 ))),
             };
         }
-        let (mut source, native_admission) =
-            freeze_mounted_ntfs_partition(binding.clone(), observation_budget, guard, events)?;
-        let collected = collected.context("complete partition raw/native collection absent")?;
-        source.revalidate(events)?;
-        ensure!(
-            collected
-                .fingerprint
-                .hash_partition_reader(&mut source, binding.storage.identity.partition_bytes)?
-                == collected.source_sha,
-            "partition source changed across actual private transition"
-        );
-        let token = Box::new(source.owner_token());
-        let source_seal = collected.scratch.seal()?;
-        let native_seal = native_group.seal()?;
+        // Validate all collected owners before the one private transition.
+        let collected=collected.context("complete partition raw/native collection absent")?;
+        let native_artifact=native_artifact.context("actual partition native artifact owner absent")?;
+        let output_basis=output_basis.context("actual partition output directory owners absent")?;
+        let (mut source,native_admission)=freeze_mounted_ntfs_partition(binding.clone(),observation_budget,guard,events)?;
+        let ownership=(||->Result<_>{
+            source.revalidate(events)?;
+            ensure!(collected.fingerprint.hash_partition_reader(&mut source,binding.storage.identity.partition_bytes)?==collected.source_sha,
+                "partition source changed across actual private transition");
+            let source_seal=collected.scratch.seal()?;
+            let native_seal=native_group.seal()?;
+            Ok((source_seal,native_seal))
+        })();
+        let (source_seal,native_seal)=match ownership{
+            Ok(owners)=>owners,
+            Err(error)=>{
+                let cancellation=live_cancel::cancel_collected(source,native_admission,collected,&binding,events);
+                return Err(match cancellation{
+                    Ok(receipt)=>error.context(format!("private source construction failed; actual live NTFS cancellation completed: {receipt:?}")),
+                    Err(cancel)=>error.context(format!("private source construction failed; live cancellation refused: {cancel:#}; preserve actual source state")),
+                });
+            }
+        };
+        let token=Box::new(source.owner_token());
         let mut context = PartitionResourceSourceContext {
             source,
             token,
@@ -523,13 +539,19 @@ impl ResourceSourceContext {
             arena: arena.clone(),
             source_seal,
             native_seal,
-            native_artifact: native_artifact
-                .context("actual partition native artifact owner absent")?,
-            output_basis: output_basis
-                .context("actual partition output directory owners absent")?,
+            native_artifact,
+            output_basis,
             binding,
+            cancel_journal:cancel_journal::LiveCancellationJournal::NotStarted,
+            cancel_journal_memory:None,
         };
-        context.recheck_source(events)?;
+        if let Err(error)=context.recheck_source(events){
+            let cancellation=context.cancel_with_original_sink(events);
+            return Err(match cancellation{
+                Ok(receipt)=>error.context(format!("private source construction failed; actual live NTFS cancellation completed: {receipt}")),
+                Err(cancel)=>error.context(format!("private source construction failed; live cancellation refused: {cancel:#}; preserve actual source state")),
+            });
+        }
         Ok(context)
     }
 }

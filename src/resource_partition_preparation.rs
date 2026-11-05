@@ -31,6 +31,30 @@ pub(crate) struct PartitionPreparedResources {
     _projection_directory: PartitionAuxiliaryDirectory,
 }
 
+/// Owns the actual live private context when a later preparation stage fails.
+/// No serialized error/receipt can recreate the context or cancel a source.
+pub(crate) struct PartitionPreparationFailure {
+    cause: anyhow::Error,
+    context: Option<PartitionResourceSourceContext>,
+}
+impl PartitionPreparationFailure {
+    fn before_context(cause:anyhow::Error)->Self { Self{cause,context:None} }
+    pub(crate) fn cause(&self)->&anyhow::Error { &self.cause }
+    /// Cancellation consumes the retained context. Its actual fingerprint,
+    /// source-gate history and held-J state remain the parent's checks.
+    pub(crate) fn cancel_if_live(
+        self,
+        observer:&mut impl n2r_win32::partition_restoration::PartitionRestorationObserver,
+        events:&mut Vec<NativeEvent>,
+    )->Result<serde_json::Value>{
+        let Self{cause,context}=self;
+        let Some(context)=context else { return Err(cause.context(
+            "preparation did not return a live private context; no caller cancellation authority")); };
+        context.cancel_unactivated(observer,events).map_err(|cancel|cause.context(format!(
+            "actual live unactivated cancellation refused: {cancel:#}")))
+    }
+}
+
 /// Getter-derived recovery routing preserved before AP; diagnostic only.
 #[derive(Clone, serde::Serialize)]
 pub(crate) struct PartitionPublicationReceipt {
@@ -55,6 +79,17 @@ pub(crate) struct PartitionExecutionRequest {
 }
 
 impl PartitionPreparedResources {
+    /// Release every retained target/source-query witness before the actual
+    /// context is consumed by its unactivated-source cancellation lane.
+    pub(crate) fn cancel_unactivated(
+        self,
+        observer:&mut impl n2r_win32::partition_restoration::PartitionRestorationObserver,
+        events:&mut Vec<NativeEvent>,
+    )->Result<serde_json::Value>{
+        let Self{context,target,..}=self;
+        drop(target);
+        context.cancel_unactivated(observer,events)
+    }
     /// Drop target/capture witnesses before opening the new filesystem. They
     /// retain query duplicates of the original locked NTFS FileObject. Expected
     /// pages and the completed HND's saved maps remain independently owned.
@@ -238,7 +273,8 @@ pub(crate) fn prepare_partition_resources(
     guard: PartitionPreparationGuard,
     events: &mut Vec<NativeEvent>,
     mut checkpoint: impl FnMut(&'static str, &mut Vec<NativeEvent>) -> Result<()>,
-) -> Result<PartitionPreparedResources> {
+) -> std::result::Result<PartitionPreparedResources,PartitionPreparationFailure> {
+    let mut context=(||->Result<PartitionResourceSourceContext>{
     request.binding.validate()?;
     request.observation_budget.validate()?;
     request.resources.validate()?;
@@ -255,7 +291,7 @@ pub(crate) fn prepare_partition_resources(
         .open(arena_root)?;
     arena.require_root_directory(&root)?;
     checkpoint("partition-source-preparation", events)?;
-    let mut context = ResourceSourceContext::prepare_partition(
+    ResourceSourceContext::prepare_partition(
         request.binding,
         request.observation_budget,
         request.resources,
@@ -264,7 +300,9 @@ pub(crate) fn prepare_partition_resources(
         arena,
         guard,
         events,
-    )?;
+    )
+    })().map_err(PartitionPreparationFailure::before_context)?;
+    let prepared=(||->Result<_>{
     context.require_source_evidence()?;
     context.recheck_source(events)?;
     checkpoint("partition-expected-projection", events)?;
@@ -321,12 +359,15 @@ pub(crate) fn prepare_partition_resources(
     expected_seal.revalidate()?;
     projection_directory.revalidate(&mut context, events)?;
     checkpoint("partition-source-and-shadow-prepared", events)?;
-    Ok(PartitionPreparedResources {
-        context,
-        expected,
-        target,
-        _projection_seal: projection_seal,
-        _expected_seal: expected_seal,
-        _projection_directory: projection_directory,
-    })
+    Ok((expected,target,projection_seal,expected_seal,projection_directory))
+    })();
+    // The borrowing stage closure has dropped its target/query objects before
+    // an error moves this same context into the live cancellation owner.
+    match prepared {
+        Ok((expected,target,projection_seal,expected_seal,projection_directory))=>Ok(PartitionPreparedResources {
+            context,expected,target,_projection_seal:projection_seal,
+            _expected_seal:expected_seal,_projection_directory:projection_directory,
+        }),
+        Err(cause)=>Err(PartitionPreparationFailure{cause,context:Some(context)}),
+    }
 }

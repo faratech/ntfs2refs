@@ -72,6 +72,7 @@ struct Ledger {
 struct Batch<'a> {
     kind: &'static str,
     phase: &'static str,
+    observed_unix_ms: Option<u64>,
     events: &'a [NativeEvent],
 }
 struct Count(u64);
@@ -119,6 +120,10 @@ impl Ledger {
         self.record(&Batch {
             kind: "actual-native-event-batch",
             phase,
+            observed_unix_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .and_then(|elapsed| u64::try_from(elapsed.as_millis()).ok()),
             events,
         })?;
         events.clear();
@@ -625,7 +630,7 @@ fn run_inner(
         target,
     };
     let result = (|| -> Result<serde_json::Value> {
-        let mut owned = prepare_partition_resources(
+        let prepared_result = prepare_partition_resources(
             prepared,
             &arena_root,
             &arena,
@@ -636,7 +641,21 @@ fn run_inner(
                     .checkpoint(phase, events)
                     .map_err(anyhow::Error::from)
             },
-        )?;
+        );
+        let mut owned = match prepared_result {
+            Ok(owned) => owned,
+            Err(failure) => {
+                let original = anyhow::anyhow!(format!("{:#}", failure.cause()));
+                let mut cancellation_observer = observer.clone();
+                let cancelled = failure.cancel_if_live(&mut cancellation_observer, &mut events);
+                return Err(live_private_cancellation_error(
+                    original,
+                    cancelled,
+                    &observer,
+                    &mut events,
+                ));
+            }
+        };
         let execution = PartitionExecutionRequest {
             journal,
             maximum_journal_bytes: journal_bytes,
@@ -645,7 +664,7 @@ fn run_inner(
             recovery_arena_bytes: resources.scratch_bytes / 16,
         };
         let mut pause_publication = None;
-        let pending =
+        let pending_result =
             owned.execute_and_handoff(&execution, &arena_root, &mut events, |phase, events| {
                 observer
                     .checkpoint(phase, events)
@@ -672,7 +691,23 @@ fn run_inner(
                     }
                 }
                 Ok(())
-            }))?;
+            }));
+        let pending = match pending_result {
+            Ok(pending) => pending,
+            Err(cause) => {
+                // The consumed SDK source-gate/held-J history decides whether
+                // this is still a cancellable original NTFS preparation.
+                // An AP/RB attempt cannot enter cancellation or replay here.
+                let mut cancellation_observer = observer.clone();
+                let cancelled = owned.cancel_unactivated(&mut cancellation_observer, &mut events);
+                return Err(live_private_cancellation_error(
+                    cause,
+                    cancelled,
+                    &observer,
+                    &mut events,
+                ));
+            }
+        };
         let trusted = hex::encode(pending.trusted_publication_sha256());
         println!("Trusted recovery publication SHA256: {trusted}");
         io::stdout().flush()?;
@@ -712,9 +747,49 @@ fn run_inner(
             let _=observer.lock().and_then(|mut l|l.record(
             &serde_json::json!({"kind":"partition-alpha-actual-error","success":false,"error":message})));
             Err(error
-                .context("conversion stopped; preserve this run and actual private/recovery state"))
+                .context("conversion stopped; preserve this run and actual source/recovery state"))
         }
     }
+}
+
+/// Preserve the original preparation error together with the actual consuming
+/// cancellation result. A refusal never requests opposite-direction replay,
+/// a setter retry or a state reconstruction from the saved receipts.
+fn live_private_cancellation_error(
+    cause: anyhow::Error,
+    cancellation: Result<serde_json::Value>,
+    observer: &Observer,
+    events: &mut Vec<NativeEvent>,
+) -> anyhow::Error {
+    let original = format!("{cause:#}");
+    let (receipt, cancel_error) = match cancellation {
+        Ok(receipt) => (Some(receipt), None),
+        Err(error) => (None, Some(format!("{error:#}"))),
+    };
+    let drained = observer.checkpoint("partition-live-private-cancellation-closed", events);
+    let recorded = observer.lock().and_then(|mut log| {
+        log.record(&serde_json::json!({
+            "kind":"partition-alpha-actual-live-private-cancellation",
+            "preparation_error":original,"cancellation":receipt,"cancellation_error":cancel_error,
+            "automatic_retry":false,"automatic_replay":false,"saved_receipt_grants_authority":false,
+        }))
+    });
+    let mut error = if let Some(cancel) = cancel_error {
+        cause.context(format!(
+            "actual live private cancellation refused; preserve source/J/origin: {cancel}"
+        ))
+    } else {
+        cause.context("preparation failed; actual live unactivated source cancellation completed")
+    };
+    if let Err(checkpoint) = drained {
+        error = error.context(format!(
+            "durable cancellation event checkpoint also failed: {checkpoint}"
+        ));
+    }
+    if let Err(record) = recorded {
+        error = error.context(format!("cancellation result record also failed: {record}"));
+    }
+    error
 }
 
 #[path = "resource_partition_recovery.rs"]

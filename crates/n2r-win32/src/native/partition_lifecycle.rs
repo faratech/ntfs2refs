@@ -10,7 +10,7 @@ use std::{
 };
 mod staged;
 pub use staged::{
-    PartitionIntentReceipt, PartitionNtfsAdmission, PartitionPreparationGuard,
+    PartitionIntentReceipt, PartitionNtfsAdmission, PartitionPreparationGuard, PartitionLiveCancellationReceipt,
     PartitionPreparationObserver, PartitionPreparationPin, PartitionPreparationStage,
     PartitionPreparationToken, PartitionReadonlyPhase, PartitionReadonlyProtection,
     PartitionReadonlyReader, freeze_mounted_ntfs_partition, require_complete_fresh_ntfs_admission,
@@ -45,7 +45,9 @@ impl PartitionReadLane {
             .read(true)
             .share_mode(3)
             .custom_flags(0xa000_0000)
-            .open(route)?;
+            .open(&route).map_err(|error|io::Error::new(error.kind(),format!(
+                "PartitionReadLane::from_owner readonly GLOBALROOT CreateFile {route}: {error}; native_error={:?}",
+                error.raw_os_error())))?;
         let mut lane = Self {
             file,
             binding,

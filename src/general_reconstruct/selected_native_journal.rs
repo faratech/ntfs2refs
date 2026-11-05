@@ -177,6 +177,10 @@ impl BoundPartitionCreationJournal {
         profile: JournalProfile,
         events: &mut Vec<n2r_win32::NativeEvent>,
     ) -> Result<Self> {
+        // This live transition precedes every possible CreateNew. A later
+        // failure without an actual captured file remains Attempting/unknown,
+        // never an inference that a missing pathname means no AP exists.
+        context.note_native_journal_attempt()?;
         context.recheck_source(events)?;
         ensure!(arena.same_arena(context.arena()) && path.is_absolute()
             && !path.components().any(|c| matches!(c, Component::ParentDir|Component::CurDir))
@@ -187,6 +191,7 @@ impl BoundPartitionCreationJournal {
         let shadow_before = shadow.state(events)?;
         ensure!(shadow_before.disk_attributes == 3, "actual shadow must remain frozen");
         let shadow_binding = shadow.binding().clone();
+        let mut live_journal=None;
         let result = context.with_publication_handoff(events, |source, admission, stable, events| {
             let guard_pin = admission.durable_preparation_pin()?;
             admission.revalidate_publication_handoff(source, &guard_pin, events)?;
@@ -216,6 +221,15 @@ impl BoundPartitionCreationJournal {
                 crate::artifact_arena::ArtifactGroup::NativeJournal, quota_bytes)?;
             let (mut journal, identity) = NativeSelectedJournal::create_new(
                 path, binding, profile, None, MarkerStorageUse::QualifiedProduction, None)?;
+            {
+                let Storage::Buffered(file)=&mut journal.storage else {
+                    anyhow::bail!("partition creation supports the actual markerless buffered owner only")
+                };
+                // Retain the SAME actual FileObject before any later path,
+                // preallocation or closing check can fail and drop its writer.
+                live_journal=Some(crate::general_source_admission::resource::partition::cancel_journal::LiveClearJournal::capture(
+                    file,binding,profile,source,events)?);
+            }
             let actual_path = journal.observed_guid_path(binding)?;
             let Storage::Buffered(file) = &mut journal.storage else {
                 anyhow::bail!("partition creation supports the actual markerless buffered owner only")
@@ -244,6 +258,15 @@ impl BoundPartitionCreationJournal {
                 source_owner:stable.clone(), guard_pin,
             })
         });
+        let remembered=match live_journal{
+            Some(actual)=>context.remember_unactivated_journal_owner(actual),
+            None=>Ok(()),
+        };
+        let result=match(result,remembered){
+            (Ok(value),Ok(()))=>Ok(value),
+            (Err(error),Err(remember))=>Err(error.context(format!("actual created J ownership retention also failed: {remember:#}"))),
+            (Err(error),_)|(_,Err(error))=>Err(error),
+        };
         let closing = context.recheck_source(events);
         match (result, closing) {
             (Ok(value), Ok(())) => Ok(value),

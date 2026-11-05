@@ -2,10 +2,12 @@
 //! Its readonly duplicate retains the ORIGINAL FileObject/lock. No Read, Seek,
 //! payload operation, path constructor, Deserialize or source writer is exposed.
 use super::partition_isolation::{PartitionObservationBudget, PartitionSourceBinding};
-use super::{NativeEvent, PartitionOwnerState, PartitionOwnerToken, control, device_file};
+use super::{NativeEvent, PartitionOwnerState, PartitionOwnerToken, device_file};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::{fmt, fs::File, io};
+use std::{fmt, io};
+pub(super) mod volume_query;
+use volume_query::VolumeQueryHandle;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PartitionSourceMetadataState {
@@ -19,7 +21,7 @@ pub struct PartitionSourceMetadataState {
     pub resource_profile: Option<crate::attestation::ResourceProfile>,
 }
 pub struct PartitionSourceMetadataWitness {
-    file: File,
+    file: VolumeQueryHandle,
     binding: PartitionSourceBinding,
     budget: PartitionObservationBudget,
     token: PartitionOwnerToken,
@@ -37,7 +39,7 @@ impl fmt::Debug for PartitionSourceMetadataWitness {
 }
 impl PartitionSourceMetadataWitness {
     pub(super) fn from_live(
-        file: File,
+        file: VolumeQueryHandle,
         binding: PartitionSourceBinding,
         budget: PartitionObservationBudget,
         token: PartitionOwnerToken,
@@ -47,7 +49,7 @@ impl PartitionSourceMetadataWitness {
         resource_profile: Option<crate::attestation::ResourceProfile>,
         event_sink: super::partition_lifecycle::PartitionNativeEventSink,
     ) -> io::Result<Self> {
-        crate::file_storage::require_readonly_access(&file)?;
+        file.require_owner(&binding, &token)?;
         let guid = crate::layout::guid_bytes(&binding.storage.identity.partition_guid)?;
         let row = baseline.partition.gpt.native_layout[48..]
             .chunks_exact(144)
@@ -129,23 +131,9 @@ impl PartitionSourceMetadataWitness {
     pub fn revalidate(&self, events: &mut Vec<NativeEvent>) -> io::Result<()> {
         self.checkpoint_native_events("partition-source-metadata-opening", events)?;
         let result = (|| -> io::Result<()> {
-            crate::file_storage::require_readonly_access(&self.file)?;
-            let device = control(
-                &self.file,
-                "construction-original-source-device",
-                super::DEVICE,
-                &[],
-                12,
-                events,
-            )?;
-            let info = control(
-                &self.file,
-                "construction-original-source-partition",
-                0x0007_0048,
-                &[],
-                144,
-                events,
-            )?;
+            self.file.require_owner(&self.binding, &self.token)?;
+            let device = self.file.device(events)?;
+            let info = self.file.partition_info(events)?;
             if device.len() != 12
                 || crate::layout::u32_at(&device, 0)? != 7
                 || crate::layout::u32_at(&device, 4)? != self.binding.storage.disk_number

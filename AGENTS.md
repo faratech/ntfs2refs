@@ -556,6 +556,27 @@ ExplicitselectedDOS source VSS resolves THATsourceGUID; badresolutioncannotfallb
 Focusedcheck0/29.4918661s/sharedtarget/no units, evidence/offline-environment-probe-build-20261104.json. No boot/conversion guard bypass.
 SourcecomponentAuthenticode/fileversions uncollected; currentkernelversion+componenthashes only. Newmoduleunused by632case/frozenalpha.
 
+REAL632CANCEL PASSED:2756/birth1793844502054/OS0/414.5892015s; actualCancelled/lockingguardclosed/noShadowJ.
+IndependentAfterCancelfull8NTFS/Basic0/GPT/C oracleSHA01fd2c4ec4c9289b3211ac23071b9c98c34d2af8d69d4231a3292ed59ae6f3f8 equalsinitialBefore;
+cancelresultf05eba6c87b22a36d891e3ea82abaebbdacee529ccbab7d37c2e83d6a3599e62, proofbundleab508a1f4c2c001452f07da9a9639f3ea4c1da3cc0ca56a7c6f1865b94ca320b.
+NORMAL4732/birth1793844919268/OS1/469.1852918s: actualPRIVATE0 and FP/expectedprojection reached, thenconstruction-owner witnessfailedbareOS21.
+CurrentActualPRIVATE proof82cb42c139f3576632629a625073cd7f1d6882180897e99c767f1f5395f5b4ad,
+rawGPTONLYtype/requiredCRCdeltaa253715e44e13b77d9921ffd9c08b1f322fac217e2f51b3d7ed1b7eb57a33b10; allsiblings/MBR/C exact, noJ/pub/AP.
+Offclosed423b13abc3575c66c2b121f08ef88e030851b69ec56df3892f4b2dacbd44a1bd/current07ca18, census322334895963/free85018939392.
+Final152file/13221090B archive2d62ca29800d2ce46825958daa5d4b4df2bd4019f9a370a983d99d337eb0e2fa verifiesall125pins andcancel0/normalfailure.
+RootexplicitONErestore07ca/noCP GO plan3deff02e00e78e056b61f23db903dd978c8e8125c5758961579c70c1a03108e1 acceptsdiscardofCURRENTPRIVATEworkingCOW
+afteruniqueevidencearchived; existing3cbisBasisRO, notPRIVATE. All18 remain, nofullafterpayloadhashclaimed. Awaitoperatoractualrestoreclosure.
+NEXTcase SINGLEnormaloriginalhost0955db0c.../worker60d47..., NOTrepeatalreadyqualified7mincancel. SeparateexactbuildGO required.
+
+Root APPLIED/CHECKED livePRIVATE pre-AP cancellation: actualoriginalowner/admission/token, monotonic gateeverissuedfalse, actualscopedFP twice,
+positive same-createdJclear/EOF0 witness, BasicRO+nativeNTFSproof beforeexactBasic0/mountrestore. Rooterrors carrylivecontext ratherthan dropit.
+Unusedpublicationobserver mutationhookfailsclosed (no synthesizedsuccessNativeEvent). Process-death/intent-onlycancellationstillunsupported.
+Also fixedactualconstructorOS21: rawVOLUME no longerusesordinaryfile.metadata/EOF/FileIDduplicate helper. Private typedqueryhandle uses
+DuplicateHandle query-only0x00100080, NtQueryObjectpublic56B/accessoffset4, actualDevice12/Partition144+stabletoken bookends; no Read/Seek/Write/pathAPI.
+Ordinaryfilehelperunchanged; readonlyDataLaneopengetsERRORCONTEXTonly. Focusedlib/all3labbincheck0/28.5463049s/no units.
+Evidence partition-live-private-cancel-build-20261104.json and partition-volume-query-duplicate-build-20261104.json. Exactnativequalificationpending.
+Existingledgerbatches add optionalwallclockmilliseconds only; no extra sourcequery or scan. Publicshared-dispatch3pathDRAFT remainsunapplied.
+
 - Fresh writes require original live opaque source certificate and actual source/target/J/arena owners. Saved JSON/paths/flags are routes, never authority.
 - Revalidate device/file identities, journal/index/ticket/lifecycle and recovery files. Recovery must not require thin-pool reattachment.
 - Preserve full phase snapshots and native metadata/allocation/namespace/ACL/full retrieval checks, opening/closing boundaries and final allocation checks.

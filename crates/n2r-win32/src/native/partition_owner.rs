@@ -188,6 +188,22 @@ impl PartitionScopedOwner {
 }
 
 impl PartitionScopedOwner {
+    /// Consume only the original live, never-activated source owner. A saved
+    /// flag or another reopened owner cannot match the actual admission token.
+    pub(super) fn into_unactivated_cancellation_parts(mut self,
+        admission:&mut super::partition_lifecycle::PartitionNtfsAdmission,
+        events:&mut Vec<NativeEvent>,
+    )->io::Result<super::partition_restoration::PartitionTerminalTargetParts>{
+        if self.enrolled.source_admission_issued{return Err(io::Error::other("source gate was already issued; live cancellation is permanently unavailable"));}
+        super::partition_lifecycle::require_complete_fresh_ntfs_admission(&self,admission)?;
+        let pin=admission.durable_preparation_pin()?;
+        admission.revalidate_publication_handoff(&mut self,&pin,events)?;
+        self.revalidate_current_critical_volume_policy(events)?;
+        if self.enrolled.source_admission_issued{return Err(io::Error::other("source gate issued during cancellation authentication"));}
+        let token=self.owner_token();
+        Ok(super::partition_restoration::PartitionTerminalTargetParts{file:self.file,physical_readonly:self.physical_readonly,
+            binding:self.binding,budget:self.budget,state:self.enrolled,token})
+    }
     /// Only the terminal restoration module receives these original retained
     /// objects. It must validate its BasicRO state independently after the
     /// target type transition; no path reopen or copied admission is involved.
@@ -439,7 +455,12 @@ impl PartitionScopedOwner {
         super::partition_lifecycle::require_complete_fresh_ntfs_admission(self, admission)?;
         admission.native().domain().revalidate()?;
         let pin = admission.durable_preparation_pin()?;
-        let duplicate = crate::file_storage::duplicate_readonly(&self.file)?;
+        let target_guid=crate::layout::guid_bytes(&self.binding.storage.identity.partition_guid)?;
+        let expected=self.enrolled.partition.gpt.native_layout.get(48..)
+            .and_then(|rows|rows.chunks_exact(144).find(|row|row[48..64]==target_guid))
+            .ok_or_else(||io::Error::other("construction source native GPT row absent before volume duplicate"))?;
+        let duplicate = super::partition_source_metadata::volume_query::duplicate_bound(
+            &self.file,&self.binding,expected,&self.owner_token(),events)?;
         let witness = super::PartitionSourceMetadataWitness::from_live(
             duplicate, self.binding.clone(), self.budget, self.owner_token(), self.enrolled.clone(),
             admission.native().domain().sha256().to_owned(), pin.intent_prefix_sha256,

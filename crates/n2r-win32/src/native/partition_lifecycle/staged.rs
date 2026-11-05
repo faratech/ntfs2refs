@@ -15,6 +15,8 @@ use super::super::partition_runtime_roles::{
 use super::super::partition_storage_roles::{PartitionStorageRoleObservation,observe_partition_storage_roles};
 use super::super::{AlignedBuffer, MAX_IO, NativeEvent, control, device_file};
 use crate::attestation_partition::PartitionPagedNtfsObservation;
+mod live_cancel;
+pub use live_cancel::PartitionLiveCancellationReceipt;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
@@ -993,6 +995,12 @@ impl PartitionPreparationGuard {
         self.revalidate_current_with_volume(None,events)
     }
     fn revalidate_current_with_volume(&mut self,actual:Option<&File>, events: &mut Vec<NativeEvent>) -> io::Result<()> {
+        self.revalidate_current_metadata(events)?;
+        self.check_volume(actual.or(self.volume.as_ref()).ok_or_else(||invalid("volume transferred"))?,events)
+    }
+    // Complete metadata bookend while an actual live cancellation guard waits
+    // for its readonly namespace. It grants no volume/writer capability.
+    fn revalidate_current_metadata(&mut self,events:&mut Vec<NativeEvent>)->io::Result<()>{
         self.checkpoint("partition-preparation-revalidate", events)?;
         let private = self.current_info[32..48] == crate::layout::guid_bytes(PRIVATE)?;
         let current = if private {
@@ -1033,11 +1041,7 @@ impl PartitionPreparationGuard {
             dumps == self.dumps && roles.same_critical_roles(&self.roles),
             "configured/current critical-role bindings changed",
         )?;
-        self.check_volume(
-            actual.or(self.volume.as_ref())
-                .ok_or_else(|| invalid("volume transferred"))?,
-            events,
-        )
+        Ok(())
     }
     fn change(
         &mut self,

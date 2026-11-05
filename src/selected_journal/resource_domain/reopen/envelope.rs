@@ -459,12 +459,9 @@ impl ReopenedPartitionResourceRecovery {
         publication
             .source_scope
             .require_envelope_version(publication.schema_version, &publication.kind)?;
-        let explicit = match &publication.source_scope {
-            super::super::source_scope::ResourceRecoverySourceScope::Partition(scope) => scope,
-            _ => anyhow::bail!("missing/dedicated publication cannot enter partition recovery"),
-        };
+        let explicit = &publication.source_scope; explicit.require_partition()?;
         ensure!(
-            explicit.binding == *owner.binding()
+            explicit.partition_binding() == Some(owner.binding())
                 && publication.source == owner.binding().storage
                 && &publication.shadow == expected_shadow
                 && !publication.serialized_publication_grants_authority
@@ -478,9 +475,7 @@ impl ReopenedPartitionResourceRecovery {
                     != n2r_win32::layout::guid_bytes(&owner.binding().storage.identity.disk_guid)?,
             "partition source and shadow physical identities overlap"
         );
-        explicit
-            .complete_preparation_guard
-            .require_actual(admission, owner, stable, events)?;
+        explicit.preparation_guard()?.require_actual(admission, owner, stable, events)?;
         publication.resource_admission.validate()?;
         publication.expected_source_label.validate()?;
         ensure!(
@@ -626,9 +621,7 @@ impl ReopenedPartitionResourceRecovery {
             "clear/foreign/closed HND-ABT cannot issue partition recovery binding"
         );
         observation.retire()?;
-        explicit
-            .complete_preparation_guard
-            .require_actual(admission, owner, stable, events)?;
+        explicit.preparation_guard()?.require_actual(admission, owner, stable, events)?;
         Ok(Self {
             publication,
             publication_file,
@@ -754,12 +747,9 @@ impl ReopenedPartitionResourceRecovery {
         publication
             .source_scope
             .require_envelope_version(publication.schema_version, &publication.kind)?;
-        let explicit = match &publication.source_scope {
-            super::super::source_scope::ResourceRecoverySourceScope::Partition(scope) => scope,
-            _ => anyhow::bail!("missing/dedicated publication cannot enter partition recovery"),
-        };
+        let explicit = &publication.source_scope; explicit.require_partition()?;
         ensure!(
-            explicit.binding == *owner.binding()
+            explicit.partition_binding() == Some(owner.binding())
                 && publication.source == owner.binding().storage
                 && &publication.shadow == expected_shadow
                 && !publication.serialized_publication_grants_authority
@@ -887,11 +877,11 @@ impl ReopenedPartitionResourceRecovery {
             );
         }
         ensure!(
-            explicit.native_metadata.budget
+            explicit.partition_native_metadata()?.budget
                 == publication.resource_admission.native_observation_budget()?,
             "restart native metadata budget differs from authenticated resource admission"
         );
-        let intent = &explicit.complete_preparation_guard;
+        let intent = explicit.preparation_guard()?;
         let held_intent = HeldFile::open(
             Path::new(&intent.intent_file.final_path),
             digest(&intent.intent_prefix_sha256)?,
@@ -900,10 +890,10 @@ impl ReopenedPartitionResourceRecovery {
             scratch,
         )?;
         let held_native = HeldFile::open(
-            Path::new(&explicit.native_metadata.path),
-            digest(&explicit.native_metadata.sha256)?,
-            Some(explicit.native_metadata.bytes),
-            explicit.native_metadata.budget.pages.max_file_bytes,
+            Path::new(&explicit.partition_native_metadata()?.path),
+            digest(&explicit.partition_native_metadata()?.sha256)?,
+            Some(explicit.partition_native_metadata()?.bytes),
+            explicit.partition_native_metadata()?.budget.pages.max_file_bytes,
             scratch,
         )?;
         let ticket = locator.ticket();
@@ -937,7 +927,7 @@ impl ReopenedPartitionResourceRecovery {
             actual_origin.owner_token().same_owner(stable)
                 && actual_origin.binding() == owner.binding()
                 && *actual_origin.original_pin()
-                    == serde_json::to_value(&explicit.complete_preparation_guard)?,
+                    == serde_json::to_value(explicit.preparation_guard()?)?,
             "actual held restart origin differs from publication guard/owner"
         );
         let volume = expected_journal.disk.volume_path()?;
@@ -1029,13 +1019,8 @@ impl ReopenedPartitionResourceRecovery {
         }
         self.locator.revalidate()?;
         self.journal.revalidate()?;
-        let scope = match &self.publication.source_scope {
-            super::super::source_scope::ResourceRecoverySourceScope::Partition(scope) => scope,
-            _ => anyhow::bail!("dedicated scope cannot issue partition binding"),
-        };
-        let actual_guard = scope
-            .complete_preparation_guard
-            .require_actual(admission, owner, stable, events)?;
+        let scope = &self.publication.source_scope; scope.require_partition()?;
+        let actual_guard = scope.preparation_guard()?.require_actual(admission, owner, stable, events)?;
         let volume = self.locator.journal_binding().disk.volume_path()?;
         let _same_output = hold_index_parent(index_path, &volume)?;
         // Retain original output directory ownership as well as the new
@@ -1087,7 +1072,7 @@ impl ReopenedPartitionResourceRecovery {
             locator: &mut self.locator,
             scratch: &self.scratch,
             scope: AuthenticatedPartitionRecoveryScope {
-                source: scope.binding.clone(),
+                source: scope.partition_binding().context("partition source binding absent")?.clone(),
                 actual_guard: serde_json::to_value(actual_guard)?,
             },
             actual_journal_owner: journal_owner,
@@ -1145,12 +1130,7 @@ impl PartitionRecoveryPublicationBinding<'_> {
                 && std::ptr::from_ref(&*journal) as usize == self.actual_journal_owner,
             "partition MIXED observation lost actual owner/publication/journal association"
         );
-        let explicit = match &self.publication.source_scope {
-            super::super::source_scope::ResourceRecoverySourceScope::Partition(scope) => scope,
-            super::super::source_scope::ResourceRecoverySourceScope::Dedicated => {
-                anyhow::bail!("missing/dedicated scope cannot issue partition MIXED binding")
-            }
-        };
+        let explicit = &self.publication.source_scope; explicit.require_partition()?;
         ensure!(
             self.locator.source_scope() == &self.publication.source_scope,
             "partition publication/locator scope differs"
@@ -2439,36 +2419,30 @@ enum PartitionRecoveryOrigin<'a> {
 impl PartitionRecoveryOrigin<'_> {
     fn require_actual(
         &mut self,
-        scope: &super::super::source_scope::PartitionPublicationScope,
+        scope: &super::super::source_scope::ResourceRecoverySourceScope,
         owner: &mut n2r_win32::PartitionScopedOwner,
         stable: &n2r_win32::PartitionOwnerToken,
         events: &mut Vec<NativeEvent>,
     ) -> Result<serde_json::Value> {
         match self {
             Self::Live(admission) => Ok(serde_json::to_value(
-                scope
-                    .complete_preparation_guard
-                    .require_actual(admission, owner, stable, events)?,
+                scope.preparation_guard()?.require_actual(admission, owner, stable, events)?,
             )?),
             Self::Restarted(origin) => {
                 ensure!(
                     stable.same_owner(&owner.owner_token())
                         && origin.owner_token().same_owner(stable)
                         && origin.binding() == owner.binding()
-                        && scope.binding == *owner.binding(),
+                        && scope.partition_binding() == Some(owner.binding()),
                     "restarted actual source/intent owner differs"
                 );
                 origin.revalidate_private(owner, events)?;
                 ensure!(
-                    serde_json::to_value(
-                        super::super::source_scope::ResourceRecoverySourceScope::Partition(
-                            scope.clone()
-                        )
-                    )? == *origin.routing_scope(),
+                    serde_json::to_value(scope)? == *origin.routing_scope(),
                     "actual recovered routing scope differs"
                 );
                 ensure!(
-                    serde_json::to_value(&scope.complete_preparation_guard)?
+                    serde_json::to_value(scope.preparation_guard()?)?
                         == *origin.original_pin(),
                     "actual canonical recovered intent differs from publication guard pin"
                 );
@@ -2507,10 +2481,7 @@ impl ReopenedPartitionResourceRecovery {
         }
         self.locator.revalidate()?;
         self.journal.revalidate()?;
-        let scope = match &self.publication.source_scope {
-            super::super::source_scope::ResourceRecoverySourceScope::Partition(scope) => scope,
-            _ => anyhow::bail!("restarted partition recovery requires explicit partition scope"),
-        };
+        let scope = &self.publication.source_scope; scope.require_partition()?;
         let actual_guard = {
             let mut actual = PartitionRecoveryOrigin::Restarted(&mut *origin);
             actual.require_actual(scope, owner, stable, events)?
@@ -2582,7 +2553,7 @@ impl ReopenedPartitionResourceRecovery {
             locator: &mut self.locator,
             scratch: &self.scratch,
             scope: AuthenticatedPartitionRecoveryScope {
-                source: scope.binding.clone(),
+                source: scope.partition_binding().context("partition source binding absent")?.clone(),
                 actual_guard,
             },
             actual_journal_owner: journal_owner,

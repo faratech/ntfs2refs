@@ -543,14 +543,9 @@ pub(super) fn try_recover(directory: &Path, checksum: &str, rollback: bool) -> R
     route
         .source_scope
         .require_envelope_version(route.schema_version, &route.kind)?;
-    let scope = match &route.source_scope {
-        ResourceRecoverySourceScope::Partition(scope) => scope,
-        _ => anyhow::bail!(
-            "this recovery.json is not partition-v2; select the original dedicated recovery directory"
-        ),
-    };
+    route.source_scope.require_partition()?; let source_binding = route.source_scope.partition_binding().context("partition recovery binding absent")?;
     ensure!(
-        !route.serialized_publication_grants_authority && scope.binding.storage == route.source,
+        !route.serialized_publication_grants_authority && source_binding.storage == route.source,
         "foreign partition recovery publication route"
     );
     route.source.validate()?;
@@ -615,7 +610,7 @@ pub(super) fn try_recover(directory: &Path, checksum: &str, rollback: bool) -> R
     let output = fresh(&parent, "recovery")?;
     let request = PartitionRecoveryRequest {
         schema_version: 1,
-        source: scope.binding.clone(),
+        source: source_binding.clone(),
         shadow: route.shadow,
         journal: routed.journal_binding,
         publication: path.to_owned(),

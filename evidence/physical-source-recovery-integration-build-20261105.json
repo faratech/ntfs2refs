@@ -1,0 +1,125 @@
+{
+  "schema_version": 1,
+  "kind": "profile-aware-physical-source-and-recovery-integration",
+  "status": "compiled-physical-readonly-profile-explicitly-unavailable",
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/native/partition_lifecycle.rs",
+      "sha256": "1f7b2a2dd43c835499a2fecb31b133da55f21e8b7e3413ff8fe28ffbc7b775ee",
+      "bytes": 6417
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_lifecycle/held_read.rs",
+      "sha256": "2c0950131113bd41ce57497e3a2ddf290d6be5897949c342df1449a98b356c14",
+      "bytes": 8760
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_lifecycle/staged.rs",
+      "sha256": "57852359185afcadf7c7c667cefb318f2bb3133199543a7ca0d78f03054a71d2",
+      "bytes": 59269
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_lifecycle/staged/readonly_physical.rs",
+      "sha256": "58338cc9865072569ab1c803c4b0274967ea3d92c3d0125e8b46c46a2515232f",
+      "bytes": 4306
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_owner.rs",
+      "sha256": "f27b9978d5097ace42ed4c5af615132d73ab739acb0a7475f0f3fe8e486a4049",
+      "bytes": 53931
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_owner/physical_data.rs",
+      "sha256": "2c02aacf2829b2623c0519bf3a980d33f3829c9695a782007434a4a9cd468d2e",
+      "bytes": 6239
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_restoration.rs",
+      "sha256": "669079a0277a623d3f3349d1f9155985bb8f0f7d0abe6f599f49f3736c3e3e86",
+      "bytes": 86216
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_restoration/basic_ro.rs",
+      "sha256": "cc45595a176111938d2619756485078785b127440f183cb92c095d5bee274f2b",
+      "bytes": 15615
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_restoration/physical_profile.rs",
+      "sha256": "185b55cfcdf3d71ef776144b4d35bde0713fe75e761a2dbf4ae9acc7d6b480b2",
+      "bytes": 4644
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_source_metadata.rs",
+      "sha256": "510b66204a7fa0f1be1a6dea469526d536af0e77ea41bb22c590995c3d49b668",
+      "bytes": 9954
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_source_metadata/volume_query.rs",
+      "sha256": "221fd95404d2d9d5cc8577d37bef44a7521eda15d1c5bd3eb2da55da90ea6832",
+      "bytes": 7017
+    },
+    {
+      "path": "src/drive_partition.rs",
+      "sha256": "cd7c5aba5edc592f9a02815e5c8ebc80fcf96d08c13a6209e6c828d4b2109a05",
+      "bytes": 24849
+    },
+    {
+      "path": "src/general_source_admission/resource_partition.rs",
+      "sha256": "75893378b5ce0eb6699399e9a5bcf9453aa40aa00e244d8af9e143176b569f69",
+      "bytes": 54447
+    },
+    {
+      "path": "src/resource_partition_recovery.rs",
+      "sha256": "89ae48c95e85c9962d563168f91fe634559ce66732ef087e9718601378b35f4c",
+      "bytes": 19547
+    },
+    {
+      "path": "src/selected_journal/resource_domain/durable_anchor.rs",
+      "sha256": "154f20a937c1a71d32b52fd964a5debbf137bb37bb01934de93c6844c217d28e",
+      "bytes": 29111
+    },
+    {
+      "path": "src/selected_journal/resource_domain/prepare/qualification.rs",
+      "sha256": "3850f923efc5fbe465744e3e92402d9c19ff564208bb200b7e45c0e689cf4de8",
+      "bytes": 48410
+    },
+    {
+      "path": "src/selected_journal/resource_domain/reopen/envelope.rs",
+      "sha256": "25f689e7d35f405a501f91972b720afb1d635b1a7f08271b60e49ff63030400d",
+      "bytes": 117008
+    },
+    {
+      "path": "src/selected_journal/resource_domain/source_scope.rs",
+      "sha256": "2bcfbbe10a38e91c3b887035b92662cc1b67399834595f0cbc27de2a7c67b315",
+      "bytes": 20830
+    }
+  ],
+  "focused_check": {
+    "shared_target_reused": true,
+    "unit_tests_run": false,
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+    "wall_seconds": 18.83907,
+    "native_run": false,
+    "exit_code": 0,
+    "kind": "public-partition-dispatch-focused-check",
+    "capacity": {
+      "actual_bytes": 323500904777,
+      "free_bytes": 83878445056,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 2147483648,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    }
+  },
+  "frozen_sdk_draft_sha256": "c0eff9635ce77d78ce9a3e316f6f923a2c6da31ec20654851cbc94f8563b284f",
+  "frozen_staged_scope_draft_sha256": "bafbc99d32697e098cada3b203f0e365fab14cc495597cd42c8aa72e2ed4609f",
+  "application": "Exact frozen full files copied after all canonical-base and draft hashes matched; malformed patch serialization not used. Unrelated line-ending changes removed.",
+  "scope3": "Distinct actual BasicRO physical owner, bounded relative physical reader and data lanes, genuine retained volume lock, protocol3 locator/publication and protocol2 intent; actual owner and authenticated Origin/pins retained across fresh/reopened/terminal paths.",
+  "write_qualification": "Explicit Unsupported before source admission/gate/AP/RB for the BasicReadonlyPhysicalV3 profile, following actual v5 native OS1 refusal. Additional defense before RW activation.",
+  "public_default_profile_changed": false,
+  "legacy_wire_shapes_preserved": true,
+  "historical_AP_rewritten": false,
+  "native_shared_conversion_qualified": false,
+  "unit_tests_run": false
+}

@@ -7,12 +7,13 @@ use std::{
     io::{self, Read, Seek, SeekFrom},
 };
 pub(super) mod held_read;
+pub use super::partition_owner::PartitionDataProfile;
 mod staged;
 pub use staged::{
     PartitionIntentReceipt, PartitionNtfsAdmission, PartitionPreparationGuard, PartitionLiveCancellationReceipt,
     PartitionPreparationObserver, PartitionPreparationPin, PartitionPreparationStage,
     PartitionPreparationToken, PartitionReadonlyPhase, PartitionReadonlyProtection,
-    PartitionReadonlyReader, freeze_mounted_ntfs_partition, require_complete_fresh_ntfs_admission,
+    PartitionReadonlyReader, freeze_mounted_ntfs_partition, freeze_mounted_ntfs_readonly_physical, require_complete_fresh_ntfs_admission,
 };
 
 /// Independent logical cursor on a readonly duplicate of the actual locking
@@ -68,6 +69,11 @@ impl PartitionReadLane {
             }
             owner.revalidate(events)?;
             self.file.require_owner(&self.binding, &self.token)?;
+            if self.file.is_physical() {
+                self.file.require_physical_native(events)?;
+                if owner.data_profile()!=PartitionDataProfile::BasicReadonlyPhysicalV3{return Err(io::Error::other("physical lane/owner profile differs"));}
+                return Ok(());
+            }
             let number = self.file.device(events)?;
             let info = self.file.partition_info(events)?;
             let target_guid =

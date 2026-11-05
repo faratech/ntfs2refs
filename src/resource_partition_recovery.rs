@@ -72,6 +72,50 @@ pub fn run_recovery(
     request.journal.validate()?;
     request.observation_budget.validate()?;
     let publication_sha = digest(&request.publication_sha256)?;
+    // Resolve only the independently pinned protocol. This is routing, never
+    // source-write authority; the owning SDK still authenticates every record.
+    #[derive(Deserialize)]
+    struct RecoveryRoute {
+        schema_version: u32,
+        kind: String,
+        source_scope: crate::selected_journal::resource_domain::source_scope::ResourceRecoverySourceScope,
+    }
+    let routing_available = n2r_win32::resource_native::observe_available_resources(
+        request.publication.parent().context("publication parent absent")?)?;
+    let route_limit = (request.total_ram_bytes / 32).min(request.maximum_evidence_bytes)
+        .min(routing_available.available_physical_bytes / 32);
+    let mut route_pin = OpenOptions::new().read(true).share_mode(1)
+        .custom_flags(0x0020_0000).open(&request.publication)?;
+    let route_before = n2r_win32::reference_file::observe_reference_file_handle_with_limit(
+        &route_pin, route_limit)?;
+    ensure!(route_before.file_bytes > 0 && route_before.number_of_links == 1,
+        "ordinary bounded recovery publication required");
+    use std::io::{Read as _, Seek as _};
+    let routing_ram = route_before.file_bytes.checked_mul(4)
+        .and_then(|n| n.checked_add(65536)).context("routing memory overflow")?;
+    ensure!(routing_ram <= request.total_ram_bytes / 4,
+        "routing metadata exceeds prepaid memory");
+    let mut route_bytes = Vec::new();
+    route_bytes.try_reserve_exact(usize::try_from(route_before.file_bytes + 1)?)?;
+    std::io::Read::by_ref(&mut route_pin).take(route_before.file_bytes + 1)
+        .read_to_end(&mut route_bytes)?;
+    ensure!(route_bytes.len() as u64 == route_before.file_bytes
+        && <sha2::Sha256 as sha2::Digest>::digest(&route_bytes)[..] == publication_sha,
+        "recovery routing publication differs from the independent pin");
+    let route: RecoveryRoute = serde_json::from_slice(&route_bytes)?;
+    ensure!(route.source_scope.preparation_guard()?.intent_file.final_path.len() as u64
+        <= route_before.file_bytes, "recovery scope exceeds bounded publication");
+    route.source_scope.require_envelope_version(route.schema_version, &route.kind)?;
+    route.source_scope.require_partition()?;
+    ensure!(route.source_scope.partition_binding() == Some(&request.source),
+        "pinned recovery protocol names a different source");
+    ensure!(!route.source_scope.is_readonly_physical(),
+        "BASIC read-only physical write profile is unavailable after the native fresh-lock refusal; preserve the source and journal");
+    ensure!(n2r_win32::reference_file::observe_reference_file_handle_with_limit(
+        &route_pin, route_limit)? == route_before,
+        "held recovery routing publication changed");
+    route_pin.seek(std::io::SeekFrom::Start(0))?;
+    drop(route_bytes);
     ensure!(
         request.minimum_free_bytes > 0
             && request.maximum_evidence_bytes > 0
@@ -123,7 +167,8 @@ pub fn run_recovery(
     let ledger_ram = 5 * 1024 * 1024;
     let arena_ram = request
         .total_ram_bytes
-        .checked_sub(sdk_ram)
+        .checked_sub(routing_ram)
+        .and_then(|n| n.checked_sub(sdk_ram))
         .and_then(|n| n.checked_sub(ledger_ram))
         .and_then(|n| n.checked_sub(RECOVERY_THREAD_STACK_RESERVATION))
         .context("recovery RAM cannot cover SDK+ledger")?;

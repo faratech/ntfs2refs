@@ -3,6 +3,7 @@
 //! payload operation, path constructor, Deserialize or source writer is exposed.
 use super::partition_isolation::{PartitionObservationBudget, PartitionSourceBinding};
 use super::{NativeEvent, PartitionOwnerState, PartitionOwnerToken, device_file};
+use super::partition_owner::PartitionDataProfile;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{fmt, io};
@@ -12,6 +13,7 @@ use volume_query::VolumeQueryHandle;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PartitionSourceMetadataState {
     pub binding: PartitionSourceBinding,
+    pub data_profile:PartitionDataProfile,
     pub native_partition_info: Vec<u8>,
     pub original_gpt_entries_sha256: String,
     pub native_metadata_file_sha256: String,
@@ -48,6 +50,7 @@ impl PartitionSourceMetadataWitness {
         intent_sha: String,
         resource_profile: Option<crate::attestation::ResourceProfile>,
         event_sink: super::partition_lifecycle::PartitionNativeEventSink,
+        data_profile:PartitionDataProfile,
     ) -> io::Result<Self> {
         file.require_owner(&binding, &token)?;
         let guid = crate::layout::guid_bytes(&binding.storage.identity.partition_guid)?;
@@ -57,6 +60,7 @@ impl PartitionSourceMetadataWitness {
             .ok_or_else(|| io::Error::other("source witness native target row absent"))?;
         let state = PartitionSourceMetadataState {
             binding: binding.clone(),
+            data_profile,
             native_partition_info: row.to_vec(),
             original_gpt_entries_sha256: hex::encode(Sha256::digest(
                 &baseline.partition.gpt.entries,
@@ -77,6 +81,13 @@ impl PartitionSourceMetadataWitness {
             event_sink,
             _memory: None,
         })
+    }
+    fn matches_data_profile(&self,info:&[u8])->io::Result<bool>{
+        let (kind,attrs)=match self.state.data_profile {
+            PartitionDataProfile::PrivateVolumeV2=>("b627aadb-a893-48b6-aa0b-71e5f30ee370",0),
+            PartitionDataProfile::BasicReadonlyPhysicalV3=>("ebd0a0a2-b9e5-4433-87c0-68b6b72699c7",0x1000_0000_0000_0000),
+        };
+        Ok(info.len()==144&&info[32..48]==crate::layout::guid_bytes(kind)?&&crate::layout::u64_at(info,64)?==attrs)
     }
     pub fn state(&self) -> &PartitionSourceMetadataState {
         &self.state
@@ -140,13 +151,16 @@ impl PartitionSourceMetadataWitness {
                 || crate::layout::u32_at(&device, 8)?
                     != self.binding.storage.identity.partition_number
                 || info != self.state.native_partition_info
-                || info[32..48]
-                    != crate::layout::guid_bytes("b627aadb-a893-48b6-aa0b-71e5f30ee370")?
-                || crate::layout::u64_at(&info, 64)? != 0
+                || !self.matches_data_profile(&info)?
             {
                 return Err(io::Error::other(
                     "same original source FileObject private identity changed",
                 ));
+            }
+            if self.state.data_profile==PartitionDataProfile::BasicReadonlyPhysicalV3 {
+                let at=events.len();let result=self.file.readonly_query(events);
+                if !result.is_err()||!events.get(at).is_some_and(|e|!e.succeeded&&e.native_error==Some(19)) {
+                    return Err(io::Error::other("physical construction source lacks actual WRITE_PROTECT19"));}
             }
             // This independent readonly physical metadata FileObject has its OWN
             // cursor. Original source-volume FileObject receives queries only.
@@ -155,12 +169,10 @@ impl PartitionSourceMetadataWitness {
                 false,
                 false,
             )?;
-            let current = super::partition_isolation::observe_private(
-                &mut physical,
-                &self.binding,
-                self.budget,
-                events,
-            )?;
+            let current = if self.state.data_profile==PartitionDataProfile::BasicReadonlyPhysicalV3 {
+                super::partition_isolation::observe_physical_only(&mut physical,&self.binding,self.budget,events,
+                    crate::layout::guid_bytes("ebd0a0a2-b9e5-4433-87c0-68b6b72699c7")?)?
+            }else{super::partition_isolation::observe_private(&mut physical,&self.binding,self.budget,events)?};
             if !super::partition_isolation::same_private_identity(
                 &self.baseline.partition,
                 &current,
@@ -199,8 +211,7 @@ impl PartitionSourceMetadataWitness {
             ||crate::layout::u32_at(&device,4)?!=self.binding.storage.disk_number
             ||crate::layout::u32_at(&device,8)?!=self.binding.storage.identity.partition_number
             ||info!=self.state.native_partition_info
-            ||info[32..48]!=crate::layout::guid_bytes("b627aadb-a893-48b6-aa0b-71e5f30ee370")?
-            ||crate::layout::u64_at(&info,64)?!=0{
+            ||!self.matches_data_profile(&info)?{
             return Err(io::Error::other("held shadow-construction source identity/private0 changed"));
         }Ok(())
     }

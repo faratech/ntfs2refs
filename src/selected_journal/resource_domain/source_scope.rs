@@ -69,11 +69,10 @@ impl PartitionPreparationGuardPin {
             require_sha(value)?;
         }
         ensure!(
-            self.version == 1
-                && self.kind == "partition-target-only-preparation-v1"
+            ((self.version==1&&self.kind=="partition-target-only-preparation-v1"&&self.observed_stage=="PrivateLocked")
+                ||(self.version==2&&self.kind=="partition-readonly-physical-preparation-v2"&&self.observed_stage=="ReadonlyPhysicalLocked"))
                 && self.original_partition_info.len() == 144
                 && (1..=4).contains(&self.sequence)
-                && self.observed_stage == "PrivateLocked"
                 && !self.serialized_pin_grants_authority
                 && self.intent_file.file_bytes > 0
                 && self.intent_file.file_bytes <= 16 * 1024 * 1024
@@ -201,6 +200,9 @@ impl PartitionPublicationScope {
         let info = &self.complete_preparation_guard.original_partition_info;
         ensure!(
             self.scope_version == 2
+                && self.complete_preparation_guard.version==1
+                && self.complete_preparation_guard.kind=="partition-target-only-preparation-v1"
+                && self.complete_preparation_guard.observed_stage=="PrivateLocked"
                 && self.private_type_guid == PRIVATE_TYPE
                 && self.original_basic_type_guid == BASIC_TYPE
                 && self.original_name_utf16le.len() == 72
@@ -225,6 +227,64 @@ impl PartitionPublicationScope {
     }
 }
 
+
+/// New explicit routing protocol, minted only from the actual BasicRO physical
+/// owner/native admission. Serialized fields remain facts and never writer authority.
+#[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PartitionReadonlyPhysicalPublicationScope{
+    pub native_metadata:PartitionNativeMetadataPin,
+    pub scope_version:u32,
+    pub binding:PartitionSourceBinding,
+    pub readonly_type_guid:String,
+    pub readonly_attributes:u64,
+    pub original_basic_type_guid:String,
+    pub original_attributes:u64,
+    pub original_name_utf16le:Vec<u8>,
+    pub complete_preparation_guard:PartitionPreparationGuardPin,
+}
+impl PartitionReadonlyPhysicalPublicationScope{
+    pub(crate) fn from_actual(owner:&mut PartitionScopedOwner,stable:&PartitionOwnerToken,
+        admission:&mut PartitionNtfsAdmission,events:&mut Vec<NativeEvent>)->Result<Self>{
+        use n2r_win32::partition_lifecycle::PartitionDataProfile;
+        use n2r_win32::attestation::NativeObservationDomain;
+        ensure!(owner.data_profile()==PartitionDataProfile::BasicReadonlyPhysicalV3
+            &&stable.same_owner(&owner.owner_token()),"actual BasicRO physical source owner required");
+        owner.revalidate(events)?;
+        let actual=admission.durable_preparation_pin()?;
+        admission.revalidate_publication_handoff(owner,&actual,events)?;
+        ensure!(actual.version==2&&actual.kind=="partition-readonly-physical-preparation-v2",
+            "actual readonly physical preparation pin required");
+        let info=admission.original_partition_info();ensure!(info.len()==144,"actual original native144 absent");
+        let domain=admission.native().domain();domain.revalidate()?;
+        let result=Self{native_metadata:PartitionNativeMetadataPin{path:domain.final_path(),bytes:domain.byte_len(),
+                sha256:domain.sha256().into(),budget:domain.budget()},
+            scope_version:3,binding:owner.binding().clone(),readonly_type_guid:BASIC_TYPE.into(),
+            readonly_attributes:0x1000_0000_0000_0000,original_basic_type_guid:BASIC_TYPE.into(),
+            original_attributes:u64::from_le_bytes(info[64..72].try_into()?),original_name_utf16le:info[72..144].to_vec(),
+            complete_preparation_guard:PartitionPreparationGuardPin::from_actual(&actual)?};
+        result.validate()?;
+        result.complete_preparation_guard.require_actual(admission,owner,stable,events)?;
+        Ok(result)
+    }
+    pub(crate) fn validate(&self)->Result<()>{
+        self.binding.validate()?;self.native_metadata.validate()?;self.complete_preparation_guard.validate()?;
+        let pin=&self.complete_preparation_guard;let info=&pin.original_partition_info;
+        ensure!(self.scope_version==3&&self.readonly_type_guid==BASIC_TYPE&&self.readonly_attributes==0x1000_0000_0000_0000
+            &&self.original_basic_type_guid==BASIC_TYPE&&self.original_attributes==0&&self.original_name_utf16le.len()==72
+            &&pin.version==2&&pin.kind=="partition-readonly-physical-preparation-v2"&&pin.observed_stage=="ReadonlyPhysicalLocked"
+            &&pin.binding==self.binding&&info.len()==144&&u32::from_le_bytes(info[0..4].try_into()?)==1
+            &&info[32..48]==n2r_win32::layout::guid_bytes(BASIC_TYPE)?
+            &&info[48..64]==n2r_win32::layout::guid_bytes(&self.binding.storage.identity.partition_guid)?
+            &&u64::from_le_bytes(info[8..16].try_into()?)==self.binding.storage.identity.partition_offset
+            &&u64::from_le_bytes(info[16..24].try_into()?)==self.binding.storage.identity.partition_bytes
+            &&u32::from_le_bytes(info[24..28].try_into()?)==self.binding.storage.identity.partition_number
+            &&u64::from_le_bytes(info[64..72].try_into()?)==0&&info[72..144]==self.original_name_utf16le,
+            "readonly physical publication original/protected type/ID/extent/attrs/name/pin contract differs");
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
 pub(crate) enum ResourceRecoverySourceScope {
@@ -233,8 +293,59 @@ pub(crate) enum ResourceRecoverySourceScope {
     Dedicated,
     #[serde(rename = "partition-v2")]
     Partition(PartitionPublicationScope),
+    #[serde(rename="partition-ro-physical-v3")]
+    PartitionReadonlyPhysical(PartitionReadonlyPhysicalPublicationScope),
 }
 impl ResourceRecoverySourceScope {
+    pub(crate) fn require_partition(&self) -> Result<()> {
+        match self {
+            Self::Dedicated => anyhow::bail!("explicit partition source scope required"),
+            Self::Partition(scope) => scope.validate(),
+            Self::PartitionReadonlyPhysical(scope) => scope.validate(),
+        }
+    }
+    pub(crate) fn preparation_guard(&self) -> Result<&PartitionPreparationGuardPin> {
+        self.require_partition()?;
+        match self {
+            Self::Partition(scope) => Ok(&scope.complete_preparation_guard),
+            Self::PartitionReadonlyPhysical(scope) => Ok(&scope.complete_preparation_guard),
+            Self::Dedicated => unreachable!(),
+        }
+    }
+    pub(crate) fn partition_native_metadata(&self) -> Result<&PartitionNativeMetadataPin> {
+        self.require_partition()?;
+        match self {
+            Self::Partition(scope) => Ok(&scope.native_metadata),
+            Self::PartitionReadonlyPhysical(scope) => Ok(&scope.native_metadata),
+            Self::Dedicated => unreachable!(),
+        }
+    }
+    pub(crate) fn from_actual_partition(owner:&mut PartitionScopedOwner,stable:&PartitionOwnerToken,
+        admission:&mut PartitionNtfsAdmission,events:&mut Vec<NativeEvent>)->Result<Self>{
+        use n2r_win32::partition_lifecycle::PartitionDataProfile;
+        match owner.data_profile(){
+            PartitionDataProfile::PrivateVolumeV2=>Ok(Self::Partition(PartitionPublicationScope::from_actual(owner,stable,admission,events)?)),
+            PartitionDataProfile::BasicReadonlyPhysicalV3=>Ok(Self::PartitionReadonlyPhysical(PartitionReadonlyPhysicalPublicationScope::from_actual(owner,stable,admission,events)?)),
+        }
+    }
+    pub(crate) fn envelope_protocol(&self)->(u32,&'static str){match self{
+        Self::Dedicated=>(1,"resource-allocation-recovery-envelope-v1"),
+        Self::Partition(_)=>(2,"resource-partition-recovery-envelope-v2"),
+        Self::PartitionReadonlyPhysical(_)=>(3,"resource-partition-readonly-physical-recovery-envelope-v3"),
+    }}
+    pub(crate) fn locator_protocol(&self)->(u32,&'static str){match self{
+        Self::Dedicated=>(1,"resource-recovery-locator-v1"),
+        Self::Partition(_)=>(2,"resource-partition-recovery-locator-v2"),
+        Self::PartitionReadonlyPhysical(_)=>(3,"resource-partition-readonly-physical-recovery-locator-v3"),
+    }}
+    /// Routing facts only: these never construct an owner, admission or writer.
+    pub(crate) fn is_readonly_physical(&self)->bool{matches!(self,Self::PartitionReadonlyPhysical(_))}
+    pub(crate) fn partition_binding(&self)->Option<&PartitionSourceBinding>{match self{
+        Self::Dedicated=>None,Self::Partition(p)=>Some(&p.binding),Self::PartitionReadonlyPhysical(p)=>Some(&p.binding),
+    }}
+    pub(crate) fn physical_partition_scope(&self)->Option<&PartitionReadonlyPhysicalPublicationScope>{match self{
+        Self::PartitionReadonlyPhysical(p)=>Some(p),_=>None,
+    }}
     pub(crate) fn is_dedicated(&self) -> bool {
         matches!(self, Self::Dedicated)
     }
@@ -247,6 +358,7 @@ impl ResourceRecoverySourceScope {
                     p.validate()?;
                     version == 2 && kind == "resource-partition-recovery-envelope-v2"
                 }
+                Self::PartitionReadonlyPhysical(p)=>{p.validate()?;version==3&&kind=="resource-partition-readonly-physical-recovery-envelope-v3"}
             },
             "missing/foreign/mixed publication source scope/version"
         );
@@ -260,6 +372,7 @@ impl ResourceRecoverySourceScope {
                     p.validate()?;
                     version == 2 && kind == "resource-partition-recovery-locator-v2"
                 }
+                Self::PartitionReadonlyPhysical(p)=>{p.validate()?;version==3&&kind=="resource-partition-readonly-physical-recovery-locator-v3"}
             },
             "missing/foreign/mixed locator source scope/version"
         );
@@ -304,6 +417,15 @@ impl ResourceRecoverySourceScope {
                             && (se <= j.partition_offset || je <= s.partition_offset),
                         "same-disk partition journal extent overlaps selected source"
                     );
+                }
+            }
+            Self::PartitionReadonlyPhysical(scope)=>{
+                scope.validate()?;
+                ensure!(&scope.binding.storage==source&&same_number==same_guid,"readonly physical journal/source identity disagrees");
+                if same_number{let s=&source.identity;let j=&journal.disk.identity;
+                    let se=s.partition_offset.checked_add(s.partition_bytes).ok_or_else(||anyhow::anyhow!("source extent overflow"))?;
+                    let je=j.partition_offset.checked_add(j.partition_bytes).ok_or_else(||anyhow::anyhow!("journal extent overflow"))?;
+                    ensure!(s.partition_guid!=j.partition_guid&&(se<=j.partition_offset||je<=s.partition_offset),"same-disk readonly physical journal overlaps selected source");
                 }
             }
         }

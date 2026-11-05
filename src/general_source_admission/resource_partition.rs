@@ -85,15 +85,26 @@ impl ResourceSourceContext {
     /// guard. Returns a distinct context until target/capture/recovery routing
     /// is explicitly partition-scoped; never enters legacy dedicated methods.
     pub(crate) fn prepare_partition(
-        binding: PartitionSourceBinding,
-        observation_budget: PartitionObservationBudget,
-        budget: ResourceBudget,
-        policy: VerificationPolicy,
-        output: &Path,
-        arena: &ArtifactArena,
-        mut guard: PartitionPreparationGuard,
-        events: &mut Vec<NativeEvent>,
-    ) -> Result<PartitionResourceSourceContext> {
+        binding:PartitionSourceBinding,observation_budget:PartitionObservationBudget,budget:ResourceBudget,
+        policy:VerificationPolicy,output:&Path,arena:&ArtifactArena,guard:PartitionPreparationGuard,events:&mut Vec<NativeEvent>,
+    )->Result<PartitionResourceSourceContext>{
+        Self::prepare_partition_with_issuer(binding,observation_budget,budget,policy,output,arena,guard,events,freeze_mounted_ntfs_partition)
+    }
+    /// Explicit new issuer; no public/default routing is changed by adding it.
+    /// Actual BasicRO19+FSLOCK+native preparation is issued inside the SDK.
+    pub(crate) fn prepare_partition_readonly_physical(
+        binding:PartitionSourceBinding,observation_budget:PartitionObservationBudget,budget:ResourceBudget,
+        policy:VerificationPolicy,output:&Path,arena:&ArtifactArena,guard:PartitionPreparationGuard,events:&mut Vec<NativeEvent>,
+    )->Result<PartitionResourceSourceContext>{
+        Self::prepare_partition_with_issuer(binding,observation_budget,budget,policy,output,arena,guard,events,
+            n2r_win32::partition_lifecycle::freeze_mounted_ntfs_readonly_physical)
+    }
+    fn prepare_partition_with_issuer(
+        binding:PartitionSourceBinding,observation_budget:PartitionObservationBudget,budget:ResourceBudget,
+        policy:VerificationPolicy,output:&Path,arena:&ArtifactArena,mut guard:PartitionPreparationGuard,events:&mut Vec<NativeEvent>,
+        issuer:fn(PartitionSourceBinding,PartitionObservationBudget,PartitionPreparationGuard,&mut Vec<NativeEvent>)
+            ->std::io::Result<(PartitionScopedOwner,PartitionNtfsAdmission)>,
+    )->Result<PartitionResourceSourceContext>{
         binding.validate()?;
         observation_budget.validate()?;
         budget.validate()?;
@@ -511,7 +522,7 @@ impl ResourceSourceContext {
         let collected=collected.context("complete partition raw/native collection absent")?;
         let native_artifact=native_artifact.context("actual partition native artifact owner absent")?;
         let output_basis=output_basis.context("actual partition output directory owners absent")?;
-        let (mut source,native_admission)=freeze_mounted_ntfs_partition(binding.clone(),observation_budget,guard,events)?;
+        let (mut source,native_admission)=issuer(binding.clone(),observation_budget,guard,events)?;
         let ownership=(||->Result<_>{
             source.revalidate(events)?;
             // Fast construction seals only disjoint C: metadata below. Its

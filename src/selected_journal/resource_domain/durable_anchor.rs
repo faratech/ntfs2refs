@@ -232,22 +232,22 @@ impl DurableRecoveryLocator {
         ensure!(actual_group.group() == group.group()
             && actual_group.arena().same_arena(group.arena()),
             "partition locator scratch/group owner differs");
-        let scope = PartitionPublicationScope::from_actual(owner, stable, admission, events)?;
-        let source_scope = ResourceRecoverySourceScope::Partition(scope.clone());
+        let source_scope = ResourceRecoverySourceScope::from_actual_partition(owner, stable, admission, events)?;
+        let binding = source_scope.partition_binding().context("partition source binding missing")?.clone();
         ensure!(matches!(observation.lifecycle()?,
             crate::selected_journal::SelectedLifecycle::PreparedClear
                 | crate::selected_journal::SelectedLifecycle::ApplyIntent
                 | crate::selected_journal::SelectedLifecycle::RollbackIntent),
             "closed HND/ABT cannot create a new partition replay locator");
         let facts = observation.facts();
-        source_scope.require_journal_route(&scope.binding.storage, facts.binding)?;
+        source_scope.require_journal_route(&binding.storage, facts.binding)?;
         ensure!(facts.marker_native_qualified.is_none()
             && facts.marker_use == MarkerStorageUse::QualifiedProduction
             && observation.diagnostic_ticket().marker_profile.is_none(),
             "partition locator requires actual markerless production journal");
         let locator = Locator {
-            schema_version:2, kind:"resource-partition-recovery-locator-v2".into(),
-            source_scope, source:scope.binding.storage.clone(),
+            schema_version: source_scope.locator_protocol().0, kind: source_scope.locator_protocol().1.into(),
+            source_scope: source_scope.clone(), source:binding.storage.clone(),
             journal_binding:facts.binding.clone(),
             journal_identity:IdentityWire::from(facts.identity),
             journal_path:facts.path.to_path_buf(),
@@ -257,12 +257,12 @@ impl DurableRecoveryLocator {
             ticket:observation.diagnostic_ticket().clone(),
             serialized_locator_grants_authority:false,
         };
-        scope.complete_preparation_guard.require_actual(admission, owner, stable, events)?;
+        source_scope.preparation_guard()?.require_actual(admission, owner, stable, events)?;
         // write_locator validates the held output directory's actual native
         // GUID route against this same observed J volume before CreateNew.
         let mut result = Self::write_locator(&locator, group, scratch, path)?;
         result.revalidate()?;
-        scope.complete_preparation_guard.require_actual(admission, owner, stable, events)?;
+        source_scope.preparation_guard()?.require_actual(admission, owner, stable, events)?;
         Ok(result)
     }
 

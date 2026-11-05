@@ -147,8 +147,7 @@ pub(crate) fn persist_partition_metadata(
     let label = context.original_label().clone();
     let mount_paths = context.mount_paths().paths.clone();
     let result = context.with_publication_handoff(events, |owner, native, stable, events| {
-        let scope = PartitionPublicationScope::from_actual(owner, stable, native, events)?;
-        let source_scope = ResourceRecoverySourceScope::Partition(scope.clone());
+        let source_scope = ResourceRecoverySourceScope::from_actual_partition(owner, stable, native, events)?;
         locator.revalidate()?;
         ensure!(locator.source_scope() == &source_scope
             && locator.source() == &binding.storage
@@ -176,8 +175,8 @@ pub(crate) fn persist_partition_metadata(
         let expected_path = expected.final_path();
         let map_path = maps.map(|m| m.artifact_lease().snapshot().final_path.as_str());
         let publication = Publication {
-            schema_version:2, kind:"resource-partition-recovery-envelope-v2",
-            source_scope, source:&binding.storage, shadow,
+            schema_version: source_scope.envelope_protocol().0, kind: source_scope.envelope_protocol().1,
+            source_scope: source_scope.clone(), source:&binding.storage, shadow,
             resource_admission:admission, verification_policy:policy,
             source_fingerprint_kind:&fingerprint_kind, source_sha256:&source_sha,
             source_inspection_sha256:&inspection_sha, source_views_sha256:&views_sha,
@@ -193,14 +192,14 @@ pub(crate) fn persist_partition_metadata(
             expected_mount_paths:&mount_paths, expected_source_label:&label,
             serialized_publication_grants_authority:false,
         };
-        scope.complete_preparation_guard.require_actual(native, owner, stable, events)?;
+        source_scope.preparation_guard()?.require_actual(native, owner, stable, events)?;
         let (publication, checksum) =
             save_publication(group, path, &publication, scratch.budget().record_bytes)?;
         locator.revalidate()?;
         if let Some(maps) = maps { maps.revalidate()?; }
         ensure!(journal.lifecycle()? == crate::selected_journal::SelectedLifecycle::PreparedClear,
             "actual partition journal lifecycle changed during publication");
-        scope.complete_preparation_guard.require_actual(native, owner, stable, events)?;
+        source_scope.preparation_guard()?.require_actual(native, owner, stable, events)?;
         publication.revalidate()?;
         checksum.revalidate()?;
         Ok(PartitionMetadataPublication {publication, checksum})

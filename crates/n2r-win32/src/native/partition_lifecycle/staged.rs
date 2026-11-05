@@ -16,6 +16,8 @@ use super::super::partition_storage_roles::{PartitionStorageRoleObservation,obse
 use super::super::{AlignedBuffer, MAX_IO, NativeEvent, control, device_file};
 use crate::attestation_partition::PartitionPagedNtfsObservation;
 mod live_cancel;
+mod readonly_physical;
+pub use readonly_physical::freeze_mounted_ntfs_readonly_physical;
 mod physical_window;
 pub use live_cancel::PartitionLiveCancellationReceipt;
 use serde::Serialize;
@@ -105,6 +107,7 @@ pub enum PartitionPreparationStage {
     BasicReadonly,
     NativeReadonlyCaptured,
     PrivateLocked,
+    ReadonlyPhysicalLocked,
     Cancelled,
     Poisoned,
 }
@@ -369,7 +372,7 @@ impl IntentFile {
             "durable intent same-file readback differs",
         )?;
         let receipt = PartitionIntentReceipt {
-            version: 1,
+            version: record.version,
             sequence: self.sequence,
             intent_bytes: next,
             intent_prefix_sha256: hex::encode(prefix),
@@ -1376,8 +1379,10 @@ impl PartitionNtfsAdmission {
         gpt.update(&self.guard.baseline.gpt.backup_header);
         gpt.update(&self.guard.baseline.gpt.native_layout);
         Ok(PartitionPreparationPin {
-            version: 1,
-            kind: "partition-target-only-preparation-v1",
+            version: if self.guard.stage==PartitionPreparationStage::ReadonlyPhysicalLocked {2}else{1},
+            kind: if self.guard.stage==PartitionPreparationStage::ReadonlyPhysicalLocked {
+                "partition-readonly-physical-preparation-v2"
+            }else{"partition-target-only-preparation-v1"},
             binding: self.guard.binding.clone(),
             original_partition_info: self.guard.original_info.clone(),
             original_gpt_sha256: hex::encode(gpt.finalize()),
@@ -1444,7 +1449,11 @@ pub fn require_complete_fresh_ntfs_admission(
     require(
         admission.owner.same_owner(&owner.owner_token())
             && admission.guard.binding == *owner.binding()
-            && admission.guard.stage == PartitionPreparationStage::PrivateLocked
+            && match (admission.guard.stage, owner.data_profile()) {
+                (PartitionPreparationStage::PrivateLocked,super::PartitionDataProfile::PrivateVolumeV2)=>true,
+                (PartitionPreparationStage::ReadonlyPhysicalLocked,super::PartitionDataProfile::BasicReadonlyPhysicalV3)=>admission.guard.locked,
+                _=>false,
+            }
             && admission
                 .native
                 .preparation_token()

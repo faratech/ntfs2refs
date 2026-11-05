@@ -138,6 +138,9 @@ impl VolumeQueryHandle {
         }
         self.require_query_only_access()
     }
+    pub(in crate::native) fn readonly_query(&self,events:&mut Vec<NativeEvent>)->io::Result<Vec<u8>> {
+        control(&self.file,"construction-original-source-IS_WRITABLE",0x0007_0024,&[],0,events)
+    }
     pub(in crate::native) fn device(&self, events: &mut Vec<NativeEvent>) -> io::Result<Vec<u8>> {
         control(
             &self.file,

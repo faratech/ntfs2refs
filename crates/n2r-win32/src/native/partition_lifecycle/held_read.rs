@@ -99,6 +99,7 @@ pub(in crate::native) struct HeldSourceRead {
     file: File,
     binding: PartitionSourceBinding,
     token: PartitionOwnerToken,
+    physical_base:Option<u64>,
 }
 impl HeldSourceRead {
     pub(in crate::native) fn require_owner(
@@ -112,6 +113,10 @@ impl HeldSourceRead {
             ));
         }
         verify_access(&self.file)
+    }
+    pub(in crate::native) fn is_physical(&self)->bool{self.physical_base.is_some()}
+    pub(in crate::native) fn require_physical_native(&self,events:&mut Vec<NativeEvent>)->io::Result<()> {
+        require_physical(&self.file,&self.binding,events)
     }
     pub(in crate::native) fn device(&self, events: &mut Vec<NativeEvent>) -> io::Result<Vec<u8>> {
         control(
@@ -150,6 +155,11 @@ impl HeldSourceRead {
         // All users of this FILE_OBJECT obey this same owner-token mutex.
         // The seek/read pair is atomic relative to other lanes and RW owner.
         let _cursor = self.token.lock_data_cursor()?;
+        let at=if let Some(base)=self.physical_base {
+            let absolute=base.checked_add(at).ok_or_else(||io::Error::other("held physical lane offset overflow"))?;
+            let limit=base.checked_add(self.binding.storage.identity.partition_bytes).ok_or_else(||io::Error::other("held physical lane bound overflow"))?;
+            if absolute.checked_add(buffer.len() as u64).is_none_or(|end|end>limit||end>self.binding.storage.identity.disk_bytes){return Err(io::Error::other("held physical lane escapes selected partition"));}absolute
+        }else{at};
         if self.file.seek(SeekFrom::Start(at))? != at {
             return Err(io::Error::other("held-source-read seek differs"));
         }
@@ -199,5 +209,22 @@ pub(in crate::native) fn duplicate_bound(
         file,
         binding: binding.clone(),
         token: token.clone(),
+        physical_base:None,
     })
+}
+
+fn require_physical(file:&File,binding:&PartitionSourceBinding,events:&mut Vec<NativeEvent>)->io::Result<()> {
+    let device=control(file,"held-physical-read-device",super::super::DEVICE,&[],12,events)?;
+    let length=control(file,"held-physical-read-length",super::super::LENGTH,&[],8,events)?;
+    if device.len()!=12||crate::layout::u32_at(&device,0)?!=7||crate::layout::u32_at(&device,4)?!=binding.storage.disk_number
+        ||crate::layout::u32_at(&device,8)?!=0||length.len()!=8||crate::layout::u64_at(&length,0)?!=binding.storage.identity.disk_bytes {
+        return Err(io::Error::other("held physical reader is not actual disk-part0/length"));}Ok(())
+}
+pub(in crate::native) fn duplicate_physical_bound(original:&File,binding:&PartitionSourceBinding,token:&PartitionOwnerToken,events:&mut Vec<NativeEvent>)->io::Result<HeldSourceRead> {
+    require_physical(original,binding,events)?;
+    let process=unsafe{GetCurrentProcess()};let mut raw=ptr::null_mut();
+    if unsafe{DuplicateHandle(process,original.as_raw_handle(),process,&mut raw,READ_ACCESS,0,0)}==0{return Err(io::Error::last_os_error());}
+    let file=unsafe{File::from_raw_handle(raw)};verify_access(&file)?;
+    require_physical(&file,binding,events)?;require_physical(original,binding,events)?;
+    Ok(HeldSourceRead{file,binding:binding.clone(),token:token.clone(),physical_base:Some(binding.storage.identity.partition_offset)})
 }

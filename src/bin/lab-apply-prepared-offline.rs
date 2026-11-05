@@ -1,0 +1,102 @@
+//! Startup entry for the boot-bound RAM request; no path/flag is write authority.
+#[cfg(windows)]
+fn main() -> anyhow::Result<()> {
+    std::thread::Builder::new()
+        .name("cold-prepared-conversion".into())
+        .stack_size(ntfs2refs::resource_partition_alpha::WORKER_STACK_BYTES)
+        .spawn(run)?
+        .join()
+        .map_err(|_| {
+            anyhow::anyhow!("offline worker panicked; keep recovery boot and all artifacts")
+        })?
+}
+#[cfg(not(windows))]
+fn main() {
+    eprintln!("Offline conversion requires Windows.");
+    std::process::exit(1);
+}
+#[cfg(windows)]
+fn run() -> anyhow::Result<()> {
+    use anyhow::{Context, ensure};
+    use clap::Parser;
+    use sha2::{Digest, Sha256};
+    use std::{
+        fs::OpenOptions,
+        io::{Read, Seek, SeekFrom},
+        os::windows::fs::OpenOptionsExt,
+        path::PathBuf,
+    };
+    #[derive(Parser)]
+    struct Args {
+        #[arg(long)]
+        request: Option<PathBuf>,
+        #[arg(long)]
+        request_sha256: String,
+        #[arg(long)]
+        bundle_sha256: String,
+        #[arg(long)]
+        acknowledge_offline_conversion: bool,
+        #[arg(long)]
+        rollback: bool,
+    }
+    let args = Args::parse();
+    ensure!(
+        args.acknowledge_offline_conversion,
+        "explicit offline conversion acknowledgement required"
+    );
+    let path = match args.request {
+        Some(p) => p,
+        None => std::env::current_exe()?
+            .parent()
+            .context("RAM image parent absent")?
+            .join("n2r-bootstrap.json"),
+    };
+    let native = n2r_win32::recovery_boot::current_recovery_bootstrap_sha256()?;
+    ensure!(
+        args.request_sha256 == hex::encode(native),
+        "request pin differs from actual current boot selection"
+    );
+    let maximum = n2r_win32::offline_environment::available_ram_bytes()? / 256;
+    let mut file = OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .custom_flags(0x0020_0000)
+        .open(path)?;
+    n2r_win32::file_storage::require_readonly_access(&file)?;
+    let length = file.metadata()?.len();
+    ensure!(
+        length > 0 && length <= maximum,
+        "bounded RAM bootstrap required"
+    );
+    ensure!(
+        n2r_win32::sha256_native::hash_range(&mut file, 0, length)? == native,
+        "actual held RAM request differs from native boot pin"
+    );
+    file.seek(SeekFrom::Start(0))?;
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(usize::try_from(length)?)?;
+    (&mut file)
+        .take(length.checked_add(1).context("request length overflow")?)
+        .read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() as u64 == length
+            && <[u8; 32]>::from(Sha256::digest(&bytes)) == native
+            && file.metadata()?.len() == length,
+        "RAM bootstrap changed during decoding"
+    );
+    let mut request: ntfs2refs::resource_partition_alpha::PreparedOfflineRequest =
+        serde_json::from_slice(&bytes)?;
+    ensure!(
+        request.prepared_bundle_sha256 == args.bundle_sha256,
+        "startup selects another bundle than the current boot-bound request"
+    );
+    drop(bytes);
+    if args.rollback {
+        request.action = ntfs2refs::resource_partition_alpha::PreparedOfflineAction::Rollback;
+    }
+    ntfs2refs::resource_partition_alpha::run_prepared_offline(
+        request,
+        file,
+        args.acknowledge_offline_conversion,
+    )
+}

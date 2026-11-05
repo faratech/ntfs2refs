@@ -1226,3 +1226,62 @@ impl NativeSelectedJournal {
             _=>anyhow::bail!("same sealed markerless offline preparation J absent")}
     }
 }
+
+impl NativeSelectedJournal {
+    /// Memory-only immutable-body boundary for a fully scanned NEW-protocol
+    /// AP/RB journal. No historical bytes, length, pins or lifecycle are changed.
+    pub(crate) fn seal_reopened_prepared_replay_body(&mut self,ticket:&sj::SelectedTicket,direction:n2r_win32::PagedRecoveryDirection)->Result<()> {
+        ensure!(!self.prepared_body_sealed&&matches!(self.storage,Storage::Buffered(_))&&ticket.marker_profile.is_none()
+            &&self.byte_len()?==ticket.journal_length&&self.fixed_length.is_none_or(|n|n==ticket.journal_length),
+            "reopened prepared replay immutable owner/EOF differs");
+        let lifecycle=sj::classify(self,ticket)?;
+        ensure!(match direction{n2r_win32::PagedRecoveryDirection::Resume=>lifecycle==sj::SelectedLifecycle::ApplyIntent,
+            n2r_win32::PagedRecoveryDirection::Rollback=>matches!(lifecycle,sj::SelectedLifecycle::ApplyIntent|sj::SelectedLifecycle::RollbackIntent)},
+            "prepared replay direction is not permitted by actual AP/RB");
+        self.fixed_length=Some(ticket.journal_length);self.prepared_body_sealed=true;Ok(())
+    }
+    pub(crate) fn qualify_offline_prepared_replay_journal(&mut self,source:&mut n2r_win32::offline_environment::OfflinePreparedSource,
+        policy:&n2r_win32::HeldPagedWritePolicy,pins:&n2r_win32::PagedRecoveryPins<'_>,outer:&mut File,outer_sha:[u8;32],
+        direction:n2r_win32::PagedRecoveryDirection,events:&mut Vec<n2r_win32::NativeEvent>)
+        ->Result<n2r_win32::offline_environment::OfflinePreparedReplayQualification>{
+        self.require_prepared_body_seal()?;match &mut self.storage{Storage::Buffered(file)=>Ok(source.qualify_prepared_replay_journal(policy,file,pins,outer,outer_sha,direction,events)?),
+            _=>anyhow::bail!("same sealed prepared replay J absent")}
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn observe_prepared_recovery_boot(&mut self,source:&mut n2r_win32::offline_environment::OfflinePreparedSource,
+        qualification:&n2r_win32::offline_environment::OfflinePreparedReplayQualification,policy:&n2r_win32::HeldPagedWritePolicy,
+        pins:&n2r_win32::PagedRecoveryPins<'_>,outer:&mut File,intent_path:&Path,intent_sha:[u8;32],directory:&Path,
+        budget:n2r_win32::recovery_boot::RecoveryBootBudget,events:&mut Vec<n2r_win32::NativeEvent>)->Result<n2r_win32::recovery_boot::RecoveryBootGuard>{
+        self.require_prepared_body_seal()?;match &mut self.storage{Storage::Buffered(file)=>Ok(n2r_win32::recovery_boot::RecoveryBootGuard::observe_recovery(
+            source,qualification,policy,file,pins,outer,intent_path,intent_sha,directory,budget,events)?),_=>anyhow::bail!("same sealed prepared replay J absent")}
+    }
+    pub(crate) fn qualify_offline_prepared_replay(&mut self,source:&mut n2r_win32::offline_environment::OfflinePreparedSource,
+        qualification:&n2r_win32::offline_environment::OfflinePreparedReplayQualification,boot:&mut n2r_win32::recovery_boot::RecoveryBootGuard,
+        policy:&n2r_win32::HeldPagedWritePolicy,pins:&n2r_win32::PagedRecoveryPins<'_>,outer:&mut File,events:&mut Vec<n2r_win32::NativeEvent>)
+        ->Result<n2r_win32::offline_environment::OfflineSourceApplyGate>{
+        self.require_prepared_body_seal()?;match &mut self.storage{Storage::Buffered(file)=>Ok(source.qualify_guarded_prepared_replay(qualification,boot,policy,file,pins,outer,events)?),
+            _=>anyhow::bail!("same sealed prepared replay J absent")}
+    }
+    pub(crate) fn begin_offline_prepared_replay<'a,'p>(&'a mut self,source:&'a mut n2r_win32::offline_environment::OfflinePreparedSource,
+        gate:&'a mut n2r_win32::offline_environment::OfflineSourceApplyGate,qualification:&n2r_win32::offline_environment::OfflinePreparedReplayQualification,
+        boot:&'a mut n2r_win32::recovery_boot::RecoveryBootGuard,policy:n2r_win32::HeldPagedWritePolicy,pins:&'a n2r_win32::PagedRecoveryPins<'p>,
+        outer:&'a mut File,events:&mut Vec<n2r_win32::NativeEvent>)->Result<n2r_win32::offline_environment::OfflinePagedWriter<'a,'p>>{
+        self.require_prepared_body_seal()?;match &mut self.storage{Storage::Buffered(file)=>Ok(source.begin_guarded_prepared_replay(gate,qualification,boot,policy,file,pins,outer,events)?),
+            _=>anyhow::bail!("same sealed prepared replay J absent")}
+    }
+    pub(crate) fn close_offline_prepared_replay(&mut self,source:&mut n2r_win32::offline_environment::OfflinePreparedSource,
+        policy:&n2r_win32::HeldPagedWritePolicy,pins:&n2r_win32::PagedRecoveryPins<'_>,direction:n2r_win32::PagedRecoveryDirection,events:&mut Vec<n2r_win32::NativeEvent>)
+        ->Result<n2r_win32::offline_environment::OfflineClosedJournalObservation>{
+        self.require_prepared_body_seal()?;
+        let kind=match direction{n2r_win32::PagedRecoveryDirection::Resume=>n2r_win32::offline_environment::OfflineTerminalKind::Handoff,
+            n2r_win32::PagedRecoveryDirection::Rollback=>n2r_win32::offline_environment::OfflineTerminalKind::Aborted};
+        match &mut self.storage{Storage::Buffered(file)=>Ok(source.authenticate_closed(policy,file,pins,kind,events)?),_=>anyhow::bail!("same sealed prepared replay J absent")}
+    }
+    pub(crate) fn into_offline_prepared_replay_terminal(&mut self,source:n2r_win32::offline_environment::OfflinePreparedSource,
+        closed:n2r_win32::offline_environment::OfflineClosedJournalObservation,policy:&n2r_win32::HeldPagedWritePolicy,pins:&n2r_win32::PagedRecoveryPins<'_>,
+        boot:&mut n2r_win32::recovery_boot::RecoveryBootGuard,outer:&mut File,qualification:&n2r_win32::offline_environment::OfflinePreparedReplayQualification,
+        events:&mut Vec<n2r_win32::NativeEvent>)->Result<n2r_win32::offline_environment::OfflinePreparedTerminalSource>{
+        self.require_prepared_body_seal()?;match &mut self.storage{Storage::Buffered(file)=>Ok(source.into_terminal_metadata_after_replay(closed,policy,file,pins,boot,outer,qualification,events)?),
+            _=>anyhow::bail!("same sealed prepared replay J absent")}
+    }
+}

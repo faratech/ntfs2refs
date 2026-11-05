@@ -18,6 +18,10 @@ pub(super) struct PreparedPublicationPin {
     file_handle: usize,
 }
 impl PreparedPublicationPin {
+    pub(super) fn from_replay(qualification:&super::prepared_replay::OfflinePreparedReplayQualification,file:&File)->Self {
+        let facts=qualification.boot_guard_requirements();
+        Self{snapshot:facts.sealed_publication_file.clone(),sha256:facts.sealed_publication_sha256,file_handle:file.as_raw_handle()as usize}
+    }
     fn from_actual(qualification: &OfflinePreparedJournalQualification, file: &File) -> Self {
         let facts = qualification.boot_guard_requirements();
         Self {
@@ -26,7 +30,7 @@ impl PreparedPublicationPin {
             file_handle: file.as_raw_handle() as usize,
         }
     }
-    fn revalidate(
+    pub(super) fn revalidate(
         &self,
         file: &mut File,
         pins: &PagedRecoveryPins<'_>,
@@ -69,7 +73,9 @@ pub(super) struct PreparedWriteProtection<'a> {
     boot: &'a mut RecoveryBootGuard,
     outer: &'a mut File,
 }
-impl PreparedWriteProtection<'_> {
+impl<'a> PreparedWriteProtection<'a> {
+    pub(super) fn new(boot:&'a mut RecoveryBootGuard,outer:&'a mut File)->Self{Self{boot,outer}}
+
     pub(super) fn revalidate(
         &mut self,
         token: &OfflineSourceOwnerToken,
@@ -213,14 +219,22 @@ impl OfflinePreparedSource {
         qualification: &OfflinePreparedJournalQualification,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<OfflinePreparedTerminalSource> {
+        qualification.require_terminal_binding(&self,pins)?;
+        let publication=PreparedPublicationPin::from_actual(qualification,outer);
+        self.into_closed_terminal_with_publication(closed,policy,journal,pins,boot,outer,publication,events)
+    }
+    // Shared ONLY by the actual fresh/replay qualification wrappers. This
+    // consumes source write entrypoints after current closed-J authentication.
+    pub(super) fn into_closed_terminal_with_publication(mut self,closed:OfflineClosedJournalObservation,
+        policy:&HeldPagedWritePolicy,journal:&mut File,pins:&PagedRecoveryPins<'_>,boot:&mut RecoveryBootGuard,
+        outer:&mut File,publication:PreparedPublicationPin,events:&mut Vec<NativeEvent>)
+        ->io::Result<OfflinePreparedTerminalSource> {
         checkpoint(
             &self.core.sink,
             "offline-PREPARED-closed-terminal-transfer-opening",
             events,
         )?;
-        qualification.require_terminal_binding(&self, pins)?;
         boot.require_current_boot(&self.owner_token(), events)?;
-        let publication = PreparedPublicationPin::from_actual(qualification, outer);
         publication.revalidate(outer, pins, self.core.env.budget.ram_bytes / 8)?;
         closed.revalidate_prepared(&mut self, policy, journal, pins, events)?;
         self.state(events)?;

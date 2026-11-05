@@ -17,8 +17,9 @@ use anyhow::{Context, Result, ensure};
 use n2r_win32::{
     HeldPagedWritePolicy, NativeEvent, PagedRecoveryPins,
     offline_environment::{
-        OfflinePreparedAvailableSource, OfflinePreparedJournalQualification, OfflinePreparedSource,
-        OfflinePreparedTerminalSource, OfflineSourceOwnerToken,
+        OfflinePreparedAvailableSource, OfflinePreparedJournalQualification,
+        OfflinePreparedReplayQualification, OfflinePreparedSource, OfflinePreparedTerminalSource,
+        OfflineSourceOwnerToken,
     },
     recovery_boot::{RecoveryBootBudget, RecoveryBootGuard},
 };
@@ -117,7 +118,81 @@ impl PreparedReadinessCertificate {
         Ok(())
     }
 }
-/// HND is closed. Actual J/expected/maps/bundle/index/boot owners all remain
+/// Actual new-protocol recovery readiness: authenticated Windows READY plus
+/// current opaque SDK mixed/J qualification. Never the stale NTFS fingerprint.
+pub(crate) struct PreparedRecoveryReadiness {
+    owner: OfflineSourceOwnerToken,
+    outer_sha256: [u8; 32],
+    outer_identity: n2r_win32::reference_file::ReferenceFileSnapshot,
+    ticket_sha256: [u8; 32],
+    index_sha256: [u8; 32],
+}
+impl PreparedRecoveryReadiness {
+    pub(crate) fn qualify(
+        bundle: &HeldWindowsPreparedBundle,
+        source: &OfflinePreparedSource,
+        policy: &HeldPagedWritePolicy,
+        ticket: &SelectedTicket,
+        qualification: &OfflinePreparedReplayQualification,
+    ) -> Result<Self> {
+        bundle.require_ready_artifacts()?;
+        qualification.require_owner(&source.owner_token())?;
+        let facts = policy.facts()?;
+        let requirements = qualification.boot_guard_requirements();
+        let old_index = bundle
+            .core()
+            .artifacts
+            .iter()
+            .find(|p| p.role == "native-write-index")
+            .context("Windows prepared index absent")?;
+        ensure!(
+            requirements.source == *source.binding()
+                && source.binding().storage == bundle.core().source
+                && requirements.sealed_publication_sha256 == bundle.outer_sha256()
+                && requirements.source_was_already_offline_on_enrollment
+                && facts.index_sha256 == requirements.index_sha256
+                && old_index.sha256 == hex::encode(facts.index_sha256)
+                && ticket_pin(ticket)? == ticket_pin(&bundle.core().ticket)?,
+            "actual CURRENT recovery scope differs from authenticated Windows/J owners"
+        );
+        Ok(Self {
+            owner: source.owner_token(),
+            outer_sha256: bundle.outer_sha256(),
+            outer_identity: bundle.outer_snapshot().clone(),
+            ticket_sha256: ticket_pin(ticket)?,
+            index_sha256: facts.index_sha256,
+        })
+    }
+    pub(crate) fn require_binding(
+        &self,
+        bundle: &HeldWindowsPreparedBundle,
+        source: &OfflinePreparedSource,
+        policy: &HeldPagedWritePolicy,
+        ticket: &SelectedTicket,
+    ) -> Result<()> {
+        bundle.require_ready_artifacts()?;
+        policy.revalidate()?;
+        ensure!(
+            self.owner.same_owner(&source.owner_token())
+                && source.binding().storage == bundle.core().source
+                && self.outer_sha256 == bundle.outer_sha256()
+                && &self.outer_identity == bundle.outer_snapshot()
+                && self.ticket_sha256 == ticket_pin(ticket)?
+                && self.index_sha256 == policy.facts()?.index_sha256,
+            "CURRENT recovery readiness lost actual bundle/source/index owners"
+        );
+        Ok(())
+    }
+}
+enum PreparedTerminalQualification {
+    Fresh(OfflinePreparedJournalQualification),
+    Replay(OfflinePreparedReplayQualification),
+}
+enum PreparedTerminalReadiness {
+    Fresh(PreparedReadinessCertificate),
+    Replay(PreparedRecoveryReadiness),
+}
+/// HND/ABT is closed. Actual J/expected/maps/bundle/index/boot owners all remain
 /// retained. Source has no writer, replay, File or raw-handle interface.
 pub(crate) struct PreparedOfflineHandoff {
     pub(crate) bundle: HeldWindowsPreparedBundle,
@@ -128,8 +203,8 @@ pub(crate) struct PreparedOfflineHandoff {
     pub(crate) index_owner: ArtifactLease,
     pub(crate) selected: SelectedResult,
     pub(crate) native_bytes_written: u64,
-    qualification: OfflinePreparedJournalQualification,
-    _readiness: PreparedReadinessCertificate,
+    qualification: PreparedTerminalQualification,
+    _readiness: PreparedTerminalReadiness,
     _memory: SourceRamLease,
 }
 /// Positive closed-only availability, still source BASIC+READONLY. Native
@@ -143,8 +218,8 @@ pub(crate) struct PreparedOfflineAvailable {
     pub(crate) index_owner: ArtifactLease,
     pub(crate) selected: SelectedResult,
     pub(crate) native_bytes_written: u64,
-    _qualification: OfflinePreparedJournalQualification,
-    _readiness: PreparedReadinessCertificate,
+    _qualification: PreparedTerminalQualification,
+    _readiness: PreparedTerminalReadiness,
     _memory: SourceRamLease,
 }
 impl PreparedOfflineHandoff {
@@ -300,8 +375,119 @@ pub(crate) fn apply_prepared(
         index_owner,
         selected,
         native_bytes_written,
+        qualification: PreparedTerminalQualification::Fresh(qualification),
+        _readiness: PreparedTerminalReadiness::Fresh(readiness),
+        _memory: memory,
+    })
+}
+
+/// New-protocol CURRENT AP/RB resume or rollback. This entry never calls
+/// verify_original_source and never interprets a missing artifact as no AP.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn recover_prepared(
+    mut bundle: HeldWindowsPreparedBundle,
+    mut source: OfflinePreparedSource,
+    mut journal: BoundNativeRecoveryJournal,
+    group: &ArtifactGroupPermit,
+    scratch: &SourceScratch,
+    index_path: &Path,
+    max_index_bytes: u64,
+    direction: n2r_win32::PagedRecoveryDirection,
+    boot_request: &PreparedOfflineBootRequest,
+    events: &mut Vec<NativeEvent>,
+    mut checkpoint: impl FnMut(&mut Vec<NativeEvent>) -> Result<()>,
+) -> Result<PreparedOfflineHandoff> {
+    checkpoint(events)?;
+    ensure!(
+        events.is_empty(),
+        "opening prepared checkpoint did not drain"
+    );
+    bundle.require_ready_artifacts()?;
+    journal.revalidate()?;
+    let ticket = bundle.core().ticket.clone();
+    {
+        let (_native, facts) = journal.split_for_observation()?;
+        let core = bundle.core();
+        ensure!(
+            facts.binding == &core.journal_binding
+                && facts.identity == &core.journal_identity
+                && facts.path == core.journal_path.as_path()
+                && facts.journal_length == ticket.journal_length
+                && facts.profile.version() == core.journal_profile_version
+                && facts.profile.max_journal_bytes() == core.journal_profile_max_bytes
+                && facts.marker_native_qualified.is_none(),
+            "actual exclusively held J differs from Windows sealed bundle"
+        );
+    }
+    let observation = BoundJournalObservation::open(
+        &mut journal,
+        &ticket,
+        group,
+        scratch,
+        index_path,
+        max_index_bytes,
+    )?;
+    let crate::selected_journal::resource_domain::reopen::PreparedOfflineReplayRun {
+        selected,
         qualification,
-        _readiness: readiness,
+        mut boot,
+        closed,
+        policy,
+        index_owner,
+        readiness,
+        memory,
+        native_bytes_written,
+    } = observation.replay_windows_prepared(
+        &mut bundle,
+        &mut source,
+        direction,
+        boot_request,
+        events,
+        |events| checkpoint(events),
+    )?;
+    // Actual HND/NEW or ABT/restoredOLD has been authenticated. Never run original
+    // NTFS/fingerprint/allOLD checks when consuming the terminal source.
+    let terminal = {
+        let (native, facts) = journal.split_for_observation()?;
+        let pins = PagedRecoveryPins {
+            journal_binding: facts.binding,
+            journal_identity: facts.identity,
+            journal_path: facts.path,
+            journal_profile: facts.profile,
+            immutable_sha256: ticket.immutable_sha256,
+            old_selected_sha256: ticket.old_selected_sha256,
+            old_restored_selected_sha256: ticket.old_restored_selected_sha256,
+            new_selected_sha256: ticket.new_selected_sha256,
+        };
+        native.into_offline_prepared_replay_terminal(
+            source,
+            closed,
+            &policy,
+            &pins,
+            &mut boot,
+            bundle.outer_file(),
+            &qualification,
+            events,
+        )?
+    };
+    bundle.revalidate()?;
+    index_owner.revalidate()?;
+    checkpoint(events)?;
+    ensure!(
+        events.is_empty(),
+        "terminal prepared checkpoint did not drain"
+    );
+    Ok(PreparedOfflineHandoff {
+        bundle,
+        source: terminal,
+        journal,
+        boot,
+        policy,
+        index_owner,
+        selected,
+        native_bytes_written,
+        qualification: PreparedTerminalQualification::Replay(qualification),
+        _readiness: PreparedTerminalReadiness::Replay(readiness),
         _memory: memory,
     })
 }

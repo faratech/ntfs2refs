@@ -21,10 +21,10 @@ fn metadata_pin(g: &super::super::PartitionGptObservation) -> [u8; 32] {
 /// has NO live PE/preboot native observation. It cannot call FreshPE gates.
 pub struct OfflinePreparedSource {
     pub(super) core: Core,
-    source_readonly_gpt_sha256: [u8; 32],
+    pub(super) source_readonly_gpt_sha256: [u8; 32],
     basic_readonly_info: Vec<u8>,
     actual_current_boot_volume_locks_acquired: bool,
-    source_was_already_offline_on_enrollment: bool,
+    pub(super) source_was_already_offline_on_enrollment: bool,
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct OfflinePreparedBootGuardRequirements {
@@ -328,7 +328,7 @@ impl OfflinePreparedSource {
             (Err(e), _) | (_, Err(e)) => Err(e),
         }
     }
-    fn require_sealed_publication(
+    pub(super) fn require_sealed_publication(
         &self,
         file: &mut File,
         pin: [u8; 32],

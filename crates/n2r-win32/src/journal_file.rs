@@ -648,6 +648,7 @@ pub use marker_native::{
 #[cfg(windows)]
 pub use native::{
     observe_general_journal_file, observe_general_journal_file_with_profile, observe_journal_file,
+    observe_general_journal_file_on_held_volume,
     observe_ordinary_file_handle,
 };
 

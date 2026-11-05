@@ -687,3 +687,61 @@ fn physical_binding(
     )?;
     Ok(native)
 }
+
+/// Resolve CURRENT published EFI alias by positive native DEVICE/144B/extents.
+/// The original Windows volume GUID is routing history, not a PE alias claim.
+pub(super) fn available_efi(expected:&EfiIdentity,state:&crate::offline_environment::OfflineSourceState,
+    memory_bytes:u64,events:&mut Vec<NativeEvent>)->io::Result<EfiIdentity> {
+    need(state.actual.disk_attributes==0&&!state.disk_offline_in_current_environment
+        &&state.binding.storage.disk_number==expected.binding.disk_number
+        &&state.binding.storage.identity.disk_guid==expected.binding.identity.disk_guid,
+        "actual closed-terminal source disk must be available before EFI publication")?;
+    let id=layout::guid_bytes(&expected.binding.identity.partition_guid)?;
+    let rows=&state.actual.gpt.native_layout;
+    need(rows.len()>=48&&(rows.len()-48).is_multiple_of(144)
+        &&rows[48..].chunks_exact(144).filter(|r|r[48..64]==id&&*r==expected.native_partition_info).count()==1,
+        "actual available EFI native row differs from original boot intent")?;
+    let mut name=[0u16;1024];let h=unsafe{FindFirstVolumeW(name.as_mut_ptr(),name.len()as u32)};
+    if h==INVALID_HANDLE_VALUE{return Err(io::Error::last_os_error())}
+    let enumeration=Enumeration(h);let mut found=None;let mut complete=false;
+    for _ in 0..memory_bytes/4096 {
+        let n=name.iter().position(|v|*v==0).ok_or_else(||bad("EFI publication name unterminated"))?;
+        let value=String::from_utf16(&name[..n]).map_err(io::Error::other)?;
+        need(value.len()==49&&value.starts_with(r"\\?\Volume{")&&value.ends_with("}\\"),"current EFI publication catalog malformed")?;
+        let opened=OpenOptions::new().access_mode(0x80).share_mode(3).open(value.trim_end_matches('\\'));
+        let file=match opened {Ok(f)=>Some(f),Err(e)if e.raw_os_error()==Some(21)=>None,Err(e)=>return Err(e)};
+        if let Some(file)=file {
+            let device=control(&file,"terminal-boot-EFI-published-native-device",DEVICE,&[],12,events);
+            let device=match device {Ok(v)=>Some(v),Err(e)if e.raw_os_error()==Some(21)=>None,Err(e)=>return Err(e)};
+            if let Some(device)=device {
+                if device.len()==12&&layout::u32_at(&device,0)?==7
+                    &&layout::u32_at(&device,4)?==expected.binding.disk_number
+                    &&layout::u32_at(&device,8)?==expected.binding.identity.partition_number {
+                    let info=control(&file,"terminal-boot-EFI-published-native144",0x00070048,&[],144,events)?;
+                    let ext=control(&file,"terminal-boot-EFI-published-extents",VOLUME_EXTENTS,&[],32,events)?;
+                    expected.binding.validate_volume_extent(&ext)?;
+                    need(info==expected.native_partition_info&&found.is_none(),"actual EFI publication identity ambiguous")?;
+                    let mut actual=expected.clone();actual.binding.volume_guid=value[11..47].into();
+                    actual.bcd_path=PathBuf::from(&value).join(r"EFI\Microsoft\Boot\BCD");
+                    found=Some(actual);
+                }
+            }
+        }
+        name.fill(0);
+        if unsafe{FindNextVolumeW(enumeration.0,name.as_mut_ptr(),name.len()as u32)}==0{
+            let e=io::Error::last_os_error();if e.raw_os_error()==Some(18){complete=true;break}return Err(e)
+        }
+    }
+    need(complete,"current published EFI catalog exceeds admitted bound")?;
+    found.ok_or_else(||io::Error::new(io::ErrorKind::NotFound,"actual available EFI volume not yet published"))
+}
+/// Flush only the positively bound explicit EFI BCD, not a PE default hive.
+pub(super) fn flush_explicit_store(efi:&EfiIdentity)->io::Result<()> {
+    let file=OpenOptions::new().read(true).write(true).share_mode(3)
+        .custom_flags(0x00200000).open(&efi.bcd_path)?;
+    legacy_identity(&file)?;
+    let actual=crate::file_storage::final_path_guid(&file)?;
+    need(actual.eq_ignore_ascii_case(efi.bcd_path.to_str().ok_or_else(||bad("Unicode actual EFI BCD path required"))?),
+        "explicit BCD flush file escaped actual EFI route")?;
+    file.sync_all()
+}

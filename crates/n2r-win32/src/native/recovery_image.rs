@@ -6,7 +6,7 @@ use crate::{
     partition_isolation::{PartitionObservationBudget, PartitionSourceBinding},
     reference_file::ReferenceFileSnapshot,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::{
     cell::RefCell,
@@ -27,13 +27,15 @@ use windows_sys::Win32::{
         SystemInformation::{GetSystemDirectoryW, GetWindowsDirectoryW},
     },
 };
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RecoveryImageInput {
     pub path: PathBuf,
     pub bytes: u64,
     pub sha256: [u8; 32],
 }
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RecoveryImageBudget {
     pub ram_bytes: u64,
     pub maximum_input_bytes: u64,
@@ -44,7 +46,8 @@ pub struct RecoveryImageBudget {
     pub maximum_command_seconds: u64,
     pub maximum_evidence_bytes: u64,
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RecoveryImageRequest {
     pub root: PathBuf,
     pub run_id: String,
@@ -52,6 +55,9 @@ pub struct RecoveryImageRequest {
     pub wim_index: u32,
     pub boot_sdi: RecoveryImageInput,
     pub runner: RecoveryImageInput,
+    /// Pinned routing/resources copied into RAM before SAN3 leaves J offline.
+    /// Its data does not grant source write or recovery authority.
+    pub bootstrap: RecoveryImageInput,
     pub startup_args: Vec<String>,
     pub prepared_bundle_sha256: [u8; 32],
     pub budget: RecoveryImageBudget,
@@ -798,6 +804,13 @@ impl OwnedRecoveryImage {
             .expect("ownedrunner")
             .sha256
     }
+    pub fn bootstrap_sha256(&self) -> [u8; 32] {
+        self.pins
+            .iter()
+            .find(|p| p.role == "bootstrap")
+            .expect("constructed recovery image always owns bootstrap")
+            .sha256
+    }
     pub fn revalidate(&self) -> io::Result<()> {
         let mut events = Vec::new();
         enrollment(
@@ -876,6 +889,7 @@ pub fn build(
         .bytes
         .checked_add(request.boot_sdi.bytes)
         .and_then(|n| n.checked_add(request.runner.bytes))
+        .and_then(|n| n.checked_add(request.bootstrap.bytes))
         .ok_or_else(|| bad("inputbyteoverflow"))?;
     need(
         total <= b.maximum_input_bytes
@@ -915,6 +929,7 @@ pub fn build(
     let wim = root.join("boot.wim");
     let sdi = root.join("boot.sdi");
     let runner = root.join("runner.exe");
+    let bootstrap = root.join("n2r-bootstrap.json");
     let script = root.join("n2r-start.cmd");
     let ini = root.join("winpeshl.ini");
     let unattend = root.join("san3.xml");
@@ -926,6 +941,33 @@ pub fn build(
         copy_pin(&request.boot_wim, &wim, source, b.maximum_input_bytes)?;
         copy_pin(&request.boot_sdi, &sdi, source, b.maximum_input_bytes)?;
         copy_pin(&request.runner, &runner, source, b.maximum_input_bytes)?;
+        copy_pin(&request.bootstrap, &bootstrap, source, b.ram_bytes / 64)?;
+        // Before a persistent loader can point at this image, prove that its
+        // boot-bound routing describes the SAME actually enrolled source/J.
+        // A later BootGuard refusal cannot undo an early wrong-disk online.
+        let mut route_file = OpenOptions::new().read(true).share_mode(1)
+            .custom_flags(0x0020_0000).open(&bootstrap)?;
+        let mut route_bytes = Vec::new();
+        route_bytes.try_reserve_exact(usize::try_from(request.bootstrap.bytes).map_err(io::Error::other)?)
+            .map_err(io::Error::other)?;
+        (&mut route_file).take(request.bootstrap.bytes.checked_add(1)
+            .ok_or_else(|| bad("bootstrap route length overflow"))?).read_to_end(&mut route_bytes)?;
+        need(route_bytes.len() as u64 == request.bootstrap.bytes
+            && <[u8;32]>::from(sha2::Sha256::digest(&route_bytes)) == request.bootstrap.sha256,
+            "held copied bootstrap route differs from admitted image input")?;
+        #[derive(Deserialize)]
+        struct BootstrapRouting {
+            schema_version: u32,
+            source: PartitionSourceBinding,
+            journal: GeneralJournalStorageBinding,
+            prepared_bundle_sha256: String,
+        }
+        let route: BootstrapRouting = serde_json::from_slice(&route_bytes).map_err(io::Error::other)?;
+        need(route.schema_version == 1 && route.source == *source && route.journal == *journal
+            && route.prepared_bundle_sha256 == hex::encode(request.prepared_bundle_sha256),
+            "RAM bootstrap must preserve exact actually enrolled image source/J/bundle domain")?;
+        drop(route_bytes);
+        drop(route_file);
         write_bytes(
             &script,
             &startup(&request.startup_args, request.prepared_bundle_sha256)?,
@@ -966,6 +1008,11 @@ pub fn build(
             "selectedownedimageisnotactualWinPEstartupcapable",
         )?;
         same_file_copy(&runner, &sys.join("n2r-runner.exe"), b.maximum_input_bytes)?;
+        same_file_copy(
+            &bootstrap,
+            &sys.join("n2r-bootstrap.json"),
+            b.ram_bytes / 64,
+        )?;
         // Existing stock startup files are intentionally replaced ONLY inside owned copiedWIM.
         for (from, to) in [
             (&script, sys.join("n2r-start.cmd")),
@@ -1093,6 +1140,7 @@ pub fn build(
         ("wim", wim.clone(), b.maximum_final_wim_bytes),
         ("sdi", sdi.clone(), b.maximum_input_bytes),
         ("runner", runner.clone(), b.maximum_input_bytes),
+        ("bootstrap", bootstrap.clone(), b.ram_bytes / 64),
         ("startup", script.clone(), 65536),
         ("winpeshl", ini.clone(), 65536),
         ("san3-unattend", unattend.clone(), 65536),

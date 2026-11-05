@@ -1,9 +1,11 @@
 //! Positive RAM-Windows owning environment. Readonly facts/owners only; this
 //! token never substitutes a physical C: extent, FS lock, VSS catalog or writer.
 mod source;
+mod journal_bootstrap;
 use super::*;
 use crate::journal_file::GeneralJournalStorageBinding;
 pub use source::{
+    OfflinePreparedReplayQualification,
     OfflinePreparedSource, OfflinePreparedJournalQualification, OfflinePreparedBootGuardRequirements,
     OfflineFreshWitness, OfflineFrozenSource, OfflinePagedNtfsObservation,
     OfflineReadonlyNtfsPhase, OfflineRecoverySource, OfflineSourceIntentPin,

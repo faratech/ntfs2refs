@@ -126,7 +126,7 @@ impl HeldMetadata {
             .read(true)
             .share_mode(1)
             .custom_flags(0x0020_0000)
-            .open(path)?;
+            .open(path).with_context(||format!("opening exact prepared artifact route {}; if PE MountMgr differs, a typed same-partition/FID alias proof is required; no pathname fallback",path.display()))?;
         n2r_win32::file_storage::require_readonly_access(&file)?;
         let snapshot =
             n2r_win32::reference_file::observe_reference_file_handle_with_limit(&file, maximum)?;
@@ -176,14 +176,28 @@ pub(crate) struct HeldWindowsPreparedBundle {
 }
 impl HeldWindowsPreparedBundle {
     pub(crate) fn open(
-        path: &Path,
-        independently_expected_sha256: &str,
-        maximum_bytes: u64,
-        environment: &mut OfflineOwningEnvironment,
-        actual_journal_volume: &File,
-        scratch: &SourceScratch,
-        events: &mut Vec<NativeEvent>,
-    ) -> Result<Self> {
+        path:&Path,independently_expected_sha256:&str,maximum_bytes:u64,
+        environment:&mut OfflineOwningEnvironment,actual_journal_volume:&File,
+        scratch:&SourceScratch,events:&mut Vec<NativeEvent>,
+    )->Result<Self>{
+        Self::open_impl(path,independently_expected_sha256,maximum_bytes,Some(environment),None,actual_journal_volume,scratch,events)
+    }
+    /// Metadata-only preboot authentication. It does not inspect source bytes,
+    /// claim PE execution or issue source readiness/write authority. Caller
+    /// separately binds current protected source and PreparedClear native J.
+    pub(crate) fn open_metadata_on_journal(
+        path:&Path,independently_expected_sha256:&str,maximum_bytes:u64,
+        actual_journal:&GeneralJournalStorageBinding,actual_journal_volume:&File,
+        scratch:&SourceScratch,events:&mut Vec<NativeEvent>,
+    )->Result<Self>{
+        Self::open_impl(path,independently_expected_sha256,maximum_bytes,None,Some(actual_journal),actual_journal_volume,scratch,events)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn open_impl(
+        path:&Path,independently_expected_sha256:&str,maximum_bytes:u64,
+        mut environment:Option<&mut OfflineOwningEnvironment>,expected_journal:Option<&GeneralJournalStorageBinding>,
+        actual_journal_volume:&File,scratch:&SourceScratch,events:&mut Vec<NativeEvent>,
+    )->Result<Self>{
         // Reserve the actual bounded decoder/DTO representation before parsing;
         // the reservation lives as long as the decoded bundle and its paths.
         let _io_memory = scratch.lease_ram(5 * 1024 * 1024)?;
@@ -220,7 +234,18 @@ impl HeldWindowsPreparedBundle {
         c.shadow.validate()?;
         c.journal_binding.validate()?;
         c.source_preparation.validate()?;
-        environment.require_journal_disjoint(&c.journal_binding, actual_journal_volume, events)?;
+        if let Some(environment)=environment.as_mut(){
+            environment.require_journal_disjoint(&c.journal_binding,actual_journal_volume,events)?;
+        }
+        ensure!(expected_journal.is_none_or(|expected|expected==&c.journal_binding),
+            "authenticated bundle names another independently enrolled J");
+        let profile=JournalProfile::from_schema_and_capacity(c.journal_profile_version,Some(c.journal_profile_max_bytes))?;
+        let actual_storage=n2r_win32::journal_file::observe_general_journal_file_on_held_volume(
+            &outer.file,actual_journal_volume,&c.journal_binding,profile)?;
+        ensure!(actual_storage.identity.volume_serial_number==outer.snapshot.volume_serial_number
+            &&actual_storage.identity.file_id_128==outer.snapshot.file_id_128
+            &&actual_storage.file_bytes==outer.snapshot.file_bytes,
+            "actual held outer/held J-volume/full native storage observations differ");
         outer.require_volume(&c.journal_binding)?;
         ensure!(
             bundle.schema_version == 1
@@ -250,7 +275,7 @@ impl HeldWindowsPreparedBundle {
                 && n2r_win32::layout::guid_bytes(&c.source.identity.disk_guid)?
                     != n2r_win32::layout::guid_bytes(&c.journal_binding.disk.identity.disk_guid)?
                 && c.source_preparation.binding.storage == c.source
-                && environment.facts().source.storage == c.source
+                && environment.as_ref().is_none_or(|environment|environment.facts().source.storage==c.source)
                 && c.ticket.image_length == c.source.identity.partition_bytes
                 && c.ticket.marker_profile.is_none()
                 && bundle.postclose_prepared_journal_prefix_bytes == 8192

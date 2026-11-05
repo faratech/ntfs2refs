@@ -17,11 +17,12 @@ mod cold;
 mod fat;
 mod metadata;
 mod native;
-pub use cold::{RecoveryBootGuard, RecoveryBootGuardFacts};
+pub use cold::{RecoveryBootGuard, RecoveryBootGuardFacts, RecoveryBootRestorationReceipt};
 use metadata::{EfiIdentity, StorePin};
 const BOOTMGR: &str = "{9dea862c-5cdd-4e70-acc1-f32b344d4795}";
 const FWBOOTMGR: &str = "{a5a30fa2-3d06-4e9f-b5f4-a01df9d1fcba}";
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RecoveryBootBudget {
     pub ram_bytes: u64,
     pub maximum_store_bytes: u64,
@@ -374,7 +375,7 @@ impl OwnedRecoveryBoot {
         tool.set(
             &loader,
             "loadoptions",
-            &format!("N2RRECOVERYINTENT={}", "0".repeat(64)),
+            &load_options([0u8;32], bootstrap_pin(&intent)?),
             directory,
         )?;
         image.revalidate()?;
@@ -387,7 +388,7 @@ impl OwnedRecoveryBoot {
         tool.set(
             &loader,
             "loadoptions",
-            &format!("N2RRECOVERYINTENT={}", hex::encode(intent_sha256)),
+            &load_options(intent_sha256, bootstrap_pin(&intent)?),
             directory,
         )?;
         verify_loader(
@@ -510,7 +511,21 @@ fn verify_loader(
             && one(fields, "systemroot")?.eq_ignore_ascii_case(r"\windows")
             && one(fields, "winpe")?.eq_ignore_ascii_case("Yes")
             && one(fields, "detecthal")?.eq_ignore_ascii_case("Yes")
-            && one(fields, "loadoptions")? == format!("N2RRECOVERYINTENT={}", hex::encode(sha)),
+            && one(fields, "loadoptions")? == load_options(sha,bootstrap_pin(intent)?),
         "actual private PE loader is not the sealed image/options/intent",
     )
+}
+
+/// Actual current kernel boot-options routing pin only; never write authority.
+pub fn current_recovery_intent_sha256()->io::Result<[u8;32]> {native::current_intent_sha()}
+
+/// Actual current kernel bootstrap routing pin only; never source authority.
+pub fn current_recovery_bootstrap_sha256()->io::Result<[u8;32]>{native::current_bootstrap_sha()}
+fn bootstrap_pin(intent:&BootIntent)->io::Result<[u8;32]>{
+    let pins:Vec<_>=intent.image_pins.iter().filter(|p|p.role=="bootstrap").collect();
+    need(pins.len()==1,"exact owned recovery bootstrap artifact pin required")?;
+    Ok(pins[0].sha256)
+}
+fn load_options(intent:[u8;32],bootstrap:[u8;32])->String{
+    format!("N2RRECOVERYINTENT={} N2RRECOVERYBOOTSTRAP={}",hex::encode(intent),hex::encode(bootstrap))
 }

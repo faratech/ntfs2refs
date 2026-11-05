@@ -111,7 +111,7 @@ pub(super) fn reg_bytes(path: &str, name: &str, kind: u32, maximum: usize) -> io
     value.truncate(n as usize);
     Ok(value)
 }
-pub(super) fn current_intent_sha() -> io::Result<[u8; 32]> {
+fn current_option_sha(prefix:&str) -> io::Result<[u8; 32]> {
     let data = reg_bytes(
         r"SYSTEM\CurrentControlSet\Control",
         "SystemStartOptions",
@@ -133,7 +133,7 @@ pub(super) fn current_intent_sha() -> io::Result<[u8; 32]> {
     let value = String::from_utf16(&units[..end]).map_err(io::Error::other)?;
     let pins: Vec<_> = value
         .split_ascii_whitespace()
-        .filter_map(|part| part.strip_prefix("N2RRECOVERYINTENT="))
+        .filter_map(|part| part.strip_prefix(prefix))
         .collect();
     need(
         pins.len() == 1 && pins[0].len() == 64,
@@ -144,6 +144,8 @@ pub(super) fn current_intent_sha() -> io::Result<[u8; 32]> {
         .try_into()
         .map_err(|_| bad("native boot intent SHA width invalid"))
 }
+pub(super) fn current_intent_sha()->io::Result<[u8;32]>{current_option_sha("N2RRECOVERYINTENT=")}
+pub(super) fn current_bootstrap_sha()->io::Result<[u8;32]>{current_option_sha("N2RRECOVERYBOOTSTRAP=")}
 pub(super) fn require_san3() -> io::Result<()> {
     let current = reg_bytes(r"SYSTEM\Select", "Current", REG_DWORD, 4)?;
     let default = reg_bytes(r"SYSTEM\Select", "Default", REG_DWORD, 4)?;
@@ -625,6 +627,19 @@ impl Tool {
             directory,
         )
         .map(|_| ())
+    }
+    pub(super) fn enum_all(&self,store:&Path,directory:&Path)
+        ->io::Result<BTreeMap<String,BTreeMap<String,Vec<String>>>> {
+        let bytes=self.run(Some(store),&["/enum".into(),"all".into(),"/v".into()],directory)?;
+        let text=decode(&bytes)?.replace("\r\n","\n");
+        let mut objects=BTreeMap::new();
+        for block in text.split("\n\n").filter(|s|!s.trim().is_empty()) {
+            let fields=parse(block)?;
+            let id=canonical_guid(one(&fields,"identifier")?)?;
+            need(objects.insert(id,fields).is_none(),"duplicate actual native BCD object")?;
+        }
+        need(objects.contains_key(BOOTMGR),"complete native BCD object domain omits BootMgr")?;
+        Ok(objects)
     }
     pub(super) fn enum_object(
         &self,

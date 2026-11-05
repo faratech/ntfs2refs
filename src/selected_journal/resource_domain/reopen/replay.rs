@@ -1310,3 +1310,6 @@ impl BoundJournalObservation<'_> {
 
 mod prepared_offline;
 pub(crate) use prepared_offline::PreparedOfflineRun;
+
+mod prepared_recovery;
+pub(crate) use prepared_recovery::PreparedOfflineReplayRun;

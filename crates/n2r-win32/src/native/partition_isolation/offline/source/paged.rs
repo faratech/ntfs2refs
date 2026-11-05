@@ -58,6 +58,7 @@ fn source_io<T>(
 enum Activation {
     Fresh,
     Prepared,
+    PreparedReplay(PagedRecoveryDirection),
     Replay(PagedRecoveryDirection),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -115,8 +116,8 @@ fn phase(activation: Activation, initial: bool) -> PartitionJournalPhase {
     match (activation, initial) {
         (Activation::Fresh | Activation::Prepared, true) => PartitionJournalPhase::FreshOld,
         (Activation::Fresh | Activation::Prepared, false) => PartitionJournalPhase::Applying,
-        (Activation::Replay(d), true) => PartitionJournalPhase::Mixed(d),
-        (Activation::Replay(d), false) => PartitionJournalPhase::Replaying(d),
+        (Activation::Replay(d) | Activation::PreparedReplay(d), true) => PartitionJournalPhase::Mixed(d),
+        (Activation::Replay(d) | Activation::PreparedReplay(d), false) => PartitionJournalPhase::Replaying(d),
     }
 }
 fn independent_journal(core: &Core, pins: &PagedRecoveryPins<'_>) -> io::Result<()> {
@@ -161,7 +162,7 @@ fn require_native(
         "actual fresh native owner/domain differs from source gate",
     )
 }
-fn authenticate(
+pub(super) fn authenticate(
     core: &mut Core,
     policy: &HeldPagedWritePolicy,
     journal: &mut File,
@@ -188,7 +189,7 @@ fn authenticate(
         (Err(error), _) | (_, Err(error)) => Err(error),
     }
 }
-fn lifecycle_digest(journal: &mut File) -> io::Result<[u8; 32]> {
+pub(super) fn lifecycle_digest(journal: &mut File) -> io::Result<[u8; 32]> {
     let before = journal.stream_position()?;
     let mut bytes = [0; 8192];
     journal.seek(SeekFrom::Start(0))?;
@@ -315,7 +316,7 @@ pub(super) fn begin<'a, 'p>(
     gate.require_bound(core, &policy, journal, pins)?;
     require_native(gate, core, native)?;
     require(
-        (gate.activation == Activation::Prepared) == prepared.is_some(),
+        matches!(gate.activation, Activation::Prepared | Activation::PreparedReplay(_)) == prepared.is_some(),
         "prepared activation needs the actual retained boot guard and outer file",
     )?;
     if let Some(protection) = prepared.as_mut() {
@@ -386,10 +387,10 @@ pub(super) fn begin<'a, 'p>(
             Activation::Fresh | Activation::Prepared => {
                 paged_recovery::publish_partition_apply_marker(journal, pins, events)?
             }
-            Activation::Replay(PagedRecoveryDirection::Rollback) => {
+            Activation::Replay(PagedRecoveryDirection::Rollback) | Activation::PreparedReplay(PagedRecoveryDirection::Rollback) => {
                 paged_recovery::publish_partition_rollback_marker(journal, pins, events)?
             }
-            Activation::Replay(PagedRecoveryDirection::Resume) => (),
+            Activation::Replay(PagedRecoveryDirection::Resume) | Activation::PreparedReplay(PagedRecoveryDirection::Resume) => (),
         }
         gate_file_state(&file, core, core.expected_attributes, events)?;
         // OFFLINE stays set; only physical READ_ONLY is cleared after durable
@@ -570,13 +571,13 @@ impl OfflinePagedWriter<'_, '_> {
                 events,
             ),
             None => require(
-                self.gate.activation != Activation::Prepared,
+                !matches!(self.gate.activation, Activation::Prepared | Activation::PreparedReplay(_)),
                 "prepared writer lost boot/outer owners",
             ),
         }
     }
     fn prepared_write_checkpoint(&mut self) -> io::Result<()> {
-        if self.gate.activation != Activation::Prepared {
+        if !matches!(self.gate.activation, Activation::Prepared | Activation::PreparedReplay(_)) {
             return Ok(());
         }
         let mut events = Vec::new();
@@ -722,7 +723,7 @@ impl OfflinePagedWriter<'_, '_> {
     pub fn finish_new(mut self, events: &mut Vec<NativeEvent>) -> io::Result<()> {
         let result = (|| {
             require(
-                self.gate.activation != Activation::Replay(PagedRecoveryDirection::Rollback),
+                !matches!(self.gate.activation, Activation::Replay(PagedRecoveryDirection::Rollback) | Activation::PreparedReplay(PagedRecoveryDirection::Rollback)),
                 "rollback writer cannot finish NEW",
             )?;
             self.revalidate(events)?;
@@ -741,7 +742,7 @@ impl OfflinePagedWriter<'_, '_> {
     pub fn finish_old(mut self, events: &mut Vec<NativeEvent>) -> io::Result<()> {
         let result = (|| {
             require(
-                self.gate.activation == Activation::Replay(PagedRecoveryDirection::Rollback),
+                matches!(self.gate.activation, Activation::Replay(PagedRecoveryDirection::Rollback) | Activation::PreparedReplay(PagedRecoveryDirection::Rollback)),
                 "finish OLD requires actual Rollback writer",
             )?;
             self.revalidate(events)?;
@@ -1086,4 +1087,23 @@ pub(super) fn require_prepared_gate(gate: &OfflineSourceApplyGate) -> io::Result
         gate.activation == Activation::Prepared && gate.prepared_pin.is_some(),
         "actual prepared activation gate required",
     )
+}
+
+// Distinct cold-prepared recovery factory: legacy PE-fresh and standalone
+// recovery entrypoints keep their original activation/protection contract.
+pub(super) fn qualify_prepared_replay(core:&mut Core,policy:&HeldPagedWritePolicy,journal:&mut File,
+    pins:&PagedRecoveryPins<'_>,publication:super::prepared_apply::PreparedPublicationPin,direction:PagedRecoveryDirection,
+    events:&mut Vec<NativeEvent>)->io::Result<OfflineSourceApplyGate>{
+    require(!core.poisoned&&!core.fresh&&core.fresh_witness.is_none()&&!core.gate_ever_issued&&!core.writer_ever_issued
+        &&core.expected_attributes==3,"prepared replay needs new actual excluded cold owner")?;
+    let current=authenticate(core,policy,journal,pins,PartitionJournalPhase::Mixed(direction),events)?;
+    require(current.is_some(),"prepared replay CURRENT mixed digest absent")?;
+    let gate=OfflineSourceApplyGate{owner:core.token.clone(),binding:core.env.source.clone(),boot:core.env.facts.boot.clone(),
+        pins:OwnedPartitionJournalPins::capture(pins),index_sha256:policy.facts()?.index_sha256,journal_handle:journal.as_raw_handle()as usize,
+        current_mixed_sha256:current,lifecycle_sha256:lifecycle_digest(journal)?,native_pin:None,prepared_pin:Some(publication),
+        activation:Activation::PreparedReplay(direction),used:false};
+    core.gate_ever_issued=true;Ok(gate)
+}
+pub(super) fn require_prepared_replay_gate(gate:&OfflineSourceApplyGate,direction:PagedRecoveryDirection)->io::Result<()> {
+    require(gate.activation==Activation::PreparedReplay(direction)&&gate.prepared_pin.is_some(),"actual guarded prepared replay gate/direction required")
 }

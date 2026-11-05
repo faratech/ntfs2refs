@@ -528,6 +528,18 @@ Frozen TWO-rolehelperdraft host2a246df5787072d0149c7e32a27527723196e1cd2023f3948
 worker717e9b67c8b9a8298d56d78c5c5d5cb61447cd9ba7eeac45ba8d5aef507e7325,
 definitions-only rolerunnerfd2f4d1377481d9922707aecebcc2c465796099d2edb97fbdccab5a846e9f109.
 Root reviewedserialcancel→independentNTFSoracle→ONE normalconversion andactualtwoPID/terminal handling; noGOyet; baselineOff18.
+cba2717 exact BOTH-binbuild11669 closed0/170s/417heldsourcefilesunchanged; manifestc2fb1ee28a897f2d31d0dddb03628773f3dbb76b3463a0192fc8dc7fc1c279ba.
+labalpha8603648B/SHAa97656012980f8b4818eadef32e066f75e80bfcbb8ecea3c2e2adfc41416a016;
+labrecovery3860480B/SHA56036cddfce239b0b8da9abc59d83e6ac019bf51f7434b40fc05aeac2a9904bc.
+Actualtwo-rolecaseaae1f81fedca4d0cbb3eb61d274a3a9c host6093: CANCEL5128/birth1793843101542/boot1793843058929 exited1/209.5795539s.
+ActualfreshRWopen/extents/NTFS/RO19 andfreshLOCK succeeded; explicitlockedFlushFileBuffers FAILED19. NORMAL neverstarted.
+SourceBasicRO/valid1frame41785B/noShadow/J/pub; readonlyclosure516a39eecaf3174c3c2731414b0181244189fe4c9f84773775f7110f487ecbd4,
+GPTRO-onlydelta6ee66b2eb6c43b2e20a18f385a14a56c28acbeef34398d5406a8962ce8e06f44/Ccontrol unchanged. Originalnative/workerbirthsabsent.
+OperatorauthorizedONEorderlyOff/fresh18graph+census thenpreparearchive/resetPLANonly; no retry/SET/restore/extraCP unlessseparateGO.
+RootfixedROlane: successfulFSCTL_LOCK_VOLUME alreadyflushescacheddata byMicrosoftcontract, andactualRO+heldlockpreventwrites;
+removeonlytwoillegalredundantBasicRO.sync_all requests, retainallactualLOCK/dismount/DASD/closingproofs. Failedactual19remainsfailureevidence.
+InitialBasic0flush andALLwritablepayload/Jflushes unchanged. Focusedcheck0/32.2764946s/no units; evidence/partition-readonly-lock-flush-build-20261104.json.
+Exactfixedbuild/nativecasespending. Sourceprivate-preAP livecanceldraft andreadonlyofflineWinPEprobe DRAFT remainunapplied/offcriticalpath.
 
 - Fresh writes require original live opaque source certificate and actual source/target/J/arena owners. Saved JSON/paths/flags are routes, never authority.
 - Revalidate device/file identities, journal/index/ticket/lifecycle and recovery files. Recovery must not require thin-pool reattachment.

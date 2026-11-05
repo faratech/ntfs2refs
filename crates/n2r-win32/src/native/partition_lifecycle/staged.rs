@@ -902,7 +902,12 @@ impl PartitionPreparationGuard {
                 events,
             )?;
             require(reply.is_empty(), "fresh relock returned unexpected bytes")?;
-            Self::flush_relocked_volume(&fresh, "partition-basic-ro-relock-locked-flush", events)?;
+            // FSCTL_LOCK_VOLUME flushes cached data before success. This lane
+            // has already proved WRITE_PROTECT19 and issues no payload write;
+            // an additional FlushFileBuffers is invalid on the read-only
+            // volume (observed ERROR_WRITE_PROTECT19). Keep the actual lock
+            // success as the flush boundary, rather than masking that error.
+            // https://learn.microsoft.com/windows/win32/api/winioctl/ni-winioctl-fsctl_lock_volume
             let reply = control(
                 &fresh,
                 "partition-basic-ro-relock-dismount",
@@ -924,7 +929,6 @@ impl PartitionPreparationGuard {
                 reply.is_empty(),
                 "fresh extended DASD returned unexpected bytes",
             )?;
-            Self::flush_relocked_volume(&fresh, "partition-basic-ro-relock-final-flush", events)?;
             self.revalidate_current_with_volume(Some(&fresh), events)?;
             self.check_volume(&fresh, events)?;
             require(
@@ -944,33 +948,13 @@ impl PartitionPreparationGuard {
             }
             (Err(error), _) | (_, Err(error)) => return Err(error),
         }
-        // Adopt only the successfully locked, flushed and fully revalidated
+        // Adopt only the successfully locked (and thereby flushed), revalidated
         // replacement. This SAME live guard/token retains its native proof;
         // the original dismounted FileObject was closed before the lock.
         self.volume=Some(fresh);
         self.locked = true;
         self.stage = stage;
         Ok(())
-    }
-    fn flush_relocked_volume(
-        file: &File,
-        operation: &str,
-        events: &mut Vec<NativeEvent>,
-    ) -> io::Result<()> {
-        require(
-            events.len() < 128,
-            "fresh relock flush event budget exhausted",
-        )?;
-        let result = file.sync_all();
-        events.push(NativeEvent {
-            operation: operation.into(),
-            control_code: 0,
-            input: Vec::new(),
-            succeeded: result.is_ok(),
-            native_error: result.as_ref().err().and_then(io::Error::raw_os_error),
-            output: Vec::new(),
-        });
-        result.map_err(|error| io::Error::new(error.kind(), format!("{operation}: {error}")))
     }
     fn expected_gpt(&self, current: &PartitionIsolationObservation) -> io::Result<()> {
         let old = &self.baseline.gpt;

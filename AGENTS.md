@@ -7,6 +7,14 @@ This record supersedes historical LIVE/keeper/next-action statements. Full previ
 [history](docs/history/AGENTS-through-20261105-shared-AP.md), SHA256 `8973ba9a024dffffc88d82a332afc7dab76d008609cf63970a7a0279fa18c91e`.
 Read specific historical sections only when needed; do not restart finished investigations or repeat unchanged cases.
 
+## Corrected ONE public conversion is actually running
+
+Actual native **PID4312/birth1793922649258**, owned SYSTEM worker2604/birth1793922646843, Windows boot1793921925901. Source runtime aa8acbf public049d092... and sibling recoveryb7a868... verified. EXACT public argv: `--drive D --scratch-directory J:\n2r-public-aa8acbf-326b3ce2744b437e8d36100db1cdfdc8 --offline-media E:\`; ONE yLF was flushed and stdin closed. Host dispatch79027 CLOSED0 after queueing task (hostPID19568 absence is expected); do NOT redispatch or confuse parent exit with native completion.
+
+Case `.lab/hyperv/streaming-v2-20261027/PUBLIC-aa8acbf-actual-once-1530d6e37e2a4b3f86192c3b2ceb7a1f`, first actual observation23:51:13Z shows native4312 live, stdout4260/stderr0, phases through `readonly-physical-lock-and-protection-complete` and `physical-source-adoption-critical-before`. No completed conversion/restart claim. Exclusive operator aef_postcut_operator owns SAME task/process monitoring, archive and future cold console; Root never competes or restarts on observation timeout. Native SYSTEM task/records path is in actual-ONE-task-dispatched-not-native-completion.json; inspect that receipt for actual current task identity.
+
+Fresh prelaunch actual246849181243/free159628013568, remaining2919237111 under **same whole-case absolute249768418354**; original global epoch/cap/reserve unchanged. VM was Running/current07ca/five/4GiB4CPU/noNIC/originalDVD before public-owned restart. Preserve failed462 branch and frozen alpha. No manual arm, second converter, deliberate fault injection or power action authorized for this normal case. Observe product-owned restart/cold phases; on native failure preserve exact state/logs, never infer source/AP contents from screen alone. Source code and public layout remain unchanged since aa8acbf. Goal incomplete.
+
 ## Fresh public-case Windows setup ready (conversion not started)
 
 After preserving462, ONE LAB Restore07ca and ONE ordinary Start completed; controller7928/session92375 CLOSED0. VM now **Running/current07ca/five keepers/4GiB/4CPU/noNIC**, Windows26300 `C:\Windows`, new boot1793921925901. SourceD6 original NTFS BASIC0/not-readonly, GUID4310d74c-614f-435b-9cf1-7ff664391590/offset68719476736/55834574848 bytes; independent J2 GUID09fcc613-b8c2-4a1a-8833-226f9399be7f, partition8bdb2a25-9c1a-4132-a1fc-0b4654153d3b, free6608957440 bytes. Failed prepared branch462 remains intact. This setup reset is NOT product recovery evidence.

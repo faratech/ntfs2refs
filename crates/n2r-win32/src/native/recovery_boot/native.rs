@@ -170,14 +170,36 @@ pub(super) fn require_san3() -> io::Result<()> {
     }
     Ok(())
 }
-pub(super) fn flush_system_bcd() -> io::Result<()> {
-    let k = key("BCD00000000")?;
-    let status = unsafe { RegFlushKey(k.0) };
-    if status != 0 {
-        return Err(io::Error::from_raw_os_error(status as i32));
+/// Error-only native event context. Return the ORIGINAL error object so
+/// raw_os_error survives exactly. No extra native operation or success event.
+pub(super) fn diagnose<T>(result:io::Result<T>,operation:&str,phase:&str,context:&str,
+    events:&mut Vec<NativeEvent>)->io::Result<T> {
+    if let Err(error)=&result {
+        // Preserve existing event limits and every prior record. On a full
+        // vector the original failure still wins; no diagnostics mask it.
+        if events.len()<128 {
+            let route:String=context.chars().take(4096).collect();
+            let message:String=error.to_string().chars().take(4096).collect();
+            if let Ok(output)=serde_json::to_vec(&serde_json::json!({
+                "kind":"actual-native-boot-step-failed-v1","phase":phase,
+                "context":route,"message":message,"raw_os_error":error.raw_os_error(),
+                "original_error_returned_unchanged":true})) {
+                if output.len()<=65536 { events.push(NativeEvent{operation:operation.into(),control_code:0,
+                    input:Vec::new(),succeeded:false,native_error:error.raw_os_error(),output}); }
+            }
+        }
     }
-    Ok(())
+    result
 }
+pub(super) fn flush_system_bcd_with_events(events:&mut Vec<NativeEvent>)->io::Result<()> {
+    let k=diagnose(key("BCD00000000"),"boot-system-BCD-flush-failed",
+        "RegOpenKeyExW-KEY_QUERY_VALUE","HKLM\\BCD00000000",events)?;
+    let status=unsafe{RegFlushKey(k.0)};
+    let result=if status!=0{Err(io::Error::from_raw_os_error(status as i32))}else{Ok(())};
+    diagnose(result,"boot-system-BCD-flush-failed","RegFlushKey","HKLM\\BCD00000000",events)
+}
+#[allow(dead_code)]
+pub(super) fn flush_system_bcd()->io::Result<()> {flush_system_bcd_with_events(&mut Vec::new())}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct FirmwareIdentity {
     pub current: u16,
@@ -450,11 +472,12 @@ impl Drop for OwnedChild {
         }
     }
 }
+static TOOL_RECORD_ORDINAL: AtomicU64 = AtomicU64::new(0);
+
 pub(super) struct Tool {
     path: PathBuf,
     _file: File,
     budget: RecoveryBootBudget,
-    next: AtomicU64,
     spent: AtomicU64,
 }
 impl Tool {
@@ -480,7 +503,6 @@ impl Tool {
             path,
             _file: file,
             budget,
-            next: AtomicU64::new(0),
             spent: AtomicU64::new(0),
         })
     }
@@ -588,7 +610,8 @@ impl Tool {
         let (err, err_over) = stderr
             .join()
             .map_err(|_| bad("BCD stderr drain panicked"))??;
-        let ordinal = self.next.fetch_add(1, Ordering::Relaxed);
+        let ordinal=TOOL_RECORD_ORDINAL.fetch_update(Ordering::Relaxed,Ordering::Relaxed,
+            |value|value.checked_add(1)).map_err(|_|bad("native BCD command ordinal overflow"))?;
         let record = ToolRecord {
             kind: "actual-native-bcdedit-child-v1",
             arguments: &all,
@@ -630,7 +653,13 @@ impl Tool {
     }
     pub(super) fn enum_all(&self,store:&Path,directory:&Path)
         ->io::Result<BTreeMap<String,BTreeMap<String,Vec<String>>>> {
-        let bytes=self.run(Some(store),&["/enum".into(),"all".into(),"/v".into()],directory)?;
+        self.enum_all_at(Some(store),directory)
+    }
+    pub(super) fn enum_system_all(&self,directory:&Path)->io::Result<BTreeMap<String,BTreeMap<String,Vec<String>>>> {
+        self.enum_all_at(None,directory)
+    }
+    fn enum_all_at(&self,store:Option<&Path>,directory:&Path)->io::Result<BTreeMap<String,BTreeMap<String,Vec<String>>>> {
+        let bytes=self.run(store,&["/enum".into(),"all".into(),"/v".into()],directory)?;
         let text=decode(&bytes)?.replace("\r\n","\n");
         let mut objects=BTreeMap::new();
         for block in text.split("\n\n").filter(|s|!s.trim().is_empty()) {

@@ -237,8 +237,8 @@ impl OwnedRecoveryBoot {
                     .is_some_and(|s| s == BOOTMGR),
             "UEFI Windows Boot Manager must already be first with no one-shot sequence",
         )?;
-        native::flush_system_bcd()?;
-        let original_store = metadata::capture_store(&efi, budget, events)?;
+        native::flush_system_bcd_with_events(events)?;
+        let original_store = metadata::capture_active_store(&efi, budget, &tool, directory, events)?;
         let backup_path = directory.join("original-system-store.bcd");
         tool.run(
             None,
@@ -379,8 +379,8 @@ impl OwnedRecoveryBoot {
             directory,
         )?;
         image.revalidate()?;
-        native::flush_system_bcd()?;
-        let preselect = metadata::capture_store(&intent.efi, budget, events)?;
+        native::flush_system_bcd_with_events(events)?;
+        let preselect = metadata::capture_active_store(&intent.efi, budget, &tool, directory, events)?;
         intent.guarded_store_map = Some(preselect.clone());
         intent.parent_original_intent_sha256 = Some(original_intent_sha256);
         let intent_path = directory.join("recovery-boot-guard-intent.json");
@@ -399,13 +399,13 @@ impl OwnedRecoveryBoot {
         tool.run(None, &["/default".into(), loader.clone()], directory)?;
         tool.run(None, &["/displayorder".into(), loader.clone()], directory)?;
         tool.run(None, &["/timeout".into(), "0".into()], directory)?;
-        native::flush_system_bcd()?;
+        native::flush_system_bcd_with_events(events)?;
         verify_selection(&tool.enum_object(None, BOOTMGR, directory)?, &intent)?;
         verify_selection(
             &tool.enum_object(Some(&intent.efi.bcd_path), BOOTMGR, directory)?,
             &intent,
         )?;
-        let installed_store = metadata::capture_store(&intent.efi, budget, events)?;
+        let installed_store = metadata::capture_active_store(&intent.efi, budget, &tool, directory, events)?;
         need(
             installed_store.same_file_map(&preselect),
             "installed BCD physical mapping changed after immutable guard intent; no cold guard issued",
@@ -462,7 +462,7 @@ impl OwnedRecoveryBoot {
             &self.intent,
         )?;
         need(
-            metadata::capture_store(&self.intent.efi, self.budget, events)?
+            metadata::capture_active_store(&self.intent.efi, self.budget, &tool, self.receipt.intent_path.parent().ok_or_else(||bad("boot directory absent"))?, events)?
                 == self.record.installed_store,
             "actual installed boot bytes/mapping changed",
         )?;

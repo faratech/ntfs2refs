@@ -35,7 +35,8 @@ pub use prepare_only::{WindowsPreparedOfflineApplyReceipt, prepare_for_offline_a
 #[path = "resource_prepared_boot.rs"]
 mod prepared_boot;
 pub use prepared_boot::{
-    PreparedBootRequest, arm_prepared_boot, prepare_and_arm_shared_conversion,
+    PreparedBootRequest, arm_existing_prepared_boot, arm_prepared_boot,
+    prepare_and_arm_shared_conversion,
 };
 #[path = "resource_prepared_runner.rs"]
 mod prepared_runner;

@@ -30,6 +30,9 @@ fn run() -> anyhow::Result<()> {
         output: PathBuf,
         #[arg(long)]
         acknowledge_persistent_recovery_boot: bool,
+        /// Independently pinned completed-image receipt; reopens exact bytes.
+        #[arg(long)]
+        completed_image_sha256: Option<String>,
     }
     let args = Args::parse();
     ensure!(
@@ -86,11 +89,30 @@ fn run() -> anyhow::Result<()> {
     let request: ntfs2refs::resource_partition_alpha::PreparedBootRequest =
         serde_json::from_slice(&bytes)?;
     drop(bytes);
-    let receipt = ntfs2refs::resource_partition_alpha::arm_prepared_boot(
-        request,
-        &args.output,
-        args.acknowledge_persistent_recovery_boot,
-    )?;
+    let receipt = if let Some(pin) = args.completed_image_sha256 {
+        ensure!(
+            pin.len() == 64
+                && pin
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            "canonical completed-image receipt SHA256 required"
+        );
+        let pin: [u8; 32] = hex::decode(pin)?
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("image receipt SHA width"))?;
+        ntfs2refs::resource_partition_alpha::arm_existing_prepared_boot(
+            request,
+            &args.output,
+            args.acknowledge_persistent_recovery_boot,
+            pin,
+        )?
+    } else {
+        ntfs2refs::resource_partition_alpha::arm_prepared_boot(
+            request,
+            &args.output,
+            args.acknowledge_persistent_recovery_boot,
+        )?
+    };
     println!("{}", serde_json::to_string(&receipt)?);
     Ok(())
 }

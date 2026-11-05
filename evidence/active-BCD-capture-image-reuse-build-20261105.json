@@ -1,0 +1,105 @@
+{
+  "preserved_arm_metadata_rename_receipt_sha256": "f3ea2b8e24f36130cc438bab10e65380492dba7230df3f995d0a42adc2e9aeb3",
+  "actual_native_arm": {
+    "birth": 1793908103011,
+    "pid": 2660,
+    "BCD_query_exits": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "evidence_sha256": "f45a9f1d91e3c782a8abd1c0d255a5ce74b7f14437036ee9eee86ea7a9c9067c",
+    "wall_seconds": 42.3826573,
+    "image_completed_record_sha256": "c8a350e4a74f48047bb0be2a038da549c70b97cb0047256811a1da9a32680efc",
+    "image_wim_bytes": 619516755,
+    "image_built": true,
+    "raw_source_apply_or_data_writer": 0,
+    "exit_code": 1,
+    "BCD_mutation_commands": 0
+  },
+  "base_commit": "800d2bdbe2f83e4a165c165e74fffb662bc2c3e0",
+  "kind": "active-BCD-hive-capture-and-completed-image-reuse-build-v1",
+  "implemented": [
+    "Expected sharing32 alone can select actual attribute-only BCD metadata handle; no logical byte-read claim",
+    "FAT/physical raw-byte bookends plus complete native system versus raw-copy BCD enum equality",
+    "Durably preserved bounded native failure events keep original raw OS error",
+    "Checked global command ordinal prevents known same-process revalidate log collisions",
+    "Completed image reopens actual8immutable artifacts plus build-record owner; full hashes/native identities and original startup/SAN3 bindings; no copy/mount/write",
+    "Existing image embeds EXACT800d cold helper; new installer is a separate component; do not claim same source commit"
+  ],
+  "new_native_install_qualification": false,
+  "actual_four_readonly_opens": {
+    "exit_code": 0,
+    "pid": 3728,
+    "observation_sha256": "35ccaba1333715fd286af29882945ec2d996ae9e9e2464ad4a3c3d8c1469e498",
+    "generic_read_share3_error": 32,
+    "BCD_eof_bytes": 40960,
+    "attributes_read_share3_succeeded": true,
+    "generic_read_share7_error": 32,
+    "attributes_read_share7_succeeded": true,
+    "same_legacy52_identity": true
+  },
+  "focused_check": {
+    "shared_target_reused": true,
+    "kind": "public-partition-dispatch-focused-check",
+    "native_run": false,
+    "exit_code": 0,
+    "capacity": {
+      "actual_bytes": 244283316180,
+      "free_bytes": 163059335168,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 2147483648,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "unit_tests_run": false,
+    "wall_seconds": 33.0956096,
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+  },
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/native/recovery_boot.rs",
+      "sha256": "611ab24eeb1f4c1fb8a6e0207be5f7acbd3a10240a16c03d48d1d709edde4f14",
+      "bytes": 20320
+    },
+    {
+      "path": "crates/n2r-win32/src/native/recovery_boot/metadata.rs",
+      "sha256": "7bbb043c5f9cb6f42624a6249d06cfd39c78e0c136f4b7abee282c20bf98e66b",
+      "bytes": 36623
+    },
+    {
+      "path": "crates/n2r-win32/src/native/recovery_boot/native.rs",
+      "sha256": "b4f01397fd361097dcbd2b59159d6ac39949b05f3b9e5788486e4595030771b5",
+      "bytes": 26840
+    },
+    {
+      "path": "crates/n2r-win32/src/native/recovery_image.rs",
+      "sha256": "597826e049f00683cf008a64abacacc13eecc07b25304754fc2126d196bd7109",
+      "bytes": 41781
+    },
+    {
+      "path": "crates/n2r-win32/src/native/recovery_image/reopen.rs",
+      "sha256": "a5d865e97eee0529b95bf5be209bb9695a32c5c9b0cd82cd6055502a56895368",
+      "bytes": 14843
+    },
+    {
+      "path": "src/bin/lab-arm-prepared-boot.rs",
+      "sha256": "916361a15d45fbd907cc604b58f649d4d13836cc9e58ec63a76c63304d7c2dd4",
+      "bytes": 4041
+    },
+    {
+      "path": "src/resource_partition_alpha.rs",
+      "sha256": "cec8c0626c8ccdc4e5675e712e4dfe06f631eaca9c3483763a359112056818cc",
+      "bytes": 39781
+    },
+    {
+      "path": "src/resource_prepared_boot.rs",
+      "sha256": "cac85bef0ee7e1be2a0c6429f8b2dc37c7373f5f4f7eb49a0f203cac10641556",
+      "bytes": 19792
+    }
+  ],
+  "original_image_phase_absolute": 247920173993,
+  "new_or_existing_unit_tests_run": false
+}

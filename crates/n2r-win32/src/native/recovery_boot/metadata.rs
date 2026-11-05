@@ -217,25 +217,67 @@ fn legacy_identity(file: &File) -> io::Result<(Vec<u8>, u64)> {
     }
     Ok((identity, (u64::from(data[8]) << 32) | u64::from(data[9])))
 }
-pub(super) fn capture_store(
+static ACTIVE_CAPTURE_ORDINAL:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(0);
+fn preserve_capture_events(directory:&Path,ordinal:u64,phase:&str,budget:RecoveryBootBudget,
+    events:&mut Vec<NativeEvent>)->io::Result<()> {
+    if events.is_empty(){return Ok(())}
+    native::persist(&directory.join(format!("active-capture-{ordinal:04}-{phase}-native-events.json")),
+        &serde_json::json!({"kind":"actual-active-hive-capture-native-events-v1","phase":phase,"events":&*events}),
+        budget.maximum_control_bytes)?;
+    // Only successful same-file flush/readback above permits a drain.
+    events.clear();Ok(())
+}
+pub(super) fn capture_store(efi:&EfiIdentity,budget:RecoveryBootBudget,events:&mut Vec<NativeEvent>)->io::Result<StorePin>{
+    capture_store_inner(efi,budget,None,events)
+}
+/// Explicit current-SYSTEM capture. Only genuine sharing32 may select the
+/// observed attribute-only lane; native semantic + physical proofs replace
+/// unavailable logical file reads, never a caller flag or unexplained bypass.
+pub(super) fn capture_active_store(efi:&EfiIdentity,budget:RecoveryBootBudget,tool:&native::Tool,
+    directory:&Path,events:&mut Vec<NativeEvent>)->io::Result<StorePin>{
+    let ordinal=ACTIVE_CAPTURE_ORDINAL.fetch_update(std::sync::atomic::Ordering::Relaxed,
+        std::sync::atomic::Ordering::Relaxed,|v|v.checked_add(1)).map_err(|_|bad("active BCD capture ordinal overflow"))?;
+    preserve_capture_events(directory,ordinal,"opening",budget,events)?;
+    let result=capture_store_inner(efi,budget,Some((tool,directory,ordinal)),events);
+    let drained=preserve_capture_events(directory,ordinal,"closing",budget,events);
+    match(result,drained){(Ok(pin),Ok(()))=>Ok(pin),(Err(original),_)=>Err(original),(Ok(_),Err(error))=>Err(error)}
+}
+fn capture_store_inner(
     efi: &EfiIdentity,
     budget: RecoveryBootBudget,
+    active:Option<(&native::Tool,&Path,u64)>,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<StorePin> {
-    let mut privilege =
-        crate::attestation_native::Privileges::enable_for(&["SeManageVolumePrivilege"])?;
+    let context=efi.bcd_path.to_string_lossy();
+    let mut phase="enable-SeManageVolumePrivilege";
+    let mut privilege=native::diagnose(
+        crate::attestation_native::Privileges::enable_for(&["SeManageVolumePrivilege"]),
+        "boot-store-capture-failed",phase,&context,events)?;
     let result = (|| {
-        let mut file = OpenOptions::new()
-            .read(true)
-            .share_mode(3)
-            .custom_flags(0x0020_0000)
-            .open(&efi.bcd_path)?;
+        phase="CreateFileW-GENERIC_READ-share3-OPEN_REPARSE_POINT";
+        let opened=OpenOptions::new().read(true).share_mode(3)
+            .custom_flags(0x0020_0000).open(&efi.bcd_path);
+        let (mut file,has_read_data)=match opened {
+            Ok(file)=>(file,true),
+            Err(error)if error.raw_os_error()==Some(32)&&active.is_some()=>{
+                let _=native::diagnose::<()>(Err(error),"boot-store-active-hive-read-data-sharing-refusal",
+                    phase,&context,events);
+                phase="CreateFileW-FILE_READ_ATTRIBUTES-share3-OPEN_REPARSE_POINT";
+                (OpenOptions::new().access_mode(0x80).share_mode(3)
+                    .custom_flags(0x0020_0000).open(&efi.bcd_path)?,false)
+            }
+            Err(error)=>return Err(error),
+        };
+        phase="GetFileInformationByHandle-actual-held-BCD";
         let (identity, bytes) = legacy_identity(&file)?;
+        phase="validate-actual-BCD-EOF-and-capacity";
         need(
             bytes >= 4096 && bytes.is_multiple_of(4096) && bytes <= budget.maximum_store_bytes,
             "native BCD store EOF outside admitted alpha bounds",
         )?;
+        phase="CreateFileW-actual-EFI-volume-GENERIC_READ-share3";
         let volume = device_file(&efi.binding.volume_path()?, false, false)?;
+        phase="query-actual-EFI-native144";
         let info = control(
             &volume,
             "boot-store-EFI-native-partition",
@@ -244,6 +286,7 @@ pub(super) fn capture_store(
             144,
             events,
         )?;
+        phase="query-actual-EFI-extents";
         let ext = control(
             &volume,
             "boot-store-EFI-native-extents",
@@ -252,6 +295,7 @@ pub(super) fn capture_store(
             32,
             events,
         )?;
+        phase="validate-EFI-native144-and-extents";
         efi.binding.validate_volume_extent(&ext)?;
         need(
             info == efi.native_partition_info,
@@ -259,6 +303,7 @@ pub(super) fn capture_store(
         )?;
         let root = format!("{}\\", efi.binding.volume_path()?);
         let (mut sectors, mut sector, mut free, mut total) = (0, 0, 0, 0);
+        phase="GetDiskFreeSpaceW-actual-EFI-volume";
         if unsafe {
             GetDiskFreeSpaceW(
                 wide(&root).as_ptr(),
@@ -278,6 +323,7 @@ pub(super) fn capture_store(
         let cluster_bytes = u64::from(sectors)
             .checked_mul(u64::from(sector))
             .ok_or_else(|| bad("EFI allocation size overflow"))?;
+        phase="query-FAT-cluster-heap-base";
         let base = control(
             &volume,
             "boot-store-FAT-cluster-heap-sector-base",
@@ -290,6 +336,7 @@ pub(super) fn capture_store(
         let file_area_bytes = layout::u64_at(&base, 0)?
             .checked_mul(u64::from(sector))
             .ok_or_else(|| bad("EFI file area offset overflow"))?;
+        phase="FSCTL_GET_RETRIEVAL_POINTERS-actual-held-BCD";
         let pointers = control(
             &file,
             "boot-store-actual-file-retrieval-pointers",
@@ -298,6 +345,7 @@ pub(super) fn capture_store(
             65536,
             events,
         )?;
+        phase="validate-complete-BCD-retrieval-map";
         need(
             pointers.len() >= 16 && layout::u64_at(&pointers, 8)? == 0,
             "complete initial BCD retrieval mapping required",
@@ -356,15 +404,20 @@ pub(super) fn capture_store(
             covered == bytes,
             "BCD physical mappings do not cover exact EOF",
         )?;
-        let sha256 = crate::sha256_native::hash_range(&mut file, 0, bytes)?;
+        phase="hash-actual-held-BCD-logical-bytes-opening";
+        let logical_sha256=if has_read_data{Some(crate::sha256_native::hash_range(&mut file,0,bytes)?)}else{None};
+        let sha256=logical_sha256.unwrap_or([0;32]);
+        phase="CreateFileW-actual-EFI-physical-readonly-share3";
         let mut physical = device_file(
             &format!("\\\\.\\PhysicalDrive{}", efi.binding.disk_number),
             false,
             false,
         )?;
+        phase="validate-actual-EFI-physical-native-binding";
         physical_binding(&physical, efi, events)?;
+        phase="hash-actual-EFI-FAT-boot-sector";
         let fat_boot_sha256 = fat::boot_sha(&mut physical, efi)?;
-        let pin = StorePin {
+        let mut pin = StorePin {
             bytes,
             sha256,
             identity,
@@ -373,15 +426,71 @@ pub(super) fn capture_store(
             file_area_bytes,
             fat_boot_sha256,
         };
-        need(
-            raw_hash(efi, &pin, budget.maximum_control_bytes, events)? == sha256
-                && crate::sha256_native::hash_range(&mut file, 0, bytes)? == sha256
-                && legacy_identity(&file)? == (pin.identity.clone(), bytes),
-            "actual logical/raw BCD bytes or identity differ",
-        )?;
+        if let Some(sha256)=logical_sha256 {
+            phase="hash-current-FAT-namespace-and-raw-BCD-bytes";
+            let raw=raw_hash(efi,&pin,budget.maximum_control_bytes,events)?;
+            // Keep the original short-circuit order/checks: later native reads
+            // occur only when every preceding comparison already passed.
+            let same=if raw==sha256 {
+                phase="hash-actual-held-BCD-logical-bytes-closing";
+                if crate::sha256_native::hash_range(&mut file,0,bytes)?==sha256 {
+                    phase="GetFileInformationByHandle-actual-held-BCD-closing";
+                    legacy_identity(&file)?==(pin.identity.clone(),bytes)
+                }else{false}
+            }else{false};
+            phase="validate-logical-raw-and-native-identity-bookends";
+            need(same,"actual logical/raw BCD bytes or identity differ")?;
+        }else{
+            let (tool,directory,ordinal)=active.ok_or_else(||bad("attribute-only BCD capture lacks actual native semantic authority"))?;
+            phase="active-hive-current-FAT-raw-hash-opening";
+            let raw_before=raw_hash(efi,&pin,budget.maximum_control_bytes,events)?;
+            pin.sha256=raw_before;
+            phase="active-hive-bound-raw-copy-capacity";
+            let mut used=bytes;
+            for entry in std::fs::read_dir(directory)?{
+                let path=entry?.path();let metadata=std::fs::symlink_metadata(&path)?;
+                need(metadata.is_file()&&metadata.file_attributes()&0x400==0,"ordinary owned active-BCD capture directory required")?;
+                if path.extension().and_then(|v|v.to_str())==Some("bcd"){
+                    used=used.checked_add(metadata.len()).ok_or_else(||bad("aggregate BCD metadata capacity overflow"))?;
+                }
+            }
+            need(used<=budget.maximum_store_bytes.checked_mul(2).ok_or_else(||bad("BCD metadata reserve overflow"))?,
+                "actual raw/backup BCD copies exceed existing two-store metadata reservation")?;
+            let copy=directory.join(format!("active-hive-raw-{ordinal:04}.bcd"));
+            phase="active-hive-current-FAT-namespace-bound-raw-copy";
+            need(raw_copy(efi,&pin,&copy,budget.maximum_store_bytes,budget.maximum_control_bytes,events)?==raw_before,
+                "active hive raw copy differs from opening actual physical hash")?;
+            // The raw file is ordinary bounded J metadata. Attribute-only
+            // source handle is NEVER read for data and is not claimed to be.
+            let mut copied=OpenOptions::new().read(true).share_mode(3).custom_flags(0x00200000).open(&copy)?;
+            let copy_before=crate::reference_file::observe_reference_file_handle_with_limit(&copied,budget.maximum_store_bytes)?;
+            phase="active-hive-native-complete-current-system-enum-all";
+            let current=tool.enum_system_all(directory)?;
+            phase="active-hive-native-complete-durable-raw-copy-enum-all";
+            let raw_semantics=tool.enum_all(&copy,directory)?;
+            need(current==raw_semantics,"current SYSTEM BCD and durable FAT-bound raw copy differ in complete native semantics")?;
+            phase="active-hive-raw-copy-native-identity-and-content-bookend";
+            need(crate::reference_file::observe_reference_file_handle_with_limit(&copied,budget.maximum_store_bytes)?==copy_before
+                &&crate::sha256_native::hash_range(&mut copied,0,bytes)?==raw_before,
+                "native semantic query changed actual raw-copy identity/content")?;
+            phase="active-hive-current-FAT-raw-hash-closing";
+            need(raw_hash(efi,&pin,budget.maximum_control_bytes,events)?==raw_before
+                &&legacy_identity(&file)?==(pin.identity.clone(),bytes),
+                "active hive physical/FAT/held metadata changed across native semantic check")?;
+            native::persist(&directory.join(format!("active-hive-capture-{ordinal:04}.json")),
+                &serde_json::json!({"kind":"actual-active-BCD-attribute-only-raw-capture-v1",
+                    "actual_EFI_BCD_path":efi.bcd_path,"metadata_desired_access":128,"share_mode":3,
+                    "source_file_read_data_available":false,"source_file_data_read_calls":0,
+                    "raw_copy_path":copy,"raw_store":pin,"complete_native_system_and_raw_copy_semantics_equal":true,
+                    "native_objects_compared":current.len(),"physical_raw_hashes_and_current_FAT_map_equal":true,
+                    "actual_held_legacy52_EOF_identity_equal":true,"record_grants_authority":false}),
+                budget.maximum_control_bytes)?;
+        }
         Ok(pin)
     })();
-    let restored = privilege.restore();
+    let result=native::diagnose(result,"boot-store-capture-failed",phase,&context,events);
+    let restored=native::diagnose(privilege.restore(),"boot-store-capture-privilege-restore-failed",
+        "restore-SeManageVolumePrivilege",&context,events);
     match (result, restored) {
         (Ok(v), Ok(())) => Ok(v),
         (Err(e), _) | (_, Err(e)) => Err(e),

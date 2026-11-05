@@ -46,6 +46,31 @@ pub fn arm_prepared_boot(
     output: &Path,
     acknowledge_persistent_recovery_boot: bool,
 ) -> Result<RecoveryBootReceipt> {
+    arm_prepared_boot_inner(request, output, acknowledge_persistent_recovery_boot, None)
+}
+
+/// Reopen the exact completed image after a failed pre-install operation.
+/// This authenticates current bytes; it recreates no source write capability.
+pub fn arm_existing_prepared_boot(
+    request: PreparedBootRequest,
+    output: &Path,
+    acknowledge_persistent_recovery_boot: bool,
+    completed_image_record_sha256: [u8; 32],
+) -> Result<RecoveryBootReceipt> {
+    arm_prepared_boot_inner(
+        request,
+        output,
+        acknowledge_persistent_recovery_boot,
+        Some(completed_image_record_sha256),
+    )
+}
+
+fn arm_prepared_boot_inner(
+    request: PreparedBootRequest,
+    output: &Path,
+    acknowledge_persistent_recovery_boot: bool,
+    completed_image_record_sha256: Option<[u8; 32]>,
+) -> Result<RecoveryBootReceipt> {
     ensure!(
         acknowledge_persistent_recovery_boot,
         "explicit recovery boot acknowledgement required"
@@ -76,10 +101,12 @@ pub fn arm_prepared_boot(
         .and_then(|n| n.checked_add(request.image.observation.ram_bytes.checked_mul(2)?))
         .and_then(|n| n.checked_add(EXECUTION_STACK_RESERVE_BYTES + 5 * 1024 * 1024))
         .context("aggregate boot memory overflow")?;
-    let disk = request
-        .image
-        .budget
-        .admitted_working_bytes
+    let image_working = if completed_image_record_sha256.is_some() {
+        0
+    } else {
+        request.image.budget.admitted_working_bytes
+    };
+    let disk = image_working
         .checked_add(
             request
                 .maximum_evidence_bytes
@@ -223,15 +250,27 @@ pub fn arm_prepared_boot(
             "prepared J changed during boot handoff check"
         );
         observer.checkpoint("prepared-boot-source-J-ready-before-image", &mut events)?;
-        let image = recovery_image::build(
-            &PartitionSourceBinding {
-                storage: request.source.clone(),
-            },
-            &request.journal,
-            &volume,
-            &request.image,
-            &mut events,
-        )?;
+        let image_source = PartitionSourceBinding {
+            storage: request.source.clone(),
+        };
+        let image = if let Some(expected_record) = completed_image_record_sha256 {
+            recovery_image::reopen_completed(
+                &image_source,
+                &request.journal,
+                &volume,
+                &request.image,
+                expected_record,
+                &mut events,
+            )?
+        } else {
+            recovery_image::build(
+                &image_source,
+                &request.journal,
+                &volume,
+                &request.image,
+                &mut events,
+            )?
+        };
         observer.checkpoint("prepared-boot-owned-image-complete", &mut events)?;
         bundle.revalidate()?;
         source.revalidate(&mut restoration, &mut events)?;

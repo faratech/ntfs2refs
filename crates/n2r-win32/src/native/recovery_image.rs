@@ -1,5 +1,8 @@
 //! Full-Windows owned recovery-WIM builder. NO BCD/firmware/source data writer.
 //! All DISM targets/copies/temporary hive live under one fresh independent-J root.
+#[path="recovery_image/reopen.rs"]
+mod completed;
+pub use completed::reopen_completed;
 use super::*;
 use crate::{
     journal_file::GeneralJournalStorageBinding,

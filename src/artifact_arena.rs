@@ -1012,6 +1012,13 @@ impl ArtifactArena {
             registry_ram_bytes: state.index_bytes,
         })
     }
+    /// Telemetry only, querying the existing retained readonly native J owner.
+    /// Returns (current allocation,current EOF), never a reservation or peak.
+    pub(crate) fn observe_native_journal_metadata(&self)->Result<Option<(u64,u64)>>{
+        let state=self.0.state.lock().map_err(|_|anyhow::anyhow!("artifact arena lock poisoned"))?;
+        state.groups.get(&ArtifactGroup::NativeJournal).and_then(|group|group.native_journal.as_ref())
+            .map(|owner|owner.observe()).transpose()
+    }
 }
 impl ArtifactGroupPermit {
     pub fn group(&self) -> ArtifactGroup {

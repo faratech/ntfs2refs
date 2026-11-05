@@ -692,6 +692,33 @@ fn run_inner(
                 events: &mut Vec<NativeEvent>| {
                 use crate::resource_preparation::partition_preparation::PartitionExecutionProgress;
                 match progress {
+                    PartitionExecutionProgress::Accounting(preparation) => {
+                        // Paid by the existing independent bounded ledger RAM
+                        // allowance. Same-held outer metadata only; failures
+                        // remain unknown observations, never capacity truth.
+                        let mut ledger=observer.lock()?;
+                        let observed=ledger.meter.as_ref().map(|meter|meter.observe());
+                        let sample=observed.as_ref().and_then(|v|v.as_ref().ok());
+                        let error=observed.as_ref().and_then(|v|v.as_ref().err()).map(ToString::to_string);
+                        let report=serde_json::json!({"kind":"pre-ap-resource-accounting-v1","source_scope":"selected_partition",
+                            "preparation":preparation,"staging_backing":sample,"staging_observation_error":error,
+                            "staging_meter_present":ledger.meter.is_some(),"admitted_total_ram_bytes":request.total_ram_bytes,
+                            "independent_sdk_ram_reservation_bytes":sdk_ram,"ledger_ram_reservation_bytes":ledger_ram,
+                            "execution_stack_reservation_bytes":EXECUTION_STACK_RESERVE_BYTES,
+                            "controlled_pause_ram_reservation_bytes":pause_ram,
+                            "admitted_RAM_is_not_working_set_or_peak":true,
+                            "current_backing_allocation_is_not_virtual_capacity_or_peak":true,
+                            "measurement_grants_authority":false});
+                        ledger.record(&report)?;
+                        let text=|v:Option<u64>|v.map(|n|n.to_string()).unwrap_or_else(||"unknown".into());
+                        let allocated=sample.map(|s|s.backing_file.allocation_bytes);
+                        use std::io::Write as _;
+                        let _=writeln!(std::io::stdout().lock(),
+                            "Before apply: backing allocation {} bytes; capture literal {} bytes, index {} bytes; encoded journal {} bytes (allocation {}); admitted RAM {} bytes.",
+                            text(allocated),text(preparation["capture_literal_file_bytes"].as_u64()),
+                            text(preparation["capture_index_wire_bytes"].as_u64()),text(preparation["encoded_journal_bytes"].as_u64()),
+                            text(preparation["journal_current_allocation_bytes"].as_u64()),request.total_ram_bytes);
+                    }
                     PartitionExecutionProgress::Published(receipt) => {
                         observer.lock()?.record(receipt)?;
                         observer.checkpoint("partition-actual-publisher-before-AP", events)?;

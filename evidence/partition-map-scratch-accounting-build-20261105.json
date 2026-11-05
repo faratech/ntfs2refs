@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "kind": "partition-map-scratch-and-pre-apply-resource-report",
+  "status": "focused-check-passed-native-pending",
+  "files": [
+    {
+      "path": "src/artifact_arena.rs",
+      "bytes": 65505,
+      "sha256": "601d0fe8e9c503dc12129c9e4f1e05e60629420a3d6c138fe2411020cb618c7b"
+    },
+    {
+      "path": "src/general_shadow/paged_capture.rs",
+      "bytes": 33705,
+      "sha256": "12f1eba78abdde1e247e08d90f4df6af875768186bceb6783362d344e4bdf14e"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/prepare.rs",
+      "bytes": 49814,
+      "sha256": "e7533f132b7c27858eefa9511a822f7c335c61e65ebf9283716693bb6bcc9586"
+    },
+    {
+      "path": "src/resource_partition_preparation.rs",
+      "bytes": 17442,
+      "sha256": "221b7144dda2f73472957bbe72ea7d93928c630ff78508d905bba58e9b195e86"
+    },
+    {
+      "path": "src/resource_partition_alpha.rs",
+      "bytes": 35317,
+      "sha256": "990b9f5bb9f03fd57ac77da034ba07369edab3c5f1d3a84123a49b8a1d5b381d"
+    }
+  ],
+  "focused_check": {
+    "capacity": {
+      "actual_bytes": 323586528205,
+      "free_bytes": 83804524544,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 2147483648,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "wall_seconds": 22.9175178,
+    "native_run": false,
+    "shared_target_reused": true,
+    "exit_code": 0,
+    "unit_tests_run": false,
+    "kind": "public-partition-dispatch-focused-check",
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+  },
+  "prior_native": {
+    "source_commit": "6e4f74bbf122eecf74cff333a5cdaa55b6fff5f9",
+    "pid": 4924,
+    "birth_ms": 1793853951455,
+    "exit_code": 1,
+    "wall_seconds": 157.7932326,
+    "error": "non-source scratch requires an auxiliary/capture/recovery group",
+    "journal_bytes": 137148720,
+    "journal_file_id": "8a490200000002000000000000000000",
+    "journal_volume_serial": "12259941802954451809",
+    "lifecycle_8192_bytes_zero": true,
+    "source_writer_gate_issued": false,
+    "source_payload_writes": 0,
+    "live_cancellation_completed": true,
+    "independent_after_sha256": "5e86d1f7e69171130cd15dda7ed8b9725df07dae47088540fed37848437b003a",
+    "before_after_equal": true,
+    "oracle_pid": 4264,
+    "oracle_birth_ms": 1793854260401,
+    "oracle_exit": 0,
+    "oracle_wall_seconds": 2.3318989,
+    "oracle_bundle_sha256": "d1bf2a4eaff11eaf637d40c4b70656b285c82bdade1d61d4cd99150f11519b26"
+  },
+  "scratch_fix": "Use actual admitted RecoveryCopy permit for map scratch; Map output keeps its own separately admitted Map permit. Preserve constructor group restrictions and total arena budgeting.",
+  "accounting": "Same-held current outer backing, literal/index and native journal metadata plus existing arena usage and capture/J format facts before publication/apply. Errors remain explicit telemetry unknowns. Admitted limits, current allocation and wire length distinguished; no extra payload scans.",
+  "all_stage_device_io_totals_known": false,
+  "peak_ram_or_disk_measured": false,
+  "unit_tests_run": false,
+  "native_qualification_pending": true
+}

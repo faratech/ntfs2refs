@@ -64,6 +64,58 @@ pub(crate) struct PartitionProtectedPreparedJournal<'journal, 'domain, 'capture,
 }
 
 impl PartitionProtectedPreparedJournal<'_, '_, '_, '_, '_> {
+    /// Advisory same-held-file metadata and already computed format facts.
+    /// Errors remain unknown telemetry; this does not revalidate/hash payloads
+    /// or participate in source admission, reservation or writer decisions.
+    pub(crate) fn pre_apply_accounting(&self)->serde_json::Value{
+        let capture=self.candidate.protected_proof().captured();
+        let literal=capture.literal().pin();let index=capture.index().pin();
+        let literal_allocation=capture.literal().observe_allocation_bytes();
+        let index_allocation=capture.index().observe_allocation_bytes();
+        let arena=self.context.arena();let usage=arena.usage();
+        let native_journal=arena.observe_native_journal_metadata();
+        let journal_sample=native_journal.as_ref().ok().and_then(|v|v.as_ref());
+        let reads=capture.summary().get("read_counts");let f=self.domain.facts();
+        let mut report=serde_json::json!({"kind":"pre-ap-resource-accounting-v1","source_scope":"selected_partition",
+            "phase":"native-journal-prepared-before-publication","metadata_queries_only":true,
+            "admitted_arena_ram_bytes":arena.budget().ram_bytes,
+            "capture_literal_file_bytes":literal.snapshot.file_bytes,
+            "capture_literal_recorded_allocation_bytes":literal.snapshot.allocation_bytes,
+            "capture_literal_current_allocation_bytes":literal_allocation.as_ref().ok().copied(),
+            "capture_literal_allocation_error":literal_allocation.as_ref().err().map(ToString::to_string),
+            "capture_index_wire_bytes":index.bytes,
+            "capture_index_current_allocation_bytes":index_allocation.as_ref().ok().copied(),
+            "capture_index_allocation_error":index_allocation.as_ref().err().map(ToString::to_string),
+            "capture_allocation_basis":"current same-held metadata; recorded literal pin separately labelled",
+            "encoded_journal_bytes":f.journal_length,
+            "journal_current_allocation_bytes":journal_sample.map(|v|v.0),
+            "journal_current_file_bytes":journal_sample.map(|v|v.1),
+            "journal_allocation_error":native_journal.as_ref().err().map(ToString::to_string),
+            "journal_allocation_owner_present":native_journal.as_ref().ok().map(Option::is_some),
+            "encoded_journal_length_is_not_allocation":true,
+            "selected_bytes":f.selected_bytes,"old_zero_bytes":f.old_zero_bytes,"source_free_bytes":f.source_free_bytes,
+            "new_zero_bytes":f.new_zero_bytes,"copy_bytes":f.copy_bytes,"literal_bytes":f.literal_bytes,
+            "classification_basis":"journal encoding classes, not file relocation or source-device I/O counters"});
+        let counters=serde_json::json!({
+            "retained_file_payload_bytes":Option::<u64>::None,"relocated_file_payload_bytes":Option::<u64>::None,
+            "source_payload_bytes_read_total":Option::<u64>::None,"source_payload_bytes_written_total":Option::<u64>::None,
+            "capture_source_logical_bytes":reads.and_then(|v|v.get("source_logical_bytes")).and_then(serde_json::Value::as_u64),
+            "capture_shadow_bytes":reads.and_then(|v|v.get("shadow_bytes")).and_then(serde_json::Value::as_u64),
+            "capture_source_reference_bytes":reads.and_then(|v|v.get("source_reference_bytes")).and_then(serde_json::Value::as_u64),
+            "capture_source_reference_bytes_reused":reads.and_then(|v|v.get("source_reference_bytes_reused")).and_then(serde_json::Value::as_u64),
+            "capture_counters_are_single_stage_not_total_device_IO":true,
+            "arena_current_wire_bytes":usage.as_ref().ok().map(|u|u.actual_wire_bytes),
+            "arena_current_allocation_bytes":usage.as_ref().ok().map(|u|u.actual_allocated_bytes),
+            "arena_promised_bytes":usage.as_ref().ok().map(|u|u.promised_bytes),
+            "arena_leased_ram_bytes":usage.as_ref().ok().map(|u|u.leased_ram_bytes),
+            "arena_registry_ram_bytes":usage.as_ref().ok().map(|u|u.registry_ram_bytes),
+            "arena_observation_error":usage.as_ref().err().map(ToString::to_string),
+            "peak_RAM_or_allocation_measured":false,"source_or_replay_authority_granted":false});
+        if let (Some(report),serde_json::Value::Object(counters))=(report.as_object_mut(),counters){
+            report.extend(counters);
+        }
+        report
+    }
     pub(crate) fn revalidate(&mut self, events:&mut Vec<n2r_win32::NativeEvent>) -> Result<()> {
         let proof = self.candidate.protected_proof();
         let result = proof.captured().with_revalidation(|witness| {

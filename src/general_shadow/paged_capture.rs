@@ -174,6 +174,18 @@ impl ClosedCaptureLiteral {
     pub(crate) fn pin(&self) -> &LiteralCapturePin {
         &self.pin
     }
+    /// Same-held-file metadata only. This never hashes or scans literal bytes
+    /// and never replaces the stricter capture/admission revalidation.
+    pub(crate) fn observe_allocation_bytes(&self)->Result<u64>{
+        let file=self.file.try_borrow().map_err(|_|anyhow::anyhow!("capture literal metadata handle already borrowed"))?;
+        let current=n2r_win32::reference_file::observe_reference_file_handle_with_limit(&file,self.limit)?;
+        let old=&self.pin.snapshot;
+        ensure!(current.final_path==old.final_path&&current.volume_serial_number==old.volume_serial_number
+            &&current.file_id_128==old.file_id_128&&current.file_bytes==old.file_bytes
+            &&current.file_attributes==old.file_attributes&&current.number_of_links==old.number_of_links,
+            "capture literal metadata identity differs from actual closed owner");
+        Ok(current.allocation_bytes)
+    }
     pub(crate) fn read_exact_at(&self, offset: u64, output: &mut [u8]) -> Result<()> {
         ensure!(
             offset

@@ -66,6 +66,7 @@ pub(crate) struct PartitionPublicationReceipt {
     pub observed_before_apply_intent: bool,
 }
 pub(crate) enum PartitionExecutionProgress<'a> {
+    Accounting(&'a serde_json::Value),
     Published(&'a PartitionPublicationReceipt),
     PostFlush(&'a crate::selected_journal::resource_domain::prepare::PartitionPostFlushReceipt),
 }
@@ -186,6 +187,12 @@ impl PartitionPreparedResources {
                     request.maximum_index_bytes,
                     events,
                 )?;
+                // Advisory metadata facts at the actual prepared-J boundary.
+                // The original held owners remain; no payload/source scan.
+                if let Some(observe)=progress.as_mut(){
+                    let accounting=prepared.pre_apply_accounting();
+                    observe(PartitionExecutionProgress::Accounting(&accounting),events)?;
+                }
                 let map_required = prepared.recovery_maps_required(expected)?;
                 let maps = if map_required {
                     Some(arena.reserve_group(
@@ -197,7 +204,9 @@ impl PartitionPreparedResources {
                 };
                 let map_scratch = SourceScratch::new_auxiliary_in_arena(
                     source_budget,
-                    maps.as_ref().unwrap_or(&recovery).clone(),
+                    // Map output keeps its separate Map permit below. Its
+                    // scratch/RAM workspace uses the admitted recovery group.
+                    recovery.clone(),
                 )?;
                 let map_path = arena_root.join("recovery-maps.pages");
                 let publication_path = arena_root.join("recovery.json");

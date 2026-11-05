@@ -589,6 +589,9 @@ OperatorsoleVMowner; poll SAME18962/2400birth, neverrestartfromtimeout. OnHND ne
 PUBLIC3pathdispatchDRAFT .lab/development/public-partition-dispatch-draft/public-partition-dispatch.patch SHA450cfbe49a61e9e15564a2b14a9bd688b75b811e783c99db7994ba39c1af0858
 unapplied: actual shareddata/native recovery dispatch withoutmain edits, realtargetformat/capacitypolicies, explicitunsupportedoptions.
 Its632Alpha base nowneedsMERGE (preserve liveprivatecancel+batchtimestamps), notfullcopyoverwrite. Boot/offlineowner/bootcontrol/hardwarecoverage stillunfinished.
+LATEST02:53:50Z SAME48772native2400 isLIVE andPASSED priorconstructionfailure: actualnative144 PRIVATEb627.../attrs0/target4310...,
+ledger2393052B crossed partition-source-metadata-closed→partition-private-tree-source-shadow-check→source-metadata-opening without error.
+This is native acceptance of volume-query DUP fix, NOT J/AP/HND/fullconversion proof. Keep polling same18962/2400; no extra native/repair.
 
 - Fresh writes require original live opaque source certificate and actual source/target/J/arena owners. Saved JSON/paths/flags are routes, never authority.
 - Revalidate device/file identities, journal/index/ticket/lifecycle and recovery files. Recovery must not require thin-pool reattachment.

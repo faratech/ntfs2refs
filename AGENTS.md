@@ -443,7 +443,12 @@ Generic64Bceiling unchanged; same nativecall/auditbody and source/intent/GPTguar
 Lab+publiccheck0/32.6221558s/no units, evidence/typed-partition-setter-build-20261104.json. No speculativeeventcapincrease.
 Exact ed7 build ACTIVE hostsession16531 `.lab/development/release-candidates/partition-alpha-ed7f16c`, log
 `.lab/development/partition-alpha-ed7f16c-build.log`; fresh2GiBallprogrammeadmission/sharedtarget+staging/4jobs, no competingCargo.
-No converterGOfored7 yet. OperatoridleexclusiveVMowner/Off07ca17; unchanged reviewedOffv4/UTF8helpers canreuseexternalnewbuildpins.
+Exact ed7 build COMPLETED: hostsession16531 actual exit0, Cargo release146s, 414 held source files unchanged.
+Manifest9d08fdca42763acf264d347cb17fc25b2a4474174c70d9d6efd103448deaf1ba;
+lab-partition-alpha.exe8486400B/SHA0c98bc0dbc667d4d47eff48ebeee565b8ee2790a6edf46d3af15201c63046e25.
+Root issued ONE normal-run GO to exclusiveoperator using unchanged reviewedOffv4/UTF8helpers and exact newpins,
+conditional on fresh6GiB allprogrammecapacity/Off07ca17/sourceoracle. No restore/prearrangement/repair/retry.
+Evidence: evidence/partition-alpha-ed7f16c-exact-build-20261104.json. GO is not dispatch or success; await actualPID/terminal.
 
 - Fresh writes require original live opaque source certificate and actual source/target/J/arena owners. Saved JSON/paths/flags are routes, never authority.
 - Revalidate device/file identities, journal/index/ticket/lifecycle and recovery files. Recovery must not require thin-pool reattachment.

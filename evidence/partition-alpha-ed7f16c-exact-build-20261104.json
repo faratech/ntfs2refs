@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "kind": "exact-committed-partition-alpha-build",
+  "status": "build-passed-single-native-run-authorized-results-pending",
+  "source_commit": "ed7f16c0c4e1f2ca02d9412f94a1c9c1434e1fde",
+  "source_tree": "16131e46b95ca748d7d2e0822f59873c01704c62",
+  "build_directory": ".lab/development/release-candidates/partition-alpha-ed7f16c",
+  "build_manifest_sha256": "9d08fdca42763acf264d347cb17fc25b2a4474174c70d9d6efd103448deaf1ba",
+  "actual_build_exit_code": 0,
+  "cargo_reported_release_seconds": 146,
+  "binary": {
+    "name": "lab-partition-alpha.exe",
+    "bytes": 8486400,
+    "sha256": "0c98bc0dbc667d4d47eff48ebeee565b8ee2790a6edf46d3af15201c63046e25"
+  },
+  "source_before_after_verified": true,
+  "held_source_files": 414,
+  "shared_target_reused": true,
+  "working_tree_inputs_used": false,
+  "unit_tests_run": false,
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "change": "Use the fixed 120-byte SDK GPT setter path without raising the generic control input limit.",
+  "native_authorization": {
+    "maximum_converter_launches": 1,
+    "helper": ".lab/development/launch-partition-alpha-normal-8f-off-v4.ps1",
+    "helper_sha256": "bdfa8925db4a9e75c33bf5021f956e08d1d28bd77682ba2192b49186fb95966b",
+    "fresh_all_programme_capacity_admission_required": true,
+    "additional_forecast_bytes": 6442450944,
+    "source_restore_or_prearrangement": false,
+    "automatic_retry_or_repair": false,
+    "conversion_location": "guest owning source disk"
+  },
+  "qualification_inherited": false,
+  "public_frozen_alpha_changed": false,
+  "native_result_claimed": false
+}

@@ -1353,12 +1353,10 @@ impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
         input[..4].copy_from_slice(&1u32.to_le_bytes());
         input[8..120].copy_from_slice(&desired[32..144]);
         self.stage = PartitionTerminalStage::Poisoned;
-        let reply = control(
+        let reply = control_set_gpt_partition(
             &management,
             "terminal-SET_PARTITION_INFO_EX-once",
-            0x0007_c04c,
             &input,
-            0,
             events,
         )?;
         need(reply.is_empty(), "terminal setter returned unexpected data")?;

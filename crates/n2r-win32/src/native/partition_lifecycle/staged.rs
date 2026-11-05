@@ -895,12 +895,10 @@ impl PartitionPreparationGuard {
         )?;
         // Phase is poisoned BEFORE the single call: failure may still change GPT.
         self.stage = PartitionPreparationStage::Poisoned;
-        let result = control(
+        let result = super::super::control_set_gpt_partition(
             self.volume.as_ref().unwrap(),
             "partition-preparation-SET_PARTITION_INFO_EX-once",
-            SET_PARTITION,
             &input,
-            0,
             events,
         )?;
         require(

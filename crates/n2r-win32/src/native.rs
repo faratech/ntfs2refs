@@ -513,16 +513,41 @@ impl WritePolicy {
     }
 }
 
+#[derive(Clone,Copy)]
+enum ControlInputBudget { Ordinary64, GptPartitionInformation120 }
+impl ControlInputBudget {
+    fn input_limit(self)->usize {match self{Self::Ordinary64=>64,Self::GptPartitionInformation120=>120}}
+}
 fn control(
-    file: &File,
-    name: &str,
-    code: u32,
-    input: &[u8],
-    capacity: usize,
-    events: &mut Vec<NativeEvent>,
-) -> io::Result<Vec<u8>> {
-    if input.len() > 64 || capacity > 65536 || events.len() >= 128 {
-        return Err(invalid("native control budget exceeded"));
+    file:&File,name:&str,code:u32,input:&[u8],capacity:usize,events:&mut Vec<NativeEvent>,
+)->io::Result<Vec<u8>> {
+    control_admitted(file,name,code,input,capacity,events,ControlInputBudget::Ordinary64)
+}
+/// Fixed SDK single-GPT-partition setter only. The caller must already hold
+/// the actual source/intent/GPT lifecycle; this helper grants none of those.
+/// Ordinary control keeps its64-byte input ceiling and cannot select this case.
+fn control_set_gpt_partition(
+    file:&File,name:&str,input:&[u8;120],events:&mut Vec<NativeEvent>,
+)->io::Result<Vec<u8>> {
+    const _:()=assert!(std::mem::size_of::<windows_sys::Win32::System::Ioctl::SET_PARTITION_INFORMATION_EX>()==120
+        &&std::mem::offset_of!(windows_sys::Win32::System::Ioctl::SET_PARTITION_INFORMATION_EX,Anonymous)==8
+        &&std::mem::size_of::<windows_sys::Win32::System::Ioctl::PARTITION_INFORMATION_GPT>()==112);
+    if input[..4]!=1u32.to_le_bytes()||input[4..8]!=[0;4] {
+        return Err(invalid("typed partition setter requires exact GPT SDK header/padding"));
+    }
+    control_admitted(file,name,windows_sys::Win32::System::Ioctl::IOCTL_DISK_SET_PARTITION_INFO_EX,
+        input,0,events,ControlInputBudget::GptPartitionInformation120)
+}
+fn control_admitted(
+    file:&File,name:&str,code:u32,input:&[u8],capacity:usize,events:&mut Vec<NativeEvent>,budget:ControlInputBudget,
+)->io::Result<Vec<u8>> {
+    if matches!(budget,ControlInputBudget::GptPartitionInformation120)
+        &&(code!=windows_sys::Win32::System::Ioctl::IOCTL_DISK_SET_PARTITION_INFO_EX||input.len()!=120||capacity!=0) {
+        return Err(invalid("typed GPT setter control shape differs from fixed SDK contract"));
+    }
+    let limit=budget.input_limit();
+    if input.len()>limit||capacity>65536||events.len()>=128 {
+        return Err(invalid(&format!("native control budget exceeded: operation={name}, code=0x{code:08x}, input_bytes={}, output_capacity={capacity}, events={}, limits(input_bytes<={limit}, output_capacity<=65536, events<128)",input.len(),events.len())));
     }
     let mut output = vec![0; capacity];
     let mut returned = 0_u32;

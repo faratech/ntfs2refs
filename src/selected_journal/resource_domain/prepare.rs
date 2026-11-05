@@ -16,7 +16,7 @@ use crate::{
 
 mod qualification;
 pub(super) use qualification::FrozenPreparedWitness;
-pub(crate) use qualification::partition_apply::{PartitionResourcePreparedConversion,PartitionFreshApply,PartitionExecutionOutcome,PartitionApplyOutcome,PartitionApplyFailure,PartitionRetainedVerification};
+pub(crate) use qualification::partition_apply::{PartitionResourcePreparedConversion,PartitionFreshApply,PartitionExecutionOutcome,PartitionApplyOutcome,PartitionApplyFailure,PartitionRetainedVerification,PartitionPostFlushReceipt};
 pub(crate) use qualification::{
     FirstFlushedWrite, ResourceAppliedConversion, ResourceFreshApply, ResourcePreparedConversion,
 };

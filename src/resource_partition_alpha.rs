@@ -41,6 +41,8 @@ use std::{
 /// stack address-space bound, not a claim about peak resident memory.
 pub const WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
 const EXECUTION_STACK_RESERVE_BYTES: u64 = WORKER_STACK_BYTES as u64 + 1024 * 1024;
+#[path = "resource_partition_pause.rs"]
+mod controlled_pause;
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -253,6 +255,47 @@ pub fn run(
     output: &Path,
     acknowledge_source_conversion: bool,
 ) -> Result<()> {
+    run_inner(request, output, acknowledge_source_conversion, None, false)
+}
+/// Exercise the real mounted-BasicRO cancellation path without creating a
+/// shadow, source admission or payload writer. The guard closes before return.
+#[doc(hidden)]
+pub fn run_cancel_before_private(
+    request: PartitionAlphaRequest,
+    output: &Path,
+    acknowledge_source_conversion: bool,
+) -> Result<()> {
+    run_inner(request, output, acknowledge_source_conversion, None, true)
+}
+/// Explicit hidden-lab fault control. The nonce/command never authorizes I/O.
+#[doc(hidden)]
+pub fn run_with_controlled_post_flush_pause(
+    request: PartitionAlphaRequest,
+    output: &Path,
+    acknowledge_source_conversion: bool,
+    nonce: String,
+    acknowledge_controlled_pause: bool,
+) -> Result<()> {
+    ensure!(
+        acknowledge_controlled_pause,
+        "separate controlled post-flush pause acknowledgement required"
+    );
+    controlled_pause::require_nonce(&nonce)?;
+    run_inner(
+        request,
+        output,
+        acknowledge_source_conversion,
+        Some(nonce),
+        false,
+    )
+}
+fn run_inner(
+    request: PartitionAlphaRequest,
+    output: &Path,
+    acknowledge_source_conversion: bool,
+    pause_nonce: Option<String>,
+    cancel_readonly: bool,
+) -> Result<()> {
     ensure!(
         acknowledge_source_conversion && request.schema_version == 1,
         "explicit disposable source conversion acknowledgement required"
@@ -322,10 +365,21 @@ pub fn run(
     let intent_quota = PartitionPreparationGuard::maximum_intent_file_bytes()
         .checked_add(slack)
         .context("intent reservation overflow")?;
+    let pause_ram = if pause_nonce.is_some() {
+        controlled_pause::RAM_RESERVE_BYTES
+    } else {
+        0
+    };
+    let pause_evidence = if pause_nonce.is_some() {
+        controlled_pause::EVIDENCE_RESERVE_BYTES
+    } else {
+        0
+    };
     let control_quota = request
         .maximum_evidence_bytes
         .checked_mul(2)
         .and_then(|n| n.checked_add(intent_quota))
+        .and_then(|n| n.checked_add(pause_evidence))
         .context("control reservation overflow")?;
     let independent = request
         .minimum_free_bytes
@@ -349,6 +403,7 @@ pub fn run(
     let arena_ram = request
         .total_ram_bytes
         .checked_sub(EXECUTION_STACK_RESERVE_BYTES)
+        .and_then(|n| n.checked_sub(pause_ram))
         .and_then(|n| n.checked_sub(sdk_ram))
         .and_then(|n| n.checked_sub(ledger_ram))
         .context("total RAM cannot cover execution stacks and independent SDK lifecycle/owner/intent/evidence")?;
@@ -380,14 +435,80 @@ pub fn run(
     observer.lock()?.record(
         &serde_json::json!({"kind":"partition-alpha-admitted-resources","request":request,
         "actual_source":binding,"arena":resources,"intent_maximum_including_slack":intent_quota,
+        "cancel_before_private_requested":cancel_readonly,
         "intent_outside_arena":true,"evidence_outside_arena":true,"provider_outside_arena":true,
         "independently_reserved_sdk_ram_bytes":sdk_ram,"ledger_ram_bytes":ledger_ram,
         "worker_stack_reservation_bytes":WORKER_STACK_BYTES,
         "execution_stacks_reservation_bytes":EXECUTION_STACK_RESERVE_BYTES,
+        "controlled_pause_enabled":pause_nonce.is_some(),
+        "controlled_pause_reader_stack_reservation_bytes":if pause_nonce.is_some(){controlled_pause::READER_STACK_BYTES}else{0},
+        "controlled_pause_ram_reservation_bytes":pause_ram,
+        "controlled_pause_extra_control_evidence_reservation_bytes":pause_evidence,
         "stack_reservation_is_not_peak_resident_memory":true,
         "maximum_staging_is_observed_phase_budget_not_kernel_quota":true}),
     )?;
     observer.checkpoint("readonly-source-route-and-resource-admission", &mut events)?;
+    if cancel_readonly {
+        let cancellation = (|| -> Result<serde_json::Value> {
+            let intent = OpenOptions::new()
+                .create_new(true)
+                .read(true)
+                .write(true)
+                .share_mode(1)
+                .custom_flags(0x0020_0000)
+                .open(output.join("control/partition.intent"))?;
+            let mut guard = PartitionPreparationGuard::begin(
+                binding.clone(),
+                request.observation_budget,
+                intent,
+                Box::new(observer.clone()),
+                &mut events,
+            )?;
+            guard.protect_basic_readonly(&mut events)?;
+            observer.checkpoint("partition-cancel-actual-mounted-readonly", &mut events)?;
+            guard.cancel_before_private(&mut events)?;
+            let stage = guard.stage();
+            // Closing the actual locking FileObject releases the lock before
+            // an independent observer or subsequent conversion can open NTFS.
+            drop(guard);
+            ensure!(
+                stage == n2r_win32::partition_lifecycle::PartitionPreparationStage::Cancelled,
+                "actual live cancellation did not reach Cancelled"
+            );
+            Ok(
+                serde_json::json!({"kind":"partition-alpha-live-readonly-cancellation-result-v1",
+                "success":true,"actual_guard_stage":stage,"locking_guard_closed":true,
+                "payload_apply_attempted":false,"shadow_created":false,
+                "independent_file_preservation_verification_required":true}),
+            )
+        })();
+        let drained = observer.checkpoint("partition-cancel-guard-closed", &mut events);
+        return match (cancellation, drained) {
+            (Ok(value), Ok(())) => {
+                observer.lock()?.record(&value)?;
+                save(
+                    &output.join("control/result.json"),
+                    &value,
+                    request.maximum_evidence_bytes,
+                )?;
+                Ok(())
+            }
+            (Err(error), Ok(())) => {
+                let _ = observer.lock().and_then(|mut log| {
+                    log.record(&serde_json::json!({
+                    "kind":"partition-alpha-live-cancellation-error", "error":format!("{error:#}"),
+                    "automatic_retry":false,"preserve_actual_source_and_intent":true}))
+                });
+                Err(error.context(
+                    "live cancellation stopped; preserve actual source protection and intent",
+                ))
+            }
+            (Ok(_), Err(error)) => Err(error.into()),
+            (Err(error), Err(checkpoint)) => Err(error.context(format!(
+                "live cancellation and durable event checkpoint failed: {checkpoint}"
+            ))),
+        };
+    }
     let shadow = managed_shadow::create_with_profile(
         &output.join("provider/shadow.vhdx"),
         binding.storage.identity.partition_bytes,
@@ -523,12 +644,35 @@ pub fn run(
             maximum_index_bytes: resources.scratch_bytes / 16,
             recovery_arena_bytes: resources.scratch_bytes / 16,
         };
+        let mut pause_publication = None;
         let pending =
             owned.execute_and_handoff(&execution, &arena_root, &mut events, |phase, events| {
                 observer
                     .checkpoint(phase, events)
                     .map_err(anyhow::Error::from)
-            })?;
+            }, Some(|progress: crate::resource_preparation::partition_preparation::PartitionExecutionProgress<'_>,
+                events: &mut Vec<NativeEvent>| {
+                use crate::resource_preparation::partition_preparation::PartitionExecutionProgress;
+                match progress {
+                    PartitionExecutionProgress::Published(receipt) => {
+                        observer.lock()?.record(receipt)?;
+                        observer.checkpoint("partition-actual-publisher-before-AP", events)?;
+                        if pause_nonce.is_some() {
+                            save(&output.join("control/publication-before-AP.json"), receipt, 512 * 1024)?;
+                            pause_publication = Some(receipt.clone());
+                        }
+                    }
+                    PartitionExecutionProgress::PostFlush(receipt) => {
+                        observer.lock()?.record(receipt)?;
+                        observer.checkpoint("partition-nondiscovery-writes-flushed", events)?;
+                        if let Some(nonce) = pause_nonce.as_deref() {
+                            controlled_pause::wait(&observer, output, nonce,
+                                pause_publication.as_ref().context("actual pre-AP publisher receipt absent")?, receipt)?;
+                        }
+                    }
+                }
+                Ok(())
+            }))?;
         let trusted = hex::encode(pending.trusted_publication_sha256());
         println!("Trusted recovery publication SHA256: {trusted}");
         io::stdout().flush()?;

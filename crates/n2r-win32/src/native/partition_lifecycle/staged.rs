@@ -1,5 +1,6 @@
 //! Target-only staged protection. No disk setter, payload writer, JSON issuer
-//! or automatic Drop restoration. All transitions retain the original File.
+//! or automatic Drop restoration. Mounted BasicRO is relocked through a fresh
+//! fully bound volume FileObject before that object replaces the initial File.
 use super::super::partition_dump_locations::{
     ConfiguredDumpObservation, observe_configured_dump_locations,
 };
@@ -737,6 +738,10 @@ impl PartitionPreparationGuard {
         )
     }
     fn lock_and_flush(&mut self, events: &mut Vec<NativeEvent>) -> io::Result<()> {
+        if !self.locked && matches!(self.stage,
+            PartitionPreparationStage::BasicReadonly|PartitionPreparationStage::NativeReadonlyCaptured){
+            return self.relock_mounted_readonly(events);
+        }
         if !self.locked {
             control(
                 self.volume
@@ -762,6 +767,210 @@ impl PartitionPreparationGuard {
             "partition-preparation-extended-dasd", 0x0009_0083, &[], 0, events)?;
         require(reply.is_empty(), "extended DASD returned unexpected data")?;
         self.volume.as_ref().unwrap().sync_all()
+    }
+    /// UNLOCK/remount can leave the initial NTFS FileObject dismounted. Never
+    /// retry LOCK on it. Only this live guard can bind a fresh RW volume object
+    /// to its actual original token, BasicRO proof, GPT and critical baselines.
+    fn relock_mounted_readonly(&mut self, events: &mut Vec<NativeEvent>) -> io::Result<()> {
+        require(
+            !self.locked
+                && self.volume.is_some()
+                && self.physical.is_some()
+                && matches!(
+                    self.stage,
+                    PartitionPreparationStage::BasicReadonly
+                        | PartitionPreparationStage::NativeReadonlyCaptured
+                )
+                && self.current_info[32..48] == crate::layout::guid_bytes(BASIC)?
+                && crate::layout::u64_at(&self.current_info, 64)? == READONLY,
+            "fresh relock requires this live mounted BasicRO guard",
+        )?;
+        let token = self.token.clone();
+        let stage = self.stage;
+        let expected = self
+            .protection
+            .clone()
+            .ok_or_else(|| invalid("actual prior BasicRO protection required for live relock"))?;
+        self.checkpoint("partition-basic-ro-relock-opening", events)?;
+        require(events.len()<128,"fresh BasicRO open event budget exhausted")?;
+        let path = self.binding.storage.volume_path()?;
+        let opened = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(3)
+            .custom_flags(0xa000_0000)
+            .open(&path);
+        events.push(NativeEvent {
+            operation: "partition-basic-ro-relock-open-fresh-rw-volume".into(),
+            control_code: 0,
+            input: Vec::new(),
+            succeeded: opened.is_ok(),
+            native_error: opened.as_ref().err().and_then(io::Error::raw_os_error),
+            output: path.as_bytes().to_vec(),
+        });
+        let fresh = match opened {
+            Ok(file) => file,
+            Err(error) => {
+                let failure = io::Error::new(
+                    error.kind(),
+                    format!("opening fresh BasicRO RW volume {path}: {error}"),
+                );
+                return match self.checkpoint("partition-basic-ro-relock-open-failed", events) {
+                    Ok(()) => Err(failure),
+                    Err(checkpoint) => Err(io::Error::new(
+                        failure.kind(),
+                        format!("{failure}; durable event checkpoint also failed: {checkpoint}"),
+                    )),
+                };
+            }
+        };
+        let bound = (|| {
+            // Use the fresh object for native device/info queries too; no old
+            // FileObject is relied upon after its mounted phase was unlocked.
+            self.revalidate_current_with_volume(Some(&fresh), events)?;
+            self.check_volume(&fresh, events)?;
+            let ext = control(
+                &fresh,
+                "partition-basic-ro-relock-extents",
+                super::super::VOLUME_EXTENTS,
+                &[],
+                32,
+                events,
+            )?;
+            self.binding.storage.validate_volume_extent(&ext)?;
+            let ntfs = control(
+                &fresh,
+                "partition-basic-ro-relock-ntfs",
+                0x0009_0064,
+                &[],
+                128,
+                events,
+            )?;
+            let at = events.len();
+            let writable = control(
+                &fresh,
+                "partition-basic-ro-relock-write-protect",
+                IS_WRITABLE,
+                &[],
+                0,
+                events,
+            );
+            require(
+                writable.is_err()
+                    && events
+                        .get(at)
+                        .is_some_and(|e| !e.succeeded && e.native_error == Some(19)),
+                "fresh BasicRO volume lacks actual WRITE_PROTECT19",
+            )?;
+            require(
+                self.token.same_owner(&token)
+                    && expected.original_partition_info == self.original_info
+                    && expected.readonly_partition_info == self.current_info
+                    && expected.volume_extents == ext
+                    && expected.ntfs_volume_data == ntfs
+                    && ntfs.len() >= 96
+                    && expected.physical_disk_attributes == 0
+                    && expected.partition_write_protect_error == 19,
+                "fresh mounted NTFS/native protection differs from this actual guard",
+            )
+        })();
+        let drained = self.checkpoint("partition-basic-ro-relock-bound", events);
+        match (bound, drained) {
+            (Ok(()), Ok(())) => (),
+            (Err(error), Err(checkpoint)) => {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!("{error}; durable event checkpoint also failed: {checkpoint}"),
+                ));
+            }
+            (Err(error), _) | (_, Err(error)) => return Err(error),
+        }
+        // The stale direct-volume open can itself prevent the new FS lock.
+        // The fresh object is already fully bound and its proof durably saved.
+        // Poison before releasing that old object; the local fresh File is the
+        // sole relock candidate. Failure leaves persistent BasicRO and no saved
+        // volume handle, never an old-handle retry, GPT setter or restoration.
+        self.stage = PartitionPreparationStage::Poisoned;
+        drop(self.volume.take());
+        let locked = (|| {
+            let reply = control(
+                &fresh,
+                "partition-basic-ro-relock-lock-once",
+                super::super::LOCK,
+                &[],
+                0,
+                events,
+            )?;
+            require(reply.is_empty(), "fresh relock returned unexpected bytes")?;
+            Self::flush_relocked_volume(&fresh, "partition-basic-ro-relock-locked-flush", events)?;
+            let reply = control(
+                &fresh,
+                "partition-basic-ro-relock-dismount",
+                super::super::DISMOUNT,
+                &[],
+                0,
+                events,
+            )?;
+            require(reply.is_empty(), "fresh dismount returned unexpected bytes")?;
+            let reply = control(
+                &fresh,
+                "partition-basic-ro-relock-extended-dasd",
+                0x0009_0083,
+                &[],
+                0,
+                events,
+            )?;
+            require(
+                reply.is_empty(),
+                "fresh extended DASD returned unexpected bytes",
+            )?;
+            Self::flush_relocked_volume(&fresh, "partition-basic-ro-relock-final-flush", events)?;
+            self.revalidate_current_with_volume(Some(&fresh), events)?;
+            self.check_volume(&fresh, events)?;
+            require(
+                self.token.same_owner(&token)
+                    && self.current_info == expected.readonly_partition_info,
+                "live preparation token/native identity changed across fresh relock",
+            )
+        })();
+        let drained = self.checkpoint("partition-basic-ro-relock-closed", events);
+        match (locked, drained) {
+            (Ok(()), Ok(())) => (),
+            (Err(error), Err(checkpoint)) => {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!("{error}; durable event checkpoint also failed: {checkpoint}"),
+                ));
+            }
+            (Err(error), _) | (_, Err(error)) => return Err(error),
+        }
+        // Adopt only the successfully locked, flushed and fully revalidated
+        // replacement. This SAME live guard/token retains its native proof;
+        // the original dismounted FileObject was closed before the lock.
+        self.volume=Some(fresh);
+        self.locked = true;
+        self.stage = stage;
+        Ok(())
+    }
+    fn flush_relocked_volume(
+        file: &File,
+        operation: &str,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
+        require(
+            events.len() < 128,
+            "fresh relock flush event budget exhausted",
+        )?;
+        let result = file.sync_all();
+        events.push(NativeEvent {
+            operation: operation.into(),
+            control_code: 0,
+            input: Vec::new(),
+            succeeded: result.is_ok(),
+            native_error: result.as_ref().err().and_then(io::Error::raw_os_error),
+            output: Vec::new(),
+        });
+        result.map_err(|error| io::Error::new(error.kind(), format!("{operation}: {error}")))
     }
     fn expected_gpt(&self, current: &PartitionIsolationObservation) -> io::Result<()> {
         let old = &self.baseline.gpt;
@@ -797,6 +1006,9 @@ impl PartitionPreparationGuard {
         )
     }
     fn revalidate_current(&mut self, events: &mut Vec<NativeEvent>) -> io::Result<()> {
+        self.revalidate_current_with_volume(None,events)
+    }
+    fn revalidate_current_with_volume(&mut self,actual:Option<&File>, events: &mut Vec<NativeEvent>) -> io::Result<()> {
         self.checkpoint("partition-preparation-revalidate", events)?;
         let private = self.current_info[32..48] == crate::layout::guid_bytes(PRIVATE)?;
         let current = if private {
@@ -838,8 +1050,7 @@ impl PartitionPreparationGuard {
             "configured/current critical-role bindings changed",
         )?;
         self.check_volume(
-            self.volume
-                .as_ref()
+            actual.or(self.volume.as_ref())
                 .ok_or_else(|| invalid("volume transferred"))?,
             events,
         )
@@ -1032,8 +1243,8 @@ impl PartitionPreparationGuard {
             "no live pre-private cancellation state",
         )?;
         self.native = None;
-        self.protection = None;
         self.lock_and_flush(events)?;
+        self.protection = None;
         self.change(BASIC, 0, events)?;
         self.stage = PartitionPreparationStage::Cancelled;
         Ok(())

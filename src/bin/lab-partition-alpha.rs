@@ -32,6 +32,18 @@ fn run() -> anyhow::Result<()> {
         output: PathBuf,
         #[arg(long)]
         acknowledge_disposable_source_conversion: bool,
+        /// Exercise live BasicRO cancellation before creating a shadow.
+        #[arg(long, hide = true, conflicts_with_all = ["controlled_post_flush_pause_nonce", "acknowledge_controlled_post_flush_pause"])]
+        cancel_before_private: bool,
+        /// Exact nonce for the owning launcher's StandardInput Continue pipe.
+        #[arg(
+            long,
+            hide = true,
+            requires = "acknowledge_controlled_post_flush_pause"
+        )]
+        controlled_post_flush_pause_nonce: Option<String>,
+        #[arg(long, hide = true, requires = "controlled_post_flush_pause_nonce")]
+        acknowledge_controlled_post_flush_pause: bool,
     }
     let args = Args::parse();
     ensure!(
@@ -83,11 +95,27 @@ fn run() -> anyhow::Result<()> {
         serde_json::from_slice(&bytes)?;
     drop(bytes);
     drop(file);
-    ntfs2refs::resource_partition_alpha::run(
-        request,
-        &args.output,
-        args.acknowledge_disposable_source_conversion,
-    )
+    if args.cancel_before_private {
+        return ntfs2refs::resource_partition_alpha::run_cancel_before_private(
+            request,
+            &args.output,
+            args.acknowledge_disposable_source_conversion,
+        );
+    }
+    match args.controlled_post_flush_pause_nonce {
+        Some(nonce) => ntfs2refs::resource_partition_alpha::run_with_controlled_post_flush_pause(
+            request,
+            &args.output,
+            args.acknowledge_disposable_source_conversion,
+            nonce,
+            args.acknowledge_controlled_post_flush_pause,
+        ),
+        None => ntfs2refs::resource_partition_alpha::run(
+            request,
+            &args.output,
+            args.acknowledge_disposable_source_conversion,
+        ),
+    }
 }
 #[cfg(not(windows))]
 fn main() {

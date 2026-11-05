@@ -31,6 +31,21 @@ pub(crate) struct PartitionPreparedResources {
     _projection_directory: PartitionAuxiliaryDirectory,
 }
 
+/// Getter-derived recovery routing preserved before AP; diagnostic only.
+#[derive(Clone, serde::Serialize)]
+pub(crate) struct PartitionPublicationReceipt {
+    pub kind: &'static str,
+    pub publication_path: std::path::PathBuf,
+    pub publication_sha256: String,
+    pub locator_path: String,
+    pub locator_sha256: [u8; 32],
+    pub observed_before_apply_intent: bool,
+}
+pub(crate) enum PartitionExecutionProgress<'a> {
+    Published(&'a PartitionPublicationReceipt),
+    PostFlush(&'a crate::selected_journal::resource_domain::prepare::PartitionPostFlushReceipt),
+}
+
 pub(crate) struct PartitionExecutionRequest {
     pub journal: GeneralJournalStorageBinding,
     pub maximum_journal_bytes: u64,
@@ -70,6 +85,7 @@ impl PartitionPreparedResources {
         arena_root: &Path,
         events: &mut Vec<NativeEvent>,
         mut checkpoint: impl FnMut(&'static str, &mut Vec<NativeEvent>) -> Result<()>,
+        mut progress: Option<impl FnMut(PartitionExecutionProgress<'_>, &mut Vec<NativeEvent>) -> Result<()>>,
     ) -> Result<PartitionPendingFinalization> {
         use crate::{
             general_reconstruct::selected_native_journal::BoundPartitionCreationJournal,
@@ -174,16 +190,34 @@ impl PartitionPreparedResources {
                     &mut published,
                     &arena,
                 )?);
+                if let Some(observe) = progress.as_mut() {
+                    let receipt = PartitionPublicationReceipt {
+                        kind: "partition-actual-publisher-before-AP-v1",
+                        publication_path: published.publication_path().to_owned(),
+                        publication_sha256: published.publication_sha256().to_owned(),
+                        locator_path: published.locator_path().to_owned(),
+                        locator_sha256: published.locator_sha256(),
+                        observed_before_apply_intent: true,
+                    };
+                    // This callback must persist the actual publisher pin
+                    // synchronously while all published owners remain held.
+                    observe(PartitionExecutionProgress::Published(&receipt), events)?;
+                    ensure!(events.is_empty(), "pre-AP publisher observer did not drain actual events");
+                }
                 println!("Recovery metadata: {}", publication_path.display());
+                println!("Trusted recovery publication SHA256 before AP: {}", published.publication_sha256());
                 std::io::stdout().flush()?;
                 let fresh = published.into_fresh_apply(events, |events| {
                     checkpoint("partition-fresh-source-certificate", events)
                 })?;
-                Ok(fresh.apply_and_handoff(
-                    events,
-                    |events| checkpoint("partition-apply-and-handoff", events),
-                    |_| Ok(()),
-                ))
+                Ok(match progress {
+                    Some(mut observe) => fresh.apply_and_handoff_with_post_flush(
+                        events, |events| checkpoint("partition-apply-and-handoff", events),
+                        |_| Ok(()), |receipt, events| observe(PartitionExecutionProgress::PostFlush(receipt), events)),
+                    None => fresh.apply_and_handoff(
+                        events, |events| checkpoint("partition-apply-and-handoff", events),
+                        |_| Ok(())),
+                })
             },
         )?;
         Ok(PartitionPendingFinalization::from_actual_handoff(

@@ -13,6 +13,21 @@ use std::{
     sync::Arc,
 };
 
+/// Actual completed non-discovery source flush/readback facts only. This is
+/// diagnostic progress, never a writer/recovery token or first-write proof.
+#[derive(Serialize)]
+pub(crate) struct PartitionPostFlushReceipt {
+    pub kind: &'static str,
+    pub image_length: u64,
+    pub selected_bytes: u64,
+    pub range_count: u32,
+    pub native_bytes_written: u64,
+    pub delayed_discovery_bytes: u64,
+    pub immutable_journal_sha256: [u8; 32],
+    pub flush_and_pending_readback_succeeded: bool,
+    pub first_flushed_write_qualified: bool,
+}
+
 pub(crate) struct PartitionResourcePreparedConversion<'j, 'd, 'c, 'p, 's, 'e> {
     prepared: PartitionProtectedPreparedJournal<'j, 'd, 'c, 'p, 's>,
     expected: &'e PagedExpectedTree,
@@ -295,10 +310,31 @@ impl<'j, 'd, 'c, 'p, 's, 'e> PartitionFreshApply<'j, 'd, 'c, 'p, 's, 'e> {
     /// Consumes actual original admission exactly once. Failure is an explicit
     /// interrupted execution, never a request to hash or restore stale NTFS.
     pub(crate) fn apply_and_handoff(
+        self,
+        events: &mut Vec<NativeEvent>,
+        checkpoint: impl FnMut(&mut Vec<NativeEvent>) -> Result<()>,
+        after_apply: impl FnOnce(&SelectedResult) -> Result<()>,
+    ) -> PartitionExecutionOutcome {
+        self.apply_and_handoff_inner(events, checkpoint, after_apply,
+            None::<fn(&PartitionPostFlushReceipt, &mut Vec<NativeEvent>) -> Result<()>>)
+    }
+    /// Explicit lab progress observer. The default entry above stays hook-free.
+    /// Returning an error preserves actual AP/private recovery state; no retry.
+    pub(crate) fn apply_and_handoff_with_post_flush(
+        self,
+        events: &mut Vec<NativeEvent>,
+        checkpoint: impl FnMut(&mut Vec<NativeEvent>) -> Result<()>,
+        after_apply: impl FnOnce(&SelectedResult) -> Result<()>,
+        post_flush: impl FnOnce(&PartitionPostFlushReceipt, &mut Vec<NativeEvent>) -> Result<()>,
+    ) -> PartitionExecutionOutcome {
+        self.apply_and_handoff_inner(events, checkpoint, after_apply, Some(post_flush))
+    }
+    fn apply_and_handoff_inner(
         mut self,
         events: &mut Vec<NativeEvent>,
         mut checkpoint: impl FnMut(&mut Vec<NativeEvent>) -> Result<()>,
         after_apply: impl FnOnce(&SelectedResult) -> Result<()>,
+        post_flush: Option<impl FnOnce(&PartitionPostFlushReceipt, &mut Vec<NativeEvent>) -> Result<()>>,
     ) -> PartitionExecutionOutcome {
         let source = self.published.prepared.context.owner_token();
         let scope = self
@@ -308,7 +344,7 @@ impl<'j, 'd, 'c, 'p, 's, 'e> PartitionFreshApply<'j, 'd, 'c, 'p, 's, 'e> {
             .protected_proof()
             .scope()
             .capture_identity();
-        match self.try_apply(events, &mut checkpoint, after_apply) {
+        match self.try_apply(events, &mut checkpoint, after_apply, post_flush) {
             Ok(outcome) => PartitionExecutionOutcome::Handoff(outcome),
             Err(error) => PartitionExecutionOutcome::Interrupted(PartitionApplyFailure {
                 error,
@@ -323,6 +359,7 @@ impl<'j, 'd, 'c, 'p, 's, 'e> PartitionFreshApply<'j, 'd, 'c, 'p, 's, 'e> {
         events: &mut Vec<NativeEvent>,
         checkpoint: &mut impl FnMut(&mut Vec<NativeEvent>) -> Result<()>,
         after_apply: impl FnOnce(&SelectedResult) -> Result<()>,
+        post_flush: Option<impl FnOnce(&PartitionPostFlushReceipt, &mut Vec<NativeEvent>) -> Result<()>>,
     ) -> Result<PartitionApplyOutcome> {
         checkpoint_native_events(events, checkpoint)?;
         self.published.revalidate(events)?;
@@ -393,6 +430,25 @@ impl<'j, 'd, 'c, 'p, 's, 'e> PartitionFreshApply<'j, 'd, 'c, 'p, 's, 'e> {
             )?;
         }
         writer.sync_all()?;
+        if let Some(observe) = post_flush {
+            let native_bytes_written = writer.native_bytes_written();
+            ensure!(native_bytes_written > 0,
+                "post-flush progress requires an actual completed source write");
+            let first = p.domain.row(0)?;
+            let receipt = PartitionPostFlushReceipt {
+                kind: "partition-nondiscovery-source-writes-flushed-v1",
+                image_length: ticket.image_length,
+                selected_bytes: ticket.selected_bytes,
+                range_count: ticket.range_count,
+                native_bytes_written,
+                delayed_discovery_bytes: if first.capture.offset == 0 { GRANULE } else { 0 },
+                immutable_journal_sha256: ticket.immutable_sha256,
+                flush_and_pending_readback_succeeded: true,
+                first_flushed_write_qualified: false,
+            };
+            observe(&receipt, events)?;
+            ensure!(events.is_empty(), "post-flush observer did not drain actual native events");
+        }
         let first = p.domain.row(0)?;
         if first.capture.offset == 0 {
             write_partition_span(&mut writer, p.domain, 0, first, 0, GRANULE, &mut buffers)?;

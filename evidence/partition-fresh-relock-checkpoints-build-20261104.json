@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "kind": "mounted-readonly-fresh-relock-and-controlled-recovery-checkpoints",
+  "status": "focused-check-passed-native-pending",
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/native/partition_lifecycle/staged.rs",
+      "bytes": 58195,
+      "sha256": "bb551ce344306f2a279e0a055027fa06ce3d93c217cf38846898b9b3664452e2"
+    },
+    {
+      "path": "src/bin/lab-partition-alpha.rs",
+      "bytes": 4609,
+      "sha256": "d09ae253d01ea26fc9cb16304c6c6ceb601a82187807f5a738f14ba8f450f586"
+    },
+    {
+      "path": "src/resource_partition_alpha.rs",
+      "bytes": 28759,
+      "sha256": "e89ec5a7497379102c09bf0d98e637fb2417cb8e57391cc732101a745e30f809"
+    },
+    {
+      "path": "src/resource_partition_preparation.rs",
+      "bytes": 14613,
+      "sha256": "f3da2d8da67747a2044d0959c4f89e1b90a97e9c18c8cc15b30d0586bebb622e"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/prepare.rs",
+      "bytes": 45460,
+      "sha256": "08f26f915aac0573835badea3deb1e3c672a534e46656e8fe276b6b83e316c95"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/prepare/qualification/partition_apply.rs",
+      "bytes": 26578,
+      "sha256": "072e39b167dd03f53731c8c77b1d3555c05cdf252ec6a348c2642f67284902a5"
+    },
+    {
+      "path": "src/resource_partition_pause.rs",
+      "bytes": 5633,
+      "sha256": "c166dc50eeba04272d3f0f4cff039b63e960a3ab870fd4688c7ff7e7eaaa6d7d"
+    }
+  ],
+  "relock_draft_patch_sha256": "a1091998a0b55d2be1a5e3fd7a228467f3fc7b5c474e9c23c142f7c7efb08837",
+  "postflush_draft_patch_sha256": "2394d463cf551979244e9e26bdf06914c3ed8790f61ff07936dc0660b8ed6aec",
+  "check_exit": 0,
+  "check_seconds": 28.1635596,
+  "unit_tests_run": false,
+  "native_run": false,
+  "relock": "Actual mounted BasicRO guard verifies a fresh same-volume RW FileObject against original token/RO/native/GPT/critical baselines, closes stale object, locks/flushes/dismounts once, verifies closing facts, then transfers. Failures poison and preserve BasicRO.",
+  "initial_basic_lock_changed": false,
+  "cancel_mode": "Lab-only real BasicRO cancellation, with guard dropped before returning success; no shadow or payload writer created. Independent file oracle remains required.",
+  "interruption": "Actual publisher SHA256 durably exposed before AP; actual non-discovery flush/readback receipt before discovery writes; opt-in same-process stdin nonce Continue with 120-second watchdog. No first-write or physical-power qualification.",
+  "additional_pause_ram_bytes": 524288,
+  "additional_pause_evidence_bytes": 1048576,
+  "public_main_or_frozen_alpha_changed": false,
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+}

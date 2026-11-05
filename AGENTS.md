@@ -10,7 +10,8 @@ This current record supersedes historical LIVE/keep/next-action claims. Prior gu
 ## Objective and authority
 
 - Finish efficient in-place NTFS→ReFS, bounded preparation/recovery, useful hardware/NTFS coverage, and exact-build release qualification. The broader goal is incomplete.
-- Conversion and recovery run inside the Windows machine owning the source disk. Hyper-V is lab infrastructure. Preserve the native-shadow alpha; boot and independent-writer/GPL work are deferred.
+- Conversion and recovery run inside the Windows machine owning the source disk. Hyper-V is lab infrastructure. Preserve the native-shadow alpha; independent-writer/GPL work remains deferred.
+- User resumed and expanded the goal on 2026-11-04 to include boot/system conversion and broader hardware/NTFS coverage. Boot work is now in scope, using offline owning-machine execution and VM-only destructive qualification. Existing boot refusal guards remain until the actual offline path and native boot profile are proved; research or a switch never grants write authority.
 - Keep the public product frozen while finishing its finite alpha matrix. Avoid speculative changes, repeated unchanged checks and repeated full-payload scans.
 - User forbids **new and existing unit tests / cargo test** unless explicitly requested. Necessary focused builds and native integration cases are allowed.
 - **NEVER edit, format, reset or clean `src/main.rs`**. SHA256 `c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b`.
@@ -498,6 +499,22 @@ Operator capturing actual144/GPT/C/intent then authorized ONE orderlyOff/freshal
 Postflush observer frozen DRAFT .lab/development/partition-postflush-hook-draft/partition-postflush-hook.patch SHAfb497a5abc593c6b8b0dcb67bd3a3637d002c96ddf59d70ba7becda150cc0b4a,
 not applied/compiled. INTERRRUPTION-PLAN.md documents prerequisites: trustedpublisherSHA beforeAP, controlledpause, partitionpostbootJ/MIXEDpreflight.
 Current889 has no postflush hook; don't infer flushed-writecut fromAP. Publicfrozenalpha remains qualified separately/unchanged.
+
+USER RESUMED expanded full goal, including boot/offline OS conversion, after the explicit pause. Original scope remains incomplete.
+Current889 finally CLOSED Off/RAM0/current07ca/all18, receiptc7e88915d3345ada59f786792cbceebac50c4f212c9fa319e2badc6bb59b15bc;
+actualtargetBasicRO, all57rawsource artifacts archived, noJ/publication. Complete115file/1656672B archiveSHA1f247791fb13b38d9561ce71b100dc7e6add6e82e0cf938fd536db1c7342859e.
+Freshall18/80dependency census321959045698/free85406539776. Root authorized ONE restore07ca WITHOUTnewCP under plan3869ef795f8386f84ca72f93096a5d3024ac427522eea9f1109f3010507dd078,
+conditionalarchive/dependency/fresh1GiBcapacity insideold889absolute327044998096. This discards only disposable889workingCOWbranch after preservingunique metadata;
+all18 incl3cbBasicROimage remain. Awaitactualoperatorclosure; no native/start authorization yet.
+
+Root APPLIED real mounted-BasicRO fresh-handle relock for cancellation AND normalfreeze: same actualguard/token/nativeRO/GPT/critical bookends,
+close stale FileObject after freshproof BEFORE singleLOCK, thenflush/dismount/DASD/flush/closingproof andtransfer. No old-handle retry/setterfallback.
+Lab-only --cancel-before-private exercisesbegin→actualBasicRO→cancel→dropguardbeforeresult; no shadow/payloadwriter, independent8oracle required.
+Also applied actualpreAPpublisherSHA receipt, typedpost-nondiscoveryflush receipt, explicitnonce/ACK stdinContinue/120s watchdog labpause.
+Normaldefault no pause; extra512KiBRAM/1MiBevidence charged onlypausemode. No fabricatedNativeEvent or first-writecutclaim.
+Combinedlib+labalpha+labrecovery focusedcheck0/28.1635596s/sharedtarget/no units. evidence/partition-fresh-relock-checkpoints-build-20261104.json.
+Newcode NOT natively qualified; exactcommittedbuild pending. OperatorpreparingDRAFT oneboot cancel→independentNTFSoracle→normalconvert→ReFSoracle case.
+Sourceprivate-preAP livecancel still missing; separateagentdraft only. Rootmain unchanged. Boot control/inactiveOS path not enabled from research.
 
 - Fresh writes require original live opaque source certificate and actual source/target/J/arena owners. Saved JSON/paths/flags are routes, never authority.
 - Revalidate device/file identities, journal/index/ticket/lifecycle and recovery files. Recovery must not require thin-pool reattachment.

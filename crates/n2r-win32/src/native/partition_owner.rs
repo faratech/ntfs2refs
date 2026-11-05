@@ -16,7 +16,7 @@ use std::{
     fs::{File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     os::windows::fs::OpenOptionsExt,
-    sync::Arc,
+    sync::{Arc, Mutex, MutexGuard},
 };
 
 const PRIVATE_TYPE: &str = "b627aadb-a893-48b6-aa0b-71e5f30ee370";
@@ -50,7 +50,7 @@ pub struct PartitionScopedOwner {
     recovery_events: Option<super::partition_lifecycle::PartitionNativeEventSink>,
 }
 struct PartitionOwnerIdentity {
-    _private: (),
+    data_cursor: Mutex<()>,
 }
 /// Stable equality identity from an actual owner, never source admission.
 /// Moving the owner preserves it; no serialized/path constructor exists.
@@ -59,6 +59,10 @@ pub struct PartitionOwnerToken(Arc<PartitionOwnerIdentity>);
 impl PartitionOwnerToken {
     pub fn same_owner(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
+    }
+    /// Private synchronization only; no handle or source permission is issued.
+    pub(super) fn lock_data_cursor(&self) -> io::Result<MutexGuard<'_, ()>> {
+        self.0.data_cursor.lock().map_err(|_|io::Error::other("actual source FILE_OBJECT cursor lock poisoned"))
     }
 }
 
@@ -382,7 +386,7 @@ impl PartitionScopedOwner {
             .custom_flags(0xa000_0000)
             .open(route)?;
         let mut owner = Self {
-            identity: Arc::new(PartitionOwnerIdentity { _private: () }),
+            identity: Arc::new(PartitionOwnerIdentity { data_cursor: Mutex::new(()) }),
             file,
             physical_readonly,
             binding,
@@ -430,7 +434,7 @@ impl PartitionScopedOwner {
             return Err(io::Error::other("original lifecycle File is not the actual private target"));
         }
         let mut owner = Self {
-            identity: Arc::new(PartitionOwnerIdentity { _private: () }),
+            identity: Arc::new(PartitionOwnerIdentity { data_cursor: Mutex::new(()) }),
             file, physical_readonly, binding, budget,
             enrolled: PartitionOwnerState {
                 partition, configured_dump_locations: dumps, vds_current_volume_roles: vds_roles,
@@ -441,6 +445,18 @@ impl PartitionScopedOwner {
         };
         owner.revalidate(events)?;
         Ok(owner)
+    }
+    /// Reduced read duplicate of this actual retained source FileObject.
+    /// Caller brackets construction with full actual owner revalidation.
+    pub(super) fn duplicate_source_read_lane(&self, events: &mut Vec<NativeEvent>)
+        -> io::Result<super::partition_lifecycle::held_read::HeldSourceRead> {
+        if self.poisoned { return Err(io::Error::other("poisoned source cannot issue a held read lane")); }
+        let guid=crate::layout::guid_bytes(&self.binding.storage.identity.partition_guid)?;
+        let expected=self.enrolled.partition.gpt.native_layout.get(48..)
+            .and_then(|rows|rows.chunks_exact(144).find(|row|row[48..64]==guid))
+            .ok_or_else(||io::Error::other("held read lane source native row absent"))?;
+        super::partition_lifecycle::held_read::duplicate_bound(
+            &self.file,&self.binding,expected,&self.owner_token(),events)
     }
     pub fn construction_metadata_memory_bytes(&self) -> u64 { self.budget.ram_bytes }
     /// Query-only duplicate of the original lifecycle FileObject. Neither a
@@ -655,18 +671,14 @@ impl Read for PartitionScopedOwner {
             as usize;
         let transfer = (lead + count).div_ceil(GRANULE as usize) * GRANULE as usize;
         let expected = self.position - lead as u64;
-        let sought = match self.file.seek(SeekFrom::Start(expected)) {
-            Ok(at) => at,
-            Err(error) => {
-                self.poisoned = true;
-                return Err(error);
+        let result = (|| {
+            let _cursor=self.identity.data_cursor.lock()
+                .map_err(|_|io::Error::other("actual source FILE_OBJECT cursor lock poisoned"))?;
+            if self.file.seek(SeekFrom::Start(expected))? != expected {
+                return Err(io::Error::other("partition read seek differs"));
             }
-        };
-        if sought != expected {
-            self.poisoned = true;
-            return Err(io::Error::other("partition read seek differs"));
-        }
-        let result = self.file.read(&mut self.buffer.bytes_mut()[..transfer]);
+            self.file.read(&mut self.buffer.bytes_mut()[..transfer])
+        })();
         match result {
             Ok(n) if n >= lead + count => {
                 output[..count].copy_from_slice(&self.buffer.bytes_mut()[lead..lead + count]);
@@ -719,6 +731,8 @@ impl PartitionPagedWriter<'_, '_> {
             if self.poisoned || self.owner.poisoned {
                 return Err(io::Error::other("partition paged writer poisoned"));
             }
+            let _cursor=self.owner.identity.data_cursor.lock()
+                .map_err(|_|io::Error::other("actual source FILE_OBJECT cursor lock poisoned"))?;
             self.owner.file.sync_all()?;
             if let Some((at, bytes, expected)) = self.pending {
                 if self.owner.file.seek(SeekFrom::Start(at))? != at {
@@ -892,41 +906,24 @@ impl Write for PartitionPagedWriter<'_, '_> {
         })();
         let requested = admission.map_err(|error| self.poison(error))?;
         let at = self.owner.position;
-        let sought = self
-            .owner
-            .file
-            .seek(SeekFrom::Start(at))
-            .map_err(|error| self.poison(error))?;
-        if sought != at {
-            return Err(self.poison(io::Error::other("partition write seek differs")));
-        }
-        self.owner.buffer.bytes_mut()[..input.len()].copy_from_slice(input);
-        self.requested = requested;
-        match self
-            .owner
-            .file
-            .write(&self.owner.buffer.bytes_mut()[..input.len()])
-        {
-            Ok(n) if n == input.len() => {
-                self.written += n as u64;
-                self.owner.position += n as u64;
-                self.pending = Some((at, n, Sha256::digest(input).into()));
-                Ok(n)
+        let result = (|| {
+            let _cursor=self.owner.identity.data_cursor.lock()
+                .map_err(|_|io::Error::other("actual source FILE_OBJECT cursor lock poisoned"))?;
+            if self.owner.file.seek(SeekFrom::Start(at))? != at {
+                return Err(io::Error::other("partition write seek differs"));
             }
-            Ok(_) => {
-                self.poisoned = true;
-                self.owner.poisoned = true;
-                Err(io::Error::new(
-                    io::ErrorKind::WriteZero,
-                    "short partition write; authenticated recovery required",
-                ))
-            }
-            Err(error) => {
-                self.poisoned = true;
-                self.owner.poisoned = true;
-                Err(error)
-            }
-        }
+            self.owner.buffer.bytes_mut()[..input.len()].copy_from_slice(input);
+            self.requested = requested;
+            let n=self.owner.file.write(&self.owner.buffer.bytes_mut()[..input.len()])?;
+            if n!=input.len() {return Err(io::Error::new(io::ErrorKind::WriteZero,
+                "short partition write; authenticated recovery required"));}
+            self.written += n as u64;
+            self.owner.position += n as u64;
+            self.pending = Some((at, n, Sha256::digest(input).into()));
+            Ok(n)
+        })();
+        // The mutex guard is gone before poisoning either borrowed owner.
+        result.map_err(|error|self.poison(error))
     }
     fn flush(&mut self) -> io::Result<()> {
         self.sync_all()

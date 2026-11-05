@@ -631,6 +631,17 @@ RootauthorizedONEorderlyOff afteralloriginal/oraclebirthsabsent/tasksidle; fresh
 NEXTcase mayuseCURRENT restoredNTFSSource ifBefore8matches, no gratuitousbaselineRestore/no repeatCancel. Newexactbuild/RootGO required.
 Held-dataReadLaneDRAFT inprogress: sameOriginalFileObject readonlyDUP0x00100081+NtQueryObject56+nativeidentity, sharedcursorMutex acrossowner/lane/writerIO.
 No currentcode appliedyet; fagentownsDRAFT. Lowspaceagentread-onlyaudits terminalrevalidate_closed freshGLOBALROOT underheldlock forsameclassissue.
+HelddataReadLane NOWAPPLIED/CHECKED3files: actualsameOriginalFILE_OBJECT DuplicateHandle readonly0x00100081,
+NtQueryObject56B/accessmask+nativeDevice12/Partition144/token bookends, no sourcepathreopen orwriterAPI.
+Source ArcIdentity owns cursorMutex; ALLownerRead/writerWrite/writerFlush+Readback/laneRead seek+I/O pairs serialized, logicalpositionsindependent.
+Nativegates/policy/requested/written/pending/poisonrules retained. Focusedlib+public+3labcheck0/29.1964616s/sharedtarget/no units;
+evidence/partition-held-read-lane-build-20261105.json. Nativequalificationpending; no newIOVOLUMEprobe.
+TerminalsameclassissueCONFIRMED: revalidate_closed currentlyfreshGLOBALROOT whilefileSome(originallockingowner), usedfreshHND/ABT/enterReadonly.
+LowspaceagentpreparingtinyTerminalRawReader Held/Independent backing usingSAMEreadonlyDUP/cursor API, ALLJ/body/index/lifecycle/NEW/OLD/COPY/zero/bootproofsretained.
+Do not buildnextcandidate untilthatminimalterminalfix reviewed; no more broadrefactors/tests.
+OperatorOff63262 alreadyauthorized/active; doNOTrepeatStop. LatestsourceAfterCancel8/sourceNTFS0verified, all18 unchanged; currentSource reuse(noRestore) planned.
+Nextcase shouldqualify ACTUALpublicntfs2refs --drive D --partition6 --minimize-scratch (ONEinteractivey), notanotherlab-onlyrun;
+operatorpreparingDRAFTpublicharness with actualdynamicrunpath/nativePID/result/HND/retirement/After8, no executeuntilRootGO+exactnewbuild.
 
 - Fresh writes require original live opaque source certificate and actual source/target/J/arena owners. Saved JSON/paths/flags are routes, never authority.
 - Revalidate device/file identities, journal/index/ticket/lifecycle and recovery files. Recovery must not require thin-pool reattachment.

@@ -1,13 +1,12 @@
 //! Target-only lifecycle implementation plus the unchanged bounded read lane.
 use super::partition_isolation::{PartitionObservationBudget, PartitionSourceBinding};
 use super::{
-    AlignedBuffer, MAX_IO, NativeEvent, PartitionOwnerToken, PartitionScopedOwner, control,
+    AlignedBuffer, MAX_IO, NativeEvent, PartitionOwnerToken, PartitionScopedOwner,
 };
 use std::{
-    fs::{File, OpenOptions},
     io::{self, Read, Seek, SeekFrom},
-    os::windows::fs::OpenOptionsExt,
 };
+pub(super) mod held_read;
 mod staged;
 pub use staged::{
     PartitionIntentReceipt, PartitionNtfsAdmission, PartitionPreparationGuard, PartitionLiveCancellationReceipt,
@@ -16,10 +15,11 @@ pub use staged::{
     PartitionReadonlyReader, freeze_mounted_ntfs_partition, require_complete_fresh_ntfs_admission,
 };
 
-/// Independent readonly FILE_OBJECT/cursor opened while actual owner remains
-/// held. No Write, Deserialize or caller-selected path constructor exists.
+/// Independent logical cursor on a readonly duplicate of the actual locking
+/// FILE_OBJECT. Kernel cursor access is serialized with the owner and writer.
+/// No Write, Deserialize or caller-selected path constructor exists.
 pub struct PartitionReadLane {
-    file: File,
+    file: held_read::HeldSourceRead,
     binding: PartitionSourceBinding,
     token: PartitionOwnerToken,
     buffer: AlignedBuffer,
@@ -37,17 +37,7 @@ impl PartitionReadLane {
         owner.revalidate(events)?;
         let binding = owner.binding().clone();
         let token = owner.owner_token();
-        let route = format!(
-            "\\\\?\\GLOBALROOT\\Device\\Harddisk{}\\Partition{}",
-            binding.storage.disk_number, binding.storage.identity.partition_number
-        );
-        let file = OpenOptions::new()
-            .read(true)
-            .share_mode(3)
-            .custom_flags(0xa000_0000)
-            .open(&route).map_err(|error|io::Error::new(error.kind(),format!(
-                "PartitionReadLane::from_owner readonly GLOBALROOT CreateFile {route}: {error}; native_error={:?}",
-                error.raw_os_error())))?;
+        let file = owner.duplicate_source_read_lane(events)?;
         let mut lane = Self {
             file,
             binding,
@@ -77,22 +67,9 @@ impl PartitionReadLane {
                 ));
             }
             owner.revalidate(events)?;
-            let number = control(
-                &self.file,
-                "readonly-partition-lane-device",
-                super::DEVICE,
-                &[],
-                12,
-                events,
-            )?;
-            let info = control(
-                &self.file,
-                "readonly-partition-lane-info",
-                0x0007_0048,
-                &[],
-                144,
-                events,
-            )?;
+            self.file.require_owner(&self.binding, &self.token)?;
+            let number = self.file.device(events)?;
+            let info = self.file.partition_info(events)?;
             let target_guid =
                 crate::layout::guid_bytes(&self.binding.storage.identity.partition_guid)?;
             let expected = owner.state().partition.gpt.native_layout[48..]
@@ -155,10 +132,7 @@ impl Read for PartitionReadLane {
                 (out.len().min(MAX_IO - lead) as u64).min(self.byte_len() - self.position) as usize;
             let transfer = (lead + n).div_ceil(4096) * 4096;
             let at = self.position - lead as u64;
-            if self.file.seek(SeekFrom::Start(at))? != at {
-                return Err(io::Error::other("partition lane seek differs"));
-            }
-            let got = self.file.read(&mut self.buffer.bytes_mut()[..transfer])?;
+            let got = self.file.read_at(at, &mut self.buffer.bytes_mut()[..transfer])?;
             if got < lead + n {
                 return Err(io::Error::new(
                     io::ErrorKind::UnexpectedEof,

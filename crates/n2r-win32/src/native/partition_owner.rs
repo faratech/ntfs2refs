@@ -738,8 +738,11 @@ impl PartitionPagedWriter<'_, '_> {
             }
             let _cursor=self.owner.identity.data_cursor.lock()
                 .map_err(|_|io::Error::other("actual source FILE_OBJECT cursor lock poisoned"))?;
-            self.owner.file.sync_all()?;
             if let Some((at, bytes, expected)) = self.pending {
+                // Every successful write creates pending; only verified
+                // flush/readback clears it. With None there is no dirty
+                // source write to flush, including the first J read view.
+                self.owner.file.sync_all()?;
                 if self.owner.file.seek(SeekFrom::Start(at))? != at {
                     return Err(io::Error::other("partition readback seek differs"));
                 }

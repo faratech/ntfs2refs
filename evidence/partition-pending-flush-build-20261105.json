@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "kind": "pending-source-flush-and-native-io-error-context",
+  "status": "focused-check-passed-native-pending",
+  "files": [
+    {
+      "sha256": "adad69102cbdc7ed6c917d3a584dd91d547ad9df4e2828bb8b3c906c75d19e54",
+      "path": "crates/n2r-win32/src/native/partition_owner.rs",
+      "bytes": 46355
+    },
+    {
+      "sha256": "72c8fa74817f66a3c649bf459e29fc4c1f108f46dc204d84451f574b2a90fe90",
+      "path": "src/selected_journal/resource_domain/prepare/qualification/partition_apply.rs",
+      "bytes": 27335
+    },
+    {
+      "sha256": "e105e7fa8d46e7259dca51afa8e05514d893eba728b8fa999407a0eb6d60af55",
+      "path": "src/selected_journal/resource_domain/reopen/replay.rs",
+      "bytes": 47784
+    }
+  ],
+  "focused_check": {
+    "native_run": false,
+    "kind": "public-partition-dispatch-focused-check",
+    "capacity": {
+      "actual_bytes": 324069970025,
+      "free_bytes": 83311390720,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 2147483648,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "exit_code": 0,
+    "wall_seconds": 31.4887359,
+    "shared_target_reused": true,
+    "unit_tests_run": false,
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+  },
+  "reviewed_patch_sha256": "812804a25ff7cac1e5449514ce6c062e97ce411c059850f2eff1edca0536578a",
+  "behavior": "Skip source FlushFileBuffers only when writer.pending is None. Every successful write sets pending; full flush/seek/readback/SHA verification remains required before clearing it. Poison and cursor serialization unchanged. Root anyhow context preserves original native error chain and identifies phase/read/write/flush.",
+  "normal_cached_readonly_fileobject_hypothesis_proved": false,
+  "native_qualification_pending": true,
+  "existing_ap_reclassified_or_modified": false,
+  "preserved_ap_archive_sha256": "226bd1003f01b776c7e22279a4da3dc36bec5a83062ab2a6ec3586ade9a7f987",
+  "observed_fd777_pre_ap_accounting": {
+    "report_sha256": "a55e914550879c0c8333b4263ec679fec96db98a9fe90cfee2eabed8e2d284e6",
+    "publisher_receipt_sha256": "a8fe625fc9ce0e327d8f4d54fdf428a9d360348d288cf344710089d1c15f971d",
+    "admitted_total_ram_bytes": 1786877270,
+    "admitted_arena_ram_bytes": 1544577708,
+    "current_arena_leased_ram_bytes": 265629828,
+    "current_arena_allocation_bytes": 149740432,
+    "current_arena_wire_bytes": 149436362,
+    "promised_arena_bytes": 1259571959,
+    "current_backing_allocation_bytes": 171966464,
+    "journal_wire_bytes": 137154376,
+    "current_journal_allocation_bytes": 137154560,
+    "capture_index_wire_bytes": 18896,
+    "current_capture_index_allocation_bytes": 20480,
+    "capture_literal_wire_bytes": 2412544,
+    "capture_source_reference_bytes": 67198976,
+    "peak_or_all_stage_io_measured": false
+  },
+  "unit_tests_run": false
+}

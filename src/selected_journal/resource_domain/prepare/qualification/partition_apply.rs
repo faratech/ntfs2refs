@@ -256,7 +256,8 @@ fn write_partition_span(
         "partition span escapes actual descriptor"
     );
     let original = {
-        let mut journal = writer.journal_read_view()?;
+        let mut journal = writer.journal_read_view()
+            .context("partition apply: opening same-J read view after pending source flush/readback")?;
         super::apply::record(row, domain, &mut journal)?
     };
     let mut done = 0;
@@ -264,9 +265,11 @@ fn write_partition_span(
         let count = usize::try_from((length - done).min(BUFFER as u64))?;
         let within = add(start, done)?;
         let offset = add(row.capture.offset, within)?;
-        at(writer, offset, &mut buffers.current[..count])?;
+        at(writer, offset, &mut buffers.current[..count])
+            .with_context(||format!("partition apply: current-source read request offset={offset},bytes={count} (includes pending flush/readback)"))?;
         {
-            let mut journal = writer.journal_read_view()?;
+            let mut journal = writer.journal_read_view()
+            .context("partition apply: opening same-J read view after pending source flush/readback")?;
             super::apply::read_new(
                 domain,
                 &mut journal,
@@ -296,9 +299,11 @@ fn write_partition_span(
             }
         }
         if buffers.current[..count] != buffers.new[..count] {
-            writer.seek(SeekFrom::Start(offset))?;
+            writer.seek(SeekFrom::Start(offset))
+                .with_context(||format!("partition apply: prewrite logical seek offset={offset} (includes pending flush/readback)"))?;
             ensure!(
-                writer.write(&buffers.new[..count])? == count,
+                writer.write(&buffers.new[..count])
+                    .with_context(||format!("partition apply: bounded native source write request offset={offset},bytes={count}"))? == count,
                 "short bounded partition native write"
             );
         }
@@ -429,7 +434,7 @@ impl<'j, 'd, 'c, 'p, 's, 'e> PartitionFreshApply<'j, 'd, 'c, 'p, 's, 'e> {
                 &mut buffers,
             )?;
         }
-        writer.sync_all()?;
+        writer.sync_all().context("partition apply: non-discovery pending source flush/readback")?;
         if let Some(observe) = post_flush {
             let native_bytes_written = writer.native_bytes_written();
             ensure!(native_bytes_written > 0,
@@ -453,7 +458,7 @@ impl<'j, 'd, 'c, 'p, 's, 'e> PartitionFreshApply<'j, 'd, 'c, 'p, 's, 'e> {
         if first.capture.offset == 0 {
             write_partition_span(&mut writer, p.domain, 0, first, 0, GRANULE, &mut buffers)?;
         }
-        writer.sync_all()?;
+        writer.sync_all().context("partition apply: discovery pending source flush/readback")?;
         writer.revalidate(events)?;
         let digest = super::apply::check_selected(
             &mut writer,

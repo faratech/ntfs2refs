@@ -1034,9 +1034,11 @@ fn partition_write_span(
         let n = usize::try_from((length - done).min(BUFFER as u64))?;
         let within = add(start, done)?;
         let at_source = add(row.offset, within)?;
-        at(writer, at_source, &mut buffers.current[..n])?;
+        at(writer, at_source, &mut buffers.current[..n])
+            .with_context(||format!("partition replay: current-source read request offset={at_source},bytes={n} (includes pending flush/readback)"))?;
         {
-            let mut journal = writer.journal_read_view()?;
+            let mut journal = writer.journal_read_view()
+                .context("partition replay: opening same-J read view after pending source flush/readback")?;
             partition_read_new(
                 policy,
                 &mut journal,
@@ -1077,9 +1079,11 @@ fn partition_write_span(
             &buffers.before[..n]
         };
         if &buffers.current[..n] != desired {
-            writer.seek(SeekFrom::Start(at_source))?;
+            writer.seek(SeekFrom::Start(at_source))
+                .with_context(||format!("partition replay: prewrite logical seek offset={at_source} (includes pending flush/readback)"))?;
             ensure!(
-                writer.write(desired)? == n,
+                writer.write(desired)
+                    .with_context(||format!("partition replay: bounded native source write request offset={at_source},bytes={n},forward={forward}"))? == n,
                 "short bounded partition replay write"
             );
         }
@@ -1139,7 +1143,8 @@ impl BoundJournalObservation<'_> {
         let forward = direction == PagedRecoveryDirection::Resume;
         for ordinal in 0..u64::from(ticket.range_count) {
             let row = {
-                let mut journal = writer.journal_read_view()?;
+                let mut journal = writer.journal_read_view()
+                .context("partition replay: opening same-J read view after pending source flush/readback")?;
                 partition_record(&policy, &mut journal, format, ticket, ordinal)?
             };
             let skip = if row.offset == 0 { GRANULE } else { 0 };
@@ -1156,9 +1161,10 @@ impl BoundJournalObservation<'_> {
                 &mut buffers,
             )?;
         }
-        writer.sync_all()?;
+        writer.sync_all().context("partition replay: non-discovery pending source flush/readback")?;
         let first = {
-            let mut journal = writer.journal_read_view()?;
+            let mut journal = writer.journal_read_view()
+                .context("partition replay: opening same-J read view after pending source flush/readback")?;
             partition_record(&policy, &mut journal, format, ticket, 0)?
         };
         if first.offset == 0 {
@@ -1175,7 +1181,7 @@ impl BoundJournalObservation<'_> {
                 &mut buffers,
             )?;
         }
-        writer.sync_all()?;
+        writer.sync_all().context("partition replay: discovery pending source flush/readback")?;
         writer.revalidate(events)?;
         if forward {
             writer.finish_new(events)?;

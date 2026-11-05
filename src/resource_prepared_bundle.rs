@@ -330,8 +330,49 @@ impl HeldWindowsPreparedBundle {
             "recovery-locator",
             "source-native-pages",
             "source-preparation-intent",
+            "fingerprint-allocated-data",
+            "fingerprint-allocated-directory",
+            "fingerprint-covered-data",
+            "fingerprint-covered-directory",
+            "fingerprint-omitted-data",
+            "fingerprint-omitted-directory",
         ] {
             ensure!(roles.contains(role), "missing prepared artifact {role}");
+        }
+        for (data_role, directory_role, store) in [
+            (
+                "fingerprint-allocated-data",
+                "fingerprint-allocated-directory",
+                &c.source_fingerprint.allocated,
+            ),
+            (
+                "fingerprint-covered-data",
+                "fingerprint-covered-directory",
+                &c.source_fingerprint.covered,
+            ),
+            (
+                "fingerprint-omitted-data",
+                "fingerprint-omitted-directory",
+                &c.source_fingerprint.omitted,
+            ),
+        ] {
+            for (role, page) in [(data_role, &store.data), (directory_role, &store.directory)] {
+                let artifact = c
+                    .artifacts
+                    .iter()
+                    .find(|a| a.role == role)
+                    .context("fingerprint artifact absent")?;
+                let native = artifact
+                    .snapshot
+                    .as_ref()
+                    .context("fingerprint native route snapshot absent")?;
+                ensure!(
+                    page.path == PathBuf::from(&native.final_path)
+                        && page.wire_bytes == artifact.bytes
+                        && page.file_sha256 == artifact.sha256,
+                    "fingerprint range pin is not the same authenticated, journal-bound native artifact"
+                );
+            }
         }
         outer.revalidate()?;
         Ok(Self {
@@ -367,18 +408,35 @@ impl HeldWindowsPreparedBundle {
             owner.binding().storage == self.bundle.core.source,
             "actual prepared source differs from bundle"
         );
-        let fingerprint = self.bundle.core.source_fingerprint.clone().open(scratch)?;
-        let length = owner.byte_len();
-        ensure!(
-            fingerprint.hash_partition_reader(owner, length)?
-                == self.bundle.core.source_sha256,
-            "current source metadata/extent fingerprint differs from the Windows-prepared source"
-        );
-        ensure!(
-            token.same_owner(&owner.owner_token()) && owner.state(events)?.actual == before.actual,
-            "actual prepared source changed across fingerprint verification"
-        );
-        self.revalidate()?;
-        Ok(fingerprint)
+        let operation = (|| -> Result<PagedSourceFingerprint> {
+            let fingerprint = self.bundle.core.source_fingerprint.clone().open(scratch)?;
+            let length = owner.byte_len();
+            ensure!(
+                fingerprint.hash_partition_reader(owner, length)? == self.bundle.core.source_sha256,
+                "current source metadata/extent fingerprint differs from the Windows-prepared source"
+            );
+            Ok(fingerprint)
+        })();
+        // Both closing checks execute even when opening/hashing a fingerprint
+        // fails. An error cannot silently skip the held metadata/source bookend.
+        let source_closing = owner.state(events);
+        let metadata_closing = self.revalidate();
+        let closing = (|| -> Result<()> {
+            let source = source_closing?;
+            metadata_closing?;
+            ensure!(
+                token.same_owner(&owner.owner_token()) && source.actual == before.actual,
+                "actual prepared source changed across fingerprint verification"
+            );
+            Ok(())
+        })();
+        match (operation, closing) {
+            (Ok(fingerprint), Ok(())) => Ok(fingerprint),
+            (Err(primary), Ok(())) => Err(primary),
+            (Ok(_), Err(closing)) => Err(closing),
+            (Err(primary), Err(closing)) => Err(primary.context(format!(
+                "closing source/artifact verification also failed: {closing:#}"
+            ))),
+        }
     }
 }

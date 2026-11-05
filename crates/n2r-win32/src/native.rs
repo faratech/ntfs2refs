@@ -595,7 +595,10 @@ fn control_admitted(
         output: output.clone(),
     });
     if let Some(error) = error {
-        return Err(io::Error::new(error.kind(), format!("{name}: {error}")));
+        // Native callers classify expected WRITE_PROTECT, NOT_READY and other
+        // statuses by raw_os_error(). The event above retains the operation
+        // name and complete result; wrapping in a string erases that contract.
+        return Err(error);
     }
     Ok(output)
 }

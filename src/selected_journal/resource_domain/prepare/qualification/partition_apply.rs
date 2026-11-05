@@ -708,6 +708,36 @@ pub(crate) struct WindowsPreparedBundleCore {
 fn prepared_artifact(role:&'static str,lease:&crate::artifact_arena::ArtifactLease)->WindowsPreparedArtifact{
     WindowsPreparedArtifact{role,path:lease.path().to_owned(),bytes:lease.wire_bytes(),sha256:lease.sha256().into(),snapshot:Some(lease.snapshot().clone())}
 }
+fn prepared_fingerprint(
+    source:&crate::source_fingerprint::resource::FingerprintPins,
+    journal:&n2r_win32::journal_file::GeneralJournalStorageBinding,
+    arena:&crate::artifact_arena::ArtifactArena,
+)->Result<(crate::source_fingerprint::resource::FingerprintPins,Vec<WindowsPreparedArtifact>)>{
+    let _memory=arena.reserve_ram(5*1024*1024)?;
+    let mut pins=source.clone();let mut files=Vec::new();
+    let prefix=format!("{}\\",journal.disk.volume_path()?);
+    for (data_role,directory_role,store) in [
+        ("fingerprint-allocated-data","fingerprint-allocated-directory",&mut pins.allocated),
+        ("fingerprint-covered-data","fingerprint-covered-directory",&mut pins.covered),
+        ("fingerprint-omitted-data","fingerprint-omitted-directory",&mut pins.omitted),
+    ]{
+        for (role,page) in [(data_role,&mut store.data),(directory_role,&mut store.directory)]{
+            let mut file=std::fs::OpenOptions::new().read(true).share_mode(1).custom_flags(0x0020_0000).open(&page.path)?;
+            n2r_win32::file_storage::require_readonly_access(&file)?;
+            let actual=n2r_win32::reference_file::observe_reference_file_handle_with_limit(&file,page.wire_bytes)?;
+            ensure!(actual.file_bytes==page.wire_bytes&&actual.number_of_links==1
+                &&actual.final_path.get(..prefix.len()).is_some_and(|p|p.eq_ignore_ascii_case(&prefix)),
+                "fingerprint pages must belong to the actual independent journal GUID volume");
+            ensure!(hex::encode(n2r_win32::sha256_native::hash_range(&mut file,0,actual.file_bytes)?)==page.file_sha256
+                &&n2r_win32::reference_file::observe_reference_file_handle_with_limit(&file,page.wire_bytes)?==actual,
+                "actual fingerprint page changed before cold route pinning");
+            page.path=PathBuf::from(&actual.final_path);
+            files.push(WindowsPreparedArtifact{role,path:page.path.clone(),bytes:page.wire_bytes,
+                sha256:page.file_sha256.clone(),snapshot:Some(actual)});
+        }
+    }
+    Ok((pins,files))
+}
 impl PartitionResourcePreparedConversion<'_,'_,'_,'_,'_,'_> {
     /// This function stops at clear J/publication. It never calls the root
     /// source-certificate issuer, into_fresh_apply or any SDK source writer.
@@ -746,6 +776,10 @@ impl PartitionResourcePreparedConversion<'_,'_,'_,'_,'_,'_> {
         artifacts.push(WindowsPreparedArtifact{role:"source-preparation-intent",path:PathBuf::from(&source_preparation.intent_file.final_path),
             bytes:source_preparation.intent_file.file_bytes,sha256:source_preparation.intent_prefix_sha256.clone(),snapshot:Some(source_preparation.intent_file.clone())});
         if let Some(maps)=&self.maps{artifacts.push(prepared_artifact("recovery-maps",maps.artifact_lease()));}
+        p.context.fingerprint().revalidate()?;
+        let (source_fingerprint,fingerprint_artifacts)=prepared_fingerprint(
+            p.context.fingerprint().pins(),p.facts.native.binding,p.context.arena())?;
+        artifacts.extend(fingerprint_artifacts);
         let result=WindowsPreparedBundleCore{schema_version:1,kind:"windows-native-prepared-offline-apply-core-v1",source,
             shadow:p.facts.native.shadow.clone(),source_preparation,source_readonly_gpt_sha256,
             journal_binding:p.facts.native.binding.clone(),journal_identity:p.facts.native.identity.clone(),journal_path:p.facts.native.path.to_owned(),
@@ -754,7 +788,7 @@ impl PartitionResourcePreparedConversion<'_,'_,'_,'_,'_,'_> {
             locator_path:self.locator.snapshot().final_path.clone(),locator_sha256:self.locator.external_sha256(),artifacts,
             source_resource_admission:p.context.resource_admission(),source_sha256:p.context.source_sha256().into(),
             source_inspection_sha256:p.context.inspection_sha256().into(),source_views_sha256:p.context.source_views_sha256().into(),
-            source_fingerprint:p.context.fingerprint().pins().clone(),
+            source_fingerprint,
             journal_contains_source_free_rows:p.domain.facts().source_free_bytes>0,native_journal_body_sealed:true,journal_prepared_clear:true,
             source_payload_write_calls:0,source_apply_intent_attempted:false,source_certificate_issued:false,sealed_bundle_grants_writer_permission:false,
             requires_new_pe_bootguard_and_actual_apply_gate:true};

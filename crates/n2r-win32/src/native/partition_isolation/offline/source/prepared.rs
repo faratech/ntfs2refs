@@ -255,6 +255,9 @@ impl OfflinePreparedSource {
     pub fn binding(&self) -> &PartitionSourceBinding {
         &self.core.env.source
     }
+    pub fn offline_environment_facts(&self) -> &OfflineOwningFacts {
+        self.core.env.facts()
+    }
     pub fn byte_len(&self) -> u64 {
         self.core.env.source.storage.identity.partition_bytes
     }

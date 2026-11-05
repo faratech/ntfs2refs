@@ -483,6 +483,12 @@ Initialjointactual320602547152/projected329192481744 withinunchanged329374052988
 Fixed889 ONE normalcase39f87845eeaa4e2fba2606d68c91ac0f host19065 ACTIVE underexclusiveoperator.
 Fresh6GiBadmission passed; VMRunning4GiB/current07ca/all18. Wait actualpreoracle/nativePID/terminal; dispatch is not success.
 Exact18graphhost0955db0ccd5e11700dca2b0e2eae99a9bdf012c914f3f6576fe49873b653406f with actual3cb failedkeeper mandatory.
+Actual889nativePID2948/birth1793840555672/boot1793840512480 nowRUNNING, preoraclefull8 matched actualrestoredNTFS.
+Recovery exactbuild89710 COMPLETED0/release156s/416heldsourcefiles unchanged; manifest3fb24f741bc32b2ee8588babb3128647d87dea91a71124f8438f2e45b1c5cde1,
+lab-partition-recovery.exe3852288B/SHA9ba0f7eafa7219998c5891fa7f4ec838235032dc7f658c6581a6bd9ea501aa68.
+Evidence evidence/partition-recovery-b2e96ff-exact-build-20261104.json. NO recovery-nativeGO yet; normalcase remains first.
+Current889 apply has no signal between firstnon-discovery sync/readback and discovery0 write: AP alone is NOT post-flushed-writecutproof.
+Agent preparing narrow typed post-nondiscovery-flush observer DRAFT only; do not claim current889 interrupted-flush qualification.
 
 - Fresh writes require original live opaque source certificate and actual source/target/J/arena owners. Saved JSON/paths/flags are routes, never authority.
 - Revalidate device/file identities, journal/index/ticket/lifecycle and recovery files. Recovery must not require thin-pool reattachment.

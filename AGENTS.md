@@ -540,6 +540,21 @@ RootfixedROlane: successfulFSCTL_LOCK_VOLUME alreadyflushescacheddata byMicrosof
 removeonlytwoillegalredundantBasicRO.sync_all requests, retainallactualLOCK/dismount/DASD/closingproofs. Failedactual19remainsfailureevidence.
 InitialBasic0flush andALLwritablepayload/Jflushes unchanged. Focusedcheck0/32.2764946s/no units; evidence/partition-readonly-lock-flush-build-20261104.json.
 Exactfixedbuild/nativecasespending. Sourceprivate-preAP livecanceldraft andreadonlyofflineWinPEprobe DRAFT remainunapplied/offcriticalpath.
+632d213 exact BOTH-binbuild3457 COMPLETED0/159s/417heldsourcefilesunchanged; manifest510f7af362d8dda300dd1fb41debe703392993f729ba827a555286a67ac187e5.
+alpha8602624B/SHA24f8e20baab506c6b2f9b03b714ddd34d576404c8622ea616cb836349c383998;
+recovery3858432B/SHAc595b1fcaf2b754cff4732ad02efed9eb800277b000fef8aa8b0f778f2c857df.
+cba archive33files802194B/SHA62e1df06e52bd788d732a5823b88176385d5227c4761ec08f9e0ac7eafbc1c31 preservedall19copiedpins/failedflush19;
+RootauthorizedONErestore07ca/noCP plan398d99a52e9fe0fe0c40d0df4962ada2a9f8ca4f26d46d1cb948e923cfdad472.
+RestoreclosedOff07ca18 receipt23c5b8d2caa3c6c791f8abafcebaff6a55896b96a47e319fcb4770f6dab7c95e;
+census320710700114/free86660730880/reclaim1257904529B. No newCP/native/SET/manualdelete.
+Rootreviewed632TWO-roleGO (samehost2a24/worker717e/runnerfd2f/oraclea4a5/meta40e8/all18/fresh6GiB), freshcaseebd05bc9484643a786d384ce6b92d0d8
+host46067 ACTIVE; actualBefore/cancelPID notyet reported. Observeactualoperatorroles/terminals; no thirdnative/retry/repair.
+
+Bootfoundation readonlyenvironmentcollector APPLIED/CHECKED: newlab-offline-environment/nativeSDK modules, no sourcewriter/admission.
+NativeWindowsroot/driveType/MiniNT/firmware/version/storage/WMI/VSS/componentSHAfacts; unknowns stayunknown, qualificationfalse.
+ExplicitselectedDOS source VSS resolves THATsourceGUID; badresolutioncannotfallbacktoWindowsC. ActualPE observationsstillpending.
+Focusedcheck0/29.4918661s/sharedtarget/no units, evidence/offline-environment-probe-build-20261104.json. No boot/conversion guard bypass.
+SourcecomponentAuthenticode/fileversions uncollected; currentkernelversion+componenthashes only. Newmoduleunused by632case/frozenalpha.
 
 - Fresh writes require original live opaque source certificate and actual source/target/J/arena owners. Saved JSON/paths/flags are routes, never authority.
 - Revalidate device/file identities, journal/index/ticket/lifecycle and recovery files. Recovery must not require thin-pool reattachment.

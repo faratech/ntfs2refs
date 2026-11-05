@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "kind": "readonly-offline-WinPE-environment-observer",
+  "status": "focused-check-passed-native-PE-observation-pending",
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/lib.rs",
+      "bytes": 4085,
+      "sha256": "d84c7465fab3f552dd3e2e44009aec6a962ceacba7d8b0b58b7a4db11ef8c53b"
+    },
+    {
+      "path": "crates/n2r-win32/src/native.rs",
+      "bytes": 203040,
+      "sha256": "b2346c73d002fd687876a0953e0490f0b471d7000e83854eb102cb3d225fb1b7"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/offline_environment.rs",
+      "bytes": 21686,
+      "sha256": "78e49002b518407d1aa592d81f6e632bb4f1c6c7dba62af71a0b8fd22d9a9987"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/offline_environment_wmi.rs",
+      "bytes": 8161,
+      "sha256": "7d23b6514aa0e24318cc38ab88405a371cf6cdc324e501ebad4f724b2506935e"
+    },
+    {
+      "path": "src/bin/lab-offline-environment.rs",
+      "bytes": 5878,
+      "sha256": "c18c77a86bfd758b5168b77c4b1ab74ba1baa6cb89bb9b551b4d9ea57ee77a23"
+    }
+  ],
+  "reviewed_draft_patch_sha256": "10fa3abbe79ed328d73e594a72035ecb050185ebcaeb213d791d086436b56a9e",
+  "root_correction": "An explicit selected DOS source resolves its own GUID for VSS. Failed explicit-source resolution is reported and cannot fall back to querying the current Windows volume.",
+  "check_exit": 0,
+  "check_seconds": 29.4918661,
+  "unit_tests_run": false,
+  "native_run": false,
+  "facts": "Native current Windows path, volume/drive type, MiniNT key, firmware, kernel version, bounded direct RO storage controls, WMI/VSS availability and same-held component SHA256.",
+  "positive_ramdisk_evidence": "GetDriveTypeW DRIVE_RAMDISK6 only; unknown/unsupported extents never mean safe roles.",
+  "source_write_requests": 0,
+  "issues_source_admission_or_writer": false,
+  "critical_roles_clear": false,
+  "offline_environment_qualified": false,
+  "component_versions_and_authenticode_collected": false,
+  "additional_dependencies": false,
+  "public_main_or_frozen_alpha_changed": false,
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+}

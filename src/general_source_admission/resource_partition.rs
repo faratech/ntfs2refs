@@ -514,8 +514,16 @@ impl ResourceSourceContext {
         let (mut source,native_admission)=freeze_mounted_ntfs_partition(binding.clone(),observation_budget,guard,events)?;
         let ownership=(||->Result<_>{
             source.revalidate(events)?;
-            ensure!(collected.fingerprint.hash_partition_reader(&mut source,binding.storage.identity.partition_bytes)?==collected.source_sha,
-                "partition source changed across actual private transition");
+            // Fast construction seals only disjoint C: metadata below. Its
+            // mandatory context.recheck_source before returning performs this
+            // SAME held covered-range fingerprint with full native bookends.
+            // An earlier seal/error instead consumes cancel_collected, which
+            // verifies the original fingerprint before any RW restoration.
+            // Preserve the existing full-content behavior explicitly.
+            if !policy.is_fast(){
+                ensure!(collected.fingerprint.hash_partition_reader(&mut source,binding.storage.identity.partition_bytes)?==collected.source_sha,
+                    "partition source changed across actual private transition");
+            }
             let source_seal=collected.scratch.seal()?;
             let native_seal=native_group.seal()?;
             Ok((source_seal,native_seal))

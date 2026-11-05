@@ -24,6 +24,10 @@ pub(crate) struct PartitionPreparedTargetCapture {
     proof: ProtectedPagedTargetSelection,
     capture_group: crate::artifact_arena::ArtifactGroupPermit,
     capture_scratch: SourceScratch,
+    // These files share the capture group. Keep their actual immutable owners
+    // alive through group sealing and journal preparation, as the dedicated
+    // preparation path does with its enclosing placement-evidence local.
+    _placement_evidence: placement_evidence::PagedPlacementEvidence,
     _output_directory: PartitionAuxiliaryDirectory,
     _shadow_ram: crate::artifact_arena::ArenaRamLease,
 }
@@ -311,6 +315,7 @@ fn prepare_partition_target_capture_inner(
         proof,
         capture_group,
         capture_scratch,
+        _placement_evidence: placement_evidence,
         _output_directory: output_directory,
         _shadow_ram: shadow_ram,
     })

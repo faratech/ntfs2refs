@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "kind": "retain-placement-evidence-and-remove-duplicate-fast-constructor-read",
+  "status": "focused-check-passed-native-pending",
+  "files": [
+    {
+      "path": "src/resource_partition_target.rs",
+      "bytes": 14398,
+      "sha256": "aa61120d7b1a295eea04797c5ea8989955a45b165535992c32b3859093b5d76a"
+    },
+    {
+      "path": "src/general_source_admission/resource_partition.rs",
+      "bytes": 53171,
+      "sha256": "86e41f5e2c71bc77f6d4ede0a533392d39929fc3154f01cc80fb0bce84fec176"
+    }
+  ],
+  "focused_check": {
+    "shared_target_reused": true,
+    "unit_tests_run": false,
+    "kind": "public-partition-dispatch-focused-check",
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+    "native_run": false,
+    "capacity": {
+      "actual_bytes": 323183214158,
+      "free_bytes": 84208734208,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 2147483648,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "exit_code": 0,
+    "wall_seconds": 20.8306148
+  },
+  "prior_native": {
+    "source_commit": "32f86943cdaf3abbf7e357fdb7f28b13e923f794",
+    "pid": 6012,
+    "birth_ms": 1793853188311,
+    "exit_code": 1,
+    "wall_seconds": 90.6591783,
+    "error": "sealed artifact requires its actual retained immutable file owner",
+    "journal_creation_started": false,
+    "source_payload_writes": 0,
+    "live_cancellation_completed": true,
+    "independent_after_sha256": "5e86d1f7e69171130cd15dda7ed8b9725df07dae47088540fed37848437b003a",
+    "before_after_equal": true,
+    "oracle_pid": 1536,
+    "oracle_birth_ms": 1793853457055,
+    "oracle_exit": 0,
+    "oracle_wall_seconds": 2.2383963,
+    "oracle_bundle_sha256": "a2659e49d931fb2a7267cb926f8f5940ef3f8d6d52b0fefb31f44c3a637c0bd5"
+  },
+  "ownership_fix": "Retain actual PagedPlacementEvidence and its scratch/immutable file owners in PartitionPreparedTargetCapture through capture-group sealing and journal execution. Arena lease validation unchanged.",
+  "efficiency": "Fast constructor skips only its early covered-range fingerprint; mandatory context.recheck_source verifies the same original held source before successful return. Error cancellation retains original fingerprint gate. Full-content mode unchanged.",
+  "fast_fingerprint_is_not_whole_volume": true,
+  "unit_tests_run": false,
+  "native_qualification_pending": true
+}

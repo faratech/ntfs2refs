@@ -489,6 +489,15 @@ lab-partition-recovery.exe3852288B/SHA9ba0f7eafa7219998c5891fa7f4ec838235032dc7f
 Evidence evidence/partition-recovery-b2e96ff-exact-build-20261104.json. NO recovery-nativeGO yet; normalcase remains first.
 Current889 apply has no signal between firstnon-discovery sync/readback and discovery0 write: AP alone is NOT post-flushed-writecutproof.
 Agent preparing narrow typed post-nondiscovery-flush observer DRAFT only; do not claim current889 interrupted-flush qualification.
+LATEST889 normal39f87845eeaa4e2fba2606d68c91ac0f FAILED actualPID2948/birth1793840555672/exit1/239.3743653s.
+Stackfix passed previousfrontier:57recorded-source artifacts/rawhashed-files128618B/directory/security/SDS/read-union produced.
+Primaryfailure VSSexactGUIDvolumepath: attestation_partition passed raw volume_guid. Rootfixed canonical volume_path()+trailingbackslash;
+focusedcheck0/29.295493s/no units, evidence/partition-vss-volume-path-build-20261104.json. Exact fixed build/native run still pending.
+SDK's live pre-private cancellation thenfailed LOCK error21; not fixed, no external repair/cancel inferred. No J/publication yet.
+Operator capturing actual144/GPT/C/intent then authorized ONE orderlyOff/freshall18/census; awaitactualclosure, no moreGO/CP/restore.
+Postflush observer frozen DRAFT .lab/development/partition-postflush-hook-draft/partition-postflush-hook.patch SHAfb497a5abc593c6b8b0dcb67bd3a3637d002c96ddf59d70ba7becda150cc0b4a,
+not applied/compiled. INTERRRUPTION-PLAN.md documents prerequisites: trustedpublisherSHA beforeAP, controlledpause, partitionpostbootJ/MIXEDpreflight.
+Current889 has no postflush hook; don't infer flushed-writecut fromAP. Publicfrozenalpha remains qualified separately/unchanged.
 
 - Fresh writes require original live opaque source certificate and actual source/target/J/arena owners. Saved JSON/paths/flags are routes, never authority.
 - Revalidate device/file identities, journal/index/ticket/lifecycle and recovery files. Recovery must not require thin-pool reattachment.

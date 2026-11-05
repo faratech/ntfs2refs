@@ -233,7 +233,7 @@ pub fn collect_partition_ntfs_paged(
 ) -> io::Result<PartitionPagedNtfsObservation> {
     phase.revalidate(events)?;
     let preparation = phase.preparation_token();
-    let volume_guid = phase.binding().storage.volume_guid.clone();
+    let volume_guid = format!("{}\\", phase.binding().storage.volume_path()?);
     phase.require_original_vss_catalog_clear()?;
     let vss_before = crate::vss_observation::observe_snapshot_presence(&volume_guid)?;
     vss_before.require_observed_snapshot_absence()?;

@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "kind": "user-authorized-obsolete-snapshot-cleanup",
+  "removed_count": 14,
+  "supported_HyperV_remove_calls": 14,
+  "removed_ids": [
+    "508e5c78-289b-4ad3-9c47-286fb03ddb01",
+    "895f472a-4d33-47f2-86ec-bb8ead5f3911",
+    "a0a8217f-894f-4311-bbf7-27151da5d216",
+    "ea75dff5-36f4-42af-8e13-cc9b2e8cba6c",
+    "f4bf5238-14c0-4b15-bda6-7859abd4d1c9",
+    "0cf3dd7d-9724-46d2-83da-6cbcbcca9fc2",
+    "266130c1-51c8-479c-b528-423644770dc2",
+    "39ba49c9-01d1-48fa-941f-08d34ff346c1",
+    "766c9abc-8582-4de6-b497-8acbc81274da",
+    "fe668886-647a-4928-9c14-9fd9e323aefb",
+    "d8db8fd9-284a-4e78-86b5-85d8a2607663",
+    "001f7611-257f-4c5a-8c5b-560ce8faa68d",
+    "a0627dbd-aa3b-4896-bbeb-495f5e372057",
+    "83290a28-1e83-4eb2-a4d3-b0e9f5a8d63b"
+  ],
+  "remaining": [
+    {
+      "Id": "07ca22f3-bb1c-444b-8f31-ff16b1fcb521",
+      "ParentSnapshotId": "3343f2a4-cf81-4fa9-a504-030425a8011e",
+      "Name": "shared-windows52-ordinary8-92c6ff57-20261104"
+    },
+    {
+      "Id": "3343f2a4-cf81-4fa9-a504-030425a8011e",
+      "ParentSnapshotId": null,
+      "Name": "resource-diagnostic-large-journal-7e45997d"
+    },
+    {
+      "Id": "9f0372c8-4aa9-4fd7-94d3-2f8356619e21",
+      "ParentSnapshotId": "3343f2a4-cf81-4fa9-a504-030425a8011e",
+      "Name": "public-thin-aef-operational-mutation-HND-f9c1b2f236d442318afcec1df0cd24a8"
+    },
+    {
+      "Id": "b68cf347-f33f-4444-9a9e-f4bd22f8acca",
+      "ParentSnapshotId": "07ca22f3-bb1c-444b-8f31-ff16b1fcb521",
+      "Name": "shared52-fd777-actualAP-write19-dd07-2e25db8adfab4a95b7ce9e0829ffed66"
+    }
+  ],
+  "current_checkpoint": "b68cf347-f33f-4444-9a9e-f4bd22f8acca",
+  "VM_state": "Running",
+  "all_current_and_surviving_VHD_chains_present": true,
+  "host_free_bytes": 165298769920,
+  "sum_of_measured_batch_census_decreases_bytes": 81412818550,
+  "whole_interval_census_decrease_bytes": 81511850671,
+  "whole_interval_includes_build_and_background_net_drift": true,
+  "capacity_after": {
+    "actual_bytes": 241995129971,
+    "free_bytes": 165298769920,
+    "maximum_actual_bytes": 329374052988,
+    "minimum_free_bytes": 17179869184,
+    "additional_bytes": 0,
+    "all_lab_shared_cache_and_staging_charged": true,
+    "epoch_reset": false
+  },
+  "manual_virtual_disk_deletions": 0,
+  "source_or_journal_payload_actions": 0,
+  "new_checkpoints": 0,
+  "power_actions": 0,
+  "historical_evidence_preserved_as_is": true,
+  "old_sparse_refusal_raw_state_intentionally_retired": true,
+  "user_instruction_supersedes_historical_keeper_lists": true,
+  "receipts": [
+    {
+      "sha256": "7653caae3fdf227cf4eb60b278fd56159433eb55783acf85361a371b23ff234e",
+      "path": ".lab/hyperv/streaming-v2-20261027/retire-five-obsolete-leaves-cc8ab63c958d444db5e7e21292027bd7/closed-five-leaf-retirement.json"
+    },
+    {
+      "sha256": "dea0eb709c48cbbf6981a1a4bac895381eea2016a0a68408d2354473ede4e85c",
+      "path": ".lab/hyperv/streaming-v2-20261027/retire-nine-obsolete-ancestors-7fae7405bb3e41d889776c8cde57f758/closed-nine-ancestor-retirements-four-keepers.json"
+    }
+  ]
+}

@@ -612,3 +612,5 @@ pub fn observe(
         grants_conversion_or_recovery_authority: false,
     })
 }
+
+pub use super::partition_isolation::offline::{OfflineFrozenSource,OfflineRecoverySource,OfflineSourceOwnerToken,OfflineSourceState,OfflineSourceIntentPin};

@@ -1,7 +1,12 @@
 //! Positive RAM-Windows owning environment. Readonly facts/owners only; this
 //! token never substitutes a physical C: extent, FS lock, VSS catalog or writer.
+mod source;
 use super::*;
 use crate::journal_file::GeneralJournalStorageBinding;
+pub use source::{
+    OfflineFrozenSource, OfflineRecoverySource, OfflineSourceIntentPin, OfflineSourceOwnerToken,
+    OfflineSourceState,
+};
 use std::{ffi::c_void, fs::OpenOptions, os::windows::fs::OpenOptionsExt, ptr};
 use windows_sys::Win32::{
     Storage::FileSystem::GetDriveTypeW,
@@ -520,6 +525,15 @@ impl OfflineOwningEnvironment {
         &self.facts
     }
     pub fn require_current(&mut self, events: &mut Vec<NativeEvent>) -> io::Result<()> {
+        self.require_current_at_attributes(self.facts.source_physical.disk_attributes, events)
+    }
+    // SDK-owner-only bookend after its ACTUAL durable disk transition. Original
+    // enrollment facts are never rewritten or reconstructed from a pin/DTO.
+    fn require_current_at_attributes(
+        &mut self,
+        expected_attributes: u64,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
         require(
             current_windows()? == self.facts.windows_directory
                 && require_ram_root(&self.facts.windows_directory)? == self.facts.windows_ram_root,
@@ -565,10 +579,15 @@ impl OfflineOwningEnvironment {
                 && length == self.facts.current_ram_volume_length,
             "held RAM volume native identity changed",
         )?;
+        let actual = source_facts(&mut self.physical, &self.source, self.budget, events)?;
+        let original = &self.facts.source_physical;
         require(
-            source_facts(&mut self.physical, &self.source, self.budget, events)?
-                == self.facts.source_physical,
-            "offline source full GPT/native identity changed",
+            actual.device == original.device
+                && actual.length == original.length
+                && actual.alignment == original.alignment
+                && actual.gpt == original.gpt
+                && actual.disk_attributes == expected_attributes,
+            "offline source full GPT/native identity or actual expected disk protection changed",
         )?;
         let critical = super::super::partition_dump_locations::offline::observe(
             &self.source,

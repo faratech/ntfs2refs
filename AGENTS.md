@@ -607,6 +607,11 @@ Public --recover originalpartition-v2/pubSHA+framedlocator → actualrun_recover
 Rootaddedexplicitexperimentalqualification-in-progress warning BEFOREconfirmation. Runningbootguard+dedicatedbehavior unchanged; mainSHAunchanged.
 Focusedlib+publicbin+3labbincheck0/20.8321816s/no units; evidence/public-partition-dispatch-build-20261105.json. NativePUBLICqualificationpending.
 DoNOTrebuild/interruptcurrent48772case. Fullgoal(boot/offlineowner, broadgeometry/featurecoverage, IOaccounting/faultmatrix)stillincomplete.
+LATEST03:09:19Z SAME48772normal2400/birth1793846737788/host18962 entered INTERNALlivepreparationcancel:
+ledger22777884B phases live-cancel-request/original-basis-and-J→handoff-revalidation→live-unactivated-original-owner-returned→guardcriticalchecks.
+No native terminalyet; primarycausemayonlyprintaftercancelreturns. No externalcancel/repair/typeSET/replay/power/restart authorized.
+Operator continuesSAMEownedprocess, preservingflushedrecords. DoNOTinferNTFSrestoration/cancellation/conversion success fromphase alone.
+RootpublicCLI/performancechanges are NOTcurrent48772binary. Nextactionactualterminal+cause+state; no newnativeuntilreviewedGO.
 
 - Fresh writes require original live opaque source certificate and actual source/target/J/arena owners. Saved JSON/paths/flags are routes, never authority.
 - Revalidate device/file identities, journal/index/ticket/lifecycle and recovery files. Recovery must not require thin-pool reattachment.

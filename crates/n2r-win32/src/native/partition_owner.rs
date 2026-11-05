@@ -277,6 +277,10 @@ impl PartitionScopedOwner {
         pins: &super::paged_recovery::PagedRecoveryPins<'_>, events: &mut Vec<NativeEvent>,
     ) -> io::Result<PartitionSourceAdmissionGate> {
         self.require_supported_write_profile()?;
+        if self.data_profile() == PartitionDataProfile::PrivateVolumeV2 {
+            return Err(io::Error::new(io::ErrorKind::Unsupported,
+                "legacy private-GPT source exclusion allowed NTFS metadata changes after restart; fresh shared-disk apply is unavailable until persistent exclusion is qualified"));
+        }
         if self.enrolled.source_admission_issued {
             return Err(io::Error::other("partition fresh source admission already issued"));
         }

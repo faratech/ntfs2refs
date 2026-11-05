@@ -254,6 +254,7 @@ pub(super) fn convert(
     selected: PartitionSelection,
     before: VolumeDiscovery,
 ) -> Result<u8> {
+    require_shared_conversion_backend()?;
     ensure!(args.controlled_post_flush_pause_nonce.is_some()
         == args.acknowledge_controlled_post_flush_pause,
         "controlled qualification pause requires both nonce and separate acknowledgement");
@@ -407,6 +408,12 @@ pub(super) fn convert(
         )
     })??;
     Ok(0)
+}
+
+fn require_shared_conversion_backend() -> Result<()> {
+    anyhow::bail!(
+        "Shared-disk conversion is unavailable while persistent source exclusion is being repaired: the legacy private partition allowed NTFS metadata changes after restart, and the read-only physical writer was rejected by Windows. No conversion was started."
+    )
 }
 
 #[derive(Deserialize)]

@@ -674,6 +674,20 @@ Also APPLIEDprivate CLOSED HND/ABT rootfinalization4files: actualheldJ/index lif
 HNDreadonlyknowncontents/fullmaps beforeRW, ABTclosedOLD/NTFS proof. BasicRO/operationalBasic0remainexplicitlyunsupported.
 Combinedlib+public+3labcheck0/20.3513475s/sharedtarget/no units; evidence/public-parent-closed-terminal-build-20261105.json. Nativequalificationpending.
 NEWexactcandidatebuildrequired forparentfix; retain60b8failedcase/zero-launchproofs, no rerunoldbinary. Samebootbudgetcontinuation requiresnewRootGO/pins.
+fd4bcc4 exact4binbuild60653 COMPLETED0/161s/427heldsourcefilesunchanged; manifest73858095a9c9a027bfb6b90cc4efa04c58af6929ab2a298fbd867b0337d176a6,
+PUBLIC19410944B/SHA80cfa188dbf6839c9bf1b906fde194114ecb2006b28a8df1944cb247b461aa53.
+RootONEFIXED PUBLICsamebootGO resume0db698.../worker10984... sourcefd4bcc4; actualcontroller51325/run4e7b5e3ce0554edab0c60eeb1aace089.
+ACTUALPUBLIC3916/birth1793851224477 exited1/0.7135606s/stdout798/stderr58: 'formatting consumed reserved C conversion capacity'.
+Parent/root/confirmationpassed, generatedactualpublicrun partition-conversion-3ad01c5dec38ea407b0edae2c3f8336e uniquelycorrelated.
+Lastphasefresh-owned-devdrive-shadow-formatted; no SourceGuardbegin/sourcepreparation. Archive31file/295136B/all23pinsSHA8d9ccc9a2bca661fdc7a4b901d3ca2130102640c8d462e0ef63ba82038939128.
+Original3916/4444birthsabsent/tasksidle fac270fb6542e7de410911e7cd169449ca21213eb6dd3865177c820828ef62ae.Sourcequeries0/operatorpower0.
+VMKEEP RUNNING/sameboot1793849950708/07ca18. Actual322772707541/free84601323520, originalabsolute329102331170/remaining6329623629 retained.
+Closedactualplanningmath: allpromises37204164607 vs inferredCfree37204164608 ONLY1BYTEheadroom; backing104857600 correctlydebited, auxiliaryFS/control/drift remained.
+RootFIXEDautomaticplan leavesalign(working/64) UNCOMMITTEDheadroom beforestage/arena split; allreserves/postformatguard retained, no capraise.
+Also appliedhiddenPUBLICnonce+ACK pairedqualificationflags→existingpostflushpause (defaultunchanged); dedicated/wholeimage/thin/recover conflicts,
+SAME1MiBcontrolEvidence pre-reserved beforearena, Alpha512KiBRAMchargedonce. No JSON/nonceauthority or first-write/power qualification claim.
+Combinedlib+public+3labscheck0/21.6681811s/sharedtarget/no units; evidence/public-pause-planning-headroom-build-20261105.json.
+Nextnewexactbuild+separateRootGO mustreuseSAMEboot/originalbudget, no restore/CP/cancelretest/newepoch. No newNativeauthorizedyet.
 Terminalheld-reader NOWAPPLIED/CHECKEDsingleSDKfile: self.fileSome→sameactualreadonlyHeldSourceRead/tokenmutex; fileNone retainsindependentunlockedreader.
 Allclosed.revalidate_reader J/body/index/lifecycle/NEW/OLD/COPY/zero/boot proofbody unchanged. Actualeventbookends/sixcontrols fitunchanged128.
 Combinedlib+public+3labscheck0/29.3570361s/sharedtarget/no units, evidence/terminal-held-read-build-20261105.json. Nativequalificationpending.

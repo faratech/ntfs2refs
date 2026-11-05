@@ -43,6 +43,10 @@ pub const WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
 const EXECUTION_STACK_RESERVE_BYTES: u64 = WORKER_STACK_BYTES as u64 + 1024 * 1024;
 #[path = "resource_partition_pause.rs"]
 mod controlled_pause;
+// Public dispatch reserves this SAME existing independent evidence allowance;
+// the Alpha still owns the actual control-file/RAM accounting and validation.
+pub(crate) const CONTROLLED_POST_FLUSH_EVIDENCE_RESERVE_BYTES: u64 =
+    controlled_pause::EVIDENCE_RESERVE_BYTES;
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

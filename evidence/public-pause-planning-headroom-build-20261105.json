@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "kind": "public-controlled-pause-and-adaptive-planning-headroom",
+  "status": "focused-check-passed-native-pending",
+  "files": [
+    {
+      "path": "src/drive_cli.rs",
+      "bytes": 39725,
+      "sha256": "055fe3ab3458523397664b8d56b7b9ecb49bdab80f3edb9206eecad4c3744c28"
+    },
+    {
+      "path": "src/drive_partition.rs",
+      "bytes": 24952,
+      "sha256": "220895186ac8db41ab281f6e43d9f598238117ab579e8bc554e8b9f96e332dab"
+    },
+    {
+      "path": "src/resource_partition_alpha.rs",
+      "bytes": 32850,
+      "sha256": "cfa79f6b35670af510401843235a8180cf739d501309573477f46aa72e58965e"
+    }
+  ],
+  "pause_reviewed_patch_sha256": "c69b2cc0ba417b02274d4a0e0bd8965a5ceaf5445e69286dd70a448da18a469a",
+  "check_exit": 0,
+  "check_seconds": 21.6681811,
+  "unit_tests_run": false,
+  "native_run": false,
+  "headroom": "Automatic resource plan leaves aligned working/64 uncommitted for filesystem metadata and sampled-availability drift; all named reserves and postformat capacity checks remain.",
+  "actual_prior_plan": {
+    "arena_bytes": 18445529088,
+    "stage_max_bytes": 9222762496,
+    "twice_evidence_bytes": 108994560,
+    "keep_bytes": 9301041152,
+    "intent_bytes": 16842751,
+    "sum_promised_bytes": 37204164607,
+    "inferred_available_bytes": 37204164608,
+    "rounding_margin_bytes": 1,
+    "actual_shadow_backing_allocation": 104857600
+  },
+  "prior_native": {
+    "source_commit": "fd4bcc45e90c4e6fe99f475219aa2cd0b065bf00",
+    "pid": 3916,
+    "birth_ms": 1793851224477,
+    "exit_code": 1,
+    "wall_seconds": 0.7135606,
+    "error": "formatting consumed reserved C conversion capacity",
+    "source_preparation_reached": false,
+    "archive_sha256": "8d9ccc9a2bca661fdc7a4b901d3ca2130102640c8d462e0ef63ba82038939128",
+    "original_case_absolute_bytes": 329102331170
+  },
+  "pause": "Hidden paired drive-only nonce/ack flags call existing bounded postflush pause. Dedicated/unsupported modes explicitly refuse. Same 1MiB evidence pre-reserved before arena split; existing Alpha512KiB RAM charged once.",
+  "normal_flags_default_changed": false,
+  "volume_or_budget_caps_raised": false,
+  "source_writer_guard_changed": false,
+  "first_write_or_physical_power_loss_qualified": false,
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+}

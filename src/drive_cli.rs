@@ -71,6 +71,23 @@ pub struct DriveArgs {
     /// Qualification-only bound on the thin provider's carrier and metadata.
     #[arg(long, requires = "experimental_thin_shadow", hide = true)]
     pub experimental_thin_backing_bytes: Option<u64>,
+    /// Qualification-only bounded wait after actual source flush/readback.
+    #[arg(long, hide = true, value_parser = parse_controlled_pause_nonce,
+        requires_all = ["drive", "acknowledge_controlled_post_flush_pause"],
+        conflicts_with_all = ["list", "recover", "recovery_sha256", "rollback", "whole_image_verification", "experimental_thin_shadow", "experimental_thin_backing_bytes"])]
+    pub controlled_post_flush_pause_nonce: Option<String>,
+    /// Separate acknowledgement for shared-partition qualification control.
+    #[arg(long, hide = true,
+        requires_all = ["drive", "controlled_post_flush_pause_nonce"],
+        conflicts_with_all = ["list", "recover", "recovery_sha256", "rollback", "whole_image_verification", "experimental_thin_shadow", "experimental_thin_backing_bytes"])]
+    pub acknowledge_controlled_post_flush_pause: bool,
+}
+fn parse_controlled_pause_nonce(value: &str) -> std::result::Result<String, String> {
+    if value.len() == 64 && value.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+        Ok(value.to_owned())
+    } else {
+        Err("controlled pause requires an independently chosen64-character lowercase hexadecimal nonce".into())
+    }
 }
 impl DriveArgs {
     pub fn requested(&self) -> bool {
@@ -429,6 +446,9 @@ mod windows {
                 Role::Journal { allow_additional_partitions: true })?;
             return super::partition::convert(&args, selected, before);
         }
+        ensure!(args.controlled_post_flush_pause_nonce.is_none()
+            && !args.acknowledge_controlled_post_flush_pause,
+            "controlled post-flush qualification flags apply only to a data partition sharing the current Windows disk; dedicated conversion does not accept them");
         let before = discovery::discover(&selected.volume_guid_path, Role::Source)
             .map_err(|error| if error.raw_os_error() == Some(5) {
                 anyhow::anyhow!("administrator access is required for conversion; run from an elevated Windows terminal: {error}")

@@ -195,8 +195,9 @@ struct Plan {
     stage: u64,
     evidence: u64,
     keep: u64,
+    planning_headroom: u64,
 }
-fn automatic(available: AvailableResources, ancestor: &Path, staging: bool) -> Result<Plan> {
+fn automatic(available: AvailableResources, ancestor: &Path, staging: bool, controlled_pause: bool) -> Result<Plan> {
     let total = total_ram(available);
     let observation = observation_budget(total)?;
     let keep = (available.scratch_available_bytes / 4).min(16 * 1024 * 1024 * 1024);
@@ -220,7 +221,17 @@ fn automatic(available: AvailableResources, ancestor: &Path, staging: bool) -> R
     let working = usable
         .checked_sub(evidence.checked_mul(2).context("evidence overflow")?)
         .and_then(|n| n.checked_sub(intent))
-        .context("space cannot cover independent intent/evidence")?;
+        .and_then(|n| n.checked_sub(if controlled_pause {
+            resource_partition_alpha::CONTROLLED_POST_FLUSH_EVIDENCE_RESERVE_BYTES
+        } else { 0 }))
+        .context("space cannot cover independent intent/evidence and optional qualification control")?;
+    // Availability is sampled before directory creation/formatting. Do not
+    // promise every remaining byte: provider/control filesystem metadata and
+    // unrelated Windows activity can consume space between those samples.
+    // Keep all actual capacity checks and named reservations intact.
+    let planning_headroom = align(working / 64);
+    let working = working.checked_sub(planning_headroom)
+        .context("planning headroom underflow")?;
     let stage = if staging { align(working / 3) } else { 0 };
     let arena = align(working - stage);
     ensure!(
@@ -234,6 +245,7 @@ fn automatic(available: AvailableResources, ancestor: &Path, staging: bool) -> R
         stage,
         evidence,
         keep,
+        planning_headroom,
     })
 }
 
@@ -242,6 +254,13 @@ pub(super) fn convert(
     selected: PartitionSelection,
     before: VolumeDiscovery,
 ) -> Result<u8> {
+    ensure!(args.controlled_post_flush_pause_nonce.is_some()
+        == args.acknowledge_controlled_post_flush_pause,
+        "controlled qualification pause requires both nonce and separate acknowledgement");
+    if let Some(nonce) = args.controlled_post_flush_pause_nonce.as_deref() {
+        super::parse_controlled_pause_nonce(nonce).map_err(anyhow::Error::msg)?;
+    }
+    let controlled_pause = args.controlled_post_flush_pause_nonce.is_some();
     ensure!(
         before.disk_is_windows_disk
             && before.read_only
@@ -267,6 +286,7 @@ pub(super) fn convert(
         resource_native::observe_available_resources(&ancestor)?,
         &ancestor,
         true,
+        controlled_pause,
     )?;
     let binding = PartitionSourceBinding {
         storage: before.binding.clone(),
@@ -316,6 +336,10 @@ pub(super) fn convert(
         "Working storage: {} (actual Windows volume only).",
         parent.display()
     );
+    println!("Uncommitted planning headroom: {} bytes; this is not a disk reservation.", plan.planning_headroom);
+    if controlled_pause {
+        println!("Qualification control: wait up to120seconds after actual non-discovery source flush/readback, then Continue or timeout. This does not qualify a first write or physical power loss.");
+    }
     if !windows::confirm(
         "Convert this partition to ReFS in place, preserving supported files? [y/N]",
     )? {
@@ -341,6 +365,7 @@ pub(super) fn convert(
         resource_native::observe_available_resources(&parent)?,
         &parent,
         true,
+        controlled_pause,
     )?;
     let output = fresh(&parent, "conversion")?;
     let request = PartitionAlphaRequest {
@@ -366,10 +391,16 @@ pub(super) fn convert(
         },
     };
     println!("Conversion records: {}", output.display());
+    let pause_nonce = args.controlled_post_flush_pause_nonce.clone();
+    let pause_ack = args.acknowledge_controlled_post_flush_pause;
     let worker = std::thread::Builder::new()
         .name("public-partition-conversion".into())
         .stack_size(resource_partition_alpha::WORKER_STACK_BYTES)
-        .spawn(move || resource_partition_alpha::run(request, &output, true))?;
+        .spawn(move || match pause_nonce {
+            Some(nonce) => resource_partition_alpha::run_with_controlled_post_flush_pause(
+                request, &output, true, nonce, pause_ack),
+            None => resource_partition_alpha::run(request, &output, true),
+        })?;
     worker.join().map_err(|_| {
         anyhow::anyhow!(
             "partition conversion worker panicked; preserve the printed run and actual source state"
@@ -578,6 +609,7 @@ pub(super) fn try_recover(directory: &Path, checksum: &str, rollback: bool) -> R
     let plan = automatic(
         resource_native::observe_available_resources(&parent)?,
         &parent,
+        false,
         false,
     )?;
     let output = fresh(&parent, "recovery")?;

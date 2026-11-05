@@ -61,6 +61,8 @@ pub mod preparation_shadow;
 pub mod process_io;
 #[cfg(windows)]
 pub use native::recovery_image;
+#[cfg(windows)]
+pub use native::recovery_boot;
 pub mod reference_file;
 #[cfg(windows)]
 pub mod reference_import;

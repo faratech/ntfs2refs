@@ -450,6 +450,20 @@ Root issued ONE normal-run GO to exclusiveoperator using unchanged reviewedOffv4
 conditional on fresh6GiB allprogrammecapacity/Off07ca17/sourceoracle. No restore/prearrangement/repair/retry.
 Evidence: evidence/partition-alpha-ed7f16c-exact-build-20261104.json. GO is not dispatch or success; await actualPID/terminal.
 
+LATEST actual ed7 case b55da9f289b246bcae9c4e064ea3d83a FAILED stack overflow: PID4528/birth1793839020507,
+owned exit255/237.0301935s. First typed GPT SET actually succeeded. Source6 remains BasicRO(attrs1000000000000000),
+one valid41785B intent, no J/publication. Raw GPT proves only targetRO+requiredCRC changes; siblings/MBR/C unchanged.
+NormalOff/RAM0/current07ca/all17 verified; closureSHA5f0e584fbf5d96bfe76f098913615469aa7e7cf19c33a2e5242576e83c6ee03b.
+Census320528532918/free86836535296. No restore/repair/replay/delete/newCP. Existing WERc00000fd/RVA00659c07 resolves __chkstk+55.
+Measured PE mainstack1MiB and four nested exact frames589136B before other callers/callees; no recursion found.
+Root applied lab-only explicit8MiB worker stack,9MiB execution-stack budget charge; focusedcheck0/32.0424673s/no units.
+Evidence evidence/partition-alpha-ed7-stack-overflow-20261104.json. Fixed exact binary/native qualification still pending.
+Operator preparing (NOT authorized yet) one Off failure-branch checkpoint then baseline07ca restore plan, preserving all17+failure.
+Never manually reset current BasicRO attrs from missingJ/noAP inference. Existing full-intent-only crash cancellation remains unsupported.
+Root also applied minimal terminal observer drains: HND/ABT previously could accumulate137/138events before drain against128cap.
+All checks/settercount/cap unchanged; complete metadata bookends now durably streamed, including change success/error.
+Combined lab/public focusedcheck0/27.7569929s/no units; evidence/partition-terminal-event-drains-20261104.json.
+
 - Fresh writes require original live opaque source certificate and actual source/target/J/arena owners. Saved JSON/paths/flags are routes, never authority.
 - Revalidate device/file identities, journal/index/ticket/lifecycle and recovery files. Recovery must not require thin-pool reattachment.
 - Preserve full phase snapshots and native metadata/allocation/namespace/ACL/full retrieval checks, opening/closing boundaries and final allocation checks.

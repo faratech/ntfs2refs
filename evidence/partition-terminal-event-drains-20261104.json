@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "kind": "partition-terminal-durable-event-drains",
+  "status": "focused-check-passed-native-pending",
+  "source_path": "crates/n2r-win32/src/native/partition_restoration.rs",
+  "base_sha256": "5578355dd2a65faeba77ae0bd5da40f2843c23aa9637b41011930ea182f9a30c",
+  "checked_sha256": "34606399fa811051f5f7e6d30799c58f9a2c6ae21cd6622ed443c79335901207",
+  "reviewed_patch_sha256": "4b067928ee81b5a01a6474b12b0e4ec45fb8a64e08ded4cb2fead151155d2122",
+  "problem": "The nested terminal metadata checks can accumulate 137 HND events or 138 ABT events before the next durable drain, exceeding the unchanged 128-event bound.",
+  "fix": "Invoke the existing durable observer before and after complete metadata bookends and drain the partition-change result on both success and failure.",
+  "metadata_checks_removed": false,
+  "event_limit_increased": false,
+  "setter_calls_added": false,
+  "automatic_retry_added": false,
+  "focused_check_includes_worker_stack_fix": true,
+  "focused_check_exit_code": 0,
+  "focused_check_seconds": 27.7569929,
+  "unit_tests_run": false,
+  "native_qualification_claimed": false,
+  "public_frozen_alpha_changed": false
+}

@@ -1031,7 +1031,7 @@ impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
         observer: &mut impl PartitionRestorationObserver,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<PartitionRestorationReceipt> {
-        self.revalidate_metadata(events)?;
+        self.revalidate_metadata_checkpoint(observer, "terminal-finish-metadata-1", events)?;
         self.require_readonly(events)?;
         self.revalidate_closed()?;
         // Check every path before enabling writes; never steal another volume's
@@ -1056,7 +1056,7 @@ impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
             "terminal writable filesystem is not the verified target",
         )?;
         if before.label != self.origin.original_label {
-            self.revalidate_metadata(events)?;
+            self.revalidate_metadata_checkpoint(observer, "terminal-finish-metadata-2", events)?;
             let root = wide_terminal(&format!("{}\\", self.mounted_binding.volume_path()?));
             let label = self.origin.original_label.terminated()?;
             // SAFETY: exact freshly revalidated target GUID, bounded original
@@ -1083,7 +1083,7 @@ impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
             &self.mounted_binding,
             &self.current_info,
         )?;
-        self.revalidate_metadata(events)?;
+        self.revalidate_metadata_checkpoint(observer, "terminal-finish-metadata-3", events)?;
         need(
             self.current_info == self.origin.original_info,
             "terminal original native type/attrs/name not restored",
@@ -1144,6 +1144,18 @@ impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
                 events,
             )
         }
+    }
+    // Stream the real native records between complete metadata bookends.
+    // The observer must durably retain and drain them on both result paths.
+    fn revalidate_metadata_checkpoint(
+        &self,
+        observer: &mut impl PartitionRestorationObserver,
+        phase: &'static str,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<partition_isolation::PartitionIsolationObservation> {
+        publication_checkpoint(Ok(()), observer, "terminal-metadata-before", events)?;
+        let result = self.revalidate_metadata(events);
+        publication_checkpoint(result, observer, phase, events)
     }
     fn revalidate_metadata(
         &self,
@@ -1318,12 +1330,22 @@ impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
         observer: &mut impl PartitionRestorationObserver,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<()> {
-        self.revalidate_metadata(events)?;
+        publication_checkpoint(Ok(()), observer, "terminal-partition-change-before", events)?;
+        let result = self.change_checked(attrs, observer, events);
+        publication_checkpoint(result, observer, "terminal-partition-change-complete", events)
+    }
+    fn change_checked(
+        &mut self,
+        attrs: u64,
+        observer: &mut impl PartitionRestorationObserver,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
+        self.revalidate_metadata_checkpoint(observer, "terminal-change-metadata-1", events)?;
         self.origin.revalidate()?;
         let mut desired = self.origin.original_info.clone();
         desired[64..72].copy_from_slice(&attrs.to_le_bytes());
         observer.before_partition_change(self.kind, &self.current_info, &desired)?;
-        self.revalidate_metadata(events)?;
+        self.revalidate_metadata_checkpoint(observer, "terminal-change-metadata-2", events)?;
         let route = format!(
             "\\\\?\\GLOBALROOT\\Device\\Harddisk{}\\Partition{}",
             self.binding.storage.disk_number, self.binding.storage.identity.partition_number
@@ -1362,7 +1384,7 @@ impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
         need(reply.is_empty(), "terminal setter returned unexpected data")?;
         self.current_info = desired;
         self.file = Some(management);
-        self.revalidate_metadata(events)?;
+        self.revalidate_metadata_checkpoint(observer, "terminal-change-metadata-3", events)?;
         Ok(())
     }
     pub fn enter_readonly(

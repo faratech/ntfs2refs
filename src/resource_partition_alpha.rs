@@ -15,7 +15,7 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use n2r_win32::{
-    NativeEvent,
+    NativeEvent, PartitionTerminalKind,
     general_layout::{GeneralDiskBinding, GeneralSourceShadowBinding},
     journal_file::GeneralJournalStorageBinding,
     managed_shadow::{self, StagingAllocationMeter, TargetFormatProfile},
@@ -26,7 +26,6 @@ use n2r_win32::{
         PartitionIntentReceipt, PartitionPreparationGuard, PartitionPreparationObserver,
     },
     partition_restoration::PartitionRestorationObserver,
-    PartitionTerminalKind,
     tree_resources::ResourceBudget,
 };
 use serde::{Deserialize, Serialize};
@@ -37,6 +36,11 @@ use std::{
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
 };
+
+/// Fixed reservation for the experimental owning-machine worker. This is a
+/// stack address-space bound, not a claim about peak resident memory.
+pub const WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
+const EXECUTION_STACK_RESERVE_BYTES: u64 = WORKER_STACK_BYTES as u64 + 1024 * 1024;
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -344,9 +348,10 @@ pub fn run(
         .context("SDK RAM reserve overflow")?;
     let arena_ram = request
         .total_ram_bytes
-        .checked_sub(sdk_ram)
+        .checked_sub(EXECUTION_STACK_RESERVE_BYTES)
+        .and_then(|n| n.checked_sub(sdk_ram))
         .and_then(|n| n.checked_sub(ledger_ram))
-        .context("total RAM cannot cover independent SDK lifecycle/owner/intent/evidence")?;
+        .context("total RAM cannot cover execution stacks and independent SDK lifecycle/owner/intent/evidence")?;
     let resources = derive_budget(arena_ram, align(request.arena_scratch_bytes))?;
     fs::create_dir(output)?;
     let _run_owners = ordinary_directory(output)?;
@@ -377,6 +382,9 @@ pub fn run(
         "actual_source":binding,"arena":resources,"intent_maximum_including_slack":intent_quota,
         "intent_outside_arena":true,"evidence_outside_arena":true,"provider_outside_arena":true,
         "independently_reserved_sdk_ram_bytes":sdk_ram,"ledger_ram_bytes":ledger_ram,
+        "worker_stack_reservation_bytes":WORKER_STACK_BYTES,
+        "execution_stacks_reservation_bytes":EXECUTION_STACK_RESERVE_BYTES,
+        "stack_reservation_is_not_peak_resident_memory":true,
         "maximum_staging_is_observed_phase_budget_not_kernel_quota":true}),
     )?;
     observer.checkpoint("readonly-source-route-and-resource-admission", &mut events)?;

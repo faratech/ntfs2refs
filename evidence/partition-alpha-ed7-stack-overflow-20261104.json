@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "kind": "actual-partition-alpha-stack-overflow-and-bounded-stack-fix",
+  "status": "native-attempt-failed-source-protection-preserved-fix-check-passed",
+  "native": {
+    "source_commit": "ed7f16c0c4e1f2ca02d9412f94a1c9c1434e1fde",
+    "binary_sha256": "0c98bc0dbc667d4d47eff48ebeee565b8ee2790a6edf46d3af15201c63046e25",
+    "run_id": "b55da9f289b246bcae9c4e064ea3d83a",
+    "pid": 4528,
+    "birth_ms": 1793839020507,
+    "exit_code": 255,
+    "wall_seconds": 237.0301935,
+    "typed_gpt_setter_actually_succeeded": true,
+    "actual_source_state": "Basic GPT partition, read-only attribute set",
+    "valid_intent_frames": 1,
+    "intent_file_bytes": 41785,
+    "journal_or_publication_created": false,
+    "recovery_or_cancellation_authority_inferred_from_missing_files": false,
+    "raw_gpt_comparison_sha256": "8d8f42dd56ad7b4678a47b1d44b28dc9ca4a889869d92c3bf7985438a3ce4f20",
+    "other_gpt_entries_mbr_and_c_control_unchanged": true,
+    "closed_off_receipt_sha256": "5f0e584fbf5d96bfe76f098913615469aa7e7cf19c33a2e5242576e83c6ee03b",
+    "closed_off_receipt": ".lab/hyperv/streaming-v2-20261027/partition-alpha-first-normal-b55da9f289b246bcae9c4e064ea3d83a/closed-off-ed7-stackoverflow.json",
+    "vm_off_ram_zero": true,
+    "checkpoints_preserved": 17,
+    "source_type_or_attribute_restoration": false
+  },
+  "stack_evidence": {
+    "actual_pe_initial_stack_reserve_bytes": 1048576,
+    "existing_wer_report_sha256": "a2ac1d37415b6a5310d2a360f40eade9f0a569779570564e7749a19783d6afad",
+    "wer_exception_code": "c00000fd",
+    "wer_exception_rva": "00659c07",
+    "pdb_resolution": "__chkstk+55",
+    "exact_overflowing_caller_unknown": true,
+    "recursive_cycle_identified": false,
+    "measured_nested_frames_bytes": {
+      "prepare_partition_resources": 166488,
+      "prepare_partition": 241736,
+      "inspect_recorded_with_scratch": 87528,
+      "inspect_paged_internal": 93384
+    },
+    "four_frame_total_bytes": 589136,
+    "four_frame_total_excludes_other_nested_callers_and_callees": true
+  },
+  "fix": {
+    "scope": "lab-partition-alpha worker and its admitted RAM accounting",
+    "worker_stack_bytes": 8388608,
+    "execution_stacks_reserved_from_total_ram_bytes": 9437184,
+    "reservation_is_peak_resident_memory": false,
+    "one_spawn_one_join_no_retry": true,
+    "focused_check_exit_code": 0,
+    "focused_check_seconds": 32.0424673,
+    "unit_tests_run": false,
+    "native_fix_qualification_pending": true,
+    "public_main_or_frozen_alpha_changed": false
+  }
+}

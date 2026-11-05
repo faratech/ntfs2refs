@@ -1,6 +1,18 @@
 //! Explicit owning-machine experimental source conversion; no host/VM actions.
 #[cfg(windows)]
 fn main() -> anyhow::Result<()> {
+    // Windows gives the executable's initial thread a 1 MiB stack. The
+    // owning preparation chain nests several bounded parser frames; keep its
+    // stack explicit and charge the reservation in the conversion budget.
+    std::thread::Builder::new()
+        .name("partition-alpha".into())
+        .stack_size(ntfs2refs::resource_partition_alpha::WORKER_STACK_BYTES)
+        .spawn(run)?
+        .join()
+        .map_err(|_| anyhow::anyhow!("partition conversion worker panicked; preserve its run"))?
+}
+#[cfg(windows)]
+fn run() -> anyhow::Result<()> {
     use anyhow::{Context, ensure};
     use clap::Parser;
     use sha2::{Digest, Sha256};

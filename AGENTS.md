@@ -25,8 +25,8 @@ Conversion and recovery execute inside the machine owning the disk. Hyper-V is l
 ## CRITICAL current VM/AP state
 
 VM `2401593c-4b30-472e-9b6d-c9534cbaa599`, `ntfs2refs-streaming-v2-20261027`, fixed4GiB/4CPU/noNIC.
-Latest CONFIRMED state: **Off/RAM0/current AP checkpoint `b68cf347-f33f-4444-9a9e-f4bd22f8acca`, all18 keepers** after obsolete3cb retirement.
-Root has since authorized ONE BootObserve using helper/observer pins below. **Consult the operator's actual process/receipts for live state; never infer completion, repeat Start, or restore because an observation timed out.**
+Latest CONFIRMED state: **Running/4GiB/current AP checkpoint `b68cf347-f33f-4444-9a9e-f4bd22f8acca`, all18 keepers**, actual new boot1793856847028 after ONE normal Start/no restore.
+BootObserve controller87036 CLOSED0; readonly observer4776/birth1793856880991 OS0. Source Private0/fullGPT/C/current critical routes and original pub/locator/native J/AP8192 survived actual restart. Receipt SHA `6ac29a114396af4010305e80a79e8ff414f01b1f28d57c5a94736c8c64fb243e`; host boot-readonly-closed SHA `3f6dae365ef539673eee0c4643d4832f4d62d4c7bfb80b94aecc28d9cdf90aca`, case `fd777-AP-BootObserve-4ade03b677174647840efcd1c5248128`. No source payload/J body IO, source setters or replay. Census322813154078/free84534517760. **Public recovery has NO GO yet: worker/host dispatcher are under review. Consult the operator before any action; never repeat Start or restore on timeout.**
 
 Actual public fd777 process4416/birth1793854653590 exited1/284.0334652s with OS19 **AFTER durable AP and source-gate issuance**. Cancellation correctly refused.
 The precise failed I/O was unrecorded; an unconditional EMPTY source FlushFileBuffers before first write is a concrete possible origin. **Source bytes written UNKNOWN. Do not classify this as unchanged NTFS or run a Before/NTFS contents oracle.**

@@ -91,17 +91,64 @@ unsafe extern "system" {
     ) -> i32;
     fn CoTaskMemFree(memory: *mut c_void);
 }
-#[link(name = "vssapi")]
+// VSS is optional in WinPE. Do not make every SDK executable depend on
+// VSSAPI.DLL at process startup: only an actual VSS query loads the system DLL.
+#[link(name = "kernel32")]
 unsafe extern "system" {
-    fn CreateVssBackupComponentsInternal(result: *mut *mut Backup) -> i32;
-    fn VssFreeSnapshotPropertiesInternal(properties: *mut SnapshotRaw);
-    // The SDK's supported IsVolumeSnapshotted inline forwards exactly to this
-    // exported entry point; no private interface or provider activation is used.
-    fn IsVolumeSnapshottedInternal(
-        volume: *const u16,
-        present: *mut i32,
-        compatibility: *mut i32,
-    ) -> i32;
+    fn GetSystemDirectoryW(buffer:*mut u16,characters:u32)->u32;
+    fn LoadLibraryExW(path:*const u16,file:*mut c_void,flags:u32)->*mut c_void;
+    fn GetProcAddress(module:*mut c_void,name:*const u8)->*mut c_void;
+    fn FreeLibrary(module:*mut c_void)->i32;
+}
+type CreateBackup = unsafe extern "system" fn(*mut *mut Backup)->i32;
+type FreeSnapshot = unsafe extern "system" fn(*mut SnapshotRaw);
+type IsSnapshotted = unsafe extern "system" fn(*const u16,*mut i32,*mut i32)->i32;
+struct VssModule(*mut c_void);
+impl Drop for VssModule {
+    fn drop(&mut self){
+        // SAFETY: exactly the successful LoadLibraryExW reference owned here.
+        // VssApi and every returned object borrow outlive this release.
+        unsafe{FreeLibrary(self.0);}
+    }
+}
+struct VssApi {
+    _module:VssModule,
+    create_backup:CreateBackup,
+    free_snapshot:FreeSnapshot,
+    is_snapshotted:IsSnapshotted,
+}
+impl VssApi {
+    fn load()->io::Result<Self>{
+        let mut directory=vec![0u16;32768];
+        // SAFETY: initialized bounded WCHAR buffer, no environment path input.
+        let n=unsafe{GetSystemDirectoryW(directory.as_mut_ptr(),directory.len() as u32)} as usize;
+        if n==0{return Err(io::Error::last_os_error());}
+        if n>=directory.len(){return Err(invalid("VSS system directory exceeds bounded path"));}
+        directory.truncate(n);
+        directory.extend("\\vssapi.dll".encode_utf16());directory.push(0);
+        // Full native system path and LOAD_LIBRARY_SEARCH_SYSTEM32 prevent
+        // caller/current-directory DLL search or an installed-image transplant.
+        let raw=unsafe{LoadLibraryExW(directory.as_ptr(),ptr::null_mut(),0x0000_0800)};
+        if raw.is_null(){
+            let error=io::Error::last_os_error();
+            return Err(io::Error::new(error.kind(),format!("VSS unavailable: LoadLibraryExW(system32/vssapi.dll) failed: {error}; native_error={:?}",error.raw_os_error())));
+        }
+        let module=VssModule(raw);
+        let address=|name:&'static [u8]|->io::Result<*mut c_void>{
+            // SAFETY: live module and fixed NUL-terminated SDK export names.
+            let raw=unsafe{GetProcAddress(module.0,name.as_ptr())};
+            if raw.is_null(){let error=io::Error::last_os_error();return Err(io::Error::new(error.kind(),format!(
+                "VSS unavailable: required export {} missing: {error}; native_error={:?}",
+                String::from_utf8_lossy(&name[..name.len()-1]),error.raw_os_error())));}
+            Ok(raw)
+        };
+        // SAFETY: these exact exports/signatures are the same SDK entry points
+        // previously imported statically; no guessed alternate API is used.
+        let create_backup=unsafe{mem::transmute::<*mut c_void,CreateBackup>(address(b"CreateVssBackupComponentsInternal\0")?)};
+        let free_snapshot=unsafe{mem::transmute::<*mut c_void,FreeSnapshot>(address(b"VssFreeSnapshotPropertiesInternal\0")?)};
+        let is_snapshotted=unsafe{mem::transmute::<*mut c_void,IsSnapshotted>(address(b"IsVolumeSnapshottedInternal\0")?)};
+        Ok(Self{_module:module,create_backup,free_snapshot,is_snapshotted})
+    }
 }
 
 #[repr(C)]
@@ -213,16 +260,21 @@ struct ObjectRaw {
     kind: i32,
     object: ObjectUnion,
 }
-impl Drop for ObjectRaw {
+struct OwnedObject<'api>{raw:ObjectRaw,api:&'api VssApi}
+impl std::ops::Deref for OwnedObject<'_>{
+    type Target=ObjectRaw;
+    fn deref(&self)->&ObjectRaw{&self.raw}
+}
+impl Drop for OwnedObject<'_> {
     fn drop(&mut self) {
         // SAFETY: only an SDK-discriminated returned arm is released. Zeroed
         // initial storage has kind 0, so failed/unfilled queries release none.
         unsafe {
-            match self.kind {
-                SNAPSHOT => VssFreeSnapshotPropertiesInternal(&mut self.object.snapshot),
+            match self.raw.kind {
+                SNAPSHOT => (self.api.free_snapshot)(&mut self.raw.object.snapshot),
                 PROVIDER => {
-                    CoTaskMemFree(self.object.provider.name.cast());
-                    CoTaskMemFree(self.object.provider.version.cast());
+                    CoTaskMemFree(self.raw.object.provider.name.cast());
+                    CoTaskMemFree(self.raw.object.provider.version.cast());
                 }
                 _ => {}
             }
@@ -434,10 +486,12 @@ pub fn observe_snapshot_presence(source_volume_guid: &str) -> io::Result<Observa
 
 fn observe(source_volume_guid: &str, include_storage: bool) -> io::Result<Observation> {
     let source = volume_guid(source_volume_guid)?;
+    // Declare the module before all COM owners; they release before unload.
+    let api=VssApi::load()?;
     let _apartment = Apartment::initialize()?;
     let mut backup = ptr::null_mut();
     // SAFETY: initialized output pointer, owned reference checked below.
-    let hr = unsafe { CreateVssBackupComponentsInternal(&mut backup) };
+    let hr = unsafe { (api.create_backup)(&mut backup) };
     let backup = Com::returned(backup, hr, "CreateVssBackupComponents")?;
     // SAFETY: SDK-typed vtable slots on the live interface, null BSTR means a
     // new query context; no StartSnapshotSet/DoSnapshotSet or writers are called.
@@ -466,7 +520,7 @@ fn observe(source_volume_guid: &str, include_storage: bool) -> io::Result<Observ
     let provider_enum = query(&backup, PROVIDER)?;
     let mut providers = Vec::new();
     let mut areas = Vec::new();
-    while let Some(item) = next_object(&provider_enum, PROVIDER)? {
+    while let Some(item) = next_object(&provider_enum, PROVIDER,&api)? {
         count(&mut total)?;
         // SAFETY: next_object checked the union discriminator.
         let provider = unsafe { item.object.provider };
@@ -519,7 +573,7 @@ fn observe(source_volume_guid: &str, include_storage: bool) -> io::Result<Observ
     // SAFETY: live NUL-terminated volume GUID and exact SDK BOOL/LONG outputs;
     // this is the public IsVolumeSnapshotted inline's exported entry point.
     let hr = unsafe {
-        IsVolumeSnapshottedInternal(source_wide.as_ptr(), &mut present, &mut compatibility)
+        (api.is_snapshotted)(source_wide.as_ptr(), &mut present, &mut compatibility)
     };
     exact_ok("IsVolumeSnapshotted", hr)?;
     if !matches!(present, 0 | 1) || compatibility < 0 {
@@ -649,12 +703,13 @@ fn query(backup: &Com<Backup>, kind: i32) -> io::Result<Com<ObjectEnum>> {
         unsafe { ((*(*backup.raw).vtable).query)(backup.raw, NULL_GUID, 1, kind, &mut result) };
     Com::returned(result, hr, "IVssBackupComponents::Query")
 }
-fn next_object(enumeration: &Com<ObjectEnum>, expected: i32) -> io::Result<Option<ObjectRaw>> {
-    // SAFETY: zeroed C POD/union has no references or Rust invariants.
-    let mut item: ObjectRaw = unsafe { mem::zeroed() };
+fn next_object<'api>(enumeration:&Com<ObjectEnum>,expected:i32,api:&'api VssApi)->io::Result<Option<OwnedObject<'api>>>{
+    // SAFETY: zeroed C POD/union has no references or Rust invariants. The
+    // wrapper retains a live free function even if Next fails/misbehaves.
+    let mut item=OwnedObject{raw:unsafe{mem::zeroed()},api};
     let mut fetched = 0;
     let hr =
-        unsafe { ((*(*enumeration.raw).vtable).next)(enumeration.raw, 1, &mut item, &mut fetched) };
+        unsafe { ((*(*enumeration.raw).vtable).next)(enumeration.raw, 1, &mut item.raw, &mut fetched) };
     if hr == S_FALSE && fetched == 0 && item.kind == 0 {
         return Ok(None);
     }

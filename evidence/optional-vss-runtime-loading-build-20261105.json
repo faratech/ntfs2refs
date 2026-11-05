@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "kind": "optional-runtime-system-vss-loading",
+  "status": "focused-check-passed-native-pe-unqualified",
+  "source": {
+    "path": "crates/n2r-win32/src/vss_observation.rs",
+    "bytes": 30310,
+    "sha256": "0432758d691594f4f1a7abdd92eed99b700e41adf0205feeb82e688b69b5a326"
+  },
+  "focused_check": {
+    "shared_target_reused": true,
+    "unit_tests_run": false,
+    "wall_seconds": 27.5180531,
+    "native_run": false,
+    "capacity": {
+      "actual_bytes": 323506248585,
+      "free_bytes": 83873329152,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 2147483648,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "exit_code": 0,
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+    "kind": "public-partition-dispatch-focused-check"
+  },
+  "behavior": "Remove static VSSAPI import. Actual VSS queries load the native system directory DLL with system-only dependency search and require all original exports. COM/object lifetimes retain the library until all release calls complete. Missing DLL/export returns explicit unknown/unavailable error, never empty facts.",
+  "installed_vss_semantics_intended_unchanged": true,
+  "missing_vss_native_case_executed": false,
+  "pe_startup_or_formatter_qualified": false,
+  "source_write_or_default_profile_changed": false,
+  "unit_tests_run": false
+}

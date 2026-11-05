@@ -610,6 +610,7 @@ impl Origin {
             number_of_links: u32::try_from(num_field(ip, "number_of_links")?)
                 .map_err(io::Error::other)?,
         };
+        let reopened_intent = matches!(&intent_input, IntentInput::Reopened(_));
         let mut intent = match intent_input {
             IntentInput::Reopened(file) => Artifact::hold(
                 file,
@@ -634,8 +635,20 @@ impl Origin {
                 )?
             }
         };
+        // NTFS may trim allocation slack on last close. Reopening the SAME
+        // authenticated ordinary file can therefore have less allocation than
+        // the live publication recorded. Its identity, EOF, attributes, links
+        // and complete content must still match; live-owner adoption stays exact.
+        let mut expected_intent = intent_snapshot.clone();
+        if reopened_intent
+            && intent.snapshot.file_attributes & 0x0a00 == 0
+            && intent.snapshot.allocation_bytes >= intent.snapshot.file_bytes
+            && intent.snapshot.allocation_bytes <= intent_snapshot.allocation_bytes
+        {
+            expected_intent.allocation_bytes = intent.snapshot.allocation_bytes;
+        }
         need(
-            intent.snapshot == intent_snapshot,
+            intent.snapshot == expected_intent,
             "actual held preparation intent identity differs",
         )?;
         let mut consumed = 0;

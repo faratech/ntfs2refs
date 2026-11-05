@@ -345,6 +345,13 @@ impl IntentFile {
         // Prefix hashing reuses the admitted4MiB record workspace after exact
         // comparison has completed, rather than keeping a second4MiB buffer.
         drop(bytes);
+        // Normalize through the SAME exclusive RW intent owner before its
+        // allocation becomes a durable external pin. NTFS can otherwise
+        // discard transient append growth allocation only on final close.
+        let slack=self.max_allocation.checked_sub(MAX_INTENT)
+            .ok_or_else(||invalid("intent allocation reservation is inconsistent"))?;
+        let normalized=crate::file_storage::normalize_allocation_at_eof(
+            &self.file,next,MAX_INTENT,slack)?;
         let prefix = crate::sha256_native::hash_range(&mut self.file, 0, next)?;
         self.end = next;
         self.sequence += 1;
@@ -352,7 +359,8 @@ impl IntentFile {
             &self.file, MAX_INTENT,
         )?;
         require(
-            snapshot.file_bytes == next
+            snapshot == normalized.after
+                && snapshot.file_bytes == next
                 && snapshot.allocation_bytes <= self.max_allocation
                 && snapshot.file_id_128 == self.identity.file_id_128
                 && snapshot.volume_serial_number == self.identity.volume_serial_number

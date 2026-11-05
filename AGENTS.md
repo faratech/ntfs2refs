@@ -396,6 +396,28 @@ ROOT ISSUED ONE actual normal8f conversion GO to operator using Offv4hostbdfa892
 fresh6GiB fullprogramme admission/Off07caall17/actual source8filebaselinefirst, mandatorybuildpinsabove. No newsourceprep/restore/repair/replay/retry/extraCP.
 Native launch/phase/success mustcome fromactualoperatorPID/birth/terminal observations, notfromGO. RootdoesnotcompeteVM.
 
+LATEST ACTUAL8f attempt72394fdbfa684136921b57da7af9ff1f: actualnative2304/birth1793836791495/boot1793836749023,
+OSexit1/58.6320047s. Accepted nativeCIM baseline, then stdoutrevalidate/critical-role-check; stderrdevice-not-ready21.
+LOCK/DISMOUNT/90083 succeeded in ledger. Lastcriticalrolebatch14successes ends nativeGPT/activepagefileextents; failedoperationitselfunflushed,
+do not attribute OSerror21 to a specific ioctl from absent evidence. SourceBasic0NTFS/native144B/all6GPTheaders+entries+MBR/Ccontrol unchanged,
+intentEOF0/noJ. Readonlyreceipt72394/readonly-after8f-critical-role-refusal.json SHAe294cf920bb4a6d7ae3d0e0cb5470ae1285e228eaf5c843561ce80d56d2a95af.
+NormalOffclosed `.lab/hyperv/streaming-v2-20261027/partition-alpha-first-normal-72394fdbfa684136921b57da7af9ff1f/closed-off8f-os21-refusal.json`
+SHAd399dd4a282aa2b2746a42b3ac818e69d66ac8efc96819a3ac5e592985434ae7; separatefreshOff/RAM0/07ca/all17.
+Compact34file328416Bmanifest closed-off8f-small-manifest.json SHAdc0a15d2a8c727224b0224bdb430469bbefe5afc3439aca5805635ea64dafb56.
+Both100MiBproviders retained, no detach/delete/source repair/replay/restore/extraCP. Finalcensus320112978875/free87227400192;
+8fcasebaseline319680684332/absolute326123135276 unchanged, remaining6010156401. OperatoridleexclusiveVMowner.
+
+LOCK COMPATIBILITY FIX APPLIED/COMMITTED/PUSHED **353ce917efa5cfbb08ff7cbd7fdf517d3e55d059**: singlecollectorpatch8380e469...,
+source28737B/SHA2b358b529f1e08349dcf34a1546230992cb4254a8e43ff37370427794161c4f5. SourceSelected query no longer opensNEWGLOBALROOT
+volume whileoriginalFileLOCKED; readonlyPhysicalDrive DEVICE/LENGTH/fullnativeGPTlayout selectsuniqueGUID/number/extent and exactbeforeafterlayout.
+CurrentC/critical/nativeWMIchecks unchanged; othermetadataopens nowinclude exactNativeEvent/path/OSerrorcontext.
+Lab+publiccheck0/32.8696308s/no units, evidence/partition-storage-locked-target-build-20261104.json. No staged signature change:
+its optionalSourceGUID reopen captures21 asunavailable; originalRWFile stillchecks identity; later freshopens onlyafterUNLOCK.
+EXACT NEW BUILD ACTIVE hostsession57244 `.lab/development/release-candidates/partition-alpha-353ce91`, source353ce91,
+log `.lab/development/partition-alpha-353ce91-build.log`; fresh2GiBprogrammeadmission/sharedtarget+staging/4jobs, no competingCargo.
+OperatorcanREUSEunchangedOffv4hostbdfa... (externalbuildpins) with UTF8worker60d47/oraclea4a575/support40e8 once353buildclosed.
+No converterGOfor353yet. Verifyactualmanifest+EXE+sourceclosure thenRootone-runGO; VMstillOff07ca/all17.
+
 - Fresh writes require original live opaque source certificate and actual source/target/J/arena owners. Saved JSON/paths/flags are routes, never authority.
 - Revalidate device/file identities, journal/index/ticket/lifecycle and recovery files. Recovery must not require thin-pool reattachment.
 - Preserve full phase snapshots and native metadata/allocation/namespace/ACL/full retrieval checks, opening/closing boundaries and final allocation checks.

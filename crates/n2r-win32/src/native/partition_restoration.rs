@@ -1181,7 +1181,6 @@ impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
             self.budget,
             events,
         )?;
-        let _vds_diagnostics=partition_runtime_roles::runtime_volume_role_diagnostics(&self.binding,self.budget,events);
         let roles=super::partition_storage_roles::observe_partition_storage_roles(&self.binding,self.budget,events)?;
         let critical_unchanged=roles.catalog_complete
             &&roles.same_critical_roles(&self.baseline.storage_current_partition_roles);

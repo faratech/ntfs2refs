@@ -174,7 +174,6 @@ impl PartitionSourceMetadataWitness {
                 self.budget,
                 events,
             )?;
-            let _vds_diagnostics=super::partition_runtime_roles::runtime_volume_role_diagnostics(&self.binding,self.budget,events);
             let roles=super::partition_storage_roles::observe_partition_storage_roles(&self.binding,self.budget,events)?;
             if dumps != self.baseline.configured_dump_locations
                 || !roles.same_critical_roles(&self.baseline.storage_current_partition_roles)

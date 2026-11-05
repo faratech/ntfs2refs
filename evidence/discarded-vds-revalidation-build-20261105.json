@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "kind": "remove-discarded-optional-vds-revalidation",
+  "status": "focused-check-passed-native-performance-unmeasured",
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/native/partition_owner.rs",
+      "bytes": 44650,
+      "sha256": "6ee7792a5eebf5e630772d490a1f3dedec2e4d632b723ceaa2405a45286d89a4"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_source_metadata.rs",
+      "bytes": 7939,
+      "sha256": "bc79d051cd2991b24790b89995501701ba2e96d96269331d4165d848d4523c51"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_lifecycle/staged.rs",
+      "bytes": 58060,
+      "sha256": "328f69325a56bc2e52b49784790bb0108ff245d744211bdec25556cb5ec1e32a"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_restoration.rs",
+      "bytes": 77938,
+      "sha256": "c1b7ea4066c03c950fc933a4f7f5d961750c6aa286cd1f556d2f49a9ade547e6"
+    }
+  ],
+  "reviewed_patch_sha256": "d8de490e193390880a81ee4bd4f2c4bcee57da40289906c280e7f4f6d16c3dc1",
+  "check_exit": 0,
+  "check_seconds": 28.4050669,
+  "unit_tests_run": false,
+  "native_run": false,
+  "change": "Remove four discarded optional VDS diagnostic calls during revalidation; preserve initial diagnostic provenance and label it opening-only.",
+  "authoritative_storage_wmi_dump_page_windows_gpt_identity_and_fingerprint_checks_removed": false,
+  "source_writer_checks_changed": false,
+  "current_native_48772_binary_changed": false,
+  "timing_evidence": ".lab/hyperv/streaming-v2-20261027/partition-alpha-first-normal-5825c5fdf71a4922847752eea6f4f576/ledger-phase-timing-corrected-v2.json",
+  "timing_evidence_sha256": "88c13a5f9d260ee5b2ff36bc60366f2e42c46452920b1515c32271786c853ef5",
+  "speedup_claimed": false
+}

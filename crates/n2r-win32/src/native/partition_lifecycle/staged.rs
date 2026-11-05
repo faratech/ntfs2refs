@@ -1035,7 +1035,6 @@ impl PartitionPreparationGuard {
         )?;
         self.checkpoint("partition-preparation-critical-role-check", events)?;
         let dumps = observe_configured_dump_locations(&self.binding, self.budget, events)?;
-        let _vds_diagnostics=runtime_volume_role_diagnostics(&self.binding,self.budget,events);
         let roles=observe_partition_storage_roles(&self.binding,self.budget,events)?;
         require(
             dumps == self.dumps && roles.same_critical_roles(&self.roles),

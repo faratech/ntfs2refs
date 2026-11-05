@@ -26,6 +26,8 @@ const GRANULE: u64 = 4096;
 pub struct PartitionOwnerState {
     pub partition: PartitionIsolationObservation,
     pub(super) configured_dump_locations: ConfiguredDumpObservation,
+    // Optional provenance captured at owner opening only; never current-role authority.
+    #[serde(rename = "vds_opening_volume_roles")]
     pub(super) vds_current_volume_roles: RuntimeVolumeRoleDiagnostic,
     pub(super) storage_current_partition_roles:PartitionStorageRoleObservation,
     pub source_admission_issued: bool,
@@ -513,7 +515,6 @@ impl PartitionScopedOwner {
             events,
         )?;
         let dumps = observe_configured_dump_locations(&self.binding, self.budget, events)?;
-        let _vds_roles = runtime_volume_role_diagnostics(&self.binding,self.budget,events);
         let storage_roles=observe_partition_storage_roles(&self.binding,self.budget,events)?;
         if !super::partition_isolation::same_private_identity(&self.enrolled.partition, &current)
             || dumps != self.enrolled.configured_dump_locations

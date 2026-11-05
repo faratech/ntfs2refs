@@ -450,13 +450,8 @@ fn capture_store_inner(
             // disposable B. Existing .bcd copies share the same two-store cap.
             let mut used=bytes.checked_add(budget.maximum_store_bytes)
                 .ok_or_else(||bad("pristine/query BCD reservation overflow"))?;
-            for entry in std::fs::read_dir(directory)?{
-                let path=entry?.path();let metadata=std::fs::symlink_metadata(&path)?;
-                need(metadata.is_file()&&metadata.file_attributes()&0x400==0,"ordinary owned active-BCD capture directory required")?;
-                if path.extension().and_then(|v|v.to_str())==Some("bcd"){
-                    used=used.checked_add(metadata.len()).ok_or_else(||bad("aggregate BCD metadata capacity overflow"))?;
-                }
-            }
+            let census=native::owned_control_usage(directory,budget.maximum_control_bytes,0)?;
+            used=used.checked_add(census.stores).ok_or_else(||bad("aggregate BCD allocation overflow"))?;
             need(used<=budget.maximum_store_bytes.checked_mul(2).ok_or_else(||bad("BCD metadata reserve overflow"))?,
                 "actual raw/backup BCD copies exceed existing two-store metadata reservation")?;
             let copy_a=directory.join(format!("active-hive-pristine-{ordinal:04}.bcd"));
@@ -493,6 +488,7 @@ fn capture_store_inner(
             let query_before_sha256=crate::sha256_native::hash_range(&mut query,0,query_before.file_bytes)?;
             need(query_before.file_bytes==bytes&&query_before_sha256==raw_before,
                 "query B did not start as the exact pristine snapshot")?;
+            native::register_owned_query_store(&query,&copy_b,budget.maximum_store_bytes,budget.maximum_control_bytes)?;
             drop(query);
             phase="active-hive-native-complete-current-system-enum-all";
             let current=tool.enum_system_all(directory)?;
@@ -705,6 +701,7 @@ pub(super) fn raw_copy(
         crate::sha256_native::hash_range(&mut output, 0, pin.bytes)? == sha,
         "raw BCD metadata copy readback differs",
     )?;
+    native::register_owned_query_store(&output,path,maximum,metadata_limit)?;
     Ok(sha)
 }
 pub(super) fn read_external(

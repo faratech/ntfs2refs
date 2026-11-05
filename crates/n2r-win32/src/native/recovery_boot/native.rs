@@ -385,62 +385,103 @@ fn verify_option(option: &[u8], efi: &EfiIdentity) -> io::Result<()> {
         "complete native Windows firmware device/file path absent",
     )
 }
+#[derive(Clone)]
+struct RegisteredQueryStores { store:u64, control:u64, sidecars:BTreeMap<PathBuf,String> }
+static QUERY_STORES:std::sync::OnceLock<std::sync::Mutex<BTreeMap<PathBuf,RegisteredQueryStores>>>=std::sync::OnceLock::new();
+static SIDECAR_RECEIPT:AtomicU64=AtomicU64::new(0);
+fn query_stores()->&'static std::sync::Mutex<BTreeMap<PathBuf,RegisteredQueryStores>>{QUERY_STORES.get_or_init(||std::sync::Mutex::new(BTreeMap::new()))}
+pub(super) fn register_owned_query_store(file:&File,path:&Path,store:u64,control:u64)->io::Result<()> {
+    use std::os::windows::fs::MetadataExt;
+    let parent=path.parent().ok_or_else(||bad("owned query store parent absent"))?;
+    let metadata=file.metadata()?;
+    need(path.is_absolute()&&path.extension().and_then(|x|x.to_str())==Some("bcd")
+        &&metadata.is_file()&&metadata.file_attributes()&0x400==0&&metadata.len()>0&&metadata.len()<=store,
+        "actual SDK-created ordinary bounded query store required")?;
+    let base_native_id=crate::file_storage::file_id_info(file)?;
+    let mut registry=query_stores().lock().map_err(|_|bad("query-store registration poisoned"))?;
+    let entry=registry.entry(parent.to_path_buf()).or_insert_with(||RegisteredQueryStores{store,control,sidecars:Default::default()});
+    need(entry.store==store&&entry.control==control,"owned query directory budget changed")?;
+    for suffix in [".LOG",".LOG1",".LOG2"] {let mut name=path.as_os_str().to_os_string();name.push(suffix);let sidecar=PathBuf::from(name);if let Some(old)=entry.sidecars.get(&sidecar){need(old==&base_native_id,"owned query base native file identity changed")?;}else{entry.sidecars.insert(sidecar,base_native_id.clone());}}
+    let memory=entry.sidecars.iter().try_fold(0u64,|n,(p,id)|n.checked_add(p.as_os_str().as_encoded_bytes().len()as u64+id.len()as u64+128)).ok_or_else(||bad("owned sidecar metadata overflow"))?;
+    need(memory<=control/2,"owned sidecar registration exceeds existing metadata budget")
+}
+#[derive(Serialize)]
+pub(super) struct SidecarObservation {path:PathBuf,base_native_file_id:String,eof:u64,allocation:u64,charged:u64,attributes:u32}
+#[derive(Serialize)]
+pub(super) struct ControlUsage {pub control:u64,pub stores:u64,sidecars:Vec<SidecarObservation>,vanished_known_sidecars:Vec<PathBuf>,census_attempts:u32}
+fn standard_bytes(file:&File)->io::Result<[u8;24]>{
+    use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandleEx,FileStandardInfo};
+    #[repr(C,align(8))]struct Aligned([u8;24]);let mut value=Aligned([0;24]);
+    if unsafe{GetFileInformationByHandleEx(file.as_raw_handle(),FileStandardInfo,value.0.as_mut_ptr().cast(),24)}==0{return Err(io::Error::last_os_error())}Ok(value.0)
+}
+/// Same exact sidecar policy for every control write and active-copy admission.
+pub(super) fn owned_control_usage(parent:&Path,maximum:u64,pending:u64)->io::Result<ControlUsage>{
+    use std::os::windows::fs::{MetadataExt,OpenOptionsExt};
+    let registered=query_stores().lock().map_err(|_|bad("query-store registry poisoned"))?.get(parent).cloned();
+    if let Some(r)=&registered{need(r.control==maximum,"owned directory control budget differs")?;}
+    let known=|p:&Path|registered.as_ref().is_some_and(|r|r.sidecars.contains_key(p));
+    let mut vanished=Vec::new();
+    for attempt in 1..=3 {
+        let mut paths=std::fs::read_dir(parent)?.map(|x|x.map(|e|e.path())).collect::<io::Result<Vec<_>>>()?;paths.sort();
+        need(paths.len()as u64<=maximum/64+1,"owned control census exceeds bounded metadata count")?;
+        let mut usage=ControlUsage{control:pending,stores:0,sidecars:Vec::new(),vanished_known_sidecars:Vec::new(),census_attempts:attempt};let mut retry=false;
+        for path in &paths {
+            let sidecar=known(path);let extension=path.extension().and_then(|s|s.to_str());
+            need(sidecar||matches!(extension,Some("json"|"bcd")),"unexpected file kind in owned boot control directory")?;
+            let metadata=match std::fs::symlink_metadata(path){Ok(v)=>v,Err(e)if sidecar&&matches!(e.raw_os_error(),Some(2|3))=>{vanished.push(path.clone());retry=true;break},Err(e)=>return Err(e)};
+            need(metadata.is_file()&&metadata.file_attributes()&0x400==0,"unexpected entry in owned boot control directory")?;
+            let file=match OpenOptions::new().access_mode(0x80).share_mode(7).custom_flags(0x00200000).open(path){Ok(v)=>v,Err(e)if sidecar&&matches!(e.raw_os_error(),Some(2|3))=>{vanished.push(path.clone());retry=true;break},Err(e)=>return Err(e)};
+            let actual=file.metadata()?;need(actual.is_file()&&actual.file_attributes()&0x400==0,"owned census handle is redirected")?;
+            let first=standard_bytes(&file)?;let second=standard_bytes(&file)?;
+            if sidecar&&(first!=second||first[20]!=0){retry=true;break}
+            need(first==second&&first[20]==0&&first[21]==0&&u32::from_le_bytes(first[16..20].try_into().map_err(io::Error::other)?)==1,"owned metadata native identity changed or is not ordinary")?;
+            let allocated=i64::from_le_bytes(first[..8].try_into().map_err(io::Error::other)?);let eof=i64::from_le_bytes(first[8..16].try_into().map_err(io::Error::other)?);
+            need(allocated>=0&&eof>=0&&actual.len()==eof as u64,"owned metadata native sizes differ")?;
+            let charge=(allocated as u64).max(eof as u64);
+            if sidecar {
+                usage.control=usage.control.checked_add(charge).ok_or_else(||bad("native sidecar control charge overflow"))?;
+                usage.stores=usage.stores.checked_add(charge).ok_or_else(||bad("native sidecar store charge overflow"))?;
+                usage.sidecars.push(SidecarObservation{path:path.clone(),base_native_file_id:registered.as_ref().and_then(|r|r.sidecars.get(path)).cloned().ok_or_else(||bad("registered sidecar base identity absent"))?,eof:eof as u64,allocation:allocated as u64,charged:charge,attributes:actual.file_attributes()});
+            }else if extension==Some("json"){
+                usage.control=usage.control.checked_add(charge).and_then(|n|n.checked_add(65535)).ok_or_else(||bad("boot control charge overflow"))?;
+            }else{usage.stores=usage.stores.checked_add(charge).ok_or_else(||bad("boot store charge overflow"))?;}
+        }
+        if retry{continue}
+        let mut closing=std::fs::read_dir(parent)?.map(|x|x.map(|e|e.path())).collect::<io::Result<Vec<_>>>()?;closing.sort();
+        if paths!=closing {
+            let changed:Vec<_>=paths.iter().filter(|p|!closing.contains(p)).chain(closing.iter().filter(|p|!paths.contains(p))).cloned().collect();
+            need(changed.iter().all(|p|known(p)),"unregistered control file appeared/disappeared during census")?;
+            vanished.extend(paths.iter().filter(|p|known(p)&&!closing.contains(p)).cloned());continue
+        }
+        need(usage.control<=maximum,"aggregate boot control allocation exceeds admission")?;
+        if let Some(r)=&registered{need(usage.stores<=r.store.checked_mul(2).ok_or_else(||bad("store budget overflow"))?,"BCD/query sidecar allocation exceeds existing two-store admission")?;}
+        vanished.sort();vanished.dedup();usage.vanished_known_sidecars=vanished;return Ok(usage)
+    }
+    Err(bad("registered native query-sidecar census did not stabilize within three bookends"))
+}
+fn write_control_exact(path:&Path,bytes:&[u8])->io::Result<[u8;32]>{
+    let mut file=OpenOptions::new().read(true).write(true).share_mode(1).create_new(true).open(path)?;
+    file.write_all(bytes)?;file.sync_all()?;let mut check=vec![0;bytes.len()];file.seek(SeekFrom::Start(0))?;file.read_exact(&mut check)?;
+    need(check==bytes,"boot control durable readback differs")?;Ok(digest(&check))
+}
 pub(super) fn persist(path: &Path, value: &impl Serialize, maximum: u64) -> io::Result<[u8; 32]> {
     let bytes = serde_json::to_vec(value).map_err(io::Error::other)?;
     need(
         bytes.len() as u64 <= maximum,
         "boot control record exceeds admitted bound",
     )?;
-    // This is a fresh, ordinary control-only directory. Two bounded .bcd
-    // metadata files have a separate reservation; every JSON plus NTFS
-    // allocation slack is charged against the aggregate control quota.
-    use std::os::windows::fs::MetadataExt;
-    let parent = path
-        .parent()
-        .ok_or_else(|| bad("boot control parent absent"))?;
-    let mut used = (bytes.len() as u64)
-        .checked_add(65535)
-        .ok_or_else(|| bad("boot control charge overflow"))?;
-    for entry in std::fs::read_dir(parent)? {
-        let entry = entry?;
-        let m = std::fs::symlink_metadata(entry.path())?;
-        need(
-            m.is_file() && m.file_attributes() & 0x400 == 0,
-            "unexpected entry in owned boot control directory",
-        )?;
-        match entry.path().extension().and_then(|v| v.to_str()) {
-            Some("json") => {
-                used = used
-                    .checked_add(m.len())
-                    .and_then(|n| n.checked_add(65535))
-                    .ok_or_else(|| bad("boot control charge overflow"))?;
-            }
-            Some("bcd") => (),
-            _ => return Err(bad("unexpected file kind in owned boot control directory")),
-        }
-        need(
-            used <= maximum,
-            "aggregate boot control bytes plus allocation slack exceed admission",
-        )?;
+    let parent=path.parent().ok_or_else(||bad("boot control parent absent"))?;
+    let pending=(bytes.len()as u64).checked_add(65535).ok_or_else(||bad("boot control charge overflow"))?;
+    let usage=owned_control_usage(parent,maximum,pending)?;
+    if !usage.sidecars.is_empty()||!usage.vanished_known_sidecars.is_empty(){
+        let wire=serde_json::to_vec(&usage).map_err(io::Error::other)?;
+        need(usage.control.checked_add(wire.len()as u64).and_then(|n|n.checked_add(65535)).is_some_and(|n|n<=maximum),"sidecar census receipt exceeds existing control admission")?;
+        let ordinal=SIDECAR_RECEIPT.fetch_update(Ordering::Relaxed,Ordering::Relaxed,|v|v.checked_add(1)).map_err(|_|bad("sidecar receipt ordinal overflow"))?;
+        write_control_exact(&parent.join(format!("owned-query-sidecars-{ordinal:04}.json")),&wire)?;
     }
-    need(
-        used <= maximum,
-        "boot control admission smaller than actual record",
-    )?;
-    let mut file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .share_mode(1)
-        .create_new(true)
-        .open(path)?;
-    file.write_all(&bytes)?;
-    file.sync_all()?;
-    let mut check = vec![0; bytes.len()];
-    file.seek(SeekFrom::Start(0))?;
-    file.read_exact(&mut check)?;
-    need(check == bytes, "boot control durable readback differs")?;
-    Ok(digest(&check))
+    write_control_exact(path,&bytes)
 }
+
 #[derive(Serialize)]
 struct ToolRecord<'a> {
     kind: &'static str,

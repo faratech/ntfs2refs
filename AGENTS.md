@@ -427,6 +427,24 @@ ROOT ISSUED ONE353normalGO tooperator withunchangedOffv4hostbdfa/UTF8worker60d47
 fresh6GiBwholeprogrambudget/Off07ca17+actualsource8fileBeforefirst. NoSourceprep/restore/replay/repair/retry/providerdelete/extraCP.
 ObserveactualoperatorPID/birth/exit/ledger/sourceclosure forcurrentstate; GOisnotdispatch/success. RootdoesnotcompeteVM.
 
+LATEST353REFUSAL SOURCESTATE: readonly-after353-budget-refusal.json under312a85f20de64c9686412f17862c9d4e
+SHA7deb14bfddffd9be27287de75d7bdf9e299842146c247ad60993a842e3577554 confirmsstillBasic0NTFS/attrs0/native144/allGPT+MBR+Ccontrolunchanged.
+IntentvalidONE41745Bframe/41785Bfile, kindpartition-target-only-pre-AP-intent, seq1/stageBasicLocked/currentBasic0/desiredBasicRO1000.../APfalse.
+No SET/J/root-source artifacts. PID5144wasREUSEDWmiPrvSEbirth1793838218142; originalnativebirth1793837836992 absent, no kill of reusedPID.
+NormalOffclosure312a/closed-off353-control-budget-refusal.json SHAbdecbe792ad2440670557642676983c299ab75a6ef68b02d9d7a753b95c1da37,
+freshOff/RAM0/current07ca/all17 exactgraph. Compact34file463534B closed-off353-small-manifest.json
+SHAad4d10d34cb35cc335e2768388362275a13e58b0d1a5a00ae4f4bad2b9f25aa2; no VHDX/payload duplication/deletion/checkpoint/restore/retry.
+Finalcensus320355457013/free86985396224; original353case320131802392+6GiB absolute326574253336 retained, remaining6218796323.
+
+ACTUAL DETERMINISTIC BUDGETMISMATCH FIX APPLIED/COMMITTED/PUSHED **ed7f16c0c4e1f2ca02d9412f94a1c9c1434e1fde**:
+staged firstSET constructed120B butgenericcontrol rejectedinputs>64 BEFOREDeviceIoControl, matchingintent/noSET actualtimeline.
+Typedpatch288f470f... changesonlynative.rs/staged/restorer: fixed &[u8;120] GPTSET SDKcontract/zerooutput/headerpadding+compiletimeABIchecks.
+Generic64Bceiling unchanged; same nativecall/auditbody and source/intent/GPTguards. Futurebudgetreject namesoperation/code/input/output/eventcount.
+Lab+publiccheck0/32.6221558s/no units, evidence/typed-partition-setter-build-20261104.json. No speculativeeventcapincrease.
+Exact ed7 build ACTIVE hostsession16531 `.lab/development/release-candidates/partition-alpha-ed7f16c`, log
+`.lab/development/partition-alpha-ed7f16c-build.log`; fresh2GiBallprogrammeadmission/sharedtarget+staging/4jobs, no competingCargo.
+No converterGOfored7 yet. OperatoridleexclusiveVMowner/Off07ca17; unchanged reviewedOffv4/UTF8helpers canreuseexternalnewbuildpins.
+
 - Fresh writes require original live opaque source certificate and actual source/target/J/arena owners. Saved JSON/paths/flags are routes, never authority.
 - Revalidate device/file identities, journal/index/ticket/lifecycle and recovery files. Recovery must not require thin-pool reattachment.
 - Preserve full phase snapshots and native metadata/allocation/namespace/ACL/full retrieval checks, opening/closing boundaries and final allocation checks.

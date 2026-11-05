@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "kind": "public-shared-partition-conversion-and-recovery-dispatch",
+  "status": "focused-check-passed-native-public-qualification-pending",
+  "files": [
+    {
+      "path": "src/drive_cli.rs",
+      "bytes": 38219,
+      "sha256": "58f7aaebc2771ee139189534e2c4799d96e4b3e4ee14da1245c864175d2955f6"
+    },
+    {
+      "path": "src/drive_partition.rs",
+      "bytes": 22154,
+      "sha256": "c67c1f235ed4077f638edc124e5933e2917b8b5482595ffd20d5373d3bd3be13"
+    },
+    {
+      "path": "src/resource_partition_alpha.rs",
+      "bytes": 32577,
+      "sha256": "c82cbfa413d6534025162097fba183c4c1f76e3e83cefe7dec4b0e76fa656901"
+    }
+  ],
+  "reviewed_patch_sha256": "9709428e1cf5d6f48aa8a5da0603cf335cc1305fa7a2453da9d33d8d1abd1da1",
+  "check_exit": 0,
+  "check_seconds": 20.8321816,
+  "unit_tests_run": false,
+  "native_public_run": false,
+  "conversion": "Readonly shared-Windows-disk data selection and actual PartitionScopedReader preflight, bounded interactive confirmation, actual identity recheck and owning-machine V4 partition facade.",
+  "recovery": "Original partition-v2 publication and framed locator selected by independent SHA256 before confirmation; actual private owner/artifact/J/MIXED guards issue replay authority.",
+  "options": "Real target-format and full-content policy; conservative public default, SourceFree for minimize-scratch. Existing lab request defaults preserved. Shared whole-image/thin options explicitly refused.",
+  "storage": "Actual native Windows volume and ordinary ancestry verified before both metadata-directory creation paths. External partition-profile journals remain unsupported.",
+  "dedicated_behavior_preserved": true,
+  "running_boot_source_refused": true,
+  "experimental_warning_before_confirmation": true,
+  "current_native_48772_binary_changed": false,
+  "frozen_alpha_package_changed": false,
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+}

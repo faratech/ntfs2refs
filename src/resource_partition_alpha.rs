@@ -57,6 +57,14 @@ pub struct PartitionAlphaRequest {
     pub maximum_evidence_bytes: u64,
     pub minimum_free_bytes: u64,
     pub verification_policy: VerificationPolicy,
+    #[serde(default)]
+    pub target_format: TargetFormatProfile,
+    // Preserve historical lab requests; public callers choose explicitly.
+    #[serde(default = "legacy_partition_capacity_policy")]
+    pub selected_capacity_policy: SelectedCapacityPolicy,
+}
+fn legacy_partition_capacity_policy() -> SelectedCapacityPolicy {
+    SelectedCapacityPolicy::SourceFreeActualBytesV1
 }
 struct Ledger {
     file: File,
@@ -519,10 +527,17 @@ fn run_inner(
         binding.storage.identity.partition_bytes,
         binding.storage.identity.logical_sector_bytes,
         binding.storage.identity.physical_sector_bytes,
-        TargetFormatProfile::DevDrive,
+        request.target_format,
     )?;
     observer.lock()?.meter = Some(shadow.staging_allocation_meter()?);
-    observer.checkpoint("fresh-owned-devdrive-shadow-formatted", &mut events)?;
+    observer.checkpoint(
+        if request.target_format.is_dev_drive() {
+            "fresh-owned-devdrive-shadow-formatted"
+        } else {
+            "fresh-owned-standard-shadow-formatted"
+        },
+        &mut events,
+    )?;
     let run_guid =
         n2r_win32::file_storage::final_path_guid(_run_owners.first().context("held run absent")?)?;
     let root_end = run_guid.find('}').context("run has no volume GUID")? + 1;
@@ -619,7 +634,7 @@ fn run_inner(
             max_literal_backing_bytes: capture,
             max_combined_backing_and_journal_bytes: combined,
             minimum_free_bytes: remaining_independent,
-            selected_capacity_policy: SelectedCapacityPolicy::SourceFreeActualBytesV1,
+            selected_capacity_policy: request.selected_capacity_policy,
         },
     };
     let prepared = PartitionPreparationRequest {

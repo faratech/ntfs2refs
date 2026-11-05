@@ -9,6 +9,9 @@ mod resource;
 #[cfg(windows)]
 #[path = "drive_staging.rs"]
 mod staging;
+#[cfg(windows)]
+#[path = "drive_partition.rs"]
+mod partition;
 
 #[derive(Args, Debug)]
 pub struct DriveArgs {
@@ -226,7 +229,7 @@ mod windows {
         f.sync_all()?;
         Ok(())
     }
-    fn ordinary_parents(path: &std::path::Path) -> Result<()> {
+    pub(super) fn ordinary_parents(path: &std::path::Path) -> Result<()> {
         use std::os::windows::fs::MetadataExt;
         let mut parents: Vec<_> = path.ancestors().collect();
         parents.reverse();
@@ -345,6 +348,18 @@ mod windows {
             result
         })
     }
+    // Same bounded affirmative confirmation for both actual source scopes.
+    pub(super) fn confirm(prompt: &str) -> Result<bool> {
+        println!("{prompt}");
+        print!("> ");
+        io::stdout().flush()?;
+        let input = io::stdin();
+        let mut bounded = input.lock().take(65);
+        let mut answer = String::new();
+        bounded.read_line(&mut answer)?;
+        drop(bounded);
+        Ok(answer.len() < 65 && matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
+    }
     pub(super) fn run(args: DriveArgs) -> Result<u8> {
         if let Some(directory) = args.recover {
             let checksum = args
@@ -368,6 +383,9 @@ mod windows {
                 // protocol. Do not fall back to a legacy recovery writer.
                 return super::resource::recover_preparation(&directory, &checksum, args.rollback);
             }
+            if let Some(result) = super::partition::try_recover(&directory, &checksum, args.rollback)? {
+                return Ok(result);
+            }
             return crate::drive_recovery::run(&directory, &checksum, args.rollback);
         }
         let inventory = drive_inventory::inventory_drives_readonly()?;
@@ -375,7 +393,7 @@ mod windows {
             list(&inventory);
             return Ok(0);
         }
-        let values = args.drive.context("drive selection required")?;
+        let values = args.drive.as_ref().context("drive selection required")?;
         let drive = values.first().context("drive value required")?;
         let partition = match values.as_slice() {
             [_] => args.partition,
@@ -403,6 +421,14 @@ mod windows {
             selected.partition.contains_running_windows != Some(true),
             "the running Windows partition is not supported for conversion"
         );
+        // Inventory is routing only. The partition path independently probes
+        // actual source/GPT/current-Windows roles before any write admission.
+        if inventory.disks.iter().any(|disk| disk.disk_number == selected.disk_number
+            && disk.contains_running_windows == Some(true)) {
+            let before = discovery::discover(&selected.volume_guid_path,
+                Role::Journal { allow_additional_partitions: true })?;
+            return super::partition::convert(&args, selected, before);
+        }
         let before = discovery::discover(&selected.volume_guid_path, Role::Source)
             .map_err(|error| if error.raw_os_error() == Some(5) {
                 anyhow::anyhow!("administrator access is required for conversion; run from an elevated Windows terminal: {error}")
@@ -477,17 +503,7 @@ mod windows {
                 "Reduced scratch: rollback restores allocated NTFS data and metadata; unused-space contents may change. Volumes with VSS snapshots or hosted diff areas are refused."
             );
         }
-        println!("Convert this partition to ReFS in place, preserving supported files? [y/N]");
-        print!("> ");
-        io::stdout().flush()?;
-        let input = io::stdin();
-        // Match recovery: an overlong response cannot become affirmative.
-        let mut bounded = input.lock().take(65);
-        let mut answer = String::new();
-        bounded.read_line(&mut answer)?;
-        drop(bounded);
-        if answer.len() >= 65 || !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
-        {
+        if !confirm("Convert this partition to ReFS in place, preserving supported files? [y/N]")? {
             println!("Cancelled. No conversion started.");
             return Ok(0);
         }

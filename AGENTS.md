@@ -592,6 +592,21 @@ Its632Alpha base nowneedsMERGE (preserve liveprivatecancel+batchtimestamps), not
 LATEST02:53:50Z SAME48772native2400 isLIVE andPASSED priorconstructionfailure: actualnative144 PRIVATEb627.../attrs0/target4310...,
 ledger2393052B crossed partition-source-metadata-closed→partition-private-tree-source-shadow-check→source-metadata-opening without error.
 This is native acceptance of volume-query DUP fix, NOT J/AP/HND/fullconversion proof. Keep polling same18962/2400; no extra native/repair.
+Current48772native2400/birth1793846737788 remainsLIVE03:07:25Z/host18962. Ledger21629182B, source-shadow/backed-supply/recovery-owner checks advance,
+sameheldshadow allocation171966464B afterinitial104857600B. No terminal/J/AP/HND claim yet; sourcequeries/intervention notauthorized.
+Existingtimestampedledgertimingv2 case5825.../ledger-phase-timing-corrected-v2.json SHA88c13a5f9d260ee5b2ff36bc60366f2e42c46452920b1515c32271786c853ef5
+shows252source-metadata opening/closed and248private-tree checks atsample959batches; topadjacent56.3s intervals are NOT isolatedAPIcosts.
+CPU6.75s at~12min sample: metadata waits dominate; no speedupclaimed. Performanceagent owns shadow-onlyheldidentityleaseDRAFT withfullboundary/writerchecks.
+Removedexactly4DISCARDEDoptionalVDSrevalidation calls, retainingopeningdiagnostic+allauthoritativeWMI/dump/page/C/GPT/FP/writerchecks.
+Focusedcheck0/28.4050669s/no units; evidence/discarded-vds-revalidation-build-20261105.json, committed05dc09f. CurrentVMbinaryunchanged.
+
+PUBLICsharedpartitiondispatch now APPLIED/CHECKED development3paths; original9709428e... patch cleanlymergescurrentAlpha livecancel/timestamps.
+ActualnativeWindows route checks beforebothdirectorywrites, boundedinteractiveack, realtarget/capacity/verificationoptions andactualSDKowners.
+PublicdefaultConservative/minScratchSourceFree; historical labdefaults DevDrive/SourceFree preserved via2serde-defaultfields.
+Public --recover originalpartition-v2/pubSHA+framedlocator → actualrun_recovery; noJSONauthority/badpinfallback. Wholeimage/thin/externaljournal stillclearrefusals.
+Rootaddedexplicitexperimentalqualification-in-progress warning BEFOREconfirmation. Runningbootguard+dedicatedbehavior unchanged; mainSHAunchanged.
+Focusedlib+publicbin+3labbincheck0/20.8321816s/no units; evidence/public-partition-dispatch-build-20261105.json. NativePUBLICqualificationpending.
+DoNOTrebuild/interruptcurrent48772case. Fullgoal(boot/offlineowner, broadgeometry/featurecoverage, IOaccounting/faultmatrix)stillincomplete.
 
 - Fresh writes require original live opaque source certificate and actual source/target/J/arena owners. Saved JSON/paths/flags are routes, never authority.
 - Revalidate device/file identities, journal/index/ticket/lifecycle and recovery files. Recovery must not require thin-pool reattachment.

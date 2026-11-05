@@ -1,0 +1,65 @@
+{
+  "source_before_after_verified": true,
+  "actual_discard": {
+    "old_input_full_sha256_unchanged": "7ec5a53988452441a5446ecfc8c344d0b9557fa56c598cf44c9a2419b3b9943f",
+    "wall_seconds": 16.1308359,
+    "helper_exit_code": 0,
+    "Dism_pid": 2496,
+    "helper_pid": 616,
+    "new_copy_hash_equals_old_input": true,
+    "exit_code": 0,
+    "wall_including_hashes": 85.8228211,
+    "receipt_sha256": "9c80347378d7b7b4ac60c6a3098c2a4c8daf176692c56189715da3a845974c68",
+    "unlocked_dism_log_sha256": "0d73fb79d830f86835be45237533dc969343bf78c7b7fa29213263011c429a5a"
+  },
+  "binaries": [
+    {
+      "name": "ntfs2refs",
+      "path": "bin/ntfs2refs.exe",
+      "bytes": 20625920,
+      "sha256": "32c053c6f9b828c9c17bdda84c46f460de2de8f2f06502527bbdec89c420845e"
+    },
+    {
+      "name": "lab-arm-prepared-boot",
+      "path": "bin/lab-arm-prepared-boot.exe",
+      "bytes": 2551808,
+      "sha256": "b0b98b2b5d3370acee6d417333ead91d88c478ab5381cf14a34749fc4f2e483f"
+    },
+    {
+      "name": "lab-apply-prepared-offline",
+      "path": "bin/lab-apply-prepared-offline.exe",
+      "bytes": 4228608,
+      "sha256": "19714d7dda38e7f277b8919c7d2b520860257179daa2757a01b30d974a8e7fc6"
+    }
+  ],
+  "unit_tests_run": false,
+  "next_native_run": "one authorized new 7fc image/boot install; consult operator actual handle, no reboot/AP GO",
+  "cargo_commands": [
+    {
+      "pid": 31616,
+      "birth_utc": "2026-11-05T21:04:30.5601963Z",
+      "exit_code": 0
+    }
+  ],
+  "build_manifest_sha256": "7468f98c5e99c8e983ab4589d4bcf64b3bcad0d35e700c0e5664712aacd3da1e",
+  "kind": "shared-offline-7fc-exact-build-and-owned-duplicate-cleanup-v1",
+  "source_commit": "7fc0ae260971135e1630043d38c15657ef0eacaa",
+  "goal_complete": false,
+  "actual_duplicate_retirement": {
+    "guest_free_after": 5612322816,
+    "wall_seconds": 45.3858376,
+    "allocation": 619520000,
+    "birth": 1793913335377,
+    "exit_code": 0,
+    "guest_free_before": 4992802816,
+    "host_reclaim_assumed": false,
+    "exact_target": "J:\\n2r-owned-recovery-e6656bcf215f4beab9ed5177f30b6b2c\\image\\boot.wim",
+    "sha256": "7ec5a53988452441a5446ecfc8c344d0b9557fa56c598cf44c9a2419b3b9943f",
+    "pid": 5552,
+    "receipt_sha256": "dfb2dc2241c74a5a53662865cd418a8d0e1fdaddd0eb3f31835a19e063221e0c",
+    "path_absent": true,
+    "bytes": 619516755,
+    "old_input_and_all_metadata_preserved": true,
+    "same_held_disposition_calls": 1
+  }
+}

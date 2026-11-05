@@ -458,7 +458,8 @@ Census320528532918/free86836535296. No restore/repair/replay/delete/newCP. Exist
 Measured PE mainstack1MiB and four nested exact frames589136B before other callers/callees; no recursion found.
 Root applied lab-only explicit8MiB worker stack,9MiB execution-stack budget charge; focusedcheck0/32.0424673s/no units.
 Evidence evidence/partition-alpha-ed7-stack-overflow-20261104.json. Fixed exact binary/native qualification still pending.
-Operator preparing (NOT authorized yet) one Off failure-branch checkpoint then baseline07ca restore plan, preserving all17+failure.
+Operator completed ONE Off failure-branch checkpoint3cbfd35b-b442-467e-a9e6-3f38ce3bccb1 thenONEbaseline07ca restore.
+FailedBasicRObranch preserved; freshOff/RAM0/current07ca/all18/dependencies closed, receipt16badd6b1758a71dbe6c1a6ed52a6a6604e627fde79b645a93c2f40a7f80619a.
 Never manually reset current BasicRO attrs from missingJ/noAP inference. Existing full-intent-only crash cancellation remains unsupported.
 Root also applied minimal terminal observer drains: HND/ABT previously could accumulate137/138events before drain against128cap.
 All checks/settercount/cap unchanged; complete metadata bookends now durably streamed, including change success/error.
@@ -476,6 +477,12 @@ ABT closedOLD+readonlyNTFS then restoration. Real owned event sink and8MiBworker
 Focusedcheck0/31.4494306s/lib+bothlab bins/sharedtarget/no units. evidence/partition-recovery-entry-build-20261104.json.
 Initial copied-source mtime staleSDKcheck failed; source-only timestamps refreshed, SDK recompiled and passed; no cache deletion.
 New recovery code is not in fixed889normal EXE or frozenpublicalpha. src/main.rs unchanged. Exact recovery build/native cases pending.
+Recovery code committed/pushed b2e96ff189f8ee9b857384d7243ba23a3f6f8b10. Exact recovery-onlybuild ACTIVE host89710,
+`.lab/development/release-candidates/partition-recovery-b2e96ff`; sharedtarget4jobs, freshJOINT8GiB admission covers2GiBbuild+6GiBVMforecast.
+Initialjointactual320602547152/projected329192481744 withinunchanged329374052988/reserve17179869184; no cap/epoch reset.
+Fixed889 ONE normalcase39f87845eeaa4e2fba2606d68c91ac0f host19065 ACTIVE underexclusiveoperator.
+Fresh6GiBadmission passed; VMRunning4GiB/current07ca/all18. Wait actualpreoracle/nativePID/terminal; dispatch is not success.
+Exact18graphhost0955db0ccd5e11700dca2b0e2eae99a9bdf012c914f3f6576fe49873b653406f with actual3cb failedkeeper mandatory.
 
 - Fresh writes require original live opaque source certificate and actual source/target/J/arena owners. Saved JSON/paths/flags are routes, never authority.
 - Revalidate device/file identities, journal/index/ticket/lifecycle and recovery files. Recovery must not require thin-pool reattachment.

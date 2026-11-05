@@ -624,6 +624,13 @@ Shadow-only owning source lease APPLIED/CHECKED6files: actualtoken/access/device
 genericWitness/fullsourcephaseopening+success/errorclosing/FP/enrollment/cache refresh andALLsourcewriterchecks retained.
 Rootpreservesallprimary+closing+checkpoint errors. Focusedlib+public+3labcheck0/28.5098384s/sharedtarget/no units;
 evidence/shadow-held-construction-lease-build-20261105.json. Nativeperformancegain unmeasured; running48772 EXE wasunchanged.
+INDEPENDENT48772AfterInternalCancel PASSED: oracle788/birth1793848637106/OS0/2.065431s/stderr0,
+source-after-internal-cancel.json SHA1e4e92cdfd02997a41418a4df84c74d8ea6f1d8791eec895c7816a40288a66a5 provesfull8/67178865B+ACL/nativeNTFSBasic0/GPT/C/label/Dmount.
+Onlymetadataarchivecopy had remotingwrapperrefusal; operatorcorrectingexplicit5-filecopy, NOoraclererun/native/sourcequery.
+RootauthorizedONEorderlyOff afteralloriginal/oraclebirthsabsent/tasksidle; freshOff18/census+smallarchivepending. No restore/newCP/repair/SET/replay.
+NEXTcase mayuseCURRENT restoredNTFSSource ifBefore8matches, no gratuitousbaselineRestore/no repeatCancel. Newexactbuild/RootGO required.
+Held-dataReadLaneDRAFT inprogress: sameOriginalFileObject readonlyDUP0x00100081+NtQueryObject56+nativeidentity, sharedcursorMutex acrossowner/lane/writerIO.
+No currentcode appliedyet; fagentownsDRAFT. Lowspaceagentread-onlyaudits terminalrevalidate_closed freshGLOBALROOT underheldlock forsameclassissue.
 
 - Fresh writes require original live opaque source certificate and actual source/target/J/arena owners. Saved JSON/paths/flags are routes, never authority.
 - Revalidate device/file identities, journal/index/ticket/lifecycle and recovery files. Recovery must not require thin-pool reattachment.

@@ -463,6 +463,19 @@ Never manually reset current BasicRO attrs from missingJ/noAP inference. Existin
 Root also applied minimal terminal observer drains: HND/ABT previously could accumulate137/138events before drain against128cap.
 All checks/settercount/cap unchanged; complete metadata bookends now durably streamed, including change success/error.
 Combined lab/public focusedcheck0/27.7569929s/no units; evidence/partition-terminal-event-drains-20261104.json.
+Fixed committed source88937b76af5bfd62061c26bdb5addbe206798d67 exactbuild58900 COMPLETED exit0/release153s/414sourcefiles unchanged.
+Manifest77cc9e32154e381e0440d71d90cfbf63fa43d1db8ed517b338685a79338cd5b0;
+lab-partition-alpha.exe8500224B/SHAdf4e2a5e9b6609aaf4690c7eac1463d5a8c94db0e5224e8db188e53c1111661b.
+Operator authorized ONE OfffailedbranchCP3cbfd35b-b442-467e-a9e6-3f38ce3bccb1 (actualcreated/proved) thenONErestore07ca;
+after closedOff07ca/all18/dependencies/fresh6GiB/sourceoracle, separate conditional ONE889normalrun GO uses exact18graphhost0955db0c...
+No sourceattrs repair/rawreplay/automaticretry. Operator alone owns actualoperations/results; do not infer closure or success from GO.
+
+AP/RB recovery executable wiring now APPLIED/CHECKED, not natively qualified: lab-partition-recovery request+independentSHA frontend,
+actual privateowner/open_restarted/MIXED replay and owning terminal transfer; HND native readonly knowncontent+allmaps then writable,
+ABT closedOLD+readonlyNTFS then restoration. Real owned event sink and8MiBworker/9MiBcharge. PreAP process-death cancel still refuses.
+Focusedcheck0/31.4494306s/lib+bothlab bins/sharedtarget/no units. evidence/partition-recovery-entry-build-20261104.json.
+Initial copied-source mtime staleSDKcheck failed; source-only timestamps refreshed, SDK recompiled and passed; no cache deletion.
+New recovery code is not in fixed889normal EXE or frozenpublicalpha. src/main.rs unchanged. Exact recovery build/native cases pending.
 
 - Fresh writes require original live opaque source certificate and actual source/target/J/arena owners. Saved JSON/paths/flags are routes, never authority.
 - Revalidate device/file identities, journal/index/ticket/lifecycle and recovery files. Recovery must not require thin-pool reattachment.

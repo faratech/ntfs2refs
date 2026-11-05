@@ -45,6 +45,7 @@ pub struct PartitionScopedOwner {
     buffer: AlignedBuffer,
     position: u64,
     poisoned: bool,
+    recovery_events: Option<super::partition_lifecycle::PartitionNativeEventSink>,
 }
 struct PartitionOwnerIdentity {
     _private: (),
@@ -372,6 +373,7 @@ impl PartitionScopedOwner {
             buffer: AlignedBuffer::new()?,
             position: 0,
             poisoned: false,
+            recovery_events: None,
         };
         owner.revalidate(events)?;
         Ok(owner)
@@ -416,7 +418,7 @@ impl PartitionScopedOwner {
             storage_current_partition_roles:storage_roles,
                 source_admission_issued: false, loaded_dump_exclusion_qualified: false,
             },
-            buffer: AlignedBuffer::new()?, position: 0, poisoned: false,
+            buffer: AlignedBuffer::new()?, position: 0, poisoned: false, recovery_events:None,
         };
         owner.revalidate(events)?;
         Ok(owner)
@@ -464,7 +466,18 @@ impl PartitionScopedOwner {
         self.binding.storage.identity.partition_bytes
     }
     pub fn revalidate(&mut self, events: &mut Vec<NativeEvent>) -> io::Result<()> {
+        if let Some(sink)=&self.recovery_events{
+            if let Err(error)=sink.checkpoint("partition-recovery-owner-before",events){self.poisoned=true;return Err(error);}
+        }
         let result = self.revalidate_inner(events);
+        let result=if let Some(sink)=&self.recovery_events{
+            let closed=sink.checkpoint("partition-recovery-owner-after",events);
+            match(result,closed){
+                (Ok(()),Ok(()))=>Ok(()),
+                (Err(error),Err(checkpoint))=>Err(io::Error::new(error.kind(),format!("{error}; recovery event checkpoint also failed: {checkpoint}"))),
+                (Err(error),_)|(_,Err(error))=>Err(error),
+            }
+        }else{result};
         if result.is_err() {
             self.poisoned = true;
         }
@@ -577,6 +590,18 @@ impl PartitionScopedOwner {
             pending: None,
             poisoned: false,
         })
+    }
+}
+
+impl PartitionScopedOwner{
+    /// Attach only an owned durable observation destination to this actual
+    /// private owner. It grants no admission, direction, setter or writer.
+    /// The callback remains live until this owner is consumed or dropped.
+    pub fn attach_recovery_observer(mut self,observer:Box<dyn super::partition_lifecycle::PartitionPreparationObserver>,
+        events:&mut Vec<NativeEvent>)->io::Result<Self>{
+        if self.recovery_events.is_some(){return Err(io::Error::other("recovery owner already has a durable event destination"));}
+        self.recovery_events=Some(super::partition_lifecycle::PartitionNativeEventSink::new(observer));
+        self.revalidate(events)?;Ok(self)
     }
 }
 

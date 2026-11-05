@@ -2551,3 +2551,171 @@ impl ReopenedPartitionResourceRecovery {
         }
     }
 }
+
+impl ReopenedPartitionResourceRecovery {
+    pub(crate) fn expected_artifact(&self) -> ReopenedArtifact<'_> {
+        ReopenedArtifact {
+            file: &self.expected.file,
+            snapshot: &self.expected.snapshot,
+            sha256: self.expected.sha256,
+        }
+    }
+    pub(crate) fn publication_artifact(&self) -> ReopenedArtifact<'_> {
+        ReopenedArtifact {
+            file: &self.publication_file.file,
+            snapshot: &self.publication_file.snapshot,
+            sha256: self.publication_file.sha256,
+        }
+    }
+    pub(crate) fn map_artifact(&self) -> Option<ReopenedArtifact<'_>> {
+        self.maps.as_ref().map(|maps| ReopenedArtifact {
+            file: &maps.file,
+            snapshot: &maps.snapshot,
+            sha256: maps.sha256,
+        })
+    }
+    pub(crate) fn resource_admission(&self) -> SourceResourceAdmission {
+        self.publication.resource_admission
+    }
+    pub(crate) fn verification_policy(&self) -> VerificationPolicy {
+        self.publication.verification_policy
+    }
+    pub(crate) fn expected_semantic_sha256(&self) -> &str {
+        &self.publication.expected.semantic_sha256
+    }
+    pub(crate) fn expected_objects(&self) -> u64 {
+        self.publication.expected.objects
+    }
+    pub(crate) fn expected_source_label(&self) -> &VolumeLabel {
+        &self.publication.expected_source_label
+    }
+    pub(crate) fn expected_mount_paths(&self) -> &[String] {
+        &self.publication.expected_mount_paths
+    }
+    pub(crate) fn map_records(&self) -> Option<u64> {
+        self.publication.recovery_maps.as_ref().map(|m| m.records)
+    }
+    pub(crate) fn ticket(&self) -> &crate::selected_journal::SelectedTicket {
+        self.locator.ticket()
+    }
+
+    pub(crate) fn source(&self) -> &GeneralDiskBinding {
+        &self.publication.source
+    }
+    pub(crate) fn shadow(&self) -> &GeneralDiskBinding {
+        &self.publication.shadow
+    }
+    pub(crate) fn source_sha256(&self) -> &str {
+        &self.publication.source_sha256
+    }
+    pub(crate) fn source_inspection_sha256(&self) -> &str {
+        &self.publication.source_inspection_sha256
+    }
+    pub(crate) fn source_views_sha256(&self) -> &str {
+        &self.publication.source_views_sha256
+    }
+    pub(crate) fn runtime_scratch(&self) -> &SourceScratch {
+        &self.scratch
+    }
+}
+
+impl ReopenedPartitionResourceRecovery {
+    /// Consume the actual reopened origin/J and terminal replay owner together.
+    /// No file-name reopen of intent/J and no fresh NTFS admission occurs here.
+    pub(crate) fn finalize_replayed_partition(
+        mut self,
+        mut owner:n2r_win32::PartitionScopedOwner,
+        mut outcome:super::replay::PartitionReplayResult,
+        group:&ArtifactGroupPermit,
+        index_path:&Path,
+        maximum_index_bytes:u64,
+        observer:&mut impl n2r_win32::partition_restoration::PartitionRestorationObserver,
+        events:&mut Vec<NativeEvent>,
+        mut checkpoint:impl FnMut(&'static str,&mut Vec<NativeEvent>)->Result<()>,
+    )->Result<serde_json::Value>{
+        use crate::general_reconstruct::fast_verification::v4_maps::reopened::ReopenedVerificationMetadata;
+        use n2r_win32::PartitionTerminalKind;
+        let stable=owner.owner_token();
+        checkpoint("partition-recovery-terminal-opening",events)?;
+        let (kind,selected)=match &mut outcome{
+            super::replay::PartitionReplayResult::Resumed{selected,witness,..}=>{
+                witness.require_owner(&stable)?;witness.revalidate(&mut owner,events)?;
+                (PartitionTerminalKind::Handoff,serde_json::to_value(selected)?)
+            }
+            super::replay::PartitionReplayResult::RolledBack{selected,closed,..}=>{
+                closed.require_owner(&stable)?;
+                ensure!(closed.kind()==PartitionTerminalKind::Aborted,"rollback result is not actual closed ABT");
+                (PartitionTerminalKind::Aborted,serde_json::to_value(selected)?)
+            }
+        };
+        self.publication_file.revalidate(&self.scratch)?;self.expected.revalidate(&self.scratch)?;
+        if let Some(maps)=&mut self.maps{maps.revalidate(&self.scratch)?;}
+        self.locator.revalidate()?;self.journal.revalidate()?;
+        let metadata=if let super::replay::PartitionReplayResult::Resumed{witness,..}=&outcome{
+            Some(ReopenedVerificationMetadata::open_partition(&self,witness,&stable)?)
+        }else{None};
+        let ticket=self.locator.ticket().clone();
+        checkpoint("partition-recovery-terminal-index",events)?;
+        let mut observed=BoundJournalObservation::open(&mut self.journal,&ticket,group,&self.scratch,index_path,maximum_index_bytes)?;
+        ensure!(observed.lifecycle()?==if kind==PartitionTerminalKind::Handoff{SelectedLifecycle::Handoff}else{SelectedLifecycle::Aborted},
+            "actual terminal J direction differs from completed replay");
+        let policy=observed.observation.index.clone();
+        let _terminal_index=observed.observation.index_lease.clone();
+        drop(observed);
+        let origin=self.restarted_origin.take().context("actual authenticated restarted origin absent")?;
+        origin.require_journal_pins(&{
+            let (_,facts)=self.journal.split_for_observation()?;
+            n2r_win32::PagedRecoveryPins{journal_binding:facts.binding,journal_identity:facts.identity,journal_path:facts.path,
+                journal_profile:facts.profile,immutable_sha256:ticket.immutable_sha256,old_selected_sha256:ticket.old_selected_sha256,
+                old_restored_selected_sha256:ticket.old_restored_selected_sha256,new_selected_sha256:ticket.new_selected_sha256}
+        })?;
+        let shadow=self.publication.shadow.clone();
+        let admission=self.publication.resource_admission;
+        let arena=group.arena().clone();
+        let (journal,facts)=self.journal.split_for_observation()?;
+        let pins=n2r_win32::PagedRecoveryPins{journal_binding:facts.binding,journal_identity:facts.identity,journal_path:facts.path,
+            journal_profile:facts.profile,immutable_sha256:ticket.immutable_sha256,old_selected_sha256:ticket.old_selected_sha256,
+            old_restored_selected_sha256:ticket.old_restored_selected_sha256,new_selected_sha256:ticket.new_selected_sha256};
+        checkpoint("partition-recovery-terminal-private-authentication",events)?;
+        let mut guard=origin.into_terminal(owner,&policy,journal.markerless_recovery_file()?,pins,kind,events)?;
+        checkpoint("partition-recovery-terminal-readonly",events)?;
+        guard.enter_readonly(observer,events)?;
+        checkpoint("partition-recovery-terminal-native-verification",events)?;
+        let mut map_bindings=0;let mut known_streams=0;let mut extent_streams=0;
+        let restoration=if let Some(metadata)=metadata.as_ref(){
+            let native={
+                let readonly=guard.readonly_volume()?;
+                ensure!(readonly.owner_token().same_owner(&stable),"actual terminal readonly owner changed");
+                let pair=GeneralSourceShadowBinding{source:readonly.binding().clone(),shadow};
+                let native=readonly.observe_converted_metadata_with_memory(pair,&crate::general_shadow::PagedInputs(metadata.expected()),None,
+                    |a,b|crate::ntfs_attestation::same_security(a,b).map_err(io::Error::other),
+                    n2r_win32::attestation::ResourceProfile::ResourceBoundedV4(Some(admission)),
+                    &crate::general_composite_target::paged_memory::ArenaReportMemory(arena.clone()),true,events)?;
+                map_bindings=metadata.compare_partition(&stable,&native)?;
+                let known=native.report().content_observation.as_ref().and_then(|c|c.known_content.as_ref())
+                    .context("actual terminal known-content proof absent")?;
+                known_streams=known.streams_hashed;extent_streams=known.streams_without_content_baseline;
+                native
+            };
+            checkpoint("partition-recovery-terminal-verified-before-writable",events)?;
+            guard.finish(native,observer,events)?
+        }else{
+            ensure!(kind==PartitionTerminalKind::Aborted,"resume lacks authenticated expected/maps owner");
+            checkpoint("partition-recovery-aborted-old-before-writable",events)?;
+            guard.finish_aborted(observer,events)?
+        };
+        checkpoint("partition-recovery-terminal-restored",events)?;
+        // Close only metadata/J facts after RW publication. Do not compare a
+        // mounted operational source to stale conversion-time OLD/NEW bytes.
+        self.publication_file.revalidate(&self.scratch)?;self.expected.revalidate(&self.scratch)?;
+        if let Some(maps)=&mut self.maps{maps.revalidate(&self.scratch)?;}
+        self.locator.revalidate()?;
+        drop(outcome);
+        Ok(serde_json::json!({"kind":"partition-recovery-terminal-result-v1","success":true,
+            "direction":if kind==PartitionTerminalKind::Handoff{"resume"}else{"rollback"},
+            "selected":selected,"restoration":restoration,"raw_replay_performed":true,
+            "matching_map_bindings":map_bindings,"known_streams_hashed":known_streams,
+            "extent_only_streams":extent_streams,"recovery_files_retired":false,
+            "native_terminal_verified_before_writable":true,"stable_release_qualification":false}))
+    }
+}

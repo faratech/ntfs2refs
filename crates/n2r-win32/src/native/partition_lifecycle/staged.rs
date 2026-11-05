@@ -143,7 +143,7 @@ pub(in crate::native) struct PartitionNativeEventSink {
     observer: Rc<RefCell<Box<dyn PartitionPreparationObserver>>>,
 }
 impl PartitionNativeEventSink {
-    fn new(observer:Box<dyn PartitionPreparationObserver>)->Self {
+    pub(in crate::native) fn new(observer:Box<dyn PartitionPreparationObserver>)->Self {
         Self{observer:Rc::new(RefCell::new(observer))}
     }
     pub(in crate::native) fn checkpoint(&self,phase:&'static str,events:&mut Vec<NativeEvent>)->io::Result<()> {

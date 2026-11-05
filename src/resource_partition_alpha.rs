@@ -572,3 +572,10 @@ pub fn run(
         }
     }
 }
+
+#[path = "resource_partition_recovery.rs"]
+mod recovery;
+pub use recovery::{
+    PARTITION_RECOVERY_WORKER_STACK_BYTES, PartitionRecoveryDirection, PartitionRecoveryRequest,
+    run_recovery,
+};

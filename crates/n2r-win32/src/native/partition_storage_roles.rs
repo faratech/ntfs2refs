@@ -513,13 +513,13 @@ fn native(
     row: &StoragePartitionRole,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<NativeStoragePartitionRole> {
-    let file = device_file(
+    let file = metadata_file(
         &format!(
             r"\\?\GLOBALROOT\Device\Harddisk{}\Partition{}",
             row.disk_number, row.partition_number
         ),
-        false,
-        false,
+        "critical-partition-native-query",
+        events,
     )?;
     let info = control(
         &file,
@@ -556,6 +556,136 @@ fn native(
         native_partition_info: info,
     })
 }
+fn metadata_file(
+    path: &str,
+    operation: &str,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<std::fs::File> {
+    need(
+        events.len() < 128,
+        "Storage metadata open event budget exhausted",
+    )?;
+    let opened = device_file(path, false, false);
+    events.push(NativeEvent {
+        operation: format!("storage-role-open-{operation}"),
+        control_code: 0,
+        input: Vec::new(),
+        succeeded: opened.is_ok(),
+        native_error: opened.as_ref().err().and_then(io::Error::raw_os_error),
+        output: path.as_bytes().to_vec(),
+    });
+    opened.map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("storage-role {operation}: opening readonly {path}: {error}"),
+        )
+    })
+}
+// A locked volume permits access through its ORIGINAL locking FileObject.
+// Opening a new GLOBALROOT selected-volume object is not that authority. This
+// query therefore obtains selected partition metadata from the already-live
+// physical disk's readonly layout, never from a newly opened target volume.
+fn selected_from_physical_layout(
+    binding: &PartitionSourceBinding,
+    budget: PartitionObservationBudget,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<(Vec<u8>, Vec<u8>)> {
+    let storage = &binding.storage;
+    let id = &storage.identity;
+    let file = metadata_file(
+        &format!(r"\\.\PhysicalDrive{}", storage.disk_number),
+        "selected-physical-layout",
+        events,
+    )?;
+    let device = control(
+        &file,
+        "storage-role-selected-physical-device",
+        super::DEVICE,
+        &[],
+        12,
+        events,
+    )?;
+    layout::validate_device(&device, storage.disk_number)?;
+    let length = control(
+        &file,
+        "storage-role-selected-physical-length",
+        super::LENGTH,
+        &[],
+        8,
+        events,
+    )?;
+    need(
+        length.len() == 8 && layout::u64_at(&length, 0)? == id.disk_bytes,
+        "Storage-role physical disk length differs",
+    )?;
+    let capacity = usize::try_from(budget.native_layout_bytes).map_err(io::Error::other)?;
+    need(
+        (192..=65536).contains(&capacity),
+        "Storage-role native layout capacity unsupported",
+    )?;
+    let native = control(
+        &file,
+        "storage-role-selected-physical-layout",
+        super::LAYOUT,
+        &[],
+        capacity,
+        events,
+    )?;
+    need(
+        native.len() >= 48
+            && layout::u32_at(&native, 0)? == 1
+            && native[8..24] == layout::guid_bytes(&id.disk_guid)?,
+        "Storage-role physical GPT/disk GUID differs",
+    )?;
+    let count = usize::try_from(layout::u32_at(&native, 4)?).map_err(io::Error::other)?;
+    need(
+        count > 0 && count.checked_mul(144).and_then(|n| n.checked_add(48)) == Some(native.len()),
+        "Storage-role physical native partition array incomplete",
+    )?;
+    let first = layout::u64_at(&native, 24)?;
+    let bytes = layout::u64_at(&native, 32)?;
+    let end = first
+        .checked_add(bytes)
+        .ok_or_else(|| invalid("Native GPT usable range overflow"))?;
+    need(
+        first >= 512
+            && first.is_multiple_of(512)
+            && bytes > 0
+            && bytes.is_multiple_of(512)
+            && end <= id.disk_bytes,
+        "Storage-role native GPT usable geometry differs",
+    )?;
+    let guid = layout::guid_bytes(&id.partition_guid)?;
+    let mut found = None;
+    for row in native[48..].chunks_exact(144) {
+        if row[48..64] == guid {
+            need(
+                found.is_none()
+                    && layout::u32_at(row, 0)? == 1
+                    && layout::u32_at(row, 24)? == id.partition_number
+                    && layout::u64_at(row, 8)? == id.partition_offset
+                    && layout::u64_at(row, 16)? == id.partition_bytes
+                    && id.partition_offset >= first
+                    && id
+                        .partition_offset
+                        .checked_add(id.partition_bytes)
+                        .is_some_and(|v| v <= end),
+                "Storage-role native selected row GUID/device/extent differs or repeats",
+            )?;
+            found = Some(row.to_vec());
+        } else {
+            need(
+                layout::u32_at(row, 24)? != id.partition_number,
+                "Storage-role selected native number has another GUID",
+            )?;
+        }
+    }
+    Ok((
+        found
+            .ok_or_else(|| invalid("Storage-role selected GUID absent from complete native GPT"))?,
+        native,
+    ))
+}
 fn windows_extent(events: &mut Vec<NativeEvent>) -> io::Result<PartitionVolumeExtent> {
     let mut name = [0u16; 512];
     let n = unsafe {
@@ -570,7 +700,7 @@ fn windows_extent(events: &mut Vec<NativeEvent>) -> io::Result<PartitionVolumeEx
     )?;
     let letter = char::from_u32(name[0] as u32).ok_or_else(|| invalid("Windows letter invalid"))?;
     need(letter.is_ascii_alphabetic(), "Windows letter not local")?;
-    let file = device_file(&format!(r"\\.\{letter}:"), false, false)?;
+    let file = metadata_file(&format!(r"\\.\{letter}:"), "current-Windows-volume", events)?;
     let ext = control(
         &file,
         "storage-role-current-windows-extents",
@@ -639,42 +769,14 @@ pub(super) fn observe_partition_storage_roles(
             }),
             "WMI selected partition number names a different GUID",
         )?;
-        // Query the selected raw partition even if a private type has no CIM row.
-        let file = device_file(
-            &format!(
-                r"\\?\GLOBALROOT\Device\Harddisk{}\Partition{}",
-                binding.storage.disk_number, binding.storage.identity.partition_number
-            ),
-            false,
-            false,
-        )?;
-        let target = control(
-            &file,
-            "storage-role-selected-native",
-            0x0007_0048,
-            &[],
-            144,
-            events,
-        )?;
-        let device = control(
-            &file,
-            "storage-role-selected-device",
-            super::DEVICE,
-            &[],
-            12,
-            events,
-        )?;
+        let (target, native_layout) = selected_from_physical_layout(binding, budget, events)?;
         need(
             target.len() == 144
                 && layout::u32_at(&target, 0)? == 1
                 && layout::u32_at(&target, 24)? == binding.storage.identity.partition_number
                 && layout::u64_at(&target, 8)? == binding.storage.identity.partition_offset
                 && layout::u64_at(&target, 16)? == binding.storage.identity.partition_bytes
-                && target[48..64] == target_guid
-                && device.len() == 12
-                && layout::u32_at(&device, 0)? == 7
-                && layout::u32_at(&device, 4)? == binding.storage.disk_number
-                && layout::u32_at(&device, 8)? == binding.storage.identity.partition_number,
+                && target[48..64] == target_guid,
             "Storage-role selected native binding differs",
         )?;
         if let Some(row) = &selected {
@@ -682,9 +784,11 @@ pub(super) fn observe_partition_storage_roles(
                 !row.is_boot && !row.is_system,
                 "Selected partition is boot/system",
             )?;
-            let checked = native(row, events)?;
             need(
-                checked.native_partition_info == target,
+                row.partition_number == binding.storage.identity.partition_number
+                    && row.offset == binding.storage.identity.partition_offset
+                    && row.size == binding.storage.identity.partition_bytes
+                    && row.gpt_type.as_slice() == &target[32..48],
                 "Selected CIM/native partition differs",
             )?;
         } else {
@@ -723,16 +827,11 @@ pub(super) fn observe_partition_storage_roles(
             before == after && windows_extent(events)? == windows,
             "Storage role catalog/Windows binding changed across native queries",
         )?;
+        let (closing_target, closing_layout) =
+            selected_from_physical_layout(binding, budget, events)?;
         need(
-            control(
-                &file,
-                "storage-role-selected-native-closing",
-                0x0007_0048,
-                &[],
-                144,
-                events,
-            )? == target,
-            "Storage-role selected native info changed across catalog",
+            closing_target == target && closing_layout == native_layout,
+            "Storage-role selected native info/complete GPT layout changed across catalog",
         )?;
         // None never claims an observed false role. The caller's actual retained
         // private lifecycle/lock must preserve its earlier live Basic role witness.

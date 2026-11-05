@@ -651,6 +651,14 @@ Freshcase0055d0b593fe431d83592dc4e161a189 controller31799 ACTIVE; freshALLprogra
 No NativePIDyetreported. UseCURRENTrestoredNTFS0source(no baselineRestore/no repeatCancel). All18incl3cbprotected, fixedepoch/max/reserveunchanged.
 Evidence/public-shared-candidate-60b8f00-build-20261105.json bindsall4exactbinaries. Nativepublicqualificationstillpending; boot/fullcoverage/faultmatrixincomplete.
 Privateclosed-terminalHND/ABTno-raw-replay andpubliccontrolledpauseflags areAGENTDRAFTS only; doNOTinjectintocurrent60b8case.
+ACTUALPUBLICcontroller31799closed1 at itsNEWarchiveancestryguard. ZEROconverterlaunchconfirmed:
+SYSTEMworker4952/birth1793849987217/boot1793849950708 failedPSIsContainer PropertyNotFound, actual_native_startedfalse/exitnull,
+no dispatch/process/terminal/publicrun/namespace-before receipts. InitialindependentBefore8passedNTFS/full67178865/allhandlesclosed,
+SHA5e86d1f7e69171130cd15dda7ed8b9725df07dae47088540fed37848437b003a. NoSourcepayloadwrites.
+ActualDirectoryInfo.Parent lacksprovider-addedPSIsContainer. OperatorpreparingNEWv2copies thatuseactualDirectoryInfo type+existingreparse/pathchecks;
+Rootmustreviewnewpins/diffbeforeexecute. Candidate60b8binaryunchanged; originalfailedhelpers/receiptskept.
+VMstillRunning/sameboot/sourceNTFS0. NextnarrowSAMEBOOTcontinuation underORIGINALbaseline322659880226+6GiB absolute329102331170,
+global329374052988/reserve17179869184, no secondStart/capreset/restore/CP/extraNative. StillmaxONEpublicexe/yLF; no GOforv2yet.
 Terminalheld-reader NOWAPPLIED/CHECKEDsingleSDKfile: self.fileSome→sameactualreadonlyHeldSourceRead/tokenmutex; fileNone retainsindependentunlockedreader.
 Allclosed.revalidate_reader J/body/index/lifecycle/NEW/OLD/COPY/zero/boot proofbody unchanged. Actualeventbookends/sixcontrols fitunchanged128.
 Combinedlib+public+3labscheck0/29.3570361s/sharedtarget/no units, evidence/terminal-held-read-build-20261105.json. Nativequalificationpending.

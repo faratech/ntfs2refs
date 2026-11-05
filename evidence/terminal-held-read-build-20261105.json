@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "kind": "terminal-source-reader-retains-actual-locking-fileobject",
+  "status": "focused-check-passed-native-pending",
+  "path": "crates/n2r-win32/src/native/partition_restoration.rs",
+  "bytes": 79714,
+  "sha256": "71f24f870ee70176f7341cd5a4244f6ff4e233957214fcec4f69ed88848d828f",
+  "reviewed_patch_sha256": "43f923768b5238afb08dac4876a6d2fbf51b1213e36eb92b804425f8170284a7",
+  "check_exit": 0,
+  "check_seconds": 29.3570361,
+  "unit_tests_run": false,
+  "native_run": false,
+  "change": "Closed-source validation uses the original locking FileObject reduced readonly duplicate when present; the existing independent readonly route remains only after original locks close.",
+  "all_journal_body_index_lifecycle_selected_NEW_restored_OLD_COPY_zero_boot_checks_retained": true,
+  "original_revalidate_reader_body_unchanged": true,
+  "events": "All callers pass real events; observer sites preserve before/after durable drains, six duplicate controls stay under the unchanged 128 cap.",
+  "source_writer_or_admission_changes": false,
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+}

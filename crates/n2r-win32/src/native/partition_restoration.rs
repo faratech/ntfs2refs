@@ -439,7 +439,7 @@ impl PartitionRecoveredOrigin {
             mounted: None,
         };
         guard.revalidate_metadata(events)?;
-        guard.revalidate_closed()?;
+        guard.revalidate_closed(events)?;
         Ok(guard)
     }
 }
@@ -889,7 +889,7 @@ impl PartitionTerminalRestorationGuard<'static, 'static> {
             mounted: None,
         };
         guard.revalidate_metadata(events)?;
-        guard.revalidate_closed()?;
+        guard.revalidate_closed(events)?;
         consume(guard, events)
     }
 }
@@ -937,7 +937,7 @@ impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
             mounted: None,
         };
         guard.revalidate_metadata(events)?;
-        guard.revalidate_closed()?;
+        guard.revalidate_closed(events)?;
         Ok(guard)
     }
     pub fn stage(&self) -> PartitionTerminalStage {
@@ -995,7 +995,7 @@ impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
             "ABT finish requires actual terminal readonly stage",
         )?;
         self.require_readonly(events)?;
-        self.revalidate_closed()?;
+        self.revalidate_closed_checkpoint(observer,"terminal-abt-closed-source",events)?;
         let volume = self
             .mounted
             .as_ref()
@@ -1033,7 +1033,7 @@ impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
     ) -> io::Result<PartitionRestorationReceipt> {
         self.revalidate_metadata_checkpoint(observer, "terminal-finish-metadata-1", events)?;
         self.require_readonly(events)?;
-        self.revalidate_closed()?;
+        self.revalidate_closed_checkpoint(observer,"terminal-finish-closed-source",events)?;
         // Check every path before enabling writes; never steal another volume's
         // letter or replace a nonempty/unrelated mounted folder.
         preflight_mounts(
@@ -1204,16 +1204,33 @@ impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
         }
         Ok(actual)
     }
-    fn revalidate_closed(&mut self) -> io::Result<()> {
+    fn revalidate_closed_checkpoint(&mut self,observer:&mut impl PartitionRestorationObserver,
+        phase:&'static str,events:&mut Vec<NativeEvent>)->io::Result<()>{
+        publication_checkpoint(Ok(()),observer,"terminal-closed-source-opening",events)?;
+        let result=self.revalidate_closed(events);
+        publication_checkpoint(result,observer,phase,events)
+    }
+    fn revalidate_closed(&mut self,events:&mut Vec<NativeEvent>) -> io::Result<()> {
         self.origin.revalidate()?;
-        let file = OpenOptions::new()
+        let file=if let Some(original)=self.file.as_ref(){
+            // The original FS lock admits access only through this SAME
+            // FileObject. A reduced data duplicate shares its cursor mutex;
+            // reopening the selected pathname can fail ERROR_NOT_READY21.
+            need(events.len()<=122,"terminal held source duplicate event budget exhausted")?;
+            TerminalReadBacking::Held(super::partition_lifecycle::held_read::duplicate_bound(
+                original,&self.binding,&self.current_info,&self.token,events)?)
+        }else{
+            // Original locking objects have closed before mounted BasicRO.
+            // This independent readonly route keeps the existing unlocked lane.
+            TerminalReadBacking::Independent(OpenOptions::new()
             .read(true)
             .share_mode(3)
             .custom_flags(0xa000_0000)
             .open(format!(
                 "\\\\?\\GLOBALROOT\\Device\\Harddisk{}\\Partition{}",
                 self.binding.storage.disk_number, self.binding.storage.identity.partition_number
-            ))?;
+            ))?)
+        };
         let mut reader = TerminalRawReader {
             file,
             buffer: AlignedBuffer::new()?,
@@ -1395,7 +1412,7 @@ impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
             self.stage == PartitionTerminalStage::Private,
             "terminal readonly transition is one-shot",
         )?;
-        self.revalidate_closed()?;
+        self.revalidate_closed_checkpoint(observer,"terminal-before-readonly-closed-source",events)?;
         self.change(RO, observer, events)?;
         // Persistent target-only RO precedes closing the old NTFS FileObject.
         // All root capture duplicates must also close before native publication.
@@ -1406,7 +1423,7 @@ impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
         self.stage = PartitionTerminalStage::Readonly;
         self.revalidate_metadata(events)?;
         self.require_readonly(events)?;
-        self.revalidate_closed()?;
+        self.revalidate_closed_checkpoint(observer,"terminal-after-readonly-closed-source",events)?;
         Ok(())
     }
     pub fn readonly_volume(
@@ -1533,10 +1550,14 @@ impl super::ProtectedReadonlyRefsAccess for PartitionTerminalReadonlyVolume<'_, 
     }
 }
 struct TerminalRawReader {
-    file: File,
+    file: TerminalReadBacking,
     buffer: AlignedBuffer,
     position: u64,
     length: u64,
+}
+enum TerminalReadBacking{
+    Held(super::partition_lifecycle::held_read::HeldSourceRead),
+    Independent(File),
 }
 impl Seek for TerminalRawReader {
     fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
@@ -1563,8 +1584,13 @@ impl Read for TerminalRawReader {
         let n = (lead + count).div_ceil(4096) * 4096;
         let at = self.position - lead as u64;
         need(at + n as u64 <= self.length, "terminal read leaves target")?;
-        self.file.seek(SeekFrom::Start(at))?;
-        let got = self.file.read(&mut self.buffer.bytes_mut()[..n])?;
+        let got=match &mut self.file{
+            TerminalReadBacking::Held(source)=>source.read_at(at,&mut self.buffer.bytes_mut()[..n])?,
+            TerminalReadBacking::Independent(file)=>{
+                file.seek(SeekFrom::Start(at))?;
+                file.read(&mut self.buffer.bytes_mut()[..n])?
+            }
+        };
         need(got >= lead + count, "short terminal raw read")?;
         out[..count].copy_from_slice(&self.buffer.bytes_mut()[lead..lead + count]);
         self.position += count as u64;

@@ -642,6 +642,14 @@ Do not buildnextcandidate untilthatminimalterminalfix reviewed; no more broadref
 OperatorOff63262 alreadyauthorized/active; doNOTrepeatStop. LatestsourceAfterCancel8/sourceNTFS0verified, all18 unchanged; currentSource reuse(noRestore) planned.
 Nextcase shouldqualify ACTUALpublicntfs2refs --drive D --partition6 --minimize-scratch (ONEinteractivey), notanotherlab-onlyrun;
 operatorpreparingDRAFTpublicharness with actualdynamicrunpath/nativePID/result/HND/retirement/After8, no executeuntilRootGO+exactnewbuild.
+Terminalheld-reader NOWAPPLIED/CHECKEDsingleSDKfile: self.fileSome→sameactualreadonlyHeldSourceRead/tokenmutex; fileNone retainsindependentunlockedreader.
+Allclosed.revalidate_reader J/body/index/lifecycle/NEW/OLD/COPY/zero/boot proofbody unchanged. Actualeventbookends/sixcontrols fitunchanged128.
+Combinedlib+public+3labscheck0/29.3570361s/sharedtarget/no units, evidence/terminal-held-read-build-20261105.json. Nativequalificationpending.
+VMactualOffclosure961d5326b2f26b0106e304de7218a40e4ca9b901f7f5a1bba58c7c35b72f32da/current07ca18,
+NTFS0/full8AfterCancel verified; actual322555507554/free84734025728. Final188file33852402B archive0625af1e814c012eff0213e220adfcc4924fc4d02f7230011086629d3a117c08
+verifiesall164originalcopiedpins, complete23MBledger/raw/native/expected/cancelcause/After8. Before==AfterJSONexactSHA1e4e92...;
+comparison1cf32b17a41400c76d48f2ac9ea8f6bf0c7d0ffd1ee841eb650c10734f841861. No baselineRestore/newCP/newnative.
+Nextcandidate toincludePUBLICexe+3labs andallheldRead/perfpatches; nativeONEPUBLICcaseonlyafterRootnewbuild/GO, no repeatCancel/probes.
 
 - Fresh writes require original live opaque source certificate and actual source/target/J/arena owners. Saved JSON/paths/flags are routes, never authority.
 - Revalidate device/file identities, journal/index/ticket/lifecycle and recovery files. Recovery must not require thin-pool reattachment.

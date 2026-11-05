@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "kind": "exact-lock-compatible-storage-role-partition-alpha-candidate",
+  "source_commit": "353ce917efa5cfbb08ff7cbd7fdf517d3e55d059",
+  "source_tree": "4e845f22877b1b826cf6eac2f263fef48037053b",
+  "manifest_sha256": "18bdf733893703750f80a5cebe12565ead640c44679f36942c86dc71c57a3230",
+  "candidate_directory": ".lab/development/release-candidates/partition-alpha-353ce91",
+  "binary": {
+    "name": "lab-partition-alpha",
+    "path": "bin/lab-partition-alpha.exe",
+    "bytes": 8483840,
+    "sha256": "87d62d1c48e3b93e96f72ec00e9ba4f00950c4ae83071ed5b79682f851863afd"
+  },
+  "archive": {
+    "bytes": 2038129,
+    "path": "source.zip",
+    "sha256": "f9ac9ff9bf5a9f29a018456b7d6a274dc503d55943cf3b986ab1b0b91d74a9f0"
+  },
+  "source_before_after_verified": true,
+  "working_tree_inputs_used": false,
+  "shared_target": true,
+  "shared_source": true,
+  "unit_tests_run": false,
+  "native_qualification_inherited": false,
+  "stable_release": false,
+  "fix": "selected-target role identity uses readonly physical-disk layout without reopening locked target",
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+}

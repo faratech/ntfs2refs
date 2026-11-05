@@ -327,7 +327,10 @@ fn startup(args: &[String], bundle: [u8; 32]) -> io::Result<Vec<u8>> {
         cmd.extend(std::iter::repeat_n('\\', trailing));
         cmd.push('"');
     }
-    cmd.push_str("\r\nexit /b %ERRORLEVEL%\r\n");
+    // Preserve failure in the recovery console. Exiting winpeshl's only app
+    // could otherwise reboot and accidentally retry an unqualified state.
+    // Reboot is requested only after the Rust runner actually returns zero.
+    cmd.push_str("\r\nset \"N2R_EXIT=%ERRORLEVEL%\"\r\nif not \"%N2R_EXIT%\"==\"0\" goto n2r_failed\r\n\"%SystemRoot%\\System32\\wpeutil.exe\" Reboot\r\necho Restart request returned. Restart normally when ready.\r\ngoto n2r_console\r\n:n2r_failed\r\necho Conversion stopped. Preserve recovery artifacts and review the error above.\r\n:n2r_console\r\n\"%SystemRoot%\\System32\\cmd.exe\" /d /k\r\nexit /b %N2R_EXIT%\r\n");
     Ok(cmd.into_bytes())
 }
 fn write_bytes(p: &Path, b: &[u8]) -> io::Result<()> {
@@ -1004,8 +1007,9 @@ pub fn build(
         let sys = mount.join("Windows/System32");
         image_subdir(&sys, &mount)?;
         need(
-            sys.join("wpeinit.exe").is_file() && sys.join("winpeshl.exe").is_file(),
-            "selectedownedimageisnotactualWinPEstartupcapable",
+            sys.join("wpeinit.exe").is_file() && sys.join("winpeshl.exe").is_file()
+                && sys.join("drivers/refs.sys").is_file(),
+            "selected owned image must contain WinPE startup and native ReFS driver",
         )?;
         same_file_copy(&runner, &sys.join("n2r-runner.exe"), b.maximum_input_bytes)?;
         same_file_copy(

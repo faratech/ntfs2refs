@@ -1313,3 +1313,6 @@ pub(crate) use prepared_offline::PreparedOfflineRun;
 
 mod prepared_recovery;
 pub(crate) use prepared_recovery::PreparedOfflineReplayRun;
+
+mod prepared_closed;
+pub(crate) use prepared_closed::PreparedOfflineClosedRun;

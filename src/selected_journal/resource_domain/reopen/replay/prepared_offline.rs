@@ -51,6 +51,7 @@ impl BoundJournalObservation<'_> {
     ) -> Result<PreparedOfflineRun> {
         checkpoint(events, &mut drain)?;
         self.observation.revalidate_index()?;
+        boot_request.validate_control()?;
         ensure!(
             self.observation.ticket.marker_profile.is_none()
                 && self.facts.marker_native_qualified.is_none()
@@ -74,7 +75,9 @@ impl BoundJournalObservation<'_> {
             new_selected_sha256: ticket.new_selected_sha256,
         };
         // The same actual native body becomes marker-only before any AP attempt.
-        self.observation.journal.seal_reopened_prepared_body(ticket)?;
+        self.observation
+            .journal
+            .seal_reopened_prepared_body(ticket)?;
         let outer_sha = bundle.outer_sha256();
         let qualification = self.observation.journal.qualify_guarded_offline_prepared(
             source,
@@ -108,6 +111,13 @@ impl BoundJournalObservation<'_> {
             bundle.outer_file(),
             events,
         )?;
+        let pause_context = boot_request.postflush_pause_nonce.as_ref().map(|_| {
+            (
+                source.offline_environment_facts().boot.clone(),
+                source.binding().clone(),
+                bundle.outer_sha256(),
+            )
+        });
         let mut writer = self.observation.journal.begin_offline_prepared_apply(
             source,
             &mut gate,
@@ -148,6 +158,37 @@ impl BoundJournalObservation<'_> {
             let mut view = writer.journal_read_view()?;
             partition_record(&policy, &mut view, format, ticket, 0)?
         };
+        if let Some((actual_boot, source_binding, outer_bundle_sha256)) = pause_context {
+            ensure!(
+                first.offset == 0 && first.length >= GRANULE,
+                "controlled cut requires an actual deferred discovery granule"
+            );
+            let actual = crate::resource_prepared_offline_apply::PreparedPostFlushReceipt {
+                kind: "offline-prepared-actual-nondiscovery-postflush-v1",
+                actual_pid: actual_boot.process_id,
+                actual_process_creation_100ns: actual_boot.process_creation_100ns,
+                actual_boot_identifier: &actual_boot.boot_identifier,
+                source: &source_binding,
+                outer_bundle_sha256,
+                immutable_journal_sha256: ticket.immutable_sha256,
+                index_sha256: policy.facts()?.index_sha256,
+                journal_binding: pins.journal_binding,
+                journal_identity: pins.journal_identity,
+                image_bytes: ticket.image_length,
+                selected_bytes: ticket.selected_bytes,
+                range_count: ticket.range_count,
+                native_bytes_written: writer.native_bytes_written(),
+                native_write_bytes_requested: writer.native_write_bytes_requested(),
+                delayed_discovery_bytes: GRANULE,
+                flush_and_pending_readback_succeeded: true,
+                native_writer_revalidation_succeeded: true,
+                discovery_write_not_requested: true,
+                first_write_qualified: false,
+            };
+            crate::resource_prepared_offline_apply::wait_postflush_pause(boot_request, &actual)?;
+            writer.revalidate(events)?;
+            checkpoint(events, &mut drain)?;
+        }
         if first.offset == 0 {
             partition_write_span(
                 &mut writer,

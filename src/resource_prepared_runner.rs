@@ -42,6 +42,9 @@ pub struct PreparedOfflineRequest {
     pub boot_budget: RecoveryBootBudget,
     #[serde(default)]
     pub action: PreparedOfflineAction,
+    /// Qualification-only pause; normal public conversion leaves this absent.
+    #[serde(default)]
+    pub controlled_pause_nonce: Option<String>,
 }
 
 pub fn run_prepared_offline(
@@ -56,6 +59,13 @@ pub fn run_prepared_offline(
     request.source.validate()?;
     request.journal.validate()?;
     request.observation_budget.validate()?;
+    let pause_ram = if let Some(nonce) = &request.controlled_pause_nonce {
+        super::controlled_pause::require_nonce(nonce)?;
+        512 * 1024
+    } else {
+        0
+    };
+    let pause_evidence = if pause_ram > 0 { 1024 * 1024 } else { 0 };
     ensure!(
         request.maximum_evidence_bytes > 0 && request.minimum_free_bytes > 0,
         "independent offline evidence and free-space reserves required"
@@ -69,6 +79,7 @@ pub fn run_prepared_offline(
     let arena_ram = request
         .total_ram_bytes
         .checked_sub(sdk_ram)
+        .and_then(|n| n.checked_sub(pause_ram))
         .and_then(|n| n.checked_sub(request.maximum_evidence_bytes))
         .and_then(|n| n.checked_sub(EXECUTION_STACK_RESERVE_BYTES + 5 * 1024 * 1024))
         .context("offline memory cannot cover native, boot, stacks and evidence")?;
@@ -129,14 +140,14 @@ pub fn run_prepared_offline(
     );
     let available =
         n2r_win32::resource_native::observe_available_resources(&request.output_parent)?;
+    let evidence_bytes = request
+        .maximum_evidence_bytes
+        .checked_mul(2)
+        .context("offline evidence reservation overflow")?;
     let required = request
         .arena_scratch_bytes
-        .checked_add(
-            request
-                .maximum_evidence_bytes
-                .checked_mul(2)
-                .context("offline evidence reservation overflow")?,
-        )
+        .checked_add(pause_evidence)
+        .and_then(|n| n.checked_add(evidence_bytes))
         .and_then(|n| n.checked_add(request.minimum_free_bytes))
         .context("offline storage reservation overflow")?;
     ensure!(
@@ -239,6 +250,7 @@ pub fn run_prepared_offline(
         intent_sha256: n2r_win32::recovery_boot::current_recovery_intent_sha256()?,
         output: output.join("boot-proof"),
         budget: request.boot_budget,
+        postflush_pause_nonce: request.controlled_pause_nonce.clone(),
     };
     let lifecycle = {
         let (native, _) = journal.split_for_observation()?;
@@ -246,21 +258,62 @@ pub fn run_prepared_offline(
     };
     use crate::selected_journal::SelectedLifecycle;
     let operation = match (lifecycle, request.action) {
-        (SelectedLifecycle::PreparedClear, PreparedOfflineAction::AutoResume) =>
-            resource_prepared_offline_apply::apply_prepared(bundle, source, journal,
-                &group, &scratch, &output.join("arena/cold-write.index"), budget.scratch_bytes,
-                &boot, &mut events, |events| Ok(observer.checkpoint("cold-prepared-operation", events)?)),
+        (SelectedLifecycle::PreparedClear, PreparedOfflineAction::AutoResume) => {
+            resource_prepared_offline_apply::apply_prepared(
+                bundle,
+                source,
+                journal,
+                &group,
+                &scratch,
+                &output.join("arena/cold-write.index"),
+                budget.scratch_bytes,
+                &boot,
+                &mut events,
+                |events| Ok(observer.checkpoint("cold-prepared-operation", events)?),
+            )
+        }
         (SelectedLifecycle::ApplyIntent, _) | (SelectedLifecycle::RollbackIntent, _) => {
             let direction = match (lifecycle, request.action) {
-                (_, PreparedOfflineAction::Rollback) | (SelectedLifecycle::RollbackIntent, _) => PagedRecoveryDirection::Rollback,
-                _ => PagedRecoveryDirection::Resume,
+                (_, PreparedOfflineAction::Rollback) | (SelectedLifecycle::RollbackIntent, _) => {
+                    PagedRecoveryDirection::Rollback
+                }
+                _ => choose_recovery_direction()?,
             };
-            resource_prepared_offline_apply::recover_prepared(bundle, source, journal,
-                &group, &scratch, &output.join("arena/cold-write.index"), budget.scratch_bytes,
-                direction, &boot, &mut events,
-                |events| Ok(observer.checkpoint("cold-prepared-restart-recovery", events)?))
+            resource_prepared_offline_apply::recover_prepared(
+                bundle,
+                source,
+                journal,
+                &group,
+                &scratch,
+                &output.join("arena/cold-write.index"),
+                budget.scratch_bytes,
+                direction,
+                &boot,
+                &mut events,
+                |events| Ok(observer.checkpoint("cold-prepared-restart-recovery", events)?),
+            )
         }
-        _ => anyhow::bail!("current closed/unactivated J requires terminal reconciliation; no raw replay was attempted"),
+        (SelectedLifecycle::Handoff, PreparedOfflineAction::Rollback) => anyhow::bail!(
+            "handoff permanently closed NTFS rollback; no raw replay or metadata change was attempted"
+        ),
+        (SelectedLifecycle::Handoff, PreparedOfflineAction::AutoResume)
+        | (SelectedLifecycle::Aborted, _) => {
+            resource_prepared_offline_apply::finalize_prepared_closed(
+                bundle,
+                source,
+                journal,
+                &group,
+                &scratch,
+                &output.join("arena/cold-write.index"),
+                budget.scratch_bytes,
+                &boot,
+                &mut events,
+                |events| Ok(observer.checkpoint("cold-prepared-closed-reconciliation", events)?),
+            )
+        }
+        _ => anyhow::bail!(
+            "an unactivated journal cannot be rolled back through the replay path; no raw replay was attempted"
+        ),
     };
     match operation {
         Ok(terminal) => {
@@ -269,12 +322,33 @@ pub fn run_prepared_offline(
                 "selected":terminal.selected,"native_bytes_written":terminal.native_bytes_written,
                 "normal_boot_restored":false,"native_finalization_complete":false}),
             )?;
-            // A closed journal is not a successful mounted conversion. Retain
-            // recovery boot protection until native target verification and
-            // the consuming closed-owner restoration are connected.
-            anyhow::bail!(
-                "raw conversion reached closed HND; recovery boot remains selected pending native finalization"
-            )
+            let mut restoration = observer.clone();
+            let result = crate::resource_prepared_terminal::finalize_prepared_offline(
+                terminal,
+                &scratch,
+                &output.join("terminal"),
+                request.observation_budget,
+                &mut restoration,
+                &mut events,
+            );
+            let drained = observer.checkpoint("cold-prepared-native-terminal-closed", &mut events);
+            let receipt = match (result, drained) {
+                (Ok(v), Ok(())) => v,
+                (Err(e), Err(close)) => {
+                    return Err(e.context(format!("terminal evidence also failed: {close}")));
+                }
+                (Err(e), _) => return Err(e),
+                (_, Err(e)) => return Err(e.into()),
+            };
+            save(
+                &output.join("conversion-terminal-result.json"),
+                &receipt,
+                request.maximum_evidence_bytes,
+            )?;
+            observer.lock()?.record(&receipt)?;
+            println!("Conversion/recovery finalized; normal Windows boot restored.");
+            io::stdout().flush()?;
+            Ok(())
         }
         Err(error) => {
             let closing =
@@ -284,5 +358,26 @@ pub fn run_prepared_offline(
                 Err(close) => Err(error.context(format!("closing evidence failed: {close}"))),
             }
         }
+    }
+}
+
+fn choose_recovery_direction() -> Result<PagedRecoveryDirection> {
+    use std::io::{BufRead, Read};
+    println!(
+        "An interrupted conversion is protected. Enter R to resume conversion or B to restore NTFS:"
+    );
+    io::stdout().flush()?;
+    let stdin = io::stdin();
+    let mut reader = stdin.lock().take(16);
+    let mut answer = String::new();
+    reader.read_line(&mut answer)?;
+    ensure!(
+        answer.len() < 16 && answer.ends_with('\n'),
+        "bounded recovery choice required; source remains excluded"
+    );
+    match answer.trim().to_ascii_uppercase().as_str() {
+        "R" => Ok(PagedRecoveryDirection::Resume),
+        "B" => Ok(PagedRecoveryDirection::Rollback),
+        _ => anyhow::bail!("recovery choice was not R or B; source remains excluded"),
     }
 }

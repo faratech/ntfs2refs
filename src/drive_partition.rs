@@ -1,6 +1,8 @@
 //! Confirmed public routing to the actual partition-scoped owners. Metadata
 //! selection and automatic resource budgets are never source/write authority.
 use super::{DriveArgs, windows};
+#[path = "drive_partition_offline.rs"]
+mod offline;
 use crate::{
     resource_partition_alpha::{
         self, PartitionAlphaRequest, PartitionRecoveryDirection, PartitionRecoveryRequest,
@@ -254,6 +256,9 @@ pub(super) fn convert(
     selected: PartitionSelection,
     before: VolumeDiscovery,
 ) -> Result<u8> {
+    if args.offline_recovery_media.is_some() {
+        return offline::convert(args, selected, before);
+    }
     require_shared_conversion_backend()?;
     ensure!(args.controlled_post_flush_pause_nonce.is_some()
         == args.acknowledge_controlled_post_flush_pause,

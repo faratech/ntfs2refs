@@ -5764,3 +5764,7 @@ mod tests {
         );
     }
 }
+
+mod offline_terminal;
+pub use offline_terminal::OfflineReadonlyFidelity;
+pub(crate) use offline_terminal::observe_offline_converted_readonly;

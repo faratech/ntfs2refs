@@ -3,7 +3,7 @@
 use super::*;
 use crate::native::{HeldPagedWritePolicy, PagedRecoveryPins};
 use crate::offline_environment::{
-    OfflinePreparedJournalQualification, OfflinePreparedReplayQualification, OfflinePreparedBootGuardRequirements, OfflinePreparedSource, OfflineSourceOwnerToken,
+    OfflinePreparedJournalQualification, OfflinePreparedReplayQualification, OfflinePreparedClosedQualification, OfflinePreparedBootGuardRequirements, OfflinePreparedSource, OfflineSourceOwnerToken,
 };
 use crate::reference_file::ReferenceFileSnapshot;
 use windows_sys::Win32::Storage::FileSystem::GetVolumeNameForVolumeMountPointW;
@@ -97,6 +97,13 @@ impl ActualBootQualification for OfflinePreparedReplayQualification {
     }
     fn actual_requirements(&self)->&OfflinePreparedBootGuardRequirements{self.boot_guard_requirements()}
 }
+impl ActualBootQualification for OfflinePreparedClosedQualification {
+    fn revalidate_actual(&self,source:&mut OfflinePreparedSource,policy:&HeldPagedWritePolicy,
+        journal:&mut File,pins:&PagedRecoveryPins<'_>,outer:&mut File,events:&mut Vec<NativeEvent>)->io::Result<()>{
+        self.revalidate(source,policy,journal,pins,outer,events)
+    }
+    fn actual_requirements(&self)->&OfflinePreparedBootGuardRequirements{self.boot_guard_requirements()}
+}
 #[derive(Clone, Debug, Serialize)]
 pub struct RecoveryBootGuardFacts {
     pub kind: &'static str,
@@ -140,6 +147,14 @@ impl RecoveryBootGuard {
     }
     #[allow(clippy::too_many_arguments)]
     pub fn observe_recovery(source:&mut OfflinePreparedSource,qualification:&OfflinePreparedReplayQualification,
+        policy:&HeldPagedWritePolicy,journal:&mut File,pins:&PagedRecoveryPins<'_>,sealed_bundle:&mut File,
+        intent_path:&Path,expected_intent_sha256:[u8;32],directory:&Path,budget:RecoveryBootBudget,
+        events:&mut Vec<NativeEvent>)->io::Result<Self>{
+        Self::observe_bound(source,qualification,policy,journal,pins,sealed_bundle,
+            intent_path,expected_intent_sha256,directory,budget,events)
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn observe_closed(source:&mut OfflinePreparedSource,qualification:&OfflinePreparedClosedQualification,
         policy:&HeldPagedWritePolicy,journal:&mut File,pins:&PagedRecoveryPins<'_>,sealed_bundle:&mut File,
         intent_path:&Path,expected_intent_sha256:[u8;32],directory:&Path,budget:RecoveryBootBudget,
         events:&mut Vec<NativeEvent>)->io::Result<Self>{

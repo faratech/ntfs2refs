@@ -1285,3 +1285,40 @@ impl NativeSelectedJournal {
             _=>anyhow::bail!("same sealed prepared replay J absent")}
     }
 }
+
+impl NativeSelectedJournal {
+    /// Closed-only marker/body seal after complete scanner. No marker repair,
+    /// AP/RB, source write, EOF change or replay API can follow through this entry.
+    pub(crate) fn seal_reopened_prepared_closed_body(&mut self,ticket:&sj::SelectedTicket)->Result<()> {
+        ensure!(!self.prepared_body_sealed&&matches!(self.storage,Storage::Buffered(_))&&ticket.marker_profile.is_none()
+            &&self.byte_len()?==ticket.journal_length&&self.fixed_length.is_none_or(|n|n==ticket.journal_length)
+            &&matches!(sj::classify(self,ticket)?,sj::SelectedLifecycle::Handoff|sj::SelectedLifecycle::Aborted),
+            "actual prepared closed J/EOF/HND/ABT required; no replay or fallback");
+        self.fixed_length=Some(ticket.journal_length);self.prepared_body_sealed=true;Ok(())
+    }
+    pub(crate) fn qualify_offline_prepared_closed_journal(&mut self,source:&mut n2r_win32::offline_environment::OfflinePreparedSource,
+        policy:&n2r_win32::HeldPagedWritePolicy,pins:&n2r_win32::PagedRecoveryPins<'_>,outer:&mut File,outer_sha:[u8;32],
+        kind:n2r_win32::offline_environment::OfflineTerminalKind,events:&mut Vec<n2r_win32::NativeEvent>)
+        ->Result<n2r_win32::offline_environment::OfflinePreparedClosedQualification>{
+        self.require_prepared_body_seal()?;match &mut self.storage{Storage::Buffered(file)=>Ok(source.qualify_prepared_closed_journal(policy,file,pins,outer,outer_sha,kind,events)?),
+            _=>anyhow::bail!("same sealed prepared closed J absent")}
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn observe_prepared_closed_boot(&mut self,source:&mut n2r_win32::offline_environment::OfflinePreparedSource,
+        qualification:&n2r_win32::offline_environment::OfflinePreparedClosedQualification,policy:&n2r_win32::HeldPagedWritePolicy,
+        pins:&n2r_win32::PagedRecoveryPins<'_>,outer:&mut File,intent_path:&Path,intent_sha:[u8;32],directory:&Path,
+        budget:n2r_win32::recovery_boot::RecoveryBootBudget,events:&mut Vec<n2r_win32::NativeEvent>)->Result<n2r_win32::recovery_boot::RecoveryBootGuard>{
+        self.require_prepared_body_seal()?;match &mut self.storage{Storage::Buffered(file)=>Ok(n2r_win32::recovery_boot::RecoveryBootGuard::observe_closed(
+            source,qualification,policy,file,pins,outer,intent_path,intent_sha,directory,budget,events)?),_=>anyhow::bail!("same sealed prepared closed J absent")}
+    }
+    pub(crate) fn into_offline_prepared_closed_terminal(&mut self,source:n2r_win32::offline_environment::OfflinePreparedSource,
+        policy:&n2r_win32::HeldPagedWritePolicy,pins:&n2r_win32::PagedRecoveryPins<'_>,boot:&mut n2r_win32::recovery_boot::RecoveryBootGuard,
+        outer:&mut File,qualification:n2r_win32::offline_environment::OfflinePreparedClosedQualification,events:&mut Vec<n2r_win32::NativeEvent>)
+        ->Result<n2r_win32::offline_environment::OfflinePreparedTerminalSource>{
+        self.require_prepared_body_seal()?;match &mut self.storage{Storage::Buffered(file)=>Ok(qualification.into_terminal(source,policy,file,pins,boot,outer,events)?),
+            _=>anyhow::bail!("same sealed prepared closed J absent")}
+    }
+}
+
+#[path="selected_native_journal/offline_terminal.rs"]
+mod offline_terminal;

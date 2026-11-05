@@ -17,20 +17,34 @@ use anyhow::{Context, Result, ensure};
 use n2r_win32::{
     HeldPagedWritePolicy, NativeEvent, PagedRecoveryPins,
     offline_environment::{
-        OfflinePreparedAvailableSource, OfflinePreparedJournalQualification,
-        OfflinePreparedReplayQualification, OfflinePreparedSource, OfflinePreparedTerminalSource,
-        OfflineSourceOwnerToken,
+        OfflinePreparedAvailableSource, OfflinePreparedClosedQualification,
+        OfflinePreparedJournalQualification, OfflinePreparedReplayQualification,
+        OfflinePreparedSource, OfflinePreparedTerminalSource, OfflineSourceOwnerToken,
     },
     recovery_boot::{RecoveryBootBudget, RecoveryBootGuard},
 };
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
+#[path = "resource_prepared_pause.rs"]
+mod controlled_pause;
+pub(crate) use controlled_pause::{PreparedPostFlushReceipt, wait as wait_postflush_pause};
+pub(crate) const CONTROLLED_PAUSE_RAM_BYTES: u64 = 512 * 1024;
+pub(crate) const CONTROLLED_PAUSE_EVIDENCE_BYTES: u64 = 1024 * 1024;
 pub(crate) struct PreparedOfflineBootRequest {
+    pub(crate) postflush_pause_nonce: Option<String>,
     pub(crate) intent_path: PathBuf,
     pub(crate) intent_sha256: [u8; 32],
     pub(crate) output: PathBuf,
     pub(crate) budget: RecoveryBootBudget,
+}
+impl PreparedOfflineBootRequest {
+    pub(crate) fn validate_control(&self) -> Result<()> {
+        if let Some(nonce) = &self.postflush_pause_nonce {
+            controlled_pause::require_nonce(nonce)?;
+        }
+        Ok(())
+    }
 }
 /// Current proof is issued from actual held bundle + current raw fingerprint,
 /// never from a decoded READY flag or a fabricated preboot native witness.
@@ -163,6 +177,41 @@ impl PreparedRecoveryReadiness {
             index_sha256: facts.index_sha256,
         })
     }
+    pub(crate) fn qualify_closed(
+        bundle: &HeldWindowsPreparedBundle,
+        source: &OfflinePreparedSource,
+        policy: &HeldPagedWritePolicy,
+        ticket: &SelectedTicket,
+        qualification: &OfflinePreparedClosedQualification,
+    ) -> Result<Self> {
+        bundle.require_ready_artifacts()?;
+        qualification.require_owner(&source.owner_token())?;
+        let facts = policy.facts()?;
+        let requirements = qualification.boot_guard_requirements();
+        let old_index = bundle
+            .core()
+            .artifacts
+            .iter()
+            .find(|p| p.role == "native-write-index")
+            .context("Windows prepared index absent")?;
+        ensure!(
+            requirements.source == *source.binding()
+                && source.binding().storage == bundle.core().source
+                && requirements.sealed_publication_sha256 == bundle.outer_sha256()
+                && requirements.source_was_already_offline_on_enrollment
+                && facts.index_sha256 == requirements.index_sha256
+                && old_index.sha256 == hex::encode(facts.index_sha256)
+                && ticket_pin(ticket)? == ticket_pin(&bundle.core().ticket)?,
+            "actual CURRENT recovery scope differs from authenticated Windows/J owners"
+        );
+        Ok(Self {
+            owner: source.owner_token(),
+            outer_sha256: bundle.outer_sha256(),
+            outer_identity: bundle.outer_snapshot().clone(),
+            ticket_sha256: ticket_pin(ticket)?,
+            index_sha256: facts.index_sha256,
+        })
+    }
     pub(crate) fn require_binding(
         &self,
         bundle: &HeldWindowsPreparedBundle,
@@ -187,10 +236,12 @@ impl PreparedRecoveryReadiness {
 enum PreparedTerminalQualification {
     Fresh(OfflinePreparedJournalQualification),
     Replay(OfflinePreparedReplayQualification),
+    Closed,
 }
 enum PreparedTerminalReadiness {
     Fresh(PreparedReadinessCertificate),
     Replay(PreparedRecoveryReadiness),
+    Closed(PreparedRecoveryReadiness),
 }
 /// HND/ABT is closed. Actual J/expected/maps/bundle/index/boot owners all remain
 /// retained. Source has no writer, replay, File or raw-handle interface.
@@ -488,6 +539,112 @@ pub(crate) fn recover_prepared(
         native_bytes_written,
         qualification: PreparedTerminalQualification::Replay(qualification),
         _readiness: PreparedTerminalReadiness::Replay(readiness),
+        _memory: memory,
+    })
+}
+
+/// Reopen actual closed HND/ABT before final writable restoration. No source
+/// writes, marker mutation or replay occurs; data still BASIC+READONLY.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn finalize_prepared_closed(
+    mut bundle: HeldWindowsPreparedBundle,
+    mut source: OfflinePreparedSource,
+    mut journal: BoundNativeRecoveryJournal,
+    group: &ArtifactGroupPermit,
+    scratch: &SourceScratch,
+    index_path: &Path,
+    max_index_bytes: u64,
+    boot_request: &PreparedOfflineBootRequest,
+    events: &mut Vec<NativeEvent>,
+    mut checkpoint: impl FnMut(&mut Vec<NativeEvent>) -> Result<()>,
+) -> Result<PreparedOfflineHandoff> {
+    checkpoint(events)?;
+    ensure!(
+        events.is_empty(),
+        "opening prepared checkpoint did not drain"
+    );
+    bundle.require_ready_artifacts()?;
+    journal.revalidate()?;
+    let ticket = bundle.core().ticket.clone();
+    {
+        let (_native, facts) = journal.split_for_observation()?;
+        let core = bundle.core();
+        ensure!(
+            facts.binding == &core.journal_binding
+                && facts.identity == &core.journal_identity
+                && facts.path == core.journal_path.as_path()
+                && facts.journal_length == ticket.journal_length
+                && facts.profile.version() == core.journal_profile_version
+                && facts.profile.max_journal_bytes() == core.journal_profile_max_bytes
+                && facts.marker_native_qualified.is_none(),
+            "actual exclusively held J differs from Windows sealed bundle"
+        );
+    }
+    let observation = BoundJournalObservation::open(
+        &mut journal,
+        &ticket,
+        group,
+        scratch,
+        index_path,
+        max_index_bytes,
+    )?;
+    let crate::selected_journal::resource_domain::reopen::PreparedOfflineClosedRun {
+        selected,
+        qualification,
+        mut boot,
+        policy,
+        index_owner,
+        readiness,
+        memory,
+    } = observation.observe_windows_prepared_closed(
+        &mut bundle,
+        &mut source,
+        boot_request,
+        events,
+        |events| checkpoint(events),
+    )?;
+    // HND/current NEW has already been authenticated. Never run original
+    // NTFS/fingerprint/allOLD checks when consuming the terminal source.
+    let terminal = {
+        let (native, facts) = journal.split_for_observation()?;
+        let pins = PagedRecoveryPins {
+            journal_binding: facts.binding,
+            journal_identity: facts.identity,
+            journal_path: facts.path,
+            journal_profile: facts.profile,
+            immutable_sha256: ticket.immutable_sha256,
+            old_selected_sha256: ticket.old_selected_sha256,
+            old_restored_selected_sha256: ticket.old_restored_selected_sha256,
+            new_selected_sha256: ticket.new_selected_sha256,
+        };
+        native.into_offline_prepared_closed_terminal(
+            source,
+            &policy,
+            &pins,
+            &mut boot,
+            bundle.outer_file(),
+            qualification,
+            events,
+        )?
+    };
+    bundle.revalidate()?;
+    index_owner.revalidate()?;
+    checkpoint(events)?;
+    ensure!(
+        events.is_empty(),
+        "terminal prepared checkpoint did not drain"
+    );
+    Ok(PreparedOfflineHandoff {
+        bundle,
+        source: terminal,
+        journal,
+        boot,
+        policy,
+        index_owner,
+        selected,
+        native_bytes_written: 0,
+        qualification: PreparedTerminalQualification::Closed,
+        _readiness: PreparedTerminalReadiness::Closed(readiness),
         _memory: memory,
     })
 }

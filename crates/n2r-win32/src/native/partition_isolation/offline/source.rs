@@ -1,10 +1,14 @@
 //! Actual offline-machine source ownership. No legacy Windows-C/layout guard
 //! changes and no source writer or online/repair operation is exposed here.
+mod terminal;
+pub use terminal::{OfflinePreparedTerminalGuard,OfflineTerminalReadonlyVolume,OfflinePreparedTerminalReceipt};
 mod native_observation;
 mod paged;
 mod prepared;
 mod prepared_apply;
 mod prepared_replay;
+mod prepared_closed;
+pub use prepared_closed::OfflinePreparedClosedQualification;
 pub use prepared_replay::OfflinePreparedReplayQualification;
 pub use prepared_apply::{OfflinePreparedTerminalSource,OfflinePreparedAvailableSource};
 pub use prepared::{OfflinePreparedSource, OfflinePreparedJournalQualification, OfflinePreparedBootGuardRequirements};

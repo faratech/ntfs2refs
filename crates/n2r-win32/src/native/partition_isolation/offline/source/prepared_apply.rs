@@ -18,6 +18,10 @@ pub(super) struct PreparedPublicationPin {
     file_handle: usize,
 }
 impl PreparedPublicationPin {
+    pub(super) fn from_closed(qualification:&super::prepared_closed::OfflinePreparedClosedQualification,file:&File)->Self {
+        let facts=qualification.boot_guard_requirements();
+        Self{snapshot:facts.sealed_publication_file.clone(),sha256:facts.sealed_publication_sha256,file_handle:file.as_raw_handle()as usize}
+    }
     pub(super) fn from_replay(qualification:&super::prepared_replay::OfflinePreparedReplayQualification,file:&File)->Self {
         let facts=qualification.boot_guard_requirements();
         Self{snapshot:facts.sealed_publication_file.clone(),sha256:facts.sealed_publication_sha256,file_handle:file.as_raw_handle()as usize}

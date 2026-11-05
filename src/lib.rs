@@ -132,3 +132,6 @@ pub mod source_fingerprint;
 pub mod source_volume_label;
 pub mod tree_placement;
 pub mod verification_policy;
+
+#[cfg(windows)]
+pub(crate) mod resource_prepared_terminal;

@@ -428,3 +428,7 @@ impl ReopenedVerificationMetadata {
         Ok(count)
     }
 }
+
+#[path="reopened/offline_prepared.rs"]
+mod offline_prepared;
+pub(crate) use offline_prepared::OfflinePreparedVerification;

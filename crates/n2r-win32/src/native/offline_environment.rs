@@ -1,6 +1,8 @@
 //! Read-only environment facts for a future offline boot lane. No constructor
 //! here issues source admission, exclusion, restoration or write authority.
+pub use super::partition_isolation::offline::{OfflinePreparedTerminalGuard,OfflineTerminalReadonlyVolume,OfflinePreparedTerminalReceipt};
 pub use super::partition_isolation::offline::OfflinePreparedReplayQualification;
+pub use super::partition_isolation::offline::OfflinePreparedClosedQualification;
 pub use super::partition_isolation::offline::{OfflineOwningEnvironment,OfflineOwningFacts,OfflineSourcePhysicalFacts};
 pub use super::partition_isolation::offline::{OfflineFreshWitness,OfflinePagedNtfsObservation,OfflineReadonlyNtfsPhase};
 pub use super::partition_isolation::offline::{OfflinePreparedAvailableSource,OfflinePreparedTerminalSource,OfflinePreparedSource,OfflinePreparedJournalQualification,OfflinePreparedBootGuardRequirements};

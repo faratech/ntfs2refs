@@ -1873,7 +1873,7 @@ fn is_target_mount(
         &mut Vec::new(),
     )? == info)
 }
-fn preflight_mounts(
+pub(in crate::native) fn preflight_mounts(
     paths: &[String],
     binding: &crate::general_layout::GeneralDiskBinding,
     info: &[u8],

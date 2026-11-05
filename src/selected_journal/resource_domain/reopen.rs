@@ -7,7 +7,7 @@
 pub(crate) mod envelope;
 mod replay;
 pub(crate) use replay::PartitionMixedObservation;
-pub(crate) use replay::{PreparedOfflineRun,PreparedOfflineReplayRun};
+pub(crate) use replay::{PreparedOfflineRun,PreparedOfflineReplayRun,PreparedOfflineClosedRun};
 
 use super::*;
 use crate::{

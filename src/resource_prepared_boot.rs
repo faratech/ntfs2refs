@@ -280,3 +280,175 @@ fn decode_sha(value: &str) -> Result<[u8; 32]> {
         .try_into()
         .map_err(|_| anyhow::anyhow!("SHA256 width"))
 }
+
+/// One owning-machine preparation and boot handoff. All recovery resources
+/// are reserved before NTFS preparation; the image builder receives the exact
+/// bundle returned by that same preparation, never a caller's READY boolean.
+pub fn prepare_and_arm_shared_conversion(
+    mut request: PartitionAlphaRequest,
+    output: &Path,
+    mut image: RecoveryImageRequest,
+    boot_budget: RecoveryBootBudget,
+    acknowledge: bool,
+) -> Result<RecoveryBootReceipt> {
+    ensure!(
+        acknowledge,
+        "shared conversion and persistent recovery boot require confirmation"
+    );
+    ensure!(
+        request.schema_version == 1 && output.is_absolute() && !output.exists(),
+        "fresh shared conversion namespace required"
+    );
+    let parent = output.parent().context("shared conversion parent absent")?;
+    let _parent = ordinary_directory(parent)?;
+    let parent_guid = n2r_win32::file_storage::final_path_guid(
+        _parent.first().context("held shared parent absent")?,
+    )?;
+    let end = parent_guid
+        .find('}')
+        .context("shared parent has no native volume GUID")?
+        + 1;
+    let journal_route = n2r_win32::discovery::discover(
+        &format!("{}\\", &parent_guid[..end]),
+        n2r_win32::discovery::Role::Journal {
+            allow_additional_partitions: true,
+        },
+    )?;
+    ensure!(
+        journal_route.read_only
+            && journal_route.observed_twice_unchanged
+            && journal_route.source_write_requests == 0
+            && journal_route.binding.disk_number != request.expected_source.disk_number
+            && n2r_win32::layout::guid_bytes(&journal_route.binding.identity.disk_guid)?
+                != n2r_win32::layout::guid_bytes(&request.expected_source.identity.disk_guid)?,
+        "whole workflow must use an actually observed independent recovery disk"
+    );
+    let actual = n2r_win32::resource_native::observe_available_resources(parent)?;
+    let additional = image
+        .budget
+        .admitted_working_bytes
+        .checked_add(
+            request
+                .maximum_evidence_bytes
+                .checked_mul(3)
+                .context("boot evidence overflow")?,
+        )
+        .context("shared image reservation overflow")?;
+    request.minimum_free_bytes = request
+        .minimum_free_bytes
+        .checked_add(additional)
+        .context("shared image free reserve overflow")?;
+    let required = request
+        .arena_scratch_bytes
+        .checked_add(request.maximum_staging_allocation_bytes)
+        .and_then(|n| n.checked_add(request.maximum_evidence_bytes.checked_mul(3)?))
+        .and_then(|n| n.checked_add(request.minimum_free_bytes))
+        .and_then(|n| n.checked_add(PartitionPreparationGuard::maximum_intent_file_bytes()))
+        .context("whole shared workflow admission overflow")?;
+    ensure!(
+        actual.scratch_available_bytes >= required,
+        "independent storage cannot cover preparation, image, boot evidence and free reserve together"
+    );
+    ensure!(
+        request.total_ram_bytes <= actual.available_physical_bytes,
+        "whole shared workflow RAM exceeds actual availability"
+    );
+    fs::create_dir(output)?;
+    let _output = ordinary_directory(output)?;
+    let output_guid = PathBuf::from(n2r_win32::file_storage::final_path_guid(
+        _output
+            .first()
+            .context("held shared workflow directory absent")?,
+    )?);
+    save(
+        &output.join("workflow-admission.json"),
+        &serde_json::json!({
+            "kind":"shared-native-shadow-offline-workflow-admission-v1", "preparation":request,
+            "recovery_image":image, "boot_budget":boot_budget, "required_independent_capacity":required,
+            "actual_available":actual, "source_payload_write_authority":false
+        }),
+        request.maximum_evidence_bytes,
+    )?;
+    let source = request.expected_source.clone();
+    let total_ram = request.total_ram_bytes;
+    let evidence = request.maximum_evidence_bytes;
+    let minimum_free = request.minimum_free_bytes - additional;
+    let observation = request.observation_budget;
+    let prepared = prepare_for_offline_apply(request, &output.join("prepared"), acknowledge)?;
+    let available_after = n2r_win32::resource_native::observe_available_resources(output)?;
+    let metadata = SourceMetadataBudget::from_resource_budget(derive_budget(
+        total_ram / 4,
+        align(available_after.scratch_available_bytes / 16),
+    )?)?;
+    let bundle_pin = decode_sha(&prepared.bundle_manifest_sha256)?;
+    let bootstrap = output.join("offline-request.json");
+    let offline_request = PreparedOfflineRequest {
+        schema_version: 1,
+        source: PartitionSourceBinding {
+            storage: source.clone(),
+        },
+        journal: prepared.journal_binding.clone(),
+        prepared_bundle: {
+            let held = OpenOptions::new()
+                .read(true)
+                .share_mode(1)
+                .custom_flags(0x0020_0000)
+                .open(&prepared.bundle_manifest_path)?;
+            PathBuf::from(n2r_win32::file_storage::final_path_guid(&held)?)
+        },
+        prepared_bundle_sha256: prepared.bundle_manifest_sha256.clone(),
+        maximum_bundle_bytes: evidence,
+        output_parent: output_guid.clone(),
+        observation_budget: observation,
+        total_ram_bytes: total_ram,
+        // Reopened index/maps are metadata. Do not reserve the former shadow
+        // or journal a second time; their actual storage remains occupied.
+        arena_scratch_bytes: align(available_after.scratch_available_bytes / 8),
+        maximum_evidence_bytes: evidence,
+        minimum_free_bytes: minimum_free,
+        boot_intent: output_guid.join("boot/selection/recovery-boot-guard-intent.json"),
+        boot_budget,
+        action: PreparedOfflineAction::AutoResume,
+        controlled_pause_nonce: None,
+    };
+    save(&bootstrap, &offline_request, evidence)?;
+    let mut file = OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .custom_flags(0x0020_0000)
+        .open(&bootstrap)?;
+    let bytes = file.metadata()?.len();
+    let bootstrap_hash = n2r_win32::sha256_native::hash_range(&mut file, 0, bytes)?;
+    image.root = output.join("recovery-image");
+    image.prepared_bundle_sha256 = bundle_pin;
+    image.bootstrap = n2r_win32::recovery_image::RecoveryImageInput {
+        path: bootstrap,
+        bytes,
+        sha256: bootstrap_hash,
+    };
+    image.startup_args = vec![
+        "--request-sha256".into(),
+        hex::encode(bootstrap_hash),
+        "--bundle-sha256".into(),
+        prepared.bundle_manifest_sha256.clone(),
+        "--acknowledge-offline-conversion".into(),
+    ];
+    arm_prepared_boot(
+        PreparedBootRequest {
+            schema_version: 1,
+            prepared_bundle: prepared.bundle_manifest_path,
+            prepared_bundle_sha256: prepared.bundle_manifest_sha256,
+            source,
+            journal: prepared.journal_binding,
+            maximum_bundle_bytes: evidence,
+            metadata_budget: metadata,
+            total_ram_bytes: total_ram,
+            maximum_evidence_bytes: evidence,
+            minimum_free_bytes: minimum_free,
+            image,
+            boot: boot_budget,
+        },
+        &output.join("boot"),
+        acknowledge,
+    )
+}

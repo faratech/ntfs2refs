@@ -24,9 +24,12 @@ pub struct DriveArgs {
     /// Exact partition number. A letter must already identify that partition.
     #[arg(long, requires = "drive")]
     pub partition: Option<u32>,
-    /// Optional working directory on the Windows OS volume.
+    /// Working directory; shared-disk conversion requires a different physical disk.
     #[arg(long, requires = "drive")]
     pub scratch_directory: Option<PathBuf>,
+    /// Mounted Windows installation-media directory for offline shared-disk conversion.
+    #[arg(long = "offline-media", requires = "drive")]
+    pub offline_recovery_media: Option<PathBuf>,
     /// Native target format: dev-drive (experimental default) or standard ReFS.
     /// Standard formatting must be supported by Windows; no fallback is used.
     #[arg(long, requires = "drive", value_parser = ["dev-drive", "standard"])]

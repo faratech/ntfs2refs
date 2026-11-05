@@ -66,6 +66,8 @@ pub(crate) struct PreparedCore {
     pub source_payload_write_calls: u64,
     pub source_apply_intent_attempted: bool,
     pub source_certificate_issued: bool,
+    pub source_semantic_readiness_qualified: bool,
+    pub source_write_gate_issued: bool,
     pub sealed_bundle_grants_writer_permission: bool,
     pub requires_new_pe_bootguard_and_actual_apply_gate: bool,
 }
@@ -236,7 +238,9 @@ impl HeldWindowsPreparedBundle {
                 && c.journal_prepared_clear
                 && c.source_payload_write_calls == 0
                 && !c.source_apply_intent_attempted
-                && !c.source_certificate_issued
+                && c.source_certificate_issued
+                && c.source_semantic_readiness_qualified
+                && !c.source_write_gate_issued
                 && !c.sealed_bundle_grants_writer_permission
                 && c.requires_new_pe_bootguard_and_actual_apply_gate,
             "bundle is not an unactivated Windows preparation result"

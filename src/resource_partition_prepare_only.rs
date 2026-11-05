@@ -62,7 +62,9 @@ pub(super) fn finish_prepared(
             && core.journal_prepared_clear
             && core.native_journal_body_sealed
             && !core.source_apply_intent_attempted
-            && !core.source_certificate_issued
+            && core.source_certificate_issued
+            && core.source_semantic_readiness_qualified
+            && !core.source_write_gate_issued
             && core.source_payload_write_calls == 0,
         "actual prepared source/publication summary is inconsistent"
     );

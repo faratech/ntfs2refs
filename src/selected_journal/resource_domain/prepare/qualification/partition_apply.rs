@@ -703,6 +703,7 @@ pub(crate) struct WindowsPreparedBundleCore {
     pub source_fingerprint:crate::source_fingerprint::resource::FingerprintPins,
     pub journal_contains_source_free_rows:bool,pub native_journal_body_sealed:bool,pub journal_prepared_clear:bool,
     pub source_payload_write_calls:u64,pub source_apply_intent_attempted:bool,pub source_certificate_issued:bool,
+    pub source_semantic_readiness_qualified:bool,pub source_write_gate_issued:bool,
     pub sealed_bundle_grants_writer_permission:bool,pub requires_new_pe_bootguard_and_actual_apply_gate:bool,
 }
 fn prepared_artifact(role:&'static str,lease:&crate::artifact_arena::ArtifactLease)->WindowsPreparedArtifact{
@@ -744,6 +745,11 @@ impl PartitionResourcePreparedConversion<'_,'_,'_,'_,'_,'_> {
     pub(crate) fn snapshot_for_offline_apply(&mut self,events:&mut Vec<NativeEvent>)->Result<WindowsPreparedBundleCore>{
         self.revalidate(events)?;
         let p=&mut self.prepared;
+        // Close the SAME complete source/target/expected/arena conjunction as
+        // live apply, without asking the SDK for an apply gate or publishing AP.
+        let readiness=p.context.qualify_prepared_target(
+            p.candidate.protected_proof(),self.expected,&self.closure,events)?;
+        readiness.require_partition_binding(p.context,p.candidate.protected_proof(),self.expected,&self.closure)?;
         let source=p.context.binding().storage.clone();
         let token=p.context.owner_token();
         let (owner,admission,_)=p.context.source_admission_and_inspection();
@@ -790,8 +796,10 @@ impl PartitionResourcePreparedConversion<'_,'_,'_,'_,'_,'_> {
             source_inspection_sha256:p.context.inspection_sha256().into(),source_views_sha256:p.context.source_views_sha256().into(),
             source_fingerprint,
             journal_contains_source_free_rows:p.domain.facts().source_free_bytes>0,native_journal_body_sealed:true,journal_prepared_clear:true,
-            source_payload_write_calls:0,source_apply_intent_attempted:false,source_certificate_issued:false,sealed_bundle_grants_writer_permission:false,
+            source_payload_write_calls:0,source_apply_intent_attempted:false,source_certificate_issued:true,
+            source_semantic_readiness_qualified:true,source_write_gate_issued:false,sealed_bundle_grants_writer_permission:false,
             requires_new_pe_bootguard_and_actual_apply_gate:true};
+        drop(readiness);
         self.revalidate(events)?;Ok(result)
     }
 }

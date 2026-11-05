@@ -1,0 +1,59 @@
+{
+  "native_run": {
+    "backup_LOG_lengths": [
+      32768,
+      0,
+      0
+    ],
+    "seconds": 46.2980862,
+    "backup_bytes": 32768,
+    "backup_LOG_attributes": 38,
+    "pid": 3712,
+    "query_logs_passed": true,
+    "birth": 1793917018304,
+    "failure": "Export factory registration missing before command receipt",
+    "source_AP_and_reboot": 0,
+    "image_complete": true,
+    "exit": 1
+  },
+  "base_commit": "8e3ff88255fefb1d301ddc5d6c7cfef606b6111e",
+  "files": [
+    {
+      "sha256": "be35d3fa3bd3283f5cdc3dda09a7fe4aeed254fce94f92d8e88eca241c815d63",
+      "path": "crates/n2r-win32/src/native/recovery_boot/native.rs"
+    },
+    {
+      "sha256": "245112df80a65d439dadf83d675aeca84e2aaff32bbcea5a5e7ef80ed8efaaa1",
+      "path": "crates/n2r-win32/src/native/recovery_boot.rs"
+    }
+  ],
+  "kind": "owned-BCD-export-factory-registration-build-v1",
+  "unit_tests_run": false,
+  "completed_image": {
+    "bytes": 629037987,
+    "request_sha256": "82aa651b8d7c2e9c409b29728e13cde6f84ab48e42282ab69b08befdc3ba70b9",
+    "cold_helper_sha256": "05a38738e5e5f5559dc6b41bf7eef9a9405a623b939b2a58f2b94eabeadde166",
+    "record_sha256": "1e7558ef7dd6f36f621e589f9425a3e5c7443e1fce2cfa309ffea53337fcf362",
+    "sha256": "75ceda68641456fa677bc3e5dc508618339dee52a827249ca2a11a6b978064ab"
+  },
+  "native_fix_qualified": false,
+  "focused_check": {
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+    "wall_seconds": 32.7584618,
+    "capacity": {
+      "actual_bytes": 245236143567,
+      "free_bytes": 162089570304,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 2147483648,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "native_run": false,
+    "exit_code": 0,
+    "unit_tests_run": false,
+    "shared_target_reused": true,
+    "kind": "public-partition-dispatch-focused-check"
+  },
+  "change": "Private fixed-name export factory registers actual output native FID/EOF and exact LOG family after child exit before receipt; normal/cold paths and all caps/checks unchanged"
+}

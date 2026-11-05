@@ -240,11 +240,7 @@ impl OwnedRecoveryBoot {
         native::flush_system_bcd_with_events(events)?;
         let original_store = metadata::capture_active_store(&efi, budget, &tool, directory, events)?;
         let backup_path = directory.join("original-system-store.bcd");
-        tool.run(
-            None,
-            &["/export".into(), backup_path.to_string_lossy().into_owned()],
-            directory,
-        )?;
+        tool.export_owned_store(directory)?;
         let backup_sha256 = metadata::hash_external(
             &backup_path,
             image.journal_binding(),

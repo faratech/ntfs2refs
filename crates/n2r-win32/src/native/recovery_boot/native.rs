@@ -553,6 +553,16 @@ impl Tool {
         args: &[String],
         directory: &Path,
     ) -> io::Result<Vec<u8>> {
+        self.run_inner(store,args,directory,None)
+    }
+    /// Sole fixed SDK export factory. No external path/argument adoption.
+    pub(super) fn export_owned_store(&self,directory:&Path)->io::Result<Vec<u8>> {
+        let path=directory.join("original-system-store.bcd");
+        let target=path.to_str().ok_or_else(||bad("Unicode owned export path required"))?.to_owned();
+        self.run_inner(None,&["/export".into(),target],directory,Some(&path))
+    }
+    fn run_inner(&self,store:Option<&Path>,args:&[String],directory:&Path,
+        expected_export:Option<&Path>)->io::Result<Vec<u8>> {
         let mut all = Vec::new();
         if let Some(store) = store {
             all.extend([
@@ -564,6 +574,20 @@ impl Tool {
             ]);
         }
         all.extend_from_slice(args);
+        // This is the ONE SDK export factory, not permission for arbitrary
+        // paths or suffixes. Capture its actual created FD before persisting
+        // the child receipt, since Microsoft's export can create LOG sidecars.
+        let export_output=if let Some(target)=expected_export {
+            need(store.is_none()&&args.len()==2&&args[0]=="/export"
+                &&target==directory.join("original-system-store.bcd")&&Path::new(&args[1])==target,
+                "invalid private SDK export dispatch")?;
+            match std::fs::symlink_metadata(target){
+                Err(error)if matches!(error.raw_os_error(),Some(2|3))=>(),
+                Err(error)=>return Err(error),
+                Ok(_)=>return Err(bad("SDK original BCD export target must be fresh")),
+            }
+            Some(target.to_path_buf())
+        }else{None};
         let mut child = OwnedChild(
             Command::new(&self.path)
                 .creation_flags(0x0800_0000)
@@ -651,6 +675,17 @@ impl Tool {
         let (err, err_over) = stderr
             .join()
             .map_err(|_| bad("BCD stderr drain panicked"))??;
+        if let Some(path)=&export_output {
+            // Official child has actually closed. Registration is accounting
+            // only: caller still performs full held hash/identity validation.
+            match OpenOptions::new().access_mode(0x80).share_mode(7)
+                .custom_flags(0x00200000).open(path) {
+                Ok(file)=>register_owned_query_store(&file,path,self.budget.maximum_store_bytes,
+                    self.budget.maximum_control_bytes)?,
+                Err(error)if !status.success()&&matches!(error.raw_os_error(),Some(2|3))=>(),
+                Err(error)=>return Err(error),
+            }
+        }
         let ordinal=TOOL_RECORD_ORDINAL.fetch_update(Ordering::Relaxed,Ordering::Relaxed,
             |value|value.checked_add(1)).map_err(|_|bad("native BCD command ordinal overflow"))?;
         let record = ToolRecord {

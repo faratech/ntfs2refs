@@ -612,6 +612,18 @@ ledger22777884B phases live-cancel-request/original-basis-and-J→handoff-revali
 No native terminalyet; primarycausemayonlyprintaftercancelreturns. No externalcancel/repair/typeSET/replay/power/restart authorized.
 Operator continuesSAMEownedprocess, preservingflushedrecords. DoNOTinferNTFSrestoration/cancellation/conversion success fromphase alone.
 RootpublicCLI/performancechanges are NOTcurrent48772binary. Nextactionactualterminal+cause+state; no newnativeuntilreviewedGO.
+ACTUAL48772closed host18962exit1/native2400birth1793846737788 OS1/1689.9517184s. Exactprimaryerror:
+PartitionReadLane::from_owner readonlyGLOBALROOT CreateFile \\?\GLOBALROOT\Device\Harddisk0\Partition6 OS21.
+LedgerSHA b2b916f61faf7d87abe2299c7211b376f9737d9ff1f8dde49b019058a3697092 records actualLIVEprivate cancellation with cancellation_error=null,
+sourcegateeverissuedfalse/Jcreation-not-started/sourcepayloadwritecalls0/nativeNTFSROprooftrue/originaltype+attrs+label+mountsrestoredtrue/scopedFPverifiedtrue.
+This is SDKreport, not independentAfter8 proofyet. Original2400/3464birthsabsent/natives+N2Rtasksidle proof2b7bb7e4532bc1ab24fb0596f4e82325f546b777cf25516ea1a31ce273ac5b2a.
+Root authorized existingreadonlyBefore8oracle ONCE afterclosedtransition to verifyactualNTFS/Basic0/GPT/C/full8contents+ACL; no converter/SET/repair/power/restore.
+Awaitoperatororacle+sourceclosure; no power/newnativeuntilseparateGO. Held READ data-lane sameFileObject+serializedcursor fix is agentDRAFT, notapplied.
+
+Shadow-only owning source lease APPLIED/CHECKED6files: actualtoken/access/device/full144B/private0 checks perSHADOWoperation;
+genericWitness/fullsourcephaseopening+success/errorclosing/FP/enrollment/cache refresh andALLsourcewriterchecks retained.
+Rootpreservesallprimary+closing+checkpoint errors. Focusedlib+public+3labcheck0/28.5098384s/sharedtarget/no units;
+evidence/shadow-held-construction-lease-build-20261105.json. Nativeperformancegain unmeasured; running48772 EXE wasunchanged.
 
 - Fresh writes require original live opaque source certificate and actual source/target/J/arena owners. Saved JSON/paths/flags are routes, never authority.
 - Revalidate device/file identities, journal/index/ticket/lifecycle and recovery files. Recovery must not require thin-pool reattachment.

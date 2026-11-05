@@ -190,6 +190,20 @@ impl PartitionSourceMetadataWitness {
             (Err(error), _) | (_, Err(error)) => Err(error),
         }
     }
+    /// Held native identity check only for the typed SHADOW construction lease.
+    /// Full revalidate remains the source/critical/phase admission operation.
+    pub(crate) fn revalidate_held_shadow_identity(&self,events:&mut Vec<NativeEvent>)->io::Result<()>{
+        self.file.require_owner(&self.binding,&self.token)?;
+        let device=self.file.device(events)?;let info=self.file.partition_info(events)?;
+        if device.len()!=12||crate::layout::u32_at(&device,0)?!=7
+            ||crate::layout::u32_at(&device,4)?!=self.binding.storage.disk_number
+            ||crate::layout::u32_at(&device,8)?!=self.binding.storage.identity.partition_number
+            ||info!=self.state.native_partition_info
+            ||info[32..48]!=crate::layout::guid_bytes("b627aadb-a893-48b6-aa0b-71e5f30ee370")?
+            ||crate::layout::u64_at(&info,64)?!=0{
+            return Err(io::Error::other("held shadow-construction source identity/private0 changed"));
+        }Ok(())
+    }
     /// Conservative retained fact/handle workspace under the caller's actual
     /// V4 accountant. This excludes the caller's independent input row leases.
     pub fn retained_memory_bytes(&self) -> u64 {

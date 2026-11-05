@@ -97,9 +97,9 @@ impl ConstructionEnrollment<'_> {
                         return Err(invalid("live dedicated construction freeze changed"));
                     }
                 }
-                source_scope::ConstructionSource::Partition(witness) => {
+                source_scope::ConstructionSource::Partition(lease) => {
                     self.source_before
-                        .require(&self.pair, Some(witness), &mut self.events)?;
+                        .require(&self.pair, Some(lease.witness()), &mut self.events)?;
                 }
             }
             if native::observe_general_disk_state_readonly(
@@ -250,7 +250,8 @@ pub fn enroll_partition_with_resource_profile(
     validate_open_type(&root, true)?;
     let root_id = info(&root, 18, 24)?;
     let mut inner = ConstructionEnrollment {
-        source: source_scope::ConstructionSource::Partition(witness),
+        source: source_scope::ConstructionSource::Partition(
+            source_scope::PartitionShadowConstructionLease::begin(witness,pair,&source_before,&mut events)?),
         pair: pair.clone(),
         source_before,
         shadow_before,

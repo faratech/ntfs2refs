@@ -48,7 +48,7 @@ pub struct PrivateTree {
     volume: File,
     pair: GeneralSourceShadowBinding,
     source_before: source_scope::ConstructionSourceState,
-    partition_source: Option<native::PartitionSourceMetadataWitness>,
+    partition_source: Option<source_scope::PartitionShadowConstructionLease>,
     initial_objects: Vec<serde_json::Value>,
     events: Vec<NativeEvent>,
     privileges: Privileges,
@@ -973,8 +973,11 @@ impl PrivateTree {
         }
         let mut events = Vec::new();
         let result = (|| {
-            self.source_before
-                .require(&self.pair, self.partition_source.as_ref(), &mut events)?;
+            if let Some(lease)=&self.partition_source{
+                lease.check_shadow_operation(&mut events)?;
+            }else{
+                self.source_before.require(&self.pair,None,&mut events)?;
+            }
             if native::observe_general_disk_state_readonly(self.pair.shadow.clone(), &mut events)?
                 .disk_attributes
                 != 0
@@ -985,7 +988,8 @@ impl PrivateTree {
             }
             Ok(())
         })();
-        if let Some(witness) = &self.partition_source {
+        if let Some(lease) = &self.partition_source {
+            let witness=lease.witness();
             let drained = witness.checkpoint_native_events(
                 "partition-private-tree-source-shadow-check",
                 &mut events,
@@ -1627,7 +1631,8 @@ fn allocate_domain_with_memory(
     // refuse. Target-only IndexerVolumeGuid normalization is already scoped to
     // these enrolled disks and never touches the excluded source.
     let system = existing_system_entries_domain(&root, &initial, input, true, &mut events);
-    let system_identities = if let Some(witness) = &partition_source {
+    let system_identities = if let Some(lease) = &partition_source {
+        let witness=lease.witness();
         let drained = witness
             .checkpoint_native_events("partition-private-allocation-global-queries", &mut events);
         match (system, drained) {

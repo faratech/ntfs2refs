@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "kind": "shadow-only-held-source-construction-lease",
+  "status": "focused-check-passed-native-speedup-unmeasured",
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/native/partition_source_metadata.rs",
+      "bytes": 8920,
+      "sha256": "7e15802222186c474836ea27d27949c5d32cff24f23c1bc16ae6f08fda2a6cfb"
+    },
+    {
+      "path": "crates/n2r-win32/src/shadow_native/private_tree.rs",
+      "bytes": 76985,
+      "sha256": "058e28db57647259321f4f208ba6b591633e72ef241ae4b1d78aeccc499fd503"
+    },
+    {
+      "path": "crates/n2r-win32/src/shadow_native/private_tree/source_scope.rs",
+      "bytes": 4406,
+      "sha256": "2d8bf43134c43d5752d52a27c78263309c34eb7b7c98673183b97742fec3d08c"
+    },
+    {
+      "path": "crates/n2r-win32/src/shadow_native/private_tree/enrollment.rs",
+      "bytes": 10836,
+      "sha256": "674673c40fb969f489cfeb9affb7c4a871677b7806bd37107a257717aec8e588"
+    },
+    {
+      "path": "crates/n2r-win32/src/shadow_native/private_tree/metadata.rs",
+      "bytes": 14810,
+      "sha256": "6c29b11bf461c9a31316374a8ba075523bbd1f058883ab9f11f8a77dc3064c6a"
+    },
+    {
+      "path": "src/resource_partition_target.rs",
+      "bytes": 14050,
+      "sha256": "744da1f85f2aaf1622de133b14acaeb4fcf6cb7b41114f0f15715be17244dd55"
+    }
+  ],
+  "reviewed_patch_sha256": "5cc59f5dd877014f6983be5d9c3ab6b684df634d5b4619ba3ae0df406b6e6e5b",
+  "check_exit": 0,
+  "check_seconds": 28.5098384,
+  "unit_tests_run": false,
+  "native_run": false,
+  "hot_scope": "Only private-tree shadow operations use an owning query-only lease that verifies actual owner/token/access/device/full144-byte private0 partition identity.",
+  "full_checks_preserved": "Generic source witness revalidation, enrollment/allocation/cache refresh, lease opening/successful finish, Root source phase opening and BOTH success/error closing GPT/C/page/dump/StorageWMI/fingerprint, all before-AP/source-writer checks.",
+  "root_review_correction": "Preserve primary, full-closing and event-checkpoint failures together, including simultaneous failures.",
+  "grants_source_write_authority": false,
+  "cached_JSON_authority": false,
+  "speedup_claimed": false,
+  "current_native_48772_executable_changed": false,
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+}

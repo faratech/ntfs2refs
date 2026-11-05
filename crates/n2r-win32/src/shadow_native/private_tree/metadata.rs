@@ -288,7 +288,7 @@ pub(super) fn complete_domain(
     let mut report = super::super::cache_refresh::complete_owned_metadata_scoped_domain(
         &tree.pair,
         &tree.source_before,
-        tree.partition_source.as_ref(),
+        tree.partition_source.as_ref().map(|lease|lease.witness()),
         &tree.volume,
         input,
         &tree.metadata_targets,
@@ -337,5 +337,8 @@ pub(super) fn complete_domain(
     }
     report["privileges"] =
         serde_json::to_value(tree.privileges.audit()).map_err(io::Error::other)?;
+    if let Some(lease)=tree.partition_source.take(){
+        let mut events=Vec::new();lease.finish(&mut events)?;
+    }
     Ok(report)
 }

@@ -135,6 +135,31 @@ pub(crate) fn prepare_partition_target_capture(
     events: &mut Vec<NativeEvent>,
     mut checkpoint: impl FnMut(&'static str, &mut Vec<NativeEvent>) -> Result<()>,
 ) -> Result<PartitionPreparedTargetCapture> {
+    // This phase writes ONLY the separately enrolled shadow. Full current
+    // source GPT/C/page/dump/StorageWMI and original fingerprint bracket BOTH
+    // result paths; the typed native lease narrows only per-shadow-op checks.
+    context.recheck_source(events)?;
+    checkpoint("partition-shadow-source-phase-opening",events)?;
+    let result=prepare_partition_target_capture_inner(context,expected,request,output,events,&mut checkpoint);
+    let closing=context.recheck_source(events);
+    let drained=checkpoint("partition-shadow-source-phase-closing",events);
+    match(result,closing,drained){
+        (Ok(value),Ok(()),Ok(()))=>Ok(value),
+        (Err(error),Err(closing),Err(checkpoint))=>Err(error.context(format!("full source closing check also failed: {closing:#}; source phase event checkpoint also failed: {checkpoint:#}"))),
+        (Ok(_),Err(closing),Err(checkpoint))=>Err(closing.context(format!("source phase event checkpoint also failed: {checkpoint:#}"))),
+        (Err(error),Err(closing),_)=>Err(error.context(format!("full source closing check also failed: {closing:#}"))),
+        (Err(error),_,Err(checkpoint))=>Err(error.context(format!("source phase event checkpoint also failed: {checkpoint:#}"))),
+        (Err(error),_,_)|(_,Err(error),_)|(_,_,Err(error))=>Err(error),
+    }
+}
+fn prepare_partition_target_capture_inner(
+    context:&mut PartitionResourceSourceContext,
+    expected:&PagedExpectedTree,
+    request:&PartitionTargetRequest,
+    output:&std::path::Path,
+    events:&mut Vec<NativeEvent>,
+    mut checkpoint:impl FnMut(&'static str,&mut Vec<NativeEvent>)->Result<()>,
+)->Result<PartitionPreparedTargetCapture>{
     let admission = context.resource_admission();
     let arena = context.arena().clone();
     let policy = context.verification_policy();

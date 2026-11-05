@@ -7,6 +7,14 @@ This record supersedes historical LIVE/keeper/next-action statements. Full previ
 [history](docs/history/AGENTS-through-20261105-shared-AP.md), SHA256 `8973ba9a024dffffc88d82a332afc7dab76d008609cf63970a7a0279fa18c91e`.
 Read specific historical sections only when needed; do not restart finished investigations or repeat unchanged cases.
 
+## Native RAMdisk DEVICE failure identified and fixed (compile only)
+
+One existing read-only observer ran from RAM after a 1.3 MiB NONBOOT diagnostic DVD was hot-added at SCSI 0:3; no VM restart or converter retry. Actual console evidence in `PE-N2RDIAG-finite-facts-53cc898c68b340eda6311c05436d45a3/10-actual-facts-page-01.png` proves RAM `DEVICE` returns error 1, `LENGTH` succeeds with 8 bytes, and native kernel RAMdisk backing is positive. Probe omitted source/binding/owner/VSS arguments. DVD remains attached; exclusive operator still owns VM actions.
+
+`offline.rs` now represents this exact unsupported DEVICE case as a typed kernel-RAMdisk GUID observation, after revalidating the SAME held RAM handle and complete backing facts. Successful DEVICE still requires 12 bytes; every other error fails. Rechecks compare the complete variant/identity plus unchanged length. RAM handle now requests read access; source physical DEVICE/LENGTH/GPT/attributes, boot/process/kernel and role checks are unchanged. Focused compile session50418 CLOSED0/41.1688252s; no unit tests; main unchanged. Evidence: `evidence/native-RAMdisk-device-number-fix-20261105.json`. Corrected cold helper is NOT yet built/deployed or native-qualified.
+
+Next: build exact candidate. Operator verified NONE of the four checkpoints contains the new prepared state; checkpoint07ca is original source8. Current SDK has no pre-AP cold cancellation API; normal-boot restoration requires genuine HND/ABT. Root requested a bounded LAB setup draft: preserve the failed branch with an OFFLINE checkpoint, then restore original source8 and run the corrected public workflow, repeating fixture preparation. No power/checkpoint/restore GO yet. Do not fabricate a marker, patch boot pins, or count this setup reset as restart-recovery evidence. Actual interrupted resume/rollback still must work without snapshot restoration. Full goal remains incomplete.
+
 ## Latest ACTUAL owned cold boot: stopped during initialization
 
 ONEordinaryshutdown.exe /r/t5 PID520/birth1793918870917 OWNEDexit0; bootcase BOOT-installed-af00-ONE-restart-318261239cfd4024ada7bd86c084a2b3. Controller46852/session94893 was actualowner; consultoperator currenthandle/state, never repeat restart fromtimeout. Actualframe03 shows OWNEDWinPE X:\Windows\System32 launchedconverter then `Error: Incorrect function. (os error1)`, controlledfailureconsole; NOpositiveenvironmentprogressphase. No NormalWindowsfallback/reboot/restore/keys beyondtwo readonlycommands below. Source/AP/datawrite CURRENTstateNOTindependentlyobserved; doNOTclaimdatawrite0fromscreenshot alone.

@@ -430,6 +430,47 @@ fn source_facts(
         gpt,
     })
 }
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum OfflineRamStorageDevice {
+    StorageDeviceNumber { bytes: Vec<u8> },
+    KernelRamdiskWithoutStorageDeviceNumber {
+        native_error: i32,
+        ram_device_object_name: String,
+    },
+}
+fn ram_storage_device(
+    ram: &File,
+    windows: &str,
+    expected: &crate::native::offline_environment::KernelRamBackingFacts,
+    operation: &str,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<OfflineRamStorageDevice> {
+    match control(ram, operation, DEVICE, &[], 12, events) {
+        Ok(bytes) => {
+            require(bytes.len() == 12, "RAM storage device number length differs")?;
+            Ok(OfflineRamStorageDevice::StorageDeviceNumber { bytes })
+        }
+        Err(error) if error.raw_os_error() == Some(1) => {
+            // WIM RAMdisk returns ERROR_INVALID_FUNCTION for this storage
+            // IOCTL. It still has a kernel-owned Ramdisk{GUID} identity; prove
+            // that identity on this SAME live handle rather than inventing a
+            // physical storage device number. The failed IOCTL stays in events.
+            let actual = crate::native::offline_environment::kernel_ram_backing::require_held(
+                windows, ram,
+            )?;
+            require(
+                actual == *expected && actual.positive_native_kernel_ramdisk,
+                "unsupported RAM device-number query lacks same held kernel RAMdisk identity",
+            )?;
+            Ok(OfflineRamStorageDevice::KernelRamdiskWithoutStorageDeviceNumber {
+                native_error: 1,
+                ram_device_object_name: actual.ram_device_object_name,
+            })
+        }
+        Err(error) => Err(error),
+    }
+}
 #[derive(Clone, Debug, Serialize)]
 pub struct OfflineOwningFacts {
     pub source: PartitionSourceBinding,
@@ -441,7 +482,7 @@ pub struct OfflineOwningFacts {
     pub boot: OfflineBootIdentity,
     pub running_image: OfflineImageIdentity,
     pub kernel_image: OfflineImageIdentity,
-    pub current_ram_volume_device: Vec<u8>,
+    pub current_ram_volume_device: OfflineRamStorageDevice,
     pub current_ram_volume_length: Vec<u8>,
     pub source_physical: OfflineSourcePhysicalFacts,
     pub critical_routes: serde_json::Value,
@@ -476,7 +517,7 @@ impl OfflineOwningEnvironment {
         let windows = current_windows()?;
         let ram_root = require_ram_root(&windows)?;
         let ram = OpenOptions::new()
-            .access_mode(0x00100080)
+            .read(true)
             .share_mode(3)
             .open(format!("\\\\.\\{}:", &ram_root[..1]))?;
         let native_ram_backing =
@@ -493,12 +534,11 @@ impl OfflineOwningEnvironment {
             kernel_image(&windows, &ram_root, budget)?,
             &mut component_bytes,
         )?;
-        let device = control(
+        let device = ram_storage_device(
             &ram,
+            &windows,
+            &native_ram_backing,
             "offline-current-RAM-volume-device",
-            DEVICE,
-            &[],
-            12,
             events,
         )?;
         let length = control(
@@ -510,7 +550,7 @@ impl OfflineOwningEnvironment {
             events,
         )?;
         require(
-            device.len() == 12 && length.len() == 8 && layout::u64_at(&length, 0)? > 0,
+            length.len() == 8 && layout::u64_at(&length, 0)? > 0,
             "actual held RAM volume native identity/length unavailable",
         )?;
         let mut physical = device_file(
@@ -608,12 +648,11 @@ impl OfflineOwningEnvironment {
             )? == self.kernel.identity.path,
             "actual loaded kernel route changed",
         )?;
-        let device = control(
+        let device = ram_storage_device(
             &self.ram,
+            &self.facts.windows_directory,
+            &self.facts.native_ram_backing,
             "offline-current-RAM-volume-device-recheck",
-            DEVICE,
-            &[],
-            12,
             events,
         )?;
         let length = control(

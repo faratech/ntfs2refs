@@ -57,6 +57,7 @@ fn source_io<T>(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Activation {
     Fresh,
+    Prepared,
     Replay(PagedRecoveryDirection),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -74,6 +75,7 @@ pub struct OfflineSourceApplyGate {
     current_mixed_sha256: Option<[u8; 32]>,
     lifecycle_sha256: [u8; 32],
     native_pin: Option<(String, String, u64)>,
+    prepared_pin: Option<super::prepared_apply::PreparedPublicationPin>,
     activation: Activation,
     used: bool,
 }
@@ -111,8 +113,8 @@ impl Seek for Reader<'_> {
 }
 fn phase(activation: Activation, initial: bool) -> PartitionJournalPhase {
     match (activation, initial) {
-        (Activation::Fresh, true) => PartitionJournalPhase::FreshOld,
-        (Activation::Fresh, false) => PartitionJournalPhase::Applying,
+        (Activation::Fresh | Activation::Prepared, true) => PartitionJournalPhase::FreshOld,
+        (Activation::Fresh | Activation::Prepared, false) => PartitionJournalPhase::Applying,
         (Activation::Replay(d), true) => PartitionJournalPhase::Mixed(d),
         (Activation::Replay(d), false) => PartitionJournalPhase::Replaying(d),
     }
@@ -241,13 +243,14 @@ fn qualify(
         current_mixed_sha256: current,
         lifecycle_sha256,
         native_pin,
+        prepared_pin: None,
         activation,
         used: false,
     };
     core.gate_ever_issued = true;
     Ok(gate)
 }
-fn gate_file_state(
+pub(super) fn gate_file_state(
     file: &File,
     core: &Core,
     expected: u64,
@@ -298,18 +301,34 @@ fn gate_file_state(
         "same actual offline physical gate identity/protection differs",
     )
 }
-fn begin<'a, 'p>(
+pub(super) fn begin<'a, 'p>(
     core: &'a mut Core,
     gate: &'a mut OfflineSourceApplyGate,
     policy: HeldPagedWritePolicy,
     journal: &'a mut File,
     pins: &'a PagedRecoveryPins<'p>,
     native: Option<&'a OfflinePagedNtfsObservation>,
+    mut prepared: Option<super::prepared_apply::PreparedWriteProtection<'a>>,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<OfflinePagedWriter<'a, 'p>> {
     require(!gate.used, "offline paged gate is single use")?;
     gate.require_bound(core, &policy, journal, pins)?;
     require_native(gate, core, native)?;
+    require(
+        (gate.activation == Activation::Prepared) == prepared.is_some(),
+        "prepared activation needs the actual retained boot guard and outer file",
+    )?;
+    if let Some(protection) = prepared.as_mut() {
+        protection.revalidate(
+            &core.token,
+            gate.prepared_pin
+                .as_ref()
+                .ok_or_else(|| invalid("prepared publication pin absent"))?,
+            pins,
+            core.env.budget.ram_bytes / 8,
+            events,
+        )?;
+    }
     let current = authenticate(
         core,
         &policy,
@@ -364,7 +383,7 @@ fn begin<'a, 'p>(
     gate.used = true;
     let activated = (|| {
         match gate.activation {
-            Activation::Fresh => {
+            Activation::Fresh | Activation::Prepared => {
                 paged_recovery::publish_partition_apply_marker(journal, pins, events)?
             }
             Activation::Replay(PagedRecoveryDirection::Rollback) => {
@@ -396,6 +415,17 @@ fn begin<'a, 'p>(
             phase(gate.activation, false),
             events,
         )?;
+        if let Some(protection) = prepared.as_mut() {
+            protection.revalidate(
+                &core.token,
+                gate.prepared_pin
+                    .as_ref()
+                    .ok_or_else(|| invalid("prepared publication pin absent"))?,
+                pins,
+                core.env.budget.ram_bytes / 8,
+                events,
+            )?;
+        }
         Ok(())
     })();
     if let Err(error) = activated {
@@ -410,6 +440,7 @@ fn begin<'a, 'p>(
         journal,
         pins,
         native,
+        prepared,
         requested: 0,
         written: 0,
         pending: None,
@@ -457,6 +488,7 @@ impl OfflineFrozenSource {
             journal,
             pins,
             Some(native),
+            None,
             events,
         )
     }
@@ -494,7 +526,16 @@ impl OfflineRecoverySource {
             matches!(gate.activation, Activation::Replay(_)),
             "fresh gate cannot enter recovery owner",
         )?;
-        begin(&mut self.core, gate, policy, journal, pins, None, events)
+        begin(
+            &mut self.core,
+            gate,
+            policy,
+            journal,
+            pins,
+            None,
+            None,
+            events,
+        )
     }
 }
 pub struct OfflinePagedWriter<'a, 'p> {
@@ -504,6 +545,7 @@ pub struct OfflinePagedWriter<'a, 'p> {
     journal: &'a mut File,
     pins: &'a PagedRecoveryPins<'p>,
     native: Option<&'a OfflinePagedNtfsObservation>,
+    prepared: Option<super::prepared_apply::PreparedWriteProtection<'a>>,
     requested: u64,
     written: u64,
     pending: Option<(u64, usize, [u8; 32])>,
@@ -514,6 +556,48 @@ impl OfflinePagedWriter<'_, '_> {
         self.poisoned = true;
         self.core.poisoned = true;
         error
+    }
+    fn prepared_protection(&mut self, events: &mut Vec<NativeEvent>) -> io::Result<()> {
+        match self.prepared.as_mut() {
+            Some(protection) => protection.revalidate(
+                &self.core.token,
+                self.gate
+                    .prepared_pin
+                    .as_ref()
+                    .ok_or_else(|| invalid("prepared publication pin absent"))?,
+                self.pins,
+                self.core.env.budget.ram_bytes / 8,
+                events,
+            ),
+            None => require(
+                self.gate.activation != Activation::Prepared,
+                "prepared writer lost boot/outer owners",
+            ),
+        }
+    }
+    fn prepared_write_checkpoint(&mut self) -> io::Result<()> {
+        if self.gate.activation != Activation::Prepared {
+            return Ok(());
+        }
+        let mut events = Vec::new();
+        checkpoint(
+            &self.core.sink,
+            "offline-PREPARED-before-source-write-boot-opening",
+            &mut events,
+        )?;
+        let checked = self.prepared_protection(&mut events);
+        let drained = checkpoint(
+            &self.core.sink,
+            "offline-PREPARED-before-source-write-boot-closed",
+            &mut events,
+        );
+        match (checked, drained) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(a), Err(b)) => Err(invalid(&format!(
+                "prepared boot protection failed:{a}; durable checkpoint also failed:{b}"
+            ))),
+            (Err(e), _) | (_, Err(e)) => Err(e),
+        }
     }
     fn live(&self) -> io::Result<()> {
         require(
@@ -622,6 +706,7 @@ impl OfflinePagedWriter<'_, '_> {
             self.gate
                 .require_bound(self.core, &self.policy, self.journal, self.pins)?;
             require_native(self.gate, self.core, self.native)?;
+            self.prepared_protection(events)?;
             authenticate(
                 self.core,
                 &self.policy,
@@ -741,6 +826,7 @@ impl Write for OfflinePagedWriter<'_, '_> {
                 )? == absolute,
                 "offline physical write seek differs",
             )?;
+            self.prepared_write_checkpoint()?;
             self.core.buffer.bytes_mut()[..input.len()].copy_from_slice(input);
             self.requested = attempted;
             let count = source_io(
@@ -841,7 +927,7 @@ pub struct OfflineClosedJournalObservation {
     index_sha256: [u8; 32],
     kind: OfflineTerminalKind,
 }
-fn closed(
+pub(super) fn closed(
     core: &mut Core,
     policy: &HeldPagedWritePolicy,
     journal: &mut File,
@@ -879,7 +965,7 @@ impl OfflineClosedJournalObservation {
             "offline closed-J observation belongs to another actual source",
         )
     }
-    fn revalidate(
+    pub(super) fn revalidate(
         &self,
         core: &mut Core,
         policy: &HeldPagedWritePolicy,
@@ -948,3 +1034,56 @@ macro_rules! closed_owner {
 }
 closed_owner!(OfflineFrozenSource);
 closed_owner!(OfflineRecoverySource);
+
+// Only the opaque prepared-source/boot-guard entry calls this factory.
+pub(super) fn qualify_prepared(
+    core: &mut Core,
+    policy: &HeldPagedWritePolicy,
+    journal: &mut File,
+    pins: &PagedRecoveryPins<'_>,
+    publication: super::prepared_apply::PreparedPublicationPin,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<OfflineSourceApplyGate> {
+    require(
+        !core.poisoned
+            && !core.fresh
+            && !core.gate_ever_issued
+            && !core.writer_ever_issued
+            && core.expected_attributes == 3,
+        "prepared activation needs a new excluded cold owner",
+    )?;
+    let current = authenticate(
+        core,
+        policy,
+        journal,
+        pins,
+        PartitionJournalPhase::FreshOld,
+        events,
+    )?;
+    require(
+        current.is_none(),
+        "prepared clear OLD checker returned mixed state",
+    )?;
+    let gate = OfflineSourceApplyGate {
+        owner: core.token.clone(),
+        binding: core.env.source.clone(),
+        boot: core.env.facts.boot.clone(),
+        pins: OwnedPartitionJournalPins::capture(pins),
+        index_sha256: policy.facts()?.index_sha256,
+        journal_handle: journal.as_raw_handle() as usize,
+        current_mixed_sha256: None,
+        lifecycle_sha256: lifecycle_digest(journal)?,
+        native_pin: None,
+        prepared_pin: Some(publication),
+        activation: Activation::Prepared,
+        used: false,
+    };
+    core.gate_ever_issued = true;
+    Ok(gate)
+}
+pub(super) fn require_prepared_gate(gate: &OfflineSourceApplyGate) -> io::Result<()> {
+    require(
+        gate.activation == Activation::Prepared && gate.prepared_pin.is_some(),
+        "actual prepared activation gate required",
+    )
+}

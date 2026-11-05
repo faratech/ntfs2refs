@@ -703,6 +703,6 @@ impl OfflineOwningEnvironment {
 }
 
 pub use source::{
-    OfflineClosedJournalObservation, OfflineJournalReadView, OfflinePagedWriter,
+    OfflinePreparedAvailableSource, OfflinePreparedTerminalSource, OfflineClosedJournalObservation, OfflineJournalReadView, OfflinePagedWriter,
     OfflineSourceApplyGate, OfflineTerminalKind,
 };

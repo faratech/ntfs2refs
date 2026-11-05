@@ -20,7 +20,7 @@ fn metadata_pin(g: &super::super::PartitionGptObservation) -> [u8; 32] {
 /// Opaque actual cold prepared holder. The Core is explicitly NOT fresh, and
 /// has NO live PE/preboot native observation. It cannot call FreshPE gates.
 pub struct OfflinePreparedSource {
-    core: Core,
+    pub(super) core: Core,
     source_readonly_gpt_sha256: [u8; 32],
     basic_readonly_info: Vec<u8>,
     actual_current_boot_volume_locks_acquired: bool,
@@ -69,6 +69,14 @@ impl OfflinePreparedJournalQualification {
             self.owner.same_owner(t),
             "prepared J qualification belongs to another actual owner",
         )
+    }
+    // Terminal binding only: no stale original source-byte check after AP.
+    pub(super) fn require_terminal_binding(&self,source:&OfflinePreparedSource,
+        pins:&PagedRecoveryPins<'_>)->io::Result<()> {
+        self.require_owner(&source.owner_token())?;
+        self.pins.require(pins)?;
+        require(self.boot==source.core.env.facts.boot&&self.binding==*source.binding(),
+            "prepared terminal lost original actual owner/boot/J binding")
     }
     pub fn revalidate(
         &self,
@@ -278,7 +286,7 @@ impl OfflinePreparedSource {
     pub fn state(&mut self, events: &mut Vec<NativeEvent>) -> io::Result<OfflineSourceState> {
         let mut state = self.core.state(events)?;
         require(
-            state.actual.disk_attributes == 3
+            (state.actual.disk_attributes == 3 || (state.actual.disk_attributes == 1 && self.core.gate_ever_issued && self.core.writer_ever_issued))
                 && state.actual.gpt.target_attributes == SOURCE_READONLY
                 && metadata_pin(&state.actual.gpt) == self.source_readonly_gpt_sha256,
             "prepared current exclusion/native enrollment changed",

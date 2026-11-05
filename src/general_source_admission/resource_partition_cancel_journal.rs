@@ -4,6 +4,7 @@ use crate::artifact_arena::ArenaRamLease;
 use anyhow::{Context, Result, ensure};
 use n2r_win32::{
     NativeEvent, PartitionOwnerToken, PartitionScopedOwner,
+    partition_lifecycle::PartitionNtfsAdmission,
     journal_file::{
         GeneralJournalStorageBinding, JournalFileIdentity, JournalFileSnapshot, JournalProfile,
         observe_general_journal_file_with_profile,
@@ -23,6 +24,12 @@ pub(super) enum LiveCancellationJournal {
 /// This charge covers both bounded native observation copies/path storage and
 /// the fixed lifecycle read. The context prepays it before any CreateNew.
 pub(crate) const WORKING_MEMORY_BYTES: u64 = 256 * 1024;
+// Provenance is captured only from an actual matching SDK admission. The
+// retained enum is not deserializable or caller-constructed routing authority.
+enum LiveJournalLocation {
+    CurrentWindows,
+    ExternalPreparation(GeneralJournalStorageBinding),
+}
 pub(crate) struct LiveClearJournal {
     file: File,
     identity: JournalFileIdentity,
@@ -31,6 +38,7 @@ pub(crate) struct LiveClearJournal {
     binding: GeneralJournalStorageBinding,
     profile: JournalProfile,
     source: PartitionOwnerToken,
+    location: LiveJournalLocation,
     memory: Option<ArenaRamLease>,
 }
 impl LiveClearJournal {
@@ -41,6 +49,7 @@ impl LiveClearJournal {
         binding: &GeneralJournalStorageBinding,
         profile: JournalProfile,
         owner: &PartitionScopedOwner,
+        admission: &PartitionNtfsAdmission,
         events: &mut Vec<NativeEvent>,
     ) -> Result<Self> {
         ensure!(
@@ -51,8 +60,17 @@ impl LiveClearJournal {
             profile.version() == 3,
             "live partition cancellation requires actual capacity-pinned J profile"
         );
+        n2r_win32::partition_lifecycle::require_complete_fresh_ntfs_admission(owner, admission)?;
+        let location = match admission.external_intent_journal() {
+            Some(enrolled) => {
+                ensure!(enrolled == binding,
+                    "actual external preparation intent and held native J enrollment differ");
+                LiveJournalLocation::ExternalPreparation(enrolled.clone())
+            }
+            None => LiveJournalLocation::CurrentWindows,
+        };
         let before = observe_general_journal_file_with_profile(file, binding, profile)?;
-        Self::require_location(&before, binding, owner)?;
+        Self::require_location(&before, binding, owner, &location)?;
         Self::deny_second_writer(&before.final_path)?;
         let readonly = n2r_win32::file_storage::duplicate_readonly(file)?;
         n2r_win32::file_storage::require_readonly_access(&readonly)?;
@@ -66,7 +84,7 @@ impl LiveClearJournal {
                 && !owner.state().source_admission_issued,
             "actual created J changed while retaining readonly same-object owner"
         );
-        Self::require_location(&after, binding, owner)?;
+        Self::require_location(&after, binding, owner, &location)?;
         Self::record(
             events,
             "live-unactivated-journal-captured",
@@ -85,6 +103,7 @@ impl LiveClearJournal {
             binding: binding.clone(),
             profile,
             source: owner.owner_token(),
+            location,
             memory: None,
         })
     }
@@ -116,7 +135,7 @@ impl LiveClearJournal {
         n2r_win32::file_storage::require_readonly_access(&self.file)?;
         let before =
             observe_general_journal_file_with_profile(&self.file, &self.binding, self.profile)?;
-        Self::require_location(&before, &self.binding, owner)?;
+        Self::require_location(&before, &self.binding, owner, &self.location)?;
         self.require_same(&before)?;
         Self::deny_second_writer(&self.final_path)?;
         let position = self.file.stream_position()?;
@@ -160,7 +179,7 @@ impl LiveClearJournal {
         };
         let after =
             observe_general_journal_file_with_profile(&self.file, &self.binding, self.profile)?;
-        Self::require_location(&after, &self.binding, owner)?;
+        Self::require_location(&after, &self.binding, owner, &self.location)?;
         self.require_same(&after)?;
         ensure!(
             before.identity == after.identity
@@ -194,21 +213,44 @@ impl LiveClearJournal {
         actual: &JournalFileSnapshot,
         binding: &GeneralJournalStorageBinding,
         owner: &PartitionScopedOwner,
+        location: &LiveJournalLocation,
     ) -> Result<()> {
         let windows = &owner.state().partition.windows_volume;
         let source = &owner.binding().storage;
         let j = &binding.disk;
-        ensure!(
-            actual.number_of_links == 1
-                && actual.observations_match_before_after
-                && actual.disk_number == windows.disk_number
-                && j.disk_number == windows.disk_number
-                && actual.identity.partition_offset == windows.offset
-                && actual.identity.partition_bytes == windows.length
-                && j.identity.partition_offset == windows.offset
-                && j.identity.partition_bytes == windows.length,
-            "actual J must be an ordinary held file on current Windows C volume"
-        );
+        match location {
+            LiveJournalLocation::CurrentWindows => {
+                ensure!(
+                    actual.number_of_links == 1
+                        && actual.observations_match_before_after
+                        && actual.disk_number == windows.disk_number
+                        && j.disk_number == windows.disk_number
+                        && actual.identity.partition_offset == windows.offset
+                        && actual.identity.partition_bytes == windows.length
+                        && j.identity.partition_offset == windows.offset
+                        && j.identity.partition_bytes == windows.length,
+                    "actual J must be an ordinary held file on current Windows C volume"
+                );
+            }
+            LiveJournalLocation::ExternalPreparation(enrolled) => {
+                // Each snapshot above has already checked the actual held file,
+                // volume extents, native physical GUID/layout/alignment, and
+                // complete before/after identity against this exact binding.
+                ensure!(enrolled == binding
+                    && actual.number_of_links == 1
+                    && actual.observations_match_before_after
+                    && actual.disk_number == enrolled.disk.disk_number
+                    && actual.identity.disk_guid == n2r_win32::layout::guid_bytes(&enrolled.disk.identity.disk_guid)?
+                    && actual.identity.partition_guid == n2r_win32::layout::guid_bytes(&enrolled.disk.identity.partition_guid)?
+                    && actual.identity.partition_number == enrolled.disk.identity.partition_number
+                    && actual.identity.partition_offset == enrolled.disk.identity.partition_offset
+                    && actual.identity.partition_bytes == enrolled.disk.identity.partition_bytes
+                    && source.disk_number != enrolled.disk.disk_number
+                    && n2r_win32::layout::guid_bytes(&source.identity.disk_guid)?
+                        != n2r_win32::layout::guid_bytes(&enrolled.disk.identity.disk_guid)?,
+                    "actual held J lost the independent external preparation enrollment");
+            }
+        }
         let source_guid = n2r_win32::layout::guid_bytes(&source.identity.disk_guid)?;
         let journal_guid = n2r_win32::layout::guid_bytes(&j.identity.disk_guid)?;
         ensure!(

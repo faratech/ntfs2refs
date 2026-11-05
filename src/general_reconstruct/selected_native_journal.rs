@@ -228,7 +228,7 @@ impl BoundPartitionCreationJournal {
                 // Retain the SAME actual FileObject before any later path,
                 // preallocation or closing check can fail and drop its writer.
                 live_journal=Some(crate::general_source_admission::resource::partition::cancel_journal::LiveClearJournal::capture(
-                    file,binding,profile,source,events)?);
+                    file,binding,profile,source,admission,events)?);
             }
             let actual_path = journal.observed_guid_path(binding)?;
             let Storage::Buffered(file) = &mut journal.storage else {
@@ -1135,5 +1135,94 @@ impl NativeSelectedJournal {
         pins:&n2r_win32::PagedRecoveryPins<'_>,events:&mut Vec<n2r_win32::NativeEvent>,
     )->Result<n2r_win32::PartitionClosedJournalObservation>{
         Ok(source.finish_partition_replay_abort(gate,policy,self.markerless_recovery_file()?,pins,events)?)
+    }
+}
+
+// New Windows-prepared/offline protocol. The only File borrow stays inside
+// these actual native owner + SDK qualification/boot/writer entrypoints.
+impl NativeSelectedJournal {
+    /// A reopened owner has no remembered in-process fixed-length field.
+    /// Bind that memory-only boundary to the actual exclusive file EOF after
+    /// the complete scanner; never resize/normalize the historical journal.
+    pub(crate) fn seal_reopened_prepared_body(&mut self,ticket:&sj::SelectedTicket)->Result<()> {
+        ensure!(!self.prepared_body_sealed&&matches!(self.storage,Storage::Buffered(_))
+            &&ticket.marker_profile.is_none()&&self.byte_len()?==ticket.journal_length
+            &&self.fixed_length.is_none_or(|n|n==ticket.journal_length)
+            &&sj::classify(self,ticket)?==sj::SelectedLifecycle::PreparedClear,
+            "reopened exclusive prepared J/actual EOF/lifecycle differs");
+        self.fixed_length=Some(ticket.journal_length);
+        self.seal_prepared_body(ticket)
+    }
+    pub(crate) fn qualify_guarded_offline_prepared(
+        &mut self,source:&mut n2r_win32::offline_environment::OfflinePreparedSource,
+        policy:&n2r_win32::HeldPagedWritePolicy,pins:&n2r_win32::PagedRecoveryPins<'_>,
+        outer:&mut File,outer_sha:[u8;32],events:&mut Vec<n2r_win32::NativeEvent>,
+    )->Result<n2r_win32::offline_environment::OfflinePreparedJournalQualification>{
+        self.require_prepared_body_seal()?;
+        match &mut self.storage{Storage::Buffered(file)=>Ok(source.qualify_prepared_journal(policy,file,pins,outer,outer_sha,events)?),
+            _=>anyhow::bail!("same sealed markerless offline preparation J absent")}
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn observe_prepared_boot(
+        &mut self,source:&mut n2r_win32::offline_environment::OfflinePreparedSource,
+        qualification:&n2r_win32::offline_environment::OfflinePreparedJournalQualification,
+        policy:&n2r_win32::HeldPagedWritePolicy,pins:&n2r_win32::PagedRecoveryPins<'_>,outer:&mut File,
+        intent_path:&Path,intent_sha:[u8;32],directory:&Path,budget:n2r_win32::recovery_boot::RecoveryBootBudget,
+        events:&mut Vec<n2r_win32::NativeEvent>,
+    )->Result<n2r_win32::recovery_boot::RecoveryBootGuard>{
+        self.require_prepared_body_seal()?;
+        match &mut self.storage{Storage::Buffered(file)=>Ok(n2r_win32::recovery_boot::RecoveryBootGuard::observe_prepared(
+            source,qualification,policy,file,pins,outer,intent_path,intent_sha,directory,budget,events)?),
+            _=>anyhow::bail!("same sealed markerless offline preparation J absent")}
+    }
+    pub(crate) fn qualify_offline_prepared_apply(
+        &mut self,source:&mut n2r_win32::offline_environment::OfflinePreparedSource,
+        qualification:&n2r_win32::offline_environment::OfflinePreparedJournalQualification,
+        boot:&mut n2r_win32::recovery_boot::RecoveryBootGuard,policy:&n2r_win32::HeldPagedWritePolicy,
+        pins:&n2r_win32::PagedRecoveryPins<'_>,outer:&mut File,events:&mut Vec<n2r_win32::NativeEvent>,
+    )->Result<n2r_win32::offline_environment::OfflineSourceApplyGate>{
+        self.require_prepared_body_seal()?;
+        match &mut self.storage{Storage::Buffered(file)=>Ok(source.qualify_guarded_paged_apply(qualification,boot,policy,file,pins,outer,events)?),
+            _=>anyhow::bail!("same sealed markerless offline preparation J absent")}
+    }
+    pub(crate) fn begin_offline_prepared_apply<'a,'p>(
+        &'a mut self,source:&'a mut n2r_win32::offline_environment::OfflinePreparedSource,
+        gate:&'a mut n2r_win32::offline_environment::OfflineSourceApplyGate,
+        qualification:&'a n2r_win32::offline_environment::OfflinePreparedJournalQualification,
+        boot:&'a mut n2r_win32::recovery_boot::RecoveryBootGuard,policy:n2r_win32::HeldPagedWritePolicy,
+        pins:&'a n2r_win32::PagedRecoveryPins<'p>,outer:&'a mut File,events:&mut Vec<n2r_win32::NativeEvent>,
+    )->Result<n2r_win32::offline_environment::OfflinePagedWriter<'a,'p>>{
+        self.require_prepared_body_seal()?;
+        match &mut self.storage{Storage::Buffered(file)=>Ok(source.begin_guarded_paged_apply(gate,qualification,boot,policy,file,pins,outer,events)?),
+            _=>anyhow::bail!("same sealed markerless offline preparation J absent")}
+    }
+    pub(crate) fn close_offline_prepared_handoff(
+        &mut self,source:&mut n2r_win32::offline_environment::OfflinePreparedSource,
+        policy:&n2r_win32::HeldPagedWritePolicy,pins:&n2r_win32::PagedRecoveryPins<'_>,events:&mut Vec<n2r_win32::NativeEvent>,
+    )->Result<n2r_win32::offline_environment::OfflineClosedJournalObservation>{
+        self.require_prepared_body_seal()?;
+        match &mut self.storage{Storage::Buffered(file)=>Ok(source.authenticate_closed(policy,file,pins,n2r_win32::offline_environment::OfflineTerminalKind::Handoff,events)?),
+            _=>anyhow::bail!("same sealed markerless offline preparation J absent")}
+    }
+    pub(crate) fn into_offline_prepared_terminal(
+        &mut self,source:n2r_win32::offline_environment::OfflinePreparedSource,
+        closed:n2r_win32::offline_environment::OfflineClosedJournalObservation,
+        policy:&n2r_win32::HeldPagedWritePolicy,pins:&n2r_win32::PagedRecoveryPins<'_>,
+        boot:&mut n2r_win32::recovery_boot::RecoveryBootGuard,outer:&mut File,
+        qualification:&n2r_win32::offline_environment::OfflinePreparedJournalQualification,
+        events:&mut Vec<n2r_win32::NativeEvent>,
+    )->Result<n2r_win32::offline_environment::OfflinePreparedTerminalSource>{
+        self.require_prepared_body_seal()?;
+        match &mut self.storage{Storage::Buffered(file)=>Ok(source.into_terminal_metadata(closed,policy,file,pins,boot,outer,qualification,events)?),
+            _=>anyhow::bail!("same sealed markerless offline preparation J absent")}
+    }
+    pub(crate) fn make_offline_prepared_available(
+        &mut self,source:n2r_win32::offline_environment::OfflinePreparedTerminalSource,
+        policy:&n2r_win32::HeldPagedWritePolicy,pins:&n2r_win32::PagedRecoveryPins<'_>,
+        boot:&mut n2r_win32::recovery_boot::RecoveryBootGuard,events:&mut Vec<n2r_win32::NativeEvent>,
+    )->Result<n2r_win32::offline_environment::OfflinePreparedAvailableSource>{
+        self.require_prepared_body_seal()?;
+        match &mut self.storage{Storage::Buffered(file)=>Ok(source.make_available_for_boot_restoration(policy,file,pins,boot,events)?),
+            _=>anyhow::bail!("same sealed markerless offline preparation J absent")}
     }
 }

@@ -2,7 +2,7 @@
 //! here issues source admission, exclusion, restoration or write authority.
 pub use super::partition_isolation::offline::{OfflineOwningEnvironment,OfflineOwningFacts,OfflineSourcePhysicalFacts};
 pub use super::partition_isolation::offline::{OfflineFreshWitness,OfflinePagedNtfsObservation,OfflineReadonlyNtfsPhase};
-pub use super::partition_isolation::offline::{OfflinePreparedSource,OfflinePreparedJournalQualification,OfflinePreparedBootGuardRequirements};
+pub use super::partition_isolation::offline::{OfflinePreparedAvailableSource,OfflinePreparedTerminalSource,OfflinePreparedSource,OfflinePreparedJournalQualification,OfflinePreparedBootGuardRequirements};
 use super::{NativeEvent, control, device_file};
 use crate::general_layout::GeneralDiskBinding;
 use serde::{Deserialize, Serialize};

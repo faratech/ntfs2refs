@@ -1023,8 +1023,19 @@ fn partition_read_new<J: Read + Seek>(
     };
     Ok(())
 }
+// IO-only adapter for the two already-authorized native writer types.
+// It cannot construct either writer or obtain a File/raw handle.
+trait ReplayPagedWriter: Read + Seek + std::io::Write {
+    fn replay_journal_view(&mut self)->std::io::Result<impl Read+Seek+'_>;
+}
+impl ReplayPagedWriter for n2r_win32::PartitionPagedWriter<'_,'_>{
+    fn replay_journal_view(&mut self)->std::io::Result<impl Read+Seek+'_>{self.journal_read_view()}
+}
+impl ReplayPagedWriter for n2r_win32::offline_environment::OfflinePagedWriter<'_,'_>{
+    fn replay_journal_view(&mut self)->std::io::Result<impl Read+Seek+'_>{self.journal_read_view()}
+}
 fn partition_write_span(
-    writer: &mut n2r_win32::PartitionPagedWriter<'_, '_>,
+    writer: &mut impl ReplayPagedWriter,
     policy: &n2r_win32::HeldPagedWritePolicy,
     format: JournalFormat,
     ticket: &SelectedTicket,
@@ -1050,7 +1061,7 @@ fn partition_write_span(
         at(writer, at_source, &mut buffers.current[..n])
             .with_context(||format!("partition replay: current-source read request offset={at_source},bytes={n} (includes pending flush/readback)"))?;
         {
-            let mut journal = writer.journal_read_view()
+            let mut journal = writer.replay_journal_view()
                 .context("partition replay: opening same-J read view after pending source flush/readback")?;
             partition_read_new(
                 policy,
@@ -1296,3 +1307,6 @@ impl BoundJournalObservation<'_> {
         Ok(result)
     }
 }
+
+mod prepared_offline;
+pub(crate) use prepared_offline::PreparedOfflineRun;

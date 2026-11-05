@@ -444,3 +444,25 @@ impl HeldWindowsPreparedBundle {
         }
     }
 }
+
+impl HeldWindowsPreparedBundle {
+    pub(crate) fn outer_sha256(&self)->[u8;32]{self.outer.sha256}
+    pub(crate) fn outer_snapshot(&self)->&ReferenceFileSnapshot{&self.outer.snapshot}
+    /// Same held, individually authenticated Windows metadata; no source or J
+    /// File escapes and serialized role data cannot construct this owner.
+    pub(crate) fn require_ready_artifacts(&self)->Result<()> {
+        self.revalidate()?;
+        let c=self.core();
+        ensure!(c.source_certificate_issued&&c.source_semantic_readiness_qualified&&!c.source_write_gate_issued
+            &&!c.source_apply_intent_attempted&&!c.sealed_bundle_grants_writer_permission,
+            "actual sealed Windows semantic readiness contract absent");
+        for role in ["expected-tree","native-write-index","source-native-pages","publication","recovery-locator"]{
+            let matches:Vec<_>=c.artifacts.iter().enumerate().filter(|(_,p)|p.role==role).collect();
+            ensure!(matches.len()==1,"required same held prepared semantic artifact absent");
+            let(i,pin)=matches[0];let actual=self.artifacts.get(i).context("actual held artifact absent")?;
+            actual.revalidate()?;ensure!(actual.sha256==digest(&pin.sha256)?&&actual.snapshot.file_bytes==pin.bytes,
+                "same held semantic artifact lost its exact authenticated Windows pin");
+        }
+        Ok(())
+    }
+}

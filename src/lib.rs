@@ -113,6 +113,8 @@ pub mod resource_partition_alpha;
 #[cfg(windows)]
 pub(crate) mod resource_prepared_bundle;
 #[cfg(windows)]
+pub(crate) mod resource_prepared_offline_apply;
+#[cfg(windows)]
 pub(crate) mod resource_preparation;
 #[cfg(windows)]
 pub(crate) mod resource_recovery;

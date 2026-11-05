@@ -1009,6 +1009,8 @@ pub fn build(
         ]);
         mounted = true;
         checked_command(&dism, args, &root, b, &mut records, initial_free)?;
+        let payload_mount=payload_replace::mounted(&root,&mount,&wim,request.wim_index,
+            records.last().ok_or_else(||bad("actual completed mount command receipt missing"))?)?;
         let sys = mount.join("Windows/System32");
         image_subdir(&sys, &mount)?;
         need(
@@ -1016,12 +1018,12 @@ pub fn build(
                 && sys.join("drivers/refs.sys").is_file(),
             "selected owned image must contain WinPE startup and native ReFS driver",
         )?;
-        payload_replace::replace(&root,&mount,&runner,"n2r-runner.exe",b.maximum_input_bytes)?;
-        payload_replace::replace(&root,&mount,&bootstrap,"n2r-bootstrap.json",b.ram_bytes/64)?;
+        payload_replace::replace(&payload_mount,&runner,"n2r-runner.exe",b.maximum_input_bytes)?;
+        payload_replace::replace(&payload_mount,&bootstrap,"n2r-bootstrap.json",b.ram_bytes/64)?;
         // Both stock startup and old custom payloads are backed up BEFORE
         // deletion, and only within the actual freshly copied mounted WIM.
         for(from,name)in [(&script,"n2r-start.cmd"),(&ini,"winpeshl.ini")]{
-            payload_replace::replace(&root,&mount,from,name,65536)?;
+            payload_replace::replace(&payload_mount,from,name,65536)?;
         }
         let mut args = common.clone();
         args.extend([
@@ -1086,7 +1088,7 @@ pub fn build(
         let marker_wire = serde_json::to_vec(&marker).map_err(io::Error::other)?;
         need(marker_wire.len() <= 65536, "originmarkerbound")?;
         write_bytes(&origin_marker, &marker_wire)?;
-        payload_replace::replace(&root,&mount,&origin_marker,"ntfs2refs-recovery-origin.json",65536)?;
+        payload_replace::replace(&payload_mount,&origin_marker,"ntfs2refs-recovery-origin.json",65536)?;
         store(
             &root.join("mounted-SAN3-startup-verified.json"),
             &serde_json::json!({"selectedControlSets":sets,"SANpolicy":3,"temporaryHiveUnloaded":true,"startupArgs":request.startup_args,"preparedOUTERbundleSHA":hex::encode(request.prepared_bundle_sha256),"verifiedMountedRunnerSHA":hex::encode(request.runner.sha256),"coldBootActuallyQualified":false}),

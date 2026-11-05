@@ -11,6 +11,9 @@ pub(crate) use partition_closed::{PartitionClosedTerminal,ReopenedPartitionResta
 #[path = "partition_basic_ro.rs"]
 mod partition_basic_ro;
 pub(crate) use partition_basic_ro::PartitionBasicRoClosedTerminal;
+#[path = "partition_operational.rs"]
+mod partition_operational;
+pub(crate) use partition_operational::reconcile_operational_partition;
 use crate::{
     artifact_arena::{ArtifactGroup, ArtifactGroupPermit},
     ntfs_inspect::paged_storage::{SourceRamLease, SourceScratch},

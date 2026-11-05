@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "kind": "operational-partition-closed-no-replay-reconciliation",
+  "status": "focused-check-passed-native-pending",
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/native/partition_restoration.rs",
+      "bytes": 80670,
+      "sha256": "c019151b4feb9b115e23f774a6e52dc8dac79ac9b61af888e4de9d94d0104885"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_restoration/operational.rs",
+      "bytes": 10799,
+      "sha256": "0d6ed6f8feb65d7a857bf5745b480176b26f469bdde1dbf3143f34b61a5d2f9a"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/reopen/envelope.rs",
+      "bytes": 118106,
+      "sha256": "4d09ffb1b495795f9e3ee6b1b18caf08701297f410dbc484c78cc977dd655fe4"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/reopen/partition_operational.rs",
+      "bytes": 13602,
+      "sha256": "d99c6110ec8003709477da43a7bde6d4873d6b8b3274bbaa485ab352c3a96b2d"
+    },
+    {
+      "path": "src/resource_partition_recovery.rs",
+      "bytes": 16695,
+      "sha256": "ee19b8c8ccc83b55f8081be7b9153121deb9b3228f0d08839bc459e210bae927"
+    }
+  ],
+  "reviewed_patch_sha256": "b9aba5c89257d2b8bd2883500b7637864ddcbd8440b9203a278e9305cc6b2fa5",
+  "focused_check": {
+    "native_run": false,
+    "wall_seconds": 30.766773,
+    "unit_tests_run": false,
+    "exit_code": 0,
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+    "kind": "public-partition-dispatch-focused-check",
+    "capacity": {
+      "actual_bytes": 323630977086,
+      "free_bytes": 83755884544,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 2147483648,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "shared_target_reused": true
+  },
+  "behavior": "Positive actual Basic0 topology/critical/native-volume proof followed by canonical independently pinned original publication and locator, held native journal identity and full immutable journal/index authentication. Closed HND/ABT only with matching requested direction. Derive filesystem epoch from authenticated literal discovery0 OLD/NEW and compare current serial64/geometry/checksum grammar opening and closing. Preserve current files/label/mounts; no source image/expected/map replay comparison, raw writer, setter, gate or lifecycle write.",
+  "private_ap_and_basic_ro_routes_preserved": true,
+  "requires_literal_discovery_epoch_contract": true,
+  "current_contents_reverified": false,
+  "native_qualification_pending": true,
+  "unit_tests_run": false,
+  "running_native_candidate_unchanged": "fd777a341c6a02a00946869dea269b85b31a2747"
+}

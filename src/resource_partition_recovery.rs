@@ -157,8 +157,34 @@ pub fn run_recovery(
     let mut events = routing_events;
     let operation = (|| -> Result<serde_json::Value> {
         // This is positive native state routing, not an error fallback. None
-        // is issued only for the observed project-private0 row; Basic0 refuses.
+        // is issued only for the observed project-private0 row. Basic0 was
+        // handled separately above; no error is converted into this route.
         let mut basic_observer = observer.clone();
+        // Positive Basic0 routing only: this lane can inspect current metadata
+        // and closed J, but never restores/replays historical source bytes.
+        if let Some(source)=n2r_win32::partition_restoration::PartitionOperationalTerminal::open_if_actual_basic0(
+            request.source.clone(),request.observation_budget,&mut basic_observer,&mut events)? {
+            ensure!(source.binding().storage.disk_number==source.windows_volume().disk_number,
+                "operational terminal route requires same running Windows disk");
+            let destination=n2r_win32::partition_isolation::metadata_destination_outside_source(&request.source,parent,&mut events)?;
+            let windows=source.windows_volume();
+            ensure!(destination.disk_number==windows.disk_number&&destination.offset==windows.offset&&destination.length==windows.length,
+                "operational reconciliation records must be on actual Windows volume outside selected source");
+            observer.checkpoint("partition-operational-terminal-source",&mut events)?;
+            let arena=ArtifactArena::new(&output.join("arena"),resources,&[request.source.storage.clone(),request.shadow.clone()])?;
+            let budget=SourceMetadataBudget::from_resource_budget(resources)?;
+            let group=arena.reserve_group(ArtifactGroup::RecoveryCopy,budget.scratch_bytes)?;
+            let scratch=SourceScratch::new_auxiliary_in_arena(budget,group.clone())?;
+            let requested=match request.direction {
+                PartitionRecoveryDirection::Resume=>n2r_win32::PartitionTerminalKind::Handoff,
+                PartitionRecoveryDirection::Rollback=>n2r_win32::PartitionTerminalKind::Aborted,
+            };
+            return crate::selected_journal::resource_domain::reopen::envelope::reconcile_operational_partition(
+                source,&request.publication,publication_sha,budget.record_bytes,&request.shadow,&request.journal,
+                &group,&scratch,&output.join("arena/operational-closed-journal.index"),budget.scratch_bytes,
+                requested,&mut basic_observer,&mut events);
+        }
+
         if let Some(source)=n2r_win32::partition_restoration::PartitionBasicReadonlyTerminal::open_if_actual_basic_ro(
             request.source.clone(),request.observation_budget,&mut basic_observer,&mut events)?{
             ensure!(source.binding().storage.disk_number==source.windows_volume().disk_number,
@@ -187,7 +213,7 @@ pub fn run_recovery(
             request.source.clone(),
             request.observation_budget,
             &mut events,
-        ).context("private AP/replay route requires actual private0 state; operational Basic0 reconciliation remains unsupported; no fallback/replay was attempted")?;
+        ).context("private AP/replay route requires actual private0 state; operational Basic0 never enters raw replay; no fallback/replay was attempted")?;
         let mut owner = owner.attach_recovery_observer(Box::new(observer.clone()), &mut events)?;
         ensure!(
             owner.binding().storage.disk_number

@@ -14,6 +14,8 @@ use std::{
 
 mod basic_ro;
 pub use basic_ro::PartitionBasicReadonlyTerminal;
+mod operational;
+pub use operational::{PartitionOperationalTerminal, OperationalPartitionMetadata};
 
 // Actual terminal metadata only: no private-owner/admission/loaded flags.
 struct TerminalMetadataBaseline{

@@ -576,6 +576,19 @@ DuplicateHandle query-only0x00100080, NtQueryObjectpublic56B/accessoffset4, actu
 Ordinaryfilehelperunchanged; readonlyDataLaneopengetsERRORCONTEXTonly. Focusedlib/all3labbincheck0/28.5463049s/no units.
 Evidence partition-live-private-cancel-build-20261104.json and partition-volume-query-duplicate-build-20261104.json. Exactnativequalificationpending.
 Existingledgerbatches add optionalwallclockmilliseconds only; no extra sourcequery or scan. Publicshared-dispatch3pathDRAFT remainsunapplied.
+Latestrestoreafter632closedcd25ed8e4188fca2a2324f69102a30bcf072933e312bcf3fd4a80553d46400ae:
+Off07ca18/all151deps/current8newchildren verified; actual320725126501/free86652375040/reclaim1610324944B/no newCP/native/SET/manualdelete.
+48772bd7debdd5fa9026aeeffd0d7ef4ad0d6799 exactbuild30853 CLOSED0/151s/424heldsourcefilesunchanged;
+manifest2e1d8e92148e3936f340e47b02923c8f889b764289b79e54d0c5a3037f5d5e92. Evidence partition-48772bd-exact-build-20261104.json binds3binaries.
+RootONE SINGLEnormalGO (doNOTrepeatqualifiedCancel) uses ORIGINAL18host0955db0ccd5e11700dca2b0e2eae99a9bdf012c914f3f6576fe49873b653406f,
+worker60d47f4ecc655df07ed52ca97e147cb6cef163d010c5b534050bd3e636793f21, oraclea4a57540.../metadata40e8 unchanged.
+ACTUALcurrentcase5825c5fdf71a4922847752eea6f4f576 host18962 ACTIVE; guestnormal2400/birth1793846737788/boot1793846695352.
+Fresh6GiBbaseline320763497941/absolute327205948885 passed; initialindependentBefore8passed. No pause/cancel/recovery/probe/2ndnativeauthorized.
+Latestbounded02:52:21Z ledger1335560B/intent83580B: guard/criticalcheckssuccess, no terminalyet. Secondframe ONLYINTENT unlessactualSET/nativeinfo provestransition.
+OperatorsoleVMowner; poll SAME18962/2400birth, neverrestartfromtimeout. OnHND neverstaleNTFSrestore/replay. Current source stage/successnotinferred.
+PUBLIC3pathdispatchDRAFT .lab/development/public-partition-dispatch-draft/public-partition-dispatch.patch SHA450cfbe49a61e9e15564a2b14a9bd688b75b811e783c99db7994ba39c1af0858
+unapplied: actual shareddata/native recovery dispatch withoutmain edits, realtargetformat/capacitypolicies, explicitunsupportedoptions.
+Its632Alpha base nowneedsMERGE (preserve liveprivatecancel+batchtimestamps), notfullcopyoverwrite. Boot/offlineowner/bootcontrol/hardwarecoverage stillunfinished.
 
 - Fresh writes require original live opaque source certificate and actual source/target/J/arena owners. Saved JSON/paths/flags are routes, never authority.
 - Revalidate device/file identities, journal/index/ticket/lifecycle and recovery files. Recovery must not require thin-pool reattachment.

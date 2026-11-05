@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "kind": "exact-committed-partition-construction-fix-build",
+  "status": "build-passed-single-normal-native-run-in-progress",
+  "source_commit": "48772bd7debdd5fa9026aeeffd0d7ef4ad0d6799",
+  "source_tree": "8494e03d62f4fb0e7ae26f4b459be5d8310d1e83",
+  "build_directory": ".lab/development/release-candidates/partition-48772bd",
+  "build_manifest_sha256": "2e1d8e92148e3936f340e47b02923c8f889b764289b79e54d0c5a3037f5d5e92",
+  "actual_build_exit_code": 0,
+  "cargo_reported_release_seconds": 151,
+  "source_before_after_verified": true,
+  "held_source_files": 424,
+  "shared_target_reused": true,
+  "unit_tests_run": false,
+  "binaries": [
+    {"name":"lab-partition-alpha","bytes":8696320,"sha256":"899e8e2225a2446f4fa7b08305478aecdde693ee701d56a59ca64e065d5c5401"},
+    {"name":"lab-partition-recovery","bytes":3855872,"sha256":"55b21bda9b1732474a893aa07f5cda0eac959a68c13e7356ff0a6c7ab37633f3"},
+    {"name":"lab-offline-environment","bytes":1072640,"sha256":"8d3ddfc69056feced7142181df829c69373e2f9c6eee8d8ac4f76f151dca528f"}
+  ],
+  "single_normal_case": {
+    "run_id": "5825c5fdf71a4922847752eea6f4f576",
+    "pid": 2400,
+    "birth_ms": 1793846737788,
+    "boot_ms": 1793846695352,
+    "initial_independent_eight_file_oracle_passed": true,
+    "capacity_baseline_bytes": 320763497941,
+    "additional_forecast_bytes": 6442450944,
+    "maximum_actual_bytes": 329374052988,
+    "conversion_success_claimed": false,
+    "cancellation_repeated": false,
+    "recovery_or_probe_executed": false
+  },
+  "public_frozen_alpha_changed": false,
+  "qualification_inherited": false
+}

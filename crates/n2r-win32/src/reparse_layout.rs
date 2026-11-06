@@ -62,6 +62,27 @@ fn name(paths: &[u8], offset: u16, length: u16, required: bool) -> io::Result<()
     Ok(())
 }
 impl Point {
+    /// An explicit relative path alias in the same parent directory. This is
+    /// used by journaled Windows short-name preparation, never a filesystem
+    /// short-name claim. The eventual creator owns file/directory semantics.
+    pub fn relative_component_alias(target: &[u16]) -> io::Result<Self> {
+        if target.is_empty() || target.len()>255 || target==[46] || target==[46,46]
+            || target.iter().any(|c|matches!(*c,0|47|58|92)) {
+            return Err(invalid("relative alias requires one canonical name component"));
+        }
+        if char::decode_utf16(target.iter().copied()).any(|c|c.is_err()) {
+            return Err(invalid("relative alias target is not valid UTF-16"));
+        }
+        let size=u16::try_from(target.len()*2).map_err(|_|invalid("relative alias name length overflow"))?;
+        let mut buffer=Vec::with_capacity(20+usize::from(size));
+        buffer.extend_from_slice(&IO_REPARSE_TAG_SYMLINK.to_le_bytes());
+        buffer.extend_from_slice(&(12+size).to_le_bytes());buffer.extend_from_slice(&[0,0]);
+        buffer.extend_from_slice(&0u16.to_le_bytes());buffer.extend_from_slice(&size.to_le_bytes());
+        buffer.extend_from_slice(&size.to_le_bytes());buffer.extend_from_slice(&0u16.to_le_bytes());
+        buffer.extend_from_slice(&1u32.to_le_bytes());
+        for c in target {buffer.extend_from_slice(&c.to_le_bytes());}
+        let point=Self{buffer};point.validate()?;Ok(point)
+    }
     /// Raw tag only. Malformed short buffers return zero and must still fail
     /// validate(); this getter never makes serialized bytes trustworthy.
     pub fn tag(&self) -> u32 {

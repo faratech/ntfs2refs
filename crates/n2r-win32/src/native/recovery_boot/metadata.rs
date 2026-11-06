@@ -639,7 +639,8 @@ fn raw_hash_bound(efi: &EfiIdentity, pin: &StorePin, metadata_limit: u64,
         false,
     )?;
     let opening = physical_binding_bound(&mut file, efi, protected, events)?;
-    fat::require_current_map(&mut file, efi, pin, metadata_limit)?;
+    fat::require_current_map(&mut file, efi, pin, metadata_limit).map_err(|error|
+        io::Error::new(error.kind(), format!("raw BCD opening FAT namespace: {error}")))?;
     let mut hash = sha2::Sha256::new();
     let mut buffer = [0; 65536];
     let mut covered = 0;
@@ -674,7 +675,8 @@ fn raw_hash_bound(efi: &EfiIdentity, pin: &StorePin, metadata_limit: u64,
         covered += span.bytes;
     }
     need(covered == pin.bytes, "raw BCD EOF coverage differs")?;
-    fat::require_current_map(&mut file, efi, pin, metadata_limit)?;
+    fat::require_current_map(&mut file, efi, pin, metadata_limit).map_err(|error|
+        io::Error::new(error.kind(), format!("raw BCD closing FAT namespace: {error}")))?;
     need(
         physical_binding_bound(&mut file, efi, protected, events)? == opening,
         "same raw BCD physical handle metadata changed",

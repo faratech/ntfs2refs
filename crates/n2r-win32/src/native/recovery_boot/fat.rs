@@ -32,13 +32,17 @@ impl<'a> Fat<'a> {
         let mut boot = vec![0; efi.binding.identity.logical_sector_bytes as usize];
         file.seek(SeekFrom::Start(base))?;
         file.read_exact(&mut boot)?;
-        need(
-            digest(&boot) == expected
-                && boot.len() >= 512
-                && boot[510..512] == [0x55, 0xaa]
-                && &boot[82..90] == b"FAT32   ",
-            "current EFI FAT32 boot sector differs",
-        )?;
+        let observed = digest(&boot);
+        let signature_valid = boot.len() >= 512 && boot[510..512] == [0x55, 0xaa];
+        let fat32_tag_valid = boot.len() >= 512 && &boot[82..90] == b"FAT32   ";
+        if observed != expected || !signature_valid || !fat32_tag_valid {
+            // Capture the exact failing read, without a second read, retry,
+            // mutable-bit exception or replacement of the authenticated hash.
+            return Err(bad(&format!(
+                "current EFI FAT32 boot sector differs: expected_sha256={}, observed_sha256={}, partition_offset={base}, logical_sector_bytes={}, signature_valid={signature_valid}, fat32_tag_valid={fat32_tag_valid}, observed_boot_hex={}",
+                hex::encode(expected), hex::encode(observed), boot.len(), hex::encode(&boot)
+            )));
+        }
         let sector = u64::from(u16::from_le_bytes(
             boot[11..13].try_into().map_err(io::Error::other)?,
         ));

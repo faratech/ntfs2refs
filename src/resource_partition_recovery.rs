@@ -188,6 +188,7 @@ pub fn run_recovery(
     let observer = Observer(Arc::new(Mutex::new(Ledger {
         file,
         bytes: 0,
+        event_encoder: Default::default(),
         maximum: request.maximum_evidence_bytes,
         poisoned: false,
         meter: None,

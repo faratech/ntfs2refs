@@ -103,6 +103,7 @@ pub fn run_prepared_offline(
             .share_mode(1)
             .open(ram_log)?,
         bytes: 0,
+        event_encoder: Default::default(),
         maximum: request.maximum_evidence_bytes,
         poisoned: false,
         meter: None,

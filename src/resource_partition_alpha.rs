@@ -56,6 +56,8 @@ pub const WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
 const EXECUTION_STACK_RESERVE_BYTES: u64 = WORKER_STACK_BYTES as u64 + 1024 * 1024;
 #[path = "resource_partition_pause.rs"]
 mod controlled_pause;
+#[path = "resource_native_event_log.rs"]
+mod native_event_log;
 // Public dispatch reserves this SAME existing independent evidence allowance;
 // the Alpha still owns the actual control-file/RAM accounting and validation.
 pub(crate) const CONTROLLED_POST_FLUSH_EVIDENCE_RESERVE_BYTES: u64 =
@@ -86,6 +88,7 @@ fn legacy_partition_capacity_policy() -> SelectedCapacityPolicy {
 struct Ledger {
     file: File,
     bytes: u64,
+    event_encoder: native_event_log::NativeEventEncoder,
     maximum: u64,
     poisoned: bool,
     meter: Option<StagingAllocationMeter>,
@@ -96,9 +99,10 @@ struct Ledger {
 #[derive(Serialize)]
 struct Batch<'a> {
     kind: &'static str,
+    native_buffer_encoding: &'static str,
     phase: &'static str,
     observed_unix_ms: Option<u64>,
-    events: &'a [NativeEvent],
+    events: &'a [native_event_log::EncodedNativeEvent<'a>],
 }
 struct Count(u64);
 impl Write for Count {
@@ -142,15 +146,21 @@ impl Ledger {
         Ok(())
     }
     fn checkpoint(&mut self, phase: &'static str, events: &mut Vec<NativeEvent>) -> io::Result<()> {
+        // References may point only into this successfully persisted stream.
+        // A budget/write/flush/readback failure must not publish cache state.
+        let mut next_encoder = self.event_encoder.clone();
+        let encoded = next_encoder.encode(events)?;
         self.record(&Batch {
-            kind: "actual-native-event-batch",
+            kind: "actual-native-event-batch-v2",
+            native_buffer_encoding: native_event_log::ENCODING,
             phase,
             observed_unix_ms: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .ok()
                 .and_then(|elapsed| u64::try_from(elapsed.as_millis()).ok()),
-            events,
+            events: &encoded,
         })?;
+        self.event_encoder = next_encoder;
         events.clear();
         if let Some(meter) = &self.meter {
             let observed = meter.observe()?;
@@ -533,6 +543,7 @@ fn run_inner(
     let observer = Observer(Arc::new(Mutex::new(Ledger {
         file: ledger_file,
         bytes: 0,
+        event_encoder: Default::default(),
         maximum: request.maximum_evidence_bytes,
         poisoned: false,
         meter: None,

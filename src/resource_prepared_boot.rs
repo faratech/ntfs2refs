@@ -146,6 +146,7 @@ fn arm_prepared_boot_inner(
             .share_mode(1)
             .open(output.join("native-events.jsonl"))?,
         bytes: 0,
+        event_encoder: Default::default(),
         maximum: request.maximum_evidence_bytes,
         poisoned: false,
         meter: None,

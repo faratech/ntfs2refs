@@ -43,13 +43,14 @@ pub(super) fn copy_authenticated_held(input:&mut File,expected:[u8;32],path:&Pat
 }
 pub(super) fn prove_unchanged_device(original:&mut File,original_sha:[u8;32],
     current_copy:&Path,current_sha:[u8;32],directory:&Path,journal:&GeneralJournalStorageBinding,
+    ram_root:&str,ram_backing:&crate::native::offline_environment::kernel_ram_backing::KernelRamBackingFacts,
     budget:RecoveryBootBudget,events:&mut Vec<NativeEvent>)->io::Result<BootManagerDeviceProof> {
     let ordinal=DEVICE_COPY_ORDINAL.fetch_update(std::sync::atomic::Ordering::Relaxed,
         std::sync::atomic::Ordering::Relaxed,|n|n.checked_add(1)).map_err(|_|bad("device-copy ordinal overflow"))?;
     let original_path=copy_authenticated_held(original,original_sha,
         &directory.join(format!("encoded-device-original-{ordinal:04}.bcd")),journal,budget)?;
-    let first=bcd_device::observe_owned_copy(&original_path,budget,events)?;
-    let second=bcd_device::observe_owned_copy(current_copy,budget,events)?;
+    let first=bcd_device::observe_owned_copy(&original_path,ram_root,ram_backing,budget,events)?;
+    let second=bcd_device::observe_owned_copy(current_copy,ram_root,ram_backing,budget,events)?;
     need(first.file_sha256==original_sha&&second.file_sha256==current_sha
         &&first.file.volume_serial_number==second.file.volume_serial_number
         &&first.bytes==second.bytes&&first.value_sha256==second.value_sha256,
@@ -67,13 +68,14 @@ pub(super) fn prove_unchanged_device(original:&mut File,original_sha:[u8;32],
 }
 pub(super) fn prove_available_store_device(efi:&EfiIdentity,pin:&StorePin,
     original:&mut File,original_sha:[u8;32],directory:&Path,journal:&GeneralJournalStorageBinding,
+    ram_root:&str,ram_backing:&crate::native::offline_environment::kernel_ram_backing::KernelRamBackingFacts,
     budget:RecoveryBootBudget,events:&mut Vec<NativeEvent>)->io::Result<BootManagerDeviceProof> {
     let ordinal=DEVICE_COPY_ORDINAL.fetch_update(std::sync::atomic::Ordering::Relaxed,
         std::sync::atomic::Ordering::Relaxed,|n|n.checked_add(1)).map_err(|_|bad("device-copy ordinal overflow"))?;
     let path=directory.join(format!("encoded-device-current-{ordinal:04}.bcd"));
     let actual=raw_copy(efi,pin,&path,budget.maximum_store_bytes,budget.maximum_control_bytes,events)?;
     need(actual==pin.sha256,"current available EFI device-proof copy differs from actual store epoch")?;
-    prove_unchanged_device(original,original_sha,&path,actual,directory,journal,budget,events)
+    prove_unchanged_device(original,original_sha,&path,actual,directory,journal,ram_root,ram_backing,budget,events)
 }
 use std::os::windows::fs::MetadataExt;
 use windows_sys::Win32::Storage::FileSystem::{

@@ -132,6 +132,7 @@ pub struct RecoveryBootGuard {
     boot: Vec<u8>,
     running_image_sha256: String,
     ram_root: String,
+    ram_backing: crate::native::offline_environment::kernel_ram_backing::KernelRamBackingFacts,
     actual_store_sha256: [u8; 32],
     held: Vec<HeldPin>,
     facts: RecoveryBootGuardFacts,
@@ -197,6 +198,7 @@ impl RecoveryBootGuard {
         let env = source.offline_environment_facts();
         let boot = env.boot.boot_identifier.clone();
         let ram_root = env.windows_ram_root.clone();
+        let ram_backing = env.native_ram_backing.clone();
         let running = env.running_image.sha256.clone();
         need(
             env.environment_identity_qualified
@@ -359,7 +361,7 @@ impl RecoveryBootGuard {
             &directory.join("actual-installed-system-store-query.bcd"), &intent.journal, budget)?;
         let device_proof = metadata::prove_unchanged_device(
             &mut held[original_backup_slot].file, intent.backup_sha256, &store,
-            actual_store_sha256, directory, &intent.journal, budget, events)?;
+            actual_store_sha256, directory, &intent.journal, &ram_root, &ram_backing, budget, events)?;
         let tool = native::Tool::system(budget)?;
         verify_cold_selection(
             &tool.enum_object(Some(&store), BOOTMGR, directory)?,
@@ -414,6 +416,7 @@ impl RecoveryBootGuard {
             boot,
             running_image_sha256: running,
             ram_root,
+            ram_backing,
             actual_store_sha256,
             held,
             facts,
@@ -743,7 +746,7 @@ impl RecoveryBootGuard {
                 "current published EFI BCD bytes/FAT mapping differ from actual guarded epoch")?;
             let device_proof=metadata::prove_available_store_device(&actual_efi,&first_store,
                 &mut self.held[self.original_backup_slot].file,self.intent.backup_sha256,
-                directory,&self.intent.journal,self.budget,events)?;
+                directory,&self.intent.journal,&self.ram_root,&self.ram_backing,self.budget,events)?;
             let mut expected=tool.enum_all(&actual_efi.bcd_path,directory)?;
             verify_cold_selection(expected.get(BOOTMGR).ok_or_else(||bad("current BootMgr absent"))?,
                 &self.intent,&device_proof,first_store.sha256)?;
@@ -811,7 +814,7 @@ impl RecoveryBootGuard {
                 "restored BCD actual FAT/raw bytes changed after native readback")?;
             let final_device_proof=metadata::prove_available_store_device(&actual_efi,final_store,
                 &mut self.held[self.original_backup_slot].file,self.intent.backup_sha256,
-                directory,&self.intent.journal,self.budget,events)?;
+                directory,&self.intent.journal,&self.ram_root,&self.ram_backing,self.budget,events)?;
             verify_original_selection(restored,&self.intent,&final_device_proof,final_store.sha256)?;
             self.require_boot_identity(&source.owner_token(),events)?;
             source.revalidate_closed(policy,journal,pins,events)?;

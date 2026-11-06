@@ -117,10 +117,10 @@ impl<'j,'p> OfflinePreparedTerminalGuard<'j,'p>{
   Ok(OfflineAbortedReadonlyProof{owner:self.token.clone()})
  }
  pub fn finish_handoff(self,proof:crate::shadow_native::OfflineReadonlyFidelity,output:&Path,observer:&mut impl PartitionRestorationObserver,events:&mut Vec<NativeEvent>)->io::Result<OfflinePreparedTerminalReceipt>{
-  require(self.kind==OfflineTerminalKind::Handoff,"actual HND required")?;proof.require_owner(&self.token,&self.mounted_binding)?;self.finish(output,observer,events)
+  require(self.kind==OfflineTerminalKind::Handoff,"actual HND required")?;proof.require_owner(&self.token,&self.mounted_binding)?;drop(proof);self.finish(output,observer,events)
  }
  pub fn finish_aborted(self,proof:OfflineAbortedReadonlyProof,output:&Path,observer:&mut impl PartitionRestorationObserver,events:&mut Vec<NativeEvent>)->io::Result<OfflinePreparedTerminalReceipt>{
-  require(self.kind==OfflineTerminalKind::Aborted&&proof.owner.same_owner(&self.token),"actual ABT readonly proof differs")?;self.finish(output,observer,events)
+  require(self.kind==OfflineTerminalKind::Aborted&&proof.owner.same_owner(&self.token),"actual ABT readonly proof differs")?;drop(proof);self.finish(output,observer,events)
  }
  fn finish(mut self,output:&Path,observer:&mut impl PartitionRestorationObserver,events:&mut Vec<NativeEvent>)->io::Result<OfflinePreparedTerminalReceipt>{
   self.require_readonly(events)?;let mut source=self.source.get_mut().take().ok_or_else(||invalid("terminal source consumed"))?;
@@ -131,25 +131,59 @@ impl<'j,'p> OfflinePreparedTerminalGuard<'j,'p>{
   checkpoint_terminal(observer,"offline-terminal-original-mounts-preflight-before-boot-or-writable",events)?;
   observer.before_partition_change(if self.kind==OfflineTerminalKind::Handoff{crate::PartitionTerminalKind::Handoff}else{crate::PartitionTerminalKind::Aborted},&protected,&desired)?;
   drop(self.mounted.take());
-  let (source,boot_receipt)=boot.restore_normal_boot(source,self.policy,&mut self.journal.borrow_mut(),&self.pins,output,observer,events)?;
+  let (mut source,boot_receipt)=boot.restore_normal_boot(source,self.policy,&mut self.journal.borrow_mut(),&self.pins,output,observer,events)?;
   // A closed source and actual readonly native proof precede normal selection.
   // Consume every old source/checker owner BEFORE the first writable FSD epoch.
   let before=source.offline_environment_facts().source_physical.clone();
   let mut disk=device_file(&format!("\\\\.\\PhysicalDrive{}",self.binding.storage.disk_number),false,false)?;
   require(source_facts(&mut disk,&self.binding,self.budget,events)?==self.basis.actual,"terminal held physical source changed before metadata transfer")?;
-  let route=format!(r"\\?\GLOBALROOT\Device\Harddisk{}\Partition{}",self.binding.storage.disk_number,self.binding.storage.identity.partition_number);
-  let management=OpenOptions::new().read(true).write(true).share_mode(3).open(route)?;
+  // Closing the last reader does not retire a mounted readonly FSD. Use ONE
+  // actual selected-volume FileObject for lock, dismount and the GPT setter;
+  // opening a second volume handle after LOCK would defeat exclusivity.
+  let route=self.mounted_binding.volume_path()?;
+  let management=OpenOptions::new().read(true).write(true).share_mode(3)
+   .custom_flags(0xa000_0000).open(route)?;
+  let extents=control(&management,"offline-terminal-retiring-volume-extents",crate::native::VOLUME_EXTENTS,&[],32,events)?;
+  require(extents.len()==32&&layout::u32_at(&extents,0)?==1
+   &&layout::u32_at(&extents,8)?==self.binding.storage.disk_number
+   &&layout::u64_at(&extents,16)?==self.binding.storage.identity.partition_offset
+   &&layout::u64_at(&extents,24)?==self.binding.storage.identity.partition_bytes,
+   "terminal FSD retirement handle is not the actual selected extent")?;
   require(control(&management,"offline-terminal-before-typed-SET-native144",0x00070048,&[],144,events)?==protected,"terminal setter handle differs")?;
+  let filesystem=if self.kind==OfflineTerminalKind::Handoff{"ReFS"}else{"NTFS"};
+  let readonly=terminal_volume_info(&management)?;
+  require(readonly.filesystem==filesystem&&readonly.flags&0x80000!=0,
+   &format!("terminal FSD retirement requires the verified readonly {filesystem}; actual={}, flags={:#x}",readonly.filesystem,readonly.flags))?;
+  source.revalidate_closed(self.policy,&mut self.journal.borrow_mut(),&self.pins,events)?;
+  for (code,phase) in [
+   (crate::native::LOCK,"offline-terminal-selected-readonly-FSD-LOCK"),
+   (crate::native::DISMOUNT,"offline-terminal-selected-readonly-FSD-DISMOUNT"),
+  ] {
+   require(control(&management,phase,code,&[],0,events)?.is_empty(),
+    "terminal selected readonly FSD lock/dismount reply differs")?;
+  }
+  // The lock is held until the complete original GPT/native readback below.
+  // No filesystem query/open is permitted between DISMOUNT and its release.
+  require(control(&management,"offline-terminal-locked-readonly-native144",0x00070048,&[],144,events)?==protected,
+   "terminal selected partition changed during readonly FSD retirement")?;
+  require(source_facts(&mut disk,&self.binding,self.budget,events)?==self.basis.actual,
+   "terminal source/sibling metadata changed during readonly FSD retirement")?;
+  checkpoint_terminal(observer,"offline-terminal-readonly-FSD-retired-under-lock-before-Basic0",events)?;
   drop(source);
   let mut input=[0u8;120];input[..4].copy_from_slice(&1u32.to_le_bytes());input[8..].copy_from_slice(&desired[32..]);
   let reply=crate::native::control_set_gpt_partition(&management,"offline-terminal-single-target-original-Basic0",&input,events)?;require(reply.is_empty(),"terminal typed setter returned unexpected output")?;
-  require(control(&management,"offline-terminal-original-native144-readback",0x00070048,&[],144,events)?==desired,"terminal typed setter readback differs")?;drop(management);
+  require(control(&management,"offline-terminal-original-native144-readback",0x00070048,&[],144,events)?==desired,"terminal typed setter readback differs")?;
   let after=source_facts(&mut disk,&self.binding,self.budget,events)?;disk.seek(SeekFrom::Start(0))?;let mut mbr=[0u8;512];disk.read_exact(&mut mbr)?;require(mbr.as_slice()==self.original_mbr.as_slice(),"terminal protective MBR changed")?;
   require(after.device==before.device&&after.length==before.length&&after.alignment==before.alignment&&after.disk_attributes==0&&after.gpt==self.expected_original_gpt,"terminal original full GPT/siblings/C metadata differs")?;
   checkpoint_terminal(observer,"offline-terminal-original-Basic0-complete-before-filesystem",events)?;
+  drop(management);
+  checkpoint_terminal(observer,"offline-terminal-retired-FSD-lock-owner-closed-before-fresh-mount",events)?;
   let (mounted_binding,volume)=find_terminal_volume(&self.binding,&desired,self.budget,observer,events)?;
-  let filesystem=if self.kind==OfflineTerminalKind::Handoff{"ReFS"}else{"NTFS"};let info=terminal_volume_info(&volume)?;
-  require(info.filesystem==filesystem&&info.flags&0x80000==0,"native writable target is not the verified filesystem")?;
+  let info=terminal_volume_info(&volume)?;
+  require(info.filesystem==filesystem&&info.flags&0x80000==0,
+   &format!("native writable target is not the verified {filesystem}; actual={}, flags={:#x}",info.filesystem,info.flags))?;
+  require(control(&volume,"offline-terminal-fresh-target-IS-WRITABLE",0x00070024,&[],0,events)?.is_empty(),
+   "terminal freshly mounted target does not report actual writability")?;
   if info.label!=self.label{let root=format!("{}\\",mounted_binding.volume_path()?);let w:Vec<_>=root.encode_utf16().chain([0]).collect();let label=self.label.terminated()?;
    if unsafe{windows_sys::Win32::Storage::FileSystem::SetVolumeLabelW(w.as_ptr(),label.as_ptr())}==0{return Err(io::Error::last_os_error())}}
   require(terminal_volume_info(&volume)?.label==self.label,"terminal native label restoration differs")?;

@@ -114,6 +114,7 @@ pub struct RecoveryBootGuardFacts {
     pub loader_guid: String,
     pub actual_early_san_policy: u32,
     pub source_already_offline_on_enrollment: bool,
+    pub actual_current_boot_volume_locks_acquired: bool,
     pub installed_bcd_raw_sha256: [u8; 32],
     pub persistent_recovery_default_and_order_verified: bool,
     pub ram_origin_marker_sha256: [u8; 32],
@@ -177,10 +178,13 @@ impl RecoveryBootGuard {
         budget.validate()?;
         qualification.revalidate_actual(source, policy, journal, pins, sealed_bundle, events)?;
         let requirements = qualification.actual_requirements();
+        // PreparedClear can use actual current-boot locks followed by SET3.
+        // AP/RB/closed constructors still require already-offline enrollment.
         need(
-            requirements.source_was_already_offline_on_enrollment
+            (requirements.source_was_already_offline_on_enrollment
+                || requirements.actual_current_boot_volume_locks_acquired)
                 && requirements.actual_excluded_disk_attributes == 3,
-            "source was not already excluded by early SAN3 before any prepared-source enrollment",
+            "source lacks actual already-offline or current-boot locked SET3 exclusion",
         )?;
         let actual_intent = native::current_intent_sha()?;
         need(
@@ -373,7 +377,8 @@ impl RecoveryBootGuard {
             native_kernel_intent_sha256: actual_intent,
             loader_guid: intent.loader.clone(),
             actual_early_san_policy: 3,
-            source_already_offline_on_enrollment: true,
+            source_already_offline_on_enrollment: requirements.source_was_already_offline_on_enrollment,
+            actual_current_boot_volume_locks_acquired: requirements.actual_current_boot_volume_locks_acquired,
             installed_bcd_raw_sha256: actual_store_sha256,
             persistent_recovery_default_and_order_verified: true,
             ram_origin_marker_sha256: intent.origin_marker_sha256,

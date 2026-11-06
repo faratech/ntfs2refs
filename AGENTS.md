@@ -7,6 +7,16 @@ This record supersedes historical LIVE/keeper/next-action statements. Full previ
 [history](docs/history/AGENTS-through-20261105-shared-AP.md), SHA256 `8973ba9a024dffffc88d82a332afc7dab76d008609cf63970a7a0279fa18c91e`.
 Read specific historical sections only when needed; do not restart finished investigations or repeat unchanged cases.
 
+## Actual35 public booted PE; J enrollment ordering fix compiled
+
+SAME public2560 product-owned restart actually reached owned WinPE; frame001SHA469b8fff7eb2934b773f18c1cad889a96a2776989a803a601021c7ed5451bd43 shows `offline-positive-RAM-source-environment` (RAMDEVICE fix PASSED) then `offline-J-bootstrap-opening` and refusal `early bootstrap requires source already OFFLINE before J enrollment`. Native full-Windows owned exit was NOT captured after PSDirect ended; do not invent it. Current latest VM Running/current07ca/seven/4GiB/privatePE failureconsole/originalDVD, no retry. Hostmetadata b095dd6314e1636648879be288e323b74829aca0b39814a1e56142cf0ad2dcbe; capacity253691861662/remaining1676852791 under SAMEcase255368714453.
+
+Finite readonly DiskPart/registry queries ACTUALLY VIEWED: disk0 ONLINE/nonreadonly, Boot/Pagefile/Hiber/Crash/Cluster:NO; runtimeSAN3. Summaryc2648d09122b680b690216762ac2b59f69dd849d199273e9957e9f6e1ffdeaac, no setters/sourcepayload/Jbody/power. Whole-disk query does NOT independently prove selected-partition readonly. Root subsequently authorized ONLY selectedD6 detailpartition query then ordinaryPEshutdown/Off0/ONEofflineCP `shared52-public-35afb-early-source-online-refusal-20261105`, parent07ca, original7+new8,128MiB+forthcomingbuild1GiB samecase. Actual query/preservation completion pending: consult exclusiveoperator aef_postcut_operator, neverrepeat API on timeout.
+
+Fix compiled53984 CLOSED0/42.8391222s/no tests/mainunchanged. J metadata enrollment now requires actual BASIC+READONLY in both fullGPT and native144 plus existing actualRAM/kernel-boundbootstrap/disjointJ checks, permitting initialSource0. Existing PreparedClear exclusion0 still requires genuine current-boot volume LOCK/DISMOUNT→Jdurableintent→SET3/nativeproof BEFORE anySourceAP/writer. Boot guard accepts actual alreadyOffline ORactualCurrentBootLocks, alwaysactual3 after opaquequalification revalidation; originalfacts0 staytruthful. AP/RB/closed retain already-offline enrollment precondition. No source writer gate, runner/origin/J/index check removed; no preJsourceSetter or fictitiousSANexclusion. Actualfresh lock path/restartpersistentexclusion stillunqualified. Evidence `evidence/boot-bound-J-enrollment-ordering-20261105.json`.
+
+Next exact FOUR-bin build from new committed source, preservefailed35PEbranch and existingfrozenalpha, then nextnormalpubliccase and actual R/B/mutation/reboot. No independentwriter/unit tests/broadercompat. Goal remains incomplete.
+
 ## Actual same-build35afb public conversion is running
 
 Reset82218 CLOSED0: actual newWindows26300 boot1793925620534, originalD6 NTFS BASIC0/J2idle, current07ca/sevenkeepers. Closure8b301a297a6594175cb74cc5c0deab70942a3c04c15e4c6e9cfd514ba87b87c8. NEWdistinctFULL4GiB case effectiveabsolute **255368714453** (global originalepoch/cap/reserve unchanged). Staging24462 CLOSED0, readyc63e8ebfccc303e9d5adc6caeda9e89c78cb479ffa91575f785f072028ad56a6; SAMEsource35afb public83aa7a5f.../cold3c87531f... and originalE media verified.

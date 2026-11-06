@@ -1,0 +1,30 @@
+{
+  "kind": "boot-bound-independent-J-enrollment-ordering-fix-v1",
+  "actual_public_case": ".lab/hyperv/streaming-v2-20261027/PUBLIC-35afb-actual-once-4accea2218cd4f7cb3ea6182909a2f5a",
+  "actual_cold_progress": ["offline-positive-RAM-source-environment", "offline-J-bootstrap-opening"],
+  "actual_error": "early bootstrap requires source already OFFLINE before J enrollment",
+  "actual_error_frame_sha256": "469b8fff7eb2934b773f18c1cad889a96a2776989a803a601021c7ed5451bd43",
+  "actual_readonly_console_summary_sha256": "c2648d09122b680b690216762ac2b59f69dd849d199273e9957e9f6e1ffdeaac",
+  "actual_readonly_observations": {
+    "source_disk_guid": "1f804918-e98f-4a71-9022-fc00c3cb7c26",
+    "disk_0_online": true,
+    "disk_0_readonly": false,
+    "boot_pagefile_hibernation_crashdump_cluster_disk": false,
+    "runtime_SAN_policy": 3,
+    "source_partition_readonly_not_independently_claimed_from_whole_disk_query": true,
+    "setters_payload_queries_power_or_converter_retries": 0
+  },
+  "ordering_correction": {
+    "J_metadata_enrollment": "Require actual selected BASIC+READONLY in full raw GPT and native144 row, positive held RAM environment and kernel-bound bootstrap, and native disjoint J identity; allow original source disk state0 as well as1/3.",
+    "source_exclusion": "Existing PreparedClear path must still acquire actual current-boot source-volume LOCK/DISMOUNT handles, persist the J exclusion intent, SET3 and verify native readback before source/J/writer qualification.",
+    "source_original_facts_are_not_rewritten": true,
+    "cold_guard": "After mandatory opaque qualification revalidation, require actual disk3 plus either actual already-offline enrollment or actual current-boot locks.",
+    "AP_RB_closed_already_offline_prerequisite_unchanged": true,
+    "runner_boot_origin_J_index_source_checks_and_raw_writer_gates_unchanged": true,
+    "exported_lock_provenance_is_actual_not_hardcoded": true,
+    "no_new_preJ_source_setter_or_writer_authority": true
+  },
+  "focused_compile": {"exit_code": 0, "wall_seconds": 42.8391222, "receipt_sha256": "752de390379ce9ee585312ec522584438d1d67d3b868351e92dec0044d5f33ed", "unit_tests_run": false},
+  "qualification_still_required": ["Fresh PreparedClear actual volume locks and SET3", "Successful native conversion", "Actual AP restart persistent exclusion and resume/rollback", "Native verification mutation reboot and exact package"],
+  "source_data_write_or_AP_state_not_independently_inferred_from_error_screen": true
+}

@@ -23,7 +23,7 @@ pub struct OfflinePreparedSource {
     pub(super) core: Core,
     pub(super) source_readonly_gpt_sha256: [u8; 32],
     basic_readonly_info: Vec<u8>,
-    actual_current_boot_volume_locks_acquired: bool,
+    pub(super) actual_current_boot_volume_locks_acquired: bool,
     pub(super) source_was_already_offline_on_enrollment: bool,
 }
 #[derive(Clone, Debug, Serialize)]
@@ -34,6 +34,7 @@ pub struct OfflinePreparedBootGuardRequirements {
     pub prepared_readonly_gpt_sha256: [u8; 32],
     pub actual_excluded_disk_attributes: u64,
     pub source_was_already_offline_on_enrollment: bool,
+    pub actual_current_boot_volume_locks_acquired: bool,
     pub journal_identity: crate::journal_file::JournalFileIdentity,
     pub journal_path: String,
     pub journal_immutable_sha256: [u8; 32],
@@ -408,6 +409,7 @@ impl OfflinePreparedSource {
             prepared_readonly_gpt_sha256: self.source_readonly_gpt_sha256,
             actual_excluded_disk_attributes: 3,
             source_was_already_offline_on_enrollment: self.source_was_already_offline_on_enrollment,
+            actual_current_boot_volume_locks_acquired: self.actual_current_boot_volume_locks_acquired,
             journal_identity: pins.journal_identity.clone(),
             journal_path: pins.journal_path.to_string_lossy().into_owned(),
             journal_immutable_sha256: pins.immutable_sha256,

@@ -1,5 +1,6 @@
-//! Early-SAN3 independent journal enrollment. Only the independently observed
-//! J disk becomes available. The selected source remains physically offline.
+//! Boot-bound independent journal enrollment. Only the independently observed
+//! J disk becomes available. Source BASIC+READONLY protects its filesystem until
+//! the prepared-source owner acquires actual locks and whole-disk exclusion.
 use super::*;
 use crate::native::partition_lifecycle::PartitionPreparationObserver;
 
@@ -15,10 +16,7 @@ impl OfflineOwningEnvironment {
         self.require_current(events)?;
         journal.validate()?;
         require_bootstrap_route(self, journal, ram_bootstrap)?;
-        require(
-            matches!(self.facts.source_physical.disk_attributes, 1 | 3),
-            "early bootstrap requires source already OFFLINE before J enrollment",
-        )?;
+        require_bootstrap_source_protection(self)?;
         require(
             journal.disk.disk_number != self.source.storage.disk_number
                 && layout::guid_bytes(&journal.disk.identity.disk_guid)?
@@ -82,6 +80,38 @@ impl OfflineOwningEnvironment {
         observer.checkpoint("offline-J-bootstrap-held-volume-enrolled", events)?;
         Ok(volume)
     }
+}
+
+fn require_bootstrap_source_protection(environment: &OfflineOwningEnvironment) -> io::Result<()> {
+    let actual = &environment.facts.source_physical;
+    const BASIC_READONLY: u64 = 0x1000_0000_0000_0000;
+    require(
+        matches!(actual.disk_attributes, 0 | 1 | 3)
+            && actual.gpt.target_attributes == BASIC_READONLY,
+        "J bootstrap requires actual source BASIC+READONLY and supported disk attributes",
+    )?;
+    let guid = layout::guid_bytes(&environment.source.storage.identity.partition_guid)?;
+    let rows: Vec<_> = actual
+        .gpt
+        .native_layout
+        .get(48..)
+        .ok_or_else(|| invalid("J bootstrap source native layout is truncated"))?
+        .chunks_exact(144)
+        .filter(|row| row[48..64] == guid)
+        .collect();
+    require(
+        rows.len() == 1
+            && rows[0][32..48]
+                == layout::guid_bytes("ebd0a0a2-b9e5-4433-87c0-68b6b72699c7")?
+            && layout::u64_at(rows[0], 64)? == BASIC_READONLY,
+        "J bootstrap source native partition row does not prove BASIC+READONLY",
+    )?;
+    // SAN3 can leave an existing/system disk online. This authorizes only
+    // disjoint J metadata availability, never source I/O or source writes.
+    // PreparedClear still needs actual volume LOCK/DISMOUNT -> durable intent
+    // -> whole-disk3 before its opaque source/J/writer qualification. AP/RB
+    // reopening retains its stricter already-offline requirement.
+    Ok(())
 }
 
 fn require_bootstrap_route(

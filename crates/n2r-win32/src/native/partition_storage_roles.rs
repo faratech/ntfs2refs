@@ -468,10 +468,20 @@ fn query(
             need(object.is_none(), "WMI end-of-enumeration returned object")?;
             break;
         }
-        // Timeout/partial enumeration never means complete coverage.
+        // A finite Next timeout is not the end of a semisynchronous query.
+        // Continue the SAME enumeration within its existing total deadline;
+        // only WBEM_S_FALSE proves complete coverage.
+        if hr == 0x0004_0004 && count == 0 {
+            need(object.is_none(), "WMI timeout returned an unexpected object")?;
+            continue;
+        }
+        let last_row = hr == 1;
         need(
-            hr == 0 && count == 1,
-            "WMI partition enumeration incomplete or timed out",
+            (hr == 0 || last_row) && count == 1,
+            &format!(
+                "WMI partition enumeration failed or returned an invalid result: HRESULT=0x{:08x}, returned={count}",
+                hr as u32
+            ),
         )?;
         let object = object.ok_or_else(|| invalid("WMI Next returned no object"))?;
         need(
@@ -504,6 +514,9 @@ fn query(
             "Duplicate WMI partition identity",
         )?;
         rows.push(row);
+        if last_row {
+            break;
+        }
     }
     rows.sort_by_key(|r| (r.disk_number, r.partition_number));
     need(!rows.is_empty(), "WMI partition catalog empty")?;

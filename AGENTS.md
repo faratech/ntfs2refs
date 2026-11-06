@@ -7,6 +7,14 @@ This record supersedes historical LIVE/keeper/next-action statements. Full previ
 [history](docs/history/AGENTS-through-20261105-shared-AP.md), SHA256 `8973ba9a024dffffc88d82a332afc7dab76d008609cf63970a7a0279fa18c91e`.
 Read specific historical sections only when needed; do not restart finished investigations or repeat unchanged cases.
 
+## Actual same-build35afb public conversion is running
+
+Reset82218 CLOSED0: actual newWindows26300 boot1793925620534, originalD6 NTFS BASIC0/J2idle, current07ca/sevenkeepers. Closure8b301a297a6594175cb74cc5c0deab70942a3c04c15e4c6e9cfd514ba87b87c8. NEWdistinctFULL4GiB case effectiveabsolute **255368714453** (global originalepoch/cap/reserve unchanged). Staging24462 CLOSED0, readyc63e8ebfccc303e9d5adc6caeda9e89c78cb479ffa91575f785f072028ad56a6; SAMEsource35afb public83aa7a5f.../cold3c87531f... and originalE media verified.
+
+ONE actual public **PID2560/birth1793925861331**, SYSTEMworker1772/birth1793925859140, SAMEboot1793925620534; one yLF flushed/closed. Dispatcher14994 CLOSED0 afterqueue, not native completion; neverredispatch. Case `.lab/hyperv/streaming-v2-20261027/PUBLIC-35afb-actual-once-4accea2218cd4f7cb3ea6182909a2f5a`; producer `J:\n2r-public-35afb05-c130770264314546be9f6d25e7a7614d\partition-offline-conversion-cc4eb6b0081c085c6c31f32408342cd8`.
+
+Actual sameownedobservation00200:46:46Z: bothlive, publicCPU46.4375s/stdout39201/stderr0, recovery-owner phases. PublicWS54185984/OSPeakWS141553664/private42823680; processscope only, not entireVM or hardquota. WorkflowadmittedRAM1951287979/available2926157824/evidencecap13864960 unchanged. Activeledger METADATALENGTHonly3911864 at00:46:12, no activecontents read. Capacity252248334896, remaining3120379557 under255368714453. Alloldfailedbranches/frozenalpha preserved. Exclusiveoperator aef_postcut_operator owns SAMEprocess monitoring/productrestart/coldconsole/archive; Root no competingVMactions. No AP/HND/restart/converted-source claim yet. No newcode/build/test or deliberatecut authorized in normalcase. Goal incomplete.
+
 ## Lossless-trace four-binary candidate ready; next public case in setup
 
 Build22663 ACTUAL CLOSED0, all FOUR binaries SAME source35afb054af5370c40e44444e901d87720488c285, manifest092ff54b281329a84df5b68f95ef82dabf4325e9b478fbcfb728e6f35b85ab80/sourcebeforeaftertrue/no tests. Public20737536/83aa7a5f6219143d1cf3064fe423f46d596e66f2ea4f9b93fd17399e11f54c94; cold4291072/3c87531f4cb77e0b2ddc9b98f229872181129d0f9c4ee9a2af2033a73ac7cc55; prepare8939520/d2315a94dfa9d7ac4e289f91c8c87359f6f9801cedc843ca0867d27816fc509e; arm2621440/fb6d02147f6ee257555bf74af8ba41818e5c8fc4d5171b79b9c7be8ee6bff7a2. Publiclayout `.lab/development/public-layout-35afb05/layout.json` fadea337b514a41a062b6231fbdf616c426f730d49fe7085286871720f90fb48 uses exact cold renamed sibling `ntfs2refs-recovery.exe`. No native qualification inherited.

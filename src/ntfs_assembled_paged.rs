@@ -150,7 +150,7 @@ impl PagedMftResolver {
         ensure!(
             number >= 16
                 && self.allocated(number)?
-                && matches!(record.flags, 1 | 3)
+                && matches!(record.flags, 1 | 3 | 9)
                 && record.links == 0
                 && record.sequence != 0
                 && record.base != 0
@@ -173,7 +173,7 @@ impl PagedMftResolver {
         // MFT0 has already been independently bootstrapped. Unsupported list
         // semantics remain a refusal rather than an incompletely emitted file.
         ensure!(
-            number > 0 && record.base == 0 && matches!(record.flags,1|3)
+            number > 0 && record.base == 0 && matches!(record.flags,1|3|9)
                 && record.links>0 && record.attributes.iter().all(|a|a.report.flags==0&&a.report.compression_unit==0),
             "unsupported resource-bound attribute-list FILE {number}, flags={:#x}",record.flags
         );
@@ -181,6 +181,7 @@ impl PagedMftResolver {
             self.allocated(number)?,
             "attribute-list base is not allocated"
         );
+        let ordinary = stream_candidate(number, record);
         let working = self.scratch.budget().ram_bytes / 4;
         let limits =
             lists::AssemblyLimits::from_working_bytes(working, self.geometry.file_record_size)?;
@@ -245,7 +246,7 @@ impl PagedMftResolver {
             )?;
             let parsed = parse_record(bytes.clone(), &self.geometry)?;
             ensure!(
-                matches!(parsed.flags,1|3) && parsed.sequence == sequence,
+                (parsed.flags == 1 || !ordinary && matches!(parsed.flags,3|9)) && parsed.sequence == sequence,
                 "referenced extension sequence or allocation header differs"
             );
             run_count = parsed
@@ -272,7 +273,6 @@ impl PagedMftResolver {
             }
             extensions.push(evidence(extension, &bytes, &parsed));
         }
-        let ordinary = stream_candidate(number, record);
         let assemble = if ordinary { lists::assemble_streams_resource } else { lists::assemble_attributes_resource };
         let (canonical, assembly) = assemble(
             evidence(number, raw, record),

@@ -184,7 +184,7 @@ fn actual_assembly<R: Read + Seek>(
         let actual = assembled_io::evidence(wanted.record_number, &bytes, &parsed);
         ensure!(
             actual == *wanted && (parsed.flags == 1
-                || matches!(expected.schema_version,8|9) && parsed.flags == 3),
+                || matches!(expected.schema_version,8|9) && matches!(parsed.flags,3|9)),
             "actual physical extension bytes differ from the complete captured assembly"
         );
         for attribute in &parsed.attributes {

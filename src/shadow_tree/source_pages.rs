@@ -107,6 +107,7 @@ fn stream_evidence(
     source: &PagedInspection,
     file: &ntfs::FileInventory,
     stream: &ntfs::StreamInventory,
+    aliases: Option<&crate::boot_alias::WindowsAliasDomain>,
 ) -> Result<Option<SourceStreamEvidence>> {
     match stream.logical_hash_status {
         ntfs::LogicalHashStatus::Complete => {
@@ -122,10 +123,11 @@ fn stream_evidence(
         ntfs::LogicalHashStatus::NotReadExtentIdentityV1 => {
             ensure!(
                 stream.logical_sha256.is_none()
-                    && crate::ntfs_attestation::extent_identity_stream_request_domain(
-                        source, file, stream, true, true
-                    )?
-                    .is_some(),
+                    && (if aliases.is_some() {
+                        crate::ntfs_attestation::extent_identity_stream_request_windows_domain(source, file, stream)?
+                    } else {
+                        crate::ntfs_attestation::extent_identity_stream_request_domain(source, file, stream, true, true)?
+                    }).is_some(),
                 "source extent-only stream is not eligible"
             );
             Ok(Some(if stream.logical_size.is_multiple_of(4096) {
@@ -143,9 +145,11 @@ fn build_object(
     ordinal: u64,
     file: &ntfs::FileInventory,
     admission: SourceResourceAdmission,
+    aliases: Option<&crate::boot_alias::WindowsAliasDomain>,
 ) -> Result<Object> {
     let resources = ntfs_admission::ResourceProfile::ResourceBoundedV4(Some(admission));
-    let mut names = ntfs_admission::paged::user_paths(source, file)?;
+    let mut names = if let Some(aliases) = aliases { aliases.user_paths(source, file)? }
+        else { ntfs_admission::paged::user_paths(source, file)? };
     ensure!(
         !names.is_empty() && (!file.is_directory || names.len() == 1),
         "missing names or unsupported directory links"
@@ -180,11 +184,15 @@ fn build_object(
                     && a.name_utf16.is_empty())
                     || (matches!(a.type_code, 0x90 | 0xa0 | 0xb0)
                         && crate::ntfs_namespace::is_i30(&a.name_utf16))
-                    || ntfs_admission::recognized_root_txf(a))),
+                    || ntfs_admission::recognized_root_txf(a)
+                    || (aliases.is_some_and(|aliases| aliases.storage_hint_normalization().is_some())
+                        && crate::ntfs_storage_class::recognized_default(a)))),
             "unknown root attributes"
         );
     } else {
-        let issues = ntfs_admission::paged::ordinary_user_issues(source, file, admission)?;
+        let issues = if let Some(aliases) = aliases {
+            ntfs_admission::paged::ordinary_user_issues_windows(source, file, admission, aliases)?
+        } else { ntfs_admission::paged::ordinary_user_issues(source, file, admission)? };
         ensure!(
             issues.is_empty(),
             "record {} exceeds shadow profile: {issues:?}",
@@ -265,15 +273,16 @@ fn build_object(
     );
     let (source_offset, source_extents, length, sha256, source_evidence, sparse) =
         if let Some(stream) = file.streams.iter().find(|s| s.name_utf16.is_empty()) {
-            let decision =
-                ntfs_stream_plan::classify_stream_domain(source, file, stream, admission)?;
+            let decision = if let Some(aliases) = aliases {
+                ntfs_stream_plan::classify_stream_windows_domain(source, file, stream, admission, aliases)?
+            } else { ntfs_stream_plan::classify_stream_domain(source, file, stream, admission)? };
             let (offset, extents) = planned_stream_source(Some(&decision), resources)?;
             (
                 offset,
                 extents,
                 stream.logical_size,
                 stream.logical_sha256.clone(),
-                stream_evidence(source, file, stream)?,
+                stream_evidence(source, file, stream, aliases)?,
                 decision.sparse,
             )
         } else {
@@ -282,7 +291,9 @@ fn build_object(
     let mut named_streams = Vec::new();
     for stream in file.streams.iter().filter(|s| !s.name_utf16.is_empty()) {
         ensure!(!file.is_directory, "named directory streams unsupported");
-        let decision = ntfs_stream_plan::classify_stream_domain(source, file, stream, admission)?;
+        let decision = if let Some(aliases) = aliases {
+            ntfs_stream_plan::classify_stream_windows_domain(source, file, stream, admission, aliases)?
+        } else { ntfs_stream_plan::classify_stream_domain(source, file, stream, admission)? };
         ensure!(
             decision.disposition != Disposition::Reject,
             "named source stream candidate refused"
@@ -295,7 +306,7 @@ fn build_object(
             source_extents: extents,
             length: stream.logical_size,
             sha256: stream.logical_sha256.clone(),
-            source_evidence: stream_evidence(source, file, stream)?,
+            source_evidence: stream_evidence(source, file, stream, aliases)?,
             sparse: decision.sparse,
         });
     }
@@ -337,6 +348,27 @@ impl SourceExpectedDomain {
         admission: SourceResourceAdmission,
         output: &Path,
         scratch: &SourceScratch,
+    ) -> Result<Self> {
+        Self::derive_scoped(source, native, admission, output, scratch, None)
+    }
+    pub fn derive_windows(
+        source: &PagedInspection,
+        native: &impl NativeObservationDomain,
+        admission: SourceResourceAdmission,
+        output: &Path,
+        scratch: &SourceScratch,
+        aliases: &crate::boot_alias::WindowsAliasDomain,
+    ) -> Result<Self> {
+        aliases.require_source(source)?;
+        Self::derive_scoped(source, native, admission, output, scratch, Some(aliases))
+    }
+    fn derive_scoped(
+        source: &PagedInspection,
+        native: &impl NativeObservationDomain,
+        admission: SourceResourceAdmission,
+        output: &Path,
+        scratch: &SourceScratch,
+        aliases: Option<&crate::boot_alias::WindowsAliasDomain>,
     ) -> Result<Self> {
         admission.validate()?;
         source.require_paged_source(admission.source_pages, admission.semantic_byte_budget())?;
@@ -408,7 +440,7 @@ impl SourceExpectedDomain {
                 add_role(&mut roles, &mut role_ram, role, scratch)?;
                 continue;
             }
-            let object = build_object(source, native, ordinal, &file, admission)?;
+            let object = build_object(source, native, ordinal, &file, admission, aliases)?;
             if object.directory {
                 directories = directories
                     .checked_add(1)
@@ -450,7 +482,7 @@ impl SourceExpectedDomain {
                     .checked_add(1)
                     .context("physical source interval count overflow")?;
             }
-            if file.record_number == 5 && file.attributes.iter().any(|a| a.type_code == 0x100) {
+            if file.record_number == 5 && file.attributes.iter().any(ntfs_admission::recognized_root_txf) {
                 add_role(
                     &mut roles,
                     &mut role_ram,
@@ -462,6 +494,19 @@ impl SourceExpectedDomain {
                 ordered_key(u64::try_from(object.path.len())?, object.record_number),
                 &object,
             )?;
+        }
+        if let Some(aliases) = aliases {
+            // Alias entries participate in the real destination collision
+            // proof without becoming source objects or changing source counts.
+            for ordinal in 0..aliases.len() {
+                let alias = aliases.alias(ordinal)?;
+                let folded = n2r_win32::shadow_names::conservative_path_key(&alias.path);
+                let hash = Sha256::digest(folded.as_bytes());
+                let bucket = u64::from_be_bytes(hash[..8].try_into()?);
+                names.push(ordered_key(bucket, name_ordinal), &NameRow { folded })?;
+                name_ordinal = name_ordinal.checked_add(1).context("Windows alias namespace count overflow")?;
+            }
+            aliases.require_source(source)?;
         }
         admission.validate_tree(files, directories, streams)?;
         let name_pin = names.finish()?;

@@ -83,12 +83,35 @@ pub fn verify_known_contents_in_accounted_report(
 }
 
 pub(crate) fn verify_known_contents_in_accounted_report_with_lease(
+    report: GeneralConvertedReport,
+    input: &impl InputDomain,
+    admission: crate::tree_resources::SourceResourceAdmission,
+    payer: &dyn report_memory::ReportMemoryAccountant,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    protected: Option<&dyn native::ProtectedReadonlyRefsAccess>,
+) -> io::Result<GeneralConvertedReport> {
+    verify_known_contents_in_accounted_report_with_aliases(report,input,admission,payer,same_security,protected,None)
+}
+pub(crate) fn verify_known_contents_in_accounted_report_with_lease_windows_aliases(
+    report: GeneralConvertedReport,
+    input: &impl InputDomain,
+    admission: crate::tree_resources::SourceResourceAdmission,
+    payer: &dyn report_memory::ReportMemoryAccountant,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    protected: Option<&dyn native::ProtectedReadonlyRefsAccess>,
+    aliases:&windows_aliases::VerifiedWindowsAliases,
+) -> io::Result<GeneralConvertedReport> {
+    aliases.require_canonical_input(input)?;
+    verify_known_contents_in_accounted_report_with_aliases(report,input,admission,payer,same_security,protected,Some(aliases))
+}
+fn verify_known_contents_in_accounted_report_with_aliases(
     mut report: GeneralConvertedReport,
     input: &impl InputDomain,
     admission: crate::tree_resources::SourceResourceAdmission,
     payer: &dyn report_memory::ReportMemoryAccountant,
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
     protected: Option<&dyn native::ProtectedReadonlyRefsAccess>,
+    aliases:Option<&windows_aliases::VerifiedWindowsAliases>,
 ) -> io::Result<GeneralConvertedReport> {
     admission.validate()?;
     input.require_resource_metadata(admission)?;
@@ -110,7 +133,7 @@ pub(crate) fn verify_known_contents_in_accounted_report_with_lease(
     // Reuse the complete static metadata/namespace/security validator; this
     // enumerates no native tree and cannot substitute a saved report for the
     // already held, independently accounted observation.
-    validate_existing_content_domain_with_memory(
+    validate_existing_content_domain_with_memory_and_windows_aliases(
         &report.native,
         input,
         &same_security,
@@ -119,6 +142,7 @@ pub(crate) fn verify_known_contents_in_accounted_report_with_lease(
         false,
         true,
         Some(payer),
+        aliases,
     )?;
     let observation = report
         .content_observation

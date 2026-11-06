@@ -73,6 +73,10 @@ pub struct ResourceSourceReport<'a> {
     pub comparison_rows: &'a RecordStorePin,
     pub unresolved_blockers: &'a RecordStorePin,
     pub internal_replacements: &'a RecordStorePin,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub windows_alias_plan: Option<&'a RecordStorePin>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_hint_normalizations: Option<&'a RecordStorePin>,
     pub gates: &'a [Gate],
     pub source_group_bytes: u64,
     pub source_native_groups_sealed: bool,
@@ -94,6 +98,10 @@ pub struct ResourceSourceContext {
     early_preparation_guard: Option<crate::resource_preparation::early_guard::EarlyPreparationGuard>,
     source: ResourceSourceOwner,
     raw: PagedInspection,
+    windows_aliases: Option<Arc<crate::boot_alias::WindowsAliasDomain>>,
+    storage_hint_normalization: Option<Arc<n2r_win32::BootStorageHintNormalization>>,
+    storage_hint_records: Option<SortedRecordStore>,
+    _storage_hint_ram: Option<SourceRamLease>,
     native: GeneralLivePagedNtfsObservation,
     fingerprint: PagedSourceFingerprint,
     read_coverage: InspectionReadCoverage,
@@ -870,6 +878,31 @@ impl ResourceSourceContext {
             "frozen source geometry differs from online capture"
         );
         let inspection_sha = raw.canonical_sha256()?;
+        let storage_hint_ram = if binding.layout_profile
+            == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows {
+            Some(scratch.lease_ram(16384)?)
+        } else { None };
+        let storage_hint_normalization = if storage_hint_ram.is_some() {
+            let proof = Arc::new(source.observe_boot_storage_hint_normalization(events)?);
+            proof.revalidate(source, events)?;
+            Some(proof)
+        } else { None };
+        let windows_aliases = if binding.layout_profile
+            == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows {
+            let mut aliases = crate::boot_alias::WindowsAliasDomain::derive(
+                &raw, &output.join("windows-aliases"), &scratch,
+            )?;
+            aliases.bind_storage_hint_normalization(&raw,
+                Arc::clone(storage_hint_normalization.as_ref().context("Windows storage normalization witness absent")?))?;
+            let aliases = Arc::new(aliases);
+            aliases.require_source(&raw)?;
+            save(output, "windows-alias-source.json", &serde_json::json!({
+                "kind":"frozen-Windows-derived-alias-plan-v1", "source_inspection_sha256":inspection_sha,
+                "aliases":aliases.pin(), "alias_count":aliases.len(),
+                "source_normalization_authorized":false, "target_preservation_verified":false,
+            }), &scratch, &mut metadata, &mut reservations)?;
+            Some(aliases)
+        } else { None };
         save(
             output,
             "source-manifest.json",
@@ -1056,10 +1089,21 @@ impl ResourceSourceContext {
             *b"N2RREPL1",
             &scratch,
         )?;
+        let mut storage_hint_writer = storage_hint_normalization.as_ref().map(|_| {
+            SortedRecordWriter::new(&output.join("storage-hint-normalizations"), *b"WINDSC01", &scratch)
+        }).transpose()?;
+        let mut storage_hint_count = 0u64;
         let comparison = compare_domain(&raw, &binding, budget, policy, native.domain(), |row| {
             let file = raw
                 .find_record(row.record_number, Some(row.sequence_number))?
                 .context("compared source identity absent")?;
+            if let Some(proof) = &storage_hint_normalization {
+                if let Some(normalization) = crate::ntfs_storage_class::normalize(&file, proof)? {
+                    storage_hint_writer.as_mut().context("storage normalization archive absent")?
+                        .push(key(file.record_number), &normalization)?;
+                    storage_hint_count = storage_hint_count.checked_add(1).context("storage normalization count overflow")?;
+                }
+            }
             no_dos &= file.names.iter().all(|name| name.namespace != 2);
             let role = ntfs_admission::paged::internal_role(&raw, &file)?;
             ensure!(
@@ -1109,7 +1153,11 @@ impl ResourceSourceContext {
                             .context("logical total overflow")?;
                     }
                 }
-                ntfs_admission::paged::ordinary_user_issues(&raw, &file, admission)?
+                if let Some(aliases) = &windows_aliases {
+                    ntfs_admission::paged::ordinary_user_issues_windows(&raw, &file, admission, aliases)?
+                } else {
+                    ntfs_admission::paged::ordinary_user_issues(&raw, &file, admission)?
+                }
             };
             policy_rejections = policy_rejections
                 .checked_add(u64::from(!issues.is_empty()))
@@ -1143,11 +1191,25 @@ impl ResourceSourceContext {
         })?;
         let rows_pin = rows_writer.finish()?;
         let replacements_pin = replacements_writer.finish()?;
+        let storage_hint_pin = storage_hint_writer.map(SortedRecordWriter::finish).transpose()?;
+        if let Some(proof) = &storage_hint_normalization {
+            proof.revalidate(source, events)?;
+            save(output, "source-storage-hint-normalizations.json", &serde_json::json!({
+                "kind":"explicit-default-Windows-storage-hint-normalization-v1",
+                "source_inspection_sha256":inspection_sha, "source_device_witness":proof.as_ref(),
+                "normalized_record_count":storage_hint_count, "records":storage_hint_pin.as_ref(),
+                "target_storage_class_property_preserved":false,
+                "policy":"archive exact default class2/flags0 placement hint on fixed non-Spaces storage; refuse all other values",
+            }), &scratch, &mut metadata, &mut reservations)?;
+        }
         ensure!(
             row_count == raw.file_count(),
             "complete per-object source comparison coverage differs"
         );
-        let short_policy = short_names(&raw, &native, no_dos);
+        // Existing data admission still requires no DOS aliases. An explicit
+        // Windows owner may account for them in its held, exact derived plan;
+        // actual target preservation remains a separate final obligation.
+        let short_policy = short_names(&raw, &native, no_dos || windows_aliases.is_some());
         let mut unresolved_writer = SortedRecordWriter::new(
             &output.join("unresolved-source-blockers"),
             *b"N2RBLOCK",
@@ -1156,6 +1218,30 @@ impl ResourceSourceContext {
         let mut unresolved_count = 0u64;
         for ordinal in 0..raw.blocker_count() {
             let blocker = raw.blocker(ordinal)?;
+            let windows_alias_covered = if blocker.code == "dos_short_name" {
+                if let (Some(aliases), Some(number)) = (&windows_aliases, blocker.file_record_number) {
+                    let file = raw.find_record(number, None)?.context("Windows alias blocker identity absent")?;
+                    ensure!(file.names.iter().any(|name| name.namespace == 2), "Windows alias blocker has no DOS source name");
+                    let _ = aliases.user_paths(&raw, &file)?;
+                    true
+                } else { false }
+            } else { false };
+            if windows_alias_covered { continue; }
+            if blocker.code == "unsupported_attribute"
+                && blocker.message == "Attribute type 0x100 needs a preservation policy" {
+                if let (Some(proof), Some(number)) = (&storage_hint_normalization, blocker.file_record_number) {
+                    let file = raw.find_record(number, None)?.context("storage normalization blocker identity absent")?;
+                    if crate::ntfs_storage_class::normalize(&file, proof)?.is_some() {
+                        let role = ntfs_admission::paged::internal_role(&raw, &file)?;
+                        let root_txf_covered = transactions.binds_domain(&raw)
+                            && (number == 5 || role.as_deref() == Some("$Extend\\$RmMetadata\\$Txf"));
+                        let all_covered = file.attributes.iter().filter(|attribute| attribute.type_code == 0x100)
+                            .all(|attribute| crate::ntfs_storage_class::recognized_default(attribute)
+                                || (root_txf_covered && ntfs_admission::recognized_root_txf(attribute)));
+                        if all_covered { continue; }
+                    }
+                }
+            }
             if ntfs_admission::paged::blocker_is_unresolved(
                 &raw,
                 &blocker,
@@ -1173,6 +1259,18 @@ impl ResourceSourceContext {
         }
         let unresolved_pin = unresolved_writer.finish()?;
         let mut gates = Vec::new();
+        if let Some(aliases) = &windows_aliases {
+            aliases.require_source(&raw)?;
+            gate(&mut gates, "windows_alias_source_coverage", true,
+                "every DOS source name is bound to a canonical same-parent derived target entry; native source identities remain unchanged");
+            gate(&mut gates, "windows_alias_target_preservation", aliases.is_empty(),
+                "nonempty Windows alias plans require actual complete protected-target alias verification before writer admission");
+        }
+        if let Some(proof) = &storage_hint_normalization {
+            proof.revalidate(source, events)?;
+            gate(&mut gates, "default_storage_hint_normalization", storage_hint_pin.is_some(),
+                "exact default $DSC class2/flags0 metadata archived under the original frozen fixed non-Spaces device witness; ReFS property preservation is not claimed");
+        }
         let clean = raw.header().dirty == Some(false)
             && raw
                 .header()
@@ -1328,14 +1426,18 @@ impl ResourceSourceContext {
             false,
             "actual resource-selected target preservation remains required",
         );
+        let mut source_views = serde_json::json!({"kind":"resource-source-views-v1","inspection":inspection_sha,
+            "source_fingerprint":source_sha,"native_pages_sha256":native.domain().sha256(),"comparison_rows":rows_pin});
+        if let Some(aliases) = &windows_aliases { source_views["windows_alias_plan"] = serde_json::to_value(aliases.pin())?; }
+        if let Some(pin) = &storage_hint_pin { source_views["storage_hint_normalizations"] = serde_json::to_value(pin)?; }
         let source_views_sha = json_sha(
-            &serde_json::json!({"kind":"resource-source-views-v1","inspection":inspection_sha,
-            "source_fingerprint":source_sha,"native_pages_sha256":native.domain().sha256(),"comparison_rows":rows_pin}),
+            &source_views,
             scratch.budget().scratch_bytes / 2,
         )?;
         let rows = SortedRecordStore::open(&rows_pin, &scratch)?;
         let unresolved = SortedRecordStore::open(&unresolved_pin, &scratch)?;
         let replacements = SortedRecordStore::open(&replacements_pin, &scratch)?;
+        let storage_hint_records = storage_hint_pin.as_ref().map(|pin| SortedRecordStore::open(pin, &scratch)).transpose()?;
         // All preceding fallible collection used the same live source owner.
         // Move it only once the complete source context is ready to form.
         let source = source_slot.take().context("isolated source owner absent")?;
@@ -1343,6 +1445,10 @@ impl ResourceSourceContext {
             early_preparation_guard: early_preparation_guard.take(),
             source: ResourceSourceOwner::dedicated(source),
             raw,
+            windows_aliases,
+            storage_hint_normalization,
+            storage_hint_records,
+            _storage_hint_ram: storage_hint_ram,
             native,
             fingerprint,
             read_coverage,
@@ -1433,6 +1539,8 @@ impl ResourceSourceContext {
             comparison_rows: self.rows.pin(),
             unresolved_blockers: self.unresolved.pin(),
             internal_replacements: self.replacements.pin(),
+            windows_alias_plan: self.windows_aliases.as_ref().map(|aliases| aliases.pin()),
+            storage_hint_normalizations: self.storage_hint_records.as_ref().map(SortedRecordStore::pin),
             gates: &self.gates,
             source_group_bytes: self.scratch.used_bytes(),
             source_native_groups_sealed: self.source_seal.is_some() && self.native_seal.is_some(),
@@ -1455,6 +1563,7 @@ impl ResourceSourceContext {
                     "security_timestamp_preservation"
                         | "target_resource_profile_support"
                         | "shared_artifact_arena"
+                        | "windows_alias_target_preservation"
                 ) && !g.satisfied
             })
             .map(|g| g.code.as_str())
@@ -1467,6 +1576,8 @@ impl ResourceSourceContext {
     }
     pub fn require_source_gates(&self) -> Result<()> {
         self.require_source_evidence()?;
+        ensure!(self.windows_aliases.as_ref().is_none_or(|aliases| aliases.is_empty()),
+            "Windows alias target preservation needs its opaque protected-target witness before source writer admission");
         ensure!(
             self.gates
                 .iter()
@@ -1488,6 +1599,9 @@ impl ResourceSourceContext {
     ) -> Result<PreparedResourceSourceAdmission> {
         self.source.require_complete_partition_admission(events)?;
         self.require_source_evidence()?;
+        if let Some(aliases)=&self.windows_aliases {
+            target.require_windows_alias_source(aliases,self.admission.source_inspection_sha256,expected)?;
+        }
         self.recheck_source(events)?;
         let arena = self
             .arena
@@ -1569,6 +1683,13 @@ impl ResourceSourceContext {
             )?;
         }
         self.raw.revalidate()?;
+        if let Some(aliases) = &self.windows_aliases { aliases.require_source(&self.raw)?; }
+        if let Some(proof) = &self.storage_hint_normalization {
+            ensure!(proof.binding() == self.source.binding()
+                && self.windows_aliases.as_ref().is_some_and(|aliases| aliases.has_storage_hint_owner(proof)),
+                "Windows storage normalization runtime owner changed");
+            self.storage_hint_records.as_ref().context("Windows storage normalization records absent")?.revalidate()?;
+        }
         self.native.domain().revalidate()?;
         self.fingerprint.revalidate()?;
         self.fingerprint.validate_reads(&self.read_coverage)?;
@@ -1648,6 +1769,9 @@ impl ResourceSourceContext {
             "original live NTFS freeze witness was consumed by an apply-intent attempt"
         );
         self.revalidate_evidence()?;
+        if let Some(proof) = &self.storage_hint_normalization {
+            proof.revalidate(self.source.require_dedicated()?, events)?;
+        }
         let before = self.source.state(events)?;
         ensure!(
             before == self.before && before.disk_attributes == 3,
@@ -1717,6 +1841,22 @@ impl ResourceSourceContext {
     }
     pub fn inspection(&self) -> &PagedInspection {
         &self.raw
+    }
+    pub fn windows_aliases(&self) -> Option<Arc<crate::boot_alias::WindowsAliasDomain>> {
+        self.windows_aliases.as_ref().map(Arc::clone)
+    }
+    pub fn derive_projection(
+        &self, admission: SourceResourceAdmission, output: &Path, scratch: &SourceScratch,
+    ) -> Result<crate::shadow_tree::source_pages::SourceExpectedDomain> {
+        if let Some(aliases) = &self.windows_aliases {
+            crate::shadow_tree::source_pages::SourceExpectedDomain::derive_windows(
+                &self.raw, self.native.domain(), admission, output, scratch, aliases,
+            )
+        } else {
+            crate::shadow_tree::source_pages::SourceExpectedDomain::derive(
+                &self.raw, self.native.domain(), admission, output, scratch,
+            )
+        }
     }
     pub fn native(&self) -> &GeneralLivePagedNtfsObservation {
         &self.native

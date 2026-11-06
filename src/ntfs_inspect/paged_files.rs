@@ -1,9 +1,35 @@
 //! Canonical raw files over a complete fixed-width disk index and bitmap facts.
 use super::*;
 use super::{
-    paged_storage::{PagedMetadataRange, SourcePagePin, SourceScratch},
+    paged_storage::{PagedMetadataRange, SourcePagePin, SourceRamLease, SourceScratch},
     record_store::{RecordStorePin, SortedRecordStore},
 };
+use std::{cell::RefCell, collections::BTreeMap};
+
+struct CachedDirectory {
+    file: FileInventory,
+    charged: u64,
+    last_used: u64,
+    // The retained row is dropped before its memory credit.
+    _ram: SourceRamLease,
+}
+#[derive(Default)]
+struct DirectoryRowCache {
+    rows: BTreeMap<u64, CachedDirectory>,
+    charged: u64,
+    clock: u64,
+}
+impl DirectoryRowCache {
+    fn clear(&mut self) {
+        self.rows.clear(); self.charged = 0; self.clock = 0;
+    }
+    fn evict_oldest(&mut self) -> bool {
+        let Some(number) = self.rows.iter().min_by_key(|(_, row)| row.last_used).map(|(number, _)| *number)
+            else { return false; };
+        if let Some(row) = self.rows.remove(&number) { self.charged -= row.charged; }
+        true
+    }
+}
 
 pub(super) fn file_key(number: u64) -> [u8; 16] {
     let mut key = [0; 16];
@@ -18,6 +44,7 @@ pub struct PagedRawFiles {
     extensions: PagedMetadataRange,
     extension_pin: SourcePagePin,
     scratch: SourceScratch,
+    directory_rows: RefCell<DirectoryRowCache>,
 }
 impl PagedRawFiles {
     pub(super) fn from_live_bitmap(
@@ -41,6 +68,7 @@ impl PagedRawFiles {
             extensions: PagedMetadataRange::open(extensions, scratch)?,
             extension_pin: extensions.clone(),
             scratch: scratch.clone(),
+            directory_rows: RefCell::new(DirectoryRowCache::default()),
         };
         value.validate_complete_files()?;
         Ok(value)
@@ -70,6 +98,9 @@ impl PagedRawFiles {
             pin.records == self.files.len() && pin.data.path != self.files.pin().data.path,
             "source row replacement cannot change its complete identity domain"
         );
+        // Replacement changes roles or hash evidence. Never serve an old row,
+        // and return optional cache credit before opening replacement pages.
+        self.directory_rows.get_mut().clear();
         let replacement = SortedRecordStore::open(pin, &self.scratch)?;
         for ordinal in 0..replacement.len() {
             ensure!(
@@ -102,6 +133,35 @@ impl PagedRawFiles {
     }
     pub(super) fn ordinal_wire_bytes(&self, ordinal: u64) -> Result<u64> {
         self.files.record_bytes(ordinal)
+    }
+    fn retain_directory(&self, ordinal: u64, file: &FileInventory) -> Result<()> {
+        if !file.is_directory { return Ok(()); }
+        let wire = self.files.record_bytes(ordinal)?;
+        // Pay an oversized complete BTree node per row as well as the clone's
+        // actual wire-derived bound. No file DATA contents live in this row.
+        let node = (std::mem::size_of::<CachedDirectory>() as u64 + 8) * 16 + 4096;
+        let Some(charge) = wire.checked_mul(32).and_then(|bytes| bytes.checked_add(node))
+            else { return Ok(()); };
+        let limit = self.budget().ram_bytes / 32;
+        if charge > limit { return Ok(()); }
+        let actual = file_heap_bytes(file)?.checked_add(std::mem::size_of::<FileInventory>() as u64);
+        if actual.is_none_or(|bytes| bytes > charge - node) { return Ok(()); }
+        let mut cache = self.directory_rows.borrow_mut();
+        if cache.rows.contains_key(&file.record_number) { return Ok(()); }
+        while cache.charged > limit - charge {
+            if !cache.evict_oldest() { return Ok(()); }
+        }
+        // Optional cache pressure must not become a source admission limit.
+        // The ordinary read below already belongs to the caller's row budget.
+        let Ok(ram) = self.scratch.lease_ram(charge) else { return Ok(()); };
+        let retained = file.clone();
+        cache.clock = cache.clock.saturating_add(1);
+        let last_used = cache.clock;
+        cache.rows.insert(file.record_number, CachedDirectory {
+            file: retained, charged: charge, last_used, _ram: ram,
+        });
+        cache.charged += charge;
+        Ok(())
     }
     fn bit(&self, range: &dyn SourceMetadataRange, number: u64) -> Result<bool> {
         ensure!(
@@ -201,10 +261,22 @@ impl RootFileDomain for PagedRawFiles {
         self.files.get(ordinal)
     }
     fn find_record(&self, number: u64, sequence: Option<u16>) -> Result<Option<FileInventory>> {
+        {
+            let mut cache = self.directory_rows.borrow_mut();
+            cache.clock = cache.clock.saturating_add(1);
+            let last_used = cache.clock;
+            if let Some(row) = cache.rows.get_mut(&number) {
+                row.last_used = last_used;
+                return Ok(if sequence.is_none_or(|wanted| wanted == row.file.sequence_number) {
+                    Some(row.file.clone())
+                } else { None });
+            }
+        }
         let Some(ordinal) = self.ordinal(number)? else {
             return Ok(None);
         };
         let file = self.file(ordinal)?;
+        self.retain_directory(ordinal, &file)?;
         Ok(if sequence.is_none_or(|s| s == file.sequence_number) {
             Some(file)
         } else {

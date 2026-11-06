@@ -135,9 +135,7 @@ impl ScopedSourceContext<'_> {
         scratch: &SourceScratch,
     ) -> Result<crate::shadow_tree::source_pages::SourceExpectedDomain> {
         match self {
-            Self::Dedicated(c) => crate::shadow_tree::source_pages::SourceExpectedDomain::derive(
-                c.inspection(),
-                c.native().domain(),
+            Self::Dedicated(c) => c.derive_projection(
                 admission,
                 path,
                 scratch,
@@ -162,10 +160,18 @@ impl ScopedSourceContext<'_> {
         same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
         profile: Option<n2r_win32::attestation::ResourceProfile>,
         memory: &dyn n2r_win32::shadow_native::report_memory::ReportMemoryAccountant,
+        aliases: Option<&n2r_win32::shadow_native::windows_aliases::VerifiedWindowsAliases>,
         events: &mut Vec<NativeEvent>,
-    ) -> Result<GeneralLiveRefsLayoutObservation> {
+    ) -> Result<(GeneralLiveRefsLayoutObservation,
+        Option<n2r_win32::shadow_native::windows_aliases::ObservedWindowsAliases>)> {
         match self {
-            Self::Dedicated(_) => Ok(target
+            Self::Dedicated(_) if aliases.is_some() => {
+                let (native,proof)=target.observe_refs_layout_residuals_paged_domain_with_memory_windows_aliases(
+                    pair,input,provider,path,budget,same_security,profile,memory,aliases.unwrap(),events,
+                )?;
+                Ok((native,Some(proof)))
+            }
+            Self::Dedicated(_) => Ok((target
                 .observe_refs_layout_residuals_paged_domain_with_memory(
                     pair,
                     input,
@@ -176,8 +182,9 @@ impl ScopedSourceContext<'_> {
                     profile,
                     memory,
                     events,
-                )?),
+                )?,None)),
             Self::Partition(c) => {
+                ensure!(aliases.is_none(),"Windows alias overlay cannot enter the ordinary shared-disk source path");
                 let token = c.owner_token();
                 let (owner, admission, _) = c.source_admission_and_inspection();
                 let result = target
@@ -195,7 +202,7 @@ impl ScopedSourceContext<'_> {
                         events,
                     )?;
                 result.require_partition_source_owner(&token)?;
-                Ok(result)
+                Ok((result,None))
             }
         }
     }

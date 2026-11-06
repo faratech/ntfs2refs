@@ -43,6 +43,8 @@ mod partition_dump_locations;
 mod partition_runtime_roles;
 mod partition_storage_roles;
 mod offline_windows;
+mod windows_storage_class;
+pub use windows_storage_class::BootStorageHintNormalization;
 mod partition_owner;
 mod partition_source_metadata;
 mod partition_target_observation;
@@ -3339,6 +3341,42 @@ impl GeneralFrozenPartition {
             observed_readonly,
             after,
         })
+    }
+
+    /// Boot-only alias-aware observation under the same actual physical
+    /// READ_ONLY mount lease as canonical target metadata and residuals.
+    pub fn observe_refs_layout_residuals_paged_domain_with_memory_windows_aliases(
+        &mut self,
+        pair: crate::general_layout::GeneralSourceShadowBinding,
+        input: &impl crate::shadow_native::input_domain::InputDomain,
+        provider: &impl crate::layout_residual_pages::LayoutResidualProvider,
+        result_path: &std::path::Path,
+        result_budget: crate::metadata_pages::PageBudget,
+        same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+        resource_profile: Option<crate::attestation::ResourceProfile>,
+        memory: &dyn crate::shadow_native::report_memory::ReportMemoryAccountant,
+        aliases: &crate::shadow_native::windows_aliases::VerifiedWindowsAliases,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<(GeneralLiveRefsLayoutObservation,
+        crate::shadow_native::windows_aliases::ObservedWindowsAliases)> {
+        if pair.source.layout_profile != crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows {
+            return Err(invalid("derived path aliases require the explicit Windows source profile"));
+        }
+        let admission=resource_profile.ok_or_else(||invalid("Windows alias observation needs a resource profile"))?
+            .resource_admission()?.ok_or_else(||invalid("Windows alias observation requires V4"))?;
+        input.require_resource_metadata(admission)?;
+        aliases.require_scope(&pair,admission.source_inspection_sha256,aliases.plan_digest())?;
+        provider.revalidate()?;
+        let ((report,observed_aliases),before,observed_readonly,after)=
+            self.with_readonly_refs_observation(&pair,resource_profile,events,|protected| {
+                crate::shadow_native::observe_general_layout_residuals_paged_readonly_domain_with_memory_windows_aliases(
+                    pair.clone(),input,provider,result_path,result_budget,&same_security,
+                    protected,resource_profile,memory,aliases,
+                )
+            })?;
+        provider.revalidate()?;
+        observed_aliases.require_scope(&pair,admission.source_inspection_sha256,aliases.plan_digest())?;
+        Ok((GeneralLiveRefsLayoutObservation{report,before,observed_readonly,after},observed_aliases))
     }
 
     fn with_readonly_refs_observation<T>(

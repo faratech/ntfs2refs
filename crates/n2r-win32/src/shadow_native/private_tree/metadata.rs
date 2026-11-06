@@ -10,7 +10,7 @@ pub(super) fn input_digest(input: &[Input<'_>]) -> [u8; 32] {
     input_digest_domain(&SliceInputs(input)).expect("in-memory input ordinal domain")
 }
 
-pub(super) fn input_digest_domain(input: &impl InputDomain) -> io::Result<[u8; 32]> {
+pub(in crate::shadow_native) fn input_digest_domain(input: &impl InputDomain) -> io::Result<[u8; 32]> {
     fn bytes(hash: &mut Sha256, value: &[u8]) {
         hash.update((value.len() as u64).to_le_bytes());
         hash.update(value);
@@ -179,10 +179,30 @@ pub(super) fn complete(
 }
 
 pub(super) fn complete_domain(
-    mut tree: PrivateTree,
+    tree: PrivateTree,
     input: &impl InputDomain,
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
 ) -> io::Result<serde_json::Value> {
+    complete_domain_inner(tree, input, None::<&super::super::windows_aliases::NoWindowsAliases>, same_security)
+        .map(|(report, _)| report)
+}
+
+pub(super) fn complete_windows_aliases_domain(
+    tree: PrivateTree,
+    input: &impl InputDomain,
+    aliases: &impl super::super::windows_aliases::WindowsAliasInputDomain,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+) -> io::Result<(serde_json::Value, super::super::windows_aliases::VerifiedWindowsAliases)> {
+    let (report, proof)=complete_domain_inner(tree,input,Some(aliases),same_security)?;
+    Ok((report,proof.ok_or_else(||invalid("Windows alias completion witness absent"))?))
+}
+
+fn complete_domain_inner(
+    mut tree: PrivateTree,
+    input: &impl InputDomain,
+    aliases: Option<&impl super::super::windows_aliases::WindowsAliasInputDomain>,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+) -> io::Result<(serde_json::Value, Option<super::super::windows_aliases::VerifiedWindowsAliases>)> {
     tree.require_bound_input_domain(input)?;
     tree.require_source_excluded()?;
     if !tree.placement_complete || !tree.system_payloads_complete {
@@ -283,9 +303,16 @@ pub(super) fn complete_domain(
         super::super::hard_links::create_owned_domain(input, &tree.metadata_targets)?
     };
     tree.require_source_excluded()?;
+    let mut alias_stage=if let Some(aliases)=aliases {
+        let admission=tree.metadata_resource_admission.ok_or_else(||invalid("Windows aliases require actual resource metadata ownership"))?;
+        let memory=tree.memory.as_ref().ok_or_else(||invalid("Windows alias constructor RAM owner absent"))?;
+        if tree.reparse_privileges.is_none(){tree.reparse_privileges=Some(Privileges::enable_for(&["SeCreateSymbolicLinkPrivilege"])?);}
+        Some(super::super::windows_aliases::StagedWindowsAliases::create(input,aliases,&tree.pair,&tree.metadata_targets,admission,memory.payer().as_ref())?)
+    }else{None};
+    tree.require_source_excluded()?;
     // This consumes the only tree owner on success AND failure. A diagnostic
     // return cannot resume a partially public/private metadata transition.
-    let mut report = super::super::cache_refresh::complete_owned_metadata_scoped_domain(
+    let mut report = super::super::cache_refresh::complete_owned_metadata_scoped_windows_aliases_domain(
         &tree.pair,
         &tree.source_before,
         tree.partition_source.as_ref().map(|lease|lease.witness()),
@@ -294,6 +321,7 @@ pub(super) fn complete_domain(
         &tree.metadata_targets,
         tree.metadata_object_limit,
         tree.metadata_resource_admission,
+        alias_stage.as_mut(),
         same_security,
     )?;
     tree.require_source_excluded()?;
@@ -340,5 +368,7 @@ pub(super) fn complete_domain(
     if let Some(lease)=tree.partition_source.take(){
         let mut events=Vec::new();lease.finish(&mut events)?;
     }
-    Ok(report)
+    if let Some(aliases)=aliases{aliases.revalidate()?;}
+    if let Some(stage)=alias_stage.as_ref(){report["derived_windows_aliases"]=stage.summary();}
+    Ok((report,alias_stage.map(super::super::windows_aliases::StagedWindowsAliases::finish).transpose()?))
 }

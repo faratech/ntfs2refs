@@ -399,13 +399,16 @@ fn accounted_internal_txf_blocker(
         && file
             .attributes
             .iter()
-            .filter(|attribute| attribute.type_code == 0x100)
+            .filter(|attribute| attribute.type_code == 0x100
+                && attribute.name_utf16 == [36, 84, 88, 70, 95, 68, 65, 84, 65])
             .count()
             == 1
         && file
             .attributes
             .iter()
             .any(|attribute| recognized_root_txf(attribute))
+        && file.attributes.iter().filter(|attribute| attribute.type_code == 0x100)
+            .all(recognized_root_txf)
 }
 
 fn accounted_empty_badclus_blocker(
@@ -1235,6 +1238,26 @@ pub(crate) fn user_issues_with_context(
     descriptor: Option<&ntfs_security::DescriptorRecord>,
     descriptor_maximum: Option<u64>,
     maximum_streams: usize,
+    source_evidence_valid: impl FnMut(&ntfs::StreamInventory) -> bool,
+) -> Vec<String> {
+    user_issues_with_context_alias_scope(f, ordinary, geometry, names_supported,
+        system_volume_information, descriptor, descriptor_maximum, maximum_streams,
+        false, false, source_evidence_valid)
+}
+
+/// The true alias scope is supplied only after a held WindowsAliasDomain has
+/// conserved this record's DOS paths. Ordinary data callers use the wrapper.
+pub(crate) fn user_issues_with_context_alias_scope(
+    f: &FileInventory,
+    ordinary: bool,
+    geometry: &ntfs::NtfsGeometry,
+    names_supported: bool,
+    system_volume_information: bool,
+    descriptor: Option<&ntfs_security::DescriptorRecord>,
+    descriptor_maximum: Option<u64>,
+    maximum_streams: usize,
+    windows_alias_paths_preserved: bool,
+    default_storage_hint_normalization: bool,
     mut source_evidence_valid: impl FnMut(&ntfs::StreamInventory) -> bool,
 ) -> Vec<String> {
     let mut issues = vec![];
@@ -1263,7 +1286,7 @@ pub(crate) fn user_issues_with_context(
             );
         }
     }
-    if !names_supported || f.names.iter().any(|n| n.namespace == 2) {
+    if !names_supported || (!windows_alias_paths_preserved && f.names.iter().any(|n| n.namespace == 2)) {
         issues
             .push("names, depth, short-name aliases or directory links exceed the profile".into());
     }
@@ -1279,6 +1302,11 @@ pub(crate) fn user_issues_with_context(
                 && matches!(a.type_code, 0x90 | 0xa0 | 0xb0)
                 && ntfs_namespace::is_i30(&a.name_utf16);
             let root_txf = f.record_number == 5 && f.is_directory && recognized_root_txf(a);
+            #[cfg(windows)]
+            let default_storage_hint = windows_alias_paths_preserved && default_storage_hint_normalization
+                && crate::ntfs_storage_class::recognized_default(a);
+            #[cfg(not(windows))]
+            let default_storage_hint = { let _ = default_storage_hint_normalization; false };
             let ea = ea_supported && matches!(a.type_code, 0xd0 | 0xe0) && a.name_utf16.is_empty();
             let point = reparse.is_some() && a.type_code == 0xc0 && a.name_utf16.is_empty();
             let sparse_data = ordinary
@@ -1302,7 +1330,7 @@ pub(crate) fn user_issues_with_context(
                 && f.standard_information
                     .as_ref()
                     .is_some_and(|si| si.file_attributes & 0x800 != 0);
-            !(plain || data || index || root_txf || ea || point)
+            !(plain || data || index || root_txf || ea || point || default_storage_hint)
                 || ((a.flags != 0 || a.compression_unit != 0)
                     && !sparse_data
                     && !compressed_data
@@ -1315,7 +1343,8 @@ pub(crate) fn user_issues_with_context(
     if f.record_number == 5
         && f.attributes
             .iter()
-            .filter(|attribute| attribute.type_code == 0x100)
+            .filter(|attribute| attribute.type_code == 0x100
+                && attribute.name_utf16 == [36, 84, 88, 70, 95, 68, 65, 84, 65])
             .count()
             > 1
     {

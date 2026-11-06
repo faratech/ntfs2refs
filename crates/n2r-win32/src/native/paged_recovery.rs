@@ -744,6 +744,48 @@ impl GeneralFrozenPartition {
         })
     }
 
+    /// Native Windows alias-aware finalization on the converted original
+    /// partition. Canonical rows and known-content checks remain unchanged;
+    /// the separate alias witness is issued only by the actual readonly lease.
+    pub fn observe_converted_protected_with_memory_windows_aliases(
+        &mut self,
+        pair:crate::general_layout::GeneralSourceShadowBinding,
+        input:&impl crate::shadow_native::input_domain::InputDomain,
+        expected_label:Option<&crate::volume_label::VolumeLabel>,
+        same_security:impl Fn(&[u8],&[u8])->io::Result<bool>,
+        resource_profile:crate::attestation::ResourceProfile,
+        memory:&dyn crate::shadow_native::report_memory::ReportMemoryAccountant,
+        aliases:&crate::shadow_native::windows_aliases::VerifiedWindowsAliases,
+        events:&mut Vec<NativeEvent>,
+    )->io::Result<(GeneralLiveConvertedObservation,crate::shadow_native::windows_aliases::ObservedWindowsAliases)> {
+        pair.validate_with_resource_profile(Some(resource_profile))?;
+        if pair.source!=self.binding||pair.source.layout_profile!=crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows{
+            return Err(invalid("converted Windows alias observer source binding differs"));
+        }
+        let admission=resource_profile.resource_admission()?.ok_or_else(||invalid("converted alias observer requires actual V4 admission"))?;
+        aliases.require_scope(&pair,admission.source_inspection_sha256,aliases.plan_digest())?;
+        let ((report,observed_aliases),before,observed_readonly,after)=self.with_readonly_refs_binding_observation(events,|protected|{
+            let actual_label=protected_refs_label(protected.volume())?;
+            let enrollment_label=crate::volume_label::VolumeLabel::from_text("n2r-retained-shadow")?;
+            let effective_label=match expected_label{
+                Some(desired)if *desired==actual_label=>Some(desired),
+                _ if actual_label==enrollment_label=>None,
+                _=>return Err(invalid("converted label is neither enrollment nor original source label")),
+            };
+            let (report,observed_aliases)=crate::shadow_native::observe_general_converted_metadata_domain_readonly_with_windows_aliases(
+                pair.clone(),input,effective_label,&same_security,resource_profile,memory,protected,aliases)?;
+            let report=crate::shadow_native::verify_known_contents_in_accounted_report_with_lease_windows_aliases(
+                report,input,admission,memory,&same_security,Some(protected),aliases)?;
+            observed_aliases.require_converted_scope(&pair,admission.source_inspection_sha256,aliases.plan_digest())?;
+            observed_aliases.require_input(input)?;
+            Ok((report,observed_aliases))
+        })?;
+        if before!=after||before.disk_attributes!=OFFLINE|READ_ONLY||observed_readonly.disk_attributes!=READ_ONLY||report.pair!=pair{
+            return Err(invalid("converted alias observation changed source identity/exclusion"));
+        }
+        Ok((GeneralLiveConvertedObservation{report,before,observed_readonly,after},observed_aliases))
+    }
+
     /// Bring an actually frozen HND source online only after the exact held
     /// markerless journal, paged index and selected NEW bytes validate. This
     /// closes rollback but does not claim native ReFS/map verification.

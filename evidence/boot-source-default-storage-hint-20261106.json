@@ -1,0 +1,59 @@
+{
+  "kind": "native-Windows-source-storage-hint-observation-v1",
+  "source": {
+    "partition_guid": "c6c3318f-a7c8-47b9-be6d-6dde5e00862f",
+    "frozen": false,
+    "disk_number": 0,
+    "filesystem": "NTFS",
+    "partition_number": 3
+  },
+  "record_number": 144231,
+  "sequence_number": 1,
+  "attribute": {
+    "bytes": 8,
+    "resident": true,
+    "type": 256,
+    "name": "$DSC",
+    "value_hex": "0200000000000000"
+  },
+  "native_source_query": {
+    "ntstatus": 0,
+    "flags": 0,
+    "reply_bytes": 8,
+    "completion_status": 0,
+    "class": 2,
+    "information_class": 67
+  },
+  "fresh_refs_control_query": {
+    "ntstatus": -1073741811,
+    "reply_bytes": 0,
+    "property_preservation_established": false
+  },
+  "source_setter_calls_requested": 0,
+  "new_refs_control_files": 1,
+  "native_probe_sha256": "4fcad94120711840290e507a6a10541d4c7c1f9290436b660e9facbcf88eef42",
+  "normalization_requires_original_frozen_source_witness": true,
+  "conversion_performed": false,
+  "converted_Windows_boot_proven": false,
+  "samples": [
+    {
+      "bytes": 1236,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\boot-file-shape-8ca4fcdc43564e198af839350836327f\\shape-v3-result.json",
+      "sha256": "e6c03b6907a9807c3efbb67414e67ce10a2ba65fe0da74858f5ced05ee7b1e9f"
+    },
+    {
+      "bytes": 1528,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\boot-file-shape-8ca4fcdc43564e198af839350836327f\\shape-v4-result.json",
+      "sha256": "591e3be0e1866a598eae1e9f9b695b685a41738ebb1bfc8ec68e8817f9fbfb6d"
+    },
+    {
+      "bytes": 1243,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\boot-file-shape-8ca4fcdc43564e198af839350836327f\\users-record-result.json",
+      "sha256": "54d65f506b90a0079ccbda42e33e97cf220c1a36cda3d37935aefd16da811070"
+    }
+  ],
+  "semantic_references": [
+    "https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_desired_storage_class_information",
+    "https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/ne-wdm-_file_information_class"
+  ]
+}

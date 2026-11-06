@@ -457,6 +457,29 @@ pub fn classify_stream_domain(
     stream: &StreamInventory,
     admission: n2r_win32::tree_resources::SourceResourceAdmission,
 ) -> Result<StreamDecision> {
+    classify_stream_domain_scoped(source, file, stream, admission, None)
+}
+
+#[cfg(windows)]
+pub(crate) fn classify_stream_windows_domain(
+    source: &crate::ntfs_inspect::PagedInspection,
+    file: &FileInventory,
+    stream: &StreamInventory,
+    admission: n2r_win32::tree_resources::SourceResourceAdmission,
+    aliases: &crate::boot_alias::WindowsAliasDomain,
+) -> Result<StreamDecision> {
+    let _ = aliases.user_paths(source, file)?;
+    classify_stream_domain_scoped(source, file, stream, admission, Some(aliases))
+}
+
+#[cfg(windows)]
+fn classify_stream_domain_scoped(
+    source: &crate::ntfs_inspect::PagedInspection,
+    file: &FileInventory,
+    stream: &StreamInventory,
+    admission: n2r_win32::tree_resources::SourceResourceAdmission,
+    aliases: Option<&crate::boot_alias::WindowsAliasDomain>,
+) -> Result<StreamDecision> {
     use crate::ntfs_inspect::RootFileDomain;
     admission.validate()?;
     ensure!(
@@ -475,15 +498,17 @@ pub fn classify_stream_domain(
             .is_some_and(n2r_win32::content_digest::is_hex),
         crate::ntfs_inspect::LogicalHashStatus::NotReadExtentIdentityV1 => {
             stream.logical_sha256.is_none()
-                && crate::ntfs_attestation::extent_identity_stream_request_domain(
-                    source,
-                    file,
-                    stream,
-                    source.allocation().status
-                        == crate::ntfs_inspect::AllocationReconciliationStatus::ConsistentRawModel,
-                    true,
-                )?
-                .is_some()
+                && (if aliases.is_some() {
+                    ensure!(source.allocation().status == crate::ntfs_inspect::AllocationReconciliationStatus::ConsistentRawModel,
+                        "Windows stream allocation ownership is not closed");
+                    crate::ntfs_attestation::extent_identity_stream_request_windows_domain(source, file, stream)?
+                } else {
+                    crate::ntfs_attestation::extent_identity_stream_request_domain(
+                        source, file, stream,
+                        source.allocation().status == crate::ntfs_inspect::AllocationReconciliationStatus::ConsistentRawModel,
+                        true,
+                    )?
+                }).is_some()
         }
         _ => false,
     };

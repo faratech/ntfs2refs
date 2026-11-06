@@ -9,6 +9,8 @@ pub mod block_io;
 pub mod boot_source;
 #[cfg(windows)]
 pub mod boot_alias;
+#[cfg(windows)]
+mod ntfs_storage_class;
 pub mod capability_evidence;
 #[cfg(windows)]
 pub mod compact_fixture;

@@ -225,6 +225,7 @@ pub(crate) fn convert_owned_with_provider_commitment(
     request.validate()?;
     let prepared_output = run.join("conversion");
     let result = (|| -> Result<()> {
+        let mut windows_aliases=None;
         let (publication, sha) = crate::resource_preparation::prepare_with(
             request,
             &prepared_output,
@@ -251,6 +252,7 @@ pub(crate) fn convert_owned_with_provider_commitment(
                     applied.source() == &pair.source,
                     "completed apply source identity differs"
                 );
+                windows_aliases=applied.windows_aliases().cloned();
                 drop(applied);
                 Ok((path, sha))
             },
@@ -265,7 +267,7 @@ pub(crate) fn convert_owned_with_provider_commitment(
             .and_then(|n| n.checked_sub(observer.remaining_reservation_bytes()))
             .context("finalization cannot preserve evidence and free-space reserves")?;
         let final_resources = budget(current, aligned(remaining / 2), observer.ram_bytes())?;
-        let finalized = crate::resource_finalize::finalize_resource_handoff_with_observer(
+        let finalized = crate::resource_finalize::finalize_resource_handoff_with_windows_aliases_observer(
             pair,
             journal,
             &publication,
@@ -273,6 +275,7 @@ pub(crate) fn convert_owned_with_provider_commitment(
             final_resources,
             &run.join("finalization"),
             &mut observer,
+            windows_aliases,
         )?;
         if let Err(error) = observer.note(&finalized) {
             eprintln!("Conversion completed; the final evidence log could not be updated: {error}");

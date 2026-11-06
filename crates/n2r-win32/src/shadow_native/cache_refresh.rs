@@ -5,7 +5,7 @@ use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy, Default)]
-struct ProtectionRestore {
+pub(super) struct ProtectionRestore {
     dacl: bool,
     sacl: bool,
 }
@@ -13,7 +13,7 @@ struct ProtectionRestore {
 fn restore_acl_protection(file: &File, item: &Input<'_>) -> io::Result<ProtectionRestore> {
     restore_acl_protection_with_limit(file, item, None)
 }
-fn restore_acl_protection_with_limit(
+pub(super) fn restore_acl_protection_with_limit(
     file: &File,
     item: &Input<'_>,
     maximum: Option<u64>,
@@ -205,6 +205,22 @@ pub(super) fn complete_owned_metadata_scoped_domain(
     resource_admission: Option<crate::tree_resources::SourceResourceAdmission>,
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
 ) -> io::Result<serde_json::Value> {
+    complete_owned_metadata_scoped_windows_aliases_domain(pair,source_before,partition_source,volume,input,handles,
+        maximum_objects,resource_admission,None,same_security)
+}
+
+pub(super) fn complete_owned_metadata_scoped_windows_aliases_domain(
+    pair: &GeneralSourceShadowBinding,
+    source_before: &private_tree::source_scope::ConstructionSourceState,
+    partition_source: Option<&native::PartitionSourceMetadataWitness>,
+    volume: &File,
+    input: &impl InputDomain,
+    handles: &BTreeMap<usize, File>,
+    maximum_objects: usize,
+    resource_admission: Option<crate::tree_resources::SourceResourceAdmission>,
+    mut aliases: Option<&mut super::windows_aliases::StagedWindowsAliases>,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+) -> io::Result<serde_json::Value> {
     let resource_root = format!("{}\\", pair.shadow.volume_path()?);
     if let Some(admission) = resource_admission {
         input.require_resource_metadata(admission)?;
@@ -339,7 +355,13 @@ pub(super) fn complete_owned_metadata_scoped_domain(
             }
         }
     }
-    let namespace = |points_installed: bool| -> io::Result<()> {
+    if let Some(aliases)=aliases.as_deref(){
+        for path in aliases.paths(){
+            if namespace_index.contains_key(path){return Err(invalid("derived alias collides with a canonical source name"));}
+            expected_children.entry(path[..path.len()-1].to_vec()).or_default().insert(path.to_vec());
+        }
+    }
+    let namespace = |points_installed: bool, aliases: Option<&super::windows_aliases::StagedWindowsAliases>| -> io::Result<()> {
         for index in 0..input.len() {
             let owned = input.object(index)?;
             let directory = owned.input();
@@ -359,8 +381,14 @@ pub(super) fn complete_owned_metadata_scoped_domain(
                     .map_err(|_| invalid("owned metadata namespace UTF-16 differs"))?;
                 let mut path = directory.components.to_vec();
                 path.push(name);
-                let &(child_index, child_directory, child_reparse) = namespace_index
-                    .get(&path)
+                if let Some(alias)=aliases.and_then(|aliases|aliases.entry(&path)){
+                    if !seen.insert(path.clone())||(entry.attributes&16!=0)!=alias.directory
+                        ||(entry.attributes&0x400!=0)!=points_installed||entry.file_id.as_slice()!=&alias.file_id_info[8..24]{
+                        return Err(invalid("derived alias namespace identity/type differs"));
+                    }
+                    continue;
+                }
+                let &(child_index, child_directory, child_reparse) = namespace_index.get(&path)
                     .ok_or_else(|| invalid("unexpected owned metadata namespace entry"))?;
                 if !seen.insert(path.clone())
                     || (entry.attributes & 16 != 0) != child_directory
@@ -380,7 +408,7 @@ pub(super) fn complete_owned_metadata_scoped_domain(
         }
         Ok(())
     };
-    namespace(false)?;
+    namespace(false,aliases.as_deref())?;
     const DIRECTORY: u8 = 1;
     const EXTENDED_ATTRIBUTES: u8 = 2;
     const REPARSE: u8 = 4;
@@ -504,6 +532,7 @@ pub(super) fn complete_owned_metadata_scoped_domain(
             reparse_objects += 1;
         }
     }
+    if let Some(aliases)=aliases.as_deref_mut(){aliases.restore_metadata(input,handles,&same_security)?;}
     // Reverse depth order finalizes root last, using the same held handles.
     for &(index, _, _) in ordered.iter().rev() {
         let owned = input.object(index)?;
@@ -519,7 +548,7 @@ pub(super) fn complete_owned_metadata_scoped_domain(
         }
     }
     volume.sync_all()?;
-    namespace(true)?;
+    namespace(true,aliases.as_deref())?;
     for index in 0..input.len() {
         let owned = input.object(index)?;
         let view = owned.input();

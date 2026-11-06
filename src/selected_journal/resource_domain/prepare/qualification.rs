@@ -38,6 +38,9 @@ pub(crate) struct ResourcePreparedConversion<'journal, 'domain, 'capture, 'proof
     // may create an index after the exhaustive arena closure.
     write_index: Option<super::super::reopen::PreparedJournalIndex>,
     closure: PreparedArenaClosure,
+    // Runtime native alias ownership survives publication/apply. It is never
+    // reconstructed from the JSON envelope or used as raw-write authority.
+    windows_aliases: Option<std::sync::Arc<n2r_win32::shadow_native::windows_aliases::VerifiedWindowsAliases>>,
     // Covers publication path copies and the bounded serializer/IO workspace.
     // Drop after the corresponding owned values and their final revalidation.
     _memory: ArenaRamLease,
@@ -749,6 +752,20 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
     /// fixed-EOF journal must then close together, so this constructor fails
     /// while any creation, missing owner, or accounting obligation remains.
     pub(crate) fn publish(
+        prepared: ProtectedPreparedJournal<'journal, 'domain, 'capture, 'proof, 'scope>,
+        expected: &'expected PagedExpectedTree,
+        maps: Option<V4RecoveryMaps>,
+        locator: super::super::durable_anchor::DurableRecoveryLocator,
+        group: &ArtifactGroupPermit,
+        scratch: &SourceScratch,
+        path: &Path,
+        events: &mut Vec<n2r_win32::NativeEvent>,
+        checkpoint_events: impl FnMut(&mut Vec<n2r_win32::NativeEvent>) -> Result<()>,
+    ) -> Result<Self> {
+        Self::publish_with_windows_aliases(prepared,expected,maps,locator,group,scratch,path,events,checkpoint_events,None)
+    }
+
+    pub(crate) fn publish_with_windows_aliases(
         mut prepared: ProtectedPreparedJournal<'journal, 'domain, 'capture, 'proof, 'scope>,
         expected: &'expected PagedExpectedTree,
         maps: Option<V4RecoveryMaps>,
@@ -758,7 +775,17 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
         path: &Path,
         events: &mut Vec<n2r_win32::NativeEvent>,
         mut checkpoint_events: impl FnMut(&mut Vec<n2r_win32::NativeEvent>) -> Result<()>,
+        windows_aliases: Option<std::sync::Arc<n2r_win32::shadow_native::windows_aliases::VerifiedWindowsAliases>>,
     ) -> Result<Self> {
+        let source_aliases=prepared.context.windows_aliases();
+        ensure!(source_aliases.as_ref().is_none_or(|plan|plan.is_empty())||windows_aliases.is_some(),
+            "Windows alias publication requires its actual live constructor witness");
+        if let Some(aliases)=windows_aliases.as_deref(){
+            let pair=n2r_win32::general_layout::GeneralSourceShadowBinding{
+                source:prepared.inner._facts.source.clone(),shadow:prepared.inner._facts.shadow.clone()};
+            aliases.require_scope(&pair,prepared.context.resource_admission().source_inspection_sha256,aliases.plan_digest())?;
+            aliases.require_canonical_input(&crate::general_shadow::PagedInputs(expected))?;
+        }
         prepared.require_arena(group)?;
         let scratch_group = scratch
             .artifact_group()
@@ -931,6 +958,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
             checksum,
             write_index,
             closure,
+            windows_aliases,
             _memory: memory,
         };
         result.revalidate(events)?;
@@ -940,6 +968,12 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
     }
 
     pub(crate) fn revalidate(&mut self, events: &mut Vec<n2r_win32::NativeEvent>) -> Result<()> {
+        if let Some(aliases)=self.windows_aliases.as_deref(){
+            let pair=n2r_win32::general_layout::GeneralSourceShadowBinding{
+                source:self.prepared.inner._facts.source.clone(),shadow:self.prepared.inner._facts.shadow.clone()};
+            aliases.require_scope(&pair,self.prepared.context.resource_admission().source_inspection_sha256,aliases.plan_digest())?;
+            aliases.require_canonical_input(&crate::general_shadow::PagedInputs(self.expected))?;
+        }
         self.closure.with_revalidation(|arena| {
             self.publication.revalidate()?;
             self.checksum.revalidate()?;

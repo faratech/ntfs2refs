@@ -553,6 +553,9 @@ impl ResourceAppliedConversion<'_, '_, '_, '_, '_, '_> {
     pub(crate) fn source(&self) -> &n2r_win32::general_layout::GeneralDiskBinding {
         self.owner.prepared.prepared.inner._facts.source
     }
+    pub(crate) fn windows_aliases(&self) -> Option<&std::sync::Arc<n2r_win32::shadow_native::windows_aliases::VerifiedWindowsAliases>> {
+        self.owner.prepared.windows_aliases.as_ref()
+    }
     pub(crate) fn publication_path(&self) -> &Path {
         self.owner.prepared.publication_path()
     }

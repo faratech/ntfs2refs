@@ -126,10 +126,25 @@ pub(crate) fn finalize_resource_handoff_with_observer<O: PreparationObserver>(
     journal: GeneralJournalStorageBinding,
     publication: &Path,
     publication_sha256: [u8; 32],
-    mut resources: ResourceBudget,
+    resources: ResourceBudget,
     output: &Path,
     observer: &mut O,
 ) -> Result<serde_json::Value> {
+    finalize_resource_handoff_with_windows_aliases_observer(pair,journal,publication,publication_sha256,resources,output,observer,None)
+}
+
+pub(crate) fn finalize_resource_handoff_with_windows_aliases_observer<O: PreparationObserver>(
+    pair: GeneralSourceShadowBinding,
+    journal: GeneralJournalStorageBinding,
+    publication:&Path,
+    publication_sha256:[u8;32],
+    mut resources:ResourceBudget,
+    output:&Path,
+    observer:&mut O,
+    windows_aliases:Option<std::sync::Arc<n2r_win32::shadow_native::windows_aliases::VerifiedWindowsAliases>>,
+)->Result<serde_json::Value>{
+    ensure!(pair.source.layout_profile!=n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows||windows_aliases.is_some(),
+        "experimental Windows finalization needs the live alias witness; authenticated restart alias expectations are not implemented");
     resources.validate()?;
     ensure!(
         output.is_absolute() && !output.exists(),
@@ -196,8 +211,23 @@ pub(crate) fn finalize_resource_handoff_with_observer<O: PreparationObserver>(
     };
     let input = PagedInputs(metadata.expected());
     let payer = ArenaReportMemory(arena.clone());
+    // The old preparation's Arc remains a real owner. Charge its retained
+    // ledger in this new arena as well before native queries/union indexes.
+    let _external_alias_memory=windows_aliases.as_deref().map(|aliases|
+        aliases.reserve_external_retained_memory(&payer)).transpose()?;
     let admission = protected.recovery().resource_admission();
-    let native = protected
+    let (native,observed_windows_aliases) = if let Some(aliases)=windows_aliases.as_deref(){
+        aliases.require_scope(&native_pair,admission.source_inspection_sha256,aliases.plan_digest())?;
+        aliases.require_canonical_input(&input)?;
+        let (native,observed)=protected.source_mut()?.observe_converted_protected_with_memory_windows_aliases(
+            native_pair.clone(),&input,Some(&desired_label),
+            |a,b|crate::ntfs_attestation::same_security(a,b).map_err(std::io::Error::other),
+            n2r_win32::attestation::ResourceProfile::ResourceBoundedV4(Some(admission)),&payer,aliases,&mut events)?;
+        observed.require_converted_scope(&native_pair,admission.source_inspection_sha256,aliases.plan_digest())?;
+        observed.require_input(&input)?;
+        ensure!(observed.len()==aliases.len(),"converted Windows alias coverage differs");
+        (native,Some(observed))
+    }else{(protected
         .source_mut()?
         .observe_converted_protected_with_memory(
             native_pair,
@@ -207,7 +237,7 @@ pub(crate) fn finalize_resource_handoff_with_observer<O: PreparationObserver>(
             n2r_win32::attestation::ResourceProfile::ResourceBoundedV4(Some(admission)),
             &payer,
             &mut events,
-        )?;
+        )?,None)};
     events.checkpoint()?;
     let maps = metadata.compare_protected(&protected, &native)?;
     let matching_bindings = maps.bindings();
@@ -267,13 +297,17 @@ pub(crate) fn finalize_resource_handoff_with_observer<O: PreparationObserver>(
             .as_ref()
             .and_then(|o| o.known_content.as_ref())
             .context("known-content verification receipt absent")?;
-        Ok(
-            serde_json::json!({"kind":"resource-native-finalization-v1","success":true,
+        let mut receipt=serde_json::json!({"kind":"resource-native-finalization-v1","success":true,
         "publication_sha256":hex::encode(publication_sha256),"matching_map_bindings":matching_bindings,
         "known_streams_hashed":known.streams_hashed,"known_payload_bytes_read":known.payload_bytes_read,
         "extent_only_streams":known.streams_without_content_baseline,"source":converted,
-        "label_restored":true,"mount_paths_preserved":true,"journal_handoff_closed":true}),
-        )
+        "label_restored":true,"mount_paths_preserved":true,"journal_handoff_closed":true});
+        if let Some(aliases)=observed_windows_aliases.as_ref(){
+            receipt["derived_windows_aliases_verified"]=true.into();
+            receipt["derived_windows_alias_count"]=aliases.len().into();
+            receipt["windows_alias_restart_recovery_qualified"]=false.into();
+        }
+        Ok(receipt)
     })();
     finish_online.map_err(|cause| CommittedFinalizationError { cause }.into())
 }

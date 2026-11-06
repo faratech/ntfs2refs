@@ -7,7 +7,7 @@ pub use crate::native::{PartitionSourceMetadataState, PartitionSourceMetadataWit
 use std::collections::{BTreeMap, BTreeSet};
 mod enrollment;
 mod memory;
-mod metadata;
+pub(super) mod metadata;
 mod placement;
 mod routed_prefix;
 mod source_backed;
@@ -342,6 +342,18 @@ impl PrivateTree {
         same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
     ) -> io::Result<serde_json::Value> {
         metadata::complete_domain(self, input, same_security)
+    }
+
+    /// Complete source metadata plus separately derived Windows alias paths.
+    /// Canonical input identities/counts are unchanged. Only the actual bound
+    /// OfflineWindows source and constructor-owned ReFS shadow are admitted.
+    pub fn complete_source_metadata_windows_aliases_domain(
+        self,
+        input: &impl InputDomain,
+        aliases: &impl super::windows_aliases::WindowsAliasInputDomain,
+        same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    ) -> io::Result<(serde_json::Value, super::windows_aliases::VerifiedWindowsAliases)> {
+        metadata::complete_windows_aliases_domain(self, input, aliases, same_security)
     }
 
     pub fn materialize_system_payloads_domain(

@@ -55,7 +55,12 @@ fn inspect_scope_with<'a>(
     let mut transactional_records = Vec::new();
     for ordinal in 0..count {
         let file = get(ordinal)?;
-        let mut attrs = file.attributes.iter().filter(|a| a.type_code == 0x100);
+        // LOGGED_UTILITY_STREAM also carries nontransactional metadata such as
+        // $DSC storage-class information. Its separate preservation policy must
+        // not be confused with a user TxF transaction. Unknown utility streams
+        // remain refused by the enclosing source attribute policy.
+        let mut attrs = file.attributes.iter().filter(|a| a.type_code == 0x100
+            && a.name_utf16 == [36, 84, 88, 70, 95, 68, 65, 84, 65]);
         let Some(txf) = attrs.next() else { continue };
         ensure!(
             attrs.next().is_none()

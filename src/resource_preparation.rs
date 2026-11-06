@@ -3,7 +3,7 @@
 //! qualify a source. The live prepared owner never escapes this function.
 use crate::{
     artifact_arena::{ArenaUsage, ArtifactArena, ArtifactGroup},
-    general_composite_target::{paged::observe_and_select_paged, paged_memory::ArenaReportMemory},
+    general_composite_target::paged_memory::ArenaReportMemory,
     general_reconstruct::selected_native_journal::BoundNativeCreationJournal,
     general_shadow::{
         self, PagedInputs,
@@ -421,9 +421,7 @@ where
         let aux_scratch = SourceScratch::new_auxiliary_in_arena(source_budget, aux_group)?;
         let projection_dir = output.join("projection");
         std::fs::create_dir(&projection_dir)?;
-        let projection = SourceExpectedDomain::derive(
-            context.inspection(),
-            context.native().domain(),
+        let projection = context.derive_projection(
             admission,
             &projection_dir,
             &aux_scratch,
@@ -450,6 +448,10 @@ where
         let _expected_seal = expected_group.seal()?;
         expected.require_shared_memory(&arena)?;
         expected.require_resource_owner(admission)?;
+        let alias_inputs=context.windows_aliases().map(|owner| {
+            crate::boot_alias::WindowsAliasNativeDomain::new(owner,&expected,admission,
+                &projection_dir.join("windows-alias-indices"),&aux_scratch)
+        }).transpose()?;
         events.observer.expected_prepared(&context, &expected)?;
         // The complete independently held expected pages are now reopened,
         // authenticated and resource-bound. Their producer is no longer used:
@@ -553,9 +555,17 @@ where
                 .note(&serde_json::to_value(&supply_receipt)?)?;
             bytes.finish()?;
         }
-        private.complete_source_metadata_domain(&inputs, |a, b| {
-            crate::ntfs_attestation::same_security(a, b).map_err(std::io::Error::other)
-        })?;
+        let verified_aliases=if let Some(aliases)=&alias_inputs {
+            let (_,verified)=private.complete_source_metadata_windows_aliases_domain(&inputs,aliases,|a,b| {
+                crate::ntfs_attestation::same_security(a,b).map_err(std::io::Error::other)
+            })?;
+            Some(std::sync::Arc::new(verified))
+        }else{
+            private.complete_source_metadata_domain(&inputs,|a,b| {
+                crate::ntfs_attestation::same_security(a,b).map_err(std::io::Error::other)
+            })?;
+            None
+        };
         events.phase("source-after-shadow-construction");
         context.recheck_source(&mut events)?;
         events.checkpoint()?;
@@ -579,7 +589,7 @@ where
         };
         let journal_root = format!("{}\\", request.journal.disk.volume_path()?);
         events.phase("protected-target-capture");
-        let proof = observe_and_select_paged(
+        let proof = crate::general_composite_target::paged::observe_and_select_paged_optional_windows_aliases(
             &mut context,
             &mut shadow,
             request.pair.clone(),
@@ -587,6 +597,7 @@ where
             &capture_group,
             &output.join("target"),
             &mut events,
+            verified_aliases.as_ref().zip(alias_inputs.as_ref()),
             |context, target, expected, native, scope, closing| {
                 let (source, raw) = context.source_and_inspection()?;
                 let mut bytes =
@@ -759,7 +770,7 @@ where
                 events: native_events,
                 ..
             } = &mut events;
-            ResourcePreparedConversion::publish(
+            ResourcePreparedConversion::publish_with_windows_aliases(
                 prepared,
                 &expected,
                 recovery_maps,
@@ -769,6 +780,7 @@ where
                 &output.join("recovery-envelope.json"),
                 native_events,
                 |batch| observer.native_events("prepared-conversion-publication", batch),
+                verified_aliases.clone(),
             )?
         };
         let publication_digest: [u8; 32] = hex::decode(prepared_conversion.publication_sha256())?

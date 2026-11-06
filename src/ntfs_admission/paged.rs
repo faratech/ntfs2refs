@@ -186,10 +186,12 @@ pub(crate) fn blocker_is_unresolved(
                     && file
                         .attributes
                         .iter()
-                        .filter(|a| a.type_code == 0x100)
+                        .filter(|a| a.type_code == 0x100
+                            && a.name_utf16 == [36, 84, 88, 70, 95, 68, 65, 84, 65])
                         .count()
                         == 1
                     && file.attributes.iter().any(super::recognized_root_txf)
+                    && file.attributes.iter().filter(|a| a.type_code == 0x100).all(super::recognized_root_txf)
                 {
                     return Ok(false);
                 }
@@ -249,6 +251,24 @@ pub(crate) fn ordinary_user_issues(
     file: &FileInventory,
     resources: n2r_win32::tree_resources::SourceResourceAdmission,
 ) -> Result<Vec<String>> {
+    ordinary_user_issues_scoped(source, file, resources, None)
+}
+
+pub(crate) fn ordinary_user_issues_windows(
+    source: &crate::ntfs_inspect::PagedInspection,
+    file: &FileInventory,
+    resources: n2r_win32::tree_resources::SourceResourceAdmission,
+    aliases: &crate::boot_alias::WindowsAliasDomain,
+) -> Result<Vec<String>> {
+    ordinary_user_issues_scoped(source, file, resources, Some(aliases))
+}
+
+fn ordinary_user_issues_scoped(
+    source: &crate::ntfs_inspect::PagedInspection,
+    file: &FileInventory,
+    resources: n2r_win32::tree_resources::SourceResourceAdmission,
+    aliases: Option<&crate::boot_alias::WindowsAliasDomain>,
+) -> Result<Vec<String>> {
     resources.validate()?;
     let budget = source.budget();
     let expected_budget =
@@ -265,7 +285,12 @@ pub(crate) fn ordinary_user_issues(
             && budget.page_bytes == resources.budget.page_bytes,
         "ordinary policy source/resource identity differs"
     );
-    let paths = user_paths(source, file).ok();
+    let paths = if let Some(aliases) = aliases {
+        if let Some(proof) = aliases.storage_hint_normalization() {
+            let _ = crate::ntfs_storage_class::normalize(file, proof)?;
+        }
+        Some(aliases.user_paths(source, file)?)
+    } else { user_paths(source, file).ok() };
     let names_supported = paths.is_some();
     let system_volume_information = paths.as_ref().is_some_and(|paths| {
         paths.iter().any(|path| {
@@ -302,10 +327,13 @@ pub(crate) fn ordinary_user_issues(
                 .is_some_and(n2r_win32::content_digest::is_hex),
             crate::ntfs_inspect::LogicalHashStatus::NotReadExtentIdentityV1 => {
                 stream.logical_sha256.is_none()
-                    && crate::ntfs_attestation::extent_identity_stream_request_domain(
-                        source, file, stream, true, true,
-                    )?
-                    .is_some()
+                    && (if aliases.is_some() {
+                        crate::ntfs_attestation::extent_identity_stream_request_windows_domain(source, file, stream)?
+                    } else {
+                        crate::ntfs_attestation::extent_identity_stream_request_domain(
+                            source, file, stream, true, true,
+                        )?
+                    }).is_some()
             }
             _ => false,
         };
@@ -315,7 +343,7 @@ pub(crate) fn ordinary_user_issues(
         resources.budget.max_row_bytes
             / std::mem::size_of::<crate::ntfs_inspect::StreamInventory>() as u64,
     )?;
-    Ok(super::user_issues_with_context(
+    Ok(super::user_issues_with_context_alias_scope(
         file,
         true,
         &source.header().geometry,
@@ -324,6 +352,8 @@ pub(crate) fn ordinary_user_issues(
         descriptor.as_ref(),
         Some(resources.budget.max_row_bytes),
         maximum_streams,
+        aliases.is_some(),
+        aliases.is_some_and(|aliases| aliases.storage_hint_normalization().is_some()),
         |stream| evidence.get(&stream.name_utf16).copied().unwrap_or(false),
     ))
 }

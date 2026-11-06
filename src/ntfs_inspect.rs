@@ -968,7 +968,8 @@ fn parse_record(mut bytes: Vec<u8>, geometry: &NtfsGeometry) -> Result<Record> {
         let resident_metadata_hex = if matches!(
             type_code,
             0x10 | 0x30 | 0x40 | 0x50 | 0x70 | 0xc0 | 0xd0 | 0xe0
-        ) {
+        ) || (type_code == 0x100 && name_utf16 == [36, 68, 83, 67]
+            && resident_value.as_ref().is_some_and(|value| value.len() == 8)) {
             resident_value.as_ref().map(hex::encode)
         } else {
             None

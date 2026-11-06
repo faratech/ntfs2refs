@@ -105,6 +105,8 @@ mod native;
 #[cfg(windows)]
 pub use native::partition_isolation;
 #[cfg(windows)]
+pub use native::BootStorageHintNormalization;
+#[cfg(windows)]
 pub use native::offline_environment;
 #[cfg(windows)]
 pub use native::partition_lifecycle;

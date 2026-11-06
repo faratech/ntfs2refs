@@ -4,10 +4,12 @@ pub mod cache_refresh;
 mod domain_memory;
 mod hard_links;
 pub mod input_domain;
+pub mod windows_aliases;
 mod known_content_memory;
 pub mod report_memory;
 pub use known_content_memory::verify_known_contents_in_accounted_report;
 pub(crate) use known_content_memory::verify_known_contents_in_accounted_report_with_lease;
+pub(crate) use known_content_memory::verify_known_contents_in_accounted_report_with_lease_windows_aliases;
 mod sparse_stream;
 mod streams;
 pub use hard_links::Observation as HardLinkObservation;
@@ -1493,9 +1495,69 @@ fn validate_existing_content_domain_with_memory(
     allow_post_mount_svi: bool,
     memory: Option<&dyn report_memory::ReportMemoryAccountant>,
 ) -> io::Result<()> {
+    validate_existing_content_domain_with_memory_and_windows_aliases(
+        report, input, same, before_restore, root_basic_after_mutation,
+        verify_contents, allow_post_mount_svi, memory, None,
+    )
+}
+
+/// Validate source object rows and the separate constructor-owned Windows alias
+/// overlay. Alias entries never become fabricated source objects or hard links.
+/// The opaque owner must retain/revalidate its native reparse-point evidence;
+/// namespace attribute bits alone are not proof of current reparse bytes.
+pub fn validate_existing_windows_aliases_content_domain_with_memory(
+    report: &Report,
+    input: &impl InputDomain,
+    aliases: &windows_aliases::VerifiedWindowsAliases,
+    same: &impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    before_restore: bool,
+    root_basic_after_mutation: Option<&[u8; 40]>,
+    verify_contents: bool,
+    allow_post_mount_svi: bool,
+    memory: Option<&dyn report_memory::ReportMemoryAccountant>,
+) -> io::Result<()> {
+    validate_existing_content_domain_with_memory_and_windows_aliases(
+        report, input, same, before_restore, root_basic_after_mutation,
+        verify_contents, allow_post_mount_svi, memory, Some(aliases),
+    )
+}
+
+fn validate_existing_content_domain_with_memory_and_windows_aliases(
+    report: &Report,
+    input: &impl InputDomain,
+    same: &impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    before_restore: bool,
+    root_basic_after_mutation: Option<&[u8; 40]>,
+    verify_contents: bool,
+    allow_post_mount_svi: bool,
+    memory: Option<&dyn report_memory::ReportMemoryAccountant>,
+    aliases: Option<&windows_aliases::VerifiedWindowsAliases>,
+) -> io::Result<()> {
     use std::collections::{BTreeMap, BTreeSet};
     if report.objects.len() != input.len() {
         return Err(invalid("existing shadow object coverage differs"));
+    }
+    let _alias_memory = if let Some(aliases) = aliases {
+        aliases.require_input(input)?;
+        if !aliases.is_empty() && memory.is_none() {
+            return Err(invalid("derived alias validation requires its actual resource memory payer"));
+        }
+        aliases.reserve_validation_memory(memory)?
+    } else {
+        None
+    };
+    enum NamespaceChild { Source(usize), Alias(usize) }
+    impl NamespaceChild {
+        // Keep the pre-paid (usize,u32) BTree value size. Both indices come
+        // from real Vec-backed domains, whose elements occupy multiple bytes.
+        fn encode(self) -> io::Result<usize> {
+            let (index, tag) = match self { Self::Source(i) => (i, 0), Self::Alias(i) => (i, 1) };
+            index.checked_mul(2).and_then(|n| n.checked_add(tag))
+                .ok_or_else(|| invalid("namespace child index exceeds address space"))
+        }
+        fn decode(value: usize) -> Self {
+            if value & 1 == 0 { Self::Source(value / 2) } else { Self::Alias(value / 2) }
+        }
     }
     let _index_memory = memory
         .map(|payer| {
@@ -1598,7 +1660,7 @@ fn validate_existing_content_domain_with_memory(
             if children
                 .insert(
                     path.last().unwrap().encode_utf16().collect(),
-                    (index, attributes),
+                    (NamespaceChild::Source(index).encode()?, attributes),
                 )
                 .is_some()
             {
@@ -1645,6 +1707,53 @@ fn validate_existing_content_domain_with_memory(
                 return Err(invalid(
                     "existing shadow security differs beyond the recorded creation control-bit loss",
                 ));
+            }
+        }
+    }
+    if let Some(aliases) = aliases {
+        let root = report.objects.first().ok_or_else(|| invalid("Windows alias source root absent"))?;
+        let root_identity = query_bytes(&root.before, 18, 24)?;
+        for (ordinal, alias) in aliases.entries.iter().enumerate() {
+            let parent_owner = input.object(alias.parent_object_index)?;
+            let parent = parent_owner.input();
+            let canonical_owner = input.object(alias.canonical_object_index)?;
+            let canonical = canonical_owner.input();
+            let parent_report = report.objects.get(alias.parent_object_index)
+                .ok_or_else(|| invalid("Windows alias parent report row absent"))?;
+            let canonical_report = report.objects.get(alias.canonical_object_index)
+                .ok_or_else(|| invalid("Windows alias canonical report row absent"))?;
+            if query_bytes(&parent_report.before, 18, 24)? != alias.parent_file_id_info
+                || query_bytes(&canonical_report.before, 18, 24)? != alias.canonical_file_id_info {
+                return Err(invalid("Windows alias parent or canonical native identity changed"));
+            }
+            if alias.components.is_empty() || alias.canonical_components.is_empty()
+                || alias.components == alias.canonical_components
+                || !parent.directory || parent.reparse.is_some()
+                || alias.components[..alias.components.len() - 1] != *parent.components
+                || alias.canonical_components[..alias.canonical_components.len() - 1] != *parent.components
+                || canonical.directory != alias.directory
+                || alias.components.iter().any(|c| !crate::shadow_names::valid_unicode_component(c))
+                || (alias.attributes & 16 != 0) != alias.directory
+                || alias.attributes & 0x400 == 0
+                || alias.file_id_info[..8] != root_identity[..8]
+                || alias.file_id_info[8..] == [0; 16]
+                || !unique.insert(alias.file_id_info[8..].to_vec()) {
+                return Err(invalid("Windows alias parent, identity, type or source mapping differs"));
+            }
+            alias.point.validate()?;
+            let canonical_sibling = hard_links::paths(&canonical)
+                .any(|path| path == alias.canonical_components.as_slice())
+                && crate::reparse_layout::Point::relative_component_alias(
+                    &alias.canonical_components.last().expect("nonempty canonical path")
+                        .encode_utf16().collect::<Vec<_>>()
+                ).is_ok_and(|point| point == alias.point);
+            if !canonical_sibling {
+                return Err(invalid("Windows alias point does not name a canonical sibling"));
+            }
+            let children = expected_children.entry(parent.components.to_vec()).or_default();
+            if children.insert(alias.components.last().expect("nonempty alias path")
+                .encode_utf16().collect(), (NamespaceChild::Alias(ordinal).encode()?, alias.attributes)).is_some() {
+                return Err(invalid("Windows alias collides with an expected namespace name"));
             }
         }
     }
@@ -1698,14 +1807,23 @@ fn validate_existing_content_domain_with_memory(
             {
                 continue;
             }
-            let &(child_index, expected_attributes) = expected
+            let &(child_origin, expected_attributes) = expected
                 .get(&entry.name_utf16)
                 .ok_or_else(|| invalid("unexpected existing shadow directory entry"))?;
-            let child_components = report.objects[child_index].components.as_slice();
+            let (child_components, identity_matches) = match NamespaceChild::decode(child_origin) {
+                NamespaceChild::Source(child_index) => {
+                    let child = report.objects.get(child_index)
+                        .ok_or_else(|| invalid("source namespace child index differs"))?;
+                    let path = child.components.as_slice();
+                    (path, identities.get(path).is_some_and(|id| id.as_slice() == entry.file_id))
+                }
+                NamespaceChild::Alias(alias_index) => {
+                    let alias = aliases.and_then(|a| a.entries.get(alias_index))
+                        .ok_or_else(|| invalid("derived namespace child index differs"))?;
+                    (alias.components.as_slice(), alias.file_id_info[8..] == entry.file_id)
+                }
+            };
             let duplicate = !seen.insert(entry.name_utf16.clone());
-            let identity_matches = identities
-                .get(child_components)
-                .is_some_and(|id| id.as_slice() == entry.file_id);
             if duplicate || entry.attributes != expected_attributes || !identity_matches {
                 let context = serde_json::json!({
                     "path": child_components,
@@ -2709,6 +2827,45 @@ pub(crate) fn observe_general_layout_readonly_domain_accounted(
     resource_profile: Option<crate::attestation::ResourceProfile>,
     memory: Option<&dyn report_memory::ReportMemoryAccountant>,
 ) -> io::Result<GeneralLayoutReport> {
+    observe_general_layout_readonly_domain_accounted_with_alias_overlay(
+        pair, input, same_security, protected, resource_profile, memory, None,
+    )
+}
+
+/// Explicit Windows alias observation within the real protected shadow lease.
+/// Both the source-only native report and exact alias-point witness remain
+/// separate owning results; neither result supplies conversion authority.
+pub(crate) fn observe_general_layout_readonly_domain_with_windows_aliases(
+    pair: GeneralSourceShadowBinding,
+    input: &impl InputDomain,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    protected: &native::GeneralReadonlyRefsVolume<'_>,
+    resource_profile: crate::attestation::ResourceProfile,
+    memory: &dyn report_memory::ReportMemoryAccountant,
+    aliases: &windows_aliases::VerifiedWindowsAliases,
+) -> io::Result<(GeneralLayoutReport, windows_aliases::ObservedWindowsAliases)> {
+    let admission = resource_profile.resource_admission()?
+        .ok_or_else(|| invalid("Windows alias observation requires actual resource admission"))?;
+    if pair.source.layout_profile != crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows {
+        return Err(invalid("Windows alias observation requires the explicit offline Windows source"));
+    }
+    aliases.require_scope(&pair, admission.source_inspection_sha256, aliases.plan_digest())?;
+    let report = observe_general_layout_readonly_domain_accounted_with_alias_overlay(
+        pair, input, &same_security, protected, Some(resource_profile), Some(memory), Some(aliases),
+    )?;
+    let observed = aliases.observe_readonly_volume(input, protected.volume(), memory, &same_security)?;
+    Ok((report, observed))
+}
+
+fn observe_general_layout_readonly_domain_accounted_with_alias_overlay(
+    pair: GeneralSourceShadowBinding,
+    input: &impl InputDomain,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    protected: &native::GeneralReadonlyRefsVolume<'_>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
+    memory: Option<&dyn report_memory::ReportMemoryAccountant>,
+    aliases: Option<&windows_aliases::VerifiedWindowsAliases>,
+) -> io::Result<GeneralLayoutReport> {
     pair.validate_with_resource_profile(resource_profile)?;
     if protected.binding() != &pair.shadow {
         return Err(invalid("protected ReFS layout lease binding differs"));
@@ -2735,7 +2892,7 @@ pub(crate) fn observe_general_layout_readonly_domain_accounted(
         None,
         memory,
     )?;
-    validate_existing_content_domain_with_memory(
+    validate_existing_content_domain_with_memory_and_windows_aliases(
         &native,
         input,
         &same_security,
@@ -2744,6 +2901,7 @@ pub(crate) fn observe_general_layout_readonly_domain_accounted(
         false,
         false,
         memory,
+        aliases,
     )?;
     if native.payload_bytes_written != 0 || native.conversion_qualified {
         return Err(invalid(
@@ -3076,6 +3234,54 @@ pub(crate) fn observe_general_layout_residuals_paged_readonly_domain_accounted(
     resource_profile: Option<crate::attestation::ResourceProfile>,
     memory: Option<&dyn report_memory::ReportMemoryAccountant>,
 ) -> io::Result<GeneralLayoutReport> {
+    observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_overlay(
+        pair, input, provider, result_path, result_budget, same_security, protected,
+        resource_profile, memory, None,
+    )
+}
+
+/// Paged residual observation for the explicit Windows alias overlay. Source
+/// streams and derived zero-payload aliases retain separate owning evidence.
+pub(crate) fn observe_general_layout_residuals_paged_readonly_domain_with_memory_windows_aliases(
+    pair: GeneralSourceShadowBinding,
+    input: &impl InputDomain,
+    provider: &impl crate::layout_residual_pages::LayoutResidualProvider,
+    result_path: &std::path::Path,
+    result_budget: crate::metadata_pages::PageBudget,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    protected: &native::GeneralReadonlyRefsVolume<'_>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
+    memory: &dyn report_memory::ReportMemoryAccountant,
+    aliases: &windows_aliases::VerifiedWindowsAliases,
+) -> io::Result<(GeneralLayoutReport, windows_aliases::ObservedWindowsAliases)> {
+    let admission = resource_profile
+        .ok_or_else(|| invalid("Windows alias residuals require actual resource admission"))?
+        .resource_admission()?
+        .ok_or_else(|| invalid("Windows alias residuals require V4"))?;
+    if pair.source.layout_profile != crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows {
+        return Err(invalid("Windows alias residuals require the explicit offline Windows source"));
+    }
+    aliases.require_scope(&pair, admission.source_inspection_sha256, aliases.plan_digest())?;
+    let report = observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_overlay(
+        pair, input, provider, result_path, result_budget, &same_security, protected,
+        resource_profile, Some(memory), Some(aliases),
+    )?;
+    let observed = aliases.observe_readonly_volume(input, protected.volume(), memory, &same_security)?;
+    Ok((report, observed))
+}
+
+fn observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_overlay(
+    pair: GeneralSourceShadowBinding,
+    input: &impl InputDomain,
+    provider: &impl crate::layout_residual_pages::LayoutResidualProvider,
+    result_path: &std::path::Path,
+    result_budget: crate::metadata_pages::PageBudget,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    protected: &native::GeneralReadonlyRefsVolume<'_>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
+    memory: Option<&dyn report_memory::ReportMemoryAccountant>,
+    aliases: Option<&windows_aliases::VerifiedWindowsAliases>,
+) -> io::Result<GeneralLayoutReport> {
     let admission = resource_profile
         .ok_or_else(|| invalid("paged residuals need actual resource admission"))?
         .resource_admission()?
@@ -3130,13 +3336,14 @@ pub(crate) fn observe_general_layout_residuals_paged_readonly_domain_accounted(
     // Declare the writer lease before the report so it also outlives any
     // report fields appended during this pass on every error path.
     let mut residual_writer_memory;
-    let mut report = observe_general_layout_readonly_domain_accounted(
+    let mut report = observe_general_layout_readonly_domain_accounted_with_alias_overlay(
         pair.clone(),
         input,
         &same_security,
         protected,
         resource_profile,
         memory,
+        aliases,
     )?;
     // Writer/control state survives the whole pass; descriptor query buffers
     // are acquired only after the current paged input object has decoded.
@@ -3466,6 +3673,48 @@ fn observe_general_converted_metadata_domain_accounted(
     memory: Option<&dyn report_memory::ReportMemoryAccountant>,
     protected: Option<&dyn native::ProtectedReadonlyRefsAccess>,
 ) -> io::Result<GeneralConvertedReport> {
+    observe_general_converted_metadata_domain_accounted_with_alias_overlay(
+        pair, input, expected_label, same_security, resource_profile, memory, protected, None,
+    )
+}
+
+/// Observe a converted Windows partition under the actual readonly lease,
+/// preserving canonical source rows and refreshing derived alias points.
+pub(crate) fn observe_general_converted_metadata_domain_readonly_with_windows_aliases(
+    pair: GeneralSourceShadowBinding,
+    input: &impl InputDomain,
+    expected_label: Option<&crate::volume_label::VolumeLabel>,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    resource_profile: crate::attestation::ResourceProfile,
+    memory: &dyn report_memory::ReportMemoryAccountant,
+    protected: &native::GeneralReadonlyRefsVolume<'_>,
+    aliases: &windows_aliases::VerifiedWindowsAliases,
+) -> io::Result<(GeneralConvertedReport, windows_aliases::ObservedWindowsAliases)> {
+    let admission = resource_profile.resource_admission()?
+        .ok_or_else(|| invalid("converted Windows aliases require actual resource admission"))?;
+    if pair.source.layout_profile != crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+        || protected.binding() != &pair.source {
+        return Err(invalid("converted Windows alias readonly binding differs"));
+    }
+    aliases.require_scope(&pair, admission.source_inspection_sha256, aliases.plan_digest())?;
+    let report = observe_general_converted_metadata_domain_accounted_with_alias_overlay(
+        pair, input, expected_label, &same_security, Some(resource_profile), Some(memory),
+        Some(protected), Some(aliases),
+    )?;
+    let observed = aliases.observe_converted_readonly_volume(input, protected.volume(), memory, &same_security)?;
+    Ok((report, observed))
+}
+
+fn observe_general_converted_metadata_domain_accounted_with_alias_overlay(
+    pair: GeneralSourceShadowBinding,
+    input: &impl InputDomain,
+    expected_label: Option<&crate::volume_label::VolumeLabel>,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
+    memory: Option<&dyn report_memory::ReportMemoryAccountant>,
+    protected: Option<&dyn native::ProtectedReadonlyRefsAccess>,
+    aliases: Option<&windows_aliases::VerifiedWindowsAliases>,
+) -> io::Result<GeneralConvertedReport> {
     pair.validate_with_resource_profile(resource_profile)?;
     if let Some(label) = expected_label {
         label.validate()?;
@@ -3495,7 +3744,7 @@ fn observe_general_converted_metadata_domain_accounted(
     // Keep the converted observer's existing namespace policy independently
     // of whether admitted payload bytes were read. Protected shadow layout
     // observation keeps its stricter original namespace policy.
-    validate_existing_content_domain_with_memory(
+    validate_existing_content_domain_with_memory_and_windows_aliases(
         &native,
         input,
         &same_security,
@@ -3504,6 +3753,7 @@ fn observe_general_converted_metadata_domain_accounted(
         false,
         true,
         memory,
+        aliases,
     )?;
     if native.objects.iter().any(|object| {
         object.logical_sha256.is_some()

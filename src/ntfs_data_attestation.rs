@@ -178,6 +178,23 @@ pub fn check_file_with_extent_evidence_domain(
     selector: &n2r_win32::attestation::NativeRequestRow,
     resources: n2r_win32::tree_resources::SourceResourceAdmission,
 ) -> Result<(u64, usize, u64)> {
+    check_file_with_extent_evidence_domain_scoped(source, file, logical, observation,
+        native, selector, resources, false)
+}
+
+/// Native comparison scope only. The caller derives Windows scope from the
+/// bound layout; this flag cannot satisfy source or alias-preservation gates.
+#[cfg(windows)]
+pub(crate) fn check_file_with_extent_evidence_domain_scoped(
+    source: &impl crate::ntfs_inspect::RootFileDomain,
+    file: &FileInventory,
+    logical: &LogicalFile,
+    observation: &n2r_win32::attestation::Observation,
+    native: &Report,
+    selector: &n2r_win32::attestation::NativeRequestRow,
+    resources: n2r_win32::tree_resources::SourceResourceAdmission,
+    windows_paths: bool,
+) -> Result<(u64, usize, u64)> {
     resources.validate()?;
     ensure!(
         selector.identity == logical.identity,
@@ -191,9 +208,13 @@ pub fn check_file_with_extent_evidence_domain(
         native,
         &selector.extent_identity_streams,
         |stream| {
-            crate::ntfs_attestation::extent_identity_stream_request_domain(
-                source, file, stream, true, true,
-            )
+            if windows_paths {
+                crate::ntfs_attestation::extent_identity_stream_request_windows_domain(source, file, stream)
+            } else {
+                crate::ntfs_attestation::extent_identity_stream_request_domain(
+                    source, file, stream, true, true,
+                )
+            }
         },
         Some(resources),
     )

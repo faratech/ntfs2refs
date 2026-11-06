@@ -20,6 +20,7 @@ pub struct PagedObservationRequest<'a> {
     admission: SourceResourceAdmission,
     policy: VerificationPolicy,
     length: usize,
+    windows_paths: bool,
 }
 impl<'a> PagedObservationRequest<'a> {
     pub fn new(
@@ -30,6 +31,10 @@ impl<'a> PagedObservationRequest<'a> {
     ) -> Result<Self> {
         binding.validate()?;
         budget.validate()?;
+        // Collection observes canonical native names. DOS alias preservation
+        // remains a separate boot-only shadow obligation and admission gate.
+        let windows_paths = binding.layout_profile
+            == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows;
         let header = source.header();
         ensure!(
             header.inventory_complete
@@ -58,7 +63,11 @@ impl<'a> PagedObservationRequest<'a> {
             if crate::ntfs_admission::paged::internal_role(source, &file)?.is_some() {
                 continue;
             }
-            crate::ntfs_admission::paged::user_paths(source, &file)?;
+            if windows_paths {
+                crate::ntfs_admission::paged::canonical_paths_for_alias_preparation(source, &file)?;
+            } else {
+                crate::ntfs_admission::paged::user_paths(source, &file)?;
+            }
             if file.is_directory {
                 directories = directories
                     .checked_add(1)
@@ -97,6 +106,7 @@ impl<'a> PagedObservationRequest<'a> {
             admission,
             policy,
             length: usize::try_from(source.file_count())?,
+            windows_paths,
         };
         n2r_win32::attestation::validate_native_request_domain(&value)?;
         Ok(value)
@@ -135,13 +145,14 @@ impl NativeRequestDomain for PagedObservationRequest<'_> {
             };
             if self.policy.is_fast() {
                 for stream in &file.streams {
-                    if let Some(selector) = super::extent_identity_stream_request_domain(
-                        self.source,
-                        &file,
-                        stream,
-                        true,
-                        true,
-                    )? {
+                    let selector = if self.windows_paths {
+                        super::extent_identity_stream_request_windows_domain(self.source, &file, stream)?
+                    } else {
+                        super::extent_identity_stream_request_domain(
+                            self.source, &file, stream, true, true,
+                        )?
+                    };
+                    if let Some(selector) = selector {
                         row.extent_identity_streams.push(selector);
                     }
                 }
@@ -439,7 +450,7 @@ fn compare_domain_with_header(
                 observation.open_error.is_none(),
                 "native logical file open refused"
             );
-            logical_bytes = crate::ntfs_data_attestation::check_file_with_extent_evidence_domain(
+            logical_bytes = crate::ntfs_data_attestation::check_file_with_extent_evidence_domain_scoped(
                 source,
                 &file,
                 &logical,
@@ -447,6 +458,7 @@ fn compare_domain_with_header(
                 header,
                 &selector,
                 admission,
+                expected.windows_paths,
             )?;
             Ok(())
         })());

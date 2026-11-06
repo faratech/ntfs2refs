@@ -163,6 +163,19 @@ pub fn extent_identity_stream_request_domain(
     })
 }
 
+/// Canonical native collection for the explicit offline-Windows layout.
+/// This does not cover DOS path preservation or authorize target construction.
+#[cfg(windows)]
+pub(crate) fn extent_identity_stream_request_windows_domain(
+    files: &impl crate::ntfs_inspect::RootFileDomain,
+    file: &FileInventory,
+    stream: &crate::ntfs_inspect::StreamInventory,
+) -> Result<Option<n2r_win32::attestation::ExtentIdentityStream>> {
+    extent_identity_stream_request_with_paths(&files.header().geometry, file, stream, || {
+        Ok(Some(crate::ntfs_admission::paged::canonical_paths_for_alias_preparation(files, file)?))
+    })
+}
+
 fn extent_identity_stream_request_with_paths(
     geometry: &crate::ntfs_inspect::NtfsGeometry,
     file: &FileInventory,

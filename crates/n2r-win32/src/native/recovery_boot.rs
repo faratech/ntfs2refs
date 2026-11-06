@@ -18,6 +18,7 @@ mod fat;
 mod metadata;
 mod native;
 mod bcd_device;
+mod offreg;
 pub use cold::{RecoveryBootGuard, RecoveryBootGuardFacts, RecoveryBootRestorationReceipt};
 use metadata::{EfiIdentity, StorePin};
 const BOOTMGR: &str = "{9dea862c-5cdd-4e70-acc1-f32b344d4795}";

@@ -132,7 +132,7 @@ pub struct RecoveryBootGuard {
     boot: Vec<u8>,
     running_image_sha256: String,
     ram_root: String,
-    ram_backing: crate::native::offline_environment::kernel_ram_backing::KernelRamBackingFacts,
+    offline_registry: bcd_device::OfflineRegistryLibrary,
     actual_store_sha256: [u8; 32],
     held: Vec<HeldPin>,
     facts: RecoveryBootGuardFacts,
@@ -343,6 +343,24 @@ impl RecoveryBootGuard {
             serde_json::from_slice(&marker).map_err(io::Error::other)?;
         require_marker(&marker, &intent, &running)?;
         native::firmware(&intent.efi)?.require_same(&intent.firmware)?;
+        let library = marker.get("offline_registry").and_then(serde_json::Value::as_object)
+            .ok_or_else(|| bad("sealed RAM origin lacks offline-registry dependency"))?;
+        let relative = library.get("ram_relative_path").and_then(serde_json::Value::as_str)
+            .ok_or_else(|| bad("sealed offline-registry RAM path absent"))?;
+        let library_bytes = library.get("bytes").and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| bad("sealed offline-registry byte count absent"))?;
+        let library_sha: [u8; 32] = hex::decode(library.get("sha256")
+            .and_then(serde_json::Value::as_str).ok_or_else(|| bad("sealed offline-registry SHA absent"))?)
+            .map_err(io::Error::other)?.try_into().map_err(|_| bad("offline-registry SHA width differs"))?;
+        need(library.len() == 3 && relative == r"Windows\System32\offreg.dll"
+            && library_bytes > 0 && intent.image_pins.iter().filter(|p|
+                p.role == "offline-registry-library" && p.sha256 == library_sha
+                    && p.snapshot.get("file_bytes").and_then(serde_json::Value::as_u64) == Some(library_bytes))
+                .count() == 1,
+            "current sealed image does not bind the exact offline-registry dependency")?;
+        let offline_registry = bcd_device::OfflineRegistryLibrary::open(
+            &PathBuf::from(&ram_root).join(relative), library_sha, library_bytes,
+            &ram_backing, budget, events)?;
         let protected_metadata = source.boot_metadata_witness(events)?;
         let actual_store_sha256 = metadata::raw_copy_protected(
             &intent.efi,
@@ -361,7 +379,7 @@ impl RecoveryBootGuard {
             &directory.join("actual-installed-system-store-query.bcd"), &intent.journal, budget)?;
         let device_proof = metadata::prove_unchanged_device(
             &mut held[original_backup_slot].file, intent.backup_sha256, &store,
-            actual_store_sha256, directory, &intent.journal, &ram_root, &ram_backing, budget, events)?;
+            actual_store_sha256, directory, &intent.journal, &offline_registry, budget, events)?;
         let tool = native::Tool::system(budget)?;
         verify_cold_selection(
             &tool.enum_object(Some(&store), BOOTMGR, directory)?,
@@ -416,7 +434,7 @@ impl RecoveryBootGuard {
             boot,
             running_image_sha256: running,
             ram_root,
-            ram_backing,
+            offline_registry,
             actual_store_sha256,
             held,
             facts,
@@ -746,7 +764,7 @@ impl RecoveryBootGuard {
                 "current published EFI BCD bytes/FAT mapping differ from actual guarded epoch")?;
             let device_proof=metadata::prove_available_store_device(&actual_efi,&first_store,
                 &mut self.held[self.original_backup_slot].file,self.intent.backup_sha256,
-                directory,&self.intent.journal,&self.ram_root,&self.ram_backing,self.budget,events)?;
+                directory,&self.intent.journal,&self.offline_registry,self.budget,events)?;
             let mut expected=tool.enum_all(&actual_efi.bcd_path,directory)?;
             verify_cold_selection(expected.get(BOOTMGR).ok_or_else(||bad("current BootMgr absent"))?,
                 &self.intent,&device_proof,first_store.sha256)?;
@@ -814,7 +832,7 @@ impl RecoveryBootGuard {
                 "restored BCD actual FAT/raw bytes changed after native readback")?;
             let final_device_proof=metadata::prove_available_store_device(&actual_efi,final_store,
                 &mut self.held[self.original_backup_slot].file,self.intent.backup_sha256,
-                directory,&self.intent.journal,&self.ram_root,&self.ram_backing,self.budget,events)?;
+                directory,&self.intent.journal,&self.offline_registry,self.budget,events)?;
             verify_original_selection(restored,&self.intent,&final_device_proof,final_store.sha256)?;
             self.require_boot_identity(&source.owner_token(),events)?;
             source.revalidate_closed(policy,journal,pins,events)?;

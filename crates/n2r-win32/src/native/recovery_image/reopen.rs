@@ -205,7 +205,7 @@ pub fn reopen_completed(
             && completed.committed
             && !completed.cold_qualified
             && completed.no_bcd_or_source_writer
-            && completed.artifacts.len() == 8,
+            && completed.artifacts.len() == 9,
         "unknown or incomplete original recovery-image completion record",
     )?;
     need(
@@ -220,6 +220,7 @@ pub fn reopen_completed(
         ("wim", "boot.wim", b.maximum_final_wim_bytes),
         ("sdi", "boot.sdi", b.maximum_input_bytes),
         ("runner", "runner.exe", b.maximum_input_bytes),
+        ("offline-registry-library", "offreg.dll", OFFLINE_REGISTRY_MAX_BYTES),
         ("bootstrap", "n2r-bootstrap.json", b.ram_bytes / 64),
         ("startup", "n2r-start.cmd", 65536),
         ("winpeshl", "winpeshl.ini", 65536),
@@ -267,6 +268,18 @@ pub fn reopen_completed(
                 == request.bootstrap.bytes,
         "original SDI/embedded runner/bootstrap pins differ; never replace embedded helper with current installer",
     )?;
+    let registry = &find_artifact(&artifacts, "offline-registry-library")?.pin;
+    let total = request.boot_wim.bytes.checked_add(request.boot_sdi.bytes)
+        .and_then(|n| n.checked_add(request.runner.bytes))
+        .and_then(|n| n.checked_add(request.bootstrap.bytes))
+        .and_then(|n| n.checked_add(registry.snapshot.file_bytes))
+        .ok_or_else(|| bad("completed image input accounting overflow"))?;
+    need(total <= b.maximum_input_bytes
+        && total.checked_mul(2).and_then(|n| n.checked_add(OFFLINE_REGISTRY_MAX_BYTES))
+            .is_some_and(|n| n <= b.admitted_working_bytes)
+        && (16u64 * 1024 * 1024).checked_add(registry.snapshot.file_bytes)
+            .is_some_and(|n| n <= b.ram_bytes),
+        "original image budgets do not include actual offline registry component")?;
     need(bytes(find_artifact(&artifacts,"startup")?,65536)?==startup(&request.startup_args,request.prepared_bundle_sha256)?
         &&bytes(find_artifact(&artifacts,"winpeshl")?,65536)?==b"[LaunchApps]\r\n%SYSTEMROOT%\\System32\\cmd.exe, /d /s /c X:\\Windows\\System32\\n2r-start.cmd\r\n"
         &&bytes(find_artifact(&artifacts,"san3-unattend")?,65536)?==br#"<?xml version="1.0" encoding="utf-8"?><unattend xmlns="urn:schemas-microsoft-com:unattend"><settings pass="offlineServicing"><component name="Microsoft-Windows-PartitionManager" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS"><SanPolicy>3</SanPolicy></component></settings></unattend>"#,
@@ -274,7 +287,8 @@ pub fn reopen_completed(
     let marker_expected = serde_json::json!({"kind":"ntfs2refs-owned-recovery-WIM-origin-v1","builder_nonce":request.run_id,
         "prepared_OUTER_bundle_sha256":hex::encode(request.prepared_bundle_sha256),"source":source,"journal":journal,
         "runner_sha256":hex::encode(request.runner.sha256),"startup_args":request.startup_args,"early_SAN_policy":3,
-        "actual_IMAGE_ControlSets":completed.control_sets,"current_default_select_verified":true,"no_final_WIM_self_hash":true});
+        "actual_IMAGE_ControlSets":completed.control_sets,"current_default_select_verified":true,"no_final_WIM_self_hash":true,
+        "offline_registry":{"ram_relative_path":OFFLINE_REGISTRY_RAM_PATH,"bytes":registry.snapshot.file_bytes,"sha256":hex::encode(registry.sha256)}});
     need(
         bytes(find_artifact(&artifacts, "origin-marker")?, 65536)?
             == serde_json::to_vec(&marker_expected).map_err(io::Error::other)?,
@@ -312,7 +326,7 @@ pub fn reopen_completed(
         Ok(_) => return Err(bad("original temporary IMAGE hive still loaded; no reopen")),
     }
     // Keep independently pinned build record open too, but preserve the
-    // original public eight artifact pins and report ZERO current commands.
+    // original public nine artifact pins and report ZERO current commands.
     artifacts.push(record);
     enrollment(source, journal, journal_volume, request.observation, events)?;
     for a in &artifacts {

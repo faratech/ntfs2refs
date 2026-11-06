@@ -191,7 +191,7 @@ fn context(error: io::Error, phase: &str, target: &Path) -> io::Error {
     )
 }
 /// `root` and `mount` are original live build locals. No public/path adoption
-/// constructor or caller-controlled target exists; five names are admitted.
+/// constructor or caller-controlled target exists; six names are admitted.
 pub(super) fn replace(
     scope: &MountedCopy,
     from: &Path,
@@ -202,6 +202,7 @@ pub(super) fn replace(
     let mount = scope.mount.as_path();
     let input_name = match name {
         "n2r-runner.exe" => "runner.exe",
+        "offreg.dll" => "offreg.dll",
         "n2r-bootstrap.json" => "n2r-bootstrap.json",
         "ntfs2refs-recovery-origin.json" => "ntfs2refs-recovery-origin.json",
         "n2r-start.cmd" => "n2r-start.cmd",

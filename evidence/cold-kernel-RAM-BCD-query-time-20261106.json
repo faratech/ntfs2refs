@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "kind": "private-kernel-RAM-query-modified-time-transition",
+  "actual_case": ".lab/hyperv/streaming-v2-20261027/PUBLIC-8150a3d-actual-once-e7e72d443dce4ae7920f99ed8a7dcf31",
+  "failed_source": "8150a3de6dc203734d82ef9fba251dc667a46be8",
+  "actual_failure_frame_sha256": "87f6f6b06c66e5491d54651e079362b72e555ac0a7ff711d234162a09726998e",
+  "actual_error": "kernel-RAM BCD query identity changed after private-hive close",
+  "AP_or_source_data_write_claimed": false,
+  "actual_V3": {
+    "second_only_modified_time_changed": true,
+    "both_encoded_device_equal": true,
+    "legacy_values_not_human_transcribed": true,
+    "second_serial_index_creation_attributes_links_size_unchanged": true,
+    "probe_bytes": 274432,
+    "first_file_bytes": 36864,
+    "second_file_bytes": 49152,
+    "encoded_device_bytes": 88,
+    "probe_sha256": "002db15c116cddee691864d104c97f69a49ea141f2c8063a1256669953635286",
+    "first_full_identity_unchanged": true,
+    "both_all_bytes_unchanged": true,
+    "frame_sha256": "503f4738793325b493fb25fca2381983026fdb56df3e92a5cbd2993049a53745"
+  },
+  "fresh_TYPE_inputs_verified": {
+    "both_J_vs_RAM_different_bytes": 0,
+    "original_frame_sha256": "046233b6f0cb37ff52c29fcdf558d0135517227f8e7b775a8b22399bbe0c0481",
+    "current_frame_sha256": "495d693f375965755304cfec610eff6dafd0073774237ac95196b62dbb93e393",
+    "both_complete_SHA_native_ID_and_byte_bookends": true
+  },
+  "diagnostics": {
+    "source_userdata_or_J_body_opens": 0,
+    "original_media_restored": true,
+    "product_reruns": 0,
+    "power_calls": 0,
+    "one_V3_AppHive_call": true,
+    "restoration_receipt_sha256": "8a07e23d1a9c687bd5e96517b6d65779b83f22a36b9a9c584f33eb7060059610",
+    "media_swaps": 2,
+    "two_readonly_byte_comparisons": true
+  },
+  "implementation": [
+    "Private RAM query only: retain same held NT object/current positive kernel-RAM backing, real ID/serial/creation/attributes/links/size across AppHive.",
+    "Capture actual post-hive identity once; allow modified-time transition only at that boundary, then retain full metadata and ALL-byte/SHA bookends during the new read epoch.",
+    "Pristine J reference identity and complete SHA, encoded device equality and source/EFI/FAT/kernel/boot guards unchanged.",
+    "Record exact before/after modified times and failed native identity components; never set/normalize file times or accept a raw-hive format exception."
+  ],
+  "focused_check": {
+    "unit_tests_run": false,
+    "session_id": 51473,
+    "wall_seconds": 33.2051101,
+    "native_run": false,
+    "receipt_sha256": "363e74652481f5d9ab289448acc15e980721892e776936ea22600a7b7db9bd85",
+    "exit_code": 0
+  },
+  "implementation_file": "crates/n2r-win32/src/native/recovery_boot/bcd_device.rs",
+  "implementation_sha256": "ab12daf34a9d1de6d183335f802edc7392305c893c2436c598460db383bfb177",
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "product_native_qualified": false,
+  "normal_conversion_qualified": false,
+  "AP_restart_resume_qualified": false,
+  "AP_restart_rollback_qualified": false
+}

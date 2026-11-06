@@ -294,6 +294,8 @@ pub(super) fn observe_owned_copy(
             Ok(id) => id,
             Err(error) => return Err(error), // No unvalidated path is retired.
         };
+        let mut query_modified_time_changed = false;
+        let mut query_modified_times = None;
         let queried = (|| {
             let ram_keeper = OpenOptions::new().access_mode(0x80).share_mode(3)
                 .custom_flags(0x0020_0000).open(&ram_path)?;
@@ -310,10 +312,31 @@ pub(super) fn observe_owned_copy(
             // the SAME held NT Ramdisk object are positively checked on both sides.
             let result = read_element(&ram_path, value_maximum as u32);
             let closing = (|| {
-                need(require_ram_file(&ram_path, &ram_keeper, ram_backing)? == native_name
-                    && ram_identity(&ram_keeper, false)? == query_id,
+                let after_name = require_ram_file(&ram_path, &ram_keeper, ram_backing)?;
+                let after_id = ram_identity(&ram_keeper, false)?;
+                let same_nt_name = after_name == native_name;
+                query_modified_times = Some([query_id.modified, after_id.modified]);
+                let stable_identity = same_ram_object(&after_id, &query_id)
+                    && after_id.file_bytes == query_id.file_bytes;
+                if !same_nt_name || !stable_identity {
+                    events.push(NativeEvent {
+                        operation: "boot-RAM-query-native-identity-comparison-failed".into(),
+                        control_code: 0, input: Vec::new(), succeeded: false, native_error: None,
+                        output: serde_json::to_vec(&serde_json::json!({
+                            "before": query_id, "after": after_id,
+                            "before_NT_name": native_name, "after_NT_name": after_name,
+                            "same_NT_name": same_nt_name, "stable_native_identity": stable_identity,
+                            "source_write_authority": false,
+                        })).map_err(io::Error::other)?,
+                    });
+                }
+                need(same_nt_name && stable_identity,
                     "kernel-RAM BCD query identity changed after private-hive close")?;
-                let closing_bytes = ram_bytes(&ram_path, &query_id, ram_backing)?;
+                // Read-only Registry can finalize LastWriteTime on this OWNED
+                // scratch copy. Stable native identity and every content byte
+                // must still match; the new read epoch has full bookends.
+                query_modified_time_changed = after_id.modified != query_id.modified;
+                let closing_bytes = ram_bytes(&ram_path, &after_id, ram_backing)?;
                 need(closing_bytes == original_bytes && digest(&closing_bytes) == before_hash,
                     "kernel-RAM BCD query bytes changed after private-hive close")?;
                 require_ram_file(&ram_directory, &directory_holder, ram_backing)?;
@@ -375,7 +398,9 @@ pub(super) fn observe_owned_copy(
                 "private_hive_KEY_READ_only": true, "working_memory_bound": required,
                 "query_copy_backing": "current-positive-kernel-RAM",
                 "pristine_J_copy_complete_bytes_unchanged": true,
-                "RAM_legacy_native_identity_and_all_bytes_unchanged": true,
+                "RAM_native_object_identity_size_and_all_bytes_unchanged": true,
+                "RAM_query_modified_time_changed": query_modified_time_changed,
+                "RAM_query_modified_times_before_after": query_modified_times,
                 "RAM_copy_retired_by_exact_native_handle": true,
                 "empty_RAM_registry_logs_retired": retired_logs,
                 "source_write_authority": false,

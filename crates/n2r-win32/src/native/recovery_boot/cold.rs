@@ -6,6 +6,7 @@ use crate::offline_environment::{
     OfflinePreparedJournalQualification, OfflinePreparedReplayQualification, OfflinePreparedClosedQualification, OfflinePreparedBootGuardRequirements, OfflinePreparedSource, OfflineSourceOwnerToken,
 };
 use crate::reference_file::ReferenceFileSnapshot;
+use crate::native::partition_isolation::offline::OfflineBootMetadataWitness;
 use windows_sys::Win32::Storage::FileSystem::GetVolumeNameForVolumeMountPointW;
 
 struct HeldPin {
@@ -135,6 +136,7 @@ pub struct RecoveryBootGuard {
     held: Vec<HeldPin>,
     facts: RecoveryBootGuardFacts,
     budget: RecoveryBootBudget,
+    protected_metadata: Option<OfflineBootMetadataWitness>,
 }
 impl RecoveryBootGuard {
     #[allow(clippy::too_many_arguments)]
@@ -337,12 +339,14 @@ impl RecoveryBootGuard {
             serde_json::from_slice(&marker).map_err(io::Error::other)?;
         require_marker(&marker, &intent, &running)?;
         native::firmware(&intent.efi)?.require_same(&intent.firmware)?;
-        let actual_store_sha256 = metadata::raw_copy(
+        let protected_metadata = source.boot_metadata_witness(events)?;
+        let actual_store_sha256 = metadata::raw_copy_protected(
             &intent.efi,
             guard_map,
             &directory.join("actual-installed-system-store.bcd"),
             budget.maximum_store_bytes,
             budget.maximum_control_bytes,
+            &protected_metadata, &source.owner_token(),
             events,
         )?;
         let tool = native::Tool::system(budget)?;
@@ -364,7 +368,8 @@ impl RecoveryBootGuard {
         )?;
         require_j_route(one(&options, "ramdisksdidevice")?, &intent.journal)?;
         need(
-            metadata::raw_hash(&intent.efi, guard_map, budget.maximum_control_bytes, events)?
+            metadata::raw_hash_protected(&intent.efi, guard_map, budget.maximum_control_bytes,
+                &protected_metadata, &source.owner_token(), events)?
                 == actual_store_sha256,
             "installed BCD changed during actual native enum",
         )?;
@@ -402,6 +407,7 @@ impl RecoveryBootGuard {
             held,
             facts,
             budget,
+            protected_metadata: Some(protected_metadata),
         })
     }
     pub fn facts(&self) -> &RecoveryBootGuardFacts {
@@ -445,10 +451,31 @@ impl RecoveryBootGuard {
     }
     pub fn require_current_boot(&mut self,owner:&OfflineSourceOwnerToken,events:&mut Vec<NativeEvent>)->io::Result<()> {
         self.require_boot_identity(owner,events)?;
-        need(metadata::raw_hash(&self.intent.efi,
-            self.intent.guarded_store_map.as_ref().ok_or_else(||bad("guarded BCD map absent"))?,
-            self.budget.maximum_control_bytes,events)?==self.actual_store_sha256,
+        let map = self.intent.guarded_store_map.as_ref().ok_or_else(||bad("guarded BCD map absent"))?;
+        let hash = match self.protected_metadata.as_ref() {
+            Some(witness) => metadata::raw_hash_protected(&self.intent.efi, map,
+                self.budget.maximum_control_bytes, witness, owner, events)?,
+            None => metadata::raw_hash(&self.intent.efi, map, self.budget.maximum_control_bytes, events)?,
+        };
+        need(hash==self.actual_store_sha256,
             "actual persistent installed BCD bytes changed")
+    }
+    // Only the actual closed-J source owner returned after authenticated SET0
+    // can end protected metadata mode. An attribute sample/report is insufficient.
+    pub(crate) fn accept_closed_available_source(&mut self,
+        source:&mut crate::offline_environment::OfflinePreparedAvailableSource,
+        policy:&HeldPagedWritePolicy,journal:&mut File,pins:&PagedRecoveryPins<'_>,
+        events:&mut Vec<NativeEvent>) -> io::Result<()> {
+        self.require_owner(&source.owner_token())?;
+        source.revalidate_closed(policy,journal,pins,events)?;
+        let state=source.state(events)?;
+        need(source.binding()==&self.intent.source&&pins.journal_binding==&self.intent.journal
+            &&state.actual.disk_attributes==0
+            &&state.actual.gpt.target_attributes==0x1000_0000_0000_0000,
+            "boot metadata availability lacks actual authenticated closed source0/BASICRO/J")?;
+        need(self.protected_metadata.is_some(),"protected boot metadata mode already retired")?;
+        self.protected_metadata=None;
+        self.require_current_boot(&source.owner_token(),events)
     }
     pub fn require_before_writer(
         &mut self,
@@ -484,13 +511,15 @@ impl RecoveryBootGuard {
         )?;
         need(
             digest(&marker) == self.intent.origin_marker_sha256
-                && metadata::raw_hash(
+                && metadata::raw_hash_protected(
                     &self.intent.efi,
                     self.intent
                         .guarded_store_map
                         .as_ref()
                         .ok_or_else(|| bad("guarded BCD map absent"))?,
                     self.budget.maximum_control_bytes,
+                    self.protected_metadata.as_ref().ok_or_else(||bad("protected boot source witness absent"))?,
+                    &source.owner_token(),
                     events,
                 )? == self.actual_store_sha256,
             "actual RAM origin or persistent installed BCD bytes changed",
@@ -666,13 +695,15 @@ impl RecoveryBootGuard {
             // Full actual HND/allNEW or ABT/restoredOLD, same J/index/owner.
             // No original NTFS fingerprint/allOLD check is used after HND.
             source.revalidate_closed(policy,journal,pins,events)?;
-            self.require_current_boot(&source.owner_token(),events)?;
             let before=source.state(events)?;
             need(source.binding()==&self.intent.source
                 &&pins.journal_binding==&self.intent.journal
                 &&before.actual.disk_attributes==0
                 &&before.actual.gpt.target_attributes==0x1000_0000_0000_0000,
                 "normal boot restore lacks the actual closed/available BASICRO source/J")?;
+            need(self.protected_metadata.is_none(),
+                "closed source availability did not retire protected boot metadata mode")?;
+            self.require_current_boot(&source.owner_token(),events)?;
             restore_checkpoint(observer,"recovery-boot-actual-closed-owner-before-records",events)?;
             metadata::fresh_external(directory,source.binding(),&self.intent.journal,self.budget,events)?;
             let mut published=None;

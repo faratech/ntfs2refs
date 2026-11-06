@@ -2,6 +2,7 @@
 //! token never substitutes a physical C: extent, FS lock, VSS catalog or writer.
 pub use source::{OfflinePreparedTerminalGuard,OfflineTerminalReadonlyVolume,OfflinePreparedTerminalReceipt};
 mod source;
+pub(crate) use source::OfflineBootMetadataWitness;
 mod journal_bootstrap;
 use super::*;
 use crate::journal_file::GeneralJournalStorageBinding;
@@ -371,6 +372,16 @@ fn source_facts(
     budget: PartitionObservationBudget,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<OfflineSourcePhysicalFacts> {
+    source_facts_with_native_witness(file, binding, budget, None, events)
+}
+fn source_facts_with_native_witness(
+    file: &mut File,
+    binding: &PartitionSourceBinding,
+    budget: PartitionObservationBudget,
+    held_native_layout: Option<&[u8]>,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<OfflineSourcePhysicalFacts> {
+    let opening_attributes = attributes(file, events)?;
     let device = control(
         file,
         "offline-source-native-DEVICE",
@@ -401,7 +412,16 @@ fn source_facts(
     )?;
     binding.storage.validate_alignment(&alignment)?;
     let disk_attributes = attributes(file, events)?;
-    let native = native_layout(file, budget, events)?;
+    require(opening_attributes == disk_attributes,
+        "physical protection changed during current device/length/alignment queries")?;
+    let native = match held_native_layout {
+        Some(held) => {
+            require(held.len() as u64 <= u64::from(budget.native_layout_bytes),
+                "held native witness exceeds its prepaid layout allowance")?;
+            held.to_vec()
+        }
+        None => native_layout(file, budget, events)?,
+    };
     let after_native_layout = attributes(file, events)?;
     require(disk_attributes == after_native_layout, &format!(
         "offline physical disk{} protection changed during native LAYOUT: before={}, after={}",
@@ -434,6 +454,21 @@ fn source_facts(
         "offline physical disk{} protection changed during raw GPT reads: before={}, after={}",
         binding.storage.disk_number, disk_attributes, after_raw_gpt,
     ))?;
+    if held_native_layout.is_some() {
+        events.push(NativeEvent {
+            operation:"offline-current-raw-GPT-held-native-correspondence".into(),
+            control_code:0,input:Vec::new(),succeeded:true,native_error:None,
+            output:serde_json::to_vec(&serde_json::json!({
+                "current_full_raw_GPT_CRC_and_every_entry_revalidated":true,
+                "current_DEVICE_length_alignment_and_attribute_bookends":true,
+                "native_layout_requeried":false,
+                "native_layout_provenance":"same-boot-before-exclusion-native-witness",
+                "native_layout_bytes":gpt.native_layout.len(),
+                "native_layout_sha256":hex::encode(Sha256::digest(&gpt.native_layout)),
+                "actual_disk_attributes":after_raw_gpt,"facts_grant_authority":false,
+            })).map_err(io::Error::other)?,
+        });
+    }
     Ok(OfflineSourcePhysicalFacts {
         device,
         length,
@@ -513,6 +548,25 @@ pub struct OfflineOwningEnvironment {
     running_image: ImageOwner,
     kernel: ImageOwner,
     facts: OfflineOwningFacts,
+    protected_native_witness: Option<ProtectedNativeLayoutWitness>,
+}
+// Constructed only by the actual current-boot source owner after its complete
+// native query and actual mounted-volume locks, never from a JSON report.
+struct ProtectedNativeLayoutWitness {
+    source: PartitionSourceBinding,
+    boot: OfflineBootIdentity,
+    physical_file_object: usize,
+    native_layout: Vec<u8>,
+}
+impl ProtectedNativeLayoutWitness {
+    fn bytes<'a>(&'a self, source: &PartitionSourceBinding, boot: &OfflineBootIdentity,
+        physical: &File) -> io::Result<&'a [u8]> {
+        use std::os::windows::io::AsRawHandle;
+        require(self.source == *source && self.boot == *boot
+            && self.physical_file_object == physical.as_raw_handle() as usize,
+            "held native witness lost actual physical FileObject/source/boot ownership")?;
+        Ok(&self.native_layout)
+    }
 }
 impl OfflineOwningEnvironment {
     pub fn observe_and_require(
@@ -602,6 +656,7 @@ impl OfflineOwningEnvironment {
             running_image,
             kernel,
             facts,
+            protected_native_witness: None,
         };
         value.require_current(events)?;
         Ok(value)
@@ -614,6 +669,43 @@ impl OfflineOwningEnvironment {
     }
     pub fn require_current(&mut self, events: &mut Vec<NativeEvent>) -> io::Result<()> {
         self.require_current_at_attributes(self.facts.source_physical.disk_attributes, events)
+    }
+    fn retain_current_boot_native_witness(&mut self, management: &File,
+        locked_volumes: &[File], events: &mut Vec<NativeEvent>) -> io::Result<()> {
+        use std::os::windows::io::AsRawHandle;
+        require(self.protected_native_witness.is_none()
+            && self.facts.source_physical.disk_attributes == 0 && !locked_volumes.is_empty(),
+            "native witness requires actual initial disk0 state and current mounted-volume locks")?;
+        self.require_current(events)?;
+        source::require_physical_handle(management, &self.facts.source_physical, 0, None, events)?;
+        self.protected_native_witness = Some(ProtectedNativeLayoutWitness {
+            source:self.source.clone(),boot:self.facts.boot.clone(),
+            physical_file_object:self.physical.as_raw_handle() as usize,
+            native_layout:self.facts.source_physical.gpt.native_layout.clone(),
+        });
+        events.push(NativeEvent {
+            operation:"offline-before-exclusion-complete-native-witness-held".into(),
+            control_code:0,input:Vec::new(),succeeded:true,native_error:None,
+            output:serde_json::to_vec(&serde_json::json!({
+                "native_layout_currently_queried_before_exclusion":true,
+                "actual_source_volume_lock_FileObjects_retained":locked_volumes.len(),
+                "native_layout_sha256":hex::encode(Sha256::digest(&self.facts.source_physical.gpt.native_layout)),
+                "later_protected_observations_require_current_full_raw_GPT":true,
+                "facts_grant_authority":false,
+            })).map_err(io::Error::other)?,
+        });
+        Ok(())
+    }
+    fn protected_native_layout(&self, expected_attributes: u64) -> io::Result<Option<&[u8]>> {
+        if matches!(expected_attributes, 1 | 3) {
+            self.protected_native_witness.as_ref()
+                .map(|w| w.bytes(&self.source, &self.facts.boot, &self.physical)).transpose()
+        } else { Ok(None) }
+    }
+    fn observe_held_source_file(&self, file: &mut File, expected_attributes: u64,
+        events: &mut Vec<NativeEvent>) -> io::Result<OfflineSourcePhysicalFacts> {
+        source_facts_with_native_witness(file, &self.source, self.budget,
+            self.protected_native_layout(expected_attributes)?, events)
     }
     // SDK-owner-only bookend after its ACTUAL durable disk transition. Original
     // enrollment facts are never rewritten or reconstructed from a pin/DTO.
@@ -680,7 +772,12 @@ impl OfflineOwningEnvironment {
                 && length == self.facts.current_ram_volume_length,
             "held RAM volume native identity changed",
         )?;
-        let actual = source_facts(&mut self.physical, &self.source, self.budget, events)?;
+        let held_native = if matches!(expected_attributes, 1 | 3) {
+            self.protected_native_witness.as_ref()
+                .map(|w| w.bytes(&self.source, &self.facts.boot, &self.physical)).transpose()?
+        } else { None };
+        let actual = source_facts_with_native_witness(&mut self.physical,
+            &self.source, self.budget, held_native, events)?;
         let original = &self.facts.source_physical;
         let unchanged = actual.device == original.device
                 && actual.length == original.length

@@ -374,16 +374,16 @@ impl OfflinePreparedTerminalSource {
         )?;
         self.closed
             .revalidate_prepared(&mut self.source, policy, journal, pins, events)?;
-        boot.require_current_boot(&self.source.owner_token(), events)?;
+        let mut available = OfflinePreparedAvailableSource {
+            source:self.source, closed:self.closed,
+        };
+        boot.accept_closed_available_source(&mut available, policy, journal, pins, events)?;
         checkpoint(
-            &self.source.core.sink,
+            &available.source.core.sink,
             "offline-PREPARED-closed-availability-SET0-complete",
             events,
         )?;
-        Ok(OfflinePreparedAvailableSource {
-            source: self.source,
-            closed: self.closed,
-        })
+        Ok(available)
     }
     pub fn revalidate_closed(
         &mut self,

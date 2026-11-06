@@ -1,4 +1,6 @@
 use super::*;
+use crate::native::partition_isolation::offline::OfflineBootMetadataWitness;
+type ProtectedBootBinding<'a> = (&'a OfflineBootMetadataWitness, &'a crate::offline_environment::OfflineSourceOwnerToken);
 use std::os::windows::fs::MetadataExt;
 use windows_sys::Win32::Storage::FileSystem::{
     FindFirstVolumeW, FindNextVolumeW, FindVolumeClose, GetDiskFreeSpaceW,
@@ -546,12 +548,21 @@ pub(super) fn raw_hash(
     metadata_limit: u64,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<[u8; 32]> {
+    raw_hash_bound(efi, pin, metadata_limit, None, events)
+}
+pub(super) fn raw_hash_protected(efi: &EfiIdentity, pin: &StorePin, metadata_limit: u64,
+    witness: &OfflineBootMetadataWitness, owner: &crate::offline_environment::OfflineSourceOwnerToken,
+    events: &mut Vec<NativeEvent>) -> io::Result<[u8; 32]> {
+    raw_hash_bound(efi, pin, metadata_limit, Some((witness, owner)), events)
+}
+fn raw_hash_bound(efi: &EfiIdentity, pin: &StorePin, metadata_limit: u64,
+    protected: Option<ProtectedBootBinding<'_>>, events: &mut Vec<NativeEvent>) -> io::Result<[u8; 32]> {
     let mut file = device_file(
         &format!("\\\\.\\PhysicalDrive{}", efi.binding.disk_number),
         false,
         false,
     )?;
-    let opening = physical_binding(&file, efi, events)?;
+    let opening = physical_binding_bound(&mut file, efi, protected, events)?;
     fat::require_current_map(&mut file, efi, pin, metadata_limit)?;
     let mut hash = sha2::Sha256::new();
     let mut buffer = [0; 65536];
@@ -589,7 +600,7 @@ pub(super) fn raw_hash(
     need(covered == pin.bytes, "raw BCD EOF coverage differs")?;
     fat::require_current_map(&mut file, efi, pin, metadata_limit)?;
     need(
-        physical_binding(&file, efi, events)? == opening,
+        physical_binding_bound(&mut file, efi, protected, events)? == opening,
         "same raw BCD physical handle metadata changed",
     )?;
     Ok(hash.finalize().into())
@@ -638,6 +649,17 @@ pub(super) fn raw_copy(
     metadata_limit: u64,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<[u8; 32]> {
+    raw_copy_bound(efi, pin, path, maximum, metadata_limit, None, events)
+}
+pub(super) fn raw_copy_protected(efi: &EfiIdentity, pin: &StorePin, path: &Path,
+    maximum: u64, metadata_limit: u64, witness: &OfflineBootMetadataWitness,
+    owner: &crate::offline_environment::OfflineSourceOwnerToken, events: &mut Vec<NativeEvent>)
+    -> io::Result<[u8; 32]> {
+    raw_copy_bound(efi, pin, path, maximum, metadata_limit, Some((witness, owner)), events)
+}
+fn raw_copy_bound(efi: &EfiIdentity, pin: &StorePin, path: &Path, maximum: u64,
+    metadata_limit: u64, protected: Option<ProtectedBootBinding<'_>>, events: &mut Vec<NativeEvent>)
+    -> io::Result<[u8; 32]> {
     need(
         pin.bytes <= maximum,
         "raw BCD copy exceeds admitted metadata bytes",
@@ -647,7 +669,7 @@ pub(super) fn raw_copy(
         false,
         false,
     )?;
-    let opening = physical_binding(&source, efi, events)?;
+    let opening = physical_binding_bound(&mut source, efi, protected, events)?;
     fat::require_current_map(&mut source, efi, pin, metadata_limit)?;
     let mut output = OpenOptions::new()
         .read(true)
@@ -692,7 +714,7 @@ pub(super) fn raw_copy(
     need(covered == pin.bytes, "raw BCD copy EOF differs")?;
     fat::require_current_map(&mut source, efi, pin, metadata_limit)?;
     need(
-        physical_binding(&source, efi, events)? == opening,
+        physical_binding_bound(&mut source, efi, protected, events)? == opening,
         "same raw BCD copy physical metadata changed",
     )?;
     output.sync_all()?;
@@ -793,6 +815,29 @@ fn physical_binding(
     efi: &EfiIdentity,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<Vec<u8>> {
+    physical_binding_native(file, efi, events)
+}
+fn physical_binding_bound(file: &mut File, efi: &EfiIdentity,
+    protected: Option<ProtectedBootBinding<'_>>, events: &mut Vec<NativeEvent>) -> io::Result<Vec<u8>> {
+    if let Some((witness, owner)) = protected {
+        let actual = witness.verify_file(file, owner, events)?;
+        let native = actual.gpt.native_layout;
+        let id = layout::guid_bytes(&efi.binding.identity.partition_guid)?;
+        need(actual.device.len() == 12
+            && layout::u32_at(&actual.device, 4)? == efi.binding.disk_number
+            && layout::u32_at(&actual.device, 8)? == 0
+            && layout::u64_at(&actual.length, 0)? == efi.binding.identity.disk_bytes
+            && native.len() >= 48 && (native.len()-48).is_multiple_of(144)
+            && native[8..24] == layout::guid_bytes(&efi.binding.identity.disk_guid)?
+            && native[48..].chunks_exact(144).filter(|r| r[48..64] == id
+                && *r == efi.native_partition_info.as_slice()).count() == 1,
+            "current raw BCD source/EFI differs from actual protected source witness")?;
+        return Ok(native);
+    }
+    physical_binding_native(file, efi, events)
+}
+fn physical_binding_native(file: &File, efi: &EfiIdentity,
+    events: &mut Vec<NativeEvent>) -> io::Result<Vec<u8>> {
     let device = control(
         file,
         "boot-raw-store-physical-DEVICE",

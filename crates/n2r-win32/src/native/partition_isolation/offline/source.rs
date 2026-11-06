@@ -54,6 +54,9 @@ pub struct OfflineSourceState {
     pub source_gate_ever_issued: bool,
     pub source_writer_issued: bool,
     pub serialized_state_grants_authority: bool,
+    pub native_layout_provenance: &'static str,
+    pub native_layout_currently_requeried: bool,
+    pub current_complete_raw_gpt_revalidated: bool,
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct OfflineSourceIntentPin {
@@ -471,6 +474,31 @@ struct PreparedExclusionLease {
     locked_volumes: Vec<File>,
     management: Option<File>,
 }
+// Read-only boot metadata bookend, derived from a real opaque source owner.
+// It has no source data handle, Write, Clone, Deserialize or writer constructor.
+pub(crate) struct OfflineBootMetadataWitness {
+    owner: OfflineSourceOwnerToken,
+    source: PartitionSourceBinding,
+    boot: OfflineBootIdentity,
+    budget: PartitionObservationBudget,
+    basis: OfflineSourcePhysicalFacts,
+}
+impl OfflineBootMetadataWitness {
+    pub(crate) fn verify_file(&self, file: &mut File, owner: &OfflineSourceOwnerToken,
+        events: &mut Vec<NativeEvent>) -> io::Result<OfflineSourcePhysicalFacts> {
+        require(self.owner.same_owner(owner) && boot_identity()? == self.boot,
+            "boot metadata witness lost actual source owner/current boot")?;
+        let before = attributes(file, events)?;
+        require(matches!(before, 1 | 3), "boot metadata source is not actually excluded")?;
+        let actual = source_facts_with_native_witness(file, &self.source, self.budget,
+            Some(&self.basis.gpt.native_layout), events)?;
+        require(actual.disk_attributes == before
+            && actual.device == self.basis.device && actual.length == self.basis.length
+            && actual.alignment == self.basis.alignment && actual.gpt == self.basis.gpt,
+            "boot metadata actual full raw GPT/device/protection differs from held source witness")?;
+        Ok(actual)
+    }
+}
 struct Core {
     env: OfflineOwningEnvironment,
     file: File,
@@ -491,18 +519,24 @@ struct Core {
     prepared_exclusion: Option<PreparedExclusionLease>,
     sink: PartitionNativeEventSink,
 }
-fn require_physical_handle(
+pub(super) fn require_physical_handle(
     file: &File,
     enrolled: &OfflineSourcePhysicalFacts,
     expected: u64,
+    held_native_layout: Option<&[u8]>,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<()> {
+    require(attributes(file, events)? == expected,
+        "actual physical gate lost protection before current identity queries")?;
     let device = control(file, "offline-paged-gate-native-device", DEVICE, &[], 12, events)?;
     let length = control(file, "offline-paged-gate-native-length", LENGTH, &[], 8, events)?;
     let mut query = [0u8; 12];
     query[0] = 6;
     let alignment = control(file, "offline-paged-gate-native-alignment", ALIGNMENT, &query, 28, events)?;
-    let native = control(file, "offline-paged-gate-full-native-layout", LAYOUT, &[], 65536, events)?;
+    let native = match held_native_layout {
+        Some(held) => held.to_vec(),
+        None => control(file, "offline-paged-gate-full-native-layout", LAYOUT, &[], 65536, events)?,
+    };
     let actual = attributes(file, events)?;
     require(
         device == enrolled.device
@@ -522,7 +556,7 @@ impl Core {
                 .require_current_at_attributes(self.expected_attributes, events)?;
             if let Some(management) = self.prepared_exclusion.as_ref().and_then(|v| v.management.as_ref()) {
                 require_physical_handle(management, &self.env.facts.source_physical,
-                    self.expected_attributes, events)?;
+                    self.expected_attributes, self.env.protected_native_layout(self.expected_attributes)?, events)?;
             }
             // Raw GPT metadata reads need a separate buffered readonly object;
             // the source data object is NO_BUFFERING and its aligned window
@@ -535,7 +569,10 @@ impl Core {
                 false,
                 false,
             )?;
-            let actual = source_facts(&mut metadata, &self.env.source, self.env.budget, events)?;
+            let actual = self.env.observe_held_source_file(&mut metadata,
+                self.expected_attributes, events)?;
+            require(attributes(&self.file, events)? == self.expected_attributes,
+                "source data FileObject lost protection before current identity queries")?;
             let device = control(
                 &self.file,
                 "offline-source-data-device",
@@ -552,18 +589,17 @@ impl Core {
                 8,
                 events,
             )?;
-            let layout = control(
-                &self.file,
-                "offline-source-data-full-native-layout",
-                LAYOUT,
-                &[],
-                65536,
-                events,
-            )?;
+            let held_native = self.env.protected_native_layout(self.expected_attributes)?;
+            let layout = match held_native {
+                Some(held) => held.to_vec(),
+                None => control(&self.file, "offline-source-data-full-native-layout",
+                    LAYOUT, &[], 65536, events)?,
+            };
             require(
                 device == actual.device
                     && length == actual.length
-                    && layout == actual.gpt.native_layout,
+                    && layout == actual.gpt.native_layout
+                    && attributes(&self.file, events)? == self.expected_attributes,
                 "actual data FileObject differs from complete metadata source",
             )?;
             close_file(
@@ -599,6 +635,11 @@ impl Core {
                 source_gate_ever_issued: self.gate_ever_issued,
                 source_writer_issued: self.writer_ever_issued,
                 serialized_state_grants_authority: false,
+                native_layout_provenance: if held_native.is_some() {
+                    "same-boot-before-exclusion-native-witness"
+                } else { "current-native-query" },
+                native_layout_currently_requeried: held_native.is_none(),
+                current_complete_raw_gpt_revalidated: true,
             })
         })();
         let closed = checkpoint(&self.sink, "offline-owned-source-state-closed", events);

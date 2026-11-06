@@ -212,7 +212,15 @@ impl OfflinePreparedSource {
         // object. This management FileObject is unbuffered so the already-gated
         // aligned writer can duplicate it without closing the exclusion owner.
         require_physical_handle(&management, &env.facts.source_physical,
-            enrolled_attributes, events)?;
+            enrolled_attributes, None, events)?;
+        let file = OpenOptions::new().read(true).share_mode(3)
+            .custom_flags(0xa000_0000)
+            .open(format!("\\\\.\\PhysicalDrive{}", env.source.storage.disk_number))?;
+        require_physical_handle(&file, &env.facts.source_physical,
+            enrolled_attributes, None, events)?;
+        if enrolled_attributes == 0 {
+            env.retain_current_boot_native_witness(&management, &locked, events)?;
+        }
         if enrolled_attributes != 3 {
             set_attributes(&management, 3, events)?;
         }
@@ -223,16 +231,6 @@ impl OfflinePreparedSource {
         checkpoint(&sink, "offline-PREPARED-current-boot-exclusion-lease-retained", events)?;
         env.require_current_at_attributes(3, events).map_err(|error|
             invalid(&format!("after retained-lease durable checkpoint; native_error={:?}: {error}",error.raw_os_error())))?;
-        let file = OpenOptions::new()
-            .read(true)
-            .share_mode(3)
-            .custom_flags(0xa000_0000)
-            .open(format!(
-                "\\\\.\\PhysicalDrive{}",
-                env.source.storage.disk_number
-            ))?;
-        env.require_current_at_attributes(3, events).map_err(|error|
-            invalid(&format!("after readonly data FileObject open; native_error={:?}: {error}",error.raw_os_error())))?;
         let buffer = AlignedBuffer::new()?;
         env.require_current_at_attributes(3, events).map_err(|error|
             invalid(&format!("after aligned data-buffer allocation; native_error={:?}: {error}",error.raw_os_error())))?;
@@ -279,6 +277,14 @@ impl OfflinePreparedSource {
     }
     pub fn owner_token(&self) -> OfflineSourceOwnerToken {
         self.core.token.clone()
+    }
+    pub(crate) fn boot_metadata_witness(&mut self, events: &mut Vec<NativeEvent>)
+        -> io::Result<OfflineBootMetadataWitness> {
+        let state = self.state(events)?;
+        require(matches!(state.actual.disk_attributes, 1 | 3),
+            "boot metadata witness requires actual excluded source")?;
+        Ok(OfflineBootMetadataWitness { owner:self.owner_token(),source:self.binding().clone(),
+            boot:self.core.env.facts.boot.clone(),budget:self.core.env.budget,basis:state.actual })
     }
     pub fn preparation_pin(&self) -> &OfflineSourceIntentPin {
         &self

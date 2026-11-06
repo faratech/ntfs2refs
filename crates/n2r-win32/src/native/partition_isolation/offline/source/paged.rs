@@ -257,7 +257,8 @@ pub(super) fn gate_file_state(
     expected: u64,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<()> {
-    require_physical_handle(file, &core.env.facts.source_physical, expected, events)
+    require_physical_handle(file, &core.env.facts.source_physical, expected,
+        core.env.protected_native_layout(expected)?, events)
 }
 pub(super) fn begin<'a, 'p>(
     core: &'a mut Core,

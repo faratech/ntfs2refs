@@ -18,7 +18,13 @@ type CloseKey = unsafe extern "system" fn(Handle) -> u32;
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct OfflineBcdObject {
     pub(super) object_type: u32,
-    pub(super) elements: BTreeMap<u32, Vec<u8>>,
+    pub(super) elements: BTreeMap<u32, OfflineBcdElement>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(super) struct OfflineBcdElement {
+    pub(super) registry_type: u32,
+    pub(super) bytes: Vec<u8>,
 }
 
 #[link(name = "kernel32")]
@@ -206,13 +212,15 @@ impl OfflineRegistry {
                 // SAFETY: size/type query only under the exact element key.
                 status(unsafe { (self.get)(element.handle, ptr::null(), wide("Element").as_ptr(),
                     &mut kind, ptr::null_mut(), &mut length) })?;
-                if kind != 3 || length > max_value_bytes {
-                    return Err(invalid("BCD Element must be admitted REG_BINARY"));
+                if length > max_value_bytes {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, format!(
+                        "BCD Element exceeds admitted raw value workspace: element=0x{element_type:08x}, type={kind}, bytes={length}, maximum={max_value_bytes}")));
                 }
                 used = used.checked_add(ENTRY_HEAP_CHARGE).and_then(|n| n.checked_add(u64::from(length)))
                     .ok_or_else(|| invalid("BCD object workspace accounting overflow"))?;
                 if used > max_total_bytes { return Err(invalid("complete BCD object exceeds admitted heap/data workspace")); }
                 let expected = length;
+                let registry_type = kind;
                 let mut bytes = Vec::new();
                 let count = usize::try_from(length).map_err(io::Error::other)?;
                 bytes.try_reserve_exact(count).map_err(io::Error::other)?;
@@ -221,9 +229,14 @@ impl OfflineRegistry {
                 status(unsafe { (self.get)(element.handle, ptr::null(), wide("Element").as_ptr(),
                     &mut kind, if bytes.is_empty() { ptr::null_mut() } else { bytes.as_mut_ptr().cast() },
                     &mut length) })?;
-                if kind != 3 || length != expected { return Err(invalid("BCD Element changed size/type during complete query")); }
+                if kind != registry_type || length != expected {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, format!(
+                        "BCD Element changed size/type during complete query: element=0x{element_type:08x}, type={kind}, expected_type={registry_type}, bytes={length}, expected_bytes={expected}, maximum={max_value_bytes}")));
+                }
                 element.close()?;
-                elements.insert(element_type, bytes);
+                // Preserve the native type and exact bytes. String/GUID/list
+                // semantics belong to the caller; no registry data is coerced.
+                elements.insert(element_type, OfflineBcdElement { registry_type, bytes });
                 index = index.checked_add(1).ok_or_else(|| invalid("BCD element enumeration index overflow"))?;
             }
             elements_key.close()?;

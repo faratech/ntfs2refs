@@ -128,25 +128,41 @@ const BCD_DISPLAY_ORDER: u32 = 0x2400_0001;
 const BCD_TIMEOUT: u32 = 0x2500_0004;
 const BCD_BOOT_SEQUENCE: u32 = 0x2400_0002;
 const BCD_LOAD_OPTIONS: u32 = 0x1200_0030;
-fn encoded_guid(value:&str) -> io::Result<Vec<u8>> {
-    Ok(crate::layout::guid_bytes(value)?.to_vec())
-}
-fn encoded_guid_list(values:&[String]) -> io::Result<Vec<u8>> {
-    let mut bytes=Vec::new();
-    bytes.try_reserve_exact(values.len().checked_mul(16).ok_or_else(||bad("BCD GUID list overflow"))?)
-        .map_err(io::Error::other)?;
-    for value in values { bytes.extend_from_slice(&crate::layout::guid_bytes(value)?); }
-    Ok(bytes)
-}
-fn encoded_string(value:&str,terminated:bool) -> Vec<u8> {
-    value.encode_utf16().chain(if terminated {Some(0)} else {None})
+fn encoded_string(value:&str,terminators:u32) -> Vec<u8> {
+    value.encode_utf16().chain(std::iter::repeat_n(0,terminators as usize))
         .flat_map(u16::to_le_bytes).collect()
+}
+fn decoded_guid_units(units:&[u16]) -> io::Result<String> {
+    need(units.len()==38 && !units.contains(&0),"BCD native GUID string width differs")?;
+    canonical_guid(&String::from_utf16(units).map_err(io::Error::other)?)
+}
+fn decoded_guid(value:&offreg::OfflineBcdElement) -> io::Result<String> {
+    need(value.registry_type==1 && value.bytes.len()==78 && value.bytes[76..]==[0,0],
+        "BCD object reference must be native REG_SZ GUID38 plus NUL")?;
+    let units:Vec<_>=value.bytes[..76].chunks_exact(2).map(|v|u16::from_le_bytes([v[0],v[1]])).collect();
+    decoded_guid_units(&units)
+}
+fn decoded_guid_list(value:&offreg::OfflineBcdElement) -> io::Result<Vec<String>> {
+    need(value.registry_type==7 && value.bytes.len()>=4 && value.bytes.len()%2==0
+        && value.bytes[value.bytes.len()-4..]==[0,0,0,0],
+        "BCD object list must be native double-NUL REG_MULTI_SZ")?;
+    let units:Vec<_>=value.bytes[..value.bytes.len()-4].chunks_exact(2)
+        .map(|v|u16::from_le_bytes([v[0],v[1]])).collect();
+    units.split(|v|*v==0).map(decoded_guid_units).collect()
+}
+fn decoded_integer(value:&offreg::OfflineBcdElement) -> io::Result<u64> {
+    need(value.registry_type==3 && value.bytes.len()==8,
+        "BCD integer must be native REG_BINARY u64LE8")?;
+    Ok(u64::from_le_bytes(value.bytes.as_slice().try_into().map_err(io::Error::other)?))
+}
+fn element<'a>(object:&'a offreg::OfflineBcdObject,id:u32)->io::Result<&'a offreg::OfflineBcdElement> {
+    object.elements.get(&id).ok_or_else(||bad(&format!("required encoded BCD element 0x{id:08x} absent")))
 }
 fn verify_original_mutable_encoding(object:&offreg::OfflineBcdObject,original:&Selection) -> io::Result<()> {
     let timeout=original.timeout.parse::<u64>().map_err(io::Error::other)?;
-    need(object.elements.get(&BCD_DEFAULT)==Some(&encoded_guid(&original.default)?)
-        && object.elements.get(&BCD_DISPLAY_ORDER)==Some(&encoded_guid_list(&original.displayorder)?)
-        && object.elements.get(&BCD_TIMEOUT).is_some_and(|v|v.as_slice()==timeout.to_le_bytes())
+    need(decoded_guid(element(object,BCD_DEFAULT)?)?==original.default
+        && decoded_guid_list(element(object,BCD_DISPLAY_ORDER)?)?==original.displayorder
+        && decoded_integer(element(object,BCD_TIMEOUT)?)?==timeout
         && !object.elements.contains_key(&BCD_BOOT_SEQUENCE),
         "native original BCD raw default/order/timeout/sequence encoding differs")
 }
@@ -155,19 +171,22 @@ fn verify_encoded_cold_objects(original:&offreg::OfflineBcdObject,current:&offre
     intent:&BootIntent,intent_sha:[u8;32]) -> io::Result<()> {
     verify_original_mutable_encoding(original,&intent.original)?;
     let mut expected=original.clone();
-    expected.elements.insert(BCD_DEFAULT,encoded_guid(&intent.loader)?);
-    expected.elements.insert(BCD_DISPLAY_ORDER,encoded_guid_list(std::slice::from_ref(&intent.loader))?);
-    expected.elements.insert(BCD_TIMEOUT,0u64.to_le_bytes().to_vec());
-    need(*current==expected,
+    let mut unrelated=current.clone();
+    for id in [BCD_DEFAULT,BCD_DISPLAY_ORDER,BCD_TIMEOUT] {
+        expected.elements.remove(&id);unrelated.elements.remove(&id);
+    }
+    need(unrelated==expected && decoded_guid(element(current,BCD_DEFAULT)?)?==intent.loader
+        && decoded_guid_list(element(current,BCD_DISPLAY_ORDER)?)?==std::slice::from_ref(&intent.loader)
+        && decoded_integer(element(current,BCD_TIMEOUT)?)?==0 && !current.elements.contains_key(&BCD_BOOT_SEQUENCE),
         "actual encoded BootMgr selection or unrelated complete elements changed")?;
     let private=intent.private_encoded_objects.as_ref()
         .ok_or_else(||bad("native-boot-pinned private encoded objects absent"))?;
     let mut expected_loader=private.loader.clone();
-    need(expected_loader.elements.get(&BCD_LOAD_OPTIONS)==Some(&encoded_string(
-        &load_options([0u8;32],bootstrap_pin(intent)?),private.loadoptions_terminated)),
+    need(expected_loader.elements.get(&BCD_LOAD_OPTIONS)==Some(&offreg::OfflineBcdElement {
+        registry_type:1,bytes:encoded_string(&load_options([0u8;32],bootstrap_pin(intent)?),private.loadoptions_terminators) }),
         "sealed native-created private loadoptions template differs")?;
-    expected_loader.elements.insert(BCD_LOAD_OPTIONS,encoded_string(
-        &load_options(intent_sha,bootstrap_pin(intent)?),private.loadoptions_terminated));
+    expected_loader.elements.insert(BCD_LOAD_OPTIONS,offreg::OfflineBcdElement { registry_type:1,
+        bytes:encoded_string(&load_options(intent_sha,bootstrap_pin(intent)?),private.loadoptions_terminators) });
     need(*loader==expected_loader && *options==private.options,
         "actual complete private loader/ramdisk elements differ from native-created sealed maps")
 }
@@ -182,7 +201,7 @@ struct ImagePin {
 struct PrivateEncodedBootObjects {
     loader: offreg::OfflineBcdObject,
     options: offreg::OfflineBcdObject,
-    loadoptions_terminated: bool,
+    loadoptions_terminators: u32,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct BootIntent {
@@ -463,11 +482,15 @@ impl OwnedRecoveryBoot {
         let placeholder = loader_encoded.object.elements.get(&BCD_LOAD_OPTIONS)
             .ok_or_else(||bad("native-created private loadoptions element absent"))?;
         let zero_options = load_options([0u8;32],bootstrap_pin(&intent)?);
-        let loadoptions_terminated = if *placeholder == encoded_string(&zero_options,false) { false }
-            else { need(*placeholder == encoded_string(&zero_options,true),
-                "native private loadoptions encoding is not exact bounded UTF16")?; true };
+        need(placeholder.registry_type==1,"native private loadoptions must be REG_SZ")?;
+        let base=encoded_string(&zero_options,0);
+        let padding=placeholder.bytes.strip_prefix(base.as_slice())
+            .ok_or_else(||bad("native private loadoptions differs from exact placeholder UTF16"))?;
+        need(matches!(padding.len(),2|4) && padding.iter().all(|v|*v==0),
+            "native private loadoptions has unknown REG_SZ terminator format")?;
+        let loadoptions_terminators=(padding.len()/2) as u32;
         intent.private_encoded_objects = Some(PrivateEncodedBootObjects {
-            loader: loader_encoded.object, options: options_encoded.object, loadoptions_terminated });
+            loader: loader_encoded.object, options: options_encoded.object, loadoptions_terminators });
         intent.guarded_store_map = Some(preselect.clone());
         intent.parent_original_intent_sha256 = Some(original_intent_sha256);
         let intent_path = directory.join("recovery-boot-guard-intent.json");

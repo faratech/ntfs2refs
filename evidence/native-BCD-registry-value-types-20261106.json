@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "kind": "preserve-native-BCD-registry-types-and-encoded-bytes",
+  "actual_case": ".lab/hyperv/streaming-v2-20261027/PUBLIC-4afb999-actual-once-5c8ac678ce1747ca843987a25cc65cfb",
+  "failed_source": "4afb9997f037fd0d008af1d249bc593665f79396",
+  "actual_warm_failure": {
+    "before_original_intent_private_BCD_mutations_restart_AP": true,
+    "birth_ms": 1793965690771,
+    "pid": 4652,
+    "owned_exit_code": 1,
+    "source_data_write_claimed": false,
+    "error": "BCD Element must be admitted REG_BINARY",
+    "wall_seconds": 334.2677327
+  },
+  "native_type_probe": {
+    "birth_ms": 1793966319567,
+    "pid": 1408,
+    "DLL_input_identity_ALLbytes_SHA_unchanged": true,
+    "object_description_type": {
+      "registry_type": 4,
+      "bytes": 4,
+      "hex": "02001010"
+    },
+    "probe_sha256": "15725c2beb7b1490329e651d2795bacf4e1944eb36ea7e875fd9ceb74d299351",
+    "result_path": "bcd-type-diagnostic-601864e7a81e405ea0de914914365046/ACTUAL-ONE-readonly-type-diagnostic-result.json",
+    "elements": [
+      {
+        "bytes": 88,
+        "type": 3,
+        "id": "11000001"
+      },
+      {
+        "bytes": 68,
+        "type": 1,
+        "id": "12000002"
+      },
+      {
+        "bytes": 42,
+        "type": 1,
+        "id": "12000004"
+      },
+      {
+        "bytes": 12,
+        "type": 1,
+        "id": "12000005"
+      },
+      {
+        "bytes": 80,
+        "type": 7,
+        "id": "14000006"
+      },
+      {
+        "bytes": 78,
+        "type": 1,
+        "id": "23000003"
+      },
+      {
+        "bytes": 78,
+        "type": 1,
+        "id": "23000006"
+      },
+      {
+        "bytes": 80,
+        "type": 7,
+        "id": "24000001"
+      },
+      {
+        "bytes": 80,
+        "type": 7,
+        "id": "24000010"
+      },
+      {
+        "bytes": 8,
+        "type": 3,
+        "hex": "1e00000000000000",
+        "id": "25000004"
+      }
+    ],
+    "complete_element_count": 10,
+    "owned_exit_code": 0,
+    "save_set_active_registry_sourceD_raw_Jbody_product_calls": 0
+  },
+  "implementation": [
+    "Retain actual registry_type plus exact bytes for every raw element; no coercion or type erasure.",
+    "Complete bounded object reader compares second query native type and length to its first query; all hive/key/value/heap/count/byte/SHA guards remain.",
+    "Object references strictly decode measured REG_SZ GUID38 plus NUL; lists decode measured double-NUL REG_MULTI_SZ GUID strings; timeout decodes measured REG_BINARY u64LE8.",
+    "All unrelated BootMgr/private elements compare exact native type and byte arrays; only intended selection fields have explicit strict semantics.",
+    "Private LoadOptions must be REG_SZ with exact native-created placeholder UTF16 and captured one/two-NUL terminator format; real self-hash replacement preserves type and padding.",
+    "No external BCD reads under protected source, selection-before-guard crash window, protection reassertion, byte exception, budget increase or unit tests."
+  ],
+  "focused_check": {
+    "native_run": false,
+    "receipt_sha256": "aeeaf5339770092bd93b873f1a3c16bdfcef8cba7085e0818ecca5f1aa208349",
+    "session_id": 82454,
+    "exit_code": 0,
+    "unit_tests_run": false,
+    "wall_seconds": 32.8857093
+  },
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "product_native_qualified": false,
+  "normal_conversion_qualified": false,
+  "AP_restart_resume_qualified": false,
+  "AP_restart_rollback_qualified": false
+}

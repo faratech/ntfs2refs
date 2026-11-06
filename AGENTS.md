@@ -7,7 +7,13 @@ This record supersedes historical LIVE/keeper/next-action statements. Full previ
 [history](docs/history/AGENTS-through-20261105-shared-AP.md), SHA256 `8973ba9a024dffffc88d82a332afc7dab76d008609cf63970a7a0279fa18c91e`.
 Read specific historical sections only when needed; do not restart finished investigations or repeat unchanged cases.
 
-## Actual3aee protected/ordinary-route pass; exact5fd fresh case starts
+## Actual5fd clean-OLD complete; exact firmware tuple identifies late DVD enumeration
+
+LATEST ACTUAL5fd: productrestartenteredPE; frame001 SHA0b1c01e13eaec95f73e849a885215013deea2e4ea9ba05fcb98ebeec44508e5f shows protected3/ordinaryroute/pageopen/currentstatechecks and `offline-PREPARED-clear-OLD-qualification-complete`, then `actual firmware boot selection/security changed`. No AP/sourcewrite claim. CurrentPE/Xcmd/source/J/privatebootheld/nopendingVMcall, 3192/3676LIVEbelowishistoricalbeforethisrestart. No fixtureRestoreafterthisfailurewithoutfirstproofnoAP; allguard factsremainstrict.
+
+ONEreadonlyprobe COMPLETE; comparison005 SHA507d266d4fe82e3f6ec762c469f7535f239c3ad288d971ec03030232205e53be: actual/expectedcurrent2, exactoption300B+SecureBoot01equal/BootNextabsent/privrestored; ONLYorderdiff actual[2,0,1,3,4,5,6,7,8,9,10]vsexpected[2,0,1,3,4,5,6,7,8,9]. Hosttailmapping28f74f7... confirms11entries/lastordinal10DVD0:3/originalISO. Originalmediarestored/oneproberun/swaps2/power0/fwsettings0. Evidence `evidence/lab-dvd-before-boot-firmware-order-20261106.json`. FIXTUREONLY: attachoriginalDVD OFFafterONE Restore07 BEFOREONE WindowsStart, soenumeratedbeforewarmfirmwarepin. Frozen5fd/productsecuritycomparisonUNCHANGED/no rebuild.
+
+CURRENT **freshFULL4GiB+ONEordinaryPEshutdown75518 ACTIVE**, run6d6940768192477ca94807e757d842cc; thenresethelper17c7a0b5 doesONE Restore07→DVD0:3 OFFattach→ONEStart; stageb68d4fb2 reusesDVD/plainlocalprincipal. SamefiniteGO/no Rootreview/newcheckpoint. PreserveanypostAPmixedSource/J; NO RestoreafteractualAP/writes.
 
 LATEST ACTUAL3aee: productrestartenteredPE, frame001 SHA4a4cecb5f12e9fe04d1ab50420bfa9840f8486d410a5751ec79d520296812b8f shows protectedsource3/firstCorestate+ordinaryoutput/indexadvance/multiplecoldoperation-sourcechecks, then `source range exceeds owner resources`. No AP/sourcewrite claim. CurrentPE/Xcmd/source/J/privatebootheld/nopendingVMcall; bothPSDirect43560/46731closedchannelerrors. Source1188LIVEbelowishistoricalbeforethisrestart.
 

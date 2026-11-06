@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "kind": "shared-offline-inventory-corrected-candidate-build",
+  "source_commit": "932175d07203307015a75277728f9388adeaf6c5",
+  "source_tree": "3d5374c8ed22ab3fe2a7220945e95076718653a8",
+  "build_manifest_path": ".lab/development/release-candidates/shared-inventory-932175d/manifest.json",
+  "build_manifest_sha256": "194fb65be0c18b24d96468c2a948860015a91910f3121b296921e0ef75be1e3d",
+  "actual_builder_terminal_exit_code": 0,
+  "builder_session_id": 11941,
+  "actual_terminal_observed_by": "root",
+  "toolchain": "1.98.1",
+  "target": "x86_64-pc-windows-msvc",
+  "held_source_files": 474,
+  "source_before_after_verified": true,
+  "layout_path": ".lab/development/public-layout-932175d/layout.json",
+  "layout_sha256": "4dedafcbda4bad79ecbe56d9ba1597767014d643d0bfbe0f83da38183cdd1230",
+  "public_binary": {
+    "bytes": 20725248,
+    "sha256": "1d61b15c81b9f28c07648c4233a286228a85ce2eb6c63ecc5e4370a3d3787f57",
+    "name": "ntfs2refs.exe"
+  },
+  "recovery_binary": {
+    "bytes": 4301312,
+    "sha256": "920cdfcc316d7bc49c93e54ad13ebb77ff6d45800ede110644491dc1b51cf66c",
+    "name": "ntfs2refs-recovery.exe",
+    "source_name": "lab-apply-prepared-offline.exe"
+  },
+  "unit_tests_run": false,
+  "native_tools_invoked_by_build": false,
+  "native_qualified": false,
+  "power_loss_qualified": false,
+  "stable_release": false,
+  "qualification_inherited": false,
+  "main_rs_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "observed_utc": "2026-11-06T02:41:36.1815636Z"
+}

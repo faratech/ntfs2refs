@@ -7,6 +7,12 @@ This record supersedes historical LIVE/keeper/next-action statements. Full previ
 [history](docs/history/AGENTS-through-20261105-shared-AP.md), SHA256 `8973ba9a024dffffc88d82a332afc7dab76d008609cf63970a7a0279fa18c91e`.
 Read specific historical sections only when needed; do not restart finished investigations or repeat unchanged cases.
 
+## Current live correction build and failed-public preservation
+
+Conservative capture fix is committed and PUSHED at6cff11d75863da45cdfcfca57267d7f75329af34. Exact PUBLIC-ONLY build **session40624 is confirmed live** using `.lab/development/build-shared-public-budget-6cff11d.ps1`, output `release-candidates/shared-public-budget-6cff11d`, shared target/source cache,1GiB bound and same case absolute249768418354. Poll SAME session/actual process; no duplicate build. New public will pair with EXACT unchanged aa8 recoveryb7a868695a06ec072d9e0c2c23b7ffdd76181a89038b36d56cb9c0117b2aac9e; document distinct component commits rather than pretend cold was rebuilt. No corrected public native run yet.
+
+Exclusive operator preservation **session77439 started** with reviewed eb2d61c639a32b8651fd5966a3473e4cf41c41c9502a295365fc5e662e07e832. It checks samecase128MiB/exactfive/current07ca/originalfailedprocesses absent/projectidle, then ONE ordinary Windows shutdown and ONE named offline failed-public checkpoint. Actual completion/newGUID not yet observed; consult operator and SAME controller, never repeat from timeout. No restore/start/source queries or second native authorized yet. Original frozen alpha and failed462 remain keepers. Goal incomplete; no unit tests.
+
 ## Actual public preparation failed; conservative capacity fix compiled
 
 SAME native4312/birth1793922649258 ACTUAL OWNEDexit1/wall71.177512s; worker2604 absent. No restart. Actual error `encoded capture capacity bounds differ` during Windows preparation, last phase `partition-shadow-source-phase-closing`. Preserve actual source/protection/J; no inferred independent source-byte/AP result. Archive19files/2009737bytes manifestcfd6573cade96af0101626906d99b12b7567df376c7e1ae97ecc0359bc101f7a in public case1530. Actual request defaults ConservativeV1; arena2245193728 derives journal1496793088 but maxChanged incorrectly55834574848 (whole partition), exceeding journal minus16MiB. Prior manual preparation defaulted SourceFreeActualBytesV1, explaining different outcome.

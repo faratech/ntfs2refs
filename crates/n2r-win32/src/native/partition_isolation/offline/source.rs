@@ -463,8 +463,8 @@ fn lock_source_volumes(
     }
     Ok(locked)
 }
-// Keep the actual current-boot exclusion owners. Closing them immediately
-// after SET3 allowed the native attributes to return to0 in the owning PE.
+// Keep the actual current-boot exclusion owners until closed SET0. Retention
+// alone does not establish protection; every native state check still must pass.
 // The management FileObject supplies a duplicate handle to the existing paged
 // writer while its original handle stays private for controls until closed SET0.
 struct PreparedExclusionLease {

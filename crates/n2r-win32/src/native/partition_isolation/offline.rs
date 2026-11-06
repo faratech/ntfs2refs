@@ -402,6 +402,11 @@ fn source_facts(
     binding.storage.validate_alignment(&alignment)?;
     let disk_attributes = attributes(file, events)?;
     let native = native_layout(file, budget, events)?;
+    let after_native_layout = attributes(file, events)?;
+    require(disk_attributes == after_native_layout, &format!(
+        "offline physical disk{} protection changed during native LAYOUT: before={}, after={}",
+        binding.storage.disk_number, disk_attributes, after_native_layout,
+    ))?;
     require(
         native.len() >= 48 && (native.len() - 48).is_multiple_of(144),
         "offline source native layout is incomplete",
@@ -422,6 +427,13 @@ fn source_facts(
         "offline source may not be EFI/reserved/unknown partition type",
     )?;
     let gpt = gpt(file, &binding.storage, budget, native, kind)?;
+    // An opening attribute sample cannot establish the protection of a later
+    // raw GPT read. Keep the actual closing sample in the same full proof.
+    let after_raw_gpt = attributes(file, events)?;
+    require(disk_attributes == after_raw_gpt, &format!(
+        "offline physical disk{} protection changed during raw GPT reads: before={}, after={}",
+        binding.storage.disk_number, disk_attributes, after_raw_gpt,
+    ))?;
     Ok(OfflineSourcePhysicalFacts {
         device,
         length,
@@ -670,14 +682,49 @@ impl OfflineOwningEnvironment {
         )?;
         let actual = source_facts(&mut self.physical, &self.source, self.budget, events)?;
         let original = &self.facts.source_physical;
-        require(
-            actual.device == original.device
+        let unchanged = actual.device == original.device
                 && actual.length == original.length
                 && actual.alignment == original.alignment
                 && actual.gpt == original.gpt
-                && actual.disk_attributes == expected_attributes,
-            "offline source full GPT/native identity or actual expected disk protection changed",
-        )?;
+                && actual.disk_attributes == expected_attributes;
+        if !unchanged {
+            let expected_native = &original.gpt.native_layout;
+            let actual_native = &actual.gpt.native_layout;
+            let first_native_difference = (0..expected_native.len().max(actual_native.len()))
+                .find(|at| expected_native.get(*at) != actual_native.get(*at))
+                .map(|at| serde_json::json!({"offset":at,
+                    "expected":expected_native.get(at),"actual":actual_native.get(at)}));
+            let detail = serde_json::json!({
+                "actual_disk_attributes":actual.disk_attributes,
+                "expected_disk_attributes":expected_attributes,
+                "original_disk_attributes":original.disk_attributes,
+                "device_equal":actual.device==original.device,
+                "length_equal":actual.length==original.length,
+                "alignment_equal":actual.alignment==original.alignment,
+                "full_gpt_equal":actual.gpt==original.gpt,
+                "primary_header_equal":actual.gpt.primary_header==original.gpt.primary_header,
+                "backup_header_equal":actual.gpt.backup_header==original.gpt.backup_header,
+                "entries_equal":actual.gpt.entries==original.gpt.entries,
+                "native_layout_equal":actual_native==expected_native,
+                "native_lengths":[expected_native.len(),actual_native.len()],
+                "first_native_difference":first_native_difference,
+                "target_attributes":[original.gpt.target_attributes,actual.gpt.target_attributes],
+                "facts_grant_authority":false,
+            });
+            events.push(NativeEvent {
+                operation:"offline-source-current-identity-protection-mismatch".into(),
+                control_code:0,input:Vec::new(),succeeded:false,native_error:None,
+                output:serde_json::to_vec(&detail).map_err(io::Error::other)?,
+            });
+            return Err(invalid(&format!(
+                "offline source identity/protection changed: actual_attrs={}, expected_attrs={}; device_eq={}, length_eq={}, alignment_eq={}, full_GPT_eq={}, native_eq={}, first_native_diff={}",
+                actual.disk_attributes, expected_attributes,
+                actual.device==original.device, actual.length==original.length,
+                actual.alignment==original.alignment, actual.gpt==original.gpt,
+                actual_native==expected_native,
+                detail["first_native_difference"],
+            )));
+        }
         let critical = super::super::partition_dump_locations::offline::observe(
             &self.source,
             self.budget,

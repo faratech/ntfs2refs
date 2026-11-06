@@ -218,7 +218,11 @@ impl OfflinePreparedSource {
         }
         env.require_current_at_attributes(3, events)?;
         checkpoint(&sink, "offline-PREPARED-actual-whole-disk3", events)?;
+        env.require_current_at_attributes(3, events).map_err(|error|
+            invalid(&format!("after whole-disk3 durable checkpoint; native_error={:?}: {error}",error.raw_os_error())))?;
         checkpoint(&sink, "offline-PREPARED-current-boot-exclusion-lease-retained", events)?;
+        env.require_current_at_attributes(3, events).map_err(|error|
+            invalid(&format!("after retained-lease durable checkpoint; native_error={:?}: {error}",error.raw_os_error())))?;
         let file = OpenOptions::new()
             .read(true)
             .share_mode(3)
@@ -227,13 +231,18 @@ impl OfflinePreparedSource {
                 "\\\\.\\PhysicalDrive{}",
                 env.source.storage.disk_number
             ))?;
+        env.require_current_at_attributes(3, events).map_err(|error|
+            invalid(&format!("after readonly data FileObject open; native_error={:?}: {error}",error.raw_os_error())))?;
+        let buffer = AlignedBuffer::new()?;
+        env.require_current_at_attributes(3, events).map_err(|error|
+            invalid(&format!("after aligned data-buffer allocation; native_error={:?}: {error}",error.raw_os_error())))?;
         let mut source = Self {
             core: Core {
                 env,
                 file,
                 expected_attributes: 3,
                 position: 0,
-                buffer: AlignedBuffer::new()?,
+                buffer,
                 token: OfflineSourceOwnerToken(Arc::new(())),
                 poisoned: false,
                 fresh: false,

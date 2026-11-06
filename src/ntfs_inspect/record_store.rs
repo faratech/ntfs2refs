@@ -2,7 +2,7 @@
 //! Pins describe stored facts; they never grant device or conversion authority.
 use super::{
     SourceMetadataRange,
-    paged_storage::{PagedMetadataRange, SourcePagePin, SourceRangeWriter, SourceScratch},
+    paged_storage::{PagedMetadataRange, SourcePagePin, SourceRamLease, SourceRangeWriter, SourceScratch},
 };
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -213,9 +213,38 @@ impl SortedRecordWriter {
 pub struct SortedRecordStore {
     data: PagedMetadataRange,
     directory: PagedMetadataRange,
+    directory_cache: Option<DirectoryCache>,
     pin: RecordStorePin,
     maximum_record_bytes: u64,
     read_buffer_bytes: usize,
+}
+
+struct DirectoryCache {
+    bytes: Vec<u8>,
+    // Declared after the buffer so the allocation is dropped before its credit.
+    _ram: SourceRamLease,
+}
+impl DirectoryCache {
+    fn try_load(directory: &PagedMetadataRange, scratch: &SourceScratch) -> Result<Option<Self>> {
+        let budget = scratch.budget();
+        let maximum = (budget.ram_bytes / 64).min(budget.record_bytes);
+        let length = directory.byte_len();
+        let Some(charge) = length.checked_add(std::mem::size_of::<Self>() as u64)
+            .filter(|n| length > 0 && *n <= maximum) else { return Ok(None); };
+        let Ok(size) = usize::try_from(length) else { return Ok(None); };
+        // This is an optional optimization, never a new admission requirement.
+        // Reservation/allocation refusals retain the original paged reader.
+        let Ok(ram) = scratch.lease_ram(charge) else { return Ok(None); };
+        let mut bytes = Vec::new();
+        if bytes.try_reserve_exact(size).is_err() || bytes.capacity() != size {
+            return Ok(None);
+        }
+        bytes.resize(size, 0);
+        // PagedMetadataRange already authenticates the complete logical stream.
+        // Read failures remain failures, not an optimization fallback waiver.
+        directory.read_exact_at(0, &mut bytes)?;
+        Ok(Some(Self { bytes, _ram: ram }))
+    }
 }
 
 struct RowReader<'a> {
@@ -249,9 +278,13 @@ impl SortedRecordStore {
                 && pin.records.checked_mul(DIRECTORY_BYTES) == Some(pin.directory.logical_bytes),
             "invalid record store root/counts"
         );
+        let data = PagedMetadataRange::open(&pin.data, scratch)?;
+        let directory = PagedMetadataRange::open(&pin.directory, scratch)?;
+        let directory_cache = DirectoryCache::try_load(&directory, scratch)?;
         let store = Self {
-            data: PagedMetadataRange::open(&pin.data, scratch)?,
-            directory: PagedMetadataRange::open(&pin.directory, scratch)?,
+            data,
+            directory,
+            directory_cache,
             pin: pin.clone(),
             maximum_record_bytes: scratch.budget().record_bytes,
             read_buffer_bytes: usize::try_from(
@@ -305,12 +338,15 @@ impl SortedRecordStore {
             "record ordinal outside complete domain"
         );
         let mut bytes = [0u8; 32];
-        self.directory.read_exact_at(
-            ordinal
-                .checked_mul(DIRECTORY_BYTES)
-                .context("record index overflow")?,
-            &mut bytes,
-        )?;
+        let at = ordinal.checked_mul(DIRECTORY_BYTES).context("record index overflow")?;
+        if let Some(cache) = &self.directory_cache {
+            let start = usize::try_from(at).context("resident record index exceeds address space")?;
+            let end = start.checked_add(bytes.len()).context("resident record index overflow")?;
+            bytes.copy_from_slice(cache.bytes.get(start..end)
+                .context("resident record index exceeds complete directory")?);
+        } else {
+            self.directory.read_exact_at(at, &mut bytes)?;
+        }
         let key = bytes[..16].try_into()?;
         let offset = u64::from_le_bytes(bytes[16..24].try_into()?);
         let length = u64::from_le_bytes(bytes[24..].try_into()?);

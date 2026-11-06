@@ -11,6 +11,7 @@ use std::io;
 #[serde(tag = "role", rename_all = "snake_case")]
 pub enum Role {
     Source,
+    OfflineWindowsSource,
     Shadow,
     ShadowReadOnly,
     Journal { allow_additional_partitions: bool },
@@ -240,7 +241,10 @@ pub fn binding_from_evidence(
         invalid("single volume extent does not identify a GPT basic-data partition")
     })?;
     let binding = GeneralDiskBinding {
-        disk_number: number,
+        layout_profile: if role == Role::OfflineWindowsSource {
+            crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+        } else { Default::default() },
+            disk_number: number,
         volume_guid: guid.to_ascii_lowercase(),
         identity: PartitionIdentity {
             disk_guid: guid_text(&raw[8..24])?,
@@ -263,7 +267,7 @@ pub fn binding_from_evidence(
         "conversion-request discovery disk attributes differ from the explicit role",
     )?;
     match role {
-        Role::Source | Role::Shadow | Role::ShadowReadOnly => {
+        Role::Source | Role::OfflineWindowsSource | Role::Shadow | Role::ShadowReadOnly => {
             require(
                 number != windows_disk,
                 "Windows OS disk is excluded from source/shadow roles",

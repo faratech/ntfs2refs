@@ -706,6 +706,7 @@ mod tests {
     use n2r_win32::{general_layout::GeneralDiskBinding, layout::PartitionIdentity};
     fn disk(number: u32, identity: &str, partition: &str, bytes: u64) -> GeneralDiskBinding {
         GeneralDiskBinding {
+            layout_profile: Default::default(),
             disk_number: number,
             volume_guid: partition.into(),
             identity: PartitionIdentity {

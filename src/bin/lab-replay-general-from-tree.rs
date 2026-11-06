@@ -102,12 +102,14 @@ fn main() -> anyhow::Result<()> {
         expected_source_label: None,
         pair: GeneralSourceShadowBinding {
             source: GeneralDiskBinding {
-                disk_number: old.source.disk_number,
+                layout_profile: Default::default(),
+            disk_number: old.source.disk_number,
                 volume_guid: old.source.volume_guid,
                 identity: old.source.identity,
             },
             shadow: GeneralDiskBinding {
-                disk_number: old.shadow.disk_number,
+                layout_profile: Default::default(),
+            disk_number: old.shadow.disk_number,
                 volume_guid: old.shadow.volume_guid,
                 identity: old.shadow.identity,
             },
@@ -115,7 +117,8 @@ fn main() -> anyhow::Result<()> {
         comparison,
         journal: GeneralJournalStorageBinding {
             disk: GeneralDiskBinding {
-                disk_number: old.journal.disk_number,
+                layout_profile: Default::default(),
+            disk_number: old.journal.disk_number,
                 volume_guid: old.journal.volume_guid,
                 identity: old.journal.identity,
             },

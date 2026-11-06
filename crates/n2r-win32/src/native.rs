@@ -42,6 +42,7 @@ pub use paged_recovery::{PartitionClosedJournalObservation, PartitionHandoffWitn
 mod partition_dump_locations;
 mod partition_runtime_roles;
 mod partition_storage_roles;
+mod offline_windows;
 mod partition_owner;
 mod partition_source_metadata;
 mod partition_target_observation;
@@ -766,6 +767,7 @@ pub(crate) fn general_disk_state(
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<GeneralDiskState> {
     binding.validate()?;
+    offline_windows::require_detached_roles(binding, events)?;
     let device = control(&disk, "general-storage-device", DEVICE, &[], 12, events)?;
     layout::validate_device(&device, binding.disk_number)?;
     let disk_length = control(&disk, "general-disk-length", LENGTH, &[], 8, events)?;
@@ -1986,6 +1988,14 @@ impl GeneralFrozenPartition {
         MAX_IO as u64
     }
 
+    /// The Windows-source profile also pays the bounded native role workspace.
+    pub fn read_buffer_memory_bytes_for(binding: &GeneralDiskBinding) -> u64 {
+        Self::read_buffer_memory_bytes()
+            + if binding.layout_profile == crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows {
+                8 * 1024 * 1024
+            } else { 0 }
+    }
+
     /// Pre-count source freeze with an explicit observed resource contract.
     /// Counts and raw pins do not exist yet; this creates no admission facts.
     /// All original NTFS/TxF, lock/dismount and physical route checks execute
@@ -2052,6 +2062,9 @@ impl GeneralFrozenPartition {
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<(Self, GeneralAllocationFreezeWitness)> {
         binding.validate()?;
+        if binding.layout_profile != crate::general_layout::GeneralDiskLayoutProfile::DedicatedData {
+            return Err(invalid("allocation-capture isolation requires a dedicated shadow/data layout"));
+        }
         let resource_admission = resource_profile
             .map(crate::attestation::ResourceProfile::resource_admission)
             .transpose()?
@@ -2272,9 +2285,13 @@ impl GeneralFrozenPartition {
         {
             return Err(invalid("general disk changed before lock"));
         }
-        let volume = device_file(&binding.volume_path()?, true, false)?;
+        let mut sibling_locks = if binding.layout_profile == crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows {
+            offline_windows::lock_all_volumes(&binding, &pre_lock.gpt_layout, events)?
+        } else { Vec::new() };
+        let volume = if sibling_locks.is_empty() { Some(device_file(&binding.volume_path()?, true, false)?) } else { None };
+        if let Some(volume) = &volume {
         let extents = control(
-            &volume,
+            volume,
             "general-lock-volume-extents",
             VOLUME_EXTENTS,
             &[],
@@ -2282,11 +2299,13 @@ impl GeneralFrozenPartition {
             events,
         )?;
         binding.validate_volume_extent(&extents)?;
+        control(volume, "general-lock-volume", LOCK, &[], 0, events)?;
+        control(volume, "general-dismount-volume", DISMOUNT, &[], 0, events)?;
+        }
         let buffer = AlignedBuffer::new()?;
-        control(&volume, "general-lock-volume", LOCK, &[], 0, events)?;
-        control(&volume, "general-dismount-volume", DISMOUNT, &[], 0, events)?;
         set_attributes(&management, OFFLINE | READ_ONLY, events)?;
-        close_file(volume, "close-general-volume-lock", events)?;
+        if let Some(volume) = volume { close_file(volume, "close-general-volume-lock", events)?; }
+        for volume in sibling_locks.drain(..) { close_file(volume, "close-offline-windows-volume-lock", events)?; }
         let frozen = general_disk_state(&management, &binding, events)?;
         if frozen.disk_attributes != OFFLINE | READ_ONLY
             || frozen.device != pre_lock.device
@@ -4876,6 +4895,7 @@ mod tests {
             ..
         } = ordinary_stream();
         let binding = GeneralDiskBinding {
+            layout_profile: Default::default(),
             disk_number: binding.disk_number,
             volume_guid: binding.volume_guid,
             identity: binding.identity,
@@ -5044,6 +5064,7 @@ mod tests {
             ..
         } = ordinary_stream();
         let binding = GeneralDiskBinding {
+            layout_profile: Default::default(),
             disk_number: binding.disk_number,
             volume_guid: binding.volume_guid,
             identity: binding.identity,
@@ -5090,6 +5111,7 @@ mod tests {
             ..
         } = ordinary_stream();
         let binding = GeneralDiskBinding {
+            layout_profile: Default::default(),
             disk_number: binding.disk_number,
             volume_guid: binding.volume_guid,
             identity: binding.identity,
@@ -5137,7 +5159,8 @@ mod tests {
                 allocation_capture: None,
                 file,
                 binding: GeneralDiskBinding {
-                    disk_number: binding.disk_number,
+                    layout_profile: Default::default(),
+            disk_number: binding.disk_number,
                     volume_guid: binding.volume_guid,
                     identity: binding.identity,
                 },

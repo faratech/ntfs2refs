@@ -1772,6 +1772,7 @@ mod tests {
         volume_guid: &str,
     ) -> GeneralDiskBinding {
         GeneralDiskBinding {
+            layout_profile: Default::default(),
             disk_number: number,
             volume_guid: volume_guid.into(),
             identity: PartitionIdentity {
@@ -1823,7 +1824,8 @@ mod tests {
                 externally_enrolled_disk_unique_id: "JOURNAL-TEST".into(),
                 allow_additional_partitions: false,
                 disk: GeneralDiskBinding {
-                    disk_number: 2,
+                    layout_profile: Default::default(),
+            disk_number: 2,
                     volume_guid: "77777777-7777-7777-7777-777777777777".into(),
                     identity: PartitionIdentity {
                         disk_guid: "88888888-8888-8888-8888-888888888888".into(),

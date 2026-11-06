@@ -295,7 +295,7 @@ unsafe extern "system" fn pagefile_callback(
     context.paths.push(path);
     1
 }
-fn paging(
+pub(in crate::native) fn paging(
     binding: &GeneralDiskBinding,
     budget: PartitionObservationBudget,
     events: &mut Vec<NativeEvent>,

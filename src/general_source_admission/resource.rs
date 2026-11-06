@@ -782,7 +782,7 @@ impl ResourceSourceContext {
             vss_before.source_volume_guid.eq_ignore_ascii_case(&volume),
             "VSS source route differs"
         );
-        let source_io_ram = scratch.lease_ram(GeneralFrozenPartition::read_buffer_memory_bytes())?;
+        let source_io_ram = scratch.lease_ram(GeneralFrozenPartition::read_buffer_memory_bytes_for(&binding))?;
         *phase = "source-freeze";
         let mut online = n2r_win32::GeneralPartitionReader::open(binding.clone(), events)?;
         let mut boot = [0; 512];

@@ -145,6 +145,9 @@ impl GeneralFrozenPartition {
         let mut volume = Some(device_file(&binding.volume_path()?, true, false)?);
         let extents = control(volume.as_ref().expect("volume owner"), "general-lock-volume-extents", VOLUME_EXTENTS, &[], 1024, events)?;
         binding.validate_volume_extent(&extents)?;
+        let mut sibling_locks = if binding.layout_profile == crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows {
+            super::offline_windows::lock_sibling_volumes(&binding, &pre_lock.gpt_layout, events)?
+        } else { Vec::new() };
         let mut buffer = AlignedBuffer::new()?;
         let mut locked = false;
         let mut original_boot = None;
@@ -172,6 +175,7 @@ impl GeneralFrozenPartition {
         let (file, frozen_state) = match result {
             Ok(value) => value,
             Err(original) => {
+                for file in sibling_locks.drain(..) { close_file(file, "close-windows-sibling-before-isolation-cleanup", events)?; }
                 if !locked { return Err(original); }
                 let Some(original_boot) = original_boot else {
                     // No attribute mutation was attempted before the boot
@@ -201,6 +205,7 @@ impl GeneralFrozenPartition {
         // exact frozen readonly route is verified. If either close fails,
         // leave the already excluded device offline rather than guessing.
         close_file(volume.take().expect("locked volume owner"), "close-general-volume-lock", events)?;
+        for file in sibling_locks.drain(..) { close_file(file, "close-frozen-windows-sibling-volume", events)?; }
         close_file(management, "close-general-management", events)?;
         Ok(Self {
             file, binding, frozen_state: frozen_state.clone(), position: 0, buffer,

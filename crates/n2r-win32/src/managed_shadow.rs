@@ -461,7 +461,8 @@ fn initialize_new_owned(
     control(disk, IOCTL_DISK_SET_DRIVE_LAYOUT_EX, &header, 0)?;
     control(disk, IOCTL_DISK_UPDATE_PROPERTIES, &[], 0)?;
     let binding = GeneralDiskBinding {
-        disk_number: geometry.number,
+        layout_profile: Default::default(),
+            disk_number: geometry.number,
         // Placeholder only for syntax validation: discovery replaces this
         // with the actual volume whose physical extents match this partition.
         volume_guid: guid_text(&partition_guid),

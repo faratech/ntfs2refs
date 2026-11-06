@@ -746,6 +746,28 @@ pub(super) fn observe_partition_storage_roles(
     budget: PartitionObservationBudget,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<PartitionStorageRoleObservation> {
+    observe_partition_storage_roles_impl(binding, budget, events, false)
+}
+
+pub(super) fn observe_detached_windows_storage_roles(
+    binding: &PartitionSourceBinding,
+    budget: PartitionObservationBudget,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<PartitionStorageRoleObservation> {
+    let facts = observe_partition_storage_roles_impl(binding, budget, events, true)?;
+    need(facts.current_windows.role.disk_number != binding.storage.disk_number
+        && facts.critical_partitions.iter().any(|p| p.role.is_system)
+        && facts.critical_partitions.iter().all(|p| p.role.disk_number != binding.storage.disk_number),
+        "offline Windows source disk contains a current boot/system role or the system role is unknown")?;
+    Ok(facts)
+}
+
+fn observe_partition_storage_roles_impl(
+    binding: &PartitionSourceBinding,
+    budget: PartitionObservationBudget,
+    events: &mut Vec<NativeEvent>,
+    detached_windows: bool,
+) -> io::Result<PartitionStorageRoleObservation> {
     binding.validate()?;
     budget.validate()?;
     need(events.len() < 112, "Storage role event workspace exhausted")?;
@@ -807,8 +829,15 @@ pub(super) fn observe_partition_storage_roles(
                 "Selected CIM/native partition differs",
             )?;
         } else {
+            let detached_offline = if detached_windows {
+                let disk = device_file(&format!("\\\\.\\PhysicalDrive{}", binding.storage.disk_number), false, false)?;
+                super::attributes(&disk, events)? & 1 != 0
+            } else { false };
             need(
-                target[32..48] == layout::guid_bytes("b627aadb-a893-48b6-aa0b-71e5f30ee370")?,
+                target[32..48] == layout::guid_bytes("b627aadb-a893-48b6-aa0b-71e5f30ee370")?
+                    || detached_offline
+                        && binding.storage.layout_profile == crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+                        && target[32..48] == layout::guid_bytes("ebd0a0a2-b9e5-4433-87c0-68b6b72699c7")?,
                 "Selected Basic partition missing from complete live catalog",
             )?;
         }

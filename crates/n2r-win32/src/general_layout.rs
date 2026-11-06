@@ -12,12 +12,28 @@ pub const MAX_LIVE_PARTITION_BYTES: u64 = 128 * 1024 * 1024 * 1024;
 pub const MAX_EXPERIMENTAL_PARTITION_BYTES: u64 =
     crate::bitmap_streaming::MAX_STREAM_BITMAP_BYTES * 8 * 4096;
 
+/// Requested topology, never native exclusion or write authority. The Windows
+/// profile additionally requires fresh runtime checks that the entire physical
+/// disk is outside current boot, system, paging and dump roles.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GeneralDiskLayoutProfile {
+    #[default]
+    DedicatedData,
+    OfflineWindows,
+}
+impl GeneralDiskLayoutProfile {
+    fn is_dedicated_data(&self) -> bool { matches!(self, Self::DedicatedData) }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GeneralDiskBinding {
     pub disk_number: u32,
     pub volume_guid: String,
     pub identity: PartitionIdentity,
+    #[serde(default, skip_serializing_if = "GeneralDiskLayoutProfile::is_dedicated_data")]
+    pub layout_profile: GeneralDiskLayoutProfile,
 }
 
 /// Separate physical disks with identically sized data partitions. This is a
@@ -40,6 +56,8 @@ impl GeneralSourceShadowBinding {
     ) -> io::Result<()> {
         self.source.validate()?;
         self.shadow.validate()?;
+        require(self.shadow.layout_profile == GeneralDiskLayoutProfile::DedicatedData,
+            "a freshly owned shadow cannot use an installed-Windows source layout")?;
         let s = &self.source.identity;
         let t = &self.shadow.identity;
         require(
@@ -167,8 +185,13 @@ impl GeneralDiskBinding {
         )?;
         let basic = guid_bytes("ebd0a0a2-b9e5-4433-87c0-68b6b72699c7")?;
         let msr = guid_bytes("e3c9e316-0b5c-4db8-817d-f92df00215ae")?;
+        let efi = guid_bytes("c12a7328-f81f-11d2-ba4b-00a0c93ec93b")?;
+        let recovery = guid_bytes("de94bba4-06d1-4d40-a16a-bfd50179d6ac")?;
+        let windows = self.layout_profile == GeneralDiskLayoutProfile::OfflineWindows;
         let mut seen = Vec::<(u32, u64, u64)>::new();
+        let mut seen_guids = Vec::<[u8; 16]>::new();
         let (mut target, mut msr_count) = (0, 0);
+        let (mut efi_count, mut recovery_count) = (0, 0);
         for index in 0..count {
             let at = 48 + index * 144;
             let number = layout::u32_at(bytes, at + 24)?;
@@ -196,6 +219,11 @@ impl GeneralDiskBinding {
                 "duplicate, overlapping or malformed GPT partition",
             )?;
             seen.push((number, offset, end));
+            if windows {
+                let id: [u8; 16] = bytes[at + 48..at + 64].try_into().unwrap();
+                require(!seen_guids.contains(&id), "Windows GPT partition GUID is duplicated")?;
+                seen_guids.push(id);
+            }
             if number == self.identity.partition_number {
                 require(
                     kind == basic
@@ -211,14 +239,17 @@ impl GeneralDiskBinding {
                     // An MSR has no independently mounted user filesystem.
                     // Its historical 16/128 MiB size and ordering do not
                     // change this owner's whole-disk exclusion contract.
-                    kind == msr,
+                    kind == msr || windows && (kind == efi || kind == recovery),
                     "other data, EFI or system partitions exclude whole-disk isolation",
                 )?;
-                msr_count += 1;
+                if kind == msr { msr_count += 1; }
+                else if kind == efi { efi_count += 1; }
+                else { recovery_count += 1; }
             }
         }
         require(
-            target == 1 && msr_count <= 1,
+            target == 1 && msr_count <= 1
+                && (!windows || msr_count == 1 && efi_count == 1 && recovery_count == 1),
             "dedicated data-disk partition set differs",
         )
     }
@@ -235,6 +266,7 @@ mod pair_tests {
         volume_guid: &str,
     ) -> GeneralDiskBinding {
         GeneralDiskBinding {
+            layout_profile: Default::default(),
             disk_number: number,
             volume_guid: volume_guid.into(),
             identity: PartitionIdentity {

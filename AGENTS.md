@@ -1,5 +1,13 @@
 # ntfs2refs: current handoff
 
+## CURRENT 20261106 boot alias implementation
+
+Root owns the VM, build cache and Git on `codex/boot-volume`. App commit `8254d37` (pushed) adds `src/boot_alias.rs`: a paged derived Windows-alias domain with exact source/parent identities, unique canonical same-parent targets and relative symlink buffers. Inspector alias rows now use `WINALIS1`. This is a shadow preservation plan, not a source normalizer or admission bypass. Native FILE_STANDARD_INFO link counts now compare canonical names while raw FILE headers still reconcile every FILE_NAME, including DOS aliases. Inline and paged raw namespace reconciliation use that same physical-name invariant. Focused SDK/library/public/inspector checks closed successfully; no unit tests ran and `src/main.rs` SHA remains `c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b`.
+
+The existing e8f01af read-only native inspection is still the SAME run `e336b98a05874b13970f34fc7bf573a6`: ROOT exec `22230`, guest PID4696/birth1794004209100, inspector SHA `b0ff41292829c59b4d56a4da81a086acbc7d51be76b7090293f058f223920a61`. Last actual observation: live, CPU780.67s, elapsed913.09s, peak154824704 bytes (process only). Poll its owned handle or actual native-terminal.json; do not restart from an observation timeout. Original Windows D remains NTFS, unconverted and unfrozen; current alternate Windows C remains ReFS on disk1; disk2 remains RAW. There are zero checkpoints on all five project VMs.
+
+`/root/finish_coordinator/package_readiness` is implementing only NEW SDK file `windows_alias_native.rs` plus its SDK module export: caller-held fresh ReFS alias/canonical handles, no source writer, exact relative reparse readback. Root must inspect/check and integrate that helper; it is not yet connected to conversion. Keep default no-DOS admission and source/native identity counts strict. Do not append derived aliases as fabricated source objects. Native shadow creation, complete target namespace proof, boot-specific source policy and actual converted-OS boot remain required; the clean ReFS installation control is not goal completion.
+
 ## ACTIVE 20261106 Windows boot-volume conversion
 
 The user started a new goal: convert an installed Windows OS partition from NTFS to ReFS and boot that converted installation successfully. Work is on `codex/boot-volume`, based on `4ca7f9a`; the completed a3 data-volume binaries, package and evidence below remain frozen. The earlier boot deferral is superseded by this explicit goal. Do not edit `src/main.rs`, run unit tests, create checkpoints, or touch host boot disks.

@@ -156,7 +156,9 @@ fn retire_ram_object(path: &Path, identity: &RamFileIdentity, directory: bool,
     let file = OpenOptions::new().access_mode(0x0001_0080).share_mode(3)
         .custom_flags(if directory { 0x0220_0000 } else { 0x0020_0000 }).open(path)?;
     require_ram_file(path, &file, backing)?;
-    need(same_ram_object(&ram_identity(&file, directory)?, identity),
+    let actual = ram_identity(&file, directory)?;
+    need(same_ram_object(&actual, identity)
+        && (directory || identity.file_bytes != 0 || actual == *identity),
         "fresh RAM BCD object changed before bounded retirement")?;
     let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
     // SAFETY: live DELETE handle, fixed initialized input, synchronous call.
@@ -166,6 +168,39 @@ fn retire_ram_object(path: &Path, identity: &RamFileIdentity, directory: bool,
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+fn retire_empty_ram_logs(directory: &Path, held: &File, backing: &KernelRamBackingFacts)
+    -> io::Result<u32> {
+    require_ram_file(directory, held, backing)?;
+    let mut seen = [false; 2];
+    let mut logs = Vec::new();
+    logs.try_reserve_exact(2).map_err(io::Error::other)?;
+    for entry in std::fs::read_dir(directory)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_str().ok_or_else(|| bad("non-Unicode RAM query sidecar"))?;
+        let slot = if name.eq_ignore_ascii_case("query.bcd.LOG1") { 0 }
+            else if name.eq_ignore_ascii_case("query.bcd.LOG2") { 1 }
+            else { return Err(bad("unexpected file in fresh private RAM query directory")); };
+        need(!seen[slot], "duplicate RAM query log name")?;
+        seen[slot] = true;
+        let path = directory.join(name);
+        let file = OpenOptions::new().access_mode(0x80).share_mode(1)
+            .custom_flags(0x0020_0000).open(&path)?;
+        require_ram_file(&path, &file, backing)?;
+        let id = ram_identity(&file, false)?;
+        // Actual KEY_READ AppHive creates these two empty files on WinPE.
+        // A nonempty, aliased, reparse or multiply-linked object is never retired.
+        need(id.file_bytes == 0 && id.links == 1 && ram_identity(&file, false)? == id,
+            "RAM query log is not an unchanged empty single-link owned file")?;
+        drop(file);
+        logs.push((path, id));
+    }
+    // Finish the bounded enumeration before changing directory contents.
+    let retired = logs.len() as u32;
+    for (path, id) in logs { retire_ram_object(&path, &id, false, backing)?; }
+    require_ram_file(directory, held, backing)?;
+    Ok(retired)
 }
 static RAM_COPY_ORDINAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -297,12 +332,35 @@ pub(super) fn observe_owned_copy(
                 "pristine authenticated J BCD input changed during RAM query")
         })();
         let cleanup_file = retire_ram_object(&ram_path, &ram_id, false, ram_backing);
+        let cleanup_logs = if cleanup_file.is_ok() {
+            retire_empty_ram_logs(&ram_directory, &directory_holder, ram_backing)
+        } else { Err(bad("RAM sidecar retirement skipped after primary-copy retirement failed")) };
         drop(directory_holder);
         let cleanup_directory = retire_ram_object(&ram_directory, &directory_id, true, ram_backing);
-        cleanup_file?;
-        cleanup_directory?;
-        closing_j?;
+        if queried.is_err() || closing_j.is_err() || cleanup_file.is_err()
+            || cleanup_logs.is_err() || cleanup_directory.is_err() {
+            events.push(NativeEvent {
+                operation: "boot-owned-RAM-query-and-retirement-failed".into(),
+                control_code: 0, input: Vec::new(), succeeded: false, native_error: None,
+                output: serde_json::to_vec(&serde_json::json!({
+                    "RAM_directory": ram_directory, "query_ok": queried.is_ok(),
+                    "query_error": queried.as_ref().err().map(ToString::to_string),
+                    "pristine_J_bookends_ok": closing_j.is_ok(),
+                    "pristine_J_error": closing_j.as_ref().err().map(ToString::to_string),
+                    "primary_retirement_error": cleanup_file.as_ref().err().map(ToString::to_string),
+                    "empty_logs_retirement_error": cleanup_logs.as_ref().err().map(ToString::to_string),
+                    "directory_retirement_error": cleanup_directory.as_ref().err().map(ToString::to_string),
+                    "source_write_authority": false,
+                })).map_err(io::Error::other)?,
+            });
+        }
+        // Cleanup is attempted even after a failed query, but cannot hide the
+        // original query or pristine-J bookend failure.
         let bytes = queried?;
+        closing_j?;
+        cleanup_file?;
+        let retired_logs = cleanup_logs?;
+        cleanup_directory?;
         let observation = DeviceElementObservation {
             file: before, file_sha256: before_hash, value_sha256: digest(&bytes), bytes,
         };
@@ -319,6 +377,7 @@ pub(super) fn observe_owned_copy(
                 "pristine_J_copy_complete_bytes_unchanged": true,
                 "RAM_legacy_native_identity_and_all_bytes_unchanged": true,
                 "RAM_copy_retired_by_exact_native_handle": true,
+                "empty_RAM_registry_logs_retired": retired_logs,
                 "source_write_authority": false,
             })).map_err(io::Error::other)?,
         });

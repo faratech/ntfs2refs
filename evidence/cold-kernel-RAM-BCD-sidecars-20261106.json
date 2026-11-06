@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "kind": "bounded-owned-kernel-RAM-Registry-sidecar-retirement",
+  "actual_case": ".lab/hyperv/streaming-v2-20261027/PUBLIC-e9dd7df-actual-once-10dc6eb96f9e4df998d108a6a55d71fd",
+  "failed_source": "e9dd7df2c194866bb361d8c213c8982c799b692f",
+  "build_manifest_sha256": "5234ebf7a48cf06a676a9691f952bbd9ec3d4989b290b5a7ab57ef44884c0c2b",
+  "actual_failure": {
+    "frame_sha256": "dc918bdf94862431b63ace43ab28becf2db61329d4e2d46a7a7ffafd010a2ae9",
+    "AP_or_source_data_writes_claimed": false,
+    "underlying_query_success_not_claimed": true,
+    "protected_source_and_clean_OLD_qualification_passed": true,
+    "error": "The directory is not empty (os error 145)"
+  },
+  "actual_RAM_listing": {
+    "frame_sha256": "b6bc8a288396d38e5c7196915f2d97e222a7caf0c327493bf1e12192c74d9973",
+    "diagnostic_deletions": 0,
+    "directory": "X:\\N2R-BCD-query-1900-0000000000000000",
+    "primary_query_copy_already_retired": true,
+    "files": [
+      {
+        "name": "query.bcd.LOG1",
+        "bytes": 0
+      },
+      {
+        "name": "query.bcd.LOG2",
+        "bytes": 0
+      }
+    ]
+  },
+  "implementation": [
+    "Recognize only the two measured log names; reject unknown, nonempty, reparse and multiply linked files.",
+    "Complete the bounded two-file enumeration before deleting anything.",
+    "Require current positive kernel-RAM backing/native object identity and still-zero full native metadata on the exact DELETE handle.",
+    "Use nonrecursive exact-native-handle disposition; no pathname recursive cleanup.",
+    "Always attempt safe owned cleanup; failure-only diagnostics preserve query, pristine-J and cleanup outcomes separately.",
+    "Propagate underlying query or J bookend failures before cleanup errors; all complete bytes/SHA checks unchanged."
+  ],
+  "focused_check": {
+    "receipt_sha256": "567588849ffa17b2fc122173e0c2f67ca8d99f8b7895338ed932a36a5d14bada",
+    "session_id": 3264,
+    "exit_code": 0,
+    "unit_tests_run": false,
+    "native_run": false,
+    "wall_seconds": 31.436187
+  },
+  "implementation_file": "crates/n2r-win32/src/native/recovery_boot/bcd_device.rs",
+  "implementation_sha256": "00005cfd28b756a2e7128b180f85aef284c3cd0bfe4891b339553a9369af2c00",
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "product_native_qualified": false,
+  "normal_conversion_qualified": false,
+  "AP_restart_resume_qualified": false,
+  "AP_restart_rollback_qualified": false
+}

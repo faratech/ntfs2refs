@@ -51,7 +51,7 @@ pub fn inspect(binding: GeneralDiskBinding, budget: ResourceBudget,
     let mut counts = BTreeMap::<&str,u64>::new();
     let mut members = BTreeSet::<(u64,&'static str,u64)>::new();
     let mut alias_plan=crate::ntfs_inspect::record_store::SortedRecordWriter::new(
-        &output.join("dos-alias-plan"),*b"WINDOS01",&scratch)?;
+        &output.join("dos-alias-plan"),*b"WINALIS1",&scratch)?;
     let mut alias_count=0u64;
     let labels = ["Windows","System32","config","drivers","SYSTEM","SOFTWARE","winload.efi","ntoskrnl.exe","refs.sys"];
     for ordinal in 0..raw.file_count() {
@@ -61,14 +61,10 @@ pub fn inspect(binding: GeneralDiskBinding, budget: ResourceBudget,
         if file.hard_link_count > 1 { *counts.entry("identities_with_multiple_links").or_default() += 1; }
         if file.names.iter().any(|n|n.namespace==2) {
             *counts.entry("identities_with_DOS_aliases").or_default() += 1;
-            let canonical=crate::ntfs_admission::paged::canonical_paths_for_alias_preparation(&raw,&file)?;
-            for alias in file.names.iter().filter(|n|n.namespace==2) {
-                let mut key=[0u8;16];key[..8].copy_from_slice(&alias_count.to_be_bytes());
-                alias_plan.push(key,&serde_json::json!({"record_number":file.record_number,
-                    "sequence_number":file.sequence_number,"directory":file.is_directory,
-                    "parent_record_number":alias.parent_record_number,"parent_sequence_number":alias.parent_sequence_number,
-                    "alias_name_utf16":alias.name_utf16,"canonical_paths":canonical,
-                    "source_normalization_authorized":false}))?;
+            for (index,alias) in crate::boot_alias::aliases_for(&raw,&file)?.iter().enumerate() {
+                let mut key=[0u8;16];key[..8].copy_from_slice(&file.record_number.to_be_bytes());
+                key[8..].copy_from_slice(&u64::try_from(index)?.to_be_bytes());
+                alias_plan.push(key,&alias)?;
                 alias_count=alias_count.checked_add(1).context("DOS alias plan count overflow")?;
             }
         }
@@ -112,6 +108,8 @@ pub fn inspect(binding: GeneralDiskBinding, budget: ResourceBudget,
         "all_payload_hashing_skipped":true,"preparation_only":true,"windows_installation_identified":true,
         "windows_members":windows_members,"header":raw.header(),"counts":counts,"blocker_counts":blockers,
         "dos_aliases":alias_count,"dos_alias_preparation_plan":alias_plan,
+        "dos_alias_plan_kind":"derived-relative-symlink-paths-v1",
+        "source_normalization_authorized":false,
         "directory_index_count":raw.directories().directory_count(),"source_native_bytes_read":reader.native_bytes_read(),
         "source_scratch_bytes":scratch.used_bytes(),"source_ram_accounted_bytes":scratch.working_ram_bytes(),
         "working_set_peak_measured":false,"source_payload_write_calls":0,"native_events":events}))?;

@@ -850,9 +850,16 @@ pub(crate) fn check_non_security_snapshot(
         standard[20] == 0 && standard[21] == u8::from(file.is_directory),
         "native delete/directory state differs"
     );
+    // NTFS's physical FILE header includes DOS FILE_NAME attributes. Native
+    // FILE_STANDARD_INFO counts canonical links only; aliases have their own
+    // preservation obligation and are still refused by ordinary admission.
+    let native_links = file.names.iter().filter(|name| name.namespace != 2).count();
     ensure!(
-        u32le(standard, 16) == u32::from(file.hard_link_count),
-        "native link count differs"
+        usize::from(file.hard_link_count) == file.names.len()
+            && usize::try_from(u32le(standard, 16))? == native_links,
+        "native link count differs at FILE {}: native={}, canonical={}, raw={}, names={}",
+        file.record_number, u32le(standard, 16), native_links,
+        file.hard_link_count, file.names.len()
     );
     if let Some(stream) = file.streams.iter().find(|s| s.name_utf16.is_empty()) {
         ensure!(

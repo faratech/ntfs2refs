@@ -7,6 +7,8 @@ pub mod artifact_arena;
 pub mod block_io;
 #[cfg(windows)]
 pub mod boot_source;
+#[cfg(windows)]
+pub mod boot_alias;
 pub mod capability_evidence;
 #[cfg(windows)]
 pub mod compact_fixture;

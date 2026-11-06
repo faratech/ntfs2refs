@@ -194,8 +194,10 @@ pub fn reconcile(
         }
         let links = file.names.iter().filter(|n| n.namespace != 2).count();
         ensure!(
-            usize::from(file.hard_link_count) == links && (!file.is_directory || links == 1),
-            "hard-link count or directory name count differs"
+            usize::from(file.hard_link_count) == file.names.len()
+                && (!file.is_directory || links == 1),
+            "NTFS FILE {} header/name count differs: header={}, names={}, canonical={}",
+            file.record_number, file.hard_link_count, file.names.len(), links
         );
         for name in &file.names {
             ensure!(

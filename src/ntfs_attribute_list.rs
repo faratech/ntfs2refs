@@ -634,7 +634,7 @@ fn assemble_profile(
         );
         ensure!(
             !extension.is_directory
-                && extension.hard_link_count == 0
+                && (complete_file || extension.hard_link_count == 0)
                 && extension.base_file_reference == base_reference,
             "foreign extension record base or form"
         );

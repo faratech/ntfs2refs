@@ -151,7 +151,6 @@ impl PagedMftResolver {
             number >= 16
                 && self.allocated(number)?
                 && matches!(record.flags, 1 | 3 | 9)
-                && record.links == 0
                 && record.sequence != 0
                 && record.base != 0
                 && (record.base >> 48) != 0,
@@ -183,7 +182,7 @@ impl PagedMftResolver {
             self.allocated(number)?,
             "attribute-list base is not allocated"
         );
-        let ordinary = stream_candidate(number, record);
+        let ordinary_base = stream_candidate(number, record);
         let working = self.scratch.budget().ram_bytes / 4;
         let limits =
             lists::AssemblyLimits::from_working_bytes(working, self.geometry.file_record_size)?;
@@ -248,7 +247,7 @@ impl PagedMftResolver {
             )?;
             let parsed = parse_record(bytes.clone(), &self.geometry)?;
             ensure!(
-                (parsed.flags == 1 || !ordinary && matches!(parsed.flags,3|9)) && parsed.sequence == sequence,
+                (parsed.flags == 1 || !ordinary_base && matches!(parsed.flags,3|9)) && parsed.sequence == sequence,
                 "referenced extension sequence or allocation header differs"
             );
             run_count = parsed
@@ -275,6 +274,10 @@ impl PagedMftResolver {
             }
             extensions.push(evidence(extension, &bytes, &parsed));
         }
+        // Extension headers can retain 0xffff in their noncanonical link-count
+        // field. Their base reference, sequence, allocation and exact list
+        // membership establish ownership; only the base supplies file links.
+        let ordinary = ordinary_base && extensions.iter().all(|r|r.hard_link_count==0);
         let assemble = if ordinary { lists::assemble_streams_resource } else { lists::assemble_attributes_resource };
         let (canonical, assembly) = assemble(
             evidence(number, raw, record),

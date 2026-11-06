@@ -203,7 +203,8 @@ impl PagedMftResolver {
         // semantics remain a refusal rather than an incompletely emitted file.
         ensure!(
             number > 0 && record.base == 0 && matches!(record.flags,1|3|9)
-                && record.links>0 && record.attributes.iter().all(|a|a.report.flags==0&&a.report.compression_unit==0),
+                && record.links>0 && record.attributes.iter().all(|a|a.report.flags==0&&a.report.compression_unit==0
+                    || a.report.type_code==0x80&&a.report.flags==1&&matches!(a.report.compression_unit,0|4)),
             "unsupported resource-bound attribute-list FILE {number}, flags={:#x}, attributes={:?}",record.flags,
             record.attributes.iter().map(|a|(a.report.type_code,a.report.flags,a.report.compression_unit)).collect::<Vec<_>>()
         );
@@ -299,7 +300,8 @@ impl PagedMftResolver {
         // field. Their base reference, sequence, allocation and exact list
         // membership establish ownership; only the base supplies file links.
         let ordinary = ordinary_base && extensions.iter().all(|r|r.hard_link_count==0
-            && r.attributes.iter().all(|a|matches!(a.type_code,0x10|0x30|0x50|0x80)));
+            && r.attributes.iter().all(|a|a.flags==0&&a.compression_unit==0
+                &&matches!(a.type_code,0x10|0x30|0x50|0x80)));
         let assemble = if ordinary { lists::assemble_streams_resource } else { lists::assemble_attributes_resource };
         let (canonical, assembly) = assemble(
             evidence(number, raw, record),

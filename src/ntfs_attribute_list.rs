@@ -883,10 +883,12 @@ fn stream_record_identity(record: &RecordEvidence, complete_file: bool) -> Resul
     );
     let mut instances = BTreeSet::new();
     for attribute in &record.attributes {
+        let encoded_data = complete_file && attribute.type_code == 0x80 && attribute.flags == 1
+            && if attribute.resident { attribute.compression_unit == 0 }
+                else { attribute.compression_unit == 4 || attribute.lowest_vcn > 0 && attribute.compression_unit == 0 };
         ensure!(
             instances.insert(attribute.instance)
-                && attribute.flags == 0
-                && attribute.compression_unit == 0
+                && (attribute.flags == 0 && attribute.compression_unit == 0 || encoded_data)
                 && (attribute.type_code == 0x80 || complete_file
                     && matches!(attribute.type_code, 0x90 | 0xa0 | 0xb0 | 0x100)
                     || attribute.name_utf16.is_empty()),
@@ -1157,6 +1159,7 @@ fn assemble_attributes_inner(
             "ordinary DATA has no VCN-zero leader"
         );
         let mut merged: AttributeInventory = (**leader).clone();
+        let compressed = complete_file && leader.type_code == 0x80 && leader.flags == 1;
         if leader.resident {
             ensure!(
                 segments.len() == 1,
@@ -1165,7 +1168,7 @@ fn assemble_attributes_inner(
         } else {
             ensure!(
                 leader.initialized_size <= leader.logical_size
-                    && leader.logical_size <= leader.allocated_size
+                    && (compressed || leader.logical_size <= leader.allocated_size)
                     && leader.allocated_size.is_multiple_of(cluster),
                 "ordinary DATA leader lengths or allocation differ"
             );
@@ -1174,6 +1177,9 @@ fn assemble_attributes_inner(
             for (_, segment) in &segments {
                 ensure!(
                     !segment.resident
+                        && segment.flags == leader.flags
+                        && (segment.compression_unit == leader.compression_unit
+                            || compressed && segment.lowest_vcn > 0 && segment.compression_unit == 0)
                         && segment.lowest_vcn.checked_mul(cluster) == Some(next)
                         && (!segment.extents.is_empty()
                             || (segments.len() == 1 && leader.allocated_size == 0)),
@@ -1190,29 +1196,25 @@ fn assemble_attributes_inner(
                             && extent.length.is_multiple_of(cluster),
                         "ordinary DATA run budget, coverage or alignment differs"
                     );
-                    let start = extent
-                        .physical_offset
-                        .context("sparse ordinary DATA remains unsupported")?;
-                    let end = start
-                        .checked_add(extent.length)
-                        .context("ordinary DATA physical overflow")?;
-                    ensure!(
-                        start.is_multiple_of(cluster) && end <= geometry.volume_size,
-                        "ordinary DATA physical run escapes volume or alignment"
-                    );
+                    if let Some(start) = extent.physical_offset {
+                        let end = start.checked_add(extent.length).context("ordinary DATA physical overflow")?;
+                        ensure!(start.is_multiple_of(cluster) && end <= geometry.volume_size,
+                            "ordinary DATA physical run escapes volume or alignment");
+                        physical.push((start,end));
+                    } else { ensure!(compressed,"sparse ordinary DATA remains unsupported"); }
                     next = next
                         .checked_add(extent.length)
                         .context("ordinary DATA VCN overflow")?;
-                    physical.push((start, end));
                     extents.push(extent.clone());
                 }
             }
             ensure!(
-                next == leader.allocated_size,
+                compressed || next == leader.allocated_size,
                 "ordinary DATA segments do not cover allocation"
             );
             merged.extents = extents;
         }
+        if compressed { crate::ntfs_compression::supported(&merged,geometry)?; }
         canonical.push((merged, origin.clone()));
     }
     for extent in &list.extents {

@@ -175,7 +175,8 @@ impl PagedMftResolver {
         ensure!(
             number > 0 && record.base == 0 && matches!(record.flags,1|3|9)
                 && record.links>0 && record.attributes.iter().all(|a|a.report.flags==0&&a.report.compression_unit==0),
-            "unsupported resource-bound attribute-list FILE {number}, flags={:#x}",record.flags
+            "unsupported resource-bound attribute-list FILE {number}, flags={:#x}, attributes={:?}",record.flags,
+            record.attributes.iter().map(|a|(a.report.type_code,a.report.flags,a.report.compression_unit)).collect::<Vec<_>>()
         );
         ensure!(
             self.allocated(number)?,

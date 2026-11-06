@@ -71,6 +71,8 @@ pub mod reparse_layout;
 #[cfg(windows)]
 pub mod reparse_native;
 #[cfg(windows)]
+pub mod windows_alias_native;
+#[cfg(windows)]
 pub mod resource_native;
 pub mod retention_layout;
 pub mod retrieval_paging;

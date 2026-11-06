@@ -155,7 +155,8 @@ impl PagedMftResolver {
                 && record.sequence != 0
                 && record.base != 0
                 && (record.base >> 48) != 0,
-            "physical MFT extension identity/allocation differs"
+            "physical MFT extension FILE {number} differs: flags={:#x}, links={}, sequence={}, base={:#x}",
+            record.flags, record.links, record.sequence, record.base
         );
         self.physical
             .push(key(number), &ExtensionOwnership::of(number, raw, record))

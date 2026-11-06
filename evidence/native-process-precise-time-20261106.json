@@ -1,0 +1,47 @@
+{
+  "all_five_goals_complete": false,
+  "time_probe": {
+    "frame_sha256": "556e3a40abcda299e6f5d9f2ac292e059bac07b8fba27b03fced25c97ec9853b",
+    "boot_nonzero": true,
+    "opening_closing_boot_equal": true,
+    "argv": [],
+    "source_sha256": "e75154303662e461ebf0176e80e66db61d0598e5452c1ce700af70ebbe74f693",
+    "creation_minus_open_and_close_current_100ns": "66437",
+    "actual_runs": 1,
+    "creation_le_close_current": false,
+    "creation_le_precise_after": true,
+    "creation_ge_open_boot": true,
+    "exe_sha256": "b2e4e7ea83549f8d1509a190a8930017c4e4a8b034c35e2ebb320bdb8efd62a1",
+    "creation_le_open_current": false,
+    "exe_bytes": 243200,
+    "file_disk_registry_or_setter_calls": 0
+  },
+  "original_DVD_restored": true,
+  "failure_before_source_or_J_access": true,
+  "failure_frame_sha256": "84e3038ffacedf5e2ace466d8735aeaa152af5291b87b88c4c23697846d9afcc",
+  "schema_version": 1,
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "kind": "actual-PE-native-process-precise-time-upper-bound",
+  "native_bytes_written": 203694080,
+  "failed_helper_source": "77188d50f5159d85edd2b3db9377aef21a6cd1da",
+  "preserve_current_HND_and_J": true,
+  "implementation": [
+    "Precise UTC upper-bound sample occurs after actual GetProcessTimes.",
+    "Native boot time, boot GUID, process creation identity and all equality bindings remain unchanged.",
+    "Native boot > 0 and process creation >= native boot remain mandatory.",
+    "No clock tolerance, sleep, retry, setter or Source/J recovery bypass."
+  ],
+  "failed_helper_sha256": "d7a6263fed2ecdd60a13ff893e06ce95eca2817e450b36355797a40bdc644105",
+  "native_closed_repair_qualified": false,
+  "closed_HND_records": 1,
+  "precise_time_API_contract": "https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-getsystemtimepreciseasfiletime",
+  "case": ".lab/hyperv/streaming-v2-20261027/PUBLIC-c04ed6c-actual-once-54157c2296aa4814bfb46a9173168d62",
+  "media_restore_receipt_sha256": "2c8f048e67cbe21f5f1d880a00b5dcbca0d8dcc76abafaf0696c05e252d111b0",
+  "focused_check": {
+    "exit_code": 0,
+    "wall_seconds": 32.818566,
+    "receipt_sha256": "1fc3a9c81c3c9a5fa96886727b224276f0e7777be149e36e159fa40f0a01a4a9",
+    "unit_tests_run": false,
+    "session_id": 39932
+  }
+}

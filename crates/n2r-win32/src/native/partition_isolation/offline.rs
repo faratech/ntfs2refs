@@ -33,6 +33,7 @@ unsafe extern "system" {
     fn GetFileInformationByHandle(file: *mut c_void, info: *mut c_void) -> i32;
     fn GetCurrentProcessId() -> u32;
     fn GetCurrentProcess() -> *mut c_void;
+    fn GetSystemTimePreciseAsFileTime(time: *mut u64);
     fn GetProcessTimes(
         process: *mut c_void,
         creation: *mut u64,
@@ -174,11 +175,18 @@ fn boot_identity() -> io::Result<OfflineBootIdentity> {
         } != 0,
         "actual running-process birth unavailable",
     )?;
+    // SystemTimeOfDayInformation.CurrentTime can lag a just-created process by
+    // a clock tick. Use an actual precise UTC sample taken after GetProcessTimes
+    // for the upper bound; the native boot and process identity remain exact.
+    let mut precise_after_creation = 0u64;
+    unsafe { GetSystemTimePreciseAsFileTime(&mut precise_after_creation) };
+    let boot_time = layout::u64_at(&time, 0)?;
     require(
-        layout::u64_at(&time, 0)? > 0
-            && creation >= layout::u64_at(&time, 0)?
-            && creation <= layout::u64_at(&time, 8)?,
-        "native boot/process timestamps inconsistent",
+        boot_time > 0 && creation >= boot_time && creation <= precise_after_creation,
+        &format!(
+            "native boot/process timestamps inconsistent: boot={boot_time}, native_sampled_current={}, process_creation={creation}, precise_after_creation={precise_after_creation}, boot_bias={}, sleep_bias={}",
+            layout::u64_at(&time, 8)?, layout::u64_at(&time, 32)?, layout::u64_at(&time, 40)?
+        ),
     )?;
     Ok(OfflineBootIdentity {
         boot_time_100ns: layout::u64_at(&time, 0)?,

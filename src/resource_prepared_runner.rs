@@ -152,6 +152,14 @@ pub fn run_prepared_offline(
         .is_some_and(|s| s.eq_ignore_ascii_case(&prefix)),
         "offline output parent is not the actual independently enrolled J"
     );
+    let ordinary_output_parent = environment.ordinary_journal_directory(
+        &request.journal, &volume,
+        _parents.first().context("held J output parent absent")?, &mut events,
+    )?;
+    // Retain every ordinary ancestor on the same native directory before any
+    // arena/index output is admitted. Sealed bundle/J/bootstrap paths stay GUID.
+    let _ordinary_output_parents = ordinary_directory(&ordinary_output_parent)?;
+    observer.checkpoint("offline-current-J-ordinary-output-route", &mut events)?;
     let available =
         n2r_win32::resource_native::observe_available_resources(&request.output_parent)?;
     let evidence_bytes = request
@@ -171,8 +179,7 @@ pub fn run_prepared_offline(
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_millis();
-    let output = request
-        .output_parent
+    let output = ordinary_output_parent
         .join(format!("offline-{stamp}-{}", std::process::id()));
     fs::create_dir(&output)?;
     let _output = ordinary_directory(&output)?;

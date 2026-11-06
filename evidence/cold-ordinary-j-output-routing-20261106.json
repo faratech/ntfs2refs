@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "kind": "cold-current-ordinary-journal-output-route",
+  "actual_candidate_source": "2f8beadd3b9c6e96a66495ca9e1083dcd52528d1",
+  "actual_case": ".lab/hyperv/streaming-v2-20261027/PUBLIC-2f8bead-actual-once-b89921e458144d41bbf07e131b949026",
+  "actual_frame": {
+    "next_error": "absolute ordinary local artifact path required",
+    "former_protected_source_state_boundary_passed": true,
+    "AP_or_source_payload_writes_not_proven": true,
+    "path": "2f8bead-after-channel-close-001.png",
+    "sha256": "f97cc9c330a816c35fa91efc34930f6d0da72d24cbed6ec1c92e6acbd1d7dc47"
+  },
+  "cause": "Sealed output_parent is a Volume-GUID path; the new index is passed to ordinary-DOS-only ArtifactGroupPermit::reserve_file.",
+  "implemented_route": [
+    "Resolve BEFORE source exclusion from the already held native J and actual output-parent handle.",
+    "Bounded Mount Manager paths with every alias reverse-resolved to exact J GUID; choose only current ordinary drive root.",
+    "Derive only validated normal unambiguous relative components from actual held directory GUID final path.",
+    "Reopen candidate and require same native directory FileID, volume serial and GUID, with J-native bookends.",
+    "Retain ordinary directory ancestry and use mapped path only for fresh outputs/arena."
+  ],
+  "global_artifact_arena_path_guard_changed": false,
+  "sealed_bundle_journal_bootstrap_inputs_edited": false,
+  "mountpoint_changes": 0,
+  "source_writer_changes": 0,
+  "focused_check": {
+    "sha256": "9bf7d4db722bde50809f3a65ed5954f125f1cf2a8f188c74b02770232d6a6dc6",
+    "exit_code": 0,
+    "unit_tests_run": false,
+    "wall_seconds": 69.5811359,
+    "native_run": false,
+    "receipt": ".lab\\development\\cold-ordinary-J-output-check.json",
+    "session_id": 14852
+  },
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline/journal_bootstrap.rs",
+      "sha256": "24e3012bfb47f16dd1c6bd045307a3e5f232d8c0736498403da72e4454b093d5"
+    },
+    {
+      "path": "src/resource_prepared_runner.rs",
+      "sha256": "10fed606f6796e97f2f4999fcb8b2801e4a7edff62f25f37dea2c94310e1de82"
+    }
+  ],
+  "native_route_qualified": false,
+  "normal_conversion_qualified": false,
+  "resume_qualified": false,
+  "rollback_qualified": false,
+  "stable_release": false,
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "observed_utc": "2026-11-06T05:13:21.1269880Z"
+}

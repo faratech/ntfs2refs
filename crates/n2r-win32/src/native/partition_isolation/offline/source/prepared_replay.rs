@@ -112,10 +112,17 @@ impl OfflinePreparedSource {
                     && self.core.fresh_witness.is_none()
                     && !self.core.gate_ever_issued
                     && !self.core.writer_ever_issued
-                    && self.source_was_already_offline_on_enrollment
+                    && (self.source_was_already_offline_on_enrollment
+                        || self.actual_current_boot_volume_locks_acquired)
                     && self.core.expected_attributes == 3,
-                "cold prepared replay requires actual early-offline/new readonly owner, never fresh/native or spent admission",
+                "cold prepared replay requires actual prior exclusion or current-boot volume locks, current disk3, and an unspent readonly owner",
             )?;
+            // Disk attributes observed in an earlier PE boot are not inherited
+            // exclusion evidence. Enrollment either found this disk offline or
+            // acquired and retained the real current-boot source-volume locks
+            // before setting disk3. Both paths still authenticate CURRENT mixed
+            // bytes, the sealed publication, J/index and boot guard below;
+            // neither authorizes a fresh NTFS scan or an allOLD assumption.
             self.state(events)?;
             let outer_file =
                 self.require_sealed_publication(outer, independent_outer_sha256, pins, None)?;

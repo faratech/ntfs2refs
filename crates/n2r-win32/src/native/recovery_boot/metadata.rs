@@ -69,11 +69,13 @@ pub(super) fn prove_unchanged_device(original:&mut File,original_sha:[u8;32],
 pub(super) fn prove_available_store_device(efi:&EfiIdentity,pin:&StorePin,
     original:&mut File,original_sha:[u8;32],directory:&Path,journal:&GeneralJournalStorageBinding,
     offline_registry:&bcd_device::OfflineRegistryLibrary,
-    budget:RecoveryBootBudget,events:&mut Vec<NativeEvent>)->io::Result<BootManagerDeviceProof> {
+    budget:RecoveryBootBudget,source:&mut crate::offline_environment::OfflinePreparedAvailableSource,
+    events:&mut Vec<NativeEvent>)->io::Result<BootManagerDeviceProof> {
     let ordinal=DEVICE_COPY_ORDINAL.fetch_update(std::sync::atomic::Ordering::Relaxed,
         std::sync::atomic::Ordering::Relaxed,|n|n.checked_add(1)).map_err(|_|bad("device-copy ordinal overflow"))?;
     let path=directory.join(format!("encoded-device-current-{ordinal:04}.bcd"));
-    let actual=raw_copy(efi,pin,&path,budget.maximum_store_bytes,budget.maximum_control_bytes,events)?;
+    let actual=with_live_source(efi,source,events,|events|
+        raw_copy_bound(efi,pin,&path,budget.maximum_store_bytes,budget.maximum_control_bytes,None,true,events))?;
     need(actual==pin.sha256,"current available EFI device-proof copy differs from actual store epoch")?;
     prove_unchanged_device(original,original_sha,&path,actual,directory,journal,offline_registry,budget,events)
 }
@@ -112,13 +114,63 @@ pub(super) struct StorePin {
 }
 impl StorePin {
     pub(super) fn same_file_map(&self, other: &Self) -> bool {
+        self.same_file_map_storage(other) && self.fat_boot_sha256 == other.fat_boot_sha256
+    }
+    fn same_file_map_storage(&self, other: &Self) -> bool {
         self.bytes == other.bytes
             && self.identity == other.identity
             && self.spans == other.spans
             && self.cluster_bytes == other.cluster_bytes
             && self.file_area_bytes == other.file_area_bytes
-            && self.fat_boot_sha256 == other.fat_boot_sha256
     }
+}
+// Only a genuine closed-J AvailableSource can select the live EFI lane. The
+// protected-source and ordinary observation entry points remain exact.
+fn with_live_source<T>(efi:&EfiIdentity,
+    source:&mut crate::offline_environment::OfflinePreparedAvailableSource,
+    events:&mut Vec<NativeEvent>, operation:impl FnOnce(&mut Vec<NativeEvent>)->io::Result<T>)
+    ->io::Result<T> {
+    fn require(efi:&EfiIdentity,source:&mut crate::offline_environment::OfflinePreparedAvailableSource,
+        events:&mut Vec<NativeEvent>)->io::Result<()> {
+        let state=source.state(events)?;
+        need(state.actual.disk_attributes==0&&!state.disk_offline_in_current_environment,
+            "live EFI metadata requires the actual closed/available source0 owner")?;
+        require_source_efi_identity(efi,&state)
+    }
+    require(efi,source,events)?;
+    let result=operation(events);
+    let closing=require(efi,source,events);
+    match(result,closing) {
+        (Ok(value),Ok(()))=>Ok(value),
+        (Err(error),Ok(()))=>Err(error),
+        (Ok(_),Err(error))=>Err(error),
+        (Err(error),Err(closing))=>Err(bad(&format!("{error}; live EFI source closing proof also failed:{closing}"))),
+    }
+}
+pub(super) fn require_live_boot_epoch(efi:&EfiIdentity,first:&StorePin,second:&StorePin,
+    source:&mut crate::offline_environment::OfflinePreparedAvailableSource,
+    metadata_limit:u64,events:&mut Vec<NativeEvent>)->io::Result<()> {
+    with_live_source(efi,source,events,|events| {
+        let mut file=device_file(&format!("\\\\.\\PhysicalDrive{}",efi.binding.disk_number),false,false)?;
+        let opening=physical_binding_bound(&mut file,efi,None,events)?;
+        let observed=fat::require_live_boot(&mut file,efi,first.fat_boot_sha256,
+            second.fat_boot_sha256,metadata_limit)?;
+        need(physical_binding_bound(&mut file,efi,None,events)?==opening,
+            "live EFI boot fingerprint physical binding changed")?;
+        events.push(NativeEvent{operation:"closed-available-EFI-full-sector-dirty-flag-proof".into(),
+            control_code:0,input:Vec::new(),succeeded:true,native_error:None,
+            output:serde_json::to_vec(&serde_json::json!({"first_full_sector_sha256":hex::encode(first.fat_boot_sha256),
+                "second_full_sector_sha256":hex::encode(second.fat_boot_sha256),
+                "observed_full_sector_sha256":hex::encode(observed),"only_runtime_dirty_bit_may_differ":true,
+                "source_actual_attributes":0,"source_write_authority":false})).map_err(io::Error::other)?});
+        Ok(())
+    })
+}
+pub(super) fn require_live_file_map(efi:&EfiIdentity,current:&StorePin,expected:&StorePin,
+    source:&mut crate::offline_environment::OfflinePreparedAvailableSource,
+    metadata_limit:u64,events:&mut Vec<NativeEvent>)->io::Result<()> {
+    need(current.same_file_map_storage(expected),"current published EFI BCD file mapping changed")?;
+    require_live_boot_epoch(efi,current,expected,source,metadata_limit,events)
 }
 pub(super) fn fresh_external(
     directory: &Path,
@@ -306,7 +358,12 @@ fn preserve_capture_events(directory:&Path,ordinal:u64,phase:&str,budget:Recover
     events.clear();Ok(())
 }
 pub(super) fn capture_store(efi:&EfiIdentity,budget:RecoveryBootBudget,events:&mut Vec<NativeEvent>)->io::Result<StorePin>{
-    capture_store_inner(efi,budget,None,events)
+    capture_store_inner(efi,budget,None,false,events)
+}
+pub(super) fn capture_store_live(efi:&EfiIdentity,budget:RecoveryBootBudget,
+    source:&mut crate::offline_environment::OfflinePreparedAvailableSource,events:&mut Vec<NativeEvent>)
+    ->io::Result<StorePin> {
+    with_live_source(efi,source,events,|events|capture_store_inner(efi,budget,None,true,events))
 }
 /// Explicit current-SYSTEM capture. Only genuine sharing32 may select the
 /// observed attribute-only lane; native semantic + physical proofs replace
@@ -316,7 +373,7 @@ pub(super) fn capture_active_store(efi:&EfiIdentity,budget:RecoveryBootBudget,to
     let ordinal=ACTIVE_CAPTURE_ORDINAL.fetch_update(std::sync::atomic::Ordering::Relaxed,
         std::sync::atomic::Ordering::Relaxed,|v|v.checked_add(1)).map_err(|_|bad("active BCD capture ordinal overflow"))?;
     preserve_capture_events(directory,ordinal,"opening",budget,events)?;
-    let result=capture_store_inner(efi,budget,Some((tool,directory,ordinal)),events);
+    let result=capture_store_inner(efi,budget,Some((tool,directory,ordinal)),false,events);
     let drained=preserve_capture_events(directory,ordinal,"closing",budget,events);
     match(result,drained){(Ok(pin),Ok(()))=>Ok(pin),(Err(original),_)=>Err(original),(Ok(_),Err(error))=>Err(error)}
 }
@@ -324,6 +381,7 @@ fn capture_store_inner(
     efi: &EfiIdentity,
     budget: RecoveryBootBudget,
     active:Option<(&native::Tool,&Path,u64)>,
+    live:bool,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<StorePin> {
     let context=efi.bcd_path.to_string_lossy();
@@ -506,7 +564,7 @@ fn capture_store_inner(
         };
         if let Some(sha256)=logical_sha256 {
             phase="hash-current-FAT-namespace-and-raw-BCD-bytes";
-            let raw=raw_hash(efi,&pin,budget.maximum_control_bytes,events)?;
+            let raw=raw_hash_bound(efi,&pin,budget.maximum_control_bytes,None,live,events)?;
             // Keep the original short-circuit order/checks: later native reads
             // occur only when every preceding comparison already passed.
             let same=if raw==sha256 {
@@ -624,22 +682,28 @@ pub(super) fn raw_hash(
     metadata_limit: u64,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<[u8; 32]> {
-    raw_hash_bound(efi, pin, metadata_limit, None, events)
+    raw_hash_bound(efi, pin, metadata_limit, None, false, events)
+}
+pub(super) fn raw_hash_live(efi:&EfiIdentity,pin:&StorePin,metadata_limit:u64,
+    source:&mut crate::offline_environment::OfflinePreparedAvailableSource,events:&mut Vec<NativeEvent>)
+    ->io::Result<[u8;32]> {
+    with_live_source(efi,source,events,|events|raw_hash_bound(efi,pin,metadata_limit,None,true,events))
 }
 pub(super) fn raw_hash_protected(efi: &EfiIdentity, pin: &StorePin, metadata_limit: u64,
     witness: &OfflineBootMetadataWitness, owner: &crate::offline_environment::OfflineSourceOwnerToken,
     events: &mut Vec<NativeEvent>) -> io::Result<[u8; 32]> {
-    raw_hash_bound(efi, pin, metadata_limit, Some((witness, owner)), events)
+    raw_hash_bound(efi, pin, metadata_limit, Some((witness, owner)), false, events)
 }
 fn raw_hash_bound(efi: &EfiIdentity, pin: &StorePin, metadata_limit: u64,
-    protected: Option<ProtectedBootBinding<'_>>, events: &mut Vec<NativeEvent>) -> io::Result<[u8; 32]> {
+    protected: Option<ProtectedBootBinding<'_>>, live:bool, events: &mut Vec<NativeEvent>) -> io::Result<[u8; 32]> {
+    need(!live||protected.is_none(),"protected EFI metadata cannot select live runtime state")?;
     let mut file = device_file(
         &format!("\\\\.\\PhysicalDrive{}", efi.binding.disk_number),
         false,
         false,
     )?;
     let opening = physical_binding_bound(&mut file, efi, protected, events)?;
-    fat::require_current_map(&mut file, efi, pin, metadata_limit).map_err(|error|
+    current_map(&mut file, efi, pin, metadata_limit, live).map_err(|error|
         io::Error::new(error.kind(), format!("raw BCD opening FAT namespace: {error}")))?;
     let mut hash = sha2::Sha256::new();
     let mut buffer = [0; 65536];
@@ -675,7 +739,7 @@ fn raw_hash_bound(efi: &EfiIdentity, pin: &StorePin, metadata_limit: u64,
         covered += span.bytes;
     }
     need(covered == pin.bytes, "raw BCD EOF coverage differs")?;
-    fat::require_current_map(&mut file, efi, pin, metadata_limit).map_err(|error|
+    current_map(&mut file, efi, pin, metadata_limit, live).map_err(|error|
         io::Error::new(error.kind(), format!("raw BCD closing FAT namespace: {error}")))?;
     need(
         physical_binding_bound(&mut file, efi, protected, events)? == opening,
@@ -687,11 +751,15 @@ pub(super) fn require_cold_efi(
     efi: &EfiIdentity,
     state: &crate::offline_environment::OfflineSourceState,
 ) -> io::Result<()> {
-    let binding = &state.binding.storage;
-    let e = &efi.binding;
+    need(state.disk_offline_in_current_environment,"boot EFI requires the actual excluded source disk")?;
+    require_source_efi_identity(efi,state)
+}
+fn require_source_efi_identity(efi:&EfiIdentity,state:&crate::offline_environment::OfflineSourceState)
+    ->io::Result<()> {
+    let binding=&state.binding.storage;
+    let e=&efi.binding;
     need(
-        state.disk_offline_in_current_environment
-            && e.disk_number == binding.disk_number
+        e.disk_number == binding.disk_number
             && e.identity.disk_guid == binding.identity.disk_guid
             && e.identity.disk_bytes == binding.identity.disk_bytes
             && e.identity.logical_sector_bytes == binding.identity.logical_sector_bytes
@@ -727,17 +795,22 @@ pub(super) fn raw_copy(
     metadata_limit: u64,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<[u8; 32]> {
-    raw_copy_bound(efi, pin, path, maximum, metadata_limit, None, events)
+    raw_copy_bound(efi, pin, path, maximum, metadata_limit, None, false, events)
 }
 pub(super) fn raw_copy_protected(efi: &EfiIdentity, pin: &StorePin, path: &Path,
     maximum: u64, metadata_limit: u64, witness: &OfflineBootMetadataWitness,
     owner: &crate::offline_environment::OfflineSourceOwnerToken, events: &mut Vec<NativeEvent>)
     -> io::Result<[u8; 32]> {
-    raw_copy_bound(efi, pin, path, maximum, metadata_limit, Some((witness, owner)), events)
+    raw_copy_bound(efi, pin, path, maximum, metadata_limit, Some((witness, owner)), false, events)
+}
+fn current_map(file:&mut File,efi:&EfiIdentity,pin:&StorePin,limit:u64,live:bool)->io::Result<()> {
+    if live {fat::require_current_map_live(file,efi,pin,limit)}
+    else {fat::require_current_map(file,efi,pin,limit)}
 }
 fn raw_copy_bound(efi: &EfiIdentity, pin: &StorePin, path: &Path, maximum: u64,
-    metadata_limit: u64, protected: Option<ProtectedBootBinding<'_>>, events: &mut Vec<NativeEvent>)
+    metadata_limit: u64, protected: Option<ProtectedBootBinding<'_>>, live:bool, events: &mut Vec<NativeEvent>)
     -> io::Result<[u8; 32]> {
+    need(!live||protected.is_none(),"protected EFI copy cannot select live runtime state")?;
     need(
         pin.bytes <= maximum,
         "raw BCD copy exceeds admitted metadata bytes",
@@ -748,7 +821,7 @@ fn raw_copy_bound(efi: &EfiIdentity, pin: &StorePin, path: &Path, maximum: u64,
         false,
     )?;
     let opening = physical_binding_bound(&mut source, efi, protected, events)?;
-    fat::require_current_map(&mut source, efi, pin, metadata_limit)?;
+    current_map(&mut source, efi, pin, metadata_limit, live)?;
     let mut output = OpenOptions::new()
         .read(true)
         .write(true)
@@ -790,7 +863,7 @@ fn raw_copy_bound(efi: &EfiIdentity, pin: &StorePin, path: &Path, maximum: u64,
         covered += span.bytes;
     }
     need(covered == pin.bytes, "raw BCD copy EOF differs")?;
-    fat::require_current_map(&mut source, efi, pin, metadata_limit)?;
+    current_map(&mut source, efi, pin, metadata_limit, live)?;
     need(
         physical_binding_bound(&mut source, efi, protected, events)? == opening,
         "same raw BCD copy physical metadata changed",

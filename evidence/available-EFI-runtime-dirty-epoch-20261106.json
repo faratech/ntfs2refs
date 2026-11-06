@@ -1,0 +1,53 @@
+{
+  "diagnostic_repair_actual_runs": 1,
+  "all_five_goals_complete": false,
+  "focused_check": {
+    "session_id": 63917,
+    "unit_tests_run": false,
+    "wall_seconds": 32.1687685,
+    "exit_code": 0,
+    "receipt_sha256": "accaa78413cfac74c707390997d35fca6e9989af8e7e2c9a7828f3bafb9b585f"
+  },
+  "decoder": {
+    "actual_sector_bytes": 512,
+    "actual_CNG_SHA_verified": true,
+    "byte65_one_matches_expected_SHA": false,
+    "source_sha256": "44dc4d6a51be058e045b383275fcd851880bd4aaa8aa44da286de00c9ed27ec4",
+    "exe_bytes": 263680,
+    "actual_runs": 1,
+    "byte65_zero_matches_exact_expected_SHA": true,
+    "all_other_511_bytes_cryptographically_exact": true,
+    "stdin_bytes": 2305,
+    "frame_sha256": "47a76486a35eadc5308d0e1abab40244eb68300de62d8c313c50fbe75ba443cf",
+    "exe_sha256": "8798869c310d84f491f0187ab163a9aa52416c0a048c954bbc8fc6e779943e0c",
+    "file_Source_registry_opens": 0,
+    "actual_byte65": 1
+  },
+  "diagnostic_source": "12723dfa3588f45f6b5cf2a6378d83fc46af5c28",
+  "saved_failure_metadata_bytes": 2305,
+  "normal_boot_restored": false,
+  "primary_contract": "https://github.com/microsoft/Windows-driver-samples/blob/main/filesys/fastfat/fat.h",
+  "failure_frame_sha256": "b2a92e6f7989b20fa12f1466b768259a420a0ade13f8477b19dbbf3bd1ba3ece",
+  "native_fix_qualified": false,
+  "checkpoints_remaining": 0,
+  "implementation": [
+    "Default and protected-source3 FAT entrypoints remain exact.",
+    "Live comparison requires typed closed AvailableSource with actual0 and complete current Source/GPT/native144/EFI bookends on success and error.",
+    "Both full SHA pins bind to the SAME current sector; only documented byte65 bit0 may differ; flag2/test-surface and unknown bits fail.",
+    "StorePin serialization/full observed SHA and all other sector bytes/geometry/FAT namespace/mirrors/chains/BCD content/native mapping/unrelated fields remain exact.",
+    "No clock or filesystem flag setter, normalized SHA, snapshot restore, fresh Source prepare, payload replay or new WIM."
+  ],
+  "current_HND_records": 1,
+  "current_apply_source": "c04ed6cab181077c9a7c504acc0843de492fa1d1",
+  "original_DVD_restored_receipt_sha256": "61578088352ca1c588c530e1afb202fe54f2947f15c0492141da7cea157a2329",
+  "failure_phase": "raw BCD opening FAT namespace before first selection setter",
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "kind": "actual-available-source-EFI-runtime-dirty-flag-epoch",
+  "historical_native_bytes_written": 203694080,
+  "replay_predicate": {
+    "truthful_already_offline_OR_actual_current_boot_locks": true,
+    "actual3_and_all_existing_native_mixed_J_index_boot_guards_unchanged": true,
+    "actual_AP_restart_R_B_qualified": false
+  },
+  "schema_version": 1
+}

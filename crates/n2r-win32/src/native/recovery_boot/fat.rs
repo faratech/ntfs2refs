@@ -14,6 +14,7 @@ struct Fat<'a> {
     data: u64,
     total_clusters: u64,
     root: u32,
+    boot_sha256: [u8; 32],
     used: u64,
     limit: u64,
     cached: [Option<(u64, Vec<u8>)>; 2],
@@ -23,6 +24,15 @@ impl<'a> Fat<'a> {
         file: &'a mut File,
         efi: &EfiIdentity,
         expected: [u8; 32],
+        limit: u64,
+    ) -> io::Result<Self> {
+        Self::open_with_live_epoch(file, efi, expected, None, limit)
+    }
+    fn open_with_live_epoch(
+        file: &'a mut File,
+        efi: &EfiIdentity,
+        expected: [u8; 32],
+        second_live_epoch: Option<[u8; 32]>,
         limit: u64,
     ) -> io::Result<Self> {
         let base = efi.binding.identity.partition_offset;
@@ -35,7 +45,29 @@ impl<'a> Fat<'a> {
         let observed = digest(&boot);
         let signature_valid = boot.len() >= 512 && boot[510..512] == [0x55, 0xaa];
         let fat32_tag_valid = boot.len() >= 512 && &boot[82..90] == b"FAT32   ";
-        if observed != expected || !signature_valid || !fat32_tag_valid {
+        let boot_matches = if let Some(second) = second_live_epoch {
+            // Windows fastfat uses FAT32 CurrentHead (offset 0x41) for its
+            // transient dirty flag. The available-source caller must hold the
+            // actual available disk/EFI identity proof. Every other bit stays covered by
+            // BOTH full-sector pins; no normalized hash replaces either pin.
+            // Test-surface (0x02) and all unknown flag bits remain refusals.
+            if boot.len() >= 512 && matches!(boot[65], 0 | 1) {
+                if observed == expected && observed == second {
+                    true
+                } else {
+                    let mut alternate = boot.clone();
+                    alternate[65] ^= 1;
+                    let alternate_sha256 = digest(&alternate);
+                    (observed == expected || alternate_sha256 == expected)
+                        && (observed == second || alternate_sha256 == second)
+                }
+            } else {
+                false
+            }
+        } else {
+            observed == expected
+        };
+        if !boot_matches || !signature_valid || !fat32_tag_valid {
             // Capture the exact failing read, without a second read, retry,
             // mutable-bit exception or replacement of the authenticated hash.
             return Err(bad(&format!(
@@ -105,6 +137,7 @@ impl<'a> Fat<'a> {
             data: data_sector * sector,
             total_clusters,
             root,
+            boot_sha256: observed,
             used: sector,
             limit,
             cached: [None, None],
@@ -286,7 +319,45 @@ pub(super) fn require_current_map(
     pin: &StorePin,
     limit: u64,
 ) -> io::Result<()> {
-    let mut fat = Fat::open(file, efi, pin.fat_boot_sha256, limit)?;
+    let fat = Fat::open(file, efi, pin.fat_boot_sha256, limit)?;
+    require_current_map_inner(fat, efi, pin, limit)
+}
+/// Only the positively available/live EFI lane may select this comparison.
+/// Protected/offline callers continue to use exact `require_current_map`.
+pub(super) fn require_current_map_live(
+    file: &mut File,
+    efi: &EfiIdentity,
+    pin: &StorePin,
+    limit: u64,
+) -> io::Result<()> {
+    let fat = Fat::open_with_live_epoch(
+        file, efi, pin.fat_boot_sha256, Some(pin.fat_boot_sha256), limit,
+    )?;
+    require_current_map_inner(fat, efi, pin, limit)
+}
+/// Bind two recorded complete VBR epochs to ONE actual sector read. Both must
+/// match all bytes except the documented transient dirty bit; return the full
+/// observed digest unchanged. This routine performs no write or retry.
+pub(super) fn require_live_boot(
+    file: &mut File,
+    efi: &EfiIdentity,
+    first_full_sha256: [u8; 32],
+    second_full_sha256: [u8; 32],
+    limit: u64,
+) -> io::Result<[u8; 32]> {
+    need(u64::from(efi.binding.identity.logical_sector_bytes) <= limit,
+        "live EFI boot-sector read exceeds metadata budget")?;
+    let fat = Fat::open_with_live_epoch(
+        file, efi, first_full_sha256, Some(second_full_sha256), limit,
+    )?;
+    Ok(fat.boot_sha256)
+}
+fn require_current_map_inner(
+    mut fat: Fat<'_>,
+    efi: &EfiIdentity,
+    pin: &StorePin,
+    limit: u64,
+) -> io::Result<()> {
     let mut current = fat.root;
     for name in ["EFI", "Microsoft", "Boot"] {
         current = fat.find(current, name, true)?.0;

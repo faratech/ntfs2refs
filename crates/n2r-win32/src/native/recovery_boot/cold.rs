@@ -801,13 +801,15 @@ impl RecoveryBootGuard {
                 &&original.displayorder==self.intent.original.displayorder
                 &&original.timeout==self.intent.original.timeout,
                 "authenticated original BootMgr selection is internally inconsistent")?;
-            let first_store=metadata::capture_store(&actual_efi,self.budget,events)?;
-            need(first_store.sha256==self.actual_store_sha256
-                &&first_store.same_file_map(self.intent.guarded_store_map.as_ref().ok_or_else(||bad("guarded store map absent"))?),
-                "current published EFI BCD bytes/FAT mapping differ from actual guarded epoch")?;
+            let first_store=metadata::capture_store_live(&actual_efi,self.budget,&mut source,events)?;
+            need(first_store.sha256==self.actual_store_sha256,
+                "current published EFI BCD bytes differ from actual guarded epoch")?;
+            metadata::require_live_file_map(&actual_efi,&first_store,
+                self.intent.guarded_store_map.as_ref().ok_or_else(||bad("guarded store map absent"))?,
+                &mut source,self.budget.maximum_control_bytes,events)?;
             let device_proof=metadata::prove_available_store_device(&actual_efi,&first_store,
                 &mut self.held[self.original_backup_slot].file,self.intent.backup_sha256,
-                directory,&self.intent.journal,&self.offline_registry,self.budget,events)?;
+                directory,&self.intent.journal,&self.offline_registry,self.budget,&mut source,events)?;
             let mut expected=tool.enum_all(&actual_efi.bcd_path,directory)?;
             verify_cold_selection(expected.get(BOOTMGR).ok_or_else(||bad("current BootMgr absent"))?,
                 &self.intent,&device_proof,first_store.sha256)?;
@@ -840,7 +842,7 @@ impl RecoveryBootGuard {
                 self.require_boot_identity(&source.owner_token(),events)?;
                 source.state(events)?;
                 let prior=last_verified_store.as_ref().ok_or_else(||bad("current store epoch absent"))?;
-                need(metadata::raw_hash(&actual_efi,prior,self.budget.maximum_control_bytes,events)?==prior.sha256,
+                need(metadata::raw_hash_live(&actual_efi,prior,self.budget.maximum_control_bytes,&mut source,events)?==prior.sha256,
                     "actual current FAT/BCD epoch changed before original selection setter")?;
                 restore_checkpoint(observer,"recovery-boot-before-explicit-original-selection-setter",events)?;
                 let mut args=vec![format!("/{field}")];args.extend(values.clone());
@@ -849,9 +851,9 @@ impl RecoveryBootGuard {
                 expected.get_mut(BOOTMGR).ok_or_else(||bad("BootMgr disappeared"))?.insert(field.into(),values);
                 need(tool.enum_all(&actual_efi.bcd_path,directory)?==expected,
                     "native BCD readback changed unrelated objects/fields or failed original element restoration")?;
-                let current=metadata::capture_store(&actual_efi,self.budget,events)?;
-                need(current.fat_boot_sha256==first_store.fat_boot_sha256,
-                    "EFI FAT boot geometry changed during BootMgr-only restoration")?;
+                let current=metadata::capture_store_live(&actual_efi,self.budget,&mut source,events)?;
+                metadata::require_live_boot_epoch(&actual_efi,&current,&first_store,
+                    &mut source,self.budget.maximum_control_bytes,events)?;
                 // This epoch is minted only from the current published EFI file,
                 // actual retrieval map, both FAT chains and logical/raw readback.
                 // Native BCD may legitimately reallocate its own hive pages.
@@ -871,11 +873,11 @@ impl RecoveryBootGuard {
                 &&one(restored,"timeout")?==original.timeout&&!restored.contains_key("bootsequence"),
                 "actual original native BootMgr selection was not fully restored")?;
             let final_store=last_verified_store.as_ref().ok_or_else(||bad("verified restored store absent"))?;
-            need(metadata::raw_hash(&actual_efi,final_store,self.budget.maximum_control_bytes,events)?==final_store.sha256,
+            need(metadata::raw_hash_live(&actual_efi,final_store,self.budget.maximum_control_bytes,&mut source,events)?==final_store.sha256,
                 "restored BCD actual FAT/raw bytes changed after native readback")?;
             let final_device_proof=metadata::prove_available_store_device(&actual_efi,final_store,
                 &mut self.held[self.original_backup_slot].file,self.intent.backup_sha256,
-                directory,&self.intent.journal,&self.offline_registry,self.budget,events)?;
+                directory,&self.intent.journal,&self.offline_registry,self.budget,&mut source,events)?;
             verify_original_selection(restored,&self.intent,&final_device_proof,final_store.sha256)?;
             self.require_boot_identity(&source.owner_token(),events)?;
             source.revalidate_closed(policy,journal,pins,events)?;

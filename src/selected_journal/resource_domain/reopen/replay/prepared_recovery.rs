@@ -105,6 +105,7 @@ impl BoundJournalObservation<'_> {
             request.intent_sha256,
             &request.output,
             request.budget,
+            request.interrupted_recovery_boot_repair,
             events,
         )?;
         readiness.require_binding(bundle, source, &policy, ticket)?;

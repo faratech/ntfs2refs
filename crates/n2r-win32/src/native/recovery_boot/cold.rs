@@ -123,6 +123,7 @@ pub struct RecoveryBootGuardFacts {
     pub source_write_authority: bool,
     pub restoration_requires_actual_closed_terminal_owner: bool,
     pub closed_only_boot_repair: bool,
+    pub interrupted_recovery_boot_repair: bool,
     pub executing_helper_sha256: String,
     pub sealed_booted_runner_sha256: String,
 }
@@ -153,7 +154,7 @@ impl RecoveryBootGuard {
         intent_path:&Path,expected_intent_sha256:[u8;32],directory:&Path,budget:RecoveryBootBudget,
         events:&mut Vec<NativeEvent>)->io::Result<Self>{
         Self::observe_bound(source,qualification,policy,journal,pins,sealed_bundle,
-            intent_path,expected_intent_sha256,directory,budget,false,events)
+            intent_path,expected_intent_sha256,directory,budget,false,false,events)
     }
     #[allow(clippy::too_many_arguments)]
     pub fn observe_recovery(source:&mut OfflinePreparedSource,qualification:&OfflinePreparedReplayQualification,
@@ -161,7 +162,18 @@ impl RecoveryBootGuard {
         intent_path:&Path,expected_intent_sha256:[u8;32],directory:&Path,budget:RecoveryBootBudget,
         events:&mut Vec<NativeEvent>)->io::Result<Self>{
         Self::observe_bound(source,qualification,policy,journal,pins,sealed_bundle,
-            intent_path,expected_intent_sha256,directory,budget,false,events)
+            intent_path,expected_intent_sha256,directory,budget,false,false,events)
+    }
+    /// Updated helper for an actually qualified CURRENT AP/RB journal. The old
+    /// sealed booted runner is proved independently of this executing image;
+    /// this constructor cannot consume a fresh-prepared or closed qualification.
+    #[allow(clippy::too_many_arguments)]
+    pub fn observe_recovery_repair(source:&mut OfflinePreparedSource,qualification:&OfflinePreparedReplayQualification,
+        policy:&HeldPagedWritePolicy,journal:&mut File,pins:&PagedRecoveryPins<'_>,sealed_bundle:&mut File,
+        intent_path:&Path,expected_intent_sha256:[u8;32],directory:&Path,budget:RecoveryBootBudget,
+        events:&mut Vec<NativeEvent>)->io::Result<Self>{
+        Self::observe_bound(source,qualification,policy,journal,pins,sealed_bundle,
+            intent_path,expected_intent_sha256,directory,budget,false,true,events)
     }
     #[allow(clippy::too_many_arguments)]
     pub fn observe_closed(source:&mut OfflinePreparedSource,qualification:&OfflinePreparedClosedQualification,
@@ -169,7 +181,7 @@ impl RecoveryBootGuard {
         intent_path:&Path,expected_intent_sha256:[u8;32],directory:&Path,budget:RecoveryBootBudget,
         events:&mut Vec<NativeEvent>)->io::Result<Self>{
         Self::observe_bound(source,qualification,policy,journal,pins,sealed_bundle,
-            intent_path,expected_intent_sha256,directory,budget,false,events)
+            intent_path,expected_intent_sha256,directory,budget,false,false,events)
     }
     /// Explicitly invoked helper may only finish an authenticated closed J.
     /// It proves the OLD sealed booted runner separately and reports its REAL
@@ -180,7 +192,7 @@ impl RecoveryBootGuard {
         intent_path:&Path,expected_intent_sha256:[u8;32],directory:&Path,budget:RecoveryBootBudget,
         events:&mut Vec<NativeEvent>)->io::Result<Self>{
         Self::observe_bound(source,qualification,policy,journal,pins,sealed_bundle,
-            intent_path,expected_intent_sha256,directory,budget,true,events)
+            intent_path,expected_intent_sha256,directory,budget,true,false,events)
     }
     fn observe_bound<Q:ActualBootQualification>(
         source: &mut OfflinePreparedSource,
@@ -194,15 +206,20 @@ impl RecoveryBootGuard {
         directory: &Path,
         budget: RecoveryBootBudget,
         closed_only_boot_repair: bool,
+        interrupted_recovery_boot_repair: bool,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<Self> {
         budget.validate()?;
         qualification.revalidate_actual(source, policy, journal, pins, sealed_bundle, events)?;
         let requirements = qualification.actual_requirements();
+        need(!(closed_only_boot_repair&&interrupted_recovery_boot_repair),
+            "closed-only and interrupted recovery helper modes are mutually exclusive")?;
         need(!closed_only_boot_repair||requirements.kind=="offline-closed-prepared-recovery-boot-requirements-v1",
             "updated-helper origin is restricted to authenticated closed J only")?;
-        // PreparedClear can use actual current-boot locks followed by SET3.
-        // AP/RB/closed constructors still require already-offline enrollment.
+        need(!interrupted_recovery_boot_repair||requirements.kind=="offline-current-prepared-recovery-boot-requirements-v1",
+            "updated interrupted helper requires actual authenticated CURRENT AP/RB qualification")?;
+        // Every constructor needs actual current exclusion. A previous PE
+        // boot's disk attributes do not replace real current-boot locks.
         need(
             (requirements.source_was_already_offline_on_enrollment
                 || requirements.actual_current_boot_volume_locks_acquired)
@@ -361,7 +378,8 @@ impl RecoveryBootGuard {
         )?;
         let marker: serde_json::Value =
             serde_json::from_slice(&marker).map_err(io::Error::other)?;
-        let sealed_booted_runner=if closed_only_boot_repair {
+        let updated_helper_origin=closed_only_boot_repair||interrupted_recovery_boot_repair;
+        let sealed_booted_runner=if updated_helper_origin {
             let runner_pin=intent.image_pins.iter().find(|p|p.role=="runner"&&p.sha256==intent.runner_sha256)
                 .ok_or_else(||bad("old sealed runner image pin absent"))?;
             let bytes=runner_pin.snapshot.get("file_bytes").and_then(serde_json::Value::as_u64)
@@ -369,7 +387,7 @@ impl RecoveryBootGuard {
             Some(bcd_device::HeldBootedRunner::open(&PathBuf::from(&ram_root).join(r"Windows\System32\n2r-runner.exe"),
                 intent.runner_sha256,bytes,&ram_backing,budget)?)
         }else{None};
-        let booted_runner_sha256=if closed_only_boot_repair {hex::encode(intent.runner_sha256)}else{running.clone()};
+        let booted_runner_sha256=if updated_helper_origin {hex::encode(intent.runner_sha256)}else{running.clone()};
         require_marker(&marker, &intent, &booted_runner_sha256)?;
         native::firmware(&intent.efi)?.require_same(&intent.firmware)?;
         let library = marker.get("offline_registry").and_then(serde_json::Value::as_object)
@@ -448,6 +466,7 @@ impl RecoveryBootGuard {
             source_write_authority: false,
             restoration_requires_actual_closed_terminal_owner: true,
             closed_only_boot_repair,
+            interrupted_recovery_boot_repair,
             executing_helper_sha256: running.clone(),
             sealed_booted_runner_sha256: booted_runner_sha256.clone(),
         };
@@ -554,8 +573,8 @@ impl RecoveryBootGuard {
         sealed_bundle: &mut File,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<()> {
-        need(!self.facts.closed_only_boot_repair,
-            "closed-only boot helper can never obtain a source payload-writer gate")?;
+        need(!self.facts.closed_only_boot_repair&&!self.facts.interrupted_recovery_boot_repair,
+            "updated boot helper cannot obtain a fresh-prepared payload-writer gate")?;
         qualification.revalidate(source, policy, journal, pins, sealed_bundle, events)?;
         self.require_owner(&source.owner_token())?;
         let state = source.state(events)?;

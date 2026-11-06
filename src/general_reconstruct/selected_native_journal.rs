@@ -1251,9 +1251,15 @@ impl NativeSelectedJournal {
     pub(crate) fn observe_prepared_recovery_boot(&mut self,source:&mut n2r_win32::offline_environment::OfflinePreparedSource,
         qualification:&n2r_win32::offline_environment::OfflinePreparedReplayQualification,policy:&n2r_win32::HeldPagedWritePolicy,
         pins:&n2r_win32::PagedRecoveryPins<'_>,outer:&mut File,intent_path:&Path,intent_sha:[u8;32],directory:&Path,
-        budget:n2r_win32::recovery_boot::RecoveryBootBudget,events:&mut Vec<n2r_win32::NativeEvent>)->Result<n2r_win32::recovery_boot::RecoveryBootGuard>{
-        self.require_prepared_body_seal()?;match &mut self.storage{Storage::Buffered(file)=>Ok(n2r_win32::recovery_boot::RecoveryBootGuard::observe_recovery(
-            source,qualification,policy,file,pins,outer,intent_path,intent_sha,directory,budget,events)?),_=>anyhow::bail!("same sealed prepared replay J absent")}
+        budget:n2r_win32::recovery_boot::RecoveryBootBudget,interrupted_recovery_boot_repair:bool,
+        events:&mut Vec<n2r_win32::NativeEvent>)->Result<n2r_win32::recovery_boot::RecoveryBootGuard>{
+        self.require_prepared_body_seal()?;match &mut self.storage{Storage::Buffered(file)=>Ok(if interrupted_recovery_boot_repair {
+            n2r_win32::recovery_boot::RecoveryBootGuard::observe_recovery_repair(
+                source,qualification,policy,file,pins,outer,intent_path,intent_sha,directory,budget,events)?
+        }else{
+            n2r_win32::recovery_boot::RecoveryBootGuard::observe_recovery(
+                source,qualification,policy,file,pins,outer,intent_path,intent_sha,directory,budget,events)?
+        }),_=>anyhow::bail!("same sealed prepared replay J absent")}
     }
     pub(crate) fn qualify_offline_prepared_replay(&mut self,source:&mut n2r_win32::offline_environment::OfflinePreparedSource,
         qualification:&n2r_win32::offline_environment::OfflinePreparedReplayQualification,boot:&mut n2r_win32::recovery_boot::RecoveryBootGuard,

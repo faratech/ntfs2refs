@@ -41,8 +41,13 @@ fn run() -> anyhow::Result<()> {
         /// Finish only an already authenticated closed HND/ABT; never apply/replay.
         #[arg(long)]
         finalize_closed_boot_only: bool,
+        /// Updated helper for the CURRENT authenticated AP/RB only.
+        #[arg(long)]
+        recover_current_interruption_only: bool,
     }
     let args = Args::parse();
+    ensure!(!(args.finalize_closed_boot_only&&args.recover_current_interruption_only),
+        "closed-only and interrupted-recovery helper modes are exclusive");
     ensure!(
         args.acknowledge_offline_conversion,
         "explicit offline conversion acknowledgement required"
@@ -99,11 +104,16 @@ fn run() -> anyhow::Result<()> {
     );
     drop(bytes);
     if args.rollback {
-        ensure!(!args.finalize_closed_boot_only,"closed-only boot repair never selects rollback/replay");
+        ensure!(!args.finalize_closed_boot_only&&!args.recover_current_interruption_only,
+            "helper repair selects direction only through the authenticated journal prompt");
         request.action = ntfs2refs::resource_partition_alpha::PreparedOfflineAction::Rollback;
     }
     if args.finalize_closed_boot_only {
         return ntfs2refs::resource_partition_alpha::finalize_closed_boot_only(
+            request,file,args.acknowledge_offline_conversion);
+    }
+    if args.recover_current_interruption_only {
+        return ntfs2refs::resource_partition_alpha::recover_current_interruption_only(
             request,file,args.acknowledge_offline_conversion);
     }
     ntfs2refs::resource_partition_alpha::run_prepared_offline(

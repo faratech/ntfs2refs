@@ -1,0 +1,60 @@
+{
+  "current_updated_helper_native_qualified": false,
+  "focused_check": {
+    "session_id": 88736,
+    "unit_tests_run": false,
+    "wall_seconds": 32.0073776,
+    "exit_code": 0,
+    "receipt_sha256": "991c21010dc31394ef7015a866ea6d3e181391bd856ba511fce7324862f3c527"
+  },
+  "actual_failure": {
+    "frame_sha256": "bfe95c7d1e273dea95be0688964752dcf779fc180232ac7cd79c122deaa60d07",
+    "Source_AP_J_and_private_boot_preserved": true,
+    "SDK_current_mixed_qualification_passed": true,
+    "payload_writer_not_reached": true,
+    "caller_still_required_already_offline": true,
+    "error": "actual CURRENT recovery scope differs from authenticated Windows/J owners"
+  },
+  "kind": "genuine-AP-cut-restart-current-boot-recovery-caller-and-updated-helper",
+  "all_five_goals_complete": false,
+  "unchanged_normal_restart": {
+    "one_R_and_Enter": true,
+    "actual_utc": "2026-11-06T16:25:13.5974627Z",
+    "actual_AP_prompt_frame_sha256": "17668714f0ce93812198785387655cb3c51637cf9589c2a41874abd56a9b50f3",
+    "calls": 1,
+    "snapshot_restore_reprepare_rearm_request_edits": 0,
+    "actual_new_PE_current_volume_locks_and_disk3": true
+  },
+  "original_kernel_bootstrap_sha256": "c163e9a45d70671eb8ffdafa348c1da4d1d7c84cdebc096924ff6b6a41bbbde0",
+  "actual_pause": {
+    "native_bytes_positive": true,
+    "frame_sha256": "9814441d64c205d8892e5be2e3931731ad6a77c85ddaf9ca3528ae1c250f65ee",
+    "PID": 1924,
+    "BEFORE_VBR": true,
+    "exact_nonce_bundle_J_observed": true
+  },
+  "bundle_sha256": "246a8a1adfde6c5e12e80e30741d5435dfc8b89fcbe82eca3cc0d5d5a181616f",
+  "original_source_commit": "1c23f6e394ec359633797f013cf33bf85cb65c34",
+  "actual_hardcut": {
+    "actual_state": "Off",
+    "receipt_sha256": "59f323f702c19f2e11c230901f8392aa7315ce84751be459f3e72c2dbbd14fc4",
+    "actual_utc": "2026-11-06T16:24:27.3309602Z",
+    "RAM": 0,
+    "calls": 1
+  },
+  "immutable_J_sha256": "f164d8c6aeee3651fcc5a8b47a637252936d79f18952615b672dbaff2a42d348",
+  "rollback_qualified": false,
+  "actual_resume_HND_and_original8_verified": false,
+  "implementation": [
+    "Caller accepts actual prior-offline OR actual retained current-boot locks, plus actual3; all other source/owner/ticket/index/sealed-publication requirements unchanged.",
+    "Explicit updated-helper CLI route requires actual AP/RB and rejects PreparedClear/HND/ABT; fresh writer and closed-only APIs reject the interrupted-helper mode.",
+    "Actual opaque SDK mixed replay qualification selects updated recovery origin.",
+    "Real new executing image hash is recorded separately; OLD sealed RAM runner native object/kernel RAM/fullSHA plus original WIM marker/kernel intent/bootstrap/request/nonce remain mandatory.",
+    "No old-hash fiction, binary/marker swap, WIM rebuild, request mutation, rearm, reprepare, snapshot/restore or Source format.",
+    "Mixed native replay never repeats the fresh-apply pause hook."
+  ],
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "schema_version": 1,
+  "case": "AP-RESUME-1c23-case-admission-01835927c9ca4d28830f18dcb7c7eaf1",
+  "nonce": "9ea0fbd734d8a52bde862378f4042f2aa5df4b264d57e25237cbbd512e5e65f5"
+}

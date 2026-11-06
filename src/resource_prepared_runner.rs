@@ -52,18 +52,26 @@ pub fn run_prepared_offline(
     mut held_ram_bootstrap: File,
     acknowledge: bool,
 ) -> Result<()> {
-    run_prepared_offline_mode(request,held_ram_bootstrap,acknowledge,false)
+    run_prepared_offline_mode(request,held_ram_bootstrap,acknowledge,false,false)
 }
 /// Metadata-only continuation of an authenticated HND/ABT. This route cannot
 /// admit PreparedClear/AP/RB or obtain a source payload writer.
 pub fn finalize_closed_boot_only(request:PreparedOfflineRequest,held_ram_bootstrap:File,
     acknowledge:bool) -> Result<()> {
-    run_prepared_offline_mode(request,held_ram_bootstrap,acknowledge,true)
+    run_prepared_offline_mode(request,held_ram_bootstrap,acknowledge,true,false)
+}
+/// Updated helper for the CURRENT authenticated AP/RB only. The original
+/// kernel-bound request and nonce stay unchanged; no fresh apply is admitted.
+pub fn recover_current_interruption_only(request:PreparedOfflineRequest,held_ram_bootstrap:File,
+    acknowledge:bool) -> Result<()> {
+    run_prepared_offline_mode(request,held_ram_bootstrap,acknowledge,false,true)
 }
 fn run_prepared_offline_mode(
     request:PreparedOfflineRequest,mut held_ram_bootstrap:File,acknowledge:bool,
-    closed_only_boot_repair:bool,
+    closed_only_boot_repair:bool,interrupted_recovery_boot_repair:bool,
 ) -> Result<()> {
+    ensure!(!(closed_only_boot_repair&&interrupted_recovery_boot_repair),
+        "closed-only and interrupted-recovery helper modes are exclusive");
     ensure!(
         acknowledge && request.schema_version == 1,
         "explicit owning-machine offline execution required"
@@ -294,6 +302,7 @@ fn run_prepared_offline_mode(
     )?;
     let boot = PreparedOfflineBootRequest {
         closed_only_boot_repair,
+        interrupted_recovery_boot_repair,
         intent_path: request.boot_intent.clone(),
         intent_sha256: n2r_win32::recovery_boot::current_recovery_intent_sha256()?,
         output: output.join("boot-proof"),
@@ -312,6 +321,13 @@ fn run_prepared_offline_mode(
         observer.lock()?.record(&serde_json::json!({"kind":"closed-only-boot-repair-authenticated-entry",
             "source_payload_writer_allowed":false,"already_closed_lifecycle":true,
             "uses_original_boot_bound_request":true}))?;
+    }
+    if interrupted_recovery_boot_repair {
+        ensure!(matches!(lifecycle,SelectedLifecycle::ApplyIntent|SelectedLifecycle::RollbackIntent),
+            "updated interrupted helper requires CURRENT AP/RB; fresh apply and closed J are forbidden");
+        observer.lock()?.record(&serde_json::json!({"kind":"current-interrupted-recovery-helper-authenticated-entry",
+            "actual_AP_or_RB":true,"fresh_apply_allowed":false,
+            "uses_original_boot_bound_request_and_nonce":true,"recovery_pause_hook_repeated":false}))?;
     }
     let operation = match (lifecycle, request.action) {
         (SelectedLifecycle::PreparedClear, PreparedOfflineAction::AutoResume) => {

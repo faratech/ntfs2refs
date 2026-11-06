@@ -183,7 +183,8 @@ fn actual_assembly<R: Read + Seek>(
         let parsed = parse_record(bytes.clone(), geometry)?;
         let actual = assembled_io::evidence(wanted.record_number, &bytes, &parsed);
         ensure!(
-            actual == *wanted && parsed.flags == 1,
+            actual == *wanted && (parsed.flags == 1
+                || matches!(expected.schema_version,8|9) && parsed.flags == 3),
             "actual physical extension bytes differ from the complete captured assembly"
         );
         for attribute in &parsed.attributes {
@@ -230,10 +231,12 @@ fn actual_assembly<R: Read + Seek>(
         result
     } else {
         ensure!(
-            matches!(expected.schema_version, 5 | 6) && expected.mft_bitmap_hex.is_none(),
+            matches!(expected.schema_version, 5 | 6 | 8 | 9) && expected.mft_bitmap_hex.is_none(),
             "resource ordinary assembly profile differs"
         );
-        lists::assemble_streams_resource(
+        let assemble = if matches!(expected.schema_version,8|9) { lists::assemble_attributes_resource }
+            else { lists::assemble_streams_resource };
+        assemble(
             expected.base.clone(),
             extensions,
             &value,

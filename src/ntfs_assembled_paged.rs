@@ -150,7 +150,7 @@ impl PagedMftResolver {
         ensure!(
             number >= 16
                 && self.allocated(number)?
-                && record.flags == 1
+                && matches!(record.flags, 1 | 3)
                 && record.links == 0
                 && record.sequence != 0
                 && record.base != 0
@@ -173,8 +173,9 @@ impl PagedMftResolver {
         // MFT0 has already been independently bootstrapped. Unsupported list
         // semantics remain a refusal rather than an incompletely emitted file.
         ensure!(
-            number >= 16 && stream_candidate(number, record),
-            "unsupported resource-bound attribute-list file profile"
+            number > 0 && record.base == 0 && matches!(record.flags,1|3)
+                && record.links>0 && record.attributes.iter().all(|a|a.report.flags==0&&a.report.compression_unit==0),
+            "unsupported resource-bound attribute-list FILE {number}, flags={:#x}",record.flags
         );
         ensure!(
             self.allocated(number)?,
@@ -244,7 +245,7 @@ impl PagedMftResolver {
             )?;
             let parsed = parse_record(bytes.clone(), &self.geometry)?;
             ensure!(
-                parsed.flags == 1 && parsed.sequence == sequence,
+                matches!(parsed.flags,1|3) && parsed.sequence == sequence,
                 "referenced extension sequence or allocation header differs"
             );
             run_count = parsed
@@ -271,13 +272,15 @@ impl PagedMftResolver {
             }
             extensions.push(evidence(extension, &bytes, &parsed));
         }
-        let (canonical, assembly) = lists::assemble_streams_resource(
+        let ordinary = stream_candidate(number, record);
+        let assemble = if ordinary { lists::assemble_streams_resource } else { lists::assemble_attributes_resource };
+        let (canonical, assembly) = assemble(
             evidence(number, raw, record),
             extensions,
             &value,
             &self.geometry,
             limits,
-        )?;
+        ).with_context(|| format!("assembling complete attributes of NTFS FILE {number}"))?;
         let origins = assembly
             .canonical_origins
             .as_ref()
@@ -436,10 +439,12 @@ impl PagedMftResolver {
                 )?
             } else {
                 ensure!(
-                    matches!(assembly.schema_version, 5 | 6) && assembly.mft_bitmap_hex.is_none(),
+                    matches!(assembly.schema_version, 5 | 6 | 8 | 9) && assembly.mft_bitmap_hex.is_none(),
                     "unknown resource ordinary assembly schema"
                 );
-                lists::assemble_streams_resource(
+                let assemble = if matches!(assembly.schema_version,8|9) { lists::assemble_attributes_resource }
+                    else { lists::assemble_streams_resource };
+                assemble(
                     assembly.base.clone(),
                     assembly.extensions.clone(),
                     &value,

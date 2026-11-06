@@ -872,11 +872,11 @@ pub fn parse_stream_entries_with_limit(bytes: &[u8], maximum: usize) -> Result<V
     Ok(entries)
 }
 
-fn stream_record_identity(record: &RecordEvidence) -> Result<()> {
+fn stream_record_identity(record: &RecordEvidence, complete_file: bool) -> Result<()> {
     ensure!(
-        (16..=RECORD_MASK).contains(&record.record_number)
+        ((if complete_file { 1 } else { 16 })..=RECORD_MASK).contains(&record.record_number)
             && record.sequence_number != 0
-            && !record.is_directory
+            && (complete_file || !record.is_directory)
             && record.raw_record_sha256.len() == 64
             && resident_digest_valid(&record.raw_record_sha256),
         "invalid ordinary physical record identity"
@@ -887,7 +887,9 @@ fn stream_record_identity(record: &RecordEvidence) -> Result<()> {
             instances.insert(attribute.instance)
                 && attribute.flags == 0
                 && attribute.compression_unit == 0
-                && (attribute.type_code == 0x80 || attribute.name_utf16.is_empty()),
+                && (attribute.type_code == 0x80 || complete_file
+                    && matches!(attribute.type_code, 0x90 | 0xa0 | 0xb0 | 0x100)
+                    || attribute.name_utf16.is_empty()),
             "duplicate physical instance or unsupported named/encoded metadata"
         );
     }
@@ -968,6 +970,22 @@ pub fn assemble_streams_resource(
     geometry: &NtfsGeometry,
     limits: AssemblyLimits,
 ) -> Result<(Vec<AttributeInventory>, Assembly)> {
+    assemble_attributes_inner(base, extensions, list_value, geometry, limits, false)
+}
+
+/// Complete unencoded metadata/directory assembly. This conserves physical
+/// attributes; namespace, security and preservation admission remain separate.
+pub fn assemble_attributes_resource(
+    base: RecordEvidence, extensions: Vec<RecordEvidence>, list_value: &[u8],
+    geometry: &NtfsGeometry, limits: AssemblyLimits,
+) -> Result<(Vec<AttributeInventory>, Assembly)> {
+    assemble_attributes_inner(base, extensions, list_value, geometry, limits, true)
+}
+
+fn assemble_attributes_inner(
+    base: RecordEvidence, extensions: Vec<RecordEvidence>, list_value: &[u8],
+    geometry: &NtfsGeometry, limits: AssemblyLimits, complete_file: bool,
+) -> Result<(Vec<AttributeInventory>, Assembly)> {
     validate_working_assembly(&base, &extensions, list_value.len(), limits)?;
     let cluster = u64::from(geometry.cluster_size);
     ensure!(
@@ -978,7 +996,7 @@ pub fn assemble_streams_resource(
         extensions.len() <= limits.extension_records,
         "ordinary extension record count exceeds bound"
     );
-    stream_record_identity(&base)?;
+    stream_record_identity(&base, complete_file)?;
     ensure!(
         base.base_file_reference == 0 && base.hard_link_count > 0,
         "ordinary assembly needs a base file with a positive link count"
@@ -986,10 +1004,11 @@ pub fn assemble_streams_resource(
     let base_reference = base.record_number | (u64::from(base.sequence_number) << 48);
     let mut record_numbers = BTreeSet::from([base.record_number]);
     for extension in &extensions {
-        stream_record_identity(extension)?;
+        stream_record_identity(extension, complete_file)?;
         ensure!(
             record_numbers.insert(extension.record_number)
                 && extension.hard_link_count == 0
+                && (!extension.is_directory || base.is_directory)
                 && extension.base_file_reference == base_reference
                 && !extension.attributes.is_empty(),
             "ordinary extension identity, ownership or contents differ"
@@ -1011,7 +1030,7 @@ pub fn assemble_streams_resource(
     let mut si_count = 0usize;
     let mut name_count = 0usize;
     let mut security_count = 0usize;
-    let mut streams: BTreeMap<Vec<u16>, Vec<(CanonicalOrigin, &AttributeInventory)>> =
+    let mut streams: BTreeMap<(u32,Vec<u16>), Vec<(CanonicalOrigin, &AttributeInventory)>> =
         BTreeMap::new();
     let mut canonical = Vec::new();
     for record in std::iter::once(&base).chain(&extensions) {
@@ -1055,7 +1074,9 @@ pub fn assemble_streams_resource(
                     }
                     canonical.push((attribute.clone(), origin));
                 }
-                0x80 => {
+                0x80 | 0x40 | 0x60 | 0x70 | 0x90 | 0xa0 | 0xb0 | 0xc0 | 0xd0 | 0xe0 | 0x100 => {
+                    ensure!(attribute.type_code == 0x80 || complete_file,
+                        "ordinary stream assembly cannot accept metadata attributes");
                     ensure!(
                         attribute.name_utf16.len() <= 255,
                         "ordinary stream name exceeds bound"
@@ -1070,7 +1091,7 @@ pub fn assemble_streams_resource(
                         );
                     }
                     streams
-                        .entry(attribute.name_utf16.clone())
+                        .entry((attribute.type_code,attribute.name_utf16.clone()))
                         .or_default()
                         .push((origin, attribute));
                 }
@@ -1082,7 +1103,7 @@ pub fn assemble_streams_resource(
         si_count == 1
             && name_count > 0
             && security_count <= 1
-            && streams.contains_key(&Vec::new())
+            && (complete_file || streams.contains_key(&(0x80,Vec::new())))
             && streams.len() <= limits.streams,
         "ordinary semantic metadata or DATA stream inventory differs"
     );
@@ -1243,7 +1264,8 @@ pub fn assemble_streams_resource(
     Ok((
         canonical,
         Assembly {
-            schema_version: if list.resident { 5 } else { 6 },
+            schema_version: if complete_file { if list.resident { 8 } else { 9 } }
+                else if list.resident { 5 } else { 6 },
             base,
             extensions,
             list_value_hex: hex::encode(list_value),

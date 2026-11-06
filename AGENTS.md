@@ -7,7 +7,13 @@ This record supersedes historical LIVE/keeper/next-action statements. Full previ
 [history](docs/history/AGENTS-through-20261105-shared-AP.md), SHA256 `8973ba9a024dffffc88d82a332afc7dab76d008609cf63970a7a0279fa18c91e`.
 Read specific historical sections only when needed; do not restart finished investigations or repeat unchanged cases.
 
-## Actual5fd clean-OLD complete; exact firmware tuple identifies late DVD enumeration
+## Actualencoded BCD device equality proved; integrated check40998 CLOSED0
+
+LATEST ACTUALDVDpreboot5fd: productrestartenteredPE; frame001 SHA878a91305df66028de878756dd380a7e9d9ef3cb9f3d63ea45d7b1d24a1fb910 shows protected3/currentchecks+cleanOLDqualificationCOMPLETE, firmwaregateadvanced, then `unrelated boot-manager element changed`. No AP/sourcewrite claim. CurrentPE/Xcmd/source/J/privatebootheld/nopendingproductcall; 4492/3228LIVEbelowhistoricalbeforethisrestart. Observer005closedinvalidcredentialonOStransition/archive49871closedremote-ended; no retry/nativefromtimeout.
+
+TwoexistingmetadataSTDINdecodes COMPLETE: expecteddevice `partition=\Device\HarddiskVolume2` (frame004/8be00217...), actualsavednativechild `partition=\Device\Harddisk0\Partition2` (005/df1e5129...), samebootmgfwpath/otherunrelatedfields; intendedselectionchangesonly. Originalmediarestored/no source/nativeBCDquery. Needencodeddevice11000001 exactequality+actualESPproof, NOTskipdevice/acceptunknown/onlineSource.
+
+V1AppHiveprobeERROR32wasdiagnosticread-FDsharing; filesunchanged. V2attribute-onlydenydeletekeeper/separateREADFDprovedACTUALKEY_READ+REG_PROCESS_APPKEY success onSAMEownedRAMcopies: element11000001/88BEXACTequal,bothFULLbytes+nativeIDsunchanged (frame014/b59b9dea...). OriginalDVDRESTORED/no SourceJopens/privileges/globalmounts/setters/power. Newprivatebcd_device.rs Rootownedobserverintegrated: authenticatefreshJcopies/SHA/snapshots, pristinecurrentA/nativeenumB, opaqueencodedproofcold+restoreBEFOREsetters+AFTERfinalepoch; warmstrict/allotherfields/currentEFI/FAT/hash/kernel/firmware/source/J remain. Focusedcheck40998 ACTUAL CLOSED0/32.3687723s/no tests/mainunchanged; evidence `evidence/cold-encoded-BCD-device-equality-20261106.json`. CurrentPEheld/nopendingVMcall; nextcommit/exact4binbuild/native, no furtherRootgate.
 
 LATEST ACTUAL5fd: productrestartenteredPE; frame001 SHA0b1c01e13eaec95f73e849a885215013deea2e4ea9ba05fcb98ebeec44508e5f shows protected3/ordinaryroute/pageopen/currentstatechecks and `offline-PREPARED-clear-OLD-qualification-complete`, then `actual firmware boot selection/security changed`. No AP/sourcewrite claim. CurrentPE/Xcmd/source/J/privatebootheld/nopendingVMcall, 3192/3676LIVEbelowishistoricalbeforethisrestart. No fixtureRestoreafterthisfailurewithoutfirstproofnoAP; allguard factsremainstrict.
 

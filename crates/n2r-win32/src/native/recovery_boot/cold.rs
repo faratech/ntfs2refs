@@ -137,6 +137,7 @@ pub struct RecoveryBootGuard {
     facts: RecoveryBootGuardFacts,
     budget: RecoveryBootBudget,
     protected_metadata: Option<OfflineBootMetadataWitness>,
+    original_backup_slot: usize,
 }
 impl RecoveryBootGuard {
     #[allow(clippy::too_many_arguments)]
@@ -278,6 +279,7 @@ impl RecoveryBootGuard {
             "guard intent no longer preserves original pre-mutation selection/store",
         )?;
         held.push(parent);
+        let original_backup_slot = held.len();
         held.push(HeldPin::open(
             &intent.backup_path,
             &intent.journal,
@@ -349,11 +351,20 @@ impl RecoveryBootGuard {
             &protected_metadata, &source.owner_token(),
             events,
         )?;
+        // Preserve the raw-source copy as immutable A. Native BCD enumeration
+        // runs only on disposable B, and encoded-device queries use fresh copies.
+        let mut pristine_current = OpenOptions::new().read(true).share_mode(1)
+            .custom_flags(0x0020_0000).open(directory.join("actual-installed-system-store.bcd"))?;
+        let store = metadata::copy_authenticated_held(&mut pristine_current, actual_store_sha256,
+            &directory.join("actual-installed-system-store-query.bcd"), &intent.journal, budget)?;
+        let device_proof = metadata::prove_unchanged_device(
+            &mut held[original_backup_slot].file, intent.backup_sha256, &store,
+            actual_store_sha256, directory, &intent.journal, budget, events)?;
         let tool = native::Tool::system(budget)?;
-        let store = directory.join("actual-installed-system-store.bcd");
-        verify_selection(
+        verify_cold_selection(
             &tool.enum_object(Some(&store), BOOTMGR, directory)?,
             &intent,
+            &device_proof, actual_store_sha256,
         )?;
         verify_cold_loader(
             &tool.enum_object(Some(&store), &intent.loader, directory)?,
@@ -408,6 +419,7 @@ impl RecoveryBootGuard {
             facts,
             budget,
             protected_metadata: Some(protected_metadata),
+            original_backup_slot,
         })
     }
     pub fn facts(&self) -> &RecoveryBootGuardFacts {
@@ -725,12 +737,16 @@ impl RecoveryBootGuard {
                 &&original.displayorder==self.intent.original.displayorder
                 &&original.timeout==self.intent.original.timeout,
                 "authenticated original BootMgr selection is internally inconsistent")?;
-            let mut expected=tool.enum_all(&actual_efi.bcd_path,directory)?;
-            verify_selection(expected.get(BOOTMGR).ok_or_else(||bad("current BootMgr absent"))?,&self.intent)?;
             let first_store=metadata::capture_store(&actual_efi,self.budget,events)?;
             need(first_store.sha256==self.actual_store_sha256
                 &&first_store.same_file_map(self.intent.guarded_store_map.as_ref().ok_or_else(||bad("guarded store map absent"))?),
                 "current published EFI BCD bytes/FAT mapping differ from actual guarded epoch")?;
+            let device_proof=metadata::prove_available_store_device(&actual_efi,&first_store,
+                &mut self.held[self.original_backup_slot].file,self.intent.backup_sha256,
+                directory,&self.intent.journal,self.budget,events)?;
+            let mut expected=tool.enum_all(&actual_efi.bcd_path,directory)?;
+            verify_cold_selection(expected.get(BOOTMGR).ok_or_else(||bad("current BootMgr absent"))?,
+                &self.intent,&device_proof,first_store.sha256)?;
             last_verified_store=Some(first_store.clone());
             restore_checkpoint(observer,"recovery-boot-original-selection-and-current-FAT-bound",events)?;
             let original_fields=&original.all_fields;
@@ -793,6 +809,10 @@ impl RecoveryBootGuard {
             let final_store=last_verified_store.as_ref().ok_or_else(||bad("verified restored store absent"))?;
             need(metadata::raw_hash(&actual_efi,final_store,self.budget.maximum_control_bytes,events)?==final_store.sha256,
                 "restored BCD actual FAT/raw bytes changed after native readback")?;
+            let final_device_proof=metadata::prove_available_store_device(&actual_efi,final_store,
+                &mut self.held[self.original_backup_slot].file,self.intent.backup_sha256,
+                directory,&self.intent.journal,self.budget,events)?;
+            verify_original_selection(restored,&self.intent,&final_device_proof,final_store.sha256)?;
             self.require_boot_identity(&source.owner_token(),events)?;
             source.revalidate_closed(policy,journal,pins,events)?;
             let final_state=source.state(events)?;

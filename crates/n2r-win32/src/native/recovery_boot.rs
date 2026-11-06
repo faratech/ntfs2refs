@@ -17,6 +17,7 @@ mod cold;
 mod fat;
 mod metadata;
 mod native;
+mod bcd_device;
 pub use cold::{RecoveryBootGuard, RecoveryBootGuardFacts, RecoveryBootRestorationReceipt};
 use metadata::{EfiIdentity, StorePin};
 const BOOTMGR: &str = "{9dea862c-5cdd-4e70-acc1-f32b344d4795}";
@@ -475,7 +476,29 @@ fn derived_guid(domain: &[u8], nonce: &str, bundle: [u8; 32]) -> io::Result<Stri
     b[8] = (b[8] & 63) | 0x80;
     guid(&b)
 }
+// Private evidence from authenticated fresh owned copies, never a serialized
+// flag or rendered device alias. It grants no source/boot write authority.
+struct BootManagerDeviceProof {
+    original_store_sha256: [u8;32],
+    current_store_sha256: [u8;32],
+    element_sha256: [u8;32],
+    element_bytes: u64,
+}
+impl BootManagerDeviceProof {
+    fn require_stores(&self, original:[u8;32], current:[u8;32]) -> io::Result<()> {
+        need(self.original_store_sha256==original&&self.current_store_sha256==current
+            &&self.element_bytes>0,"encoded BootMgr device proof belongs to another actual store epoch")
+    }
+}
 fn verify_selection(fields: &BTreeMap<String, Vec<String>>, intent: &BootIntent) -> io::Result<()> {
+    verify_selection_inner(fields,intent,None)
+}
+fn verify_cold_selection(fields:&BTreeMap<String,Vec<String>>,intent:&BootIntent,
+    proof:&BootManagerDeviceProof,current:[u8;32]) -> io::Result<()> {
+    verify_selection_inner(fields,intent,Some((proof,current)))
+}
+fn verify_selection_inner(fields: &BTreeMap<String, Vec<String>>, intent: &BootIntent,
+    device_proof:Option<(&BootManagerDeviceProof,[u8;32])>) -> io::Result<()> {
     need(
         one(fields, "identifier")? == BOOTMGR
             && one(fields, "default")? == intent.loader
@@ -486,10 +509,32 @@ fn verify_selection(fields: &BTreeMap<String, Vec<String>>, intent: &BootIntent)
     )?;
     for (key, value) in &intent.original.all_fields {
         if !matches!(key.as_str(), "default" | "displayorder" | "timeout") {
+            if key=="device" {
+                if let Some((proof,current))=device_proof {
+                    need(value.len()==1&&fields.get(key).is_some_and(|v|v.len()==1),
+                        "BootMgr device element multiplicity changed")?;
+                    proof.require_stores(intent.backup_sha256,current)?;
+                    continue;
+                }
+            }
             need(
                 fields.get(key) == Some(value),
                 "unrelated boot-manager element changed",
             )?;
+        }
+    }
+    Ok(())
+}
+fn verify_original_selection(fields:&BTreeMap<String,Vec<String>>,intent:&BootIntent,
+    proof:&BootManagerDeviceProof,current:[u8;32]) -> io::Result<()> {
+    proof.require_stores(intent.backup_sha256,current)?;
+    need(!fields.contains_key("bootsequence"),"one-shot boot sequence appeared during restoration")?;
+    for (key,value) in &intent.original.all_fields {
+        if key=="device" {
+            need(value.len()==1&&fields.get(key).is_some_and(|v|v.len()==1),
+                "restored encoded BootMgr device multiplicity differs")?;
+        } else {
+            need(fields.get(key)==Some(value),"restored original BootMgr field differs")?;
         }
     }
     Ok(())

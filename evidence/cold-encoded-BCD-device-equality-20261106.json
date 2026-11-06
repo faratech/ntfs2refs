@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "kind": "cold-bootmgr-encoded-device-equality",
+  "actual_case": ".lab/hyperv/streaming-v2-20261027/PUBLIC-5fd0277-actual-once-ce7e723639aa4966ae9b0ca98a51423e",
+  "actual_failed_source": "5fd0277fe41d6f4d5b858e5fc62e598822d931bb",
+  "expected_native_render": "partition=\\Device\\HarddiskVolume2",
+  "actual_native_render": "partition=\\Device\\Harddisk0\\Partition2",
+  "expected_frame_sha256": "8be0021714565cac0cec34e045e25c2f79039781e8f274fd48f86699ba73358b",
+  "actual_frame_sha256": "df1e5129194491824fc0f8345f83cc312239bb8433941f4b3f780fb335c7bb7c",
+  "actual_readonly_apphive_proof": {
+    "frame_sha256": "b59b9dea42c9769dcdadf537417d9ce90794958097182cc8d570f7ddfe211244",
+    "encoded_bytes": 88,
+    "hive_setters": 0,
+    "global_hive_mounts": 0,
+    "original_RAM_copy_bytes": 36864,
+    "privilege_changes": 0,
+    "encoded_equal": true,
+    "original_media_restored": true,
+    "source_or_J_opens_by_probe": 0,
+    "current_RAM_copy_bytes": 49152,
+    "both_native_ids_and_complete_bytes_unchanged": true,
+    "KEY_READ_REG_PROCESS_APPKEY_only": true,
+    "element": "11000001"
+  },
+  "implementation": [
+    "Warm all-field string verification unchanged.",
+    "Current raw-source BCD copy A remains pristine; native enumeration uses a registered disposable B.",
+    "Authenticated original backup copied into fresh owned J metadata; app-hive observation requires complete SHA/native snapshot/byte bookends.",
+    "Private proof requires both input SHAs and exact encoded device bytes; no saved flag grants authority.",
+    "Cold device validation uses encoded proof; all other unrelated fields and actual EFI/FAT/raw hash/kernel/firmware/source/J checks remain.",
+    "Fresh encoded proof before original selection setters and after final actual restored store epoch."
+  ],
+  "focused_check": {
+    "exit_code": 0,
+    "wall_seconds": 32.3687723,
+    "native_run": false,
+    "unit_tests_run": false,
+    "receipt_sha256": "6c75b7320f0a20f6db33bc9bebf813afa7f0db363060b80002f0b4de7a51175d",
+    "session_id": 40998
+  },
+  "files": [
+    {
+      "sha256": "077d8171060fdc85fa9d30895bb66d2d3d6a15f20b235416df7ece488faf6c99",
+      "path": "crates/n2r-win32/src/native/recovery_boot.rs"
+    },
+    {
+      "sha256": "b6cdfedfd095833217119a245718cc7581fda2ffe2d291ca0d1839a551ee284b",
+      "path": "crates/n2r-win32/src/native/recovery_boot/cold.rs"
+    },
+    {
+      "sha256": "cc3b7c6633e85eed7122950620469744772f953800dc6f10621ddb577f639f6d",
+      "path": "crates/n2r-win32/src/native/recovery_boot/metadata.rs"
+    },
+    {
+      "sha256": "7fb3eec0c45a0295797c1a94457972e18cadbb43365b880f34e485ea0f444c8f",
+      "path": "crates/n2r-win32/src/native/recovery_boot/bcd_device.rs"
+    }
+  ],
+  "product_native_qualified": false,
+  "normal_conversion_qualified": false,
+  "AP_restart_resume_qualified": false,
+  "AP_restart_rollback_qualified": false,
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "observed_utc": "2026-11-06T07:25:37.8717254Z"
+}

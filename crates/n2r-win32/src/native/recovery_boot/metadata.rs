@@ -1,6 +1,80 @@
 use super::*;
 use crate::native::partition_isolation::offline::OfflineBootMetadataWitness;
 type ProtectedBootBinding<'a> = (&'a OfflineBootMetadataWitness, &'a crate::offline_environment::OfflineSourceOwnerToken);
+static DEVICE_COPY_ORDINAL:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(0);
+
+pub(super) fn copy_authenticated_held(input:&mut File,expected:[u8;32],path:&Path,
+    journal:&GeneralJournalStorageBinding,budget:RecoveryBootBudget)->io::Result<PathBuf> {
+    budget.validate()?;
+    crate::file_storage::require_readonly_access(input)?;
+    let before=crate::reference_file::observe_reference_file_handle_with_limit(input,budget.maximum_store_bytes)?;
+    let prefix=format!("{}\\",journal.disk.volume_path()?.trim_end_matches('\\'));
+    need(before.file_bytes>0&&before.number_of_links==1
+        &&before.final_path.get(..prefix.len()).is_some_and(|s|s.eq_ignore_ascii_case(&prefix))
+        &&crate::sha256_native::hash_range(input,0,before.file_bytes)?==expected,
+        "authenticated held BCD input is not the exact native J metadata")?;
+    let parent=path.parent().ok_or_else(||bad("owned BCD copy parent absent"))?;
+    let held_parent=OpenOptions::new().access_mode(0x80).share_mode(3)
+        .custom_flags(0x0220_0000).open(parent)?;
+    let parent_guid=crate::file_storage::final_path_guid(&held_parent)?;
+    need(parent_guid.get(..prefix.len()).is_some_and(|s|s.eq_ignore_ascii_case(&prefix))
+        &&held_parent.metadata()?.is_dir()&&held_parent.metadata()?.file_attributes()&0x400==0,
+        "owned BCD copy destination is not actual ordinary J")?;
+    native::owned_control_usage(parent,budget.maximum_control_bytes,
+        before.file_bytes.checked_add(65535).ok_or_else(||bad("BCD copy quota overflow"))?)?;
+    let mut output=OpenOptions::new().read(true).write(true).share_mode(3)
+        .create_new(true).open(path)?;
+    input.seek(SeekFrom::Start(0))?;
+    need(io::copy(&mut (&mut *input).take(before.file_bytes),&mut output)?==before.file_bytes,
+        "owned BCD copy input became short")?;
+    output.sync_all()?;
+    let after=crate::reference_file::observe_reference_file_handle_with_limit(&output,budget.maximum_store_bytes)?;
+    need(after.file_bytes==before.file_bytes&&after.number_of_links==1
+        &&after.volume_serial_number==before.volume_serial_number
+        &&after.final_path.get(..prefix.len()).is_some_and(|s|s.eq_ignore_ascii_case(&prefix))
+        &&crate::sha256_native::hash_range(&mut output,0,after.file_bytes)?==expected
+        &&crate::reference_file::observe_reference_file_handle_with_limit(input,budget.maximum_store_bytes)?==before
+        &&crate::sha256_native::hash_range(input,0,before.file_bytes)?==expected,
+        "owned BCD copy or original held input changed")?;
+    native::register_owned_query_store(&output,path,budget.maximum_store_bytes,budget.maximum_control_bytes)?;
+    drop(output);
+    native::owned_control_usage(parent,budget.maximum_control_bytes,0)?;
+    Ok(path.to_path_buf())
+}
+pub(super) fn prove_unchanged_device(original:&mut File,original_sha:[u8;32],
+    current_copy:&Path,current_sha:[u8;32],directory:&Path,journal:&GeneralJournalStorageBinding,
+    budget:RecoveryBootBudget,events:&mut Vec<NativeEvent>)->io::Result<BootManagerDeviceProof> {
+    let ordinal=DEVICE_COPY_ORDINAL.fetch_update(std::sync::atomic::Ordering::Relaxed,
+        std::sync::atomic::Ordering::Relaxed,|n|n.checked_add(1)).map_err(|_|bad("device-copy ordinal overflow"))?;
+    let original_path=copy_authenticated_held(original,original_sha,
+        &directory.join(format!("encoded-device-original-{ordinal:04}.bcd")),journal,budget)?;
+    let first=bcd_device::observe_owned_copy(&original_path,budget,events)?;
+    let second=bcd_device::observe_owned_copy(current_copy,budget,events)?;
+    need(first.file_sha256==original_sha&&second.file_sha256==current_sha
+        &&first.file.volume_serial_number==second.file.volume_serial_number
+        &&first.bytes==second.bytes&&first.value_sha256==second.value_sha256,
+        "actual encoded BootMgr device element changed or copy authentication differs")?;
+    native::owned_control_usage(directory,budget.maximum_control_bytes,0)?;
+    events.push(NativeEvent {operation:"boot-original-current-encoded-device-exact-equality".into(),
+        control_code:0,input:Vec::new(),succeeded:true,native_error:None,
+        output:serde_json::to_vec(&serde_json::json!({"original_store_sha256":hex::encode(original_sha),
+            "current_store_sha256":hex::encode(current_sha),"element_type":"11000001",
+            "encoded_bytes":first.bytes.len(),"encoded_sha256":hex::encode(first.value_sha256),
+            "rendered_alias_is_not_device_identity":true,"source_write_authority":false})).map_err(io::Error::other)?,
+    });
+    Ok(BootManagerDeviceProof {original_store_sha256:original_sha,current_store_sha256:current_sha,
+        element_sha256:first.value_sha256,element_bytes:first.bytes.len() as u64})
+}
+pub(super) fn prove_available_store_device(efi:&EfiIdentity,pin:&StorePin,
+    original:&mut File,original_sha:[u8;32],directory:&Path,journal:&GeneralJournalStorageBinding,
+    budget:RecoveryBootBudget,events:&mut Vec<NativeEvent>)->io::Result<BootManagerDeviceProof> {
+    let ordinal=DEVICE_COPY_ORDINAL.fetch_update(std::sync::atomic::Ordering::Relaxed,
+        std::sync::atomic::Ordering::Relaxed,|n|n.checked_add(1)).map_err(|_|bad("device-copy ordinal overflow"))?;
+    let path=directory.join(format!("encoded-device-current-{ordinal:04}.bcd"));
+    let actual=raw_copy(efi,pin,&path,budget.maximum_store_bytes,budget.maximum_control_bytes,events)?;
+    need(actual==pin.sha256,"current available EFI device-proof copy differs from actual store epoch")?;
+    prove_unchanged_device(original,original_sha,&path,actual,directory,journal,budget,events)
+}
 use std::os::windows::fs::MetadataExt;
 use windows_sys::Win32::Storage::FileSystem::{
     FindFirstVolumeW, FindNextVolumeW, FindVolumeClose, GetDiskFreeSpaceW,

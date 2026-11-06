@@ -1,5 +1,11 @@
 # ntfs2refs: current handoff
 
+## ACTIVE 20261106 Windows boot-volume conversion
+
+The user started a new goal: convert an installed Windows OS partition from NTFS to ReFS and boot that converted installation successfully. Work is on `codex/boot-volume`, based on `4ca7f9a`; the completed a3 data-volume binaries, package and evidence below remain frozen. The earlier boot deferral is superseded by this explicit goal. Do not edit `src/main.rs`, run unit tests, create checkpoints, or touch host boot disks.
+
+First native control uses only `ntfs2refs-reference-isolated` (`8f7fc646-8c9f-41d0-b65a-ecfadccfc36a`): stock Windows 11 Pro 26300.9457, Secure Boot, no network, a separately enrolled RAW 64 GiB target. `lab/guest/Prepare-BootVolumeCandidate.ps1` prepares a same-image NTFS or Dev Drive ReFS boot control with signed stock tools and an independent NTFS WinRE partition. A fresh installation control is not conversion evidence. The current operator owns VM actions; root owns the new branch. Preserve the qualified streaming VM, its backing chain, and all completed source/journal artifacts. New work is limited to 50,000,000,000 additional bytes and the existing global cap/free reserve.
+
 ## COMPLETE 20261106 exact a3 finite shared-disk alpha qualification and ZIP
 
 All five required observations are ACTUAL and complete for frozen runtime source a3ba1f30b2428fcfb7975220d7b400b3c4c54be9/treeebf0968538323b04573172451595f59f83bf361d/buildmanifest8dcf646e25924527d30967d2975d7b8affd6bdf9463c27ccf9707e0b2490874c. Native normal public5788 HND/native203337728/maps16 + strict8, native513 mutation/ordinaryreboot/Verify+8, genuine independent AP cut/R HND4096/maps16/strict00872, and separate genuine AP cut/B ABT203354112/originalNTFSIDs+serial+VBR+strict229ab all passed. No snapshots/restores/postcut format, no updated rescue helper, no inherited1c qualification, no unit/cargo tests; src/main.rs remains c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b.

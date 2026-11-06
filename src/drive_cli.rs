@@ -12,6 +12,9 @@ mod staging;
 #[cfg(windows)]
 #[path = "drive_partition.rs"]
 mod partition;
+#[cfg(windows)]
+#[path = "drive_boot.rs"]
+mod boot;
 
 #[derive(Args, Debug)]
 pub struct DriveArgs {
@@ -30,6 +33,10 @@ pub struct DriveArgs {
     /// Mounted Windows installation-media directory for offline shared-disk conversion.
     #[arg(long = "offline-media", requires = "drive")]
     pub offline_recovery_media: Option<PathBuf>,
+    /// Convert an offline Windows installation from a different physical
+    /// Windows boot disk. The running Windows volume remains excluded.
+    #[arg(long, requires="drive", conflicts_with_all=["offline_recovery_media","whole_image_verification","experimental_thin_shadow"])]
+    pub windows_boot_volume: bool,
     /// Native target format: dev-drive (experimental default) or standard ReFS.
     /// Standard formatting must be supported by Windows; no fallback is used.
     #[arg(long, requires = "drive", value_parser = ["dev-drive", "standard"])]
@@ -443,7 +450,7 @@ mod windows {
         );
         // Inventory is routing only. The partition path independently probes
         // actual source/GPT/current-Windows roles before any write admission.
-        if inventory.disks.iter().any(|disk| disk.disk_number == selected.disk_number
+        if !args.windows_boot_volume && inventory.disks.iter().any(|disk| disk.disk_number == selected.disk_number
             && disk.contains_running_windows == Some(true)) {
             let before = discovery::discover(&selected.volume_guid_path,
                 Role::Journal { allow_additional_partitions: true })?;
@@ -452,7 +459,12 @@ mod windows {
         ensure!(args.controlled_post_flush_pause_nonce.is_none()
             && !args.acknowledge_controlled_post_flush_pause,
             "controlled post-flush qualification flags apply only to a data partition sharing the current Windows disk; dedicated conversion does not accept them");
-        let before = discovery::discover(&selected.volume_guid_path, Role::Source)
+        let source_role = if args.windows_boot_volume {Role::OfflineWindowsSource}else{Role::Source};
+        if args.windows_boot_volume {
+            ensure!(args.target_format.as_deref().unwrap_or("dev-drive")=="dev-drive",
+                "the demonstrated Windows boot profile uses the native Dev Drive target format");
+        }
+        let before = discovery::discover(&selected.volume_guid_path, source_role)
             .map_err(|error| if error.raw_os_error() == Some(5) {
                 anyhow::anyhow!("administrator access is required for conversion; run from an elevated Windows terminal: {error}")
             } else { anyhow::anyhow!("selected volume is not an eligible dedicated data volume: {error}") })?;
@@ -460,6 +472,7 @@ mod windows {
             before.filesystem == "NTFS",
             "selected partition must currently be NTFS"
         );
+        if args.windows_boot_volume {super::boot::validate(&before.binding)?;}
         let resources = if !args.whole_image_verification {
             crate::ntfs_admission::ResourceProfile::ResourceBoundedV4(None)
         } else {
@@ -530,7 +543,7 @@ mod windows {
             println!("Cancelled. No conversion started.");
             return Ok(0);
         }
-        let current = discovery::discover(&selected.volume_guid_path, Role::Source)?;
+        let current = discovery::discover(&selected.volume_guid_path, source_role)?;
         ensure!(
             current.binding == before.binding && current.filesystem == "NTFS",
             "selected drive identity changed while awaiting confirmation"
@@ -560,7 +573,8 @@ mod windows {
         thin_shadow: bool,
         thin_backing_bytes: Option<u64>,
     ) -> Result<u8> {
-        let system = std::env::var("SystemRoot").context("Windows system path unavailable")?;
+        let system = n2r_win32::current_windows_directory()?.to_str()
+            .context("Unicode native Windows directory required")?.to_owned();
         let os_root = format!(
             "{}\\",
             system

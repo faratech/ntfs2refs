@@ -702,7 +702,7 @@ pub(crate) fn flush_persisted_attributes(events: &mut Vec<NativeEvent>) -> io::R
     Ok(())
 }
 
-pub(crate) fn current_windows_disk(events: &mut Vec<NativeEvent>) -> io::Result<u32> {
+pub fn current_windows_directory() -> io::Result<std::path::PathBuf> {
     let mut name = vec![0_u16; 512];
     // SAFETY: the output buffer contains 512 writable UTF-16 elements.
     let count = unsafe { GetWindowsDirectoryW(name.as_mut_ptr(), name.len() as u32) } as usize;
@@ -711,6 +711,13 @@ pub(crate) fn current_windows_disk(events: &mut Vec<NativeEvent>) -> io::Result<
             "current Windows volume cannot be safely identified",
         ));
     }
+    Ok(std::path::PathBuf::from(String::from_utf16(&name[..count])
+        .map_err(|_| invalid("current Windows directory UTF-16 differs"))?))
+}
+
+pub(crate) fn current_windows_disk(events: &mut Vec<NativeEvent>) -> io::Result<u32> {
+    use std::os::windows::ffi::OsStrExt;
+    let name: Vec<u16> = current_windows_directory()?.as_os_str().encode_wide().collect();
     let letter =
         char::from_u32(u32::from(name[0])).ok_or_else(|| invalid("invalid system drive"))?;
     if !letter.is_ascii_alphabetic() {

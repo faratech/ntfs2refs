@@ -277,7 +277,8 @@ impl PagedMftResolver {
         // Extension headers can retain 0xffff in their noncanonical link-count
         // field. Their base reference, sequence, allocation and exact list
         // membership establish ownership; only the base supplies file links.
-        let ordinary = ordinary_base && extensions.iter().all(|r|r.hard_link_count==0);
+        let ordinary = ordinary_base && extensions.iter().all(|r|r.hard_link_count==0
+            && r.attributes.iter().all(|a|matches!(a.type_code,0x10|0x30|0x50|0x80)));
         let assemble = if ordinary { lists::assemble_streams_resource } else { lists::assemble_attributes_resource };
         let (canonical, assembly) = assemble(
             evidence(number, raw, record),

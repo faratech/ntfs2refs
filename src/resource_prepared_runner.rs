@@ -52,6 +52,18 @@ pub fn run_prepared_offline(
     mut held_ram_bootstrap: File,
     acknowledge: bool,
 ) -> Result<()> {
+    run_prepared_offline_mode(request,held_ram_bootstrap,acknowledge,false)
+}
+/// Metadata-only continuation of an authenticated HND/ABT. This route cannot
+/// admit PreparedClear/AP/RB or obtain a source payload writer.
+pub fn finalize_closed_boot_only(request:PreparedOfflineRequest,held_ram_bootstrap:File,
+    acknowledge:bool) -> Result<()> {
+    run_prepared_offline_mode(request,held_ram_bootstrap,acknowledge,true)
+}
+fn run_prepared_offline_mode(
+    request:PreparedOfflineRequest,mut held_ram_bootstrap:File,acknowledge:bool,
+    closed_only_boot_repair:bool,
+) -> Result<()> {
     ensure!(
         acknowledge && request.schema_version == 1,
         "explicit owning-machine offline execution required"
@@ -281,6 +293,7 @@ pub fn run_prepared_offline(
         &serde_json::json!({"kind":"actual-exclusive-cold-J-open","observed":observed_journal}),
     )?;
     let boot = PreparedOfflineBootRequest {
+        closed_only_boot_repair,
         intent_path: request.boot_intent.clone(),
         intent_sha256: n2r_win32::recovery_boot::current_recovery_intent_sha256()?,
         output: output.join("boot-proof"),
@@ -292,6 +305,14 @@ pub fn run_prepared_offline(
         crate::selected_journal::classify(native, &bundle.core().ticket)?
     };
     use crate::selected_journal::SelectedLifecycle;
+    if closed_only_boot_repair {
+        ensure!(matches!(lifecycle,SelectedLifecycle::Handoff|SelectedLifecycle::Aborted)
+            &&request.controlled_pause_nonce.is_none(),
+            "closed-only boot repair rejects unactivated/AP/RB journals and pause hooks; no payload writer admitted");
+        observer.lock()?.record(&serde_json::json!({"kind":"closed-only-boot-repair-authenticated-entry",
+            "source_payload_writer_allowed":false,"already_closed_lifecycle":true,
+            "uses_original_boot_bound_request":true}))?;
+    }
     let operation = match (lifecycle, request.action) {
         (SelectedLifecycle::PreparedClear, PreparedOfflineAction::AutoResume) => {
             resource_prepared_offline_apply::apply_prepared(

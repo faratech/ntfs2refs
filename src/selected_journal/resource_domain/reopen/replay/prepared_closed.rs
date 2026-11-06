@@ -111,6 +111,7 @@ impl BoundJournalObservation<'_> {
             request.intent_sha256,
             &request.output,
             request.budget,
+            request.closed_only_boot_repair,
             events,
         )?;
         readiness.require_binding(bundle, source, &policy, ticket)?;

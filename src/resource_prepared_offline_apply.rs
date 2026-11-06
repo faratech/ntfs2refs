@@ -32,6 +32,9 @@ pub(crate) use controlled_pause::{PreparedPostFlushReceipt, wait as wait_postflu
 pub(crate) const CONTROLLED_PAUSE_RAM_BYTES: u64 = 512 * 1024;
 pub(crate) const CONTROLLED_PAUSE_EVIDENCE_BYTES: u64 = 1024 * 1024;
 pub(crate) struct PreparedOfflineBootRequest {
+    /// Explicit metadata-only repair after authenticated HND/allNEW or
+    /// ABT/restoredOLD. This mode can never enter apply or mixed replay.
+    pub(crate) closed_only_boot_repair: bool,
     pub(crate) postflush_pause_nonce: Option<String>,
     pub(crate) intent_path: PathBuf,
     pub(crate) intent_sha256: [u8; 32],
@@ -40,6 +43,10 @@ pub(crate) struct PreparedOfflineBootRequest {
 }
 impl PreparedOfflineBootRequest {
     pub(crate) fn validate_control(&self) -> Result<()> {
+        ensure!(
+            !self.closed_only_boot_repair || self.postflush_pause_nonce.is_none(),
+            "closed-only boot repair cannot request a data-writer pause"
+        );
         if let Some(nonce) = &self.postflush_pause_nonce {
             controlled_pause::require_nonce(nonce)?;
         }
@@ -198,7 +205,9 @@ impl PreparedRecoveryReadiness {
             requirements.source == *source.binding()
                 && source.binding().storage == bundle.core().source
                 && requirements.sealed_publication_sha256 == bundle.outer_sha256()
-                && requirements.source_was_already_offline_on_enrollment
+                && (requirements.source_was_already_offline_on_enrollment
+                    || requirements.actual_current_boot_volume_locks_acquired)
+                && requirements.actual_excluded_disk_attributes == 3
                 && facts.index_sha256 == requirements.index_sha256
                 && old_index.sha256 == hex::encode(facts.index_sha256)
                 && ticket_pin(ticket)? == ticket_pin(&bundle.core().ticket)?,
@@ -337,6 +346,10 @@ pub(crate) fn apply_prepared(
     events: &mut Vec<NativeEvent>,
     mut checkpoint: impl FnMut(&mut Vec<NativeEvent>) -> Result<()>,
 ) -> Result<PreparedOfflineHandoff> {
+    ensure!(
+        !boot_request.closed_only_boot_repair,
+        "closed-only boot repair cannot apply source patches or activate a journal"
+    );
     checkpoint(events)?;
     ensure!(
         events.is_empty(),
@@ -448,6 +461,10 @@ pub(crate) fn recover_prepared(
     events: &mut Vec<NativeEvent>,
     mut checkpoint: impl FnMut(&mut Vec<NativeEvent>) -> Result<()>,
 ) -> Result<PreparedOfflineHandoff> {
+    ensure!(
+        !boot_request.closed_only_boot_repair,
+        "closed-only boot repair cannot resume or roll back source patches"
+    );
     checkpoint(events)?;
     ensure!(
         events.is_empty(),
@@ -558,6 +575,7 @@ pub(crate) fn finalize_prepared_closed(
     events: &mut Vec<NativeEvent>,
     mut checkpoint: impl FnMut(&mut Vec<NativeEvent>) -> Result<()>,
 ) -> Result<PreparedOfflineHandoff> {
+    boot_request.validate_control()?;
     checkpoint(events)?;
     ensure!(
         events.is_empty(),

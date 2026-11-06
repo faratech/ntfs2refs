@@ -40,7 +40,7 @@ pub use prepared_boot::{
 };
 #[path = "resource_prepared_runner.rs"]
 mod prepared_runner;
-pub use prepared_runner::{PreparedOfflineAction, PreparedOfflineRequest, run_prepared_offline};
+pub use prepared_runner::{PreparedOfflineAction, PreparedOfflineRequest, run_prepared_offline, finalize_closed_boot_only};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},

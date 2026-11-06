@@ -38,6 +38,9 @@ fn run() -> anyhow::Result<()> {
         acknowledge_offline_conversion: bool,
         #[arg(long)]
         rollback: bool,
+        /// Finish only an already authenticated closed HND/ABT; never apply/replay.
+        #[arg(long)]
+        finalize_closed_boot_only: bool,
     }
     let args = Args::parse();
     ensure!(
@@ -96,7 +99,12 @@ fn run() -> anyhow::Result<()> {
     );
     drop(bytes);
     if args.rollback {
+        ensure!(!args.finalize_closed_boot_only,"closed-only boot repair never selects rollback/replay");
         request.action = ntfs2refs::resource_partition_alpha::PreparedOfflineAction::Rollback;
+    }
+    if args.finalize_closed_boot_only {
+        return ntfs2refs::resource_partition_alpha::finalize_closed_boot_only(
+            request,file,args.acknowledge_offline_conversion);
     }
     ntfs2refs::resource_partition_alpha::run_prepared_offline(
         request,

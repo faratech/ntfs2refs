@@ -966,7 +966,9 @@ fn physical_binding_native(file: &File, efi: &EfiIdentity,
 /// Resolve CURRENT published EFI alias by positive native DEVICE/144B/extents.
 /// The original Windows volume GUID is routing history, not a PE alias claim.
 pub(super) fn available_efi(expected:&EfiIdentity,state:&crate::offline_environment::OfflineSourceState,
-    memory_bytes:u64,events:&mut Vec<NativeEvent>)->io::Result<EfiIdentity> {
+    memory_bytes:u64,ram_root:&str,
+    ram_backing:&crate::native::offline_environment::kernel_ram_backing::KernelRamBackingFacts,
+    events:&mut Vec<NativeEvent>)->io::Result<EfiIdentity> {
     need(state.actual.disk_attributes==0&&!state.disk_offline_in_current_environment
         &&state.binding.storage.disk_number==expected.binding.disk_number
         &&state.binding.storage.identity.disk_guid==expected.binding.identity.disk_guid,
@@ -986,6 +988,21 @@ pub(super) fn available_efi(expected:&EfiIdentity,state:&crate::offline_environm
         let opened=OpenOptions::new().access_mode(0x80).share_mode(3).open(value.trim_end_matches('\\'));
         let file=match opened {Ok(f)=>Some(f),Err(e)if e.raw_os_error()==Some(21)=>None,Err(e)=>return Err(e)};
         if let Some(file)=file {
+            let same_current_ram=matches!(
+                crate::native::offline_environment::kernel_ram_backing::require_held(ram_root,&file),
+                Ok(actual)if actual.positive_native_kernel_ramdisk&&actual==*ram_backing);
+            if same_current_ram {
+                need(events.len()<128,"terminal EFI publication native event budget exceeded")?;
+                events.push(NativeEvent {
+                    operation:"terminal-boot-EFI-publication-current-kernel-RAM-nonsource".into(),
+                    control_code:0,input:Vec::new(),succeeded:true,native_error:None,
+                    output:serde_json::to_vec(&serde_json::json!({"path":&value,
+                        "same_current_kernel_RAM_backing_verified":true,
+                        "positive_native_kernel_ramdisk":true,
+                        "grants_source_write_authority":false,"source_data_io":false}))
+                        .map_err(io::Error::other)?,
+                });
+            } else {
             let device=control(&file,"terminal-boot-EFI-published-native-device",DEVICE,&[],12,events);
             let device=match device {Ok(v)=>Some(v),Err(e)if e.raw_os_error()==Some(21)=>None,Err(e)=>return Err(e)};
             if let Some(device)=device {
@@ -1000,6 +1017,7 @@ pub(super) fn available_efi(expected:&EfiIdentity,state:&crate::offline_environm
                     actual.bcd_path=PathBuf::from(&value).join(r"EFI\Microsoft\Boot\BCD");
                     found=Some(actual);
                 }
+            }
             }
         }
         name.fill(0);

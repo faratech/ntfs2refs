@@ -122,6 +122,9 @@ pub struct RecoveryBootGuardFacts {
     pub raw_mapping_durable_across_boot_verified: bool,
     pub source_write_authority: bool,
     pub restoration_requires_actual_closed_terminal_owner: bool,
+    pub closed_only_boot_repair: bool,
+    pub executing_helper_sha256: String,
+    pub sealed_booted_runner_sha256: String,
 }
 /// No Clone/Deserialize/raw File/Write. This is a separate necessary boot proof,
 /// never the semantic prepared certificate or the actual J/AP writer gate.
@@ -139,6 +142,8 @@ pub struct RecoveryBootGuard {
     budget: RecoveryBootBudget,
     protected_metadata: Option<OfflineBootMetadataWitness>,
     original_backup_slot: usize,
+    sealed_booted_runner: Option<bcd_device::HeldBootedRunner>,
+    booted_runner_sha256: String,
 }
 impl RecoveryBootGuard {
     #[allow(clippy::too_many_arguments)]
@@ -148,7 +153,7 @@ impl RecoveryBootGuard {
         intent_path:&Path,expected_intent_sha256:[u8;32],directory:&Path,budget:RecoveryBootBudget,
         events:&mut Vec<NativeEvent>)->io::Result<Self>{
         Self::observe_bound(source,qualification,policy,journal,pins,sealed_bundle,
-            intent_path,expected_intent_sha256,directory,budget,events)
+            intent_path,expected_intent_sha256,directory,budget,false,events)
     }
     #[allow(clippy::too_many_arguments)]
     pub fn observe_recovery(source:&mut OfflinePreparedSource,qualification:&OfflinePreparedReplayQualification,
@@ -156,7 +161,7 @@ impl RecoveryBootGuard {
         intent_path:&Path,expected_intent_sha256:[u8;32],directory:&Path,budget:RecoveryBootBudget,
         events:&mut Vec<NativeEvent>)->io::Result<Self>{
         Self::observe_bound(source,qualification,policy,journal,pins,sealed_bundle,
-            intent_path,expected_intent_sha256,directory,budget,events)
+            intent_path,expected_intent_sha256,directory,budget,false,events)
     }
     #[allow(clippy::too_many_arguments)]
     pub fn observe_closed(source:&mut OfflinePreparedSource,qualification:&OfflinePreparedClosedQualification,
@@ -164,7 +169,18 @@ impl RecoveryBootGuard {
         intent_path:&Path,expected_intent_sha256:[u8;32],directory:&Path,budget:RecoveryBootBudget,
         events:&mut Vec<NativeEvent>)->io::Result<Self>{
         Self::observe_bound(source,qualification,policy,journal,pins,sealed_bundle,
-            intent_path,expected_intent_sha256,directory,budget,events)
+            intent_path,expected_intent_sha256,directory,budget,false,events)
+    }
+    /// Explicitly invoked helper may only finish an authenticated closed J.
+    /// It proves the OLD sealed booted runner separately and reports its REAL
+    /// current executable hash. No Prepared/AP/RB or payload gate can use it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn observe_closed_repair(source:&mut OfflinePreparedSource,qualification:&OfflinePreparedClosedQualification,
+        policy:&HeldPagedWritePolicy,journal:&mut File,pins:&PagedRecoveryPins<'_>,sealed_bundle:&mut File,
+        intent_path:&Path,expected_intent_sha256:[u8;32],directory:&Path,budget:RecoveryBootBudget,
+        events:&mut Vec<NativeEvent>)->io::Result<Self>{
+        Self::observe_bound(source,qualification,policy,journal,pins,sealed_bundle,
+            intent_path,expected_intent_sha256,directory,budget,true,events)
     }
     fn observe_bound<Q:ActualBootQualification>(
         source: &mut OfflinePreparedSource,
@@ -177,11 +193,14 @@ impl RecoveryBootGuard {
         expected_intent_sha256: [u8; 32],
         directory: &Path,
         budget: RecoveryBootBudget,
+        closed_only_boot_repair: bool,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<Self> {
         budget.validate()?;
         qualification.revalidate_actual(source, policy, journal, pins, sealed_bundle, events)?;
         let requirements = qualification.actual_requirements();
+        need(!closed_only_boot_repair||requirements.kind=="offline-closed-prepared-recovery-boot-requirements-v1",
+            "updated-helper origin is restricted to authenticated closed J only")?;
         // PreparedClear can use actual current-boot locks followed by SET3.
         // AP/RB/closed constructors still require already-offline enrollment.
         need(
@@ -342,7 +361,16 @@ impl RecoveryBootGuard {
         )?;
         let marker: serde_json::Value =
             serde_json::from_slice(&marker).map_err(io::Error::other)?;
-        require_marker(&marker, &intent, &running)?;
+        let sealed_booted_runner=if closed_only_boot_repair {
+            let runner_pin=intent.image_pins.iter().find(|p|p.role=="runner"&&p.sha256==intent.runner_sha256)
+                .ok_or_else(||bad("old sealed runner image pin absent"))?;
+            let bytes=runner_pin.snapshot.get("file_bytes").and_then(serde_json::Value::as_u64)
+                .ok_or_else(||bad("old sealed runner byte count absent"))?;
+            Some(bcd_device::HeldBootedRunner::open(&PathBuf::from(&ram_root).join(r"Windows\System32\n2r-runner.exe"),
+                intent.runner_sha256,bytes,&ram_backing,budget)?)
+        }else{None};
+        let booted_runner_sha256=if closed_only_boot_repair {hex::encode(intent.runner_sha256)}else{running.clone()};
+        require_marker(&marker, &intent, &booted_runner_sha256)?;
         native::firmware(&intent.efi)?.require_same(&intent.firmware)?;
         let library = marker.get("offline_registry").and_then(serde_json::Value::as_object)
             .ok_or_else(|| bad("sealed RAM origin lacks offline-registry dependency"))?;
@@ -419,6 +447,9 @@ impl RecoveryBootGuard {
             raw_mapping_durable_across_boot_verified: true,
             source_write_authority: false,
             restoration_requires_actual_closed_terminal_owner: true,
+            closed_only_boot_repair,
+            executing_helper_sha256: running.clone(),
+            sealed_booted_runner_sha256: booted_runner_sha256.clone(),
         };
         native::persist(
             &directory.join("actual-cold-boot-guard.json"),
@@ -439,6 +470,8 @@ impl RecoveryBootGuard {
             budget,
             protected_metadata: Some(protected_metadata),
             original_backup_slot,
+            sealed_booted_runner,
+            booted_runner_sha256,
         })
     }
     pub fn facts(&self) -> &RecoveryBootGuardFacts {
@@ -473,12 +506,15 @@ impl RecoveryBootGuard {
         for artifact in &self.held {
             artifact.revalidate()?;
         }
+        if let Some(runner)=&self.sealed_booted_runner {runner.revalidate()?;}
         let marker = read_ram_marker(
             &PathBuf::from(&self.ram_root).join(&self.intent.origin_marker_ram_relative),
             self.budget.maximum_control_bytes,
         )?;
         need(digest(&marker)==self.intent.origin_marker_sha256,
-            "actual RAM origin marker changed")
+            "actual RAM origin marker changed")?;
+        let marker:serde_json::Value=serde_json::from_slice(&marker).map_err(io::Error::other)?;
+        require_marker(&marker,&self.intent,&self.booted_runner_sha256)
     }
     pub fn require_current_boot(&mut self,owner:&OfflineSourceOwnerToken,events:&mut Vec<NativeEvent>)->io::Result<()> {
         self.require_boot_identity(owner,events)?;
@@ -518,6 +554,8 @@ impl RecoveryBootGuard {
         sealed_bundle: &mut File,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<()> {
+        need(!self.facts.closed_only_boot_repair,
+            "closed-only boot helper can never obtain a source payload-writer gate")?;
         qualification.revalidate(source, policy, journal, pins, sealed_bundle, events)?;
         self.require_owner(&source.owner_token())?;
         let state = source.state(events)?;
@@ -746,7 +784,8 @@ impl RecoveryBootGuard {
             let mut published=None;
             for attempt in 0..60 {
                 let state=source.state(events)?;
-                let observed=metadata::available_efi(&self.intent.efi,&state,self.budget.ram_bytes,events);
+                let observed=metadata::available_efi(&self.intent.efi,&state,self.budget.ram_bytes,
+                    &self.ram_root,self.offline_registry.current_ram_backing()?,events);
                 restore_checkpoint(observer,"recovery-boot-terminal-EFI-publication-metadata-attempt",events)?;
                 match observed {
                     Ok(efi)=>{published=Some(efi);break},

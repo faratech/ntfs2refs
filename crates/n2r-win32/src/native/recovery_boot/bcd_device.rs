@@ -69,7 +69,54 @@ enum LibraryLocation {
     CurrentRam { native_name: String, backing: KernelRamBackingFacts },
     SealedJournal(ReferenceFileSnapshot),
 }
+/// The OLD boot-bound RAM executable, held independently of an explicitly
+/// invoked NEW closed-only metadata helper. Never a payload-writer capability.
+pub(super) struct HeldBootedRunner {
+    file: File,
+    path: PathBuf,
+    identity: LibraryIdentity,
+    backing: KernelRamBackingFacts,
+    native_name: String,
+    sha256: [u8;32],
+    _parents: Vec<File>,
+}
+impl HeldBootedRunner {
+    pub(super) fn open(path:&Path,expected:[u8;32],expected_bytes:u64,
+        backing:&KernelRamBackingFacts,budget:RecoveryBootBudget) -> io::Result<Self> {
+        need(expected_bytes>0&&expected_bytes<=budget.maximum_image_bytes,
+            "bounded sealed booted runner required")?;
+        let held_parents=parents(path)?;
+        let mut file=OpenOptions::new().read(true).share_mode(1)
+            .custom_flags(0x0020_0000).open(path)?;
+        crate::file_storage::require_readonly_access(&file)?;
+        let identity=library_identity(&file)?;
+        let (actual,native_name)=kernel_ram_backing::require_file(
+            path.to_str().ok_or_else(||bad("Unicode sealed RAM runner required"))?,&file)?;
+        need(actual==*backing&&actual.positive_native_kernel_ramdisk
+            &&identity.bytes==expected_bytes
+            &&crate::sha256_native::hash_range(&mut file,0,expected_bytes)?==expected
+            &&library_identity(&file)?==identity,
+            "actual held OLD sealed RAM runner differs from native-boot-pinned image")?;
+        Ok(Self{file,path:path.to_owned(),identity,backing:backing.clone(),native_name,
+            sha256:expected,_parents:held_parents})
+    }
+    pub(super) fn revalidate(&self)->io::Result<()> {
+        let(actual,name)=kernel_ram_backing::require_file(
+            self.path.to_str().ok_or_else(||bad("Unicode sealed RAM runner required"))?,&self.file)?;
+        let mut data=self.file.try_clone()?;
+        need(actual==self.backing&&name==self.native_name&&library_identity(&self.file)?==self.identity
+            &&crate::sha256_native::hash_range(&mut data,0,self.identity.bytes)?==self.sha256
+            &&library_identity(&self.file)?==self.identity,
+            "held OLD sealed RAM runner identity/bytes/backing changed")
+    }
+}
 impl OfflineRegistryLibrary {
+    pub(super) fn current_ram_backing(&self) -> io::Result<&KernelRamBackingFacts> {
+        match &self.location {
+            LibraryLocation::CurrentRam { backing, .. } => Ok(backing),
+            LibraryLocation::SealedJournal(_) => Err(bad("actual current-RAM library owner required")),
+        }
+    }
     pub(super) fn open(path: &Path, expected: [u8; 32], expected_bytes: u64,
         backing: &KernelRamBackingFacts, budget: RecoveryBootBudget,
         events: &mut Vec<NativeEvent>) -> io::Result<Self> {

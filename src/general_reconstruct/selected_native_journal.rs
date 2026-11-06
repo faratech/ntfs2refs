@@ -1307,9 +1307,19 @@ impl NativeSelectedJournal {
     pub(crate) fn observe_prepared_closed_boot(&mut self,source:&mut n2r_win32::offline_environment::OfflinePreparedSource,
         qualification:&n2r_win32::offline_environment::OfflinePreparedClosedQualification,policy:&n2r_win32::HeldPagedWritePolicy,
         pins:&n2r_win32::PagedRecoveryPins<'_>,outer:&mut File,intent_path:&Path,intent_sha:[u8;32],directory:&Path,
-        budget:n2r_win32::recovery_boot::RecoveryBootBudget,events:&mut Vec<n2r_win32::NativeEvent>)->Result<n2r_win32::recovery_boot::RecoveryBootGuard>{
-        self.require_prepared_body_seal()?;match &mut self.storage{Storage::Buffered(file)=>Ok(n2r_win32::recovery_boot::RecoveryBootGuard::observe_closed(
-            source,qualification,policy,file,pins,outer,intent_path,intent_sha,directory,budget,events)?),_=>anyhow::bail!("same sealed prepared closed J absent")}
+        budget:n2r_win32::recovery_boot::RecoveryBootBudget,closed_only_boot_repair:bool,
+        events:&mut Vec<n2r_win32::NativeEvent>)->Result<n2r_win32::recovery_boot::RecoveryBootGuard>{
+        self.require_prepared_body_seal()?;
+        match &mut self.storage {
+            Storage::Buffered(file)=>Ok(if closed_only_boot_repair {
+                n2r_win32::recovery_boot::RecoveryBootGuard::observe_closed_repair(
+                    source,qualification,policy,file,pins,outer,intent_path,intent_sha,directory,budget,events)?
+            }else{
+                n2r_win32::recovery_boot::RecoveryBootGuard::observe_closed(
+                    source,qualification,policy,file,pins,outer,intent_path,intent_sha,directory,budget,events)?
+            }),
+            _=>anyhow::bail!("same sealed prepared closed J absent")
+        }
     }
     pub(crate) fn into_offline_prepared_closed_terminal(&mut self,source:n2r_win32::offline_environment::OfflinePreparedSource,
         policy:&n2r_win32::HeldPagedWritePolicy,pins:&n2r_win32::PagedRecoveryPins<'_>,boot:&mut n2r_win32::recovery_boot::RecoveryBootGuard,

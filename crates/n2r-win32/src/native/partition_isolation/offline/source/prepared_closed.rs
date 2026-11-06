@@ -115,9 +115,10 @@ impl OfflinePreparedSource {
                     && self.core.fresh_witness.is_none()
                     && !self.core.gate_ever_issued
                     && !self.core.writer_ever_issued
-                    && self.source_was_already_offline_on_enrollment
+                    && (self.source_was_already_offline_on_enrollment
+                        || self.actual_current_boot_volume_locks_acquired)
                     && self.core.expected_attributes == 3,
-                "closed prepared reopen requires actual early-offline/new readonly owner",
+                "closed prepared reopen requires actual already-offline or current-boot locked disk3 owner",
             )?;
             self.state(events)?;
             let publication = self.require_sealed_publication(outer, outer_sha256, pins, None)?;

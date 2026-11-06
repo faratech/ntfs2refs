@@ -890,7 +890,9 @@ fn stream_record_identity(record: &RecordEvidence, complete_file: bool) -> Resul
                 && (attribute.type_code == 0x80 || complete_file
                     && matches!(attribute.type_code, 0x90 | 0xa0 | 0xb0 | 0x100)
                     || attribute.name_utf16.is_empty()),
-            "duplicate physical instance or unsupported named/encoded metadata"
+            "unsupported physical attribute: FILE {}, instance {}, type={:#x}, flags={:#x}, compression_unit={}, name={:?}",
+            record.record_number,attribute.instance,attribute.type_code,attribute.flags,
+            attribute.compression_unit,attribute.name_utf16
         );
     }
     Ok(())

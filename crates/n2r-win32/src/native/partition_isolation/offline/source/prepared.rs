@@ -199,32 +199,26 @@ impl OfflinePreparedSource {
         )?;
         let intent = HeldIntent::persist(exclusion_intent, &env, journal, 3)?;
         checkpoint(&sink, "offline-PREPARED-exclusion-intent-durable", events)?;
-        let mut management = OpenOptions::new()
+        let management = OpenOptions::new()
             .read(true)
             .write(true)
-            .share_mode(3)
+            .share_mode(1)
+            .custom_flags(0xa000_0000)
             .open(format!(
                 "\\\\.\\PhysicalDrive{}",
                 env.source.storage.disk_number
             ))?;
-        require(
-            source_facts(&mut management, &env.source, env.budget, events)?
-                == env.facts.source_physical,
-            "actual prepared exclusion management handle lost full native binding",
-        )?;
+        // Full raw GPT is checked through the same held buffered environment
+        // object. This management FileObject is unbuffered so the already-gated
+        // aligned writer can duplicate it without closing the exclusion owner.
+        require_physical_handle(&management, &env.facts.source_physical,
+            enrolled_attributes, events)?;
         if enrolled_attributes != 3 {
             set_attributes(&management, 3, events)?;
         }
         env.require_current_at_attributes(3, events)?;
         checkpoint(&sink, "offline-PREPARED-actual-whole-disk3", events)?;
-        for volume in locked {
-            close_file(
-                volume,
-                "offline-PREPARED-real-volume-lock-close-ONLY-after-disk3",
-                events,
-            )?;
-        }
-        close_file(management, "offline-PREPARED-management-close", events)?;
+        checkpoint(&sink, "offline-PREPARED-current-boot-exclusion-lease-retained", events)?;
         let file = OpenOptions::new()
             .read(true)
             .share_mode(3)
@@ -251,6 +245,10 @@ impl OfflinePreparedSource {
                 native_read_error_count: 0,
                 native_read_short_count: 0,
                 intent: Some(intent),
+                prepared_exclusion: Some(PreparedExclusionLease {
+                    locked_volumes: locked,
+                    management: Some(management),
+                }),
                 sink,
             },
             source_readonly_gpt_sha256: expected_readonly_gpt_sha256,

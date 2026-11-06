@@ -257,50 +257,7 @@ pub(super) fn gate_file_state(
     expected: u64,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<()> {
-    let device = control(
-        file,
-        "offline-paged-gate-native-device",
-        DEVICE,
-        &[],
-        12,
-        events,
-    )?;
-    let length = control(
-        file,
-        "offline-paged-gate-native-length",
-        LENGTH,
-        &[],
-        8,
-        events,
-    )?;
-    let mut query = [0u8; 12];
-    query[0] = 6;
-    let alignment = control(
-        file,
-        "offline-paged-gate-native-alignment",
-        ALIGNMENT,
-        &query,
-        28,
-        events,
-    )?;
-    let native = control(
-        file,
-        "offline-paged-gate-full-native-layout",
-        LAYOUT,
-        &[],
-        65536,
-        events,
-    )?;
-    let actual = attributes(file, events)?;
-    let enrolled = &core.env.facts.source_physical;
-    require(
-        device == enrolled.device
-            && length == enrolled.length
-            && alignment == enrolled.alignment
-            && native == enrolled.gpt.native_layout
-            && actual == expected,
-        "same actual offline physical gate identity/protection differs",
-    )
+    require_physical_handle(file, &core.env.facts.source_physical, expected, events)
 }
 pub(super) fn begin<'a, 'p>(
     core: &'a mut Core,
@@ -351,12 +308,17 @@ pub(super) fn begin<'a, 'p>(
         "\\\\.\\PhysicalDrive{}",
         core.env.source.storage.disk_number
     );
-    let file = OpenOptions::new()
+    let retained = core.prepared_exclusion.as_ref().and_then(|v| v.management.as_ref())
+        .map(File::try_clone).transpose()?;
+    let file = match retained {
+        Some(file) => file,
+        None => OpenOptions::new()
         .read(true)
         .write(true)
         .share_mode(1)
         .custom_flags(0xa000_0000)
-        .open(&path)?;
+        .open(&path)?,
+    };
     gate_file_state(&file, core, core.expected_attributes, events)?;
     match OpenOptions::new()
         .read(true)

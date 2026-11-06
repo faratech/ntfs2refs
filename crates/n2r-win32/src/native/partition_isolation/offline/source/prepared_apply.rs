@@ -335,11 +335,15 @@ impl OfflinePreparedTerminalSource {
             "offline-PREPARED-closed-before-availability-SET0",
             events,
         )?;
-        let management = device_file(
+        let retained = self.source.core.prepared_exclusion.as_mut().and_then(|v| v.management.take());
+        let management = match retained {
+            Some(file) => file,
+            None => device_file(
             &format!("\\\\.\\PhysicalDrive{}", self.binding().storage.disk_number),
             true,
             false,
-        )?;
+            )?,
+        };
         paged::gate_file_state(
             &management,
             &self.source.core,
@@ -351,6 +355,13 @@ impl OfflinePreparedTerminalSource {
         set_attributes(&management, 0, events)?;
         paged::gate_file_state(&management, &self.source.core, 0, events)?;
         self.source.core.expected_attributes = 0;
+        if let Some(lease) = self.source.core.prepared_exclusion.take() {
+            require(lease.management.is_none(), "closed availability retained another management owner")?;
+            for volume in lease.locked_volumes {
+                close_file(volume,
+                    "offline-PREPARED-real-volume-lock-close-after-authenticated-SET0", events)?;
+            }
+        }
         close_file(
             management,
             "offline-PREPARED-terminal-availability-management-close",

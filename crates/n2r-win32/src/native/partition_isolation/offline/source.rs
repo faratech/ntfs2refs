@@ -463,6 +463,14 @@ fn lock_source_volumes(
     }
     Ok(locked)
 }
+// Keep the actual current-boot exclusion owners. Closing them immediately
+// after SET3 allowed the native attributes to return to0 in the owning PE.
+// The management FileObject supplies a duplicate handle to the existing paged
+// writer while its original handle stays private for controls until closed SET0.
+struct PreparedExclusionLease {
+    locked_volumes: Vec<File>,
+    management: Option<File>,
+}
 struct Core {
     env: OfflineOwningEnvironment,
     file: File,
@@ -480,7 +488,30 @@ struct Core {
     native_read_error_count: u64,
     native_read_short_count: u64,
     intent: Option<HeldIntent>,
+    prepared_exclusion: Option<PreparedExclusionLease>,
     sink: PartitionNativeEventSink,
+}
+fn require_physical_handle(
+    file: &File,
+    enrolled: &OfflineSourcePhysicalFacts,
+    expected: u64,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<()> {
+    let device = control(file, "offline-paged-gate-native-device", DEVICE, &[], 12, events)?;
+    let length = control(file, "offline-paged-gate-native-length", LENGTH, &[], 8, events)?;
+    let mut query = [0u8; 12];
+    query[0] = 6;
+    let alignment = control(file, "offline-paged-gate-native-alignment", ALIGNMENT, &query, 28, events)?;
+    let native = control(file, "offline-paged-gate-full-native-layout", LAYOUT, &[], 65536, events)?;
+    let actual = attributes(file, events)?;
+    require(
+        device == enrolled.device
+            && length == enrolled.length
+            && alignment == enrolled.alignment
+            && native == enrolled.gpt.native_layout
+            && actual == expected,
+        "same actual offline physical gate identity/protection differs",
+    )
 }
 impl Core {
     fn state(&mut self, events: &mut Vec<NativeEvent>) -> io::Result<OfflineSourceState> {
@@ -489,6 +520,10 @@ impl Core {
             require(!self.poisoned, "offline source owner poisoned")?;
             self.env
                 .require_current_at_attributes(self.expected_attributes, events)?;
+            if let Some(management) = self.prepared_exclusion.as_ref().and_then(|v| v.management.as_ref()) {
+                require_physical_handle(management, &self.env.facts.source_physical,
+                    self.expected_attributes, events)?;
+            }
             // Raw GPT metadata reads need a separate buffered readonly object;
             // the source data object is NO_BUFFERING and its aligned window
             // never becomes a general metadata/file/raw-handle API.
@@ -799,6 +834,7 @@ impl OfflineFrozenSource {
                 native_read_short_count: 0,
                 fresh_witness: Some(fresh_witness),
                 intent: Some(held_intent),
+                prepared_exclusion: None,
                 sink,
             },
         };
@@ -855,6 +891,7 @@ impl OfflineRecoverySource {
                 native_read_short_count: 0,
                 fresh_witness: None,
                 intent: None,
+                prepared_exclusion: None,
                 sink,
             },
         };

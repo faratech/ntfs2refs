@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "kind": "prepared-source-exclusion-owner-lifetime-fix",
+  "actual_failed_candidate_source_commit": "932175d07203307015a75277728f9388adeaf6c5",
+  "actual_failed_case": ".lab/hyperv/streaming-v2-20261027/PUBLIC-932-actual-once-795e3dd6187242bb9cda1d34db8522f2",
+  "actual_failure_time_log_view": {
+    "log_bytes": 161351,
+    "before_lock_management_close_disk_attributes": 3,
+    "native_layout_reference_id_after": 1,
+    "actual_source_write_or_AP_not_proven": true,
+    "sha256": "be8b1fba663af3457979cdd42b7c00ed2d3d74f233f2738e6b1fdb704903a705",
+    "after_lock_management_close_disk_attributes": 0,
+    "native_layout_reference_id_before": 1,
+    "path": "COLD-932-exact-log-TYPE-tail-011.png",
+    "native_layout_bytes": 912
+  },
+  "change": {
+    "cross_boot_persist_not_assumed": true,
+    "full_GPT_native_J_boot_OLD_NEW_checks_retained": true,
+    "release_only_after_authenticated_closed_lifecycle_and_actual_SET0": true,
+    "retain_current_boot_filesystem_lock_owners": true,
+    "existing_gated_paged_writer_uses_duplicate_of_same_file_object": true,
+    "ordinary_second_raw_writer_must_still_fail_32": true,
+    "retain_exclusive_unbuffered_physical_management_file_object": true
+  },
+  "focused_check": {
+    "receipt_sha256": "10916358f59536310d4a2d8965ca3bb8b5fad659b782567853cc2dc7eb3c556a",
+    "session_id": 89478,
+    "unit_tests_run": false,
+    "receipt_path": ".lab\\development\\prepared-exclusion-lease-check.json",
+    "native_run": false,
+    "wall_seconds": 32.3300722,
+    "exit_code": 0
+  },
+  "component_files": [
+    {
+      "sha256": "394a18b9bb4989bc2ab10efc1778d3a17ad5abfc34433d9964ebb03820d621af",
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline/source.rs"
+    },
+    {
+      "sha256": "3033568d295228ff4e2334c3b60187d4142170e407843875d9eceecb3fb0f3ff",
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline/source/paged.rs"
+    },
+    {
+      "sha256": "eaa48828d6bc34f5a8ff3c02ee2658f3a64db08433bb5d84634759cffadd8e15",
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline/source/prepared.rs"
+    },
+    {
+      "sha256": "bf6a1325c384c62018816ce05a93e42cbd1f93db127d40649adf059ecfb56590",
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline/source/prepared_apply.rs"
+    }
+  ],
+  "main_rs_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "native_fix_qualified": false,
+  "AP_restart_resume_qualified": false,
+  "AP_restart_rollback_qualified": false,
+  "stable_release": false,
+  "observed_utc": "2026-11-06T03:10:39.5546531Z"
+}

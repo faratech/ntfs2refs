@@ -79,6 +79,10 @@ pub(in crate::ntfs_inspect) struct PagedMftResolver {
     consumed: ExternalSort,
     physical: SortedRecordWriter,
     assemblies: SortedRecordWriter,
+    record_window: Vec<u8>,
+    window_start: u64,
+    window_valid: usize,
+    _window_ram: SourceRamLease,
     _mapping_ram: SourceRamLease,
 }
 impl PagedMftResolver {
@@ -99,6 +103,12 @@ impl PagedMftResolver {
             .and_then(|n| n.checked_add(4096))
             .context("MFT mapping RAM overflow")?;
         let ram = scratch.lease_ram(mapping)?;
+        let record_bytes=u64::from(geometry.file_record_size);
+        let window_bytes=(u64::from(scratch.budget().page_bytes)/record_bytes).max(1)
+            .checked_mul(record_bytes).context("MFT read window overflow")?;
+        let window_ram=scratch.lease_ram(window_bytes)?;
+        let mut window=Vec::new();window.try_reserve_exact(usize::try_from(window_bytes)?)?;
+        window.resize(usize::try_from(window_bytes)?,0);
         Ok(Self {
             data: data.clone(),
             geometry: geometry.clone(),
@@ -114,7 +124,26 @@ impl PagedMftResolver {
                 scratch,
             )?,
             _mapping_ram: ram,
+            record_window: window, window_start: 0, window_valid: 0,
+            _window_ram: window_ram,
         })
+    }
+    /// Read ahead only inside the known logical $MFT stream. Neighboring user
+    /// payload is never prefetched. The window is paid by the source ledger.
+    pub(in crate::ntfs_inspect) fn read_physical_record<R:Read+Seek>(
+        &mut self, reader:&mut R, number:u64, output:&mut [u8],
+    )->Result<()> {
+        ensure!(number<self.record_count&&output.len()==self.geometry.file_record_size as usize,
+            "MFT record read escapes its complete mapping");
+        let at=number.checked_mul(u64::from(self.geometry.file_record_size)).context("MFT window address overflow")?;
+        let end=at.checked_add(output.len() as u64).context("MFT record end overflow")?;
+        if self.window_valid==0||at<self.window_start||end>self.window_start+self.window_valid as u64 {
+            self.window_start=at/(self.record_window.len() as u64)*(self.record_window.len() as u64);
+            self.window_valid=usize::try_from((self.data.report.logical_size-self.window_start).min(self.record_window.len() as u64))?;
+            read_attribute_range(reader,&self.data,self.window_start,&mut self.record_window[..self.window_valid],&self.geometry)?;
+        }
+        let start=usize::try_from(at-self.window_start)?;
+        output.copy_from_slice(&self.record_window[start..start+output.len()]);Ok(())
     }
     pub(in crate::ntfs_inspect) fn allocated(&self, number: u64) -> Result<bool> {
         if number >= self.record_count || number / 8 >= self.bitmap.byte_len() {
@@ -236,15 +265,7 @@ impl PagedMftResolver {
                 "list references an unallocated/out-of-range extension"
             );
             let mut bytes = vec![0; self.geometry.file_record_size as usize];
-            read_attribute_range(
-                reader,
-                &self.data,
-                extension
-                    .checked_mul(u64::from(self.geometry.file_record_size))
-                    .context("extension record byte offset overflow")?,
-                &mut bytes,
-                &self.geometry,
-            )?;
+            self.read_physical_record(reader,extension,&mut bytes)?;
             let parsed = parse_record(bytes.clone(), &self.geometry)?;
             ensure!(
                 (parsed.flags == 1 || !ordinary_base && matches!(parsed.flags,3|9)) && parsed.sequence == sequence,

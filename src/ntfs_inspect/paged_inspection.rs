@@ -495,15 +495,7 @@ fn inspect_paged_internal<R: Read + Seek>(
             let mut raw = Vec::new();
             raw.try_reserve_exact(geometry.file_record_size as usize)?;
             raw.resize(geometry.file_record_size as usize, 0);
-            read_attribute_range(
-                reader,
-                &mft_data,
-                number
-                    .checked_mul(u64::from(geometry.file_record_size))
-                    .context("MFT record byte address overflow")?,
-                &mut raw,
-                &geometry,
-            )?;
+            resolver.read_physical_record(reader,number,&mut raw)?;
             // Declared before the record so the assembly lease drops only
             // after the assembled record and its resident values are gone.
             let mut _assembly_ram = None;

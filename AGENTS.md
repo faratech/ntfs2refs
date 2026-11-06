@@ -7,6 +7,12 @@ This record supersedes historical LIVE/keeper/next-action statements. Full previ
 [history](docs/history/AGENTS-through-20261105-shared-AP.md), SHA256 `8973ba9a024dffffc88d82a332afc7dab76d008609cf63970a7a0279fa18c91e`.
 Read specific historical sections only when needed; do not restart finished investigations or repeat unchanged cases.
 
+## Inventory-corrected four-binary build active
+
+Inventory fix committed and PUSHED at932175d07203307015a75277728f9388adeaf6c5. Exact four-bin build **11941 is running** from that commit using `.lab/development/build-shared-inventory-932175d.ps1`, outputshared-inventory-932175d/shared target/reviewed Cargo-home config6a5/1GiB bound under SAMEcase230093155912. Poll SAME11941; do notduplicate. New cold includes volume classification, unused-DASD removal and failed-event preservation; old833WIM must not be patched or labelled as newcode.
+
+Exclusiveoperator aef_postcut_operator retains currentPE/source/J unchanged while build runs. Finite nextnormalcase GO afteractualbuildclosure/newpins: ordinaryPEshutdown→Off0→ONE Restore sole07/twoOffNormal/ONEStart, freshdistinctFULL4GiB case within unchanged originalglobalepoch279374052988/cap329374052988/reserve17179869184; stage SAMEnewpublic+cold/originalmedia/freshordinaryJdir, thenONEpublic command INSIDEVM withone yLF afterreadyfacts. Reuse executed harness mechanically, no extraRootapproval gate/newframework/checkpoints/manualBCD/data setters. No snapshot recreation afterusercleanup. No repeatedpower/restore/native API on observationtimeout. Actualcold inventoryfailure will now preserve path/op/native events. Goal incomplete; no unit tests.
+
 ## Actual833 cold reached volume inventory; correction compiled
 
 ONEordinaryrestart3128/birth1793931349747 OWNEDexit0 (`/r /t5`) booted sameinstalled833image. ActualframeCOLD-833-after-ONE-restart-001.png SHA9e53d2fafa576339714c97292aeef1e594a95d6eb7a1f9c4124558677df90789 shows positiveRAM/Jenrollment/bundleauthenticated/sourceexclusiveopening, then FOURinventory-row-closed, thenOS1. No source disk3/AP/datawrite inference. CurrentPE/privateboot stays; no converterretry/power/sourceJbody/WIM query followed. OriginalWindowsinstalled105metadatafilesmanifestca54f4c4e1df768f20a3ca02203acc7b0aa3edfd2d1a0ced7cdafe6de5d88301 kept.

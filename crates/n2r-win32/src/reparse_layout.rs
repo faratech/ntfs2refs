@@ -7,6 +7,7 @@ use std::io;
 pub const MAX_REPARSE_BYTES: usize = 16 * 1024;
 pub const IO_REPARSE_TAG_SYMLINK: u32 = 0xa000_000c;
 pub const IO_REPARSE_TAG_MOUNT_POINT: u32 = 0xa000_0003;
+pub const IO_REPARSE_TAG_APPEXECLINK: u32 = 0x8000_001b;
 const HEADER_BYTES: usize = 8;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,6 +79,26 @@ impl Point {
             return Err(invalid(
                 "reparse buffer length differs from its common header",
             ));
+        }
+        if self.tag() == IO_REPARSE_TAG_APPEXECLINK {
+            // Observed Windows application-execution alias format. Preserve
+            // every byte, including optional trailing strings; never resolve
+            // or reinterpret the package, AUMID or executable path.
+            if dword(bytes,8)? != 3 { return Err(invalid("unsupported application-execution alias version")); }
+            let strings=bytes.get(12..).ok_or_else(||invalid("short application-execution alias"))?;
+            if !strings.len().is_multiple_of(2)||strings.last()!=Some(&0)||strings.get(strings.len().saturating_sub(2))!=Some(&0){
+                return Err(invalid("application-execution alias string framing differs"));
+            }
+            let mut count=0usize;let mut length=0usize;
+            for c in char::decode_utf16(strings.chunks_exact(2).map(|b|u16::from_le_bytes([b[0],b[1]]))){
+                match c {
+                    Ok('\0') => { if count<3&&length==0{return Err(invalid("empty application-execution alias field"));}count+=1;length=0; }
+                    Ok(_) => length+=1,
+                    Err(_) => return Err(invalid("invalid application-execution alias UTF-16")),
+                }
+            }
+            if count<3 {return Err(invalid("incomplete application-execution alias fields"));}
+            return Ok(());
         }
         let fixed = match self.tag() {
             IO_REPARSE_TAG_SYMLINK => {

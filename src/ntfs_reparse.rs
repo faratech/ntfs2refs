@@ -115,6 +115,8 @@ pub fn file_point(file: &FileInventory) -> Result<Option<Point>> {
                 point.tag() != MOUNT_POINT || file.is_directory,
                 "a mount-point reparse attribute requires a directory"
             );
+            ensure!(point.tag()!=n2r_win32::reparse_layout::IO_REPARSE_TAG_APPEXECLINK||!file.is_directory,
+                "application-execution aliases require file objects");
             Ok(Some(point.clone()))
         }
         (None, Some(_)) => anyhow::bail!("retained point has no raw reparse attribute"),

@@ -3,7 +3,12 @@
 use crate::ntfs_inspect::{FileInventory, RootFileDomain};
 use anyhow::{Context, Result, ensure};
 
-fn directory_path(files: &impl RootFileDomain, mut current: u64) -> Result<Vec<String>> {
+fn directory_path(files: &impl RootFileDomain, current: u64) -> Result<Vec<String>> {
+    directory_path_for_alias_preparation(files,current,false)
+}
+
+fn directory_path_for_alias_preparation(files: &impl RootFileDomain, mut current:u64,
+    alias_preparation:bool)->Result<Vec<String>> {
     let mut components = Vec::new();
     let mut units = 0usize;
     // A canonical parent chain cannot contain more identities than the source.
@@ -14,14 +19,15 @@ fn directory_path(files: &impl RootFileDomain, mut current: u64) -> Result<Vec<S
         let directory = files
             .find_record(number, Some(sequence))?
             .context("source parent identity is missing or stale")?;
+        let names:Vec<_>=directory.names.iter().filter(|n|!alias_preparation||n.namespace!=2).collect();
         ensure!(
             directory.is_directory
                 && directory.hard_link_count == 1
-                && directory.names.len() == 1
+                && names.len() == 1
                 && directory.base_file_reference == 0,
             "source parent is not a canonical single-name directory"
         );
-        let name = &directory.names[0];
+        let name = names[0];
         ensure!(
             matches!(name.namespace, 0 | 1 | 3),
             "source namespace is unsupported"
@@ -47,6 +53,31 @@ fn directory_path(files: &impl RootFileDomain, mut current: u64) -> Result<Vec<S
         current = parent;
     }
     anyhow::bail!("source parent chain cycles or does not reach the root")
+}
+
+/// Canonical long paths for a separately journaled short-name preparation.
+/// This does not satisfy normal source admission or permit dropping aliases.
+pub(crate) fn canonical_paths_for_alias_preparation(
+    files:&impl RootFileDomain,file:&FileInventory,
+)->Result<Vec<Vec<String>>>{
+    ensure!(file.base_file_reference==0,"canonical base required for alias preparation");
+    let canonical:Vec<_>=file.names.iter().filter(|n|n.namespace!=2).collect();
+    ensure!(!canonical.is_empty()&&canonical.len()==usize::from(file.hard_link_count)
+        &&canonical.iter().all(|n|matches!(n.namespace,0|1|3))
+        &&(!file.is_directory||canonical.len()==1),"canonical name/link coverage differs");
+    for alias in file.names.iter().filter(|n|n.namespace==2){
+        ensure!(canonical.iter().any(|n|n.parent_record_number==alias.parent_record_number
+            &&n.parent_sequence_number==alias.parent_sequence_number),"DOS alias has no canonical parent identity");
+    }
+    let mut paths=Vec::new();
+    for name in canonical {
+        let parent=name.parent_record_number|(u64::from(name.parent_sequence_number)<<48);
+        let mut path=directory_path_for_alias_preparation(files,parent,true)?;
+        if file.record_number!=5 {path.push(String::from_utf16(&name.name_utf16)?);}
+        ensure!(crate::shadow_tree::expected_path_fits(&path,!file.is_directory),"alias preparation path exceeds native representation");
+        paths.push(path);
+    }
+    Ok(paths)
 }
 
 pub(crate) fn user_paths(

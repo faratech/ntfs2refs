@@ -7,6 +7,16 @@ This record supersedes historical LIVE/keeper/next-action statements. Full previ
 [history](docs/history/AGENTS-through-20261105-shared-AP.md), SHA256 `8973ba9a024dffffc88d82a332afc7dab76d008609cf63970a7a0279fa18c91e`.
 Read specific historical sections only when needed; do not restart finished investigations or repeat unchanged cases.
 
+## Budget-corrected candidate built; next actual public case authorized
+
+Root build40624 ACTUAL CLOSED0. New PUBLIC source6cff11d75863da45cdfcfca57267d7f75329af34, manifest a91f9d66e5c56b062eb95f6429a778e82e9672fdfccfb9bed3838a9f1fc609cf, public20648448/b3d811e1556ea1e832a026f08c01197f6077a305bb603cb4c420e3876ebd9b14; source before/after verified. Exact unchanged recovery4280832/b7a868695a06ec072d9e0c2c23b7ffdd76181a89038b36d56cb9c0117b2aac9e sourceaa8acbf. `.lab/development/public-layout-6cff11d/layout.json` SHA3cc8f39696394d4573c176832ac4495d3718b21116d8db53a4b636751f11fb6d records both component commits. No duplicate build/recompile/qualification inheritance.
+
+Preservation77439 ACTUAL CLOSED0: VM Off/RAM0/current9ae3dabe-a87e-4727-988b-270fcec3b6a3, parent07ca, six checkpoints/originalfive unchanged; ONE ordinary shutdown and ONE offline checkpoint. Receipt f3b5479af33534887854c19afac2e931c3b43fcc4344ed18cac76bd5eb3979df, actual247787309639/free159263322112 under completed failed-case249768418354. This preserves source/J/full failed branch, not product rollback. Evidence `evidence/public-budget-corrected-build-20261105.json`.
+
+Exclusive operator current **reset/start6314** started with frozen helperedd365f9d1a0c162b6a82f85a20080368267242ee235058a6e29afe6a17e7ac1. Root GO: fresh distinct FULL4GiB case after previous build/preservation terminals, same ORIGINAL global epoch279374052988/cap329374052988/reserve17179869184, then ONE Restore07ca→twoactualOffnormalreads→ONEStart. Preserve allsix; no manual source/BCD writes. Consult operator for actual current state; never repeat API after observation timeout.
+
+After actual fresh Windows/sourceD6Basic0/J2emptyordinaryscratch/originalmediaE/exacttwo-componenthashes/newcasecapacity pass, operator is ALREADY AUTHORIZED to stage and launch ONE public `--drive D --scratch-directory J:\<fresh-existing-dir> --offline-media E:\` INSIDE VM with one yLF, mechanically adapted existing owned worker. No additional Root approval round trip required. Capture ready facts BEFORE launch; report actualPID/birth/ownedterminal/product restart/cold progress. No source extent prearrangement, manual arm, deliberate cut or retry in normal case; preserve any failure. No native invocation yet observed at this record. Goal incomplete; no unit tests.
+
 ## Current live correction build and failed-public preservation
 
 Conservative capture fix is committed and PUSHED at6cff11d75863da45cdfcfca57267d7f75329af34. Exact PUBLIC-ONLY build **session40624 is confirmed live** using `.lab/development/build-shared-public-budget-6cff11d.ps1`, output `release-candidates/shared-public-budget-6cff11d`, shared target/source cache,1GiB bound and same case absolute249768418354. Poll SAME session/actual process; no duplicate build. New public will pair with EXACT unchanged aa8 recoveryb7a868695a06ec072d9e0c2c23b7ffdd76181a89038b36d56cb9c0117b2aac9e; document distinct component commits rather than pretend cold was rebuilt. No corrected public native run yet.

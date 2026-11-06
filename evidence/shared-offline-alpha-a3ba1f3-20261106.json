@@ -1,0 +1,1276 @@
+{
+  "schema_version": 1,
+  "kind": "actual-shared-offline-alpha-qualification-and-package-v1",
+  "status": "complete-finite-experimental-profile",
+  "runtime_source_commit": "a3ba1f30b2428fcfb7975220d7b400b3c4c54be9",
+  "runtime_source_tree": "ebf0968538323b04573172451595f59f83bf361d",
+  "build_manifest_sha256": "8dcf646e25924527d30967d2975d7b8affd6bdf9463c27ccf9707e0b2490874c",
+  "source_archive_sha256": "7ca273721bbca6eea38fa6c94c7302fba14e4b44745649de63be482c06ba2d84",
+  "public_layout_sha256": "2fb8215834d45aad3857b928d095e12c829a98dfdba120e856aae957c407908c",
+  "cargo_package_version": "0.1.0",
+  "stable_release": false,
+  "physical_host_power_loss_qualified": false,
+  "inherited_qualification": false,
+  "unit_tests_run": false,
+  "runtime_source_edited_during_this_qualification": false,
+  "original_main_rs_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "source_binding": {
+    "disk_number": 0,
+    "partition_number": 6,
+    "partition_guid": "4310d74c-614f-435b-9cf1-7ff664391590",
+    "partition_offset_bytes": 68719476736,
+    "partition_length_bytes": 55834574848
+  },
+  "qualification_sha256": "79f1c7dd3fd5fdab9653bacec73ca34416aa54f19d96434e34f1320c17b67c31",
+  "build_binaries": [
+    {
+      "name": "ntfs2refs",
+      "path": "bin/ntfs2refs.exe",
+      "bytes": 20783616,
+      "sha256": "160f64460edb4857837063c64508d0381ef8f571535f5ad8984fa429dd660379"
+    },
+    {
+      "name": "lab-prepare-partition-offline",
+      "path": "bin/lab-prepare-partition-offline.exe",
+      "bytes": 8945664,
+      "sha256": "6040c3ae190ef72adda8f56511f342b4fc4c54059859ea98ba6194074184ad65"
+    },
+    {
+      "name": "lab-arm-prepared-boot",
+      "path": "bin/lab-arm-prepared-boot.exe",
+      "bytes": 2752512,
+      "sha256": "9f8210934d9e12f9edc1034b5dfabe2ff11d3919a0a0af32ca3dfdaa438c8891"
+    },
+    {
+      "name": "lab-apply-prepared-offline",
+      "path": "bin/lab-apply-prepared-offline.exe",
+      "bytes": 4594176,
+      "sha256": "6246764f06d4312b46d64f0b291505b73682fcd5a5eb71ecff61b946041efca3"
+    }
+  ],
+  "gates": [
+    {
+      "key": "normalSharedRetainedExtents",
+      "status": "passed",
+      "passed": true,
+      "actual_case_observed": true,
+      "case_reference": "PUBLIC-fresh-actual-once-53fd90305b494528889f76fcce5c5f11",
+      "evidence_path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\normalSharedRetainedExtents.json",
+      "evidence_sha256": "cd75731472a65b2218326ea8c5c3d806fc5f092ea3a68ef2f9f6f3689f60a5bf"
+    },
+    {
+      "key": "interruptedResume",
+      "status": "passed",
+      "passed": true,
+      "actual_case_observed": true,
+      "case_reference": "AP-RESUME-a3ba1f3-case-admission-a13ba6bffb4f43ffa78c220d4dc42d40",
+      "evidence_path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\interruptedResume.json",
+      "evidence_sha256": "0273f155907fca86ee5c17f845a0381dbca0bd31147b82de92e264874315936f"
+    },
+    {
+      "key": "interruptedRollback",
+      "status": "passed",
+      "passed": true,
+      "actual_case_observed": true,
+      "case_reference": "AP-ROLLBACK-a3ba1f3-case-admission-a95c0597828d4ed28b5442ea6a9e63d0",
+      "evidence_path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\interruptedRollback.json",
+      "evidence_sha256": "e7135fc2c96d5807b35148e7f8101aa426769df7d59775286107e316a3bbe724"
+    },
+    {
+      "key": "nativeMutationReboot",
+      "status": "passed",
+      "passed": true,
+      "actual_case_observed": true,
+      "case_reference": "PUBLIC-fresh-actual-once-53fd90305b494528889f76fcce5c5f11",
+      "evidence_path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\nativeMutationReboot.json",
+      "evidence_sha256": "8404962f4dd65c171c247e728bc95563f83954cf8b00e241a115cbab033fbb8d"
+    },
+    {
+      "key": "boundedResources",
+      "status": "passed",
+      "passed": true,
+      "actual_case_observed": true,
+      "case_reference": "FINAL-a3-three-actual-case-runtime-bounds",
+      "evidence_path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\boundedResources.json",
+      "evidence_sha256": "6b48557a491a02450b4e57798672fd5d603eae28314069bb27444ec2680e7afe"
+    }
+  ],
+  "behavior_observations": {
+    "normalSharedRetainedExtents": {
+      "schema_version": 1,
+      "kind": "shared-offline-alpha-gate-observation",
+      "passed": true,
+      "actual_case_observed": true,
+      "observational_only": true,
+      "inherited_qualification": false,
+      "grants_runtime_authority": false,
+      "source_commit": "a3ba1f30b2428fcfb7975220d7b400b3c4c54be9",
+      "source_tree": "ebf0968538323b04573172451595f59f83bf361d",
+      "build_manifest_sha256": "8dcf646e25924527d30967d2975d7b8affd6bdf9463c27ccf9707e0b2490874c",
+      "public_layout_sha256": "2fb8215834d45aad3857b928d095e12c829a98dfdba120e856aae957c407908c",
+      "public_binary_sha256": "160f64460edb4857837063c64508d0381ef8f571535f5ad8984fa429dd660379",
+      "cold_binary_sha256": "6246764f06d4312b46d64f0b291505b73682fcd5a5eb71ecff61b946041efca3",
+      "source_binding": {
+        "disk_number": 0,
+        "partition_number": 6,
+        "partition_guid": "4310d74c-614f-435b-9cf1-7ff664391590",
+        "partition_offset_bytes": 68719476736,
+        "partition_length_bytes": 55834574848
+      },
+      "case_reference": "PUBLIC-fresh-actual-once-53fd90305b494528889f76fcce5c5f11",
+      "gate_key": "normalSharedRetainedExtents",
+      "native_exit_code": 0,
+      "terminal_state": "HND",
+      "one_command_public_run": true,
+      "same_partition_conversion": true,
+      "retained_extents_verified": true,
+      "original_source8_verified": true,
+      "source_physical_disk_shared_with_running_windows": true,
+      "closed_lifecycle_verified": true,
+      "normal_windows_boot_observed": true,
+      "prepared_bundle_sha256": "2d01853cd9f8cd3419b3ec2190502cd20ab5d7a59f075e7097b03b9a6c80d46a",
+      "bootstrap_sha256": "80cc84cd593a58b47cb7a5d5a1cece9eab73a2a4c7df471c67131319144abf6e",
+      "image_record_sha256": "c3d224958d7b27170048a7853aff7d36a650ecfabb17730f284fba1f47427bfa",
+      "boot_intent_sha256": "750c4d5621455d569f9e74f665aa7546d7f329f4f100ef0bae222ad36b000043",
+      "journal_immutable_sha256": "8251d58f61dd2373f9d51ae65f76b41b7df1b979e54fba683066181e95ec3fc4",
+      "journal_index_sha256": "b308d5ab89112a30c0b1c155b355e0898cfa61a8cf618f0a6829fca4d6d9b842",
+      "journal_native_identity": {
+        "disk_bytes": 8589934592,
+        "disk_guid": [
+          19,
+          198,
+          252,
+          9,
+          194,
+          184,
+          26,
+          74,
+          136,
+          51,
+          34,
+          111,
+          147,
+          153,
+          190,
+          127
+        ],
+        "file_id_128": [
+          11,
+          6,
+          0,
+          0,
+          0,
+          0,
+          5,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "logical_sector_bytes": 512,
+        "partition_bytes": 8556380160,
+        "partition_guid": [
+          37,
+          42,
+          219,
+          139,
+          26,
+          156,
+          50,
+          65,
+          161,
+          252,
+          11,
+          70,
+          84,
+          21,
+          61,
+          59
+        ],
+        "partition_number": 2,
+        "partition_offset": 16777216,
+        "physical_sector_bytes": 4096,
+        "volume_guid": [
+          37,
+          42,
+          219,
+          139,
+          26,
+          156,
+          50,
+          65,
+          161,
+          252,
+          11,
+          70,
+          84,
+          21,
+          61,
+          59
+        ],
+        "volume_serial_number": 9250070551590475566
+      },
+      "supporting_evidence": [
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\support\\00-conversion-terminal-result.json",
+          "bytes": 3894,
+          "sha256": "d5fceff820a6e003c781d35c84b0f81c4735e516fe8bd350a19884a25ad06073"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\support\\01-windows-prepared-offline-apply-bundle.json",
+          "bytes": 34712,
+          "sha256": "2d01853cd9f8cd3419b3ec2190502cd20ab5d7a59f075e7097b03b9a6c80d46a"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\support\\02-recovery.json",
+          "bytes": 6706,
+          "sha256": "b2bd2273cebc8243b5c80ce72935735cf2419389e2e3a93dd82df3babb5adc04"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\support\\03-n2r-bootstrap.json",
+          "bytes": 2579,
+          "sha256": "80cc84cd593a58b47cb7a5d5a1cece9eab73a2a4c7df471c67131319144abf6e"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\support\\04-recovery-image-built.json",
+          "bytes": 11887,
+          "sha256": "c3d224958d7b27170048a7853aff7d36a650ecfabb17730f284fba1f47427bfa"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\support\\05-recovery-boot-guard-intent.json",
+          "bytes": 19672,
+          "sha256": "750c4d5621455d569f9e74f665aa7546d7f329f4f100ef0bae222ad36b000043"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\support\\06-actual-cold-boot-guard.json",
+          "bytes": 1725,
+          "sha256": "5238149aad7435dc513bfc673d6c626c351ab52ca815304a9d68d0b4d3942f79"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\support\\07-native-process.json",
+          "bytes": 762,
+          "sha256": "10eef09707ebf13cbb144f5890f8df3312d8028d2c3f398339f0c0e5c451997e"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\support\\08-native-terminal.json",
+          "bytes": 481,
+          "sha256": "d4ad0011c808ca125b5416857ac32bd901eb8af223279598f82317b515a93f50"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\support\\09-stdin-closed.json",
+          "bytes": 172,
+          "sha256": "f350234eb735415ee82b4b02cc07f3f0459570b1db826cf1c4348f786746e35d"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\support\\10-worker-result.json",
+          "bytes": 236,
+          "sha256": "4d7daa467756cee483f67dffbc2c12c231f98154ef295a62a5d33badb788e9c5"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\support\\11-fresh-before.json",
+          "bytes": 43496,
+          "sha256": "bf27bc094c52347e17da520ce03ab1bf5e1d4cce564e24b8f281a701ab40a6d4"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\support\\12-fresh-Source8-After.json",
+          "bytes": 11932,
+          "sha256": "8391c96439168c450d0741e6dec3a6529b560cb8ccce6b5a857ca6812c1cd22b"
+        }
+      ],
+      "observation_details": {
+        "actual_native_bytes_written": 203337728,
+        "readonly_native_metadata_objects": 16,
+        "retained_map_bindings": 16,
+        "retention_counter_scope": "SDK binding records, not a count of physical payload extents",
+        "public_pid": 5788,
+        "public_birth_ms": 1793986252900,
+        "producer_windows_boot_ms": 1793984680106,
+        "normal_windows_boot_ms": 1793986656740,
+        "archive_manifest_path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ARCHIVED-a3-NORMAL-HND-0586590d5b784583a90ba8be75ac2043\\manifest.json",
+        "archive_manifest_sha256": "751c0e78651585df034587f271cc714075286030944e85b80f374d0b23317e98"
+      }
+    },
+    "interruptedResume": {
+      "schema_version": 1,
+      "kind": "shared-offline-alpha-gate-observation",
+      "passed": true,
+      "actual_case_observed": true,
+      "observational_only": true,
+      "inherited_qualification": false,
+      "grants_runtime_authority": false,
+      "source_commit": "a3ba1f30b2428fcfb7975220d7b400b3c4c54be9",
+      "source_tree": "ebf0968538323b04573172451595f59f83bf361d",
+      "build_manifest_sha256": "8dcf646e25924527d30967d2975d7b8affd6bdf9463c27ccf9707e0b2490874c",
+      "public_layout_sha256": "2fb8215834d45aad3857b928d095e12c829a98dfdba120e856aae957c407908c",
+      "public_binary_sha256": "160f64460edb4857837063c64508d0381ef8f571535f5ad8984fa429dd660379",
+      "cold_binary_sha256": "6246764f06d4312b46d64f0b291505b73682fcd5a5eb71ecff61b946041efca3",
+      "source_binding": {
+        "disk_number": 0,
+        "partition_number": 6,
+        "partition_guid": "4310d74c-614f-435b-9cf1-7ff664391590",
+        "partition_offset_bytes": 68719476736,
+        "partition_length_bytes": 55834574848
+      },
+      "gate_key": "interruptedResume",
+      "case_reference": "AP-RESUME-a3ba1f3-case-admission-a13ba6bffb4f43ffa78c220d4dc42d40",
+      "controlled_pause_nonce": "923766aab058c3654f076dc508f5b678483e064ec4dbd5883fd0c8db66220d4a",
+      "supporting_evidence": [
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resume-support\\00-ready.json",
+          "bytes": 2742,
+          "sha256": "63ad9d4814109b336a2e60f86f2beab8a12c93bf0127d707eee23fd5d0df7fd5"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resume-support\\01-conversion-terminal-result.json",
+          "bytes": 3829,
+          "sha256": "f7e2e4b5dd849b084427d771e2fd545c10117acb79b0d07169d6bb4aa262f45a"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resume-support\\02-actual-cold-boot-guard.json",
+          "bytes": 1720,
+          "sha256": "820cacc60e6d31d923de3bbbc3689733f422ac055de753aca4af96fa0f1393ce"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resume-support\\03-windows-prepared-offline-apply-bundle.json",
+          "bytes": 32603,
+          "sha256": "45bdbaedbe9746c583162850e36265f6a5684d7f948a5c08e020afad55272dec"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resume-support\\04-offline-request.json",
+          "bytes": 3965,
+          "sha256": "376fb2be890e312b5e747f2a98c0624e9eef5b9f03e5000f557912179bf87a56"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resume-support\\05-n2r-bootstrap.json",
+          "bytes": 3965,
+          "sha256": "376fb2be890e312b5e747f2a98c0624e9eef5b9f03e5000f557912179bf87a56"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resume-support\\06-recovery-image-built.json",
+          "bytes": 9603,
+          "sha256": "a90bb129d42ca3d379026c3edd625ee09ec2e7e730fbe5e3c55e611a1c973905"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resume-support\\07-mounted-SAN3-startup-verified.json",
+          "bytes": 513,
+          "sha256": "d5169fee1615fc88518b7f5ab3e393bac9911d2a678feaef6dc8aad600428161"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resume-support\\08-recovery-boot-guard-intent.json",
+          "bytes": 17359,
+          "sha256": "e09966706d963a295e410588a6c3c78a1b68348cc0ecb4e2c53a3036d09d4837"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resume-support\\09-fresh-Source8-Before.json",
+          "bytes": 43496,
+          "sha256": "24954e178a4f29092027656a3dc68538e7a4dfcfd430ce0489e97fe11bf6c4ec"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resume-support\\10-fresh-Source8-After.json",
+          "bytes": 11871,
+          "sha256": "00872a5eb00a0dc015bbeee032f7b22a1c3a5ee7484b11f213200649d0aa1457"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resume-support\\11-recovery.json",
+          "bytes": 6420,
+          "sha256": "941fc97d46b536b40d0f0d092dbfcc1a59c7c7374135a9aa7cb3fbf8588968d8"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resume-support\\12-ACTUAL-ONE-postflush-hardcut-Off-RAM0.json",
+          "bytes": 248,
+          "sha256": "3f72c5d0dc99d16e98ab1d24e978c3181dc2f4e89c2bdbb9e5fa7b3779d88fee"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resume-support\\13-ACTUAL-ONE-unchanged-normal-Start-after-real-cut.json",
+          "bytes": 220,
+          "sha256": "3fe85d8ab37aec8a672becb000cc34c43c48669857b86bc95e96fb1c0161e5af"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resume-support\\14-ACTUAL-ONE-current-AP-prompt-R-key-return.json",
+          "bytes": 202,
+          "sha256": "6c40b2db0f98b8323b95dc2eaf8e5321b476a30bbb9d96b7b4c75e7dd2e5b7fc"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resume-support\\15-BEFORE-ONE-actual-current-AP-prompt-R.json",
+          "bytes": 745,
+          "sha256": "d518326851d0ae59265fd027ab60f7baf29c758a8a4046b52b226e409caa70ea"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resume-support\\16-APR-a3-positive-postflush-watch-003.json",
+          "bytes": 759,
+          "sha256": "a0c0f38c06d6bb652a8cd5c6209905149fc4412271e550f907d5154fb450700a"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resume-support\\17-APR-a3-unchanged-restart-protection-prompt-004.json",
+          "bytes": 781,
+          "sha256": "3dc2622528ef46cb84ee0da0b74b606819fc970b3514652728a0f3280c7637c2"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resume-support\\18-APR-a3-after-ONE-R-watch-007.json",
+          "bytes": 745,
+          "sha256": "f1c9d912619bed98509692764f6522c9298f7dd95424a161eeb8ebdf35478880"
+        }
+      ],
+      "independent_interrupted_case": true,
+      "positive_ap_writes_before_discovery": true,
+      "flush_and_pending_readback_succeeded": true,
+      "native_writer_revalidation_succeeded": true,
+      "discovery_write_not_requested": true,
+      "actual_restart_observed": true,
+      "source_exclusion_after_restart_verified": true,
+      "original_source_and_journal_identities_retained": true,
+      "closed_lifecycle_verified": true,
+      "original_source8_verified": true,
+      "normal_windows_boot_observed": true,
+      "snapshot_restored_after_interruption": false,
+      "native_bytes_written_before_discovery": 203403264,
+      "delayed_discovery_bytes": 4096,
+      "recovery_choice": "R",
+      "terminal_state": "HND",
+      "native_exit_code": 0,
+      "prepared_bundle_sha256": "45bdbaedbe9746c583162850e36265f6a5684d7f948a5c08e020afad55272dec",
+      "bootstrap_sha256": "376fb2be890e312b5e747f2a98c0624e9eef5b9f03e5000f557912179bf87a56",
+      "image_record_sha256": "a90bb129d42ca3d379026c3edd625ee09ec2e7e730fbe5e3c55e611a1c973905",
+      "boot_intent_sha256": "e09966706d963a295e410588a6c3c78a1b68348cc0ecb4e2c53a3036d09d4837",
+      "journal_immutable_sha256": "336a42569da312afcc5608c4372792e253c75bda1b2447c7bf51a683c9f1099d",
+      "journal_index_sha256": "2a9fad4757dc57a4a1094adfab691171cfae9db80987a8dd5e26cb713ac3dbec",
+      "journal_native_identity": {
+        "disk_bytes": 8589934592,
+        "disk_guid": [
+          19,
+          198,
+          252,
+          9,
+          194,
+          184,
+          26,
+          74,
+          136,
+          51,
+          34,
+          111,
+          147,
+          153,
+          190,
+          127
+        ],
+        "file_id_128": [
+          119,
+          7,
+          0,
+          0,
+          0,
+          0,
+          6,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "logical_sector_bytes": 512,
+        "partition_bytes": 8556380160,
+        "partition_guid": [
+          37,
+          42,
+          219,
+          139,
+          26,
+          156,
+          50,
+          65,
+          161,
+          252,
+          11,
+          70,
+          84,
+          21,
+          61,
+          59
+        ],
+        "partition_number": 2,
+        "partition_offset": 16777216,
+        "physical_sector_bytes": 4096,
+        "volume_guid": [
+          37,
+          42,
+          219,
+          139,
+          26,
+          156,
+          50,
+          65,
+          161,
+          252,
+          11,
+          70,
+          84,
+          21,
+          61,
+          59
+        ],
+        "volume_serial_number": 9250070551590475566
+      },
+      "observation_details": {
+        "first_non_discovery_write_bytes": 203403264,
+        "resume_invocation_native_write_bytes": 4096,
+        "readonly_native_metadata_objects": 16,
+        "retained_map_bindings": 16,
+        "retention_counter_scope": "SDK bindings, not count of physical payload extents",
+        "new_normal_windows_boot_ms": 1793988919996,
+        "producer_windows_boot_ms": 1793986906003,
+        "sealed_original_runner_used": true,
+        "updated_helper_used": false,
+        "operator_repair_used": false,
+        "first_write_qualified": false,
+        "physical_power_loss_qualified": false,
+        "hook_flags_preserved_from_raw_ready": true,
+        "native_exit_code_evidence": "Sealed image startup requests automatic normal reboot only after runner returns zero; native closed-HND terminal plus automatic Windows return observed; not a direct PE process handle observation.",
+        "native_exit_code_rule_source": "D:\\code\\ntfs2refs\\crates\\n2r-win32\\src\\native\\recovery_image.rs:450",
+        "original_request_sha256": "376fb2be890e312b5e747f2a98c0624e9eef5b9f03e5000f557912179bf87a56",
+        "archive_manifest_path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ARCHIVED-a3-AP-RESUME-54db90b6d6bb4f5b963fb7aa77ce9015\\manifest.json",
+        "archive_manifest_sha256": "687674752834e27f522aac69d57e1795b81dce2952b0a2d4cc3ac046736fd110",
+        "ready_sha256": "63ad9d4814109b336a2e60f86f2beab8a12c93bf0127d707eee23fd5d0df7fd5",
+        "terminal_sha256": "f7e2e4b5dd849b084427d771e2fd545c10117acb79b0d07169d6bb4aa262f45a",
+        "strict_source8_sha256": "00872a5eb00a0dc015bbeee032f7b22a1c3a5ee7484b11f213200649d0aa1457"
+      }
+    },
+    "interruptedRollback": {
+      "schema_version": 1,
+      "kind": "shared-offline-alpha-gate-observation",
+      "passed": true,
+      "actual_case_observed": true,
+      "observational_only": true,
+      "inherited_qualification": false,
+      "grants_runtime_authority": false,
+      "source_commit": "a3ba1f30b2428fcfb7975220d7b400b3c4c54be9",
+      "source_tree": "ebf0968538323b04573172451595f59f83bf361d",
+      "build_manifest_sha256": "8dcf646e25924527d30967d2975d7b8affd6bdf9463c27ccf9707e0b2490874c",
+      "public_layout_sha256": "2fb8215834d45aad3857b928d095e12c829a98dfdba120e856aae957c407908c",
+      "public_binary_sha256": "160f64460edb4857837063c64508d0381ef8f571535f5ad8984fa429dd660379",
+      "cold_binary_sha256": "6246764f06d4312b46d64f0b291505b73682fcd5a5eb71ecff61b946041efca3",
+      "source_binding": {
+        "disk_number": 0,
+        "partition_number": 6,
+        "partition_guid": "4310d74c-614f-435b-9cf1-7ff664391590",
+        "partition_offset_bytes": 68719476736,
+        "partition_length_bytes": 55834574848
+      },
+      "gate_key": "interruptedRollback",
+      "case_reference": "AP-ROLLBACK-a3ba1f3-case-admission-a95c0597828d4ed28b5442ea6a9e63d0",
+      "controlled_pause_nonce": "b2b287a8cb6b71fa71d0986b67ac9f2e77d3ca4bd9f3f688a48c9b5636611387",
+      "supporting_evidence": [
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\rollback-support\\00-ready.json",
+          "bytes": 2748,
+          "sha256": "091f2f025a19a2a88fb91a9953ed3a0dfc9d0c5b30d879cb3de9c63d90499cd9"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\rollback-support\\01-conversion-terminal-result.json",
+          "bytes": 3830,
+          "sha256": "fb818b223661a609d8397a2206ea7aff5136d8be7c0960b4c843a6c1a205aa6a"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\rollback-support\\02-actual-cold-boot-guard.json",
+          "bytes": 1739,
+          "sha256": "a56df78ea2a6dbabcb6649ebcda053552d90594629d171cee2a37d86fd09a726"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\rollback-support\\03-windows-prepared-offline-apply-bundle.json",
+          "bytes": 32607,
+          "sha256": "f92f46c9948888f1b6ef9929eaa5efa2b0abcc7246d49fbff13df5707a05eed5"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\rollback-support\\04-offline-request.json",
+          "bytes": 3965,
+          "sha256": "f2e1d313768961604a4f9041a64120cd5eb636bbde1d0151a8f452f06c3b6ba6"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\rollback-support\\05-n2r-bootstrap.json",
+          "bytes": 3965,
+          "sha256": "f2e1d313768961604a4f9041a64120cd5eb636bbde1d0151a8f452f06c3b6ba6"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\rollback-support\\06-recovery-image-built.json",
+          "bytes": 9588,
+          "sha256": "89f663dc062887585563378b15e16196f9090fa1186878cd3d84f1c8f802f2c1"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\rollback-support\\07-mounted-SAN3-startup-verified.json",
+          "bytes": 513,
+          "sha256": "fbc2a04507471eb4bdd35c2306ee765cbb7c38fb921aa6fd797f58eba0988fe2"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\rollback-support\\08-recovery-boot-guard-intent.json",
+          "bytes": 17364,
+          "sha256": "eb0e76aecec1caef1b667191729e64ecbc5b623d0ad1fe699df43b0fce00829e"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\rollback-support\\09-fresh-Source8-Before.json",
+          "bytes": 43487,
+          "sha256": "350b4fd290c5160b4450935c79039b1e18fc4252028d88421c4e334c21a9c9a1"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\rollback-support\\10-fresh-Source8-After-rollback.json",
+          "bytes": 12066,
+          "sha256": "229ab3e4596424b740813068501a6a2d26765f5ad1dd30c634f1ed01b444c2dc"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\rollback-support\\11-recovery.json",
+          "bytes": 6422,
+          "sha256": "10ee96ebc8fcd149827c0320e73ecc1966437c081d626ae6cf17bc89536706dc"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\rollback-support\\12-ACTUAL-ONE-postflush-hardcut-Off-RAM0.json",
+          "bytes": 248,
+          "sha256": "ea84a85440b9b31998d3dfd28b45d7f092d2c0a79b9c0845db4b5dacf1275b52"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\rollback-support\\13-ACTUAL-ONE-unchanged-normal-Start-after-real-cut.json",
+          "bytes": 220,
+          "sha256": "1d7bab23405140904ed68840f1bf472ebc4d1c7c7700768709d47c80668342fd"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\rollback-support\\14-ACTUAL-ONE-current-AP-prompt-B-key-return.json",
+          "bytes": 202,
+          "sha256": "4cbaeb73c8c6100c405a177d0de60d0095dd3fd6d43e6c31dfcaa6fcb8d94d21"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\rollback-support\\15-BEFORE-ONE-actual-current-AP-prompt-B.json",
+          "bytes": 747,
+          "sha256": "97923878f52480ab7bacae24deebf5e0545a15443d1c5b8421e36f8bd1ba37ce"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\rollback-support\\16-APB-a3-positive-postflush-watch-002.json",
+          "bytes": 763,
+          "sha256": "b011510cfec9b3166c04239b3f024451b35a16a8caa9a4d598f009429d767929"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\rollback-support\\17-APB-a3-unchanged-restart-protection-prompt-003.json",
+          "bytes": 785,
+          "sha256": "4465c35965239ae35c02e22c78c980c1f19f982f98ee9232fadfd6610ea61fd8"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\rollback-support\\18-APB-a3-after-ONE-B-watch-005.json",
+          "bytes": 749,
+          "sha256": "7600e28fb38aeeb1d2b80038f0c26a7a05f6d05cceeb87c7045735d36bdb893c"
+        }
+      ],
+      "independent_interrupted_case": true,
+      "positive_ap_writes_before_discovery": true,
+      "flush_and_pending_readback_succeeded": true,
+      "native_writer_revalidation_succeeded": true,
+      "discovery_write_not_requested": true,
+      "actual_restart_observed": true,
+      "source_exclusion_after_restart_verified": true,
+      "original_source_and_journal_identities_retained": true,
+      "closed_lifecycle_verified": true,
+      "original_source8_verified": true,
+      "normal_windows_boot_observed": true,
+      "snapshot_restored_after_interruption": false,
+      "native_bytes_written_before_discovery": 203354112,
+      "delayed_discovery_bytes": 4096,
+      "recovery_choice": "B",
+      "terminal_state": "ABT",
+      "native_exit_code": 0,
+      "prepared_bundle_sha256": "f92f46c9948888f1b6ef9929eaa5efa2b0abcc7246d49fbff13df5707a05eed5",
+      "bootstrap_sha256": "f2e1d313768961604a4f9041a64120cd5eb636bbde1d0151a8f452f06c3b6ba6",
+      "image_record_sha256": "89f663dc062887585563378b15e16196f9090fa1186878cd3d84f1c8f802f2c1",
+      "boot_intent_sha256": "eb0e76aecec1caef1b667191729e64ecbc5b623d0ad1fe699df43b0fce00829e",
+      "journal_immutable_sha256": "8207862e8459d266b717ae1ad35e6b77921b9f39b8fb7b37f42958d538277db5",
+      "journal_index_sha256": "d027589b9154c8cf6c8003e09bf8484a98aac1f19b1355cd5eef4e38f41895d6",
+      "journal_native_identity": {
+        "disk_bytes": 8589934592,
+        "disk_guid": [
+          19,
+          198,
+          252,
+          9,
+          194,
+          184,
+          26,
+          74,
+          136,
+          51,
+          34,
+          111,
+          147,
+          153,
+          190,
+          127
+        ],
+        "file_id_128": [
+          240,
+          8,
+          0,
+          0,
+          0,
+          0,
+          7,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "logical_sector_bytes": 512,
+        "partition_bytes": 8556380160,
+        "partition_guid": [
+          37,
+          42,
+          219,
+          139,
+          26,
+          156,
+          50,
+          65,
+          161,
+          252,
+          11,
+          70,
+          84,
+          21,
+          61,
+          59
+        ],
+        "partition_number": 2,
+        "partition_offset": 16777216,
+        "physical_sector_bytes": 4096,
+        "volume_guid": [
+          37,
+          42,
+          219,
+          139,
+          26,
+          156,
+          50,
+          65,
+          161,
+          252,
+          11,
+          70,
+          84,
+          21,
+          61,
+          59
+        ],
+        "volume_serial_number": 9250070551590475566
+      },
+      "observation_details": {
+        "first_non_discovery_write_bytes": 203354112,
+        "rollback_invocation_native_write_bytes": 203354112,
+        "readonly_native_metadata_objects": 0,
+        "retained_map_bindings": 0,
+        "rollback_is_not_a_ReFS_retention_claim": true,
+        "original_NTFS_user_file_ids_and_serials_compared": true,
+        "original_NTFS_VBR512_compared": true,
+        "new_normal_windows_boot_ms": 1793990778008,
+        "producer_windows_boot_ms": 1793988919996,
+        "sealed_original_runner_used": true,
+        "updated_helper_used": false,
+        "operator_repair_used": false,
+        "first_write_qualified": false,
+        "physical_power_loss_qualified": false,
+        "hook_flags_preserved_from_raw_ready": true,
+        "native_exit_code_evidence": "Sealed image startup requests automatic normal reboot only after runner returns zero; native closed-ABT terminal plus automatic Windows return observed; not a direct PE process handle observation.",
+        "native_exit_code_rule_source": "D:\\code\\ntfs2refs\\crates\\n2r-win32\\src\\native\\recovery_image.rs:450",
+        "original_request_sha256": "f2e1d313768961604a4f9041a64120cd5eb636bbde1d0151a8f452f06c3b6ba6",
+        "archive_manifest_path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ARCHIVED-a3-AP-ROLLBACK-42cc2b3a53ef492a83e0ce78ce9ed5b2\\manifest.json",
+        "archive_manifest_sha256": "c787a604c91570cea1fc12c9e14c0799ded2ad2c1f31f87c477162d630f9aaee",
+        "ready_sha256": "091f2f025a19a2a88fb91a9953ed3a0dfc9d0c5b30d879cb3de9c63d90499cd9",
+        "terminal_sha256": "fb818b223661a609d8397a2206ea7aff5136d8be7c0960b4c843a6c1a205aa6a",
+        "strict_source8_sha256": "229ab3e4596424b740813068501a6a2d26765f5ad1dd30c634f1ed01b444c2dc"
+      }
+    },
+    "nativeMutationReboot": {
+      "schema_version": 1,
+      "kind": "shared-offline-alpha-gate-observation",
+      "passed": true,
+      "actual_case_observed": true,
+      "observational_only": true,
+      "inherited_qualification": false,
+      "grants_runtime_authority": false,
+      "source_commit": "a3ba1f30b2428fcfb7975220d7b400b3c4c54be9",
+      "source_tree": "ebf0968538323b04573172451595f59f83bf361d",
+      "build_manifest_sha256": "8dcf646e25924527d30967d2975d7b8affd6bdf9463c27ccf9707e0b2490874c",
+      "public_layout_sha256": "2fb8215834d45aad3857b928d095e12c829a98dfdba120e856aae957c407908c",
+      "public_binary_sha256": "160f64460edb4857837063c64508d0381ef8f571535f5ad8984fa429dd660379",
+      "cold_binary_sha256": "6246764f06d4312b46d64f0b291505b73682fcd5a5eb71ecff61b946041efca3",
+      "source_binding": {
+        "disk_number": 0,
+        "partition_number": 6,
+        "partition_guid": "4310d74c-614f-435b-9cf1-7ff664391590",
+        "partition_offset_bytes": 68719476736,
+        "partition_length_bytes": 55834574848
+      },
+      "case_reference": "PUBLIC-fresh-actual-once-53fd90305b494528889f76fcce5c5f11",
+      "gate_key": "nativeMutationReboot",
+      "native_mutation_verified": true,
+      "ordinary_reboot_observed": true,
+      "mutation_persisted_after_reboot": true,
+      "original_source8_verified_after_reboot": true,
+      "mutated_or_created_files": 513,
+      "supporting_evidence": [
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\support\\00-conversion-terminal-result.json",
+          "bytes": 3894,
+          "sha256": "d5fceff820a6e003c781d35c84b0f81c4735e516fe8bd350a19884a25ad06073"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\support\\12-fresh-Source8-After.json",
+          "bytes": 11932,
+          "sha256": "8391c96439168c450d0741e6dec3a6529b560cb8ccce6b5a857ca6812c1cd22b"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\support\\13-mutation-Create.json",
+          "bytes": 49920,
+          "sha256": "e6ffe9d548e1d75d049ab750694e2e208e16255f0345a734fa338a93586db218"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\support\\14-mutation-Verify.json",
+          "bytes": 49921,
+          "sha256": "b06d25da715ab7e06c470cbfde894a88884c46efcbaee54783383ef69bc5e83e"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\support\\15-fresh-Source8-After-mutation-reboot.json",
+          "bytes": 11932,
+          "sha256": "f13eadb4146e68a04a56e4a5e4cb94f7d04b3fcb3b60400f5f0c593ffaa4cfd2"
+        },
+        {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\support\\16-000-shared-D6-mutation-eb7e8684eacb4f0eae54a4d680b920a2.json",
+          "bytes": 352476,
+          "sha256": "056f7f3265014f79e73013ced6a99d73c6d689556f8236c66c28e78ddf83a35d"
+        }
+      ],
+      "observation_details": {
+        "creation_boot_ms": 1793986656740,
+        "verified_later_boot_ms": 1793986906003,
+        "mutation_manifest_sha256": "056f7f3265014f79e73013ced6a99d73c6d689556f8236c66c28e78ddf83a35d",
+        "original_source_files_written": false,
+        "physical_allocation_reuse_proven": false,
+        "security_scope": "owner/group/DACL; no SACL claim"
+      }
+    }
+  },
+  "resource_observation": {
+    "schema_version": 1,
+    "kind": "shared-offline-alpha-gate-observation",
+    "passed": true,
+    "actual_case_observed": true,
+    "observational_only": true,
+    "inherited_qualification": false,
+    "grants_runtime_authority": false,
+    "source_commit": "a3ba1f30b2428fcfb7975220d7b400b3c4c54be9",
+    "source_tree": "ebf0968538323b04573172451595f59f83bf361d",
+    "build_manifest_sha256": "8dcf646e25924527d30967d2975d7b8affd6bdf9463c27ccf9707e0b2490874c",
+    "public_layout_sha256": "2fb8215834d45aad3857b928d095e12c829a98dfdba120e856aae957c407908c",
+    "public_binary_sha256": "160f64460edb4857837063c64508d0381ef8f571535f5ad8984fa429dd660379",
+    "cold_binary_sha256": "6246764f06d4312b46d64f0b291505b73682fcd5a5eb71ecff61b946041efca3",
+    "source_binding": {
+      "disk_number": 0,
+      "partition_number": 6,
+      "partition_guid": "4310d74c-614f-435b-9cf1-7ff664391590",
+      "partition_offset_bytes": 68719476736,
+      "partition_length_bytes": 55834574848
+    },
+    "gate_key": "boundedResources",
+    "case_reference": "FINAL-a3-three-actual-case-runtime-bounds",
+    "all_required_case_resources_observed": true,
+    "all_lab_shared_cache_and_staging_charged": true,
+    "runtime_budget_respected": true,
+    "scratch_budget_respected": true,
+    "epoch_reset": false,
+    "global_epoch_baseline_bytes": 279374052988,
+    "maximum_actual_bytes": 329374052988,
+    "minimum_host_free_bytes": 17179869184,
+    "observed_peak_working_set_bytes": 144375808,
+    "admitted_ram_bytes": 1828327424,
+    "admitted_scratch_bytes": 4054411724,
+    "observed_maximum_actual_bytes": 229808126545,
+    "observed_minimum_host_free_bytes": 172242845696,
+    "host_observation_scope": "recorded qualifying admission and final census samples; not continuous extrema",
+    "ram_measurement_scope": "Windows-native-process-only",
+    "cold_aggregate_ram_peak_measured": false,
+    "observed_cold_aggregate_ram_peak_bytes": null,
+    "os_kernel_memory_quota_claimed": false,
+    "physical_scratch_peak_measured": false,
+    "scratch_peak_measured": false,
+    "observed_scratch_peak_bytes": null,
+    "runtime_bound_method": "aggregate_artifact_reservations_and_named_staging_image_limits_v1",
+    "scratch_accounting_scope": "per-phase aggregate reservations plus separately named staging and recovery-image limits; no physical peak claim",
+    "fixed_guest_memory_bytes": 4294967296,
+    "case_resources": [
+      {
+        "gate_key": "normalSharedRetainedExtents",
+        "case_reference": "PUBLIC-fresh-actual-once-53fd90305b494528889f76fcce5c5f11",
+        "upfront_budget_reported": true,
+        "all_native_actors_closed": true,
+        "case_complete": true,
+        "source_and_core_reservations_enforced": true,
+        "staging_allocation_limit_enforced": true,
+        "image_growth_and_free_floor_checked": true,
+        "separate_named_staging_and_image_limits": true,
+        "cold_arena_reservations_enforced": true,
+        "journal_profile_is_inside_core_reservation": true,
+        "native_report_memory_leases_share_arena_ram": true,
+        "scratch_peak_measured": false,
+        "admitted_ram_bytes": 1942831104,
+        "prepare_arena_scratch_bytes": 1373749248,
+        "source_scratch_bytes": 171718656,
+        "core_arena_scratch_bytes": 1202030592,
+        "maximum_staging_allocation_bytes": 703897600,
+        "image_working_bytes": 1876126156,
+        "prepare_minimum_free_bytes": 2628020057,
+        "recovery_minimum_free_bytes": 726359437,
+        "independent_journal_free_before_bytes": 4781563904,
+        "maximum_evidence_bytes": 8511488,
+        "pause_evidence_bytes": 0,
+        "cold_total_ram_bytes": 1942831104,
+        "cold_arena_scratch_bytes": 556748800,
+        "cold_minimum_free_bytes": 726359437,
+        "budget_reference": {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\00-budget_reference.json",
+          "bytes": 4998,
+          "sha256": "1d4b7165e2d1f212acddd7c0d8ad7656b605efb00af147cb695861a253838572"
+        },
+        "capacity_reference": {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\00-capacity_reference.json",
+          "bytes": 924,
+          "sha256": "f481ed2bf7a8dc18e18fabaa00ba99378cf2f83bbb0074dc12f5f8bea2911b5a"
+        },
+        "bundle_reference": {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\00-bundle_reference.json",
+          "bytes": 34712,
+          "sha256": "2d01853cd9f8cd3419b3ec2190502cd20ab5d7a59f075e7097b03b9a6c80d46a"
+        },
+        "cold_request_reference": {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\00-cold_request_reference.json",
+          "bytes": 2579,
+          "sha256": "80cc84cd593a58b47cb7a5d5a1cece9eab73a2a4c7df471c67131319144abf6e"
+        },
+        "closed_reference": {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\00-closed_reference.json",
+          "bytes": 3894,
+          "sha256": "d5fceff820a6e003c781d35c84b0f81c4735e516fe8bd350a19884a25ad06073"
+        },
+        "source8_reference": {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\00-source8_reference.json",
+          "bytes": 11932,
+          "sha256": "f13eadb4146e68a04a56e4a5e4cb94f7d04b3fcb3b60400f5f0c593ffaa4cfd2"
+        }
+      },
+      {
+        "gate_key": "interruptedResume",
+        "case_reference": "AP-RESUME-a3ba1f3-case-admission-a13ba6bffb4f43ffa78c220d4dc42d40",
+        "upfront_budget_reported": true,
+        "all_native_actors_closed": true,
+        "case_complete": true,
+        "source_and_core_reservations_enforced": true,
+        "staging_allocation_limit_enforced": true,
+        "image_growth_and_free_floor_checked": true,
+        "separate_named_staging_and_image_limits": true,
+        "cold_arena_reservations_enforced": true,
+        "journal_profile_is_inside_core_reservation": true,
+        "native_report_memory_leases_share_arena_ram": true,
+        "scratch_peak_measured": false,
+        "admitted_ram_bytes": 1828327424,
+        "prepare_arena_scratch_bytes": 1440292864,
+        "source_scratch_bytes": 180036608,
+        "core_arena_scratch_bytes": 1260256256,
+        "maximum_staging_allocation_bytes": 737992704,
+        "image_working_bytes": 1876126156,
+        "prepare_minimum_free_bytes": 2665573209,
+        "recovery_minimum_free_bytes": 761622925,
+        "independent_journal_free_before_bytes": 4922617856,
+        "maximum_evidence_bytes": 8925184,
+        "pause_evidence_bytes": 1048576,
+        "cold_total_ram_bytes": 1828327424,
+        "cold_arena_scratch_bytes": 574373888,
+        "cold_minimum_free_bytes": 761622925,
+        "budget_reference": {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\01-budget_reference.json",
+          "bytes": 2505,
+          "sha256": "a54a0f19e3b404e7c81c103309486cf383950a288328e2c04a631614b12b12c3"
+        },
+        "capacity_reference": {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\01-capacity_reference.json",
+          "bytes": 970,
+          "sha256": "173b8b4e7c7ba07f3ed0d0206fae6d9df1f2eeb0e18a7c116954255be58daa5c"
+        },
+        "bundle_reference": {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\01-bundle_reference.json",
+          "bytes": 32603,
+          "sha256": "45bdbaedbe9746c583162850e36265f6a5684d7f948a5c08e020afad55272dec"
+        },
+        "cold_request_reference": {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\01-cold_request_reference.json",
+          "bytes": 3965,
+          "sha256": "376fb2be890e312b5e747f2a98c0624e9eef5b9f03e5000f557912179bf87a56"
+        },
+        "closed_reference": {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\01-closed_reference.json",
+          "bytes": 3829,
+          "sha256": "f7e2e4b5dd849b084427d771e2fd545c10117acb79b0d07169d6bb4aa262f45a"
+        },
+        "source8_reference": {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\01-source8_reference.json",
+          "bytes": 11871,
+          "sha256": "00872a5eb00a0dc015bbeee032f7b22a1c3a5ee7484b11f213200649d0aa1457"
+        }
+      },
+      {
+        "gate_key": "interruptedRollback",
+        "case_reference": "AP-ROLLBACK-a3ba1f3-case-admission-a95c0597828d4ed28b5442ea6a9e63d0",
+        "upfront_budget_reported": true,
+        "all_native_actors_closed": true,
+        "case_complete": true,
+        "source_and_core_reservations_enforced": true,
+        "staging_allocation_limit_enforced": true,
+        "image_growth_and_free_floor_checked": true,
+        "separate_named_staging_and_image_limits": true,
+        "cold_arena_reservations_enforced": true,
+        "journal_profile_is_inside_core_reservation": true,
+        "native_report_memory_leases_share_arena_ram": true,
+        "scratch_peak_measured": false,
+        "admitted_ram_bytes": 1876844544,
+        "prepare_arena_scratch_bytes": 1359331328,
+        "source_scratch_bytes": 169916416,
+        "core_arena_scratch_bytes": 1189414912,
+        "maximum_staging_allocation_bytes": 696512512,
+        "image_working_bytes": 1876126156,
+        "prepare_minimum_free_bytes": 2621602649,
+        "recovery_minimum_free_bytes": 719151501,
+        "independent_journal_free_before_bytes": 4752732160,
+        "maximum_evidence_bytes": 8425472,
+        "pause_evidence_bytes": 1048576,
+        "cold_total_ram_bytes": 1876844544,
+        "cold_arena_scratch_bytes": 553148416,
+        "cold_minimum_free_bytes": 719151501,
+        "budget_reference": {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\02-budget_reference.json",
+          "bytes": 2505,
+          "sha256": "eaa2871ddd255cab7f981372e6850c27455248b65474d85c1a107bf10e5b6e46"
+        },
+        "capacity_reference": {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\02-capacity_reference.json",
+          "bytes": 1037,
+          "sha256": "56faaee6e684859d890f1bdf61a053a2d12c66c0bda7aa7db6893c0bb8612524"
+        },
+        "bundle_reference": {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\02-bundle_reference.json",
+          "bytes": 32607,
+          "sha256": "f92f46c9948888f1b6ef9929eaa5efa2b0abcc7246d49fbff13df5707a05eed5"
+        },
+        "cold_request_reference": {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\02-cold_request_reference.json",
+          "bytes": 3965,
+          "sha256": "f2e1d313768961604a4f9041a64120cd5eb636bbde1d0151a8f452f06c3b6ba6"
+        },
+        "closed_reference": {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\02-closed_reference.json",
+          "bytes": 3830,
+          "sha256": "fb818b223661a609d8397a2206ea7aff5136d8be7c0960b4c843a6c1a205aa6a"
+        },
+        "source8_reference": {
+          "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\02-source8_reference.json",
+          "bytes": 12066,
+          "sha256": "229ab3e4596424b740813068501a6a2d26765f5ad1dd30c634f1ed01b444c2dc"
+        }
+      }
+    ],
+    "bound_review_reference": {
+      "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\runtime-bound-review.json",
+      "bytes": 2708,
+      "sha256": "c33496bbd70499177751b4dee346abb1c766c8c1dbf4dc7f57cc480bf9f28976"
+    },
+    "supporting_evidence": [
+      {
+        "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\00-budget_reference.json",
+        "bytes": 4998,
+        "sha256": "1d4b7165e2d1f212acddd7c0d8ad7656b605efb00af147cb695861a253838572"
+      },
+      {
+        "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\00-capacity_reference.json",
+        "bytes": 924,
+        "sha256": "f481ed2bf7a8dc18e18fabaa00ba99378cf2f83bbb0074dc12f5f8bea2911b5a"
+      },
+      {
+        "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\00-bundle_reference.json",
+        "bytes": 34712,
+        "sha256": "2d01853cd9f8cd3419b3ec2190502cd20ab5d7a59f075e7097b03b9a6c80d46a"
+      },
+      {
+        "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\00-cold_request_reference.json",
+        "bytes": 2579,
+        "sha256": "80cc84cd593a58b47cb7a5d5a1cece9eab73a2a4c7df471c67131319144abf6e"
+      },
+      {
+        "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\00-closed_reference.json",
+        "bytes": 3894,
+        "sha256": "d5fceff820a6e003c781d35c84b0f81c4735e516fe8bd350a19884a25ad06073"
+      },
+      {
+        "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\00-source8_reference.json",
+        "bytes": 11932,
+        "sha256": "f13eadb4146e68a04a56e4a5e4cb94f7d04b3fcb3b60400f5f0c593ffaa4cfd2"
+      },
+      {
+        "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\01-budget_reference.json",
+        "bytes": 2505,
+        "sha256": "a54a0f19e3b404e7c81c103309486cf383950a288328e2c04a631614b12b12c3"
+      },
+      {
+        "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\01-capacity_reference.json",
+        "bytes": 970,
+        "sha256": "173b8b4e7c7ba07f3ed0d0206fae6d9df1f2eeb0e18a7c116954255be58daa5c"
+      },
+      {
+        "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\01-bundle_reference.json",
+        "bytes": 32603,
+        "sha256": "45bdbaedbe9746c583162850e36265f6a5684d7f948a5c08e020afad55272dec"
+      },
+      {
+        "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\01-cold_request_reference.json",
+        "bytes": 3965,
+        "sha256": "376fb2be890e312b5e747f2a98c0624e9eef5b9f03e5000f557912179bf87a56"
+      },
+      {
+        "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\01-closed_reference.json",
+        "bytes": 3829,
+        "sha256": "f7e2e4b5dd849b084427d771e2fd545c10117acb79b0d07169d6bb4aa262f45a"
+      },
+      {
+        "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\01-source8_reference.json",
+        "bytes": 11871,
+        "sha256": "00872a5eb00a0dc015bbeee032f7b22a1c3a5ee7484b11f213200649d0aa1457"
+      },
+      {
+        "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\02-budget_reference.json",
+        "bytes": 2505,
+        "sha256": "eaa2871ddd255cab7f981372e6850c27455248b65474d85c1a107bf10e5b6e46"
+      },
+      {
+        "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\02-capacity_reference.json",
+        "bytes": 1037,
+        "sha256": "56faaee6e684859d890f1bdf61a053a2d12c66c0bda7aa7db6893c0bb8612524"
+      },
+      {
+        "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\02-bundle_reference.json",
+        "bytes": 32607,
+        "sha256": "f92f46c9948888f1b6ef9929eaa5efa2b0abcc7246d49fbff13df5707a05eed5"
+      },
+      {
+        "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\02-cold_request_reference.json",
+        "bytes": 3965,
+        "sha256": "f2e1d313768961604a4f9041a64120cd5eb636bbde1d0151a8f452f06c3b6ba6"
+      },
+      {
+        "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\02-closed_reference.json",
+        "bytes": 3830,
+        "sha256": "fb818b223661a609d8397a2206ea7aff5136d8be7c0960b4c843a6c1a205aa6a"
+      },
+      {
+        "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\02-source8_reference.json",
+        "bytes": 12066,
+        "sha256": "229ab3e4596424b740813068501a6a2d26765f5ad1dd30c634f1ed01b444c2dc"
+      },
+      {
+        "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\runtime-bound-review.json",
+        "bytes": 2708,
+        "sha256": "c33496bbd70499177751b4dee346abb1c766c8c1dbf4dc7f57cc480bf9f28976"
+      },
+      {
+        "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\final-host-capacity.json",
+        "bytes": 780,
+        "sha256": "91d44a1db3d5e16e51daab6c68b75c53693c9b0c715096eb7dbb2a5d8626794f"
+      },
+      {
+        "path": "D:\\code\\ntfs2refs\\.lab\\development\\final-a3-observations\\resources-support\\normal-Windows-process-peak.json",
+        "bytes": 2415,
+        "sha256": "0265551c30121eb1d3694f4fdee5de339d3ade95d05e6f989c878979dfd258ab"
+      }
+    ]
+  },
+  "package_receipt": {
+    "schema_version": 1,
+    "kind": "local-shared-offline-alpha-experimental-package-receipt",
+    "shipped_binaries": [
+      "ntfs2refs.exe",
+      "ntfs2refs-recovery.exe"
+    ],
+    "cargo_package_version": "0.1.0",
+    "archive_name": "ntfs2refs-shared-offline-alpha-experimental.zip",
+    "archive_bytes": 29027652,
+    "archive_sha256": "9aefe65cfa89a4ae62a924f69784f550f5a24bdfc93f8330cbab91601e3afbc1",
+    "manifest_sha256": "141760fcde65c8489c153885bccf0080f6ec2c545a2cd80fbb86c25775c582df",
+    "qualification_sha256": "79f1c7dd3fd5fdab9653bacec73ca34416aa54f19d96434e34f1320c17b67c31",
+    "source_commit": "a3ba1f30b2428fcfb7975220d7b400b3c4c54be9",
+    "source_tree": "ebf0968538323b04573172451595f59f83bf361d",
+    "build_manifest_sha256": "8dcf646e25924527d30967d2975d7b8affd6bdf9463c27ccf9707e0b2490874c",
+    "public_layout_sha256": "2fb8215834d45aad3857b928d095e12c829a98dfdba120e856aae957c407908c",
+    "all_zip_entry_lengths_and_sha256_verified": true,
+    "stable_release": false,
+    "published": false,
+    "observational_only": true,
+    "grants_runtime_authority": false,
+    "epoch_reset": false,
+    "reserved_additional_bytes": 58255044,
+    "content_bytes": 29016418,
+    "zip_allowance_bytes": 29173090,
+    "capacity_before": {
+      "actual_bytes": 229808349681,
+      "free_bytes": 171678441472,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 58255044,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "capacity_after": {
+      "actual_bytes": 229866393751,
+      "free_bytes": 171619160064,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 65536,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "utc": "2026-11-06T19:03:06.6652129Z"
+  },
+  "archive_path": "D:\\code\\ntfs2refs\\.lab\\packages\\shared-offline-alpha-b464dc19ba3342eeaf344da2b4813de4\\ntfs2refs-shared-offline-alpha-experimental.zip",
+  "archive_entry_count": 89,
+  "all_archive_entry_lengths_and_sha256_independently_rechecked": true,
+  "no_redistributed_Windows_WIM_DLL_or_virtual_disk_payloads": true,
+  "nested_source_archive_entries": 546,
+  "preserved_separate_disk_alpha": {
+    "bytes": 19254647,
+    "sha256": "00016d67e5580416f08a73c585c934b811fdd113d0325b24e17da9d42fda5514",
+    "rechecked_by_parent_final_audit": true
+  },
+  "final_lab_state": {
+    "current_VM": "2401593c-4b30-472e-9b6d-c9534cbaa599",
+    "ordinary_graceful_shutdown_after_complete_archives": true,
+    "observed_state": "Off",
+    "observed_assigned_RAM_bytes": 0,
+    "all_five_project_VMs_checkpoint_count": 0,
+    "last_qualified_windows_boot_ms": 1793990778008,
+    "last_qualified_source_filesystem": "NTFS",
+    "original_eight_file_ids_serial_VBR_GPT_contents_ACLs_label_mounts_verified": true
+  },
+  "readme_sha256": "282cc1ab1ea7687d43ac9dff134e6559b286f68eb8d2d32177c3db390bde9159",
+  "mechanical_packager_sha256": "a91aedd5dd4f18d5897c817b754ef0c37c92f4b6324018ebcf5a01978cb48b39",
+  "scope": "Windows26300 owning-machine shared physical Windows disk, nonboot D6 52GiB/512e4K, NTFS4K MFT1K index4K disabled8dot3, Windows Dev Drive target, eight ordinary files67178865 bytes; no broad compatibility or physical scratch/cold aggregate RAM peak claim"
+}

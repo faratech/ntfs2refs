@@ -243,15 +243,22 @@ fn lock_source_volumes(
     sink: &PartitionNativeEventSink,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<Vec<File>> {
+    fn context(error: io::Error, path: &str, drive_type: u32, operation: &str) -> io::Error {
+        io::Error::new(error.kind(), format!(
+            "offline source volume inventory {operation}: path={path:?}, drive_type={drive_type}, native_error={:?}; {error}",
+            error.raw_os_error(),
+        ))
+    }
     checkpoint(sink, "offline-source-volume-inventory-opening", events)?;
     let mut name = [0u16; 1024];
     let handle = unsafe { FindFirstVolumeW(name.as_mut_ptr(), name.len() as u32) };
     if handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
-        return Err(io::Error::last_os_error());
+        return Err(context(io::Error::last_os_error(), "<volume-catalog>", 0, "FindFirstVolumeW"));
     }
     let enumeration = Volumes(handle);
     let maximum = env.budget.ram_bytes / 4096;
     let mut locked = Vec::new();
+    let mut locked_routes = Vec::new();
     let mut selected_seen = false;
     let mut complete = false;
     let mut identities = Vec::<Vec<u8>>::new();
@@ -267,12 +274,48 @@ fn lock_source_volumes(
             "source volume inventory returned non-GUID path",
         )?;
         names.push(path.clone());
-        if unsafe { GetDriveTypeW(wide(&path).as_ptr()) } != 6 {
+        let drive_type = unsafe { GetDriveTypeW(wide(&path).as_ptr()) };
+        if drive_type == 5 {
+            events.push(NativeEvent {
+                operation: "offline-volume-inventory-optical-nonsource".into(),
+                control_code: 0,
+                input: Vec::new(),
+                succeeded: true,
+                native_error: None,
+                output: serde_json::to_vec(&serde_json::json!({
+                    "path": &path, "drive_type": drive_type,
+                    "positive_optical_classification": true, "source_data_io": false,
+                })).map_err(io::Error::other)?,
+            });
+        } else {
             // Metadata only; no source file enumeration/payload read.
             let query = OpenOptions::new()
                 .access_mode(0x0010_0080)
                 .share_mode(3)
-                .open(path.trim_end_matches('\\'))?;
+                .open(path.trim_end_matches('\\'))
+                .map_err(|e| context(e, &path, drive_type, "metadata-open"))?;
+            let object = crate::native::offline_environment::kernel_ram_backing::object_name(&query);
+            if object.name.as_deref().is_some_and(|name|
+                name.eq_ignore_ascii_case(&env.facts.native_ram_backing.held_volume_object_name)) {
+                let actual = crate::native::offline_environment::kernel_ram_backing::require_held(
+                    &env.facts.windows_directory, &query,
+                ).map_err(|e| context(e, &path, drive_type, "same-held-RAM-proof"))?;
+                require(actual == env.facts.native_ram_backing,
+                    "inventory current RAM volume differs from actual held environment")?;
+                events.push(NativeEvent {
+                    operation: "offline-volume-inventory-current-kernel-RAM-nonsource".into(),
+                    control_code: 0,
+                    input: Vec::new(),
+                    succeeded: true,
+                    native_error: None,
+                    output: serde_json::to_vec(&serde_json::json!({
+                        "path": &path, "drive_type": drive_type,
+                        "actual_ram_backing": actual, "source_data_io": false,
+                    })).map_err(io::Error::other)?,
+                });
+                close_file(query, "offline-current-RAM-volume-query-close", events)
+                    .map_err(|e| context(e, &path, drive_type, "same-held-RAM-close"))?;
+            } else {
             let device = control(
                 &query,
                 "offline-volume-inventory-device",
@@ -280,7 +323,7 @@ fn lock_source_volumes(
                 &[],
                 12,
                 events,
-            )?;
+            ).map_err(|e| context(e, &path, drive_type, "DEVICE"))?;
             require(
                 device.len() == 12,
                 "source volume inventory device reply incomplete",
@@ -295,7 +338,7 @@ fn lock_source_volumes(
                     &[],
                     32,
                     events,
-                )?;
+                ).map_err(|e| context(e, &path, drive_type, "VOLUME_EXTENTS"))?;
                 let info = control(
                     &query,
                     "offline-volume-inventory-native-info",
@@ -303,7 +346,7 @@ fn lock_source_volumes(
                     &[],
                     144,
                     events,
-                )?;
+                ).map_err(|e| context(e, &path, drive_type, "PARTITION_INFO"))?;
                 require(
                     ext.len() == 32
                         && layout::u32_at(&ext, 0)? == 1
@@ -329,13 +372,14 @@ fn lock_source_volumes(
                     query,
                     "offline-source-volume-query-close-before-real-lock",
                     events,
-                )?;
+                ).map_err(|e| context(e, &path, drive_type, "query-close-before-lock"))?;
                 let volume = OpenOptions::new()
                     .read(true)
                     .write(true)
                     .share_mode(3)
                     .custom_flags(0xa000_0000)
-                    .open(path.trim_end_matches('\\'))?;
+                    .open(path.trim_end_matches('\\'))
+                    .map_err(|e| context(e, &path, drive_type, "locking-open"))?;
                 require(
                     control(
                         &volume,
@@ -344,19 +388,21 @@ fn lock_source_volumes(
                         &[],
                         144,
                         events,
-                    )? == info,
+                    ).map_err(|e| context(e, &path, drive_type, "locking-PARTITION_INFO"))? == info,
                     "new locking FileObject names another actual source-disk volume",
                 )?;
+                // These FileObjects provide quiescence only. Raw source I/O
+                // uses PhysicalDrive, so extended-DASD permission is unused.
                 for (code, phase) in [
                     (crate::native::LOCK, "offline-source-volume-actual-LOCK"),
                     (
                         crate::native::DISMOUNT,
                         "offline-source-volume-actual-DISMOUNT",
                     ),
-                    (0x0009_0083, "offline-source-volume-extended-DASD"),
                 ] {
                     require(
-                        control(&volume, phase, code, &[], 0, events)?.is_empty(),
+                        control(&volume, phase, code, &[], 0, events)
+                            .map_err(|e| context(e, &path, drive_type, phase))?.is_empty(),
                         "source-volume lock/dismount control reply differs",
                     )?;
                 }
@@ -370,12 +416,15 @@ fn lock_source_volumes(
                         &[],
                         144,
                         events,
-                    )? == info,
+                    ).map_err(|e| context(e, &path, drive_type, "locked-closing-PARTITION_INFO"))? == info,
                     "locked source volume identity changed",
                 )?;
                 locked.push(volume);
+                locked_routes.push((path.clone(), drive_type));
             } else {
-                close_file(query, "offline-nonsource-volume-query-close", events)?;
+                close_file(query, "offline-nonsource-volume-query-close", events)
+                    .map_err(|e| context(e, &path, drive_type, "nonsource-query-close"))?;
+            }
             }
         }
         checkpoint(sink, "offline-source-volume-inventory-row-closed", events)?;
@@ -386,7 +435,7 @@ fn lock_source_volumes(
                 complete = true;
                 break;
             }
-            return Err(error);
+            return Err(context(error, &path, drive_type, "FindNextVolumeW"));
         }
     }
     require(
@@ -395,10 +444,10 @@ fn lock_source_volumes(
     )?;
     names.sort();
     require(
-        catalog_names(maximum)? == names,
+        catalog_names(maximum).map_err(|e| context(e, "<volume-catalog>", 0, "closing-catalog"))? == names,
         "native volume catalog changed while real source locks were acquired",
     )?;
-    for (volume, expected) in locked.iter().zip(&identities) {
+    for ((volume, expected), (path, drive_type)) in locked.iter().zip(&identities).zip(&locked_routes) {
         require(
             control(
                 volume,
@@ -407,7 +456,7 @@ fn lock_source_volumes(
                 &[],
                 144,
                 events,
-            )? == *expected,
+            ).map_err(|e| context(e, path, *drive_type, "all-locks-closing-PARTITION_INFO"))? == *expected,
             "original locking source FileObject changed before persistent exclusion",
         )?;
         checkpoint(sink, "offline-source-all-locks-closing-native-info", events)?;

@@ -1,0 +1,28 @@
+{
+  "kind": "offline-volume-inventory-classification-and-lock-only-handle-fix-v1",
+  "case": ".lab/hyperv/streaming-v2-20261027/REARM-833-completed-image-16164252d4a34e9d9026df36e997c686",
+  "actual_progress": ["offline-independent-J-enrollment", "cold-prepared-bundle-authenticated", "offline-PREPARED-source-and-independent-J-native-bound", "offline-source-volume-inventory-opening", "four inventory-row-closed checkpoints"],
+  "actual_error": "Incorrect function. (os error 1)",
+  "failure_frame_sha256": "9e53d2fafa576339714c97292aeef1e594a95d6eb7a1f9c4124558677df90789",
+  "failing_control_and_volume_not_recorded_by_old_path": true,
+  "actual_readonly_inventory": {
+    "source_windows": "C: NTFS",
+    "selected_source": "D: NTFS",
+    "independent_journal": "F: NTFS",
+    "EFI": "FAT32, no mount path",
+    "current_RAM": "X:, Volume{d9b257fc-684e-4dcb-ab79-03cfa2f6b750}",
+    "optical_media": "E: UDF/DVD-ROM"
+  },
+  "corrections": {
+    "optical": "Exclude only positively observed DRIVE_CDROM=5 from irrelevant storage disk-number queries; log classification and keep catalog name.",
+    "RAM": "Exclude only an opened volume whose kernel object name and complete held RAM backing match the actual current environment; do not infer RAM from failed DEVICE.",
+    "lock_only_handles": "Keep LOCK and DISMOUNT; remove unused extended-DASD boundary-check permission because actual source data I/O uses PhysicalDrive, not these volume handles.",
+    "strict_source_checks_retained": "Full native GPT/partition identity, complete catalog, selected_seen, real source locks held until SET3 and all source/J/boot/writer gates.",
+    "failure_evidence": "Include path, drive type, operation and native error; drain actual failed exclusion events to the independent log before returning.",
+    "unknown_storage_errors_remain_fatal": true,
+    "extended_DASD_contract": "https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-fsctl_allow_extended_dasd_io"
+  },
+  "focused_compile": {"exit_code": 0, "wall_seconds": 35.3714423, "receipt_sha256": "73fc1810166c2069ada4c0c49a016ffe690270f8c456a5e821f497ec7ef97c9d", "unit_tests_run": false},
+  "not_yet_proven": ["Corrected source volume inventory completes", "Actual source disk SET3", "Shared-disk native data writes", "Actual restart resume/rollback and final qualification"],
+  "no_source_AP_or_data_write_outcome_inferred_from_error_screen": true
+}

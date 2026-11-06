@@ -230,7 +230,7 @@ pub fn run_prepared_offline(
     let gpt: [u8; 32] = hex::decode(&bundle.core().source_readonly_gpt_sha256)?
         .try_into()
         .map_err(|_| anyhow::anyhow!("prepared GPT hash width"))?;
-    let source = OfflinePreparedSource::exclude(
+    let excluded = OfflinePreparedSource::exclude(
         environment,
         gpt,
         &request.journal,
@@ -243,7 +243,21 @@ pub fn run_prepared_offline(
             .open(output.join("exclusion.intent"))?,
         Box::new(observer.clone()),
         &mut events,
-    )?;
+    );
+    let source = match excluded {
+        Ok(source) => source,
+        Err(error) => {
+            // Retain the actual failed inventory/lock controls before returning
+            // to the recovery console. These diagnostics grant no authority.
+            let closing = observer.checkpoint("cold-prepared-source-exclusion-failed", &mut events);
+            return match closing {
+                Ok(()) => Err(error).context("exclude actual prepared source in recovery Windows"),
+                Err(close) => Err(anyhow::Error::from(error).context(format!(
+                    "prepared source exclusion failed; preserving native evidence also failed: {close}"
+                ))),
+            };
+        }
+    };
     let profile = JournalProfile::from_schema_and_capacity(
         bundle.core().journal_profile_version,
         Some(bundle.core().journal_profile_max_bytes),

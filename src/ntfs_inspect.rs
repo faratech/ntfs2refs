@@ -1851,11 +1851,11 @@ fn local_ancestry_issue(file: &FileInventory) -> Option<MetadataRoleIssue> {
     } else if file.names.is_empty() {
         Some(Issue::MissingNames)
     } else if file.hard_link_count == 0
-        || usize::from(file.hard_link_count)
-            != file.names.iter().filter(|name| name.namespace != 2).count()
+        || usize::from(file.hard_link_count) != file.names.len()
     {
-        // DOS aliases do not add hard links. This is a necessary consistency
-        // check, not a substitute for directory-index/link reconciliation.
+        // The physical NTFS header counts FILE_NAME attributes, including DOS
+        // aliases. Native Windows link counts exclude those aliases. Neither
+        // interpretation substitutes for complete I30/name reconciliation.
         Some(Issue::LinkCountMismatch)
     } else if file.names.iter().any(|name| {
         name.name_utf16.is_empty()

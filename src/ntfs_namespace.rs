@@ -438,8 +438,9 @@ pub fn reconcile_domains(
         }
         let links = file.names.iter().filter(|name| name.namespace != 2).count();
         ensure!(
-            usize::from(file.hard_link_count) == links && (!file.is_directory || links == 1),
-            "hard-link/name count differs"
+            usize::from(file.hard_link_count) == file.names.len() && (!file.is_directory || links == 1),
+            "NTFS FILE {} header/name count differs: header={}, names={}, canonical={}",
+            file.record_number,file.hard_link_count,file.names.len(),links
         );
         if file.is_directory {
             file_directories += 1;

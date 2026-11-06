@@ -7,7 +7,11 @@ This record supersedes historical LIVE/keeper/next-action statements. Full previ
 [history](docs/history/AGENTS-through-20261105-shared-AP.md), SHA256 `8973ba9a024dffffc88d82a332afc7dab76d008609cf63970a7a0279fa18c91e`.
 Read specific historical sections only when needed; do not restart finished investigations or repeat unchanged cases.
 
-## Actual2f8 protected-source pass; exact3aee fresh case starts
+## Actual3aee protected/ordinary-route pass; held page bounds check38141 active
+
+LATEST ACTUAL3aee: productrestartenteredPE, frame001 SHA4a4cecb5f12e9fe04d1ab50420bfa9840f8486d410a5751ec79d520296812b8f shows protectedsource3/firstCorestate+ordinaryoutput/indexadvance/multiplecoldoperation-sourcechecks, then `source range exceeds owner resources`. No AP/sourcewrite claim. CurrentPE/Xcmd/source/J/privatebootheld/nopendingVMcall; bothPSDirect43560/46731closedchannelerrors. Source1188LIVEbelowishistoricalbeforethisrestart.
+
+Exactactualgeometry: sealed6fingerprintpagesformatmax3281908/chunk2461287, wire760/736/880/864/804/776B; coldarenaRAM1427978242→pagecap2789020. Oldcompoundguardrejectedproducermax>consumer despiteactualfiles≤880B. New1-filefix keepsseparatepoison+wirescratchguards, originalpinnedformat/SHA/header/footer/allchunks, andunchangedSourceRamLeases; afteractualheldlength requiresactualbody+decodedbounds≤SAMEconsumerpagecap, no cap/pinrewrite. Focusedcheck38141 ACTUAL CLOSED0/22.7641426s/no tests/mainunchanged/SAME230360318040. Evidence `evidence/cold-held-source-page-bounds-20261106.json`. Nextcommit/exact4binbuild/native; no newRootreviewgate/unitcases/VMcaller.
 
 LATEST ACTUAL2f8: productrestartenteredPE, frame001 SHAf97cc9c330a816c35fa91efc34930f6d0da72d24cbed6ec1c92e6acbd1d7dc47 shows fullinventory/4locks/nativewitnessheld/exclusionintent/actual3/retainedlease/FIRSTCORESTATEOPEN+CLOSED PASSED. Then cold-prepared-operation→cold-prepared-failed-preserve-recovery, error `absolute ordinary local artifact path required`. No AP/sourcepayload-write claim. CurrentPE/Xcmd/source/J/privatebootheld/nopendingVMcalls. Lastowned4728/4772 Windowsobservationsbelow arehistoricalbeforethisactualrestart. Hostcensus80603 CLOSED0 actual225990954059/free181414670336 underSAME230554154895; originalglobal/cap/reserveunchanged. Rootsourceprotectedroute nowpassedformerfailure; conversion/recoverystillunqualified.
 

@@ -972,10 +972,13 @@ impl PagedMetadataRange {
             );
         }
         ensure!(
-            !scratch.is_poisoned()
-                && pin.page_budget.max_page_bytes <= scratch.budget().page_bytes
-                && pin.wire_bytes <= scratch.budget().scratch_bytes,
-            "source range exceeds owner resources"
+            !scratch.is_poisoned(),
+            "source range owner is poisoned before open"
+        );
+        ensure!(
+            pin.wire_bytes <= scratch.budget().scratch_bytes,
+            "source range wire bytes exceed owner scratch: wire={}, owner={}",
+            pin.wire_bytes, scratch.budget().scratch_bytes
         );
         let declared_chunk = pin
             .page_budget
@@ -1012,6 +1015,15 @@ impl PagedMetadataRange {
         // A source chunk uses lossless base64, so no decoded chunk can exceed
         // the actual complete file length even before its logical footer closes.
         let initial_decoded = u64::from(declared_chunk).min(metadata.len());
+        // The producer's page geometry is part of the authenticated format,
+        // not a request to allocate that maximum in a different boot's owner.
+        // Admit only the actual held-file body/decode bounds under this SAME
+        // owner's existing page cap; the normal aggregate leases still follow.
+        ensure!(body <= u64::from(scratch.budget().page_bytes)
+            && initial_decoded <= u64::from(scratch.budget().page_bytes),
+            "source range held buffers exceed owner page cap: wire={}, format_page={}, body={}, decoded={}, owner_page={}",
+            metadata.len(), pin.page_budget.max_page_bytes, body, initial_decoded,
+            scratch.budget().page_bytes);
         let initial_cache = body
             .checked_add(
                 initial_decoded

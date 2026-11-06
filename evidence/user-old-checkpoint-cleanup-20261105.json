@@ -1,0 +1,42 @@
+{
+  "kind": "user-requested-obsolete-checkpoint-cleanup-v1",
+  "authorization": "Delete all old snapshots",
+  "removed_count": 6,
+  "removed_ids": [
+    "2d548d26-cce9-49b0-90d9-48498afc56c8",
+    "9ae3dabe-a87e-4727-988b-270fcec3b6a3",
+    "462332c8-1743-405b-b4c8-079ea936732b",
+    "b68cf347-f33f-4444-9a9e-f4bd22f8acca",
+    "9f0372c8-4aa9-4fd7-94d3-2f8356619e21",
+    "3343f2a4-cf81-4fa9-a504-030425a8011e"
+  ],
+  "sole_remaining_checkpoint": {
+    "id": "07ca22f3-bb1c-444b-8f31-ff16b1fcb521",
+    "name": "shared-windows52-ordinary8-92c6ff57-20261104",
+    "parent": null,
+    "reason": "Original NTFS test baseline required for the active conversion goal"
+  },
+  "other_project_VM_checkpoint_counts": {
+    "ntfs2refs-reference-isolated": 0,
+    "ntfs2refs-shadow-alpha-20261026": 0,
+    "ntfs2refs-shadow-large-beta-20261027": 0,
+    "ntfs2refs-win11": 0
+  },
+  "post_cleanup": {
+    "VM_state": "Running",
+    "VM_status": "Operating normally",
+    "all_current_disk_chain_parents_exist": true,
+    "other_project_VM_ancestor_dependencies": 0,
+    "active_HyperV_jobs": 0,
+    "D_free_before_bytes": 153669349376,
+    "D_free_after_bytes": 181626368000,
+    "observed_reclaimed_bytes": 27957018624,
+    "later_post_merge_D_free_bytes": 181627666432
+  },
+  "managed_HyperV_removal_only": true,
+  "manual_VHD_file_deletion": false,
+  "VM_power_restore_or_new_checkpoint_calls": 0,
+  "software_builds_and_metadata_logs_preserved": true,
+  "full_ignored_receipt": ".lab/development/user-old-checkpoint-cleanup-20261105.json",
+  "full_receipt_sha256": "40ace43ad4415296ce9c066a8abc3917c23b041d9ba448adce92428f5e9e0206"
+}

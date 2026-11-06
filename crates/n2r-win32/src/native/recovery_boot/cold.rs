@@ -275,6 +275,7 @@ impl RecoveryBootGuard {
         let mut reconstructed = intent.clone();
         reconstructed.guarded_store_map = None;
         reconstructed.parent_original_intent_sha256 = None;
+        reconstructed.private_encoded_objects = None;
         need(
             serde_json::to_vec(&before).map_err(io::Error::other)?
                 == serde_json::to_vec(&reconstructed).map_err(io::Error::other)?,
@@ -371,38 +372,35 @@ impl RecoveryBootGuard {
             &protected_metadata, &source.owner_token(),
             events,
         )?;
-        // Preserve the raw-source copy as immutable A. Native BCD enumeration
-        // runs only on disposable B, and encoded-device queries use fresh copies.
+        // Preserve the raw-source copy as immutable A. Under Source3 use only
+        // the readonly offline reader: external bcdedit resolves disk aliases
+        // and was actually observed before the source exclusion was lost.
         let mut pristine_current = OpenOptions::new().read(true).share_mode(1)
             .custom_flags(0x0020_0000).open(directory.join("actual-installed-system-store.bcd"))?;
         let store = metadata::copy_authenticated_held(&mut pristine_current, actual_store_sha256,
             &directory.join("actual-installed-system-store-query.bcd"), &intent.journal, budget)?;
-        let device_proof = metadata::prove_unchanged_device(
-            &mut held[original_backup_slot].file, intent.backup_sha256, &store,
-            actual_store_sha256, directory, &intent.journal, &offline_registry, budget, events)?;
-        let tool = native::Tool::system(budget)?;
-        verify_cold_selection(
-            &tool.enum_object(Some(&store), BOOTMGR, directory)?,
-            &intent,
-            &device_proof, actual_store_sha256,
-        )?;
-        verify_cold_loader(
-            &tool.enum_object(Some(&store), &intent.loader, directory)?,
-            &intent,
-            actual_intent,
-        )?;
-        let options = tool.enum_object(Some(&store), &intent.ramdisk_options, directory)?;
-        need(
-            one(&options, "identifier")? == intent.ramdisk_options
-                && one(&options, "ramdisksdipath")?.eq_ignore_ascii_case(&intent.planned_sdi_path),
-            "actual installed private ramdisk options differ",
-        )?;
-        require_j_route(one(&options, "ramdisksdidevice")?, &intent.journal)?;
+        let original_object = bcd_device::observe_object(&intent.backup_path,BOOTMGR,&offline_registry,budget,events)?;
+        let current_object = bcd_device::observe_object(&store,BOOTMGR,&offline_registry,budget,events)?;
+        let loader_object = bcd_device::observe_object(&store,&intent.loader,&offline_registry,budget,events)?;
+        let options_object = bcd_device::observe_object(&store,&intent.ramdisk_options,&offline_registry,budget,events)?;
+        need(original_object.file_sha256==intent.backup_sha256
+            &&current_object.file_sha256==actual_store_sha256
+            &&loader_object.file_sha256==actual_store_sha256
+            &&options_object.file_sha256==actual_store_sha256,
+            "actual complete encoded BCD object input differs from held backup/current raw store")?;
+        verify_encoded_cold_objects(&original_object.object,&current_object.object,
+            &loader_object.object,&options_object.object,&intent,actual_intent)?;
+        events.push(NativeEvent { operation:"boot-current-complete-encoded-objects-verified".into(),
+            control_code:0,input:Vec::new(),succeeded:true,native_error:None,
+            output:serde_json::to_vec(&serde_json::json!({"all_BootMgr_unrelated_elements_equal_original":true,
+                "default_order_timeout_sequence_validated_raw":true,"complete_private_loader_and_ramdisk_maps_equal":true,
+                "loadoptions_equal_current_kernel_intent_and_bootstrap":true,"external_BCD_reads_under_exclusion":0,
+                "source_write_authority":false})).map_err(io::Error::other)? });
         need(
             metadata::raw_hash_protected(&intent.efi, guard_map, budget.maximum_control_bytes,
                 &protected_metadata, &source.owner_token(), events)?
                 == actual_store_sha256,
-            "installed BCD changed during actual native enum",
+            "installed BCD changed during complete readonly encoded verification",
         )?;
         qualification.revalidate_actual(source, policy, journal, pins, sealed_bundle, events)?;
         let facts = RecoveryBootGuardFacts {
@@ -652,6 +650,12 @@ fn require_j_route(route: &str, journal: &GeneralJournalStorageBinding) -> io::R
             .eq_ignore_ascii_case(&journal.disk.volume_path()?),
         "native BCD image device is not actual independently enrolled J",
     )
+}
+pub(super) fn verify_cold_options(options:&BTreeMap<String,Vec<String>>,intent:&BootIntent) -> io::Result<()> {
+    need(one(options,"identifier")?==intent.ramdisk_options
+        &&one(options,"ramdisksdipath")?.eq_ignore_ascii_case(&intent.planned_sdi_path),
+        "actual installed private ramdisk options differ")?;
+    require_j_route(one(options,"ramdisksdidevice")?,&intent.journal)
 }
 fn verify_cold_loader(
     fields: &BTreeMap<String, Vec<String>>,

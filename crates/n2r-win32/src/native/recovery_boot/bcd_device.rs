@@ -1,7 +1,7 @@
 //! Encoded device observation using the documented read-only offline reader.
 //! Input files and the actual sealed RAM DLL retain full identity/byte bookends.
 use super::*;
-use super::offreg::OfflineRegistry;
+use super::offreg::{OfflineRegistry, OfflineBcdObject};
 use crate::native::offline_environment::kernel_ram_backing::{self, KernelRamBackingFacts};
 use crate::reference_file::{ReferenceFileSnapshot, observe_reference_file_handle_with_limit};
 use std::os::windows::{fs::{MetadataExt, OpenOptionsExt}, io::AsRawHandle};
@@ -59,12 +59,15 @@ fn parents(path: &Path) -> io::Result<Vec<File>> {
 pub(super) struct OfflineRegistryLibrary {
     provider: OfflineRegistry,
     path: PathBuf,
-    native_name: String,
-    backing: KernelRamBackingFacts,
+    location: LibraryLocation,
     identity: LibraryIdentity,
     sha256: [u8; 32],
     working_bytes: u64,
     _parents: Vec<File>,
+}
+enum LibraryLocation {
+    CurrentRam { native_name: String, backing: KernelRamBackingFacts },
+    SealedJournal(ReferenceFileSnapshot),
 }
 impl OfflineRegistryLibrary {
     pub(super) fn open(path: &Path, expected: [u8; 32], expected_bytes: u64,
@@ -91,8 +94,9 @@ impl OfflineRegistryLibrary {
             && library_identity(&file)? == identity,
             "actual current kernel-RAM library differs from sealed image dependency")?;
         let provider = OfflineRegistry::load(path, file)?;
-        let owner = Self { provider, path: path.to_owned(), native_name,
-            backing: backing.clone(), identity, sha256: expected, working_bytes,
+        let owner = Self { provider, path: path.to_owned(),
+            location: LibraryLocation::CurrentRam { native_name, backing: backing.clone() },
+            identity, sha256: expected, working_bytes,
             _parents: held_parents };
         owner.require_unchanged()?;
         events.push(NativeEvent { operation: "boot-sealed-RAM-offline-registry-loaded".into(),
@@ -103,13 +107,45 @@ impl OfflineRegistryLibrary {
                 "save_set_exports_resolved": 0, "source_write_authority": false})).map_err(io::Error::other)? });
         Ok(owner)
     }
+    pub(super) fn open_sealed_journal(path: &Path, expected: [u8; 32],
+        expected_snapshot: &ReferenceFileSnapshot, journal: &GeneralJournalStorageBinding,
+        budget: RecoveryBootBudget) -> io::Result<Self> {
+        budget.validate()?;
+        let working_bytes = expected_snapshot.file_bytes.checked_mul(3)
+            .and_then(|n| n.checked_add(1024 * 1024))
+            .ok_or_else(|| bad("sealed journal library RAM overflow"))?;
+        need(working_bytes <= budget.ram_bytes, "sealed journal library exceeds RAM")?;
+        let held_parents = parents(path)?;
+        let mut file = OpenOptions::new().read(true).share_mode(1)
+            .custom_flags(0x0020_0000).open(path)?;
+        crate::file_storage::require_readonly_access(&file)?;
+        let identity = library_identity(&file)?;
+        let snapshot = observe_reference_file_handle_with_limit(&file, budget.maximum_image_bytes)?;
+        let prefix = format!("{}\\", journal.disk.volume_path()?.trim_end_matches('\\'));
+        need(snapshot == *expected_snapshot && snapshot.number_of_links == 1
+            && snapshot.final_path.get(..prefix.len()).is_some_and(|p| p.eq_ignore_ascii_case(&prefix))
+            && crate::sha256_native::hash_range(&mut file, 0, snapshot.file_bytes)? == expected,
+            "actual sealed J library identity/hash differs from owned image")?;
+        let provider = OfflineRegistry::load(path, file)?;
+        let owner = Self { provider, path: path.to_owned(), location: LibraryLocation::SealedJournal(snapshot),
+            identity, sha256: expected, working_bytes, _parents: held_parents };
+        owner.require_unchanged()?;
+        Ok(owner)
+    }
     fn require_unchanged(&self) -> io::Result<()> {
         let file = self.provider.held_file();
-        let (actual, name) = kernel_ram_backing::require_file(
-            self.path.to_str().ok_or_else(|| bad("Unicode RAM library path required"))?, file)?;
-        need(actual == self.backing && name == self.native_name
-            && library_identity(file)? == self.identity,
-            "held current-RAM offline-registry DLL identity changed")?;
+        match &self.location {
+            LibraryLocation::CurrentRam { native_name, backing } => {
+                let (actual, name) = kernel_ram_backing::require_file(
+                    self.path.to_str().ok_or_else(|| bad("Unicode RAM library path required"))?, file)?;
+                need(actual == *backing && name == *native_name,
+                    "held current-RAM offline-registry DLL backing changed")?;
+            }
+            LibraryLocation::SealedJournal(snapshot) => need(
+                observe_reference_file_handle_with_limit(file, snapshot.file_bytes)? == *snapshot,
+                "held sealed J offline-registry DLL identity changed")?,
+        }
+        need(library_identity(file)? == self.identity, "held offline-registry DLL identity changed")?;
         let mut data = file.try_clone()?;
         need(crate::sha256_native::hash_range(&mut data, 0, self.identity.bytes)? == self.sha256
             && library_identity(file)? == self.identity,
@@ -129,8 +165,10 @@ fn input_bytes(file: &mut File, before: &ReferenceFileSnapshot, maximum: u64) ->
         "held readonly BCD input changed during complete read")?;
     Ok(bytes)
 }
-pub(super) fn observe_owned_copy(path: &Path, library: &OfflineRegistryLibrary,
-    budget: RecoveryBootBudget, events: &mut Vec<NativeEvent>) -> io::Result<DeviceElementObservation> {
+fn observe_with<T>(path: &Path, library: &OfflineRegistryLibrary,
+    budget: RecoveryBootBudget, events: &mut Vec<NativeEvent>, extra: u64,
+    read: impl FnOnce(&OfflineRegistry, &Path, u32) -> io::Result<T>)
+    -> io::Result<(ReferenceFileSnapshot, [u8; 32], T, u64)> {
     budget.validate()?;
     let result = (|| {
         let initial = std::fs::symlink_metadata(path)?;
@@ -141,6 +179,7 @@ pub(super) fn observe_owned_copy(path: &Path, library: &OfflineRegistryLibrary,
         let required = initial.len().checked_mul(3)
             .and_then(|n| n.checked_add(value_maximum * 3))
             .and_then(|n| n.checked_add(library.working_bytes))
+            .and_then(|n| n.checked_add(extra))
             .and_then(|n| n.checked_add((path.as_os_str().as_encoded_bytes().len() as u64) * 32))
             .ok_or_else(|| bad("offline registry query workspace overflow"))?;
         need(value_maximum > 0 && required <= budget.ram_bytes,
@@ -163,7 +202,7 @@ pub(super) fn observe_owned_copy(path: &Path, library: &OfflineRegistryLibrary,
         library.require_unchanged()?;
         // The documented reader validates/loads in memory without repair/save.
         // Use the held native GUID route rather than a mutable drive alias.
-        let queried = library.provider.read_device(Path::new(&before.final_path), value_maximum as u32);
+        let queried = read(&library.provider, Path::new(&before.final_path), value_maximum as u32);
         let closing = (|| {
             let after = input_bytes(&mut file, &before, budget.maximum_store_bytes)?;
             let after_sha = digest(&after);
@@ -188,7 +227,16 @@ pub(super) fn observe_owned_copy(path: &Path, library: &OfflineRegistryLibrary,
             (Ok(bytes), Ok(())) => bytes,
             (Err(error), _) | (_, Err(error)) => return Err(error),
         };
-        let observation = DeviceElementObservation { file: before, file_sha256: original_sha,
+        Ok((before, original_sha, bytes, required))
+    })();
+    native::diagnose(result, "boot-owned-copy-encoded-device-readonly-failed",
+        "offline-registry-read-and-file-bookends", &path.to_string_lossy(), events)
+}
+pub(super) fn observe_owned_copy(path: &Path, library: &OfflineRegistryLibrary,
+    budget: RecoveryBootBudget, events: &mut Vec<NativeEvent>) -> io::Result<DeviceElementObservation> {
+        let (file, file_sha256, bytes, required) = observe_with(path,library,budget,events,0,
+            |reader,path,maximum| reader.read_device(path,maximum))?;
+        let observation = DeviceElementObservation { file, file_sha256,
             value_sha256: digest(&bytes), bytes };
         events.push(NativeEvent { operation: "boot-owned-copy-encoded-device-readonly-verified".into(),
             control_code: 0, input: Vec::new(), succeeded: true, native_error: None,
@@ -199,7 +247,18 @@ pub(super) fn observe_owned_copy(path: &Path, library: &OfflineRegistryLibrary,
                 "backend": "documented-readonly-offline-registry", "working_memory_bound": required,
                 "save_set_active_hive_calls": 0, "source_write_authority": false})).map_err(io::Error::other)? });
         Ok(observation)
-    })();
-    native::diagnose(result, "boot-owned-copy-encoded-device-readonly-failed",
-        "offline-registry-read-and-file-bookends", &path.to_string_lossy(), events)
+}
+pub(super) struct ObjectObservation {
+    pub(super) file_sha256: [u8;32],
+    pub(super) object: OfflineBcdObject,
+}
+pub(super) fn observe_object(path:&Path, object_guid:&str, library:&OfflineRegistryLibrary,
+    budget:RecoveryBootBudget, events:&mut Vec<NativeEvent>) -> io::Result<ObjectObservation> {
+    let map_bound = budget.maximum_control_bytes.min(budget.ram_bytes / 16);
+    let elements = u32::try_from(map_bound / 1024).map_err(io::Error::other)?;
+    need(elements > 0, "offline BCD object workspace empty")?;
+    let (_,file_sha256,object,_) = observe_with(path,library,budget,events,
+        map_bound.checked_mul(3).ok_or_else(||bad("BCD map workspace overflow"))?,
+        |reader,path,maximum|reader.read_object(path,object_guid,maximum,map_bound,elements))?;
+    Ok(ObjectObservation{file_sha256,object})
 }

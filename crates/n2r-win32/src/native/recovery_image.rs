@@ -324,8 +324,17 @@ fn capture_registry_library(input: &mut SystemRegistryLibrary, target: &Path) ->
     drop(output);
     input.revalidate()?;
     let artifact = hold_artifact("offline-registry-library", target.to_path_buf(), OFFLINE_REGISTRY_MAX_BYTES)?;
-    need(artifact.pin.snapshot == copied && artifact.pin.sha256 == input.input.sha256,
-        "same new J offline registry object changed before immutable hold")?;
+    // Actual NTFS closes 262144 preallocated bytes down to 114688 EOF here.
+    // Begin the immutable artifact epoch after writer close, retaining exact
+    // object identity/content and accepting only bounded allocation shrink.
+    let mut same_object = copied.clone();
+    same_object.allocation_bytes = artifact.pin.snapshot.allocation_bytes;
+    let closed_allocation = artifact.pin.snapshot.allocation_bytes;
+    if artifact.pin.snapshot != same_object || artifact.pin.sha256 != input.input.sha256
+        || closed_allocation < copied.file_bytes || closed_allocation > copied.allocation_bytes {
+        return Err(bad(format!("same new J offline registry object changed before immutable hold: before_writer_close={copied:?}, after_readonly_reopen={:?}, complete_sha_equal={}",
+            artifact.pin.snapshot, artifact.pin.sha256 == input.input.sha256)));
+    }
     Ok(artifact)
 }
 fn copy_pin(

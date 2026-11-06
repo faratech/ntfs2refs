@@ -810,7 +810,8 @@ impl RecoveryBootGuard {
             let device_proof=metadata::prove_available_store_device(&actual_efi,&first_store,
                 &mut self.held[self.original_backup_slot].file,self.intent.backup_sha256,
                 directory,&self.intent.journal,&self.offline_registry,self.budget,&mut source,events)?;
-            let mut expected=tool.enum_all(&actual_efi.bcd_path,directory)?;
+            let mut expected=metadata::enum_available_store(&actual_efi,&first_store,&mut source,
+                &tool,directory,&self.intent.journal,self.budget,events)?;
             verify_cold_selection(expected.get(BOOTMGR).ok_or_else(||bad("current BootMgr absent"))?,
                 &self.intent,&device_proof,first_store.sha256)?;
             last_verified_store=Some(first_store.clone());
@@ -849,9 +850,10 @@ impl RecoveryBootGuard {
                 tool.run(Some(&actual_efi.bcd_path),&args,directory)?;
                 metadata::flush_explicit_store(&actual_efi)?;
                 expected.get_mut(BOOTMGR).ok_or_else(||bad("BootMgr disappeared"))?.insert(field.into(),values);
-                need(tool.enum_all(&actual_efi.bcd_path,directory)?==expected,
-                    "native BCD readback changed unrelated objects/fields or failed original element restoration")?;
                 let current=metadata::capture_store_live(&actual_efi,self.budget,&mut source,events)?;
+                need(metadata::enum_available_store(&actual_efi,&current,&mut source,
+                    &tool,directory,&self.intent.journal,self.budget,events)?==expected,
+                    "native BCD readback changed unrelated objects/fields or failed original element restoration")?;
                 metadata::require_live_boot_epoch(&actual_efi,&current,&first_store,
                     &mut source,self.budget.maximum_control_bytes,events)?;
                 // This epoch is minted only from the current published EFI file,

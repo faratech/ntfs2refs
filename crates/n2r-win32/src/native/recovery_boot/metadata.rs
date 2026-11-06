@@ -2,6 +2,7 @@ use super::*;
 use crate::native::partition_isolation::offline::OfflineBootMetadataWitness;
 type ProtectedBootBinding<'a> = (&'a OfflineBootMetadataWitness, &'a crate::offline_environment::OfflineSourceOwnerToken);
 static DEVICE_COPY_ORDINAL:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(0);
+static LIVE_QUERY_ORDINAL:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(0);
 
 pub(super) fn copy_authenticated_held(input:&mut File,expected:[u8;32],path:&Path,
     journal:&GeneralJournalStorageBinding,budget:RecoveryBootBudget)->io::Result<PathBuf> {
@@ -146,6 +147,96 @@ fn with_live_source<T>(efi:&EfiIdentity,
         (Ok(_),Err(error))=>Err(error),
         (Err(error),Err(closing))=>Err(bad(&format!("{error}; live EFI source closing proof also failed:{closing}"))),
     }
+}
+/// Native BCD query APIs may update the hive they open. Query only a disposable
+/// B copied from a held pristine A on J; never query the live EFI store here.
+pub(super) fn enum_available_store(
+    efi:&EfiIdentity,pin:&StorePin,
+    source:&mut crate::offline_environment::OfflinePreparedAvailableSource,
+    tool:&native::Tool,directory:&Path,journal:&GeneralJournalStorageBinding,
+    budget:RecoveryBootBudget,events:&mut Vec<NativeEvent>,
+) -> io::Result<std::collections::BTreeMap<String,std::collections::BTreeMap<String,Vec<String>>>> {
+    budget.validate()?;
+    with_live_source(efi,source,events,|events| {
+        need(pin.bytes>0&&pin.bytes<=budget.maximum_store_bytes,
+            "available BCD query exceeds admitted store bytes")?;
+        let ordinal=LIVE_QUERY_ORDINAL.fetch_update(std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,|n|n.checked_add(1))
+            .map_err(|_|bad("available BCD query ordinal overflow"))?;
+        let parent=OpenOptions::new().access_mode(0x80).share_mode(3)
+            .custom_flags(0x0220_0000).open(directory)?;
+        let parent_guid=crate::file_storage::final_path_guid(&parent)?;
+        let prefix=format!("{}\\",journal.disk.volume_path()?.trim_end_matches('\\'));
+        need(parent.metadata()?.is_dir()&&parent.metadata()?.file_attributes()&0x400==0
+            &&parent_guid.get(..prefix.len()).is_some_and(|p|p.eq_ignore_ascii_case(&prefix)),
+            "available BCD query directory is not actual ordinary J")?;
+        let pending=pin.bytes.checked_add(65535).and_then(|n|n.checked_mul(2))
+            .ok_or_else(||bad("available BCD query reservation overflow"))?;
+        native::owned_control_usage(directory,budget.maximum_control_bytes,pending)?;
+        let copy_a=directory.join(format!("available-query-pristine-A-{ordinal:04}.bcd"));
+        let copy_b=directory.join(format!("available-query-disposable-B-{ordinal:04}.bcd"));
+        need(raw_copy_bound(efi,pin,&copy_a,budget.maximum_store_bytes,
+            budget.maximum_control_bytes,None,true,events)?==pin.sha256,
+            "available BCD pristine A differs from actual pinned EFI epoch")?;
+        let mut pristine=OpenOptions::new().read(true).share_mode(1)
+            .custom_flags(0x00200000).open(&copy_a)?;
+        crate::file_storage::require_readonly_access(&pristine)?;
+        let a_before=crate::reference_file::observe_reference_file_handle_with_limit(
+            &pristine,budget.maximum_store_bytes)?;
+        need(a_before.file_bytes==pin.bytes&&a_before.number_of_links==1
+            &&a_before.final_path.get(..prefix.len()).is_some_and(|p|p.eq_ignore_ascii_case(&prefix))
+            &&crate::sha256_native::hash_range(&mut pristine,0,pin.bytes)?==pin.sha256,
+            "held available BCD pristine A identity/bytes differ")?;
+        copy_authenticated_held(&mut pristine,pin.sha256,&copy_b,journal,budget)?;
+        let mut query=OpenOptions::new().read(true).share_mode(3)
+            .custom_flags(0x00200000).open(&copy_b)?;
+        let b_before=crate::reference_file::observe_reference_file_handle_with_limit(
+            &query,budget.maximum_store_bytes)?;
+        need(b_before.file_bytes==pin.bytes&&b_before.number_of_links==1
+            &&b_before.volume_serial_number==a_before.volume_serial_number
+            &&crate::sha256_native::hash_range(&mut query,0,pin.bytes)?==pin.sha256,
+            "disposable available BCD query B did not start as exact A")?;
+        drop(query);
+        // The only native query target is the separately enrolled J copy B.
+        let queried=tool.enum_all(&copy_b,directory);
+        let closing=(||->io::Result<()> {
+            let mut query=OpenOptions::new().read(true).share_mode(3)
+                .custom_flags(0x00200000).open(&copy_b)?;
+            let b_after=crate::reference_file::observe_reference_file_handle_with_limit(
+                &query,budget.maximum_store_bytes)?;
+            need(b_after.file_id_128==b_before.file_id_128
+                &&b_after.volume_serial_number==b_before.volume_serial_number
+                &&b_after.final_path==b_before.final_path
+                &&b_after.file_bytes==b_before.file_bytes&&b_after.number_of_links==1,
+                "native query replaced available BCD B or changed its bounded EOF")?;
+            let b_after_sha256=crate::sha256_native::hash_range(&mut query,0,b_after.file_bytes)?;
+            need(crate::reference_file::observe_reference_file_handle_with_limit(
+                &pristine,budget.maximum_store_bytes)?==a_before
+                &&crate::sha256_native::hash_range(&mut pristine,0,pin.bytes)?==pin.sha256,
+                "available BCD pristine A changed during disposable query")?;
+            need(raw_hash_bound(efi,pin,budget.maximum_control_bytes,None,true,events)?==pin.sha256,
+                "actual live EFI BCD epoch changed during disposable J query")?;
+            native::owned_control_usage(directory,budget.maximum_control_bytes,0)?;
+            native::persist(&directory.join(format!("available-query-{ordinal:04}.json")),
+                &serde_json::json!({"kind":"actual-available-BCD-pristine-A-disposable-B-query-v1",
+                    "actual_EFI_BCD_path":efi.bcd_path,"actual_store":pin,
+                    "pristine_A_path":copy_a,"pristine_A_snapshot":a_before,"pristine_A_sha256":pin.sha256,
+                    "query_B_path":copy_b,"query_B_before":b_before,"query_B_after":b_after,
+                    "query_B_sha256_before":pin.sha256,"query_B_sha256_after":b_after_sha256,
+                    "query_B_mutated_by_native_query":b_after_sha256!=pin.sha256,
+                    "query_B_never_used_as_source_or_pristine_bytes":true,
+                    "native_query_succeeded":queried.is_ok(),"live_EFI_query_calls":0,
+                    "source_raw_hash_and_FAT_bookends_equal":true,"record_grants_authority":false}),
+                budget.maximum_control_bytes)?;
+            Ok(())
+        })();
+        match(queried,closing) {
+            (Ok(objects),Ok(()))=>Ok(objects),
+            (Err(error),Ok(()))=>Err(error),
+            (Ok(_),Err(error))=>Err(error),
+            (Err(error),Err(closing))=>Err(bad(&format!("disposable BCD query:{error}; closing:{closing}"))),
+        }
+    })
 }
 pub(super) fn require_live_boot_epoch(efi:&EfiIdentity,first:&StorePin,second:&StorePin,
     source:&mut crate::offline_environment::OfflinePreparedAvailableSource,

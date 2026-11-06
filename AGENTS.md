@@ -7,6 +7,14 @@ This record supersedes historical LIVE/keeper/next-action statements. Full previ
 [history](docs/history/AGENTS-through-20261105-shared-AP.md), SHA256 `8973ba9a024dffffc88d82a332afc7dab76d008609cf63970a7a0279fa18c91e`.
 Read specific historical sections only when needed; do not restart finished investigations or repeat unchanged cases.
 
+## Corrected public6cff is ACTUALLY running past the previous refusal
+
+New FULL case reset6314 CLOSED0, closureSHA d0f0be5d76e18b5df7ee3c06488e09f0124602945b89f84f70de59c791955266. Fresh Windows boot1793923649744/sourceD6 NTFS BASIC0/J2/original8 tree, current07ca/six keepers. New distinct FULL4GiB case effectiveabsolute **252385983888** (same global originalepoch/cap/reserve); all actions within THIS case consume its remaining allowance, no reset. Reversible staging10327 CLOSED0, readySHA f66fbd89344e172b57a5d9596c7412b51e59847e81f64833883ed18ec6d2a246, new publicb3d811e.../unchangedcoldb7a868... and originalmediaE verified.
+
+ONE public native **PID5152/birth1793923825726**, owned SYSTEM worker5988/birth1793923823584, SAMEboot1793923649744. ONE yLF flushed/closed. Host dispatcher13099 CLOSED0 afterqueue (not native completion); NEVER redispatch. Case `.lab/hyperv/streaming-v2-20261027/PUBLIC-6cff-actual-once-8f86c2f0f90f4e5b8aa61c81ed81d879`; producer `J:\n2r-public-6cff11d-d209b8c6479b45adbccb304793afba25\partition-offline-conversion-c8d359a588e1e923ba774d014ff9f139`.
+
+Actual SAMEownedobservation002 at00:11:44Z proves both live, nativeCPU7.125s/stdout20714/stderr0, private-tree source-shadow checks/recovery-owner phases reached beyond the old capture-budget refusal. Fresh capacity249164935857/free158156509184, remaining3221048031 under252385983888. No restart/AP/HND/conversion completion claim yet. Exclusive operator aef_postcut_operator owns sameprocess monitoring/archive/productrestart/coldconsole; Root no competing VM actions. Automatic ONE normal public-case GO remains, no deliberatecut/cancel/retry/manualarm. On process/restart observation timeout inspect SAME ownership/state, never restart/relaunch. Frozen alpha and failed462/9ae preserved. Goal incomplete; no unit tests.
+
 ## Budget-corrected candidate built; next actual public case authorized
 
 Root build40624 ACTUAL CLOSED0. New PUBLIC source6cff11d75863da45cdfcfca57267d7f75329af34, manifest a91f9d66e5c56b062eb95f6429a778e82e9672fdfccfb9bed3838a9f1fc609cf, public20648448/b3d811e1556ea1e832a026f08c01197f6077a305bb603cb4c420e3876ebd9b14; source before/after verified. Exact unchanged recovery4280832/b7a868695a06ec072d9e0c2c23b7ffdd76181a89038b36d56cb9c0117b2aac9e sourceaa8acbf. `.lab/development/public-layout-6cff11d/layout.json` SHA3cc8f39696394d4573c176832ac4495d3718b21116d8db53a4b636751f11fb6d records both component commits. No duplicate build/recompile/qualification inheritance.

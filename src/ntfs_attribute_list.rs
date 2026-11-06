@@ -634,7 +634,7 @@ fn assemble_profile(
         );
         ensure!(
             !extension.is_directory
-                && (complete_file || extension.hard_link_count == 0)
+                && extension.hard_link_count == 0
                 && extension.base_file_reference == base_reference,
             "foreign extension record base or form"
         );
@@ -1007,7 +1007,7 @@ fn assemble_attributes_inner(
         stream_record_identity(extension, complete_file)?;
         ensure!(
             record_numbers.insert(extension.record_number)
-                && extension.hard_link_count == 0
+                && (complete_file || extension.hard_link_count == 0)
                 && (!extension.is_directory || base.is_directory)
                 && extension.base_file_reference == base_reference
                 && !extension.attributes.is_empty(),

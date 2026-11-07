@@ -1,5 +1,13 @@
 # ntfs2refs: current handoff
 
+## Latest actual public candidate: fd6163a release built; policy decision still pending
+
+Root-owned build session21055 actually CLOSED0. Committed-source public-only release `fd6163a78310a6ed0fe192b9971d6876e9cdbc7a` completed in288.0295436s with the existing shared target/source, Rust1.98.1, static CRT, jobs4, locked/offline dependencies and source-before/after verification. Candidate `.lab/development/release-candidates/boot-public-fd6163a/bin/ntfs2refs.exe` is21571072B/SHA`6ae120b9d841938c934007a80772629c16cd4db9e33c94353bf66aae1532573c`; the shared-cache executable matches. Manifest SHA`e31d39ab863313e5ff6d5441eee181fbf18492c86c781622b83fc2a084dff940`. No unit tests or native conversion ran; no inherited/stable/boot qualification. Evidence `evidence/boot-candidate-fd6163a-20261107.json`.
+
+Fresh release-stage census actual210542851561B+1GiB was admitted under unchanged strict boot cap279866334601/global329374052988/free reserve17179869184. After build actual210284381747B/free38638735360B; native16GiB forecast still requires its own fresh admission. Old3c7ef0a public executable+PDB were first copied/hash-verified to `.lab/development/preserved-public-3c7ef0a-before-fd6163a` (32743653B including receipt, below admitted64MiB). All old reports, verified archives, qualified alpha and VHD chains remain preserved. Frozen main SHA c6bc unchanged. Root owns all operations; no build/helper/native actor is left active. The prior statement that the public executable remains3c7ef0a is historical.
+
+The outstanding blocker remains the unanswered trust-label policy choice. No omission is authorized or implemented. Do not start a known-failing conversion or repeat trust-label setter/privilege probes. The original Windows installation is still NTFS; conversion and actual original-disk ReFS boot remain unproven.
+
 ## Current ownership: root; trust-label policy decision pending
 
 `/root/boot_finish_operator` explicitly handed all code, build, Git and VM ownership back to `/root` after pushing `464f086ad1d0102f4fbcd83fe6ccbd3f2f7c2596`. Its tool calls, builds, helpers and children are closed. This supersedes older operator-only ownership statements below. Both focused checks passed; the new code has not been release built or executed in a conversion. The public release binary remains runtime `3c7ef0a`.

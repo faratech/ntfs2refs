@@ -1,5 +1,11 @@
 # ntfs2refs: current handoff
 
+## Latest SAME6068 actual plan/liveness; no retry or intervention
+
+Run d4098b0c4ce64927a65796754d72b762/native6068/birth1794078853378 continues Running/terminalfalse/stderrEMPTY. Last actualCPU1548.765625s/WS38498304B/peak654274560B; stdout generic VerifyingReFSmetadata, hashed/frozen/basis/native-report/summary not yetpresent. Rawinventory666565316B andclassified668479854B completed earlier. These are confirmed actual-process waits, not conversion/boot completion. Do not restart from duration/timeout; sole VM operator boot_finish_operator, root no competing calls.
+
+ACTUAL post-normal-staging plan passed: calleravailable19158777856/keep4789858304/evidence224457375, resourceScratch14145114112 minusWindows128MiB givesmain14010896384; Nativewire2627043072 vsmeasured2573591778 margin53451294, decoded1313521536; Sourcegroup1751362048 vs1625747056 margin125614992. No caps raised. Product54ed257/SHA c61d... unchanged, ORIGINALprep19033d89682836093208d2fe8203a3ed0fcc19bc81f3e1d622f2dc1fe567459b retained. Hostcase has actual-post-staging-plan-check.json and resource-plan.json. Do not add sourcehashing/tracing/newvalidationwork; follow same process to actual result and preserve critical records before original-onlyboot.
+
 ## ACTUAL NEW LIVE memory-fixed run d4098b0c: PID6068
 
 Queue81262 CLOSED0; NEWRunId d4098b0c4ce64927a65796754d72b762 actually native6068/birth1794078853378/SYSTEMworker1784, taskN2R-WindowsConvert-d4098b0c4ce64927a65796754d72b762 Running/terminalfalse/stderrEMPTY, oneLaunch/one y. Product54ed2576061bd82e6372d0340892c3dd09e3543e /21876224B/SHA c61d1f8f87a7bd84f43ce6e1b5e7f7b0fa11cd684677b1046c6dc2e0a6fe2eb0. ORIGINAL independently printed preparation SHA19033d89682836093208d2fe8203a3ed0fcc19bc81f3e1d622f2dc1fe567459b. Workflow scratch/883d44062156cb18d4db3142519e0d86; host/guestcase boot-conversion-54ed257-d4098b0c4ce64927a65796754d72b762. FirstactualCPU6.171875s/peak39510016B. Post-copy read-only scratch forecast passed; actual emittedresourceplan validation next. Fullsourceadmission/projection/repair/mainAP/handoff/originalbootUNPROVEN.

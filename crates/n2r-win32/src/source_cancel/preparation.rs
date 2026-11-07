@@ -20,6 +20,16 @@ use std::{
 
 pub const SLOT_BYTES: u64 = 65536;
 pub const STATE_BYTES: u64 = SLOT_BYTES * 2;
+
+// Cancellation is a sequence of independently bounded native observations.
+// Retain every completed/failed batch for the caller's observer, while a prior
+// phase's event history cannot exhaust the next operation's control budget.
+pub(super) fn native_batch<T>(events: &mut Vec<NativeEvent>, operation: impl FnOnce(&mut Vec<NativeEvent>) -> io::Result<T>) -> io::Result<T> {
+    let mut batch = Vec::new();
+    let result = operation(&mut batch);
+    events.extend(batch);
+    result
+}
 const HEADER: usize = 64;
 const MAGIC: &[u8; 8] = b"N2RPRE01";
 fn bad(message: &str) -> io::Error {
@@ -895,7 +905,7 @@ impl PreparationGuard {
             "preparation cannot cancel after delegation or without its locked baseline",
         )?;
         let binding = self.intent.source.clone();
-        let observed = native::observe_general_disk_state_readonly(binding.clone(), events)?;
+        let observed = native_batch(events, |batch| native::observe_general_disk_state_readonly(binding.clone(), batch))?;
         require(
             normalized(&observed)? == self.intent.original_state_sha256,
             "preparation cancellation physical layout changed",
@@ -916,17 +926,17 @@ impl PreparationGuard {
                 "unresolved preparation source is unexpectedly writable",
             )?;
             require(
-                native::mounted_filesystem_general(binding.clone(), events)? == "NTFS",
+                native_batch(events, |batch| native::mounted_filesystem_general(binding.clone(), batch))? == "NTFS",
                 "terminal preparation source is not NTFS",
             )?;
             // Both Frozen records precede the first persistent exclusion
             // request. A crash in that interval leaves original NTFS online.
             // Reconcile the actual identity without stale-byte replay or an
             // attribute transition on this writable terminal route.
-            let mut reader = native::GeneralPartitionReader::open(binding.clone(), events)?;
+            let mut reader = native_batch(events, |batch| native::GeneralPartitionReader::open(binding.clone(), batch))?;
             let mut boot = [0; 512];
             reader.read_exact(&mut boot)?;
-            reader.revalidate_route(events)?;
+            native_batch(events, |batch| reader.revalidate_route(batch))?;
             drop(reader);
             require(
                 &boot[3..11] == b"NTFS    "
@@ -936,7 +946,7 @@ impl PreparationGuard {
                     && u16::from_le_bytes(boot[11..13].try_into().unwrap())
                         == self.intent.bytes_per_sector
                     && boot[13] == self.intent.sectors_per_cluster
-                    && native::observe_general_disk_state_readonly(binding.clone(), events)?
+                    && native_batch(events, |batch| native::observe_general_disk_state_readonly(binding.clone(), batch))?
                         == observed,
                 "online preparation NTFS identity changed",
             )?;
@@ -950,7 +960,7 @@ impl PreparationGuard {
             )?;
             if observed.disk_attributes == 2 {
                 let (source, _) =
-                    GeneralFrozenPartition::restore_exclusion(binding.clone(), events)?;
+                    native_batch(events, |batch| GeneralFrozenPartition::restore_exclusion(binding.clone(), batch))?;
                 drop(source);
             }
             let mut privileges =
@@ -961,7 +971,7 @@ impl PreparationGuard {
                 .share_mode(0)
                 .custom_flags(0x8000_0000)
                 .open(format!("\\\\.\\PhysicalDrive{}", binding.disk_number))?;
-            let before = native::general_disk_state(&file, &binding, events)?;
+            let before = native_batch(events, |batch| native::general_disk_state(&file, &binding, batch))?;
             require(
                 before.disk_attributes == 3
                     && normalized(&before)? == self.intent.original_state_sha256,
@@ -981,23 +991,23 @@ impl PreparationGuard {
             self.persist(next)?;
             journal_route(&self.intent)?;
             require(
-                native::general_disk_state(&file, &binding, events)? == before,
+                native_batch(events, |batch| native::general_disk_state(&file, &binding, batch))? == before,
                 "source changed before preparation cancellation",
             )?;
-            native::set_attributes(&file, 0, events)?;
-            native::refresh_disk_properties(&file, events)?;
-            let after = native::general_disk_state(&file, &binding, events)?;
+            native_batch(events, |batch| native::set_attributes(&file, 0, batch))?;
+            native_batch(events, |batch| native::refresh_disk_properties(&file, batch))?;
+            let after = native_batch(events, |batch| native::general_disk_state(&file, &binding, batch))?;
             require(
                 after.disk_attributes == 0
                     && normalized(&after)? == self.intent.original_state_sha256,
                 "preparation cancellation availability transition differs",
             )?;
-            native::close_file(file, "close-preparation-cancellation-source", events)?;
+            native_batch(events, |batch| native::close_file(file, "close-preparation-cancellation-source", batch))?;
             privileges.restore()?;
         }
         self.revalidate()?;
         let paths =
-            super::restore_ntfs_mount_paths(binding.clone(), &self.intent.mount_paths, events)?;
+            native_batch(events, |batch| super::restore_ntfs_mount_paths(binding.clone(), &self.intent.mount_paths, batch))?;
         let label = crate::volume_label::observe_label(binding.clone(), "NTFS")?;
         require(
             label.label == self.intent.label,

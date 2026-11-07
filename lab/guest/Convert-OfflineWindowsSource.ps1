@@ -21,8 +21,10 @@ try{
  $process.StartInfo.Arguments=$arguments-join' ';$process.StartInfo.UseShellExecute=$false
  $process.StartInfo.CreateNoWindow=$true;$process.StartInfo.RedirectStandardInput=$true
  $process.StartInfo.RedirectStandardOutput=$true;$process.StartInfo.RedirectStandardError=$true
- $output=[IO.File]::Open((Join-Path $Root 'stdout.log'),'CreateNew','Write','Read')
- $errors=[IO.File]::Open((Join-Path $Root 'stderr.log'),'CreateNew','Write','Read')
+ # Publish short phase/error messages as they arrive, including a refusal
+ # before slow supported cleanup hashes; preserve exact byte order/content.
+ $output=[IO.FileStream]::new((Join-Path $Root 'stdout.log'),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read,1)
+ $errors=[IO.FileStream]::new((Join-Path $Root 'stderr.log'),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read,1)
  $watch=[Diagnostics.Stopwatch]::StartNew();if(-not$process.Start()){throw 'Converter did not start'}
  $outTask=$process.StandardOutput.BaseStream.CopyToAsync($output,65536)
  $errTask=$process.StandardError.BaseStream.CopyToAsync($errors,65536)

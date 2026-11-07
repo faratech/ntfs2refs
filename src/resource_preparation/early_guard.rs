@@ -186,8 +186,13 @@ impl EarlyPreparationGuard {
         Ok(())
     }
     pub(crate) fn mark_live_cancelled(&mut self, events: &mut Vec<NativeEvent>) -> Result<()> {
-        self.native()?.mark_live_cancelled(events)?;
-        Ok(())
+        // Native controls have a bounded per-operation batch. Preserve earlier
+        // failure/restore evidence without feeding its merged history into a
+        // new guard-retirement query or weakening any native checks.
+        let mut retirement_events = Vec::new();
+        let result = self.native()?.mark_live_cancelled(&mut retirement_events);
+        events.extend(retirement_events);
+        result.map_err(Into::into)
     }
 }
 

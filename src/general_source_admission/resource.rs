@@ -623,6 +623,8 @@ fn guarded_collection_failure(
     original: anyhow::Error,
     mut guard: Option<&mut crate::resource_preparation::early_guard::EarlyPreparationGuard>,
 ) -> anyhow::Error {
+    eprintln!("Source preparation refused before apply: {original:#}. Restoring unchanged NTFS; preserve the preparation recovery records until cleanup completes.");
+    let _ = io::stderr().flush();
     let intent_error = if workspace.is_some() {
         guard.as_deref_mut().and_then(|g| g.mark_live_cancel_intent().err())
     } else { None };

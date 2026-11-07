@@ -157,8 +157,29 @@ pub fn check_metadata_with_limit(
     after: &Snapshot,
     maximum_security_bytes: u64,
 ) -> Result<TimestampView> {
-    let a = ntfs_attestation::check_non_security_snapshot(f, serial, before)?;
-    let b = ntfs_attestation::check_non_security_snapshot(f, serial, after)?;
+    check_metadata_with_link_counter_hint(f, serial, sd, before, after, maximum_security_bytes, false)
+}
+
+/// The paged Windows owner has already closed the complete raw I30 join.
+/// Native before/after canonical counts still match without rewriting the hint.
+pub(crate) fn check_metadata_windows_with_limit(
+    f: &FileInventory, serial: u64, sd: &[u8], before: &Snapshot, after: &Snapshot,
+    maximum_security_bytes: u64,
+) -> Result<TimestampView> {
+    check_metadata_with_link_counter_hint(f, serial, sd, before, after, maximum_security_bytes, true)
+}
+
+fn check_metadata_with_link_counter_hint(
+    f: &FileInventory, serial: u64, sd: &[u8], before: &Snapshot, after: &Snapshot,
+    maximum_security_bytes: u64, header_is_hint: bool,
+) -> Result<TimestampView> {
+    let (a, b) = if header_is_hint {
+        (ntfs_attestation::check_non_security_snapshot_windows(f, serial, before)?,
+         ntfs_attestation::check_non_security_snapshot_windows(f, serial, after)?)
+    } else {
+        (ntfs_attestation::check_non_security_snapshot(f, serial, before)?,
+         ntfs_attestation::check_non_security_snapshot(f, serial, after)?)
+    };
     check_security_views_with_limit(sd, before, after, maximum_security_bytes)?;
     let si = f
         .standard_information

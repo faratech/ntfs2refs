@@ -801,6 +801,26 @@ pub(crate) fn check_non_security_snapshot(
     serial: u64,
     s: &Snapshot,
 ) -> Result<[u64; 4]> {
+    check_non_security_snapshot_scoped(file, serial, s, false)
+}
+
+/// The frozen Windows path retains the raw FILE link counter as a hint.
+/// Complete MFT/I30 coverage remains a prerequisite, and native canonical
+/// link counts are still checked against the complete FILE_NAME inventory.
+pub(crate) fn check_non_security_snapshot_windows(
+    file: &FileInventory,
+    serial: u64,
+    s: &Snapshot,
+) -> Result<[u64; 4]> {
+    check_non_security_snapshot_scoped(file, serial, s, true)
+}
+
+fn check_non_security_snapshot_scoped(
+    file: &FileInventory,
+    serial: u64,
+    s: &Snapshot,
+    windows_counter_hint: bool,
+) -> Result<[u64; 4]> {
     check_reparse_snapshot(file, s)?;
     if file.extended_attributes.is_some()
         || s.extended_attributes.is_some()
@@ -863,12 +883,12 @@ pub(crate) fn check_non_security_snapshot(
         standard[20] == 0 && standard[21] == u8::from(file.is_directory),
         "native delete/directory state differs"
     );
-    // NTFS's physical FILE header includes DOS FILE_NAME attributes. Native
-    // FILE_STANDARD_INFO counts canonical links only; aliases have their own
-    // preservation obligation and are still refused by ordinary admission.
+    // The Windows profile preserves the raw FILE counter as a hint. Native
+    // FILE_STANDARD_INFO must match canonical links in every profile; DOS
+    // aliases retain their separate preservation obligation.
     let native_links = file.names.iter().filter(|name| name.namespace != 2).count();
     ensure!(
-        usize::from(file.hard_link_count) == file.names.len()
+        (windows_counter_hint || usize::from(file.hard_link_count) == file.names.len())
             && usize::try_from(u32le(standard, 16))? == native_links,
         "native link count differs at FILE {}: native={}, canonical={}, raw={}, names={}",
         file.record_number, u32le(standard, 16), native_links,

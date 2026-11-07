@@ -35,6 +35,8 @@ impl<'a> PagedObservationRequest<'a> {
         // remains a separate boot-only shadow obligation and admission gate.
         let windows_paths = binding.layout_profile
             == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows;
+        ensure!(windows_paths == source.is_windows_conversion(),
+            "native Windows namespace policy differs from actual source inspection purpose");
         let header = source.header();
         ensure!(
             header.inventory_complete
@@ -373,7 +375,7 @@ fn compare_domain_with_header(
         let role = crate::ntfs_admission::paged::internal_role(source, &file)?;
         let mut timestamps = None;
         let mut security_view = None;
-        let metadata = Check::from((|| {
+        let mut metadata = Check::from((|| {
             ensure!(
                 observation.open_error.is_none(),
                 "native metadata open refused: {:?}",
@@ -406,7 +408,12 @@ fn compare_domain_with_header(
                 .after
                 .as_ref()
                 .context("native metadata after absent")?;
-            timestamps = Some(crate::ntfs_source_view::check_metadata_with_limit(
+            let check_metadata = if expected.windows_paths {
+                crate::ntfs_source_view::check_metadata_windows_with_limit
+            } else {
+                crate::ntfs_source_view::check_metadata_with_limit
+            };
+            timestamps = Some(check_metadata(
                 &file,
                 source.header().geometry.serial_number,
                 &descriptor,
@@ -422,6 +429,13 @@ fn compare_domain_with_header(
             )?);
             Ok(())
         })());
+        if expected.windows_paths && metadata.matched
+            && usize::from(file.hard_link_count) != file.names.len() {
+            metadata.detail = format!(
+                "raw FILE header link-counter hint preserved: raw={}, FILE_NAME={}, canonical={}; native before/after canonical counts match; complete native namespace coverage remains required",
+                file.hard_link_count, file.names.len(),
+                file.names.iter().filter(|name| name.namespace != 2).count());
+        }
         let streams = Check::from((|| {
             ensure!(
                 observation.open_error.is_none(),

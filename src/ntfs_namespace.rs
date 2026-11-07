@@ -328,6 +328,24 @@ pub fn reconcile_domains(
     files: &impl crate::ntfs_inspect::RootFileDomain,
     directories: &impl crate::ntfs_inspect::RootDirectoryDomain,
 ) -> Result<u64> {
+    reconcile_domains_with_link_counter_hint(files, directories, false)
+}
+
+/// Selected only by the actual frozen offline-Windows inspection owner.
+/// Preserve the FILE counter as observed; both directions of the complete
+/// name/index join and the later native canonical-link proof remain required.
+pub(crate) fn reconcile_windows_domains(
+    files: &impl crate::ntfs_inspect::RootFileDomain,
+    directories: &impl crate::ntfs_inspect::RootDirectoryDomain,
+) -> Result<u64> {
+    reconcile_domains_with_link_counter_hint(files, directories, true)
+}
+
+fn reconcile_domains_with_link_counter_hint(
+    files: &impl crate::ntfs_inspect::RootFileDomain,
+    directories: &impl crate::ntfs_inspect::RootDirectoryDomain,
+    header_is_hint: bool,
+) -> Result<u64> {
     use crate::ntfs_inspect::{RootDirectoryDomain, RootFileDomain};
     files.revalidate()?;
     directories.revalidate()?;
@@ -440,7 +458,8 @@ pub fn reconcile_domains(
         }
         let links = file.names.iter().filter(|name| name.namespace != 2).count();
         ensure!(
-            usize::from(file.hard_link_count) == file.names.len() && (!file.is_directory || links == 1),
+            (header_is_hint || usize::from(file.hard_link_count) == file.names.len())
+                && (!header_is_hint || links != 0) && (!file.is_directory || links == 1),
             "NTFS FILE {} header/name count differs: header={}, names={}, canonical={}",
             file.record_number,file.hard_link_count,file.names.len(),links
         );

@@ -22,8 +22,7 @@ fn directory_path_for_alias_preparation(files: &impl RootFileDomain, mut current
         let names:Vec<_>=directory.names.iter().filter(|n|!alias_preparation||n.namespace!=2).collect();
         ensure!(
             directory.is_directory
-                && (if alias_preparation {usize::from(directory.hard_link_count)==directory.names.len()}
-                    else {directory.hard_link_count==1})
+                && (alias_preparation || directory.hard_link_count==1)
                 && names.len() == 1
                 && directory.base_file_reference == 0,
             "source parent is not a canonical single-name directory"
@@ -63,7 +62,9 @@ pub(crate) fn canonical_paths_for_alias_preparation(
 )->Result<Vec<Vec<String>>>{
     ensure!(file.base_file_reference==0,"canonical base required for alias preparation");
     let canonical:Vec<_>=file.names.iter().filter(|n|n.namespace!=2).collect();
-    ensure!(!canonical.is_empty()&&file.names.len()==usize::from(file.hard_link_count)
+    // The Windows path preserves the raw FILE counter as a hint; complete
+    // MFT/I30 coverage and native canonical link counts establish the names.
+    ensure!(!canonical.is_empty()
         &&canonical.iter().all(|n|matches!(n.namespace,0|1|3))
         &&(!file.is_directory||canonical.len()==1),"canonical name/link coverage differs");
     for alias in file.names.iter().filter(|n|n.namespace==2){

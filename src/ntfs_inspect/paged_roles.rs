@@ -148,6 +148,7 @@ pub(super) fn classify(
     files: &mut PagedRawFiles,
     root: &Path,
     scratch: &SourceScratch,
+    windows_link_counter_hint: bool,
     mut blocked: impl FnMut(InspectionBlocker) -> Result<()>,
 ) -> Result<()> {
     use AncestryState as State;
@@ -189,7 +190,7 @@ pub(super) fn classify(
                     _ => State::Unresolved(Issue::UnsupportedReservedParent),
                 },
             )?;
-        } else if let Some(problem) = local_ancestry_issue(&file) {
+        } else if let Some(problem) = local_ancestry_issue_with_link_counter_hint(&file, windows_link_counter_hint) {
             states.set(ordinal, State::Unresolved(problem))?;
         }
     }

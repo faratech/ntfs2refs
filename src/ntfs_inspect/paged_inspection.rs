@@ -85,6 +85,9 @@ impl PagedInspection {
     pub fn budget(&self) -> SourceMetadataBudget {
         self.scratch.budget()
     }
+    pub(crate) fn is_windows_conversion(&self) -> bool {
+        self.purpose == InspectionPurpose::WindowsConversion
+    }
     pub fn security(&self) -> &crate::ntfs_security::PagedReconciliation {
         &self.security
     }
@@ -649,11 +652,16 @@ fn inspect_paged_internal<R: Read + Seek>(
         &scratch,
     )?;
     let assemblies = resolver.finish(&files)?;
-    super::paged_roles::classify(&mut files, &root.join("roles"), &scratch, |item| {
+    super::paged_roles::classify(&mut files, &root.join("roles"), &scratch,
+        purpose == InspectionPurpose::WindowsConversion, |item| {
         emit_blocker(&mut blockers, &mut blocker_count, &item)
     })?;
     let directories = namespace.finish()?;
-    let namespace_entries = crate::ntfs_namespace::reconcile_domains(&files, &directories)?;
+    let namespace_entries = if purpose == InspectionPurpose::WindowsConversion {
+        crate::ntfs_namespace::reconcile_windows_domains(&files, &directories)?
+    } else {
+        crate::ntfs_namespace::reconcile_domains(&files, &directories)?
+    };
     let allocation = {
         let mut bits = AttributeBitmapReader {
             reader,

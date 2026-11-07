@@ -218,7 +218,13 @@ fn build_object(
         .after
         .as_ref()
         .context("source native after snapshot absent")?;
-    let timestamps = crate::ntfs_source_view::check_metadata_with_limit(
+    let check_metadata = if aliases.is_some() {
+        ensure!(source.is_windows_conversion(), "Windows projection requires its actual inspection purpose");
+        crate::ntfs_source_view::check_metadata_windows_with_limit
+    } else {
+        crate::ntfs_source_view::check_metadata_with_limit
+    };
+    let timestamps = check_metadata(
         file,
         source.header().geometry.serial_number,
         &stored,

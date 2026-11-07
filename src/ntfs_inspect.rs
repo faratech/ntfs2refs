@@ -1844,6 +1844,12 @@ fn valid_role_anchor(file: &FileInventory, name: &[u16], root_sequence: u16) -> 
 }
 
 fn local_ancestry_issue(file: &FileInventory) -> Option<MetadataRoleIssue> {
+    local_ancestry_issue_with_link_counter_hint(file, false)
+}
+
+fn local_ancestry_issue_with_link_counter_hint(
+    file: &FileInventory, header_is_hint: bool,
+) -> Option<MetadataRoleIssue> {
     use MetadataRoleIssue as Issue;
     if file.base_file_reference != 0 {
         Some(Issue::ExtensionRecord)
@@ -1853,12 +1859,12 @@ fn local_ancestry_issue(file: &FileInventory) -> Option<MetadataRoleIssue> {
         Some(Issue::ZeroSequenceNumber)
     } else if file.names.is_empty() {
         Some(Issue::MissingNames)
-    } else if file.hard_link_count == 0
-        || usize::from(file.hard_link_count) != file.names.len()
+    } else if !header_is_hint && (file.hard_link_count == 0
+        || usize::from(file.hard_link_count) != file.names.len())
     {
-        // The physical NTFS header counts FILE_NAME attributes, including DOS
-        // aliases. Native Windows link counts exclude those aliases. Neither
-        // interpretation substitutes for complete I30/name reconciliation.
+        // Ordinary inspection keeps its strict historical counter check.
+        // The explicit Windows owner instead requires complete I30/name
+        // reconciliation and native canonical counts, retaining the raw hint.
         Some(Issue::LinkCountMismatch)
     } else if file.names.iter().any(|name| {
         name.name_utf16.is_empty()

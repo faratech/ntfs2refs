@@ -951,7 +951,10 @@ impl ResidentMetadataCache {
         let divisor = if purpose == *b"N2RFILE1" {
             4
         } else if purpose == *b"N2RNSD01" || purpose == *b"N2RNSE01" {
-            64
+            // Namespace joins revisit entries in filename and MFT order.
+            // Keep modest complete tables cached when the SAME aggregate
+            // ledger can pay for them; refusal still uses paged fallback.
+            32
         } else {
             return None;
         };

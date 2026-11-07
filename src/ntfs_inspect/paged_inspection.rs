@@ -85,6 +85,9 @@ impl PagedInspection {
     pub fn budget(&self) -> SourceMetadataBudget {
         self.scratch.budget()
     }
+    pub(crate) fn release_inventory_resident_cache(&mut self) {
+        self.files.release_inventory_resident_cache();
+    }
     pub(crate) fn is_windows_conversion(&self) -> bool {
         self.purpose == InspectionPurpose::WindowsConversion
     }

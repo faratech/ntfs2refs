@@ -129,7 +129,7 @@ impl ScopedSourceContext<'_> {
         }
     }
     pub(super) fn derive_projection(
-        &self,
+        &mut self,
         admission: SourceResourceAdmission,
         path: &Path,
         scratch: &SourceScratch,

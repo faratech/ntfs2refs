@@ -1894,8 +1894,13 @@ impl ResourceSourceContext {
         self.windows_aliases.as_ref().map(Arc::clone)
     }
     pub fn derive_projection(
-        &self, admission: SourceResourceAdmission, output: &Path, scratch: &SourceScratch,
+        &mut self, admission: SourceResourceAdmission, output: &Path, scratch: &SourceScratch,
     ) -> Result<crate::shadow_tree::source_pages::SourceExpectedDomain> {
+        // The frozen source evidence has already completed validation. Projection
+        // walks its file domain in ordinal order, so return the optional
+        // whole-inventory cache before paying for projection rows/sorters.
+        // Authenticated readers, compact indexes and all proof owners remain.
+        self.raw.release_inventory_resident_cache();
         if let Some(aliases) = &self.windows_aliases {
             crate::shadow_tree::source_pages::SourceExpectedDomain::derive_windows(
                 &self.raw, self.native.domain(), admission, output, scratch, aliases,

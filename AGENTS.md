@@ -1,5 +1,13 @@
 # ntfs2refs: current handoff
 
+## Namespace cache cutoff fix compiled; current run cancellation and rebuild pending
+
+Current user authorizes storage cleanup. Actual D free107467001856B/C116299968512B and all five project VMs have ZERO registered snapshots; no further deletion is needed for the next run. Prior verified external C relocation remains charged to the unchanged combined storage budget. Do not attribute unrelated host free-space increases to our cleanup.
+
+SAME native6068/d4098b0c is still in the read-only namespace reconciliation phase: closed namespace entries logical58802306B exceeds current mainRAM3612868950/64=56451077B by2351229B, causing paged random-read amplification. Root authorized sole VM operator boot_finish_operator to confirm exact PID/birth/path/c61d executable and absent publication markers, stop only that prepublication process, then read the previously exclusively held preparation guard and use SAME pinned54ed257 with ORIGINAL preparationSHA19033d89682836093208d2fe8203a3ed0fcc19bc81f3e1d622f2dc1fe567459b for supported --recover --rollback only if closed guard confirms pre-AP. No share-mode bypass, manual disk flags or source writes. Cancellation result is NOT yet recorded here; do not assume stopped or relaunch.
+
+Five-file fix changes namespace optional cache ceiling from RAM/64 to RAM/32 under the SAME actual aggregate lease, and releases the whole raw inventory cache before projection while retaining authenticated readers/pins/compact and parent indexes. Wrapper now accepts the mutable context needed for that release. Checkv1 failed ONLY its missing wrapper receiver; corrected v2 ACTUAL exit0/29.0649696s, shared cache, no tests/mainc6bc unchanged. Evidence namespace-projection-cache-fix-20261107.json. Commit/exact public build and actual native run remain required; no performance/Windows conversion/boot success is claimed. Root owns code/build/Git; operator alone owns VM/native/storage.
+
 ## Latest SAME6068 actual plan/liveness; no retry or intervention
 
 Run d4098b0c4ce64927a65796754d72b762/native6068/birth1794078853378 continues Running/terminalfalse/stderrEMPTY. Last actualCPU1548.765625s/WS38498304B/peak654274560B; stdout generic VerifyingReFSmetadata, hashed/frozen/basis/native-report/summary not yetpresent. Rawinventory666565316B andclassified668479854B completed earlier. These are confirmed actual-process waits, not conversion/boot completion. Do not restart from duration/timeout; sole VM operator boot_finish_operator, root no competing calls.

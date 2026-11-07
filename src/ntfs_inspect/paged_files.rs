@@ -82,6 +82,12 @@ impl PagedRawFiles {
     pub fn budget(&self) -> SourceMetadataBudget {
         self.scratch.budget()
     }
+    pub(super) fn release_inventory_resident_cache(&mut self) {
+        // Projection consumes file records sequentially. Preserve the compact
+        // lookup directory and hot parent-directory rows, but release the
+        // optional full file-data copy and its actual RAM credit.
+        self.files.clear_resident_cache();
+    }
     pub(super) fn set_header(&mut self, header: SourceHeader) -> Result<()> {
         ensure!(
             header.schema_version == self.header.schema_version

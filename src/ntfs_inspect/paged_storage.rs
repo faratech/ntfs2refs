@@ -1104,11 +1104,14 @@ impl PagedMetadataRange {
         );
         reader.revalidate()?;
         let created = scratch.reader_lease(pin)?;
-        let second_chunk_cache = pin.purpose == *b"N2RFILE1"
+        let second_chunk_cache = (pin.purpose == *b"N2RFILE1"
+            || pin.purpose == *b"N2RNSD01" || pin.purpose == *b"N2RNSE01")
             && footer.logical_bytes > u64::from(declared_chunk)
             && u64::from(declared_chunk) <= scratch.budget().ram_bytes / 64;
         // Both decoded slots were prepaid above, including the old/new overlap
-        // on a miss. Preserve the existing file-inventory two-chunk behavior.
+        // on a miss. Namespace binary searches and cross-directory hard links
+        // also alternate metadata chunks; retain their already-paid second
+        // slot rather than repeatedly decoding megabytes for each name.
         let actual_path = (pin.path.as_os_str().as_encoded_bytes().len() as u64)
             .checked_add(reader.final_path().len() as u64)
             .and_then(|n| n.checked_mul(12))

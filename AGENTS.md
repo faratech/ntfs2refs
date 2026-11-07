@@ -1,5 +1,19 @@
 # ntfs2refs: current handoff
 
+## ACTUAL LIVE original-Windows conversion: 466b35ab, PID2436
+
+Corrected queue82733 CLOSED0; RunId466b35ab294d45b79112a9e0a78d2bd2 ACTUALLY launched native2436/birth1794073057936/worker212, taskN2R-WindowsConvert-466b35ab294d45b79112a9e0a78d2bd2 Running, one launch/one y. Product39cb900be75fb297dfef698dbd9e16bdb80ff261/21869568B/SHA3b52fe9a6785799f194ef86bdd6d57c9a6a07cb966e0b26356ec320f5a66d800. ORIGINAL independently printed preparation SHA25193deeeab61b1a9b0edb9bc4ae7bc713dda3fd0bae1eec402faeaa18d38c36; workflow scratch/daca53f5dd3bad3133828708d38e4113. Last actual CPU59.75s/peak110075904B/taskRunning/terminalfalse/stderrEMPTY. Host+guest case boot-conversion-39cb900-466b35ab294d45b79112a9e0a78d2bd2. Full source admission/shadow repair/source apply/native finalization/original0 boot remain unproven.
+
+ONLY `/root/boot_finish_operator` performs VM/native observations. Follow the SAME process/run via Queue-WindowsBootConversion -RunId466b35ab294d45b79112a9e0a78d2bd2 -SourceCommit39cb900be75fb297dfef698dbd9e16bdb80ff261 -ObserveOnly. No source filesystem probes, duplicate launch, restart from timeout, shutdown or firmware/disk changes while source-write phase is unknown. Preserve ORIGINAL preparation SHA and all live recovery artifacts. Root code/build/Git only; do not modify the running product.
+
+## Latest worker correction: first queue refused before native; corrected fresh queue authorized
+
+First39cb900 RunId0417df2ccd134e4f9ffe4319c25639a5 queue65358 CLOSED0, but SYSTEM worker task Ready/LastResult1 BEFORE any native launch. No native-process/stdout/preparation SHA or Source0 freeze/write. Exact worker error `Actual alternate Windows/source binding changed` came from stale hardcoded maintenance boot1793995332223; fresh positive preflight observed1793995329156, while all Source0/control GUIDs/geometry/healthy states matched. Failed case is preserved.
+
+Lab-only fix8bccc5b now requires an independently observed `-ExpectedControlBootUnixMs`, forwarded by Queue-WindowsBootConversion, and worker compares that exact value plus the original source/control checks (including exact control C partitionGUID). Parser0; product39cb900/SHA3b52fe unchanged/no rebuild. Sole VM operator `/root/boot_finish_operator` has explicit authorization for ONE new RunId with fresh no-actor/source/boot preflight and this parameter; never restart0417 or duplicate an active task. Await actual new RunId/PID/birth/ORIGINAL printed preparation SHA before claiming live conversion. Root does no competing VM calls.
+
+Cleanup is terminal: all six old standalone generated data disks relocated to C with full container SHA/virtual identity/config verification, plus obsolete root target/debug987759160B moved and all1255files/235dirs verified. Parent temporary access DACLs/owners and all remaining child ACLs restored exactly. Last Dfree~35.44GB and externalC~16.22GB under its16GiB ceiling; rejected failedpartial2.149GB remains untouched, as do OS/J/AVHDX/current disks/qualifiedpackages. Zero snapshots. All new admission guards count the externalC ceiling. User storage task has achieved the required immediate headroom without raising caps or discarding evidence.
+
 ## Current public release ready for ONE original-Windows conversion
 
 Public source39cb900be75fb297dfef698dbd9e16bdb80ff261 exact release94910 CLOSED0/264.064275s, clean source before/after, shared cache, no tests/mainc6bc unchanged. Executable21869568B/SHA3b52fe9a6785799f194ef86bdd6d57c9a6a07cb966e0b26356ec320f5a66d800 is preserved in `.lab/development/release-candidates/windows-trust-public-39cb900/bin/ntfs2refs.exe` and matches shared release. ManifestSHA df01d9d1d7ea863832ca43d9cae383ea1fa462cd6d5dd30168da0666cc48ebc8. Build final Dfree35281911808 exceeds native16GiB+reserve16GiB; Dlab197416625716 plus externalC16GiB still below unchanged strict cap. Evidence `evidence/windows-trust-public-build-20261107.json`.

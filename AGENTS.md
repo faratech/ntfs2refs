@@ -1,5 +1,13 @@
 # ntfs2refs: current handoff
 
+## Cache-fixed public release built; supported old-run cancellation succeeded
+
+Release33919 ACTUAL CLOSED0/296.1409151s, source56d663a06ee61680550aa73ec9f74a30dc10b994 clean before/after. Candidate `.lab/development/release-candidates/namespace-cache-public-56d663a/bin/ntfs2refs.exe`21876736B/SHA9be704ad364e3ed61027d2aced7e9d7a24aad747e4586c85950527a9d987e937; manifestf0ec60df609b2e15dd4697528c7ffb9ef579a14bd68b61d7d7be45777a20bf7e. Shared target reused, no tests/mainc6bc unchanged. Final Dfree107430215680B; old external C storage remains charged. Peer audit confirms namespace opening receives ~514654248B returned workspace before its ~120MiB cache/index/reader allocations, all under unchanged aggregate budget. Native speed/conversion/boot success not yet proven.
+
+Old6068 stopped only after exact PID/birth/path/c61d and absent publication checks. Worker observed actual exit-1/one launch; closed guard BOTH slots Frozen/no delegation and original19033d preparation pin matched. SAME c61d recovery --rollback ACTUALLY CLOSED0/4.5508958s, owned PID2124/one launch/one y, stderr empty. Independent original0 HealthyNTFS/noactors confirmation is being completed by sole VM operator boot_finish_operator; do not claim it before its receipt.
+
+Root authorized that operator for ONE fresh56d663a conversion after actual source-safe/noactors and guest post-staging nativewire>=2573591778B/sourcegroup>=1625747056B checks. Require a NEW RunId, current independently observed control boot, exact candidateSHA, original p3 normalized66236448768B, original printed recoverySHA. No duplicate/restart-on-timeout; no source probe while phase unknown. User authorizes storage cleanup as needed; all five VMs have zero snapshots and host headroom is ample. Reclaim only genuinely obsolete closed guest scratch if needed, preserving recovery authority/evidence and avoiding previously rejected deletion paths. After actual native handoff/finalizer archive critical records then immediate clean original0-only boot; no extra workloads. Root code/build/Git only; operator owns all VM/native/storage. Full original-Windows ReFS conversion/boot objective remains incomplete.
+
 ## Namespace cache cutoff fix compiled; current run cancellation and rebuild pending
 
 Current user authorizes storage cleanup. Actual D free107467001856B/C116299968512B and all five project VMs have ZERO registered snapshots; no further deletion is needed for the next run. Prior verified external C relocation remains charged to the unchanged combined storage budget. Do not attribute unrelated host free-space increases to our cleanup.

@@ -3,6 +3,7 @@ param([Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{32}\z')][string]$RunId,
  [ValidatePattern('\A[0-9a-f]{64}\z')][string]$CandidateSha='1f5fe77e6e53d34dbc499b263b6b2571ff54c1fe6cb7b84a58585c03699b3dbb',
  [long]$ExpectedPartitionBytes=66238545920L,
  [long]$ExpectedControlBootUnixMs=0,
+ [guid]$ExpectedQualificationCheckpointId=[guid]::Empty,
  [switch]$ObserveOnly)
 $ErrorActionPreference='Stop';Set-StrictMode -Version Latest
 $workspace=Split-Path -Parent $PSScriptRoot
@@ -30,10 +31,14 @@ try{
   Need ($combined-le279866334601L) 'Boot-work 50GB allowance including external test storage cannot admit16GiB forecast'
   Need (-not(Test-Path -LiteralPath $case)) 'Existing conversion case must only be observed'
   $vm=Get-VM -Id '8f7fc646-8c9f-41d0-b65a-ecfadccfc36a'
-  Need ($vm.State-eq'Running'-and(Get-VMFirmware -VM $vm).SecureBoot-eq'On'-and@(Get-VMSnapshot -VM $vm).Count-eq0) 'Reference VM or zero-checkpoint policy changed'
+  $snapshots=@(Get-VMSnapshot -VM $vm)
+  $checkpointMatches=if($ExpectedQualificationCheckpointId-eq[guid]::Empty){$snapshots.Count-eq0}else{
+   $snapshots.Count-eq1-and$snapshots[0].Id-eq$ExpectedQualificationCheckpointId
+  }
+  Need ($vm.State-eq'Running'-and(Get-VMFirmware -VM $vm).SecureBoot-eq'On'-and$checkpointMatches) 'Reference VM or exact qualification checkpoint binding changed'
   $null=New-Item -ItemType Directory -Path $case
   $capacity|ConvertTo-Json -Depth 4|Set-Content -LiteralPath (Join-Path $case 'admission.json') -Encoding UTF8
-  @{D_capacity=$capacity;external_storage=$external;combined_forecast_bytes=$combined;strict_boot_cap=279866334601L;epoch_reset=$false}|ConvertTo-Json -Depth 6|Set-Content -LiteralPath (Join-Path $case 'combined-admission.json') -Encoding UTF8
+  @{D_capacity=$capacity;external_storage=$external;combined_forecast_bytes=$combined;strict_boot_cap=279866334601L;qualification_checkpoint_id=$ExpectedQualificationCheckpointId;actual_checkpoint_ids=@($snapshots|ForEach-Object{$_.Id.ToString('D')});epoch_reset=$false}|ConvertTo-Json -Depth 6|Set-Content -LiteralPath (Join-Path $case 'combined-admission.json') -Encoding UTF8
   Invoke-Command -Session $session -ArgumentList $guestRoot -ScriptBlock {param($root)if(Test-Path -LiteralPath $root){throw 'Guest conversion case already exists'};$null=New-Item -ItemType Directory -Path $root}
   $worker=Join-Path $PSScriptRoot 'guest\Convert-OfflineWindowsSource.ps1'
   $workerSha=(Get-FileHash -LiteralPath $worker -Algorithm SHA256).Hash.ToLowerInvariant()

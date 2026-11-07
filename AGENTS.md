@@ -1,5 +1,9 @@
 # ntfs2refs: current handoff
 
+## Latest SAME2436 milestone: native source witness completed
+
+SAME Run466b35ab294d45b79112a9e0a78d2bd2/native2436/birth1794073057936 remains Running/terminalfalse/stderrEMPTY. Last actual CPU1956.671875s/WS530702336B/peak714862592B. Raw inventory/roles, namespace/allocation closure and hashed inventory completed earlier. Native report reached2573591778B, then validated witness source-native-witness.json404443B and native-source-header.json4241559B CLOSED18:12:18Z. Source assessment/projection/recovery envelope not yet present. These are real completed source-evidence milestones, not source admission, source apply or boot success. Continue SAME process only; original printed prepSHA25193deeeab61b1a9b0edb9bc4ae7bc713dda3fd0bae1eec402faeaa18d38c36 remains authoritative. Sole VM operator boot_finish_operator; root read-only/code/Git and no competing VM calls.
+
 ## ACTUAL LIVE original-Windows conversion: 466b35ab, PID2436
 
 Corrected queue82733 CLOSED0; RunId466b35ab294d45b79112a9e0a78d2bd2 ACTUALLY launched native2436/birth1794073057936/worker212, taskN2R-WindowsConvert-466b35ab294d45b79112a9e0a78d2bd2 Running, one launch/one y. Product39cb900be75fb297dfef698dbd9e16bdb80ff261/21869568B/SHA3b52fe9a6785799f194ef86bdd6d57c9a6a07cb966e0b26356ec320f5a66d800. ORIGINAL independently printed preparation SHA25193deeeab61b1a9b0edb9bc4ae7bc713dda3fd0bae1eec402faeaa18d38c36; workflow scratch/daca53f5dd3bad3133828708d38e4113. Last actual CPU59.75s/peak110075904B/taskRunning/terminalfalse/stderrEMPTY. Host+guest case boot-conversion-39cb900-466b35ab294d45b79112a9e0a78d2bd2. Full source admission/shadow repair/source apply/native finalization/original0 boot remain unproven.

@@ -159,4 +159,3 @@ $wire=[Text.UTF8Encoding]::new($false).GetBytes($json)
 if($wire.Length-gt8MB){throw 'TxF observation exceeds8MiB bounded metadata output'}
 if($OutputPath){$file=[IO.File]::Open($OutputPath,'CreateNew','Write','Read');try{$file.Write($wire,0,$wire.Length);$file.Flush($true)}finally{$file.Dispose()}}
 $json
-

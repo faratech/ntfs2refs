@@ -29,8 +29,10 @@ pub enum ArtifactGroup {
     NativeJournal,
 }
 impl ArtifactGroup {
-    fn limit(self, budget: ResourceBudget) -> u64 {
+    fn limit(self, budget: ResourceBudget, windows_native: bool) -> u64 {
         match self {
+            Self::Native if windows_native => budget.scratch_bytes / 16 * 3,
+            Self::LegacyExpectation if windows_native => 0,
             Self::Source | Self::Native | Self::Expected | Self::Map | Self::Auxiliary => {
                 budget.scratch_bytes / 8
             }
@@ -65,6 +67,7 @@ struct Verified {
     sha256: String,
 }
 struct State {
+    windows_native_allocation: bool,
     groups: BTreeMap<ArtifactGroup, Group>,
     entries: BTreeMap<PathBuf, Entry>,
     // The same immutable verified snapshots previously folded in check_free.
@@ -765,6 +768,7 @@ impl ArtifactArena {
             _parents: handles,
             budget,
             state: Mutex::new(State {
+                windows_native_allocation: false,
                 groups: BTreeMap::new(),
                 entries: BTreeMap::new(),
                 verified_allocated_bytes: 0,
@@ -779,6 +783,42 @@ impl ArtifactArena {
     }
     pub fn budget(&self) -> ResourceBudget {
         self.0.budget
+    }
+    /// Reassign only the unused legacy-expectation sixteenth to the Windows
+    /// native report. Select this before any group reservation; the five
+    /// primary shares plus recovery still fit the same total scratch budget.
+    pub(crate) fn use_windows_native_allocation(&self, source: &GeneralDiskBinding) -> Result<()> {
+        source.validate()?;
+        ensure!(source.layout_profile == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows,
+            "Windows native allocation requires the actual offline Windows source");
+        let mut state = self.0.state.lock().map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
+        ensure!(!state.windows_native_allocation && !state.prepared_closed
+            && state.groups.is_empty() && state.entries.is_empty() && state.overhead == 0,
+            "Windows native allocation must precede every arena reservation");
+        let budget = self.0.budget;
+        let primary = (budget.scratch_bytes / 8).checked_mul(4).context("arena primary shares overflow")?;
+        let native = budget.windows_native_page_budget()?.max_file_bytes;
+        let recovery = budget.scratch_bytes / 16 * 5;
+        ensure!(add(add(primary, native)?, recovery)? <= budget.scratch_bytes,
+            "Windows native allocation exceeds the unchanged total scratch budget");
+        state.windows_native_allocation = true;
+        Ok(())
+    }
+    pub(crate) fn native_page_budget(&self) -> Result<n2r_win32::tree_resources::MetadataPageBudget> {
+        let state = self.0.state.lock().map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
+        Ok(if state.windows_native_allocation { self.0.budget.windows_native_page_budget()? }
+            else { self.0.budget.page_budget()? })
+    }
+    pub(crate) fn require_native_allocation(&self, admission: n2r_win32::tree_resources::SourceResourceAdmission) -> Result<()> {
+        admission.validate()?;
+        let state = self.0.state.lock().map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
+        let expected = if state.windows_native_allocation { self.0.budget.windows_native_page_budget()? }
+            else { self.0.budget.page_budget()? };
+        ensure!(admission.budget == self.0.budget && admission.native_pages == expected
+            && admission.schema_version == (if state.windows_native_allocation { 2 } else { 1 })
+            && (!state.windows_native_allocation || !state.groups.contains_key(&ArtifactGroup::LegacyExpectation)),
+            "native observation admission differs from its actual arena allocation");
+        Ok(())
     }
     pub fn allocation_slack_bytes(&self) -> u64 {
         self.0.allocation_slack
@@ -847,15 +887,15 @@ impl ArtifactArena {
         })
     }
     pub fn reserve_group(&self, group: ArtifactGroup, maximum: u64) -> Result<ArtifactGroupPermit> {
-        ensure!(
-            maximum <= group.limit(self.0.budget),
-            "artifact group exceeds its resource share"
-        );
         let mut state = self
             .0
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("artifact arena lock poisoned"))?;
+        ensure!(!(state.windows_native_allocation && group == ArtifactGroup::LegacyExpectation),
+            "Windows native report allocation consumes the legacy expectation slot");
+        ensure!(maximum <= group.limit(self.0.budget, state.windows_native_allocation),
+            "artifact group exceeds its resource share");
         ensure!(
             !state.prepared_closed && !state.groups.contains_key(&group),
             "artifact group already reserved; clone its real permit"

@@ -716,7 +716,7 @@ impl ResourceSourceContext {
             SourceMetadataBudget::from_resource_budget(budget)?.scratch_bytes,
         )?;
         let native =
-            arena.reserve_group(ArtifactGroup::Native, budget.page_budget()?.max_file_bytes)?;
+            arena.reserve_group(ArtifactGroup::Native, arena.native_page_budget()?.max_file_bytes)?;
         Self::collect(
             binding,
             budget,
@@ -973,6 +973,7 @@ impl ResourceSourceContext {
         *phase = "source-observation";
         let selectors = PagedObservationRequest::new(&raw, &binding, budget, policy)?;
         let admission = selectors.admission();
+        if let Some((arena, _, _)) = &groups { arena.require_native_allocation(admission)?; }
         let native_path = native_output.join("native.pages");
         let native_permit = groups
             .as_ref()
@@ -1715,6 +1716,10 @@ impl ResourceSourceContext {
         Ok(proof)
     }
     pub fn revalidate_evidence(&self) -> Result<()> {
+        self.admission.validate()?;
+        ensure!((self.admission.schema_version == 2) == self.raw.is_windows_conversion(),
+            "source purpose differs from the selected native artifact allocation");
+        if let Some(arena) = &self.arena { arena.require_native_allocation(self.admission)?; }
         if let Some(guard) = &self.early_preparation_guard { guard.revalidate()?; }
         if let Some(output) = &self._output_basis {
             output.revalidate(

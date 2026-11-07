@@ -81,7 +81,8 @@ impl<'a> PagedObservationRequest<'a> {
                     .context("stream count overflow")?;
             }
         }
-        let admission = SourceResourceAdmission::new(
+        let admit = if windows_paths { SourceResourceAdmission::new_windows } else { SourceResourceAdmission::new };
+        let admission = admit(
             pin_bytes,
             header.mft_record_count,
             source.file_count(),

@@ -106,6 +106,20 @@ impl ResourceBudget {
             max_file_bytes: bytes,
         })
     }
+    /// Explicit Windows native-evidence share. The owning arena must debit
+    /// LegacyExpectation and retain the same aggregate scratch/free-space
+    /// checks; this budget alone grants neither allocation nor source access.
+    pub fn windows_native_page_budget(self) -> io::Result<MetadataPageBudget> {
+        self.validate()?;
+        let bytes = 3 * (self.scratch_bytes / 16);
+        Ok(MetadataPageBudget {
+            max_page_bytes: self.page_bytes,
+            max_records_per_page: (self.page_bytes - 64) / 9,
+            max_records: (bytes - 192) / 9,
+            max_pages: (bytes - 192) / 137,
+            max_file_bytes: bytes,
+        })
+    }
 }
 
 /// Complete actual source counts, authenticated by the caller's frozen raw
@@ -155,6 +169,24 @@ impl SourceResourceAdmission {
         value.validate()?;
         Ok(value)
     }
+    /// Schema2 pins the Legacy-funded Windows native allocation. Source,
+    /// expected and map pages retain schema1's exact resource shares.
+    pub fn new_windows(
+        source_inspection_sha256: [u8; 32],
+        mft_records: u64,
+        raw_identities: u64,
+        files: u64,
+        directories: u64,
+        data_streams: u64,
+        budget: ResourceBudget,
+    ) -> io::Result<Self> {
+        let mut value = Self::new(source_inspection_sha256, mft_records, raw_identities,
+            files, directories, data_streams, budget)?;
+        value.schema_version = 2;
+        value.native_pages = budget.windows_native_page_budget()?;
+        value.validate()?;
+        Ok(value)
+    }
     pub fn objects(self) -> io::Result<u64> {
         self.files
             .checked_add(self.directories)
@@ -171,6 +203,11 @@ impl SourceResourceAdmission {
     pub fn validate(self) -> io::Result<()> {
         self.budget.validate()?;
         let pages = self.budget.page_budget()?;
+        let native_pages = match self.schema_version {
+            1 => pages,
+            2 => self.budget.windows_native_page_budget()?,
+            _ => return Err(io::Error::other("unknown source resource admission schema")),
+        };
         // Per-entry state covers scalar source/native identity indexes and
         // target/map ordinal indexes. Large bytes remain in paged records.
         let indexes = self.raw_identities.checked_mul(256).and_then(|n| {
@@ -180,8 +217,7 @@ impl SourceResourceAdmission {
                 .and_then(|o| o.checked_mul(64))
                 .and_then(|o| n.checked_add(o))
         });
-        if self.schema_version != 1
-            || self.source_inspection_sha256 == [0; 32]
+        if self.source_inspection_sha256 == [0; 32]
             || self.directories == 0
             || self.raw_identities == 0
             || self.raw_identities > self.mft_records
@@ -191,7 +227,7 @@ impl SourceResourceAdmission {
             || !indexes.is_some_and(|n| n <= self.budget.retained_index_bytes)
             || self.projected_handles()? > self.budget.handle_slots
             || self.source_pages != pages
-            || self.native_pages != pages
+            || self.native_pages != native_pages
             || self.expected_pages != pages
             || self.map_pages != pages
         {
@@ -212,6 +248,11 @@ impl SourceResourceAdmission {
     }
     pub fn semantic_byte_budget(self) -> u64 {
         self.budget.scratch_bytes / 16
+    }
+    /// Decoded native row bytes occupy the same HEX-encoded native artifact;
+    /// this is not an additional disk reservation or constructor allowance.
+    pub fn native_semantic_byte_budget(self) -> u64 {
+        self.native_pages.max_file_bytes / 2
     }
     pub fn maximum_namespace_names(self) -> io::Result<usize> {
         self.validate()?;
@@ -273,7 +314,7 @@ impl SourceResourceAdmission {
         let result = crate::observation_pages::NativeObservationBudget {
             pages: self.native_pages.native()?,
             max_row_bytes: self.budget.max_row_bytes,
-            max_total_row_bytes: self.semantic_byte_budget(),
+            max_total_row_bytes: self.native_semantic_byte_budget(),
             max_index_bytes: self.budget.retained_index_bytes,
         };
         result.validate()?;

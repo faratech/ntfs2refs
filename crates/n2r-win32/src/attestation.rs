@@ -59,7 +59,7 @@ impl ResourceProfile {
                     };
                 };
                 let semantic =
-                    usize::try_from(admission.semantic_byte_budget()).unwrap_or(usize::MAX);
+                    usize::try_from(admission.native_semantic_byte_budget()).unwrap_or(usize::MAX);
                 ResourceLimits {
                     maximum_identities: usize::try_from(admission.raw_identities).unwrap_or(0),
                     maximum_stream_bytes: i64::MAX as u64,
@@ -1653,7 +1653,7 @@ pub fn validate_domain_resources(domain: &impl NativeObservationDomain) -> io::R
         || a.security_bytes > limits.security_bytes as u64
         || a.stream_evidence_bytes > limits.stream_evidence_bytes as u64
         || a.bitmap_evidence_bytes
-            > resource_admission.map_or(MAX_TOTAL_BITMAP_BYTES as u64, |a| a.semantic_byte_budget())
+            > resource_admission.map_or(MAX_TOTAL_BITMAP_BYTES as u64, |a| a.native_semantic_byte_budget())
         || a.namespace_evidence_bytes > limits.namespace_evidence_bytes as u64
         || !same_ids(
             (0..domain.len())
@@ -1709,7 +1709,7 @@ pub fn validate_domain_resources(domain: &impl NativeObservationDomain) -> io::R
         return Err(invalid());
     }
     let maximum = if let Some(admission) = resource_admission {
-        usize::try_from(admission.semantic_byte_budget()).map_err(io::Error::other)?
+        usize::try_from(admission.native_semantic_byte_budget()).map_err(io::Error::other)?
     } else {
         header
             .request

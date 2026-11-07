@@ -353,6 +353,9 @@ where
         request.resources,
         &[request.pair.source.clone(), request.pair.shadow.clone()],
     )?;
+    if request.pair.source.layout_profile == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows {
+        arena.use_windows_native_allocation(&request.pair.source)?;
+    }
     ensure!(
         arena
             .volume_guid_path()?

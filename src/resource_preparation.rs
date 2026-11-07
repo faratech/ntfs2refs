@@ -432,6 +432,9 @@ where
         if let Some(report) = projection.windows_txf_disposition_report()? {
             events.observer.note(&report)?;
         }
+        if let Some(report)=projection.windows_object_id_disposition_report()? {
+            events.observer.note(&report)?;
+        }
         let expected_group = arena.reserve_group(
             ArtifactGroup::Expected,
             admission.expected_page_budget()?.max_file_bytes,

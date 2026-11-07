@@ -1029,6 +1029,7 @@ impl ResourceSourceContext {
                 "source_fingerprint_before_native":source_sha,
                 "native_pages_sha256":native.domain().sha256(),
                 "protected_windows_txf_markers":native.windows_txf_markers().map(|proof| proof.audit()),
+                "protected_windows_object_ids":native.windows_object_ids().map(|proof| proof.audit()),
                 "txf":native.txf(),
                 "txf_error":native.txf_error(),
                 "before":native.before(),
@@ -1073,9 +1074,20 @@ impl ResourceSourceContext {
                 && raw.canonical_sha256()? == inspection_sha,
             "frozen source changed across actual native observation"
         );
-        let mut indexes =
-            ntfs_internal::verify_domain(&mut source, &raw, &output.join("internal-indexes"))?;
+        let mut indexes = if let Some(proof) = native.windows_object_ids_owned() {
+            ensure!(raw.is_windows_conversion() && proof.binding() == &binding,
+                "Windows object-ID witness belongs to another actual frozen source");
+            ntfs_internal::verify_domain_windows(
+                &mut source, &raw, &output.join("internal-indexes"), &binding, proof,
+            )?
+        } else {
+            ntfs_internal::verify_domain(&mut source, &raw, &output.join("internal-indexes"))?
+        };
         indexes.bind_native_quota(&native);
+        if let (Some(aliases), Some(proof)) = (windows_aliases.as_mut(), indexes.windows_object_ids_owned()) {
+            Arc::get_mut(aliases).context("Windows alias owner was shared before object-ID disposition binding")?
+                .bind_windows_object_ids(&raw, &binding, proof)?;
+        }
         let transactions = ntfs_transactions::verify_domain(
             &raw,
             &log,

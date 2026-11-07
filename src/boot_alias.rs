@@ -14,6 +14,112 @@ use sha2::{Digest, Sha256};
 
 const PURPOSE: [u8; 8] = *b"WINALIS1";
 
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct WindowsObjectIdDisposition {
+    pub identity: n2r_win32::attestation::FileIdentity,
+    pub source_inspection_sha256: String,
+    pub source_attribute: crate::ntfs_inspect::AttributeInventory,
+    pub index_key_hex: String,
+    pub index_value_hex: String,
+    pub native_object_id_hex: String,
+}
+
+/// Paid exact source/index/native evidence for an explicitly new target
+/// object-ID epoch. Its private owner cannot be recreated from serialized pins.
+pub struct WindowsObjectIdDomain {
+    entries: SortedRecordStore,
+    source_inspection_sha256: String,
+    binding: n2r_win32::general_layout::GeneralDiskBinding,
+    proof: Arc<n2r_win32::windows_object_ids::VerifiedWindowsObjectIds>,
+    _scratch: SourceScratch,
+    _owner_ram: SourceRamLease,
+}
+pub(crate) fn windows_object_id_bytes(attribute:&crate::ntfs_inspect::AttributeInventory)->Result<[u8;16]> {
+    ensure!(attribute.type_code==0x40 && attribute.name_utf16.is_empty() && attribute.resident
+        && attribute.flags==0 && attribute.compression_unit==0 && attribute.lowest_vcn==0
+        && attribute.logical_size==16 && attribute.initialized_size==16 && attribute.allocated_size==16
+        && attribute.total_allocated_size.is_none() && attribute.extents.is_empty(),
+        "Windows object-ID attribute exceeds exact resident16-byte profile");
+    let encoded=attribute.resident_metadata_hex.as_deref().context("Windows object-ID bytes absent")?;
+    ensure!(encoded.len()==32 && encoded.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b)),
+        "Windows object-ID bytes are not canonical16-byte evidence");
+    let mut bytes=[0u8;16];hex::decode_to_slice(encoded,&mut bytes)?;
+    ensure!(bytes.iter().any(|b|*b!=0) && attribute.resident_sha256.as_deref().is_some_and(|digest|
+        crate::ntfs_attribute_list::resident_digest_matches(digest,&bytes)),
+        "Windows object-ID resident digest or nonzero identity differs");
+    Ok(bytes)
+}
+impl WindowsObjectIdDomain {
+    pub(crate) fn from_verified_archive(source:&PagedInspection,
+        binding:&n2r_win32::general_layout::GeneralDiskBinding,
+        proof:Arc<n2r_win32::windows_object_ids::VerifiedWindowsObjectIds>,
+        pin:&RecordStorePin,scratch:&SourceScratch)->Result<Self> {
+        ensure!(source.is_windows_conversion() && proof.binding()==binding
+            && binding.layout_profile==n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows,
+            "Windows object-ID archive lacks actual Windows/native source scope");
+        let entries=SortedRecordStore::open(pin,scratch)?;
+        ensure!(pin.purpose==*b"WINOID01" && entries.len()==u64::try_from(proof.len())?,"Windows object-ID native/archive coverage differs");
+        let owner_ram=scratch.lease_ram(std::mem::size_of::<Self>() as u64+16384)?;
+        let value=Self {entries,source_inspection_sha256:source.canonical_sha256()?,binding:binding.clone(),
+            proof,_scratch:scratch.clone(),_owner_ram:owner_ram};
+        value.require_source(source)?;
+        for ordinal in 0..value.entries.len(){
+            let row:WindowsObjectIdDisposition=value.entries.get(ordinal)?;
+            ensure!(value.entries.key(ordinal)?==object_key(row.identity.record_number),
+                "Windows object-ID archive key differs");
+            let file=source.find_record(row.identity.record_number,Some(row.identity.sequence_number))?
+                .context("Windows object-ID archive source identity absent")?;
+            ensure!(value.accounted(source,&file)?,"Windows object-ID archive has an unaccounted source row");
+        }
+        Ok(value)
+    }
+    pub(crate) fn require_source(&self,source:&PagedInspection)->Result<()> {
+        self.entries.revalidate()?;
+        ensure!(source.is_windows_conversion() && source.canonical_sha256()?==self.source_inspection_sha256
+            && self.proof.binding()==&self.binding,"Windows object-ID owner belongs to another source");
+        Ok(())
+    }
+    pub(crate) fn accounted(&self,source:&PagedInspection,file:&FileInventory)->Result<bool> {
+        let mut attributes=file.attributes.iter().filter(|a|a.type_code==0x40);
+        let Some(attribute)=attributes.next() else{return Ok(false)};
+        ensure!(attributes.next().is_none() && file.record_number>=16 && file.sequence_number!=0
+            && file.base_file_reference==0 && !file.is_metadata
+            && file.metadata_role==crate::ntfs_inspect::MetadataRole::OutsideExtendCandidate
+            && file.metadata_role_issue.is_none(),"Windows ordinary object-ID scope differs");
+        ensure!(source.is_windows_conversion() && source.canonical_sha256()?==self.source_inspection_sha256,
+            "Windows object-ID source inspection differs");
+        let row:WindowsObjectIdDisposition=self.entries.find(object_key(file.record_number))?
+            .context("Windows object-ID source lacks its exact archived native/index member")?;
+        let raw=windows_object_id_bytes(attribute)?;let indexed=hex::decode(&row.index_value_hex)?;
+        let native=hex::decode(&row.native_object_id_hex)?;
+        ensure!(row.identity.record_number==file.record_number && row.identity.sequence_number==file.sequence_number
+            && row.source_inspection_sha256==self.source_inspection_sha256 && row.source_attribute==*attribute
+            && row.index_key_hex==hex::encode(raw) && indexed.len()==56
+            && indexed[..8]==row.identity.reference().to_le_bytes() && native.len()==64
+            && native[..16]==raw && native[16..]==indexed[8..],
+            "Windows object-ID archived raw/index/native bytes differ");
+        let inspection:[u8;32]=hex::decode(&self.source_inspection_sha256)?.try_into()
+            .map_err(|_|anyhow::anyhow!("Windows object-ID inspection digest width differs"))?;
+        let extended:[u8;48]=indexed[8..].try_into()?;
+        self.proof.require_raw_object_id_scope(&self.binding,inspection,&row.identity,&raw,&extended)?;
+        Ok(true)
+    }
+    pub(crate) fn disposition(&self,source:&PagedInspection,file:&FileInventory)->Result<Option<WindowsObjectIdDisposition>> {
+        if !self.accounted(source,file)?{return Ok(None)}
+        self.entries.find(object_key(file.record_number))
+    }
+    pub(crate) fn pin(&self)->&RecordStorePin {self.entries.pin()}
+    pub(crate) fn revalidate(&self)->Result<()> {self.entries.revalidate()}
+    pub(crate) fn len(&self)->u64 {self.entries.len()}
+    pub(crate) fn binding(&self)->&n2r_win32::general_layout::GeneralDiskBinding {&self.binding}
+    pub(crate) fn audit(&self)->serde_json::Value {serde_json::json!({
+        "kind":"Windows-source-object-ID-disposition-v1","source_inspection_sha256":self.source_inspection_sha256,
+        "records":self.entries.pin(),"source_object_id_objects":self.entries.len(),"native":self.proof.audit(),
+        "policy":"archive exact raw object-ID attribute and complete index/native identity; target starts a new object-ID epoch",
+        "target_object_id_continuity_preserved":false,"grants_source_or_replay_authority":false})}
+}
+
 /// The parent identity and canonical target are proven by the complete raw
 /// namespace. The derived entry is a relative symlink, not a ReFS short name.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,6 +179,7 @@ pub struct WindowsAliasDomain {
     source_inspection_sha256: String,
     storage_hint_normalization: Option<Arc<n2r_win32::BootStorageHintNormalization>>,
     windows_txf_markers: Option<Arc<n2r_win32::windows_txf::VerifiedWindowsTxfMarkers>>,
+    windows_object_ids: Option<Arc<WindowsObjectIdDomain>>,
     _storage_hint_ram: Option<SourceRamLease>,
     _scratch: SourceScratch,
     _owner_ram: SourceRamLease,
@@ -100,7 +207,7 @@ impl WindowsAliasDomain {
         ensure!(source.canonical_sha256()? == source_inspection_sha256,
             "Windows source changed across alias derivation");
         let owner_ram = scratch.lease_ram(std::mem::size_of::<Self>() as u64 + 128)?;
-        Ok(Self { entries, source_inspection_sha256, storage_hint_normalization: None, windows_txf_markers: None, _storage_hint_ram: None,
+        Ok(Self { entries, source_inspection_sha256, storage_hint_normalization: None, windows_txf_markers: None, windows_object_ids:None, _storage_hint_ram: None,
             _scratch: scratch.clone(), _owner_ram: owner_ram })
     }
     pub fn len(&self) -> u64 { self.entries.len() }
@@ -152,6 +259,19 @@ impl WindowsAliasDomain {
         let proof = self.windows_txf_markers.as_deref().context("Windows user TxF metadata lacks its live protected witness")?;
         crate::ntfs_transactions::windows_user_marker(source, file, proof)
     }
+    pub(crate) fn bind_windows_object_ids(&mut self,source:&PagedInspection,
+        binding:&n2r_win32::general_layout::GeneralDiskBinding,domain:Arc<WindowsObjectIdDomain>)->Result<()> {
+        self.require_source(source)?;domain.require_source(source)?;
+        ensure!(self.windows_object_ids.is_none() && domain.binding()==binding,
+            "Windows object-ID owner is duplicated or has another source binding");
+        self.windows_object_ids=Some(domain);Ok(())
+    }
+    pub(crate) fn windows_object_id_accounted(&self,source:&PagedInspection,file:&FileInventory)->Result<bool> {
+        if !file.attributes.iter().any(|a|a.type_code==0x40){return Ok(false)}
+        self.windows_object_ids.as_deref().context("Windows object ID lacks its held disposition owner")?
+            .accounted(source,file)
+    }
+    pub(crate) fn windows_object_ids_owned(&self)->Option<Arc<WindowsObjectIdDomain>> {self.windows_object_ids.clone()}
     pub(crate) fn has_storage_hint_owner(&self, proof: &Arc<n2r_win32::BootStorageHintNormalization>) -> bool {
         self.storage_hint_normalization.as_ref().is_some_and(|held| Arc::ptr_eq(held, proof))
     }
@@ -185,6 +305,7 @@ impl WindowsAliasDomain {
     pub fn require_source(&self, source: &PagedInspection) -> Result<()> {
         source.revalidate()?;
         self.entries.revalidate()?;
+        if let Some(domain)=&self.windows_object_ids {domain.require_source(source)?;}
         ensure!(source.canonical_sha256()? == self.source_inspection_sha256,
             "Windows alias plan belongs to a different source inventory");
         Ok(())

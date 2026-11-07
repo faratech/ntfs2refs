@@ -35,6 +35,8 @@ pub struct SourceExpectedDomain {
     objects: SortedRecordStore,
     windows_ea_normalizations: Option<SortedRecordStore>,
     windows_txf_dispositions: Option<SortedRecordStore>,
+    windows_object_id_dispositions: Option<SortedRecordStore>,
+    windows_object_id_owner: Option<std::sync::Arc<crate::boot_alias::WindowsObjectIdDomain>>,
     windows_ea_normalized_entries: u64,
     object_count: usize,
     admission: SourceResourceAdmission,
@@ -57,6 +59,8 @@ pub(crate) struct ProjectionRevalidationOwner {
     objects: SortedRecordStore,
     windows_ea_normalizations: Option<SortedRecordStore>,
     windows_txf_dispositions: Option<SortedRecordStore>,
+    windows_object_id_dispositions: Option<SortedRecordStore>,
+    windows_object_id_owner: Option<std::sync::Arc<crate::boot_alias::WindowsObjectIdDomain>>,
     _scratch: SourceScratch,
 }
 
@@ -65,6 +69,8 @@ impl ProjectionRevalidationOwner {
         self.objects.revalidate()?;
         if let Some(records) = &self.windows_ea_normalizations { records.revalidate()?; }
         if let Some(records) = &self.windows_txf_dispositions { records.revalidate()?; }
+        if let Some(records) = &self.windows_object_id_dispositions { records.revalidate()?; }
+        if let Some(owner) = &self.windows_object_id_owner { owner.revalidate()?; }
         Ok(())
     }
 }
@@ -458,6 +464,10 @@ impl SourceExpectedDomain {
         let mut windows_txf_writer = aliases.map(|_| SortedRecordWriter::new(
             &output.join("windows-nontransacted-txf-dispositions"), *b"WINTXF01", scratch,
         )).transpose()?;
+        let windows_object_id_owner=aliases.and_then(|owner|owner.windows_object_ids_owned());
+        let mut windows_object_id_writer=windows_object_id_owner.as_ref().map(|_|SortedRecordWriter::new(
+            &output.join("windows-object-ID-dispositions"),*b"WINOIDP1",scratch,
+        )).transpose()?;
         let (
             mut files,
             mut directories,
@@ -482,6 +492,12 @@ impl SourceExpectedDomain {
                         record_number: file.record_number, sequence_number: file.sequence_number,
                         source_attribute: attribute.clone(),
                     })?;
+            }
+            if let Some(owner)=&windows_object_id_owner {
+                if let Some(disposition)=owner.disposition(source,&file)? {
+                    windows_object_id_writer.as_mut().context("Windows object-ID disposition archive absent")?
+                        .push(ordered_key(ordinal,file.record_number),&disposition)?;
+                }
             }
             if let Some(normalization) = ea_normalization {
                 windows_ea_normalized_entries = windows_ea_normalized_entries
@@ -612,6 +628,14 @@ impl SourceExpectedDomain {
         let windows_txf_dispositions = windows_txf_writer.map(|writer| {
             SortedRecordStore::open(&writer.finish()?, scratch)
         }).transpose()?;
+        let windows_object_id_dispositions=windows_object_id_writer.map(|writer|{
+            SortedRecordStore::open(&writer.finish()?,scratch)
+        }).transpose()?;
+        if let Some(owner)=&windows_object_id_owner {
+            owner.require_source(source)?;
+            ensure!(windows_object_id_dispositions.as_ref().is_some_and(|records|records.len()==owner.len()),
+                "Windows object-ID projected disposition coverage differs");
+        }
         let mut roots = 0u64;
         for ordinal in 0..objects.len() {
             let object: Object = objects.get(ordinal)?;
@@ -635,6 +659,8 @@ impl SourceExpectedDomain {
             objects,
             windows_ea_normalizations,
             windows_txf_dispositions,
+            windows_object_id_dispositions,
+            windows_object_id_owner,
             windows_ea_normalized_entries,
             object_count,
             admission,
@@ -665,6 +691,8 @@ impl SourceExpectedDomain {
         self.objects.revalidate()?;
         if let Some(records) = &self.windows_ea_normalizations { records.revalidate()?; }
         if let Some(records) = &self.windows_txf_dispositions { records.revalidate()?; }
+        if let Some(records) = &self.windows_object_id_dispositions { records.revalidate()?; }
+        if let Some(owner) = &self.windows_object_id_owner { owner.revalidate()?; }
         Ok(())
     }
 
@@ -692,18 +720,31 @@ impl SourceExpectedDomain {
             "grants_source_or_replay_authority":false,
         })))
     }
+    pub(crate) fn windows_object_id_disposition_report(&self)->Result<Option<serde_json::Value>> {
+        self.revalidate_stores()?;
+        Ok(self.windows_object_id_dispositions.as_ref().map(|records|serde_json::json!({
+            "kind":"Windows-target-object-ID-epoch-disposition-v1",
+            "source_inspection_sha256":self.source_inspection_sha256,"records":records.pin(),
+            "source_object_id_objects":records.len(),"source_owner":self.windows_object_id_owner.as_ref().map(|owner|owner.audit()),
+            "policy":"retain exact source raw/index/native object-ID bytes in paid metadata; target starts a new object-ID epoch",
+            "target_object_id_continuity_preserved":false,"raw_source_evidence_changed":false,
+            "source_native_comparison_changed":false,"grants_source_or_replay_authority":false,
+        })))
+    }
 
     /// Drop decode-only workspace once the caller has completed its semantic
     /// comparison, without replacing the held file owners with serialized pins.
     pub(crate) fn into_revalidation_owner(self) -> Result<ProjectionRevalidationOwner> {
         self.revalidate_stores()?;
         let Self {
-            objects, windows_ea_normalizations, windows_txf_dispositions, scratch, ..
+            objects, windows_ea_normalizations, windows_txf_dispositions, windows_object_id_dispositions, windows_object_id_owner, scratch, ..
         } = self;
         Ok(ProjectionRevalidationOwner {
             objects,
             windows_ea_normalizations,
             windows_txf_dispositions,
+            windows_object_id_dispositions,
+            windows_object_id_owner,
             _scratch: scratch,
         })
     }

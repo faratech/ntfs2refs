@@ -153,6 +153,26 @@ impl NativeRequestDomain for PagedObservationRequest<'_> {
             Ok(Some(FileIdentity { record_number: file.record_number, sequence_number: file.sequence_number }))
         })().map_err(io::Error::other)
     }
+    fn windows_object_id_identity(&self, index: usize) -> io::Result<Option<FileIdentity>> {
+        (|| -> Result<_> {
+            if !self.windows_paths { return Ok(None); }
+            ensure!(self.source.is_windows_conversion() && index < self.length,
+                "Windows object-ID selector does not belong to the retained Windows source");
+            let file = self.source.file(index as u64)?;
+            if file.record_number < 16 { return Ok(None); }
+            let mut attributes = file.attributes.iter().filter(|attribute| attribute.type_code == 0x40);
+            let Some(attribute) = attributes.next() else { return Ok(None); };
+            ensure!(file.base_file_reference == 0
+                && file.metadata_role == crate::ntfs_inspect::MetadataRole::OutsideExtendCandidate
+                && attributes.next().is_none() && attribute.resident && attribute.name_utf16.is_empty()
+                && attribute.flags == 0 && attribute.logical_size == 16
+                && attribute.initialized_size == 16 && attribute.allocated_size == 16
+                && attribute.lowest_vcn == 0 && attribute.compression_unit == 0 && attribute.extents.is_empty()
+                && attribute.resident_metadata_hex.as_ref().is_some_and(|bytes| bytes.len() == 32),
+                "Windows object-ID selector requires exact resident16 bytes at FILE {}", file.record_number);
+            Ok(Some(FileIdentity { record_number: file.record_number, sequence_number: file.sequence_number }))
+        })().map_err(io::Error::other)
+    }
     fn row(&self, index: usize) -> io::Result<Cow<'_, NativeRequestRow>> {
         (|| -> Result<_> {
             ensure!(index < self.length, "source selector ordinal absent");

@@ -184,6 +184,13 @@ pub(crate) fn blocker_is_unresolved(
     {
         return Ok(false);
     }
+    if blocker.code=="object_id" && source.is_windows_conversion() {
+        if let (Some(number),Some(domain))=(blocker.file_record_number,indexes.windows_object_ids_owned()) {
+            if let Some(file)=source.find_record(number,None)? {
+                if domain.accounted(source,&file)? {return Ok(false);}
+            }
+        }
+    }
     if blocker.code == "unsupported_attribute"
         && blocker.message == "Attribute type 0x100 needs a preservation policy"
         && transactions.binds_domain(source)
@@ -367,6 +374,7 @@ fn ordinary_user_issues_scoped(
         aliases.is_some(),
         aliases.is_some_and(|aliases| aliases.storage_hint_normalization().is_some()),
         if let Some(aliases) = aliases { aliases.windows_txf_accounted(source, file)? } else { false },
+        if let Some(aliases) = aliases { aliases.windows_object_id_accounted(source,file)? } else { false },
         |stream| evidence.get(&stream.name_utf16).copied().unwrap_or(false),
     ))
 }

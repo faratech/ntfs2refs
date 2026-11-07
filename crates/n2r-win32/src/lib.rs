@@ -97,6 +97,10 @@ pub mod txf_native;
 pub mod windows_txf;
 #[cfg(windows)]
 pub use windows_txf::VerifiedWindowsTxfMarkers;
+#[cfg(windows)]
+pub mod windows_object_ids;
+#[cfg(windows)]
+pub use windows_object_ids::VerifiedWindowsObjectIds;
 pub mod volume_label;
 #[cfg(windows)]
 pub mod volume_policy;

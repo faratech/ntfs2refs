@@ -232,6 +232,10 @@ pub trait NativeRequestDomain {
     fn windows_txf_metadata_identity(&self, _index: usize) -> io::Result<Option<FileIdentity>> {
         Ok(None)
     }
+    /// Optional ordinary Windows object-ID identities; observation only.
+    fn windows_object_id_identity(&self, _index: usize) -> io::Result<Option<FileIdentity>> {
+        Ok(None)
+    }
     fn revalidate(&self) -> io::Result<()>;
     fn require_paged_source(
         &self,

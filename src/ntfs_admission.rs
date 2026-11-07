@@ -1242,7 +1242,7 @@ pub(crate) fn user_issues_with_context(
 ) -> Vec<String> {
     user_issues_with_context_alias_scope(f, ordinary, geometry, names_supported,
         system_volume_information, descriptor, descriptor_maximum, maximum_streams,
-        false, false, false, source_evidence_valid)
+        false, false, false, false, source_evidence_valid)
 }
 
 /// The true alias scope is supplied only after a held WindowsAliasDomain has
@@ -1259,6 +1259,7 @@ pub(crate) fn user_issues_with_context_alias_scope(
     windows_alias_paths_preserved: bool,
     default_storage_hint_normalization: bool,
     verified_windows_txf_metadata: bool,
+    verified_windows_object_id_disposition: bool,
     mut source_evidence_valid: impl FnMut(&ntfs::StreamInventory) -> bool,
 ) -> Vec<String> {
     let mut issues = vec![];
@@ -1305,6 +1306,10 @@ pub(crate) fn user_issues_with_context_alias_scope(
             let root_txf = f.record_number == 5 && f.is_directory && recognized_root_txf(a);
             let windows_txf = windows_alias_paths_preserved && verified_windows_txf_metadata
                 && recognized_root_txf(a);
+            let windows_object_id=windows_alias_paths_preserved && verified_windows_object_id_disposition
+                && a.type_code==0x40 && a.name_utf16.is_empty() && a.resident && a.flags==0
+                && a.logical_size==16 && a.initialized_size==16 && a.allocated_size==16
+                && a.lowest_vcn==0 && a.compression_unit==0 && a.extents.is_empty();
             #[cfg(windows)]
             let default_storage_hint = windows_alias_paths_preserved && default_storage_hint_normalization
                 && crate::ntfs_storage_class::recognized_default(a);
@@ -1333,7 +1338,7 @@ pub(crate) fn user_issues_with_context_alias_scope(
                 && f.standard_information
                     .as_ref()
                     .is_some_and(|si| si.file_attributes & 0x800 != 0);
-            !(plain || data || index || root_txf || windows_txf || ea || point || default_storage_hint)
+            !(plain || data || index || root_txf || windows_txf || windows_object_id || ea || point || default_storage_hint)
                 || ((a.flags != 0 || a.compression_unit != 0)
                     && !sparse_data
                     && !compressed_data

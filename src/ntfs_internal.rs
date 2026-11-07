@@ -17,7 +17,7 @@ use std::io::{Read, Seek};
 #[path = "ntfs_internal_paged.rs"]
 mod paged;
 #[cfg(windows)]
-pub use paged::{PagedVerifiedIndexes, verify_domain};
+pub use paged::{PagedVerifiedIndexes, verify_domain, verify_domain_windows};
 
 #[derive(Debug, Serialize)]
 pub struct IndexState {

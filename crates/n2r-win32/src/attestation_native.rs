@@ -26,6 +26,11 @@ use windows_sys::Win32::{
     },
 };
 
+// winnt.h 10.0.26100.0: PROCESS_TRUST_LABEL_SECURITY_INFORMATION is 0x80.
+// SYSTEM_PROCESS_TRUST_LABEL_ACE is omitted by the older 0x1f projection.
+// Query it explicitly in both API views; preservation comparisons remain exact.
+const COMPLETE_SECURITY_INFORMATION: u32 = 0x1f | 0x80;
+
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
@@ -146,7 +151,7 @@ fn security_with_limit(file: &File, maximum: usize) -> (Vec<u8>, Option<i32>) {
         GetSecurityInfo(
             raw(file),
             1,
-            0x1f,
+            COMPLETE_SECURITY_INFORMATION,
             ptr::null_mut(),
             ptr::null_mut(),
             ptr::null_mut(),
@@ -195,7 +200,7 @@ pub(crate) fn snapshot(file: &File) -> Snapshot {
     let ok = unsafe {
         GetKernelObjectSecurity(
             raw(file),
-            0x1f,
+            COMPLETE_SECURITY_INFORMATION,
             storage.as_mut_ptr().cast(),
             MAX_SECURITY_BYTES as u32,
             &mut used,
@@ -279,7 +284,7 @@ pub(crate) fn source_snapshot_paged(file: &File, require_case: bool, maximum: us
         let mut required = 0u32;
         // SAFETY: size-only synchronous query; no output buffer is passed.
         let ok =
-            unsafe { GetKernelObjectSecurity(raw(file), 0x1f, ptr::null_mut(), 0, &mut required) };
+            unsafe { GetKernelObjectSecurity(raw(file), COMPLETE_SECURITY_INFORMATION, ptr::null_mut(), 0, &mut required) };
         if ok == 0 {
             let error = io::Error::last_os_error();
             if error.raw_os_error() != Some(122) {
@@ -302,7 +307,7 @@ pub(crate) fn source_snapshot_paged(file: &File, require_case: bool, maximum: us
         let ok = unsafe {
             GetKernelObjectSecurity(
                 raw(file),
-                0x1f,
+                COMPLETE_SECURITY_INFORMATION,
                 storage.as_mut_ptr().cast(),
                 required,
                 &mut used,

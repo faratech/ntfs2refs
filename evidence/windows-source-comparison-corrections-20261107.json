@@ -1,0 +1,135 @@
+{
+  "schema_version": 1,
+  "kind": "actual-Windows-source-comparison-refusal-and-focused-corrections",
+  "run_id": "f496c0f516234002b50e4b603dfb330b",
+  "runtime_commit": "3c7ef0a6ba43ae94e92488ad9ea06e86837113b1",
+  "native": {
+    "native_exit": 1,
+    "ram_measurement_scope": "native converter process only",
+    "native_launches": 1,
+    "wall_seconds": 4335.8531744,
+    "owned_process_handle_observed": true,
+    "peak_working_set_bytes": 685363200,
+    "birth_ms": 1794041174171,
+    "pid": 5396,
+    "source_mount_not_probed_after_exit": true
+  },
+  "source_restored_healthy_ntfs": true,
+  "source_partition_bytes": 66236448768,
+  "comparison": {
+    "records": 143580,
+    "user_objects": 143552,
+    "matched_user_objects": 132112,
+    "metadata_security_failures": 11421,
+    "retrieval_failures": 23,
+    "overlap": 4,
+    "all_user_namespace_directory_case_and_logical_checks_passed": true
+  },
+  "corrections": {
+    "empty_nonresident": "Exact zero DATA attribute and native EOF38 transcript only",
+    "object_ids": "Windows-only complete raw/index/protected-native membership and paid exact archive; no ReFS object-ID continuity claim",
+    "security_capture": "Explicit PROCESS_TRUST_LABEL_SECURITY_INFORMATION in both native security views; exact semantic comparator unchanged"
+  },
+  "trust_label_restoration": {
+    "source_ace_type": 20,
+    "source_ace_hex": "14031800a9011f0001020000000000130002000000100000",
+    "source_query_0x9f_returns_complete_descriptor": true,
+    "backupwrite_target_did_not_preserve_trust_label": true,
+    "system_setsecurityinfo_0x80_required_write_dac_present": true,
+    "set_native_error": 5,
+    "preservation_proven": false,
+    "labels_waived": false
+  },
+  "retirement": {
+    "two_reports_full_gzip_readback_equal": true,
+    "originals_retired": false,
+    "automatic_approval_review_rejected": "blocked by policy",
+    "alternate_deletion_api_attempts": 0
+  },
+  "artifacts": [
+    {
+      "path": ".lab\\hyperv\\boot-conversion-3c7ef0a-f496c0f516234002b50e4b603dfb330b\\Source-admission-refusal-restored-normalized-NTFS.json",
+      "bytes": 1211,
+      "sha256": "962a07d95f097afb1c97e5e2cfe0f9d27573bbf956dd5bd1a649c3c71c0eff3a"
+    },
+    {
+      "path": ".lab\\hyperv\\boot-conversion-3c7ef0a-f496c0f516234002b50e4b603dfb330b\\protected-source-closed-milestone\\source-resource-assessment.json",
+      "bytes": 32267,
+      "sha256": "be9a79a19a43e5fb763d219f62c3b7268e5e64e85a7590d55335e0e6d47f0e51"
+    },
+    {
+      "path": ".lab\\hyperv\\boot-conversion-3c7ef0a-f496c0f516234002b50e4b603dfb330b\\protected-source-closed-milestone\\source-comparison-reasons.json",
+      "bytes": 333140,
+      "sha256": "68843a72e8a2dd953ebd47a0db2bea43910660311ed2b89e202678f88052d8c2"
+    },
+    {
+      "path": ".lab\\hyperv\\boot-conversion-3c7ef0a-f496c0f516234002b50e4b603dfb330b\\protected-source-closed-milestone\\source-policy-reasons.json",
+      "bytes": 1739,
+      "sha256": "b1dd8de447eff896037cf57215790102bd804406f9437ed0f360e1f00ed94935"
+    },
+    {
+      "path": ".lab\\hyperv\\boot-conversion-3c7ef0a-f496c0f516234002b50e4b603dfb330b\\protected-source-closed-milestone\\source-native-selected-192-48865.json",
+      "bytes": 13391,
+      "sha256": "4203db93362ea9f021101a2739580041ad48565f1f9c160b3d04f5d3a9b258d5"
+    },
+    {
+      "path": ".lab\\hyperv\\boot-conversion-3c7ef0a-f496c0f516234002b50e4b603dfb330b\\protected-source-closed-milestone\\source-mismatch-raw-facts.json",
+      "bytes": 14940,
+      "sha256": "e809e66d956ac339932ab7f7f9c3dd262dae10c1b75bdf8c9250e585a2908e7b"
+    },
+    {
+      "path": ".lab\\hyperv\\boot-conversion-3c7ef0a-f496c0f516234002b50e4b603dfb330b\\protected-source-closed-milestone\\object-id-FILE145263.json",
+      "bytes": 38891,
+      "sha256": "daed487d3449458c135603db437047bcf6ab025a52875339f6356579d96b18ed"
+    },
+    {
+      "path": ".lab\\hyperv\\boot-conversion-3c7ef0a-f496c0f516234002b50e4b603dfb330b\\protected-source-closed-milestone\\object-id-FILE3.json",
+      "bytes": 16408,
+      "sha256": "d76f9ecdb7c4eb81717b4cfdf945afdbd3b9ec30de63f46dcedc4c5d671e8927"
+    },
+    {
+      "path": ".lab\\hyperv\\boot-conversion-3c7ef0a-f496c0f516234002b50e4b603dfb330b\\protected-source-closed-milestone\\actual-SYSTEM-process-trust-label-required-rights-set.json",
+      "bytes": 47804,
+      "sha256": "3ec6efc854829b8f4fde37f2724f6cf4b32d9b7b9a7a61bcf8fc6135cb5ebd7e"
+    },
+    {
+      "path": ".lab\\hyperv\\boot-conversion-3c7ef0a-f496c0f516234002b50e4b603dfb330b\\two-closed-native-report-verified-archives.json",
+      "bytes": 3287,
+      "sha256": "94566a4b21bc2af71c51084c65954fd0d5a78e24692828b5170b09f50346b9e0"
+    },
+    {
+      "path": ".lab\\hyperv\\boot-conversion-3c7ef0a-f496c0f516234002b50e4b603dfb330b\\two-closed-native-report-retirement-preflight.json",
+      "bytes": 1605,
+      "sha256": "64eda4e5545ec54a6e8935dc5d33afbd74039ae46a01350302d1e97123cbfadb"
+    }
+  ],
+  "unit_tests_run": false,
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "original_windows_converted": false,
+  "original_windows_booted_refs": false,
+  "primary_sources": [
+    "https://learn.microsoft.com/en-us/windows-server/storage/refs/refs-overview",
+    "https://learn.microsoft.com/en-us/windows/win32/secauthz/security-information",
+    "https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-setsecurityaccessmask",
+    "https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/security-information"
+  ],
+  "focused_check": {
+    "kind": "actual-Windows-object-ID-empty-stream-complete-trust-query-check",
+    "exit_code": 0,
+    "wall_seconds": 49.5602102,
+    "stage_admission": {
+      "actual_bytes": 210509987260,
+      "free_bytes": 39572226048,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 2147483648,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "absolute_boot_cap": 279866334601,
+    "full_build_forecast": 2147483648,
+    "future_native_forecast": 17179869184,
+    "unit_tests_run": false,
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+  }
+}

@@ -429,6 +429,26 @@ fn check_file_inner(
             );
             continue;
         }
+        if s.flags == 0 && s.logical_size == 0 && s.initialized_size == 0
+            && s.allocated_size == 0 && s.extents.is_empty()
+        {
+            let mut attributes = file.attributes.iter()
+                .filter(|a| a.type_code == 0x80 && a.name_utf16 == s.name_utf16);
+            let attribute = attributes.next().context("empty nonresident DATA inventory absent")?;
+            ensure!(attributes.next().is_none() && !attribute.resident
+                && attribute.flags == 0 && attribute.logical_size == 0
+                && attribute.initialized_size == 0 && attribute.allocated_size == 0
+                && attribute.lowest_vcn == 0 && attribute.compression_unit == 0
+                && attribute.total_allocated_size.is_none() && attribute.extents.is_empty(),
+                "empty nonresident stream differs from its DATA attribute");
+            // An observed empty nonresident DATA has no physical run to
+            // assemble. Identity and zero-VCN query checks above still apply;
+            // logical EOF/content verification remains a separate obligation.
+            ensure!(q.allocated_size == 0 && r.native_error == Some(38)
+                && r.bytes.is_empty() && q.retrieval_continuation.is_empty(),
+                "empty nonresident stream has unexpected physical retrieval evidence");
+            continue;
+        }
         let runs = if let Some(admission) = resources {
             retrieval_paging::assemble_queries_with_limits(
                 r,

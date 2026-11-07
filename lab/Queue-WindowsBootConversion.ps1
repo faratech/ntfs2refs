@@ -2,6 +2,7 @@ param([Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{32}\z')][string]$RunId,
  [ValidatePattern('\A[0-9a-f]{7,40}\z')][string]$SourceCommit='643880f',
  [ValidatePattern('\A[0-9a-f]{64}\z')][string]$CandidateSha='1f5fe77e6e53d34dbc499b263b6b2571ff54c1fe6cb7b84a58585c03699b3dbb',
  [long]$ExpectedPartitionBytes=66238545920L,
+ [long]$ExpectedControlBootUnixMs=0,
  [switch]$ObserveOnly)
 $ErrorActionPreference='Stop';Set-StrictMode -Version Latest
 $workspace=Split-Path -Parent $PSScriptRoot
@@ -12,6 +13,7 @@ $credential=[pscredential]::new('LabAdmin',$saved.Password)
 $session=New-PSSession -VMId '8f7fc646-8c9f-41d0-b65a-ecfadccfc36a' -Credential $credential
 try{
  if(-not$ObserveOnly){
+  if($ExpectedControlBootUnixMs-lt1793995320000L){throw 'Actual independently observed control boot time is required'}
   $binary=Join-Path $workspace 'target\shared-experiments\x86_64-pc-windows-msvc\release\ntfs2refs.exe'
   if((Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant()-cne$candidateSha){throw 'Built candidate differs'}
   $tokens=$null;$parseErrors=$null
@@ -37,12 +39,12 @@ try{
   $workerSha=(Get-FileHash -LiteralPath $worker -Algorithm SHA256).Hash.ToLowerInvariant()
   Copy-Item -LiteralPath $binary -Destination (Join-Path $guestRoot 'ntfs2refs.exe') -ToSession $session
   Copy-Item -LiteralPath $worker -Destination (Join-Path $guestRoot 'worker.ps1') -ToSession $session
-  Invoke-Command -Session $session -ArgumentList $guestRoot,$RunId,$candidateSha,$workerSha,$SourceCommit,$ExpectedPartitionBytes -ScriptBlock {
-   param($root,$id,$exeSha,$workerSha,$commit,$partitionBytes)
+  Invoke-Command -Session $session -ArgumentList $guestRoot,$RunId,$candidateSha,$workerSha,$SourceCommit,$ExpectedPartitionBytes,$ExpectedControlBootUnixMs -ScriptBlock {
+   param($root,$id,$exeSha,$workerSha,$commit,$partitionBytes,$bootMs)
    $task='N2R-WindowsConvert-'+$id;$worker=Join-Path $root 'worker.ps1'
    if(Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue){throw 'Conversion task already exists'}
    if((Get-FileHash -LiteralPath $worker -Algorithm SHA256).Hash.ToLowerInvariant()-cne$workerSha-or(Get-FileHash -LiteralPath (Join-Path $root 'ntfs2refs.exe') -Algorithm SHA256).Hash.ToLowerInvariant()-cne$exeSha){throw 'Guest candidate or worker differs'}
-   $action=New-ScheduledTaskAction -Execute 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' -Argument ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File '+$worker+' -Root '+$root+' -CandidateSha '+$exeSha+' -SourceCommit '+$commit+' -ExpectedPartitionBytes '+$partitionBytes)
+   $action=New-ScheduledTaskAction -Execute 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' -Argument ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File '+$worker+' -Root '+$root+' -CandidateSha '+$exeSha+' -SourceCommit '+$commit+' -ExpectedPartitionBytes '+$partitionBytes+' -ExpectedControlBootUnixMs '+$bootMs)
    $principal=New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
    $settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
    $null=Register-ScheduledTask -TaskName $task -Action $action -Principal $principal -Settings $settings

@@ -1,7 +1,8 @@
 param([Parameter(Mandatory)][string]$Root,
  [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{64}\z')][string]$CandidateSha,
  [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{7,40}\z')][string]$SourceCommit,
- [long]$ExpectedPartitionBytes=66238545920L)
+ [long]$ExpectedPartitionBytes=66238545920L,
+ [Parameter(Mandatory)][long]$ExpectedControlBootUnixMs)
 $ErrorActionPreference='Stop';Set-StrictMode -Version Latest
 if($Root-notmatch'\AC:\\ntfs2refs\\boot-conversion-[0-9a-f]{7}-[0-9a-f]{32}\z'-or$Root-notlike('*boot-conversion-'+$SourceCommit.Substring(0,7)+'-*')){throw 'Unexpected conversion case'}
 $marker=[IO.File]::Open((Join-Path $Root 'started.marker'),'CreateNew','Write','Read')
@@ -10,7 +11,7 @@ $process=$null;$output=$null;$errors=$null
 try{
  $os=Get-CimInstance Win32_OperatingSystem;$current=Get-Partition -DriveLetter C
  $source=Get-Partition -DriveLetter D;$disk=Get-Disk -Number $source.DiskNumber
- if([DateTimeOffset]::new($os.LastBootUpTime.ToUniversalTime()).ToUnixTimeMilliseconds()-ne1793995332223L-or$current.DiskNumber-ne1-or(Get-Volume -DriveLetter C).FileSystem-cne'ReFS'-or$source.DiskNumber-ne0-or$source.PartitionNumber-ne3-or$source.IsBoot-or$source.IsSystem-or[guid]$source.Guid-ne[guid]'c6c3318f-a7c8-47b9-be6d-6dde5e00862f'){throw 'Actual alternate Windows/source binding changed'}
+ if($ExpectedControlBootUnixMs-lt1793995320000L-or[DateTimeOffset]::new($os.LastBootUpTime.ToUniversalTime()).ToUnixTimeMilliseconds()-ne$ExpectedControlBootUnixMs-or$current.DiskNumber-ne1-or[guid]$current.Guid-ne[guid]'6e68607e-fd08-493e-9982-ae160c5e86d9'-or(Get-Volume -DriveLetter C).FileSystem-cne'ReFS'-or$source.DiskNumber-ne0-or$source.PartitionNumber-ne3-or$source.IsBoot-or$source.IsSystem-or[guid]$source.Guid-ne[guid]'c6c3318f-a7c8-47b9-be6d-6dde5e00862f'){throw 'Actual alternate Windows/source binding changed'}
  if($ExpectedPartitionBytes-notin@(66238545920L,66236448768L)-or$disk.UniqueId-cne'60022480BEA35BA9D496D5AFF633D768'-or$disk.IsOffline-or$disk.IsReadOnly-or$disk.Size-ne64GB-or$source.Offset-ne331350016L-or$source.Size-ne$ExpectedPartitionBytes-or(Get-Volume -DriveLetter D).FileSystem-cne'NTFS'){throw 'Original NTFS source geometry/state changed'}
  if(@(Get-Process -Name inspect -ErrorAction SilentlyContinue).Count){throw 'Read-only inspectors must be closed before exclusive conversion'}
  $exe=Join-Path $Root 'ntfs2refs.exe';if((Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()-cne$CandidateSha){throw 'Candidate copy differs'}

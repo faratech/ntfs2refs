@@ -925,6 +925,7 @@ impl Drop for SourceRangeWriter {
 pub struct PagedMetadataRange {
     reader: RefCell<Reader>,
     decoded: RefCell<DecodedChunks>,
+    resident: Option<ResidentMetadataCache>,
     pin: SourcePagePin,
     // Both possible decoded chunks are prepaid. Retain the same file-inventory
     // cache policy without allocating an independently maximum-sized window.
@@ -938,6 +939,31 @@ pub struct PagedMetadataRange {
 struct DecodedChunks {
     recent: Option<(u64, Vec<u8>)>,
     previous: Option<(u64, Vec<u8>)>,
+}
+struct ResidentMetadataCache {
+    bytes: Vec<u8>,
+    // Release the retained buffer before returning its aggregate RAM credit.
+    _ram: SourceRamLease,
+}
+impl ResidentMetadataCache {
+    fn try_new(purpose: [u8; 8], length: u64, scratch: &SourceScratch) -> Option<Self> {
+        // Only canonical metadata stores qualify; source payload ranges never do.
+        let divisor = if purpose == *b"N2RFILE1" {
+            4
+        } else if purpose == *b"N2RNSD01" || purpose == *b"N2RNSE01" {
+            64
+        } else {
+            return None;
+        };
+        let charge = length.checked_add(std::mem::size_of::<Self>() as u64)?;
+        if length == 0 || charge > scratch.budget().ram_bytes / divisor { return None; }
+        let size = usize::try_from(length).ok()?;
+        // Optional quota/allocation refusals preserve the ordinary chunk reader.
+        let ram = scratch.lease_ram(charge).ok()?;
+        let mut bytes = Vec::new();
+        if bytes.try_reserve_exact(size).is_err() || bytes.capacity() != size { return None; }
+        Some(Self { bytes, _ram: ram })
+    }
 }
 impl PagedMetadataRange {
     pub fn capture(
@@ -1080,6 +1106,7 @@ impl PagedMetadataRange {
             )
             .context("source retained reader memory overflow")?,
         )?;
+        let mut resident = ResidentMetadataCache::try_new(pin.purpose, footer.logical_bytes, scratch);
         let mut hash = Sha256::new();
         let mut total = 0u64;
         for ordinal in 0..footer.chunks {
@@ -1096,6 +1123,9 @@ impl PagedMetadataRange {
                 "source range has a short interior chunk"
             );
             hash.update(&chunk);
+            if let Some(cache) = &mut resident {
+                cache.bytes.extend_from_slice(&chunk);
+            }
             total += chunk.len() as u64;
         }
         ensure!(
@@ -1125,12 +1155,16 @@ impl PagedMetadataRange {
         Ok(Self {
             reader: RefCell::new(reader),
             decoded: RefCell::new(DecodedChunks::default()),
+            resident,
             pin: pin.clone(),
             _ram: ram,
             second_chunk_cache,
             _created: created,
             _path_ram: path_ram,
         })
+    }
+    pub fn clear_resident_cache(&mut self) {
+        self.resident = None;
     }
     pub fn slice(self: &Rc<Self>, offset: u64, bytes: u64) -> Result<SourceMetadataSlice> {
         ensure!(
@@ -1157,6 +1191,13 @@ impl SourceMetadataRange for PagedMetadataRange {
                 .is_some_and(|n| n <= self.pin.logical_bytes),
             "source range read escapes metadata"
         );
+        if let Some(cache) = &self.resident {
+            let start = usize::try_from(offset).context("resident source address exceeds address space")?;
+            let end = start.checked_add(output.len()).context("resident source address overflow")?;
+            output.copy_from_slice(cache.bytes.get(start..end)
+                .context("resident source range differs from complete metadata")?);
+            return Ok(());
+        }
         let mut at = offset;
         while !output.is_empty() {
             let ordinal = at / u64::from(self.pin.chunk_bytes);

@@ -408,4 +408,8 @@ impl SortedRecordStore {
         self.data.revalidate()?;
         self.directory.revalidate()
     }
+    pub(crate) fn clear_resident_cache(&mut self) {
+        self.data.clear_resident_cache();
+        self.directory.clear_resident_cache();
+    }
 }

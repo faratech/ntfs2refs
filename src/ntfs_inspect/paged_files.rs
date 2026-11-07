@@ -101,6 +101,7 @@ impl PagedRawFiles {
         // Replacement changes roles or hash evidence. Never serve an old row,
         // and return optional cache credit before opening replacement pages.
         self.directory_rows.get_mut().clear();
+        self.files.clear_resident_cache();
         let replacement = SortedRecordStore::open(pin, &self.scratch)?;
         for ordinal in 0..replacement.len() {
             ensure!(

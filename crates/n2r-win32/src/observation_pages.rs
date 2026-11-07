@@ -527,15 +527,19 @@ impl PagedNativeObservation {
         Ok(result)
     }
     fn file_row(&self, i: usize) -> io::Result<FileRow> {
-        let _decode = self
-            .memory
-            .as_ref()
-            .map(|m| m.decode(self.budget))
-            .transpose()?;
         let row = *self
             .files
             .get(i)
             .ok_or_else(|| io::Error::other("native observation index outside domain"))?;
+        require(
+            row.bytes > 0 && row.bytes <= self.budget.max_row_bytes,
+            "native file row exceeds its authenticated decode limit",
+        )?;
+        let _decode = self
+            .memory
+            .as_ref()
+            .map(|m| m.decode(self.budget, row.bytes))
+            .transpose()?;
         decode_row(&mut self.reader.borrow_mut(), row, self.budget)
     }
     pub fn sha256(&self) -> &str {
@@ -576,23 +580,34 @@ impl NativeObservationDomain for PagedNativeObservation {
         self.namespace.len()
     }
     fn row_view(&self, i: usize) -> io::Result<NativeObservationRow<'_>> {
-        let memory = self
-            .memory
-            .as_ref()
-            .map(|m| m.decode(self.budget))
-            .transpose()?
-            .flatten();
-        let row = *self
+        let file_index = *self
             .files
             .get(i)
             .ok_or_else(|| io::Error::other("native row ordinal outside domain"))?;
-        let file: FileRow = decode_row(&mut self.reader.borrow_mut(), row, self.budget)?;
-        let row = *self
+        let namespace_index = *self
             .namespace
             .get(i)
             .ok_or_else(|| io::Error::other("native namespace ordinal outside domain"))?;
-        let namespace: NamespaceFile =
-            decode_row(&mut self.namespace_reader.borrow_mut(), row, self.budget)?;
+        require(
+            file_index.bytes > 0
+                && file_index.bytes <= self.budget.max_row_bytes
+                && namespace_index.bytes > 0
+                && namespace_index.bytes <= self.budget.max_row_bytes,
+            "native paired rows exceed their authenticated decode limits",
+        )?;
+        let simultaneous_bytes = add(file_index.bytes, namespace_index.bytes)?;
+        let memory = self
+            .memory
+            .as_ref()
+            .map(|m| m.decode(self.budget, simultaneous_bytes))
+            .transpose()?
+            .flatten();
+        let file: FileRow = decode_row(&mut self.reader.borrow_mut(), file_index, self.budget)?;
+        let namespace: NamespaceFile = decode_row(
+            &mut self.namespace_reader.borrow_mut(),
+            namespace_index,
+            self.budget,
+        )?;
         Ok(NativeObservationRow::new(
             Cow::Owned(file.request),
             Cow::Owned(file.observation),
@@ -608,15 +623,19 @@ impl NativeObservationDomain for PagedNativeObservation {
         Ok(Cow::Owned(self.file_row(i)?.logical))
     }
     fn namespace_file(&self, i: usize) -> io::Result<Cow<'_, NamespaceFile>> {
-        let _decode = self
-            .memory
-            .as_ref()
-            .map(|m| m.decode(self.budget))
-            .transpose()?;
         let row = *self
             .namespace
             .get(i)
             .ok_or_else(|| io::Error::other("namespace index outside domain"))?;
+        require(
+            row.bytes > 0 && row.bytes <= self.budget.max_row_bytes,
+            "native namespace row exceeds its authenticated decode limit",
+        )?;
+        let _decode = self
+            .memory
+            .as_ref()
+            .map(|m| m.decode(self.budget, row.bytes))
+            .transpose()?;
         Ok(Cow::Owned(decode_row(
             &mut self.namespace_reader.borrow_mut(),
             row,

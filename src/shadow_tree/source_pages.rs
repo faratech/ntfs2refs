@@ -428,28 +428,27 @@ impl SourceExpectedDomain {
                 && actual_budget.merge_fan_in == expected_budget.merge_fan_in,
             "actual source/native/resource projection ownership differs"
         );
-        let row_ram = scratch.lease_ram(
-            admission
+        let row_working_bytes = admission
                 .budget
                 .max_row_bytes
                 .checked_mul(8)
-                .context("source object working RAM overflow")?,
-        )?;
+                .context("source object working RAM overflow")?;
+        let row_ram = scratch.lease_ram(row_working_bytes)?;
         // The complete source counts size batches only; extra names or large
         // rows still spill and merge without dropping any source evidence.
-        let mut objects = ExternalSort::with_record_hint(
+        let mut objects = ExternalSort::with_shared_projection_hint(
             &output.join("source-objects"),
             *b"N2RSOBJ1",
             scratch,
             source.file_count(),
         )?;
-        let mut names = ExternalSort::with_record_hint(
+        let mut names = ExternalSort::with_shared_projection_hint(
             &output.join("destination-names"),
             *b"N2RDNAM1",
             scratch,
             source.file_count(),
         )?;
-        let mut physical = ExternalSort::with_record_hint(
+        let mut physical = ExternalSort::with_shared_projection_hint(
             &output.join("retained-source-ranges"),
             *b"N2RPHYS1",
             scratch,
@@ -574,7 +573,11 @@ impl SourceExpectedDomain {
             aliases.require_source(source)?;
         }
         admission.validate_tree(files, directories, streams)?;
+        // Object construction is complete. Return its transient parse/clone
+        // allowance before opening merge heads and output verification rows.
+        drop(row_ram);
         let name_pin = names.finish()?;
+        let row_ram = scratch.lease_ram(row_working_bytes)?;
         let name_store = SortedRecordStore::open(&name_pin, scratch)?;
         // Hashes only select bounded on-disk comparison buckets. Equality is
         // ALWAYS the full folded string; distinct hash-colliding names remain
@@ -598,7 +601,9 @@ impl SourceExpectedDomain {
         drop(name_store);
         scratch.retire_created(&name_pin.data)?;
         scratch.retire_created(&name_pin.directory)?;
+        drop(row_ram);
         let physical_pin = physical.finish()?;
+        let row_ram = scratch.lease_ram(row_working_bytes)?;
         let physical_store = SortedRecordStore::open(&physical_pin, scratch)?;
         let mut prior_end = 0u64;
         for ordinal in 0..physical_store.len() {
@@ -615,7 +620,9 @@ impl SourceExpectedDomain {
         drop(physical_store);
         scratch.retire_created(&physical_pin.data)?;
         scratch.retire_created(&physical_pin.directory)?;
+        drop(row_ram);
         let object_pin = objects.finish()?;
+        let row_ram = scratch.lease_ram(row_working_bytes)?;
         let objects = SortedRecordStore::open(&object_pin, scratch)?;
         ensure!(
             objects.len() == admission.objects()? && directories > 0,

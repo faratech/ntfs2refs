@@ -102,6 +102,27 @@ impl ExternalSort {
         Self::with_batch_target(base, purpose, scratch, target, Some(record_hint))
     }
 
+    /// Concurrent projection sorters share a small admitted batch allowance.
+    /// Complete oversized rows still use the existing singleton spill path;
+    /// two-way merging avoids assuming each sorter owns the whole RAM budget.
+    pub(crate) fn with_shared_projection_hint(
+        base: &Path,
+        purpose: [u8; 8],
+        scratch: &SourceScratch,
+        record_hint: u64,
+    ) -> Result<Self> {
+        let budget = scratch.budget();
+        budget.validate()?;
+        let target = record_hint
+            .saturating_mul(4096)
+            .max(u64::from(budget.page_bytes))
+            .min(budget.ram_bytes / 512)
+            .max(size_of::<Row>() as u64 + 129);
+        let mut sort = Self::with_batch_target(base, purpose, scratch, target, Some(record_hint))?;
+        sort.fan_in = 2;
+        Ok(sort)
+    }
+
     fn with_batch_target(
         base: &Path,
         purpose: [u8; 8],

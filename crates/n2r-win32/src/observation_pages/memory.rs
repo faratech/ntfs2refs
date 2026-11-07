@@ -162,14 +162,27 @@ impl Memory {
     pub(super) fn decode(
         &self,
         budget: NativeObservationBudget,
+        row_bytes: u64,
     ) -> io::Result<Option<Box<dyn ReportMemoryLease>>> {
+        require(
+            row_bytes > 0
+                && row_bytes
+                    <= budget
+                        .max_row_bytes
+                        .checked_mul(2)
+                        .ok_or_else(|| io::Error::other("native decode row bound overflow"))?,
+            "native decode rows exceed their authenticated limits",
+        )?;
         if self.construction {
             return Ok(None);
         }
         self.accountant
             .reserve(add(
                 add(
-                    mul(budget.max_row_bytes, 16)?,
+                    // RowIndex.bytes was authenticated while opening the
+                    // complete report. Pay the actual simultaneously decoded
+                    // JSON rows, retaining the conservative expansion factor.
+                    mul(row_bytes, 16)?,
                     mul(u64::from(budget.pages.max_page_bytes), 6)?,
                 )?,
                 65536 + 4096,

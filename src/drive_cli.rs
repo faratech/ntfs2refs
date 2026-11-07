@@ -539,6 +539,7 @@ mod windows {
                 "Reduced scratch: rollback restores allocated NTFS data and metadata; unused-space contents may change. Volumes with VSS snapshots or hosted diff areas are refused."
             );
         }
+        if args.windows_boot_volume { super::boot::describe_geometry(&before.binding); }
         if !confirm("Convert this partition to ReFS in place, preserving supported files? [y/N]")? {
             println!("Cancelled. No conversion started.");
             return Ok(0);
@@ -646,6 +647,10 @@ mod windows {
             &run.join("drive-selection.json"),
             &serde_json::json!({"selected":selected,"source":before,"confirmation":"interactive affirmative","journal_budget_bytes":journal_bytes,"requested_target_format":target_format,"explicit_trust_or_filter_configuration_requested":false,"source_write_authority":false}),
         )?;
+        let before = if before.binding.layout_profile
+            == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows {
+            super::boot::normalize_geometry(before, &run)?
+        } else { before };
         println!(
             "Preparing temporary ReFS metadata storage. Recovery files: {}",
             run.display()

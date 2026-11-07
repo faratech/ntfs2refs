@@ -137,3 +137,6 @@ pub use native::{
     observe_general_disk_state_readonly, probe_general, current_windows_directory, rediscover_general_volume,
     rediscover_general_volume_wait, restore_drive_letter_general,
 };
+
+#[cfg(windows)]
+pub mod windows_boot_geometry;

@@ -41,7 +41,12 @@ pub(super) fn normalize_geometry(before:n2r_win32::discovery::VolumeDiscovery,ru
     let current=n2r_win32::current_windows_directory()?;
     // Bind the actual containing volume of the ordinary held run directory;
     // never substitute a different directory when that observation fails.
-    let run_root=format!("{}\\",run.to_str().context("Unicode resize-record directory required")?.trim_end_matches('\\'));
+    let native_run=n2r_win32::file_storage::final_path_guid(
+        parents.first().context("held resize-record directory absent")?)?;
+    ensure!(native_run.starts_with(r"\\?\Volume{"),"resize-record directory has no native GUID volume route");
+    let root_end=native_run.find("}\\").and_then(|end|end.checked_add(2))
+        .context("resize-record GUID volume root absent")?;
+    let run_root=&native_run[..root_end];
     let journal=discovery::discover(&run_root,Role::Journal{allow_additional_partitions:true})?;
     ensure!(journal.binding.disk_number==before.windows_disk_number
         &&journal.binding.disk_number!=before.binding.disk_number,"resize recovery records must be on the actual current Windows disk outside the source");

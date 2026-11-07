@@ -126,7 +126,7 @@ pub struct GeneralJournalStorageBinding {
 
 impl GeneralJournalStorageBinding {
     pub fn validate(&self) -> io::Result<()> {
-        self.disk.validate()?;
+        self.disk.validate_working_storage()?;
         require(
             // Preparation reserves its bounded metadata plus both copies of
             // at least one 4 KiB changed granule. Available filesystem space
@@ -497,7 +497,7 @@ fn validate_general_evidence_for_profile(
     if expected.allow_additional_partitions {
         validate_external_journal_layout(&evidence.disk_layout, binding)?;
     } else {
-        binding.validate_layout(&evidence.disk_layout)?;
+        binding.validate_working_storage_layout(&evidence.disk_layout)?;
     }
     let p = &binding.identity;
     Ok(JournalFileSnapshot {

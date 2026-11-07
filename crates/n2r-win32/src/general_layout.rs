@@ -94,6 +94,18 @@ fn require(condition: bool, message: &str) -> io::Result<()> {
 
 impl GeneralDiskBinding {
     pub fn validate(&self) -> io::Result<()> {
+        self.validate_working_storage()?;
+        require(
+            self.identity.partition_bytes.is_multiple_of(4096),
+            "unsupported dedicated data-disk geometry",
+        )
+    }
+
+    /// Identity and bounds for an already mounted working/journal filesystem.
+    /// A legitimate GPT tail can end on a logical sector rather than a 4 KiB
+    /// conversion granule. This never admits a source, shadow or raw writer;
+    /// those owners must continue to call the stricter `validate` entry point.
+    pub(crate) fn validate_working_storage(&self) -> io::Result<()> {
         let p = &self.identity;
         require(
             // Windows disk offsets are signed 64-bit values. The partition
@@ -106,11 +118,11 @@ impl GeneralDiskBinding {
                 && p.partition_offset >= u64::from(p.physical_sector_bytes)
                 && p.partition_offset.is_multiple_of(4096)
                 && p.partition_bytes >= 4096
-                && p.partition_bytes.is_multiple_of(4096)
+                && matches!(p.logical_sector_bytes, 512 | 4096)
+                && p.partition_bytes.is_multiple_of(u64::from(p.logical_sector_bytes))
                 && p.partition_offset
                     .checked_add(p.partition_bytes)
                     .is_some_and(|end| end <= p.disk_bytes)
-                && matches!(p.logical_sector_bytes, 512 | 4096)
                 && matches!(p.physical_sector_bytes, 512 | 4096)
                 && p.physical_sector_bytes >= p.logical_sector_bytes,
             // Actual GPT usable bounds are enforced by validate_layout;
@@ -125,14 +137,16 @@ impl GeneralDiskBinding {
         Ok(())
     }
 
+    /// Routing only. Every source/shadow/adoption owner independently performs
+    /// strict conversion-geometry validation before opening a raw capability.
     pub fn volume_path(&self) -> io::Result<String> {
-        self.validate()?;
+        self.validate_working_storage()?;
         let guid = self.volume_guid.trim_matches(['{', '}']);
         Ok(format!("\\\\?\\Volume{{{guid}}}"))
     }
 
     pub fn validate_alignment(&self, bytes: &[u8]) -> io::Result<()> {
-        self.validate()?;
+        self.validate_working_storage()?;
         require(
             bytes.len() == 28
                 && layout::u32_at(bytes, 0)? == 28
@@ -145,7 +159,7 @@ impl GeneralDiskBinding {
     }
 
     pub fn validate_volume_extent(&self, bytes: &[u8]) -> io::Result<()> {
-        self.validate()?;
+        self.validate_working_storage()?;
         require(
             bytes.len() == 32
                 && layout::u32_at(bytes, 0)? == 1
@@ -158,6 +172,17 @@ impl GeneralDiskBinding {
 
     pub fn validate_layout(&self, bytes: &[u8]) -> io::Result<()> {
         self.validate()?;
+        self.validate_layout_identity(bytes)
+    }
+
+    /// Same dedicated GPT topology checks for ordinary working storage, without
+    /// interpreting its logical-sector tail as a raw conversion write range.
+    pub(crate) fn validate_working_storage_layout(&self, bytes: &[u8]) -> io::Result<()> {
+        self.validate_working_storage()?;
+        self.validate_layout_identity(bytes)
+    }
+
+    fn validate_layout_identity(&self, bytes: &[u8]) -> io::Result<()> {
         require(
             (48..=65536).contains(&bytes.len())
                 && layout::u32_at(bytes, 0)? == 1

@@ -257,7 +257,10 @@ pub fn binding_from_evidence(
             physical_sector_bytes: u32_at(&e.alignment, 20)?,
         },
     };
-    binding.validate()?;
+    match role {
+        Role::Journal { .. } => binding.validate_working_storage()?,
+        _ => binding.validate()?,
+    }
     binding.validate_alignment(&e.alignment)?;
     binding.validate_volume_extent(&e.volume_extents)?;
     require(
@@ -282,7 +285,7 @@ pub fn binding_from_evidence(
                 "OS journal storage requires explicit additional-partitions permission",
             )?;
             if !allow_additional_partitions {
-                binding.validate_layout(raw)?;
+                binding.validate_working_storage_layout(raw)?;
             }
         }
     }

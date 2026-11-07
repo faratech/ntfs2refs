@@ -218,7 +218,51 @@ pub(super) fn complete_owned_metadata_scoped_windows_aliases_domain(
     handles: &BTreeMap<usize, File>,
     maximum_objects: usize,
     resource_admission: Option<crate::tree_resources::SourceResourceAdmission>,
+    aliases: Option<&mut super::windows_aliases::StagedWindowsAliases>,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+) -> io::Result<serde_json::Value> {
+    complete_owned_metadata_scoped_windows_aliases_domain_inner(
+        pair, source_before, partition_source, volume, input, handles,
+        maximum_objects, resource_admission, aliases, false, same_security,
+    )
+}
+
+/// Explicit provisional construction only. The original expectation domain is
+/// unchanged and must qualify again after authenticated raw security repair.
+pub(super) fn complete_owned_metadata_scoped_windows_aliases_domain_with_security_placeholders(
+    pair: &GeneralSourceShadowBinding,
+    source_before: &private_tree::source_scope::ConstructionSourceState,
+    partition_source: Option<&native::PartitionSourceMetadataWitness>,
+    volume: &File,
+    input: &impl InputDomain,
+    handles: &BTreeMap<usize, File>,
+    maximum_objects: usize,
+    resource_admission: Option<crate::tree_resources::SourceResourceAdmission>,
+    aliases: Option<&mut super::windows_aliases::StagedWindowsAliases>,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+) -> io::Result<serde_json::Value> {
+    if pair.source.layout_profile != crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+        || resource_admission.is_none()
+    {
+        return Err(invalid("security placeholders require the explicit resource-bound Windows constructor"));
+    }
+    complete_owned_metadata_scoped_windows_aliases_domain_inner(
+        pair, source_before, partition_source, volume, input, handles,
+        maximum_objects, resource_admission, aliases, true, same_security,
+    )
+}
+
+fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
+    pair: &GeneralSourceShadowBinding,
+    source_before: &private_tree::source_scope::ConstructionSourceState,
+    partition_source: Option<&native::PartitionSourceMetadataWitness>,
+    volume: &File,
+    input: &impl InputDomain,
+    handles: &BTreeMap<usize, File>,
+    maximum_objects: usize,
+    resource_admission: Option<crate::tree_resources::SourceResourceAdmission>,
     mut aliases: Option<&mut super::windows_aliases::StagedWindowsAliases>,
+    security_placeholders: bool,
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
 ) -> io::Result<serde_json::Value> {
     let resource_root = format!("{}\\", pair.shadow.volume_path()?);
@@ -428,6 +472,7 @@ pub(super) fn complete_owned_metadata_scoped_windows_aliases_domain(
     ordered.sort_by_key(|(_, depth, _)| *depth);
     let mut dacl_protection_updates = 0usize;
     let mut sacl_protection_updates = 0usize;
+    let mut provisional_security_objects = 0usize;
     // Finish every directory's inheritance propagation before restoring any
     // file. A shallow canonical file may also have a name under a deep parent.
     for &(index, _, _) in ordered
@@ -440,7 +485,19 @@ pub(super) fn complete_owned_metadata_scoped_windows_aliases_domain(
         )
     {
         let owned = input.object(index)?;
-        let view = owned.input();
+        let original_view = owned.input();
+        let temporary = if security_placeholders {
+            crate::refs_security_descriptor::ConstructorSecurityViews::prepare(
+                original_view.security, original_view.expected_api_security,
+                resource_admission.ok_or_else(|| invalid("constructor security row admission absent"))?.budget.max_row_bytes,
+            )?
+        } else { None };
+        let mut view = original_view;
+        if let Some(temporary) = temporary.as_ref() {
+            view.security = &temporary.stored;
+            view.expected_api_security = temporary.api.as_deref();
+            provisional_security_objects += 1;
+        }
         let item = &view;
         let handle = &handles[&index];
         if info(handle, 18, 24)? != identities[&index] {
@@ -532,7 +589,10 @@ pub(super) fn complete_owned_metadata_scoped_windows_aliases_domain(
             reparse_objects += 1;
         }
     }
-    if let Some(aliases)=aliases.as_deref_mut(){aliases.restore_metadata(input,handles,&same_security)?;}
+    let provisional_aliases = if let Some(aliases)=aliases.as_deref_mut(){
+        if security_placeholders { aliases.restore_metadata_with_security_placeholders(input,handles,&same_security)? }
+        else { aliases.restore_metadata(input,handles,&same_security)?; 0 }
+    } else { 0 };
     // Reverse depth order finalizes root last, using the same held handles.
     for &(index, _, _) in ordered.iter().rev() {
         let owned = input.object(index)?;
@@ -551,7 +611,18 @@ pub(super) fn complete_owned_metadata_scoped_windows_aliases_domain(
     namespace(true,aliases.as_deref())?;
     for index in 0..input.len() {
         let owned = input.object(index)?;
-        let view = owned.input();
+        let original_view = owned.input();
+        let temporary = if security_placeholders {
+            crate::refs_security_descriptor::ConstructorSecurityViews::prepare(
+                original_view.security, original_view.expected_api_security,
+                resource_admission.ok_or_else(|| invalid("constructor security row admission absent"))?.budget.max_row_bytes,
+            )?
+        } else { None };
+        let mut view = original_view;
+        if let Some(temporary) = temporary.as_ref() {
+            view.security = &temporary.stored;
+            view.expected_api_security = temporary.api.as_deref();
+        }
         let item = &view;
         let handle = &handles[&index];
         let actual = metadata_snapshot_with_limit(
@@ -615,7 +686,7 @@ pub(super) fn complete_owned_metadata_scoped_windows_aliases_domain(
     {
         return Err(invalid("owning metadata storage state changed"));
     }
-    Ok(
+    let mut report =
         serde_json::json!({"schema_version":1,"kind":"owning-private-tree-metadata-completion",
         "metadata_objects_updated":input.len(),"metadata_objects_verified":input.len(),
         "metadata_readback_verified":true,"dacl_protection_states_restored":dacl_protection_updates,
@@ -625,8 +696,18 @@ pub(super) fn complete_owned_metadata_scoped_windows_aliases_domain(
         "source_payload_writes":0,"user_payload_bytes_read":0,"user_payload_bytes_written":0,
         "source_before":source_before,"events":events,"owner_consumed":true,
         "disposable_maintenance_scope":true,"source_prefix_contents_verified":false,
-        "requires_fresh_conversion_admission":true,"conversion_qualified":false}),
-    )
+        "requires_fresh_conversion_admission":true,"conversion_qualified":false});
+    if security_placeholders {
+        report["kind"] = "provisional-Windows-constructor-metadata-completion".into();
+        report["security_readback_scope"] = "temporary-constructor-placeholder-views".into();
+        report["process_trust_labels_preserved"] = false.into();
+        report["process_trust_label_raw_repair_required"] = true.into();
+        report["provisional_security_objects"] = provisional_security_objects.into();
+        report["provisional_security_aliases"] = provisional_aliases.into();
+        report["original_source_security_expectations_unchanged"] = true.into();
+        report["requires_original_security_readback_after_raw_repair"] = true.into();
+    }
+    Ok(report)
 }
 
 pub fn run(

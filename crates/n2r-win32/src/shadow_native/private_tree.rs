@@ -356,6 +356,19 @@ impl PrivateTree {
         metadata::complete_windows_aliases_domain(self, input, aliases, same_security)
     }
 
+    /// Explicit Windows-only provisional construction. Trust ACEs are retained
+    /// in the original expectation domain while temporary audit placeholders
+    /// permit native metadata construction. The returned report is provisional;
+    /// raw repair and strict original native readback are still required.
+    pub fn complete_source_metadata_windows_aliases_domain_with_security_placeholders(
+        self,
+        input: &impl InputDomain,
+        aliases: &impl super::windows_aliases::WindowsAliasInputDomain,
+        same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    ) -> io::Result<(serde_json::Value, super::windows_aliases::VerifiedWindowsAliases)> {
+        metadata::complete_windows_aliases_domain_with_security_placeholders(self, input, aliases, same_security)
+    }
+
     pub fn materialize_system_payloads_domain(
         &mut self,
         input: &impl InputDomain,

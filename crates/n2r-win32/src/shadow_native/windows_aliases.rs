@@ -593,7 +593,28 @@ impl StagedWindowsAliases {
         handles: &BTreeMap<usize, File>,
         same: &impl Fn(&[u8], &[u8]) -> io::Result<bool>,
     ) -> io::Result<()> {
+        self.restore_metadata_inner(input, handles, same, false).map(|_| ())
+    }
+    pub(super) fn restore_metadata_with_security_placeholders(
+        &mut self,
+        input: &impl InputDomain,
+        handles: &BTreeMap<usize, File>,
+        same: &impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    ) -> io::Result<usize> {
+        if self.pair.source.layout_profile != crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows {
+            return Err(invalid("provisional alias security requires the explicit Windows constructor"));
+        }
+        self.restore_metadata_inner(input, handles, same, true)
+    }
+    fn restore_metadata_inner(
+        &mut self,
+        input: &impl InputDomain,
+        handles: &BTreeMap<usize, File>,
+        same: &impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+        security_placeholders: bool,
+    ) -> io::Result<usize> {
         let root = format!("{}\\", self.pair.shadow.volume_path()?);
+        let mut provisional_aliases = 0usize;
         for staged in self.rows.values_mut() {
             let entry = &mut staged.entry;
             let owner = input.object(entry.canonical_object_index)?;
@@ -624,14 +645,22 @@ impl StagedWindowsAliases {
             )?;
             entry.attributes =
                 (canonical.attributes & 0x2027) | 0x400 | if entry.directory { 16 } else { 0 };
+            let temporary = if security_placeholders {
+                crate::refs_security_descriptor::ConstructorSecurityViews::prepare(
+                    canonical.security,
+                    canonical.expected_api_security,
+                    self.maximum_row_bytes,
+                )?
+            } else { None };
+            if temporary.is_some() { provisional_aliases += 1; }
             let expected = Input {
                 components: &entry.components,
                 additional_names: &[],
                 directory: entry.directory,
                 times: canonical.times,
                 attributes: entry.attributes,
-                security: canonical.security,
-                expected_api_security: canonical.expected_api_security,
+                security: temporary.as_ref().map_or(canonical.security, |view| view.stored.as_slice()),
+                expected_api_security: temporary.as_ref().map_or(canonical.expected_api_security, |view| view.api.as_deref()),
                 extended_attributes: None,
                 reparse: Some(&entry.point),
                 payload: &[],
@@ -669,7 +698,7 @@ impl StagedWindowsAliases {
                 return Err(invalid("derived alias metadata verification differs"));
             }
         }
-        Ok(())
+        Ok(provisional_aliases)
     }
     pub(super) fn finish(mut self) -> io::Result<VerifiedWindowsAliases> {
         let entries:Vec<_>=self.rows.into_values().map(|row|row.entry).collect();

@@ -77,6 +77,7 @@ pub mod resource_native;
 pub mod retention_layout;
 pub mod retrieval_paging;
 pub mod security_descriptor;
+pub mod refs_security_descriptor;
 #[cfg(windows)]
 pub mod sha256_native;
 #[cfg(windows)]

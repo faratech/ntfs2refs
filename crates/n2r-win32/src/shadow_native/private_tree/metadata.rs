@@ -183,7 +183,7 @@ pub(super) fn complete_domain(
     input: &impl InputDomain,
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
 ) -> io::Result<serde_json::Value> {
-    complete_domain_inner(tree, input, None::<&super::super::windows_aliases::NoWindowsAliases>, same_security)
+    complete_domain_inner(tree, input, None::<&super::super::windows_aliases::NoWindowsAliases>, false, same_security)
         .map(|(report, _)| report)
 }
 
@@ -193,18 +193,41 @@ pub(super) fn complete_windows_aliases_domain(
     aliases: &impl super::super::windows_aliases::WindowsAliasInputDomain,
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
 ) -> io::Result<(serde_json::Value, super::super::windows_aliases::VerifiedWindowsAliases)> {
-    let (report, proof)=complete_domain_inner(tree,input,Some(aliases),same_security)?;
+    let (report, proof)=complete_domain_inner(tree,input,Some(aliases),false,same_security)?;
     Ok((report,proof.ok_or_else(||invalid("Windows alias completion witness absent"))?))
+}
+
+pub(super) fn complete_windows_aliases_domain_with_security_placeholders(
+    tree: PrivateTree,
+    input: &impl InputDomain,
+    aliases: &impl super::super::windows_aliases::WindowsAliasInputDomain,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+) -> io::Result<(serde_json::Value, super::super::windows_aliases::VerifiedWindowsAliases)> {
+    let (report, proof) = complete_domain_inner(tree, input, Some(aliases), true, same_security)?;
+    Ok((report, proof.ok_or_else(|| invalid("provisional Windows alias completion witness absent"))?))
 }
 
 fn complete_domain_inner(
     mut tree: PrivateTree,
     input: &impl InputDomain,
     aliases: Option<&impl super::super::windows_aliases::WindowsAliasInputDomain>,
+    security_placeholders: bool,
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
 ) -> io::Result<(serde_json::Value, Option<super::super::windows_aliases::VerifiedWindowsAliases>)> {
     tree.require_bound_input_domain(input)?;
     tree.require_source_excluded()?;
+    // Pay for one bounded row's temporary stored/API views before allocating
+    // them. The original admitted InputDomain and all of its digests stay held.
+    let _security_working = if security_placeholders {
+        if tree.pair.source.layout_profile != crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows {
+            return Err(invalid("security placeholders require the explicit Windows constructor"));
+        }
+        let admission = tree.metadata_resource_admission
+            .ok_or_else(|| invalid("provisional security resource admission absent"))?;
+        let memory = tree.memory.as_ref()
+            .ok_or_else(|| invalid("provisional security memory owner absent"))?;
+        Some(memory.working(crate::refs_security_descriptor::constructor_working_bytes(admission.budget.max_row_bytes)?)?)
+    } else { None };
     if !tree.placement_complete || !tree.system_payloads_complete {
         return Err(invalid(
             "complete placement and system supply required before metadata",
@@ -312,7 +335,21 @@ fn complete_domain_inner(
     tree.require_source_excluded()?;
     // This consumes the only tree owner on success AND failure. A diagnostic
     // return cannot resume a partially public/private metadata transition.
-    let mut report = super::super::cache_refresh::complete_owned_metadata_scoped_windows_aliases_domain(
+    let completion = if security_placeholders {
+        super::super::cache_refresh::complete_owned_metadata_scoped_windows_aliases_domain_with_security_placeholders(
+            &tree.pair,
+            &tree.source_before,
+            tree.partition_source.as_ref().map(|lease|lease.witness()),
+            &tree.volume,
+            input,
+            &tree.metadata_targets,
+            tree.metadata_object_limit,
+            tree.metadata_resource_admission,
+            alias_stage.as_mut(),
+            same_security,
+        )
+    } else {
+        super::super::cache_refresh::complete_owned_metadata_scoped_windows_aliases_domain(
         &tree.pair,
         &tree.source_before,
         tree.partition_source.as_ref().map(|lease|lease.witness()),
@@ -323,7 +360,9 @@ fn complete_domain_inner(
         tree.metadata_resource_admission,
         alias_stage.as_mut(),
         same_security,
-    )?;
+        )
+    };
+    let mut report = completion?;
     tree.require_source_excluded()?;
     if let Some(privileges) = tree.reparse_privileges.as_mut() {
         privileges.restore()?;

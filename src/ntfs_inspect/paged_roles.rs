@@ -14,7 +14,25 @@ use std::{
 struct States {
     file: File,
     rows: u64,
+    resident: Option<ResidentStates>,
     _lease: SourceTemporaryLease,
+}
+struct ResidentStates {
+    bytes: Vec<u8>,
+    // The transient table is dropped before returning its memory credit.
+    _ram: SourceRamLease,
+}
+impl ResidentStates {
+    fn try_new(rows: u64, scratch: &SourceScratch) -> Option<Self> {
+        let charge = rows.checked_add(std::mem::size_of::<Self>() as u64)?;
+        if rows == 0 || charge > scratch.budget().ram_bytes / 64 { return None; }
+        let size = usize::try_from(rows).ok()?;
+        let ram = scratch.lease_ram(charge).ok()?;
+        let mut bytes = Vec::new();
+        if bytes.try_reserve_exact(size).is_err() || bytes.capacity() != size { return None; }
+        bytes.resize(size, 0);
+        Some(Self { bytes, _ram: ram })
+    }
 }
 fn issue(value: u8) -> Result<MetadataRoleIssue> {
     use MetadataRoleIssue::*;
@@ -52,6 +70,7 @@ impl States {
         Ok(Self {
             file,
             rows,
+            resident: ResidentStates::try_new(rows, scratch),
             _lease: lease,
         })
     }
@@ -60,10 +79,15 @@ impl States {
             row < self.rows,
             "ancestry state escapes complete file domain"
         );
-        let mut byte = [0];
-        self.file.seek(SeekFrom::Start(row))?;
-        self.file.read_exact(&mut byte)?;
-        Ok(match byte[0] {
+        let byte = if let Some(resident) = &self.resident {
+            *resident.bytes.get(usize::try_from(row)?).context("resident ancestry address differs")?
+        } else {
+            let mut byte = [0];
+            self.file.seek(SeekFrom::Start(row))?;
+            self.file.read_exact(&mut byte)?;
+            byte[0]
+        };
+        Ok(match byte {
             0 => AncestryState::Unseen,
             1 => AncestryState::Visiting,
             2 => AncestryState::OutsideExtend,
@@ -83,8 +107,23 @@ impl States {
             AncestryState::WithinExtend => 3,
             AncestryState::Unresolved(problem) => 4 + problem as u8,
         };
-        self.file.seek(SeekFrom::Start(row))?;
-        self.file.write_all(&[byte])?;
+        if let Some(resident) = &mut self.resident {
+            *resident.bytes.get_mut(usize::try_from(row)?).context("resident ancestry address differs")? = byte;
+        } else {
+            self.file.seek(SeekFrom::Start(row))?;
+            self.file.write_all(&[byte])?;
+        }
+        Ok(())
+    }
+    fn checkpoint(&mut self) -> Result<()> {
+        // This file is private transient DFS workspace, never the authenticated
+        // preparation guard or recovery authority. Publish its complete state
+        // once before writing the derived classified-record store.
+        if let Some(resident) = &self.resident {
+            self.file.seek(SeekFrom::Start(0))?;
+            self.file.write_all(&resident.bytes)?;
+            self.file.sync_all()?;
+        }
         Ok(())
     }
 }
@@ -223,6 +262,7 @@ pub(super) fn classify(
             }
         }
     }
+    states.checkpoint()?;
     let mut output =
         SortedRecordWriter::new(&root.join("classified-files"), *b"N2RFILE1", scratch)?;
     for ordinal in 0..files.file_count() {

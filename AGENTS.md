@@ -1,5 +1,13 @@
 # ntfs2refs: current handoff
 
+## SAME4380 passed namespace/allocation/hashed boundary; readonlyobserver release built
+
+ONE authorized metadata-onlyC-scratchstat22:39:13Z returnedquickly: raw/hashed-files.data.pages669396578B CLOSED22:27:15.311Z; classified-files producer-retired. Actualnamespace/allocation→hashedboundarypassed, so oldnamespacecachecliffispassed. Sourceassessment/witness/nativeheaderwerenotyetpresentatthatstat. SAME4380lastactualCPU1661.359375/WS101543936/peak683651072, Running/terminalfalse/stderrEMPTY. Originalprep13c690.../c3f5.../4dae092b privateEXE unchanged. SoleoperatorcontinuesprovenObserveOnly; no competingVMcalls/probes/restarts. Do not infer completion/native stage fromworking-set/genericlabel.
+
+Lab-onlyobserverrelease74155 ACTUAL CLOSED0/270.2397457s, source873747e46f207ec37324bfe7b2b7f4aa8d513ff9, EXE1620480B/SHAf74eb99b0bcd0010995ba9ed84d009f9eaec1520f7a42b590238f8909c6cf226 in `.lab/development/release-candidates/cold-ap-observer-873747e/bin/lab-observe-cold-selected-ap.exe`; manifest3a887c84db5a858fcff602bc0c0b499ea334493103afbf980910a6eae72a1369. No nativeobserverrun/units/prodchanges. Fullconcurrent16GiBnativeforecast+1GiBbuild+externalmaxchargedunderunchangedcaps/reserves. Sharedcacheown-packagecleanremovedsharedmain; rootcopiedEXACTimmutable4dae092b/21968384B mainbackunderexclusivebuildlock andverifiedfullSHA, runningguestuntouched. Publicproductremains4dae, not873labtool.
+
+Operatorpreparedfirstbootcalloffline: HostReceiptOnly latestactualcontrolboot1794088472063/currentRunId; stdoutwrapper+innerreceipthashretainedseparately. Criticalcompletion path is workflowROOT/resource-completion.json plus conversion/recovery-envelope.json, NOTlegacyfinalization.json. OnactualHND/nativefinalizer archivecriticalonly thenIMMEDIATEordinaryoriginal0-onlyboot, no addedworkload. OriginalWindowsReFSconversion/boot/restart qualification remains UNPROVEN until actual. Do not deployobserver/faultcurrentrun; itisforlaterplannedcoldAPcaseonly.
+
 ## Lab-only coldAP observer compiles; production4dae/SAME4380 unchanged
 
 NEW standalone `src/bin/lab-observe-cold-selected-ap.rs` is READONLY source+J, no prod/shared/config/main changes. It authenticates independentlypinned pub/N2RANC01locator/ticket/fullJ/lifecycle and actualSDKJfile/source0identity/exclusion, reads onlybounded selectedROWs tofinddistinct OLD!=NEW andNEW!=OLD endpoints, withFREE-asNEW usingauthenticatedold4KiBXXH3table. RequiresstableAPbefore/after; partial/unclassifiedrows aren'tforeign. PublicJloader range limit65536 remains diagnosticrefusal, notraised/productcap. OnlynewsmallJSONreceiptwrites. SDKeventsusefreshper-operationbatches+appendalways (peerconcrete128riskfixed). All implementation/peerowners closed.

@@ -258,7 +258,26 @@ impl RootFileDomain for PagedRawFiles {
         self.files.len()
     }
     fn file(&self, ordinal: u64) -> Result<FileInventory> {
-        self.files.get(ordinal)
+        // Ordinal callers (notably ancestry DFS parent visits) must share the
+        // same bounded directory cache as record-number callers. The complete
+        // held ordinal index still establishes the identity on every hit.
+        let key=self.files.key(ordinal)?;
+        let number=u64::from_be_bytes(key[..8].try_into()?);
+        ensure!(key==file_key(number),"canonical ordinal key is not a file identity");
+        {
+            let mut cache=self.directory_rows.borrow_mut();
+            cache.clock=cache.clock.saturating_add(1);
+            let last_used=cache.clock;
+            if let Some(row)=cache.rows.get_mut(&number){
+                ensure!(row.file.record_number==number,"cached directory differs from its canonical ordinal");
+                row.last_used=last_used;
+                return Ok(row.file.clone());
+            }
+        }
+        let file:FileInventory=self.files.get(ordinal)?;
+        ensure!(file_key(file.record_number)==key,"canonical ordinal row identity differs");
+        self.retain_directory(ordinal,&file)?;
+        Ok(file)
     }
     fn find_record(&self, number: u64, sequence: Option<u16>) -> Result<Option<FileInventory>> {
         {
@@ -276,7 +295,6 @@ impl RootFileDomain for PagedRawFiles {
             return Ok(None);
         };
         let file = self.file(ordinal)?;
-        self.retain_directory(ordinal, &file)?;
         Ok(if sequence.is_none_or(|s| s == file.sequence_number) {
             Some(file)
         } else {

@@ -134,6 +134,25 @@ impl NativeRequestDomain for PagedObservationRequest<'_> {
             sequence_number: file.sequence_number,
         })
     }
+    fn windows_txf_metadata_identity(&self, index: usize) -> io::Result<Option<FileIdentity>> {
+        (|| -> Result<_> {
+            if !self.windows_paths { return Ok(None); }
+            ensure!(self.source.is_windows_conversion() && index < self.length,
+                "Windows TxF selector does not belong to the retained Windows source");
+            let file = self.source.file(index as u64)?;
+            if file.record_number != 5 && (file.record_number < 16
+                || file.metadata_role != crate::ntfs_inspect::MetadataRole::OutsideExtendCandidate) {
+                return Ok(None);
+            }
+            let mut attributes = file.attributes.iter().filter(|attribute| attribute.type_code == 0x100
+                && attribute.name_utf16 == [36,84,88,70,95,68,65,84,65]);
+            let Some(attribute) = attributes.next() else { return Ok(None); };
+            ensure!(attributes.next().is_none() && crate::ntfs_admission::recognized_root_txf(attribute)
+                && attribute.resident_metadata_hex.as_ref().is_some_and(|bytes| bytes.len() == 112),
+                "Windows TxF selector requires exact bounded resident marker bytes at FILE {}", file.record_number);
+            Ok(Some(FileIdentity { record_number: file.record_number, sequence_number: file.sequence_number }))
+        })().map_err(io::Error::other)
+    }
     fn row(&self, index: usize) -> io::Result<Cow<'_, NativeRequestRow>> {
         (|| -> Result<_> {
             ensure!(index < self.length, "source selector ordinal absent");

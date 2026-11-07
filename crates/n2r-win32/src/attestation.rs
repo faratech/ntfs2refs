@@ -227,6 +227,11 @@ pub trait NativeRequestDomain {
     fn identity(&self, index: usize) -> io::Result<FileIdentity> {
         Ok(self.row(index)?.identity.clone())
     }
+    /// Optional exact Windows marker identities. This selects metadata reads
+    /// only; the SDK issues a witness solely inside its protected native lease.
+    fn windows_txf_metadata_identity(&self, _index: usize) -> io::Result<Option<FileIdentity>> {
+        Ok(None)
+    }
     fn revalidate(&self) -> io::Result<()>;
     fn require_paged_source(
         &self,

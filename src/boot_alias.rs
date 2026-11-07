@@ -72,6 +72,7 @@ pub struct WindowsAliasDomain {
     entries: SortedRecordStore,
     source_inspection_sha256: String,
     storage_hint_normalization: Option<Arc<n2r_win32::BootStorageHintNormalization>>,
+    windows_txf_markers: Option<Arc<n2r_win32::windows_txf::VerifiedWindowsTxfMarkers>>,
     _storage_hint_ram: Option<SourceRamLease>,
     _scratch: SourceScratch,
     _owner_ram: SourceRamLease,
@@ -99,7 +100,7 @@ impl WindowsAliasDomain {
         ensure!(source.canonical_sha256()? == source_inspection_sha256,
             "Windows source changed across alias derivation");
         let owner_ram = scratch.lease_ram(std::mem::size_of::<Self>() as u64 + 128)?;
-        Ok(Self { entries, source_inspection_sha256, storage_hint_normalization: None, _storage_hint_ram: None,
+        Ok(Self { entries, source_inspection_sha256, storage_hint_normalization: None, windows_txf_markers: None, _storage_hint_ram: None,
             _scratch: scratch.clone(), _owner_ram: owner_ram })
     }
     pub fn len(&self) -> u64 { self.entries.len() }
@@ -124,6 +125,32 @@ impl WindowsAliasDomain {
     }
     pub(crate) fn storage_hint_normalization(&self) -> Option<&n2r_win32::BootStorageHintNormalization> {
         self.storage_hint_normalization.as_deref()
+    }
+    pub(crate) fn bind_windows_txf_markers(
+        &mut self, source: &PagedInspection, binding: &n2r_win32::general_layout::GeneralDiskBinding,
+        proof: Arc<n2r_win32::windows_txf::VerifiedWindowsTxfMarkers>,
+    ) -> Result<()> {
+        self.require_source(source)?;
+        ensure!(source.is_windows_conversion() && self.windows_txf_markers.is_none(),
+            "Windows TxF marker witness is duplicated or belongs to an ordinary source");
+        let root = source.find_record(5, None)?.context("Windows TxF root is absent")?;
+        let inspection: [u8;32] = hex::decode(&self.source_inspection_sha256)?.try_into()
+            .map_err(|_| anyhow::anyhow!("Windows TxF inspection digest width differs"))?;
+        proof.require_identity_scope(binding, inspection,
+            &n2r_win32::attestation::FileIdentity { record_number: root.record_number, sequence_number: root.sequence_number })?;
+        self.windows_txf_markers = Some(proof);
+        Ok(())
+    }
+    pub(crate) fn windows_txf_accounted(&self, source: &PagedInspection, file: &FileInventory) -> Result<bool> {
+        if file.record_number < 16 || file.metadata_role != crate::ntfs_inspect::MetadataRole::OutsideExtendCandidate
+            || !file.attributes.iter().any(|attribute| attribute.type_code == 0x100
+                && attribute.name_utf16 == [36,84,88,70,95,68,65,84,65]) {
+            return Ok(false);
+        }
+        ensure!(source.canonical_sha256()? == self.source_inspection_sha256,
+            "Windows user TxF metadata belongs to another held source");
+        let proof = self.windows_txf_markers.as_deref().context("Windows user TxF metadata lacks its live protected witness")?;
+        crate::ntfs_transactions::windows_user_marker(source, file, proof)
     }
     pub(crate) fn has_storage_hint_owner(&self, proof: &Arc<n2r_win32::BootStorageHintNormalization>) -> bool {
         self.storage_hint_normalization.as_ref().is_some_and(|held| Arc::ptr_eq(held, proof))

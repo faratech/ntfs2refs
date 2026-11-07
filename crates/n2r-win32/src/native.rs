@@ -155,6 +155,7 @@ pub struct GeneralLiveNtfsObservation {
 #[derive(Debug)]
 pub struct GeneralLivePagedNtfsObservation {
     domain: crate::observation_pages::PagedNativeObservation,
+    windows_txf_markers: Option<Arc<crate::windows_txf::VerifiedWindowsTxfMarkers>>,
     txf: Option<crate::txf_native::GeneralObservation>,
     txf_error: Option<String>,
     vss_observation: Option<crate::vss_observation::Observation>,
@@ -162,6 +163,12 @@ pub struct GeneralLivePagedNtfsObservation {
     after: GeneralDiskState,
 }
 impl GeneralLivePagedNtfsObservation {
+    pub fn windows_txf_markers(&self) -> Option<&crate::windows_txf::VerifiedWindowsTxfMarkers> {
+        self.windows_txf_markers.as_deref()
+    }
+    pub fn windows_txf_markers_owned(&self) -> Option<Arc<crate::windows_txf::VerifiedWindowsTxfMarkers>> {
+        self.windows_txf_markers.as_ref().map(Arc::clone)
+    }
     pub fn domain(&self) -> &crate::observation_pages::PagedNativeObservation {
         &self.domain
     }
@@ -2642,6 +2649,7 @@ impl GeneralFrozenPartition {
             })?;
         Ok(GeneralLivePagedNtfsObservation {
             domain: collected.domain,
+            windows_txf_markers: None,
             txf: collected.txf,
             txf_error: collected.txf_error,
             vss_observation: collected.vss_observation,
@@ -2690,6 +2698,7 @@ impl GeneralFrozenPartition {
         selectors.revalidate()?;
         Ok(GeneralLivePagedNtfsObservation {
             domain: collected.domain,
+            windows_txf_markers: None,
             txf: collected.txf,
             txf_error: collected.txf_error,
             vss_observation: collected.vss_observation,
@@ -2725,20 +2734,49 @@ impl GeneralFrozenPartition {
                 "native paged source resource budget differs from original frozen owner",
             ));
         }
+        let marker_binding = self.binding.clone();
+        let mut windows_txf_markers = None;
         let collected =
             self.observe_ntfs_files_with_collector(request, events, require_vss, |request| {
                 let _ = request;
-                crate::attestation_native::collect_file_metadata_paged_domain_with_memory(
+                let pending = if marker_binding.layout_profile
+                    == crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows {
+                    Some(crate::windows_txf::PendingWindowsTxfMarkers::begin(
+                        &marker_binding, selectors, &memory,
+                    )?)
+                } else { None };
+                let collected = crate::attestation_native::collect_file_metadata_paged_domain_with_memory(
                     selectors,
                     path,
                     budget,
                     single_content_pass,
-                    memory,
-                )
-            })?;
-        selectors.revalidate()?;
+                    Arc::clone(&memory),
+                );
+                let domain = match collected {
+                    Ok(domain) => domain,
+                    Err(error) => return Err(match pending { Some(pending) => pending.refuse(error), None => error }),
+                };
+                if let Some(pending) = pending {
+                    windows_txf_markers = Some(Arc::new(pending.finish(selectors)?));
+                }
+                Ok(domain)
+            });
+        let collected = match collected {
+            Ok(collected) => collected,
+            Err(error) => return Err(match windows_txf_markers {
+                Some(witness) => witness.refuse(error), None => error,
+            }),
+        };
+        selectors.revalidate().map_err(|error| match &windows_txf_markers {
+            Some(witness) => Arc::clone(witness).refuse(error), None => error,
+        })?;
+        if windows_txf_markers.is_some() && !collected.txf.as_ref().is_some_and(|txf|
+            txf.observation.default_rm_state() == crate::txf_native::DefaultRmState::Inactive) {
+            return Err(windows_txf_markers.unwrap().refuse(invalid(&format!("Windows TxF markers require the existing protected inactive default RM witness: {:?}; {:?}",collected.txf,collected.txf_error))));
+        }
         Ok(GeneralLivePagedNtfsObservation {
             domain: collected.domain,
+            windows_txf_markers,
             txf: collected.txf,
             txf_error: collected.txf_error,
             vss_observation: collected.vss_observation,

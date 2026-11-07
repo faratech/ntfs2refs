@@ -191,7 +191,10 @@ pub(crate) fn blocker_is_unresolved(
         if let Some(number) = blocker.file_record_number {
             if let Some(file) = source.find_record(number, None)? {
                 let role = internal_role(source, &file)?;
-                if (number == 5 || role.as_deref() == Some("$Extend\\$RmMetadata\\$Txf"))
+                let windows_user_txf = if let Some(proof) = transactions.windows_txf_markers_owned() {
+                    crate::ntfs_transactions::windows_user_marker(source, &file, &proof)?
+                } else { false };
+                if (number == 5 || role.as_deref() == Some("$Extend\\$RmMetadata\\$Txf") || windows_user_txf)
                     && file
                         .attributes
                         .iter()
@@ -363,6 +366,7 @@ fn ordinary_user_issues_scoped(
         maximum_streams,
         aliases.is_some(),
         aliases.is_some_and(|aliases| aliases.storage_hint_normalization().is_some()),
+        if let Some(aliases) = aliases { aliases.windows_txf_accounted(source, file)? } else { false },
         |stream| evidence.get(&stream.name_utf16).copied().unwrap_or(false),
     ))
 }

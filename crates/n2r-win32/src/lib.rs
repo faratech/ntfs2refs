@@ -93,6 +93,10 @@ mod stream_native;
 pub mod tree_resources;
 #[cfg(windows)]
 pub mod txf_native;
+#[cfg(windows)]
+pub mod windows_txf;
+#[cfg(windows)]
+pub use windows_txf::VerifiedWindowsTxfMarkers;
 pub mod volume_label;
 #[cfg(windows)]
 pub mod volume_policy;

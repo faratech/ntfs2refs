@@ -907,7 +907,7 @@ impl ResourceSourceContext {
             native_batch(events, |batch| proof.revalidate(source, batch))?;
             Some(proof)
         } else { None };
-        let windows_aliases = if binding.layout_profile
+        let mut windows_aliases = if binding.layout_profile
             == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows {
             let mut aliases = crate::boot_alias::WindowsAliasDomain::derive(
                 &raw, &output.join("windows-aliases"), &scratch,
@@ -1028,6 +1028,7 @@ impl ResourceSourceContext {
                 "source_inspection_sha256":inspection_sha,
                 "source_fingerprint_before_native":source_sha,
                 "native_pages_sha256":native.domain().sha256(),
+                "protected_windows_txf_markers":native.windows_txf_markers().map(|proof| proof.audit()),
                 "txf":native.txf(),
                 "txf_error":native.txf_error(),
                 "before":native.before(),
@@ -1083,6 +1084,10 @@ impl ResourceSourceContext {
                 .context("original freeze witness absent")?,
             &native,
         )?;
+        if let (Some(aliases), Some(proof)) = (windows_aliases.as_mut(), transactions.windows_txf_markers_owned()) {
+            Arc::get_mut(aliases).context("Windows alias owner was shared before TxF disposition binding")?
+                .bind_windows_txf_markers(&raw, &binding, proof)?;
+        }
         save(
             output,
             "source-internal-proofs.json",
@@ -1253,8 +1258,11 @@ impl ResourceSourceContext {
                     let file = raw.find_record(number, None)?.context("storage normalization blocker identity absent")?;
                     if crate::ntfs_storage_class::normalize(&file, proof)?.is_some() {
                         let role = ntfs_admission::paged::internal_role(&raw, &file)?;
+                        let windows_user_txf = if let Some(aliases) = &windows_aliases {
+                            aliases.windows_txf_accounted(&raw, &file)?
+                        } else { false };
                         let root_txf_covered = transactions.binds_domain(&raw)
-                            && (number == 5 || role.as_deref() == Some("$Extend\\$RmMetadata\\$Txf"));
+                            && (number == 5 || role.as_deref() == Some("$Extend\\$RmMetadata\\$Txf") || windows_user_txf);
                         let all_covered = file.attributes.iter().filter(|attribute| attribute.type_code == 0x100)
                             .all(|attribute| crate::ntfs_storage_class::recognized_default(attribute)
                                 || (root_txf_covered && ntfs_admission::recognized_root_txf(attribute)));

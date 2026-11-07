@@ -24,10 +24,17 @@ struct PhysicalRow {
     offset: u64,
     length: u64,
 }
+#[derive(Serialize, Deserialize)]
+struct WindowsTxfDisposition {
+    record_number: u64,
+    sequence_number: u16,
+    source_attribute: ntfs::AttributeInventory,
+}
 
 pub struct SourceExpectedDomain {
     objects: SortedRecordStore,
     windows_ea_normalizations: Option<SortedRecordStore>,
+    windows_txf_dispositions: Option<SortedRecordStore>,
     windows_ea_normalized_entries: u64,
     object_count: usize,
     admission: SourceResourceAdmission,
@@ -49,6 +56,7 @@ pub struct SourceExpectedDomain {
 pub(crate) struct ProjectionRevalidationOwner {
     objects: SortedRecordStore,
     windows_ea_normalizations: Option<SortedRecordStore>,
+    windows_txf_dispositions: Option<SortedRecordStore>,
     _scratch: SourceScratch,
 }
 
@@ -56,6 +64,7 @@ impl ProjectionRevalidationOwner {
     pub(crate) fn revalidate(&self) -> Result<()> {
         self.objects.revalidate()?;
         if let Some(records) = &self.windows_ea_normalizations { records.revalidate()?; }
+        if let Some(records) = &self.windows_txf_dispositions { records.revalidate()?; }
         Ok(())
     }
 }
@@ -446,6 +455,9 @@ impl SourceExpectedDomain {
             &output.join("windows-kernel-purge-ea-normalizations"), *b"WINEAN01", scratch,
         )).transpose()?;
         let mut windows_ea_normalized_entries = 0u64;
+        let mut windows_txf_writer = aliases.map(|_| SortedRecordWriter::new(
+            &output.join("windows-nontransacted-txf-dispositions"), *b"WINTXF01", scratch,
+        )).transpose()?;
         let (
             mut files,
             mut directories,
@@ -461,6 +473,16 @@ impl SourceExpectedDomain {
                 continue;
             }
             let (object, ea_normalization) = build_object(source, native, ordinal, &file, admission, aliases)?;
+            if aliases.map(|owner| owner.windows_txf_accounted(source, &file)).transpose()?.unwrap_or(false) {
+                let attribute = file.attributes.iter().find(|attribute| attribute.type_code == 0x100
+                    && attribute.name_utf16 == [36,84,88,70,95,68,65,84,65])
+                    .context("verified Windows TxF source attribute disappeared")?;
+                windows_txf_writer.as_mut().context("Windows TxF disposition archive absent")?
+                    .push(ordered_key(ordinal, file.record_number), &WindowsTxfDisposition {
+                        record_number: file.record_number, sequence_number: file.sequence_number,
+                        source_attribute: attribute.clone(),
+                    })?;
+            }
             if let Some(normalization) = ea_normalization {
                 windows_ea_normalized_entries = windows_ea_normalized_entries
                     .checked_add(u64::try_from(normalization.omitted.entries.len())?)
@@ -587,6 +609,9 @@ impl SourceExpectedDomain {
         let windows_ea_normalizations = windows_ea_writer.map(|writer| {
             SortedRecordStore::open(&writer.finish()?, scratch)
         }).transpose()?;
+        let windows_txf_dispositions = windows_txf_writer.map(|writer| {
+            SortedRecordStore::open(&writer.finish()?, scratch)
+        }).transpose()?;
         let mut roots = 0u64;
         for ordinal in 0..objects.len() {
             let object: Object = objects.get(ordinal)?;
@@ -609,6 +634,7 @@ impl SourceExpectedDomain {
         let value = Self {
             objects,
             windows_ea_normalizations,
+            windows_txf_dispositions,
             windows_ea_normalized_entries,
             object_count,
             admission,
@@ -638,6 +664,7 @@ impl SourceExpectedDomain {
     fn revalidate_stores(&self) -> Result<()> {
         self.objects.revalidate()?;
         if let Some(records) = &self.windows_ea_normalizations { records.revalidate()?; }
+        if let Some(records) = &self.windows_txf_dispositions { records.revalidate()?; }
         Ok(())
     }
 
@@ -654,17 +681,29 @@ impl SourceExpectedDomain {
             "grants_source_or_replay_authority":false,
         })))
     }
+    pub(crate) fn windows_txf_disposition_report(&self) -> Result<Option<serde_json::Value>> {
+        self.revalidate_stores()?;
+        Ok(self.windows_txf_dispositions.as_ref().map(|records| serde_json::json!({
+            "kind":"Windows-source-nontransacted-TxF-disposition-v1",
+            "source_inspection_sha256":self.source_inspection_sha256,
+            "records":records.pin(), "source_marker_objects":records.len(),
+            "policy":"archive exact NTFS-only TxF marker bytes after live protected per-file nontransacted proof; target files preserve ordinary content and metadata",
+            "target_transactional_continuity_preserved":false,
+            "grants_source_or_replay_authority":false,
+        })))
+    }
 
     /// Drop decode-only workspace once the caller has completed its semantic
     /// comparison, without replacing the held file owners with serialized pins.
     pub(crate) fn into_revalidation_owner(self) -> Result<ProjectionRevalidationOwner> {
         self.revalidate_stores()?;
         let Self {
-            objects, windows_ea_normalizations, scratch, ..
+            objects, windows_ea_normalizations, windows_txf_dispositions, scratch, ..
         } = self;
         Ok(ProjectionRevalidationOwner {
             objects,
             windows_ea_normalizations,
+            windows_txf_dispositions,
             _scratch: scratch,
         })
     }

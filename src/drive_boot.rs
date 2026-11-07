@@ -134,7 +134,12 @@ function Guard($state,[long]$bytes){
  $d=$state.disk;$s=$request.source;$p=$state.source
  $current=Get-Partition -DriveLetter ([IO.Path]::GetPathRoot([Environment]::SystemDirectory).Substring(0,1))
  if($d.number-ne$s.disk_number-or$d.number-eq$current.DiskNumber-or[guid]$d.guid-ne[guid]$s.identity.disk_guid-or$d.size-ne$s.identity.disk_bytes-or$d.logical_sector-ne$s.identity.logical_sector_bytes-or$d.physical_sector-ne$s.identity.physical_sector_bytes-or$d.is_offline-ne$false-or$d.is_readonly-ne$false-or$d.is_boot-ne$false-or$d.is_system-ne$false){throw 'Source disk identity/current Windows role changed'}
- if($state.parts.Count-ne4-or@($state.parts|Where-Object{$_.is_boot-ne$false-or$_.is_system-ne$false-or$_.is_offline-ne$false-or$_.is_readonly-ne$false}).Count){throw 'Source sibling or critical partition roles changed'}
+ # ReadOnly is inapplicable/null on EFI, MSR and WinRE in the native storage
+ # provider. Preserve that raw observation; these siblings are never resized.
+ # The actual source partition and physical disk must be positively writable.
+ if($state.parts.Count-ne4-or@($state.parts|Where-Object{$_.is_boot-ne$false-or$_.is_system-ne$false-or$_.is_offline-ne$false}).Count){throw 'Source sibling or critical partition roles changed'}
+ $selected=@($state.parts|Where-Object{$_.number-eq$s.identity.partition_number})
+ if($selected.Count-ne1-or$selected[0].is_readonly-ne$false){throw 'Selected NTFS partition is not positively writable'}
  if([guid]$p.guid-ne[guid]$s.identity.partition_guid-or$p.offset-ne$s.identity.partition_offset-or$p.size-ne$bytes-or$p.filesystem-cne'NTFS'-or$p.health-cne'Healthy'-or$p.paths-notcontains$request.volume_guid_path){throw 'Healthy mounted source NTFS binding changed'}
 }
 try{

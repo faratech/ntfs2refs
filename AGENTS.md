@@ -1,5 +1,13 @@
 # ntfs2refs: current handoff
 
+## Journal-tail-fixed public release ready; ONE fresh4dae attempt authorized
+
+Release21850 ACTUALLY CLOSED0/386.2485079s, committedsource4dae6b13a9c4918da2e5a30f4642839a766c9a46/sourcebeforeafterclean. PublicEXE21968384B/SHA092bce5cc8e6a3a829d34adef728bd27d1a7fb66e4df896265e8f92712386628 in `.lab/development/release-candidates/windows-journal-public-4dae6b1/bin/ntfs2refs.exe`; manifest3caeb212a0cb54364d53113fed6ee2d3c804654b5fee30bb4fa28312cdc5d9ad. Sharedcache/no units/mainc6bc unchanged. Sourcecode nowfrozen again; root owns code/build/Git, operator soleVM/native/storage. Actualoriginal0conversion/boot/restart qualification stillUNPROVEN.
+
+Root authorized soleoperator ONE freshNEWRunId4dae queue with exactSHA/source0p3normalized66236448768B, independently currentcontrolboot1794088472063 iffstillmatches, EXACTONE coldcheckpoint0821c0da-3905-4032-a798-e1024092b795, allunchangedcapacity/postcopy+actualCLIbudget checks. Previous57d2ca failedbeforepreparation andmustnotrestart. Preserve actualPID/birth/ORIGINALprintedprepSHA; followsameprocess, never restart from timeout. OnactualHND/nativefinalizer archivecritical thenimmediateordinaryoriginal0-onlyboot, noextraqualworkloadsfirst. Actualnewlaunch is pending here; do not infer native from authorization.
+
+Graphagent may add ONLY a NEW LAB read-only coldAP observer bin afterclosedrelease, withno production/shared/config/main edits. It authenticatespublication/locator/ticket/J and actualexcludedsource0 withstrictREADONLYhandles, then checks selectedOLD/NEWendpointwitnesses, includingFREE-asNEW viaoldgranuleXXH3table. It mustnot mintauthority/reportpartialrowsforeign orrelaxfixedotherfixture. Thisobserver is separateartifact for laterfaultmatrix, NOTcriticalpath/no newproductbuild. RootmustwaitforguestmainactualPID/path/SHA before any sharedcacheclean/build so stagingisn'tbroken; preserve immutablepubliccandidateabove and restorehash-identicalsharedmainiflab-onlybuildcleansit. Mainproductremains4dae andsourcechecksum092b...; do not accidentallyshipalabobserver asconverter.
+
 ## Actual early geometry refusal traced and fixed; source safe; checkpoint retained
 
 ONE new2ca run57d4ffa18c9f4f2c8175b26b9b8719fd/native1160/birth1794088566362/worker3868 ACTUALLY CLOSED1/2.0956219s/one launch+one y, BEFOREpreparation/anyprintedprepSHA: `unsupported dedicated data-disk geometry`. All closedlogs/smallpins retained hostcase. Independent source-safe receiptSHAda0427eae4cd75c4a102625d71a4461e8f286f631a82a0315352ff9f18db472a proves original0 SAMEGUID/UniqueID/start331350016/66236448768 HealthyNTFS/onlineRW/nonboot, noactors. ControlC1HealthyRefs68388109824B/free20172783616B, actualboot1794088472063. No retry/restore or further VM geometry mutation.

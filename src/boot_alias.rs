@@ -35,13 +35,17 @@ pub(crate) fn aliases_for(source: &PagedInspection, file: &FileInventory) -> Res
     ensure!(names.len() == canonical.len(), "Windows canonical path/name coverage differs");
     let mut rows = Vec::new();
     for alias in file.names.iter().filter(|name| name.namespace == 2) {
+        // A separate DOS FILE_NAME belongs to the Win32 name in this parent.
+        // POSIX hard links to the same FILE may also share that parent; they
+        // remain canonical paths but are not the DOS name's long-name partner.
         let mut targets = names.iter().zip(&canonical).filter(|(name, _)| {
-            name.parent_record_number == alias.parent_record_number
+            name.namespace == 1
+                && name.parent_record_number == alias.parent_record_number
                 && name.parent_sequence_number == alias.parent_sequence_number
         });
-        let (target, target_path) = targets.next().context("Windows alias has no canonical sibling")?;
+        let (target, target_path) = targets.next().context("Windows alias has no Win32 canonical sibling")?;
         ensure!(targets.next().is_none(),
-            "Windows alias has ambiguous canonical siblings at FILE {}", file.record_number);
+            "Windows alias has ambiguous Win32 canonical siblings at FILE {}", file.record_number);
         let target_name = String::from_utf16(&target.name_utf16)?;
         let alias_name = String::from_utf16(&alias.name_utf16)?;
         ensure!(alias_name != target_name

@@ -1,0 +1,221 @@
+{
+  "kind": "actual-Windows-DOS-and-Win32-name-partner-evidence",
+  "observed_utc": "2026-11-07T04:22:12.8994315Z",
+  "failed_runtime": "0b48b55bf94d4ada3131583b49c8a59d04660a1f",
+  "run_id": "c3bf3b92e5734edcb040e39273fe69dc",
+  "native_pid": 5252,
+  "native_birth_ms": 1794023421004,
+  "actual_native_exit": 1,
+  "actual_wall_seconds": 1431.6100727,
+  "source_restored_before_diagnostic": true,
+  "source_converted": false,
+  "source_booted": false,
+  "raw_evidence": {
+    "path": ".lab\\hyperv\\boot-conversion-0b48b55-c3bf3b92e5734edcb040e39273fe69dc\\actual-FILE35049-closed-raw.json",
+    "sha256": "7c07c5cc5e9d5b6737d1ac3f7392e104f3351c7c6fe027b92b79f2f9441665be"
+  },
+  "native_evidence": {
+    "path": ".lab\\hyperv\\boot-conversion-0b48b55-c3bf3b92e5734edcb040e39273fe69dc\\actual-FILE35049-native-alias-EA.json",
+    "sha256": "cfb6e0186ea0f2b98e90badd607f1a3eef8b5257af2c630268d51ad566b87312"
+  },
+  "diagnostic_helper": {
+    "path": "lab/guest/Inspect-NtfsFileAliases.ps1",
+    "sha256": "90b35bc5af7307d6c59a36ea7bd2e4b9152bd7c9defb4f703a922e05fa6453f3"
+  },
+  "record_number": 35049,
+  "sequence": 1,
+  "parent_record_number": 193,
+  "parent_sequence": 1,
+  "names": [
+    {
+      "namespace": 2,
+      "name": "APPLIS~1.PNG"
+    },
+    {
+      "namespace": 1,
+      "name": "AppList.scale-100_altform-colorful_theme-light.png"
+    },
+    {
+      "namespace": 0,
+      "name": "AppList.scale-100.png"
+    }
+  ],
+  "native_name_paths": [
+    {
+      "name": {
+        "origin_record": 35049,
+        "origin_sequence": 1,
+        "attribute_instance": 3,
+        "parent": {
+          "reference_hex": "00010000000000c1",
+          "record_number": 193,
+          "sequence_number": 1
+        },
+        "namespace": 2,
+        "name": "APPLIS~1.PNG",
+        "name_utf16": [
+          65,
+          80,
+          80,
+          76,
+          73,
+          83,
+          126,
+          49,
+          46,
+          80,
+          78,
+          71
+        ]
+      },
+      "same_file_id_info_as_base": true,
+      "normalized_path": "\\\\?\\Volume{c6c3318f-a7c8-47b9-be6d-6dde5e00862f}\\Program Files\\WindowsApps\\Clipchamp.Clipchamp_4.5.10920.0_neutral_split.scale-100_yxz26nhyzhsrt\\Images\\AppList.scale-100_altform-colorful_theme-light.png",
+      "long_path_mapping": {
+        "input": "\\\\?\\Volume{c6c3318f-a7c8-47b9-be6d-6dde5e00862f}\\Program Files\\WindowsApps\\Clipchamp.Clipchamp_4.5.10920.0_neutral_split.scale-100_yxz26nhyzhsrt\\Images\\APPLIS~1.PNG",
+        "api": "GetLongPathNameW",
+        "result": "\\\\?\\Volume{c6c3318f-a7c8-47b9-be6d-6dde5e00862f}\\Program Files\\WindowsApps\\Clipchamp.Clipchamp_4.5.10920.0_neutral_split.scale-100_yxz26nhyzhsrt\\Images\\AppList.scale-100_altform-colorful_theme-light.png"
+      },
+      "short_path_mapping": {
+        "input": "\\\\?\\Volume{c6c3318f-a7c8-47b9-be6d-6dde5e00862f}\\Program Files\\WindowsApps\\Clipchamp.Clipchamp_4.5.10920.0_neutral_split.scale-100_yxz26nhyzhsrt\\Images\\APPLIS~1.PNG",
+        "api": "GetShortPathNameW",
+        "result": "\\\\?\\Volume{c6c3318f-a7c8-47b9-be6d-6dde5e00862f}\\PROGRA~1\\WindowsApps\\CLIPCH~1.SCA\\Images\\APPLIS~1.PNG"
+      }
+    },
+    {
+      "name": {
+        "origin_record": 35049,
+        "origin_sequence": 1,
+        "attribute_instance": 2,
+        "parent": {
+          "reference_hex": "00010000000000c1",
+          "record_number": 193,
+          "sequence_number": 1
+        },
+        "namespace": 1,
+        "name": "AppList.scale-100_altform-colorful_theme-light.png",
+        "name_utf16": [
+          65,
+          112,
+          112,
+          76,
+          105,
+          115,
+          116,
+          46,
+          115,
+          99,
+          97,
+          108,
+          101,
+          45,
+          49,
+          48,
+          48,
+          95,
+          97,
+          108,
+          116,
+          102,
+          111,
+          114,
+          109,
+          45,
+          99,
+          111,
+          108,
+          111,
+          114,
+          102,
+          117,
+          108,
+          95,
+          116,
+          104,
+          101,
+          109,
+          101,
+          45,
+          108,
+          105,
+          103,
+          104,
+          116,
+          46,
+          112,
+          110,
+          103
+        ]
+      },
+      "same_file_id_info_as_base": true,
+      "normalized_path": "\\\\?\\Volume{c6c3318f-a7c8-47b9-be6d-6dde5e00862f}\\Program Files\\WindowsApps\\Clipchamp.Clipchamp_4.5.10920.0_neutral_split.scale-100_yxz26nhyzhsrt\\Images\\AppList.scale-100_altform-colorful_theme-light.png",
+      "long_path_mapping": {
+        "input": "\\\\?\\Volume{c6c3318f-a7c8-47b9-be6d-6dde5e00862f}\\Program Files\\WindowsApps\\Clipchamp.Clipchamp_4.5.10920.0_neutral_split.scale-100_yxz26nhyzhsrt\\Images\\AppList.scale-100_altform-colorful_theme-light.png",
+        "api": "GetLongPathNameW",
+        "result": "\\\\?\\Volume{c6c3318f-a7c8-47b9-be6d-6dde5e00862f}\\Program Files\\WindowsApps\\Clipchamp.Clipchamp_4.5.10920.0_neutral_split.scale-100_yxz26nhyzhsrt\\Images\\AppList.scale-100_altform-colorful_theme-light.png"
+      },
+      "short_path_mapping": {
+        "input": "\\\\?\\Volume{c6c3318f-a7c8-47b9-be6d-6dde5e00862f}\\Program Files\\WindowsApps\\Clipchamp.Clipchamp_4.5.10920.0_neutral_split.scale-100_yxz26nhyzhsrt\\Images\\AppList.scale-100_altform-colorful_theme-light.png",
+        "api": "GetShortPathNameW",
+        "result": "\\\\?\\Volume{c6c3318f-a7c8-47b9-be6d-6dde5e00862f}\\PROGRA~1\\WindowsApps\\CLIPCH~1.SCA\\Images\\APPLIS~1.PNG"
+      }
+    },
+    {
+      "name": {
+        "origin_record": 35049,
+        "origin_sequence": 1,
+        "attribute_instance": 5,
+        "parent": {
+          "reference_hex": "00010000000000c1",
+          "record_number": 193,
+          "sequence_number": 1
+        },
+        "namespace": 0,
+        "name": "AppList.scale-100.png",
+        "name_utf16": [
+          65,
+          112,
+          112,
+          76,
+          105,
+          115,
+          116,
+          46,
+          115,
+          99,
+          97,
+          108,
+          101,
+          45,
+          49,
+          48,
+          48,
+          46,
+          112,
+          110,
+          103
+        ]
+      },
+      "same_file_id_info_as_base": true,
+      "normalized_path": "\\\\?\\Volume{c6c3318f-a7c8-47b9-be6d-6dde5e00862f}\\Program Files\\WindowsApps\\Clipchamp.Clipchamp_4.5.10920.0_neutral_split.scale-100_yxz26nhyzhsrt\\Images\\AppList.scale-100.png",
+      "long_path_mapping": {
+        "input": "\\\\?\\Volume{c6c3318f-a7c8-47b9-be6d-6dde5e00862f}\\Program Files\\WindowsApps\\Clipchamp.Clipchamp_4.5.10920.0_neutral_split.scale-100_yxz26nhyzhsrt\\Images\\AppList.scale-100.png",
+        "api": "GetLongPathNameW",
+        "result": "\\\\?\\Volume{c6c3318f-a7c8-47b9-be6d-6dde5e00862f}\\Program Files\\WindowsApps\\Clipchamp.Clipchamp_4.5.10920.0_neutral_split.scale-100_yxz26nhyzhsrt\\Images\\AppList.scale-100.png"
+      },
+      "short_path_mapping": {
+        "input": "\\\\?\\Volume{c6c3318f-a7c8-47b9-be6d-6dde5e00862f}\\Program Files\\WindowsApps\\Clipchamp.Clipchamp_4.5.10920.0_neutral_split.scale-100_yxz26nhyzhsrt\\Images\\AppList.scale-100.png",
+        "api": "GetShortPathNameW",
+        "result": "\\\\?\\Volume{c6c3318f-a7c8-47b9-be6d-6dde5e00862f}\\PROGRA~1\\WindowsApps\\CLIPCH~1.SCA\\Images\\AppList.scale-100.png"
+      }
+    }
+  ],
+  "attribute_list_coverage_complete": true,
+  "all_record_bookends_unchanged": true,
+  "parent_index_diagnostic_coverage_complete": false,
+  "parent_index_limitation": "Parent193 has nonresident I30 allocation; diagnostic does not read it. Executing conversion reached hashed-files only after complete raw bidirectional namespace reconciliation succeeded.",
+  "fix_policy": "Separate DOS namespace2 pairs only to a unique namespace1 canonical name in the same parent identity. Namespace0 canonical hard links are preserved and do not compete. Zero or multiple Win32 partners remain refused.",
+  "source_raw_native_EA_comparison_changed": false,
+  "ordinary_data_policy_changed": false,
+  "unit_tests_run": false,
+  "primary_file_name_reference": "https://learn.microsoft.com/en-us/windows/win32/devnotes/file-name"
+}

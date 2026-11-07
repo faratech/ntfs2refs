@@ -6,7 +6,8 @@
 param(
     [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{32}\z')][string]$ConversionRunId,
     [long]$PreviousBootUnixMs = 1793995332223,
-    [Parameter(Mandatory)][string]$ReceiptPath
+    [string]$ReceiptPath,
+    [switch]$HostReceiptOnly
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
@@ -15,6 +16,9 @@ function Hash([byte[]]$Bytes){$h=[Security.Cryptography.SHA256]::Create();try{re
 
 # Receipt storage must be independent even if the caller accidentally invokes
 # this while the clean control still runs. Do not write to the converted OS.
+Need (($HostReceiptOnly-and[string]::IsNullOrEmpty($ReceiptPath))-or(-not$HostReceiptOnly-and-not[string]::IsNullOrEmpty($ReceiptPath))) 'Choose host-only stdout receipt or one independent guest receipt path'
+$receiptPartitions=@();$receiptVolume=$null
+if(-not$HostReceiptOnly){
 Need ([IO.Path]::IsPathRooted($ReceiptPath)-and-not(Test-Path -LiteralPath $ReceiptPath)) 'A new absolute receipt path is required'
 $parent=Split-Path -Parent $ReceiptPath
 $directory=Get-Item -LiteralPath $parent -Force
@@ -27,6 +31,7 @@ Need ($receiptVolumes.Count-eq1) 'Receipt directory must identify one actual loc
 $receiptVolume=$receiptVolumes[0]
 $receiptPartitions=@(Get-Partition|Where-Object {@($_.AccessPaths)-contains[string]$receiptVolume.UniqueId})
 Need ($receiptPartitions.Count-eq1-and$receiptPartitions[0].DiskNumber-ne0-and$receiptPartitions[0].IsOffline-eq$false-and$receiptPartitions[0].IsReadOnly-eq$false) 'Receipt storage must be online outside original source disk0'
+}
 
 $result=[ordered]@{
     schema_version=1;kind='actual-original-Windows-partition-ReFS-boot-v1';status='observing'
@@ -35,8 +40,9 @@ $result=[ordered]@{
     source_filesystem_now_refs=$false;clean_install_control_observed=$false
     conversion_proven_by_this_observer=$false;conversion_handoff_evidence_required_separately=$true
     observer_boot_order_changes=0;observer_snapshot_calls=0;observer_conversion_or_recovery_calls=0
-    observer_source_mutations_requested=0;receipt_storage_disk=$receiptPartitions[0].DiskNumber
-    receipt_volume_unique_id=[string]$receiptVolume.UniqueId
+    observer_source_mutations_requested=0;host_receipt_only=[bool]$HostReceiptOnly
+    receipt_storage_disk=$(if($HostReceiptOnly){$null}else{$receiptPartitions[0].DiskNumber})
+    receipt_volume_unique_id=$(if($HostReceiptOnly){$null}else{[string]$receiptVolume.UniqueId})
     created_utc=[DateTime]::UtcNow.ToString('o')
 }
 $failure=$null
@@ -94,7 +100,13 @@ try{
 
 $wire=[Text.UTF8Encoding]::new($false).GetBytes(($result|ConvertTo-Json -Depth 12))
 Need ($wire.Length-le1MB) 'Boot receipt exceeds its bounded metadata size'
-$file=[IO.File]::Open($ReceiptPath,'CreateNew','Write','Read')
-try{$file.Write($wire,0,$wire.Length);$file.Flush($true)}finally{$file.Dispose()}
-[pscustomobject]@{path=$ReceiptPath;bytes=$wire.Length;sha256=(Hash $wire);actual_boot_verified=$result.actual_boot_verified;status=$result.status}|ConvertTo-Json -Compress
+if($HostReceiptOnly){
+    # The caller persists this bounded result on the host. No second guest disk
+    # or ReFS maintenance installation is needed to observe the original boot.
+    [pscustomobject]@{kind='host-only-original-Windows-boot-receipt';receipt=$result;bytes=$wire.Length;sha256=(Hash $wire)}|ConvertTo-Json -Depth 14 -Compress
+}else{
+    $file=[IO.File]::Open($ReceiptPath,'CreateNew','Write','Read')
+    try{$file.Write($wire,0,$wire.Length);$file.Flush($true)}finally{$file.Dispose()}
+    [pscustomobject]@{path=$ReceiptPath;bytes=$wire.Length;sha256=(Hash $wire);actual_boot_verified=$result.actual_boot_verified;status=$result.status}|ConvertTo-Json -Compress
+}
 if($null-ne$failure){throw $failure}

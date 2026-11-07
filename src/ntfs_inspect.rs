@@ -47,6 +47,8 @@ pub use paged_files::PagedRawFiles;
 pub use paged_inspection::{
     PagedInspection, SourceInspectionPin, inspect_paged_with_policy, inspect_paged_with_scratch,
 };
+#[cfg(windows)]
+pub(crate) use paged_inspection::inspect_paged_with_layout_scope;
 pub use source_domain::{
     LegacySecurityRecord, RootDirectoryDomain, RootFileDomain, RootSecurityCaptureDomain,
     SourceDirectoryHeader, SourceHeader, SourceIndexRanges, SourceMetadataBudget,

@@ -865,13 +865,14 @@ impl ResourceSourceContext {
         );
         let length = source.byte_len();
         *phase = "source-inspection";
-        let (raw, read_coverage) = fp::inspect_recorded_with_scratch(
+        let (raw, read_coverage) = fp::inspect_recorded_with_layout_scope(
             &mut source,
             length,
             budget,
             policy,
             &output.join("recorded-source"),
             &scratch,
+            binding.layout_profile,
         )?;
         ensure!(
             raw.header().geometry == geometry,

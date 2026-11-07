@@ -38,6 +38,7 @@ fn is_false(value: &bool) -> bool {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum InspectionPurpose {
     Conversion,
+    WindowsConversion,
     Preparation,
 }
 struct ClosedSource;
@@ -219,7 +220,7 @@ impl PagedInspection {
     ) -> Result<()> {
         let actual = self.budget().page_budget()?;
         ensure!(
-            self.purpose == InspectionPurpose::Conversion
+            matches!(self.purpose,InspectionPurpose::Conversion|InspectionPurpose::WindowsConversion)
                 && !self.pin.preparation_only
                 && self.pin.schema_version == 1
                 && self.files.header().inventory_complete
@@ -410,6 +411,19 @@ pub fn inspect_paged_with_scratch<R: Read + Seek>(
         scratch,
         InspectionPurpose::Conversion,
     )
+}
+
+/// Observational path scope selected by the actual frozen source layout.
+/// It does not cover target alias preservation or grant write authority.
+pub(crate) fn inspect_paged_with_layout_scope<R: Read + Seek>(
+    reader:&mut R,length:u64,resources:n2r_win32::tree_resources::ResourceBudget,
+    policy:crate::verification_policy::VerificationPolicy,root:&Path,scratch:&SourceScratch,
+    layout:n2r_win32::general_layout::GeneralDiskLayoutProfile,
+)->Result<PagedInspection>{
+    let purpose=if layout==n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows {
+        InspectionPurpose::WindowsConversion
+    }else{InspectionPurpose::Conversion};
+    inspect_paged_internal(reader,length,resources,policy,root,scratch,purpose)
 }
 
 fn inspect_paged_internal<R: Read + Seek>(
@@ -681,14 +695,15 @@ fn inspect_paged_internal<R: Read + Seek>(
                 if file.streams[index].logical_hash_status != LogicalHashStatus::NotComputed {
                     continue;
                 }
-                let eligible = crate::ntfs_attestation::extent_identity_stream_request_domain(
-                    &files,
-                    &file,
-                    &file.streams[index],
-                    true,
-                    true,
-                )?
-                .is_some();
+                let eligible = if purpose==InspectionPurpose::WindowsConversion {
+                    crate::ntfs_attestation::extent_identity_stream_request_windows_domain(
+                        &files,&file,&file.streams[index],
+                    )?
+                }else{
+                    crate::ntfs_attestation::extent_identity_stream_request_domain(
+                        &files,&file,&file.streams[index],true,true,
+                    )?
+                }.is_some();
                 let (status, digest) = if eligible {
                     (LogicalHashStatus::NotReadExtentIdentityV1, None)
                 } else {

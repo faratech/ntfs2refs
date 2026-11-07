@@ -437,16 +437,26 @@ pub fn inspect_recorded_with_scratch<R: Read + Seek>(
     root: &Path,
     scratch: &SourceScratch,
 ) -> Result<(PagedInspection, InspectionReadCoverage)> {
+    inspect_recorded_with_layout_scope(reader,length,budget,policy,root,scratch,
+        n2r_win32::general_layout::GeneralDiskLayoutProfile::DedicatedData)
+}
+
+pub(crate) fn inspect_recorded_with_layout_scope<R: Read + Seek>(
+    reader:&mut R,length:u64,budget:n2r_win32::tree_resources::ResourceBudget,
+    policy:VerificationPolicy,root:&Path,scratch:&SourceScratch,
+    layout:n2r_win32::general_layout::GeneralDiskLayoutProfile,
+) -> Result<(PagedInspection,InspectionReadCoverage)> {
     ensure!(!root.exists(), "fresh recorded source directory required");
     fs::create_dir(root)?;
     let mut recorder = PagedReadRecorder::new(reader, length, root, scratch)?;
-    let source = ntfs_inspect::inspect_paged_with_scratch(
+    let source = ntfs_inspect::inspect_paged_with_layout_scope(
         &mut recorder,
         length,
         budget,
         policy,
         &root.join("raw"),
         scratch,
+        layout,
     )?;
     let (_, coverage) = recorder.finish()?;
     let source_pin = source.canonical_sha256()?;

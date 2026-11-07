@@ -40,6 +40,18 @@ use std::{
     sync::Arc,
 };
 
+// Native controls bound one operation's evidence, not the complete retained
+// history. Preserve every emitted event, including a failed operation's batch.
+fn native_batch<T, E>(
+    history: &mut Vec<NativeEvent>,
+    operation: impl FnOnce(&mut Vec<NativeEvent>) -> std::result::Result<T, E>,
+) -> std::result::Result<T, E> {
+    let mut batch = Vec::new();
+    let result = operation(&mut batch);
+    history.append(&mut batch);
+    result
+}
+
 #[derive(Serialize)]
 struct MetadataPin {
     path: PathBuf,
@@ -794,7 +806,8 @@ impl ResourceSourceContext {
         );
         let source_io_ram = scratch.lease_ram(GeneralFrozenPartition::read_buffer_memory_bytes_for(&binding))?;
         *phase = "source-freeze";
-        let mut online = n2r_win32::GeneralPartitionReader::open(binding.clone(), events)?;
+        let mut online = native_batch(events, |batch|
+            n2r_win32::GeneralPartitionReader::open(binding.clone(), batch))?;
         let mut boot = [0; 512];
         online.read_exact(&mut boot)?;
         let geometry = ntfs_inspect::inspect_boot_sector(&boot, online.byte_len())?;
@@ -803,9 +816,10 @@ impl ResourceSourceContext {
                 .supports_source_geometry(&geometry),
             "source geometry exceeds the implemented resource profile"
         );
-        online.revalidate_route(events)?;
+        native_batch(events, |batch| online.revalidate_route(batch))?;
         drop(online);
-        let mount_paths = n2r_win32::capture_mount_paths_general(binding.clone(), events)?;
+        let mount_paths = native_batch(events, |batch|
+            n2r_win32::capture_mount_paths_general(binding.clone(), batch))?;
         let label = n2r_win32::volume_label::capture_source_label(binding.clone())?;
         ensure!(
             mount_paths.binding == binding
@@ -847,20 +861,22 @@ impl ResourceSourceContext {
             None
         };
         let source = if let Some(guard) = &mut early_preparation_guard {
-            guard.isolate(binding.clone(), budget, events)?
+            native_batch(events, |batch| guard.isolate(binding.clone(), budget, batch))?
         } else if restore_on_failure {
-            GeneralFrozenPartition::isolate_observed_ntfs_with_resource_budget_restore_on_error(
-                binding.clone(), budget, events,
-            )?
+            native_batch(events, |batch|
+                GeneralFrozenPartition::isolate_observed_ntfs_with_resource_budget_restore_on_error(
+                    binding.clone(), budget, batch,
+                ))?
         } else {
-            GeneralFrozenPartition::isolate_observed_ntfs_with_resource_budget(
-                binding.clone(), budget, events,
-            )?
+            native_batch(events, |batch|
+                GeneralFrozenPartition::isolate_observed_ntfs_with_resource_budget(
+                    binding.clone(), budget, batch,
+                ))?
         };
         let mut source_slot = Some(source);
         let result = (|| -> Result<Self> {
         let mut source = source_slot.as_mut().context("isolated source owner absent")?;
-        let before = source.state(events)?;
+        let before = native_batch(events, |batch| source.state(batch))?;
         ensure!(
             before.disk_attributes == 3 && source.freeze_observation().is_some(),
             "actual observed source freeze absent"
@@ -886,8 +902,9 @@ impl ResourceSourceContext {
             Some(scratch.lease_ram(16384)?)
         } else { None };
         let storage_hint_normalization = if storage_hint_ram.is_some() {
-            let proof = Arc::new(source.observe_boot_storage_hint_normalization(events)?);
-            proof.revalidate(source, events)?;
+            let proof = Arc::new(native_batch(events, |batch|
+                source.observe_boot_storage_hint_normalization(batch))?);
+            native_batch(events, |batch| proof.revalidate(source, batch))?;
             Some(proof)
         } else { None };
         let windows_aliases = if binding.layout_profile
@@ -970,7 +987,7 @@ impl ResourceSourceContext {
             .as_ref()
             .map(|_| scratch.lease_ram(std::mem::size_of::<SourceNativeMemory>() as u64 + 128))
             .transpose()?;
-        let native = if let Some((arena, _, _)) = &groups {
+        let native = native_batch(events, |batch| if let Some((arena, _, _)) = &groups {
             source.observe_ntfs_files_paged_domain_with_memory(
                 &selectors,
                 native_destination,
@@ -978,8 +995,8 @@ impl ResourceSourceContext {
                 true,
                 true,
                 Arc::new(SourceNativeMemory(arena.clone())),
-                events,
-            )?
+                batch,
+            )
         } else {
             source.observe_ntfs_files_paged_domain(
                 &selectors,
@@ -987,9 +1004,9 @@ impl ResourceSourceContext {
                 admission.native_observation_budget()?,
                 true,
                 true,
-                events,
-            )?
-        };
+                batch,
+            )
+        })?;
         ensure!(
             groups.is_none() || native.domain().retained_storage_ram_accounted(),
             "actual native source owner lost its shared memory leases"
@@ -1048,7 +1065,7 @@ impl ResourceSourceContext {
         )?;
         *phase = "source-admission";
         let after_hash = fingerprint.hash(&mut source)?;
-        let after = source.state(events)?;
+        let after = native_batch(events, |batch| source.state(batch))?;
         ensure!(
             before == after
                 && source_sha == after_hash
@@ -1196,7 +1213,7 @@ impl ResourceSourceContext {
         let replacements_pin = replacements_writer.finish()?;
         let storage_hint_pin = storage_hint_writer.map(SortedRecordWriter::finish).transpose()?;
         if let Some(proof) = &storage_hint_normalization {
-            proof.revalidate(source, events)?;
+            native_batch(events, |batch| proof.revalidate(source, batch))?;
             save(output, "source-storage-hint-normalizations.json", &serde_json::json!({
                 "kind":"explicit-default-Windows-storage-hint-normalization-v1",
                 "source_inspection_sha256":inspection_sha, "source_device_witness":proof.as_ref(),
@@ -1270,7 +1287,7 @@ impl ResourceSourceContext {
                 "nonempty Windows alias plans require actual complete protected-target alias verification before writer admission");
         }
         if let Some(proof) = &storage_hint_normalization {
-            proof.revalidate(source, events)?;
+            native_batch(events, |batch| proof.revalidate(source, batch))?;
             gate(&mut gates, "default_storage_hint_normalization", storage_hint_pin.is_some(),
                 "exact default $DSC class2/flags0 metadata archived under the original frozen fixed non-Spaces device witness; ReFS property preservation is not claimed");
         }
@@ -1600,7 +1617,7 @@ impl ResourceSourceContext {
         closure: &crate::artifact_arena::PreparedArenaClosure,
         events: &mut Vec<NativeEvent>,
     ) -> Result<PreparedResourceSourceAdmission> {
-        self.source.require_complete_partition_admission(events)?;
+        native_batch(events, |batch| self.source.require_complete_partition_admission(batch))?;
         self.require_source_evidence()?;
         if let Some(aliases)=&self.windows_aliases {
             target.require_windows_alias_source(aliases,self.admission.source_inspection_sha256,expected)?;
@@ -1773,15 +1790,16 @@ impl ResourceSourceContext {
         );
         self.revalidate_evidence()?;
         if let Some(proof) = &self.storage_hint_normalization {
-            proof.revalidate(self.source.require_dedicated()?, events)?;
+            let source = self.source.require_dedicated()?;
+            native_batch(events, |batch| proof.revalidate(source, batch))?;
         }
-        let before = self.source.state(events)?;
+        let before = native_batch(events, |batch| self.source.state(batch))?;
         ensure!(
             before == self.before && before.disk_attributes == 3,
             "original frozen source state changed"
         );
         let digest = self.fingerprint.hash(self.source.require_dedicated_mut()?)?;
-        let after = self.source.state(events)?;
+        let after = native_batch(events, |batch| self.source.state(batch))?;
         ensure!(
             after == before && digest == self.source_sha,
             "resource source fingerprint changed"
@@ -1811,12 +1829,14 @@ impl ResourceSourceContext {
         ensure!(self.source.freeze_observation().is_some(),
             "pre-AP NTFS freeze witness was consumed");
         if let Some(guard) = &mut self.early_preparation_guard { guard.mark_live_cancel_intent()?; }
-        self.source.bring_original_online_unchanged(&sha, events)
+        native_batch(events, |batch| self.source.bring_original_online_unchanged(&sha, batch))
             .context("original NTFS online transition failed; source may require rediscovery")?;
         checkpoint(events)?;
-        let mounted = n2r_win32::rediscover_general_volume_wait(binding.clone(), events)?;
+        let mounted = native_batch(events, |batch|
+            n2r_win32::rediscover_general_volume_wait(binding.clone(), batch))?;
         n2r_win32::volume_label::validate_original_partition(&binding, &mounted)?;
-        ensure!(n2r_win32::mounted_filesystem_general(mounted.clone(), events)? == "NTFS",
+        ensure!(native_batch(events, |batch|
+            n2r_win32::mounted_filesystem_general(mounted.clone(), batch))? == "NTFS",
             "original source did not return as NTFS");
         if let Some(guard) = &mut self.early_preparation_guard { guard.mark_live_cancelled(events)?; }
         checkpoint(events)?;

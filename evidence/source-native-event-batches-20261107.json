@@ -1,0 +1,81 @@
+{
+  "kind": "actual-source-native-event-batch-refusal-and-fix-evidence",
+  "observed_utc": "2026-11-07T06:16:10.6387182Z",
+  "failed_runtime": "beef2dc86998966aac31a19bf3cf814efb403807",
+  "run_id": "a5af7e7c5993464680af88bde1375208",
+  "native_pid": 2032,
+  "native_birth_ms": 1794028400415,
+  "native_exit": 1,
+  "native_wall_seconds": 3364.743354,
+  "native_launches": 1,
+  "failure_before_AP": true,
+  "native_control_failure": {
+    "operation": "general-disk-length",
+    "code": "0x0007405c",
+    "input_bytes": 0,
+    "output_capacity": 8,
+    "history_event_count": 128,
+    "unchanged_event_limit_exclusive": 128,
+    "unchanged_input_limit": 64,
+    "unchanged_output_limit": 65536
+  },
+  "closed_native_collection_evidence": [
+    {
+      "path": ".lab\\hyperv\\boot-conversion-beef2dc-a5af7e7c5993464680af88bde1375208\\native-event-budget-refusal\\source-native-witness.json",
+      "bytes": 17143,
+      "sha256": "fda70c413118f05430850522d84fb36aece7089b5be8a13d8bd2754c4d75e29c",
+      "source_admitted": false
+    },
+    {
+      "path": ".lab\\hyperv\\boot-conversion-beef2dc-a5af7e7c5993464680af88bde1375208\\native-event-budget-refusal\\native-source-header.json",
+      "bytes": 4241553,
+      "sha256": "d06761b26f98ad67a72cd5311203930c358340419b2cfa6fcc4dcb53679b5788"
+    }
+  ],
+  "actual_failure_boundary": "After native witness/header publication: source-admission fingerprint rehash then source.state reused a full accumulated event history. Per-operation native controls correctly refused events128.",
+  "restoration_receipt": {
+    "path": ".lab\\hyperv\\boot-conversion-beef2dc-a5af7e7c5993464680af88bde1375208\\native-event-budget-restored-normalized-NTFS.json",
+    "sha256": "9947bbed3e9251069b9584e8d5805e5db20dec2b6ba4ddf4e4bedeae1714b160",
+    "original_disk": 0,
+    "original_partition": 3,
+    "partition_guid": "c6c3318f-a7c8-47b9-be6d-6dde5e00862f",
+    "partition_offset": 331350016,
+    "partition_bytes": 66236448768,
+    "filesystem": "NTFS",
+    "cluster_bytes": 4096,
+    "healthy_online_writable": true,
+    "current_windows_disk": 1,
+    "live_converter_or_inspector_count": 0
+  },
+  "fix_policy": "Use a fresh bounded native-event vector for each high-level operation, append every successful or failed event to retained history before propagating the unchanged result; preserve controls, predicates, limits, ordering and original persisted preflight boundary.",
+  "affected_paths": [
+    "collect preflight/isolation/storage witness/native observation/state and later storage rechecks",
+    "source admission completeness check",
+    "recheck_source storage witness/before state/after state",
+    "supported unchanged-source online/rediscovery/filesystem checks"
+  ],
+  "native_limits_raised": false,
+  "events_discarded": false,
+  "checks_waived": false,
+  "new_event_history_clear_added": false,
+  "wpr_trace_started": false,
+  "unit_tests_run": false,
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "source_converted": false,
+  "source_booted": false,
+  "grants_source_or_replay_authority": false,
+  "focused_compile": {
+    "exit_code": 0,
+    "wall_seconds": 25.1604766,
+    "rust_version": "1.98.1",
+    "shared_target": "target/shared-experiments",
+    "offline": true,
+    "locked": true,
+    "static_crt": true,
+    "jobs": 4,
+    "unit_tests_run": false,
+    "full_build_forecast_bytes": 2147483648,
+    "separate_fresh_native_admission_required": true,
+    "native_forecast_unchanged_bytes": 17179869184
+  }
+}

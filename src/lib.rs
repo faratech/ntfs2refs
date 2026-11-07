@@ -115,6 +115,8 @@ pub(crate) mod refs_security_repair;
 #[cfg(windows)]
 #[doc(hidden)]
 pub mod refs_security_oracle;
+#[cfg(windows)]
+pub(crate) mod refs_security_integration;
 pub mod refs_split_refs;
 pub mod refs_virtual_roots;
 pub mod refs_write_set;

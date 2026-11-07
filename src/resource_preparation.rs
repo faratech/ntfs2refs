@@ -32,10 +32,10 @@ mod placement_evidence;
 pub(crate) mod abort;
 pub(crate) mod early_guard;
 pub(crate) mod file_observer;
-#[path = "resource_partition_target.rs"]
-pub(crate) mod partition_target;
 #[path = "resource_partition_preparation.rs"]
 pub(crate) mod partition_preparation;
+#[path = "resource_partition_target.rs"]
+pub(crate) mod partition_target;
 use anyhow::{Context, Result, ensure};
 use n2r_win32::{
     GeneralFrozenPartition, NativeEvent,
@@ -330,7 +330,7 @@ pub(crate) fn create_external_output(
 }
 
 pub(crate) fn prepare_with<T, O, F>(
-    request: ResourcePreparationRequest,
+    mut request: ResourcePreparationRequest,
     output: &Path,
     observer: &mut O,
     consume: F,
@@ -343,17 +343,30 @@ where
         &mut O,
     ) -> Result<T>,
 {
+    let original_resources = request.resources;
+    let trust_repair_allocation = if request.pair.source.layout_profile
+        == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+    {
+        let allocation =
+            crate::refs_security_integration::TrustRepairAllocation::split(original_resources)?;
+        request.resources = allocation.main;
+        Some(allocation)
+    } else {
+        None
+    };
     request.validate()?;
     let parent = output.parent().context("diagnostic output parent absent")?;
     let available = n2r_win32::resource_native::observe_available_resources(parent)?;
-    available.validate_budget(request.resources)?;
+    available.validate_budget(original_resources)?;
     let _output_ancestry = create_external_output(output, &request.journal)?;
     let arena = ArtifactArena::new(
         output,
         request.resources,
         &[request.pair.source.clone(), request.pair.shadow.clone()],
     )?;
-    if request.pair.source.layout_profile == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows {
+    if request.pair.source.layout_profile
+        == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+    {
         arena.use_windows_native_allocation(&request.pair.source)?;
     }
     ensure!(
@@ -363,6 +376,13 @@ where
         "diagnostic arena must use the actual external journal volume"
     );
     let mut events = EventLog::new(observer);
+    if let Some(allocation) = trust_repair_allocation {
+        events.observer.note(&serde_json::json!({
+            "kind":"Windows-constructor-security-repair-resource-split-v1",
+            "allocation":allocation,"combined_budget_unchanged":true,
+            "source_security_expectations_changed":false,
+        }))?;
+    }
     let locator_group =
         arena.reserve_group(ArtifactGroup::RecoveryCopy, request.locator_arena_bytes)?;
     events.phase("early-preparation-guard");
@@ -424,18 +444,14 @@ where
         let aux_scratch = SourceScratch::new_auxiliary_in_arena(source_budget, aux_group)?;
         let projection_dir = output.join("projection");
         std::fs::create_dir(&projection_dir)?;
-        let projection = context.derive_projection(
-            admission,
-            &projection_dir,
-            &aux_scratch,
-        )?;
+        let projection = context.derive_projection(admission, &projection_dir, &aux_scratch)?;
         if let Some(report) = projection.windows_ea_normalization_report()? {
             events.observer.note(&report)?;
         }
         if let Some(report) = projection.windows_txf_disposition_report()? {
             events.observer.note(&report)?;
         }
-        if let Some(report)=projection.windows_object_id_disposition_report()? {
+        if let Some(report) = projection.windows_object_id_disposition_report()? {
             events.observer.note(&report)?;
         }
         let expected_group = arena.reserve_group(
@@ -460,10 +476,18 @@ where
         let _expected_seal = expected_group.seal()?;
         expected.require_shared_memory(&arena)?;
         expected.require_resource_owner(admission)?;
-        let alias_inputs=context.windows_aliases().map(|owner| {
-            crate::boot_alias::WindowsAliasNativeDomain::new(owner,&expected,admission,
-                &projection_dir.join("windows-alias-indices"),&aux_scratch)
-        }).transpose()?;
+        let alias_inputs = context
+            .windows_aliases()
+            .map(|owner| {
+                crate::boot_alias::WindowsAliasNativeDomain::new(
+                    owner,
+                    &expected,
+                    admission,
+                    &projection_dir.join("windows-alias-indices"),
+                    &aux_scratch,
+                )
+            })
+            .transpose()?;
         events.observer.expected_prepared(&context, &expected)?;
         // The complete independently held expected pages are now reopened,
         // authenticated and resource-bound. Their producer is no longer used:
@@ -486,6 +510,13 @@ where
         })?;
         let maximum_source_read_bytes = request.source_read_budget(&expected, admission)?;
         let inputs = PagedInputs(&expected);
+        let trust_recipes = if trust_repair_allocation.is_some() {
+            Some(crate::refs_security_integration::collect_recipes(
+                &inputs, &arena,
+            )?)
+        } else {
+            None
+        };
 
         // Placement and later target capture share one actual quota. Keep
         // every complete placement proof in its constructor-owned page files.
@@ -567,14 +598,28 @@ where
                 .note(&serde_json::to_value(&supply_receipt)?)?;
             bytes.finish()?;
         }
-        let verified_aliases=if let Some(aliases)=&alias_inputs {
-            let (_,verified)=private.complete_source_metadata_windows_aliases_domain(&inputs,aliases,|a,b| {
-                crate::ntfs_attestation::same_security(a,b).map_err(std::io::Error::other)
-            })?;
+        let verified_aliases = if let Some(aliases) = &alias_inputs {
+            let compare = |a: &[u8], b: &[u8]| {
+                crate::ntfs_attestation::same_security(a, b).map_err(std::io::Error::other)
+            };
+            let (report, verified) = if trust_recipes
+                .as_ref()
+                .is_some_and(|recipes| !recipes.is_empty())
+            {
+                private.complete_source_metadata_windows_aliases_domain_with_security_placeholders(
+                    &inputs, aliases, compare,
+                )?
+            } else {
+                private
+                    .complete_source_metadata_windows_aliases_domain(&inputs, aliases, compare)?
+            };
+            events.observer.note(&serde_json::json!({"kind":"Windows-constructor-metadata-completion",
+                "trust_label_descriptors_requiring_raw_repair":trust_recipes.as_ref().map_or(0,|recipes|recipes.len()),
+                "report":report,"original_security_native_verification_pending":true}))?;
             Some(std::sync::Arc::new(verified))
-        }else{
-            private.complete_source_metadata_domain(&inputs,|a,b| {
-                crate::ntfs_attestation::same_security(a,b).map_err(std::io::Error::other)
+        } else {
+            private.complete_source_metadata_domain(&inputs, |a, b| {
+                crate::ntfs_attestation::same_security(a, b).map_err(std::io::Error::other)
             })?;
             None
         };
@@ -588,6 +633,28 @@ where
         )?;
         events.phase("shadow-freeze");
         let mut shadow = GeneralFrozenPartition::isolate(request.pair.shadow.clone(), &mut events)?;
+        let _trust_repair_owner = if let Some(recipes) =
+            trust_recipes.as_ref().filter(|recipes| !recipes.is_empty())
+        {
+            events.phase("shadow-original-trust-label-repair");
+            let (repaired, owner) = crate::refs_security_integration::repair_constructor_shadow(
+                &mut context,
+                shadow,
+                recipes,
+                trust_repair_allocation.context("Windows security-repair allocation absent")?,
+                &arena,
+                &request.journal,
+                &output.join("shadow-security-repair"),
+                &mut events,
+            )?;
+            shadow = repaired;
+            events
+                .observer
+                .note(&serde_json::to_value(owner.receipt())?)?;
+            Some(owner)
+        } else {
+            None
+        };
         events.checkpoint()?;
         let capture_dir = output.join("capture");
         std::fs::create_dir(&capture_dir)?;

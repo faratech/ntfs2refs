@@ -22,12 +22,16 @@ try{
    if(-not$function){throw 'Capacity function absent'};. ([scriptblock]::Create($function.Extent.Text))
   }
   $capacity=Capacity 17179869184L
-  Need ($capacity.actual_bytes+17179869184L-le279866334601L) 'Boot-work 50GB allowance cannot admit16GiB forecast'
+  Import-Module (Join-Path $PSScriptRoot 'ExternalLabStorage.psm1') -Force
+  $external=Get-ExternalLabStorageCharge -WorkspaceRoot $workspace
+  $combined=Add (Add $capacity.actual_bytes $external.reserved_maximum_bytes) 17179869184L
+  Need ($combined-le279866334601L) 'Boot-work 50GB allowance including external test storage cannot admit16GiB forecast'
   Need (-not(Test-Path -LiteralPath $case)) 'Existing conversion case must only be observed'
   $vm=Get-VM -Id '8f7fc646-8c9f-41d0-b65a-ecfadccfc36a'
   Need ($vm.State-eq'Running'-and(Get-VMFirmware -VM $vm).SecureBoot-eq'On'-and@(Get-VMSnapshot -VM $vm).Count-eq0) 'Reference VM or zero-checkpoint policy changed'
   $null=New-Item -ItemType Directory -Path $case
   $capacity|ConvertTo-Json -Depth 4|Set-Content -LiteralPath (Join-Path $case 'admission.json') -Encoding UTF8
+  @{D_capacity=$capacity;external_storage=$external;combined_forecast_bytes=$combined;strict_boot_cap=279866334601L;epoch_reset=$false}|ConvertTo-Json -Depth 6|Set-Content -LiteralPath (Join-Path $case 'combined-admission.json') -Encoding UTF8
   Invoke-Command -Session $session -ArgumentList $guestRoot -ScriptBlock {param($root)if(Test-Path -LiteralPath $root){throw 'Guest conversion case already exists'};$null=New-Item -ItemType Directory -Path $root}
   $worker=Join-Path $PSScriptRoot 'guest\Convert-OfflineWindowsSource.ps1'
   $workerSha=(Get-FileHash -LiteralPath $worker -Algorithm SHA256).Hash.ToLowerInvariant()

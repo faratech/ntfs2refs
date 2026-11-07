@@ -30,7 +30,18 @@ observation must then recover the **original** trust label through Microsoft's
 driver before the main in-place conversion may write the original partition.
 
 The hidden `lab-refs-security-repair` tool is restricted to the separately
-created data-only oracle. The one-file native raw-repair acceptance and the
-original Windows installation's conversion/boot remain unproven until recorded.
+created data-only oracle. Its recorded native run changed five metadata
+clusters (20 KiB), completed the existing journal handoff, and brought the same
+volume online. Fresh API and kernel `0x9f` queries returned the exact original
+process-trust ACE; the file identity and 47-byte payload remained unchanged.
+See `evidence/trust-label-raw-native-20261107.json`. This qualifies that one
+descriptor repair. The original Windows installation's conversion and boot
+remain unproven until their own recorded run completes.
+
+Windows preparation reserves a separate repair arena by splitting its observed
+RAM, scratch, retained-index and handle envelope before source preparation.
+The main and repair shares sum to the caller's original ceilings; other volume
+classes keep their existing resource plan. Original source expectations and
+the final protected-target comparisons are unchanged.
 No temporary shadow or secondary Windows disk is a permissible final boot
 dependency; successful conversion publishes onto the original partition.

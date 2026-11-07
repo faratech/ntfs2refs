@@ -538,9 +538,17 @@ pub(super) fn checked_data_attribute_domain<R: Read + Seek>(
             .is_some_and(n2r_win32::content_digest::is_hex),
         LogicalHashStatus::NotReadExtentIdentityV1 => {
             stream.logical_sha256.is_none()
-                && crate::ntfs_attestation::extent_identity_stream_request_domain(
-                    source, &file, stream, true, true,
-                )?
+                && (if source.is_windows_conversion() {
+                    crate::ntfs_attestation::extent_identity_stream_request_windows_domain(
+                        source, &file, stream,
+                    )
+                } else {
+                    crate::ntfs_attestation::extent_identity_stream_request_domain(
+                        source, &file, stream, true, true,
+                    )
+                }).with_context(|| format!(
+                    "checked DATA extent selector at FILE {number} stream {name:?}",
+                ))?
                 .is_some()
         }
         _ => false,

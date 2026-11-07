@@ -123,10 +123,18 @@ pub(crate) fn internal_role(
     files: &impl RootFileDomain,
     file: &FileInventory,
 ) -> Result<Option<String>> {
+    // Ordinary objects cannot be replaced as NTFS internals. Their complete
+    // user paths are checked by the caller's ordinary or Windows policy.
+    if file.record_number >= 16
+        && file.metadata_role == crate::ntfs_inspect::MetadataRole::OutsideExtendCandidate
+    {
+        return Ok(None);
+    }
     // Exact internal roles have a single canonical name. Reserved nameless
     // slots are recognized before the closure is called by the shared policy.
     let path = if file.names.len() == 1 {
-        user_paths(files, file)?.pop()
+        user_paths(files, file)
+            .with_context(|| format!("NTFS internal-role path at FILE {}", file.record_number))?.pop()
     } else {
         None
     };

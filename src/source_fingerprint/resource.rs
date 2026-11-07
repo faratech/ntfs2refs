@@ -765,9 +765,18 @@ impl PagedSourceFingerprint {
                 let explicit = stream.logical_hash_status
                     == LogicalHashStatus::NotReadExtentIdentityV1
                     && stream.logical_sha256.is_none()
-                    && crate::ntfs_attestation::extent_identity_stream_request_domain(
-                        source, &file, stream, true, true,
-                    )?
+                    && (if source.is_windows_conversion() {
+                        crate::ntfs_attestation::extent_identity_stream_request_windows_domain(
+                            source, &file, stream,
+                        )
+                    } else {
+                        crate::ntfs_attestation::extent_identity_stream_request_domain(
+                            source, &file, stream, true, true,
+                        )
+                    }).with_context(|| format!(
+                        "source fingerprint extent selector at FILE {} stream {:?}",
+                        file.record_number, stream.name_utf16,
+                    ))?
                     .is_some();
                 if stream.resident
                     || stream.flags != 0

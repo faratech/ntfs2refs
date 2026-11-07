@@ -1,0 +1,248 @@
+{
+  "kind": "actual-Windows-fingerprint-and-checked-DATA-selector-scope-evidence",
+  "observed_utc": "2026-11-07T05:08:15.7719378Z",
+  "failed_runtime": "47f6ac9539aaa452eaf68e85e8b31592a807a570",
+  "run_id": "48f00d238e9e4f068ec6b43b0e54f3cb",
+  "native_pid": 5772,
+  "native_birth_ms": 1794026324226,
+  "native_exit": 1,
+  "native_wall_seconds": 1366.1115234,
+  "failure_before_AP": true,
+  "unchanged_original_NTFS_restored": true,
+  "restoration_receipt": {
+    "path": ".lab\\hyperv\\boot-conversion-47f6ac9-48f00d238e9e4f068ec6b43b0e54f3cb\\fingerprint-refusal-restored-normalized-NTFS.json",
+    "sha256": "f33657cec32df6c961b9c74f230898928d408cb11fc74e9e07fc7db225f42b87"
+  },
+  "actual_phase_evidence": {
+    "metadata_root": "conversion/source/source",
+    "windows_alias_source_sha256": "e30d73ee68ca28bf57c076970f31a8af9dec53f89d8919dab11754e447fe07a6",
+    "source_manifest_sha256": "2c2a66cb2509fdd66491237844d969fdbc647e0794beaa33dd3b27587275cfa4",
+    "inspection_coverage_sha256": "09ec14d47598d916db704325a7f25e65040a62e03db2859299b285ad15ea6610",
+    "source_frozen_absent": true,
+    "source_basis_absent": true,
+    "native_pages_absent": true,
+    "source_cluster_bytes": 4096,
+    "native_failure_FRN_independently_printed": false
+  },
+  "fingerprint_diagnostic": {
+    "path": ".lab\\hyperv\\boot-conversion-47f6ac9-48f00d238e9e4f068ec6b43b0e54f3cb\\pre-fingerprint-refusal\\actual-closed-fingerprint-strict-path-domain.json",
+    "sha256": "9611a3a6ae534e835680d377f3f7c4e918da9992ad47eb98466d9a52e1a30e96",
+    "eligible_files_failing_strict_initial_name_guard": 32144,
+    "first_deterministic_initial_guard_failure": {
+      "file": {
+        "record_number": 3083,
+        "sequence_number": 5,
+        "hard_link_count": 2,
+        "is_directory": false,
+        "is_metadata": false,
+        "metadata_role": "outside_extend_candidate",
+        "base_file_reference": 0,
+        "names": [
+          {
+            "name": "DO2E95~1.ETL",
+            "name_utf16": [
+              68,
+              79,
+              50,
+              69,
+              57,
+              53,
+              126,
+              49,
+              46,
+              69,
+              84,
+              76
+            ],
+            "namespace": 2,
+            "parent_record_number": 146549,
+            "parent_sequence_number": 1
+          },
+          {
+            "name": "domgmt.20261106_195532_450.etl",
+            "name_utf16": [
+              100,
+              111,
+              109,
+              103,
+              109,
+              116,
+              46,
+              50,
+              48,
+              50,
+              54,
+              49,
+              49,
+              48,
+              54,
+              95,
+              49,
+              57,
+              53,
+              53,
+              51,
+              50,
+              95,
+              52,
+              53,
+              48,
+              46,
+              101,
+              116,
+              108
+            ],
+            "namespace": 1,
+            "parent_record_number": 146549,
+            "parent_sequence_number": 1
+          }
+        ],
+        "record_json_sha256": "3c98a55633c167eb3fe92402d947c196738ec1dca3f2744a1f401a09b65fe8b8"
+      },
+      "file_ordinal": 3074,
+      "stream_ordinal": 0,
+      "stream": {
+        "name": "",
+        "name_utf16": [],
+        "resident": false,
+        "flags": 0,
+        "logical_size": 32768,
+        "initialized_size": 32768,
+        "allocated_size": 32768,
+        "logical_hash_status": "not_read_extent_identity_v1",
+        "logical_sha256_present": false,
+        "extent_count": 1,
+        "all_extents_have_physical_offsets": true
+      },
+      "strict_initial_guard_failures": {
+        "names_empty": false,
+        "raw_counter_differs_from_all_filename_count": false,
+        "dos_namespace2_present": true,
+        "directory_multiple_names": false
+      }
+    }
+  },
+  "ancestor_diagnostic": {
+    "path": ".lab\\hyperv\\boot-conversion-47f6ac9-48f00d238e9e4f068ec6b43b0e54f3cb\\pre-fingerprint-refusal\\actual-closed-single-FN-DOS-ancestor-domain.json",
+    "sha256": "a1b8419c60922a3f0460fdc7e96f94c0a1dcb02ed61d9387041c44bee5f1d746",
+    "single_FN_candidates": 22537,
+    "DOS_ancestor_candidates": 18119,
+    "missing_or_stale_ancestors": 0,
+    "first_example": {
+      "file": {
+        "record_number": 45,
+        "sequence_number": 1,
+        "hard_link_count": 1,
+        "base_file_reference": 0,
+        "is_directory": true,
+        "names": [
+          {
+            "name": "ink",
+            "name_utf16": [
+              105,
+              110,
+              107
+            ],
+            "namespace": 0,
+            "parent_record_number": 44,
+            "parent_sequence_number": 1
+          }
+        ],
+        "record_json_sha256": "8adda9dffa91b9f75c98d051ceb9438aeb935a30d63687b7578e8d837820288e"
+      },
+      "first_failing_ancestor": {
+        "record_number": 44,
+        "sequence_number": 1,
+        "hard_link_count": 2,
+        "base_file_reference": 0,
+        "is_directory": true,
+        "names": [
+          {
+            "name": "MICROS~1",
+            "name_utf16": [
+              77,
+              73,
+              67,
+              82,
+              79,
+              83,
+              126,
+              49
+            ],
+            "namespace": 2,
+            "parent_record_number": 43,
+            "parent_sequence_number": 1
+          },
+          {
+            "name": "microsoft shared",
+            "name_utf16": [
+              109,
+              105,
+              99,
+              114,
+              111,
+              115,
+              111,
+              102,
+              116,
+              32,
+              115,
+              104,
+              97,
+              114,
+              101,
+              100
+            ],
+            "namespace": 1,
+            "parent_record_number": 43,
+            "parent_sequence_number": 1
+          }
+        ],
+        "record_json_sha256": "cb36154a08a553c50c3dbec90d1fe355dd431b6bc719c5d8dc22352b00ae0640"
+      },
+      "strict_failure": "source parent is not a canonical single-name directory",
+      "ancestor_has_dos_namespace2": true,
+      "chain_from_file_parent_inclusive": [
+        {
+          "record_number": 45,
+          "sequence_number": 1
+        },
+        {
+          "record_number": 44,
+          "sequence_number": 1
+        }
+      ],
+      "chain_truncated": false,
+      "ancestor_steps_inclusive": 2
+    }
+  },
+  "actual_raw_EA_counts": {
+    "kernel_purge_flags0_entries": 20977,
+    "ordinary_EA_entries": 1028,
+    "nonpurge_kernel_EA_entries": 0,
+    "purge_nonzero_flags_entries": 0,
+    "full_native_source_EA_comparison_not_yet_proven": true
+  },
+  "fix_scope": [
+    "Fingerprint and checked DATA selectors use canonical Windows paths only for the actual retained Windows inspection purpose; ordinary selectors and all physical mapping/hash/bounds checks remain unchanged.",
+    "Internal-role classification returns None before path lookup only for nonreserved OutsideExtend candidates, which the shared exact replacement policy cannot recognize as internal. Explicit ordinary and Windows user-path admission remains mandatory."
+  ],
+  "source_device_opens_by_diagnostics": 0,
+  "source_write_calls_by_diagnostics": 0,
+  "source_converted": false,
+  "source_booted": false,
+  "unit_tests_run": false,
+  "grants_source_or_replay_authority": false,
+  "focused_compile": {
+    "exit_code": 0,
+    "wall_seconds": 22.7448359,
+    "rust_version": "1.98.1",
+    "shared_target": "target/shared-experiments",
+    "offline": true,
+    "locked": true,
+    "static_crt": true,
+    "jobs": 4,
+    "unit_tests_run": false,
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+  }
+}

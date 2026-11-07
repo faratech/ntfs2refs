@@ -44,6 +44,19 @@ try{
    $task='N2R-WindowsConvert-'+$id;$worker=Join-Path $root 'worker.ps1'
    if(Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue){throw 'Conversion task already exists'}
    if((Get-FileHash -LiteralPath $worker -Algorithm SHA256).Hash.ToLowerInvariant()-cne$workerSha-or(Get-FileHash -LiteralPath (Join-Path $root 'ntfs2refs.exe') -Algorithm SHA256).Hash.ToLowerInvariant()-cne$exeSha){throw 'Guest candidate or worker differs'}
+   $drive=[IO.DriveInfo]::new('C:\');$free=[long]$drive.AvailableFreeSpace
+   $keep=[long][Math]::Max(1073741824L,[long][Math]::Floor([double]$free/4))
+   $usable=$free-$keep
+   $evidence=[long][Math]::Floor([double]$usable/64/4096)*4096
+   # Preserve a conservative staging allowance before the CLI measures its
+   # actual managed-shadow/provider/evidence plan. This is not write authority.
+   $working=[long][Math]::Floor([double]($free-$keep-$evidence-67108864L)/4096)*4096
+   $main=$working-134217728L
+   $wire=[long][Math]::Floor([double]$main/16)*3
+   $sourceShare=[long][Math]::Floor([double]$main/8)
+   $postCopy=@{kind='post-copy-C-scratch-forecast';available_to_caller=$free;keep=$keep;evidence_ceiling=$evidence;staging_allowance=67108864L;Windows_repair_scratch=134217728L;estimated_main_scratch=$main;estimated_native_wire_maximum=$wire;estimated_source_group_maximum=$sourceShare;required_prior_native_wire=2573591778L;required_prior_source_group=1625747056L;forecast_only=$true;actual_CLI_admission_still_required=$true;source_write_authority=$false}
+   $postCopy|ConvertTo-Json -Depth 4|Set-Content -LiteralPath (Join-Path $root 'post-copy-scratch-forecast.json') -Encoding UTF8
+   if($wire-lt2573591778L-or$sourceShare-lt1625747056L){throw 'Post-copy C scratch cannot cover the measured native/source evidence under unchanged budgets'}
    $action=New-ScheduledTaskAction -Execute 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' -Argument ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File '+$worker+' -Root '+$root+' -CandidateSha '+$exeSha+' -SourceCommit '+$commit+' -ExpectedPartitionBytes '+$partitionBytes+' -ExpectedControlBootUnixMs '+$bootMs)
    $principal=New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
    $settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew

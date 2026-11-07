@@ -1,5 +1,11 @@
 # ntfs2refs: current handoff
 
+## ACTUAL NEW LIVE memory-fixed run d4098b0c: PID6068
+
+Queue81262 CLOSED0; NEWRunId d4098b0c4ce64927a65796754d72b762 actually native6068/birth1794078853378/SYSTEMworker1784, taskN2R-WindowsConvert-d4098b0c4ce64927a65796754d72b762 Running/terminalfalse/stderrEMPTY, oneLaunch/one y. Product54ed2576061bd82e6372d0340892c3dd09e3543e /21876224B/SHA c61d1f8f87a7bd84f43ce6e1b5e7f7b0fa11cd684677b1046c6dc2e0a6fe2eb0. ORIGINAL independently printed preparation SHA19033d89682836093208d2fe8203a3ed0fcc19bc81f3e1d622f2dc1fe567459b. Workflow scratch/883d44062156cb18d4db3142519e0d86; host/guestcase boot-conversion-54ed257-d4098b0c4ce64927a65796754d72b762. FirstactualCPU6.171875s/peak39510016B. Post-copy read-only scratch forecast passed; actual emittedresourceplan validation next. Fullsourceadmission/projection/repair/mainAP/handoff/originalbootUNPROVEN.
+
+Sole VM/native operator boot_finish_operator follows SAME6068/run only; root no competing VM calls/sourceprobes/rebuilds. Observe Queue-WindowsBootConversion -RunIdd4098b0c4ce64927a65796754d72b762 -SourceCommit54ed2576061bd82e6372d0340892c3dd09e3543e -ObserveOnly. Never restart from timeout. Original prepSHA is recovery authority input; no aliasfromJSONflag. All previous466/0417cases terminalandpreserved. Source0 was independentlyHealthyNTFSbeforethislaunch. Root must wait for realterminal/phase evidence, not infer success. AfteractualmainHND/nativefinalizer success archivecriticalpins then immediateclean shutdown/original0-onlybootwithHostReceiptOnly observer; no snapshots/extraqualificationdetours.
+
 ## Actual memory-fixed public release ready: 54ed257; ONE fresh attempt authorized
 
 Root74741 ACTUALLY CLOSED0/303.5046655s. Public source54ed2576061bd82e6372d0340892c3dd09e3543e/sourcebeforeafterclean; executable21876224B/SHA c61d1f8f87a7bd84f43ce6e1b5e7f7b0fa11cd684677b1046c6dc2e0a6fe2eb0 in `.lab/development/release-candidates/windows-memory-public-54ed257/bin/ntfs2refs.exe` and matching shared release. Manifest643752c147b9a76fd75bf9cc81cd2e778b59c74ba23630970923a08797ace7e6. No tests/mainc6bc unchanged. Dfree109312487424 afterbuild; externalCactual16218926090/reserved17179869184 remainscharged, no cap/epochchanges. Newrelease includes actual-sized native decoder and small concurrentprojection batches/two-way merges/paid-row lease sequencing.

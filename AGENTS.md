@@ -1,5 +1,9 @@
 # ntfs2refs: current handoff
 
+## Latest SAME2436 source assessment: all143552 user objects match; no source blockers
+
+Actual CLOSED source-resource-assessment32252B at18:28:14.957Z copied host `.lab/hyperv/boot-conversion-39cb900-466b35ab294d45b79112a9e0a78d2bd2/source-closed/source-resource-assessment.json`, SHAefd363757387c121c0ada9e702df547191b0b9c35dcab7ef9f97650742424a06, independently rehashed by root. Requested143580/user143552/MATCHED143552/recognizedinternals28, all_supported_user_views_compatible=true, unresolvedrecords0. Only false gates are windows_alias_target_preservation/shared_artifact_arena/security_timestamp_preservation/target_resource_profile_support, which require later actual target/cross-stage completion. source_admitted=false correctly; this is not a write certificate. SAME2436 Running/terminalfalse/stderrEMPTY; CPU2868.015625s/WS521691136B. Projection/envelope not yet present. Continue same process only; originalprepSHA25193d... retained and sole VM operator boot_finish_operator. Root no competing VM calls.
+
 ## Latest SAME2436 milestone: native source witness completed
 
 SAME Run466b35ab294d45b79112a9e0a78d2bd2/native2436/birth1794073057936 remains Running/terminalfalse/stderrEMPTY. Last actual CPU1956.671875s/WS530702336B/peak714862592B. Raw inventory/roles, namespace/allocation closure and hashed inventory completed earlier. Native report reached2573591778B, then validated witness source-native-witness.json404443B and native-source-header.json4241559B CLOSED18:12:18Z. Source assessment/projection/recovery envelope not yet present. These are real completed source-evidence milestones, not source admission, source apply or boot success. Continue SAME process only; original printed prepSHA25193deeeab61b1a9b0edb9bc4ae7bc713dda3fd0bae1eec402faeaa18d38c36 remains authoritative. Sole VM operator boot_finish_operator; root read-only/code/Git and no competing VM calls.

@@ -5,7 +5,7 @@ use super::{
     *,
 };
 use crate::tree_resources::SourceResourceAdmission;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub struct WindowsAliasInputRef<'a> {
     pub canonical_object_index: usize,
@@ -67,8 +67,9 @@ pub(super) struct VerifiedAlias {
     pub(super) parent_file_id_info: [u8; 24],
     pub(super) point: crate::reparse_layout::Point,
 }
-/// Constructor-issued observation, not deserializable source/write authority.
-/// Source counts stay unchanged; every entry has its own actual ReFS identity.
+/// Native-issued ledger from construction or a protected readonly recovery
+/// observation, never deserializable source/write authority. Source counts
+/// stay unchanged; every entry has its own actual ReFS identity.
 pub struct VerifiedWindowsAliases {
     pub(super) entries: Vec<VerifiedAlias>,
     pair: GeneralSourceShadowBinding,
@@ -80,6 +81,183 @@ pub struct VerifiedWindowsAliases {
     _memory: Box<dyn report_memory::ReportMemoryLease>,
 }
 impl VerifiedWindowsAliases {
+    /// Recovered rows are expectations only. Issue a private native ledger
+    /// after checking every row against the actual converted READ_ONLY ReFS
+    /// lease. No source/write capability or saved constructor proof is rebuilt.
+    /// The caller must still perform the complete canonical-plus-alias native
+    /// namespace and content validation before returning an observation.
+    pub(crate) fn from_recovered_expectations_readonly(
+        pair: &GeneralSourceShadowBinding,
+        input: &impl InputDomain,
+        aliases: &impl WindowsAliasInputDomain,
+        admission: SourceResourceAdmission,
+        protected: &native::GeneralReadonlyRefsVolume<'_>,
+        payer: &dyn report_memory::ReportMemoryAccountant,
+        same: &impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    ) -> io::Result<Self> {
+        admission.validate()?;
+        if pair.source.layout_profile
+            != crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+            || protected.binding() != &pair.source
+            || aliases.source_inspection_sha256() != admission.source_inspection_sha256
+        {
+            return Err(invalid("recovered aliases require the actual converted Windows lease"));
+        }
+        crate::file_storage::require_readonly_access(protected.volume())?;
+        pair.source.validate_volume_extent(&ctl(protected.volume(), 0x00560000, &[], 1024)?)?;
+        input.require_resource_metadata(admission)?;
+        aliases.require_resource_metadata(admission)?;
+        aliases.revalidate()?;
+        let plan_digest = aliases.semantic_sha256()?;
+        let input_digest = super::private_tree::metadata::input_digest_domain(input)?;
+        let root = format!("{}\\", pair.source.volume_path()?);
+        let workspace = admission.budget.max_row_bytes.checked_mul(8)
+            .and_then(|n| n.checked_add(4 << 20))
+            .ok_or_else(|| invalid("recovered alias workspace overflow"))?;
+        let _working = payer.reserve(workspace)?;
+        let count = aliases.len();
+        let mut bytes = 4096u64;
+        let mut preflight = Sha256::new();
+        for index in 0..count {
+            let owner = aliases.alias(index)?;
+            let row = owner.input();
+            validate_row(input, &row, &root)?;
+            bytes = bytes.checked_add(row_memory(&row)?)
+                .ok_or_else(|| invalid("recovered alias retained RAM overflow"))?;
+            row_digest(&mut preflight, &row);
+        }
+        let mut memory = payer.reserve(bytes.checked_add(payer.lease_heap_bytes())
+            .ok_or_else(|| invalid("recovered alias owner RAM overflow"))?)?;
+        let mut entries = BTreeMap::new();
+        let mut identities = BTreeSet::new();
+        let mut actual = Sha256::new();
+        let mut charged = 4096u64;
+        let mut privileges = Privileges::enable_for(&["SeBackupPrivilege", "SeSecurityPrivilege"])?;
+        let open_readonly = |components: &[String]| {
+            File::options().access_mode(super::PROTECTED_READ_ACCESS).share_mode(3)
+                .custom_flags(0x02200000)
+                .open(format!("{root}{}", components.join("\\")))
+        };
+        let root_handle = open_readonly(&[])?;
+        let root_id: [u8; 24] = super::info(&root_handle, 18, 24)?.try_into()
+            .map_err(|_| invalid("recovered alias root native ID width differs"))?;
+        let mut events = Vec::new();
+        let before = native::observe_general_disk_state_readonly(pair.source.clone(), &mut events)?;
+        if before.disk_attributes & 2 == 0 || root_id[..8] == [0; 8] {
+            return Err(invalid("recovered aliases lack physical READ_ONLY ReFS identity"));
+        }
+        for index in 0..count {
+            let owner = aliases.alias(index)?;
+            let row = owner.input();
+            let directory = validate_row(input, &row, &root)?;
+            charged = charged.checked_add(row_memory(&row)?)
+                .ok_or_else(|| invalid("recovered alias rows changed after prepayment"))?;
+            if charged > bytes || row.canonical_object_index == row.parent_object_index {
+                return Err(invalid("recovered alias row or identity domain changed"));
+            }
+            row_digest(&mut actual, &row);
+            let canonical_owner = input.object(row.canonical_object_index)?;
+            let canonical = canonical_owner.input();
+            let parent = open_readonly(&row.components[..row.components.len() - 1])?;
+            let target = open_readonly(row.canonical_components)?;
+            super::validate_bound_type(&target, &canonical)?;
+            let alias = open_readonly(row.components)?;
+            let observed = crate::windows_alias_native::verify_owned(
+                &parent, &target, &alias, directory,
+                &row.canonical_components.last().unwrap().encode_utf16().collect::<Vec<_>>(),
+            )?;
+            if observed.alias_file_id_info[..8] != root_id[..8]
+                || !identities.insert(observed.alias_file_id_info)
+            {
+                return Err(invalid("recovered aliases repeat or escape the actual ReFS volume"));
+            }
+            let point = crate::reparse_layout::Point::relative_component_alias(
+                &row.canonical_components.last().unwrap().encode_utf16().collect::<Vec<_>>(),
+            )?;
+            let attributes = (canonical.attributes & 0x2027) | 0x400
+                | if directory { 16 } else { 0 };
+            let expected = Input {
+                components: row.components, additional_names: &[], directory,
+                times: canonical.times, attributes, security: canonical.security,
+                expected_api_security: canonical.expected_api_security,
+                extended_attributes: None, reparse: Some(&point), payload: &[],
+                expected_length: Some(0), expected_sha256: None, source_offset: None,
+                source_runs: Vec::new(), named_streams: Vec::new(), sparse: None,
+            };
+            let snapshot = super::metadata_snapshot_with_limit(
+                &alias, &expected, Some(admission.budget.max_row_bytes),
+            );
+            let standard = super::query_bytes(&snapshot, 1, 24)?;
+            if observed.point != point
+                || super::query_bytes(&snapshot, 18, 24)? != observed.alias_file_id_info
+                || !super::basic_matches(&expected, super::query_bytes(&snapshot, 0, 40)?)
+                || !super::security_matches(&expected, &snapshot, same)?
+                || !super::reparse_matches(&expected, &snapshot)?
+                || layout::u32_at(standard, 16)? != 1
+                || standard[20] != 0 || standard[21] != u8::from(directory)
+                || (!directory && layout::u64_at(standard, 8)? != 0)
+            {
+                return Err(invalid("recovered alias native metadata or point differs"));
+            }
+            if !directory {
+                super::streams::exact_list(
+                    &info(&alias, 7, stream_layout::MAX_STREAM_BUFFER)?, &expected,
+                )?;
+            }
+            let entry = VerifiedAlias {
+                components: row.components.to_vec(),
+                canonical_components: row.canonical_components.to_vec(),
+                canonical_object_index: row.canonical_object_index,
+                parent_object_index: row.parent_object_index,
+                directory, attributes, file_id_info: observed.alias_file_id_info,
+                canonical_file_id_info: observed.canonical_file_id_info,
+                parent_file_id_info: observed.parent_file_id_info, point,
+            };
+            if entries.insert(row.components.to_vec(), entry).is_some() {
+                return Err(invalid("duplicate recovered alias path"));
+            }
+        }
+        if aliases.len() != count || preflight.finalize() != actual.finalize()
+            || aliases.semantic_sha256()? != plan_digest
+            || super::private_tree::metadata::input_digest_domain(input)? != input_digest
+        {
+            return Err(invalid("recovered alias or canonical expectation domain changed"));
+        }
+        aliases.revalidate()?;
+        let after = native::observe_general_disk_state_readonly(pair.source.clone(), &mut events)?;
+        if before != after {
+            return Err(invalid("recovered alias readonly source identity changed"));
+        }
+        privileges.restore()?;
+        drop(root_handle);
+        drop(identities);
+        let entries: Vec<_> = entries.into_values().collect();
+        let path_bytes = |path: &Vec<String>| -> io::Result<u64> {
+            path.iter().try_fold((path.capacity() as u64)
+                .checked_mul(mem::size_of::<String>() as u64)
+                .ok_or_else(|| invalid("recovered alias path RAM overflow"))?, |sum, part| {
+                sum.checked_add(part.capacity() as u64)
+                    .ok_or_else(|| invalid("recovered alias path RAM overflow"))
+            })
+        };
+        let mut retained = (entries.capacity() as u64)
+            .checked_mul(mem::size_of::<VerifiedAlias>() as u64)
+            .and_then(|n| n.checked_add(4096))
+            .ok_or_else(|| invalid("recovered alias ledger RAM overflow"))?;
+        for entry in &entries {
+            retained = retained.checked_add(path_bytes(&entry.components)?)
+                .and_then(|n| n.checked_add(path_bytes(&entry.canonical_components).ok()?))
+                .and_then(|n| n.checked_add(entry.point.buffer.capacity() as u64))
+                .ok_or_else(|| invalid("recovered alias ledger RAM overflow"))?;
+        }
+        memory.shrink_to(retained)?;
+        Ok(Self {
+            entries, pair: pair.clone(), source_pin: admission.source_inspection_sha256,
+            input_digest, plan_digest, maximum_row_bytes: admission.budget.max_row_bytes,
+            retained_memory_bytes: retained, _memory: memory,
+        })
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }

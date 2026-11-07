@@ -7,13 +7,12 @@
 use super::{BoundJournalObservation, BoundNativeRecoveryJournal, SelectedLifecycle};
 #[path = "partition_closed.rs"]
 mod partition_closed;
-pub(crate) use partition_closed::{PartitionClosedTerminal,ReopenedPartitionRestart};
+pub(crate) use partition_closed::{PartitionClosedTerminal, ReopenedPartitionRestart};
 #[path = "partition_basic_ro.rs"]
 mod partition_basic_ro;
 pub(crate) use partition_basic_ro::PartitionBasicRoClosedTerminal;
 #[path = "partition_operational.rs"]
 mod partition_operational;
-pub(crate) use partition_operational::reconcile_operational_partition;
 use crate::{
     artifact_arena::{ArtifactGroup, ArtifactGroupPermit},
     ntfs_inspect::paged_storage::{SourceRamLease, SourceScratch},
@@ -30,6 +29,7 @@ use n2r_win32::{
     tree_resources::SourceResourceAdmission,
     volume_label::VolumeLabel,
 };
+pub(crate) use partition_operational::reconcile_operational_partition;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -69,7 +69,10 @@ struct MapPin {
 struct Publication {
     schema_version: u32,
     kind: String,
-    #[serde(default, skip_serializing_if = "super::super::source_scope::ResourceRecoverySourceScope::is_dedicated")]
+    #[serde(
+        default,
+        skip_serializing_if = "super::super::source_scope::ResourceRecoverySourceScope::is_dedicated"
+    )]
     source_scope: super::super::source_scope::ResourceRecoverySourceScope,
     source: GeneralDiskBinding,
     shadow: GeneralDiskBinding,
@@ -83,6 +86,10 @@ struct Publication {
     expected: ExpectedPin,
     #[serde(skip_serializing_if = "Option::is_none")]
     recovery_maps: Option<MapPin>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    windows_aliases: Option<crate::ntfs_inspect::record_store::RecordStorePin>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    windows_alias_plan_sha256: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     early_preparation_guard: Option<crate::resource_preparation::early_guard::GuardPin>,
     ticket_sha256: String,
@@ -191,6 +198,76 @@ struct HeldFile {
     modified: SystemTime,
     sha256: [u8; 32],
 }
+
+struct HeldWindowsAliasFiles {
+    data: HeldFile,
+    directory: HeldFile,
+}
+impl HeldWindowsAliasFiles {
+    fn revalidate(&mut self, scratch: &SourceScratch) -> Result<()> {
+        self.data.revalidate(scratch)?;
+        self.directory.revalidate(scratch)
+    }
+}
+
+fn open_windows_alias_files(
+    publication: &Publication,
+    volume: &str,
+    expected: &HeldFile,
+    scratch: &SourceScratch,
+) -> Result<Option<HeldWindowsAliasFiles>> {
+    let windows = publication.source.layout_profile
+        == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows;
+    let (pin, plan) = match (
+        &publication.windows_aliases,
+        &publication.windows_alias_plan_sha256,
+    ) {
+        (None, None) if !windows => return Ok(None),
+        (Some(pin), Some(plan)) if windows => (pin, plan),
+        _ => anyhow::bail!(
+            "Windows recovery requires its authenticated complete alias expectations; legacy Windows publications cannot reconstruct them"
+        ),
+    };
+    digest(plan)?;
+    ensure!(
+        pin.schema_version == 1
+            && pin.purpose == *b"WINALIS1"
+            && pin.records <= publication.resource_admission.maximum_namespace_names()? as u64
+            && pin
+                .data
+                .wire_bytes
+                .checked_add(pin.directory.wire_bytes)
+                .is_some_and(|bytes| bytes <= publication.resource_admission.budget.scratch_bytes),
+        "Windows alias publication record/storage bounds differ"
+    );
+    let open = |pin: &crate::ntfs_inspect::paged_storage::SourcePagePin| -> Result<HeldFile> {
+        ensure!(
+            pin.page_budget.max_file_bytes <= publication.resource_admission.budget.scratch_bytes
+                && pin.wire_bytes <= pin.page_budget.max_file_bytes,
+            "Windows alias artifact exceeds original admission"
+        );
+        let held = HeldFile::open(
+            &pin.path,
+            digest(&pin.file_sha256)?,
+            Some(pin.wire_bytes),
+            pin.page_budget.max_file_bytes,
+            scratch,
+        )?;
+        ensure!(
+            pin.path
+                .to_str()
+                .is_some_and(|path| held.snapshot.final_path.eq_ignore_ascii_case(path))
+                && on_volume(&held.snapshot.final_path, volume)
+                && held.snapshot.volume_serial_number == expected.snapshot.volume_serial_number,
+            "Windows alias artifact differs from the actual authenticated journal volume"
+        );
+        Ok(held)
+    };
+    Ok(Some(HeldWindowsAliasFiles {
+        data: open(&pin.data)?,
+        directory: open(&pin.directory)?,
+    }))
+}
 impl HeldFile {
     fn open(
         path: &Path,
@@ -289,6 +366,7 @@ pub(crate) struct ReopenedResourceRecovery {
     publication_file: HeldFile,
     expected: HeldFile,
     maps: Option<HeldFile>,
+    windows_aliases: Option<HeldWindowsAliasFiles>,
     locator: DurableRecoveryLocator,
     journal: BoundNativeRecoveryJournal,
     target: Option<ObservedTarget>,
@@ -459,7 +537,8 @@ impl ReopenedPartitionResourceRecovery {
         publication
             .source_scope
             .require_envelope_version(publication.schema_version, &publication.kind)?;
-        let explicit = &publication.source_scope; explicit.require_partition()?;
+        let explicit = &publication.source_scope;
+        explicit.require_partition()?;
         ensure!(
             explicit.partition_binding() == Some(owner.binding())
                 && publication.source == owner.binding().storage
@@ -475,7 +554,9 @@ impl ReopenedPartitionResourceRecovery {
                     != n2r_win32::layout::guid_bytes(&owner.binding().storage.identity.disk_guid)?,
             "partition source and shadow physical identities overlap"
         );
-        explicit.preparation_guard()?.require_actual(admission, owner, stable, events)?;
+        explicit
+            .preparation_guard()?
+            .require_actual(admission, owner, stable, events)?;
         publication.resource_admission.validate()?;
         publication.expected_source_label.validate()?;
         ensure!(
@@ -621,7 +702,9 @@ impl ReopenedPartitionResourceRecovery {
             "clear/foreign/closed HND-ABT cannot issue partition recovery binding"
         );
         observation.retire()?;
-        explicit.preparation_guard()?.require_actual(admission, owner, stable, events)?;
+        explicit
+            .preparation_guard()?
+            .require_actual(admission, owner, stable, events)?;
         Ok(Self {
             publication,
             publication_file,
@@ -650,13 +733,28 @@ impl ReopenedPartitionResourceRecovery {
         scratch: &SourceScratch,
         index_path: &Path,
         maximum_index_bytes: u64,
-        kind:n2r_win32::PartitionTerminalKind,
+        kind: n2r_win32::PartitionTerminalKind,
         events: &mut Vec<NativeEvent>,
     ) -> Result<PartitionClosedTerminal> {
-        match Self::open_observed_restarted(path,independently_supplied_sha256,maximum_publication_bytes,owner,stable,
-            observation_budget,expected_shadow,expected_journal,group,scratch,index_path,maximum_index_bytes,events)?{
-            ReopenedPartitionRestart::Closed(value) if value.kind()==kind=>Ok(value),
-            _=>anyhow::bail!("actual closed lifecycle conflicts with terminal-only request; no raw replay attempted"),
+        match Self::open_observed_restarted(
+            path,
+            independently_supplied_sha256,
+            maximum_publication_bytes,
+            owner,
+            stable,
+            observation_budget,
+            expected_shadow,
+            expected_journal,
+            group,
+            scratch,
+            index_path,
+            maximum_index_bytes,
+            events,
+        )? {
+            ReopenedPartitionRestart::Closed(value) if value.kind() == kind => Ok(value),
+            _ => anyhow::bail!(
+                "actual closed lifecycle conflicts with terminal-only request; no raw replay attempted"
+            ),
         }
     }
 
@@ -675,9 +773,25 @@ impl ReopenedPartitionResourceRecovery {
         maximum_index_bytes: u64,
         events: &mut Vec<NativeEvent>,
     ) -> Result<Self> {
-        match Self::open_observed_restarted(path,independently_supplied_sha256,maximum_publication_bytes,owner,stable,observation_budget,expected_shadow,expected_journal,group,scratch,index_path,maximum_index_bytes,events)?{
-            ReopenedPartitionRestart::Replay(value)=>Ok(value),
-            ReopenedPartitionRestart::Closed(_)=>anyhow::bail!("closed HND/ABT requires terminal finalization, never raw replay"),
+        match Self::open_observed_restarted(
+            path,
+            independently_supplied_sha256,
+            maximum_publication_bytes,
+            owner,
+            stable,
+            observation_budget,
+            expected_shadow,
+            expected_journal,
+            group,
+            scratch,
+            index_path,
+            maximum_index_bytes,
+            events,
+        )? {
+            ReopenedPartitionRestart::Replay(value) => Ok(value),
+            ReopenedPartitionRestart::Closed(_) => {
+                anyhow::bail!("closed HND/ABT requires terminal finalization, never raw replay")
+            }
         }
     }
 
@@ -747,7 +861,8 @@ impl ReopenedPartitionResourceRecovery {
         publication
             .source_scope
             .require_envelope_version(publication.schema_version, &publication.kind)?;
-        let explicit = &publication.source_scope; explicit.require_partition()?;
+        let explicit = &publication.source_scope;
+        explicit.require_partition()?;
         ensure!(
             explicit.partition_binding() == Some(owner.binding())
                 && publication.source == owner.binding().storage
@@ -893,7 +1008,11 @@ impl ReopenedPartitionResourceRecovery {
             Path::new(&explicit.partition_native_metadata()?.path),
             digest(&explicit.partition_native_metadata()?.sha256)?,
             Some(explicit.partition_native_metadata()?.bytes),
-            explicit.partition_native_metadata()?.budget.pages.max_file_bytes,
+            explicit
+                .partition_native_metadata()?
+                .budget
+                .pages
+                .max_file_bytes,
             scratch,
         )?;
         let ticket = locator.ticket();
@@ -955,27 +1074,50 @@ impl ReopenedPartitionResourceRecovery {
             index_path,
             maximum_index_bytes,
         )?;
-        let lifecycle=observation.lifecycle()?;
-        let closed=match lifecycle{
-            SelectedLifecycle::ApplyIntent|SelectedLifecycle::RollbackIntent=>None,
-            SelectedLifecycle::Handoff|SelectedLifecycle::Aborted=>{
-                let kind=if lifecycle==SelectedLifecycle::Handoff{n2r_win32::PartitionTerminalKind::Handoff}else{n2r_win32::PartitionTerminalKind::Aborted};
-                let policy=observation.observation.index.clone();
-                let index=observation.observation.index_lease.clone();
-                let ticket=observation.observation.ticket;
-                let facts=&observation.facts;
-                let pins=n2r_win32::PagedRecoveryPins{journal_binding:facts.binding,journal_identity:facts.identity,journal_path:facts.path,
-                    journal_profile:facts.profile,immutable_sha256:ticket.immutable_sha256,old_selected_sha256:ticket.old_selected_sha256,
-                    old_restored_selected_sha256:ticket.old_restored_selected_sha256,new_selected_sha256:ticket.new_selected_sha256};
-                let witness=n2r_win32::authenticate_partition_closed_journal(owner,&policy,
-                    observation.observation.journal.markerless_recovery_file()?,&pins,kind,events)?;
-                Some((witness,policy,index))
+        let lifecycle = observation.lifecycle()?;
+        let closed = match lifecycle {
+            SelectedLifecycle::ApplyIntent | SelectedLifecycle::RollbackIntent => None,
+            SelectedLifecycle::Handoff | SelectedLifecycle::Aborted => {
+                let kind = if lifecycle == SelectedLifecycle::Handoff {
+                    n2r_win32::PartitionTerminalKind::Handoff
+                } else {
+                    n2r_win32::PartitionTerminalKind::Aborted
+                };
+                let policy = observation.observation.index.clone();
+                let index = observation.observation.index_lease.clone();
+                let ticket = observation.observation.ticket;
+                let facts = &observation.facts;
+                let pins = n2r_win32::PagedRecoveryPins {
+                    journal_binding: facts.binding,
+                    journal_identity: facts.identity,
+                    journal_path: facts.path,
+                    journal_profile: facts.profile,
+                    immutable_sha256: ticket.immutable_sha256,
+                    old_selected_sha256: ticket.old_selected_sha256,
+                    old_restored_selected_sha256: ticket.old_restored_selected_sha256,
+                    new_selected_sha256: ticket.new_selected_sha256,
+                };
+                let witness = n2r_win32::authenticate_partition_closed_journal(
+                    owner,
+                    &policy,
+                    observation.observation.journal.markerless_recovery_file()?,
+                    &pins,
+                    kind,
+                    events,
+                )?;
+                Some((witness, policy, index))
             }
-            _=>anyhow::bail!("clear/foreign lifecycle cannot issue private AP replay or closed terminal finalization"),
+            _ => anyhow::bail!(
+                "clear/foreign lifecycle cannot issue private AP replay or closed terminal finalization"
+            ),
         };
-        if closed.is_none(){observation.retire()?;}else{drop(observation);}
+        if closed.is_none() {
+            observation.retire()?;
+        } else {
+            drop(observation);
+        }
 
-        let recovery=Self {
+        let recovery = Self {
             publication,
             publication_file,
             expected,
@@ -987,9 +1129,11 @@ impl ReopenedPartitionResourceRecovery {
             _memory: memory,
             restarted_origin: Some(actual_origin),
         };
-        Ok(match closed{
-            Some((closed,policy,index))=>ReopenedPartitionRestart::Closed(PartitionClosedTerminal::from_actual(recovery,closed,policy,index)),
-            None=>ReopenedPartitionRestart::Replay(recovery),
+        Ok(match closed {
+            Some((closed, policy, index)) => ReopenedPartitionRestart::Closed(
+                PartitionClosedTerminal::from_actual(recovery, closed, policy, index),
+            ),
+            None => ReopenedPartitionRestart::Replay(recovery),
         })
     }
 
@@ -1019,8 +1163,11 @@ impl ReopenedPartitionResourceRecovery {
         }
         self.locator.revalidate()?;
         self.journal.revalidate()?;
-        let scope = &self.publication.source_scope; scope.require_partition()?;
-        let actual_guard = scope.preparation_guard()?.require_actual(admission, owner, stable, events)?;
+        let scope = &self.publication.source_scope;
+        scope.require_partition()?;
+        let actual_guard = scope
+            .preparation_guard()?
+            .require_actual(admission, owner, stable, events)?;
         let volume = self.locator.journal_binding().disk.volume_path()?;
         let _same_output = hold_index_parent(index_path, &volume)?;
         // Retain original output directory ownership as well as the new
@@ -1072,7 +1219,10 @@ impl ReopenedPartitionResourceRecovery {
             locator: &mut self.locator,
             scratch: &self.scratch,
             scope: AuthenticatedPartitionRecoveryScope {
-                source: scope.partition_binding().context("partition source binding absent")?.clone(),
+                source: scope
+                    .partition_binding()
+                    .context("partition source binding absent")?
+                    .clone(),
                 actual_guard: serde_json::to_value(actual_guard)?,
             },
             actual_journal_owner: journal_owner,
@@ -1130,7 +1280,8 @@ impl PartitionRecoveryPublicationBinding<'_> {
                 && std::ptr::from_ref(&*journal) as usize == self.actual_journal_owner,
             "partition MIXED observation lost actual owner/publication/journal association"
         );
-        let explicit = &self.publication.source_scope; explicit.require_partition()?;
+        let explicit = &self.publication.source_scope;
+        explicit.require_partition()?;
         ensure!(
             self.locator.source_scope() == &self.publication.source_scope,
             "partition publication/locator scope differs"
@@ -1577,7 +1728,10 @@ impl ReopenedResourceRecovery {
                 && <[u8; 32]>::from(canonical.hash.finalize()) == independently_supplied_sha256,
             "recovery publication is not the original canonical encoding"
         );
-        ensure!(publication.source_scope.is_dedicated(), "partition publication requires the explicit actual-owner/held-guard recovery path");
+        ensure!(
+            publication.source_scope.is_dedicated(),
+            "partition publication requires the explicit actual-owner/held-guard recovery path"
+        );
         publication.resource_admission.validate()?;
         ensure!(
             publication.source == expected_pair.source
@@ -1674,6 +1828,7 @@ impl ReopenedResourceRecovery {
         } else {
             None
         };
+        let windows_aliases = open_windows_alias_files(&publication, &volume, &expected, scratch)?;
         ensure!(
             locator
                 .snapshot()
@@ -1803,6 +1958,7 @@ impl ReopenedResourceRecovery {
             publication_file,
             expected,
             maps,
+            windows_aliases,
             locator,
             journal,
             target,
@@ -1831,6 +1987,9 @@ impl ReopenedResourceRecovery {
         self.expected.revalidate(&self.scratch)?;
         if let Some(maps) = &mut self.maps {
             maps.revalidate(&self.scratch)?;
+        }
+        if let Some(aliases) = &mut self.windows_aliases {
+            aliases.revalidate(&self.scratch)?;
         }
         self.locator.revalidate()?;
         self.journal.revalidate()?;
@@ -1921,6 +2080,9 @@ impl ReopenedResourceRecovery {
         self.expected.revalidate(&self.scratch)?;
         if let Some(maps) = &mut self.maps {
             maps.revalidate(&self.scratch)?;
+        }
+        if let Some(aliases) = &mut self.windows_aliases {
+            aliases.revalidate(&self.scratch)?;
         }
         self.locator.revalidate()?;
         self.journal.revalidate()?;
@@ -2338,6 +2500,49 @@ impl ReopenedResourceRecovery {
             sha256: self.expected.sha256,
         }
     }
+    pub(crate) fn reopen_windows_alias_expectations<'expected>(
+        &self,
+        expected: &'expected crate::shadow_tree::PagedExpectedTree,
+        scratch: &SourceScratch,
+        output: &Path,
+    ) -> Result<Option<crate::boot_alias::recovery::ReopenedWindowsAliasNativeDomain<'expected>>>
+    {
+        let windows = self.publication.source.layout_profile
+            == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows;
+        match (
+            &self.publication.windows_aliases,
+            &self.publication.windows_alias_plan_sha256,
+            &self.windows_aliases,
+        ) {
+            (None, None, None) if !windows => Ok(None),
+            (Some(pin), Some(plan), Some(held)) if windows => {
+                ensure!(
+                    expected.semantic_sha256() == self.publication.expected.semantic_sha256
+                        && expected.file_sha256() == self.publication.expected.file.sha256
+                        && expected.len() as u64 == self.publication.expected.objects,
+                    "reopened alias expectations belong to different canonical expected pages"
+                );
+                let files = [
+                    held.data.file.try_clone()?,
+                    held.directory.file.try_clone()?,
+                ];
+                Ok(Some(
+                    crate::boot_alias::recovery::ReopenedWindowsAliasNativeDomain::open(
+                        pin,
+                        digest(plan)?,
+                        files,
+                        expected,
+                        self.publication.resource_admission,
+                        scratch,
+                        output,
+                    )?,
+                ))
+            }
+            _ => anyhow::bail!(
+                "Windows recovery alias expectations are absent or lost their authenticated held owners"
+            ),
+        }
+    }
     pub(crate) fn publication_artifact(&self) -> ReopenedArtifact<'_> {
         ReopenedArtifact {
             file: &self.publication_file.file,
@@ -2426,7 +2631,9 @@ impl PartitionRecoveryOrigin<'_> {
     ) -> Result<serde_json::Value> {
         match self {
             Self::Live(admission) => Ok(serde_json::to_value(
-                scope.preparation_guard()?.require_actual(admission, owner, stable, events)?,
+                scope
+                    .preparation_guard()?
+                    .require_actual(admission, owner, stable, events)?,
             )?),
             Self::Restarted(origin) => {
                 ensure!(
@@ -2442,8 +2649,7 @@ impl PartitionRecoveryOrigin<'_> {
                     "actual recovered routing scope differs"
                 );
                 ensure!(
-                    serde_json::to_value(scope.preparation_guard()?)?
-                        == *origin.original_pin(),
+                    serde_json::to_value(scope.preparation_guard()?)? == *origin.original_pin(),
                     "actual canonical recovered intent differs from publication guard pin"
                 );
                 Ok(origin.original_pin().clone())
@@ -2481,7 +2687,8 @@ impl ReopenedPartitionResourceRecovery {
         }
         self.locator.revalidate()?;
         self.journal.revalidate()?;
-        let scope = &self.publication.source_scope; scope.require_partition()?;
+        let scope = &self.publication.source_scope;
+        scope.require_partition()?;
         let actual_guard = {
             let mut actual = PartitionRecoveryOrigin::Restarted(&mut *origin);
             actual.require_actual(scope, owner, stable, events)?
@@ -2553,7 +2760,10 @@ impl ReopenedPartitionResourceRecovery {
             locator: &mut self.locator,
             scratch: &self.scratch,
             scope: AuthenticatedPartitionRecoveryScope {
-                source: scope.partition_binding().context("partition source binding absent")?.clone(),
+                source: scope
+                    .partition_binding()
+                    .context("partition source binding absent")?
+                    .clone(),
                 actual_guard,
             },
             actual_journal_owner: journal_owner,
@@ -2663,98 +2873,191 @@ impl ReopenedPartitionResourceRecovery {
     /// No file-name reopen of intent/J and no fresh NTFS admission occurs here.
     pub(crate) fn finalize_replayed_partition(
         mut self,
-        mut owner:n2r_win32::PartitionScopedOwner,
-        mut outcome:super::replay::PartitionReplayResult,
-        group:&ArtifactGroupPermit,
-        index_path:&Path,
-        maximum_index_bytes:u64,
-        observer:&mut impl n2r_win32::partition_restoration::PartitionRestorationObserver,
-        events:&mut Vec<NativeEvent>,
-        mut checkpoint:impl FnMut(&'static str,&mut Vec<NativeEvent>)->Result<()>,
-    )->Result<serde_json::Value>{
+        mut owner: n2r_win32::PartitionScopedOwner,
+        mut outcome: super::replay::PartitionReplayResult,
+        group: &ArtifactGroupPermit,
+        index_path: &Path,
+        maximum_index_bytes: u64,
+        observer: &mut impl n2r_win32::partition_restoration::PartitionRestorationObserver,
+        events: &mut Vec<NativeEvent>,
+        mut checkpoint: impl FnMut(&'static str, &mut Vec<NativeEvent>) -> Result<()>,
+    ) -> Result<serde_json::Value> {
         use crate::general_reconstruct::fast_verification::v4_maps::reopened::ReopenedVerificationMetadata;
         use n2r_win32::PartitionTerminalKind;
-        let stable=owner.owner_token();
-        checkpoint("partition-recovery-terminal-opening",events)?;
-        let (kind,selected)=match &mut outcome{
-            super::replay::PartitionReplayResult::Resumed{selected,witness,..}=>{
-                witness.require_owner(&stable)?;witness.revalidate(&mut owner,events)?;
-                (PartitionTerminalKind::Handoff,serde_json::to_value(selected)?)
+        let stable = owner.owner_token();
+        checkpoint("partition-recovery-terminal-opening", events)?;
+        let (kind, selected) = match &mut outcome {
+            super::replay::PartitionReplayResult::Resumed {
+                selected, witness, ..
+            } => {
+                witness.require_owner(&stable)?;
+                witness.revalidate(&mut owner, events)?;
+                (
+                    PartitionTerminalKind::Handoff,
+                    serde_json::to_value(selected)?,
+                )
             }
-            super::replay::PartitionReplayResult::RolledBack{selected,closed,..}=>{
+            super::replay::PartitionReplayResult::RolledBack {
+                selected, closed, ..
+            } => {
                 closed.require_owner(&stable)?;
-                ensure!(closed.kind()==PartitionTerminalKind::Aborted,"rollback result is not actual closed ABT");
-                (PartitionTerminalKind::Aborted,serde_json::to_value(selected)?)
+                ensure!(
+                    closed.kind() == PartitionTerminalKind::Aborted,
+                    "rollback result is not actual closed ABT"
+                );
+                (
+                    PartitionTerminalKind::Aborted,
+                    serde_json::to_value(selected)?,
+                )
             }
         };
-        self.publication_file.revalidate(&self.scratch)?;self.expected.revalidate(&self.scratch)?;
-        if let Some(maps)=&mut self.maps{maps.revalidate(&self.scratch)?;}
-        self.locator.revalidate()?;self.journal.revalidate()?;
-        let metadata=if let super::replay::PartitionReplayResult::Resumed{witness,..}=&outcome{
-            Some(ReopenedVerificationMetadata::open_partition(&self,witness,&stable)?)
-        }else{None};
-        let ticket=self.locator.ticket().clone();
-        checkpoint("partition-recovery-terminal-index",events)?;
-        let mut observed=BoundJournalObservation::open(&mut self.journal,&ticket,group,&self.scratch,index_path,maximum_index_bytes)?;
-        ensure!(observed.lifecycle()?==if kind==PartitionTerminalKind::Handoff{SelectedLifecycle::Handoff}else{SelectedLifecycle::Aborted},
-            "actual terminal J direction differs from completed replay");
-        let policy=observed.observation.index.clone();
-        let _terminal_index=observed.observation.index_lease.clone();
+        self.publication_file.revalidate(&self.scratch)?;
+        self.expected.revalidate(&self.scratch)?;
+        if let Some(maps) = &mut self.maps {
+            maps.revalidate(&self.scratch)?;
+        }
+        self.locator.revalidate()?;
+        self.journal.revalidate()?;
+        let metadata =
+            if let super::replay::PartitionReplayResult::Resumed { witness, .. } = &outcome {
+                Some(ReopenedVerificationMetadata::open_partition(
+                    &self, witness, &stable,
+                )?)
+            } else {
+                None
+            };
+        let ticket = self.locator.ticket().clone();
+        checkpoint("partition-recovery-terminal-index", events)?;
+        let mut observed = BoundJournalObservation::open(
+            &mut self.journal,
+            &ticket,
+            group,
+            &self.scratch,
+            index_path,
+            maximum_index_bytes,
+        )?;
+        ensure!(
+            observed.lifecycle()?
+                == if kind == PartitionTerminalKind::Handoff {
+                    SelectedLifecycle::Handoff
+                } else {
+                    SelectedLifecycle::Aborted
+                },
+            "actual terminal J direction differs from completed replay"
+        );
+        let policy = observed.observation.index.clone();
+        let _terminal_index = observed.observation.index_lease.clone();
         drop(observed);
-        let origin=self.restarted_origin.take().context("actual authenticated restarted origin absent")?;
+        let origin = self
+            .restarted_origin
+            .take()
+            .context("actual authenticated restarted origin absent")?;
         origin.require_journal_pins(&{
-            let (_,facts)=self.journal.split_for_observation()?;
-            n2r_win32::PagedRecoveryPins{journal_binding:facts.binding,journal_identity:facts.identity,journal_path:facts.path,
-                journal_profile:facts.profile,immutable_sha256:ticket.immutable_sha256,old_selected_sha256:ticket.old_selected_sha256,
-                old_restored_selected_sha256:ticket.old_restored_selected_sha256,new_selected_sha256:ticket.new_selected_sha256}
+            let (_, facts) = self.journal.split_for_observation()?;
+            n2r_win32::PagedRecoveryPins {
+                journal_binding: facts.binding,
+                journal_identity: facts.identity,
+                journal_path: facts.path,
+                journal_profile: facts.profile,
+                immutable_sha256: ticket.immutable_sha256,
+                old_selected_sha256: ticket.old_selected_sha256,
+                old_restored_selected_sha256: ticket.old_restored_selected_sha256,
+                new_selected_sha256: ticket.new_selected_sha256,
+            }
         })?;
-        let shadow=self.publication.shadow.clone();
-        let admission=self.publication.resource_admission;
-        let arena=group.arena().clone();
-        let (journal,facts)=self.journal.split_for_observation()?;
-        let pins=n2r_win32::PagedRecoveryPins{journal_binding:facts.binding,journal_identity:facts.identity,journal_path:facts.path,
-            journal_profile:facts.profile,immutable_sha256:ticket.immutable_sha256,old_selected_sha256:ticket.old_selected_sha256,
-            old_restored_selected_sha256:ticket.old_restored_selected_sha256,new_selected_sha256:ticket.new_selected_sha256};
-        checkpoint("partition-recovery-terminal-private-authentication",events)?;
-        let mut guard=origin.into_terminal(owner,&policy,journal.markerless_recovery_file()?,pins,kind,events)?;
-        checkpoint("partition-recovery-terminal-readonly",events)?;
-        guard.enter_readonly(observer,events)?;
-        checkpoint("partition-recovery-terminal-native-verification",events)?;
-        let mut map_bindings=0;let mut known_streams=0;let mut extent_streams=0;
-        let restoration=if let Some(metadata)=metadata.as_ref(){
-            let native={
-                let readonly=guard.readonly_volume()?;
-                ensure!(readonly.owner_token().same_owner(&stable),"actual terminal readonly owner changed");
-                let pair=GeneralSourceShadowBinding{source:readonly.binding().clone(),shadow};
-                let native=readonly.observe_converted_metadata_with_memory(pair,&crate::general_shadow::PagedInputs(metadata.expected()),None,
-                    |a,b|crate::ntfs_attestation::same_security(a,b).map_err(io::Error::other),
+        let shadow = self.publication.shadow.clone();
+        let admission = self.publication.resource_admission;
+        let arena = group.arena().clone();
+        let (journal, facts) = self.journal.split_for_observation()?;
+        let pins = n2r_win32::PagedRecoveryPins {
+            journal_binding: facts.binding,
+            journal_identity: facts.identity,
+            journal_path: facts.path,
+            journal_profile: facts.profile,
+            immutable_sha256: ticket.immutable_sha256,
+            old_selected_sha256: ticket.old_selected_sha256,
+            old_restored_selected_sha256: ticket.old_restored_selected_sha256,
+            new_selected_sha256: ticket.new_selected_sha256,
+        };
+        checkpoint("partition-recovery-terminal-private-authentication", events)?;
+        let mut guard = origin.into_terminal(
+            owner,
+            &policy,
+            journal.markerless_recovery_file()?,
+            pins,
+            kind,
+            events,
+        )?;
+        checkpoint("partition-recovery-terminal-readonly", events)?;
+        guard.enter_readonly(observer, events)?;
+        checkpoint("partition-recovery-terminal-native-verification", events)?;
+        let mut map_bindings = 0;
+        let mut known_streams = 0;
+        let mut extent_streams = 0;
+        let restoration = if let Some(metadata) = metadata.as_ref() {
+            let native = {
+                let readonly = guard.readonly_volume()?;
+                ensure!(
+                    readonly.owner_token().same_owner(&stable),
+                    "actual terminal readonly owner changed"
+                );
+                let pair = GeneralSourceShadowBinding {
+                    source: readonly.binding().clone(),
+                    shadow,
+                };
+                let native = readonly.observe_converted_metadata_with_memory(
+                    pair,
+                    &crate::general_shadow::PagedInputs(metadata.expected()),
+                    None,
+                    |a, b| crate::ntfs_attestation::same_security(a, b).map_err(io::Error::other),
                     n2r_win32::attestation::ResourceProfile::ResourceBoundedV4(Some(admission)),
-                    &crate::general_composite_target::paged_memory::ArenaReportMemory(arena.clone()),true,events)?;
-                map_bindings=metadata.compare_partition(&stable,&native)?;
-                let known=native.report().content_observation.as_ref().and_then(|c|c.known_content.as_ref())
+                    &crate::general_composite_target::paged_memory::ArenaReportMemory(
+                        arena.clone(),
+                    ),
+                    true,
+                    events,
+                )?;
+                map_bindings = metadata.compare_partition(&stable, &native)?;
+                let known = native
+                    .report()
+                    .content_observation
+                    .as_ref()
+                    .and_then(|c| c.known_content.as_ref())
                     .context("actual terminal known-content proof absent")?;
-                known_streams=known.streams_hashed;extent_streams=known.streams_without_content_baseline;
+                known_streams = known.streams_hashed;
+                extent_streams = known.streams_without_content_baseline;
                 native
             };
-            checkpoint("partition-recovery-terminal-verified-before-writable",events)?;
-            guard.finish(native,observer,events)?
-        }else{
-            ensure!(kind==PartitionTerminalKind::Aborted,"resume lacks authenticated expected/maps owner");
-            checkpoint("partition-recovery-aborted-old-before-writable",events)?;
-            guard.finish_aborted(observer,events)?
+            checkpoint(
+                "partition-recovery-terminal-verified-before-writable",
+                events,
+            )?;
+            guard.finish(native, observer, events)?
+        } else {
+            ensure!(
+                kind == PartitionTerminalKind::Aborted,
+                "resume lacks authenticated expected/maps owner"
+            );
+            checkpoint("partition-recovery-aborted-old-before-writable", events)?;
+            guard.finish_aborted(observer, events)?
         };
-        checkpoint("partition-recovery-terminal-restored",events)?;
+        checkpoint("partition-recovery-terminal-restored", events)?;
         // Close only metadata/J facts after RW publication. Do not compare a
         // mounted operational source to stale conversion-time OLD/NEW bytes.
-        self.publication_file.revalidate(&self.scratch)?;self.expected.revalidate(&self.scratch)?;
-        if let Some(maps)=&mut self.maps{maps.revalidate(&self.scratch)?;}
+        self.publication_file.revalidate(&self.scratch)?;
+        self.expected.revalidate(&self.scratch)?;
+        if let Some(maps) = &mut self.maps {
+            maps.revalidate(&self.scratch)?;
+        }
         self.locator.revalidate()?;
         drop(outcome);
-        Ok(serde_json::json!({"kind":"partition-recovery-terminal-result-v1","success":true,
+        Ok(
+            serde_json::json!({"kind":"partition-recovery-terminal-result-v1","success":true,
             "direction":if kind==PartitionTerminalKind::Handoff{"resume"}else{"rollback"},
             "selected":selected,"restoration":restoration,"raw_replay_performed":true,
             "matching_map_bindings":map_bindings,"known_streams_hashed":known_streams,
             "extent_only_streams":extent_streams,"recovery_files_retired":false,
-            "native_terminal_verified_before_writable":true,"stable_release_qualification":false}))
+            "native_terminal_verified_before_writable":true,"stable_release_qualification":false}),
+        )
     }
 }

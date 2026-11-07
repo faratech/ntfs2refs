@@ -14,6 +14,9 @@ use sha2::{Digest, Sha256};
 
 const PURPOSE: [u8; 8] = *b"WINALIS1";
 
+#[path = "boot_alias_recovery.rs"]
+pub(crate) mod recovery;
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct WindowsObjectIdDisposition {

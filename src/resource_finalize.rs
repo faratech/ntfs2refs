@@ -143,8 +143,6 @@ pub(crate) fn finalize_resource_handoff_with_windows_aliases_observer<O: Prepara
     observer:&mut O,
     windows_aliases:Option<std::sync::Arc<n2r_win32::shadow_native::windows_aliases::VerifiedWindowsAliases>>,
 )->Result<serde_json::Value>{
-    ensure!(pair.source.layout_profile!=n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows||windows_aliases.is_some(),
-        "experimental Windows finalization needs the live alias witness; authenticated restart alias expectations are not implemented");
     resources.validate()?;
     ensure!(
         output.is_absolute() && !output.exists(),
@@ -216,6 +214,19 @@ pub(crate) fn finalize_resource_handoff_with_windows_aliases_observer<O: Prepara
     let _external_alias_memory=windows_aliases.as_deref().map(|aliases|
         aliases.reserve_external_retained_memory(&payer)).transpose()?;
     let admission = protected.recovery().resource_admission();
+    // A restarted process cannot carry the constructor's live witness. Open
+    // only the alias expectations authenticated by this actual HND/publication;
+    // the protected native observer below must issue a fresh observed witness.
+    let reopened_windows_aliases = if native_pair.source.layout_profile
+        == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+        && windows_aliases.is_none()
+    {
+        Some(protected.recovery().reopen_windows_alias_expectations(
+            metadata.expected(), &scratch, &output.join("reopened-windows-aliases"),
+        )?.context("Windows restart finalization lacks authenticated alias expectations")?)
+    } else {
+        None
+    };
     let (native,observed_windows_aliases) = if let Some(aliases)=windows_aliases.as_deref(){
         aliases.require_scope(&native_pair,admission.source_inspection_sha256,aliases.plan_digest())?;
         aliases.require_canonical_input(&input)?;
@@ -226,6 +237,17 @@ pub(crate) fn finalize_resource_handoff_with_windows_aliases_observer<O: Prepara
         observed.require_converted_scope(&native_pair,admission.source_inspection_sha256,aliases.plan_digest())?;
         observed.require_input(&input)?;
         ensure!(observed.len()==aliases.len(),"converted Windows alias coverage differs");
+        (native,Some(observed))
+    }else if let Some(aliases)=reopened_windows_aliases.as_ref(){
+        use n2r_win32::shadow_native::windows_aliases::WindowsAliasInputDomain;
+        let plan_digest=aliases.semantic_sha256()?;
+        let (native,observed)=protected.source_mut()?.observe_converted_protected_with_memory_windows_alias_expectations(
+            native_pair.clone(),&input,Some(&desired_label),
+            |a,b|crate::ntfs_attestation::same_security(a,b).map_err(std::io::Error::other),
+            n2r_win32::attestation::ResourceProfile::ResourceBoundedV4(Some(admission)),&payer,aliases,&mut events)?;
+        observed.require_converted_scope(&native_pair,admission.source_inspection_sha256,plan_digest)?;
+        observed.require_input(&input)?;
+        ensure!(observed.len()==aliases.len(),"reopened Windows alias coverage differs");
         (native,Some(observed))
     }else{(protected
         .source_mut()?
@@ -305,6 +327,7 @@ pub(crate) fn finalize_resource_handoff_with_windows_aliases_observer<O: Prepara
         if let Some(aliases)=observed_windows_aliases.as_ref(){
             receipt["derived_windows_aliases_verified"]=true.into();
             receipt["derived_windows_alias_count"]=aliases.len().into();
+            receipt["windows_alias_expectations_reopened"]=reopened_windows_aliases.is_some().into();
             receipt["windows_alias_restart_recovery_qualified"]=false.into();
         }
         Ok(receipt)

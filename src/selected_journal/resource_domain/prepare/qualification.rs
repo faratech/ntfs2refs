@@ -40,7 +40,9 @@ pub(crate) struct ResourcePreparedConversion<'journal, 'domain, 'capture, 'proof
     closure: PreparedArenaClosure,
     // Runtime native alias ownership survives publication/apply. It is never
     // reconstructed from the JSON envelope or used as raw-write authority.
-    windows_aliases: Option<std::sync::Arc<n2r_win32::shadow_native::windows_aliases::VerifiedWindowsAliases>>,
+    windows_aliases:
+        Option<std::sync::Arc<n2r_win32::shadow_native::windows_aliases::VerifiedWindowsAliases>>,
+    _windows_alias_archive: Option<crate::boot_alias::recovery::PublishedWindowsAliasExpectations>,
     // Covers publication path copies and the bounded serializer/IO workspace.
     // Drop after the corresponding owned values and their final revalidation.
     _memory: ArenaRamLease,
@@ -67,7 +69,9 @@ struct MapPin<'a> {
 struct Publication<'a> {
     schema_version: u32,
     kind: &'static str,
-    #[serde(skip_serializing_if = "super::super::source_scope::ResourceRecoverySourceScope::is_dedicated")]
+    #[serde(
+        skip_serializing_if = "super::super::source_scope::ResourceRecoverySourceScope::is_dedicated"
+    )]
     source_scope: super::super::source_scope::ResourceRecoverySourceScope,
     source: &'a n2r_win32::general_layout::GeneralDiskBinding,
     shadow: &'a n2r_win32::general_layout::GeneralDiskBinding,
@@ -81,6 +85,10 @@ struct Publication<'a> {
     expected: ExpectedPin<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
     recovery_maps: Option<MapPin<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    windows_aliases: Option<&'a crate::ntfs_inspect::record_store::RecordStorePin>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    windows_alias_plan_sha256: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     early_preparation_guard: Option<crate::resource_preparation::early_guard::GuardPin>,
     ticket_sha256: String,
@@ -97,8 +105,12 @@ pub(crate) struct PartitionMetadataPublication {
 }
 
 impl PartitionMetadataPublication {
-    pub(crate) fn publication_lease(&self) -> &ArtifactLease { &self.publication }
-    pub(crate) fn checksum_lease(&self) -> &ArtifactLease { &self.checksum }
+    pub(crate) fn publication_lease(&self) -> &ArtifactLease {
+        &self.publication
+    }
+    pub(crate) fn checksum_lease(&self) -> &ArtifactLease {
+        &self.checksum
+    }
 }
 
 /// The distinct partition SourceContext supplies actual owner/admission
@@ -124,23 +136,34 @@ pub(crate) fn persist_partition_metadata(
     let admission = context.resource_admission();
     expected.require_resource_owner(admission)?;
     expected.require_shared_memory(context.arena())?;
-    ensure!(group.group() == ArtifactGroup::RecoveryCopy
-        && group.arena().same_arena(context.arena())
-        && expected_requires_maps(expected, context.verification_policy())? == maps.is_some(),
-        "partition publication expected/maps/arena ownership differs");
-    let scratch_group = scratch.artifact_group().context("partition publication scratch arena absent")?;
-    ensure!(scratch_group.group() == group.group()
-        && scratch_group.arena().same_arena(group.arena()),
-        "partition publication scratch/group owner differs");
-    if let Some(maps) = maps { maps.revalidate()?; }
-    ensure!(journal.lifecycle()? == crate::selected_journal::SelectedLifecycle::PreparedClear,
-        "partition metadata publication is fresh-only; MIXED/HND/ABT cannot reuse it");
+    ensure!(
+        group.group() == ArtifactGroup::RecoveryCopy
+            && group.arena().same_arena(context.arena())
+            && expected_requires_maps(expected, context.verification_policy())? == maps.is_some(),
+        "partition publication expected/maps/arena ownership differs"
+    );
+    let scratch_group = scratch
+        .artifact_group()
+        .context("partition publication scratch arena absent")?;
+    ensure!(
+        scratch_group.group() == group.group() && scratch_group.arena().same_arena(group.arena()),
+        "partition publication scratch/group owner differs"
+    );
+    if let Some(maps) = maps {
+        maps.revalidate()?;
+    }
+    ensure!(
+        journal.lifecycle()? == crate::selected_journal::SelectedLifecycle::PreparedClear,
+        "partition metadata publication is fresh-only; MIXED/HND/ABT cannot reuse it"
+    );
     let binding = context.binding().clone();
     shadow.validate()?;
-    ensure!(shadow.disk_number != binding.storage.disk_number
-        && n2r_win32::layout::guid_bytes(&shadow.identity.disk_guid)?
-            != n2r_win32::layout::guid_bytes(&binding.storage.identity.disk_guid)?,
-        "partition source/shadow are not independently bound");
+    ensure!(
+        shadow.disk_number != binding.storage.disk_number
+            && n2r_win32::layout::guid_bytes(&shadow.identity.disk_guid)?
+                != n2r_win32::layout::guid_bytes(&binding.storage.identity.disk_guid)?,
+        "partition source/shadow are not independently bound"
+    );
     let _memory = group.arena().reserve_ram(1024 * 1024)?;
     let policy = context.verification_policy();
     let fingerprint_kind = context.fingerprint().kind().to_owned();
@@ -150,62 +173,112 @@ pub(crate) fn persist_partition_metadata(
     let label = context.original_label().clone();
     let mount_paths = context.mount_paths().paths.clone();
     let result = context.with_publication_handoff(events, |owner, native, stable, events| {
-        let source_scope = ResourceRecoverySourceScope::from_actual_partition(owner, stable, native, events)?;
+        let source_scope =
+            ResourceRecoverySourceScope::from_actual_partition(owner, stable, native, events)?;
         locator.revalidate()?;
-        ensure!(locator.source_scope() == &source_scope
-            && locator.source() == &binding.storage
-            && same_ticket(locator.ticket(), journal.diagnostic_ticket())?,
-            "actual partition locator/scope/journal ticket differs");
+        ensure!(
+            locator.source_scope() == &source_scope
+                && locator.source() == &binding.storage
+                && same_ticket(locator.ticket(), journal.diagnostic_ticket())?,
+            "actual partition locator/scope/journal ticket differs"
+        );
         let facts = journal.facts();
-        ensure!(locator.journal_binding() == facts.binding
-            && locator.journal_identity() == *facts.identity
-            && locator.journal_path() == facts.path,
-            "actual partition locator is not this held native journal");
+        ensure!(
+            locator.journal_binding() == facts.binding
+                && locator.journal_identity() == *facts.identity
+                && locator.journal_path() == facts.path,
+            "actual partition locator is not this held native journal"
+        );
         source_scope.require_journal_route(&binding.storage, facts.binding)?;
         // The actual held output directory must resolve on this actual
         // observed J volume before CreateNew, never on selected source.
-        let parent = path.parent().context("partition publication parent absent")?;
-        let output = OpenOptions::new().access_mode(0x80).share_mode(3)
-            .custom_flags(0x0200_0000 | 0x0020_0000).open(parent)?;
+        let parent = path
+            .parent()
+            .context("partition publication parent absent")?;
+        let output = OpenOptions::new()
+            .access_mode(0x80)
+            .share_mode(3)
+            .custom_flags(0x0200_0000 | 0x0020_0000)
+            .open(parent)?;
         let output_meta = output.metadata()?;
         let output_guid = n2r_win32::file_storage::final_path_guid(&output)?;
         let volume = facts.binding.disk.volume_path()?;
         let prefix = format!("{}\\", volume.trim_end_matches('\\'));
-        ensure!(output_meta.is_dir() && output_meta.file_attributes() & 0x400 == 0
-            && output_guid.get(..prefix.len()).is_some_and(|p| p.eq_ignore_ascii_case(&prefix)),
-            "partition publication output is not the actual disjoint J volume");
+        ensure!(
+            output_meta.is_dir()
+                && output_meta.file_attributes() & 0x400 == 0
+                && output_guid
+                    .get(..prefix.len())
+                    .is_some_and(|p| p.eq_ignore_ascii_case(&prefix)),
+            "partition publication output is not the actual disjoint J volume"
+        );
         let locator_sha = hex::encode(locator.external_sha256());
         let expected_path = expected.final_path();
         let map_path = maps.map(|m| m.artifact_lease().snapshot().final_path.as_str());
         let publication = Publication {
-            schema_version: source_scope.envelope_protocol().0, kind: source_scope.envelope_protocol().1,
-            source_scope: source_scope.clone(), source:&binding.storage, shadow,
-            resource_admission:admission, verification_policy:policy,
-            source_fingerprint_kind:&fingerprint_kind, source_sha256:&source_sha,
-            source_inspection_sha256:&inspection_sha, source_views_sha256:&views_sha,
-            locator:FilePin {path:&locator.snapshot().final_path, sha256:&locator_sha,
-                bytes:locator.snapshot().file_bytes},
-            expected:ExpectedPin {file:FilePin {path:&expected_path, sha256:expected.file_sha256(),
-                bytes:expected.byte_len()}, semantic_sha256:expected.semantic_sha256(),
-                objects:expected.len() as u64},
-            recovery_maps:maps.zip(map_path).map(|(m,p)|MapPin {file:FilePin {path:p,
-                sha256:m.sha256(), bytes:m.bytes()}, records:m.records()}),
-            early_preparation_guard:None,
-            ticket_sha256:hex::encode(serialization_pin(journal.diagnostic_ticket(),4096)?.1),
-            expected_mount_paths:&mount_paths, expected_source_label:&label,
-            serialized_publication_grants_authority:false,
+            schema_version: source_scope.envelope_protocol().0,
+            kind: source_scope.envelope_protocol().1,
+            source_scope: source_scope.clone(),
+            source: &binding.storage,
+            shadow,
+            resource_admission: admission,
+            verification_policy: policy,
+            source_fingerprint_kind: &fingerprint_kind,
+            source_sha256: &source_sha,
+            source_inspection_sha256: &inspection_sha,
+            source_views_sha256: &views_sha,
+            locator: FilePin {
+                path: &locator.snapshot().final_path,
+                sha256: &locator_sha,
+                bytes: locator.snapshot().file_bytes,
+            },
+            expected: ExpectedPin {
+                file: FilePin {
+                    path: &expected_path,
+                    sha256: expected.file_sha256(),
+                    bytes: expected.byte_len(),
+                },
+                semantic_sha256: expected.semantic_sha256(),
+                objects: expected.len() as u64,
+            },
+            recovery_maps: maps.zip(map_path).map(|(m, p)| MapPin {
+                file: FilePin {
+                    path: p,
+                    sha256: m.sha256(),
+                    bytes: m.bytes(),
+                },
+                records: m.records(),
+            }),
+            windows_aliases: None,
+            windows_alias_plan_sha256: None,
+            early_preparation_guard: None,
+            ticket_sha256: hex::encode(serialization_pin(journal.diagnostic_ticket(), 4096)?.1),
+            expected_mount_paths: &mount_paths,
+            expected_source_label: &label,
+            serialized_publication_grants_authority: false,
         };
-        source_scope.preparation_guard()?.require_actual(native, owner, stable, events)?;
+        source_scope
+            .preparation_guard()?
+            .require_actual(native, owner, stable, events)?;
         let (publication, checksum) =
             save_publication(group, path, &publication, scratch.budget().record_bytes)?;
         locator.revalidate()?;
-        if let Some(maps) = maps { maps.revalidate()?; }
-        ensure!(journal.lifecycle()? == crate::selected_journal::SelectedLifecycle::PreparedClear,
-            "actual partition journal lifecycle changed during publication");
-        source_scope.preparation_guard()?.require_actual(native, owner, stable, events)?;
+        if let Some(maps) = maps {
+            maps.revalidate()?;
+        }
+        ensure!(
+            journal.lifecycle()? == crate::selected_journal::SelectedLifecycle::PreparedClear,
+            "actual partition journal lifecycle changed during publication"
+        );
+        source_scope
+            .preparation_guard()?
+            .require_actual(native, owner, stable, events)?;
         publication.revalidate()?;
         checksum.revalidate()?;
-        Ok(PartitionMetadataPublication {publication, checksum})
+        Ok(PartitionMetadataPublication {
+            publication,
+            checksum,
+        })
     });
     // Keep the complete fresh source bookend on errors as well. This fresh
     // OLD check is never part of the separate MIXED recovery issuer.
@@ -762,7 +835,18 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
         events: &mut Vec<n2r_win32::NativeEvent>,
         checkpoint_events: impl FnMut(&mut Vec<n2r_win32::NativeEvent>) -> Result<()>,
     ) -> Result<Self> {
-        Self::publish_with_windows_aliases(prepared,expected,maps,locator,group,scratch,path,events,checkpoint_events,None)
+        Self::publish_with_windows_aliases(
+            prepared,
+            expected,
+            maps,
+            locator,
+            group,
+            scratch,
+            path,
+            events,
+            checkpoint_events,
+            None,
+        )
     }
 
     pub(crate) fn publish_with_windows_aliases(
@@ -775,15 +859,28 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
         path: &Path,
         events: &mut Vec<n2r_win32::NativeEvent>,
         mut checkpoint_events: impl FnMut(&mut Vec<n2r_win32::NativeEvent>) -> Result<()>,
-        windows_aliases: Option<std::sync::Arc<n2r_win32::shadow_native::windows_aliases::VerifiedWindowsAliases>>,
+        windows_aliases: Option<
+            std::sync::Arc<n2r_win32::shadow_native::windows_aliases::VerifiedWindowsAliases>,
+        >,
     ) -> Result<Self> {
-        let source_aliases=prepared.context.windows_aliases();
-        ensure!(source_aliases.as_ref().is_none_or(|plan|plan.is_empty())||windows_aliases.is_some(),
-            "Windows alias publication requires its actual live constructor witness");
-        if let Some(aliases)=windows_aliases.as_deref(){
-            let pair=n2r_win32::general_layout::GeneralSourceShadowBinding{
-                source:prepared.inner._facts.source.clone(),shadow:prepared.inner._facts.shadow.clone()};
-            aliases.require_scope(&pair,prepared.context.resource_admission().source_inspection_sha256,aliases.plan_digest())?;
+        let source_aliases = prepared.context.windows_aliases();
+        ensure!(
+            source_aliases.as_ref().is_none_or(|plan| plan.is_empty()) || windows_aliases.is_some(),
+            "Windows alias publication requires its actual live constructor witness"
+        );
+        if let Some(aliases) = windows_aliases.as_deref() {
+            let pair = n2r_win32::general_layout::GeneralSourceShadowBinding {
+                source: prepared.inner._facts.source.clone(),
+                shadow: prepared.inner._facts.shadow.clone(),
+            };
+            aliases.require_scope(
+                &pair,
+                prepared
+                    .context
+                    .resource_admission()
+                    .source_inspection_sha256,
+                aliases.plan_digest(),
+            )?;
             aliases.require_canonical_input(&crate::general_shadow::PagedInputs(expected))?;
         }
         prepared.require_arena(group)?;
@@ -801,6 +898,26 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
         // units maximum). This also prepays the 64KiB streaming writer and
         // small scalar JSON/hash/checksum work before any path copy or IO.
         let memory = arena.reserve_ram(1024 * 1024)?;
+        let windows_source = prepared.inner._facts.source.layout_profile
+            == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows;
+        ensure!(
+            windows_source == source_aliases.is_some()
+                && windows_source == windows_aliases.is_some(),
+            "explicit Windows alias expectations and actual constructor witness are required together"
+        );
+        let windows_alias_archive = source_aliases
+            .as_deref()
+            .map(|source| {
+                crate::boot_alias::recovery::publish(
+                    source,
+                    scratch,
+                    &path.with_extension("windows-aliases"),
+                )
+            })
+            .transpose()?;
+        let windows_alias_plan_sha256 = windows_aliases
+            .as_deref()
+            .map(|aliases| hex::encode(aliases.plan_digest()));
         // Each owner check can issue dozens of native controls, while the
         // native event vector has a fixed 128-event limit. Stream complete
         // batches between checks; the caller must preserve them before it
@@ -839,7 +956,8 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
                         let publication = Publication {
                             schema_version: 1,
                             kind: "resource-allocation-recovery-envelope-v1",
-                            source_scope: super::super::source_scope::ResourceRecoverySourceScope::Dedicated,
+                            source_scope:
+                                super::super::source_scope::ResourceRecoverySourceScope::Dedicated,
                             source: prepared.inner._facts.source,
                             shadow: prepared.inner._facts.shadow,
                             resource_admission: context.resource_admission(),
@@ -870,6 +988,10 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
                                 },
                                 records: m.records(),
                             }),
+                            windows_aliases: windows_alias_archive
+                                .as_ref()
+                                .map(|archive| archive.pin()),
+                            windows_alias_plan_sha256: windows_alias_plan_sha256.as_deref(),
                             // Older publications may omit this guard; fresh
                             // preparation must retain its actual runtime pin.
                             early_preparation_guard: Some(
@@ -959,6 +1081,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
             write_index,
             closure,
             windows_aliases,
+            _windows_alias_archive: windows_alias_archive,
             _memory: memory,
         };
         result.revalidate(events)?;
@@ -968,10 +1091,19 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
     }
 
     pub(crate) fn revalidate(&mut self, events: &mut Vec<n2r_win32::NativeEvent>) -> Result<()> {
-        if let Some(aliases)=self.windows_aliases.as_deref(){
-            let pair=n2r_win32::general_layout::GeneralSourceShadowBinding{
-                source:self.prepared.inner._facts.source.clone(),shadow:self.prepared.inner._facts.shadow.clone()};
-            aliases.require_scope(&pair,self.prepared.context.resource_admission().source_inspection_sha256,aliases.plan_digest())?;
+        if let Some(aliases) = self.windows_aliases.as_deref() {
+            let pair = n2r_win32::general_layout::GeneralSourceShadowBinding {
+                source: self.prepared.inner._facts.source.clone(),
+                shadow: self.prepared.inner._facts.shadow.clone(),
+            };
+            aliases.require_scope(
+                &pair,
+                self.prepared
+                    .context
+                    .resource_admission()
+                    .source_inspection_sha256,
+                aliases.plan_digest(),
+            )?;
             aliases.require_canonical_input(&crate::general_shadow::PagedInputs(self.expected))?;
         }
         self.closure.with_revalidation(|arena| {

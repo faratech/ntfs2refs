@@ -776,7 +776,7 @@ pub(crate) fn general_disk_state(
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<GeneralDiskState> {
     binding.validate()?;
-    offline_windows::require_detached_roles(binding, events)?;
+    offline_windows::require_detached_roles(disk,binding, events)?;
     let device = control(&disk, "general-storage-device", DEVICE, &[], 12, events)?;
     layout::validate_device(&device, binding.disk_number)?;
     let disk_length = control(&disk, "general-disk-length", LENGTH, &[], 8, events)?;

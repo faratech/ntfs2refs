@@ -5,6 +5,7 @@ use crate::general_layout::GeneralDiskLayoutProfile;
 use super::partition_isolation::{PartitionObservationBudget, PartitionSourceBinding};
 
 pub(super) fn require_detached_roles(
+    disk:&File,
     binding: &GeneralDiskBinding,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<()> {
@@ -15,7 +16,7 @@ pub(super) fn require_detached_roles(
         gpt_entry_bytes: 4096, read_buffer_bytes: 4096,
     };
     let mut observed = Vec::new();
-    let roles = partition_storage_roles::observe_detached_windows_storage_roles(&selected, budget, &mut observed)?;
+    let roles = partition_storage_roles::observe_detached_windows_storage_roles(&selected, budget, disk, &mut observed)?;
     let paging = partition_isolation::paging(binding, budget, &mut observed)?;
     if !paging.enumeration_succeeded || !paging.all_locations_resolved
         || paging.locations.iter().any(|p| p.extent.as_ref().is_none_or(|e| e.disk_number == binding.disk_number)) {
@@ -26,7 +27,7 @@ pub(super) fn require_detached_roles(
         || dumps.locations.iter().any(|p| p.extents.is_empty() || p.extents.iter().any(|e| e.disk_number == binding.disk_number)) {
         return Err(invalid("offline Windows source disk contains a configured or unresolved dump destination"));
     }
-    let closing = partition_storage_roles::observe_detached_windows_storage_roles(&selected, budget, &mut Vec::new())?;
+    let closing = partition_storage_roles::observe_detached_windows_storage_roles(&selected, budget, disk, &mut Vec::new())?;
     if !roles.same_critical_roles(&closing) || current_windows_disk(&mut observed)? == binding.disk_number {
         return Err(invalid("current Windows/system roles changed across offline Windows source observation"));
     }
@@ -59,7 +60,8 @@ pub(super) fn lock_sibling_volumes(
 fn lock_volumes(binding: &GeneralDiskBinding, native_layout: &[u8], skip_selected: bool,
     events: &mut Vec<NativeEvent>) -> io::Result<Vec<File>> {
     binding.validate_layout(native_layout)?;
-    require_detached_roles(binding, events)?;
+    let disk = device_file(&format!("\\\\.\\PhysicalDrive{}", binding.disk_number), false, false)?;
+    require_detached_roles(&disk,binding, events)?;
     let inventory = crate::drive_inventory::inventory_drives_readonly()?;
     if !inventory.enumeration_complete { return Err(invalid("complete volume catalog required before Windows disk exclusion")); }
     let msr = layout::guid_bytes("e3c9e316-0b5c-4db8-817d-f92df00215ae")?;
@@ -88,7 +90,6 @@ fn lock_volumes(binding: &GeneralDiskBinding, native_layout: &[u8], skip_selecte
     let mut locks = Vec::new();
     for ((offset, length), path) in routes {
         if skip_selected && offset == binding.identity.partition_offset && length == binding.identity.partition_bytes { continue; }
-        let disk = device_file(&format!("\\\\.\\PhysicalDrive{}", binding.disk_number), false, false)?;
         let read_only = attributes(&disk, events)? & READ_ONLY != 0;
         let file = device_file(path.trim_end_matches('\\'), !read_only, false)?;
         let extent = control(&file, "offline-windows-lock-volume-extent", VOLUME_EXTENTS, &[], 1024, events)?;

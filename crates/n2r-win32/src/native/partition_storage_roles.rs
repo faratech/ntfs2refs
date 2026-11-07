@@ -603,15 +603,27 @@ pub(in crate::native) fn selected_from_physical_layout(
     budget: PartitionObservationBudget,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<(Vec<u8>, Vec<u8>)> {
-    let storage = &binding.storage;
-    let id = &storage.identity;
     let file = metadata_file(
-        &format!(r"\\.\PhysicalDrive{}", storage.disk_number),
+        &format!(r"\\.\PhysicalDrive{}", binding.storage.disk_number),
         "selected-physical-layout",
         events,
     )?;
+    selected_from_held_physical_layout(binding,budget,&file,events)
+}
+
+/// Requery the selected physical identity/layout through the caller's actual
+/// retained FileObject. An exclusive cancellation owner must not be forced
+/// to open a second alias of its own device merely to collect readonly roles.
+pub(in crate::native) fn selected_from_held_physical_layout(
+    binding:&PartitionSourceBinding,
+    budget:PartitionObservationBudget,
+    file:&std::fs::File,
+    events:&mut Vec<NativeEvent>,
+) -> io::Result<(Vec<u8>,Vec<u8>)> {
+    let storage=&binding.storage;
+    let id=&storage.identity;
     let device = control(
-        &file,
+        file,
         "storage-role-selected-physical-device",
         super::DEVICE,
         &[],
@@ -620,7 +632,7 @@ pub(in crate::native) fn selected_from_physical_layout(
     )?;
     layout::validate_device(&device, storage.disk_number)?;
     let length = control(
-        &file,
+        file,
         "storage-role-selected-physical-length",
         super::LENGTH,
         &[],
@@ -637,7 +649,7 @@ pub(in crate::native) fn selected_from_physical_layout(
         "Storage-role native layout capacity unsupported",
     )?;
     let native = control(
-        &file,
+        file,
         "storage-role-selected-physical-layout",
         super::LAYOUT,
         &[],
@@ -746,15 +758,16 @@ pub(super) fn observe_partition_storage_roles(
     budget: PartitionObservationBudget,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<PartitionStorageRoleObservation> {
-    observe_partition_storage_roles_impl(binding, budget, events, false)
+    observe_partition_storage_roles_impl(binding, budget, events, false, None)
 }
 
 pub(super) fn observe_detached_windows_storage_roles(
     binding: &PartitionSourceBinding,
     budget: PartitionObservationBudget,
+    held_selected_disk:&std::fs::File,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<PartitionStorageRoleObservation> {
-    let facts = observe_partition_storage_roles_impl(binding, budget, events, true)?;
+    let facts = observe_partition_storage_roles_impl(binding, budget, events, true, Some(held_selected_disk))?;
     need(facts.current_windows.role.disk_number != binding.storage.disk_number
         && facts.critical_partitions.iter().any(|p| p.role.is_system)
         && facts.critical_partitions.iter().all(|p| p.role.disk_number != binding.storage.disk_number),
@@ -767,6 +780,7 @@ fn observe_partition_storage_roles_impl(
     budget: PartitionObservationBudget,
     events: &mut Vec<NativeEvent>,
     detached_windows: bool,
+    held_selected_disk:Option<&std::fs::File>,
 ) -> io::Result<PartitionStorageRoleObservation> {
     binding.validate()?;
     budget.validate()?;
@@ -806,7 +820,10 @@ fn observe_partition_storage_roles_impl(
             }),
             "WMI selected partition number names a different GUID",
         )?;
-        let (target, native_layout) = selected_from_physical_layout(binding, budget, events)?;
+        let (target, native_layout) = match held_selected_disk {
+            Some(file)=>selected_from_held_physical_layout(binding,budget,file,events)?,
+            None=>selected_from_physical_layout(binding,budget,events)?,
+        };
         need(
             target.len() == 144
                 && layout::u32_at(&target, 0)? == 1
@@ -830,8 +847,8 @@ fn observe_partition_storage_roles_impl(
             )?;
         } else {
             let detached_offline = if detached_windows {
-                let disk = device_file(&format!("\\\\.\\PhysicalDrive{}", binding.storage.disk_number), false, false)?;
-                super::attributes(&disk, events)? & 1 != 0
+                let disk=held_selected_disk.ok_or_else(||invalid("detached Windows roles require the actual held physical device"))?;
+                super::attributes(disk, events)? & 1 != 0
             } else { false };
             need(
                 target[32..48] == layout::guid_bytes("b627aadb-a893-48b6-aa0b-71e5f30ee370")?
@@ -871,8 +888,10 @@ fn observe_partition_storage_roles_impl(
             before == after && windows_extent(events)? == windows,
             "Storage role catalog/Windows binding changed across native queries",
         )?;
-        let (closing_target, closing_layout) =
-            selected_from_physical_layout(binding, budget, events)?;
+        let (closing_target, closing_layout) = match held_selected_disk {
+            Some(file)=>selected_from_held_physical_layout(binding,budget,file,events)?,
+            None=>selected_from_physical_layout(binding,budget,events)?,
+        };
         need(
             closing_target == target && closing_layout == native_layout,
             "Storage-role selected native info/complete GPT layout changed across catalog",

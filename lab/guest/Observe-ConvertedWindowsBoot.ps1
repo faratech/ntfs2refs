@@ -19,7 +19,7 @@ Need ([IO.Path]::IsPathRooted($ReceiptPath)-and-not(Test-Path -LiteralPath $Rece
 $parent=Split-Path -Parent $ReceiptPath
 $directory=Get-Item -LiteralPath $parent -Force
 while($null-ne$directory){
-    Need ($directory.PSIsContainer-and-not($directory.Attributes-band[IO.FileAttributes]::ReparsePoint)) 'Receipt ancestors must be ordinary existing directories'
+    Need (($directory-is[IO.DirectoryInfo])-and-not($directory.Attributes-band[IO.FileAttributes]::ReparsePoint)) 'Receipt ancestors must be ordinary existing directories'
     $directory=$directory.Parent
 }
 $receiptVolumes=@(Get-Volume -FilePath $parent)

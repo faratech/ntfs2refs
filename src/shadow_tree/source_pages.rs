@@ -4,7 +4,7 @@ use super::*;
 use crate::ntfs_inspect::{
     external_sort::ExternalSort,
     paged_storage::{SourceRamLease, SourceScratch},
-    record_store::{RecordStorePin, SortedRecordStore},
+    record_store::{RecordStorePin, SortedRecordStore, SortedRecordWriter},
 };
 use crate::{
     ntfs_inspect::{PagedInspection, RootFileDomain},
@@ -27,6 +27,8 @@ struct PhysicalRow {
 
 pub struct SourceExpectedDomain {
     objects: SortedRecordStore,
+    windows_ea_normalizations: Option<SortedRecordStore>,
+    windows_ea_normalized_entries: u64,
     object_count: usize,
     admission: SourceResourceAdmission,
     profile: String,
@@ -46,12 +48,15 @@ pub struct SourceExpectedDomain {
 /// new projection, and grants no source-admission or conversion authority.
 pub(crate) struct ProjectionRevalidationOwner {
     objects: SortedRecordStore,
+    windows_ea_normalizations: Option<SortedRecordStore>,
     _scratch: SourceScratch,
 }
 
 impl ProjectionRevalidationOwner {
     pub(crate) fn revalidate(&self) -> Result<()> {
-        self.objects.revalidate()
+        self.objects.revalidate()?;
+        if let Some(records) = &self.windows_ea_normalizations { records.revalidate()?; }
+        Ok(())
     }
 }
 fn ordered_key(first: u64, second: u64) -> [u8; 16] {
@@ -146,7 +151,7 @@ fn build_object(
     file: &ntfs::FileInventory,
     admission: SourceResourceAdmission,
     aliases: Option<&crate::boot_alias::WindowsAliasDomain>,
-) -> Result<Object> {
+) -> Result<(Object, Option<crate::ntfs_extended_attributes::WindowsKernelPurgeEaNormalization>)> {
     let resources = ntfs_admission::ResourceProfile::ResourceBoundedV4(Some(admission));
     let mut names = if let Some(aliases) = aliases { aliases.user_paths(source, file)? }
         else { ntfs_admission::paged::user_paths(source, file)? };
@@ -317,7 +322,11 @@ fn build_object(
         });
     }
     named_streams.sort_by(|a, b| a.name_utf16.cmp(&b.name_utf16));
-    Ok(Object {
+    let (extended_attributes, ea_normalization) = if aliases.is_some() {
+        ensure!(source.is_windows_conversion(), "Windows EA projection requires its actual inspection purpose");
+        crate::ntfs_extended_attributes::windows_target_projection(file)?
+    } else { (crate::ntfs_extended_attributes::file_set(file)?, None) };
+    Ok((Object {
         record_number: file.record_number,
         sequence_number: file.sequence_number,
         path,
@@ -335,7 +344,7 @@ fn build_object(
         } else {
             Some(hex::decode(views.api_descriptor_hex)?)
         },
-        extended_attributes: Some(crate::ntfs_extended_attributes::file_set(file)?),
+        extended_attributes: Some(extended_attributes),
         reparse,
         source_offset,
         source_extents,
@@ -344,7 +353,7 @@ fn build_object(
         source_evidence,
         named_streams,
         sparse,
-    })
+    }, ea_normalization))
 }
 
 impl SourceExpectedDomain {
@@ -377,6 +386,7 @@ impl SourceExpectedDomain {
         aliases: Option<&crate::boot_alias::WindowsAliasDomain>,
     ) -> Result<Self> {
         admission.validate()?;
+        ensure!(aliases.is_none() || source.is_windows_conversion(), "Windows projection requires its actual inspection purpose");
         source.require_paged_source(admission.source_pages, admission.semantic_byte_budget())?;
         native.revalidate()?;
         n2r_win32::attestation::validate_domain_resources(native)?;
@@ -432,6 +442,10 @@ impl SourceExpectedDomain {
         )?;
         let mut roles = Vec::new();
         let mut role_ram = Vec::new();
+        let mut windows_ea_writer = aliases.map(|_| SortedRecordWriter::new(
+            &output.join("windows-kernel-purge-ea-normalizations"), *b"WINEAN01", scratch,
+        )).transpose()?;
+        let mut windows_ea_normalized_entries = 0u64;
         let (
             mut files,
             mut directories,
@@ -446,7 +460,14 @@ impl SourceExpectedDomain {
                 add_role(&mut roles, &mut role_ram, role, scratch)?;
                 continue;
             }
-            let object = build_object(source, native, ordinal, &file, admission, aliases)?;
+            let (object, ea_normalization) = build_object(source, native, ordinal, &file, admission, aliases)?;
+            if let Some(normalization) = ea_normalization {
+                windows_ea_normalized_entries = windows_ea_normalized_entries
+                    .checked_add(u64::try_from(normalization.omitted.entries.len())?)
+                    .context("Windows kernel EA normalization count overflow")?;
+                windows_ea_writer.as_mut().context("Windows EA normalization archive absent")?
+                    .push(ordered_key(ordinal, file.record_number), &normalization)?;
+            }
             if object.directory {
                 directories = directories
                     .checked_add(1)
@@ -563,6 +584,9 @@ impl SourceExpectedDomain {
             "complete projected object domain differs"
         );
         let object_count = usize::try_from(objects.len())?;
+        let windows_ea_normalizations = windows_ea_writer.map(|writer| {
+            SortedRecordStore::open(&writer.finish()?, scratch)
+        }).transpose()?;
         let mut roots = 0u64;
         for ordinal in 0..objects.len() {
             let object: Object = objects.get(ordinal)?;
@@ -584,6 +608,8 @@ impl SourceExpectedDomain {
         native.revalidate()?;
         let value = Self {
             objects,
+            windows_ea_normalizations,
+            windows_ea_normalized_entries,
             object_count,
             admission,
             profile: ntfs_admission::ResourceProfile::ResourceBoundedV4(Some(admission))
@@ -599,7 +625,7 @@ impl SourceExpectedDomain {
             _role_ram: role_ram,
             _row_ram: row_ram,
         };
-        value.objects.revalidate()?;
+        value.revalidate_stores()?;
         Ok(value)
     }
     pub fn object_pin(&self) -> &RecordStorePin {
@@ -609,15 +635,36 @@ impl SourceExpectedDomain {
         &self.source_inspection_sha256
     }
 
+    fn revalidate_stores(&self) -> Result<()> {
+        self.objects.revalidate()?;
+        if let Some(records) = &self.windows_ea_normalizations { records.revalidate()?; }
+        Ok(())
+    }
+
+    pub(crate) fn windows_ea_normalization_report(&self) -> Result<Option<serde_json::Value>> {
+        self.revalidate_stores()?;
+        Ok(self.windows_ea_normalizations.as_ref().map(|records| serde_json::json!({
+            "kind":"Windows-target-kernel-purge-EA-normalization-v1",
+            "source_inspection_sha256":self.source_inspection_sha256,
+            "records":records.pin(), "normalized_objects":records.len(),
+            "omitted_kernel_purge_entries":self.windows_ea_normalized_entries,
+            "policy":"target only: omit flags0 $Kernel.Purge.<nonempty> caches; archive exact source EAs; preserve ordinary EAs",
+            "ea_set_digest_format":"ntfs2refs-exact-EA-set-v1",
+            "raw_source_evidence_changed":false,"source_native_comparison_changed":false,
+            "grants_source_or_replay_authority":false,
+        })))
+    }
+
     /// Drop decode-only workspace once the caller has completed its semantic
     /// comparison, without replacing the held file owners with serialized pins.
     pub(crate) fn into_revalidation_owner(self) -> Result<ProjectionRevalidationOwner> {
-        self.objects.revalidate()?;
+        self.revalidate_stores()?;
         let Self {
-            objects, scratch, ..
+            objects, windows_ea_normalizations, scratch, ..
         } = self;
         Ok(ProjectionRevalidationOwner {
             objects,
+            windows_ea_normalizations,
             _scratch: scratch,
         })
     }
@@ -639,7 +686,7 @@ impl ExpectedObjectDomain for SourceExpectedDomain {
         &self.internal_replacement_pending
     }
     fn revalidate_domain(&self) -> Result<()> {
-        self.objects.revalidate()
+        self.revalidate_stores()
     }
     fn require_paged_metadata(
         &self,
@@ -651,7 +698,7 @@ impl ExpectedObjectDomain for SourceExpectedDomain {
                 && semantic == self.admission.semantic_byte_budget(),
             "actual projected page resources differ"
         );
-        self.objects.revalidate()
+        self.revalidate_stores()
     }
     fn require_resource_metadata(&self, admission: SourceResourceAdmission) -> Result<()> {
         ensure!(

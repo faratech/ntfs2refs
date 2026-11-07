@@ -1,5 +1,13 @@
 # ntfs2refs: current handoff
 
+## NEWEST ACTUAL ReFS kernel EA feature proof; scoped projection checked
+
+Actual native ReFS control1 oracle receipt SHA775d533dd0975f6d5a13f314fccb4143b490bed4daa41d0fce9dd41ed6bd3bb3: ONE fresh ordinary file/ONE user-mode NtSetEaFile for exact measured two$KERNEL.PURGE cache EAs plusordinaryEA. SetterSTATUS_SUCCESS; freshRestartScan NtQueryEaFile returns ONLYordinaryEA exact37B, kernelpurgecount0; nativeidentity/contentbookends true, sourcewrites0. File+receipt retained C:\ntfs2refs\kernel-purge-ea-oracle-c3bf3b92e5734edcb040e39273fe69dc. Initialhelper7970 failed before directory/file/set on unadaptedDirectoryInfo.PSIsContainer; corrected type check and SAMEexistingpostbootobserver instrumentation. Actualsuccessfuloracle15278 CLOSED0. No extraEAexperimentmatrix/newsourcewrites.
+
+Fullclosedrawaliasdomain diagnostic SHA0e32ca4ee999be633a13ceca85aab1bf4a160ae39e9ce047fb0e061e9048e826 verified143580FILEs/112609DOSaliases: ALL112609 uniqueWin32sameparent,0zero/0multiple; priorfalseambiguities1014. Entiredata+directorylogicalSHA/page/indexclosure and bookends passed. Aliasfixebe612a pushed/check0.
+
+ScopedEAprojection implemented ONLY ntfs_extended_attributes.rs/shadow_tree/source_pages.rs/resource_preparation.rs; rootREADONLYauditpassed. ActualWindows inspection+aliasowner required. Rawfile_set/nativeSourceEAcomparison unchanged; targetalone omits documented flags0$Kernel.Purge.<nonempty>, preservesordinaryEAs exact, refusesotherKernel names/flags. Exactomissions+raw/targetSetdigests in paidpagedaudit store retained/revalidated withprojection; existingobserverledger carriespin/sourceSHA/count, ExpectedTreeschema unchanged. No targetnativecomparatorfilter added. Focusedcompile host45096 ACTUAL CLOSED0/21.4731902s; capacity260471493498B/free59859464192B, same2GiBcompile+16GiBforecast under unchangedstrictcap. Mainc6bc frozen/no tests. Next exactpublicrelease then newnativeonlyafterfreshadmission. Native5252 is CLOSED1/restored; no conversion currently live. Currenttask stilloriginal0Windowsconversion+boot, notcontrol1boot.
+
 ## NEWEST ACTUAL FILE35049 native pairing and restored source; focused fix checked
 
 Prior5252 ACTUALLY CLOSED1/wall1431.6100727/peak684720128; finalstderr proves source collection failed BEFORE AP and unchanged original NTFS restored. Exactsource0/p3 GUID/start/66236448768 then independently observed ONLINE/RW HealthyNTFS4KiB/currentCdisk1/no converter or inspector. Receipt alias-refusal-restored-normalized-NTFS.json SHA668dc1c34143e0111dc47e390a2e761c11b1c2625420079022ec3fa4e06b5c15, final stdout/stderr/terminal in SAMEcase. No recovery cancellation/reset/boot was needed or run.

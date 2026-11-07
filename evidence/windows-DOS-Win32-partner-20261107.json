@@ -217,5 +217,20 @@
   "source_raw_native_EA_comparison_changed": false,
   "ordinary_data_policy_changed": false,
   "unit_tests_run": false,
-  "primary_file_name_reference": "https://learn.microsoft.com/en-us/windows/win32/devnotes/file-name"
+  "primary_file_name_reference": "https://learn.microsoft.com/en-us/windows/win32/devnotes/file-name",
+  "complete_closed_domain_scan": {
+    "path": ".lab\\hyperv\\boot-conversion-0b48b55-c3bf3b92e5734edcb040e39273fe69dc\\actual-complete-closed-raw-alias-pair-domain.json",
+    "sha256": "0e32ca4ee999be633a13ceca85aab1bf4a160ae39e9ce047fb0e061e9048e826",
+    "file_records": 143580,
+    "dos_alias_rows": 112609,
+    "one_win32_sibling_aliases": 112609,
+    "zero_win32_sibling_aliases": 0,
+    "multiple_win32_sibling_aliases": 0,
+    "old_false_ambiguities": 1014,
+    "data_complete_logical_sha_verified": true,
+    "data_file_sha256": "63359236cdd1f12f63c2b7ee3d7f24a81360c45c3bd9c6c2efcfb695c5e2005a",
+    "directory_file_sha256": "63e2e958b64929088293eb75ca2608cec905574a53a31ca9e733f5ef78cb7904",
+    "source_device_opens": 0,
+    "source_write_calls": 0
+  }
 }

@@ -8,6 +8,7 @@ use crate::ntfs_inspect::{AttributeInventory, FileInventory};
 use anyhow::{Context, Result, ensure};
 use n2r_win32::extended_attributes::{self, Set};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 pub const MAX_DATA_BYTES: u64 = 65_536;
 const INFORMATION_BYTES: u64 = 8;
@@ -258,4 +259,65 @@ pub fn file_set(file: &FileInventory) -> Result<Set> {
         }
         _ => anyhow::bail!("EA storage and retained raw evidence disagree"),
     }
+}
+
+/// Exact source EAs omitted only from the explicit Windows target projection.
+/// Raw NTFS evidence and native source comparison continue to use file_set.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct WindowsKernelPurgeEaNormalization {
+    pub record_number: u64,
+    pub sequence_number: u16,
+    pub raw_source_ea_set_sha256: String,
+    pub target_ea_set_sha256: String,
+    pub omitted: Set,
+}
+
+fn set_digest(set: &Set) -> Result<String> {
+    set.validate()?;
+    let mut hash = Sha256::new();
+    hash.update(b"ntfs2refs-exact-EA-set-v1\0");
+    hash.update((set.entries.len() as u64).to_le_bytes());
+    for entry in &set.entries {
+        hash.update([entry.flags]);
+        hash.update((entry.name.len() as u64).to_le_bytes());
+        hash.update(&entry.name);
+        hash.update((entry.value.len() as u64).to_le_bytes());
+        hash.update(&entry.value);
+    }
+    Ok(hex::encode(hash.finalize()))
+}
+
+/// The caller must hold the actual Windows inspection and alias domain. These
+/// user-mode-unsettable kernel caches remain archived as source facts, while
+/// every ordinary target EA retains its exact flags, name bytes and value.
+pub(crate) fn windows_target_projection(
+    file: &FileInventory,
+) -> Result<(Set, Option<WindowsKernelPurgeEaNormalization>)> {
+    const KERNEL: &[u8] = b"$Kernel";
+    const PURGE: &[u8] = b"$Kernel.Purge.";
+    let raw = file_set(file)?;
+    let mut omitted_count = 0usize;
+    for entry in &raw.entries {
+        if entry.name.get(..KERNEL.len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case(KERNEL)) {
+            ensure!(entry.flags == 0 && entry.name.len() > PURGE.len()
+                && entry.name.get(..PURGE.len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case(PURGE)),
+                "Windows target EA projection refuses an unsupported $Kernel name or flags at FILE {}", file.record_number);
+            omitted_count += 1;
+        }
+    }
+    if omitted_count == 0 { return Ok((raw, None)); }
+    let (omitted, target): (Vec<_>, Vec<_>) = raw.entries.iter().cloned().partition(|entry|
+        entry.name.get(..KERNEL.len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case(KERNEL)));
+    let omitted = Set { entries: omitted };
+    let target = Set { entries: target };
+    omitted.validate()?;
+    let normalization = WindowsKernelPurgeEaNormalization {
+        record_number: file.record_number,
+        sequence_number: file.sequence_number,
+        raw_source_ea_set_sha256: set_digest(&raw)?,
+        target_ea_set_sha256: set_digest(&target)?,
+        omitted,
+    };
+    Ok((target, Some(normalization)))
 }

@@ -426,6 +426,9 @@ where
             &projection_dir,
             &aux_scratch,
         )?;
+        if let Some(report) = projection.windows_ea_normalization_report()? {
+            events.observer.note(&report)?;
+        }
         let expected_group = arena.reserve_group(
             ArtifactGroup::Expected,
             admission.expected_page_budget()?.max_file_bytes,

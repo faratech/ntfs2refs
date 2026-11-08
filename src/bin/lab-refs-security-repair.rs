@@ -312,10 +312,17 @@ fn main() -> anyhow::Result<()> {
             let file = created
                 .remove(&row.id)
                 .context("corpus case has no creator binding")?;
+            let flat_components = vec![creator.fresh_root_component.clone(), row.file_name];
+            let mut source_components = vec![creator.fresh_root_component.clone()];
+            for component in row.source_context.get("first_source")
+                .and_then(|v| v.get("path")).and_then(|v| v.as_array())
+                .context("corpus source path context required")? {
+                source_components.push(component.as_str().context("corpus source component is not text")?.to_owned());
+            }
             ensure!(
                 file.original_sha256 == row.original_sha256
                     && file.directory == row.directory
-                    && file.components == vec![creator.fresh_root_component.clone(), row.file_name],
+                    && (file.components == flat_components || file.components == source_components),
                 "creator row does not match exact corpus case"
             );
             let _source_context = row.source_context; // Retained in the held, independently hashed input.

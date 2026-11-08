@@ -1,3 +1,11 @@
+## Current proactive fixes — root owns VM/native; full retry held
+
+Focused check81565 ACTUAL exit0/34.1334197s, no unit tests/native, frozen mainc6bc unchanged. SDK now enrolls source SVI root plus ordinary EMPTY immediate child directories, fresh-only IDs/parent checks/paid metadata handles/exact owned namespace checks before+after payloads. Actual source is5dirs+4files/20568B. Existing per-file/total limits and unknown/reparse/ADS refusal remain. LAB trust manifest now permits exact pinned original source path hierarchy with held ordinary no-reparse ancestor guards, not arbitrary descendants. Four changed Rust files peer reviewed/no concrete blocker. Need actual metadata-only preflight and native parent oracle before full Windows retry.
+
+Boot readonly v2 ACTUALsuccess: `.lab/hyperv/boot-readonly-f817127014e041beb9d647897bf7f7bf/boot-metadata.json`26655B/SHAe0fb21d0d1f0a9e11475258950de4cd9ccb2e68e8aaa637f4017d132b51d5df6. Source+control queried ReFS service/boot settings match; current four EFI loader files byte-identical25d8869e...; source BCD routes sourceESP/sourceP3/sourceDisk with correct winload/systemroot. No registry/BCD/firmware changes justified. NOT proof original Windows boots ReFS: original0 remains NTFS.
+
+Fresh TrustBatchCreateV2 security-only HOST code/input pinned09eb225d.../8a8ad616... reproduces541paths381dirs160files, including source parent inheritance context; full541kernel/API checks required before369manifest. Source reparse2contexts NOT materialized; attrs/times not restored by this security-only oracle. Before RAW note ReFS security dedup may share V2carrier rows with old V1disposable placeholders, so exact original SD restoration may affect those too; preserve all prior evidence and do not claim old V1 security bytes isolated. Qualified old original-type20control file is not samecarrier. Root sole VM/native/storage/build/Git owner; other agent work HOST readonly only. No full conversion/restore baseline until proactive gates pass.
+
 # ntfs2refs: current handoff
 
 ## Proactive metadata tools EXECUTED; SVI failure found early; raw SD gate compiles

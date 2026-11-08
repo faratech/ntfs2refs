@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "kind": "proactive-Windows-constructor-and-security-context-fixes",
+  "original_Windows_converted": false,
+  "original_Windows_booted_refs": false,
+  "changes": [
+    "Preserve root and ordinary empty immediate System Volume Information directories through actual private-tree ownership and metadata restoration",
+    "Bind LAB trust cases to exact independently pinned source parent paths with ordinary no-reparse ancestor checks"
+  ],
+  "actual_source": {
+    "system_files": 4,
+    "user_objects": 143552,
+    "system_directories": 5,
+    "system_file_bytes": 20568
+  },
+  "focused_check": {
+    "exit_code": 0,
+    "unit_tests_run": false,
+    "kind": "nested-SVI-preservation-and-context-oracle-check",
+    "absolute_boot_cap": 279866334601,
+    "wall_seconds": 34.1334197,
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+    "shared_target_reused": true,
+    "native_run": false,
+    "capacity": {
+      "actual_bytes": 212099178458,
+      "free_bytes": 95523823616,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 2147483648,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    }
+  },
+  "peer_review": "No concrete issue found in four changed Rust files; no native qualification claimed",
+  "boot_audit": {
+    "same_queried_ReFS_service_settings": true,
+    "path": ".lab/hyperv/boot-readonly-f817127014e041beb9d647897bf7f7bf/boot-metadata.json",
+    "same_EFI_loader_bytes": true,
+    "source_registry_or_BCD_changes": 0,
+    "sha256": "e0fb21d0d1f0a9e11475258950de4cd9ccb2e68e8aaa637f4017d132b51d5df6"
+  },
+  "next_gate": "Metadata-only preflight and full source-parent native trust oracle before full conversion retry",
+  "native_trust_oracle_scope": "Fresh parent-context subtree; shared ReFS SecurityIds may restore matching old disposable placeholders too; no claim of row isolation",
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "unit_tests_run": false
+}

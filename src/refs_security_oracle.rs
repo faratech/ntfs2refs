@@ -133,13 +133,13 @@ fn verify_creator_files(
     let mut names = BTreeSet::new();
     for (file, replacement) in files.iter().zip(replacements) {
         ensure!(
-            file.components.len() == 2
+            (2..=32).contains(&file.components.len())
                 && file.components[0] == root
                 && file
                     .components
                     .iter()
                     .all(|s| n2r_win32::shadow_names::valid_unicode_component(s)
-                        && s.encode_utf16().count() <= 128)
+                        && s.encode_utf16().count() <= 255)
                 && file.file_id_info_hex.len() == 48
                 && file
                     .file_id_info_hex
@@ -151,6 +151,20 @@ fn verify_creator_files(
             "creator file mapping, identity uniqueness or original descriptor differs"
         );
         let path = format!("{volume}\\{}", file.components.join("\\"));
+        ensure!(path.encode_utf16().count() < 32767, "creator path exceeds native bound");
+        // Context-faithful cases retain their original parent hierarchy. Hold
+        // and check each actual ancestor so a nested path cannot escape this
+        // owned oracle root through a reparse point or directory replacement.
+        let mut parents = Vec::new();
+        for end in 2..file.components.len() {
+            let parent_path = format!("{volume}\\{}", file.components[..end].join("\\"));
+            let parent = open(&parent_path)?;
+            let metadata = parent.metadata()?;
+            ensure!(metadata.is_dir() && metadata.file_attributes() & 0x400 == 0
+                && n2r_win32::file_storage::final_path_guid(&parent)?.eq_ignore_ascii_case(&parent_path),
+                "creator parent hierarchy is not the actual ordinary oracle subtree");
+            parents.push(parent);
+        }
         let held = open(&path)?;
         let metadata = held.metadata()?;
         ensure!(

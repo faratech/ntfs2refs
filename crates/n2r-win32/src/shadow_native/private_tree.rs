@@ -59,6 +59,9 @@ pub struct PrivateTree {
     placement_complete: bool,
     placement_progress: serde_json::Value,
     system_identities: BTreeMap<Vec<String>, Vec<u8>>,
+    // Actual source ordinals of constructor-owned SVI directories. These are
+    // enrolled with metadata handles during parent-first private allocation.
+    system_directory_indices: Vec<usize>,
     system_payloads_started: bool,
     system_payloads_complete: bool,
     // Constructor-owned identity anchors, never reconstructed from a report.
@@ -1749,7 +1752,7 @@ fn allocate_domain_with_memory(
     // refuse. Target-only IndexerVolumeGuid normalization is already scoped to
     // these enrolled disks and never touches the excluded source.
     let system = existing_system_entries_domain(&root, &initial, input, true, &mut events);
-    let system_identities = if let Some(lease) = &partition_source {
+    let mut system_identities = if let Some(lease) = &partition_source {
         let witness=lease.witness();
         let drained = witness
             .checkpoint_native_events("partition-private-allocation-global-queries", &mut events);
@@ -1835,6 +1838,7 @@ fn allocate_domain_with_memory(
     // Reuse a private file's atomic descriptor to create private directories.
     // Its descriptor is constant rather than derived from source ACLs.
     let sd = private_descriptor()?;
+    let mut system_directory_indices = Vec::new();
     for index in 0..input.len() {
         let owner = input.object(index)?;
         let item = owner.input();
@@ -1846,22 +1850,95 @@ fn allocate_domain_with_memory(
             .components
             .first()
             .is_some_and(|s| s == "System Volume Information");
+        if system && item.directory {
+            // Pure preflight admits only the SVI root and ordinary empty
+            // immediate child directories. Global input order already proved
+            // parents precede children; pin that exact held parent again.
+            if item.components.len() == 2 {
+                let parent_index = *system_directory_indices.first()
+                    .ok_or_else(|| invalid("system child directory precedes its owned root"))?;
+                let parent = metadata_targets.get(&parent_index)
+                    .ok_or_else(|| invalid("owned system root metadata handle absent"))?;
+                validate_open_type(parent, true)?;
+                let parent_id = info(parent, 18, 24)?;
+                let parent_components = &item.components[..1];
+                if system_identities.get(parent_components)
+                    .is_none_or(|id| parent_id[8..24] != *id)
+                    || parent_id[..8] != info(&metadata_targets[&0], 18, 24)?[..8]
+                {
+                    return Err(invalid("owned system parent identity or volume differs"));
+                }
+            }
+            if !system_identities.contains_key(item.components) {
+                let private = Input {
+                    components: item.components,
+                    additional_names: &[],
+                    directory: true,
+                    times: item.times,
+                    attributes: 16,
+                    security: &sd,
+                    expected_api_security: None,
+                    extended_attributes: None,
+                    reparse: None,
+                    payload: &[],
+                    expected_length: None,
+                    expected_sha256: None,
+                    source_offset: None,
+                    source_runs: Vec::new(),
+                    named_streams: Vec::new(),
+                    sparse: None,
+                };
+                let path = format!("{root}{}", item.components.join("\\"));
+                // Fresh-only CreateDirectory refuses every collision. Do not
+                // merge, adopt, clear or delete an existing child directory.
+                create(&path, &private, index, None)?;
+                let handle = open(&path, true, true)?;
+                let id = info(&handle, 18, 24)?;
+                if id[..8] != info(&metadata_targets[&0], 18, 24)?[..8]
+                    || system_identities.values().any(|old| old.as_slice() == &id[8..24])
+                    || enumerate(&handle)?.iter().any(|entry|
+                        entry.name_utf16 != [46] && entry.name_utf16 != [46, 46])
+                {
+                    return Err(invalid("fresh system directory identity or empty namespace differs"));
+                }
+                system_identities.insert(item.components.to_vec(), id[8..24].to_vec());
+                if metadata_targets.insert(index, handle).is_some() {
+                    return Err(invalid("duplicate system directory metadata ordinal"));
+                }
+            } else if !metadata_targets.contains_key(&index) {
+                return Err(invalid("existing system directory lacks its constructor metadata handle"));
+            }
+            system_directory_indices.try_reserve_exact(1).map_err(io::Error::other)?;
+            if system_directory_indices.capacity() > (system_directory_indices.len() + 1).saturating_mul(2) {
+                return Err(invalid("system directory ordinal capacity exceeds paid state"));
+            }
+            system_directory_indices.push(index);
+        }
         if item.components.is_empty() || system {
             objects.push(
                 serde_json::json!({"object_index":index,"components":item.components,
                 "disposition":"pending-system-or-root-metadata"}),
             );
             if let (Some(memory), Some(guard)) = (&memory, row_memory) {
-                memory.retain(
-                    guard,
-                    memory::object_bytes(
+                let mut retained = memory::object_bytes(
                         index,
                         &objects,
                         &files,
                         &sparse_targets,
                         &metadata_targets,
-                    )?,
-                )?;
+                    )?;
+                if system && item.directory {
+                    // Own the new identity-map key/ID and directory ordinal
+                    // state in addition to object_bytes' metadata handle.
+                    let path_bytes = item.components.iter().try_fold(0u64, |sum, part|
+                        sum.checked_add(part.len() as u64)
+                            .ok_or_else(|| invalid("system directory path RAM overflow")))?;
+                    retained = retained.checked_add(8192)
+                        .and_then(|n| n.checked_add(path_bytes.checked_mul(8)?))
+                        .and_then(|n| n.checked_add((item.components.len() as u64).checked_mul(256)?))
+                        .ok_or_else(|| invalid("system directory retained RAM overflow"))?;
+                }
+                memory.retain(guard, retained)?;
             }
             continue;
         }
@@ -2039,6 +2116,7 @@ fn allocate_domain_with_memory(
         placement_complete: false,
         placement_progress: serde_json::Value::Null,
         system_identities,
+        system_directory_indices,
         system_payloads_started: false,
         system_payloads_complete: false,
         metadata_targets,

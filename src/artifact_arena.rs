@@ -907,6 +907,30 @@ impl ArtifactArena {
     pub fn same_arena(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }
+    /// A resumed preparation writes beneath the existing arena instead of
+    /// replacing its root. Require the exact retained root among the ordinary
+    /// held ancestors and bind the immediate parent to that same GUID route.
+    pub(crate) fn require_directory_ancestry(&self, parents: &[File]) -> Result<()> {
+        let first = parents.first().context("arena output ancestry is empty")?;
+        let root = self.0._parents.first().context("held arena root is absent")?;
+        let root_id = n2r_win32::file_storage::file_id_info(root)?;
+        let mut matched = false;
+        for file in parents {
+            let metadata = file.metadata()?;
+            ensure!(metadata.is_dir() && metadata.file_attributes() & 0x400 == 0,
+                "held arena output ancestor is not an ordinary directory");
+            if n2r_win32::file_storage::file_id_info(file)? == root_id {
+                self.require_root_directory(file)?;
+                matched = true;
+            }
+        }
+        let parent = n2r_win32::file_storage::final_path_guid(first)?;
+        let root_path = self.0.root_guid.trim_end_matches('\\');
+        ensure!(matched && (parent.eq_ignore_ascii_case(root_path)
+            || parent.to_ascii_lowercase().starts_with(&(root_path.to_ascii_lowercase()+"\\"))),
+            "output ancestry does not descend from the actual held arena root");
+        Ok(())
+    }
     /// Borrow the actual still-live owner of an already charged immutable
     /// artifact. This does not adopt a pathname or repeat its byte hash.
     pub(crate) fn retained_artifact(&self, path: &Path) -> Result<ArtifactLease> {

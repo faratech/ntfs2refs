@@ -453,11 +453,7 @@ struct ArenaOutputBasis {
 }
 impl ArenaOutputBasis {
     fn revalidate(&self, source: &GeneralDiskBinding, arena: &ArtifactArena) -> Result<()> {
-        arena.require_root_directory(
-            self.parents
-                .first()
-                .context("held source output parent absent")?,
-        )?;
+        arena.require_directory_ancestry(&self.parents)?;
         let actual = n2r_win32::discovery::discover(
             &self.drive_root,
             n2r_win32::discovery::Role::Journal {
@@ -569,7 +565,7 @@ fn output_in_arena(
     let held = parents
         .first()
         .context("held arena source-output parent absent")?;
-    arena.require_root_directory(held)?;
+    arena.require_directory_ancestry(&parents)?;
     let parent_guid = n2r_win32::file_storage::final_path_guid(held)?;
     let drive_root = text[..3].to_owned();
     let volume = n2r_win32::discovery::discover(

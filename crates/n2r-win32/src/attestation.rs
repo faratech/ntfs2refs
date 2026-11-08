@@ -1292,12 +1292,26 @@ pub fn measured_domain_resources(
         bitmap_evidence_bytes: 0,
         namespace_evidence_bytes: 0,
     };
-    for index in 0..domain.len() {
-        let owner = domain.row_view(index)?;
-        let row = owner.observation();
-        out.merge(measured_row_resources(profile, Some(&row), None, None)?)?;
+    // A paged row view already decodes all three parallel columns. Account
+    // them together, rather than decoding that same authenticated row three
+    // times. Irregular and legacy domains retain their existing traversal.
+    let parallel = domain.is_paged()
+        && header.logical_data.is_some() && header.namespace.is_some()
+        && domain.len() == domain.logical_len() && domain.len() == domain.namespace_len();
+    if parallel {
+        for index in 0..domain.len() {
+            let owner=domain.row_view(index)?;
+            out.merge(measured_row_resources(profile,Some(owner.observation()),
+                Some(owner.logical()?),Some(owner.namespace()?))?)?;
+        }
+    }else{
+        for index in 0..domain.len() {
+            let owner = domain.row_view(index)?;
+            let row = owner.observation();
+            out.merge(measured_row_resources(profile, Some(&row), None, None)?)?;
+        }
     }
-    if header.logical_data.is_some() {
+    if !parallel && header.logical_data.is_some() {
         for index in 0..domain.logical_len() {
             let owner = domain.row_view(index)?;
             let row = owner.logical()?;
@@ -1336,7 +1350,7 @@ pub fn measured_domain_resources(
         }
     }
 
-    if header.namespace.is_some() {
+    if !parallel && header.namespace.is_some() {
         for index in 0..domain.namespace_len() {
             let owner = domain.row_view(index)?;
             let row = owner.namespace()?;

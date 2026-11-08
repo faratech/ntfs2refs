@@ -476,6 +476,11 @@ where
         &mut events,
     )?;
     events.observer.preparation_created(&early_guard.pin())?;
+    if resume.is_some() {
+        // Exercise the exact checkpoint owner/path conversion before any
+        // expensive source revalidation or source exclusion begins.
+        resume_checkpoint::preflight_new_guard(&early_guard,&locator_group)?;
+    }
     events.observer.note(
         &serde_json::json!({"kind":"resource-preparation-cancellation-anchor",
         "intent":early_guard.pin(),"source_payload_writes_authorized":false}),

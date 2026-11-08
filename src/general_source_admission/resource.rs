@@ -1972,6 +1972,9 @@ impl ResourceSourceContext {
     pub(crate) fn early_preparation_guard_pin(&self) -> Option<crate::resource_preparation::early_guard::GuardPin> {
         self.early_preparation_guard.as_ref().map(|guard| guard.pin())
     }
+    pub(crate) fn early_preparation_guard_artifact(&self)->Option<ArtifactLease> {
+        self.early_preparation_guard.as_ref().map(|guard|guard.intent_artifact())
+    }
     pub(crate) fn delegate_preparation_guard(&mut self, publication: &Path, sha: &str,
         events: &mut Vec<NativeEvent>) -> Result<()> {
         self.early_preparation_guard.as_mut().context("fresh V4 preparation guard absent")?

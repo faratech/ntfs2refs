@@ -22,7 +22,12 @@ pub(super) struct Checkpoints {
 }
 
 fn accounted(arena: &ArtifactArena, path: &Path, key: &str) -> Result<ArtifactPin> {
-    let lease = arena.retained_artifact(path)?;
+    let lease = arena.retained_artifact(path)
+        .with_context(||format!("checkpoint artifact {key} at {} lacks its actual arena owner",path.display()))?;
+    accounted_lease(&lease,key)
+}
+fn accounted_lease(lease:&ArtifactLease,key:&str)->Result<ArtifactPin> {
+    let path=lease.path();
     let file = OpenOptions::new()
         .read(true)
         .share_mode(1)
@@ -49,6 +54,17 @@ fn accounted(arena: &ArtifactArena, path: &Path, key: &str) -> Result<ArtifactPi
         number_of_links: s.number_of_links,
         last_write_time: file.metadata()?.last_write_time(),
     })
+}
+pub(super) fn preflight_new_guard(guard:&early_guard::EarlyPreparationGuard,
+    group:&ArtifactGroupPermit)->Result<()> {
+    let owner=guard.intent_artifact();
+    let native=guard.pin();
+    ensure!(owner.same_group(group)&&owner.sha256()==native.sha256
+        &&owner.wire_bytes()==native.bytes,"preparation guard lost its paid owner before source freeze");
+    let actual=accounted_lease(&owner,"new-preparation")?;
+    ensure!(actual.sha256==native.sha256&&actual.bytes==native.bytes,
+        "checkpoint guard preflight differs from the actual native intent");
+    Ok(())
 }
 fn persist(
     group: &ArtifactGroupPermit,
@@ -146,7 +162,16 @@ impl Checkpoints {
         let guard = context
             .early_preparation_guard_pin()
             .context("resumed source has no NEW guard")?;
-        let new_guard = accounted(arena, &guard.path, "new-preparation")?;
+        // Native guard routes use a volume-GUID spelling; arena registry keys
+        // retain the ordinary producer path. Carry the actual immutable owner
+        // instead of looking that owner up through a different path spelling.
+        let guard_owner=context.early_preparation_guard_artifact()
+            .context("resumed source lost its actual new-guard artifact owner")?;
+        ensure!(guard_owner.same_group(group)&&guard_owner.sha256()==guard.sha256
+            &&guard_owner.wire_bytes()==guard.bytes,
+            "actual new-guard owner differs from the native guard pin");
+        let new_guard = accounted_lease(&guard_owner,"new-preparation")?;
+        owners.push(guard_owner);
         let expected_pin = accounted(arena, &saved.expected.path, "expected")?;
         let native = accounted(arena, &saved.source.native_pages.path, "source-native")?;
         let (source_report, source_report_owner) = persist(

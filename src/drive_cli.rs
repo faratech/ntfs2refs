@@ -107,7 +107,17 @@ impl DriveArgs {
 pub fn run(args: DriveArgs) -> Result<u8> {
     #[cfg(windows)]
     {
-        windows::run(args)
+        // Windows executables normally reserve only 1 MiB for the main
+        // thread. The paged metadata inspectors have nested bounded decode
+        // frames; keep them on an explicitly sized worker instead of changing
+        // the frozen executable entrypoint or every dependency's link flags.
+        std::thread::Builder::new()
+            .name("ntfs2refs-drive".to_owned())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || windows::run(args))
+            .context("could not create the drive worker stack")?
+            .join()
+            .map_err(|_| anyhow::anyhow!("drive worker panicked; preserve its recovery records"))?
     }
     #[cfg(not(windows))]
     {

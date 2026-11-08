@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "kind": "lab-only-closed-expected-trust-label-inventory",
+  "path": "src/bin/lab-inspect-expected-trust-labels.rs",
+  "source_sha256": "fa102f8d63b6cbb048d22d7b7dfafd5b9fc2c2067ba88702eb7c18da58621671",
+  "production_files_changed": false,
+  "source_volume_or_disk_opens": false,
+  "inputs": "Independently checksummed closed expected.pages and source-resource-assessment.json on the working volume.",
+  "validation": "N2REXP01 purpose, admission, page/object/chunk/count bounds, full file SHA, FILE_ID/time bookends, explicit metadata-volume separation and bounded RAM/output.",
+  "output": "Unique stored/API security descriptors with process-trust ACEs, exact ACE/SID/mask/flags, occurrence counts, source identity/path examples and original descriptor bytes. Placeholder eligibility is diagnostic, not conversion authority.",
+  "diagnostic_carrier_type": 13,
+  "final_focused_check_exit_code": 0,
+  "final_focused_check_wall_seconds": 0.6312768,
+  "shared_target_reused": true,
+  "unit_tests_run": false,
+  "native_extraction_run": false,
+  "expected_metadata_sha256": "3cd01a7b1cadcc8744df94edc0579cf7fef4409d37a7caba9bc19a39eb786509",
+  "source_assessment_sha256": "ff868d2421c6b5545ac1f56398913d48b132b06a2500c333080467d528160715",
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+}

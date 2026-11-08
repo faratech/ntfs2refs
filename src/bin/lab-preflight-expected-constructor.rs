@@ -497,6 +497,46 @@ mod windows {
         path: Vec<String>,
         message: String,
     }
+    #[derive(Default, Serialize)]
+    struct SviCounts {
+        objects: u64,
+        canonical_objects: u64,
+        namespace_paths: u64,
+        directories: u64,
+        nested_directories: u64,
+        files: u64,
+        streams: u64,
+        logical_stream_bytes: u64,
+    }
+    #[derive(Serialize)]
+    struct SviStreamDiagnostic {
+        name_utf16: Vec<u16>,
+        length: u64,
+        content_digest: Option<String>,
+        source_evidence: Option<ntfs2refs::shadow_tree::SourceStreamEvidence>,
+        source_offset: Option<u64>,
+        source_extent_count: usize,
+        sparse: bool,
+    }
+    #[derive(Serialize)]
+    struct SviObjectDiagnostic {
+        object_ordinal: usize,
+        source_record: u64,
+        source_sequence: u16,
+        path: Vec<String>,
+        svi_namespace_paths: Vec<Vec<String>>,
+        canonical_root_matches_sdk_exactly: bool,
+        object_type: &'static str,
+        attributes: u32,
+        reparse_tag: Option<u32>,
+        additional_names: usize,
+        default_data_length: u64,
+        default_data_digest: Option<String>,
+        named_streams: usize,
+        streams: Vec<SviStreamDiagnostic>,
+        stored_security_sha256: String,
+        api_security_sha256: Option<String>,
+    }
     struct Count {
         bytes: usize,
         maximum: usize,
@@ -513,6 +553,119 @@ mod windows {
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
+    }
+    fn svi_path(path: &[String]) -> bool {
+        path.first()
+            .is_some_and(|root| root.eq_ignore_ascii_case("System Volume Information"))
+    }
+    fn record_svi(
+        ordinal: usize,
+        object: &Object,
+        payer: &Payer,
+        counts: &mut SviCounts,
+        records: &mut Vec<SviObjectDiagnostic>,
+        payments: &mut Vec<Box<dyn ReportMemoryLease>>,
+        retained_bytes: &mut usize,
+        maximum_bytes: usize,
+    ) -> Result<()> {
+        let canonical = svi_path(&object.path);
+        let paths = std::iter::once(&object.path)
+            .chain(object.additional_names.iter())
+            .filter(|path| svi_path(path));
+        let path_count = paths.clone().count();
+        if path_count == 0 {
+            return Ok(());
+        }
+        counts.objects += 1;
+        counts.canonical_objects += u64::from(canonical);
+        counts.namespace_paths += path_count as u64;
+        counts.directories += u64::from(object.directory);
+        counts.nested_directories +=
+            u64::from(object.directory && paths.clone().any(|path| path.len() > 1));
+        counts.files += u64::from(!object.directory);
+        for stream in object.data_streams() {
+            counts.streams += 1;
+            counts.logical_stream_bytes = counts
+                .logical_stream_bytes
+                .checked_add(stream.length)
+                .context("SVI diagnostic logical-byte count overflow")?;
+        }
+        // Always count the entire authenticated source namespace. Retained
+        // diagnostics have a separate, explicit RAM/output bound; truncation
+        // never turns the actual SDK refusal into constructor eligibility.
+        if records.len() >= 4096 {
+            return Ok(());
+        }
+        let mut memory_bytes = 8192u64;
+        for path in std::iter::once(&object.path).chain(paths.clone()) {
+            for part in path {
+                memory_bytes = memory_bytes
+                    .checked_add((part.len() as u64) * 4 + 128)
+                    .context("SVI path diagnostic RAM overflow")?;
+            }
+        }
+        for stream in object.data_streams() {
+            memory_bytes = memory_bytes
+                .checked_add(
+                    (stream.name_utf16.len() as u64) * 8
+                        + (stream.sha256.map_or(0, str::len) as u64) * 4
+                        + 1024,
+                )
+                .context("SVI stream diagnostic RAM overflow")?;
+        }
+        memory_bytes = memory_bytes
+            .checked_add((object.sha256.as_ref().map_or(0, String::len) as u64) * 4)
+            .context("SVI default digest diagnostic RAM overflow")?;
+        let payment = payer.reserve(memory_bytes)?;
+        let diagnostic = SviObjectDiagnostic {
+            object_ordinal: ordinal,
+            source_record: object.record_number,
+            source_sequence: object.sequence_number,
+            path: object.path.clone(),
+            svi_namespace_paths: paths.cloned().collect(),
+            canonical_root_matches_sdk_exactly: object
+                .path
+                .first()
+                .is_some_and(|root| root == "System Volume Information"),
+            object_type: if object.directory {
+                "directory"
+            } else {
+                "file"
+            },
+            attributes: object.attributes,
+            reparse_tag: object.reparse.as_ref().map(|point| point.tag()),
+            additional_names: object.additional_names.len(),
+            default_data_length: object.length,
+            default_data_digest: object.sha256.clone(),
+            named_streams: object.named_streams.len(),
+            streams: object
+                .data_streams()
+                .map(|stream| SviStreamDiagnostic {
+                    name_utf16: stream.name_utf16.to_vec(),
+                    length: stream.length,
+                    content_digest: stream.sha256.map(str::to_owned),
+                    source_evidence: stream.source_evidence,
+                    source_offset: stream.source_offset,
+                    source_extent_count: stream.source_extents.len(),
+                    sparse: stream.sparse.is_some(),
+                })
+                .collect(),
+            stored_security_sha256: hex::encode(Sha256::digest(&object.security)),
+            api_security_sha256: object
+                .api_security
+                .as_ref()
+                .map(|bytes| hex::encode(Sha256::digest(bytes))),
+        };
+        let mut count = Count {
+            bytes: 0,
+            maximum: maximum_bytes.saturating_sub(*retained_bytes),
+        };
+        if serde_json::to_writer_pretty(&mut count, &diagnostic).is_ok() {
+            *retained_bytes += count.bytes;
+            records.push(diagnostic);
+            payments.push(payment);
+        }
+        Ok(())
     }
     fn record_error(
         object: &Object,
@@ -614,6 +767,10 @@ mod windows {
         let mut error_counts = BTreeMap::new();
         let mut retained_error_bytes = 0usize;
         let mut security_payments = Vec::new();
+        let mut svi_counts = SviCounts::default();
+        let mut svi_records = Vec::new();
+        let mut svi_payments = Vec::new();
+        let mut retained_svi_bytes = 0usize;
         let (mut files, mut directories, mut streams, mut trust_objects, mut api_views) =
             (0u64, 0u64, 0u64, 0u64, 0u64);
         let (
@@ -636,6 +793,16 @@ mod windows {
             namespace_names += 1 + object.additional_names.len() as u64;
             maximum_path_depth = maximum_path_depth.max(object.path.len());
             maximum_security_bytes = maximum_security_bytes.max(object.security.len());
+            record_svi(
+                index,
+                object,
+                &payer,
+                &mut svi_counts,
+                &mut svi_records,
+                &mut svi_payments,
+                &mut retained_svi_bytes,
+                args.max_output_bytes / 3,
+            )?;
             for stream in object.data_streams() {
                 source_ranges +=
                     stream.source_extents.len() as u64 + u64::from(stream.source_offset.is_some());
@@ -760,6 +927,7 @@ mod windows {
         let total_input_errors: u64 = error_counts.values().sum();
         let diagnostics_truncated = total_input_errors > input_errors.len() as u64;
         let constructor_completed = summary.is_some();
+        let svi_diagnostics_complete = svi_counts.objects == svi_records.len() as u64;
         let report = serde_json::json!({"schema_version":1,"kind":"closed-expected-constructor-preflight-v1",
             "expected_file":expected.snapshot,"expected_sha256":args.expected_sha256,
             "source_assessment_sha256":args.source_assessment_sha256,
@@ -771,6 +939,13 @@ mod windows {
             "unique_security_contexts":seen.len(),"trust_objects":trust_objects,
             "input_error_counts":error_counts,"input_errors_total":total_input_errors,"input_errors":input_errors,
             "input_error_diagnostics_truncated":diagnostics_truncated,
+            "system_volume_information_counts":svi_counts,
+            "system_volume_information_objects":svi_records,
+            "system_volume_information_diagnostics_complete":svi_diagnostics_complete,
+            "system_volume_information_diagnostics_maximum_objects":4096,
+            "system_volume_information_diagnostics_maximum_bytes":args.max_output_bytes/3,
+            "system_volume_information_digest_algorithm":"XXH3-128 content digest (historical Object.sha256 field); security digests are SHA-256",
+            "system_volume_information_identity_scope":"record/sequence and namespace from authenticated expected metadata; not a current filesystem observation or write authority",
             "system_payload_summary":system_summary,"system_payload_error":system_error,
             "constructor_summary":summary,"constructor_error":constructor_error,"pure_input_eligible":eligible,
             "explicit_ram_cap":args.ram_bytes,"measured_paid_ram_peak":payer.0.peak.load(Ordering::SeqCst),

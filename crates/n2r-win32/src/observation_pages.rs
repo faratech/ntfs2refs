@@ -801,6 +801,18 @@ fn decode_row<T: serde::de::DeserializeOwned>(
     row: RowIndex,
     budget: NativeObservationBudget,
 ) -> io::Result<T> {
+    // Most file and namespace rows fit in one already authenticated chunk.
+    // Decode its bounded JSON slice directly instead of feeding every byte
+    // through Read. Keep the same chunk validation and actual row-byte bound;
+    // the caller's existing decode lease already pays this buffer.
+    if row.records == 1 {
+        return reader.with_record(row.first, |_, payload| {
+            let bytes = decode_chunk(payload, budget.chunk_bytes())?;
+            require(bytes.len() as u64 == row.bytes,
+                "single-chunk native row length differs from its authenticated index")?;
+            serde_json::from_slice(&bytes).map_err(io::Error::other)
+        });
+    }
     let input = ChunkReader {
         reader,
         row,

@@ -284,11 +284,17 @@ pub struct PagedNativeObservation {
     // rehashing a full page every time it switches between those phases.
     namespace_reader: RefCell<Reader>,
     header: Report,
+    // SDK-issued volume refresh only. The immutable file/header and every
+    // per-file row remain the original authenticated historical evidence.
+    refreshed_header: Option<Report>,
+    header_wire_bytes: u64,
     files: Vec<RowIndex>,
     namespace: Vec<RowIndex>,
     budget: NativeObservationBudget,
     total_bytes: u64,
     sha256: String,
+    _refreshed_header_memory:
+        Option<Box<dyn crate::shadow_native::report_memory::ReportMemoryLease>>,
     // Drop decoded/header/index/cache storage before returning shared RAM.
     memory: Option<memory::Memory>,
 }
@@ -502,11 +508,14 @@ impl PagedNativeObservation {
             reader: RefCell::new(reader),
             namespace_reader: RefCell::new(namespace_reader),
             header,
+            refreshed_header: None,
+            header_wire_bytes: actual_header.bytes,
             files,
             namespace,
             budget,
             total_bytes: total,
             sha256: sha256.to_owned(),
+            _refreshed_header_memory: None,
         };
         for i in 0..result.len() {
             let row = result.row_view(i)?;
@@ -545,6 +554,103 @@ impl PagedNativeObservation {
     pub fn sha256(&self) -> &str {
         &self.sha256
     }
+    pub(crate) fn reserve_metadata_refresh_memory(
+        &self,
+    ) -> io::Result<Box<dyn crate::shadow_native::report_memory::ReportMemoryLease>> {
+        require(
+            self.refreshed_header.is_none(),
+            "native header was already refreshed",
+        )?;
+        let clusters = u64::from_le_bytes(
+            self.header
+                .ntfs_data_before
+                .get(16..24)
+                .ok_or_else(|| io::Error::other("cached NTFS cluster count absent"))?
+                .try_into()
+                .unwrap(),
+        );
+        let limits = source_bitmap_limits(self.header.request.resource_profile, clusters)?;
+        // Two completed bitmap summaries plus bounded collector growth/prefix
+        // copies, old-header cloning, and fixed bitmap/privilege workspaces.
+        let bytes = (limits.max_allocated_ranges as u64)
+            .checked_mul(128)
+            .and_then(|n| n.checked_add(16 * 1024 * 1024))
+            .and_then(|n| {
+                memory::header_bytes(&self.header)
+                    .ok()
+                    .and_then(|h| h.checked_mul(2))
+                    .and_then(|h| n.checked_add(h))
+            })
+            .ok_or_else(|| io::Error::other("native refreshed header RAM overflow"))?;
+        self.memory
+            .as_ref()
+            .ok_or_else(|| io::Error::other("refreshed header needs actual native memory owner"))?
+            .accountant
+            .reserve(bytes)
+    }
+    pub(crate) fn install_metadata_refreshed_header(
+        &mut self,
+        header: Report,
+        mut memory: Box<dyn crate::shadow_native::report_memory::ReportMemoryLease>,
+    ) -> io::Result<()> {
+        require(
+            self.refreshed_header.is_none()
+                && header.files.is_empty()
+                && header
+                    .logical_data
+                    .as_ref()
+                    .is_some_and(|d| d.files.is_empty())
+                && header
+                    .namespace
+                    .as_ref()
+                    .is_some_and(|d| d.files.is_empty())
+                && !header.conversion_qualified,
+            "native refreshed header shape differs",
+        )?;
+        let profile = header
+            .request
+            .resource_profile
+            .ok_or_else(|| io::Error::other("native refreshed profile absent"))?;
+        self.refreshed_header = Some(header);
+        let resources = measured_domain_resources(self, profile)?;
+        self.refreshed_header.as_mut().unwrap().resources = Some(resources);
+        struct Count {
+            bytes: u64,
+            maximum: u64,
+        }
+        impl Write for Count {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.bytes = self
+                    .bytes
+                    .checked_add(bytes.len() as u64)
+                    .filter(|n| *n <= self.maximum)
+                    .ok_or_else(|| {
+                        io::Error::other("native refreshed header exceeds row budget")
+                    })?;
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut count = Count {
+            bytes: 0,
+            maximum: self.budget.max_row_bytes,
+        };
+        serde_json::to_writer(&mut count, self.refreshed_header.as_ref().unwrap())
+            .map_err(io::Error::other)?;
+        self.total_bytes = self
+            .total_bytes
+            .checked_sub(self.header_wire_bytes)
+            .and_then(|n| n.checked_add(count.bytes))
+            .filter(|n| *n <= self.budget.max_total_row_bytes)
+            .ok_or_else(|| io::Error::other("native refreshed total evidence budget exceeded"))?;
+        memory.shrink_to(memory::header_bytes(
+            self.refreshed_header.as_ref().unwrap(),
+        )?)?;
+        self._refreshed_header_memory = Some(memory);
+        validate_domain_resources(self)
+    }
     /// Collector, immutable header, index vectors and both page caches share
     /// actual leases. Cow-returning decoded rows need separate consumer leases.
     pub fn retained_storage_ram_accounted(&self) -> bool {
@@ -568,7 +674,7 @@ impl PagedNativeObservation {
 }
 impl NativeObservationDomain for PagedNativeObservation {
     fn header(&self) -> &Report {
-        &self.header
+        self.refreshed_header.as_ref().unwrap_or(&self.header)
     }
     fn len(&self) -> usize {
         self.files.len()

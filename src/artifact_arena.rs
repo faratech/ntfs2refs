@@ -1013,6 +1013,17 @@ impl ArtifactArena {
         })
     }
 
+    /// Borrow an already reserved current-epoch quota. This cannot create a
+    /// reservation or recover an old epoch's permit from serialized counters.
+    pub(crate) fn retained_group(&self, group: ArtifactGroup, maximum: u64) -> Result<ArtifactGroupPermit> {
+        let state=self.0.state.lock().map_err(|_|anyhow::anyhow!("arena lock poisoned"))?;
+        let actual=state.groups.get(&group).context("actual group is not reserved")?;
+        ensure!(!state.prepared_closed&&!state.allocation_poisoned&&!state.ram_poisoned
+            &&!actual.poisoned&&!actual.sealed&&actual.maximum==maximum,
+            "actual retained group is closed, poisoned or has a different quota");
+        Ok(ArtifactGroupPermit{arena:self.clone(),group})
+    }
+
     /// Attach an actual fixed-EOF native journal file owner to its already
     /// reserved quota. The witness is non-serializable and constructed only
     /// from the prepared same-file native journal; callers cannot supply a

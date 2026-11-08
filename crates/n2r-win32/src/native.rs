@@ -29,7 +29,8 @@ mod paged_write_policy;
 mod paged_recovery;
 mod isolation_restore;
 mod source_cache;
-pub use source_cache::{SourceCacheContinuity, SourceCacheFingerprintDomain, NativeSourceObservationOrigin};
+pub use source_cache::{SourceCacheContinuity, SourceCacheFingerprintDomain, NativeSourceObservationOrigin,
+    SourceCacheFingerprintMismatch, SourceCacheRefreshDomain, SourceCacheRefreshRow};
 pub mod partition_isolation;
 pub mod offline_environment;
 pub mod recovery_image;

@@ -283,8 +283,15 @@ pub(crate) fn source_snapshot_paged(file: &File, require_case: bool, maximum: us
     let kernel = (|| -> io::Result<Vec<u8>> {
         let mut required = 0u32;
         // SAFETY: size-only synchronous query; no output buffer is passed.
-        let ok =
-            unsafe { GetKernelObjectSecurity(raw(file), COMPLETE_SECURITY_INFORMATION, ptr::null_mut(), 0, &mut required) };
+        let ok = unsafe {
+            GetKernelObjectSecurity(
+                raw(file),
+                COMPLETE_SECURITY_INFORMATION,
+                ptr::null_mut(),
+                0,
+                &mut required,
+            )
+        };
         if ok == 0 {
             let error = io::Error::last_os_error();
             if error.raw_os_error() != Some(122) {
@@ -629,7 +636,13 @@ fn collect_file_metadata_with_passes(
     single_content_pass: bool,
     sink: Option<&mut crate::observation_pages::NativePageWriter>,
 ) -> io::Result<Report> {
-    collect_file_metadata_with_routes(request, selectors, single_content_pass, sink, &mut DedicatedAttestationRoute)
+    collect_file_metadata_with_routes(
+        request,
+        selectors,
+        single_content_pass,
+        sink,
+        &mut DedicatedAttestationRoute,
+    )
 }
 pub(crate) fn collect_file_metadata_with_routes(
     request: &Request,
@@ -973,5 +986,88 @@ pub(crate) fn collect_file_metadata_with_routes(
     {
         report.validate_resources()?;
     }
+    Ok(report)
+}
+
+/// Renew only the volume/protection/allocation header while the caller retains
+/// the physical read-only lease and historical authenticated per-file rows.
+/// No file selector, native per-file response, or logical read is invented.
+pub(crate) fn metadata_refreshed_cached_volume_header(
+    request: &Request,
+    historical: &Report,
+    during: impl FnOnce() -> io::Result<()>,
+) -> io::Result<Report> {
+    request.validate()?;
+    if request.schema_version != 8
+        || historical.schema_version != 16
+        || !historical.files.is_empty()
+        || !historical
+            .logical_data
+            .as_ref()
+            .is_some_and(|d| d.files.is_empty())
+        || !historical
+            .namespace
+            .as_ref()
+            .is_some_and(|d| d.files.is_empty())
+        || historical.conversion_qualified
+    {
+        return Err(invalid(
+            "metadata refresh requires an authenticated paged extent header",
+        ));
+    }
+    let volume = open(request.volume.trim_end_matches('\\'))?;
+    let disk = open(&format!(r"\\.\PhysicalDrive{}", request.disk_number))?;
+    let before = route(&volume, &disk, request)?;
+    let mut privileges = Privileges::enable()?;
+    let base_before = crate::stream_native::base(&volume);
+    let clusters = u64le(&before.1, 16)?;
+    let limits = source_bitmap_limits(request.resource_profile, clusters)?;
+    let (bitmap_before, streamed_before) =
+        crate::stream_native::bitmap_streamed_with_limits(&volume, clusters, &[0; 8], limits)?
+            .into_legacy_parts();
+    during()?;
+    let base_after = crate::stream_native::base(&volume);
+    let (bitmap_after, streamed_after) =
+        crate::stream_native::bitmap_streamed_with_limits(&volume, clusters, &[0; 8], limits)?
+            .into_legacy_parts();
+    privileges.restore()?;
+    let after = route(&volume, &disk, request)?;
+    if before != after
+        || base_before != base_after
+        || base_before.native_error.is_some()
+        || base_before.bytes.len() != 8
+        || bitmap_before != bitmap_after
+        || streamed_before != streamed_after
+    {
+        return Err(invalid(
+            "fresh cached-row volume/protection/allocation bracket changed",
+        ));
+    }
+    // This small header clone retains the original historical logical-read
+    // audit/content_passes. Origin metadata explicitly distinguishes those
+    // old rows from the actual newly queried volume fields below.
+    let mut report = historical.clone();
+    report.request = request.clone();
+    report.resources = None;
+    report.volume_extents_before = before.0;
+    report.volume_extents_after = after.0;
+    report.ntfs_data_before = before.1;
+    report.ntfs_data_after = after.1;
+    report.disk_attributes_before = before.2;
+    report.disk_attributes_after = after.2;
+    report.write_protect_error_before = before.3;
+    report.write_protect_error_after = after.3;
+    report.privileges_restored = true;
+    report.privilege_states = privileges.audit.clone();
+    report.allocation = Some(VolumeAllocation {
+        base_before,
+        base_after,
+        bitmap_before,
+        bitmap_after,
+        bitmap_before_continuation: Vec::new(),
+        bitmap_after_continuation: Vec::new(),
+        streamed_before: Some(streamed_before),
+        streamed_after: Some(streamed_after),
+    });
     Ok(report)
 }

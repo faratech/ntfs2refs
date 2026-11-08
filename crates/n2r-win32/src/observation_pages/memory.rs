@@ -35,7 +35,7 @@ fn summary(s: &crate::bitmap_streaming::Summary) -> io::Result<u64> {
     )?;
     add(n, vec_bytes(&s.allocated_ranges)?)
 }
-fn header_bytes(h: &Report) -> io::Result<u64> {
+pub(super) fn header_bytes(h: &Report) -> io::Result<u64> {
     require(
         h.files.is_empty()
             && h.logical_data.as_ref().is_some_and(|d| d.files.is_empty())

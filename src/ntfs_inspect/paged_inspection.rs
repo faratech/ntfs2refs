@@ -40,6 +40,7 @@ enum InspectionPurpose {
     Conversion,
     WindowsConversion,
     Preparation,
+    CachedFacts,
 }
 struct ClosedSource;
 pub struct PagedInspection {
@@ -56,8 +57,75 @@ pub struct PagedInspection {
     // Runtime provenance, independently of the serialized diagnostic pin.
     purpose: InspectionPurpose,
     _closed: ClosedSource,
+    // Baseline readers retain the actual newly accounted immutable owners.
+    _fact_artifacts: Vec<crate::artifact_arena::ArtifactLease>,
+    _fact_artifact_ram: Option<paged_storage::SourceRamLease>,
 }
 impl PagedInspection {
+    /// Historical FACTS only. Every ordinary page must already have a real
+    /// adopted lease in the caller's auxiliary group. No source continuity,
+    /// conversion purpose, admission, native witness or writer is issued.
+    pub(crate) fn open_cached_facts(
+        pin: &SourceInspectionPin,
+        inspection_sha256: &str,
+        group: &crate::artifact_arena::ArtifactGroupPermit,
+        scratch: &SourceScratch,
+    ) -> Result<Self> {
+        ensure!(inspection_sha256.len()==64 && inspection_sha256.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))
+            &&pin.schema_version==1&&!pin.preparation_only&&!pin.serialized_facts_grant_source_admission
+            &&pin.header.inventory_complete,"complete pinned cached baseline metadata required");
+        let work=scratch.lease_ram(scratch.budget().record_bytes.checked_mul(8)
+            .context("cached-fact working RAM overflow")?)?;
+        let mut pages=std::collections::BTreeMap::<std::path::PathBuf,SourcePagePin>::new();
+        fn leaves(value:serde_json::Value,out:&mut std::collections::BTreeMap<std::path::PathBuf,SourcePagePin>)->Result<()> {
+            match value {
+                serde_json::Value::Object(map)=>{
+                    if map.contains_key("file_sha256")&&map.contains_key("logical_sha256")&&map.contains_key("wire_bytes")&&map.contains_key("chunk_bytes") {
+                        let pin:SourcePagePin=serde_json::from_value(serde_json::Value::Object(map))?;
+                        if let Some(old)=out.get(&pin.path){ensure!(old==&pin,"conflicting cached-fact page pins");}
+                        else{out.insert(pin.path.clone(),pin);}return Ok(());
+                    }
+                    for (_,value) in map{leaves(value,out)?;}
+                }
+                serde_json::Value::Array(values)=>for value in values{leaves(value,out)?;},
+                _=>{}
+            }Ok(())
+        }
+        leaves(serde_json::to_value(pin)?,&mut pages)?;
+        let retained=pages.values().try_fold(4096u64,|sum,pin|
+            sum.checked_add(8192)
+                .and_then(|n|n.checked_add((pin.path.as_os_str().as_encoded_bytes().len() as u64).checked_mul(8)?))
+                .context("cached-fact retained owner RAM overflow"))?;
+        let owners_ram=scratch.lease_ram(retained)?;
+        let mut owners=Vec::new();owners.try_reserve_exact(pages.len())?;
+        for pin in pages.values(){
+            let owner=group.arena().retained_artifact(&pin.path)?;
+            ensure!(owner.same_group(group)&&owner.sha256()==pin.file_sha256
+                &&owner.wire_bytes()==pin.wire_bytes,"cached-fact page lacks its exact accounted owner");
+            owners.push(owner);
+        }
+        let bitmap=paged_storage::PagedMetadataRange::open(&pin.assemblies.mft_bitmap,scratch)?;
+        let files=PagedRawFiles::from_live_bitmap(pin.header.clone(),&pin.files,Box::new(bitmap),&pin.extensions,scratch)?;
+        let directories=PagedNamespaceDomain::open(&pin.namespace,scratch)?;
+        ensure!(crate::ntfs_namespace::reconcile_windows_domains(&files,&directories)?==pin.namespace_entries,
+            "cached-fact namespace coverage differs");
+        let value=Self{
+            files,directories,security_input:PagedSecurityInput::open(&pin.security_capture,scratch)?,
+            security:crate::ntfs_security::PagedReconciliation::open_cached(&pin.security,scratch)?,
+            allocation:pin.allocation.clone(),
+            assemblies:[SortedRecordStore::open(&pin.assemblies.assemblies,scratch)?,
+                SortedRecordStore::open(&pin.assemblies.consumed_extensions,scratch)?,
+                SortedRecordStore::open(&pin.assemblies.physical_extensions,scratch)?],
+            ownership:[SortedRecordStore::open(&pin.allocation.physical_ownership,scratch)?,
+                SortedRecordStore::open(&pin.allocation.logical_ownership,scratch)?],
+            blockers:SortedRecordStore::open(&pin.blockers,scratch)?,pin:pin.clone(),scratch:scratch.clone(),
+            purpose:InspectionPurpose::CachedFacts,_closed:ClosedSource,
+            _fact_artifacts:owners,_fact_artifact_ram:Some(owners_ram),
+        };
+        ensure!(value.canonical_sha256()?==inspection_sha256,"cached-fact canonical source pin differs");
+        value.revalidate()?;drop(work);Ok(value)
+    }
+    pub(crate) fn is_cached_facts(&self)->bool{self.purpose==InspectionPurpose::CachedFacts}
     /// Cold metadata is promoted only by a NEW SDK byte-continuity proof bound
     /// to the actual fresh source FileObject. Saved inventory flags are not an
     /// issuer and this path does not deserialize any source/native admission.
@@ -98,6 +166,7 @@ impl PagedInspection {
             blockers: SortedRecordStore::open(&pin.blockers, scratch)?,
             pin: pin.clone(), scratch: scratch.clone(),
             purpose: InspectionPurpose::WindowsConversion, _closed: ClosedSource,
+            _fact_artifacts: Vec::new(), _fact_artifact_ram: None,
         };
         ensure!(value.canonical_sha256()? == hex::encode(continuity.inspection_sha256()),
             "cached raw canonical source pin differs from actual byte-continuity proof");
@@ -911,6 +980,7 @@ fn inspect_paged_internal<R: Read + Seek>(
         scratch,
         purpose,
         _closed: ClosedSource,
+        _fact_artifacts: Vec::new(), _fact_artifact_ram: None,
     };
     value.revalidate()?;
     let _ = value.canonical_sha256()?;

@@ -65,6 +65,8 @@ pub(super) struct OpenedSourceCache {
     pub(super) artifacts: Vec<ArtifactLease>,
     pub(super) fresh_complete_streams_verified: u64,
     pub(super) fresh_complete_payload_bytes: u64,
+    pub(super) refresh: Option<super::cache_refresh::UserSemanticRefresh>,
+    pub(super) auxiliary_group: ArtifactGroupPermit,
     pub(super) _memory: SourceRamLease,
 }
 
@@ -119,8 +121,9 @@ impl SourceCacheOriginPins {
         source: &mut GeneralFrozenPartition,
         budget: ResourceBudget,
         scratch: &SourceScratch,
-        source_group: &ArtifactGroupPermit,
+        _source_group: &ArtifactGroupPermit,
         arena: &ArtifactArena,
+        output: &Path,
         expected_origin: [u8; 32],
         events: &mut Vec<NativeEvent>,
     ) -> Result<(PagedInspection, InspectionReadCoverage, OpenedSourceCache)> {
@@ -140,6 +143,10 @@ impl SourceCacheOriginPins {
                 .and_then(|n| n.checked_add(16 * 1024 * 1024))
                 .context("cache cold-open RAM overflow")?,
         )?;
+        // Keep the authenticated prior snapshot and the new raw inspector in
+        // separate already-budgeted shares; importing is not a second copy.
+        let auxiliary_group=arena.reserve_group(ArtifactGroup::Auxiliary,scratch.budget().scratch_bytes)?;
+        let cached_scratch=SourceScratch::new_auxiliary_in_arena(scratch.budget(),auxiliary_group.clone())?;
         let mut artifacts = Vec::new();
         let mut adopted = BTreeMap::<PathBuf, (String, u64)>::new();
         let mut adopt = |pin: &SourceCacheFilePin| -> Result<()> {
@@ -150,7 +157,7 @@ impl SourceCacheOriginPins {
                 );
                 return Ok(());
             }
-            let lease = source_group.adopt_existing(&pin.path, &pin.sha256, pin.bytes)?;
+            let lease = auxiliary_group.adopt_existing(&pin.path, &pin.sha256, pin.bytes)?;
             ensure!(
                 lease.wire_bytes() == pin.bytes,
                 "cache origin actual byte length differs"
@@ -270,30 +277,51 @@ impl SourceCacheOriginPins {
             })?;
         }
         drop(adopt);
-        let fingerprint = frozen.fingerprint.open(scratch)?;
+        let previous_fingerprint = frozen.fingerprint.open(&cached_scratch)?;
         let payer = SourceNativeMemory(arena.clone());
-        let continuity = source.verify_cached_source_continuity(
-            &fingerprint,
+        let exact = source.verify_cached_source_continuity(
+            &previous_fingerprint,
             digest(&frozen.source_sha256)?,
             expected_origin,
             &payer,
             events,
-        )?;
-        let raw = PagedInspection::open_cached_exact(
-            &raw_pin,
-            source,
-            &continuity,
-            expected_origin,
-            scratch,
-            events,
-        )?;
+        );
+        let (raw,reads,fingerprint,continuity,refresh)=match exact {
+            Ok(continuity)=>{
+                let raw=PagedInspection::open_cached_exact(&raw_pin,source,&continuity,
+                    expected_origin,&cached_scratch,events)?;
+                let reads=InspectionReadCoverage::open_cached_revalidated(coverage,&continuity,
+                    &cached_scratch,source.byte_len())?;
+                (raw,reads,previous_fingerprint,continuity,None)
+            }
+            Err(error)=>{
+                if error.get_ref().and_then(|e|e.downcast_ref::<n2r_win32::SourceCacheFingerprintMismatch>()).is_none(){
+                    return Err(error.into());
+                }
+                println!("Saved NTFS metadata changed; refreshing raw metadata and checking every saved user object.");
+                std::io::stdout().flush()?;
+                let old=PagedInspection::open_cached_facts(&raw_pin,&inspection,&auxiliary_group,&cached_scratch)?;
+                let length=source.byte_len();
+                let (raw,reads)=fp::inspect_recorded_with_layout_scope(source,length,budget,self.policy,
+                    &output.join("refreshed-source"),scratch,self.source.layout_profile)?;
+                let refresh=super::cache_refresh::compare_user_semantics(old,&raw,&self.source,digest(&self.native_pages.sha256)?,
+                    &output.join("user-semantic-refresh"),&cached_scratch)?;
+                let fingerprint=PagedSourceFingerprint::for_inspection(&raw,length,self.policy,
+                    &output.join("refreshed-fingerprint"))?;
+                fingerprint.validate_inspection_reads(&reads)?;
+                let current=digest(&fingerprint.hash(source)?)?;
+                let continuity=source.verify_cached_source_continuity(&fingerprint,current,
+                    expected_origin,&payer,events)?;
+                (raw,reads,fingerprint,continuity,Some(refresh))
+            }
+        };
         // Extent policy can omit initialized payload from its fingerprint
         // while an old small/otherwise-ineligible stream still claims a
         // COMPLETE logical digest. Renew those claims from actual bytes.
         let mut fresh_complete_streams_verified = 0u64;
         let mut fresh_complete_payload_bytes = 0u64;
         let mut buffer = vec![0; 1024 * 1024];
-        for ordinal in 0..raw.file_count() {
+        for ordinal in 0..if refresh.is_some(){0}else{raw.file_count()} {
             let file = raw.file(ordinal)?;
             if file.is_directory
                 || file.is_metadata
@@ -360,12 +388,6 @@ impl SourceCacheOriginPins {
             }
         }
         drop(buffer);
-        let reads = InspectionReadCoverage::open_cached_revalidated(
-            coverage,
-            &continuity,
-            scratch,
-            source.byte_len(),
-        )?;
         fingerprint.validate_inspection_reads(&reads)?;
         // Cold decoders now carry their own actual page/cache leases. Keep
         // only registry/path ownership plus one small origin-state allowance.
@@ -386,6 +408,8 @@ impl SourceCacheOriginPins {
                 artifacts,
                 fresh_complete_streams_verified,
                 fresh_complete_payload_bytes,
+                refresh,
+                auxiliary_group,
                 _memory: memory,
             },
         ))

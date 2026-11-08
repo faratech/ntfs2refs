@@ -112,6 +112,8 @@ pub(crate) mod partition;
 mod raw_target_security;
 #[path = "resource_cache.rs"]
 pub mod cache;
+#[path = "resource_cache_refresh.rs"]
+pub(crate) mod cache_refresh;
 pub use cache::{SourceCacheFilePin, SourceCacheOriginPins};
 pub struct ResourceSourceContext {
     early_preparation_guard: Option<crate::resource_preparation::early_guard::EarlyPreparationGuard>,
@@ -920,7 +922,7 @@ impl ResourceSourceContext {
         let (raw, read_coverage) = if let Some((origin,pin))=cached_origin {
             *phase="source-cache-exact-byte-revalidation";
             let (arena,group,_)=groups.as_ref().context("cache reopening requires actual source/native arena permits")?;
-            let (raw,coverage,opened)=origin.open_raw(&mut source,budget,&scratch,group,arena,pin,events)?;
+            let (raw,coverage,opened)=origin.open_raw(&mut source,budget,&scratch,group,arena,output,pin,events)?;
             reopened_cache=Some(opened);(raw,coverage)
         } else { fp::inspect_recorded_with_layout_scope(
             &mut source,
@@ -933,9 +935,11 @@ impl ResourceSourceContext {
         )? };
         if let Some(cache)=reopened_cache.as_ref(){
             save(output,"source-cache-revalidation.json",&serde_json::json!({
-                "kind":"fresh-exact-source-cache-revalidation-v1",
+                "kind":"fresh-source-cache-revalidation-v2",
                 "origin_sha256":hex::encode(cache.origin_sha256),
-                "raw_inspection_origin":"cached_revalidated",
+                "raw_inspection_origin":if cache.refresh.is_some(){"fresh_metadata_with_revalidated_cached_native_rows"}else{"cached_revalidated"},
+                "metadata_refresh_performed":cache.refresh.is_some(),
+                "user_semantic_refresh":cache.refresh.as_ref().map(|refresh|refresh.report()),
                 "fresh_cached_complete_streams_verified":cache.fresh_complete_streams_verified,
                 "fresh_cached_complete_payload_bytes":cache.fresh_complete_payload_bytes,
                 "old_owner_or_guard_reused":false,"new_source_freeze_observed":true,
@@ -1063,9 +1067,13 @@ impl ResourceSourceContext {
             let artifact=native_group.adopt_existing(&cache.native.path,&cache.native.sha256,cache.native.bytes)?;
             ensure!(artifact.wire_bytes()==cache.native.bytes,"cached native file byte count differs");
             let proof=cache.continuity.take().context("cached source continuity owner already consumed")?;
-            let observed=native_batch(events,|batch| source.observe_revalidated_cached_ntfs_files_with_memory(
+            let observed=if let Some(refresh)=cache.refresh.as_ref(){
+                native_batch(events,|batch|source.observe_metadata_refreshed_cached_ntfs_files_with_memory(
+                    &selectors,&cache.native.path,&cache.native.sha256,admission.native_observation_budget()?,
+                    proof,&fingerprint,refresh,Arc::new(SourceNativeMemory(arena.clone())),batch))?
+            }else{native_batch(events,|batch| source.observe_revalidated_cached_ntfs_files_with_memory(
                 &selectors,&cache.native.path,&cache.native.sha256,admission.native_observation_budget()?,
-                proof,&fingerprint,Arc::new(SourceNativeMemory(arena.clone())),batch))?;
+                proof,&fingerprint,Arc::new(SourceNativeMemory(arena.clone())),batch))?};
             cached_native_artifact=Some(artifact);observed
         }else{native_batch(events, |batch| if let Some((arena, _, _)) = &groups {
             source.observe_ntfs_files_paged_domain_with_memory(
@@ -1676,6 +1684,12 @@ impl ResourceSourceContext {
             certificate_issued: false,
             execution_authorized: false,
         }
+    }
+    pub(crate) fn cache_metadata_refreshed(&self)->bool {
+        self._cache_artifacts.as_ref().is_some_and(|cache|cache.refresh.is_some())
+    }
+    pub(crate) fn cached_auxiliary_group(&self)->Option<ArtifactGroupPermit> {
+        self._cache_artifacts.as_ref().map(|cache|cache.auxiliary_group.clone())
     }
     pub fn require_source_evidence(&self) -> Result<()> {
         let failed: Vec<_> = self

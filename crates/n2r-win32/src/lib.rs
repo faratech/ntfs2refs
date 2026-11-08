@@ -135,6 +135,7 @@ pub use native::{PartitionClosedJournalObservation, PartitionHandoffWitness,
 pub use native::{
     BorrowedPagedWriter, DriveLetterRestore, GeneralAllocationFreezeWitness, GeneralAllocationPhase,
     SourceCacheContinuity, SourceCacheFingerprintDomain, NativeSourceObservationOrigin,
+    SourceCacheFingerprintMismatch, SourceCacheRefreshDomain, SourceCacheRefreshRow,
     GeneralAllocationSnapshot, GeneralDiskState, GeneralExclusiveRecoveryTarget,
     GeneralFreezeObservation, GeneralFrozenLane, GeneralFrozenPartition, GeneralJournalReadView,
     GeneralJournaledPartition, GeneralLiveConvertedObservation, GeneralLiveNtfsObservation, GeneralLivePagedNtfsObservation,

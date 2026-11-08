@@ -78,6 +78,7 @@ pub(crate) struct ResourcePreparationRequest {
 
 /// Immutable cached inputs describe facts. Fresh source continuity and native
 /// cold-shadow adoption below must issue this invocation's actual owners.
+#[derive(Clone)]
 pub(crate) struct ResumePreparation {
     pub arena_root: PathBuf,
     pub arena: ArtifactArena,
@@ -522,12 +523,14 @@ where
             .pair
             .validate_with_resource_profile(profile.native_profile())?;
         let source_budget = SourceMetadataBudget::from_resource_budget(request.resources)?;
-        let aux_group =
-            arena.reserve_group(ArtifactGroup::Auxiliary, source_budget.scratch_bytes)?;
+        let aux_group = if let Some(group)=context.cached_auxiliary_group(){
+            ensure!(group.arena().same_arena(&arena),"cached auxiliary owner differs");
+            arena.retained_group(ArtifactGroup::Auxiliary,source_budget.scratch_bytes)?
+        }else{arena.reserve_group(ArtifactGroup::Auxiliary, source_budget.scratch_bytes)?};
         let aux_scratch = SourceScratch::new_auxiliary_in_arena(source_budget, aux_group)?;
         let projection_dir = output.join("projection");
         std::fs::create_dir(&projection_dir)?;
-        let projection = if resume.is_none() {
+        let projection = if resume.is_none() || context.cache_metadata_refreshed() {
             Some(context.derive_projection(admission, &projection_dir, &aux_scratch)?)
         } else { None };
         if let Some(projection) = projection.as_ref() {
@@ -545,7 +548,7 @@ where
             ArtifactGroup::Expected,
             admission.expected_page_budget()?.max_file_bytes,
         )?;
-        let expected = if let Some(saved) = resume {
+        let expected = if let Some(saved) = resume.filter(|_| !context.cache_metadata_refreshed()) {
             ensure!(
                 saved.expected.sha256 == hex::encode(saved.shadow_origin.expected_pages_sha256),
                 "cached expected and recovered shadow origin differ"
@@ -579,6 +582,18 @@ where
         let _expected_seal = expected_group.seal()?;
         expected.require_shared_memory(&arena)?;
         expected.require_resource_owner(admission)?;
+        // A refresh changes the source-bound expected header, never the
+        // admitted user tree. Carry the new metadata artifact into this epoch
+        // while the original partial shadow is adopted rather than recreated.
+        let effective_resume=resume.map(|saved|->Result<ResumePreparation>{
+            let mut current=saved.clone();
+            let artifact=expected.artifact_lease().context("resumed expected actual owner absent")?;
+            current.expected=crate::general_source_admission::resource::SourceCacheFilePin{
+                path:artifact.path().to_path_buf(),sha256:expected.file_sha256().to_owned(),bytes:expected.byte_len()};
+            current.shadow_origin.expected_pages_sha256=hex::decode(expected.file_sha256())?
+                .try_into().map_err(|_|anyhow::anyhow!("expected digest width differs"))?;
+            Ok(current)
+        }).transpose()?;
         let alias_inputs = context
             .windows_aliases()
             .map(|owner| {
@@ -620,7 +635,7 @@ where
         } else {
             None
         };
-        let mut resume_checkpoints = resume.map(|saved| {
+        let mut resume_checkpoints = effective_resume.as_ref().map(|saved| {
             resume_checkpoint::Checkpoints::create(saved, &context, &expected,
                 &request, &locator_group, output)
         }).transpose()?;
@@ -640,7 +655,7 @@ where
 
         // Recovery acquires fresh native ownership of the existing tree. It
         // never calls the allocator or recreates the shadow's files.
-        let (mut private, placement) = if let Some(saved) = resume {
+        let (mut private, placement) = if let Some(saved) = effective_resume.as_ref() {
             let (source, _) = context.source_and_inspection()?;
             let native_profile = profile.native_profile().context("native resource profile absent")?;
             let enrollment = n2r_win32::shadow_native::private_tree::enroll_with_resource_profile(

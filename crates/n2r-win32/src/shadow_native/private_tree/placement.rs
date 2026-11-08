@@ -1191,7 +1191,7 @@ pub(super) fn run_domain(
     max_moves: usize,
 ) -> io::Result<serde_json::Value> {
     let limits = PlacementLimits::legacy(tree.pair.shadow.identity.partition_bytes, max_moves)?;
-    run_domain_inner(tree, input, max_move_bytes, max_moves, limits, None)
+    run_domain_inner(tree, input, max_move_bytes, max_moves, limits, None, None)
 }
 
 pub(super) fn run_resource_domain(
@@ -1201,6 +1201,8 @@ pub(super) fn run_resource_domain(
     max_moves: usize,
     sink: &mut dyn PlacementEvidenceSink,
 ) -> io::Result<ResourcePlacementReport> {
+    tree.require_dedicated_shadow_boundary()?;
+    let result = (|| {
     let admission = tree
         .metadata_resource_admission
         .ok_or_else(|| invalid("actual resource private-tree admission absent"))?;
@@ -1237,6 +1239,7 @@ pub(super) fn run_resource_domain(
         limits.moves,
         limits,
         Some(sink),
+        None,
     )?;
     match ResourcePlacementReport::new(value, report_memory) {
         Ok(report) => {
@@ -1250,6 +1253,108 @@ pub(super) fn run_resource_domain(
             Err(error)
         }
     }
+    })();
+    let closing = tree.require_dedicated_shadow_boundary();
+    match (result, closing) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Err(boundary)) => Err(io::Error::new(error.kind(),
+            format!("{error}; dedicated shadow placement closing roles also failed: {boundary}"))),
+        (Err(error), _) | (_, Err(error)) => Err(error),
+    }
+}
+
+/// Additional entry point requires a freshly issued native recovered origin;
+/// the fresh constructor's single-attempt checks above remain unchanged.
+pub(super) fn run_recovered_resource_domain(
+    tree:&mut PrivateTree, input:&impl InputDomain,
+    origin:&recovery::RecoveredOrigin, sink:&mut dyn PlacementEvidenceSink,
+) -> io::Result<ResourcePlacementReport> {
+    origin.require_tree(tree)?;
+    tree.require_dedicated_shadow_boundary()?;
+    let result=(|| {
+        let admission=tree.metadata_resource_admission.ok_or_else(||invalid("recovered admission absent"))?;
+        input.require_resource_metadata(admission)?;
+        let (bytes,moves)=origin.remaining();
+        let limits=PlacementLimits::resource(admission,tree.pair.shadow.identity.partition_bytes,bytes,moves,sink.maximum_bytes())?;
+        if tree.files.values().any(|f|!f.resource_placement_enabled()) {
+            return Err(invalid("recovered file lacks fresh native map/resource owner"));
+        }
+        let payer=tree.memory.as_ref().ok_or_else(||invalid("recovered payer absent"))?.payer();
+        let report_memory=payer.reserve(2*1024*1024)?;
+        let mut value=run_domain_inner(tree,input,bytes,limits.moves,limits,Some(sink),Some(origin))?;
+        value["recovered_origin"]=origin.receipt();
+        let report=ResourcePlacementReport::new(value,report_memory)?;
+        tree.placement_complete=true;
+        tree.placement_progress["placement_complete"]=true.into();
+        Ok(report)
+    })();
+    let closing=tree.require_dedicated_shadow_boundary();
+    match (result,closing) {
+        (Ok(report),Ok(()))=>Ok(report),
+        (Err(error),Err(boundary))=>Err(io::Error::new(error.kind(),format!("{error}; recovered closing roles also failed: {boundary}"))),
+        (Err(error),_)|(_,Err(error))=>{tree.placement_complete=false;Err(error)},
+    }
+}
+
+/// Subtract only exact current logical-to-physical matches. Occupied ranges
+/// belonging to another coordinate remain work for the existing planner.
+fn unfinished_runs(file:&unwritten::PrivatePlaceholder, run:&SourceRun, maximum:usize)->io::Result<Vec<SourceRun>> {
+    let start=run.logical_offset;
+    let end=start.checked_add(run.length).ok_or_else(||invalid("recovered desired logical range overflow"))?;
+    let wanted=run.physical_offset.ok_or_else(||invalid("recovered desired physical range absent"))?;
+    let mut cursor=start;
+    let mut out=Vec::new();
+    for &(v,l,n) in file.tracked_mappings() {
+        let a=(v*4096).max(start); let b=((v+u64::from(n))*4096).min(end);
+        if a>=b || l*4096+a-v*4096 != wanted+a-start {continue;}
+        if a>cursor {
+            if out.len()==maximum{return Err(invalid("recovered remaining-range index exhausted"));}
+            out.push(SourceRun {logical_offset:cursor,physical_offset:Some(wanted+cursor-start),length:a-cursor});
+        }
+        cursor=cursor.max(b);
+    }
+    if cursor<end {
+        if out.len()==maximum{return Err(invalid("recovered remaining-range index exhausted"));}
+        out.push(SourceRun {logical_offset:cursor,physical_offset:Some(wanted+cursor-start),length:end-cursor});
+    }
+    Ok(out)
+}
+
+/// Native audit of complete CURRENT retrievals against BOTH full bitmaps.
+/// Bitmap occupancy does not create ownership: every range came from a held
+/// recovered file's own complete retrieval capture, and aliases refuse.
+pub(super) fn audit_recovered_maps(tree:&PrivateTree,bytes:u64,moves:usize)->io::Result<()> {
+    let admission=tree.metadata_resource_admission.ok_or_else(||invalid("recovered admission absent"))?;
+    let limits=PlacementLimits::resource(admission,tree.pair.shadow.identity.partition_bytes,bytes,moves,admission.budget.scratch_bytes)?;
+    let payer=tree.memory.as_ref().ok_or_else(||invalid("recovered audit payer absent"))?.payer();
+    let _memory=payer.reserve((limits.tracked as u64).checked_mul(128).and_then(|n|n.checked_add(65536)).ok_or_else(||invalid("recovered allocation audit RAM overflow"))?)?;
+    let (legacy,metadata)=views(tree,limits)?;
+    let partition=tree.pair.shadow.identity.partition_bytes;
+    let a=legacy.view(partition)?;let b=metadata.view(partition)?;
+    let mut ranges=Vec::new();
+    for target in tree.sparse_targets.values() {
+        let rounded=target.logical_length.checked_next_multiple_of(4096).ok_or_else(||invalid("recovered target EOF overflow"))?;
+        unwritten::recovery::require_zero_storage_vdl(&target.file,rounded)?;
+        if layout::u64_at(&info(&target.file,1,24)?,0)? != 0 {
+            return Err(invalid("recovered sparse target gained native allocation"));
+        }
+    }
+    for file in tree.files.values() {
+        file.check_placements()?;
+        for (lcn,clusters) in file.current_allocated_ranges()? {
+            if clusters==0 || ranges.len()==limits.tracked {return Err(invalid("recovered allocation range bound exhausted"));}
+            let aa=a.candidate(lcn*4096,clusters*4096)?;
+            let bb=b.candidate(lcn*4096,clusters*4096)?;
+            if aa.allocated_clusters!=clusters || bb.allocated_clusters!=clusters {
+                return Err(invalid("native recovered ownership is absent from a complete bitmap view"));
+            }
+            ranges.push((lcn,lcn+clusters));
+        }
+    }
+    ranges.sort_unstable();
+    if ranges.windows(2).any(|w|w[0].1>w[1].0) {return Err(invalid("native recovered files have overlapping physical ownership"));}
+    tree.require_source_excluded()?;
+    Ok(())
 }
 
 fn run_domain_inner(
@@ -1259,13 +1364,16 @@ fn run_domain_inner(
     max_moves: usize,
     limits: PlacementLimits,
     sink: Option<&mut dyn PlacementEvidenceSink>,
+    recovered: Option<&recovery::RecoveredOrigin>,
 ) -> io::Result<serde_json::Value> {
     tree.require_source_excluded()?;
     tree.require_bound_input_domain(input)?;
     if !limits.resource {
         validate_limits(max_move_bytes, max_moves)?;
     }
-    if tree.placement_started {
+    if let Some(origin) = recovered {
+        origin.require_tree(tree)?;
+    } else if tree.placement_started {
         return Err(invalid(
             "tree placement already attempted; preserve without retry",
         ));
@@ -1491,7 +1599,11 @@ fn run_domain_inner(
     for index in &indexes {
         let file = tree.file_by_slot_mut(*index)?;
         if limits.resource {
-            let file_holes = file.track_current_prefix_resource()?;
+            let file_holes = if recovered.is_some() {
+                file.recovered_holes_resource()?
+            } else {
+                file.track_current_prefix_resource()?
+            };
             counters.initial_tracked_extents = counters
                 .initial_tracked_extents
                 .checked_add(file.tracked_mappings().len())
@@ -1581,6 +1693,12 @@ fn run_domain_inner(
             });
         }
         for run in &desired[index] {
+            let remaining;
+            let runs = if recovered.is_some() {
+                remaining = unfinished_runs(file, run, limits.tracked)?;
+                remaining.as_slice()
+            } else { std::slice::from_ref(run) };
+            for run in runs {
             eligible.push(shadow_evacuation::Extent {
                 file_index: u32::try_from(*index)
                     .map_err(|_| invalid("placement slot exceeds planner identity"))?,
@@ -1588,6 +1706,7 @@ fn run_domain_inner(
                 physical_offset: run.physical_offset.unwrap(),
                 length: run.length,
             });
+            }
         }
     }
     // Only initial ReFS runs can block a desired range: direct pieces sit at
@@ -1928,6 +2047,14 @@ fn run_domain_inner(
     let mut planner = resource::planner(&legacy, &metadata, partition, limits, payer.as_deref())?;
     for &index in &indexes {
         for run in &desired[&index] {
+            // Current ownership, never old FSCTL records, identifies pieces
+            // already at the exact desired logical/physical coordinates.
+            let remaining;
+            let runs = if recovered.is_some() {
+                remaining = unfinished_runs(tree.file_by_slot(index)?, run, limits.tracked)?;
+                remaining.as_slice()
+            } else { std::slice::from_ref(run) };
+            for run in runs {
             loop {
                 let Some(remaining) = max_moves.checked_sub(evidence.len()).filter(|v| *v > 0)
                 else {
@@ -2067,6 +2194,7 @@ fn run_domain_inner(
                 planner =
                     resource::planner(&legacy, &metadata, partition, limits, payer.as_deref())?;
                 counters.phase_bitmap_snapshots += 1;
+            }
             }
         }
     }

@@ -1012,12 +1012,45 @@ impl PagedExpectedTree {
         Self::open_owned_domain(
             path,
             file_sha256,
-            legacy_semantic_sha256,
+            Some(legacy_semantic_sha256),
             budget,
             semantic_byte_budget,
             resource_admission,
             memory.map(|(arena, artifact)| ExpectedMemoryOwner {
                 arena,
+                artifact: Some(artifact),
+                reopened: None,
+            }),
+        )
+    }
+
+    /// Revalidate an independently pinned legacy file whose semantic receipt
+    /// was never persisted. The complete typed domain derives that fact anew;
+    /// this does not issue source admission or recover an old runtime owner.
+    pub(crate) fn open_revalidated_with_resources_in_group(
+        path: &Path,
+        file_sha256: &str,
+        admission: n2r_win32::tree_resources::SourceResourceAdmission,
+        group: &crate::artifact_arena::ArtifactGroupPermit,
+        artifact: crate::artifact_arena::ArtifactLease,
+    ) -> Result<Self> {
+        admission.validate()?;
+        ensure!(
+            group.group() == crate::artifact_arena::ArtifactGroup::Expected
+                && group.arena().budget() == admission.budget
+                && artifact.same_group(group)
+                && artifact.sha256() == file_sha256,
+            "revalidated expected file/arena owner differs"
+        );
+        Self::open_owned_domain(
+            path,
+            file_sha256,
+            None,
+            admission.expected_page_budget()?,
+            admission.semantic_byte_budget(),
+            Some(admission),
+            Some(ExpectedMemoryOwner {
+                arena: group.arena().clone(),
                 artifact: Some(artifact),
                 reopened: None,
             }),
@@ -1045,7 +1078,7 @@ impl PagedExpectedTree {
         let tree = Self::open_owned_domain(
             Path::new(&snapshot.final_path),
             file_sha256,
-            semantic_sha256,
+            Some(semantic_sha256),
             admission.expected_page_budget()?,
             admission.semantic_byte_budget(),
             Some(admission),
@@ -1062,7 +1095,7 @@ impl PagedExpectedTree {
     fn open_owned_domain(
         path: &Path,
         file_sha256: &str,
-        legacy_semantic_sha256: &str,
+        legacy_semantic_sha256: Option<&str>,
         budget: PageBudget,
         semantic_byte_budget: u64,
         resource_admission: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
@@ -1073,7 +1106,7 @@ impl PagedExpectedTree {
             "invalid expected semantic byte budget"
         );
         ensure!(
-            canonical_sha(file_sha256) && canonical_sha(legacy_semantic_sha256),
+            canonical_sha(file_sha256) && legacy_semantic_sha256.is_none_or(canonical_sha),
             "canonical file and legacy expectation SHA-256 pins required"
         );
         // Pay the page cache, immutable path/snapshot state and read/hash
@@ -1259,7 +1292,7 @@ impl PagedExpectedTree {
             header,
             counts: ExpectedTreePageCounts::default(),
             file_sha256: file_sha256.into(),
-            semantic_sha256: legacy_semantic_sha256.into(),
+            semantic_sha256: legacy_semantic_sha256.unwrap_or_default().into(),
             budget,
             semantic_byte_budget,
             directory,
@@ -1280,10 +1313,12 @@ impl PagedExpectedTree {
                 counts: Some(&counts),
             },
         )?;
+        let derived_semantic_sha256 = semantic.finish();
         ensure!(
-            semantic.finish() == legacy_semantic_sha256,
+            legacy_semantic_sha256.is_none_or(|expected| derived_semantic_sha256 == expected),
             "paged objects do not reproduce the pinned legacy expectation JSON"
         );
+        view.semantic_sha256 = derived_semantic_sha256;
         view.counts = counts.get();
         ensure!(
             view.counts.objects == view.header.total_objects,

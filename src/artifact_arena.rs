@@ -7,7 +7,7 @@ use n2r_win32::{
     tree_resources::ResourceBudget,
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
     io::{Seek, SeekFrom},
     os::windows::fs::{MetadataExt, OpenOptionsExt},
@@ -73,6 +73,9 @@ struct State {
     // The same immutable verified snapshots previously folded in check_free.
     // Updated only with their installation/removal under this mutex.
     verified_allocated_bytes: u64,
+    // A reopened file must not earn allocation credit twice through spelling
+    // aliases. This is keyed by actual held file identity, never a pathname.
+    verified_identities: BTreeSet<(u64, [u8; 16])>,
     allocation_poisoned: bool,
     overhead: u64,
     index_bytes: u64,
@@ -210,18 +213,29 @@ impl State {
             !self.allocation_poisoned,
             "artifact allocation ledger is poisoned"
         );
+        let mut identities = 0usize;
         let totals = self
             .entries
             .values()
             .filter_map(|entry| entry.verified.as_ref())
             .try_fold((0, 0), |(wire, allocated), verified| {
+                ensure!(
+                    self.verified_identities.contains(&(
+                        verified.snapshot.volume_serial_number,
+                        verified.snapshot.file_id_128,
+                    )),
+                    "verified artifact identity is absent from registry"
+                );
+                identities = identities.checked_add(1)
+                    .context("artifact identity count overflow")?;
                 Ok::<_, anyhow::Error>((
                     add(wire, verified.snapshot.file_bytes)?,
                     add(allocated, verified.snapshot.allocation_bytes)?,
                 ))
             });
         match totals {
-            Ok((wire, allocated)) if allocated == self.verified_allocated_bytes => {
+            Ok((wire, allocated)) if allocated == self.verified_allocated_bytes
+                && identities == self.verified_identities.len() => {
                 Ok((wire, allocated))
             }
             Ok(_) => {
@@ -735,6 +749,26 @@ impl ArtifactArena {
         budget: ResourceBudget,
         excluded: &[GeneralDiskBinding],
     ) -> Result<Self> {
+        Self::new_inner(root, budget, excluded, false)
+    }
+    /// Reusing already allocated artifacts is not an allocation of their
+    /// bytes again. This constructor admits RAM and a total-volume ceiling;
+    /// every group still proves its unallocated promises against CURRENT
+    /// free space. Reopen cached groups before reserving new work.
+    /// No source, shadow or replay capability is issued here.
+    pub fn new_resuming(
+        root: &Path,
+        budget: ResourceBudget,
+        excluded: &[GeneralDiskBinding],
+    ) -> Result<Self> {
+        Self::new_inner(root, budget, excluded, true)
+    }
+    fn new_inner(
+        root: &Path,
+        budget: ResourceBudget,
+        excluded: &[GeneralDiskBinding],
+        resuming: bool,
+    ) -> Result<Self> {
         budget.validate()?;
         ensure!(
             root.is_absolute()
@@ -760,7 +794,15 @@ impl ArtifactArena {
             );
         }
         let available = n2r_win32::resource_native::observe_available_resources(root)?;
-        available.validate_budget(budget)?;
+        if resuming {
+            ensure!(
+                budget.ram_bytes <= available.available_physical_bytes
+                    && budget.scratch_bytes <= available.scratch_total_bytes,
+                "resume arena exceeds actual RAM or total working-volume capacity"
+            );
+        } else {
+            available.validate_budget(budget)?;
+        }
         Ok(Self(Arc::new(Inner {
             root: fs::canonicalize(root)?,
             root_guid,
@@ -772,6 +814,7 @@ impl ArtifactArena {
                 groups: BTreeMap::new(),
                 entries: BTreeMap::new(),
                 verified_allocated_bytes: 0,
+                verified_identities: BTreeSet::new(),
                 allocation_poisoned: false,
                 overhead: 0,
                 index_bytes: 0,
@@ -863,6 +906,26 @@ impl ArtifactArena {
     }
     pub fn same_arena(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
+    }
+    /// Borrow the actual still-live owner of an already charged immutable
+    /// artifact. This does not adopt a pathname or repeat its byte hash.
+    pub(crate) fn retained_artifact(&self, path: &Path) -> Result<ArtifactLease> {
+        let state = self.0.state.lock()
+            .map_err(|_| anyhow::anyhow!("artifact arena lock poisoned"))?;
+        ensure!(!state.allocation_poisoned && !state.ram_poisoned,
+            "retained artifact arena is poisoned");
+        let entry = state.entries.get(path).context("artifact is not accounted in this arena")?;
+        let verified = entry.verified.as_ref().context("artifact is not closed and verified")?;
+        let pin = entry.lease.upgrade().context("artifact has no surviving immutable owner")?;
+        ensure!(pin.snapshot == verified.snapshot && pin.sha256 == verified.sha256,
+            "retained artifact owner differs from accounting");
+        let artifact = ArtifactLease {
+            group: ArtifactGroupPermit { arena: self.clone(), group: entry.group },
+            path: path.to_path_buf(), pin,
+        };
+        drop(state);
+        artifact.pin.revalidate_identity()?;
+        Ok(artifact)
     }
     pub fn reserve_ram(&self, bytes: u64) -> Result<ArenaRamLease> {
         let mut state = self
@@ -1080,6 +1143,27 @@ impl ArtifactGroupPermit {
             .maximum)
     }
     pub fn reserve_file(&self, path: &Path, maximum: u64) -> Result<ArtifactPathPermit> {
+        self.reserve_path(path, maximum, false)
+    }
+    /// Reopen and account an existing ordinary immutable artifact in place.
+    /// The resulting lease owns a freshly hashed, deny-writer handle. It is
+    /// evidence storage ownership only, never old source/admission authority.
+    pub fn adopt_existing(
+        &self,
+        path: &Path,
+        expected_sha256: &str,
+        maximum: u64,
+    ) -> Result<ArtifactLease> {
+        let _identity_ram = self.arena.reserve_ram(256 * 1024)?;
+        self.reserve_path(path, maximum, true)?
+            .verify_closed(expected_sha256)
+    }
+    fn reserve_path(
+        &self,
+        path: &Path,
+        maximum: u64,
+        existing: bool,
+    ) -> Result<ArtifactPathPermit> {
         ensure!(
             self.group != ArtifactGroup::NativeJournal,
             "native journal quota is bound only through its actual native owner"
@@ -1136,9 +1220,18 @@ impl ArtifactGroupPermit {
                     && stem.as_bytes()[3].is_ascii_digit()),
             "ambiguous artifact leaf refused"
         );
-        ensure!(!path.exists(), "artifact destination already exists");
+        if existing {
+            let metadata = fs::symlink_metadata(&path)?;
+            ensure!(
+                metadata.is_file() && metadata.file_attributes() & 0x400 == 0,
+                "reopened artifact must be an existing ordinary file"
+            );
+        } else {
+            ensure!(!path.exists(), "artifact destination already exists");
+        }
         let memory = add(
-            768,
+            // Include a conservative node for the actual identity registry.
+            1280,
             (path.as_os_str().as_encoded_bytes().len() as u64)
                 .checked_mul(6)
                 .context("artifact path memory overflow")?,
@@ -1176,8 +1269,12 @@ impl ArtifactGroupPermit {
                     <= self.arena.0.budget.ram_bytes,
             "artifact registry RAM exhausted"
         );
-        self.arena
-            .check_free(&state, self.arena.0.allocation_slack)?;
+        // Adoption allocates no disk bytes. Its actual allocation is credited
+        // only after verify_file has hashed and pinned this exact file object.
+        if !existing {
+            self.arena
+                .check_free(&state, self.arena.0.allocation_slack)?;
+        }
         state.overhead = add(state.overhead, self.arena.0.allocation_slack)?;
         state.index_bytes = add(state.index_bytes, memory)?;
         let group = state.groups.get_mut(&self.group).unwrap();
@@ -1505,6 +1602,14 @@ impl ArtifactPathPermit {
             )
             .context("artifact reservation underflow")?;
         let next_files = add(group.files, 1)?;
+        let identity = (
+            verified.snapshot.volume_serial_number,
+            verified.snapshot.file_id_128,
+        );
+        ensure!(
+            !state.verified_identities.contains(&identity),
+            "artifact file object is already accounted through another path"
+        );
         // Publish the snapshot and its allocation credit in one infallible
         // commit after all prospective accounting has passed.
         state.overhead = next_overhead;
@@ -1516,6 +1621,7 @@ impl ArtifactPathPermit {
         entry.verified = Some(verified);
         entry.lease = Arc::downgrade(&pin);
         state.verified_allocated_bytes = next_allocated;
+        state.verified_identities.insert(identity);
         self.complete = true;
         Ok(ArtifactLease {
             group: self.group.clone(),
@@ -1695,6 +1801,13 @@ impl ArtifactLease {
                 entry.group == group.group && *snapshot == pin.snapshot,
                 "retired artifact differs from its credited snapshot"
             );
+            ensure!(
+                state.verified_identities.contains(&(
+                    snapshot.volume_serial_number,
+                    snapshot.file_id_128,
+                )),
+                "retired artifact identity was absent from accounting"
+            );
             let index = state
                 .index_bytes
                 .checked_sub(entry.registry_bytes)
@@ -1749,6 +1862,10 @@ impl ArtifactLease {
         state.index_bytes = index;
         state.overhead = overhead;
         state.verified_allocated_bytes = allocated;
+        state.verified_identities.remove(&(
+            pin.snapshot.volume_serial_number,
+            pin.snapshot.file_id_128,
+        ));
         let current_group = state.groups.get_mut(&group.group).unwrap();
         current_group.held = held;
         if current_group.sealed {

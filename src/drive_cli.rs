@@ -392,7 +392,8 @@ mod windows {
             let checksum = args
                 .recovery_sha256
                 .context("original recovery checksum required")?;
-            let has_preparation = directory.join("preparation-intent.json").exists();
+            let has_preparation = directory.join("preparation-intent.json").exists()
+                || directory.join("resume-intent.json").exists();
             // A matching external pin selects the early-cancellation protocol,
             // even if a later publication exists. Only its actual paired state
             // and native owner can authorize cancellation; absence of an

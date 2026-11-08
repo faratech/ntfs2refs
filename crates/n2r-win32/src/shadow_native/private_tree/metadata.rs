@@ -214,6 +214,31 @@ fn complete_domain_inner(
     security_placeholders: bool,
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
 ) -> io::Result<(serde_json::Value, Option<super::super::windows_aliases::VerifiedWindowsAliases>)> {
+    tree.require_dedicated_shadow_boundary()?;
+    let result = complete_domain_body(&mut tree, input, aliases, security_placeholders, same_security);
+    let closing = tree.require_dedicated_shadow_boundary();
+    let finish = if let Some(lease) = tree.dedicated_source.take() {
+        lease.finish(&tree.pair, &tree.source_before, &mut Vec::new())
+    } else { Ok(()) };
+    match (result, closing, finish) {
+        (Ok(value), Ok(()), Ok(())) => Ok(value),
+        (Err(error), closing, finish) => {
+            let mut detail = error.to_string();
+            if let Err(boundary) = closing { detail.push_str(&format!("; metadata closing roles failed: {boundary}")); }
+            if let Err(boundary) = finish { detail.push_str(&format!("; query-reference finish failed: {boundary}")); }
+            Err(io::Error::new(error.kind(), detail))
+        }
+        (_, Err(error), _) | (_, _, Err(error)) => Err(error),
+    }
+}
+
+fn complete_domain_body(
+    tree: &mut PrivateTree,
+    input: &impl InputDomain,
+    aliases: Option<&impl super::super::windows_aliases::WindowsAliasInputDomain>,
+    security_placeholders: bool,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+) -> io::Result<(serde_json::Value, Option<super::super::windows_aliases::VerifiedWindowsAliases>)> {
     tree.require_bound_input_domain(input)?;
     tree.require_source_excluded()?;
     // Pay for one bounded row's temporary stored/API views before allocating

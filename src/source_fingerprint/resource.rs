@@ -387,7 +387,13 @@ impl<R: Read + Seek> Seek for PagedReadRecorder<R> {
         result
     }
 }
-#[derive(Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag="kind",rename_all="snake_case")]
+pub enum InspectionReadCoverageOrigin {
+    FreshInspection,
+    CachedRevalidated { origin_sha256: String, source_fingerprint_sha256: String },
+}
+#[derive(Serialize, Deserialize)]
 pub struct ReadCoverageReport {
     pub source_inspection_sha256: String,
     pub successful_reads: u64,
@@ -397,12 +403,42 @@ pub struct ReadCoverageReport {
     pub ranges: RecordStorePin,
     pub actual_inspector_invocation_bound: bool,
     pub grants_source_admission: bool,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub origin: Option<InspectionReadCoverageOrigin>,
 }
 pub struct InspectionReadCoverage {
     coverage: UnboundReadCoverage,
     source_pin: String,
+    origin: InspectionReadCoverageOrigin,
 }
 impl InspectionReadCoverage {
+    pub(crate) fn open_cached_revalidated(
+        report: ReadCoverageReport,
+        continuity: &n2r_win32::SourceCacheContinuity,
+        scratch: &SourceScratch,
+        partition_bytes: u64,
+    ) -> Result<Self> {
+        ensure!(!report.grants_source_admission
+            && report.source_inspection_sha256 == hex::encode(continuity.inspection_sha256()),
+            "cached read coverage does not bind actual source continuity");
+        let store=SortedRecordStore::open(&report.ranges,scratch)?;
+        let mut previous=None;let mut bytes=0u64;
+        for ordinal in 0..store.len(){let row:Range=store.get(ordinal)?;
+            let row=span(row.offset,row.length,partition_bytes)?;
+            ensure!(store.key(ordinal)?==key(row.offset,0)
+                &&previous.is_none_or(|end|end<row.offset),"cached inspection-read range order/key differs");
+            bytes=bytes.checked_add(row.length).context("cached coverage total overflow")?;
+            previous=Some(row.end()?);
+        }
+        ensure!(store.len()==report.unique_ranges&&bytes==report.unique_bytes
+            &&report.returned_bytes>=bytes&&report.successful_reads>0,
+            "cached inspection-read coverage totals differ");
+        Ok(Self{coverage:UnboundReadCoverage{store,reads:report.successful_reads,
+            bytes:report.returned_bytes,length:partition_bytes},source_pin:report.source_inspection_sha256,
+            origin:InspectionReadCoverageOrigin::CachedRevalidated{
+                origin_sha256:hex::encode(continuity.origin_sha256()),
+                source_fingerprint_sha256:hex::encode(continuity.fingerprint_sha256())}})
+    }
     pub fn report(&self) -> Result<ReadCoverageReport> {
         Ok(ReadCoverageReport {
             source_inspection_sha256: self.source_pin.clone(),
@@ -411,8 +447,9 @@ impl InspectionReadCoverage {
             unique_ranges: self.coverage.store.len(),
             unique_bytes: range_bytes(&self.coverage.store)?,
             ranges: self.coverage.store.pin().clone(),
-            actual_inspector_invocation_bound: true,
+            actual_inspector_invocation_bound: matches!(self.origin, InspectionReadCoverageOrigin::FreshInspection),
             grants_source_admission: false,
+            origin: Some(self.origin.clone()),
         })
     }
 }
@@ -465,6 +502,7 @@ pub(crate) fn inspect_recorded_with_layout_scope<R: Read + Seek>(
         InspectionReadCoverage {
             coverage,
             source_pin,
+            origin: InspectionReadCoverageOrigin::FreshInspection,
         },
     ))
 }
@@ -486,7 +524,7 @@ pub struct FingerprintPins {
 }
 /// Serializable metadata for a cold reader. Reopening this does not recreate
 /// the original inspector, a live source certificate, or write authority.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ReopenedFingerprintPins {
     pub schema_version: u32,
@@ -631,6 +669,19 @@ pub struct PagedSourceFingerprint {
     covered: SortedRecordStore,
     omitted: SortedRecordStore,
     scratch: SourceScratch,
+}
+impl n2r_win32::SourceCacheFingerprintDomain for PagedSourceFingerprint {
+    fn partition_bytes(&self)->u64{self.pins.partition_bytes}
+    fn inspection_sha256(&self)->[u8;32]{
+        // Construction/open validated the canonical64-character digest.
+        let mut result=[0;32];if hex::decode_to_slice(&self.pins.source_inspection_sha256,&mut result).is_err(){return[0;32]};result
+    }
+    fn range_count(&self,omitted:bool)->u64{if omitted{self.omitted.len()}else{self.covered.len()}}
+    fn range(&self,omitted:bool,index:u64)->io::Result<(u64,u64)>{
+        let row:Range=if omitted{self.omitted.get(index)}else{self.covered.get(index)}.map_err(io::Error::other)?;
+        Ok((row.offset,row.length))
+    }
+    fn revalidate(&self)->io::Result<()>{PagedSourceFingerprint::revalidate(self).map_err(io::Error::other)}
 }
 #[derive(Deserialize)]
 struct PhysicalCoordinate {

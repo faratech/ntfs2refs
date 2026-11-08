@@ -101,3 +101,51 @@ impl PartitionShadowConstructionLease{
         self.expected.require(&self.pair,Some(&self.witness),events)
     }
 }
+
+/// Only the actual observed whole-disk Windows freeze can issue this lease.
+/// It owns a reduced-access SAME-FileObject query reference, never source I/O
+/// or availability authority. The native witness owns its actual RAM guard.
+pub(super) struct DedicatedShadowConstructionLease {
+    witness: native::NativeFrozenShadowSourceQueryWitness,
+}
+impl DedicatedShadowConstructionLease {
+    pub(super) fn begin(
+        source: &native::GeneralFrozenPartition,
+        pair: &GeneralSourceShadowBinding,
+        expected: &ConstructionSourceState,
+        payer: &dyn report_memory::ReportMemoryAccountant,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<Self> {
+        let ConstructionSourceState::Dedicated(state) = expected else {
+            return Err(invalid("dedicated shadow query lease requires original whole-disk state"));
+        };
+        if source.binding() != &pair.source {
+            return Err(invalid("dedicated shadow query source differs from actual enrollment"));
+        }
+        let witness = native::NativeFrozenShadowSourceQueryWitness::from_frozen(source, payer, events)?;
+        witness.require_binding_state(&pair.source, state)?;
+        Ok(Self { witness })
+    }
+    fn require_context(&self, pair: &GeneralSourceShadowBinding,
+        expected: &ConstructionSourceState) -> io::Result<()> {
+        let ConstructionSourceState::Dedicated(state) = expected else {
+            return Err(invalid("dedicated shadow source context changed scope"));
+        };
+        self.witness.require_binding_state(&pair.source, state)
+    }
+    pub(super) fn check_shadow_operation(&self, pair: &GeneralSourceShadowBinding,
+        expected: &ConstructionSourceState, events: &mut Vec<NativeEvent>) -> io::Result<()> {
+        self.require_context(pair, expected)?;
+        self.witness.revalidate_held(events)
+    }
+    pub(super) fn revalidate_boundary(&self, pair: &GeneralSourceShadowBinding,
+        expected: &ConstructionSourceState, events: &mut Vec<NativeEvent>) -> io::Result<()> {
+        self.require_context(pair, expected)?;
+        self.witness.revalidate_boundary(events)
+    }
+    pub(super) fn finish(self, pair: &GeneralSourceShadowBinding,
+        expected: &ConstructionSourceState, events: &mut Vec<NativeEvent>) -> io::Result<()> {
+        self.require_context(pair, expected)?;
+        self.witness.finish(events)
+    }
+}

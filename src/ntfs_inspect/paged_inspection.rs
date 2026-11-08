@@ -58,6 +58,63 @@ pub struct PagedInspection {
     _closed: ClosedSource,
 }
 impl PagedInspection {
+    /// Cold metadata is promoted only by a NEW SDK byte-continuity proof bound
+    /// to the actual fresh source FileObject. Saved inventory flags are not an
+    /// issuer and this path does not deserialize any source/native admission.
+    pub(crate) fn open_cached_exact(
+        pin: &SourceInspectionPin,
+        source: &n2r_win32::GeneralFrozenPartition,
+        continuity: &n2r_win32::SourceCacheContinuity,
+        origin: [u8; 32],
+        scratch: &SourceScratch,
+        events: &mut Vec<n2r_win32::NativeEvent>,
+    ) -> Result<Self> {
+        continuity.require_source(source, continuity.inspection_sha256(), origin, events)?;
+        let budget = scratch.budget();
+        ensure!(pin.schema_version == 1 && !pin.preparation_only
+            && !pin.serialized_facts_grant_source_admission && pin.header.inventory_complete
+            && pin.budget.ram_bytes == budget.ram_bytes
+            && pin.budget.scratch_bytes == budget.scratch_bytes
+            && pin.budget.page_bytes == budget.page_bytes
+            && pin.budget.record_bytes == budget.record_bytes
+            && source.binding().layout_profile == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows,
+            "cached raw source schema, purpose or original wire bounds differ");
+        let bitmap = paged_storage::PagedMetadataRange::open(&pin.assemblies.mft_bitmap, scratch)?;
+        let files = PagedRawFiles::from_live_bitmap(pin.header.clone(), &pin.files,
+            Box::new(bitmap), &pin.extensions, scratch)?;
+        let directories = PagedNamespaceDomain::open(&pin.namespace, scratch)?;
+        ensure!(crate::ntfs_namespace::reconcile_windows_domains(&files, &directories)? == pin.namespace_entries,
+            "cached raw namespace coverage differs");
+        let security_input = PagedSecurityInput::open(&pin.security_capture, scratch)?;
+        let security = crate::ntfs_security::PagedReconciliation::open_cached(&pin.security, scratch)?;
+        let value = Self {
+            files, directories, security_input, security,
+            allocation: pin.allocation.clone(),
+            assemblies: [SortedRecordStore::open(&pin.assemblies.assemblies, scratch)?,
+                SortedRecordStore::open(&pin.assemblies.consumed_extensions, scratch)?,
+                SortedRecordStore::open(&pin.assemblies.physical_extensions, scratch)?],
+            ownership: [SortedRecordStore::open(&pin.allocation.physical_ownership, scratch)?,
+                SortedRecordStore::open(&pin.allocation.logical_ownership, scratch)?],
+            blockers: SortedRecordStore::open(&pin.blockers, scratch)?,
+            pin: pin.clone(), scratch: scratch.clone(),
+            purpose: InspectionPurpose::WindowsConversion, _closed: ClosedSource,
+        };
+        ensure!(value.canonical_sha256()? == hex::encode(continuity.inspection_sha256()),
+            "cached raw canonical source pin differs from actual byte-continuity proof");
+        for ordinal in 0..value.file_count() {
+            let file = value.file(ordinal)?;
+            if (12..16).contains(&file.record_number) && file.names.is_empty()
+                && file.attributes.is_empty() && !file.is_directory && file.hard_link_count == 0 { continue; }
+            let binding = value.security.find_binding(file.record_number)?
+                .context("cached raw file lacks its security binding")?;
+            let id = file.standard_information.as_ref().and_then(|si| si.security_id).filter(|id| *id != 0);
+            ensure!(binding.sequence_number == file.sequence_number && binding.security_id == id,
+                "cached raw file/security binding differs");
+        }
+        value.revalidate()?;
+        continuity.require_source(source, continuity.inspection_sha256(), origin, events)?;
+        Ok(value)
+    }
     /// Complete planning metadata without separate logical DATA hashing. All
     /// source metadata, namespace, security and allocation joins still close.
     /// This runtime owner is explicitly excluded from source admission; the

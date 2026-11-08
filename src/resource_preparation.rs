@@ -32,6 +32,9 @@ mod placement_evidence;
 pub(crate) mod abort;
 pub(crate) mod early_guard;
 pub(crate) mod file_observer;
+pub(crate) mod resume_origin;
+pub(crate) mod resume_session_inputs;
+mod resume_checkpoint;
 #[path = "resource_partition_preparation.rs"]
 pub(crate) mod partition_preparation;
 #[path = "resource_partition_target.rs"]
@@ -71,6 +74,23 @@ pub(crate) struct ResourcePreparationRequest {
     pub minimum_free_bytes: u64,
     pub marker_profile: Option<SelectedMarkerProfile>,
     pub marker_use: MarkerStorageUse,
+}
+
+/// Immutable cached inputs describe facts. Fresh source continuity and native
+/// cold-shadow adoption below must issue this invocation's actual owners.
+pub(crate) struct ResumePreparation {
+    pub arena_root: PathBuf,
+    pub arena: ArtifactArena,
+    pub locator_group: crate::artifact_arena::ArtifactGroupPermit,
+    pub source: crate::general_source_admission::resource::SourceCacheOriginPins,
+    pub source_origin_sha256: [u8; 32],
+    pub expected: crate::general_source_admission::resource::SourceCacheFilePin,
+    pub shadow_origin: n2r_win32::shadow_native::private_tree::recovery::ExternalOriginPins,
+    pub prior_spend: n2r_win32::shadow_native::private_tree::recovery::PartialPlacementSpend,
+    pub placement_limits: n2r_win32::shadow_native::private_tree::recovery::RecoveryLimits,
+    pub legacy_terminal: Option<crate::general_source_admission::resource::SourceCacheFilePin>,
+    pub prior_resume_intent: Option<crate::preparation_resume::ArtifactPin>,
+    pub parent_resources: resume_origin::ParentPublicResources,
 }
 impl ResourcePreparationRequest {
     pub(crate) fn validate(&self) -> Result<()> {
@@ -330,10 +350,46 @@ pub(crate) fn create_external_output(
 }
 
 pub(crate) fn prepare_with<T, O, F>(
+    request: ResourcePreparationRequest,
+    output: &Path,
+    observer: &mut O,
+    consume: F,
+) -> Result<T>
+where
+    O: PreparationObserver,
+    F: for<'journal, 'domain, 'capture, 'proof, 'scope, 'expected> FnOnce(
+        ResourcePreparedConversion<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>,
+        &mut Vec<NativeEvent>,
+        &mut O,
+    ) -> Result<T>,
+{
+    prepare_with_mode(request, output, observer, consume, None)
+}
+
+pub(crate) fn resume_with<T, O, F>(
+    request: ResourcePreparationRequest,
+    output: &Path,
+    observer: &mut O,
+    resume: &ResumePreparation,
+    consume: F,
+) -> Result<T>
+where
+    O: PreparationObserver,
+    F: for<'journal, 'domain, 'capture, 'proof, 'scope, 'expected> FnOnce(
+        ResourcePreparedConversion<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>,
+        &mut Vec<NativeEvent>,
+        &mut O,
+    ) -> Result<T>,
+{
+    prepare_with_mode(request, output, observer, consume, Some(resume))
+}
+
+fn prepare_with_mode<T, O, F>(
     mut request: ResourcePreparationRequest,
     output: &Path,
     observer: &mut O,
     consume: F,
+    resume: Option<&ResumePreparation>,
 ) -> Result<T>
 where
     O: PreparationObserver,
@@ -357,17 +413,34 @@ where
     request.validate()?;
     let parent = output.parent().context("diagnostic output parent absent")?;
     let available = n2r_win32::resource_native::observe_available_resources(parent)?;
-    available.validate_budget(original_resources)?;
+    if let Some(saved) = resume {
+        ensure!(
+            saved.source.source == request.pair.source
+                && saved.source.resource_admission.budget == request.resources
+                && saved.source.policy == request.verification_policy
+                && original_resources.ram_bytes <= available.available_physical_bytes,
+            "resume source/wire profile or actual RAM differs"
+        );
+    } else {
+        available.validate_budget(original_resources)?;
+    }
     let _output_ancestry = create_external_output(output, &request.journal)?;
-    let arena = ArtifactArena::new(
-        output,
-        request.resources,
-        &[request.pair.source.clone(), request.pair.shadow.clone()],
-    )?;
+    let excluded = [request.pair.source.clone(), request.pair.shadow.clone()];
+    let arena = if let Some(saved) = resume {
+        ensure!(saved.arena.budget() == request.resources,
+            "resume inputs lost the actual newly admitted arena");
+        saved.arena.clone()
+    } else {
+        ArtifactArena::new(output, request.resources, &excluded)?
+    };
     if request.pair.source.layout_profile
         == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows
     {
-        arena.use_windows_native_allocation(&request.pair.source)?;
+        if let Some(saved) = resume {
+            arena.require_native_allocation(saved.source.resource_admission)?;
+        } else {
+            arena.use_windows_native_allocation(&request.pair.source)?;
+        }
     }
     ensure!(
         arena
@@ -383,8 +456,12 @@ where
             "source_security_expectations_changed":false,
         }))?;
     }
-    let locator_group =
-        arena.reserve_group(ArtifactGroup::RecoveryCopy, request.locator_arena_bytes)?;
+    let locator_group = if let Some(saved) = resume {
+        ensure!(saved.locator_group.group() == ArtifactGroup::RecoveryCopy
+            && saved.locator_group.arena().same_arena(&arena),
+            "resume locator group differs from actual arena");
+        saved.locator_group.clone()
+    } else { arena.reserve_group(ArtifactGroup::RecoveryCopy, request.locator_arena_bytes)? };
     events.phase("early-preparation-guard");
     let early_guard = early_guard::EarlyPreparationGuard::create(
         &request.pair,
@@ -412,7 +489,13 @@ where
     events.phase("source-preparation");
     let mut phase = "source-start";
     let restore_on_failure = events.observer.restore_source_on_pre_ap_failure();
-    let source_result = ResourceSourceContext::prepare_with_guard(
+    let source_result = if let Some(saved) = resume {
+        ResourceSourceContext::prepare_cached_exact_with_guard(
+            request.pair.source.clone(), request.resources, request.verification_policy,
+            &output.join("source"), &arena, &mut events, &mut phase,
+            restore_on_failure, early_guard, &saved.source, saved.source_origin_sha256,
+        )
+    } else { ResourceSourceContext::prepare_with_guard(
         request.pair.source.clone(),
         request.resources,
         request.verification_policy,
@@ -422,7 +505,7 @@ where
         &mut phase,
         restore_on_failure,
         Some(early_guard),
-    );
+    ) };
     events.phase(phase);
     let mut context = source_result?;
     let mut published: Option<(PathBuf, [u8; 32])> = None;
@@ -444,35 +527,55 @@ where
         let aux_scratch = SourceScratch::new_auxiliary_in_arena(source_budget, aux_group)?;
         let projection_dir = output.join("projection");
         std::fs::create_dir(&projection_dir)?;
-        let projection = context.derive_projection(admission, &projection_dir, &aux_scratch)?;
-        if let Some(report) = projection.windows_ea_normalization_report()? {
-            events.observer.note(&report)?;
-        }
-        if let Some(report) = projection.windows_txf_disposition_report()? {
-            events.observer.note(&report)?;
-        }
-        if let Some(report) = projection.windows_object_id_disposition_report()? {
-            events.observer.note(&report)?;
+        let projection = if resume.is_none() {
+            Some(context.derive_projection(admission, &projection_dir, &aux_scratch)?)
+        } else { None };
+        if let Some(projection) = projection.as_ref() {
+            if let Some(report) = projection.windows_ea_normalization_report()? {
+                events.observer.note(&report)?;
+            }
+            if let Some(report) = projection.windows_txf_disposition_report()? {
+                events.observer.note(&report)?;
+            }
+            if let Some(report) = projection.windows_object_id_disposition_report()? {
+                events.observer.note(&report)?;
+            }
         }
         let expected_group = arena.reserve_group(
             ArtifactGroup::Expected,
             admission.expected_page_budget()?.max_file_bytes,
         )?;
-        let expected_path = output.join("expected.pages");
-        let (receipt, artifact) = PagedExpectedTree::create_with_resources_in_group(
-            &projection,
-            &expected_path,
-            admission,
-            &expected_group,
-        )?;
-        let expected = PagedExpectedTree::open_with_resources_in_group(
-            &expected_path,
-            &receipt.file_sha256,
-            &receipt.semantic_sha256,
-            admission,
-            &expected_group,
-            artifact,
-        )?;
+        let expected = if let Some(saved) = resume {
+            ensure!(
+                saved.expected.sha256 == hex::encode(saved.shadow_origin.expected_pages_sha256),
+                "cached expected and recovered shadow origin differ"
+            );
+            let artifact = expected_group.adopt_existing(
+                &saved.expected.path, &saved.expected.sha256, saved.expected.bytes,
+            )?;
+            let expected = PagedExpectedTree::open_revalidated_with_resources_in_group(
+                &saved.expected.path, &saved.expected.sha256, admission,
+                &expected_group, artifact,
+            )?;
+            events.observer.note(&serde_json::json!({
+                "kind":"preparation-resume-expected-reused-v1",
+                "file_sha256":expected.file_sha256(),
+                "semantic_sha256":expected.semantic_sha256(),
+                "objects":expected.len(),"expected_recreated":false,
+                "source_write_authority":false,
+            }))?;
+            expected
+        } else {
+            let expected_path = output.join("expected.pages");
+            let (receipt, artifact) = PagedExpectedTree::create_with_resources_in_group(
+                projection.as_ref().context("fresh source projection absent")?,
+                &expected_path, admission, &expected_group,
+            )?;
+            PagedExpectedTree::open_with_resources_in_group(
+                &expected_path, &receipt.file_sha256, &receipt.semantic_sha256,
+                admission, &expected_group, artifact,
+            )?
+        };
         let _expected_seal = expected_group.seal()?;
         expected.require_shared_memory(&arena)?;
         expected.require_resource_owner(admission)?;
@@ -517,6 +620,10 @@ where
         } else {
             None
         };
+        let mut resume_checkpoints = resume.map(|saved| {
+            resume_checkpoint::Checkpoints::create(saved, &context, &expected,
+                &request, &locator_group, output)
+        }).transpose()?;
 
         // Placement and later target capture share one actual quota. Keep
         // every complete placement proof in its constructor-owned page files.
@@ -531,6 +638,41 @@ where
             placement_scratch,
         )?;
 
+        // Recovery acquires fresh native ownership of the existing tree. It
+        // never calls the allocator or recreates the shadow's files.
+        let (mut private, placement) = if let Some(saved) = resume {
+            let (source, _) = context.source_and_inspection()?;
+            let native_profile = profile.native_profile().context("native resource profile absent")?;
+            let enrollment = n2r_win32::shadow_native::private_tree::enroll_with_resource_profile(
+                source, &request.pair, native_profile,
+            )?;
+            let mut recovered = n2r_win32::shadow_native::private_tree::recovery::adopt_unwritten_domain(
+                enrollment, &inputs, native_profile,
+                Arc::new(ArenaReportMemory(arena.clone())),
+                saved.prior_spend, saved.placement_limits, saved.shadow_origin.clone(),
+            )?;
+            let observation = recovered.origin_observation();
+            events.observer.note(&observation)?;
+            let batch = resume_checkpoints.as_mut().map(|state| state.adopted(&observation)).transpose()?;
+            let placement = match recovered.place_remaining_domain(&inputs, &mut placement_evidence) {
+                Ok(report) => report,
+                Err(error) => {
+                    let progress = recovered.placement_progress();
+                    events.observer.note(&serde_json::json!({
+                        "kind":"resource-placement-refusal","resumed":true,
+                        "phase":progress.get("phase"),"counters":progress.get("counters"),
+                        "move_bytes_submitted":progress.get("move_bytes_submitted"),
+                        "refusal":progress.get("refusal"),
+                        "source_payload_writes":0,"conversion_authorized":false,
+                    }))?;
+                    return Err(error.into());
+                }
+            };
+            if let (Some(state), Some(batch)) = (resume_checkpoints.as_mut(), batch) {
+                state.placed(batch, &placement)?;
+            }
+            (recovered.into_placed_tree()?, placement)
+        } else {
         // Every native allocation uses this actual shared arena accountant.
         let mut private = {
             let (source, _) = context.source_and_inspection()?;
@@ -565,10 +707,13 @@ where
                 events.observer.note(&serde_json::json!({
                     "kind":"resource-placement-refusal", "phase":progress.get("phase"),
                     "counters":progress.get("counters"), "refusal":progress.get("refusal"),
+                    "move_bytes_submitted":progress.get("move_bytes_submitted"),
                     "source_payload_writes":0, "conversion_authorized":false,
                 }))?;
                 return Err(error.into());
             }
+        };
+        (private, placement)
         };
         events.observer.note(&serde_json::json!({
             "kind":"resource-placement-summary",
@@ -597,6 +742,9 @@ where
                 .observer
                 .note(&serde_json::to_value(&supply_receipt)?)?;
             bytes.finish()?;
+            if let Some(state) = resume_checkpoints.as_mut() {
+                state.stage(crate::preparation_resume::Stage::Payloads, "payloads-ready", &supply_receipt)?;
+            }
         }
         let verified_aliases = if let Some(aliases) = &alias_inputs {
             let compare = |a: &[u8], b: &[u8]| {
@@ -709,6 +857,13 @@ where
             },
         )?;
         events.checkpoint()?;
+        if let Some(state) = resume_checkpoints.as_mut() {
+            state.stage(crate::preparation_resume::Stage::Metadata, "protected-native-metadata-verified",
+                &serde_json::json!({"kind":"protected-native-target-capture-returned-v1",
+                    "expected_sha256":expected.file_sha256(),"source_inspection_sha256":context.inspection_sha256(),
+                    "shadow":request.pair.shadow,"source_write_authority":false}))?;
+            state.stage(crate::preparation_resume::Stage::Captured, "capture-ready", &proof.captured().summary())?;
+        }
         let capture_scratch =
             SourceScratch::new_auxiliary_in_arena(source_budget, capture_group.clone())?;
         let domain = ResourceJournalDomain::from_capture(
@@ -869,6 +1024,9 @@ where
             prepared_conversion.publication_path().to_path_buf(),
             publication_digest,
         ));
+        // Publication seals this arena. Its already-durable native guard
+        // delegation and the independent observer log route subsequent
+        // recovery; never allocate another checkpoint in the sealed arena.
         events.checkpoint()?;
         events.observer.published(
             prepared_conversion.publication_path(),

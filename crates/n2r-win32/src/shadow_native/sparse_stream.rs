@@ -32,6 +32,21 @@ pub(super) struct CarrierDirectory {
     id: Vec<u8>,
 }
 impl CarrierDirectory {
+    pub(in crate::shadow_native) fn reopen_unwritten(root: &str, component: String) -> io::Result<Self> {
+        if !component.strip_prefix("n2r-sparse-carriers-").is_some_and(|s|
+            s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+        {
+            return Err(invalid("recovered sparse carrier directory component differs"));
+        }
+        let path = format!("{}\\{component}", root.trim_end_matches('\\'));
+        let file = File::options().access_mode(0x011f01ff).share_mode(3)
+            .custom_flags(0x02200000).open(&path)?;
+        validate_open_type(&file, true)?;
+        private_tree::recovery::require_private_security(&file, true)?;
+        let id = info(&file, 18, 24)?;
+        Ok(Self { path, component, file, id })
+    }
+    pub(in crate::shadow_native) fn recovery_handle(&self) -> &File { &self.file }
     pub(super) fn retained_memory_bytes(&self) -> io::Result<u64> {
         (self.path.capacity() as u64)
             .checked_add(self.component.capacity() as u64)
@@ -102,6 +117,33 @@ impl CarrierDirectory {
 }
 
 impl Target {
+    pub(in crate::shadow_native) fn reopen_unwritten(
+        root: &str, components: &[String], name: &[u16], length: u64,
+        layout: &SparseLayout, sparse_mode: bool,
+    ) -> io::Result<Self> {
+        layout.validate(length)?;
+        let path = streams::path(root, components, name)?;
+        let file = File::options().access_mode(0xc1020000).share_mode(0)
+            .custom_flags(0x80200080).open(&path)?;
+        validate_open_type(&file, false)?;
+        private_tree::recovery::require_private_security(&file, false)?;
+        let rounded = length.checked_next_multiple_of(4096).ok_or_else(|| invalid("recovered sparse EOF overflow"))?;
+        unwritten::recovery::require_zero_storage_vdl(&file, rounded)?;
+        let standard = info(&file, 1, 24)?;
+        if layout::u64_at(&standard, 0)? != 0
+            || layout::u32_at(&standard, 16)? != 1
+            || (layout::u32_at(&info(&file, 9, 8)?, 0)? & 0x200 != 0) != sparse_mode
+        {
+            return Err(invalid("recovered sparse target already has allocation or incompatible flags"));
+        }
+        let mut dense = 0u64;
+        let mut islands = Vec::new();
+        for range in &layout.allocated {
+            islands.push(Island { logical: range.offset, dense, length: range.length });
+            dense = dense.checked_add(range.length).ok_or_else(|| invalid("recovered sparse dense length overflow"))?;
+        }
+        Ok(Self { file, path, logical_length:length, layout:layout.clone(), islands, dense_length:dense, sparse_mode })
+    }
     pub(super) fn retained_memory_bytes(&self) -> io::Result<u64> {
         (self.path.capacity() as u64)
             .checked_add(

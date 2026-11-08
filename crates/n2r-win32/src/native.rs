@@ -28,6 +28,8 @@ use windows_sys::Win32::System::{IO::DeviceIoControl, SystemInformation::GetWind
 mod paged_write_policy;
 mod paged_recovery;
 mod isolation_restore;
+mod source_cache;
+pub use source_cache::{SourceCacheContinuity, SourceCacheFingerprintDomain, NativeSourceObservationOrigin};
 pub mod partition_isolation;
 pub mod offline_environment;
 pub mod recovery_image;
@@ -43,6 +45,8 @@ mod partition_dump_locations;
 mod partition_runtime_roles;
 mod partition_storage_roles;
 mod offline_windows;
+mod frozen_shadow_source_query;
+pub(crate) use frozen_shadow_source_query::NativeFrozenShadowSourceQueryWitness;
 mod windows_storage_class;
 pub use windows_storage_class::BootStorageHintNormalization;
 mod partition_owner;
@@ -162,8 +166,17 @@ pub struct GeneralLivePagedNtfsObservation {
     vss_observation: Option<crate::vss_observation::Observation>,
     before: GeneralDiskState,
     after: GeneralDiskState,
+    origin: NativeSourceObservationOrigin,
+    cache_continuity: Option<SourceCacheContinuity>,
 }
 impl GeneralLivePagedNtfsObservation {
+    pub fn origin(&self) -> &NativeSourceObservationOrigin { &self.origin }
+    pub fn require_cache_owner(&self, source: &GeneralFrozenPartition, events: &mut Vec<NativeEvent>) -> io::Result<()> {
+        if let Some(proof) = &self.cache_continuity {
+            proof.require_source(source, proof.inspection_sha256(), proof.origin_sha256(), events)?;
+        }
+        Ok(())
+    }
     pub fn windows_object_ids(&self) -> Option<&crate::windows_object_ids::VerifiedWindowsObjectIds> {
         self.windows_object_ids.as_deref()
     }
@@ -791,6 +804,19 @@ pub(crate) fn general_disk_state(
 ) -> io::Result<GeneralDiskState> {
     binding.validate()?;
     offline_windows::require_detached_roles(disk,binding, events)?;
+    general_disk_state_held_geometry(disk, binding, events)
+}
+
+// Deliberately private to native and its children. Only the opaque, reduced-
+// access SHADOW construction witness may omit recurring role discovery.
+// All existing source admission/write/activation callers keep the function
+// above and therefore its complete offline-Windows role checks.
+fn general_disk_state_held_geometry(
+    disk: &File,
+    binding: &GeneralDiskBinding,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<GeneralDiskState> {
+    binding.validate()?;
     let device = control(&disk, "general-storage-device", DEVICE, &[], 12, events)?;
     layout::validate_device(&device, binding.disk_number)?;
     let disk_length = control(&disk, "general-disk-length", LENGTH, &[], 8, events)?;
@@ -2663,6 +2689,8 @@ impl GeneralFrozenPartition {
             vss_observation: collected.vss_observation,
             before: collected.before,
             after: collected.after,
+            origin: NativeSourceObservationOrigin::FreshCollection,
+            cache_continuity: None,
         })
     }
 
@@ -2713,6 +2741,8 @@ impl GeneralFrozenPartition {
             vss_observation: collected.vss_observation,
             before: collected.before,
             after: collected.after,
+            origin: NativeSourceObservationOrigin::FreshCollection,
+            cache_continuity: None,
         })
     }
 
@@ -2816,6 +2846,8 @@ impl GeneralFrozenPartition {
             vss_observation: collected.vss_observation,
             before: collected.before,
             after: collected.after,
+            origin: NativeSourceObservationOrigin::FreshCollection,
+            cache_continuity: None,
         })
     }
 

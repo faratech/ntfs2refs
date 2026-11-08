@@ -92,6 +92,8 @@ pub struct ResourceSourceReport<'a> {
     pub gates: &'a [Gate],
     pub source_group_bytes: u64,
     pub source_native_groups_sealed: bool,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub native_observation_origin: Option<&'a n2r_win32::NativeSourceObservationOrigin>,
     pub source_group_allocated_bytes: Option<u64>,
     pub native_group_allocated_bytes: Option<u64>,
     pub shared_artifact_arena_complete: bool,
@@ -108,6 +110,9 @@ use source_owner::ResourceSourceOwner;
 pub(crate) mod partition;
 #[path = "raw_target_security.rs"]
 mod raw_target_security;
+#[path = "resource_cache.rs"]
+pub mod cache;
+pub use cache::{SourceCacheFilePin, SourceCacheOriginPins};
 pub struct ResourceSourceContext {
     early_preparation_guard: Option<crate::resource_preparation::early_guard::EarlyPreparationGuard>,
     source: ResourceSourceOwner,
@@ -153,6 +158,8 @@ pub struct ResourceSourceContext {
     // one prepaid SDK buffer. The physical source owner drops first.
     _source_io_ram: SourceRamLease,
     _output_basis: Option<ArenaOutputBasis>,
+    // Newly adopted ordinary artifacts; no old arena seal or live owner.
+    _cache_artifacts: Option<cache::OpenedSourceCache>,
 }
 
 /// Original live source admission closed against the actual protected target
@@ -668,7 +675,7 @@ impl ResourceSourceContext {
         events: &mut Vec<NativeEvent>,
         phase: &mut &'static str,
     ) -> Result<Self> {
-        Self::collect(binding, budget, policy, output, events, phase, None, false, None)
+        Self::collect(binding, budget, policy, output, events, phase, None, false, None, None)
     }
 
     /// Reserve real source and native groups before any source freeze or
@@ -729,7 +736,27 @@ impl ResourceSourceContext {
             Some((arena.clone(), source, native)),
             restore_on_failure,
             guard,
+            None,
         )
+    }
+    /// New epoch over exact unchanged cached source bytes. All original wire
+    /// bounds are retained; the caller supplies a freshly admitted real arena,
+    /// source exclusion guard and independent canonical origin checksum.
+    pub(crate) fn prepare_cached_exact_with_guard(
+        binding: GeneralDiskBinding, budget: ResourceBudget, policy: VerificationPolicy,
+        output: &Path, arena: &ArtifactArena, events: &mut Vec<NativeEvent>,
+        phase: &mut &'static str, restore_on_failure: bool,
+        guard: crate::resource_preparation::early_guard::EarlyPreparationGuard,
+        origin: &SourceCacheOriginPins, origin_sha256: [u8;32],
+    ) -> Result<Self> {
+        ensure!(arena.budget()==budget&&policy==VerificationPolicy::ExtentIdentityV1
+            && origin.canonical_sha256()?==origin_sha256,
+            "cached source requires exact origin pin, extent policy and new actual arena");
+        let source=arena.reserve_group(ArtifactGroup::Source,
+            SourceMetadataBudget::from_resource_budget(budget)?.scratch_bytes)?;
+        let native=arena.reserve_group(ArtifactGroup::Native,arena.native_page_budget()?.max_file_bytes)?;
+        Self::collect(binding,budget,policy,output,events,phase,Some((arena.clone(),source,native)),
+            restore_on_failure,Some(guard),Some((origin,origin_sha256)))
     }
     fn collect(
         binding: GeneralDiskBinding,
@@ -741,6 +768,7 @@ impl ResourceSourceContext {
         groups: Option<(ArtifactArena, ArtifactGroupPermit, ArtifactGroupPermit)>,
         restore_on_failure: bool,
         mut early_preparation_guard: Option<crate::resource_preparation::early_guard::EarlyPreparationGuard>,
+        cached_origin: Option<(&SourceCacheOriginPins,[u8;32])>,
     ) -> Result<Self> {
         binding.validate()?;
         budget.validate()?;
@@ -753,7 +781,14 @@ impl ResourceSourceContext {
         let available = n2r_win32::resource_native::observe_available_resources(
             output.parent().context("output parent absent")?,
         )?;
-        available.validate_budget(budget)?;
+        if cached_origin.is_some() {
+            let (arena,_,_)=groups.as_ref().context("cached source requires actual resumed arena ownership")?;
+            ensure!(arena.budget()==budget&&budget.ram_bytes<=available.available_physical_bytes,
+                "cached source wire bounds lost actual current RAM/arena admission");
+            // Existing ordinary cache bytes already consume physical space.
+            // The actual new_resuming arena and each adopted/future group
+            // retain the current-free-space checks; do not charge old S again.
+        } else { available.validate_budget(budget)?; }
         ensure!(!output.exists(), "fresh resource source output required");
         let source_output = output.join("source");
         let native_output = output.join("native");
@@ -885,7 +920,13 @@ impl ResourceSourceContext {
         );
         let length = source.byte_len();
         *phase = "source-inspection";
-        let (raw, read_coverage) = fp::inspect_recorded_with_layout_scope(
+        let mut reopened_cache=None;
+        let (raw, read_coverage) = if let Some((origin,pin))=cached_origin {
+            *phase="source-cache-exact-byte-revalidation";
+            let (arena,group,_)=groups.as_ref().context("cache reopening requires actual source/native arena permits")?;
+            let (raw,coverage,opened)=origin.open_raw(&mut source,budget,&scratch,group,arena,pin,events)?;
+            reopened_cache=Some(opened);(raw,coverage)
+        } else { fp::inspect_recorded_with_layout_scope(
             &mut source,
             length,
             budget,
@@ -893,7 +934,19 @@ impl ResourceSourceContext {
             &output.join("recorded-source"),
             &scratch,
             binding.layout_profile,
-        )?;
+        )? };
+        if let Some(cache)=reopened_cache.as_ref(){
+            save(output,"source-cache-revalidation.json",&serde_json::json!({
+                "kind":"fresh-exact-source-cache-revalidation-v1",
+                "origin_sha256":hex::encode(cache.origin_sha256),
+                "raw_inspection_origin":"cached_revalidated",
+                "fresh_cached_complete_streams_verified":cache.fresh_complete_streams_verified,
+                "fresh_cached_complete_payload_bytes":cache.fresh_complete_payload_bytes,
+                "old_owner_or_guard_reused":false,"new_source_freeze_observed":true,
+                "native_per_file_recollection_performed":false,
+                "source_admitted":false,"execution_authorized":false}),
+                &scratch,&mut metadata,&mut reservations)?;
+        }
         ensure!(
             raw.header().geometry == geometry,
             "frozen source geometry differs from online capture"
@@ -941,12 +994,14 @@ impl ResourceSourceContext {
             &mut metadata,
             &mut reservations,
         )?;
-        let fingerprint = PagedSourceFingerprint::for_inspection(
+        let fingerprint = if let Some(cache)=reopened_cache.as_mut(){
+            cache.fingerprint.take().context("cached fingerprint owner already consumed")?
+        } else { PagedSourceFingerprint::for_inspection(
             &raw,
             length,
             policy,
             &output.join("fingerprint"),
-        )?;
+        )? };
         fingerprint.validate_inspection_reads(&read_coverage)?;
         *phase = "source-fingerprint";
         let source_sha = fingerprint.hash(&mut source)?;
@@ -992,12 +1047,12 @@ impl ResourceSourceContext {
         *phase = "source-observation";
         if let Some((arena, _, _)) = &groups { arena.require_native_allocation(admission)?; }
         let native_path = native_output.join("native.pages");
-        let native_permit = groups
+        let native_permit = if reopened_cache.is_some(){None}else{groups
             .as_ref()
             .map(|(_, _, group)| {
                 group.reserve_file(&native_path, admission.native_page_budget()?.max_file_bytes)
             })
-            .transpose()?;
+            .transpose()?};
         let native_destination = native_permit
             .as_ref()
             .map_or(native_path.as_path(), |p| p.path());
@@ -1005,7 +1060,18 @@ impl ResourceSourceContext {
             .as_ref()
             .map(|_| scratch.lease_ram(std::mem::size_of::<SourceNativeMemory>() as u64 + 128))
             .transpose()?;
-        let native = native_batch(events, |batch| if let Some((arena, _, _)) = &groups {
+        let mut cached_native_artifact=None;
+        let native = if let Some(cache)=reopened_cache.as_mut(){
+            *phase="source-cache-fresh-protected-runtime";
+            let (arena,_,native_group)=groups.as_ref().context("cache native arena permit absent")?;
+            let artifact=native_group.adopt_existing(&cache.native.path,&cache.native.sha256,cache.native.bytes)?;
+            ensure!(artifact.wire_bytes()==cache.native.bytes,"cached native file byte count differs");
+            let proof=cache.continuity.take().context("cached source continuity owner already consumed")?;
+            let observed=native_batch(events,|batch| source.observe_revalidated_cached_ntfs_files_with_memory(
+                &selectors,&cache.native.path,&cache.native.sha256,admission.native_observation_budget()?,
+                proof,&fingerprint,Arc::new(SourceNativeMemory(arena.clone())),batch))?;
+            cached_native_artifact=Some(artifact);observed
+        }else{native_batch(events, |batch| if let Some((arena, _, _)) = &groups {
             source.observe_ntfs_files_paged_domain_with_memory(
                 &selectors,
                 native_destination,
@@ -1024,15 +1090,15 @@ impl ResourceSourceContext {
                 true,
                 batch,
             )
-        })?;
+        })?};
         ensure!(
             groups.is_none() || native.domain().retained_storage_ram_accounted(),
             "actual native source owner lost its shared memory leases"
         );
         native.domain().revalidate()?;
-        let native_artifact = native_permit
+        let native_artifact = if let Some(artifact)=cached_native_artifact{Some(artifact)}else{native_permit
             .map(|permit| permit.verify_closed(native.domain().sha256()))
-            .transpose()?;
+            .transpose()?};
         let native_seal = groups
             .as_ref()
             .map(|(_, _, group)| group.seal())
@@ -1046,6 +1112,7 @@ impl ResourceSourceContext {
                 "source_inspection_sha256":inspection_sha,
                 "source_fingerprint_before_native":source_sha,
                 "native_pages_sha256":native.domain().sha256(),
+                "native_observation_origin":native.origin(),
                 "protected_windows_txf_markers":native.windows_txf_markers().map(|proof| proof.audit()),
                 "protected_windows_object_ids":native.windows_object_ids().map(|proof| proof.audit()),
                 "txf":native.txf(),
@@ -1488,6 +1555,7 @@ impl ResourceSourceContext {
             "source_fingerprint":source_sha,"native_pages_sha256":native.domain().sha256(),"comparison_rows":rows_pin});
         if let Some(aliases) = &windows_aliases { source_views["windows_alias_plan"] = serde_json::to_value(aliases.pin())?; }
         if let Some(pin) = &storage_hint_pin { source_views["storage_hint_normalizations"] = serde_json::to_value(pin)?; }
+        if reopened_cache.is_some(){source_views["native_observation_origin"]=serde_json::to_value(native.origin())?;}
         let source_views_sha = json_sha(
             &source_views,
             scratch.budget().scratch_bytes / 2,
@@ -1540,6 +1608,7 @@ impl ResourceSourceContext {
             _native_payer_ram: native_payer_ram,
             _source_io_ram: source_io_ram,
             _output_basis: output_basis,
+            _cache_artifacts: reopened_cache,
         };
         let finishing = (|| -> Result<()> {
         context.revalidate_evidence()?;
@@ -1602,6 +1671,7 @@ impl ResourceSourceContext {
             gates: &self.gates,
             source_group_bytes: self.scratch.used_bytes(),
             source_native_groups_sealed: self.source_seal.is_some() && self.native_seal.is_some(),
+            native_observation_origin: matches!(self.native.origin(),n2r_win32::NativeSourceObservationOrigin::RevalidatedCachedRows{..}).then_some(self.native.origin()),
             source_group_allocated_bytes: self.source_seal.as_ref().map(|s| s.allocated_bytes()),
             native_group_allocated_bytes: self.native_seal.as_ref().map(|s| s.allocated_bytes()),
             shared_artifact_arena_complete: false,
@@ -1831,6 +1901,7 @@ impl ResourceSourceContext {
             "original live NTFS freeze witness was consumed by an apply-intent attempt"
         );
         self.revalidate_evidence()?;
+        self.native.require_cache_owner(self.source.require_dedicated()?,events)?;
         if let Some(proof) = &self.storage_hint_normalization {
             let source = self.source.require_dedicated()?;
             native_batch(events, |batch| proof.revalidate(source, batch))?;

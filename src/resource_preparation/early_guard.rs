@@ -119,6 +119,9 @@ impl EarlyPreparationGuard {
     pub(crate) fn pin(&self) -> GuardPin {
         self.pin.clone()
     }
+    pub(crate) fn intent_artifact(&self) -> ArtifactLease {
+        self._intent_lease.clone()
+    }
     pub(crate) fn isolate(
         &mut self,
         binding: GeneralDiskBinding,

@@ -3,6 +3,7 @@
 //! leave the private file for diagnosis; they never authorize target writes.
 use super::{ctl, invalid, wide};
 mod resource;
+pub(super) mod recovery;
 use crate::{bitmap_paging, bitmap_window, bitmap_window_native, bitmap_window_transport};
 pub(super) use resource::ResourceTrackedHoles;
 use serde::Serialize;
@@ -219,6 +220,7 @@ pub(super) struct PrivatePlaceholder {
     retrieval_extents: usize,
     retire_identity: Option<Vec<u8>>,
     resource: Option<resource::ResourcePlacement>,
+    recovered_origin: bool,
 }
 
 impl PrivatePlaceholder {
@@ -423,6 +425,7 @@ impl PrivatePlaceholder {
             retrieval_extents: 0,
             retire_identity,
             resource: None,
+            recovered_origin: false,
         })
     }
     pub(super) fn allocate_carrier(

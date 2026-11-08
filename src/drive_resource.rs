@@ -2,6 +2,8 @@
 //! only the live issuer may activate, and completion uses reopened native proof.
 #[path = "drive_preparation.rs"]
 mod preparation;
+#[path = "drive_resource_resume.rs"]
+mod resumable;
 use crate::{
     resource_preparation::{
         PreparationObserver, ResourcePreparationRequest, file_observer::FilePreparationObserver,
@@ -319,7 +321,10 @@ fn recovery_metadata_limit() -> Result<u64> {
 /// neither classifies mutable guard state nor grants any native transition.
 pub(super) fn preparation_intent_matches(directory: &Path, sha: &str) -> Result<bool> {
     let expected = parse_sha(sha)?;
-    let path = directory.join("preparation-intent.json");
+    let old = directory.join("preparation-intent.json");
+    let resumed = directory.join("resume-intent.json");
+    ensure!(!(old.exists() && resumed.exists()), "ambiguous preparation recovery protocol");
+    let path = if resumed.exists() { resumed } else { old };
     ensure!(
         path.is_absolute()
             && !path
@@ -351,12 +356,20 @@ pub(super) fn preparation_intent_matches(directory: &Path, sha: &str) -> Result<
 /// Cancel only an authenticated, still-unconsumed pre-AP preparation. A final
 /// publication, missing file, or serialized phase cannot recreate authority.
 pub(super) fn recover_preparation(directory: &Path, sha: &str, rollback: bool) -> Result<u8> {
-    ensure!(
-        rollback,
-        "unfinished preparation can only be cancelled with --rollback; it cannot resume conversion"
-    );
-    let intent = directory.join("preparation-intent.json");
-    let checksum = parse_sha(sha)?;
+    if !rollback {
+        return resumable::resume_preparation(directory, parse_sha(sha)?);
+    }
+    let (intent, checksum) = if directory.join("resume-intent.json").try_exists()? {
+        let probe = crate::resource_preparation::resume_session_inputs::probe_resume_session(
+            directory, parse_sha(sha)?, recovery_metadata_limit()?.min(8 << 20),
+        )?;
+        ensure!(probe.publication_file_observed.is_none() || probe.delegated_publication.is_some(),
+            "publication observed without authenticated delegation; preserve state and use its independent publication pin");
+        (probe.intent.new_preparation_intent.path,
+            parse_sha(&probe.intent.new_preparation_intent.sha256)?)
+    } else {
+        (directory.join("preparation-intent.json"), parse_sha(sha)?)
+    };
     let routes = crate::resource_preparation::early_guard::inspect_routes(
         &intent,
         checksum,

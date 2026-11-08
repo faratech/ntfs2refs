@@ -9,6 +9,7 @@ mod enrollment;
 mod memory;
 pub(super) mod metadata;
 mod placement;
+pub mod recovery;
 mod routed_prefix;
 mod source_backed;
 pub(super) mod source_scope;
@@ -49,6 +50,7 @@ pub struct PrivateTree {
     pair: GeneralSourceShadowBinding,
     source_before: source_scope::ConstructionSourceState,
     partition_source: Option<source_scope::PartitionShadowConstructionLease>,
+    dedicated_source: Option<source_scope::DedicatedShadowConstructionLease>,
     initial_objects: Vec<serde_json::Value>,
     events: Vec<NativeEvent>,
     privileges: Privileges,
@@ -57,6 +59,7 @@ pub struct PrivateTree {
     materialized_tails: BTreeMap<StreamKey, MaterializedTail>,
     placement_started: bool,
     placement_complete: bool,
+    recovery_origin: Option<std::sync::Arc<()>>,
     placement_progress: serde_json::Value,
     system_identities: BTreeMap<Vec<String>, Vec<u8>>,
     // Actual source ordinals of constructor-owned SVI directories. These are
@@ -990,6 +993,7 @@ impl PrivateTree {
                 .checked_add(self.sparse_targets.len() as u64)
                 .and_then(|n| n.checked_add(self.metadata_targets.len() as u64))
                 .and_then(|n| n.checked_add(u64::from(self.carrier_directory.is_some())))
+                .and_then(|n| n.checked_add(u64::from(self.dedicated_source.is_some())))
                 // Volume, privilege leases and temporary native control opens.
                 .and_then(|n| n.checked_add(8))
                 .ok_or_else(|| invalid("native owned handle count overflow"))?;
@@ -1003,6 +1007,8 @@ impl PrivateTree {
         let result = (|| {
             if let Some(lease)=&self.partition_source{
                 lease.check_shadow_operation(&mut events)?;
+            }else if let Some(lease)=&self.dedicated_source{
+                lease.check_shadow_operation(&self.pair, &self.source_before, &mut events)?;
             }else{
                 self.source_before.require(&self.pair,None,&mut events)?;
             }
@@ -1033,6 +1039,15 @@ impl PrivateTree {
         } else {
             result
         }
+    }
+
+    // Only the new whole-disk Windows SHADOW lease adds these explicit full
+    // critical-role fences. Legacy, unenrolled and partition paths are unchanged.
+    fn require_dedicated_shadow_boundary(&self) -> io::Result<()> {
+        if let Some(lease) = &self.dedicated_source {
+            lease.revalidate_boundary(&self.pair, &self.source_before, &mut Vec::new())?;
+        }
+        Ok(())
     }
 
     fn require_bound_input(&self, input: &[Input<'_>]) -> io::Result<()> {
@@ -1632,8 +1647,25 @@ fn allocate_domain_with_memory(
             .transpose()?.flatten().map_or(1280, |value| value.object_slots as usize)
     };
     let mut events = Vec::new();
+    let dedicated_source = match (resource_admission, payer.as_deref(), enrollment.as_ref()) {
+        (Some(_), Some(payer), Some(owned))
+            if pair.source.layout_profile == crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows => {
+            match &owned.source {
+                source_scope::ConstructionSource::Dedicated(source) => Some(
+                    source_scope::DedicatedShadowConstructionLease::begin(
+                        source, pair, &owned.source_before, payer, &mut events,
+                    )?,
+                ),
+                source_scope::ConstructionSource::Partition(_) => None,
+            }
+        }
+        _ => None,
+    };
     let opening = (|| {
-        let source_before = if let Some(owned) = enrollment
+        let source_before = if let (Some(lease), Some(owned)) = (&dedicated_source, enrollment.as_ref()) {
+            lease.check_shadow_operation(pair, &owned.source_before, &mut events)?;
+            owned.source_before.clone()
+        } else if let Some(owned) = enrollment
             .as_ref()
             .filter(|owned| owned.source.partition().is_some())
         {
@@ -2109,6 +2141,7 @@ fn allocate_domain_with_memory(
         pair: pair.clone(),
         source_before,
         partition_source,
+        dedicated_source,
         initial_objects: objects,
         events,
         privileges,
@@ -2117,6 +2150,7 @@ fn allocate_domain_with_memory(
         materialized_tails: BTreeMap::new(),
         placement_started: false,
         placement_complete: false,
+        recovery_origin: None,
         placement_progress: serde_json::Value::Null,
         system_identities,
         system_directory_indices,
@@ -2130,6 +2164,7 @@ fn allocate_domain_with_memory(
         memory,
     };
     tree.require_source_excluded()?;
+    tree.require_dedicated_shadow_boundary()?;
     if let Some(memory) = &tree.memory {
         // Close the final state after the last source/shadow check, while the
         // global query lease still pays for that operation and the handoff.

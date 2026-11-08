@@ -132,6 +132,8 @@ pub(crate) mod resource_prepared_offline_apply;
 #[cfg(windows)]
 pub(crate) mod resource_preparation;
 #[cfg(windows)]
+pub(crate) mod preparation_resume;
+#[cfg(windows)]
 pub(crate) mod resource_recovery;
 #[cfg(windows)]
 pub(crate) mod resource_finalize;

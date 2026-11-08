@@ -45,7 +45,9 @@ unsafe extern "system" {
 }
 // Documented object identity comparison, independent of handle value/access:
 // https://learn.microsoft.com/windows/win32/api/handleapi/nf-handleapi-compareobjecthandles
-#[link(name = "kernelbase")]
+// Generate this single import directly: current Windows SDK installations do
+// not necessarily ship Kernelbase.lib, although the system DLL exports it.
+#[link(name = "kernelbase.dll", kind = "raw-dylib")]
 unsafe extern "system" {
     fn CompareObjectHandles(first: HANDLE, second: HANDLE) -> i32;
 }

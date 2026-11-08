@@ -355,7 +355,10 @@ impl PrivateTree {
         input: &impl InputDomain,
         aliases: &impl super::windows_aliases::WindowsAliasInputDomain,
         same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
-    ) -> io::Result<(serde_json::Value, super::windows_aliases::VerifiedWindowsAliases)> {
+    ) -> io::Result<(
+        serde_json::Value,
+        super::windows_aliases::VerifiedWindowsAliases,
+    )> {
         metadata::complete_windows_aliases_domain(self, input, aliases, same_security)
     }
 
@@ -368,8 +371,16 @@ impl PrivateTree {
         input: &impl InputDomain,
         aliases: &impl super::windows_aliases::WindowsAliasInputDomain,
         same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
-    ) -> io::Result<(serde_json::Value, super::windows_aliases::VerifiedWindowsAliases)> {
-        metadata::complete_windows_aliases_domain_with_security_placeholders(self, input, aliases, same_security)
+    ) -> io::Result<(
+        serde_json::Value,
+        super::windows_aliases::VerifiedWindowsAliases,
+    )> {
+        metadata::complete_windows_aliases_domain_with_security_placeholders(
+            self,
+            input,
+            aliases,
+            same_security,
+        )
     }
 
     pub fn materialize_system_payloads_domain(
@@ -1001,10 +1012,10 @@ impl PrivateTree {
         }
         let mut events = Vec::new();
         let result = (|| {
-            if let Some(lease)=&self.partition_source{
+            if let Some(lease) = &self.partition_source {
                 lease.check_shadow_operation(&mut events)?;
-            }else{
-                self.source_before.require(&self.pair,None,&mut events)?;
+            } else {
+                self.source_before.require(&self.pair, None, &mut events)?;
             }
             if native::observe_general_disk_state_readonly(self.pair.shadow.clone(), &mut events)?
                 .disk_attributes
@@ -1017,7 +1028,7 @@ impl PrivateTree {
             Ok(())
         })();
         if let Some(lease) = &self.partition_source {
-            let witness=lease.witness();
+            let witness = lease.witness();
             let drained = witness.checkpoint_native_events(
                 "partition-private-tree-source-shadow-check",
                 &mut events,
@@ -1410,17 +1421,25 @@ pub fn preflight_resource_input_domain(
     memory: &dyn report_memory::ReportMemoryAccountant,
 ) -> io::Result<ConstructorInputPreflight> {
     admission.validate()?;
-    if partition_bytes == 0 || !partition_bytes.is_multiple_of(4096)
+    if partition_bytes == 0
+        || !partition_bytes.is_multiple_of(4096)
         || partition_bytes > i64::MAX as u64
-        || !volume_root.starts_with("\\\\?\\Volume{") || !volume_root.ends_with("}\\")
+        || !volume_root.starts_with("\\\\?\\Volume{")
+        || !volume_root.ends_with("}\\")
     {
-        return Err(invalid("pure constructor geometry or volume-root syntax differs"));
+        return Err(invalid(
+            "pure constructor geometry or volume-root syntax differs",
+        ));
     }
     let guid = &volume_root[11..volume_root.len() - 2];
     crate::layout::guid_bytes(guid)?;
     preflight_input_domain(
-        input, partition_bytes, volume_root,
-        Some(crate::attestation::ResourceProfile::ResourceBoundedV4(Some(admission))),
+        input,
+        partition_bytes,
+        volume_root,
+        Some(crate::attestation::ResourceProfile::ResourceBoundedV4(
+            Some(admission),
+        )),
         Some(memory),
     )
 }
@@ -1495,16 +1514,9 @@ fn preflight_input_domain(
             .filter(|count| *count <= maximum_streams)
             .ok_or_else(|| invalid("constructor complete stream domain exceeds bound"))?;
         if resource_admission.is_some() {
-            streams::validate_resource(
-                std::slice::from_ref(item),
-                partition_bytes,
-                maximum_streams,
-            )
+            streams::validate_resource(std::slice::from_ref(item), partition_bytes, maximum_streams)
         } else {
-            streams::validate(
-                std::slice::from_ref(item),
-                partition_bytes,
-            )
+            streams::validate(std::slice::from_ref(item), partition_bytes)
         }
     })?;
     let root_owner = if input.is_empty() {
@@ -1528,6 +1540,11 @@ fn preflight_input_domain(
     for index in 0..input.len() {
         let owner = input.object(index)?;
         let item = owner.input();
+        if !basic_input_allowed(&item) {
+            return Err(invalid(
+                "owning metadata input outside bounded source profile",
+            ));
+        }
         let key = crate::shadow_names::conservative_path_key(item.components);
         if resource_admission.map_or(item.components.len() > 16, |_| {
             !super::hard_links::resource_path_valid(resource_root, item.components)
@@ -1615,8 +1632,11 @@ fn allocate_domain_with_memory(
     let payer = memory.as_ref().map(|owner| owner.payer());
     let resource_root = format!("{}\\", pair.shadow.volume_path()?);
     preflight_input_domain(
-        input, pair.shadow.identity.partition_bytes, &resource_root,
-        resource_profile, payer.as_deref(),
+        input,
+        pair.shadow.identity.partition_bytes,
+        &resource_root,
+        resource_profile,
+        payer.as_deref(),
     )?;
     let resource_admission = resource_profile
         .map(crate::attestation::ResourceProfile::resource_admission)
@@ -1625,8 +1645,11 @@ fn allocate_domain_with_memory(
     let maximum_objects = if let Some(value) = resource_admission {
         usize::try_from(value.objects()?).map_err(io::Error::other)?
     } else {
-        resource_profile.map(crate::attestation::ResourceProfile::count_admission)
-            .transpose()?.flatten().map_or(1280, |value| value.object_slots as usize)
+        resource_profile
+            .map(crate::attestation::ResourceProfile::count_admission)
+            .transpose()?
+            .flatten()
+            .map_or(1280, |value| value.object_slots as usize)
     };
     let mut events = Vec::new();
     let opening = (|| {
@@ -1753,7 +1776,7 @@ fn allocate_domain_with_memory(
     // these enrolled disks and never touches the excluded source.
     let system = existing_system_entries_domain(&root, &initial, input, true, &mut events);
     let mut system_identities = if let Some(lease) = &partition_source {
-        let witness=lease.witness();
+        let witness = lease.witness();
         let drained = witness
             .checkpoint_native_events("partition-private-allocation-global-queries", &mut events);
         match (system, drained) {
@@ -1855,14 +1878,17 @@ fn allocate_domain_with_memory(
             // immediate child directories. Global input order already proved
             // parents precede children; pin that exact held parent again.
             if item.components.len() == 2 {
-                let parent_index = *system_directory_indices.first()
+                let parent_index = *system_directory_indices
+                    .first()
                     .ok_or_else(|| invalid("system child directory precedes its owned root"))?;
-                let parent = metadata_targets.get(&parent_index)
+                let parent = metadata_targets
+                    .get(&parent_index)
                     .ok_or_else(|| invalid("owned system root metadata handle absent"))?;
                 validate_open_type(parent, true)?;
                 let parent_id = info(parent, 18, 24)?;
                 let parent_components = &item.components[..1];
-                if system_identities.get(parent_components)
+                if system_identities
+                    .get(parent_components)
                     .is_none_or(|id| parent_id[8..24] != *id)
                     || parent_id[..8] != info(&metadata_targets[&0], 18, 24)?[..8]
                 {
@@ -1895,22 +1921,35 @@ fn allocate_domain_with_memory(
                 let handle = open(&path, true, true)?;
                 let id = info(&handle, 18, 24)?;
                 if id[..8] != info(&metadata_targets[&0], 18, 24)?[..8]
-                    || system_identities.values().any(|old| old.as_slice() == &id[8..24])
-                    || enumerate(&handle)?.iter().any(|entry|
-                        entry.name_utf16 != [46] && entry.name_utf16 != [46, 46])
+                    || system_identities
+                        .values()
+                        .any(|old| old.as_slice() == &id[8..24])
+                    || enumerate(&handle)?
+                        .iter()
+                        .any(|entry| entry.name_utf16 != [46] && entry.name_utf16 != [46, 46])
                 {
-                    return Err(invalid("fresh system directory identity or empty namespace differs"));
+                    return Err(invalid(
+                        "fresh system directory identity or empty namespace differs",
+                    ));
                 }
                 system_identities.insert(item.components.to_vec(), id[8..24].to_vec());
                 if metadata_targets.insert(index, handle).is_some() {
                     return Err(invalid("duplicate system directory metadata ordinal"));
                 }
             } else if !metadata_targets.contains_key(&index) {
-                return Err(invalid("existing system directory lacks its constructor metadata handle"));
+                return Err(invalid(
+                    "existing system directory lacks its constructor metadata handle",
+                ));
             }
-            system_directory_indices.try_reserve_exact(1).map_err(io::Error::other)?;
-            if system_directory_indices.capacity() > (system_directory_indices.len() + 1).saturating_mul(2) {
-                return Err(invalid("system directory ordinal capacity exceeds paid state"));
+            system_directory_indices
+                .try_reserve_exact(1)
+                .map_err(io::Error::other)?;
+            if system_directory_indices.capacity()
+                > (system_directory_indices.len() + 1).saturating_mul(2)
+            {
+                return Err(invalid(
+                    "system directory ordinal capacity exceeds paid state",
+                ));
             }
             system_directory_indices.push(index);
         }
@@ -1921,21 +1960,25 @@ fn allocate_domain_with_memory(
             );
             if let (Some(memory), Some(guard)) = (&memory, row_memory) {
                 let mut retained = memory::object_bytes(
-                        index,
-                        &objects,
-                        &files,
-                        &sparse_targets,
-                        &metadata_targets,
-                    )?;
+                    index,
+                    &objects,
+                    &files,
+                    &sparse_targets,
+                    &metadata_targets,
+                )?;
                 if system && item.directory {
                     // Own the new identity-map key/ID and directory ordinal
                     // state in addition to object_bytes' metadata handle.
-                    let path_bytes = item.components.iter().try_fold(0u64, |sum, part|
+                    let path_bytes = item.components.iter().try_fold(0u64, |sum, part| {
                         sum.checked_add(part.len() as u64)
-                            .ok_or_else(|| invalid("system directory path RAM overflow")))?;
-                    retained = retained.checked_add(8192)
+                            .ok_or_else(|| invalid("system directory path RAM overflow"))
+                    })?;
+                    retained = retained
+                        .checked_add(8192)
                         .and_then(|n| n.checked_add(path_bytes.checked_mul(8)?))
-                        .and_then(|n| n.checked_add((item.components.len() as u64).checked_mul(256)?))
+                        .and_then(|n| {
+                            n.checked_add((item.components.len() as u64).checked_mul(256)?)
+                        })
                         .ok_or_else(|| invalid("system directory retained RAM overflow"))?;
                 }
                 memory.retain(guard, retained)?;

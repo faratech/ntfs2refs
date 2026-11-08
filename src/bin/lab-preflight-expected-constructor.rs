@@ -826,6 +826,16 @@ mod windows {
                 }
                 Ok(())
             };
+            check(
+                "constructor_basic_metadata",
+                if n2r_win32::shadow_native::basic_input_allowed(&object.input()) {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::other(
+                        "owning metadata input outside bounded source profile",
+                    ))
+                },
+            )?;
             if let Some(eas) = object.extended_attributes.as_ref() {
                 check("extended_attributes_validate", eas.validate())?;
             }
@@ -952,6 +962,8 @@ mod windows {
             "constructor_pure_checks_completed":constructor_completed,
             "native_memory_stored_descriptor_validation_completed":constructor_completed,
             "all_source_security_contexts_checked":true,"all_source_shape_records_checked":true,
+            "basic_metadata_predicate_objects_checked":domain.len(),
+            "basic_metadata_predicate_shared_with_native_completion":true,
             "path_root_identity_used_as_authority":false,
             "source_device_opens":0,"source_volume_opens":0,"setter_calls":0,"metadata_only":true,
             "deferred_native_checks":["fresh shadow identity/profile/allocator and formatter collisions",

@@ -205,8 +205,18 @@ pub(super) fn complete_owned_metadata_scoped_domain(
     resource_admission: Option<crate::tree_resources::SourceResourceAdmission>,
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
 ) -> io::Result<serde_json::Value> {
-    complete_owned_metadata_scoped_windows_aliases_domain(pair,source_before,partition_source,volume,input,handles,
-        maximum_objects,resource_admission,None,same_security)
+    complete_owned_metadata_scoped_windows_aliases_domain(
+        pair,
+        source_before,
+        partition_source,
+        volume,
+        input,
+        handles,
+        maximum_objects,
+        resource_admission,
+        None,
+        same_security,
+    )
 }
 
 pub(super) fn complete_owned_metadata_scoped_windows_aliases_domain(
@@ -222,8 +232,17 @@ pub(super) fn complete_owned_metadata_scoped_windows_aliases_domain(
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
 ) -> io::Result<serde_json::Value> {
     complete_owned_metadata_scoped_windows_aliases_domain_inner(
-        pair, source_before, partition_source, volume, input, handles,
-        maximum_objects, resource_admission, aliases, false, same_security,
+        pair,
+        source_before,
+        partition_source,
+        volume,
+        input,
+        handles,
+        maximum_objects,
+        resource_admission,
+        aliases,
+        false,
+        same_security,
     )
 }
 
@@ -244,11 +263,22 @@ pub(super) fn complete_owned_metadata_scoped_windows_aliases_domain_with_securit
     if pair.source.layout_profile != crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows
         || resource_admission.is_none()
     {
-        return Err(invalid("security placeholders require the explicit resource-bound Windows constructor"));
+        return Err(invalid(
+            "security placeholders require the explicit resource-bound Windows constructor",
+        ));
     }
     complete_owned_metadata_scoped_windows_aliases_domain_inner(
-        pair, source_before, partition_source, volume, input, handles,
-        maximum_objects, resource_admission, aliases, true, same_security,
+        pair,
+        source_before,
+        partition_source,
+        volume,
+        input,
+        handles,
+        maximum_objects,
+        resource_admission,
+        aliases,
+        true,
+        same_security,
     )
 }
 
@@ -328,9 +358,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             .iter()
             .any(|part| !crate::shadow_names::valid_unicode_component(part))
             || !paths.insert(crate::shadow_names::conservative_path_key(item.components))
-            || item.times.iter().any(|v| *v == 0 || *v >= i64::MAX as u64)
-            || !attributes_allowed(item)
-            || (item.attributes & 16 != 0) != item.directory
+            || !basic_input_allowed(item)
         {
             return Err(invalid(
                 "owning metadata input outside bounded source profile",
@@ -399,13 +427,22 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             }
         }
     }
-    if let Some(aliases)=aliases.as_deref(){
-        for path in aliases.paths(){
-            if namespace_index.contains_key(path){return Err(invalid("derived alias collides with a canonical source name"));}
-            expected_children.entry(path[..path.len()-1].to_vec()).or_default().insert(path.to_vec());
+    if let Some(aliases) = aliases.as_deref() {
+        for path in aliases.paths() {
+            if namespace_index.contains_key(path) {
+                return Err(invalid(
+                    "derived alias collides with a canonical source name",
+                ));
+            }
+            expected_children
+                .entry(path[..path.len() - 1].to_vec())
+                .or_default()
+                .insert(path.to_vec());
         }
     }
-    let namespace = |points_installed: bool, aliases: Option<&super::windows_aliases::StagedWindowsAliases>| -> io::Result<()> {
+    let namespace = |points_installed: bool,
+                     aliases: Option<&super::windows_aliases::StagedWindowsAliases>|
+     -> io::Result<()> {
         for index in 0..input.len() {
             let owned = input.object(index)?;
             let directory = owned.input();
@@ -425,14 +462,18 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                     .map_err(|_| invalid("owned metadata namespace UTF-16 differs"))?;
                 let mut path = directory.components.to_vec();
                 path.push(name);
-                if let Some(alias)=aliases.and_then(|aliases|aliases.entry(&path)){
-                    if !seen.insert(path.clone())||(entry.attributes&16!=0)!=alias.directory
-                        ||(entry.attributes&0x400!=0)!=points_installed||entry.file_id.as_slice()!=&alias.file_id_info[8..24]{
+                if let Some(alias) = aliases.and_then(|aliases| aliases.entry(&path)) {
+                    if !seen.insert(path.clone())
+                        || (entry.attributes & 16 != 0) != alias.directory
+                        || (entry.attributes & 0x400 != 0) != points_installed
+                        || entry.file_id.as_slice() != &alias.file_id_info[8..24]
+                    {
                         return Err(invalid("derived alias namespace identity/type differs"));
                     }
                     continue;
                 }
-                let &(child_index, child_directory, child_reparse) = namespace_index.get(&path)
+                let &(child_index, child_directory, child_reparse) = namespace_index
+                    .get(&path)
                     .ok_or_else(|| invalid("unexpected owned metadata namespace entry"))?;
                 if !seen.insert(path.clone())
                     || (entry.attributes & 16 != 0) != child_directory
@@ -452,7 +493,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         }
         Ok(())
     };
-    namespace(false,aliases.as_deref())?;
+    namespace(false, aliases.as_deref())?;
     const DIRECTORY: u8 = 1;
     const EXTENDED_ATTRIBUTES: u8 = 2;
     const REPARSE: u8 = 4;
@@ -488,10 +529,16 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         let original_view = owned.input();
         let temporary = if security_placeholders {
             crate::refs_security_descriptor::ConstructorSecurityViews::prepare(
-                original_view.security, original_view.expected_api_security,
-                resource_admission.ok_or_else(|| invalid("constructor security row admission absent"))?.budget.max_row_bytes,
+                original_view.security,
+                original_view.expected_api_security,
+                resource_admission
+                    .ok_or_else(|| invalid("constructor security row admission absent"))?
+                    .budget
+                    .max_row_bytes,
             )?
-        } else { None };
+        } else {
+            None
+        };
         let mut view = original_view;
         if let Some(temporary) = temporary.as_ref() {
             view.security = &temporary.stored;
@@ -589,10 +636,16 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             reparse_objects += 1;
         }
     }
-    let provisional_aliases = if let Some(aliases)=aliases.as_deref_mut(){
-        if security_placeholders { aliases.restore_metadata_with_security_placeholders(input,handles,&same_security)? }
-        else { aliases.restore_metadata(input,handles,&same_security)?; 0 }
-    } else { 0 };
+    let provisional_aliases = if let Some(aliases) = aliases.as_deref_mut() {
+        if security_placeholders {
+            aliases.restore_metadata_with_security_placeholders(input, handles, &same_security)?
+        } else {
+            aliases.restore_metadata(input, handles, &same_security)?;
+            0
+        }
+    } else {
+        0
+    };
     // Reverse depth order finalizes root last, using the same held handles.
     for &(index, _, _) in ordered.iter().rev() {
         let owned = input.object(index)?;
@@ -608,16 +661,22 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         }
     }
     volume.sync_all()?;
-    namespace(true,aliases.as_deref())?;
+    namespace(true, aliases.as_deref())?;
     for index in 0..input.len() {
         let owned = input.object(index)?;
         let original_view = owned.input();
         let temporary = if security_placeholders {
             crate::refs_security_descriptor::ConstructorSecurityViews::prepare(
-                original_view.security, original_view.expected_api_security,
-                resource_admission.ok_or_else(|| invalid("constructor security row admission absent"))?.budget.max_row_bytes,
+                original_view.security,
+                original_view.expected_api_security,
+                resource_admission
+                    .ok_or_else(|| invalid("constructor security row admission absent"))?
+                    .budget
+                    .max_row_bytes,
             )?
-        } else { None };
+        } else {
+            None
+        };
         let mut view = original_view;
         if let Some(temporary) = temporary.as_ref() {
             view.security = &temporary.stored;
@@ -686,8 +745,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
     {
         return Err(invalid("owning metadata storage state changed"));
     }
-    let mut report =
-        serde_json::json!({"schema_version":1,"kind":"owning-private-tree-metadata-completion",
+    let mut report = serde_json::json!({"schema_version":1,"kind":"owning-private-tree-metadata-completion",
         "metadata_objects_updated":input.len(),"metadata_objects_verified":input.len(),
         "metadata_readback_verified":true,"dacl_protection_states_restored":dacl_protection_updates,
         "sacl_protection_states_restored":sacl_protection_updates,
@@ -755,9 +813,7 @@ pub fn run(
                 .iter()
                 .any(|s| !crate::shadow_names::valid_unicode_component(s))
             || !names.insert(item.components.to_vec())
-            || item.times.iter().any(|v| *v == 0 || *v >= i64::MAX as u64)
-            || !attributes_allowed(item)
-            || (item.attributes & 16 != 0) != item.directory
+            || !basic_input_allowed(item)
         {
             return Err(invalid("invalid bounded cache-refresh input"));
         }

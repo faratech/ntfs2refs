@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "kind": "shared-source-basic-metadata-preflight",
+  "change": "Reuse exact existing native-completion timestamp/attribute/directory-type predicate during constructor preflight and independent all-row lab checks",
+  "semantics_weakened": false,
+  "focused_check": {
+    "wall_seconds": 36.5283567,
+    "capacity": {
+      "actual_bytes": 212262413353,
+      "free_bytes": 95401586688,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 2147483648,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+    "exit_code": 0,
+    "absolute_boot_cap": 279866334601,
+    "shared_target_reused": true,
+    "native_run": false,
+    "unit_tests_run": false,
+    "kind": "shared-early-basic-metadata-profile-check"
+  },
+  "previous_actual_constructor_preflight": {
+    "new_combined_predicate_not_yet_executed": true,
+    "exit_code": 0,
+    "wall_seconds": 34.2559335,
+    "objects": 143552,
+    "sha256": "013c450b0a895cd0442f08d5e2cb394c9cf26ac2a487c3a2daa9007475b25a50",
+    "input_errors": 0
+  },
+  "actual_parent_context_creator": {
+    "objects": 541,
+    "kernel_and_API_exact": true,
+    "pid": 1532,
+    "full_report_sha256": "c25bc052d55d15cfa996fc6a88989cc83359df94a1a6e6bb0f08de1f92f216f8",
+    "case_manifest": 369,
+    "manifest_sha256": "d6e98b3808070eaba34d879481a99b07feca7648a09446f5c02a39282d326df2",
+    "exit_code": 0,
+    "trust_label_restoration_not_yet_qualified": true
+  },
+  "original_Windows_converted": false,
+  "original_Windows_booted_refs": false,
+  "unit_tests_run": false
+}

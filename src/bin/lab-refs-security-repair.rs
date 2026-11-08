@@ -153,7 +153,7 @@ fn main() -> anyhow::Result<()> {
     ensure!(
         target.label == "N2R_TRUST_ORACLE"
             && target.filesystem == "ReFS"
-            && target.binding.disk_number >= 14
+            && target.binding.disk_number != 0
             && !target.disk_is_windows_disk,
         "only the explicitly created disposable ReFS oracle may be selected"
     );

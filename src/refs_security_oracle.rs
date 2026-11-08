@@ -358,7 +358,10 @@ fn qualify_owned_shadow_inner(
     let guid = n2r_win32::layout::guid_bytes;
     ensure!(
         target.layout_profile == GeneralDiskLayoutProfile::DedicatedData
-            && target.disk_number >= 14
+            // Windows may renumber this same persistent oracle after reboot.
+            // The original Windows disk remains explicitly excluded; the
+            // creator GUID, dedicated geometry and independent journal bind R.
+            && target.disk_number != 0
             && target.identity.partition_offset == 16 << 20
             && target.identity.partition_bytes == IMAGE_BYTES
             && target.identity.logical_sector_bytes == 512

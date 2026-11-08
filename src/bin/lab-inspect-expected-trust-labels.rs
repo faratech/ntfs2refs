@@ -17,7 +17,7 @@ mod windows {
     use serde::{Deserialize, Serialize};
     use sha2::{Digest, Sha256};
     use std::{
-        collections::BTreeMap,
+        collections::{BTreeMap, BTreeSet},
         fs::{self, File, OpenOptions},
         io::{Read, Seek, SeekFrom, Write},
         os::windows::fs::{MetadataExt, OpenOptionsExt},
@@ -39,6 +39,11 @@ mod windows {
         source_assessment: PathBuf,
         #[arg(long)]
         source_assessment_sha256: String,
+        /// Optional closed full-SD corpus; adds exact source parent/leaf context.
+        #[arg(long)]
+        context_corpus: Option<PathBuf>,
+        #[arg(long)]
+        context_corpus_sha256: Option<String>,
         /// Independent working/control filesystem GUID, never source0's volume.
         #[arg(long)]
         metadata_volume_guid: String,
@@ -59,6 +64,91 @@ mod windows {
     struct Assessment {
         binding: n2r_win32::general_layout::GeneralDiskBinding,
         resource_admission: SourceResourceAdmission,
+    }
+    #[derive(Deserialize)]
+    struct ContextCorpus {
+        schema_version: u32,
+        kind: String,
+        expected_pages_sha256: String,
+        source_assessment_sha256: String,
+        descriptors: Vec<ContextCorpusRow>,
+    }
+    #[derive(Deserialize)]
+    struct ContextCorpusRow {
+        id: String,
+        original_sha256: String,
+        source_context: ContextSource,
+    }
+    #[derive(Deserialize)]
+    struct ContextSource {
+        stored_object_references: u64,
+        first_source: ContextFirstSource,
+    }
+    #[derive(Clone, Serialize, Deserialize)]
+    struct ContextFirstSource {
+        record_number: u64,
+        sequence_number: u16,
+        path: Vec<String>,
+        directory: bool,
+        stored_security_sha256: String,
+        api_security_sha256: Option<String>,
+    }
+    #[derive(Serialize)]
+    struct ContextRequest {
+        case_id: String,
+        case_original_sha256: String,
+        source: ContextFirstSource,
+    }
+    #[derive(Serialize)]
+    struct AclContext {
+        control: Option<u16>,
+        rm_control: Option<u8>,
+        dacl_revision: Option<u8>,
+        sacl_revision: Option<u8>,
+        dacl_ace_flags: Vec<u8>,
+        sacl_ace_flags: Vec<u8>,
+        layout_error: Option<String>,
+    }
+    #[derive(Serialize)]
+    struct ContextObject {
+        record_number: u64,
+        sequence_number: u16,
+        path: Vec<String>,
+        additional_names: Vec<Vec<String>>,
+        directory: bool,
+        attributes: u32,
+        stored_times: [u64; 4],
+        stored_times_decimal: [String; 4],
+        reparse: Option<n2r_win32::reparse_layout::Point>,
+        stored_security_sha256: String,
+        stored_security_hex: String,
+        stored_security: AclContext,
+        api_security_sha256: Option<String>,
+        api_security_hex_if_different: Option<String>,
+        api_security: Option<AclContext>,
+        needed_as_parent: bool,
+    }
+    #[derive(Serialize)]
+    struct ContextReport {
+        corpus_sha256: String,
+        corpus_snapshot: ReferenceFileSnapshot,
+        requests: Vec<ContextRequest>,
+        priority_case_id: &'static str,
+        priority_original_sha256: String,
+        priority_expected_stored_references: u64,
+        priority_source_references: Vec<ContextFirstSource>,
+        objects: Vec<ContextObject>,
+        api_view_equals_stored_when_absent: bool,
+        parent_context_is_expectation_metadata_only: bool,
+    }
+    struct ContextPlan {
+        held: Held,
+        requests: Vec<ContextRequest>,
+        wanted: BTreeSet<Vec<String>>,
+        parents: BTreeSet<Vec<String>>,
+        priority_sha256: String,
+        priority_expected: u64,
+        priority_sources: Vec<ContextFirstSource>,
     }
     struct Held {
         file: File,
@@ -496,13 +586,352 @@ mod windows {
         }
     }
 
+    fn first_context(object: &Object) -> ContextFirstSource {
+        ContextFirstSource {
+            record_number: object.record_number,
+            sequence_number: object.sequence_number,
+            path: object.path.clone(),
+            directory: object.directory,
+            stored_security_sha256: hex::encode(Sha256::digest(&object.security)),
+            api_security_sha256: object
+                .api_security
+                .as_ref()
+                .filter(|api| *api != &object.security)
+                .map(|api| hex::encode(Sha256::digest(api))),
+        }
+    }
+    fn acl_context(sd: &[u8]) -> Result<AclContext> {
+        let layout = match security_descriptor::validate_with_limit(sd, MAX_SD) {
+            Ok(layout) => layout,
+            Err(error) => {
+                return Ok(AclContext {
+                    control: None,
+                    rm_control: None,
+                    dacl_revision: None,
+                    sacl_revision: None,
+                    dacl_ace_flags: vec![],
+                    sacl_ace_flags: vec![],
+                    layout_error: Some(error.to_string()),
+                });
+            }
+        };
+        let flags = |acl: AclLayout| -> Result<Vec<u8>> {
+            let Some(start) = acl.offset else {
+                return Ok(vec![]);
+            };
+            let end = start
+                .checked_add(acl.length)
+                .context("context ACL overflow")?;
+            let mut at = start + 8;
+            let mut values = Vec::with_capacity(acl.ace_count as usize);
+            for _ in 0..acl.ace_count {
+                let header = sd
+                    .get(at..at + 4)
+                    .context("context ACE header exceeds SD")?;
+                let length = u16::from_le_bytes(header[2..4].try_into()?) as usize;
+                ensure!(
+                    length >= 16 && at.checked_add(length).is_some_and(|n| n <= end),
+                    "context ACE exceeds ACL"
+                );
+                values.push(header[1]);
+                at += length;
+            }
+            Ok(values)
+        };
+        Ok(AclContext {
+            control: Some(layout.control),
+            rm_control: layout.rm_control,
+            dacl_revision: layout.dacl.revision,
+            sacl_revision: layout.sacl.revision,
+            dacl_ace_flags: flags(layout.dacl)?,
+            sacl_ace_flags: flags(layout.sacl)?,
+            layout_error: None,
+        })
+    }
+    impl ContextPlan {
+        fn want(
+            &mut self,
+            path: &[String],
+            leaf: bool,
+            retained: &mut CorpusBudget,
+            maximum: usize,
+        ) -> Result<()> {
+            ensure!(
+                path.iter()
+                    .all(|s| n2r_win32::shadow_names::valid_unicode_component(s))
+                    && path
+                        .iter()
+                        .try_fold(0usize, |units, part| {
+                            units
+                                .checked_add(part.encode_utf16().count())?
+                                .checked_add(1)
+                        })
+                        .is_some_and(|units| units < u16::MAX as usize / 2),
+                "context source path is outside the admitted namespace"
+            );
+            for end in 0..=path.len() {
+                if end == path.len() && !leaf {
+                    continue;
+                }
+                let prefix = path[..end].to_vec();
+                if !self.wanted.contains(&prefix) {
+                    ensure!(
+                        self.wanted.len() < maximum,
+                        "parent/leaf context count cap exceeded"
+                    );
+                    retained.charge(&prefix)?;
+                    self.wanted.insert(prefix.clone());
+                }
+                if end < path.len() {
+                    self.parents.insert(prefix);
+                }
+            }
+            Ok(())
+        }
+        fn open(args: &Args, retained: &mut CorpusBudget) -> Result<Option<Self>> {
+            let (path, sha) = match (&args.context_corpus, &args.context_corpus_sha256) {
+                (None, None) => return Ok(None),
+                (Some(path), Some(sha)) => (path, sha),
+                _ => anyhow::bail!("context corpus path and independent SHA are required together"),
+            };
+            let mut held = Held::open(path, sha, 2 * METADATA_CAP, &args.metadata_volume_guid)?;
+            held.file.seek(SeekFrom::Start(0))?;
+            let corpus: ContextCorpus =
+                serde_json::from_reader((&mut held.file).take(held.snapshot.file_bytes))?;
+            ensure!(
+                corpus.schema_version == 1
+                    && corpus.kind == "native-trust-full-sd-corpus-v1"
+                    && corpus.expected_pages_sha256 == args.expected_sha256
+                    && corpus.source_assessment_sha256 == args.source_assessment_sha256
+                    && (1..=512).contains(&corpus.descriptors.len()),
+                "context corpus does not bind these closed expected/assessment files"
+            );
+            let mut plan = Self {
+                held,
+                requests: vec![],
+                wanted: BTreeSet::new(),
+                parents: BTreeSet::new(),
+                priority_sha256: String::new(),
+                priority_expected: 0,
+                priority_sources: vec![],
+            };
+            let mut ids = BTreeSet::new();
+            for row in corpus.descriptors {
+                ensure!(
+                    ids.insert(row.id.clone()),
+                    "duplicate context corpus case ID"
+                );
+                digest(&row.original_sha256)?;
+                if row.source_context.stored_object_references == 0 {
+                    continue;
+                }
+                let source = row.source_context.first_source;
+                digest(&source.stored_security_sha256)?;
+                if let Some(api) = &source.api_security_sha256 {
+                    digest(api)?;
+                }
+                ensure!(source.sequence_number > 0, "context source sequence absent");
+                plan.want(&source.path, true, retained, args.max_unique_descriptors)?;
+                if row.id == "trust-0271" {
+                    plan.priority_sha256 = row.original_sha256.clone();
+                    plan.priority_expected = row.source_context.stored_object_references;
+                }
+                let request = ContextRequest {
+                    case_id: row.id,
+                    case_original_sha256: row.original_sha256,
+                    source,
+                };
+                retained.charge(&request)?;
+                plan.requests.push(request);
+            }
+            ensure!(
+                !plan.requests.is_empty()
+                    && plan.priority_expected > 0
+                    && plan.priority_expected <= args.max_unique_descriptors as u64,
+                "bounded stored0271 source context required"
+            );
+            plan.held.revalidate(2 * METADATA_CAP)?;
+            Ok(Some(plan))
+        }
+        fn discover_priority(
+            &mut self,
+            object: &Object,
+            args: &Args,
+            retained: &mut CorpusBudget,
+        ) -> Result<()> {
+            if hex::encode(Sha256::digest(&object.security)) != self.priority_sha256 {
+                return Ok(());
+            }
+            ensure!(
+                self.priority_sources.len() < self.priority_expected as usize,
+                "extra stored0271 references outside pinned corpus count"
+            );
+            self.want(&object.path, true, retained, args.max_unique_descriptors)?;
+            for alias in &object.additional_names {
+                self.want(alias, false, retained, args.max_unique_descriptors)?;
+            }
+            let source = first_context(object);
+            retained.charge(&source)?;
+            self.priority_sources.push(source);
+            Ok(())
+        }
+        fn finish(
+            self,
+            reader: &mut Reader,
+            header: &ExpectedTreePageHeader,
+            admission: SourceResourceAdmission,
+            maximum_chunk: usize,
+            retained: &mut CorpusBudget,
+        ) -> Result<ContextReport> {
+            ensure!(
+                self.priority_sources.len() as u64 == self.priority_expected,
+                "incomplete stored0271 reference coverage"
+            );
+            let mut found = BTreeMap::new();
+            walk_objects(reader, header, admission, maximum_chunk, |object| {
+                if !self.wanted.contains(&object.path) {
+                    return Ok(());
+                }
+                ensure!(
+                    !self.parents.contains(&object.path) || object.directory,
+                    "requested parent context is not a directory"
+                );
+                let source = first_context(object);
+                let api = object
+                    .api_security
+                    .as_ref()
+                    .filter(|api| *api != &object.security);
+                let value = ContextObject {
+                    record_number: object.record_number,
+                    sequence_number: object.sequence_number,
+                    path: object.path.clone(),
+                    additional_names: object.additional_names.clone(),
+                    directory: object.directory,
+                    attributes: object.attributes,
+                    stored_times: object.stored_times,
+                    stored_times_decimal: object.stored_times.map(|time| time.to_string()),
+                    reparse: object.reparse.clone(),
+                    stored_security_sha256: source.stored_security_sha256,
+                    stored_security_hex: hex::encode(&object.security),
+                    stored_security: acl_context(&object.security)?,
+                    api_security_sha256: source.api_security_sha256,
+                    api_security_hex_if_different: api.map(hex::encode),
+                    api_security: api.map(|sd| acl_context(sd)).transpose()?,
+                    needed_as_parent: self.parents.contains(&object.path),
+                };
+                retained.charge(&value)?;
+                ensure!(
+                    found.insert(object.path.clone(), value).is_none(),
+                    "duplicate expected context path"
+                );
+                Ok(())
+            })?;
+            ensure!(
+                found.len() == self.wanted.len(),
+                "one or more requested source ancestor/leaf contexts are absent"
+            );
+            for request in &self.requests {
+                let actual = found
+                    .get(&request.source.path)
+                    .context("corpus source context missing")?;
+                ensure!(
+                    actual.record_number == request.source.record_number
+                        && actual.sequence_number == request.source.sequence_number
+                        && actual.directory == request.source.directory
+                        && actual.stored_security_sha256 == request.source.stored_security_sha256
+                        && actual.api_security_sha256 == request.source.api_security_sha256,
+                    "corpus first_source differs from exact closed expected object"
+                );
+            }
+            self.held.revalidate(2 * METADATA_CAP)?;
+            Ok(ContextReport {
+                corpus_sha256: hex::encode(self.held.sha256),
+                corpus_snapshot: self.held.snapshot,
+                requests: self.requests,
+                priority_case_id: "trust-0271",
+                priority_original_sha256: self.priority_sha256,
+                priority_expected_stored_references: self.priority_expected,
+                priority_source_references: self.priority_sources,
+                objects: found.into_values().collect(),
+                api_view_equals_stored_when_absent: true,
+                parent_context_is_expectation_metadata_only: true,
+            })
+        }
+    }
+    // Same immutable N2REXP01 framing checks as the inventory pass, without
+    // retaining unrelated source objects or asking a source FSD for anything.
+    fn walk_objects(
+        reader: &mut Reader,
+        header: &ExpectedTreePageHeader,
+        admission: SourceResourceAdmission,
+        maximum_chunk: usize,
+        mut consume: impl FnMut(&Object) -> Result<()>,
+    ) -> Result<()> {
+        let (mut cursor, mut compact, mut files, mut directories, mut streams) =
+            (1u64, 0u64, 0u64, 0u64, 0u64);
+        for ordinal in 0..header.total_objects {
+            let mut bytes = Vec::new();
+            let mut chunks = 0u64;
+            let mut previous = maximum_chunk;
+            while cursor < reader.len() {
+                let item = reader.get(cursor)?;
+                ensure!(item.key.len() == 16, "context expected key width differs");
+                let object = u64::from_be_bytes(item.key[..8].try_into()?);
+                if object != ordinal {
+                    ensure!(
+                        chunks > 0 && object == ordinal + 1,
+                        "context object order differs"
+                    );
+                    break;
+                }
+                ensure!(
+                    u64::from_be_bytes(item.key[8..].try_into()?) == chunks
+                        && previous == maximum_chunk,
+                    "context chunk order/size differs"
+                );
+                let raw = decode_chunk(&item.payload, maximum_chunk)?;
+                previous = raw.len();
+                ensure!(
+                    bytes
+                        .len()
+                        .checked_add(raw.len())
+                        .is_some_and(|n| n as u64 <= admission.budget.max_row_bytes),
+                    "context object exceeds admitted row"
+                );
+                bytes.try_reserve_exact(raw.len())?;
+                bytes.extend_from_slice(&raw);
+                chunks += 1;
+                cursor += 1;
+            }
+            ensure!(chunks > 0, "context expected object has no chunks");
+            compact = compact
+                .checked_add(bytes.len() as u64)
+                .filter(|n| *n <= admission.semantic_byte_budget())
+                .context("context semantic-byte bound exceeded")?;
+            let object: Object = serde_json::from_slice(&bytes)?;
+            if object.directory {
+                directories += 1
+            } else {
+                files += 1
+            };
+            streams += object.data_streams().count() as u64;
+            consume(&object)?;
+        }
+        ensure!(cursor == reader.len(), "unaccounted context chunks");
+        admission.validate_tree(files, directories, streams)?;
+        reader.revalidate()?;
+        Ok(())
+    }
+
     pub fn run() -> Result<()> {
         let args = Args::parse();
         ensure!(
             (1..=16_384).contains(&args.max_unique_descriptors)
                 && (4096..=16 * 1024 * 1024).contains(&args.max_output_bytes)
                 && args.max_file_bytes > 192
-                && args.max_row_bytes > 0,
+                && args.max_row_bytes > 0
+                && args.context_corpus.is_some() == args.context_corpus_sha256.is_some()
+                && (args.context_corpus.is_none() || args.max_output_bytes <= 8 * 1024 * 1024),
             "explicit extractor limits differ"
         );
         n2r_win32::layout::guid_bytes(&args.metadata_volume_guid)?;
@@ -536,6 +965,13 @@ mod windows {
             .and_then(|n| n.checked_add(u64::from(admission.budget.page_bytes) * 4))
             .and_then(|n| n.checked_add(args.max_output_bytes as u64 * 16))
             .and_then(|n| n.checked_add(METADATA_CAP * 32 + 4 * 1024 * 1024))
+            .and_then(|n| {
+                n.checked_add(if args.context_corpus.is_some() {
+                    METADATA_CAP * 64
+                } else {
+                    0
+                })
+            })
             .context("extractor RAM bound overflow")?;
         ensure!(
             ram <= args.ram_bytes,
@@ -572,6 +1008,7 @@ mod windows {
             used: 0,
             maximum: args.max_output_bytes,
         };
+        let mut context = ContextPlan::open(&args, &mut retained)?;
         let (mut cursor, mut compact, mut files, mut directories, mut streams) =
             (1u64, 0u64, 0u64, 0u64, 0u64);
         for ordinal in 0..header.total_objects {
@@ -641,16 +1078,30 @@ mod windows {
                     &mut retained,
                 )?;
             }
+            if let Some(context) = context.as_mut() {
+                context.discover_priority(&object, &args, &mut retained)?;
+            }
         }
         ensure!(
             cursor == reader.len(),
             "unaccounted expected objects/chunks"
         );
         admission.validate_tree(files, directories, streams)?;
+        let context_report = context
+            .map(|plan| {
+                plan.finish(
+                    &mut reader,
+                    &header,
+                    admission,
+                    maximum_chunk,
+                    &mut retained,
+                )
+            })
+            .transpose()?;
         reader.revalidate()?;
         expected.revalidate(args.max_file_bytes)?;
         assessment.revalidate(METADATA_CAP)?;
-        let report = serde_json::json!({"kind":"closed-expected-process-trust-inventory-v1",
+        let mut report = serde_json::json!({"kind":"closed-expected-process-trust-inventory-v1",
             "expected_file":expected.snapshot,"expected_sha256":args.expected_sha256,
             "assessment_sha256":args.source_assessment_sha256,"source_inspection_sha256":hex::encode(admission.source_inspection_sha256),
             "objects":header.total_objects,"files":files,"directories":directories,"streams":streams,
@@ -659,6 +1110,9 @@ mod windows {
             "source_device_opens":0,"source_volume_opens":0,"setter_calls":0,"metadata_only":true,
             "native_preservation_qualified":false,"resource_admission_is_expectation_metadata_only":true,
             "explicit_ram_cap":args.ram_bytes,"working_ram_envelope":ram,"max_output_bytes":args.max_output_bytes});
+        if let Some(context) = context_report {
+            report["source_parent_context"] = serde_json::to_value(context)?;
+        }
         let mut count = Count {
             bytes: 0,
             maximum: args.max_output_bytes - 1,

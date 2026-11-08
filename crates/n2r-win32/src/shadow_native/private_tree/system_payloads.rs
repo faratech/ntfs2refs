@@ -3,6 +3,47 @@
 use super::super::input_domain::{InputDomain, ObjectInput, SliceInputs};
 use super::*;
 
+pub(super) fn validate_input_domain(
+    input: &impl InputDomain,
+    existing: impl Fn(&[String]) -> bool,
+) -> io::Result<SystemPayloadInputPreflight> {
+    let system = "System Volume Information";
+    let mut total = 0u64;
+    let mut result = SystemPayloadInputPreflight::default();
+    for index in 0..input.len() {
+        let owner = input.object(index)?;
+        let item = owner.input();
+        if !item.components.first().is_some_and(|s| s == system) {
+            continue;
+        }
+        if item.directory {
+            result.directories += 1;
+            if item.components != [system] {
+                return Err(invalid("nested system directory unsupported"));
+            }
+        } else if item.components.len() != 2
+            || (existing(item.components)
+                && !formatter_cache_name(&item.components[1]))
+            || item.logical_length() > 1024 * 1024
+            || item.expected_sha256.is_none()
+        {
+            return Err(invalid(
+                "system payload outside bounded admitted-source profile",
+            ));
+        } else {
+            result.files += 1;
+            total = total
+                .checked_add(item.logical_length())
+                .ok_or_else(|| invalid("system supply total overflow"))?;
+        }
+    }
+    if total > 3 * 1024 * 1024 {
+        return Err(invalid("system payload budget exceeded"));
+    }
+    result.logical_bytes = total;
+    Ok(result)
+}
+
 pub(super) fn run(
     tree: &mut PrivateTree,
     input: &[Input<'_>],
@@ -26,35 +67,8 @@ pub(super) fn run_domain(
         ));
     }
     let system = "System Volume Information";
-    let mut total = 0u64;
-    for index in 0..input.len() {
-        let owner = input.object(index)?;
-        let item = owner.input();
-        if !item.components.first().is_some_and(|s| s == system) {
-            continue;
-        }
-        if item.directory {
-            if item.components != [system] {
-                return Err(invalid("nested system directory unsupported"));
-            }
-        } else if item.components.len() != 2
-            || (tree.system_identities.contains_key(item.components)
-                && !formatter_cache_name(&item.components[1]))
-            || item.logical_length() > 1024 * 1024
-            || item.expected_sha256.is_none()
-        {
-            return Err(invalid(
-                "system payload outside bounded admitted-source profile",
-            ));
-        } else {
-            total = total
-                .checked_add(item.logical_length())
-                .ok_or_else(|| invalid("system supply total overflow"))?;
-        }
-    }
-    if total > 3 * 1024 * 1024 {
-        return Err(invalid("system payload budget exceeded"));
-    }
+    let checked = validate_input_domain(input, |path| tree.system_identities.contains_key(path))?;
+    let total = checked.logical_bytes;
     tree.system_payloads_started = true;
     let root = format!("{}\\", tree.pair.shadow.volume_path()?);
     let private = private_descriptor()?;

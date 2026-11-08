@@ -1363,13 +1363,72 @@ fn allocate_domain(
     allocate_domain_with_memory(pair, input, enrollment, resource_profile, None)
 }
 
-fn allocate_domain_with_memory(
-    pair: &GeneralSourceShadowBinding,
+/// Descriptive eligibility only. No native handles, enrollment, write owner or
+/// source-preservation proof is issued. Filesystem-dependent checks still run
+/// in the actual constructor and final protected observations.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ConstructorInputPreflight {
+    pub objects: usize,
+    pub files: usize,
+    pub directories: usize,
+    pub data_streams: usize,
+    pub logical_bytes: u64,
+    pub preflight_index_bytes: Option<u64>,
+    pub source_ranges: Option<usize>,
+    pub system_payload: SystemPayloadInputPreflight,
+}
+
+/// Pure source-side system-stream eligibility. Existing formatter collisions
+/// and actual system-file identities require the live constructor separately.
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub struct SystemPayloadInputPreflight {
+    pub directories: usize,
+    pub files: usize,
+    pub logical_bytes: u64,
+}
+
+/// Independently check source system-stream eligibility even if another
+/// constructor check refuses first. Live formatter collisions remain deferred.
+pub fn preflight_system_payload_input_domain(
     input: &impl InputDomain,
-    enrollment: Option<ConstructionEnrollment<'_>>,
+) -> io::Result<SystemPayloadInputPreflight> {
+    system_payloads::validate_input_domain(input, |_| false)
+}
+
+/// Run exactly the constructor's bounded input checks on a held immutable
+/// domain. `volume_root` supplies path syntax/length only, not target identity.
+/// Descriptor validation includes native in-memory SD/ACL validation; this
+/// function never opens a device/volume/file or invokes a native setter.
+pub fn preflight_resource_input_domain(
+    input: &impl InputDomain,
+    admission: crate::tree_resources::SourceResourceAdmission,
+    partition_bytes: u64,
+    volume_root: &str,
+    memory: &dyn report_memory::ReportMemoryAccountant,
+) -> io::Result<ConstructorInputPreflight> {
+    admission.validate()?;
+    if partition_bytes == 0 || !partition_bytes.is_multiple_of(4096)
+        || partition_bytes > i64::MAX as u64
+        || !volume_root.starts_with("\\\\?\\Volume{") || !volume_root.ends_with("}\\")
+    {
+        return Err(invalid("pure constructor geometry or volume-root syntax differs"));
+    }
+    let guid = &volume_root[11..volume_root.len() - 2];
+    crate::layout::guid_bytes(guid)?;
+    preflight_input_domain(
+        input, partition_bytes, volume_root,
+        Some(crate::attestation::ResourceProfile::ResourceBoundedV4(Some(admission))),
+        Some(memory),
+    )
+}
+
+fn preflight_input_domain(
+    input: &impl InputDomain,
+    partition_bytes: u64,
+    resource_root: &str,
     resource_profile: Option<crate::attestation::ResourceProfile>,
-    memory: Option<memory::Owner>,
-) -> io::Result<PrivateTree> {
+    memory: Option<&dyn report_memory::ReportMemoryAccountant>,
+) -> io::Result<ConstructorInputPreflight> {
     let admission = resource_profile
         .map(crate::attestation::ResourceProfile::count_admission)
         .transpose()?
@@ -1402,22 +1461,20 @@ fn allocate_domain_with_memory(
         ));
     }
     let preflight_plan = memory
-        .as_ref()
         .map(|_| super::domain_memory::input_plan(input))
         .transpose()?;
-    let preflight_ram = match (&memory, &preflight_plan) {
-        (Some(memory), Some(plan)) => Some(memory.working(plan.preflight_bytes)?),
+    let preflight_ram = match (memory, &preflight_plan) {
+        (Some(memory), Some(plan)) => Some(memory.reserve(plan.preflight_bytes)?),
         _ => None,
     };
     if input.is_empty() || input.len() > maximum_objects {
         return Err(invalid("private tree root or object bound differs"));
     }
-    let resource_root = format!("{}\\", pair.shadow.volume_path()?);
     if let Some(admission) = resource_admission {
         super::hard_links::validate_resource_domain(
             input,
             admission.maximum_namespace_names()?,
-            &resource_root,
+            resource_root,
             crate::shadow_names::valid_unicode_component,
         )?;
     } else {
@@ -1437,13 +1494,13 @@ fn allocate_domain_with_memory(
         if resource_admission.is_some() {
             streams::validate_resource(
                 std::slice::from_ref(item),
-                pair.shadow.identity.partition_bytes,
+                partition_bytes,
                 maximum_streams,
             )
         } else {
             streams::validate(
                 std::slice::from_ref(item),
-                pair.shadow.identity.partition_bytes,
+                partition_bytes,
             )
         }
     })?;
@@ -1470,7 +1527,7 @@ fn allocate_domain_with_memory(
         let item = owner.input();
         let key = crate::shadow_names::conservative_path_key(item.components);
         if resource_admission.map_or(item.components.len() > 16, |_| {
-            !super::hard_links::resource_path_valid(&resource_root, item.components)
+            !super::hard_links::resource_path_valid(resource_root, item.components)
         }) || item
             .components
             .iter()
@@ -1522,16 +1579,52 @@ fn allocate_domain_with_memory(
         )?;
         admission.validate_constructor_metadata(&DomainMetadata(input))?;
     }
-    if total > pair.shadow.identity.partition_bytes
+    if total > partition_bytes
         || (admission.is_none()
             && resource_admission.is_none()
             && (directories.len() > 256 || input.len() - directories.len() > 1024))
     {
         return Err(invalid("private tree geometry or object budget exceeded"));
     }
+    let result = ConstructorInputPreflight {
+        objects: input.len(),
+        files: input.len() - directories.len(),
+        directories: directories.len(),
+        data_streams: stream_count,
+        logical_bytes: total,
+        preflight_index_bytes: preflight_plan.as_ref().map(|plan| plan.preflight_bytes),
+        source_ranges: preflight_plan.as_ref().map(|plan| plan.source_ranges),
+        system_payload: system_payloads::validate_input_domain(input, |_| false)?,
+    };
     drop(names);
     drop(directories);
     drop(preflight_ram);
+    Ok(result)
+}
+
+fn allocate_domain_with_memory(
+    pair: &GeneralSourceShadowBinding,
+    input: &impl InputDomain,
+    enrollment: Option<ConstructionEnrollment<'_>>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
+    memory: Option<memory::Owner>,
+) -> io::Result<PrivateTree> {
+    let payer = memory.as_ref().map(|owner| owner.payer());
+    let resource_root = format!("{}\\", pair.shadow.volume_path()?);
+    preflight_input_domain(
+        input, pair.shadow.identity.partition_bytes, &resource_root,
+        resource_profile, payer.as_deref(),
+    )?;
+    let resource_admission = resource_profile
+        .map(crate::attestation::ResourceProfile::resource_admission)
+        .transpose()?
+        .flatten();
+    let maximum_objects = if let Some(value) = resource_admission {
+        usize::try_from(value.objects()?).map_err(io::Error::other)?
+    } else {
+        resource_profile.map(crate::attestation::ResourceProfile::count_admission)
+            .transpose()?.flatten().map_or(1280, |value| value.object_slots as usize)
+    };
     let mut events = Vec::new();
     let opening = (|| {
         let source_before = if let Some(owned) = enrollment

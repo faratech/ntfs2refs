@@ -950,8 +950,9 @@ impl ResidentMetadataCache {
         // Only canonical metadata stores qualify; source payload ranges never do.
         let divisor = if purpose == *b"N2RFILE1" {
             4
-        } else if purpose == *b"N2RNSD01" || purpose == *b"N2RNSE01" {
-            // Namespace joins revisit entries in filename and MFT order.
+        } else if purpose == *b"N2RNSD01" || purpose == *b"N2RNSE01"
+            || purpose == *b"N2RSCEN1" || purpose == *b"N2RSLEG1" || purpose == *b"N2RSBND1" {
+            // Namespace/security joins revisit entries in different key orders.
             // Keep modest complete tables cached when the SAME aggregate
             // ledger can pay for them; refusal still uses paged fallback.
             32
@@ -1138,7 +1139,8 @@ impl PagedMetadataRange {
         reader.revalidate()?;
         let created = scratch.reader_lease(pin)?;
         let second_chunk_cache = (pin.purpose == *b"N2RFILE1"
-            || pin.purpose == *b"N2RNSD01" || pin.purpose == *b"N2RNSE01")
+            || pin.purpose == *b"N2RNSD01" || pin.purpose == *b"N2RNSE01"
+            || pin.purpose == *b"N2RSCEN1" || pin.purpose == *b"N2RSLEG1" || pin.purpose == *b"N2RSBND1")
             && footer.logical_bytes > u64::from(declared_chunk)
             && u64::from(declared_chunk) <= scratch.budget().ram_bytes / 64;
         // Both decoded slots were prepaid above, including the old/new overlap

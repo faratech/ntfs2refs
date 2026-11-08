@@ -3,6 +3,7 @@ param([Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{32}\z')][string]$RunId,
  [ValidatePattern('\A[0-9a-f]{64}\z')][string]$CandidateSha='1f5fe77e6e53d34dbc499b263b6b2571ff54c1fe6cb7b84a58585c03699b3dbb',
  [long]$ExpectedPartitionBytes=66238545920L,
  [long]$ExpectedControlBootUnixMs=0,
+ [long]$MinimumForecastMainRamBytes=0,
  [guid]$ExpectedQualificationCheckpointId=[guid]::Empty,
  [switch]$ObserveOnly)
 $ErrorActionPreference='Stop';Set-StrictMode -Version Latest
@@ -44,8 +45,8 @@ try{
   $workerSha=(Get-FileHash -LiteralPath $worker -Algorithm SHA256).Hash.ToLowerInvariant()
   Copy-Item -LiteralPath $binary -Destination (Join-Path $guestRoot 'ntfs2refs.exe') -ToSession $session
   Copy-Item -LiteralPath $worker -Destination (Join-Path $guestRoot 'worker.ps1') -ToSession $session
-  Invoke-Command -Session $session -ArgumentList $guestRoot,$RunId,$candidateSha,$workerSha,$SourceCommit,$ExpectedPartitionBytes,$ExpectedControlBootUnixMs -ScriptBlock {
-   param($root,$id,$exeSha,$workerSha,$commit,$partitionBytes,$bootMs)
+  Invoke-Command -Session $session -ArgumentList $guestRoot,$RunId,$candidateSha,$workerSha,$SourceCommit,$ExpectedPartitionBytes,$ExpectedControlBootUnixMs,$MinimumForecastMainRamBytes -ScriptBlock {
+   param($root,$id,$exeSha,$workerSha,$commit,$partitionBytes,$bootMs,$minimumMainRam)
    $task='N2R-WindowsConvert-'+$id;$worker=Join-Path $root 'worker.ps1'
    if(Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue){throw 'Conversion task already exists'}
    if((Get-FileHash -LiteralPath $worker -Algorithm SHA256).Hash.ToLowerInvariant()-cne$workerSha-or(Get-FileHash -LiteralPath (Join-Path $root 'ntfs2refs.exe') -Algorithm SHA256).Hash.ToLowerInvariant()-cne$exeSha){throw 'Guest candidate or worker differs'}
@@ -62,6 +63,14 @@ try{
    $postCopy=@{kind='post-copy-C-scratch-forecast';available_to_caller=$free;keep=$keep;evidence_ceiling=$evidence;staging_allowance=67108864L;Windows_repair_scratch=134217728L;estimated_main_scratch=$main;estimated_native_wire_maximum=$wire;estimated_source_group_maximum=$sourceShare;required_prior_native_wire=2573591778L;required_prior_source_group=1625747056L;forecast_only=$true;actual_CLI_admission_still_required=$true;source_write_authority=$false}
    $postCopy|ConvertTo-Json -Depth 4|Set-Content -LiteralPath (Join-Path $root 'post-copy-scratch-forecast.json') -Encoding UTF8
    if($wire-lt2573591778L-or$sourceShare-lt1625747056L){throw 'Post-copy C scratch cannot cover the measured native/source evidence under unchanged budgets'}
+   # This is a case-specific early forecast, not a product RAM cap or writer
+   # admission. It prevents a known constructor reservation failure from
+   # consuming another complete native capture before the CLI checks it.
+   if($minimumMainRam-lt0){throw 'Nonnegative constructor RAM forecast required'}
+   $availableRam=[long](Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory*1024
+   $forecastMainRam=[long][Math]::Ceiling([double]$availableRam*2/3)-5256192L-100663296L
+   @{kind='post-copy-constructor-RAM-forecast';available_physical_bytes=$availableRam;forecast_main_ram_bytes=$forecastMainRam;minimum_case_forecast_bytes=$minimumMainRam;diagnostic_only=$true;actual_CLI_admission_still_required=$true;source_write_authority=$false}|ConvertTo-Json -Depth 4|Set-Content -LiteralPath (Join-Path $root 'post-copy-RAM-forecast.json') -Encoding UTF8
+   if($forecastMainRam-lt$minimumMainRam){throw 'Post-copy RAM forecast cannot cover the measured constructor peak and reserve; native conversion was not launched'}
    $action=New-ScheduledTaskAction -Execute 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' -Argument ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File '+$worker+' -Root '+$root+' -CandidateSha '+$exeSha+' -SourceCommit '+$commit+' -ExpectedPartitionBytes '+$partitionBytes+' -ExpectedControlBootUnixMs '+$bootMs)
    $principal=New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
    $settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew

@@ -16,8 +16,9 @@ use n2r_win32::{
         observe_general_journal_file_with_profile,
     },
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::{
     fs::{File, OpenOptions},
     io::{self, BufWriter, Read, Seek, SeekFrom, Write},
@@ -71,6 +72,96 @@ pub struct ShadowSecurityOracleReceipt {
     pub admitted_ram_bytes: u64,
     pub maximum_artifact_bytes: u64,
     pub native_events: Vec<NativeEvent>,
+    pub requested_descriptors: usize,
+    pub creator_files_verified: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub creator_file_bindings: Vec<OracleCreatorFile>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub corpus_input_pins: Option<OracleCorpusInputPins>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct OracleCorpusInputPins {
+    pub corpus_sha256: String,
+    pub creator_manifest_sha256: String,
+    pub corpus_snapshot: n2r_win32::reference_file::ReferenceFileSnapshot,
+    pub creator_manifest_snapshot: n2r_win32::reference_file::ReferenceFileSnapshot,
+    pub corpus_descriptor_contexts: usize,
+    pub physical_stored_descriptors: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OracleCreatorFile {
+    pub id: String,
+    pub original_sha256: String,
+    pub components: Vec<String>,
+    pub directory: bool,
+    pub file_id_info_hex: String,
+}
+
+fn verify_creator_files(
+    target: &GeneralDiskBinding,
+    root: &str,
+    files: &[OracleCreatorFile],
+    replacements: &[TrustLabelPlaceholder],
+) -> Result<()> {
+    ensure!(
+        n2r_win32::shadow_names::valid_unicode_component(root)
+            && root.encode_utf16().count() <= 128
+            && files.len() == replacements.len(),
+        "bounded complete fresh creator root required"
+    );
+    let volume = target.volume_path()?;
+    let root_path = format!("{volume}\\{root}");
+    let open = |path: &str| {
+        OpenOptions::new()
+            .access_mode(0x80)
+            .share_mode(3)
+            .custom_flags(0x0220_0000)
+            .open(path)
+    };
+    let held_root = open(&root_path)?;
+    ensure!(
+        held_root.metadata()?.is_dir()
+            && held_root.metadata()?.file_attributes() & 0x400 == 0
+            && n2r_win32::file_storage::final_path_guid(&held_root)?
+                .eq_ignore_ascii_case(&root_path),
+        "fresh creator root is not the actual ordinary target directory"
+    );
+    let mut ids = BTreeSet::new();
+    let mut names = BTreeSet::new();
+    for (file, replacement) in files.iter().zip(replacements) {
+        ensure!(
+            file.components.len() == 2
+                && file.components[0] == root
+                && file
+                    .components
+                    .iter()
+                    .all(|s| n2r_win32::shadow_names::valid_unicode_component(s)
+                        && s.encode_utf16().count() <= 128)
+                && file.file_id_info_hex.len() == 48
+                && file
+                    .file_id_info_hex
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                && file.original_sha256 == hex::encode(Sha256::digest(&replacement.original))
+                && ids.insert(file.file_id_info_hex.clone())
+                && names.insert(file.components.clone()),
+            "creator file mapping, identity uniqueness or original descriptor differs"
+        );
+        let path = format!("{volume}\\{}", file.components.join("\\"));
+        let held = open(&path)?;
+        let metadata = held.metadata()?;
+        ensure!(
+            metadata.is_dir() == file.directory
+                && metadata.file_attributes() & 0x400 == 0
+                && n2r_win32::file_storage::file_id_info(&held)? == file.file_id_info_hex
+                && n2r_win32::file_storage::final_path_guid(&held)?.eq_ignore_ascii_case(&path),
+            "actual fresh creator file ID, type, root or no-reparse binding differs"
+        );
+    }
+    Ok(())
 }
 
 struct Candidate<'a> {
@@ -212,6 +303,56 @@ pub fn qualify_owned_shadow(
     output: &Path,
     replacements: &[TrustLabelPlaceholder],
 ) -> Result<ShadowSecurityOracleReceipt> {
+    ensure!(
+        replacements.len() == 1,
+        "legacy oracle requires one descriptor"
+    );
+    qualify_owned_shadow_inner(
+        target,
+        expected_created_disk_guid,
+        journal_binding,
+        output,
+        replacements,
+        None,
+        None,
+    )
+}
+
+#[doc(hidden)]
+pub fn qualify_owned_shadow_corpus(
+    target: GeneralDiskBinding,
+    expected_created_disk_guid: &str,
+    journal_binding: &GeneralJournalStorageBinding,
+    output: &Path,
+    replacements: &[TrustLabelPlaceholder],
+    creator_root: &str,
+    creator_files: &[OracleCreatorFile],
+    input_pins: &OracleCorpusInputPins,
+) -> Result<ShadowSecurityOracleReceipt> {
+    ensure!(
+        (1..=512).contains(&replacements.len()) && creator_files.len() == replacements.len(),
+        "complete one-to-512 descriptor corpus and creator bindings required"
+    );
+    qualify_owned_shadow_inner(
+        target,
+        expected_created_disk_guid,
+        journal_binding,
+        output,
+        replacements,
+        Some((creator_root, creator_files)),
+        Some(input_pins),
+    )
+}
+
+fn qualify_owned_shadow_inner(
+    target: GeneralDiskBinding,
+    expected_created_disk_guid: &str,
+    journal_binding: &GeneralJournalStorageBinding,
+    output: &Path,
+    replacements: &[TrustLabelPlaceholder],
+    creators: Option<(&str, &[OracleCreatorFile])>,
+    input_pins: Option<&OracleCorpusInputPins>,
+) -> Result<ShadowSecurityOracleReceipt> {
     target.validate()?;
     journal_binding.validate()?;
     let guid = n2r_win32::layout::guid_bytes;
@@ -227,7 +368,7 @@ pub fn qualify_owned_shadow(
             && journal_binding.disk.disk_number != target.disk_number
             && guid(&journal_binding.disk.identity.disk_guid)? != guid(&target.identity.disk_guid)?
             && guid(&journal_binding.disk.volume_guid)? != guid(&target.volume_guid)?
-            && replacements.len() == 1,
+            && (1..=512).contains(&replacements.len()),
         "oracle scope differs from the explicitly created independent dedicated R: disk"
     );
     let current = n2r_win32::current_windows_directory()?;
@@ -274,6 +415,9 @@ pub fn qualify_owned_shadow(
             && discovered.windows_disk_number == journal_binding.disk.disk_number,
         "fresh target or actual current C: native binding differs"
     );
+    if let Some((root, files)) = creators {
+        verify_creator_files(&target, root, files, replacements)?;
+    }
     std::fs::create_dir(output)?;
     parents.insert(0, hold_parents(output)?.remove(0));
     let profile = JournalProfile::from_schema_and_capacity(3, Some(JOURNAL_BYTES))?;
@@ -382,6 +526,9 @@ pub fn qualify_owned_shadow(
         journal: &'a JournalFileSnapshot,
         ticket: &'a sj::SelectedTicket,
         plan: &'a SecurityPatchPlan,
+        creator_root: Option<&'a str>,
+        creator_files: Option<&'a [OracleCreatorFile]>,
+        corpus_input_pins: Option<&'a OracleCorpusInputPins>,
     }
     let pin_path = output.join("security-oracle-prepared.json");
     let (_pin, pin_sha256, pin_bytes) = persist(
@@ -393,6 +540,9 @@ pub fn qualify_owned_shadow(
             journal: &prepared_journal,
             ticket: &ticket,
             plan: &plan,
+            creator_root: creators.map(|(root, _)| root),
+            creator_files: creators.map(|(_, files)| files),
+            corpus_input_pins: input_pins,
         },
         PIN_BYTES,
     )?;
@@ -468,6 +618,9 @@ pub fn qualify_owned_shadow(
         ticket.journal_length,
     )?);
     native_step(&mut events, |batch| writer.bring_online(batch))?;
+    if let Some((root, files)) = creators {
+        verify_creator_files(&target, root, files, replacements)?;
+    }
     let receipt = ShadowSecurityOracleReceipt {
         kind: "owned-native-shadow-security-oracle-HND-online-v1",
         target,
@@ -492,6 +645,10 @@ pub fn qualify_owned_shadow(
         admitted_ram_bytes: RAM_BYTES,
         maximum_artifact_bytes: ARTIFACT_BYTES,
         native_events: events,
+        requested_descriptors: replacements.len(),
+        creator_files_verified: creators.map_or(0, |(_, files)| files.len()),
+        creator_file_bindings: creators.map_or_else(Vec::new, |(_, files)| files.to_vec()),
+        corpus_input_pins: input_pins.cloned(),
     };
     let _closed = persist(
         &output.join("security-oracle-closed.json"),

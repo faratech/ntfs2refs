@@ -1,4 +1,4 @@
-//! Fixed-width preparation and restoration of the measured process-trust ACE.
+//! Fixed-width preparation and restoration of observed process-trust ACE profiles.
 //!
 //! This module only describes byte replacements. It never opens a filesystem,
 //! grants native-write authority, or treats a placeholder as preserved security.
@@ -28,10 +28,35 @@ const TRUST_ACE_TYPE: u8 = 0x14;
 // Native ReFS preserves the measured callback audit's valid file-access mask.
 // Type 0x02 needs a compensating reserved bit that Windows strips on restore.
 const AUDIT_ACE_TYPE: u8 = 0x0d;
-const TRUST_ACE: [u8; 24] = [
+const TRUST_ACE_BYTES: usize = 24;
+const PPL_TRUST_ACE: [u8; TRUST_ACE_BYTES] = [
     0x14, 0x03, 0x18, 0x00, 0xa9, 0x01, 0x1f, 0x00, 0x01, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x13,
     0x00, 0x02, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00,
 ];
+const ZERO_TRUST_ACE: [u8; TRUST_ACE_BYTES] = [
+    0x14, 0x03, 0x18, 0x00, 0xff, 0xff, 0xff, 0x00, 0x01, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x13,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+];
+const fn with_flags(mut ace: [u8; TRUST_ACE_BYTES], flags: u8) -> [u8; TRUST_ACE_BYTES] {
+    ace[1] = flags;
+    ace
+}
+// Exact source corpus SHA-256:
+// fa7590b3538547d2742ad239bced1a4a5c86a2f3758ec77005d32473c6b1e7c5.
+// These seven tuples admit byte-transform candidates only. Native callback
+// mask/flag preservation and canonical raw restoration require qualification.
+const OBSERVED_TRUST_ACES: [[u8; TRUST_ACE_BYTES]; 7] = [
+    with_flags(PPL_TRUST_ACE, 0x00),
+    with_flags(PPL_TRUST_ACE, 0x03),
+    with_flags(PPL_TRUST_ACE, 0x10),
+    with_flags(PPL_TRUST_ACE, 0x13),
+    with_flags(ZERO_TRUST_ACE, 0x03),
+    with_flags(ZERO_TRUST_ACE, 0x10),
+    with_flags(ZERO_TRUST_ACE, 0x13),
+];
+fn observed_trust_ace(bytes: &[u8]) -> bool {
+    OBSERVED_TRUST_ACES.iter().any(|profile| bytes == profile)
+}
 const ACE_PREFIX_BYTES: usize = 8;
 
 /// Complete descriptor identities, retained for exact matching in the frozen
@@ -96,13 +121,18 @@ impl ConstructorSecurityViews {
             .map(|original| -> Result<Vec<u8>> {
                 let original_layout = layout(original, maximum_bytes)?;
                 let at = original_trust_ace(original, original_layout)?.ok_or_else(|| {
-                    invalid("original API view lacks the measured process-trust ACE")
+                    invalid("original API view lacks an observed process-trust ACE")
                 })?;
                 let mut placeholder = original.to_vec();
                 placeholder[at] = AUDIT_ACE_TYPE;
                 placeholder[at + 4..at + 8].copy_from_slice(&stored.placeholder_mask.to_le_bytes());
-                let temporary_layout =
-                    validate_placeholder(&placeholder, maximum_bytes, at, stored.placeholder_mask)?;
+                let temporary_layout = validate_placeholder(
+                    &placeholder,
+                    maximum_bytes,
+                    at,
+                    stored.placeholder_mask,
+                    span(original, at, TRUST_ACE_BYTES)?,
+                )?;
                 ensure!(
                     original_layout == temporary_layout,
                     "constructor API placeholder changes descriptor layout"
@@ -216,7 +246,7 @@ fn layout(bytes: &[u8], maximum_bytes: u64) -> Result<Layout> {
     Ok(layout)
 }
 
-/// Return the unique measured trust ACE, refusing every other type-20 shape or
+/// Return the unique observed trust ACE, refusing every other type-20 shape or
 /// placement. Other already-validated ACE bytes remain uninterpreted and exact.
 fn original_trust_ace(bytes: &[u8], layout: Layout) -> Result<Option<usize>> {
     for (at, _) in acl_aces(bytes, layout.dacl)? {
@@ -229,8 +259,8 @@ fn original_trust_ace(bytes: &[u8], layout: Layout) -> Result<Option<usize>> {
     for (at, length) in acl_aces(bytes, layout.sacl)? {
         if bytes[at] == TRUST_ACE_TYPE {
             ensure!(
-                length == TRUST_ACE.len() && span(bytes, at, length)? == TRUST_ACE,
-                "process-trust ACE is outside the measured preservation profile"
+                length == TRUST_ACE_BYTES && observed_trust_ace(span(bytes, at, length)?),
+                "process-trust ACE is outside the observed preservation profiles"
             );
             ensure!(
                 found.is_none(),
@@ -249,7 +279,12 @@ fn validate_placeholder(
     maximum_bytes: u64,
     wanted_at: usize,
     wanted_mask: u32,
+    original_ace: &[u8],
 ) -> Result<Layout> {
+    ensure!(
+        observed_trust_ace(original_ace),
+        "placeholder original ACE is outside the observed profiles"
+    );
     let layout = layout(bytes, maximum_bytes)?;
     let mut matched = false;
     for acl in [layout.dacl, layout.sacl] {
@@ -262,10 +297,10 @@ fn validate_placeholder(
                 let entry = span(bytes, at, length)?;
                 ensure!(
                     acl == layout.sacl
-                        && length == TRUST_ACE.len()
+                        && length == original_ace.len()
                         && entry[0] == AUDIT_ACE_TYPE
-                        && entry[1..4] == TRUST_ACE[1..4]
-                        && entry[8..] == TRUST_ACE[8..]
+                        && entry[1..4] == original_ace[1..4]
+                        && entry[8..] == original_ace[8..]
                         && dword(entry, 4)? == wanted_mask,
                     "placeholder audit ACE shape or placement differs"
                 );
@@ -277,8 +312,8 @@ fn validate_placeholder(
     Ok(layout)
 }
 
-/// Construct an ordinary audit-callback placeholder for the measured process-trust
-/// label. Every other byte is preserved, including offsets, ACL capacity,
+/// Construct an ordinary audit-callback placeholder for an observed process-trust
+/// profile. Every other byte is preserved, including offsets, ACL capacity,
 /// control, SIDs, ACE order, opaque application data and descriptor padding.
 ///
 /// The mask is solved from the actual prefix state. A fixed adjustment is wrong
@@ -309,8 +344,13 @@ pub fn prepare_trust_label_placeholder(
     let mut placeholder = original.to_vec();
     placeholder[at] = AUDIT_ACE_TYPE;
     placeholder[at + 4..at + 8].copy_from_slice(&placeholder_mask.to_le_bytes());
-    let placeholder_layout =
-        validate_placeholder(&placeholder, maximum_bytes, at, placeholder_mask)?;
+    let placeholder_layout = validate_placeholder(
+        &placeholder,
+        maximum_bytes,
+        at,
+        placeholder_mask,
+        span(original, at, TRUST_ACE_BYTES)?,
+    )?;
     ensure!(
         original_layout == placeholder_layout,
         "SD layout changed during preparation"
@@ -349,12 +389,13 @@ pub fn plan_trust_label_restoration(
     maximum_bytes: u64,
 ) -> Result<DescriptorPatchPlan> {
     let prepared = prepare_trust_label_placeholder(original, maximum_bytes)?
-        .ok_or_else(|| invalid("restoration requires the measured process-trust ACE"))?;
+        .ok_or_else(|| invalid("restoration requires an observed process-trust ACE"))?;
     validate_placeholder(
         stored_placeholder,
         maximum_bytes,
         prepared.ace_offset,
         prepared.placeholder_mask,
+        span(original, prepared.ace_offset, TRUST_ACE_BYTES)?,
     )?;
     ensure!(
         stored_placeholder == prepared.placeholder,

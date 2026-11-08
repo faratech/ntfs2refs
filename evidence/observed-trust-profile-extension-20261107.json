@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "kind": "observed-process-trust-profile-extension-pending-native-qualification",
+  "source_corpus_sha256": "fa7590b3538547d2742ad239bced1a4a5c86a2f3758ec77005d32473c6b1e7c5",
+  "batch_corpus_sha256": "dab06f5e6dfae611fd09e844de830686fd527966016d9aff7c616fd80d19880f",
+  "descriptor_contexts": 370,
+  "physical_stored_descriptors": 369,
+  "paired_API_only_contexts": 1,
+  "observed_profiles": [
+    {"sid":"S-1-19-512-4096","mask_hex":"001f01a9","flags_hex":["00","03","10","13"]},
+    {"sid":"S-1-19-0-0","mask_hex":"00ffffff","flags_hex":["03","10","13"]}
+  ],
+  "source_ACE_length_bytes": 24,
+  "source_objects_with_stored_trust_labels": 11421,
+  "sdk_change": "Exact seven-tuple allowlist. Temporary carrier validation compares flags, length and SID with the exact original ACE; type/mask-only edits, unique SACL placement, layout, complete hash, canonical restoration and stored-derived API-mask checks remain.",
+  "lab_batch_change": "Pinned corpus and creator manifest select only stored descriptors. Fresh R-only file identities are checked before freeze and after remount; the existing journaled writer runs once. Legacy single-descriptor mode remains available.",
+  "focused_check_exit_code": 0,
+  "focused_check_wall_seconds": 34.6033043,
+  "shared_target_reused": true,
+  "unit_tests_run": false,
+  "native_preservation_qualified": false,
+  "full_Windows_retry_started": false,
+  "original_Windows_converted": false,
+  "original_Windows_booted_refs": false,
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+}

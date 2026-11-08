@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "kind": "native-original-trust-security-context-qualified",
+  "release_commit": "6f2381bcf9579e12934c0c3875bb1b5ed81a448d",
+  "release_manifest_sha256": "1785c83c68425e198d7c271b4c107b475f29c92430dcd1758bfc2a94be20d3ae",
+  "main_binary": {
+    "sha256": "5cfbbc1f96bc872cb42e15f1e8dced074741e801632ac7d2a032a2677845421c",
+    "bytes": 22054912
+  },
+  "lab_binary_sha256": "e17ea279f34792015260053c060e2edf9b3d5b3f782bf4a7d3305e8916a9799b",
+  "actual_writer": {
+    "page_reads": 114,
+    "cli_result_sha256": "fb1886f4702fd858cc3de0dbc52606765a0e04dd7339e0c81502b757f4be34f7",
+    "target_online": true,
+    "exit_code": 0,
+    "changed_clusters": 78,
+    "native_bytes_written": 319488,
+    "pid": 4084,
+    "normal_child_launches": 1,
+    "creator_files_verified": 369,
+    "journal_sha256": "9a1b390472effbaaf758826bf22ea8cea2c4f0a72e348ed3ade000f4b02eb4bf",
+    "journal_handoff_closed": true,
+    "requested_descriptors": 369,
+    "journal_bytes": 653568
+  },
+  "actual_observer": {
+    "privileges_restored": true,
+    "sha256": "b24233793fcfd84ff6c970e125f48232c959c1015b4e6b31cfc3d93fa6fa3aca",
+    "errors": 0,
+    "objects_passed": 541,
+    "payloads_verified": 160,
+    "objects_checked": 541,
+    "bytes": 1692669,
+    "all541_original_stored_and_API_views_exact": true
+  },
+  "artifacts": {
+    "root": ".lab/hyperv/trust-security-raw-0f9de277ca5c4e0fac5bcffac9f70c90/batch-parent-qualification-b077d91290224721b434661a49be5266",
+    "custody_inventory": ".lab/hyperv/trust-security-raw-0f9de277ca5c4e0fac5bcffac9f70c90/batch-parent-qualification-b077d91290224721b434661a49be5266/raw3-restoration/custody-inventory.json",
+    "terminal_sha256": "d52310138c6f54ddd48392a5208188a171876f5ac8c1c2b3a18501ce06f0a0c1",
+    "all_journal_and_pin_bytes_copied_to_host_and_rehashed": true
+  },
+  "source_metadata_preflight": {
+    "exit_code": 0,
+    "objects": 143552,
+    "shared_native_basic_predicate": true,
+    "wall_seconds": 36.1455529,
+    "sha256": "ccbee78eec6fd68282f8c14bc59bed557c75703f04641318d921d13b7a16eec3",
+    "errors": 0
+  },
+  "scope": {
+    "native_trust_preservation_qualified": true,
+    "shared_old_disposable_placeholder_rows_may_be_restored": true,
+    "whole_source_unchanged_hash_claimed": false,
+    "target": "Disposable ReFS security oracle, not original Windows",
+    "time_attribute_reparse_preservation_qualified": false,
+    "source0_device_opens_during_native_oracle": 0,
+    "original_Windows_booted_refs": false,
+    "original_Windows_converted": false,
+    "full_Windows_conversion_qualified": false
+  },
+  "after": {
+    "original_partition_filesystem": "NTFS",
+    "control_boot_ms": 1794088472063,
+    "original_partition_offset": 331350016,
+    "original_partition_guid": "c6c3318f-a7c8-47b9-be6d-6dde5e00862f",
+    "original_partition_bytes": 66236448768,
+    "oracle_health": "Healthy",
+    "active_native_tools": 0,
+    "original_partition_health": "Healthy",
+    "guest_C_free_bytes": 15119515648
+  },
+  "unit_tests_run": false,
+  "storage_cap_raised": false,
+  "additional_VM_checkpoint_created": false,
+  "frozen_main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+}

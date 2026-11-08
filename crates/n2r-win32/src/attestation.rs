@@ -974,6 +974,12 @@ pub trait NativeObservationDomain {
     fn maximum_security_descriptor_bytes(&self) -> usize {
         MAX_SECURITY_BYTES
     }
+    /// A temporary SDK validation index must use the real source accountant
+    /// when this domain owns one. Historical unaccounted diagnostics retain
+    /// their existing behavior; this never issues source or write authority.
+    fn reserve_validation_working(&self, _bytes: u64) -> io::Result<Option<Box<dyn crate::shadow_native::report_memory::ReportMemoryLease>>> {
+        Ok(None)
+    }
     fn is_paged(&self) -> bool {
         false
     }
@@ -1275,16 +1281,6 @@ pub fn measured_domain_resources(
     profile: ResourceProfile,
 ) -> io::Result<ResourceAudit> {
     let header = domain.header();
-    fn add(total: &mut u64, n: usize) -> io::Result<()> {
-        *total = total
-            .checked_add(n as u64)
-            .ok_or_else(|| io::Error::other("native evidence accounting overflow"))?;
-        Ok(())
-    }
-    fn ioctl(total: &mut u64, q: &IoctlQuery) -> io::Result<()> {
-        add(total, q.input.len())?;
-        add(total, q.bytes.len())
-    }
     let mut out = ResourceAudit {
         profile,
         security_bytes: 0,
@@ -1318,6 +1314,29 @@ pub fn measured_domain_resources(
             out.merge(measured_row_resources(profile, None, Some(&row), None)?)?;
         }
     }
+    measured_allocation_resources(&mut out, header, profile)?;
+
+    if !parallel && header.namespace.is_some() {
+        for index in 0..domain.namespace_len() {
+            let owner = domain.row_view(index)?;
+            let row = owner.namespace()?;
+            out.merge(measured_row_resources(profile, None, None, Some(&row))?)?;
+        }
+    }
+    Ok(out)
+}
+
+fn measured_allocation_resources(out: &mut ResourceAudit, header: &Report, profile: ResourceProfile) -> io::Result<()> {
+    fn add(total: &mut u64, n: usize) -> io::Result<()> {
+        *total = total
+            .checked_add(n as u64)
+            .ok_or_else(|| io::Error::other("native evidence accounting overflow"))?;
+        Ok(())
+    }
+    fn ioctl(total: &mut u64, q: &IoctlQuery) -> io::Result<()> {
+        add(total, q.input.len())?;
+        add(total, q.bytes.len())
+    }
     if let Some(a) = &header.allocation {
         ioctl(&mut out.stream_evidence_bytes, &a.base_before)?;
         ioctl(&mut out.stream_evidence_bytes, &a.base_after)?;
@@ -1349,19 +1368,386 @@ pub fn measured_domain_resources(
             )?;
         }
     }
-
-    if !parallel && header.namespace.is_some() {
-        for index in 0..domain.namespace_len() {
-            let owner = domain.row_view(index)?;
-            let row = owner.namespace()?;
-            out.merge(measured_row_resources(profile, None, None, Some(&row))?)?;
-        }
-    }
-    Ok(out)
+    Ok(())
 }
+
 
 /// Validate the same native evidence rules through borrowed or paged rows.
 pub fn validate_domain_resources(domain: &impl NativeObservationDomain) -> io::Result<()> {
+    let h = domain.header();
+    if domain.is_paged() && h.schema_version == 16 && h.request.schema_version == 8
+        && h.request.resource_profile.is_some() && h.logical_data.is_some() && h.namespace.is_some()
+        && domain.len() == domain.logical_len() && domain.len() == domain.namespace_len()
+        && domain.request_len().is_ok_and(|n| n == domain.len()) {
+        return validate_regular_paged_resources(domain, domain.len());
+    }
+    validate_domain_resources_irregular(domain)
+}
+
+fn mark_native_identity(identities: &mut std::collections::BTreeMap<u64, u8>, identity: u64, bit: u8, count: usize) -> io::Result<u8> {
+    if let Some(flags) = identities.get_mut(&identity) {
+        let old = *flags; *flags |= bit; return Ok(old);
+    }
+    // A union larger than the number of unique requested identities cannot
+    // satisfy any of the original same_ids checks. Refuse BEFORE allocating
+    // an entry beyond the prepaid count, including on malformed domains.
+    if identities.len() == count {
+        return Err(io::Error::new(io::ErrorKind::InvalidData,
+            "native report resource profile or accounting differs"));
+    }
+    identities.insert(identity, bit);
+    Ok(0)
+}
+
+/// The regular schema8/report16 parallel form decodes each authenticated
+/// file/namespace pair exactly once. Every legacy/irregular rule remains in
+/// the original validator below; this path repeats its complete predicates.
+fn validate_regular_paged_resources(domain: &impl NativeObservationDomain, count: usize) -> io::Result<()> {
+    let header = domain.header();
+    let invalid = || io::Error::new(io::ErrorKind::InvalidData,
+        "native report resource profile or accounting differs");
+    let Some(profile) = header.request.resource_profile else {
+        let legacy = (2..=7).contains(&header.schema_version)
+            && matches!(header.request.schema_version, 1 | 2);
+        let canonical_case = header.schema_version == 13 && header.request.schema_version == 5;
+        if canonical_case {
+            header.request.validate()?;
+        }
+        return if (legacy || canonical_case)
+            && header.resources.is_none()
+            && header
+                .allocation
+                .as_ref()
+                .is_none_or(|a| a.streamed_before.is_none() && a.streamed_after.is_none())
+        {
+            Ok(())
+        } else {
+            Err(invalid())
+        };
+    };
+    header.request.validate()?;
+    if !matches!(
+        (header.request.schema_version, header.schema_version),
+        (3, 8 | 9 | 10 | 11) | (4, 12) | (5, 13) | (6, 14) | (7, 15) | (8, 16)
+    ) {
+        return Err(invalid());
+    }
+    let limits = profile.limits();
+    let resource_admission = profile.resource_admission()?;
+    if resource_admission.is_some() && !domain.is_paged() {
+        return Err(invalid());
+    }
+    let maximum_retrieval_pages = resource_admission
+        .map(|a| {
+            usize::try_from(a.budget.max_row_bytes)
+                .map_err(io::Error::other)
+                .and_then(crate::retrieval_paging::Limits::for_resource_bytes)
+                .map(|l| l.max_pages)
+        })
+        .transpose()?
+        .unwrap_or(crate::retrieval_paging::MAX_PAGES);
+    let a = header.resources.as_ref().ok_or_else(invalid)?;
+    let data = header.logical_data.as_ref().ok_or_else(invalid)?;
+    let _namespace = header.namespace.as_ref().ok_or_else(invalid)?;
+    let allocation = header.allocation.as_ref().ok_or_else(invalid)?;
+    if matches!(header.schema_version, 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16) {
+        allocation
+            .streamed_before
+            .as_ref()
+            .ok_or_else(invalid)?
+            .validate_source_first_with_limits(
+                &allocation.bitmap_before,
+                source_bitmap_limits(
+                    Some(profile),
+                    allocation.streamed_before.as_ref().unwrap().cluster_count,
+                )?,
+            )?;
+        allocation
+            .streamed_after
+            .as_ref()
+            .ok_or_else(invalid)?
+            .validate_source_first_with_limits(
+                &allocation.bitmap_after,
+                source_bitmap_limits(
+                    Some(profile),
+                    allocation.streamed_after.as_ref().unwrap().cluster_count,
+                )?,
+            )?;
+    }
+    // Same conservative pinned-BTree bound used by domain_memory: three
+    // complete internal nodes per insertion, including split/root growth.
+    let per_identity = (std::mem::size_of::<u64>() + std::mem::size_of::<u8>()
+        + std::mem::size_of::<usize>()) as u64;
+    let identity_bytes = (count as u64).checked_mul(3)
+        .and_then(|n| per_identity.checked_mul(16).and_then(|node| node.checked_add(256))
+            .and_then(|node| n.checked_mul(node)))
+        .and_then(|n| n.checked_add(4096)).ok_or_else(invalid)?;
+    // Declared BEFORE the map so storage drops before its actual payment.
+    let _identity_memory = domain.reserve_validation_working(identity_bytes)?;
+    let mut identities = std::collections::BTreeMap::<u64, u8>::new();
+    let mut previous = None;
+    let mut observed = 0u64;
+    let mut complete_reservations = 0u64;
+    let mut complete_streams = 0u64;
+    if !matches!(header.content_passes, 1 | 2) { return Err(invalid()); }
+    let mut bad_logical = false;
+    let mut bad_observation = false;
+    let mut bad_namespace = false;
+    let mut actual = ResourceAudit { profile, security_bytes:0, stream_evidence_bytes:0,
+        bitmap_evidence_bytes:0, namespace_evidence_bytes:0 };
+    for index in 0..count {
+        let owner = domain.row_view(index)?;
+        let row = owner.request();
+        validate_request_row(&header.request, &row)?;
+        let flags = mark_native_identity(&mut identities, row.identity.reference(), 1, count)?;
+        if flags & 1 != 0 || (header.request.has_paged_selectors()
+            && previous.is_some_and(|n| n >= row.identity.record_number)) { return Err(invalid()); }
+        previous = Some(row.identity.record_number);
+        let file = owner.observation();
+        if let Some(fallback) = &file.case_only_fallback {
+            if !matches!(header.schema_version, 13 | 14 | 15 | 16)
+                || file.open_error.is_none()
+                || file.before.is_some()
+                || file.after.is_some()
+            {
+                return Err(invalid());
+            }
+            fallback.validate()?;
+        }
+        for snapshot in file.before.iter().chain(file.after.iter()) {
+            snapshot.validate_extended_attributes(matches!(
+                header.schema_version,
+                10 | 11 | 12 | 13 | 14 | 15 | 16
+            ))?;
+            snapshot
+                .validate_reparse(matches!(header.schema_version, 11 | 12 | 13 | 14 | 15 | 16))?;
+            snapshot.validate_directory_case_sensitivity(matches!(
+                header.schema_version,
+                13 | 14 | 15 | 16
+            ))?;
+        }
+        let file = owner.logical()?;
+        let selected = Some(owner.request());
+        // A single content pass is mirrored into `after`; count it once.
+        if header.content_passes == 1 && file.after != file.before {
+            return Err(invalid());
+        }
+        let passes: &[&Vec<StreamHash>] = if header.content_passes == 1 {
+            &[&file.before]
+        } else {
+            &[&file.before, &file.after]
+        };
+        for pass in passes.iter().copied() {
+            if pass.len()
+                > resource_admission.map_or(crate::stream_layout::MAX_STREAMS, |a| {
+                    usize::try_from(a.budget.max_row_bytes).unwrap_or(0)
+                        / std::mem::size_of::<StreamHash>()
+                })
+            {
+                return Err(invalid());
+            }
+            for h in pass {
+                if h.outcome.status == crate::logical_hash::Status::NotReadExtentIdentityV1
+                    && (!matches!(
+                        (header.request.schema_version, header.schema_version),
+                        (4, 12) | (6, 14) | (8, 16)
+                    ) || h.outcome.bytes_read != 0
+                        || h.outcome.eof_confirmed
+                        || h.outcome.sha256.is_some()
+                        || h.outcome.native_error.is_some()
+                        || h.outcome.detail.is_some()
+                        || !selected
+                            .as_ref()
+                            .map_or(header.request.extent_identity_streams.as_slice(), |s| {
+                                s.extent_identity_streams.as_slice()
+                            })
+                            .iter()
+                            .any(|wanted| {
+                                wanted.identity == file.identity
+                                    && wanted.name_utf16 == h.name_utf16
+                                    && wanted.logical_size == h.logical_size
+                            }))
+                {
+                    return Err(invalid());
+                }
+                observed = observed
+                    .checked_add(h.outcome.bytes_read)
+                    .ok_or_else(invalid)?;
+                let reservation = h.logical_size.checked_add(1).ok_or_else(invalid)?;
+                if h.outcome.bytes_read > reservation {
+                    return Err(invalid());
+                }
+                if h.outcome.status == crate::logical_hash::Status::Complete {
+                    complete_reservations = complete_reservations
+                        .checked_add(reservation)
+                        .ok_or_else(invalid)?;
+                    complete_streams = complete_streams.checked_add(1).ok_or_else(invalid)?;
+                    if h.outcome.bytes_read != h.logical_size
+                        || !h.outcome.eof_confirmed
+                        || h.outcome.native_error.is_some()
+                        || h.outcome.detail.is_some()
+                        || !h
+                            .outcome
+                            .sha256
+                            .as_deref()
+                            .is_some_and(crate::content_digest::is_hex)
+                    {
+                        return Err(invalid());
+                    }
+                } else if h.outcome.sha256.is_some()
+                    || h.outcome.eof_confirmed
+                    || (h.outcome.status == crate::logical_hash::Status::BudgetExceeded
+                        && h.outcome.bytes_read != 0)
+                    || (h.outcome.status == crate::logical_hash::Status::ExpectedEofMissing
+                        && h.outcome.bytes_read != reservation)
+                {
+                    return Err(invalid());
+                }
+            }
+        }
+        bad_logical |= file.before.iter().chain(&file.after).any(|h| {
+            h.logical_size > limits.maximum_stream_bytes
+                || h.name_utf16.len() > 255
+                || h.identity_before
+                    .iter()
+                    .chain(h.identity_after.iter())
+                    .chain(h.standard_before.iter())
+                    .chain(h.standard_after.iter())
+                    .any(|q| q.bytes.len() > 24)
+        });
+        let file = owner.observation();
+        bad_observation |= {
+            file.before.iter().chain(file.after.iter()).any(|s| {
+                s.queries.len() > 4
+                    || s.queries.iter().any(|q| q.bytes.len() > 40)
+                    || s.security.len() > domain.maximum_security_descriptor_bytes()
+                    || s.kernel_security
+                        .as_ref()
+                        .is_some_and(|s| s.bytes.len() > domain.maximum_security_descriptor_bytes())
+            }) || file
+                .streams_before
+                .iter()
+                .chain(file.streams_after.iter())
+                .any(|c| {
+                    c.streams.len()
+                        > resource_admission.map_or(crate::stream_layout::MAX_STREAMS, |a| {
+                            usize::try_from(a.budget.max_row_bytes).unwrap_or(0)
+                                / std::mem::size_of::<StreamQuery>()
+                        })
+                        || c.enumeration.bytes.len()
+                            > resource_admission
+                                .map_or(crate::stream_layout::MAX_STREAM_BUFFER, |a| {
+                                    usize::try_from(a.budget.max_row_bytes).unwrap_or(0)
+                                })
+                        || c.streams.iter().any(|s| {
+                            s.name_utf16.len() > 255
+                                || s.identity_before
+                                    .iter()
+                                    .chain(s.identity_after.iter())
+                                    .any(|q| q.bytes.len() > 24)
+                                || s.retrieval_continuation.len() >= maximum_retrieval_pages
+                                || s.retrieval
+                                    .iter()
+                                    .chain(&s.retrieval_continuation)
+                                    .any(|q| {
+                                        q.bytes.len() > crate::retrieval_paging::PAGE_CAPACITY
+                                            || q.input.len() > 8
+                                    })
+                        })
+                })
+        };
+        let f = owner.namespace()?;
+        bad_namespace |= {
+            f.identity_before
+                .iter()
+                .chain(f.identity_after.iter())
+                .chain(f.standard.iter())
+                .any(|q| q.bytes.len() > 24)
+                || f.before.iter().chain(f.after.iter()).any(|c| {
+                    (!domain.is_paged() && c.calls.len() > crate::namespace_layout::MAX_CALLS)
+                        || c.calls
+                            .iter()
+                            .any(|q| q.bytes.len() > crate::namespace_layout::CAPACITY)
+                })
+        };
+        actual.merge(measured_row_resources(profile, Some(owner.observation()),
+            Some(owner.logical()?), Some(owner.namespace()?))?)?;
+        // Preserve the old THREE same_ids set checks, including valid
+        // permutations, rather than adding a stronger per-row identity rule.
+        // All four columns have count rows. A union of count unique requested
+        // IDs with all membership bits set is exactly those set equalities;
+        // duplicate/missing/unrequested IDs necessarily fail.
+        for (identity, bit) in [(owner.observation().identity.reference(), 2),
+            (owner.logical()?.identity.reference(), 4), (owner.namespace()?.identity.reference(), 8)] {
+            mark_native_identity(&mut identities, identity, bit, count)?;
+        }
+    }
+    measured_allocation_resources(&mut actual, header, profile)?;
+    let streaming_shape = match header.schema_version {
+        8 => allocation.streamed_before.is_none() && allocation.streamed_after.is_none(),
+        9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 => {
+            allocation.streamed_before.is_some()
+                && allocation.streamed_after.is_some()
+                && allocation.bitmap_before_continuation.is_empty()
+                && allocation.bitmap_after_continuation.is_empty()
+        }
+        _ => false,
+    };
+    if !streaming_shape
+        || header.conversion_qualified
+        || header.allocation.is_none()
+        || a != &actual
+        || a.security_bytes > limits.security_bytes as u64
+        || a.stream_evidence_bytes > limits.stream_evidence_bytes as u64
+        || a.bitmap_evidence_bytes
+            > resource_admission.map_or(MAX_TOTAL_BITMAP_BYTES as u64, |a| a.native_semantic_byte_budget())
+        || a.namespace_evidence_bytes > limits.namespace_evidence_bytes as u64
+        || identities.len() != count
+        || identities.values().any(|flags| *flags != 15)
+        || data.audit.limit_bytes != limits.logical_read_bytes
+        || data.audit.reserved_bytes > limits.logical_read_bytes
+        || data.audit.bytes_read > data.audit.reserved_bytes
+        || data.audit.bytes_read != observed
+        || data.audit.reserved_bytes < complete_reservations
+        || data.audit.read_calls > limits.logical_read_calls
+        || data.audit.eof_probes > data.audit.read_calls
+        || data.audit.eof_probes < complete_streams
+        || !data
+            .audit
+            .read_calls
+            .checked_mul(crate::logical_hash::CHUNK as u64)
+            .is_some_and(|maximum| observed <= maximum)
+        || bad_logical
+        || bad_observation
+        || bad_namespace
+        || allocation.bitmap_before_continuation.len() >= crate::bitmap_paging::MAX_PAGES
+        || allocation.bitmap_after_continuation.len() >= crate::bitmap_paging::MAX_PAGES
+        || std::iter::once(&allocation.bitmap_before)
+            .chain(&allocation.bitmap_before_continuation)
+            .chain(std::iter::once(&allocation.bitmap_after))
+            .chain(&allocation.bitmap_after_continuation)
+            .any(|q| q.bytes.len() > crate::bitmap_paging::PAGE_BYTES || q.input.len() > 16)
+    {
+        return Err(invalid());
+    }
+    let maximum = if let Some(admission) = resource_admission {
+        usize::try_from(admission.native_semantic_byte_budget()).map_err(io::Error::other)?
+    } else {
+        header
+            .request
+            .resource_profile
+            .map(ResourceProfile::count_admission)
+            .transpose()?
+            .flatten()
+            .map_or(MAX_SERIALIZED_REPORT_BYTES, |a| {
+                a.maximum_native_report_bytes as usize
+            })
+    };
+    domain.validate_encoded_size(maximum)?;
+    Ok(())
+}
+
+fn validate_domain_resources_irregular(domain: &impl NativeObservationDomain) -> io::Result<()> {
     let header = domain.header();
     let invalid = || {
         io::Error::new(

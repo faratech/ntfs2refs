@@ -1,0 +1,41 @@
+{
+  "kind": "read-only-native-report-replay-evidence-v1",
+  "source_commit": "e26d36cdea0e108e87a13d7cb41ebb82bff5df55",
+  "release_manifest_sha256": "d13cc03a107f61cf3c2a4d817e6bf6a44f24a55ccae226e4c5baca253a38d31b",
+  "executable_sha256": "cd096d5cf91cc84fbe427e69cba654e045b5e97fb77f8bf828f707d8b9c68fd9",
+  "case": ".lab/hyperv/native-report-replay-e26d36c-d6f3f7ff52334e40a12bc119298b65b6",
+  "process_id": 5332,
+  "process_birth_unix_ms": 1794173107484,
+  "owned_process_handle_observed": true,
+  "native_exit": 0,
+  "native_file_bytes": 2573591730,
+  "native_file_sha256": "b4c33d93dc4825fc5dc4fa4aa8c4ce0002f6176696f10ae15323442917ceb3b8",
+  "source_assessment_sha256": "ce1427e0f1c6f2feb7e28b6ed459f440775fd60d0ec1b54201d0e261bb279805",
+  "observation_rows": 143580,
+  "logical_rows": 143580,
+  "namespace_rows": 143580,
+  "open_and_first_validation_seconds": 383.2292792,
+  "repeat_validation_seconds": 275.980018,
+  "closing_file_hash_seconds": 18.981441,
+  "native_wall_seconds": 678.1907417,
+  "supervised_wall_seconds": 678.4562006,
+  "peak_working_set_bytes": 52604928,
+  "host_result_sha256": "d0578d653b67bc32b9dbfcbfd0547462ea778baf2f35e1b90958b22774a538ff",
+  "host_terminal_sha256": "6cb289a5544981617686c8b0c66b570f9cd9097ae19f1429d557d9fb5c20f4fb",
+  "covers": [
+    "authenticated single-chunk native JSON decoding",
+    "existing typed native report validation",
+    "resource audit equality after parallel column accounting consolidation",
+    "complete source report SHA before and after read-only replay"
+  ],
+  "source_devices_opened": false,
+  "source_admission_issued": false,
+  "conversion_performed": false,
+  "original_windows_boot_proven": false,
+  "unit_tests_run": false,
+  "limitations": [
+    "One real saved native report; no arbitrary-input compatibility claim",
+    "Does not qualify later full-validator pass consolidation",
+    "Concurrent original conversion remained active; these timings are not an isolated hardware benchmark"
+  ]
+}

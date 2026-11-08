@@ -751,6 +751,9 @@ impl NativeObservationDomain for PagedNativeObservation {
     fn request_row(&self, i: usize) -> io::Result<Cow<'_, NativeRequestRow>> {
         Ok(Cow::Owned(self.file_row(i)?.request))
     }
+    fn reserve_validation_working(&self, bytes: u64) -> io::Result<Option<Box<dyn crate::shadow_native::report_memory::ReportMemoryLease>>> {
+        self.memory.as_ref().map(|memory| memory.accountant.reserve(bytes)).transpose()
+    }
     fn revalidate(&self) -> io::Result<()> {
         self.reader.borrow_mut().revalidate()?;
         self.namespace_reader.borrow_mut().revalidate()

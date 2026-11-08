@@ -188,6 +188,9 @@ fn execute_resume(
 ) -> Result<u8> {
     let pair = request.pair.clone();
     let journal = request.journal.clone();
+    let cancellation_pair=pair.clone();
+    let cancellation_journal=journal.clone();
+    observer.enable_durable_preparation_cancellation()?;
     let result = (|| -> Result<()> {
         let mut aliases = None;
         let (publication, sha) = crate::resource_preparation::resume_with(
@@ -244,11 +247,43 @@ fn execute_resume(
         save(&run.join("resource-completion.json"), &receipt)?;
         Ok(())
     })();
+    let result=match result {
+        Ok(())=>Ok(()),
+        Err(error)=>match cancel_unpublished_resume(run,observer,&cancellation_pair,
+            &cancellation_journal,saved.arena.budget()) {
+            Ok(Some(receipt))=>{
+                let _=save(&run.join("preparation-cancelled.json"),&receipt);
+                Err(error.context("prepublication preparation cancelled through its authenticated native guard; NTFS access restored"))
+            }
+            Ok(None)=>Err(error),
+            Err(cleanup)=>Err(error.context(format!("preparation guard cancellation did not close; preserve records and inspect actual source availability: {cleanup:#}"))),
+        }
+    };
     if let Ok(receipt) = observer.finish() {
         save(&run.join("native-events-summary.json"), &receipt)?;
     }
     result?;
     Ok(0)
+}
+
+fn cancel_unpublished_resume(run:&Path,observer:&mut FilePreparationObserver,
+    pair:&GeneralSourceShadowBinding,journal:&GeneralJournalStorageBinding,
+    resources:ResourceBudget)->Result<Option<serde_json::Value>> {
+    let Some(pin)=observer.preparation_pin() else{return Ok(None)};
+    if run.join("conversion/recovery-envelope.json").try_exists()?{return Ok(None)}
+    let sha=parse_sha(&pin.sha256)?;
+    let routes=crate::resource_preparation::early_guard::inspect_routes(&pin.path,sha,pin.bytes)?;
+    ensure!(routes.source==pair.source&&routes.shadow==pair.shadow&&routes.journal==*journal,
+        "actual cancellation guard differs from this invocation's source/shadow/journal");
+    if routes.delegated.is_some()||routes.phase=="Delegated"{return Ok(None)}
+    let mut events=Vec::new();
+    let cancelled=crate::resource_preparation::early_guard::cancel_preparation(&pin.path,sha,resources,&mut events);
+    let recorded=observer.native_events("resume-prepublication-guard-cancellation",&mut events);
+    let receipt=cancelled?;recorded?;
+    observer.note(&serde_json::json!({"kind":"resume-prepublication-native-guard-cancelled",
+        "preparation_sha256":pin.sha256,"receipt":receipt,
+        "whole_partition_hash_passes_requested":0,"source_byte_replay_requested":false}))?;
+    Ok(Some(receipt))
 }
 
 /// Restart an epoch from durable checkpoint facts. Every native owner is newly

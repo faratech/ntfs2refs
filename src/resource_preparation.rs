@@ -177,6 +177,8 @@ pub(crate) trait PreparationObserver {
     fn restore_source_on_pre_ap_failure(&self) -> bool {
         false
     }
+    fn prefer_durable_preparation_cancellation(&self) -> bool { false }
+    fn preparation_created(&mut self, _pin: &early_guard::GuardPin) -> Result<()> { Ok(()) }
     fn native_events(&mut self, phase: &'static str, events: &mut Vec<NativeEvent>) -> Result<()>;
     fn source_prepared(&mut self, _context: &ResourceSourceContext) -> Result<()> {
         Ok(())
@@ -473,6 +475,7 @@ where
         &locator_group,
         &mut events,
     )?;
+    events.observer.preparation_created(&early_guard.pin())?;
     events.observer.note(
         &serde_json::json!({"kind":"resource-preparation-cancellation-anchor",
         "intent":early_guard.pin(),"source_payload_writes_authorized":false}),
@@ -489,7 +492,8 @@ where
     events.checkpoint()?;
     events.phase("source-preparation");
     let mut phase = "source-start";
-    let restore_on_failure = events.observer.restore_source_on_pre_ap_failure();
+    let restore_on_failure = events.observer.restore_source_on_pre_ap_failure()
+        && !events.observer.prefer_durable_preparation_cancellation();
     let source_result = if let Some(saved) = resume {
         ResourceSourceContext::prepare_cached_exact_with_guard(
             request.pair.source.clone(), request.resources, request.verification_policy,
@@ -1116,6 +1120,13 @@ where
                 }
                 if output.join("recovery-envelope.json").exists() {
                     return Err(original.context("publication may be partial; preserve it and the excluded source for explicit recovery"));
+                }
+                if events.observer.prefer_durable_preparation_cancellation() {
+                    // Drop every source/shadow owner before the outer resume
+                    // driver reopens the actual durable guard. A later AP or
+                    // delegated publication still uses journal recovery above.
+                    drop(context);
+                    return Err(original.context("prepublication source remains protected for authenticated guard cancellation"));
                 }
                 match abort::restore_live_source(context, &mut events) {
                     Ok(mounted) => Err(original.context(format!("conversion failed before publication; unchanged original NTFS restored on disk {}", mounted.disk_number))),

@@ -28,6 +28,8 @@ pub(crate) struct FilePreparationObserver {
     finished: bool,
     staging_meter: Option<n2r_win32::managed_shadow::StagingAllocationMeter>,
     staging_meter_error: Option<String>,
+    durable_preparation_cancellation: bool,
+    preparation_pin: Option<early_guard::GuardPin>,
 }
 struct CountHash {
     bytes: u64,
@@ -238,6 +240,8 @@ impl FilePreparationObserver {
             finished: false,
             staging_meter: None,
             staging_meter_error: None,
+            durable_preparation_cancellation: false,
+            preparation_pin: None,
         })
     }
     pub(crate) fn allocation_bytes(&self) -> u64 {
@@ -246,6 +250,12 @@ impl FilePreparationObserver {
     pub(crate) fn ram_bytes(&self) -> u64 {
         self.ram_bytes
     }
+    pub(crate) fn enable_durable_preparation_cancellation(&mut self)->Result<()> {
+        ensure!(!self.finished&&self.preparation_pin.is_none(),"preparation cleanup policy must precede its new guard");
+        self.durable_preparation_cancellation=true;
+        Ok(())
+    }
+    pub(crate) fn preparation_pin(&self)->Option<early_guard::GuardPin>{self.preparation_pin.clone()}
     pub(crate) fn maximum_bytes(&self) -> u64 {
         self.maximum_capacity
     }
@@ -405,6 +415,12 @@ impl FilePreparationObserver {
 impl PreparationObserver for FilePreparationObserver {
     fn restore_source_on_pre_ap_failure(&self) -> bool {
         true
+    }
+    fn prefer_durable_preparation_cancellation(&self)->bool {self.durable_preparation_cancellation}
+    fn preparation_created(&mut self,pin:&early_guard::GuardPin)->Result<()> {
+        ensure!(self.preparation_pin.is_none(),"observer already owns a preparation route");
+        self.preparation_pin=Some(pin.clone());
+        Ok(())
     }
     fn native_events(&mut self, phase: &'static str, events: &mut Vec<NativeEvent>) -> Result<()> {
         if self.phase != Some(phase) {

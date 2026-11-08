@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "kind": "native-constructor-final-static-lease-growth-fix",
+  "failed_run": "159ee200fe704a9a9ac8250c31e145fc",
+  "owned_pid": 2748,
+  "birth_ms": 1794122712475,
+  "native_exit": 1,
+  "wall_seconds": 5275.2550565,
+  "peak_working_set": 690135040,
+  "before_publication": true,
+  "CLI_original_NTFS_restored": true,
+  "error": "arena RAM lease cannot grow by shrinking",
+  "actual_shadow_backing_bytes": 1849688064,
+  "root_cause": "Initial static base was shrunk before per-object allocation; new owned SVI identity-map entries increase final static state, so final close called a downward-only shrink with a larger size",
+  "fix": [
+    "Reserve final measured static state before replacing/releasing old base lease",
+    "Measure after final source/shadow check while existing4MiBglobal query workspace remains paid",
+    "Keep strict arena shrink-only check and all per-row ownership charges"
+  ],
+  "focused_compile": {
+    "kind": "constructor-static-base-handoff-check",
+    "capacity": {
+      "actual_bytes": 214272678561,
+      "free_bytes": 93379981312,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 2147483648,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "unit_tests_run": false,
+    "native_run": false,
+    "absolute_boot_cap": 279866334601,
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+    "wall_seconds": 34.4757241,
+    "shared_target_reused": true,
+    "exit_code": 0
+  },
+  "native_fix_qualification_pending": true,
+  "next": "Native SHADOW-only constructor qualification using closed model, fresh empty NTFS source and empty ReFS target; no originalSource0 opens",
+  "original_Windows_converted": false,
+  "original_Windows_booted_refs": false,
+  "unit_tests_run": false,
+  "main_source_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+}

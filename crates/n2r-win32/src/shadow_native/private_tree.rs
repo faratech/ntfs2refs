@@ -2129,10 +2129,12 @@ fn allocate_domain_with_memory(
         construction_enrollment,
         memory,
     };
+    tree.require_source_excluded()?;
     if let Some(memory) = &tree.memory {
+        // Close the final state after the last source/shadow check, while the
+        // global query lease still pays for that operation and the handoff.
         memory.close_base(&tree)?;
     }
-    tree.require_source_excluded()?;
     // All global temporary buffers finish before their query lease is freed.
     drop(initial);
     drop(root_name);

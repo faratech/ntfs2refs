@@ -2,13 +2,18 @@
 //! operation it covers; no saved report can construct this payer capability.
 use super::*;
 use crate::shadow_native::report_memory::{ReportMemoryAccountant, ReportMemoryLease};
-use std::{cell::RefCell, mem, sync::Arc};
+use std::{
+    cell::{Cell, RefCell},
+    mem,
+    sync::Arc,
+};
 
 pub(super) struct Owner {
     payer: Arc<dyn ReportMemoryAccountant>,
     tails: RefCell<BTreeSet<StreamKey>>,
     guards: RefCell<Vec<Box<dyn ReportMemoryLease>>>,
     base: RefCell<Box<dyn ReportMemoryLease>>,
+    base_bytes: Cell<u64>,
     _registry: Box<dyn ReportMemoryLease>,
     row_bytes: u64,
 }
@@ -100,7 +105,8 @@ impl Owner {
             )?,
             4096,
         )?)?;
-        let base = payer.reserve(add(mul(row_bytes, 8)?, 64 * 1024 * 1024)?)?;
+        let base_bytes = add(mul(row_bytes, 8)?, 64 * 1024 * 1024)?;
+        let base = payer.reserve(base_bytes)?;
         let mut guards = Vec::new();
         guards.try_reserve_exact(count).map_err(io::Error::other)?;
         Ok(Self {
@@ -108,6 +114,7 @@ impl Owner {
             tails: RefCell::new(BTreeSet::new()),
             guards: RefCell::new(guards),
             base: RefCell::new(base),
+            base_bytes: Cell::new(base_bytes),
             _registry: registry,
             row_bytes,
         })
@@ -230,25 +237,48 @@ impl Owner {
         // covers their event copies and the fresh-root/constant-SDDL buffers.
         // Per-file queries and input decoding have their own separate leases.
         let queries = self.working(4 * 1024 * 1024)?;
-        self.base.borrow_mut().shrink_to(Self::static_bytes(
+        let current = Self::static_bytes(
             pair,
             source_before,
             events,
             system_identities,
             construction_enrollment,
             carrier_directory,
-        )?)?;
+        )?;
+        let previous = self.base_bytes.get();
+        self.base.borrow_mut().shrink_to(current).map_err(|error| {
+            io::Error::new(error.kind(), format!(
+                "private constructor initial base shrink failed: previous_bytes={previous}, current_static_bytes={current}: {error}"
+            ))
+        })?;
+        self.base_bytes.set(current);
         Ok(queries)
     }
     pub(super) fn close_base(&self, tree: &PrivateTree) -> io::Result<()> {
-        self.base.borrow_mut().shrink_to(Self::static_bytes(
+        let current = Self::static_bytes(
             &tree.pair,
             &tree.source_before,
             &tree.events,
             &tree.system_identities,
             &tree.construction_enrollment,
             &tree.carrier_directory,
-        )?)
+        )?;
+        let previous = self.base_bytes.get();
+        // Allocation may add owned SVI identity-map entries after the initial
+        // static-base shrink. Per-row leases cover those insertions. Reaccount
+        // the complete final static state with a new real lease; a shrink-only
+        // lease must never be used to grow it. The old base and the caller's
+        // global-query workspace remain held until replacement is admitted.
+        let replacement = self.payer.reserve(current).map_err(|error| {
+            io::Error::new(error.kind(), format!(
+                "private constructor final base replacement reservation failed: previous_bytes={previous}, current_static_bytes={current}, growth_bytes={}: {error}",
+                current.saturating_sub(previous)
+            ))
+        })?;
+        let old = self.base.replace(replacement);
+        self.base_bytes.set(current);
+        drop(old);
+        Ok(())
     }
     pub(super) fn metadata_digest(&self) -> io::Result<Box<dyn ReportMemoryLease>> {
         // input_digest_domain may serialize a complete sparse/EA value; pay

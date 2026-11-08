@@ -106,6 +106,8 @@ use source_owner::ResourceSourceOwner;
 
 #[path = "resource_partition.rs"]
 pub(crate) mod partition;
+#[path = "raw_target_security.rs"]
+mod raw_target_security;
 pub struct ResourceSourceContext {
     early_preparation_guard: Option<crate::resource_preparation::early_guard::EarlyPreparationGuard>,
     source: ResourceSourceOwner,
@@ -970,9 +972,24 @@ impl ResourceSourceContext {
             &mut metadata,
             &mut reservations,
         )?;
-        *phase = "source-observation";
+        *phase = "source-observation-selectors";
         let selectors = PagedObservationRequest::new(&raw, &binding, budget, policy)?;
         let admission = selectors.admission();
+        if binding.layout_profile == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows {
+            *phase = "source-raw-target-security-preflight";
+            let report = raw_target_security::inspect(&raw, admission, &scratch)?;
+            save(
+                output,
+                "source-raw-target-security-preflight.json",
+                &report,
+                &scratch,
+                &mut metadata,
+                &mut reservations,
+            )?;
+            ensure!(report.scan_complete && report.pure_security_eligible,
+                "raw Windows source security exceeds the pure target-construction profile; see source-raw-target-security-preflight.json; native source diagnostics were not started");
+        }
+        *phase = "source-observation";
         if let Some((arena, _, _)) = &groups { arena.require_native_allocation(admission)?; }
         let native_path = native_output.join("native.pages");
         let native_permit = groups

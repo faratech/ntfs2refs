@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "kind": "early-referenced-Windows-security-eligibility",
+  "placement": "ResourceSourceContext collection after raw metadata/selectors and before native.pages allocation and native observation.",
+  "checks": "Referenced root/user descriptors only, complete descriptor SHA binding, security-ID/legacy identity, exact shared SDK layout/profile/hash transform, source owner revalidation and complete root/user coverage.",
+  "memory": "SourceScratch leases pay the current row/transform workspace and descriptor-digest set. No descriptors are retained in a new unaccounted collection.",
+  "refusal": "A small diagnostic records source identity, descriptor hash and exact reason before expensive native capture. It grants no source admission or write authority.",
+  "late_native_and_target_checks_retained": true,
+  "API_views_and_other_metadata_gates_explicitly_deferred": true,
+  "focused_check_exit_code": 0,
+  "focused_check_wall_seconds": 23.0044081,
+  "unit_tests_run": false,
+  "shared_target_reused": true,
+  "native_run": false,
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+}

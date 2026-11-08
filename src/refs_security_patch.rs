@@ -276,6 +276,35 @@ fn value_range(row: &NodeRowObservation) -> Result<std::ops::Range<usize>> {
     Ok(start..end)
 }
 
+fn index_value_range(
+    row: &NodeRowObservation,
+    row_count: usize,
+) -> Result<std::ops::Range<usize>> {
+    if row.reserved_at_8 == 0 {
+        return value_range(row);
+    }
+    // Native 3.14 Object Tables and OID 0x530 use this final keyless
+    // child-reference row after their keyed separators. This is an index
+    // record, not a leaf or a generic allowance for nonzero reserved fields.
+    ensure!(
+        row.index.checked_add(1) == Some(row_count)
+            && row.marker == 0
+            && row.size == 64
+            && row.key_offset == 16
+            && row.key_length == 0
+            && row.reserved_at_8 == 2
+            && row.value_offset == 16
+            && row.value_length == 48
+            && row.reserved_at_14 == 0
+            && !row.key_value_overlap,
+        "unsupported native trust-label index boundary row"
+    );
+    let start = row.page_offset.checked_add(16).context("index value offset overflow")?;
+    let end = start.checked_add(48).context("index value length overflow")?;
+    ensure!(end <= PAGE, "index value outside authenticated page");
+    Ok(start..end)
+}
+
 impl<R: Read + Seek> Walker<'_, R> {
     fn read_page(&mut self, physical: [u64; 4]) -> Result<Vec<u8>> {
         ensure!(
@@ -451,7 +480,11 @@ impl<R: Read + Seek> Walker<'_, R> {
         );
         let mut after = before.clone();
         for row in &rows {
-            let span = value_range(row)?;
+            let span = if level == 0 {
+                value_range(row)?
+            } else {
+                index_value_range(row, rows.len())?
+            };
             if level != 0 {
                 let (child_slots, child_crc) = reference(&before[span.clone()])?;
                 let (new_crc, _) = self.page(

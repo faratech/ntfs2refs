@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "kind": "native-ReFS-keyless-index-boundary-support",
+  "observed_failure": {
+    "journal_bytes": 0,
+    "exit_code": 1,
+    "error": "trust-label row has unsupported reserved fields or overlapping key/value",
+    "source0_opens": 0,
+    "target_metadata_writes": 0,
+    "native_pid": 3348
+  },
+  "captured_rows": {
+    "field_at_14": 0,
+    "value_offset": 16,
+    "key_bytes": 0,
+    "field_at_8": 2,
+    "key_value_overlap": false,
+    "marker": 0,
+    "decoded": ".lab/hyperv/refs-plan-trace-fba3d05c585f44e4a084a5f2f68fc866/decoded-row-diagnostics.json",
+    "position": "final row",
+    "key_offset": 16,
+    "node_level": 1,
+    "row_bytes": 64,
+    "tables": [
+      2,
+      4,
+      1328
+    ],
+    "decoded_sha256": "d96bc5336d9524c9ee359bcf25eb218192c74db64c85d326454991fc9272a1c6",
+    "trace": ".lab/hyperv/refs-plan-trace-fba3d05c585f44e4a084a5f2f68fc866/planner.trace",
+    "value_bytes": 48
+  },
+  "preserved_checks": [
+    "leaf row reserved fields and overlap remain refused",
+    "exact final internal boundary-row form only",
+    "page CRC, child reference CRC type, VLCN mapping, child levels, bounds and allocation ownership unchanged",
+    "only child reference checksum bytes change; row header and flags preserved"
+  ],
+  "focused_check": {
+    "native_run": false,
+    "kind": "native-ReFS-index-boundary-profile-check",
+    "exit_code": 0,
+    "capacity": {
+      "actual_bytes": 212307600753,
+      "free_bytes": 95353171968,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 2147483648,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "absolute_boot_cap": 279866334601,
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+    "wall_seconds": 35.8684727,
+    "unit_tests_run": false,
+    "shared_target_reused": true
+  },
+  "actual_readonly_updated_planner": {
+    "wall_seconds": 0.5768444,
+    "descriptors": 369,
+    "planner_success": true,
+    "both_checkpoint_each_match_count": 1,
+    "trace_bytes": 3345072,
+    "sha256": "d93bd26059b780641d67be5de08321c506230d6e47b15934ae4f9c98161ba6f1",
+    "raw_security_module_sha256": "90b83da816f149f7fb8800561d3b5d0ecc21e0a26714542d5a30f68cf723b4c9",
+    "scope": "Existing planner compiled separately with only the captured index-row patch; diagnostic, not a product release or write authority",
+    "path": ".lab/hyperv/refs-plan-trace-8524af3049a947e8b34da93c227e5e4b/planner.json",
+    "changed_clusters": 78,
+    "page_reads": 114,
+    "native_writes": 0,
+    "base_release": "bf0fee5c70621531c31ae2e8a30a51db05d186c8"
+  },
+  "actual_complete_source_metadata_preflight": {
+    "exit_code": 0,
+    "input_errors": 0,
+    "basic_predicate_shared_with_native": true,
+    "wall_seconds": 36.1455529,
+    "sha256": "ccbee78eec6fd68282f8c14bc59bed557c75703f04641318d921d13b7a16eec3",
+    "native_preservation_qualified": false,
+    "objects": 143552
+  },
+  "peer_review": "No concrete issue found in captured-row gated patch",
+  "unit_tests_run": false,
+  "original_Windows_converted": false,
+  "original_Windows_booted_refs": false,
+  "native_trust_restoration_qualified": false
+}

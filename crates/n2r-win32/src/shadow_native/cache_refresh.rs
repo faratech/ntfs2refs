@@ -683,6 +683,9 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                 false,
                 false,
                 pair.shadow.identity.partition_bytes / 4096,
+                resource_admission
+                    .map(|a| usize::try_from(a.budget.max_row_bytes).map_err(io::Error::other))
+                    .transpose()?,
             )?;
             if let Some(layout) = item.sparse {
                 super::sparse_stream::observe(handle, layout, item.logical_length())?;
@@ -1054,6 +1057,7 @@ pub fn run(
                 false,
                 false,
                 pair.shadow.identity.partition_bytes / 4096,
+                None,
             )?;
             if let Some(layout) = item.sparse {
                 super::sparse_stream::observe(&handle, layout, item.logical_length())?;

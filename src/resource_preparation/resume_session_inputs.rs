@@ -160,8 +160,10 @@ pub(crate) struct SavedResumeRequest {
     pub request: SavedPreparationRequest,
     pub source_origin_sha256: String,
     pub expected: SourceCacheFilePin,
-    #[serde(default,skip_serializing_if="Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_binding: Option<crate::shadow_tree::ExpectedBindingPin>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_placement: Option<ArtifactPin>,
     /// Original legacy import receipt, when present. NEVER a current-session
     /// process terminal or a requirement that a crashed process wrote one.
     pub legacy_terminal: Option<SourceCacheFilePin>,
@@ -189,6 +191,10 @@ impl SavedResumeRequest {
             source_origin_sha256: hex::encode(saved.source_origin_sha256),
             expected: saved.expected.clone(),
             expected_binding: saved.expected_binding.clone(),
+            completed_placement: saved
+                .completed_placement
+                .as_ref()
+                .map(|proof| proof.pin().clone()),
             legacy_terminal: saved.legacy_terminal.clone(),
             prior_spend: SavedPlacementSpend {
                 prior_submissions_upper: u64::try_from(saved.prior_spend.prior_submissions_upper)?,
@@ -227,14 +233,36 @@ impl SavedResumeRequest {
         self.request.clone().into_actual()?;
         digest(&self.source_origin_sha256)?;
         file_pin(&self.expected)?;
-        if let Some(pin)=&self.expected_binding {
-            digest(&pin.sha256)?;ensure!(pin.bytes>0&&pin.bytes<=65536&&pin.path.is_absolute()
-                &&pin.facts.body_file_sha256==self.expected.sha256
-                &&pin.facts.effective_admission.budget==main,"saved expected binding pin differs");
-            pin.facts.validate(pin.facts.effective_admission,&self.expected.sha256,&pin.facts.body_semantic_sha256)?;
+        if let Some(pin) = &self.expected_binding {
+            digest(&pin.sha256)?;
+            ensure!(
+                pin.bytes > 0
+                    && pin.bytes <= 65536
+                    && pin.path.is_absolute()
+                    && pin.facts.body_file_sha256 == self.expected.sha256
+                    && pin.facts.effective_admission.budget == main,
+                "saved expected binding pin differs"
+            );
+            pin.facts.validate(
+                pin.facts.effective_admission,
+                &self.expected.sha256,
+                &pin.facts.body_semantic_sha256,
+            )?;
         }
         if let Some(terminal) = &self.legacy_terminal {
             file_pin(terminal)?;
+        }
+        if let Some(pin) = &self.completed_placement {
+            ensure!(
+                pin.key == "placement-completed"
+                    && pin.bytes > 0
+                    && pin
+                        .path
+                        .file_name()
+                        .is_some_and(|name| name == "placement-completed.json"),
+                "saved completed placement selector pin differs"
+            );
+            digest(&pin.sha256)?;
         }
         self.prior_spend.into_actual()?;
         self.placement_limits.into_actual()?;
@@ -563,6 +591,26 @@ pub(crate) fn peek_saved_resume_request(
     Ok(saved)
 }
 
+/// Actual paid, immutable report owner. Its pin is a selector for a fresh SDK
+/// placed-tree audit; neither its JSON nor this wrapper grants native authority.
+#[derive(Clone)]
+pub(crate) struct HeldCompletedPlacement {
+    file: std::sync::Arc<HeldArtifact>,
+    arena: crate::artifact_arena::ArtifactArena,
+}
+impl HeldCompletedPlacement {
+    pub(crate) fn pin(&self) -> &ArtifactPin {
+        self.file.pin()
+    }
+    pub(crate) fn require_arena(&self, arena: &crate::artifact_arena::ArtifactArena) -> Result<()> {
+        ensure!(
+            self.arena.same_arena(arena),
+            "completed placement selector belongs to another actual arena"
+        );
+        self.file.revalidate_identity()
+    }
+}
+
 pub(crate) struct ResumeSessionInputs {
     pub journal: DurableResume,
     pub saved: SavedResumeRequest,
@@ -570,7 +618,8 @@ pub(crate) struct ResumeSessionInputs {
     pub source_origin_sha256: [u8; 32],
     pub new_preparation_intent: ArtifactPin,
     pub actual_guard_phase: String,
-    pub workspace_origin: Option<(PathBuf,GeneralJournalStorageBinding)>,
+    pub workspace_origin: Option<(PathBuf, GeneralJournalStorageBinding)>,
+    pub completed_placement: Option<HeldCompletedPlacement>,
     _facts: Vec<HeldArtifact>,
     _metadata_owners: Vec<ArtifactLease>,
     _index_memory: Vec<ArenaRamLease>,
@@ -679,21 +728,67 @@ impl ResumeSessionInputs {
         let saved: SavedResumeRequest = decode(&request_file, limits.max_intent_bytes, group)?;
         let source: SourceCacheOriginPins = decode(&cache_file, limits.max_intent_bytes, group)?;
         saved.validate(journal.intent().resources)?;
-        let binding_pins:Vec<_>=initial.iter().filter(|p|p.key=="expected-binding").collect();
-        match (&saved.expected_binding,binding_pins.as_slice()) {
-            (None,[])=>{},
-            (Some(binding),[pin])=>{
-                ensure!(pin.path==binding.path&&pin.sha256==binding.sha256&&pin.bytes==binding.bytes,
-                    "resume expected binding initial artifact differs");
-                let held=adopt_pin(pin,65536,group)?;
-                let facts:crate::shadow_tree::ExpectedBindingFacts=decode(&held,65536,group)?;
-                ensure!(facts==binding.facts,"resume expected binding actual facts differ");
-                let bytes=serde_json::to_vec(&facts)?;
-                ensure!(bytes.len() as u64==binding.bytes&&hex::encode(Sha256::digest(&bytes))==binding.sha256,
-                    "resume expected binding canonical pin differs");
+        let carried: Vec<_> = initial
+            .iter()
+            .filter(|pin| pin.key == "placement-completed")
+            .collect();
+        match (&saved.completed_placement, carried.as_slice()) {
+            (None, []) => {}
+            (Some(pin), [actual]) => ensure!(
+                pin == *actual,
+                "saved completed placement initial pin differs"
+            ),
+            _ => anyhow::bail!("saved completed placement initial pin is absent or ambiguous"),
+        }
+        let current =
+            if journal.stage() == Some(Stage::Placing) && journal.pending_batch().is_none() {
+                journal.completed_placement_evidence()
+            } else {
+                None
+            };
+        let completed_placement = current
+            .or(saved.completed_placement.as_ref())
+            .map(|pin| -> Result<HeldCompletedPlacement> {
+                ensure!(
+                    pin.key == "placement-completed",
+                    "completed placement report key differs"
+                );
+                let held = adopt_pin(pin, limits.max_checkpoint_bytes, group)
+                    .context("authenticate and hold completed placement selector")?;
+                Ok(HeldCompletedPlacement {
+                    file: std::sync::Arc::new(held),
+                    arena: group.arena().clone(),
+                })
+            })
+            .transpose()?;
+        let binding_pins: Vec<_> = initial
+            .iter()
+            .filter(|p| p.key == "expected-binding")
+            .collect();
+        match (&saved.expected_binding, binding_pins.as_slice()) {
+            (None, []) => {}
+            (Some(binding), [pin]) => {
+                ensure!(
+                    pin.path == binding.path
+                        && pin.sha256 == binding.sha256
+                        && pin.bytes == binding.bytes,
+                    "resume expected binding initial artifact differs"
+                );
+                let held = adopt_pin(pin, 65536, group)?;
+                let facts: crate::shadow_tree::ExpectedBindingFacts = decode(&held, 65536, group)?;
+                ensure!(
+                    facts == binding.facts,
+                    "resume expected binding actual facts differ"
+                );
+                let bytes = serde_json::to_vec(&facts)?;
+                ensure!(
+                    bytes.len() as u64 == binding.bytes
+                        && hex::encode(Sha256::digest(&bytes)) == binding.sha256,
+                    "resume expected binding canonical pin differs"
+                );
                 metadata_owners.push(group.arena().retained_artifact(&binding.path)?);
-            },
-            _=>anyhow::bail!("resume expected binding pin is absent or ambiguous"),
+            }
+            _ => anyhow::bail!("resume expected binding pin is absent or ambiguous"),
         }
         let origin_sha = digest(&saved.source_origin_sha256)?;
         ensure!(
@@ -747,21 +842,42 @@ impl ResumeSessionInputs {
                     "prior epoch link differs"
                 );
             }
-            Origin::WorkspaceMigration{intent,source_cache_manifest,prior_arena_root,prior_working}=>{
-                prior_working.validate()?;ordinary(prior_arena_root,true)?;
-                ensure!(source_cache_manifest==&cache_pin
-                    &&intent.path!=journal.intent_pin().path&&intent.sha256!=journal.intent_pin().sha256,
-                    "migrated workspace origin link differs");
-                let prior=peek_resume_intent(intent.path.parent().context("prior migration intent parent absent")?,
-                    digest(&intent.sha256)?,limits.max_intent_bytes)?;
-                ensure!(prior.pair==journal.intent().pair
-                    &&source.source_manifest.path.starts_with(prior_arena_root),
-                    "migrated origin source/shadow/cache root differs");
+            Origin::WorkspaceMigration {
+                intent,
+                source_cache_manifest,
+                prior_arena_root,
+                prior_working,
+            } => {
+                prior_working.validate()?;
+                ordinary(prior_arena_root, true)?;
+                ensure!(
+                    source_cache_manifest == &cache_pin
+                        && intent.path != journal.intent_pin().path
+                        && intent.sha256 != journal.intent_pin().sha256,
+                    "migrated workspace origin link differs"
+                );
+                let prior = peek_resume_intent(
+                    intent
+                        .path
+                        .parent()
+                        .context("prior migration intent parent absent")?,
+                    digest(&intent.sha256)?,
+                    limits.max_intent_bytes,
+                )?;
+                ensure!(
+                    prior.pair == journal.intent().pair
+                        && source.source_manifest.path.starts_with(prior_arena_root),
+                    "migrated origin source/shadow/cache root differs"
+                );
             }
         }
-        let workspace_origin=match &journal.intent().origin {
-            Origin::WorkspaceMigration{prior_arena_root,prior_working,..}=>Some((prior_arena_root.clone(),prior_working.clone())),
-            _=>None,
+        let workspace_origin = match &journal.intent().origin {
+            Origin::WorkspaceMigration {
+                prior_arena_root,
+                prior_working,
+                ..
+            } => Some((prior_arena_root.clone(), prior_working.clone())),
+            _ => None,
         };
         let new_guard = journal.intent().new_preparation_intent.clone();
         Ok(Self {
@@ -772,12 +888,16 @@ impl ResumeSessionInputs {
             new_preparation_intent: new_guard,
             actual_guard_phase: actual.actual_guard_phase,
             workspace_origin,
+            completed_placement,
             _facts: vec![request_file, cache_file],
             _metadata_owners: metadata_owners,
             _index_memory: payments,
         })
     }
     pub(crate) fn revalidate(&self) -> Result<()> {
+        if let Some(proof) = &self.completed_placement {
+            proof.require_arena(&proof.arena)?;
+        }
         for file in &self._facts {
             file.revalidate_identity()?;
         }

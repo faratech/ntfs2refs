@@ -287,7 +287,11 @@ impl Origin {
                 intent,
                 source_cache_manifest,
             } => vec![intent, source_cache_manifest],
-            Self::WorkspaceMigration{intent,source_cache_manifest,..}=>vec![intent,source_cache_manifest],
+            Self::WorkspaceMigration {
+                intent,
+                source_cache_manifest,
+                ..
+            } => vec![intent, source_cache_manifest],
         }
     }
 }
@@ -311,9 +315,14 @@ impl ResumeIntent {
         INTENT_KIND
     }
     fn validate(&self, arena: &ArtifactArena, limits: Limits) -> Result<()> {
-        self.validate_with_working(arena,limits,volume(arena.volume_guid_path()?)?)
+        self.validate_with_working(arena, limits, volume(arena.volume_guid_path()?)?)
     }
-    fn validate_with_working(&self,arena:&ArtifactArena,limits:Limits,actual_working:[u8;16])->Result<()> {
+    fn validate_with_working(
+        &self,
+        arena: &ArtifactArena,
+        limits: Limits,
+        actual_working: [u8; 16],
+    ) -> Result<()> {
         ensure!(
             self.schema_version == 1
                 && self.kind == INTENT_KIND
@@ -329,13 +338,21 @@ impl ResumeIntent {
         );
         self.pair.validate()?;
         self.working.validate()?;
-        if let Origin::WorkspaceMigration{prior_arena_root,prior_working,..}=&self.origin {
-            prior_working.validate()?;ordinary_path(prior_arena_root)?;
-            for data in [&self.pair.source,&self.pair.shadow] {
-                ensure!(prior_working.disk.disk_number!=data.disk_number
-                    &&n2r_win32::layout::guid_bytes(&prior_working.disk.identity.disk_guid)?
-                        !=n2r_win32::layout::guid_bytes(&data.identity.disk_guid)?,
-                    "historical workspace aliases source or shadow storage");
+        if let Origin::WorkspaceMigration {
+            prior_arena_root,
+            prior_working,
+            ..
+        } = &self.origin
+        {
+            prior_working.validate()?;
+            ordinary_path(prior_arena_root)?;
+            for data in [&self.pair.source, &self.pair.shadow] {
+                ensure!(
+                    prior_working.disk.disk_number != data.disk_number
+                        && n2r_win32::layout::guid_bytes(&prior_working.disk.identity.disk_guid)?
+                            != n2r_win32::layout::guid_bytes(&data.identity.disk_guid)?,
+                    "historical workspace aliases source or shadow storage"
+                );
             }
         }
         let working = n2r_win32::layout::guid_bytes(&self.working.disk.volume_guid)?;
@@ -537,6 +554,10 @@ struct RecordOwners {
     _copies: Vec<HeldArtifact>,
     _memory: Vec<ArenaRamLease>,
 }
+struct CompletedPlacementFact {
+    pin: ArtifactPin,
+    _memory: ArenaRamLease,
+}
 pub(crate) struct DurableResume {
     group: ArtifactGroupPermit,
     directory: PathBuf,
@@ -547,6 +568,7 @@ pub(crate) struct DurableResume {
     head: String,
     stage: Option<Stage>,
     pending: Option<BatchIntent>,
+    completed_placement: Option<std::sync::Arc<CompletedPlacementFact>>,
     publication: Option<ArtifactPin>,
     uncertain: Vec<UncertainCheckpoint>,
     records: Vec<RecordOwners>,
@@ -589,6 +611,7 @@ impl DurableResume {
             head: ZERO_HASH.to_owned(),
             stage: None,
             pending: None,
+            completed_placement: None,
             publication: None,
             uncertain: Vec::new(),
             records: Vec::new(),
@@ -616,9 +639,11 @@ impl DurableResume {
                 && intent_file.pin.path == directory.join("resume-intent.json"),
             "intent pin/arena/path differs"
         );
-        let origin_directory=hold_readonly_directory(directory,group.arena())?;
-        let origin_volume=volume(&n2r_win32::file_storage::final_path_guid(&origin_directory)?)?;
-        let read_only_origin=origin_volume!=volume(group.arena().volume_guid_path()?)?;
+        let origin_directory = hold_readonly_directory(directory, group.arena())?;
+        let origin_volume = volume(&n2r_win32::file_storage::final_path_guid(
+            &origin_directory,
+        )?)?;
+        let read_only_origin = origin_volume != volume(group.arena().volume_guid_path()?)?;
         let memory = group.arena().reserve_ram(
             intent_file
                 .pin
@@ -628,7 +653,7 @@ impl DurableResume {
                 .context("intent RAM overflow")?,
         )?;
         let intent: ResumeIntent = intent_file.decode(limits.max_intent_bytes)?;
-        intent.validate_with_working(group.arena(), limits,origin_volume)?;
+        intent.validate_with_working(group.arena(), limits, origin_volume)?;
         ensure!(
             checkpoint_files.len() as u64
                 <= limits
@@ -680,6 +705,7 @@ impl DurableResume {
             head: ZERO_HASH.to_owned(),
             stage: None,
             pending: None,
+            completed_placement: None,
             publication: None,
             uncertain: Vec::new(),
             records: Vec::new(),
@@ -746,6 +772,47 @@ impl DurableResume {
     }
     pub(crate) fn pending_batch(&self) -> Option<&BatchIntent> {
         self.pending.as_ref()
+    }
+    /// Authenticated checkpoint data only; the SDK must freshly adopt/audit
+    /// the actual placed tree before this can affect any runtime owner.
+    pub(crate) fn completed_placement_evidence(&self) -> Option<&ArtifactPin> {
+        self.completed_placement.as_ref().map(|fact| &fact.pin)
+    }
+    fn observe_completed_placement(&mut self, stage: Stage, outcome: &BatchOutcome) -> Result<()> {
+        if stage != Stage::Placing
+            || !matches!(outcome.disposition, BatchDisposition::ObservedApplied)
+            || !self.pending.as_ref().is_some_and(|batch| {
+                batch.operation == "native_reconcile_and_place_remaining" && batch.id == outcome.id
+            })
+        {
+            return Ok(());
+        }
+        let mut pins = outcome
+            .evidence
+            .iter()
+            .filter(|pin| pin.key == "placement-completed");
+        let pin = pins
+            .next()
+            .context("completed placement batch lacks its closed report pin")?;
+        ensure!(
+            pins.next().is_none() && pin.path == self.directory.join("placement-completed.json"),
+            "completed placement batch report pin is ambiguous or outside its epoch"
+        );
+        let retained = (std::mem::size_of::<CompletedPlacementFact>() as u64)
+            .checked_add(
+                (pin.path.as_os_str().as_encoded_bytes().len() as u64)
+                    .checked_mul(4)
+                    .context("placement fact path RAM overflow")?,
+            )
+            .and_then(|n| n.checked_add((pin.final_path.len() as u64) * 4))
+            .and_then(|n| n.checked_add(pin.key.len() as u64 + pin.sha256.len() as u64 + 4096))
+            .context("placement fact RAM overflow")?;
+        let memory = self.group.arena().reserve_ram(retained)?;
+        self.completed_placement = Some(std::sync::Arc::new(CompletedPlacementFact {
+            pin: pin.clone(),
+            _memory: memory,
+        }));
+        Ok(())
     }
     pub(crate) fn uncertain_checkpoints(&self) -> &[UncertainCheckpoint] {
         &self.uncertain
@@ -840,7 +907,10 @@ impl DurableResume {
         )
     }
     fn ready(&self) -> Result<()> {
-        ensure!(!self.read_only_origin,"historical external checkpoint owner is read-only");
+        ensure!(
+            !self.read_only_origin,
+            "historical external checkpoint owner is read-only"
+        );
         ensure!(
             !self.poisoned && self.publication.is_none() && self.uncertain.is_empty(),
             "incomplete copies need native reconciliation, or already published"
@@ -898,6 +968,9 @@ impl DurableResume {
                     "batch crossed unresolved intent/copy"
                 );
                 batch.validate(self.limits)?;
+                if b.stage == Stage::Placing {
+                    self.completed_placement = None;
+                }
                 self.pending = Some(batch.clone());
             }
             Change::BatchOutcome { outcome } => {
@@ -910,6 +983,7 @@ impl DurableResume {
                     self.pending.as_ref().is_some_and(|v| v.id == outcome.id),
                     "outcome lacks intent"
                 );
+                self.observe_completed_placement(b.stage, outcome)?;
                 if !matches!(outcome.disposition, BatchDisposition::Refused) {
                     self.pending = None;
                 }
@@ -937,6 +1011,7 @@ impl DurableResume {
                         self.pending.as_ref().is_some_and(|v| v.id == outcome.id),
                         "reconciliation names different batch"
                     );
+                    self.observe_completed_placement(b.stage, outcome)?;
                     if !matches!(outcome.disposition, BatchDisposition::Refused) {
                         self.pending = None;
                     }
@@ -984,9 +1059,16 @@ impl DurableResume {
             self.stage,
             self.publication.clone(),
             self.uncertain.clone(),
+            self.completed_placement.clone(),
         );
         let validation = self.apply(&body, false);
-        (self.pending, self.stage, self.publication, self.uncertain) = old;
+        (
+            self.pending,
+            self.stage,
+            self.publication,
+            self.uncertain,
+            self.completed_placement,
+        ) = old;
         validation?;
         self.poisoned = true;
         let envelope = Envelope {
@@ -1077,11 +1159,17 @@ fn hold_directory(p: &Path, a: &ArtifactArena) -> Result<File> {
     );
     Ok(f)
 }
-fn hold_readonly_directory(p:&Path,a:&ArtifactArena)->Result<File> {
+fn hold_readonly_directory(p: &Path, a: &ArtifactArena) -> Result<File> {
     a.require_readonly_origin_path(p)?;
-    let file=OpenOptions::new().access_mode(0x80).share_mode(1).custom_flags(0x02200000).open(p)?;
-    ensure!(file.metadata()?.is_dir()&&file.metadata()?.file_attributes()&0x400==0,
-        "historical resume directory is not ordinary");
+    let file = OpenOptions::new()
+        .access_mode(0x80)
+        .share_mode(1)
+        .custom_flags(0x02200000)
+        .open(p)?;
+    ensure!(
+        file.metadata()?.is_dir() && file.metadata()?.file_attributes() & 0x400 == 0,
+        "historical resume directory is not ordinary"
+    );
     Ok(file)
 }
 fn validate_pins(pins: &[ArtifactPin], maximum: usize) -> Result<()> {

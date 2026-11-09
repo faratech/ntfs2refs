@@ -436,8 +436,9 @@ impl PrivateTree {
         }
         for file in self.files.values_mut() {
             let prefix = file.logical_length() / 4096 * 4096;
-            if prefix > 0 {
-                file.advance_valid_data(prefix, true)?;
+            if prefix > 0 && !file.revalidate_recovered_prefix(prefix)? {
+                file.advance_valid_data(prefix, true).map_err(|e|io::Error::new(e.kind(),
+                    format!("source-backed prefix initialization failed: path={:?}, prefix={prefix}: {e}",file.path)))?;
             }
         }
         self.require_source_excluded()

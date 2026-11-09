@@ -7,7 +7,7 @@ struct Evidence {
     metadata: Snapshot,
     private_security: Vec<u8>,
     retrieval: Vec<u8>,
-    storage: Vec<u8>,
+    storage: initialized_regions::Proof,
     integrity: Vec<u8>,
     digest: String,
 }
@@ -178,11 +178,8 @@ fn capture(
     if covered != prefix {
         return Err(bad("private routed prefix complete mapping absent"));
     }
-    let mut q = [0u8; 24];
-    q[8..16].copy_from_slice(&prefix.to_le_bytes());
-    q[16..20].copy_from_slice(&2u32.to_le_bytes());
-    let storage = ctl(file, 0x90284, &q, 16 + 24 * 1024)?;
-    crate::region_layout::validate(&storage, prefix, 2)?;
+    let storage = initialized_regions::capture_initialized(file,prefix,2,row)
+        .map_err(|e|io::Error::new(e.kind(),format!("routed prefix first initialized-region observation {path:?}: {e}")))?;
     let integrity = ctl(file, 0x9027c, &[], 16)?;
     if integrity.len() != 16 || integrity[..8] != [0; 8] || layout::u32_at(&integrity, 12)? != 4096
     {
@@ -196,12 +193,12 @@ fn capture(
         &continuation,
         crate::retrieval_paging::Limits::for_resource_bytes(row)?,
     )?;
-    let after_storage = ctl(file, 0x90284, &q, 16 + 24 * 1024)?;
-    crate::region_layout::validate(&after_storage, prefix, 2)?;
+    let after_storage = initialized_regions::capture_initialized(file,prefix,2,row)
+        .map_err(|e|io::Error::new(e.kind(),format!("routed prefix second initialized-region observation {path:?}: {e}")))?;
     if before != after
         || sd != after_sd
         || mapping.canonical != after_mapping.canonical
-        || storage != after_storage
+        || !storage.same_transcript(&after_storage)
         || !crate::file_storage::final_path_guid(file)?.eq_ignore_ascii_case(path)
     {
         return Err(bad(
@@ -245,9 +242,10 @@ fn retained_bytes(e: &Evidence, path: &String) -> io::Result<u64> {
     {
         return Err(bad("unexpected feature scope in private prefix snapshot"));
     }
-    for b in [&e.private_security, &e.retrieval, &e.storage, &e.integrity] {
+    for b in [&e.private_security, &e.retrieval, &e.integrity] {
         n = add(n, b.capacity() as u64)?;
     }
+    n=add(n,e.storage.retained_bytes()?)?;
     add(n, e.digest.capacity() as u64)
 }
 impl RoutedPrefixReady {

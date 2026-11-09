@@ -252,6 +252,10 @@ pub struct Report {
     pub resident_data: bool,
     pub cached_validity: Vec<u8>,
     pub storage_validity: Vec<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cached_validity_pages: Option<InitializedRegionPages>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_validity_pages: Option<InitializedRegionPages>,
     pub integrity: Vec<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sparse: Option<sparse_stream::Observation>,
@@ -264,6 +268,7 @@ pub(super) fn observe(
     protected: bool,
     hash: bool,
     clusters: u64,
+    region_bytes: Option<usize>,
 ) -> io::Result<Vec<Report>> {
     let mut reports = Vec::with_capacity(item.named_streams.len());
     for named in &item.named_streams {
@@ -330,9 +335,18 @@ pub(super) fn observe(
             (cap.canonical, Some(cap.proof))
         };
         let mut regions = Vec::new();
+        let mut region_pages = Vec::new();
         for usage in [1u32, 2] {
             if named.sparse.is_some() || allocation == 0 || resident_data {
                 regions.push(Vec::new());
+                region_pages.push(None);
+                continue;
+            }
+            if let Some(maximum)=region_bytes {
+                let proof=initialized_regions::capture_initialized_logical(&file,named.expected_length,usage,maximum)
+                    .map_err(|e|io::Error::new(e.kind(),format!("named initialized regions {path:?}, usage={usage}: {e}")))?;
+                let (single,pages)=proof.into_transport();
+                regions.push(single);region_pages.push(pages);
                 continue;
             }
             let mut q = [0; 24];
@@ -341,6 +355,7 @@ pub(super) fn observe(
             let b = ctl(&file, 0x90284, &q, 16 + 24 * 1024)?;
             crate::region_layout::validate_logical(&b, named.expected_length, usage)?;
             regions.push(b);
+            region_pages.push(None);
         }
         let integrity = ctl(&file, 0x9027c, &[], 16)?;
         if integrity.len() != 16
@@ -380,6 +395,8 @@ pub(super) fn observe(
             resident_data,
             cached_validity: regions.remove(0),
             storage_validity: regions.remove(0),
+            cached_validity_pages: region_pages.remove(0),
+            storage_validity_pages: region_pages.remove(0),
             integrity,
         });
     }
@@ -392,6 +409,13 @@ pub(super) fn verify(item: &Input<'_>, object: &ObjectReport, hash: bool) -> io:
         return Err(invalid("named stream report coverage differs"));
     }
     for (wanted, actual) in item.named_streams.iter().zip(&object.named_streams) {
+        for (single,pages,usage) in [(&actual.cached_validity,actual.cached_validity_pages.as_ref(),1),
+            (&actual.storage_validity,actual.storage_validity_pages.as_ref(),2)] {
+            if pages.is_some() && (wanted.sparse.is_some()||actual.resident_data) {
+                return Err(invalid("named sparse/resident stream cannot carry ordinary initialized-region pages"));
+            }
+            initialized_regions::validate_transport(single,pages,wanted.expected_length,usage,true)?;
+        }
         if actual.name_utf16 != wanted.name_utf16
             || actual.expected_sha256.as_deref() != wanted.expected_sha256
             || actual.before != actual.after

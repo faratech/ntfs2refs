@@ -201,6 +201,7 @@ pub(super) fn compact_row(row: &mut ObjectReport) {
     ] {
         bytes.shrink_to_fit();
     }
+    for pages in [&mut row.cached_validity_pages,&mut row.storage_validity_pages].into_iter().flatten(){pages.compact();}
     for stream in &mut row.named_streams {
         snapshot(&mut stream.before);
         snapshot(&mut stream.after);
@@ -212,6 +213,7 @@ pub(super) fn compact_row(row: &mut ObjectReport) {
         ] {
             bytes.shrink_to_fit();
         }
+        for pages in [&mut stream.cached_validity_pages,&mut stream.storage_validity_pages].into_iter().flatten(){pages.compact();}
         if let Some(layout) = &mut stream.sparse {
             sparse(layout);
         }
@@ -241,6 +243,7 @@ pub(super) fn row_bytes(r: &ObjectReport) -> io::Result<u64> {
     if let Some(p) = &r.retrieval_page_proof {
         n = add(n, retrieval_proof(p)?)?;
     }
+    for pages in [&r.cached_validity_pages,&r.storage_validity_pages].into_iter().flatten(){n=add(n,pages.retained_bytes()?)?;}
     n = add(n, vec_bytes(&r.namespace)?)?;
     for entry in &r.namespace {
         n = add(n, vec_bytes(&entry.name_utf16)?)?;
@@ -270,6 +273,7 @@ pub(super) fn row_bytes(r: &ObjectReport) -> io::Result<u64> {
         if let Some(p) = &s.retrieval_page_proof {
             n = add(n, retrieval_proof(p)?)?;
         }
+        for pages in [&s.cached_validity_pages,&s.storage_validity_pages].into_iter().flatten(){n=add(n,pages.retained_bytes()?)?;}
         if let Some(s) = &s.sparse {
             n = add(n, sparse_bytes(s)?)?;
         }

@@ -1298,6 +1298,96 @@ pub(super) fn run_recovered_resource_domain(
 
 /// Subtract only exact current logical-to-physical matches. Occupied ranges
 /// belonging to another coordinate remain work for the existing planner.
+pub(super) fn rehydrate_recovered_resource_domain(
+    tree:&mut PrivateTree,input:&impl InputDomain,origin:&recovery::RecoveredOrigin,
+    sink:&mut dyn PlacementEvidenceSink,
+)->io::Result<ResourcePlacementReport>{
+    origin.require_tree(tree)?;
+    tree.require_dedicated_shadow_boundary()?;
+    tree.require_bound_input_domain(input)?;
+    let admission=tree.metadata_resource_admission.ok_or_else(||invalid("placed recovery admission absent"))?;
+    input.require_resource_metadata(admission)?;
+    if input.len()!=tree.initial_objects.len(){return Err(invalid("placed recovery object coverage differs"));}
+    let (bytes,moves)=origin.remaining();
+    let limits=PlacementLimits::resource(admission,tree.pair.shadow.identity.partition_bytes,bytes,moves,sink.maximum_bytes())?;
+    let payer=tree.memory.as_ref().ok_or_else(||invalid("placed recovery payer absent"))?.payer();
+    let mut memory=Some(payer.reserve((limits.tracked as u64).checked_mul(512)
+        .and_then(|n|n.checked_add(4*1024*1024)).ok_or_else(||invalid("placed recovery index RAM overflow"))?)?);
+    let report_memory=payer.reserve(2*1024*1024)?;
+    let mut retained_streams=BTreeMap::new();
+    let mut retained_bytes=0u64;
+    let mut retained_ranges=0usize;
+    for (&slot,key) in &tree.stream_slots {
+        let file=tree.file_by_slot(slot)?;
+        let owner=input.object(key.object_index)?;
+        let object=owner.input();
+        let item=tree.placement_view_object(&object,key)?;
+        let prefix=item.logical_length()/4096*4096;
+        if file.logical_length()!=item.logical_length()
+            ||file.path!=placement_path(tree,key,&item)?
+            ||file.valid_prefix()!=prefix {
+            return Err(invalid("placed recovery stream shape or initialized prefix differs"));
+        }
+        if prefix>0&&!file.revalidate_recovered_prefix(prefix)? {
+            return Err(invalid("placed recovery prefix lacks current native readiness"));
+        }
+        file.check_placements()?;
+        let tracked=file.tracked_mappings();
+        let mut cursor=0u64;
+        for &(v,l,n) in tracked {
+            if n==0||v!=cursor||l.checked_add(u64::from(n)).is_none_or(|e|e>tree.pair.shadow.identity.partition_bytes/4096){
+                return Err(invalid("placed recovery mapping is not a complete dense prefix"));
+            }
+            cursor=cursor.checked_add(u64::from(n)).ok_or_else(||invalid("placed recovery logical map overflow"))?;
+        }
+        if cursor!=prefix/4096 {return Err(invalid("placed recovery complete prefix map absent"));}
+        let mut ranges=Vec::new();
+        for source in source_runs(&item,tree.pair.shadow.identity.partition_bytes)? {
+            let wanted_vcn=source.logical_offset/4096;
+            let wanted_lcn=source.physical_offset.ok_or_else(||invalid("placed recovery source LCN absent"))?/4096;
+            let wanted_end=wanted_vcn.checked_add(source.length/4096).ok_or_else(||invalid("placed recovery source VCN overflow"))?;
+            let first=tracked.partition_point(|&(v,_,n)|v+u64::from(n)<=wanted_vcn);
+            for &(v,l,n) in &tracked[first..] {
+                if v>=wanted_end {break;}
+                let start=v.max(wanted_vcn);
+                let end=(v+u64::from(n)).min(wanted_end);
+                if start>=end||l+start-v!=wanted_lcn+start-wanted_vcn {continue;}
+                if retained_ranges==limits.tracked {return Err(invalid("placed recovery coordinate index exhausted"));}
+                retained_ranges+=1;
+                let row=(start*4096,(l+start-v)*4096,(end-start)*4096);
+                retained_bytes=retained_bytes.checked_add(row.2).ok_or_else(||invalid("placed recovery retained bytes overflow"))?;
+                let value=serde_json::json!({"object_index":slot,"logical_offset":row.0,
+                    "source_physical_offset":row.1,"target_physical_offset":row.1,"length":row.2,
+                    "source_contents_verified":false,"derived_from_current_native_maps":true});
+                let maximum=serde_json::to_vec(&value).map_err(io::Error::other)?.len() as u64;
+                sink.reserve_next(maximum)?;sink.push("section",&value)?;
+                ranges.push(row);
+            }
+        }
+        if !ranges.is_empty()&&retained_streams.insert(key.clone(),ranges).is_some(){return Err(invalid("placed recovery stream coordinates collide"));}
+    }
+    // This is a fresh complete ownership audit, not an old placement verdict.
+    audit_recovered_maps(tree,bytes,moves)?;
+    tree.require_source_excluded()?;
+    tree.require_dedicated_shadow_boundary()?;
+    let receipt=sink.finish()?;
+    let retained=memory::coordinate_map_bytes(&retained_streams)?;
+    tree.memory.as_ref().ok_or_else(||invalid("placed recovery memory absent"))?
+        .retain_from(&mut memory,retained)?;
+    let value=serde_json::json!({"schema_version":3,"kind":"private-source-backed-placement-revalidation-pages",
+        "recovered_origin":origin.receipt(),"paged_evidence":receipt,
+        "original_coordinate_bytes":retained_bytes,"move_bytes_submitted":0,"move_count":0,
+        "max_move_bytes":bytes,"max_move_submissions":moves,
+        "counters":{"retained_ranges":retained_ranges,"native_move_submissions":0},
+        "payload_contents_verified":false,"historical_payloads_trusted":false,"source_payload_writes":0,
+        "conversion_qualified":false});
+    let report=ResourcePlacementReport::new(value,report_memory)?;
+    tree.original_coordinates=retained_streams;
+    tree.placement_complete=true;
+    tree.placement_progress=serde_json::json!({"phase":"current-native-placement-revalidated","placement_complete":true,"native_move_submissions":0});
+    Ok(report)
+}
+
 fn unfinished_runs(file:&unwritten::PrivatePlaceholder, run:&SourceRun, maximum:usize)->io::Result<Vec<SourceRun>> {
     let start=run.logical_offset;
     let end=start.checked_add(run.length).ok_or_else(||invalid("recovered desired logical range overflow"))?;

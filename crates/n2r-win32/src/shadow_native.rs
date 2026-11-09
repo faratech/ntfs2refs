@@ -19,6 +19,8 @@ pub mod private_tree;
 pub mod sparse_carrier_probe;
 mod unwritten;
 mod unwritten_regions;
+pub(super) mod initialized_regions;
+pub use initialized_regions::Proof as InitializedRegionPages;
 pub mod valid_data_probe;
 use crate::{
     attestation::{PrivilegeState, Snapshot},
@@ -269,6 +271,11 @@ pub struct ObjectReport {
     pub resident_data: bool,
     pub cached_validity: Vec<u8>,
     pub storage_validity: Vec<u8>,
+    /// Actual paginated native replies, used instead of the single raw reply.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cached_validity_pages: Option<InitializedRegionPages>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_validity_pages: Option<InitializedRegionPages>,
     pub integrity: Vec<u8>,
     pub namespace: Vec<namespace_layout::Entry>,
     pub source_candidate: Option<CandidateReport>,
@@ -1586,6 +1593,13 @@ fn validate_existing_content_domain_with_memory_and_windows_aliases(
         let owner = input.object(index)?;
         let item = owner.input();
         let i = &item;
+        for (single,pages,usage) in [(&o.cached_validity,o.cached_validity_pages.as_ref(),1),
+            (&o.storage_validity,o.storage_validity_pages.as_ref(),2)] {
+            if pages.is_some() && (i.directory||i.sparse.is_some()||o.resident_data) {
+                return Err(invalid("resident/directory/sparse object cannot carry ordinary initialized-region pages"));
+            }
+            initialized_regions::validate_transport(single,pages,i.logical_length(),usage,true)?;
+        }
         let expected_content = if verify_contents && !i.directory {
             Some(i.logical_sha256().ok_or_else(|| {
                 invalid("full existing-tree verification requires a content expectation")
@@ -5349,6 +5363,11 @@ fn run_role_content_domain_accounted(
     // verifying, hashed under its own handle. Observe them on the available
     // cores in input order; the first failure in input order is returned.
     let readonly_object_access = protected.is_some();
+    // Multi-page region retention is available only on the actual paid V4
+    // domain route. Legacy/unaccounted observations keep their old limits.
+    let initialized_region_bytes = if memory_accountant.is_some() {
+        resource_admission.map(|a|usize::try_from(a.budget.max_row_bytes).map_err(io::Error::other)).transpose()?
+    } else { None };
     let observe = |i: &Input<'_>| -> io::Result<ObjectReport> {
         let path = format!("{}{}", root, i.components.join("\\"));
         let mut h = open_input(&path, i, readonly_object_access)?;
@@ -5356,6 +5375,8 @@ fn run_role_content_domain_accounted(
         let expected_allocation = layout::u64_at(query_bytes(&before, 1, 24)?, 0)?;
         let mut resident_data = false;
         let mut retrieval_page_proof = None;
+        let mut cached_validity_pages = None;
+        let mut storage_validity_pages = None;
         let (logical_sha256, retrieval, cached_validity, storage_validity, integrity, namespace) =
             if i.directory {
                 (
@@ -5440,11 +5461,22 @@ fn run_role_content_domain_accounted(
                     ));
                 }
                 let mut regions = vec![];
+                let mut region_pages = Vec::new();
                 for usage in [1u32, 2] {
                     if i.sparse.is_some()
                         || (ordinary && (expected_allocation == 0 || resident_data))
                     {
                         regions.push(vec![]);
+                        region_pages.push(None);
+                        continue;
+                    }
+                    if let Some(maximum)=initialized_region_bytes {
+                        let proof=if ordinary {
+                            initialized_regions::capture_initialized_logical(&h,i.logical_length(),usage,maximum)
+                        }else{initialized_regions::capture_initialized(&h,i.logical_length(),usage,maximum)}
+                            .map_err(|e|io::Error::new(e.kind(),format!("file initialized regions {:?}, usage={usage}, allocation={expected_allocation}: {e}",i.components)))?;
+                        let (single,pages)=proof.into_transport();
+                        regions.push(single);region_pages.push(pages);
                         continue;
                     }
                     let mut q = [0; 24];
@@ -5457,7 +5489,10 @@ fn run_role_content_domain_accounted(
                         crate::region_layout::validate(&b, i.logical_length(), usage)?;
                     }
                     regions.push(b);
+                    region_pages.push(None);
                 }
+                cached_validity_pages=region_pages.remove(0);
+                storage_validity_pages=region_pages.remove(0);
                 let integrity = ctl(&h, 0x9027c, &[], 16).map_err(|e| {
                     io::Error::other(format!("integrity for {:?}: {e}", i.components))
                 })?;
@@ -5529,6 +5564,7 @@ fn run_role_content_domain_accounted(
                 readonly_object_access,
                 verify_file_contents,
                 clusters,
+                initialized_region_bytes,
             )?,
             sparse: i
                 .sparse
@@ -5543,6 +5579,8 @@ fn run_role_content_domain_accounted(
             resident_data,
             cached_validity,
             storage_validity,
+            cached_validity_pages,
+            storage_validity_pages,
             integrity,
             namespace,
             streams,

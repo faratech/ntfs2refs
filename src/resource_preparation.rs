@@ -32,14 +32,14 @@ mod placement_evidence;
 pub(crate) mod abort;
 pub(crate) mod early_guard;
 pub(crate) mod file_observer;
-pub(crate) mod resume_origin;
-pub(crate) mod resume_session_inputs;
-pub(crate) mod resume_workspace;
-mod resume_checkpoint;
 #[path = "resource_partition_preparation.rs"]
 pub(crate) mod partition_preparation;
 #[path = "resource_partition_target.rs"]
 pub(crate) mod partition_target;
+mod resume_checkpoint;
+pub(crate) mod resume_origin;
+pub(crate) mod resume_session_inputs;
+pub(crate) mod resume_workspace;
 use anyhow::{Context, Result, ensure};
 use n2r_win32::{
     GeneralFrozenPartition, NativeEvent,
@@ -88,12 +88,13 @@ pub(crate) struct ResumePreparation {
     pub source_origin_sha256: [u8; 32],
     pub expected: crate::general_source_admission::resource::SourceCacheFilePin,
     pub expected_binding: Option<crate::shadow_tree::ExpectedBindingPin>,
+    pub completed_placement: Option<resume_session_inputs::HeldCompletedPlacement>,
     pub shadow_origin: n2r_win32::shadow_native::private_tree::recovery::ExternalOriginPins,
     pub prior_spend: n2r_win32::shadow_native::private_tree::recovery::PartialPlacementSpend,
     pub placement_limits: n2r_win32::shadow_native::private_tree::recovery::RecoveryLimits,
     pub legacy_terminal: Option<crate::general_source_admission::resource::SourceCacheFilePin>,
     pub prior_resume_intent: Option<crate::preparation_resume::ArtifactPin>,
-    pub workspace_origin: Option<(PathBuf,GeneralJournalStorageBinding)>,
+    pub workspace_origin: Option<(PathBuf, GeneralJournalStorageBinding)>,
     pub parent_resources: resume_origin::ParentPublicResources,
 }
 impl ResourcePreparationRequest {
@@ -180,9 +181,15 @@ pub(crate) trait PreparationObserver {
     fn restore_source_on_pre_ap_failure(&self) -> bool {
         false
     }
-    fn prefer_durable_preparation_cancellation(&self) -> bool { false }
-    fn remaining_scratch_reservation_bytes(&self)->u64 {0}
-    fn preparation_created(&mut self, _pin: &early_guard::GuardPin) -> Result<()> { Ok(()) }
+    fn prefer_durable_preparation_cancellation(&self) -> bool {
+        false
+    }
+    fn remaining_scratch_reservation_bytes(&self) -> u64 {
+        0
+    }
+    fn preparation_created(&mut self, _pin: &early_guard::GuardPin) -> Result<()> {
+        Ok(())
+    }
     fn native_events(&mut self, phase: &'static str, events: &mut Vec<NativeEvent>) -> Result<()>;
     fn source_prepared(&mut self, _context: &ResourceSourceContext) -> Result<()> {
         Ok(())
@@ -434,8 +441,10 @@ where
     let _output_ancestry = create_external_output(output, &request.journal)?;
     let excluded = [request.pair.source.clone(), request.pair.shadow.clone()];
     let arena = if let Some(saved) = resume {
-        ensure!(saved.arena.budget() == request.resources,
-            "resume inputs lost the actual newly admitted arena");
+        ensure!(
+            saved.arena.budget() == request.resources,
+            "resume inputs lost the actual newly admitted arena"
+        );
         saved.arena.clone()
     } else {
         ArtifactArena::new(output, request.resources, &excluded)?
@@ -464,11 +473,15 @@ where
         }))?;
     }
     let locator_group = if let Some(saved) = resume {
-        ensure!(saved.locator_group.group() == ArtifactGroup::RecoveryCopy
-            && saved.locator_group.arena().same_arena(&arena),
-            "resume locator group differs from actual arena");
+        ensure!(
+            saved.locator_group.group() == ArtifactGroup::RecoveryCopy
+                && saved.locator_group.arena().same_arena(&arena),
+            "resume locator group differs from actual arena"
+        );
         saved.locator_group.clone()
-    } else { arena.reserve_group(ArtifactGroup::RecoveryCopy, request.locator_arena_bytes)? };
+    } else {
+        arena.reserve_group(ArtifactGroup::RecoveryCopy, request.locator_arena_bytes)?
+    };
     events.phase("early-preparation-guard");
     let early_guard = early_guard::EarlyPreparationGuard::create(
         &request.pair,
@@ -483,7 +496,7 @@ where
     if resume.is_some() {
         // Exercise the exact checkpoint owner/path conversion before any
         // expensive source revalidation or source exclusion begins.
-        resume_checkpoint::preflight_new_guard(&early_guard,&locator_group)?;
+        resume_checkpoint::preflight_new_guard(&early_guard, &locator_group)?;
     }
     events.observer.note(
         &serde_json::json!({"kind":"resource-preparation-cancellation-anchor",
@@ -505,21 +518,31 @@ where
         && !events.observer.prefer_durable_preparation_cancellation();
     let source_result = if let Some(saved) = resume {
         ResourceSourceContext::prepare_cached_exact_with_guard(
-            request.pair.source.clone(), request.resources, request.verification_policy,
-            &output.join("source"), &arena, &mut events, &mut phase,
-            restore_on_failure, early_guard, &saved.source, saved.source_origin_sha256,
+            request.pair.source.clone(),
+            request.resources,
+            request.verification_policy,
+            &output.join("source"),
+            &arena,
+            &mut events,
+            &mut phase,
+            restore_on_failure,
+            early_guard,
+            &saved.source,
+            saved.source_origin_sha256,
         )
-    } else { ResourceSourceContext::prepare_with_guard(
-        request.pair.source.clone(),
-        request.resources,
-        request.verification_policy,
-        &output.join("source"),
-        &arena,
-        &mut events,
-        &mut phase,
-        restore_on_failure,
-        Some(early_guard),
-    ) };
+    } else {
+        ResourceSourceContext::prepare_with_guard(
+            request.pair.source.clone(),
+            request.resources,
+            request.verification_policy,
+            &output.join("source"),
+            &arena,
+            &mut events,
+            &mut phase,
+            restore_on_failure,
+            Some(early_guard),
+        )
+    };
     events.phase(phase);
     let mut context = source_result?;
     let mut published: Option<(PathBuf, [u8; 32])> = None;
@@ -536,16 +559,23 @@ where
             .pair
             .validate_with_resource_profile(profile.native_profile())?;
         let source_budget = SourceMetadataBudget::from_resource_budget(request.resources)?;
-        let aux_group = if let Some(group)=context.cached_auxiliary_group(){
-            ensure!(group.arena().same_arena(&arena),"cached auxiliary owner differs");
-            arena.retained_group(ArtifactGroup::Auxiliary,source_budget.scratch_bytes)?
-        }else{arena.reserve_group(ArtifactGroup::Auxiliary, source_budget.scratch_bytes)?};
+        let aux_group = if let Some(group) = context.cached_auxiliary_group() {
+            ensure!(
+                group.arena().same_arena(&arena),
+                "cached auxiliary owner differs"
+            );
+            arena.retained_group(ArtifactGroup::Auxiliary, source_budget.scratch_bytes)?
+        } else {
+            arena.reserve_group(ArtifactGroup::Auxiliary, source_budget.scratch_bytes)?
+        };
         let aux_scratch = SourceScratch::new_auxiliary_in_arena(source_budget, aux_group)?;
         let projection_dir = output.join("projection");
         std::fs::create_dir(&projection_dir)?;
         let projection = if resume.is_none() {
             Some(context.derive_projection(admission, &projection_dir, &aux_scratch)?)
-        } else { None };
+        } else {
+            None
+        };
         if let Some(projection) = projection.as_ref() {
             if let Some(report) = projection.windows_ea_normalization_report()? {
                 events.observer.note(&report)?;
@@ -566,45 +596,106 @@ where
                 saved.expected.sha256 == hex::encode(saved.shadow_origin.expected_pages_sha256),
                 "cached expected and recovered shadow origin differ"
             );
-            let (expected_path,artifact)=if saved.workspace_origin.is_some()
-                && !saved.expected.path.starts_with(&saved.arena_root) {
-                let source=OpenOptions::new().read(true).share_mode(1).custom_flags(0x00200000).open(&saved.expected.path)?;
-                let before=n2r_win32::reference_file::observe_reference_file_handle_with_limit(&source,saved.expected.bytes)?;
-                ensure!(before.file_bytes==saved.expected.bytes,"migrated expected length differs");
-                let path=output.join("expected.pages");
-                let permit=expected_group.reserve_file(&path,saved.expected.bytes)?;
-                let mut target=OpenOptions::new().write(true).create_new(true).open(permit.path())?;
-                let _ram=arena.reserve_ram(65536)?;
-                let mut source=source;let mut buffer=[0u8;65536];let mut remaining=saved.expected.bytes;
-                while remaining>0 {let n=remaining.min(buffer.len() as u64) as usize;
-                    std::io::Read::read_exact(&mut source,&mut buffer[..n])?;target.write_all(&buffer[..n])?;remaining-=n as u64;}
-                target.sync_all()?;drop(target);
-                ensure!(n2r_win32::reference_file::observe_reference_file_handle_with_limit(&source,saved.expected.bytes)?==before,
-                    "migrated expected source changed while copied");
-                let lease=permit.verify_closed(&saved.expected.sha256)?;
-                (path,lease)
-            }else{(saved.expected.path.clone(),expected_group.adopt_existing(
-                &saved.expected.path, &saved.expected.sha256, saved.expected.bytes,
-            )?)};
+            let (expected_path, artifact) = if saved.workspace_origin.is_some()
+                && !saved.expected.path.starts_with(&saved.arena_root)
+            {
+                let source = OpenOptions::new()
+                    .read(true)
+                    .share_mode(1)
+                    .custom_flags(0x00200000)
+                    .open(&saved.expected.path)?;
+                let before = n2r_win32::reference_file::observe_reference_file_handle_with_limit(
+                    &source,
+                    saved.expected.bytes,
+                )?;
+                ensure!(
+                    before.file_bytes == saved.expected.bytes,
+                    "migrated expected length differs"
+                );
+                let path = output.join("expected.pages");
+                let permit = expected_group.reserve_file(&path, saved.expected.bytes)?;
+                let mut target = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(permit.path())?;
+                let _ram = arena.reserve_ram(65536)?;
+                let mut source = source;
+                let mut buffer = [0u8; 65536];
+                let mut remaining = saved.expected.bytes;
+                while remaining > 0 {
+                    let n = remaining.min(buffer.len() as u64) as usize;
+                    std::io::Read::read_exact(&mut source, &mut buffer[..n])?;
+                    target.write_all(&buffer[..n])?;
+                    remaining -= n as u64;
+                }
+                target.sync_all()?;
+                drop(target);
+                ensure!(
+                    n2r_win32::reference_file::observe_reference_file_handle_with_limit(
+                        &source,
+                        saved.expected.bytes
+                    )? == before,
+                    "migrated expected source changed while copied"
+                );
+                let lease = permit.verify_closed(&saved.expected.sha256)?;
+                (path, lease)
+            } else {
+                (
+                    saved.expected.path.clone(),
+                    expected_group.adopt_existing(
+                        &saved.expected.path,
+                        &saved.expected.sha256,
+                        saved.expected.bytes,
+                    )?,
+                )
+            };
             let expected = if context.cache_metadata_refreshed() {
-                let mut body=PagedExpectedTree::open_cached_body_in_group(
-                    &expected_path,&saved.expected.sha256,admission,&expected_group,artifact)?;
-                let proof=context.authorize_cached_expected_rebind(&body)?;
-                body.rebind_cached_body(proof,&expected_group,&output.join("expected-source-binding.json"))?;
+                let mut body = PagedExpectedTree::open_cached_body_in_group(
+                    &expected_path,
+                    &saved.expected.sha256,
+                    admission,
+                    &expected_group,
+                    artifact,
+                )?;
+                let proof = context.authorize_cached_expected_rebind(&body)?;
+                body.rebind_cached_body(
+                    proof,
+                    &expected_group,
+                    &output.join("expected-source-binding.json"),
+                )?;
                 body
-            } else if let Some(binding)=saved.expected_binding.as_ref() {
+            } else if let Some(binding) = saved.expected_binding.as_ref() {
                 // Exact source continuity still needs this invocation's source
                 // relation; a saved binding cannot issue a live rebind witness.
                 // The current semantic verifier remains required after refresh.
-                let mut body=PagedExpectedTree::open_cached_body_in_group(
-                    &expected_path,&saved.expected.sha256,admission,&expected_group,artifact)?;
-                binding.facts.validate(binding.facts.effective_admission,&saved.expected.sha256,
-                    &binding.facts.body_semantic_sha256)?;
-                let proof=context.authorize_cached_expected_exact_rebind(&body)?;
-                body.rebind_cached_body(proof,&expected_group,&output.join("expected-source-binding.json"))?;
+                let mut body = PagedExpectedTree::open_cached_body_in_group(
+                    &expected_path,
+                    &saved.expected.sha256,
+                    admission,
+                    &expected_group,
+                    artifact,
+                )?;
+                binding.facts.validate(
+                    binding.facts.effective_admission,
+                    &saved.expected.sha256,
+                    &binding.facts.body_semantic_sha256,
+                )?;
+                let proof = context.authorize_cached_expected_exact_rebind(&body)?;
+                body.rebind_cached_body(
+                    proof,
+                    &expected_group,
+                    &output.join("expected-source-binding.json"),
+                )?;
                 body
-            } else {PagedExpectedTree::open_revalidated_with_resources_in_group(
-                &expected_path, &saved.expected.sha256, admission,&expected_group, artifact)?};
+            } else {
+                PagedExpectedTree::open_revalidated_with_resources_in_group(
+                    &expected_path,
+                    &saved.expected.sha256,
+                    admission,
+                    &expected_group,
+                    artifact,
+                )?
+            };
             events.observer.note(&serde_json::json!({
                 "kind":"preparation-resume-expected-reused-v1",
                 "file_sha256":expected.file_sha256(),
@@ -616,12 +707,20 @@ where
         } else {
             let expected_path = output.join("expected.pages");
             let (receipt, artifact) = PagedExpectedTree::create_with_resources_in_group(
-                projection.as_ref().context("fresh source projection absent")?,
-                &expected_path, admission, &expected_group,
+                projection
+                    .as_ref()
+                    .context("fresh source projection absent")?,
+                &expected_path,
+                admission,
+                &expected_group,
             )?;
             PagedExpectedTree::open_with_resources_in_group(
-                &expected_path, &receipt.file_sha256, &receipt.semantic_sha256,
-                admission, &expected_group, artifact,
+                &expected_path,
+                &receipt.file_sha256,
+                &receipt.semantic_sha256,
+                admission,
+                &expected_group,
+                artifact,
             )?
         };
         let _expected_seal = expected_group.seal()?;
@@ -630,16 +729,24 @@ where
         // A refresh changes the source-bound expected header, never the
         // admitted user tree. Carry the new metadata artifact into this epoch
         // while the original partial shadow is adopted rather than recreated.
-        let effective_resume=resume.map(|saved|->Result<ResumePreparation>{
-            let mut current=saved.clone();
-            let artifact=expected.artifact_lease().context("resumed expected actual owner absent")?;
-            current.expected=crate::general_source_admission::resource::SourceCacheFilePin{
-                path:artifact.path().to_path_buf(),sha256:expected.file_sha256().to_owned(),bytes:expected.byte_len()};
-            current.expected_binding=expected.binding_pin().cloned();
-            current.shadow_origin.expected_pages_sha256=hex::decode(expected.file_sha256())?
-                .try_into().map_err(|_|anyhow::anyhow!("expected digest width differs"))?;
-            Ok(current)
-        }).transpose()?;
+        let effective_resume = resume
+            .map(|saved| -> Result<ResumePreparation> {
+                let mut current = saved.clone();
+                let artifact = expected
+                    .artifact_lease()
+                    .context("resumed expected actual owner absent")?;
+                current.expected = crate::general_source_admission::resource::SourceCacheFilePin {
+                    path: artifact.path().to_path_buf(),
+                    sha256: expected.file_sha256().to_owned(),
+                    bytes: expected.byte_len(),
+                };
+                current.expected_binding = expected.binding_pin().cloned();
+                current.shadow_origin.expected_pages_sha256 = hex::decode(expected.file_sha256())?
+                    .try_into()
+                    .map_err(|_| anyhow::anyhow!("expected digest width differs"))?;
+                Ok(current)
+            })
+            .transpose()?;
         let alias_inputs = context
             .windows_aliases()
             .map(|owner| {
@@ -681,42 +788,67 @@ where
         } else {
             None
         };
-        let mut resume_checkpoints = effective_resume.as_ref().map(|saved| {
-            resume_checkpoint::Checkpoints::create(saved, &context, &expected,
-                &request, &locator_group, output)
-        }).transpose()?;
+        let mut resume_checkpoints = effective_resume
+            .as_ref()
+            .map(|saved| {
+                resume_checkpoint::Checkpoints::create(
+                    saved,
+                    &context,
+                    &expected,
+                    &request,
+                    &locator_group,
+                    output,
+                )
+            })
+            .transpose()?;
 
         // Placement and later target capture share one actual quota. Keep
         // every complete placement proof in its constructor-owned page files.
-        let recovery_ceiling=locator_group.maximum_bytes()?;
+        let recovery_ceiling = locator_group.maximum_bytes()?;
         if resume.is_some() {
             // Only checkpoint facts are written before capture closes. Do not
             // promise the later locator's whole share simultaneously with
             // placement. Retain every actual owner and room for the remaining
             // bounded phase records (each checkpoint has two durable copies).
-            let facts=crate::preparation_resume::Limits::from_budget(request.resources)?;
-            let headroom=facts.max_checkpoint_bytes.checked_mul(32)
+            let facts = crate::preparation_resume::Limits::from_budget(request.resources)?;
+            let headroom = facts
+                .max_checkpoint_bytes
+                .checked_mul(32)
                 .context("resume phase fact allowance overflow")?;
-            let held=locator_group.held_bytes()?;
-            locator_group.resize_reservation(recovery_ceiling.min(held.checked_add(headroom)
-                .context("resume recovery phase reservation overflow")?))?;
-            let usage=arena.usage()?;
-            let pending=usage.promised_bytes.saturating_sub(usage.local_allocation_credit_bytes);
-            let available=n2r_win32::resource_native::observe_available_resources(output)?;
-            let reserve=request.minimum_free_bytes.checked_add(events.observer.remaining_scratch_reservation_bytes())
+            let held = locator_group.held_bytes()?;
+            locator_group.resize_reservation(
+                recovery_ceiling.min(
+                    held.checked_add(headroom)
+                        .context("resume recovery phase reservation overflow")?,
+                ),
+            )?;
+            let usage = arena.usage()?;
+            let pending = usage
+                .promised_bytes
+                .saturating_sub(usage.local_allocation_credit_bytes);
+            let available = n2r_win32::resource_native::observe_available_resources(output)?;
+            let reserve = request
+                .minimum_free_bytes
+                .checked_add(events.observer.remaining_scratch_reservation_bytes())
                 .context("resume working reserve overflow")?;
-            let current=available.scratch_available_bytes.checked_sub(pending)
-                .and_then(|n|n.checked_sub(reserve))
-                .context("resume cannot retain working reserve for capture")? /4096*4096;
-            let ceiling=request.capture_arena_bytes.min(current);
-            ensure!(ceiling>=source_budget.scratch_bytes,
-                "current capture capacity is below the canonical metadata workspace");
+            let current = available
+                .scratch_available_bytes
+                .checked_sub(pending)
+                .and_then(|n| n.checked_sub(reserve))
+                .context("resume cannot retain working reserve for capture")?
+                / 4096
+                * 4096;
+            let ceiling = request.capture_arena_bytes.min(current);
+            ensure!(
+                ceiling >= source_budget.scratch_bytes,
+                "current capture capacity is below the canonical metadata workspace"
+            );
             events.observer.note(&serde_json::json!({"kind":"resume-current-phase-capacity-v1",
                 "prior_capture_ceiling":request.capture_arena_bytes,"capture_ceiling":ceiling,
                 "recovery_later_ceiling":recovery_ceiling,"recovery_current_ceiling":locator_group.maximum_bytes()?,
                 "physical_free_bytes":available.scratch_available_bytes,"other_pending_bytes":pending,
                 "working_reserve_bytes":reserve,"checks_unchanged":true}))?;
-            request.capture_arena_bytes=ceiling;
+            request.capture_arena_bytes = ceiling;
         }
         let capture_group =
             arena.reserve_group(ArtifactGroup::Capture, request.capture_arena_bytes)?;
@@ -733,19 +865,58 @@ where
         // never calls the allocator or recreates the shadow's files.
         let (mut private, placement) = if let Some(saved) = effective_resume.as_ref() {
             let (source, _) = context.source_and_inspection()?;
-            let native_profile = profile.native_profile().context("native resource profile absent")?;
+            let native_profile = profile
+                .native_profile()
+                .context("native resource profile absent")?;
             let enrollment = n2r_win32::shadow_native::private_tree::enroll_with_resource_profile(
-                source, &request.pair, native_profile,
+                source,
+                &request.pair,
+                native_profile,
             )?;
-            let mut recovered = n2r_win32::shadow_native::private_tree::recovery::adopt_unwritten_domain(
-                enrollment, &inputs, native_profile,
-                Arc::new(ArenaReportMemory(arena.clone())),
-                saved.prior_spend, saved.placement_limits, saved.shadow_origin.clone(),
-            )?;
+            let placed_ready = saved.completed_placement.as_ref();
+            if let Some(proof) = placed_ready {
+                proof.require_arena(&arena)?;
+                events.observer.note(
+                    &serde_json::json!({"kind":"placed-shadow-recovery-selected-v1",
+                    "closed_placement_report":proof.pin(),"selection_only":true,
+                    "requires_fresh_native_placed_audit":true,"placement_moves_requested":false}),
+                )?;
+            }
+            let mut recovered = if placed_ready.is_some() {
+                n2r_win32::shadow_native::private_tree::recovery::adopt_placed_domain(
+                    enrollment,
+                    &inputs,
+                    native_profile,
+                    Arc::new(ArenaReportMemory(arena.clone())),
+                    saved.prior_spend,
+                    saved.placement_limits,
+                    saved.shadow_origin.clone(),
+                )
+                .context("fresh native placed-shadow adoption")?
+            } else {
+                n2r_win32::shadow_native::private_tree::recovery::adopt_unwritten_domain(
+                    enrollment,
+                    &inputs,
+                    native_profile,
+                    Arc::new(ArenaReportMemory(arena.clone())),
+                    saved.prior_spend,
+                    saved.placement_limits,
+                    saved.shadow_origin.clone(),
+                )
+                .context("fresh native unwritten-shadow adoption")?
+            };
             let observation = recovered.origin_observation();
             events.observer.note(&observation)?;
-            let batch = resume_checkpoints.as_mut().map(|state| state.adopted(&observation)).transpose()?;
-            let placement = match recovered.place_remaining_domain(&inputs, &mut placement_evidence) {
+            let batch = resume_checkpoints
+                .as_mut()
+                .map(|state| state.adopted(&observation))
+                .transpose()?;
+            let placement_result = if placed_ready.is_some() {
+                recovered.rehydrate_placed_domain(&inputs, &mut placement_evidence)
+            } else {
+                recovered.place_remaining_domain(&inputs, &mut placement_evidence)
+            };
+            let placement = match placement_result {
                 Ok(report) => report,
                 Err(error) => {
                     let progress = recovered.placement_progress();
@@ -764,47 +935,48 @@ where
             }
             (recovered.into_placed_tree()?, placement)
         } else {
-        // Every native allocation uses this actual shared arena accountant.
-        let mut private = {
-            let (source, _) = context.source_and_inspection()?;
-            let native_profile = profile
-                .native_profile()
-                .context("native resource profile absent")?;
-            let enrollment = n2r_win32::shadow_native::private_tree::enroll_with_resource_profile(
-                source,
-                &request.pair,
-                native_profile,
-            )?;
-            n2r_win32::shadow_native::private_tree::allocate_enrolled_domain_with_memory(
-                enrollment,
+            // Every native allocation uses this actual shared arena accountant.
+            let mut private = {
+                let (source, _) = context.source_and_inspection()?;
+                let native_profile = profile
+                    .native_profile()
+                    .context("native resource profile absent")?;
+                let enrollment =
+                    n2r_win32::shadow_native::private_tree::enroll_with_resource_profile(
+                        source,
+                        &request.pair,
+                        native_profile,
+                    )?;
+                n2r_win32::shadow_native::private_tree::allocate_enrolled_domain_with_memory(
+                    enrollment,
+                    &inputs,
+                    native_profile,
+                    Arc::new(ArenaReportMemory(arena.clone())),
+                )?
+            };
+            ensure!(
+                private.allocation_ram_accounted(),
+                "native private-tree allocation lease is absent"
+            );
+            let placement = match private.place_source_prefixes_resource_domain(
                 &inputs,
-                native_profile,
-                Arc::new(ArenaReportMemory(arena.clone())),
-            )?
-        };
-        ensure!(
-            private.allocation_ram_accounted(),
-            "native private-tree allocation lease is absent"
-        );
-        let placement = match private.place_source_prefixes_resource_domain(
-            &inputs,
-            request.maximum_placement_bytes,
-            request.maximum_placement_submissions,
-            &mut placement_evidence,
-        ) {
-            Ok(report) => report,
-            Err(error) => {
-                let progress = private.placement_progress();
-                events.observer.note(&serde_json::json!({
-                    "kind":"resource-placement-refusal", "phase":progress.get("phase"),
-                    "counters":progress.get("counters"), "refusal":progress.get("refusal"),
-                    "move_bytes_submitted":progress.get("move_bytes_submitted"),
-                    "source_payload_writes":0, "conversion_authorized":false,
-                }))?;
-                return Err(error.into());
-            }
-        };
-        (private, placement)
+                request.maximum_placement_bytes,
+                request.maximum_placement_submissions,
+                &mut placement_evidence,
+            ) {
+                Ok(report) => report,
+                Err(error) => {
+                    let progress = private.placement_progress();
+                    events.observer.note(&serde_json::json!({
+                        "kind":"resource-placement-refusal", "phase":progress.get("phase"),
+                        "counters":progress.get("counters"), "refusal":progress.get("refusal"),
+                        "move_bytes_submitted":progress.get("move_bytes_submitted"),
+                        "source_payload_writes":0, "conversion_authorized":false,
+                    }))?;
+                    return Err(error.into());
+                }
+            };
+            (private, placement)
         };
         events.observer.note(&serde_json::json!({
             "kind":"resource-placement-summary",
@@ -814,7 +986,9 @@ where
             "conversion_authorized":false,
         }))?;
         drop(placement);
-        private.prepare_source_backed_prefixes()?;
+        private
+            .prepare_source_backed_prefixes()
+            .context("prepare source-backed shadow prefixes")?;
         {
             let (source, raw) = context.source_and_inspection()?;
             let mut bytes =
@@ -825,16 +999,25 @@ where
                 &mut private,
                 request.maximum_materialized_bytes,
                 request.verification_policy,
-            )?;
-            let (_system, indexer) = routed.materialize_system_payloads()?;
+            )
+            .context("prepare routed shadow payload materialization")?;
+            let (_system, indexer) = routed
+                .materialize_system_payloads()
+                .context("materialize routed system payloads")?;
             drop(indexer);
-            let supply_receipt = routed.verify()?;
+            let supply_receipt = routed
+                .verify()
+                .context("verify routed shadow payload supply")?;
             events
                 .observer
                 .note(&serde_json::to_value(&supply_receipt)?)?;
             bytes.finish()?;
             if let Some(state) = resume_checkpoints.as_mut() {
-                state.stage(crate::preparation_resume::Stage::Payloads, "payloads-ready", &supply_receipt)?;
+                state.stage(
+                    crate::preparation_resume::Stage::Payloads,
+                    "payloads-ready",
+                    &supply_receipt,
+                )?;
             }
         }
         let verified_aliases = if let Some(aliases) = &alias_inputs {
@@ -953,7 +1136,11 @@ where
                 &serde_json::json!({"kind":"protected-native-target-capture-returned-v1",
                     "expected_sha256":expected.file_sha256(),"source_inspection_sha256":context.inspection_sha256(),
                     "shadow":request.pair.shadow,"source_write_authority":false}))?;
-            state.stage(crate::preparation_resume::Stage::Captured, "capture-ready", &proof.captured().summary())?;
+            state.stage(
+                crate::preparation_resume::Stage::Captured,
+                "capture-ready",
+                &proof.captured().summary(),
+            )?;
         }
         let capture_scratch =
             SourceScratch::new_auxiliary_in_arena(source_budget, capture_group.clone())?;

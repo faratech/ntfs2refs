@@ -1,4 +1,5 @@
-//! Cold adoption of a native private, still-unwritten shadow. Persisted pins
+//! Cold adoption of a native private shadow, either unwritten or freshly
+//! proven dense and storage-ready after completed placement. Persisted pins
 //! describe provenance only; fresh enrollment and complete native audits issue
 //! the new owner. No old PrivateTree, creator flags, or move log is restored.
 use super::*;
@@ -33,6 +34,7 @@ pub struct RecoveredOrigin {
     remaining_bytes: u64,
     pins: ExternalOriginPins,
     namespace_sha256: [u8; 32],
+    placed_ready: bool,
     _memory: Box<dyn report_memory::ReportMemoryLease>,
 }
 impl RecoveredOrigin {
@@ -52,7 +54,7 @@ impl RecoveredOrigin {
         (self.remaining_bytes, self.remaining_submissions)
     }
     pub(super) fn receipt(&self) -> serde_json::Value {
-        serde_json::json!({"kind":"fresh-native-recovered-unwritten-origin-v1",
+        serde_json::json!({"kind":if self.placed_ready {"fresh-native-recovered-source-backed-origin-v1"}else{"fresh-native-recovered-unwritten-origin-v1"},
             "pins":self.pins,"namespace_sha256":hex::encode(self.namespace_sha256),
             "prior_submissions_upper":self.prior_submissions,"prior_move_bytes_upper":self.prior_bytes,
             "remaining_submissions":self.remaining_submissions,"remaining_move_bytes":self.remaining_bytes,
@@ -78,13 +80,24 @@ impl RecoveredPrivateTree {
         input: &impl InputDomain,
         sink: &mut dyn PlacementEvidenceSink,
     ) -> io::Result<ResourcePlacementReport> {
-        if self.attempted {
+        if self.attempted || self.origin.placed_ready {
             return Err(invalid(
                 "recovered placement already attempted; preserve without retry",
             ));
         }
         self.attempted = true;
         placement::run_recovered_resource_domain(&mut self.tree, input, &self.origin, sink)
+    }
+    /// Reconstruct readiness from current native maps without submitting moves.
+    /// The old completed batch selects this audit; it grants no native owner.
+    pub fn rehydrate_placed_domain(
+        &mut self,input:&impl InputDomain,sink:&mut dyn PlacementEvidenceSink,
+    )->io::Result<ResourcePlacementReport>{
+        if self.attempted || !self.origin.placed_ready {
+            return Err(invalid("fresh placed-recovery audit required exactly once"));
+        }
+        self.attempted=true;
+        placement::rehydrate_recovered_resource_domain(&mut self.tree,input,&self.origin,sink)
     }
     pub fn into_placed_tree(self) -> io::Result<PrivateTree> {
         if !self.attempted || !self.tree.placement_complete {
@@ -322,6 +335,23 @@ fn exact_streams(file: &File, item: &Input<'_>) -> io::Result<()> {
 /// Requires fresh native exclusion; historical metadata can never issue it.
 /// There are no allocation, resize, deletion, initialization or payload reads.
 pub fn adopt_unwritten_domain(
+    enrollment:ConstructionEnrollment<'_>,input:&impl InputDomain,
+    profile:crate::attestation::ResourceProfile,payer:Arc<dyn report_memory::ReportMemoryAccountant>,
+    spend:PartialPlacementSpend,limits:RecoveryLimits,pins:ExternalOriginPins,
+)->io::Result<RecoveredPrivateTree>{
+    adopt_recovery_domain(enrollment,input,profile,payer,spend,limits,pins,false)
+}
+
+/// Fresh native private-tree and initialized-prefix audit. Historical payload
+/// bytes are not trusted: the normal supply pass must replay all exceptions.
+pub fn adopt_placed_domain(
+    enrollment:ConstructionEnrollment<'_>,input:&impl InputDomain,
+    profile:crate::attestation::ResourceProfile,payer:Arc<dyn report_memory::ReportMemoryAccountant>,
+    spend:PartialPlacementSpend,limits:RecoveryLimits,pins:ExternalOriginPins,
+)->io::Result<RecoveredPrivateTree>{
+    adopt_recovery_domain(enrollment,input,profile,payer,spend,limits,pins,true)
+}
+fn adopt_recovery_domain(
     mut enrollment: ConstructionEnrollment<'_>,
     input: &impl InputDomain,
     profile: crate::attestation::ResourceProfile,
@@ -329,6 +359,7 @@ pub fn adopt_unwritten_domain(
     spend: PartialPlacementSpend,
     limits: RecoveryLimits,
     pins: ExternalOriginPins,
+    placed_ready: bool,
 ) -> io::Result<RecoveredPrivateTree> {
     let admission = profile
         .resource_admission()?
@@ -460,6 +491,8 @@ pub fn adopt_unwritten_domain(
         )?;
     }
     let mut files = BTreeMap::new();
+    let reopen_placeholder=if placed_ready {unwritten::PrivatePlaceholder::reopen_placed}
+        else {unwritten::PrivatePlaceholder::reopen_unwritten};
     let mut sparse_targets = BTreeMap::new();
     let mut metadata_targets = BTreeMap::new();
     metadata_targets.insert(0, enrollment.root);
@@ -594,7 +627,7 @@ pub fn adopt_unwritten_domain(
                             .as_ref()
                             .ok_or_else(|| invalid("recovered carrier directory missing"))?;
                         let components = vec![dir.component.clone(), carrier_name(&key)];
-                        let file = unwritten::PrivatePlaceholder::reopen_unwritten(
+                        let file = reopen_placeholder(
                             &root,
                             &components,
                             &[],
@@ -629,7 +662,7 @@ pub fn adopt_unwritten_domain(
                     }
                     sparse_targets.insert(key, target);
                 } else {
-                    let file = unwritten::PrivatePlaceholder::reopen_unwritten(
+                    let file = reopen_placeholder(
                         &root,
                         item.components,
                         name,
@@ -657,7 +690,7 @@ pub fn adopt_unwritten_domain(
                     files.insert(key, file);
                 }
             }
-            objects.push(serde_json::json!({"object_index":index,"disposition":"fresh-native-unwritten-owner","historical_creator_claimed":false}));
+            objects.push(serde_json::json!({"object_index":index,"disposition":if placed_ready {"fresh-native-placed-prefix-owner"}else{"fresh-native-unwritten-owner"},"historical_creator_claimed":false}));
         }
         memory.retain(
             row,
@@ -740,6 +773,7 @@ pub fn adopt_unwritten_domain(
     placement::audit_recovered_maps(&tree, remaining_bytes, remaining_submissions)?;
     tree.memory.as_ref().unwrap().close_base(&tree)?;
     let origin = RecoveredOrigin {
+        placed_ready,
         token,
         prior_submissions,
         prior_bytes,

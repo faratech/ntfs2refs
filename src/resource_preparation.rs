@@ -178,6 +178,7 @@ pub(crate) trait PreparationObserver {
         false
     }
     fn prefer_durable_preparation_cancellation(&self) -> bool { false }
+    fn remaining_scratch_reservation_bytes(&self)->u64 {0}
     fn preparation_created(&mut self, _pin: &early_guard::GuardPin) -> Result<()> { Ok(()) }
     fn native_events(&mut self, phase: &'static str, events: &mut Vec<NativeEvent>) -> Result<()>;
     fn source_prepared(&mut self, _context: &ResourceSourceContext) -> Result<()> {
@@ -651,6 +652,36 @@ where
 
         // Placement and later target capture share one actual quota. Keep
         // every complete placement proof in its constructor-owned page files.
+        let recovery_ceiling=locator_group.maximum_bytes()?;
+        if resume.is_some() {
+            // Only checkpoint facts are written before capture closes. Do not
+            // promise the later locator's whole share simultaneously with
+            // placement. Retain every actual owner and room for the remaining
+            // bounded phase records (each checkpoint has two durable copies).
+            let facts=crate::preparation_resume::Limits::from_budget(request.resources)?;
+            let headroom=facts.max_checkpoint_bytes.checked_mul(32)
+                .context("resume phase fact allowance overflow")?;
+            let held=locator_group.held_bytes()?;
+            locator_group.resize_reservation(recovery_ceiling.min(held.checked_add(headroom)
+                .context("resume recovery phase reservation overflow")?))?;
+            let usage=arena.usage()?;
+            let pending=usage.promised_bytes.saturating_sub(usage.actual_allocated_bytes);
+            let available=n2r_win32::resource_native::observe_available_resources(output)?;
+            let reserve=request.minimum_free_bytes.checked_add(events.observer.remaining_scratch_reservation_bytes())
+                .context("resume working reserve overflow")?;
+            let current=available.scratch_available_bytes.checked_sub(pending)
+                .and_then(|n|n.checked_sub(reserve))
+                .context("resume cannot retain working reserve for capture")? /4096*4096;
+            let ceiling=request.capture_arena_bytes.min(current);
+            ensure!(ceiling>=source_budget.scratch_bytes,
+                "current capture capacity is below the canonical metadata workspace");
+            events.observer.note(&serde_json::json!({"kind":"resume-current-phase-capacity-v1",
+                "prior_capture_ceiling":request.capture_arena_bytes,"capture_ceiling":ceiling,
+                "recovery_later_ceiling":recovery_ceiling,"recovery_current_ceiling":locator_group.maximum_bytes()?,
+                "physical_free_bytes":available.scratch_available_bytes,"other_pending_bytes":pending,
+                "working_reserve_bytes":reserve,"checks_unchanged":true}))?;
+            request.capture_arena_bytes=ceiling;
+        }
         let capture_group =
             arena.reserve_group(ArtifactGroup::Capture, request.capture_arena_bytes)?;
         let placement_directory = output.join("placement");
@@ -1000,6 +1031,12 @@ where
         } else {
             None
         };
+        if resume.is_some() {
+            // Later locator/publication work regains its original ceiling only
+            // after unused capture promises are released, against actual free
+            // space again. No saved quota or serialized flag supplies credit.
+            locator_group.resize_reservation(recovery_ceiling)?;
+        }
         let locator_scratch =
             SourceScratch::new_auxiliary_in_arena(source_budget, locator_group.clone())?;
         let (recovery_maps, locator) = {

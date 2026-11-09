@@ -417,6 +417,7 @@ impl PreparationObserver for FilePreparationObserver {
         true
     }
     fn prefer_durable_preparation_cancellation(&self)->bool {self.durable_preparation_cancellation}
+    fn remaining_scratch_reservation_bytes(&self)->u64 {self.remaining_reservation_bytes()}
     fn preparation_created(&mut self,pin:&early_guard::GuardPin)->Result<()> {
         ensure!(self.preparation_pin.is_none(),"observer already owns a preparation route");
         self.preparation_pin=Some(pin.clone());

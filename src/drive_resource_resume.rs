@@ -450,6 +450,16 @@ fn resume_session(directory: &Path, intent_sha: [u8; 32]) -> Result<u8> {
         request.maximum_placement_bytes = new_work;
         request.maximum_placement_submissions = new_ops;
         request.minimum_free_bytes = keep;
+        // A restart keeps its original wire formats and RAM envelope, but
+        // future Capture promises must fit CURRENT working capacity. Refuse
+        // this before another freeze/metadata refresh, not an hour later.
+        let current_capture=aligned(available.scratch_available_bytes
+            .checked_sub(keep)
+            .and_then(|n|n.checked_sub(observer.remaining_reservation_bytes()))
+            .context("checkpoint cannot admit current capture reserve")?);
+        request.capture_arena_bytes=request.capture_arena_bytes.min(current_capture);
+        ensure!(request.capture_arena_bytes>=SourceMetadataBudget::from_resource_budget(main)?.scratch_bytes,
+            "checkpoint lacks current capacity for its minimum capture workspace");
         let saved = ResumePreparation {
             arena_root: session.saved.arena_root.clone(),
             arena,

@@ -1177,6 +1177,29 @@ impl ArtifactGroupPermit {
             .context("group missing")?
             .maximum)
     }
+    /// Change a live phase promise without discarding any actual file owner.
+    /// Growth still pays the same aggregate and current physical-space gates.
+    pub(crate) fn resize_reservation(&self, maximum: u64) -> Result<()> {
+        let mut state=self.arena.0.state.lock()
+            .map_err(|_|anyhow::anyhow!("arena lock poisoned"))?;
+        let group=state.groups.get(&self.group).context("group missing")?;
+        ensure!(!state.prepared_closed&&!state.allocation_poisoned&&!state.ram_poisoned
+            &&!group.sealed&&!group.poisoned&&group.native_journal.is_none()
+            &&self.group==ArtifactGroup::RecoveryCopy&&maximum>=group.held
+            &&maximum<=self.group.limit(self.arena.0.budget,state.windows_native_allocation),
+            "phase reservation cannot resize below held files or outside its share");
+        let prior=group.maximum;
+        let promised=state.groups.values().try_fold(state.overhead,|n,g|add(n,g.maximum))?;
+        ensure!(add(promised.checked_sub(prior).context("phase promise underflow")?,maximum)?
+            <=self.arena.0.budget.scratch_bytes,"resized phase exceeds aggregate budget");
+        if maximum>prior {self.arena.check_free(&state,maximum-prior)?;}
+        state.groups.get_mut(&self.group).unwrap().maximum=maximum;
+        Ok(())
+    }
+    pub(crate) fn held_bytes(&self)->Result<u64> {
+        let state=self.arena.0.state.lock().map_err(|_|anyhow::anyhow!("arena lock poisoned"))?;
+        Ok(state.groups.get(&self.group).context("group missing")?.held)
+    }
     pub fn reserve_file(&self, path: &Path, maximum: u64) -> Result<ArtifactPathPermit> {
         self.reserve_path(path, maximum, false)
     }

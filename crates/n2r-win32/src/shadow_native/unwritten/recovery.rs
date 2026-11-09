@@ -175,12 +175,32 @@ impl PrivatePlaceholder {
         {
             return Err(invalid("fresh native recovered-map owner required"));
         }
-        require_zero_storage_vdl(&self.file, self.bytes)?;
-        self.verify_placements()?;
         let resource = self
             .resource
             .as_ref()
             .ok_or_else(|| invalid("recovered resource owner absent"))?;
+        // There is no whole-cluster placement prefix for a tiny stream.
+        // Its physical allocation was audited separately, and supply rewrites
+        // the complete EOF; neither resident bytes nor a tail become retained.
+        if self.bytes < 4096 {
+            let identity = super::super::info(&self.file, 18, 24)?;
+            let standard = super::super::info(&self.file, 1, 24)?;
+            if !self.placed.is_empty()
+                || u64::from_le_bytes(standard[8..16].try_into().unwrap()) != self.bytes
+                || u32::from_le_bytes(standard[16..20].try_into().unwrap()) != 1
+                || standard[20] != 0 || standard[21] != 0
+            {
+                return Err(invalid("recovered tiny-stream placement or EOF/link/type differs"));
+            }
+            if super::super::info(&self.file, 18, 24)? != identity
+                || super::super::info(&self.file, 1, 24)? != standard
+            {
+                return Err(invalid("recovered tiny-stream identity or lengths changed"));
+            }
+            return resource.hold_holes(Vec::new());
+        }
+        require_zero_storage_vdl(&self.file, self.bytes)?;
+        self.verify_placements()?;
         let _workspace = resource.tracking_workspace(self.bytes)?;
         // The old generic placement check proves all tracked pieces remain.
         // Cold adoption additionally proves there are NO newly allocated

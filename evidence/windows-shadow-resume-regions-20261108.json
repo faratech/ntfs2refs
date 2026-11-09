@@ -1,0 +1,41 @@
+{
+  "kind": "preserved-shadow-native-region-reader-fix",
+  "failed_candidate": "1a0e76d45af1dc7da3c94ab734385be16c1cb2a7",
+  "closed_process": {
+    "pid": 4696,
+    "peak_working_set_bytes": 1215156224,
+    "wall_seconds": 2852.450601,
+    "birth_ms": 1794181125797,
+    "exit_code": 1
+  },
+  "failure": "OS234 at cold adoption; fragmented unwritten files exceeded64-byte response and single-region assumption",
+  "new_resume_intent_sha256": "d206898bd3f11a30efaa422431fdbcea46529d0f5b3ffac517f836083d108992",
+  "new_resume_directory": "C:\\ntfs2refs\\boot-conversion-8bab8af-710c70d1cb2b481b97da9621326f435d\\resume-934abfc84b67af4b893dfc47c44d036d\\conversion\\resume",
+  "checkpoint_crossed_prior_owner_bug": true,
+  "source_assessment_all_143552_users_matched": true,
+  "source_assessment_sha256": "9d062a0fb9e55d246811ca7823e9b7bf72d11857b8c5cbd4ab1f070d9a331093",
+  "authenticated_guard_cancellation_completed": true,
+  "independent_source0_ntfs_online_rw": true,
+  "shadow_preserved": true,
+  "query_probe_sha256": "0b0772687bb0ebde8eddd78719b3fa58639623efe66e6d82f1d4b9ddf566b9e1",
+  "exact_rust_reader_probe_sha256": "b9a1799f5596b90cbbf5cffd372087b057bd7bfd9935c0543f7b257957499a03",
+  "exact_rust_probe_exe_sha256": "36dbc15a9034967381be036428d9bfeca2d37835f10de6b26568a041138c8db3",
+  "actual_native": {
+    "source_device_opens": 0,
+    "unwritten_fragmented_files_accepted": [
+      "bfsvc.exe",
+      "bootstat.dat",
+      "explorer.exe",
+      "HelpPane.exe",
+      "hh.exe",
+      "mib.bin"
+    ],
+    "shadow_payload_writes": 0,
+    "initialized_file_rejected": "lsasetup.log"
+  },
+  "fix": "bounded1024-region pages with234 continuation; exact gap-free zero-usage EOF coverage; native identity/type/link/EOF retained; subcluster streams fully rewritten by normal supply and never retained",
+  "documentation": "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/6a8b64a4-ea26-4c5a-8728-c992dd657664",
+  "unit_tests_run": false,
+  "fixed_conversion_qualified": false,
+  "original_windows_refs_boot_proven": false
+}

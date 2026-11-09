@@ -5,9 +5,9 @@ use std::os::windows::fs::OpenOptionsExt;
 use std::sync::Arc;
 
 /// ReFS storage-VDL evidence, separate from the initialized-region validator.
-/// Query the entire EOF using VALID_NONCACHED_DATA (2). A single usage-zero
-/// region covering that EOF proves there is no initialized storage prefix.
-/// Unsupported operations and partial/ambiguous replies refuse adoption.
+/// Query the entire EOF using VALID_NONCACHED_DATA (2). ReFS may split an
+/// unwritten file at allocation boundaries, so prove gap-free usage-zero
+/// coverage across every returned region, including paginated responses.
 pub(in crate::shadow_native) fn require_zero_storage_vdl(
     file: &File,
     bytes: u64,
@@ -23,30 +23,8 @@ pub(in crate::shadow_native) fn require_zero_storage_vdl(
     // Settle cached writes before observing storage VDL. This is a flush, never
     // SetFileValidData, a payload write, or a saved-state inference.
     file.sync_all()?;
-    let mut input = [0u8; 24];
-    input[8..16].copy_from_slice(&bytes.max(1).to_le_bytes());
-    input[16..20].copy_from_slice(&2u32.to_le_bytes());
-    let regions = super::super::ctl(file, 0x0009_0284, &input, 64)?;
-    if regions.len() != 40
-        || u32::from_le_bytes(regions[4..8].try_into().unwrap()) != 1
-        || u32::from_le_bytes(regions[8..12].try_into().unwrap()) != 1
-        || i64::from_le_bytes(regions[16..24].try_into().unwrap()) != 0
-        || u32::from_le_bytes(regions[32..36].try_into().unwrap()) != 0
-    {
-        return Err(invalid(
-            "native full-EOF storage-VDL is not one unwritten region",
-        ));
-    }
-    let length = i64::from_le_bytes(regions[24..32].try_into().unwrap());
-    let rounded = bytes
-        .checked_add(4095)
-        .ok_or_else(|| invalid("VDL EOF overflow"))?
-        / 4096
-        * 4096;
-    if length < 0
-        || (length as u64) < bytes
-        || (length as u64) > rounded
-        || super::super::info(file, 18, 24)? != identity
+    super::super::unwritten_regions::require(file,bytes)?;
+    if super::super::info(file, 18, 24)? != identity
         || super::super::info(file, 1, 24)? != before
     {
         return Err(invalid(
@@ -106,10 +84,20 @@ impl PrivatePlaceholder {
         super::super::validate_open_type(&file, false)?;
         super::super::private_tree::recovery::require_private_security(&file, false)?;
         let standard = super::super::info(&file, 1, 24)?;
-        if u32::from_le_bytes(standard[16..20].try_into().unwrap()) != 1 {
-            return Err(invalid("recovered placeholder has additional hard links"));
+        if u64::from_le_bytes(standard[8..16].try_into().unwrap()) != bytes
+            || u32::from_le_bytes(standard[16..20].try_into().unwrap()) != 1
+            || standard[20] != 0 || standard[21] != 0
+        {
+            return Err(invalid("recovered placeholder EOF/link/type/delete state differs"));
         }
-        require_zero_storage_vdl(&file, bytes)?;
+        // ReFS may store sub-cluster EOFs initialized inside metadata even
+        // after allocation-only SetEndOfFile. No cluster from these streams
+        // can be retained: the normal supply pass rewrites their entire EOF.
+        // Keep valid_prefix/materialized_bytes zero so recovery never treats
+        // their current contents as admitted payload.
+        if bytes >= 4096 {
+            require_zero_storage_vdl(&file, bytes)?;
+        }
         let retire_identity = if retire {
             Some(super::super::info(&file, 18, 24)?)
         } else {

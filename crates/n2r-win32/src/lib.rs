@@ -137,7 +137,7 @@ pub use native::{
     SourceCacheContinuity, SourceCacheFingerprintDomain, NativeSourceObservationOrigin,
     SourceCacheFingerprintMismatch, SourceCacheRefreshDomain, SourceCacheRefreshRow,
     GeneralAllocationSnapshot, GeneralDiskState, GeneralExclusiveRecoveryTarget,
-    GeneralFreezeObservation, GeneralFrozenLane, GeneralFrozenPartition, GeneralJournalReadView,
+    GeneralFreezeObservation, GeneralFrozenLane, GeneralFrozenPartition, GeneralFrozenSourceReadScope, GeneralJournalReadView,
     GeneralJournaledPartition, GeneralLiveConvertedObservation, GeneralLiveNtfsObservation, GeneralLivePagedNtfsObservation,
     GeneralLiveRefsLayoutObservation, GeneralLiveRefsObservation, GeneralLockedPartition,
     GeneralPartitionReader, GeneralProbe, GeneralReadonlyAllocationWitness, HeldPagedWritePolicy,

@@ -1,3 +1,9 @@
+## Scoped source-read WMI fix compiled; current786 actor unchanged
+
+Root proactively APPLIED fallback to HOSTsource and ran ONEfocusedcheckv42 while existingVM5924 continued unchanged. ACTUALcheck0/38.8199545s/sharedtarget/no unit tests/mainc6bcunchanged; evidence/scoped-source-read-wmi-build-20261109.json. Boundedpeerreview foundno concrete lifetime/errorclosing/accounting flaw; directtwo-lifetime typedreference compiles, legacyadapteralias preserved. Fullrolesentry+allResultclosing and actualheldDEVICE/LENGTH/ALIGNMENT/fullGPT/attrs3innerchecks; no publicskip/writer/rawhandle/captureauthority. This removes repeatedAPPsourceWMI fromroutedsupplyonly; latercapture/admission/activationunchanged. Nativeperformance/correctness of NEWscopeNOTYETqualified; no newrelease/nativeattempt yet.
+
+CURRENTVM stillold786/PID5924birth1794241636902, new72cfcheckpoint46e53, savedExpected+0moveplacementpassed. Latest19:53:08Z CPU3107.1875/read5388983ops/Other89173568/writeSTILL3142030217B/952501ops/noerror/noterminal. DO NOTconflatehostcheckwithactivebinary. No stop/reset/relaunch/VMstoragechanges. Rootsoleoperator; agentreviewclosed. Nextactualnativeaction depends on SAME5924terminal/stage; preservecurrentinitializedshadow/placement/cache.
+
 ## Unapplied WMI fallback ready; same5924 LIVE19:36Z
 
 Current786 native5924/birth1794241636902 stillLIVE19:36:04Z CPU3013.5625/RSS50221056/noerr/no terminal; same72cfworkflow/46e53checkpoint/0moveplacement, no payloads-ready/publication/AP/HND/boot yet. Reads/queries advance; writesstill3142030217B/952501ops. DoNOTrestart/restore/relaunch. Currentproductcodefrozen; mainc6bcunchanged.

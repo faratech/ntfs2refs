@@ -47,6 +47,8 @@ mod partition_runtime_roles;
 mod partition_storage_roles;
 mod offline_windows;
 mod frozen_shadow_source_query;
+mod frozen_source_read_scope;
+pub use frozen_source_read_scope::GeneralFrozenSourceReadScope;
 pub(crate) use frozen_shadow_source_query::NativeFrozenShadowSourceQueryWitness;
 mod windows_storage_class;
 pub use windows_storage_class::BootStorageHintNormalization;
@@ -808,10 +810,10 @@ pub(crate) fn general_disk_state(
     general_disk_state_held_geometry(disk, binding, events)
 }
 
-// Deliberately private to native and its children. Only the opaque, reduced-
-// access SHADOW construction witness may omit recurring role discovery.
-// All existing source admission/write/activation callers keep the function
-// above and therefore its complete offline-Windows role checks.
+// Deliberately private to native and its children. Only the opaque SHADOW
+// query witness and exclusive frozen-source byte scope use held geometry
+// between full role fences. Source admission/write/activation callers keep
+// the complete offline-Windows role checks above.
 fn general_disk_state_held_geometry(
     disk: &File,
     binding: &GeneralDiskBinding,

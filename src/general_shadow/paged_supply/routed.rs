@@ -10,7 +10,7 @@ use crate::shadow_tree::SourceStreamEvidence;
 const ROUTED_RECEIPT_RAM: u64 = 1024 * 1024;
 
 fn frame_ram(
-    bytes: &PagedSourceByteAdapter<'_>,
+    bytes: &PagedSourceByteAdapterWithScope<'_, '_>,
     name_units: usize,
 ) -> Result<crate::ntfs_inspect::paged_storage::SourceRamLease> {
     let requested = (name_units as u64)
@@ -192,7 +192,7 @@ struct LeasedRanges {
     native_ram: Option<crate::ntfs_inspect::paged_storage::SourceRamLease>,
 }
 fn leased_ranges(
-    bytes: &PagedSourceByteAdapter<'_>,
+    bytes: &PagedSourceByteAdapterWithScope<'_, '_>,
     template: &PrivateTree,
     index: usize,
     object: &Object,
@@ -279,7 +279,7 @@ struct RoutedPlan {
 /// Check every declared physical source proposal before native target scans.
 /// This reads only the already held raw metadata model: no source payload,
 /// native file query, disk-role probe, or target observation occurs here.
-fn preflight_source_references(bytes:&PagedSourceByteAdapter<'_>,expected:&PagedExpectedTree)->Result<()> {
+fn preflight_source_references(bytes:&PagedSourceByteAdapterWithScope<'_, '_>,expected:&PagedExpectedTree)->Result<()> {
     use crate::ntfs_inspect::RootFileDomain;
     let raw=bytes.raw_source();
     let admission=expected.header().resource_admission.context("reference preflight expected admission absent")?;
@@ -343,7 +343,7 @@ fn preflight_source_references(bytes:&PagedSourceByteAdapter<'_>,expected:&Paged
 }
 
 fn scan_plan(
-    bytes: &mut PagedSourceByteAdapter<'_>,
+    bytes: &mut PagedSourceByteAdapterWithScope<'_, '_>,
     expected: &PagedExpectedTree,
     template: &PrivateTree,
     row_window: u64,
@@ -432,8 +432,8 @@ fn scan_plan(
 /// Holds the exact source adapter, expected pages and native private tree from
 /// preflight through materialization, system supply and final verification.
 /// No saved JSON, independent pointer or count can reconstruct this owner.
-pub(crate) struct RoutedSupplyOwner<'a, 'source> {
-    bytes: &'a mut PagedSourceByteAdapter<'source>,
+pub(crate) struct RoutedSupplyOwner<'a, 'source, 'scope> {
+    bytes: &'a mut PagedSourceByteAdapterWithScope<'source, 'scope>,
     expected: &'a PagedExpectedTree,
     template: &'a mut PrivateTree,
     plan: RoutedPlan,
@@ -441,13 +441,13 @@ pub(crate) struct RoutedSupplyOwner<'a, 'source> {
     _ram: crate::ntfs_inspect::paged_storage::SourceRamLease,
 }
 
-pub(crate) fn prepare<'a, 'source>(
-    bytes: &'a mut PagedSourceByteAdapter<'source>,
+pub(crate) fn prepare<'a, 'source, 'scope>(
+    bytes: &'a mut PagedSourceByteAdapterWithScope<'source, 'scope>,
     expected: &'a PagedExpectedTree,
     template: &'a mut PrivateTree,
     maximum_materialized_bytes: u64,
     policy: VerificationPolicy,
-) -> Result<RoutedSupplyOwner<'a, 'source>> {
+) -> Result<RoutedSupplyOwner<'a, 'source, 'scope>> {
     ensure!(
         policy.is_fast(),
         "routed-prefix supply requires explicit extent-identity verification"
@@ -563,7 +563,7 @@ pub(crate) fn prepare<'a, 'source>(
     })
 }
 
-impl RoutedSupplyOwner<'_, '_> {
+impl RoutedSupplyOwner<'_, '_, '_> {
     /// System data remains on the existing checked/materialized path.
     pub(crate) fn materialize_system_payloads(&mut self) -> Result<(serde_json::Value, Vec<u8>)> {
         super::materialize_private_system_payloads_paged_domain(

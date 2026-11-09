@@ -2,7 +2,7 @@
 //! These observations grant neither source admission nor cutover authority.
 use super::{
     PagedInputs,
-    source_backed::{PagedSourceByteAdapter, PagedStreamIdentity},
+    source_backed::{PagedSourceByteAdapterWithScope, PagedStreamIdentity},
 };
 use crate::{
     shadow_tree::{Object, PagedExpectedTree, StreamRef},
@@ -19,7 +19,7 @@ use std::io::{self, Write};
 const WINDOW: usize = 65536;
 
 fn phase(
-    bytes: &mut PagedSourceByteAdapter<'_>,
+    bytes: &mut PagedSourceByteAdapterWithScope<'_, '_>,
     expected: &PagedExpectedTree,
     template: &PrivateTree,
 ) -> Result<SourceResourceAdmission> {
@@ -175,7 +175,7 @@ fn user_plan(
 /// Copy only actual non-reference ranges. The complete live total is checked
 /// before the first payload write, then the complete map is checked again.
 pub fn materialize_private_supply_plan_domain(
-    bytes: &mut PagedSourceByteAdapter<'_>,
+    bytes: &mut PagedSourceByteAdapterWithScope<'_, '_>,
     expected: &PagedExpectedTree,
     template: &mut PrivateTree,
     maximum_bytes: u64,
@@ -285,7 +285,7 @@ pub fn materialize_private_supply_plan_domain(
 /// content also receives the complete ordered hybrid hash. Extent-only streams
 /// retain a distinct mapping+copied-byte scope, without a fabricated digest.
 pub fn verify_private_hybrid_contents_domain(
-    bytes: &mut PagedSourceByteAdapter<'_>,
+    bytes: &mut PagedSourceByteAdapterWithScope<'_, '_>,
     expected: &PagedExpectedTree,
     template: &mut PrivateTree,
     policy: VerificationPolicy,
@@ -451,7 +451,7 @@ pub fn verify_private_hybrid_contents_domain(
 }
 
 fn copy_system_stream(
-    bytes: &mut PagedSourceByteAdapter<'_>,
+    bytes: &mut PagedSourceByteAdapterWithScope<'_, '_>,
     object: &Object,
     output: &mut dyn Write,
 ) -> Result<String> {
@@ -488,7 +488,7 @@ fn copy_system_stream(
 /// Preserve the existing system-payload phase, using the held paged expected
 /// owner and actual DATA sessions rather than reconstructing a legacy Tree.
 pub fn materialize_private_system_payloads_paged_domain(
-    bytes: &mut PagedSourceByteAdapter<'_>,
+    bytes: &mut PagedSourceByteAdapterWithScope<'_, '_>,
     expected: &PagedExpectedTree,
     template: &mut PrivateTree,
 ) -> Result<(serde_json::Value, Vec<u8>)> {

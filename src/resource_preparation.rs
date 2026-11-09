@@ -9,7 +9,7 @@ use crate::{
         self, PagedInputs,
         paged_candidate::{PagedPayloadRoutes, PagedSourceBackedCandidate},
         paged_capture::capture_target_selected,
-        source_backed::{CaptureBudget, CaptureProgress, PagedSourceByteAdapter},
+        source_backed::{CaptureBudget, CaptureProgress, PagedSourceByteAdapter, PagedSourceByteAdapterWithScope},
     },
     general_source_admission::resource::ResourceSourceContext,
     ntfs_inspect::{SourceMetadataBudget, paged_storage::SourceScratch},
@@ -991,27 +991,28 @@ where
             .context("prepare source-backed shadow prefixes")?;
         {
             let (source, raw) = context.source_and_inspection()?;
-            let mut bytes =
-                PagedSourceByteAdapter::new(source, raw, admission, maximum_source_read_bytes)?;
-            let mut routed = general_shadow::paged_supply::routed::prepare(
-                &mut bytes,
-                &expected,
-                &mut private,
-                request.maximum_materialized_bytes,
-                request.verification_policy,
-            )
-            .context("prepare routed shadow payload materialization")?;
-            let (_system, indexer) = routed
-                .materialize_system_payloads()
-                .context("materialize routed system payloads")?;
-            drop(indexer);
-            let supply_receipt = routed
-                .verify()
-                .context("verify routed shadow payload supply")?;
-            events
-                .observer
-                .note(&serde_json::to_value(&supply_receipt)?)?;
-            bytes.finish()?;
+            let scope_memory = ArenaReportMemory(arena.clone());
+            let supply_receipt = source.with_readonly_source_bytes(
+                &scope_memory, &mut events, |scope| {
+                    (|| -> Result<serde_json::Value> {
+                        let mut bytes = PagedSourceByteAdapterWithScope::new_scoped(
+                            scope, raw, admission, maximum_source_read_bytes,
+                        )?;
+                        let mut routed = general_shadow::paged_supply::routed::prepare(
+                            &mut bytes, &expected, &mut private,
+                            request.maximum_materialized_bytes, request.verification_policy,
+                        ).context("prepare routed shadow payload materialization")?;
+                        let (_system, indexer) = routed.materialize_system_payloads()
+                            .context("materialize routed system payloads")?;
+                        drop(indexer);
+                        let receipt = routed.verify()
+                            .context("verify routed shadow payload supply")?;
+                        bytes.finish()?;
+                        Ok(receipt)
+                    })().map_err(std::io::Error::other)
+                },
+            ).context("routed source-byte scope full closing validation")?;
+            events.observer.note(&serde_json::to_value(&supply_receipt)?)?;
             if let Some(state) = resume_checkpoints.as_mut() {
                 state.stage(
                     crate::preparation_resume::Stage::Payloads,

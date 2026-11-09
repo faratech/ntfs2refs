@@ -5,8 +5,9 @@ use n2r_win32::{
     PartitionOwnerToken, PartitionScopedOwner, partition_lifecycle::PartitionNtfsAdmission,
 };
 
-pub(crate) enum BorrowedPagedSource<'a> {
+pub(crate) enum BorrowedPagedSource<'a, 'scope> {
     Dedicated(&'a mut GeneralFrozenPartition),
+    DedicatedScoped(&'a mut n2r_win32::GeneralFrozenSourceReadScope<'scope>),
     Partition {
         owner: &'a mut PartitionScopedOwner,
         admission: &'a PartitionNtfsAdmission,
@@ -14,22 +15,25 @@ pub(crate) enum BorrowedPagedSource<'a> {
         identity: usize,
     },
 }
-impl BorrowedPagedSource<'_> {
+impl BorrowedPagedSource<'_, '_> {
     pub(super) fn binding(&self) -> &n2r_win32::general_layout::GeneralDiskBinding {
         match self {
             Self::Dedicated(owner) => owner.binding(),
+            Self::DedicatedScoped(scope) => scope.binding(),
             Self::Partition { owner, .. } => &owner.binding().storage,
         }
     }
     pub(super) fn byte_len(&self) -> u64 {
         match self {
             Self::Dedicated(owner) => owner.byte_len(),
+            Self::DedicatedScoped(scope) => scope.byte_len(),
             Self::Partition { owner, .. } => owner.byte_len(),
         }
     }
     pub(super) fn owner_identity(&self) -> usize {
         match self {
             Self::Dedicated(owner) => std::ptr::from_ref(&**owner) as usize,
+            Self::DedicatedScoped(scope) => scope.original_owner_identity(),
             Self::Partition { identity, .. } => *identity,
         }
     }
@@ -41,6 +45,12 @@ impl BorrowedPagedSource<'_> {
                     owner.state(&mut Vec::new())? == *before && before.disk_attributes == 3,
                     "original source identity or physical exclusion changed"
                 );
+                Ok(())
+            }
+            Self::DedicatedScoped(scope) => {
+                let before = before.context("original scoped state absent")?;
+                ensure!(scope.state(&mut Vec::new())? == *before && before.disk_attributes == 3,
+                    "scoped original source identity or physical exclusion changed");
                 Ok(())
             }
             Self::Partition {
@@ -69,24 +79,29 @@ impl BorrowedPagedSource<'_> {
     ) -> Result<()> {
         match self {
             Self::Dedicated(owner) => observer.observe_original(owner, offset, bytes),
+            Self::DedicatedScoped(_) => anyhow::bail!(
+                "byte-supply scope cannot issue a capture closing-source witness"
+            ),
             Self::Partition { .. } => anyhow::bail!(
                 "legacy whole-disk closing observer cannot authorize a partition source; V4 OLD/COPY closure remains required"
             ),
         }
     }
 }
-impl Read for BorrowedPagedSource<'_> {
+impl Read for BorrowedPagedSource<'_, '_> {
     fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
         match self {
             Self::Dedicated(owner) => owner.read(b),
+            Self::DedicatedScoped(scope) => scope.read(b),
             Self::Partition { owner, .. } => owner.read(b),
         }
     }
 }
-impl Seek for BorrowedPagedSource<'_> {
+impl Seek for BorrowedPagedSource<'_, '_> {
     fn seek(&mut self, p: SeekFrom) -> io::Result<u64> {
         match self {
             Self::Dedicated(owner) => owner.seek(p),
+            Self::DedicatedScoped(scope) => scope.seek(p),
             Self::Partition { owner, .. } => owner.seek(p),
         }
     }

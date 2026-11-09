@@ -799,8 +799,11 @@ pub struct PagedStreamIdentity<'a> {
 mod partition_source_bytes;
 use partition_source_bytes::BorrowedPagedSource;
 
-pub struct PagedSourceByteAdapter<'a> {
-    source: BorrowedPagedSource<'a>,
+// Preserve the established one-lifetime dedicated/partition interface.
+pub type PagedSourceByteAdapter<'a> = PagedSourceByteAdapterWithScope<'a, 'a>;
+
+pub struct PagedSourceByteAdapterWithScope<'a, 'scope> {
+    source: BorrowedPagedSource<'a, 'scope>,
     raw: &'a crate::ntfs_inspect::PagedInspection,
     admission: n2r_win32::tree_resources::SourceResourceAdmission,
     before: Option<n2r_win32::GeneralDiskState>,
@@ -813,7 +816,7 @@ pub struct PagedSourceByteAdapter<'a> {
     _session_ram: crate::ntfs_inspect::paged_storage::SourceRamLease,
 }
 
-impl<'a> PagedSourceByteAdapter<'a> {
+impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
     pub fn new(
         source: &'a mut GeneralFrozenPartition,
         raw: &'a crate::ntfs_inspect::PagedInspection,
@@ -857,6 +860,69 @@ impl<'a> PagedSourceByteAdapter<'a> {
         )?;
         Ok(Self {
             source: BorrowedPagedSource::Dedicated(source),
+            raw,
+            admission,
+            before:Some(before),
+            // Individual NTFS logical lengths have the native signed-width
+            // bound. Aggregate actual reads retain the caller's explicit budget.
+            budget: crate::ntfs_inspect::StreamTransferBudget::new(
+                i64::MAX as u64,
+                maximum_logical_reads,
+            )?,
+            session: None,
+            sequence: None,
+            allow_sparse: None,
+            logical_bytes: 0,
+            poisoned: false,
+            _session_ram: session_ram,
+        })
+    }
+
+    /// The actual SDK scope supplies source identity/exclusion checks; its
+    /// issuer performs full role fences before and after this adapter lives.
+    pub(crate) fn new_scoped(
+        source: &'a mut n2r_win32::GeneralFrozenSourceReadScope<'scope>,
+        raw: &'a crate::ntfs_inspect::PagedInspection,
+        admission: n2r_win32::tree_resources::SourceResourceAdmission,
+        maximum_logical_reads: u64,
+    ) -> Result<Self> {
+        use crate::ntfs_inspect::RootFileDomain;
+        admission.validate()?;
+        raw.require_paged_source(admission.source_pages, admission.semantic_byte_budget())?;
+        let pin: [u8; 32] = hex::decode(raw.canonical_sha256()?)?
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("source pin length differs"))?;
+        ensure!(
+            pin == admission.source_inspection_sha256
+                && raw.file_count() == admission.raw_identities
+                && raw.header().mft_record_count == admission.mft_records
+                && (raw.header().geometry.volume_size == source.byte_len()
+                    || raw
+                        .header()
+                        .geometry
+                        .volume_size
+                        .checked_add(u64::from(raw.header().geometry.bytes_per_sector,))
+                        == Some(source.byte_len())),
+            "paged source byte owner differs from the admitted partition",
+        );
+        let mut events = Vec::new();
+        let before = source.state(&mut events)?;
+        ensure!(
+            before.disk_attributes == 3,
+            "original source must remain excluded read-only"
+        );
+        // One retained attribute/map plus the existing two intrinsic64KiB
+        // LZNT1 unit buffers; the legacy session representation stays unchanged.
+        let session_ram = raw.lease_working_ram(
+            admission
+                .budget
+                .max_row_bytes
+                .checked_mul(8)
+                .and_then(|bytes| bytes.checked_add(2 * 16 * 4096))
+                .context("paged DATA session working RAM overflow")?,
+        )?;
+        Ok(Self {
+            source: BorrowedPagedSource::DedicatedScoped(source),
             raw,
             admission,
             before:Some(before),
@@ -1031,7 +1097,7 @@ impl<'a> PagedSourceByteAdapter<'a> {
         result
     }
 
-    pub(super) fn original_owner(&mut self) -> &mut BorrowedPagedSource<'a> {
+    pub(super) fn original_owner(&mut self) -> &mut BorrowedPagedSource<'a, 'scope> {
         &mut self.source
     }
 

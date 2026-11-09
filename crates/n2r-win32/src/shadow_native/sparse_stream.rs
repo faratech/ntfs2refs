@@ -130,11 +130,17 @@ impl Target {
         let rounded = length.checked_next_multiple_of(4096).ok_or_else(|| invalid("recovered sparse EOF overflow"))?;
         unwritten::recovery::require_zero_storage_vdl(&file, rounded)?;
         let standard = info(&file, 1, 24)?;
-        if layout::u64_at(&standard, 0)? != 0
+        // A nonsparse ADS target is created by SetEndOfFile and can already
+        // own unwritten clusters. Its complete storage-VDL-zero proof above
+        // remains mandatory; the later carrier clone replaces its dense EOF.
+        // Actual sparse targets must still have no allocated islands yet.
+        let allocation=layout::u64_at(&standard,0)?;
+        let actual_sparse=layout::u32_at(&info(&file,9,8)?,0)?&0x200!=0;
+        if (sparse_mode && allocation != 0)
             || layout::u32_at(&standard, 16)? != 1
-            || (layout::u32_at(&info(&file, 9, 8)?, 0)? & 0x200 != 0) != sparse_mode
+            || actual_sparse != sparse_mode
         {
-            return Err(invalid("recovered sparse target already has allocation or incompatible flags"));
+            return Err(io::Error::other(format!("recovered carrier target allocation/flags differ: path={path:?}, allocation={allocation}, sparse={actual_sparse}, expected_sparse={sparse_mode}")));
         }
         let mut dense = 0u64;
         let mut islands = Vec::new();

@@ -750,11 +750,18 @@ impl ResourceSourceContext {
         ensure!(arena.budget()==budget&&policy==VerificationPolicy::ExtentIdentityV1
             && origin.canonical_sha256()?==origin_sha256,
             "cached source requires exact origin pin, extent policy and new actual arena");
+        let native=arena.reserve_group(ArtifactGroup::Native,arena.native_page_budget()?.max_file_bytes)?;
+        // Existing native pages already occupy working-volume space. Hash and
+        // retain their real file owner before promising fresh Source/Auxiliary
+        // capacity, so check_free credits only their actual allocation.
+        let native_owner=native.adopt_existing(&origin.native_pages.path,
+            &origin.native_pages.sha256,origin.native_pages.bytes)?;
         let source=arena.reserve_group(ArtifactGroup::Source,
             SourceMetadataBudget::from_resource_budget(budget)?.scratch_bytes)?;
-        let native=arena.reserve_group(ArtifactGroup::Native,arena.native_page_budget()?.max_file_bytes)?;
-        Self::collect(binding,budget,policy,output,events,phase,Some((arena.clone(),source,native)),
-            restore_on_failure,Some(guard),Some((origin,origin_sha256)))
+        let result=Self::collect(binding,budget,policy,output,events,phase,Some((arena.clone(),source,native)),
+            restore_on_failure,Some(guard),Some((origin,origin_sha256)));
+        drop(native_owner);
+        result
     }
     fn collect(
         binding: GeneralDiskBinding,
@@ -1064,7 +1071,15 @@ impl ResourceSourceContext {
         let native = if let Some(cache)=reopened_cache.as_mut(){
             *phase="source-cache-fresh-protected-runtime";
             let (arena,_,native_group)=groups.as_ref().context("cache native arena permit absent")?;
-            let artifact=native_group.adopt_existing(&cache.native.path,&cache.native.sha256,cache.native.bytes)?;
+            let artifact=match arena.retained_artifact(&cache.native.path) {
+                Ok(owner)=>{
+                    ensure!(owner.same_group(native_group)&&owner.sha256()==cache.native.sha256
+                        &&owner.wire_bytes()==cache.native.bytes,"cached native actual owner differs");
+                    owner.revalidate()?;
+                    owner
+                }
+                Err(_)=>native_group.adopt_existing(&cache.native.path,&cache.native.sha256,cache.native.bytes)?,
+            };
             ensure!(artifact.wire_bytes()==cache.native.bytes,"cached native file byte count differs");
             let proof=cache.continuity.take().context("cached source continuity owner already consumed")?;
             let observed=if let Some(refresh)=cache.refresh.as_ref(){

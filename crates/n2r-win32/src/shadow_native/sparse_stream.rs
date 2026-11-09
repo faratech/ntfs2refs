@@ -143,18 +143,7 @@ impl Target {
         if sparse_mode && allocation != 0 {
             let (runs,_)=capture(&file,rounded)?;
             for run in runs.iter().filter(|run|run.lcn.is_some()) {
-                let start=run.vcn.checked_mul(4096).ok_or_else(||invalid("recovered sparse VCN overflow"))?;
-                let end=run.clusters.checked_mul(4096).and_then(|n|start.checked_add(n))
-                    .ok_or_else(||invalid("recovered sparse interval overflow"))?;
-                let mut cursor=start;
-                for island in &layout.allocated {
-                    let stop=island.offset.checked_add(island.length).ok_or_else(||invalid("recovered island overflow"))?;
-                    if stop<=cursor {continue;}
-                    if island.offset>cursor {break;}
-                    cursor=end.min(stop);if cursor==end {break;}
-                }
-                if cursor!=end {return Err(io::Error::other(format!(
-                    "recovered sparse placeholder allocates a declared hole: path={path:?}, vcn={}, clusters={}",run.vcn,run.clusters)));}
+                require_recovered_island(layout, &path, run)?;
             }
         }
         let mut dense = 0u64;
@@ -558,6 +547,34 @@ impl Target {
         }
         Ok(())
     }
+}
+
+/// Native allocation is allowed only where the admitted stream has an island.
+/// The carrier will replace these unwritten clusters; declared holes stay holes.
+pub(super) fn require_recovered_island(
+    layout: &SparseLayout,
+    path: &str,
+    run: &stream_layout::Run,
+) -> io::Result<()> {
+    let start = run.vcn.checked_mul(4096)
+        .ok_or_else(|| invalid("recovered sparse VCN overflow"))?;
+    let end = run.clusters.checked_mul(4096).and_then(|n| start.checked_add(n))
+        .ok_or_else(|| invalid("recovered sparse interval overflow"))?;
+    let mut cursor = start;
+    for island in &layout.allocated {
+        let stop = island.offset.checked_add(island.length)
+            .ok_or_else(|| invalid("recovered island overflow"))?;
+        if stop <= cursor { continue; }
+        if island.offset > cursor { break; }
+        cursor = end.min(stop);
+        if cursor == end { break; }
+    }
+    if cursor != end {
+        return Err(io::Error::other(format!(
+            "recovered sparse placeholder allocates a declared hole: path={path:?}, vcn={}, clusters={}",
+            run.vcn, run.clusters)));
+    }
+    Ok(())
 }
 
 fn lcn_at(runs: &[stream_layout::Run], vcn: u64) -> io::Result<u64> {

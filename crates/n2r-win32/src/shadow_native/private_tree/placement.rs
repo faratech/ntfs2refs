@@ -1334,10 +1334,41 @@ pub(super) fn audit_recovered_maps(tree:&PrivateTree,bytes:u64,moves:usize)->io:
     let mut ranges=Vec::new();
     for target in tree.sparse_targets.values() {
         let rounded=target.logical_length.checked_next_multiple_of(4096).ok_or_else(||invalid("recovered target EOF overflow"))?;
+        let identity=info(&target.file,18,24)?;
+        let standard=info(&target.file,1,24)?;
         unwritten::recovery::require_zero_storage_vdl(&target.file,rounded)?;
-        if layout::u64_at(&info(&target.file,1,24)?,0)? != 0 {
-            return Err(invalid("recovered sparse target gained native allocation"));
+        let evidence_bytes=usize::try_from(admission.budget.max_row_bytes).map_err(io::Error::other)?;
+        let _retrieval_memory=payer.reserve((evidence_bytes as u64).checked_mul(8)
+            .and_then(|n|n.checked_add(4*1024*1024))
+            .ok_or_else(||invalid("recovered target retrieval RAM overflow"))?)?;
+        let (first,continuation)=crate::stream_native::retrieval_queries_resource(&target.file,evidence_bytes)?;
+        let empty_retrieval=continuation.is_empty() && layout::u64_at(&standard,0)?==0
+            && ((first.native_error==Some(38) && first.bytes.is_empty())
+                || (first.native_error.is_none() && first.bytes.len()==16
+                    && layout::u32_at(&first.bytes,0)?==0 && rounded==0));
+        if !empty_retrieval {
+            let capture=crate::retrieval_paging::assemble_queries_with_limits(&first,&continuation,
+                crate::retrieval_paging::Limits::for_resource_bytes(evidence_bytes)?)?;
+            for run in &capture.runs {
+                let Some(lcn)=run.lcn else {continue;};
+                sparse_stream::require_recovered_island(&target.layout,&target.path,run)?;
+                if run.clusters==0 || ranges.len()==limits.tracked {
+                    return Err(invalid("recovered allocation range bound exhausted"));
+                }
+                let offset=lcn.checked_mul(4096).ok_or_else(||invalid("recovered target LCN overflow"))?;
+                let length=run.clusters.checked_mul(4096).ok_or_else(||invalid("recovered target allocation overflow"))?;
+                let aa=a.candidate(offset,length)?;
+                let bb=b.candidate(offset,length)?;
+                if aa.allocated_clusters!=run.clusters || bb.allocated_clusters!=run.clusters {
+                    return Err(invalid("native recovered target ownership is absent from a complete bitmap view"));
+                }
+                ranges.push((lcn,lcn.checked_add(run.clusters).ok_or_else(||invalid("recovered target LCN end overflow"))?));
+            }
         }
+        if info(&target.file,18,24)?!=identity || info(&target.file,1,24)?!=standard {
+            return Err(invalid("recovered target identity or lengths changed during allocation audit"));
+        }
+        unwritten::recovery::require_zero_storage_vdl(&target.file,rounded)?;
     }
     for file in tree.files.values() {
         file.check_placements()?;

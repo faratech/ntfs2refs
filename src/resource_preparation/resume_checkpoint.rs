@@ -125,10 +125,10 @@ impl Checkpoints {
                 "prior resume intent differs from actual paid owner"
             );
             owners.push(prior_owner);
-            Origin::PriorEpoch {
-                intent: actual,
-                source_cache_manifest: source_cache.clone(),
-            }
+            if let Some((root,working))=&saved.workspace_origin {
+                Origin::WorkspaceMigration{intent:actual,source_cache_manifest:source_cache.clone(),
+                    prior_arena_root:root.clone(),prior_working:working.clone()}
+            }else{Origin::PriorEpoch {intent: actual,source_cache_manifest: source_cache.clone()}}
         } else {
             let terminal = saved
                 .legacy_terminal

@@ -47,6 +47,10 @@ pub struct DriveArgs {
     /// Original recovery or preparation SHA-256 printed before source changes.
     #[arg(long, requires = "recover")]
     pub recovery_sha256: Option<String>,
+    /// Continue prepublication preparation on a different independent local
+    /// volume. Saved source evidence and the existing shadow are reused.
+    #[arg(long, requires="recover", conflicts_with="rollback")]
+    pub resume_workspace: Option<PathBuf>,
     /// Restore NTFS, or cancel unfinished preparation, before handoff only.
     #[arg(long, requires = "recover")]
     pub rollback: bool,
@@ -411,16 +415,18 @@ mod windows {
             if has_preparation
                 && super::resource::preparation_intent_matches(&directory, &checksum)?
             {
-                return super::resource::recover_preparation(&directory, &checksum, args.rollback);
+                return super::resource::recover_preparation_in_workspace(&directory, &checksum, args.rollback,args.resume_workspace.as_deref());
             }
             if directory.join("recovery-envelope.json").exists() {
+                ensure!(args.resume_workspace.is_none(),"published conversion recovery uses its original workspace");
                 return super::resource::recover(&directory, &checksum, args.rollback);
             }
             if has_preparation {
                 // Preserve a bad/missing pin as a hard refusal in its selected
                 // protocol. Do not fall back to a legacy recovery writer.
-                return super::resource::recover_preparation(&directory, &checksum, args.rollback);
+                return super::resource::recover_preparation_in_workspace(&directory, &checksum, args.rollback,args.resume_workspace.as_deref());
             }
+            ensure!(args.resume_workspace.is_none(),"workspace continuation requires a pinned prepublication checkpoint");
             if let Some(result) = super::partition::try_recover(&directory, &checksum, args.rollback)? {
                 return Ok(result);
             }

@@ -34,6 +34,7 @@ pub(crate) mod early_guard;
 pub(crate) mod file_observer;
 pub(crate) mod resume_origin;
 pub(crate) mod resume_session_inputs;
+pub(crate) mod resume_workspace;
 mod resume_checkpoint;
 #[path = "resource_partition_preparation.rs"]
 pub(crate) mod partition_preparation;
@@ -91,6 +92,7 @@ pub(crate) struct ResumePreparation {
     pub placement_limits: n2r_win32::shadow_native::private_tree::recovery::RecoveryLimits,
     pub legacy_terminal: Option<crate::general_source_admission::resource::SourceCacheFilePin>,
     pub prior_resume_intent: Option<crate::preparation_resume::ArtifactPin>,
+    pub workspace_origin: Option<(PathBuf,GeneralJournalStorageBinding)>,
     pub parent_resources: resume_origin::ParentPublicResources,
 }
 impl ResourcePreparationRequest {
@@ -563,11 +565,28 @@ where
                 saved.expected.sha256 == hex::encode(saved.shadow_origin.expected_pages_sha256),
                 "cached expected and recovered shadow origin differ"
             );
-            let artifact = expected_group.adopt_existing(
+            let (expected_path,artifact)=if saved.workspace_origin.is_some()
+                && !saved.expected.path.starts_with(&saved.arena_root) {
+                let source=OpenOptions::new().read(true).share_mode(1).custom_flags(0x00200000).open(&saved.expected.path)?;
+                let before=n2r_win32::reference_file::observe_reference_file_handle_with_limit(&source,saved.expected.bytes)?;
+                ensure!(before.file_bytes==saved.expected.bytes,"migrated expected length differs");
+                let path=output.join("expected.pages");
+                let permit=expected_group.reserve_file(&path,saved.expected.bytes)?;
+                let mut target=OpenOptions::new().write(true).create_new(true).open(permit.path())?;
+                let _ram=arena.reserve_ram(65536)?;
+                let mut source=source;let mut buffer=[0u8;65536];let mut remaining=saved.expected.bytes;
+                while remaining>0 {let n=remaining.min(buffer.len() as u64) as usize;
+                    std::io::Read::read_exact(&mut source,&mut buffer[..n])?;target.write_all(&buffer[..n])?;remaining-=n as u64;}
+                target.sync_all()?;drop(target);
+                ensure!(n2r_win32::reference_file::observe_reference_file_handle_with_limit(&source,saved.expected.bytes)?==before,
+                    "migrated expected source changed while copied");
+                let lease=permit.verify_closed(&saved.expected.sha256)?;
+                (path,lease)
+            }else{(saved.expected.path.clone(),expected_group.adopt_existing(
                 &saved.expected.path, &saved.expected.sha256, saved.expected.bytes,
-            )?;
+            )?)};
             let expected = PagedExpectedTree::open_revalidated_with_resources_in_group(
-                &saved.expected.path, &saved.expected.sha256, admission,
+                &expected_path, &saved.expected.sha256, admission,
                 &expected_group, artifact,
             )?;
             events.observer.note(&serde_json::json!({
@@ -665,7 +684,7 @@ where
             locator_group.resize_reservation(recovery_ceiling.min(held.checked_add(headroom)
                 .context("resume recovery phase reservation overflow")?))?;
             let usage=arena.usage()?;
-            let pending=usage.promised_bytes.saturating_sub(usage.actual_allocated_bytes);
+            let pending=usage.promised_bytes.saturating_sub(usage.local_allocation_credit_bytes);
             let available=n2r_win32::resource_native::observe_available_resources(output)?;
             let reserve=request.minimum_free_bytes.checked_add(events.observer.remaining_scratch_reservation_bytes())
                 .context("resume working reserve overflow")?;

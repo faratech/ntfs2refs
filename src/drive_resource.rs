@@ -356,9 +356,14 @@ pub(super) fn preparation_intent_matches(directory: &Path, sha: &str) -> Result<
 /// Cancel only an authenticated, still-unconsumed pre-AP preparation. A final
 /// publication, missing file, or serialized phase cannot recreate authority.
 pub(super) fn recover_preparation(directory: &Path, sha: &str, rollback: bool) -> Result<u8> {
+    recover_preparation_in_workspace(directory,sha,rollback,None)
+}
+pub(super) fn recover_preparation_in_workspace(directory:&Path,sha:&str,rollback:bool,
+    workspace:Option<&Path>)->Result<u8> {
     if !rollback {
-        return resumable::resume_preparation(directory, parse_sha(sha)?);
+        return resumable::resume_preparation_in_workspace(directory, parse_sha(sha)?,workspace);
     }
+    ensure!(workspace.is_none(),"preparation cancellation uses its original workspace");
     let (intent, checksum) = if directory.join("resume-intent.json").try_exists()? {
         let probe = crate::resource_preparation::resume_session_inputs::probe_resume_session(
             directory, parse_sha(sha)?, recovery_metadata_limit()?.min(8 << 20),

@@ -60,6 +60,8 @@ struct Entry {
     registry_bytes: u64,
     verified: Option<Verified>,
     lease: Weak<FilePin>,
+    external_readonly: bool,
+    allocation_slack: u64,
 }
 struct Verified {
     snapshot: ReferenceFileSnapshot,
@@ -73,6 +75,8 @@ struct State {
     // The same immutable verified snapshots previously folded in check_free.
     // Updated only with their installation/removal under this mutex.
     verified_allocated_bytes: u64,
+    verified_local_allocated_bytes: u64,
+    external_roots: BTreeMap<PathBuf, Arc<ExternalOriginRoot>>,
     // A reopened file must not earn allocation credit twice through spelling
     // aliases. This is keyed by actual held file identity, never a pathname.
     verified_identities: BTreeSet<(u64, [u8; 16])>,
@@ -90,6 +94,35 @@ struct Inner {
     _parents: Vec<File>,
     budget: ResourceBudget,
     state: Mutex<State>,
+    excluded: Vec<([u8; 16], [u8; 16])>,
+    config_registry_bytes: u64,
+}
+/// Only live held directory/volume observations can enroll an immutable origin.
+/// No path list, serialized flag, source writer or allocation credit is issued.
+struct ExternalOriginRoot {
+    root: PathBuf,
+    root_guid: String,
+    root_id: String,
+    allocation_slack: u64,
+    registry_bytes: u64,
+    parents: Vec<File>,
+}
+impl ExternalOriginRoot {
+    fn revalidate(&self) -> Result<()> {
+        let root = self
+            .parents
+            .first()
+            .context("external origin root handle absent")?;
+        ensure!(
+            root.metadata()?.is_dir()
+                && root.metadata()?.file_attributes() & 0x400 == 0
+                && n2r_win32::file_storage::file_id_info(root)? == self.root_id
+                && n2r_win32::file_storage::final_path_guid(root)?
+                    .eq_ignore_ascii_case(&self.root_guid),
+            "held external readonly origin root changed"
+        );
+        Ok(())
+    }
 }
 #[derive(Clone)]
 pub struct ArtifactArena(Arc<Inner>);
@@ -130,6 +163,8 @@ pub struct ArtifactPathPermit {
     path: PathBuf,
     _parents: Vec<File>,
     complete: bool,
+    external_origin: Option<Arc<ExternalOriginRoot>>,
+    allocation_slack: u64,
 }
 struct FilePin {
     arena: ArtifactArena,
@@ -138,6 +173,7 @@ struct FilePin {
     modified: SystemTime,
     sha256: String,
     _parents: Vec<File>,
+    external_origin: Option<Arc<ExternalOriginRoot>>,
 }
 struct SealedPins {
     pins: Vec<Arc<FilePin>>,
@@ -200,6 +236,8 @@ pub struct ArenaUsage {
     pub files: u64,
     pub leased_ram_bytes: u64,
     pub registry_ram_bytes: u64,
+    /// Only bytes on the active workspace volume can offset its promises.
+    pub local_allocation_credit_bytes: u64,
 }
 fn add(a: u64, b: u64) -> Result<u64> {
     a.checked_add(b)
@@ -214,11 +252,12 @@ impl State {
             "artifact allocation ledger is poisoned"
         );
         let mut identities = 0usize;
+        let mut local_allocated = 0u64;
         let totals = self
             .entries
             .values()
-            .filter_map(|entry| entry.verified.as_ref())
-            .try_fold((0, 0), |(wire, allocated), verified| {
+            .filter_map(|entry| entry.verified.as_ref().map(|verified| (entry, verified)))
+            .try_fold((0, 0), |(wire, allocated), (entry, verified)| {
                 ensure!(
                     self.verified_identities.contains(&(
                         verified.snapshot.volume_serial_number,
@@ -226,16 +265,23 @@ impl State {
                     )),
                     "verified artifact identity is absent from registry"
                 );
-                identities = identities.checked_add(1)
+                identities = identities
+                    .checked_add(1)
                     .context("artifact identity count overflow")?;
+                if !entry.external_readonly {
+                    local_allocated = add(local_allocated, verified.snapshot.allocation_bytes)?;
+                }
                 Ok::<_, anyhow::Error>((
                     add(wire, verified.snapshot.file_bytes)?,
                     add(allocated, verified.snapshot.allocation_bytes)?,
                 ))
             });
         match totals {
-            Ok((wire, allocated)) if allocated == self.verified_allocated_bytes
-                && identities == self.verified_identities.len() => {
+            Ok((wire, allocated))
+                if allocated == self.verified_allocated_bytes
+                    && local_allocated == self.verified_local_allocated_bytes
+                    && identities == self.verified_identities.len() =>
+            {
                 Ok((wire, allocated))
             }
             Ok(_) => {
@@ -363,7 +409,13 @@ fn validate_prepared_state(
             "prepared arena required artifact group is absent or empty"
         );
     }
-    let (mut wire, mut allocated, mut registry, mut files) = (0, 0, 0, 0);
+    let mut root_registry = arena.0.config_registry_bytes;
+    for root in state.external_roots.values() {
+        root.revalidate()?;
+        root_registry = add(root_registry, root.registry_bytes)?;
+    }
+    let (mut wire, mut allocated, mut registry, mut files) = (0, 0, root_registry, 0);
+    let mut local_allocated = 0u64;
     let mut previous = None;
     for seal in ordinary {
         let tag = seal.permit.group;
@@ -407,11 +459,15 @@ fn validate_prepared_state(
                     && pin.modified == verified.modified
                     && entry.reserved == verified.snapshot.file_bytes
                     && entry.maximum >= entry.reserved
+                    && entry.external_readonly == pin.external_origin.is_some()
                     && verified.snapshot.allocation_bytes >= verified.snapshot.file_bytes,
                 "prepared artifact lease/identity/byte accounting differs"
             );
             group_wire = add(group_wire, verified.snapshot.file_bytes)?;
             group_allocated = add(group_allocated, verified.snapshot.allocation_bytes)?;
+            if !entry.external_readonly {
+                local_allocated = add(local_allocated, verified.snapshot.allocation_bytes)?;
+            }
             registry = add(registry, entry.registry_bytes)?;
             files = add(files, 1)?;
         }
@@ -460,7 +516,7 @@ fn validate_prepared_state(
         .context("prepared native witness RAM overflow")?;
     registry = add(registry, witness_ram)?;
     let promised = add(add(wire, state.overhead)?, native_reservation)?;
-    let credit = add(allocated, journal_wire)?;
+    let credit = add(local_allocated, journal_wire)?;
     ensure!(
         registry == state.index_bytes
             && registry <= arena.0.budget.retained_index_bytes
@@ -484,6 +540,7 @@ fn validate_prepared_state(
         files: add(files, 1)?,
         leased_ram_bytes: state.leased_ram_bytes,
         registry_ram_bytes: registry,
+        local_allocation_credit_bytes: credit,
     })
 }
 impl PreparedArenaClosure {
@@ -803,6 +860,26 @@ impl ArtifactArena {
         } else {
             available.validate_budget(budget)?;
         }
+        let excluded: Vec<_> = excluded
+            .iter()
+            .map(|binding| {
+                Ok((
+                    n2r_win32::layout::guid_bytes(&binding.identity.disk_guid)?,
+                    n2r_win32::layout::guid_bytes(&binding.volume_guid)?,
+                ))
+            })
+            .collect::<Result<_>>()?;
+        let config_registry_bytes = add(
+            4096,
+            (excluded.capacity() as u64)
+                .checked_mul(64)
+                .context("arena exclusion registry RAM overflow")?,
+        )?;
+        ensure!(
+            config_registry_bytes <= budget.retained_index_bytes
+                && config_registry_bytes <= budget.ram_bytes,
+            "arena retained configuration exceeds RAM budget"
+        );
         Ok(Self(Arc::new(Inner {
             root: fs::canonicalize(root)?,
             root_guid,
@@ -814,53 +891,302 @@ impl ArtifactArena {
                 groups: BTreeMap::new(),
                 entries: BTreeMap::new(),
                 verified_allocated_bytes: 0,
+                verified_local_allocated_bytes: 0,
+                external_roots: BTreeMap::new(),
                 verified_identities: BTreeSet::new(),
                 allocation_poisoned: false,
                 overhead: 0,
-                index_bytes: 0,
+                index_bytes: config_registry_bytes,
                 leased_ram_bytes: 0,
                 ram_poisoned: false,
                 prepared_closed: false,
             }),
+            excluded,
+            config_registry_bytes,
         })))
     }
     pub fn budget(&self) -> ResourceBudget {
         self.0.budget
+    }
+    /// Enroll an authenticated historical origin only after its caller has
+    /// checked the independent resume pins. This retains actual directory
+    /// handles and native identity; it never permits foreign output or credit.
+    pub(crate) fn enroll_external_readonly_root(
+        &self,
+        root: &Path,
+        excluded: &[GeneralDiskBinding],
+    ) -> Result<()> {
+        ensure!(
+            root.is_absolute()
+                && !root
+                    .components()
+                    .any(|c| matches!(c, Component::ParentDir | Component::CurDir)),
+            "ordinary absolute external origin root required"
+        );
+        let _working = self.reserve_ram(1024 * 1024)?;
+        let handles = parents(root)?;
+        let held = handles.first().context("external origin root absent")?;
+        let canonical = fs::canonicalize(root)?;
+        ensure!(
+            !canonical.starts_with(&self.0.root) && !self.0.root.starts_with(&canonical),
+            "external origin must be separate from the writable arena root"
+        );
+        let guid = n2r_win32::file_storage::final_path_guid(held)?;
+        let end = guid
+            .find("}\\")
+            .context("external root volume GUID absent")?
+            + 1;
+        let volume = &guid[..end];
+        let supplied: Vec<_> = excluded
+            .iter()
+            .map(|binding| {
+                binding.validate()?;
+                Ok((
+                    n2r_win32::layout::guid_bytes(&binding.identity.disk_guid)?,
+                    n2r_win32::layout::guid_bytes(&binding.volume_guid)?,
+                ))
+            })
+            .collect::<Result<_>>()?;
+        ensure!(
+            supplied.len() == self.0.excluded.len()
+                && supplied
+                    .iter()
+                    .all(|binding| self.0.excluded.contains(binding)),
+            "external origin exclusions differ from actual arena enrollment"
+        );
+        for (_, excluded_volume) in &self.0.excluded {
+            ensure!(
+                n2r_win32::layout::guid_bytes(volume.trim_start_matches("\\\\?\\Volume"))?
+                    != *excluded_volume,
+                "external readonly origin is on a source/shadow volume"
+            );
+        }
+        let observed = n2r_win32::discovery::discover(
+            &(volume.to_owned() + "\\"),
+            n2r_win32::discovery::Role::Journal {
+                allow_additional_partitions: true,
+            },
+        )?;
+        ensure!(
+            observed.read_only
+                && observed.observed_twice_unchanged
+                && observed.source_write_requests == 0,
+            "external origin storage discovery was incomplete or mutable"
+        );
+        let disk = n2r_win32::layout::guid_bytes(&observed.binding.identity.disk_guid)?;
+        let actual_volume = n2r_win32::layout::guid_bytes(&observed.binding.volume_guid)?;
+        ensure!(
+            self.0
+                .excluded
+                .iter()
+                .all(|(d, v)| *d != disk && *v != actual_volume),
+            "external origin physical storage aliases source/shadow"
+        );
+        let slack = n2r_win32::file_storage::artifact_allocation_slack(held)?;
+        let root_id = n2r_win32::file_storage::file_id_info(held)?;
+        let registry = add(
+            8192,
+            (canonical.as_os_str().as_encoded_bytes().len() as u64)
+                .checked_mul(8)
+                .and_then(|n| n.checked_add((handles.len() as u64).checked_mul(1024)?))
+                .context("external root registry RAM overflow")?,
+        )?;
+        let origin = Arc::new(ExternalOriginRoot {
+            root: canonical.clone(),
+            root_guid: guid,
+            root_id,
+            allocation_slack: slack,
+            registry_bytes: registry,
+            parents: handles,
+        });
+        origin.revalidate()?;
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
+        ensure!(
+            !state.prepared_closed && !state.ram_poisoned && !state.allocation_poisoned,
+            "closed or poisoned arena cannot enroll readonly origins"
+        );
+        if let Some(old) = state.external_roots.get(&canonical) {
+            old.revalidate()?;
+            ensure!(
+                old.root_id == origin.root_id
+                    && old.root_guid.eq_ignore_ascii_case(&origin.root_guid),
+                "external origin root identity changed"
+            );
+            return Ok(());
+        }
+        ensure!(
+            state
+                .external_roots
+                .values()
+                .all(|old| !canonical.starts_with(&old.root)
+                    && !old.root.starts_with(&canonical)
+                    && old.root_id != origin.root_id),
+            "external readonly roots overlap or alias"
+        );
+        let index = add(state.index_bytes, registry)?;
+        ensure!(
+            index <= self.0.budget.retained_index_bytes
+                && add(index, state.leased_ram_bytes)? <= self.0.budget.ram_bytes,
+            "external root registry exceeds actual shared RAM"
+        );
+        state.index_bytes = index;
+        state.external_roots.insert(canonical, origin);
+        Ok(())
+    }
+    fn existing_parent_origin(
+        &self,
+        canonical: &Path,
+        handles: &[File],
+    ) -> Result<Option<Arc<ExternalOriginRoot>>> {
+        let parent = handles.first().context("existing artifact parent absent")?;
+        let route = n2r_win32::file_storage::final_path_guid(parent)?;
+        if canonical == self.0.root || canonical.starts_with(&self.0.root) {
+            self.require_directory_ancestry(handles)?;
+            return Ok(None);
+        }
+        let origins: Vec<_> = {
+            let state = self
+                .0
+                .state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
+            state.external_roots.values().cloned().collect()
+        };
+        for origin in origins {
+            if canonical == origin.root || canonical.starts_with(&origin.root) {
+                origin.revalidate()?;
+                ensure!(
+                    route.eq_ignore_ascii_case(&origin.root_guid)
+                        || route.to_ascii_lowercase().starts_with(
+                            &(origin.root_guid.trim_end_matches('\\').to_ascii_lowercase() + "\\")
+                        ),
+                    "existing artifact escaped held external root route"
+                );
+                let mut found = false;
+                for handle in handles {
+                    if n2r_win32::file_storage::file_id_info(handle)? == origin.root_id
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+                ensure!(
+                    found,
+                    "existing artifact ancestry lacks the enrolled root FileObject identity"
+                );
+                return Ok(Some(origin));
+            }
+        }
+        anyhow::bail!("existing artifact escapes active/enrolled readonly roots")
+    }
+    /// Existing read-only origin routing only. No creation, growth, retirement,
+    /// source write or free-space credit can be issued through this check.
+    pub(crate) fn require_readonly_origin_path(&self, path: &Path) -> Result<()> {
+        ensure!(
+            path.is_absolute()
+                && !path
+                    .components()
+                    .any(|c| matches!(c, Component::ParentDir | Component::CurDir)),
+            "ordinary absolute readonly origin path required"
+        );
+        let _working = self.reserve_ram(256 * 1024)?;
+        let metadata = fs::symlink_metadata(path)?;
+        ensure!(
+            (metadata.is_file() || metadata.is_dir()) && metadata.file_attributes() & 0x400 == 0,
+            "readonly origin is not an existing ordinary file/directory"
+        );
+        let parent = if metadata.is_dir() {
+            path
+        } else {
+            path.parent().context("readonly origin parent absent")?
+        };
+        let handles = parents(parent)?;
+        let canonical = fs::canonicalize(parent)?;
+        let _origin = self.existing_parent_origin(&canonical, &handles)?;
+        Ok(())
     }
     /// Reassign only the unused legacy-expectation sixteenth to the Windows
     /// native report. Select this before any group reservation; the five
     /// primary shares plus recovery still fit the same total scratch budget.
     pub(crate) fn use_windows_native_allocation(&self, source: &GeneralDiskBinding) -> Result<()> {
         source.validate()?;
-        ensure!(source.layout_profile == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows,
-            "Windows native allocation requires the actual offline Windows source");
-        let mut state = self.0.state.lock().map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
-        ensure!(!state.windows_native_allocation && !state.prepared_closed
-            && state.groups.is_empty() && state.entries.is_empty() && state.overhead == 0,
-            "Windows native allocation must precede every arena reservation");
+        ensure!(
+            source.layout_profile
+                == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows,
+            "Windows native allocation requires the actual offline Windows source"
+        );
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
+        ensure!(
+            !state.windows_native_allocation
+                && !state.prepared_closed
+                && state.groups.is_empty()
+                && state.entries.is_empty()
+                && state.overhead == 0,
+            "Windows native allocation must precede every arena reservation"
+        );
         let budget = self.0.budget;
-        let primary = (budget.scratch_bytes / 8).checked_mul(4).context("arena primary shares overflow")?;
+        let primary = (budget.scratch_bytes / 8)
+            .checked_mul(4)
+            .context("arena primary shares overflow")?;
         let native = budget.windows_native_page_budget()?.max_file_bytes;
         let recovery = budget.scratch_bytes / 16 * 5;
-        ensure!(add(add(primary, native)?, recovery)? <= budget.scratch_bytes,
-            "Windows native allocation exceeds the unchanged total scratch budget");
+        ensure!(
+            add(add(primary, native)?, recovery)? <= budget.scratch_bytes,
+            "Windows native allocation exceeds the unchanged total scratch budget"
+        );
         state.windows_native_allocation = true;
         Ok(())
     }
-    pub(crate) fn native_page_budget(&self) -> Result<n2r_win32::tree_resources::MetadataPageBudget> {
-        let state = self.0.state.lock().map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
-        Ok(if state.windows_native_allocation { self.0.budget.windows_native_page_budget()? }
-            else { self.0.budget.page_budget()? })
+    pub(crate) fn native_page_budget(
+        &self,
+    ) -> Result<n2r_win32::tree_resources::MetadataPageBudget> {
+        let state = self
+            .0
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
+        Ok(if state.windows_native_allocation {
+            self.0.budget.windows_native_page_budget()?
+        } else {
+            self.0.budget.page_budget()?
+        })
     }
-    pub(crate) fn require_native_allocation(&self, admission: n2r_win32::tree_resources::SourceResourceAdmission) -> Result<()> {
+    pub(crate) fn require_native_allocation(
+        &self,
+        admission: n2r_win32::tree_resources::SourceResourceAdmission,
+    ) -> Result<()> {
         admission.validate()?;
-        let state = self.0.state.lock().map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
-        let expected = if state.windows_native_allocation { self.0.budget.windows_native_page_budget()? }
-            else { self.0.budget.page_budget()? };
-        ensure!(admission.budget == self.0.budget && admission.native_pages == expected
-            && admission.schema_version == (if state.windows_native_allocation { 2 } else { 1 })
-            && (!state.windows_native_allocation || !state.groups.contains_key(&ArtifactGroup::LegacyExpectation)),
-            "native observation admission differs from its actual arena allocation");
+        let state = self
+            .0
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
+        let expected = if state.windows_native_allocation {
+            self.0.budget.windows_native_page_budget()?
+        } else {
+            self.0.budget.page_budget()?
+        };
+        ensure!(
+            admission.budget == self.0.budget
+                && admission.native_pages == expected
+                && admission.schema_version
+                    == (if state.windows_native_allocation {
+                        2
+                    } else {
+                        1
+                    })
+                && (!state.windows_native_allocation
+                    || !state.groups.contains_key(&ArtifactGroup::LegacyExpectation)),
+            "native observation admission differs from its actual arena allocation"
+        );
         Ok(())
     }
     pub fn allocation_slack_bytes(&self) -> u64 {
@@ -912,13 +1238,19 @@ impl ArtifactArena {
     /// held ancestors and bind the immediate parent to that same GUID route.
     pub(crate) fn require_directory_ancestry(&self, parents: &[File]) -> Result<()> {
         let first = parents.first().context("arena output ancestry is empty")?;
-        let root = self.0._parents.first().context("held arena root is absent")?;
+        let root = self
+            .0
+            ._parents
+            .first()
+            .context("held arena root is absent")?;
         let root_id = n2r_win32::file_storage::file_id_info(root)?;
         let mut matched = false;
         for file in parents {
             let metadata = file.metadata()?;
-            ensure!(metadata.is_dir() && metadata.file_attributes() & 0x400 == 0,
-                "held arena output ancestor is not an ordinary directory");
+            ensure!(
+                metadata.is_dir() && metadata.file_attributes() & 0x400 == 0,
+                "held arena output ancestor is not an ordinary directory"
+            );
             if n2r_win32::file_storage::file_id_info(file)? == root_id {
                 self.require_root_directory(file)?;
                 matched = true;
@@ -926,26 +1258,51 @@ impl ArtifactArena {
         }
         let parent = n2r_win32::file_storage::final_path_guid(first)?;
         let root_path = self.0.root_guid.trim_end_matches('\\');
-        ensure!(matched && (parent.eq_ignore_ascii_case(root_path)
-            || parent.to_ascii_lowercase().starts_with(&(root_path.to_ascii_lowercase()+"\\"))),
-            "output ancestry does not descend from the actual held arena root");
+        ensure!(
+            matched
+                && (parent.eq_ignore_ascii_case(root_path)
+                    || parent
+                        .to_ascii_lowercase()
+                        .starts_with(&(root_path.to_ascii_lowercase() + "\\"))),
+            "output ancestry does not descend from the actual held arena root"
+        );
         Ok(())
     }
     /// Borrow the actual still-live owner of an already charged immutable
     /// artifact. This does not adopt a pathname or repeat its byte hash.
     pub(crate) fn retained_artifact(&self, path: &Path) -> Result<ArtifactLease> {
-        let state = self.0.state.lock()
+        let state = self
+            .0
+            .state
+            .lock()
             .map_err(|_| anyhow::anyhow!("artifact arena lock poisoned"))?;
-        ensure!(!state.allocation_poisoned && !state.ram_poisoned,
-            "retained artifact arena is poisoned");
-        let entry = state.entries.get(path).context("artifact is not accounted in this arena")?;
-        let verified = entry.verified.as_ref().context("artifact is not closed and verified")?;
-        let pin = entry.lease.upgrade().context("artifact has no surviving immutable owner")?;
-        ensure!(pin.snapshot == verified.snapshot && pin.sha256 == verified.sha256,
-            "retained artifact owner differs from accounting");
+        ensure!(
+            !state.allocation_poisoned && !state.ram_poisoned,
+            "retained artifact arena is poisoned"
+        );
+        let entry = state
+            .entries
+            .get(path)
+            .context("artifact is not accounted in this arena")?;
+        let verified = entry
+            .verified
+            .as_ref()
+            .context("artifact is not closed and verified")?;
+        let pin = entry
+            .lease
+            .upgrade()
+            .context("artifact has no surviving immutable owner")?;
+        ensure!(
+            pin.snapshot == verified.snapshot && pin.sha256 == verified.sha256,
+            "retained artifact owner differs from accounting"
+        );
         let artifact = ArtifactLease {
-            group: ArtifactGroupPermit { arena: self.clone(), group: entry.group },
-            path: path.to_path_buf(), pin,
+            group: ArtifactGroupPermit {
+                arena: self.clone(),
+                group: entry.group,
+            },
+            path: path.to_path_buf(),
+            pin,
         };
         drop(state);
         artifact.pin.revalidate_identity()?;
@@ -979,10 +1336,14 @@ impl ArtifactArena {
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("artifact arena lock poisoned"))?;
-        ensure!(!(state.windows_native_allocation && group == ArtifactGroup::LegacyExpectation),
-            "Windows native report allocation consumes the legacy expectation slot");
-        ensure!(maximum <= group.limit(self.0.budget, state.windows_native_allocation),
-            "artifact group exceeds its resource share");
+        ensure!(
+            !(state.windows_native_allocation && group == ArtifactGroup::LegacyExpectation),
+            "Windows native report allocation consumes the legacy expectation slot"
+        );
+        ensure!(
+            maximum <= group.limit(self.0.budget, state.windows_native_allocation),
+            "artifact group exceeds its resource share"
+        );
         ensure!(
             !state.prepared_closed && !state.groups.contains_key(&group),
             "artifact group already reserved; clone its real permit"
@@ -1015,13 +1376,33 @@ impl ArtifactArena {
 
     /// Borrow an already reserved current-epoch quota. This cannot create a
     /// reservation or recover an old epoch's permit from serialized counters.
-    pub(crate) fn retained_group(&self, group: ArtifactGroup, maximum: u64) -> Result<ArtifactGroupPermit> {
-        let state=self.0.state.lock().map_err(|_|anyhow::anyhow!("arena lock poisoned"))?;
-        let actual=state.groups.get(&group).context("actual group is not reserved")?;
-        ensure!(!state.prepared_closed&&!state.allocation_poisoned&&!state.ram_poisoned
-            &&!actual.poisoned&&!actual.sealed&&actual.maximum==maximum,
-            "actual retained group is closed, poisoned or has a different quota");
-        Ok(ArtifactGroupPermit{arena:self.clone(),group})
+    pub(crate) fn retained_group(
+        &self,
+        group: ArtifactGroup,
+        maximum: u64,
+    ) -> Result<ArtifactGroupPermit> {
+        let state = self
+            .0
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
+        let actual = state
+            .groups
+            .get(&group)
+            .context("actual group is not reserved")?;
+        ensure!(
+            !state.prepared_closed
+                && !state.allocation_poisoned
+                && !state.ram_poisoned
+                && !actual.poisoned
+                && !actual.sealed
+                && actual.maximum == maximum,
+            "actual retained group is closed, poisoned or has a different quota"
+        );
+        Ok(ArtifactGroupPermit {
+            arena: self.clone(),
+            group,
+        })
     }
 
     /// Attach an actual fixed-EOF native journal file owner to its already
@@ -1098,7 +1479,7 @@ impl ArtifactArena {
             .groups
             .values()
             .try_fold(state.overhead, |n, g| add(n, g.maximum))?;
-        let actual_files = state.verified_allocated_bytes;
+        let actual_files = state.verified_local_allocated_bytes;
         // The retained native witness only queries its own readonly file
         // metadata. It acquires neither a journal lock nor this arena lock,
         // so querying it while State is held cannot invert lock ordering.
@@ -1148,14 +1529,30 @@ impl ArtifactArena {
             files: add(state.entries.len() as u64, native_files)?,
             leased_ram_bytes: state.leased_ram_bytes,
             registry_ram_bytes: state.index_bytes,
+            local_allocation_credit_bytes: add(
+                state.verified_local_allocated_bytes,
+                state
+                    .groups
+                    .values()
+                    .filter_map(|g| g.native_journal.as_ref())
+                    .try_fold(0u64, |n, owner| add(n, owner.observe()?.1))?,
+            )?,
         })
     }
     /// Telemetry only, querying the existing retained readonly native J owner.
     /// Returns (current allocation,current EOF), never a reservation or peak.
-    pub(crate) fn observe_native_journal_metadata(&self)->Result<Option<(u64,u64)>>{
-        let state=self.0.state.lock().map_err(|_|anyhow::anyhow!("artifact arena lock poisoned"))?;
-        state.groups.get(&ArtifactGroup::NativeJournal).and_then(|group|group.native_journal.as_ref())
-            .map(|owner|owner.observe()).transpose()
+    pub(crate) fn observe_native_journal_metadata(&self) -> Result<Option<(u64, u64)>> {
+        let state = self
+            .0
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("artifact arena lock poisoned"))?;
+        state
+            .groups
+            .get(&ArtifactGroup::NativeJournal)
+            .and_then(|group| group.native_journal.as_ref())
+            .map(|owner| owner.observe())
+            .transpose()
     }
 }
 impl ArtifactGroupPermit {
@@ -1180,24 +1577,55 @@ impl ArtifactGroupPermit {
     /// Change a live phase promise without discarding any actual file owner.
     /// Growth still pays the same aggregate and current physical-space gates.
     pub(crate) fn resize_reservation(&self, maximum: u64) -> Result<()> {
-        let mut state=self.arena.0.state.lock()
-            .map_err(|_|anyhow::anyhow!("arena lock poisoned"))?;
-        let group=state.groups.get(&self.group).context("group missing")?;
-        ensure!(!state.prepared_closed&&!state.allocation_poisoned&&!state.ram_poisoned
-            &&!group.sealed&&!group.poisoned&&group.native_journal.is_none()
-            &&self.group==ArtifactGroup::RecoveryCopy&&maximum>=group.held
-            &&maximum<=self.group.limit(self.arena.0.budget,state.windows_native_allocation),
-            "phase reservation cannot resize below held files or outside its share");
-        let prior=group.maximum;
-        let promised=state.groups.values().try_fold(state.overhead,|n,g|add(n,g.maximum))?;
-        ensure!(add(promised.checked_sub(prior).context("phase promise underflow")?,maximum)?
-            <=self.arena.0.budget.scratch_bytes,"resized phase exceeds aggregate budget");
-        if maximum>prior {self.arena.check_free(&state,maximum-prior)?;}
-        state.groups.get_mut(&self.group).unwrap().maximum=maximum;
+        let mut state = self
+            .arena
+            .0
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
+        let group = state.groups.get(&self.group).context("group missing")?;
+        ensure!(
+            !state.prepared_closed
+                && !state.allocation_poisoned
+                && !state.ram_poisoned
+                && !group.sealed
+                && !group.poisoned
+                && group.native_journal.is_none()
+                && self.group == ArtifactGroup::RecoveryCopy
+                && maximum >= group.held
+                && maximum
+                    <= self
+                        .group
+                        .limit(self.arena.0.budget, state.windows_native_allocation),
+            "phase reservation cannot resize below held files or outside its share"
+        );
+        let prior = group.maximum;
+        let promised = state
+            .groups
+            .values()
+            .try_fold(state.overhead, |n, g| add(n, g.maximum))?;
+        ensure!(
+            add(
+                promised
+                    .checked_sub(prior)
+                    .context("phase promise underflow")?,
+                maximum
+            )? <= self.arena.0.budget.scratch_bytes,
+            "resized phase exceeds aggregate budget"
+        );
+        if maximum > prior {
+            self.arena.check_free(&state, maximum - prior)?;
+        }
+        state.groups.get_mut(&self.group).unwrap().maximum = maximum;
         Ok(())
     }
-    pub(crate) fn held_bytes(&self)->Result<u64> {
-        let state=self.arena.0.state.lock().map_err(|_|anyhow::anyhow!("arena lock poisoned"))?;
+    pub(crate) fn held_bytes(&self) -> Result<u64> {
+        let state = self
+            .arena
+            .0
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
         Ok(state.groups.get(&self.group).context("group missing")?.held)
     }
     pub fn reserve_file(&self, path: &Path, maximum: u64) -> Result<ArtifactPathPermit> {
@@ -1237,16 +1665,26 @@ impl ArtifactGroupPermit {
         let parent = path.parent().context("artifact parent absent")?;
         let handles = parents(parent)?;
         let canonical_parent = fs::canonicalize(parent)?;
-        ensure!(
-            canonical_parent == self.arena.0.root
-                || canonical_parent.starts_with(&self.arena.0.root),
-            "artifact path escapes arena"
-        );
+        let external_origin = if existing {
+            self.arena
+                .existing_parent_origin(&canonical_parent, &handles)?
+        } else {
+            ensure!(
+                canonical_parent == self.arena.0.root
+                    || canonical_parent.starts_with(&self.arena.0.root),
+                "new artifact path escapes writable arena root"
+            );
+            None
+        };
+        let allocation_slack = external_origin
+            .as_ref()
+            .map_or(self.arena.0.allocation_slack, |root| root.allocation_slack);
         let guid = n2r_win32::file_storage::final_path_guid(
             handles.first().context("artifact parent handle absent")?,
         )?;
         ensure!(
-            guid.eq_ignore_ascii_case(&self.arena.0.root_guid)
+            external_origin.is_some()
+                || guid.eq_ignore_ascii_case(&self.arena.0.root_guid)
                 || guid.to_ascii_lowercase().starts_with(
                     &(self
                         .arena
@@ -1317,7 +1755,7 @@ impl ArtifactGroupPermit {
             .values()
             .try_fold(state.overhead, |n, g| add(n, g.maximum))?;
         ensure!(
-            add(all, self.arena.0.allocation_slack)? <= self.arena.0.budget.scratch_bytes,
+            add(all, allocation_slack)? <= self.arena.0.budget.scratch_bytes,
             "artifact allocation slack exceeds aggregate budget"
         );
         ensure!(
@@ -1330,10 +1768,9 @@ impl ArtifactGroupPermit {
         // Adoption allocates no disk bytes. Its actual allocation is credited
         // only after verify_file has hashed and pinned this exact file object.
         if !existing {
-            self.arena
-                .check_free(&state, self.arena.0.allocation_slack)?;
+            self.arena.check_free(&state, allocation_slack)?;
         }
-        state.overhead = add(state.overhead, self.arena.0.allocation_slack)?;
+        state.overhead = add(state.overhead, allocation_slack)?;
         state.index_bytes = add(state.index_bytes, memory)?;
         let group = state.groups.get_mut(&self.group).unwrap();
         group.held = add(group.held, maximum)?;
@@ -1346,6 +1783,8 @@ impl ArtifactGroupPermit {
                 registry_bytes: memory,
                 verified: None,
                 lease: Weak::new(),
+                external_readonly: external_origin.is_some(),
+                allocation_slack,
             },
         );
         Ok(ArtifactPathPermit {
@@ -1353,6 +1792,8 @@ impl ArtifactGroupPermit {
             path,
             _parents: handles,
             complete: false,
+            external_origin,
+            allocation_slack,
         })
     }
     pub fn seal(&self) -> Result<ArtifactGroupSeal> {
@@ -1505,6 +1946,10 @@ impl ArtifactPathPermit {
         self.verify_closed(&hash)
     }
     pub fn extend(&mut self, bytes: u64) -> Result<()> {
+        ensure!(
+            self.external_origin.is_none(),
+            "external readonly artifacts cannot extend or become output"
+        );
         let mut state = self
             .group
             .arena
@@ -1591,16 +2036,13 @@ impl ArtifactPathPermit {
         );
         ensure!(
             verified.snapshot.allocation_bytes
-                <= add(
-                    verified.snapshot.file_bytes,
-                    self.group.arena.0.allocation_slack
-                )?,
+                <= add(verified.snapshot.file_bytes, self.allocation_slack)?,
             "artifact physical allocation exceeds reserved slack: path={:?}, EOF={}, allocation={}, grant_max_EOF={}, reserved_slack={}",
             verified.snapshot.final_path,
             verified.snapshot.file_bytes,
             verified.snapshot.allocation_bytes,
             maximum,
-            self.group.arena.0.allocation_slack
+            self.allocation_slack
         );
         let pin = Arc::new(FilePin {
             arena: self.group.arena.clone(),
@@ -1609,6 +2051,7 @@ impl ArtifactPathPermit {
             modified: verified.modified,
             sha256: verified.sha256.clone(),
             _parents: std::mem::take(&mut self._parents),
+            external_origin: self.external_origin.clone(),
         });
         let mut state = self
             .group
@@ -1626,12 +2069,23 @@ impl ArtifactPathPermit {
             .get(&self.path)
             .context("artifact entry absent")?;
         ensure!(
-            entry.group == self.group.group && entry.verified.is_none(),
+            entry.group == self.group.group
+                && entry.verified.is_none()
+                && entry.external_readonly == self.external_origin.is_some()
+                && entry.allocation_slack == self.allocation_slack,
             "artifact entry is already verified or belongs to another group"
         );
         let old = entry.reserved;
         let next_allocated =
             state.next_verified_allocation(0, verified.snapshot.allocation_bytes)?;
+        let next_local_allocated = if self.external_origin.is_none() {
+            add(
+                state.verified_local_allocated_bytes,
+                verified.snapshot.allocation_bytes,
+            )?
+        } else {
+            state.verified_local_allocated_bytes
+        };
         let extra = verified
             .snapshot
             .allocation_bytes
@@ -1639,10 +2093,7 @@ impl ArtifactPathPermit {
         let next_overhead = state
             .overhead
             .checked_sub(
-                self.group
-                    .arena
-                    .0
-                    .allocation_slack
+                self.allocation_slack
                     .checked_sub(extra)
                     .context("artifact allocation slack exceeded")?,
             )
@@ -1679,6 +2130,7 @@ impl ArtifactPathPermit {
         entry.verified = Some(verified);
         entry.lease = Arc::downgrade(&pin);
         state.verified_allocated_bytes = next_allocated;
+        state.verified_local_allocated_bytes = next_local_allocated;
         state.verified_identities.insert(identity);
         self.complete = true;
         Ok(ArtifactLease {
@@ -1701,6 +2153,9 @@ impl Drop for ArtifactPathPermit {
 }
 impl FilePin {
     fn revalidate_identity(&self) -> Result<()> {
+        if let Some(root) = &self.external_origin {
+            root.revalidate()?;
+        }
         // Native GUID-path observation can grow its UTF-16 and UTF-8 buffers
         // to the Windows path bound. Prepay that transient identity workspace.
         let _ram = self.arena.reserve_ram(256 * 1024)?;
@@ -1726,6 +2181,9 @@ impl FilePin {
         self.revalidate_prepaid()
     }
     fn revalidate_prepaid(&self) -> Result<()> {
+        if let Some(root) = &self.external_origin {
+            root.revalidate()?;
+        }
         let mut file = self
             .file
             .lock()
@@ -1777,6 +2235,10 @@ impl ArtifactLease {
         witness.require_artifact(self)
     }
     pub fn retire(self) -> Result<()> {
+        ensure!(
+            self.pin.external_origin.is_none(),
+            "external readonly origin artifacts cannot be retired/deleted"
+        );
         {
             let state = self
                 .group
@@ -1856,14 +2318,13 @@ impl ArtifactLease {
                 .context("retired artifact unverified")?
                 .snapshot;
             ensure!(
-                entry.group == group.group && *snapshot == pin.snapshot,
+                entry.group == group.group && *snapshot == pin.snapshot && !entry.external_readonly,
                 "retired artifact differs from its credited snapshot"
             );
             ensure!(
-                state.verified_identities.contains(&(
-                    snapshot.volume_serial_number,
-                    snapshot.file_id_128,
-                )),
+                state
+                    .verified_identities
+                    .contains(&(snapshot.volume_serial_number, snapshot.file_id_128,)),
                 "retired artifact identity was absent from accounting"
             );
             let index = state
@@ -1892,9 +2353,13 @@ impl ArtifactLease {
                 .context("artifact file count underflow")?;
             let remove = snapshot.allocation_bytes;
             let allocated = state.next_verified_allocation(remove, 0)?;
-            Ok((index, overhead, held, files, allocated))
+            let local_allocated = state
+                .verified_local_allocated_bytes
+                .checked_sub(remove)
+                .context("local artifact allocation credit underflow")?;
+            Ok((index, overhead, held, files, allocated, local_allocated))
         })();
-        let (index, overhead, held, files, allocated) = match transition {
+        let (index, overhead, held, files, allocated, local_allocated) = match transition {
             Ok(values) => values,
             Err(error) => {
                 state.allocation_poisoned = true;
@@ -1920,10 +2385,10 @@ impl ArtifactLease {
         state.index_bytes = index;
         state.overhead = overhead;
         state.verified_allocated_bytes = allocated;
-        state.verified_identities.remove(&(
-            pin.snapshot.volume_serial_number,
-            pin.snapshot.file_id_128,
-        ));
+        state.verified_local_allocated_bytes = local_allocated;
+        state
+            .verified_identities
+            .remove(&(pin.snapshot.volume_serial_number, pin.snapshot.file_id_128));
         let current_group = state.groups.get_mut(&group.group).unwrap();
         current_group.held = held;
         if current_group.sealed {

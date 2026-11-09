@@ -268,6 +268,12 @@ pub(crate) enum Origin {
         intent: ArtifactPin,
         source_cache_manifest: ArtifactPin,
     },
+    WorkspaceMigration {
+        intent: ArtifactPin,
+        source_cache_manifest: ArtifactPin,
+        prior_arena_root: PathBuf,
+        prior_working: n2r_win32::journal_file::GeneralJournalStorageBinding,
+    },
 }
 impl Origin {
     fn pins(&self) -> Vec<&ArtifactPin> {
@@ -281,6 +287,7 @@ impl Origin {
                 intent,
                 source_cache_manifest,
             } => vec![intent, source_cache_manifest],
+            Self::WorkspaceMigration{intent,source_cache_manifest,..}=>vec![intent,source_cache_manifest],
         }
     }
 }
@@ -304,6 +311,9 @@ impl ResumeIntent {
         INTENT_KIND
     }
     fn validate(&self, arena: &ArtifactArena, limits: Limits) -> Result<()> {
+        self.validate_with_working(arena,limits,volume(arena.volume_guid_path()?)?)
+    }
+    fn validate_with_working(&self,arena:&ArtifactArena,limits:Limits,actual_working:[u8;16])->Result<()> {
         ensure!(
             self.schema_version == 1
                 && self.kind == INTENT_KIND
@@ -319,9 +329,18 @@ impl ResumeIntent {
         );
         self.pair.validate()?;
         self.working.validate()?;
+        if let Origin::WorkspaceMigration{prior_arena_root,prior_working,..}=&self.origin {
+            prior_working.validate()?;ordinary_path(prior_arena_root)?;
+            for data in [&self.pair.source,&self.pair.shadow] {
+                ensure!(prior_working.disk.disk_number!=data.disk_number
+                    &&n2r_win32::layout::guid_bytes(&prior_working.disk.identity.disk_guid)?
+                        !=n2r_win32::layout::guid_bytes(&data.identity.disk_guid)?,
+                    "historical workspace aliases source or shadow storage");
+            }
+        }
         let working = n2r_win32::layout::guid_bytes(&self.working.disk.volume_guid)?;
         ensure!(
-            working == volume(arena.volume_guid_path()?)?,
+            working == actual_working,
             "resume arena differs from working filesystem"
         );
         for data in [&self.pair.source, &self.pair.shadow] {
@@ -474,6 +493,7 @@ struct Envelope {
 pub(crate) struct BudgetDelta {
     pub existing_wire_bytes: u64,
     pub existing_allocated_bytes: u64,
+    pub local_allocation_credit_bytes: u64,
     pub incremental_reserved_bytes: u64,
     pub total_metadata_allocation_and_increment: u64,
     pub logical_metadata_ceiling: u64,
@@ -492,6 +512,7 @@ impl BudgetDelta {
         Ok(Self {
             existing_wire_bytes: usage.actual_wire_bytes,
             existing_allocated_bytes: usage.actual_allocated_bytes,
+            local_allocation_credit_bytes: usage.local_allocation_credit_bytes,
             incremental_reserved_bytes: incremental,
             total_metadata_allocation_and_increment: total,
             logical_metadata_ceiling: arena.budget().scratch_bytes,
@@ -530,6 +551,7 @@ pub(crate) struct DurableResume {
     uncertain: Vec<UncertainCheckpoint>,
     records: Vec<RecordOwners>,
     poisoned: bool,
+    read_only_origin: bool,
     _memory: ArenaRamLease,
 }
 impl DurableResume {
@@ -571,6 +593,7 @@ impl DurableResume {
             uncertain: Vec::new(),
             records: Vec::new(),
             poisoned: false,
+            read_only_origin: false,
             _memory: memory,
         })
     }
@@ -593,7 +616,9 @@ impl DurableResume {
                 && intent_file.pin.path == directory.join("resume-intent.json"),
             "intent pin/arena/path differs"
         );
-        hold_directory(directory, group.arena())?;
+        let origin_directory=hold_readonly_directory(directory,group.arena())?;
+        let origin_volume=volume(&n2r_win32::file_storage::final_path_guid(&origin_directory)?)?;
+        let read_only_origin=origin_volume!=volume(group.arena().volume_guid_path()?)?;
         let memory = group.arena().reserve_ram(
             intent_file
                 .pin
@@ -603,7 +628,7 @@ impl DurableResume {
                 .context("intent RAM overflow")?,
         )?;
         let intent: ResumeIntent = intent_file.decode(limits.max_intent_bytes)?;
-        intent.validate(group.arena(), limits)?;
+        intent.validate_with_working(group.arena(), limits,origin_volume)?;
         ensure!(
             checkpoint_files.len() as u64
                 <= limits
@@ -659,6 +684,7 @@ impl DurableResume {
             uncertain: Vec::new(),
             records: Vec::new(),
             poisoned: false,
+            read_only_origin,
             _memory: memory,
         };
         let mut replica_uncertain = Vec::new();
@@ -814,6 +840,7 @@ impl DurableResume {
         )
     }
     fn ready(&self) -> Result<()> {
+        ensure!(!self.read_only_origin,"historical external checkpoint owner is read-only");
         ensure!(
             !self.poisoned && self.publication.is_none() && self.uncertain.is_empty(),
             "incomplete copies need native reconciliation, or already published"
@@ -1049,6 +1076,13 @@ fn hold_directory(p: &Path, a: &ArtifactArena) -> Result<File> {
         "resume directory escaped ordinary working volume"
     );
     Ok(f)
+}
+fn hold_readonly_directory(p:&Path,a:&ArtifactArena)->Result<File> {
+    a.require_readonly_origin_path(p)?;
+    let file=OpenOptions::new().access_mode(0x80).share_mode(1).custom_flags(0x02200000).open(p)?;
+    ensure!(file.metadata()?.is_dir()&&file.metadata()?.file_attributes()&0x400==0,
+        "historical resume directory is not ordinary");
+    Ok(file)
 }
 fn validate_pins(pins: &[ArtifactPin], maximum: usize) -> Result<()> {
     ensure!(pins.len() <= maximum, "artifact pin bound exceeded");

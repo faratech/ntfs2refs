@@ -560,6 +560,7 @@ pub(crate) struct ResumeSessionInputs {
     pub source_origin_sha256: [u8; 32],
     pub new_preparation_intent: ArtifactPin,
     pub actual_guard_phase: String,
+    pub workspace_origin: Option<(PathBuf,GeneralJournalStorageBinding)>,
     _facts: Vec<HeldArtifact>,
     _metadata_owners: Vec<ArtifactLease>,
     _index_memory: Vec<ArenaRamLease>,
@@ -720,7 +721,22 @@ impl ResumeSessionInputs {
                     "prior epoch link differs"
                 );
             }
+            Origin::WorkspaceMigration{intent,source_cache_manifest,prior_arena_root,prior_working}=>{
+                prior_working.validate()?;ordinary(prior_arena_root,true)?;
+                ensure!(source_cache_manifest==&cache_pin
+                    &&intent.path!=journal.intent_pin().path&&intent.sha256!=journal.intent_pin().sha256,
+                    "migrated workspace origin link differs");
+                let prior=peek_resume_intent(intent.path.parent().context("prior migration intent parent absent")?,
+                    digest(&intent.sha256)?,limits.max_intent_bytes)?;
+                ensure!(prior.pair==journal.intent().pair
+                    &&source.source_manifest.path.starts_with(prior_arena_root),
+                    "migrated origin source/shadow/cache root differs");
+            }
         }
+        let workspace_origin=match &journal.intent().origin {
+            Origin::WorkspaceMigration{prior_arena_root,prior_working,..}=>Some((prior_arena_root.clone(),prior_working.clone())),
+            _=>None,
+        };
         let new_guard = journal.intent().new_preparation_intent.clone();
         Ok(Self {
             journal,
@@ -729,6 +745,7 @@ impl ResumeSessionInputs {
             source_origin_sha256: origin_sha,
             new_preparation_intent: new_guard,
             actual_guard_phase: actual.actual_guard_phase,
+            workspace_origin,
             _facts: vec![request_file, cache_file],
             _metadata_owners: metadata_owners,
             _index_memory: payments,

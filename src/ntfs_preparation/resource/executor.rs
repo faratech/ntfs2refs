@@ -176,7 +176,7 @@ fn submission_capacity(
     let usage = arena.usage()?;
     let pending = usage
         .promised_bytes
-        .checked_sub(usage.actual_allocated_bytes)
+        .checked_sub(usage.local_allocation_credit_bytes)
         .context("NTFS pre-submit physical reservation accounting underflow")?;
     let required = minimum_free_bytes
         .checked_add(pending)

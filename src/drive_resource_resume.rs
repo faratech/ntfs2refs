@@ -32,9 +32,13 @@ fn launch_root(directory: &Path) -> Result<PathBuf> {
 }
 
 pub(super) fn resume_preparation(directory: &Path, old_sha: [u8; 32]) -> Result<u8> {
+    resume_preparation_in_workspace(directory,old_sha,None)
+}
+pub(super) fn resume_preparation_in_workspace(directory:&Path,old_sha:[u8;32],workspace:Option<&Path>)->Result<u8> {
     if directory.join("resume-intent.json").try_exists()? {
-        return resume_session(directory, old_sha);
+        return resume_session(directory, old_sha,workspace);
     }
+    ensure!(workspace.is_none(),"workspace continuation requires a durable preparation checkpoint");
     let routes = crate::resource_preparation::early_guard::inspect_routes(
         &directory.join("preparation-intent.json"),
         old_sha,
@@ -128,6 +132,7 @@ pub(super) fn resume_preparation(directory: &Path, old_sha: [u8; 32]) -> Result<
         expected: origin.expected.clone(),
         legacy_terminal: Some(origin.terminal.clone()),
         prior_resume_intent: None,
+        workspace_origin: None,
         parent_resources: origin.parent_resources.clone(),
         shadow_origin: ExternalOriginPins {
             prior_preparation_sha256: old_sha,
@@ -288,12 +293,13 @@ fn cancel_unpublished_resume(run:&Path,observer:&mut FilePreparationObserver,
 
 /// Restart an epoch from durable checkpoint facts. Every native owner is newly
 /// issued; a saved phase or a JSON request can never recreate a volume lock.
-fn resume_session(directory: &Path, intent_sha: [u8; 32]) -> Result<u8> {
+fn resume_session(directory: &Path, intent_sha: [u8; 32],workspace:Option<&Path>) -> Result<u8> {
     let maximum = recovery_metadata_limit()?.min(8 << 20);
     let probe = probe_resume_session(directory, intent_sha, maximum)?;
     // Publication can have completed before the last preparation checkpoint.
     // Follow the real guard first, even when the saved stage still says Placing.
     if let Some(publication) = &probe.delegated_publication {
+        ensure!(workspace.is_none(),"delegated recovery uses its original working volume");
         ensure!(
             publication
                 .path
@@ -315,16 +321,50 @@ fn resume_session(directory: &Path, intent_sha: [u8; 32]) -> Result<u8> {
         "publication file exists without authenticated delegation; preserve it and recover its independent publication pin"
     );
     let bootstrap = peek_saved_resume_request(directory, intent_sha, maximum)?;
+    ensure!(!(workspace.is_some()&&matches!(probe.intent.origin,crate::preparation_resume::Origin::WorkspaceMigration{..})),
+        "a migrated preparation resumes in its existing workspace; another migration is not yet supported");
     let main = crate::refs_security_integration::TrustRepairAllocation::split(
         bootstrap.parent_resources.resources,
     )?
     .main;
     let pair = bootstrap.request.pair.clone();
+    let migrated_working=workspace.map(|parent|
+        crate::resource_preparation::resume_workspace::discover(parent,&pair)).transpose()?;
+    if let Some(working)=&migrated_working {
+        ensure!(working.disk!=bootstrap.request.journal.disk,
+            "new resume workspace must be on a different working volume");
+        let available=n2r_win32::resource_native::observe_available_resources(workspace.context("new workspace path absent")?)?;
+        let working_reserve=reserve(available.scratch_available_bytes);
+        ensure!(available.scratch_available_bytes.checked_sub(working_reserve)
+            .is_some_and(|n|n>=bootstrap.parent_resources.resources.scratch_bytes),
+            "new workspace cannot cover the entire original envelope plus its current reserve");
+    }
+    let mut hash=Sha256::new();hash.update(intent_sha);hash.update(std::process::id().to_le_bytes());
+    hash.update(SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos().to_le_bytes());
+    let digest:[u8;32]=hash.finalize().into();let mut epoch=[0u8;16];epoch.copy_from_slice(&digest[..16]);
+    let migrated_root=workspace.map(|p|p.join(format!("ntfs2refs-resume-{}",hex::encode(epoch))));
+    let _new_root_owner=if let(Some(root),Some(working))=(&migrated_root,&migrated_working){
+        Some(crate::resource_preparation::create_external_output(root,working)?)
+    }else{None};
+    let active_root=migrated_root.as_deref().unwrap_or(&bootstrap.arena_root);
     let arena = ArtifactArena::new_resuming(
-        &bootstrap.arena_root,
+        active_root,
         main,
         &[pair.source.clone(), pair.shadow.clone()],
     )?;
+    if workspace.is_some(){
+        ensure!(crate::resource_preparation::resume_workspace::discover(&bootstrap.arena_root,&pair)?
+            ==bootstrap.request.journal,"saved workspace native identity differs");
+        arena.enroll_external_readonly_root(&bootstrap.arena_root,
+            &[pair.source.clone(),pair.shadow.clone()])?;
+    }
+    if let crate::preparation_resume::Origin::WorkspaceMigration{prior_arena_root,prior_working,..}=&probe.intent.origin {
+        prior_working.validate()?;
+        ensure!(crate::resource_preparation::resume_workspace::discover(prior_arena_root,&pair)?==*prior_working,
+            "external source-cache workspace native identity differs");
+        arena.enroll_external_readonly_root(prior_arena_root,
+            &[pair.source.clone(),pair.shadow.clone()])?;
+    }
     arena.use_windows_native_allocation(&pair.source)?;
     let locator = arena.reserve_group(
         ArtifactGroup::RecoveryCopy,
@@ -342,6 +382,7 @@ fn resume_session(directory: &Path, intent_sha: [u8; 32]) -> Result<u8> {
         pair.source.disk_number,
         pair.source.identity.partition_number
     );
+    if let Some(root)=&migrated_root {println!("New working directory: {}. Existing evidence remains read-only in {}.",root.display(),bootstrap.arena_root.display());}
     print!("Resume this conversion? [y/N] ");
     io::stdout().flush()?;
     let mut answer = String::new();
@@ -351,24 +392,11 @@ fn resume_session(directory: &Path, intent_sha: [u8; 32]) -> Result<u8> {
         return Ok(0);
     }
     session.revalidate()?;
-    let mut hash = Sha256::new();
-    hash.update(intent_sha);
-    hash.update(std::process::id().to_le_bytes());
-    hash.update(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)?
-            .as_nanos()
-            .to_le_bytes(),
-    );
-    let id: [u8; 32] = hash.finalize().into();
-    let mut epoch = [0u8; 16];
-    epoch.copy_from_slice(&id[..16]);
-    let run = session
-        .saved
-        .arena_root
+    let run = active_root
         .join(format!("resume-{}", hex::encode(epoch)));
+    let working=migrated_working.as_ref().unwrap_or(&session.saved.request.journal);
     let _ancestry =
-        crate::resource_preparation::create_external_output(&run, &session.saved.request.journal)?;
+        crate::resource_preparation::create_external_output(&run, working)?;
     let available = n2r_win32::resource_native::observe_available_resources(&run)?;
     let keep = reserve(available.scratch_available_bytes);
     let log = run.join("native-events.log");
@@ -383,7 +411,7 @@ fn resume_session(directory: &Path, intent_sha: [u8; 32]) -> Result<u8> {
     let mut observer = FilePreparationObserver::create(
         &log,
         &pair,
-        &session.saved.request.journal,
+        working,
         ceiling,
         log_ram,
         keep,
@@ -417,6 +445,7 @@ fn resume_session(directory: &Path, intent_sha: [u8; 32]) -> Result<u8> {
         );
         session.revalidate()?;
         let mut request = session.saved.request.clone().into_actual()?;
+        request.journal=working.clone();
         let mut spend = session.saved.prior_spend.into_actual()?;
         // A crash can leave any submitted move in flight. Charge the complete
         // prior attempt's admitted work rather than inventing zero old spend.
@@ -461,7 +490,7 @@ fn resume_session(directory: &Path, intent_sha: [u8; 32]) -> Result<u8> {
         ensure!(request.capture_arena_bytes>=SourceMetadataBudget::from_resource_budget(main)?.scratch_bytes,
             "checkpoint lacks current capacity for its minimum capture workspace");
         let saved = ResumePreparation {
-            arena_root: session.saved.arena_root.clone(),
+            arena_root: active_root.to_path_buf(),
             arena,
             locator_group: locator,
             source: session.source.clone(),
@@ -469,6 +498,8 @@ fn resume_session(directory: &Path, intent_sha: [u8; 32]) -> Result<u8> {
             expected: session.saved.expected.clone(),
             legacy_terminal: session.saved.legacy_terminal.clone(),
             prior_resume_intent: Some(session.journal.intent_pin().clone()),
+            workspace_origin: if workspace.is_some(){Some((session.saved.arena_root.clone(),
+                session.saved.request.journal.clone()))}else{session.workspace_origin.clone()},
             parent_resources: session.saved.parent_resources.clone(),
             prior_spend: spend,
             placement_limits: limits,

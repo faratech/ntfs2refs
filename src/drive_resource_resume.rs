@@ -459,6 +459,10 @@ fn resume_session(directory: &Path, intent_sha: [u8; 32], workspace: Option<&Pat
         pair.source.disk_number,
         pair.source.identity.partition_number
     );
+    println!("Authenticated completed placement: {}. Recovery will {}.",
+        session.completed_placement.is_some(),
+        if session.completed_placement.is_some() {"revalidate initialized mappings without moves"}
+        else {"adopt unwritten mappings and finish placement"});
     if let Some(root) = &migrated_root {
         println!(
             "New working directory: {}. Existing evidence remains read-only in {}.",

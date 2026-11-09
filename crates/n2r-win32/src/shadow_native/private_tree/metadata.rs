@@ -340,12 +340,16 @@ fn complete_domain_body(
         }
     }
     tree.require_source_excluded()?;
+    let enumeration_payer = if tree.metadata_resource_admission.is_some() {
+        Some(tree.memory.as_ref().ok_or_else(|| invalid("resource metadata enumeration payer absent"))?.payer())
+    } else { None };
     let links = if let Some(admission) = tree.metadata_resource_admission {
         super::super::hard_links::create_owned_resource_domain(
             input,
             &tree.metadata_targets,
             admission.maximum_namespace_names()?,
             &format!("{}\\", tree.pair.shadow.volume_path()?),
+            enumeration_payer.as_deref().ok_or_else(|| invalid("resource hard-link enumeration payer absent"))?,
         )?
     } else {
         super::super::hard_links::create_owned_domain(input, &tree.metadata_targets)?
@@ -371,6 +375,7 @@ fn complete_domain_body(
             tree.metadata_object_limit,
             tree.metadata_resource_admission,
             alias_stage.as_mut(),
+            enumeration_payer.as_deref(),
             same_security,
         )
     } else {
@@ -384,6 +389,7 @@ fn complete_domain_body(
         tree.metadata_object_limit,
         tree.metadata_resource_admission,
         alias_stage.as_mut(),
+        enumeration_payer.as_deref(),
         same_security,
         )
     };

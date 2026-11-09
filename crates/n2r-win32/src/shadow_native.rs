@@ -2102,8 +2102,13 @@ fn open_input(path: &str, item: &Input<'_>, protected: bool) -> io::Result<File>
     Ok(file)
 }
 fn enumerate(file: &File) -> io::Result<Vec<namespace_layout::Entry>> {
+    enumerate_with_resource_budget(file,None)
+}
+fn enumerate_with_resource_budget(file:&File,budget:Option<usize>)->io::Result<Vec<namespace_layout::Entry>> {
     let mut calls = vec![];
-    for i in 0..namespace_layout::MAX_CALLS {
+    let maximum_calls=budget.map_or(namespace_layout::MAX_CALLS,|n|n/std::mem::size_of::<crate::attestation::Query>());
+    let mut charged=0usize;
+    for i in 0..maximum_calls {
         let class = if i == 0 {
             namespace_layout::RESTART
         } else {
@@ -2127,9 +2132,13 @@ fn enumerate(file: &File) -> io::Result<Vec<namespace_layout::Entry>> {
         };
         let terminal = q.native_error.is_some();
         let confirm_empty = i == 0 && q.native_error == Some(namespace_layout::FIRST_EMPTY);
+        charged=charged.checked_add(std::mem::size_of::<crate::attestation::Query>())
+            .and_then(|n|n.checked_add(q.bytes.len())).ok_or_else(||invalid("directory evidence accounting overflow"))?;
+        if budget.is_some_and(|maximum|charged>maximum){return Err(invalid("complete directory evidence exceeds paid workspace"));}
         calls.push(q);
         if terminal && !confirm_empty {
-            return namespace_layout::decode_pass(&calls);
+            return if let Some(bytes)=budget {namespace_layout::decode_pass_with_resource_budget(&calls,bytes)}
+                else{namespace_layout::decode_pass(&calls)};
         }
     }
     Err(invalid("shadow namespace enumeration budget"))

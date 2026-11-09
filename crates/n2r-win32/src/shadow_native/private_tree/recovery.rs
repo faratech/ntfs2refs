@@ -234,10 +234,21 @@ fn exact_children(
     path: &[String],
     namespace: &Namespace,
     hash: &mut Sha256,
+    payer:&dyn report_memory::ReportMemoryAccountant,
 ) -> io::Result<()> {
     let before = info(file, 18, 24)?;
+    let count = namespace.children.get(path).copied().unwrap_or(0);
+    // A complete Windows directory can exceed the historical 4096-entry
+    // fixture limit. Pay for response records, UTF-16 names, parsed entries
+    // and the identity set from the actual expected child count instead.
+    let evidence=count.checked_add(2).and_then(|n|n.checked_mul(4096))
+        .and_then(|n|n.checked_add(namespace_layout::CAPACITY*4))
+        .ok_or_else(||invalid("recovered directory evidence workspace overflow"))?;
+    let _memory=payer.reserve((evidence as u64).checked_mul(2)
+        .ok_or_else(||invalid("recovered directory memory overflow"))?)?;
     let mut seen = BTreeSet::new();
-    for child in enumerate(file)? {
+    for child in enumerate_with_resource_budget(file,Some(evidence))
+        .map_err(|error|io::Error::other(format!("recovered directory {path:?}: {error}")))? {
         if child.name_utf16 == [46] || child.name_utf16 == [46, 46] {
             continue;
         }
@@ -258,7 +269,6 @@ fn exact_children(
             ));
         }
     }
-    let count = namespace.children.get(path).copied().unwrap_or(0);
     if seen.len() != count || info(file, 18, 24)? != before {
         return Err(invalid(
             "recovered complete directory namespace coverage changed",
@@ -659,7 +669,7 @@ pub fn adopt_unwritten_domain(
         let owner = input.object(*index)?;
         let item = owner.input();
         if item.directory {
-            exact_children(file, item.components, &namespace, &mut namespace_hash)?;
+            exact_children(file, item.components, &namespace, &mut namespace_hash,payer.as_ref())?;
         }
     }
     if let Some(d) = &carrier_directory {
@@ -668,6 +678,7 @@ pub fn adopt_unwritten_domain(
             &[d.component.clone()],
             &namespace,
             &mut namespace_hash,
+            payer.as_ref(),
         )?;
     }
     let mut stream_slots = BTreeMap::new();

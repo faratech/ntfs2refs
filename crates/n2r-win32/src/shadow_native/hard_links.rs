@@ -270,18 +270,19 @@ pub(super) fn create_owned_resource_domain(
     handles: &BTreeMap<usize, File>,
     maximum_names: usize,
     root: &str,
+    payer: &dyn report_memory::ReportMemoryAccountant,
 ) -> io::Result<Vec<serde_json::Value>> {
-    create_owned_domain_inner(input, handles, Some((maximum_names, root)))
+    create_owned_domain_inner(input, handles, Some((maximum_names, root, payer)))
 }
 fn create_owned_domain_inner(
     input: &impl InputDomain,
     handles: &BTreeMap<usize, File>,
-    resources: Option<(usize, &str)>,
+    resources: Option<(usize, &str, &dyn report_memory::ReportMemoryAccountant)>,
 ) -> io::Result<Vec<serde_json::Value>> {
     if !input.any(|i| !i.additional_names.is_empty())? {
         return Ok(Vec::new());
     }
-    if let Some((maximum_names, root)) = resources {
+    if let Some((maximum_names, root, _)) = resources {
         validate_resource_domain(
             input,
             maximum_names,
@@ -299,13 +300,24 @@ fn create_owned_domain_inner(
     input.for_each(|index, item| {
         if item.directory
             && directories
-                .insert(item.components.to_vec(), index)
+                .insert(item.components.to_vec(), (index, 0usize))
                 .is_some()
         {
             return Err(invalid("duplicate canonical hard-link parent"));
         }
         Ok(())
     })?;
+    if resources.is_some() {
+        input.for_each(|_, item| {
+            for path in paths(item).filter(|path| !path.is_empty()) {
+                let (_, count) = directories.get_mut(&path[..path.len() - 1])
+                    .ok_or_else(|| invalid("resource hard-link child has no owned parent"))?;
+                *count = count.checked_add(1)
+                    .ok_or_else(|| invalid("resource hard-link child count overflow"))?;
+            }
+            Ok(())
+        })?;
+    }
     let mut created = Vec::new();
     for index in 0..input.len() {
         let owned = input.object(index)?;
@@ -324,7 +336,7 @@ fn create_owned_domain_inner(
         }
         for (number, path) in item.additional_names.iter().enumerate() {
             let parent_path = &path[..path.len() - 1];
-            let parent_index = *directories
+            let &(parent_index, parent_children) = directories
                 .get(parent_path)
                 .ok_or_else(|| invalid("hard-link parent is not a canonical owned directory"))?;
             let parent = handles
@@ -333,8 +345,22 @@ fn create_owned_domain_inner(
             validate_open_type(parent, true)?;
             let parent_id = info(parent, 18, 24)?;
             let name = path.last().ok_or_else(|| invalid("empty hard-link name"))?;
+            // Final canonical/additional-name count bounds the parent at
+            // every intermediate link step. The same real tree payer owns
+            // both complete enumeration passes before either native query.
+            let (enumeration_budget, _enumeration_memory) = if let Some((maximum_names, _, payer)) = resources {
+                if parent_children > maximum_names {
+                    return Err(invalid("resource hard-link parent exceeds admitted namespace"));
+                }
+                let evidence = parent_children.checked_add(2).and_then(|n| n.checked_mul(4096))
+                    .and_then(|n| n.checked_add(namespace_layout::CAPACITY * 4))
+                    .ok_or_else(|| invalid("resource hard-link enumeration overflow"))?;
+                let memory = payer.reserve((evidence as u64).checked_mul(2)
+                    .ok_or_else(|| invalid("resource hard-link enumeration RAM overflow"))?)?;
+                (Some(evidence), Some(memory))
+            } else { (None, None) };
             if parent_id[..8] != identity[..8]
-                || enumerate(parent)?
+                || enumerate_with_resource_budget(parent, enumeration_budget)?
                     .iter()
                     .any(|e| e.name_utf16 == name.encode_utf16().collect::<Vec<_>>())
             {
@@ -351,7 +377,7 @@ fn create_owned_domain_inner(
             {
                 return Err(invalid("hard-link identity or incremented count differs"));
             }
-            let entries: Vec<_> = enumerate(parent)?
+            let entries: Vec<_> = enumerate_with_resource_budget(parent, enumeration_budget)?
                 .into_iter()
                 .filter(|e| e.name_utf16 == name.encode_utf16().collect::<Vec<_>>())
                 .collect();

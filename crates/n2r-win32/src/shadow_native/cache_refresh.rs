@@ -206,7 +206,7 @@ pub(super) fn complete_owned_metadata_scoped_domain(
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
 ) -> io::Result<serde_json::Value> {
     complete_owned_metadata_scoped_windows_aliases_domain(pair,source_before,partition_source,volume,input,handles,
-        maximum_objects,resource_admission,None,same_security)
+        maximum_objects,resource_admission,None,None,same_security)
 }
 
 pub(super) fn complete_owned_metadata_scoped_windows_aliases_domain(
@@ -219,11 +219,12 @@ pub(super) fn complete_owned_metadata_scoped_windows_aliases_domain(
     maximum_objects: usize,
     resource_admission: Option<crate::tree_resources::SourceResourceAdmission>,
     aliases: Option<&mut super::windows_aliases::StagedWindowsAliases>,
+    enumeration_payer: Option<&dyn report_memory::ReportMemoryAccountant>,
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
 ) -> io::Result<serde_json::Value> {
     complete_owned_metadata_scoped_windows_aliases_domain_inner(
         pair, source_before, partition_source, volume, input, handles,
-        maximum_objects, resource_admission, aliases, false, same_security,
+        maximum_objects, resource_admission, aliases, enumeration_payer, false, same_security,
     )
 }
 
@@ -239,6 +240,7 @@ pub(super) fn complete_owned_metadata_scoped_windows_aliases_domain_with_securit
     maximum_objects: usize,
     resource_admission: Option<crate::tree_resources::SourceResourceAdmission>,
     aliases: Option<&mut super::windows_aliases::StagedWindowsAliases>,
+    enumeration_payer: Option<&dyn report_memory::ReportMemoryAccountant>,
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
 ) -> io::Result<serde_json::Value> {
     if pair.source.layout_profile != crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows
@@ -248,7 +250,7 @@ pub(super) fn complete_owned_metadata_scoped_windows_aliases_domain_with_securit
     }
     complete_owned_metadata_scoped_windows_aliases_domain_inner(
         pair, source_before, partition_source, volume, input, handles,
-        maximum_objects, resource_admission, aliases, true, same_security,
+        maximum_objects, resource_admission, aliases, enumeration_payer, true, same_security,
     )
 }
 
@@ -262,10 +264,14 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
     maximum_objects: usize,
     resource_admission: Option<crate::tree_resources::SourceResourceAdmission>,
     mut aliases: Option<&mut super::windows_aliases::StagedWindowsAliases>,
+    enumeration_payer: Option<&dyn report_memory::ReportMemoryAccountant>,
     security_placeholders: bool,
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
 ) -> io::Result<serde_json::Value> {
     let resource_root = format!("{}\\", pair.shadow.volume_path()?);
+    if resource_admission.is_some() != enumeration_payer.is_some() {
+        return Err(invalid("resource metadata enumeration requires its actual constructor payer"));
+    }
     if let Some(admission) = resource_admission {
         input.require_resource_metadata(admission)?;
         super::hard_links::validate_resource_domain(
@@ -414,8 +420,17 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                 continue;
             }
             let handle = &handles[&index];
+            let (enumeration_budget, _enumeration_memory) = if let Some(payer) = enumeration_payer {
+                let count = expected_children.get(directory.components).map_or(0, BTreeSet::len);
+                let evidence = count.checked_add(2).and_then(|n| n.checked_mul(4096))
+                    .and_then(|n| n.checked_add(namespace_layout::CAPACITY * 4))
+                    .ok_or_else(|| invalid("owned resource directory enumeration overflow"))?;
+                let memory = payer.reserve((evidence as u64).checked_mul(2)
+                    .ok_or_else(|| invalid("owned resource directory enumeration RAM overflow"))?)?;
+                (Some(evidence), Some(memory))
+            } else { (None, None) };
             let mut seen = BTreeSet::new();
-            for entry in enumerate(handle)? {
+            for entry in enumerate_with_resource_budget(handle, enumeration_budget)? {
                 if entry.name_utf16 == [46] || entry.name_utf16 == [46, 46] {
                     continue;
                 }

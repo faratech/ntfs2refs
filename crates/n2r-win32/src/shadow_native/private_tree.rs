@@ -14,6 +14,7 @@ mod routed_prefix;
 mod source_backed;
 pub(super) mod source_scope;
 mod supply;
+mod supply_snapshot;
 mod system_payloads;
 pub use enrollment::{
     ConstructionEnrollment, PartitionConstructionEnrollment, enroll,
@@ -25,6 +26,7 @@ pub use source_backed::{
     MountedAllocation, PayloadRoute, SourceBackedRoutes, ValidatedSourceBackedRoutes,
 };
 pub use supply::{StreamSupplySummary, SupplyKind, SupplyPlan, SupplyRange};
+pub use supply_snapshot::NativeReadOnlySupplyStreamSnapshot;
 
 /// Tree-wide FSCTL_MOVE_FILE ceiling shared by deferred allocation, evacuation
 /// and final placement: about two submissions per retained NTFS run for a
@@ -481,6 +483,14 @@ impl PrivateTree {
         length: u64,
     ) -> io::Result<()> {
         self.require_source_excluded()?;
+        let key=self.validate_stream_shape_metadata(index,name,components,length)?;
+        self.files.get(&key).map_or(Ok(()),|file|file.check_placements())
+    }
+    /// Metadata half of the existing stream check. Only the scoped read-only
+    /// snapshot pairs it with its same-FileObject complete-map observation.
+    fn validate_stream_shape_metadata(
+        &self,index:usize,name:&[u16],components:&[String],length:u64,
+    )->io::Result<StreamKey>{
         let key = StreamKey::named(index, name);
         if let Some(target) = self.sparse_targets.get(&key) {
             if target.path != streams::path(&self.pair.shadow.volume_path()?, components, name)?
@@ -492,11 +502,10 @@ impl PrivateTree {
                 if file.logical_length() != target.dense_length {
                     return Err(invalid("sparse carrier length differs"));
                 }
-                file.check_placements()?;
             } else if target.dense_length != 0 {
                 return Err(invalid("sparse carrier missing"));
             }
-            return Ok(());
+            return Ok(key);
         }
         let file = self
             .files
@@ -513,7 +522,16 @@ impl PrivateTree {
         {
             return Err(invalid("private verification stream shape differs"));
         }
-        file.check_placements()
+        Ok(key)
+    }
+
+    /// One immutable native supply observation. The callback cannot mutate
+    /// this tree, and native/file/source closing checks precede its output.
+    pub fn with_readonly_supply_stream_snapshot<T>(
+        &self,index:usize,name:&[u16],components:&[String],logical:u64,maximum_range_bytes:u64,
+        consume:impl FnOnce(&NativeReadOnlySupplyStreamSnapshot<'_>)->io::Result<T>,
+    )->io::Result<T>{
+        supply_snapshot::with_snapshot(self,index,name,components,logical,maximum_range_bytes,consume)
     }
 
     /// Only materialization data is readable from the shadow in a hybrid

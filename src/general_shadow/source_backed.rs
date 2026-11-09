@@ -1089,7 +1089,9 @@ impl<'a> PagedSourceByteAdapter<'a> {
             self.session
                 .as_ref()
                 .context("checked reference session absent")?
-                .require_physical_mapping(offset, physical, length)?;
+                .require_physical_mapping(offset, physical, length).with_context(||format!(
+                    "source reference record={}, sequence={}, stream={:?}, logical_offset={offset}, physical_offset={physical}, length={length}",
+                    identity.record_number,identity.sequence_number,identity.name_utf16))?;
             Ok(())
         })();
         if result.is_err() {

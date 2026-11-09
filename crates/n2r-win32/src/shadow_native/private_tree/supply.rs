@@ -136,6 +136,12 @@ fn visit_data(
     key: &StreamKey,
     mut visit: impl FnMut(SupplyRange) -> io::Result<()>,
 ) -> io::Result<u64> {
+    visit_data_inner(tree,key,true,&mut visit)
+}
+fn visit_data_inner(
+    tree:&PrivateTree,key:&StreamKey,check_mapping:bool,
+    mut visit:impl FnMut(SupplyRange)->io::Result<()>,
+)->io::Result<u64>{
     let Some(file) = tree.files.get(key) else {
         if let Some(target) = tree.sparse_targets.get(key) {
             if target.dense_length == 0 {
@@ -144,7 +150,7 @@ fn visit_data(
         }
         return Err(invalid("private supply stream absent"));
     };
-    file.check_placements()?;
+    if check_mapping {file.check_placements()?;}
     let length = file.logical_length();
     let mut cursor = 0;
     let mut reference = tree
@@ -237,6 +243,22 @@ pub(super) fn stream(
     mut emit: impl FnMut(SupplyKind, &SupplyRange) -> io::Result<()>,
 ) -> io::Result<StreamSupplySummary> {
     tree.require_source_excluded()?;
+    let result=stream_inner(tree,key,true,&mut emit);
+    let closing=tree.require_source_excluded();
+    super::supply_snapshot::close_result(result,closing,"stream supply source closing fence")
+}
+/// The token is issued only after the batch's actual entry fence and native
+/// same-file map capture; it cannot be constructed from a report or flags.
+pub(super) fn stream_in_snapshot(
+    snapshot:&super::supply_snapshot::NativeReadOnlySupplyStreamSnapshot<'_>,
+    emit:impl FnMut(SupplyKind,&SupplyRange)->io::Result<()>,
+)->io::Result<StreamSupplySummary>{
+    stream_inner(snapshot.tree(),snapshot.key(),false,emit)
+}
+fn stream_inner(
+    tree:&PrivateTree,key:&StreamKey,check_mapping:bool,
+    mut emit:impl FnMut(SupplyKind,&SupplyRange)->io::Result<()>,
+)->io::Result<StreamSupplySummary>{
     if !tree.placement_complete {
         return Err(invalid(
             "complete live placement required for stream supply",
@@ -313,7 +335,7 @@ pub(super) fn stream(
         hash.update(range.source_physical_offset.unwrap_or(0).to_le_bytes());
         emit(kind, range)
     };
-    let observed_length = visit_data(tree, key, |range| {
+    let observed_length = visit_data_inner(tree, key, check_mapping, |range| {
         while next_hole < holes.len() && holes[next_hole].offset < range.logical_offset {
             let hole = &holes[next_hole];
             output(
@@ -358,7 +380,6 @@ pub(super) fn stream(
         ));
     }
     summary.ordered_range_sha256 = hex::encode(hash.finalize());
-    tree.require_source_excluded()?;
     Ok(summary)
 }
 

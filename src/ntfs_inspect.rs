@@ -2885,6 +2885,22 @@ pub struct StreamRangeReadProof {
     pub allocation: Option<StreamAllocationEvidence>,
 }
 
+/// Shared metadata-only eligibility for an initialized physical DATA range.
+/// A sparse NTFS attribute may use compression-unit 4 without compressed
+/// encoding; compressed/encrypted flags and bytes beyond VDL remain excluded.
+pub(crate) fn require_initialized_uncompressed_range(
+    a:&AttributeInventory,offset:u64,length:u64,
+)->Result<()> {
+    let end=offset.checked_add(length).context("reference logical overflow")?;
+    let unit_supported=if a.flags==0x8000 {matches!(a.compression_unit,0|4)}
+        else {a.compression_unit==0};
+    ensure!(!a.resident&&a.flags&!0x8000==0&&unit_supported
+        &&end<=a.initialized_size&&end<=a.logical_size,
+        "retained reference is not initialized uncompressed source DATA: resident={}, flags={:#x}, compression_unit={}, offset={}, length={}, end={}, initialized={}, logical={}",
+        a.resident,a.flags,a.compression_unit,offset,length,end,a.initialized_size,a.logical_size);
+    Ok(())
+}
+
 /// One bounded mapping cache for reads under an externally held immutable
 /// source lease. Opening and finishing revalidate the actual NTFS metadata.
 /// It grants no source admission and never owns a payload-sized buffer.
@@ -3096,7 +3112,7 @@ impl PlainStreamRangeSession {
         if length == 0
             || a.resident
             || a.flags & !0x8000 != 0
-            || a.compression_unit != 0
+            || !(if a.flags==0x8000 {matches!(a.compression_unit,0|4)} else {a.compression_unit==0})
             || end > a.initialized_size
         {
             return Ok(None);
@@ -3145,18 +3161,10 @@ impl PlainStreamRangeSession {
         length: u64,
     ) -> Result<()> {
         let a = &self.attribute.report;
-        let end = offset
-            .checked_add(length)
-            .context("reference logical overflow")?;
-        ensure!(
-            !self.poisoned
-                && !a.resident
-                && a.flags & !0x8000 == 0
-                && a.compression_unit == 0
-                && end <= a.initialized_size
-                && end <= a.logical_size,
-            "retained reference is not initialized uncompressed source DATA"
-        );
+        ensure!(!self.poisoned,"poisoned reference stream session");
+        require_initialized_uncompressed_range(a,offset,length).with_context(||format!(
+            "retained source FILE {} stream {:?}",self.record_number,self.stream_name_utf16))?;
+        let end=offset.checked_add(length).context("reference logical overflow")?;
         let mut cursor = offset;
         for run in &a.extents {
             let run_end = run

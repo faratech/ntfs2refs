@@ -91,6 +91,16 @@ fn stream_ranges(
     maximum_bytes: u64,
 ) -> Result<(StreamSupplySummary, Vec<(SupplyKind, SupplyRange)>)> {
     let summary = observe_stream(template, index, object, stream)?;
+    stream_ranges_from_summary(template,index,object,stream,maximum_bytes,summary)
+}
+
+/// The summary must come from the immediately preceding actual observation
+/// of this same held tree/stream. The second native visit remains a fresh
+/// before/after checked observation and must reproduce it exactly.
+fn stream_ranges_from_summary(
+    template:&PrivateTree,index:usize,object:&Object,stream:StreamRef<'_>,
+    maximum_bytes:u64,summary:StreamSupplySummary,
+) -> Result<(StreamSupplySummary, Vec<(SupplyKind, SupplyRange)>)> {
     let entry_bytes = (std::mem::size_of::<(SupplyKind, SupplyRange)>() as u64)
         .checked_add(
             (stream.name_utf16.len() as u64)

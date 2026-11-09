@@ -199,61 +199,42 @@ fn leased_ranges(
     stream: StreamRef<'_>,
     row_window: u64,
 ) -> Result<LeasedRanges> {
-    let native_bytes = template.supply_stream_workspace_bytes(index, stream.name_utf16)?;
-    let native_ram = bytes.lease_working_ram(native_bytes)?;
-    let first = observe_stream(template, index, object, stream)?;
-    let per_range = (std::mem::size_of::<(SupplyKind, SupplyRange)>() as u64)
-        .checked_add(
-            (stream.name_utf16.len() as u64)
-                .checked_mul(2)
-                .context("range name overflow")?,
-        )
-        .context("range charge overflow")?;
-    let exact = first
-        .ranges
-        .checked_mul(per_range)
-        .context("range charge overflow")?;
-    ensure!(
-        exact <= row_window,
-        "one live stream supply map exceeds admitted working RAM"
-    );
-    // Account for allocator spare capacity and callback/name temporaries.
-    let charged = exact
-        .checked_mul(2)
-        .and_then(|n| n.checked_add(4096))
-        .context("range charge overflow")?;
-    let range_ram = bytes.lease_working_ram(charged)?;
-    let (summary, ranges) = stream_ranges(template, index, object, stream, row_window)?;
-    ensure!(
-        summary == first,
-        "native stream supply changed while reserving workspace"
-    );
-    let mut actual = (ranges.capacity() as u64)
-        .checked_mul(std::mem::size_of::<(SupplyKind, SupplyRange)>() as u64)
-        .context("range capacity overflow")?;
-    for (_, range) in &ranges {
-        ensure!(
-            range.stream_name_utf16 == stream.name_utf16,
-            "native range stream identity differs"
-        );
-        actual = actual
-            .checked_add(
-                (range.stream_name_utf16.capacity() as u64)
-                    .checked_mul(2)
-                    .context("range name capacity overflow")?,
-            )
-            .context("range capacity overflow")?;
-    }
-    ensure!(
-        actual <= charged,
-        "native range allocation exceeded its pre-admitted workspace"
-    );
-    Ok(LeasedRanges {
-        summary,
-        ranges,
-        _range_ram: range_ram,
-        native_ram: Some(native_ram),
-    })
+    // SDK owns one actual readonly native snapshot and closes its complete
+    // source/shadow/file checks before this paid APP clone can escape.
+    let result=template.with_readonly_supply_stream_snapshot(
+        index,stream.name_utf16,&object.path,stream.length,row_window,|snapshot|{
+            (||->Result<LeasedRanges>{
+                let summary=snapshot.summary().clone();
+                ensure!(snapshot.ranges().len() as u64==summary.ranges,
+                    "native snapshot range count differs");
+                let per_range=(std::mem::size_of::<(SupplyKind,SupplyRange)>() as u64)
+                    .checked_add((stream.name_utf16.len() as u64).checked_mul(2)
+                        .context("snapshot name charge overflow")?)
+                    .context("snapshot range charge overflow")?;
+                let exact=summary.ranges.checked_mul(per_range).context("snapshot range charge overflow")?;
+                ensure!(exact<=row_window,"one native stream snapshot exceeds admitted APP range window");
+                let charged=exact.checked_mul(2).and_then(|n|n.checked_add(4096))
+                    .context("snapshot APP allocation overflow")?;
+                let range_ram=bytes.lease_working_ram(charged)?;
+                let mut ranges=Vec::new();
+                ranges.try_reserve_exact(snapshot.ranges().len())?;
+                for (kind,range) in snapshot.ranges(){
+                    ensure!(range.object_index==index&&range.stream_name_utf16==stream.name_utf16,
+                        "native snapshot range belongs to another stream");
+                    ranges.push((*kind,range.clone()));
+                }
+                let actual=(ranges.capacity() as u64)
+                    .checked_mul(std::mem::size_of::<(SupplyKind,SupplyRange)>() as u64)
+                    .context("snapshot APP capacity overflow")?;
+                let actual=ranges.iter().try_fold(actual,|n,(_,range)|{
+                    n.checked_add((range.stream_name_utf16.capacity() as u64).checked_mul(2)?)
+                }).context("snapshot APP retained name overflow")?;
+                ensure!(actual<=charged,"native snapshot clone exceeds its actual APP payment");
+                Ok(LeasedRanges{summary,ranges,_range_ram:range_ram,native_ram:None})
+            })().map_err(io::Error::other)
+        });
+    result.with_context(||format!("readonly supply snapshot: object_index={index}, FILE {}/{}, path={:?}, stream={:?}, EOF={}",
+        object.record_number,object.sequence_number,object.path,stream.name_utf16,stream.length))
 }
 
 /// Unsupported target forms use the existing checked materialization path.
@@ -293,6 +274,72 @@ struct RoutedPlan {
     routed: u64,
     materialized: u64,
     holes: u64,
+}
+
+/// Check every declared physical source proposal before native target scans.
+/// This reads only the already held raw metadata model: no source payload,
+/// native file query, disk-role probe, or target observation occurs here.
+fn preflight_source_references(bytes:&PagedSourceByteAdapter<'_>,expected:&PagedExpectedTree)->Result<()> {
+    use crate::ntfs_inspect::RootFileDomain;
+    let raw=bytes.raw_source();
+    let admission=expected.header().resource_admission.context("reference preflight expected admission absent")?;
+    ensure!(raw.canonical_sha256()?==hex::encode(admission.source_inspection_sha256),
+        "reference preflight raw/expected source pin differs");
+    let _working=bytes.lease_working_ram(admission.budget.max_row_bytes.checked_mul(8)
+        .and_then(|n|n.checked_add(65536)).context("reference preflight RAM overflow")?)?;
+    for index in 0..expected.len(){
+        let object=expected.object_leased(index)?;
+        if object.directory||system(&object){continue;}
+        for stream in object.data_streams(){
+            let prefix=stream.length/4096*4096;
+            if prefix==0||(stream.source_offset.is_none()&&stream.source_extents.is_empty()){continue;}
+            let file=raw.find_record(object.record_number,Some(object.sequence_number))?
+                .with_context(||format!("reference preflight missing FILE {}/{} path={:?}",object.record_number,object.sequence_number,object.path))?;
+            let mut source_streams=file.streams.iter().filter(|s|s.name_utf16==stream.name_utf16);
+            let source=source_streams.next().context("reference preflight source DATA stream absent")?;
+            ensure!(source_streams.next().is_none()&&source.logical_size==stream.length,
+                "reference preflight source stream coverage/EOF differs: FILE {}/{} path={:?} stream={:?}",
+                object.record_number,object.sequence_number,object.path,stream.name_utf16);
+            let mut attributes=file.attributes.iter().filter(|a|a.type_code==0x80
+                &&a.name_utf16==stream.name_utf16&&a.lowest_vcn==0);
+            let attribute=attributes.next().context("reference preflight base DATA attribute absent")?;
+            ensure!(attributes.next().is_none()&&attribute.flags==source.flags
+                &&attribute.resident==source.resident&&attribute.logical_size==source.logical_size
+                &&attribute.initialized_size==source.initialized_size,
+                "reference preflight DATA attribute/model binding differs: FILE {}/{} path={:?} stream={:?}",
+                object.record_number,object.sequence_number,object.path,stream.name_utf16);
+            let check=|offset:u64,physical:u64,length:u64|->Result<()> {
+                let context=||format!("declared retained reference preflight: object_index={index}, FILE {}/{}, path={:?}, stream={:?}, flags=0x{:04x}, compression_unit={}, resident={}, VDL={}, EOF={}, offset={offset}, length={length}, physical={physical}",
+                    object.record_number,object.sequence_number,object.path,stream.name_utf16,
+                    attribute.flags,attribute.compression_unit,attribute.resident,attribute.initialized_size,attribute.logical_size);
+                crate::ntfs_inspect::require_initialized_uncompressed_range(attribute,offset,length).with_context(||context())?;
+                let end=offset.checked_add(length).context("preflight reference end overflow")?;
+                let mut cursor=offset;
+                for run in &source.extents {
+                    let stop=run.logical_offset.checked_add(run.length).context("preflight source extent overflow")?;
+                    if stop<=cursor{continue;} if cursor==end{break;}
+                    ensure!(run.logical_offset<=cursor,"{}: source mapping gap",context());
+                    let actual=run.physical_offset.with_context(||format!("{}: source range is a hole",context()))?
+                        .checked_add(cursor-run.logical_offset).context("preflight actual physical overflow")?;
+                    let wanted=physical.checked_add(cursor-offset).context("preflight wanted physical overflow")?;
+                    ensure!(actual==wanted,"{}: current physical mapping differs",context());
+                    cursor=end.min(stop);
+                }
+                ensure!(cursor==end,"{}: physical source coverage incomplete",context());Ok(())
+            };
+            if let Some(base)=stream.source_offset{
+                ensure!(stream.source_extents.is_empty(),"preflight mixed source mapping forms");
+                check(0,base,prefix)?;
+            }else{
+                for run in stream.source_extents{
+                    let end=run.logical_offset.checked_add(run.length).context("preflight declared extent overflow")?.min(prefix);
+                    if run.logical_offset>=end{continue;}
+                    if let Some(physical)=run.physical_offset{check(run.logical_offset,physical,end-run.logical_offset)?;}
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn scan_plan(
@@ -405,6 +452,7 @@ pub(crate) fn prepare<'a, 'source>(
         policy.is_fast(),
         "routed-prefix supply requires explicit extent-identity verification"
     );
+    preflight_source_references(bytes,expected)?;
     let admission = phase(bytes, expected, template)?;
     let row_window = admission
         .budget

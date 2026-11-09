@@ -44,7 +44,7 @@ fn peak(row: usize, path: usize) -> io::Result<u64> {
             .ok_or_else(|| bad("routed prefix RAM overflow"))?,
     )
 }
-fn security(file: &File) -> io::Result<Vec<u8>> {
+pub(super) fn security(file: &File) -> io::Result<Vec<u8>> {
     // Owner/group/DACL only: the private constructor's original data handle
     // has READ_CONTROL; final source SACL preservation is a separate phase.
     const INFORMATION: u32 = 7;

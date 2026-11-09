@@ -928,6 +928,28 @@ impl PrivatePlaceholder {
         self.verify_placements()
     }
 
+    /// Same-FileObject readonly batch evidence. The complete native mapping
+    /// still checks EVERY tracked piece, then its full canonical digest binds
+    /// the closing observation. No path reopen or payload read is exposed.
+    pub(in crate::shadow_native) fn readonly_supply_mapping_fingerprint(
+        &self,readonly:&File,
+    )->io::Result<Option<[u8;32]>>{
+        if self.poisoned {return Err(invalid("poisoned private supply mapping"));}
+        if super::info(readonly,18,24)?!=super::info(&self.file,18,24)? {
+            return Err(invalid("readonly supply query differs from actual private file"));
+        }
+        if self.placed.is_empty(){return Ok(None);}
+        let resource=self.resource.as_ref().ok_or_else(||invalid("readonly supply mapping requires actual resource owner"))?;
+        let _memory=resource.tracking_workspace(self.bytes)?;
+        let capture=resource.capture(readonly)?;
+        let mapping=PreparedMapping::from_runs(capture.runs)?;
+        for &(v,l,n) in &self.placed {
+            if !mapping.matches(v,l,n)? {return Err(invalid("private supply complete mapping changed"));}
+        }
+        use sha2::Digest;
+        Ok(Some(sha2::Sha256::digest(&capture.canonical).into()))
+    }
+
     /// Bind currently allocated unwritten runs from the live owning handle.
     /// Deferred holes are returned for explicit allocation, never invented as
     /// physical ownership or accepted as source references.

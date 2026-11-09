@@ -44,7 +44,39 @@ impl PrivatePlaceholder {
             .as_ref()
             .ok_or_else(|| invalid("recovered resource capture absent"))?;
         let _memory = resource.tracking_workspace(self.bytes)?;
-        let capture = resource.capture(&self.file)?;
+        let identity = super::super::info(&self.file, 18, 24)?;
+        let standard = super::super::info(&self.file, 1, 24)?;
+        if u64::from_le_bytes(standard[8..16].try_into().unwrap()) != self.bytes
+            || u32::from_le_bytes(standard[16..20].try_into().unwrap()) != 1
+            || standard[20] != 0 || standard[21] != 0
+        {
+            return Err(invalid("recovered allocation EOF/link/type/delete state differs"));
+        }
+        let (first, continuation) = crate::stream_native::retrieval_queries_resource(
+            &self.file, resource.retrieval_bytes)?;
+        // Empty and metadata-resident streams have no payload LCNs. Native
+        // EOF is evidence of that only alongside zero current allocation;
+        // an allocated or nonempty retrieval still needs complete parsing.
+        let no_allocation = u64::from_le_bytes(standard[..8].try_into().unwrap()) == 0;
+        let empty = no_allocation && continuation.is_empty()
+            && ((first.native_error == Some(38) && first.bytes.is_empty())
+                || (self.bytes == 0 && first.native_error.is_none()
+                    && first.bytes.len() == 16
+                    && u32::from_le_bytes(first.bytes[..4].try_into().unwrap()) == 0));
+        if super::super::info(&self.file, 18, 24)? != identity
+            || super::super::info(&self.file, 1, 24)? != standard
+        {
+            return Err(invalid("recovered allocation identity or lengths changed"));
+        }
+        if empty { return Ok(Vec::new()); }
+        let capture = crate::retrieval_paging::assemble_queries_with_limits(
+            &first, &continuation,
+            crate::retrieval_paging::Limits::for_resource_bytes(resource.retrieval_bytes)?,
+        ).map_err(|error| io::Error::new(error.kind(), format!(
+            "recovered allocation capture failed: path={:?}, logical_bytes={}, allocation_bytes={}, first_error={:?}, first_bytes={}, continuation_pages={}: {error}",
+            self.path, self.bytes,
+            u64::from_le_bytes(standard[..8].try_into().unwrap()),
+            first.native_error, first.bytes.len(), continuation.len())))?;
         let mut out = Vec::new();
         for run in &capture.runs {
             if let Some(lcn) = run.lcn {

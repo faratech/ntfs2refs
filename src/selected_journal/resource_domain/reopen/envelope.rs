@@ -17,6 +17,7 @@ use crate::{
     artifact_arena::{ArtifactGroup, ArtifactGroupPermit},
     ntfs_inspect::paged_storage::{SourceRamLease, SourceScratch},
     selected_journal::resource_domain::durable_anchor::DurableRecoveryLocator,
+    shadow_tree::{ExpectedBindingFacts, ExpectedBindingPin},
     verification_policy::VerificationPolicy,
 };
 use anyhow::{Context, Result, ensure};
@@ -54,6 +55,8 @@ struct ExpectedPin {
     file: FilePin,
     semantic_sha256: String,
     objects: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    binding: Option<ExpectedBindingPin>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -197,6 +200,83 @@ struct HeldFile {
     snapshot: ReferenceFileSnapshot,
     modified: SystemTime,
     sha256: [u8; 32],
+    expected_binding: Option<Box<HeldFile>>,
+    _binding_memory: Option<SourceRamLease>,
+}
+
+fn hold_expected_binding(
+    publication: &Publication,
+    volume: &str,
+    expected: &mut HeldFile,
+    scratch: &SourceScratch,
+) -> Result<()> {
+    let Some(pin) = &publication.expected.binding else {
+        return Ok(());
+    };
+    ensure!(
+        publication.source_scope.is_dedicated()
+            && publication.source.layout_profile
+                == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+            && pin.bytes > 0
+            && pin.bytes <= 65536,
+        "expected binding requires a bounded dedicated Windows publication"
+    );
+    pin.facts.validate(
+        publication.resource_admission,
+        &publication.expected.file.sha256,
+        &publication.expected.semantic_sha256,
+    )?;
+    let _decode = scratch.lease_ram(
+        pin.bytes
+            .checked_mul(32)
+            .and_then(|n| n.checked_add(131072))
+            .context("expected binding decoder RAM overflow")?,
+    )?;
+    let wire = serde_json::to_vec(&pin.facts)?;
+    ensure!(
+        wire.len() as u64 == pin.bytes && hex::encode(Sha256::digest(&wire)) == pin.sha256,
+        "expected binding canonical bytes differ from publication pin"
+    );
+    let retained = scratch.lease_ram(
+        (pin.path.as_os_str().as_encoded_bytes().len() as u64)
+            .checked_mul(8)
+            .and_then(|n| n.checked_add(262144))
+            .context("expected binding owner RAM overflow")?,
+    )?;
+    ordinary_path(&pin.path)?;
+    let same_j_file = OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .custom_flags(0x0020_0000)
+        .open(&pin.path)?;
+    n2r_win32::file_storage::require_readonly_access(&same_j_file)?;
+    let same_j_snapshot =
+        n2r_win32::reference_file::observe_reference_file_handle_with_limit(&same_j_file, 65536)?;
+    ensure!(
+        on_volume(&same_j_snapshot.final_path, volume),
+        "expected binding is not on the actual independent journal volume"
+    );
+    let mut held = HeldFile::open(
+        &pin.path,
+        digest(&pin.sha256)?,
+        Some(pin.bytes),
+        65536,
+        scratch,
+    )?;
+    ensure!(
+        held.snapshot == same_j_snapshot,
+        "expected binding changed after its actual journal-volume check"
+    );
+    held.file.seek(SeekFrom::Start(0))?;
+    let facts: ExpectedBindingFacts = serde_json::from_reader(&mut held.file)?;
+    ensure!(
+        facts == pin.facts,
+        "actual expected binding facts differ from publication"
+    );
+    held.revalidate(scratch)?;
+    held._binding_memory = Some(retained);
+    expected.expected_binding = Some(Box::new(held));
+    Ok(())
 }
 
 struct HeldWindowsAliasFiles {
@@ -306,9 +386,14 @@ impl HeldFile {
             snapshot,
             modified,
             sha256: expected,
+            expected_binding: None,
+            _binding_memory: None,
         })
     }
     fn revalidate(&mut self, scratch: &SourceScratch) -> Result<()> {
+        if let Some(binding) = &mut self.expected_binding {
+            binding.revalidate(scratch)?;
+        }
         let _ram = scratch.lease_ram(4 * 1024 * 1024)?;
         ensure!(
             n2r_win32::reference_file::observe_reference_file_handle_with_limit(
@@ -620,7 +705,8 @@ impl ReopenedPartitionResourceRecovery {
             expected
                 .snapshot
                 .final_path
-                .eq_ignore_ascii_case(&publication.expected.file.path),
+                .eq_ignore_ascii_case(&publication.expected.file.path)
+                && publication.expected.binding.is_none(),
             "partition expected artifact same-handle canonical route differs"
         );
         let maps = if let Some(pin) = &publication.recovery_maps {
@@ -942,7 +1028,8 @@ impl ReopenedPartitionResourceRecovery {
             expected
                 .snapshot
                 .final_path
-                .eq_ignore_ascii_case(&publication.expected.file.path),
+                .eq_ignore_ascii_case(&publication.expected.file.path)
+                && publication.expected.binding.is_none(),
             "partition expected artifact same-handle canonical route differs"
         );
         let maps = if let Some(pin) = &publication.recovery_maps {
@@ -1793,7 +1880,7 @@ impl ReopenedResourceRecovery {
                 )? != n2r_win32::layout::guid_bytes(&publication.shadow.identity.disk_guid)?,
             "recovery artifacts are not on the independent journal volume"
         );
-        let expected = HeldFile::open(
+        let mut expected = HeldFile::open(
             Path::new(&publication.expected.file.path),
             digest(&publication.expected.file.sha256)?,
             Some(publication.expected.file.bytes),
@@ -1808,6 +1895,7 @@ impl ReopenedResourceRecovery {
                 && on_volume(&expected.snapshot.final_path, &volume),
             "reopened expected pages route differs"
         );
+        hold_expected_binding(&publication, &volume, &mut expected, scratch)?;
         let maps = if let Some(pin) = &publication.recovery_maps {
             ensure!(pin.records > 0, "empty V4 recovery map is invalid");
             let held = HeldFile::open(
@@ -2566,6 +2654,9 @@ impl ReopenedResourceRecovery {
     pub(crate) fn expected_semantic_sha256(&self) -> &str {
         &self.publication.expected.semantic_sha256
     }
+    pub(crate) fn expected_binding(&self) -> Option<&ExpectedBindingPin> {
+        self.publication.expected.binding.as_ref()
+    }
     pub(crate) fn expected_objects(&self) -> u64 {
         self.publication.expected.objects
     }
@@ -2831,6 +2922,9 @@ impl ReopenedPartitionResourceRecovery {
     }
     pub(crate) fn expected_semantic_sha256(&self) -> &str {
         &self.publication.expected.semantic_sha256
+    }
+    pub(crate) fn expected_binding(&self) -> Option<&ExpectedBindingPin> {
+        self.publication.expected.binding.as_ref()
     }
     pub(crate) fn expected_objects(&self) -> u64 {
         self.publication.expected.objects

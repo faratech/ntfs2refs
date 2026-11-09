@@ -164,6 +164,22 @@ pub struct ResourceSourceContext {
     _cache_artifacts: Option<cache::OpenedSourceCache>,
 }
 
+/// Issued only from this invocation's actual source and typed semantic join.
+/// Saved binding facts can never construct this one-operation live witness.
+pub(crate) struct CachedExpectedRebind {
+    facts: crate::shadow_tree::ExpectedBindingFacts,
+    source_owner: usize,
+}
+impl CachedExpectedRebind {
+    pub(crate) fn into_parts(self,body:&crate::shadow_tree::PagedExpectedTree)
+        ->Result<(crate::shadow_tree::ExpectedBindingFacts,usize)>{
+        self.facts.validate(self.facts.effective_admission,body.file_sha256(),body.semantic_sha256())?;
+        ensure!(self.facts.original_admission==body.header().resource_admission.context("cached original header absent")?,
+            "live expected rebind witness belongs to another original body");
+        Ok((self.facts,self.source_owner))
+    }
+}
+
 /// Original live source admission closed against the actual protected target
 /// and exhaustive prepared arena. This is intentionally neither serializable
 /// nor Clone. It has no constructor accepting persisted hashes or flags, and
@@ -1703,8 +1719,46 @@ impl ResourceSourceContext {
     pub(crate) fn cache_metadata_refreshed(&self)->bool {
         self._cache_artifacts.as_ref().is_some_and(|cache|cache.refresh.is_some())
     }
+    pub(crate) fn authorize_cached_expected_rebind(&self,body:&crate::shadow_tree::PagedExpectedTree)
+        ->Result<CachedExpectedRebind>{
+        self.require_source_evidence()?;self.revalidate_evidence()?;
+        let cache=self._cache_artifacts.as_ref().context("actual source cache owner absent")?;
+        let join=cache.refresh.as_ref().context("actual live user semantic refresh absent")?;
+        ensure!(self.raw.is_windows_conversion()
+            &&matches!(self.native.origin(),n2r_win32::NativeSourceObservationOrigin::MetadataRefreshedCachedRows{..})
+            &&self.native.windows_txf_markers().is_some()&&self.native.windows_object_ids().is_some(),
+            "expected reuse requires actual metadata-refreshed Windows native owners");
+        let aliases=self.windows_aliases.as_ref().context("current Windows alias owner absent")?;
+        aliases.require_source(&self.raw)?;
+        let facts=join.expected_reuse_facts(&self.inspection_sha,self.native.domain().sha256(),body,self.admission)?;
+        crate::shadow_tree::source_pages::SourceExpectedDomain::verify_cached_body(
+            &self.raw,self.native.domain(),self.admission,aliases,body,&self.scratch)?;
+        Ok(CachedExpectedRebind{facts,source_owner:self.source_owner_identity()})
+    }
     pub(crate) fn cached_auxiliary_group(&self)->Option<ArtifactGroupPermit> {
         self._cache_artifacts.as_ref().map(|cache|cache.auxiliary_group.clone())
+    }
+    pub(crate) fn authorize_cached_expected_exact_rebind(&self,body:&crate::shadow_tree::PagedExpectedTree)
+        ->Result<CachedExpectedRebind>{
+        self.require_source_evidence()?;self.revalidate_evidence()?;
+        ensure!(self._cache_artifacts.is_some()&&self.raw.is_windows_conversion()
+            &&matches!(self.native.origin(),n2r_win32::NativeSourceObservationOrigin::RevalidatedCachedRows{..}),
+            "exact expected rebind requires actual byte-continuity native cache owner");
+        let aliases=self.windows_aliases.as_ref().context("current Windows aliases absent")?;
+        crate::shadow_tree::source_pages::SourceExpectedDomain::verify_cached_body(
+            &self.raw,self.native.domain(),self.admission,aliases,body,&self.scratch)?;
+        let mut hash=Sha256::new();hash.update(b"n2r-exact-current-source-and-current-projection-v1\0");
+        hash.update(self.inspection_sha.as_bytes());hash.update(self.source_sha.as_bytes());
+        hash.update(self.native.domain().sha256().as_bytes());hash.update(body.file_sha256().as_bytes());
+        let facts=crate::shadow_tree::ExpectedBindingFacts{schema_version:1,
+            verification_kind:"exact-current-source-and-current-projection-v1".into(),
+            body_file_sha256:body.file_sha256().to_owned(),body_semantic_sha256:body.semantic_sha256().to_owned(),
+            original_admission:body.header().resource_admission.context("cached original admission absent")?,
+            effective_admission:self.admission,profile:body.profile().to_owned(),logical_bytes:body.logical_bytes(),
+            objects:body.len() as u64,pending_roles:body.internal_replacement_pending().to_vec(),
+            native_file_sha256:self.native.domain().sha256().to_owned(),user_join_sha256:hex::encode(hash.finalize())};
+        facts.validate(self.admission,body.file_sha256(),body.semantic_sha256())?;
+        Ok(CachedExpectedRebind{facts,source_owner:self.source_owner_identity()})
     }
     pub fn require_source_evidence(&self) -> Result<()> {
         let failed: Vec<_> = self
@@ -1766,6 +1820,7 @@ impl ResourceSourceContext {
         );
         closure.revalidate()?;
         expected.require_resource_owner(self.admission)?;
+        expected.require_rebind_source(self.source_owner_identity())?;
         expected.require_shared_memory(arena)?;
         let scope = target.scope();
         let native = target.native();

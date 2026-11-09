@@ -18,6 +18,54 @@ use std::{
 
 const PURPOSE: [u8; 8] = *b"N2REXP01";
 
+/// Authenticated data binding only. It cannot recreate the live source proof
+/// which authorized its producer, or issue source/journal/write authority.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ExpectedBindingFacts {
+    pub schema_version: u32,
+    pub verification_kind: String,
+    pub body_file_sha256: String,
+    pub body_semantic_sha256: String,
+    pub original_admission: n2r_win32::tree_resources::SourceResourceAdmission,
+    pub effective_admission: n2r_win32::tree_resources::SourceResourceAdmission,
+    pub profile: String,
+    pub logical_bytes: u64,
+    pub objects: u64,
+    pub pending_roles: Vec<String>,
+    pub native_file_sha256: String,
+    pub user_join_sha256: String,
+}
+impl ExpectedBindingFacts {
+    pub(crate) fn validate(&self, admission:n2r_win32::tree_resources::SourceResourceAdmission,
+        file_sha:&str, semantic_sha:&str)->Result<()> {
+        self.original_admission.validate()?; admission.validate()?;
+        let mut rebound=self.original_admission;
+        rebound.source_inspection_sha256=admission.source_inspection_sha256;
+        ensure!(self.schema_version==1 && matches!(self.verification_kind.as_str(),
+                "strict-user-refresh-and-current-projection-v1"|"exact-current-source-and-current-projection-v1")
+            && self.original_admission.schema_version==2
+            && rebound==admission && self.effective_admission==admission
+            && self.body_file_sha256==file_sha && self.body_semantic_sha256==semantic_sha
+            && canonical_sha(file_sha)&&canonical_sha(semantic_sha)
+            && canonical_sha(&self.native_file_sha256)&&canonical_sha(&self.user_join_sha256)
+            && self.profile=="native-ordinary-tree-shadow-resource-bounded-v4"
+            && self.objects==admission.objects()?
+            && serde_json::to_vec(self)?.len()<=65536,
+            "cached expected body binding differs from its exact data/resource contract");
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ExpectedBindingPin {
+    pub path: PathBuf,
+    pub sha256: String,
+    pub bytes: u64,
+    pub facts: ExpectedBindingFacts,
+}
+
 /// Record zero contains only the non-object fields and the complete domain size.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -100,11 +148,17 @@ pub struct PagedExpectedTree {
     semantic_byte_budget: u64,
     directory: Vec<ObjectEntry>,
     resource_admission: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
+    binding: Option<ExpectedBindingPin>,
+    _binding_artifact: Option<crate::artifact_arena::ArtifactLease>,
+    live_rebind_source: Option<usize>,
+    cached_body_pending: bool,
+    _binding_ram: Option<crate::artifact_arena::ArenaRamLease>,
     arena: Option<crate::artifact_arena::ArtifactArena>,
     _artifact: Option<crate::artifact_arena::ArtifactLease>,
     // A reopened expected domain retains the already authenticated read-only
     // file, but never gains a fresh-created ArtifactLease/source authority.
     _reopened_file: Option<File>,
+    _reopened_binding: Option<(File,n2r_win32::reference_file::ReferenceFileSnapshot,std::time::SystemTime)>,
     _reader_ram: Option<crate::artifact_arena::ArenaRamLease>,
     _directory_ram: Option<crate::artifact_arena::ArenaRamLease>,
     _header_ram: Option<crate::artifact_arena::ArenaRamLease>,
@@ -1016,6 +1070,7 @@ impl PagedExpectedTree {
             budget,
             semantic_byte_budget,
             resource_admission,
+            false,
             memory.map(|(arena, artifact)| ExpectedMemoryOwner {
                 arena,
                 artifact: Some(artifact),
@@ -1049,12 +1104,101 @@ impl PagedExpectedTree {
             admission.expected_page_budget()?,
             admission.semantic_byte_budget(),
             Some(admission),
+            false,
             Some(ExpectedMemoryOwner {
                 arena: group.arena().clone(),
                 artifact: Some(artifact),
                 reopened: None,
             }),
         )
+    }
+
+    pub(crate) fn open_cached_body_in_group(
+        path:&Path,file_sha:&str,current:n2r_win32::tree_resources::SourceResourceAdmission,
+        group:&crate::artifact_arena::ArtifactGroupPermit,artifact:crate::artifact_arena::ArtifactLease,
+    )->Result<Self>{
+        current.validate()?;
+        ensure!(group.group()==crate::artifact_arena::ArtifactGroup::Expected
+            && group.arena().budget()==current.budget && artifact.same_group(group)
+            && artifact.sha256()==file_sha,"cached expected actual file/group differs");
+        let mut tree=Self::open_owned_domain(path,file_sha,None,current.expected_page_budget()?,
+            current.semantic_byte_budget(),Some(current),true,Some(ExpectedMemoryOwner{
+                arena:group.arena().clone(),artifact:Some(artifact),reopened:None}))?;
+        tree.cached_body_pending=true;
+        Ok(tree)
+    }
+    pub(crate) fn binding_pin(&self)->Option<&ExpectedBindingPin>{self.binding.as_ref()}
+    pub(crate) fn require_rebind_source(&self,source_owner:usize)->Result<()> {
+        ensure!(!self.cached_body_pending && (self.binding.is_none()
+            || (self._binding_artifact.is_some()&&self.live_rebind_source==Some(source_owner))),
+            "cached expected lacks this actual fresh source's live rebind proof");
+        Ok(())
+    }
+    fn apply_binding(&mut self,pin:&ExpectedBindingPin,current:n2r_win32::tree_resources::SourceResourceAdmission)->Result<()> {
+        pin.facts.validate(current,&self.file_sha256,&self.semantic_sha256)?;
+        ensure!(pin.bytes>0&&pin.bytes<=65536&&canonical_sha(&pin.sha256)
+            && self.header.resource_admission==Some(pin.facts.original_admission)
+            && self.profile()==pin.facts.profile.as_str() && self.logical_bytes()==pin.facts.logical_bytes
+            && self.len() as u64==pin.facts.objects
+            && self.internal_replacement_pending()==pin.facts.pending_roles.as_slice(),
+            "cached expected binding does not describe the complete typed body");
+        let bytes=serde_json::to_vec(&pin.facts)?;
+        ensure!(bytes.len() as u64==pin.bytes&&hex::encode(Sha256::digest(&bytes))==pin.sha256,
+            "cached expected binding canonical pin differs");
+        let ram=self.arena.as_ref().context("bound expected arena absent")?
+            .reserve_ram(pin.bytes.checked_mul(32).and_then(|n|n.checked_add(65536)).context("expected binding RAM overflow")?)?;
+        self.binding=Some(pin.clone());self._binding_ram=Some(ram);
+        self.resource_admission=Some(current);self.header.resource_admission=Some(current);
+        self.cached_body_pending=false;
+        Ok(())
+    }
+    pub(crate) fn rebind_cached_body(
+        &mut self,proof:crate::general_source_admission::resource::CachedExpectedRebind,
+        group:&crate::artifact_arena::ArtifactGroupPermit,path:&Path,
+    )->Result<()> {
+        use std::os::windows::fs::OpenOptionsExt;
+        ensure!(self.cached_body_pending&&group.group()==crate::artifact_arena::ArtifactGroup::Expected
+            && self._artifact.as_ref().is_some_and(|a|a.same_group(group)),
+            "cached expected rebind lacks its actual paid body owner");
+        let (facts,source_owner)=proof.into_parts(self)?;
+        let _work=group.arena().reserve_ram(2*1024*1024+65536)?;
+        let bytes=serde_json::to_vec(&facts)?;
+        ensure!(bytes.len()<=65536,"expected source binding exceeds64KiB");
+        let permit=group.reserve_file(path,bytes.len() as u64)?;
+        let mut writer=std::fs::OpenOptions::new().write(true).create_new(true).share_mode(0)
+            .custom_flags(0x00200000).open(permit.path())?;
+        writer.write_all(&bytes)?;writer.sync_all()?;drop(writer);
+        let sha=hex::encode(Sha256::digest(&bytes));
+        let artifact=permit.verify_closed(&sha)?;
+        let pin=ExpectedBindingPin{path:artifact.path().to_path_buf(),sha256:sha,bytes:bytes.len() as u64,facts};
+        self.apply_binding(&pin,pin.facts.effective_admission)?;
+        self._binding_artifact=Some(artifact);self.live_rebind_source=Some(source_owner);
+        Ok(())
+    }
+
+    pub(crate) fn open_recovery_with_binding(
+        file:&File,snapshot:&n2r_win32::reference_file::ReferenceFileSnapshot,
+        file_sha:&str,semantic_sha:&str,current:n2r_win32::tree_resources::SourceResourceAdmission,
+        arena:&crate::artifact_arena::ArtifactArena,binding:Option<&ExpectedBindingPin>,
+    )->Result<Self>{
+        let Some(pin)=binding else{return Self::open_recovery_with_resources(file,snapshot,file_sha,semantic_sha,current,arena);};
+        pin.facts.validate(current,file_sha,semantic_sha)?;
+        ensure!(n2r_win32::reference_file::observe_reference_file_handle_with_limit(file,current.expected_page_budget()?.max_file_bytes)?==*snapshot,
+            "rebound recovery expected actual file differs");
+        let mut tree=Self::open_owned_domain(Path::new(&snapshot.final_path),file_sha,Some(semantic_sha),
+            current.expected_page_budget()?,current.semantic_byte_budget(),Some(current),true,
+            Some(ExpectedMemoryOwner{arena:arena.clone(),artifact:None,reopened:Some(file.try_clone()?)}))?;
+        tree.apply_binding(pin,current)?;
+        use std::os::windows::fs::OpenOptionsExt;
+        let mut binding_file=std::fs::OpenOptions::new().read(true).share_mode(1).custom_flags(0x00200000).open(&pin.path)?;
+        let binding_snapshot=n2r_win32::reference_file::observe_reference_file_handle_with_limit(&binding_file,65536)?;
+        let modified=binding_file.metadata()?.modified()?;
+        ensure!(binding_snapshot.file_bytes==pin.bytes&&binding_snapshot.number_of_links==1
+            &&hex::encode(n2r_win32::sha256_native::hash_range(&mut binding_file,0,pin.bytes)?)==pin.sha256,
+            "rebound expected sidecar actual identity/complete hash differs");
+        tree._reopened_binding=Some((binding_file,binding_snapshot,modified));
+        tree.require_recovery_memory(arena)?;
+        Ok(tree)
     }
 
     /// Reopen the exact held recovery artifact with live runtime accounting.
@@ -1082,6 +1226,7 @@ impl PagedExpectedTree {
             admission.expected_page_budget()?,
             admission.semantic_byte_budget(),
             Some(admission),
+            false,
             Some(ExpectedMemoryOwner {
                 arena: arena.clone(),
                 artifact: None,
@@ -1099,6 +1244,7 @@ impl PagedExpectedTree {
         budget: PageBudget,
         semantic_byte_budget: u64,
         resource_admission: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
+        allow_original_source_header: bool,
         mut memory: Option<ExpectedMemoryOwner>,
     ) -> Result<Self> {
         ensure!(
@@ -1182,6 +1328,15 @@ impl PagedExpectedTree {
             })
             .transpose()?;
         let header: ExpectedTreePageHeader = serde_json::from_slice(&first.payload)?;
+        let resource_admission = if allow_original_source_header {
+            let current=resource_admission.context("cached expected current limits absent")?;
+            let original=header.resource_admission.context("cached expected original admission absent")?;
+            original.validate()?;
+            let mut rebound=original; rebound.source_inspection_sha256=current.source_inspection_sha256;
+            ensure!(original.schema_version==2 && rebound==current,
+                "cached expected original/current shape or wire bounds differ");
+            Some(original)
+        } else {resource_admission};
         if let Some(lease) = &mut header_ram {
             let actual = header.internal_replacement_pending.iter().try_fold(
                 (std::mem::size_of::<ExpectedTreePageHeader>()
@@ -1297,9 +1452,15 @@ impl PagedExpectedTree {
             semantic_byte_budget,
             directory,
             resource_admission,
+            binding: None,
+            _binding_artifact: None,
+            live_rebind_source: None,
+            cached_body_pending: false,
+            _binding_ram: None,
             arena,
             _artifact: memory.as_mut().and_then(|owner| owner.artifact.take()),
             _reopened_file: memory.and_then(|owner| owner.reopened),
+            _reopened_binding: None,
             _reader_ram: reader_ram,
             _directory_ram: directory_ram,
             _header_ram: header_ram,
@@ -1427,7 +1588,7 @@ impl PagedExpectedTree {
         arena: &crate::artifact_arena::ArtifactArena,
     ) -> Result<()> {
         ensure!(
-            self.arena
+            !self.cached_body_pending && self.arena
                 .as_ref()
                 .is_some_and(|owned| owned.same_arena(arena))
                 && self._artifact.is_some()
@@ -1489,7 +1650,7 @@ impl PagedExpectedTree {
     ) -> Result<()> {
         admission.validate()?;
         ensure!(
-            self.resource_admission == Some(admission)
+            !self.cached_body_pending && self.resource_admission == Some(admission)
                 && self.budget == admission.expected_page_budget()?
                 && self.semantic_byte_budget == admission.semantic_byte_budget(),
             "expected resource page owner differs from admission"
@@ -1503,6 +1664,15 @@ impl PagedExpectedTree {
     }
 
     pub fn revalidate(&self) -> Result<()> {
+        if let Some(binding)=&self._binding_artifact {binding.revalidate()?;}
+        if let Some((file,snapshot,modified))=&self._reopened_binding {
+            let pin=self.binding.as_ref().context("reopened expected binding pin absent")?;
+            ensure!(n2r_win32::reference_file::observe_reference_file_handle_with_limit(file,65536)?==*snapshot
+                &&file.metadata()?.modified()?==*modified,"reopened expected binding identity/time changed");
+            let mut duplicate=file.try_clone()?;
+            ensure!(hex::encode(n2r_win32::sha256_native::hash_range(&mut duplicate,0,pin.bytes)?)==pin.sha256,
+                "reopened expected binding complete hash changed");
+        }
         let mut reader = self.reader.borrow_mut();
         reader.revalidate()?;
         if let Some(file) = &self._reopened_file {

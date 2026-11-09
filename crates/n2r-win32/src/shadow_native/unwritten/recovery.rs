@@ -54,11 +54,14 @@ impl PrivatePlaceholder {
         }
         let (first, continuation) = crate::stream_native::retrieval_queries_resource(
             &self.file, resource.retrieval_bytes)?;
-        // Empty and metadata-resident streams have no payload LCNs. Native
-        // EOF is evidence of that only alongside zero current allocation;
-        // an allocated or nonempty retrieval still needs complete parsing.
-        let no_allocation = u64::from_le_bytes(standard[..8].try_into().unwrap()) == 0;
-        let empty = no_allocation && continuation.is_empty()
+        // ReFS may report inline resident bytes as allocation (for example,
+        // EOF174/allocation176) while correctly returning no payload LCNs.
+        // Reuse the ordinary verifier's resident-allocation contract; cluster
+        // allocations still require the complete native retrieval map.
+        let allocation = u64::from_le_bytes(standard[..8].try_into().unwrap());
+        let no_payload_allocation = allocation == 0
+            || super::super::resident_allocation(self.bytes, allocation);
+        let empty = no_payload_allocation && continuation.is_empty()
             && ((first.native_error == Some(38) && first.bytes.is_empty())
                 || (self.bytes == 0 && first.native_error.is_none()
                     && first.bytes.len() == 16

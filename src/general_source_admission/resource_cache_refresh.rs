@@ -78,6 +78,8 @@ pub(crate) struct UserSemanticRefresh {
     old_inspection: [u8; 32],
     new_inspection: [u8; 32],
     old_native: [u8; 32],
+    projected_roles: Vec<String>,
+    _role_memory: Vec<SourceRamLease>,
     _memory: SourceRamLease,
 }
 
@@ -295,6 +297,8 @@ pub(crate) fn compare_user_semantics(
         native_rows_recollected: false,
     };
     let mut join = Sha256::new();
+    let mut projected_roles=Vec::new();
+    let mut role_memory=Vec::new();
     join.update(b"n2r-user-refresh-ordered-join-v1\0");
     join.update(old_inspection);
     join.update(new_inspection);
@@ -317,6 +321,14 @@ pub(crate) fn compare_user_semantics(
             "USER/internal replacement role changed at FILE {}",
             old.record_number
         );
+        let role=old_role.as_ref().cloned().or_else(||
+            (old.record_number==5&&old.attributes.iter().any(ntfs_admission::recognized_root_txf))
+                .then(||"root:$TXF_DATA (not yet admitted for replacement)".to_owned()));
+        if let Some(role)=role {
+            let lease=scratch.lease_ram((role.len() as u64).checked_mul(4)
+                .and_then(|n|n.checked_add(1024)).context("projection role RAM overflow")?)?;
+            projected_roles.push(role);role_memory.push(lease);
+        }
         let old_raw = row_hash(&old, maximum)?;
         let new_raw = row_hash(&new, maximum)?;
         let old_sd = stored_security(&old_facts, &old, old_role.as_deref())?;
@@ -427,11 +439,34 @@ pub(crate) fn compare_user_semantics(
         old_inspection,
         new_inspection,
         old_native: old_native_sha256,
+        projected_roles,
+        _role_memory: role_memory,
         _memory: memory,
     })
 }
 
 impl UserSemanticRefresh {
+    pub(super) fn expected_reuse_facts(&self,current:&str,native:&str,
+        body:&crate::shadow_tree::PagedExpectedTree,
+        admission:n2r_win32::tree_resources::SourceResourceAdmission,
+    )->Result<crate::shadow_tree::ExpectedBindingFacts>{
+        n2r_win32::SourceCacheRefreshDomain::revalidate(self)?;
+        ensure!(self.new_inspection==digest(current)?&&self.old_native==digest(native)?
+            &&self.report.all_user_fields_unchanged&&self.report.mismatched_user_records==0
+            &&self.report.unchanged_user_records==self.report.user_records
+            &&self.report.user_records==admission.objects()?
+            &&self.projected_roles.as_slice()==body.internal_replacement_pending(),
+            "live strict user join does not prove cached projected body eligibility");
+        let facts=crate::shadow_tree::ExpectedBindingFacts{schema_version:1,
+            verification_kind:"strict-user-refresh-and-current-projection-v1".into(),
+            body_file_sha256:body.file_sha256().to_owned(),body_semantic_sha256:body.semantic_sha256().to_owned(),
+            original_admission:body.header().resource_admission.context("cached expected original admission absent")?,
+            effective_admission:admission,profile:body.profile().to_owned(),logical_bytes:body.logical_bytes(),
+            objects:body.len() as u64,pending_roles:self.projected_roles.clone(),
+            native_file_sha256:native.to_owned(),user_join_sha256:self.report.join_sha256.clone()};
+        facts.validate(admission,body.file_sha256(),body.semantic_sha256())?;
+        Ok(facts)
+    }
     pub(crate) fn report(&self) -> &UserSemanticRefreshReport {
         &self.report
     }

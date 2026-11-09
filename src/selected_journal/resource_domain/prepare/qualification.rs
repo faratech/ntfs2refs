@@ -8,7 +8,7 @@ use crate::{
     },
     general_reconstruct::fast_verification::v4_maps::V4RecoveryMaps,
     ntfs_inspect::paged_storage::SourceScratch,
-    shadow_tree::PagedExpectedTree,
+    shadow_tree::{ExpectedBindingPin, PagedExpectedTree},
 };
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
@@ -59,6 +59,48 @@ struct ExpectedPin<'a> {
     file: FilePin<'a>,
     semantic_sha256: &'a str,
     objects: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    binding: Option<ExpectedBindingPin>,
+}
+
+fn require_expected_binding(
+    expected: &PagedExpectedTree,
+    admission: n2r_win32::tree_resources::SourceResourceAdmission,
+    volume: &str,
+    arena: &crate::artifact_arena::ArtifactArena,
+) -> Result<()> {
+    let Some(pin) = expected.binding_pin() else {
+        return Ok(());
+    };
+    pin.facts.validate(
+        admission,
+        expected.file_sha256(),
+        expected.semantic_sha256(),
+    )?;
+    ensure!(
+        pin.bytes > 0 && pin.bytes <= 65536,
+        "expected binding exceeds64KiB"
+    );
+    let _memory = arena.reserve_ram(1024 * 1024)?;
+    let wire = serde_json::to_vec(&pin.facts)?;
+    ensure!(
+        wire.len() as u64 == pin.bytes && hex::encode(Sha256::digest(&wire)) == pin.sha256,
+        "expected binding compact facts differ from sidecar pin"
+    );
+    let lease = arena.retained_artifact(&pin.path)?;
+    lease.revalidate()?;
+    let prefix = format!("{}\\", volume.trim_end_matches('\\'));
+    ensure!(
+        lease.sha256() == pin.sha256
+            && lease.wire_bytes() == pin.bytes
+            && lease
+                .snapshot()
+                .final_path
+                .get(..prefix.len())
+                .is_some_and(|p| p.eq_ignore_ascii_case(&prefix)),
+        "expected binding lacks its actual independent journal-volume owner"
+    );
+    Ok(())
 }
 #[derive(Serialize)]
 struct MapPin<'a> {
@@ -132,6 +174,10 @@ pub(crate) fn persist_partition_metadata(
     use super::super::source_scope::{PartitionPublicationScope, ResourceRecoverySourceScope};
     use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
     context.require_source_evidence()?;
+    ensure!(
+        expected.binding_pin().is_none(),
+        "partition publication cannot import a Windows expected binding"
+    );
     context.recheck_source(events)?;
     let admission = context.resource_admission();
     expected.require_resource_owner(admission)?;
@@ -240,6 +286,7 @@ pub(crate) fn persist_partition_metadata(
                 },
                 semantic_sha256: expected.semantic_sha256(),
                 objects: expected.len() as u64,
+                binding: None,
             },
             recovery_maps: maps.zip(map_path).map(|(m, p)| MapPin {
                 file: FilePin {
@@ -952,6 +999,12 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
                             .as_ref()
                             .map(|m| m.artifact_lease().snapshot().final_path.as_str());
                         let context = &prepared.context;
+                        require_expected_binding(
+                            expected,
+                            context.resource_admission(),
+                            &locator.journal_binding().disk.volume_path()?,
+                            &arena,
+                        )?;
                         let locator_sha = hex::encode(locator.external_sha256());
                         let publication = Publication {
                             schema_version: 1,
@@ -979,6 +1032,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
                                 },
                                 semantic_sha256: expected.semantic_sha256(),
                                 objects: expected.len() as u64,
+                                binding: expected.binding_pin().cloned(),
                             },
                             recovery_maps: maps.as_ref().zip(map_path).map(|(m, p)| MapPin {
                                 file: FilePin {

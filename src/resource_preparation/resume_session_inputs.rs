@@ -22,6 +22,7 @@ use n2r_win32::{
     tree_resources::ResourceBudget,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use sha2::{Digest, Sha256};
 use std::{
     fs::{self, OpenOptions},
     io::{Read, Seek, SeekFrom},
@@ -159,6 +160,8 @@ pub(crate) struct SavedResumeRequest {
     pub request: SavedPreparationRequest,
     pub source_origin_sha256: String,
     pub expected: SourceCacheFilePin,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub expected_binding: Option<crate::shadow_tree::ExpectedBindingPin>,
     /// Original legacy import receipt, when present. NEVER a current-session
     /// process terminal or a requirement that a crashed process wrote one.
     pub legacy_terminal: Option<SourceCacheFilePin>,
@@ -185,6 +188,7 @@ impl SavedResumeRequest {
             request: SavedPreparationRequest::from_actual(parent, request)?,
             source_origin_sha256: hex::encode(saved.source_origin_sha256),
             expected: saved.expected.clone(),
+            expected_binding: saved.expected_binding.clone(),
             legacy_terminal: saved.legacy_terminal.clone(),
             prior_spend: SavedPlacementSpend {
                 prior_submissions_upper: u64::try_from(saved.prior_spend.prior_submissions_upper)?,
@@ -223,6 +227,12 @@ impl SavedResumeRequest {
         self.request.clone().into_actual()?;
         digest(&self.source_origin_sha256)?;
         file_pin(&self.expected)?;
+        if let Some(pin)=&self.expected_binding {
+            digest(&pin.sha256)?;ensure!(pin.bytes>0&&pin.bytes<=65536&&pin.path.is_absolute()
+                &&pin.facts.body_file_sha256==self.expected.sha256
+                &&pin.facts.effective_admission.budget==main,"saved expected binding pin differs");
+            pin.facts.validate(pin.facts.effective_admission,&self.expected.sha256,&pin.facts.body_semantic_sha256)?;
+        }
         if let Some(terminal) = &self.legacy_terminal {
             file_pin(terminal)?;
         }
@@ -669,6 +679,22 @@ impl ResumeSessionInputs {
         let saved: SavedResumeRequest = decode(&request_file, limits.max_intent_bytes, group)?;
         let source: SourceCacheOriginPins = decode(&cache_file, limits.max_intent_bytes, group)?;
         saved.validate(journal.intent().resources)?;
+        let binding_pins:Vec<_>=initial.iter().filter(|p|p.key=="expected-binding").collect();
+        match (&saved.expected_binding,binding_pins.as_slice()) {
+            (None,[])=>{},
+            (Some(binding),[pin])=>{
+                ensure!(pin.path==binding.path&&pin.sha256==binding.sha256&&pin.bytes==binding.bytes,
+                    "resume expected binding initial artifact differs");
+                let held=adopt_pin(pin,65536,group)?;
+                let facts:crate::shadow_tree::ExpectedBindingFacts=decode(&held,65536,group)?;
+                ensure!(facts==binding.facts,"resume expected binding actual facts differ");
+                let bytes=serde_json::to_vec(&facts)?;
+                ensure!(bytes.len() as u64==binding.bytes&&hex::encode(Sha256::digest(&bytes))==binding.sha256,
+                    "resume expected binding canonical pin differs");
+                metadata_owners.push(group.arena().retained_artifact(&binding.path)?);
+            },
+            _=>anyhow::bail!("resume expected binding pin is absent or ambiguous"),
+        }
         let origin_sha = digest(&saved.source_origin_sha256)?;
         ensure!(
             source.canonical_sha256()? == origin_sha

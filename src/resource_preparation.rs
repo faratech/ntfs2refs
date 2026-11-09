@@ -87,6 +87,7 @@ pub(crate) struct ResumePreparation {
     pub source: crate::general_source_admission::resource::SourceCacheOriginPins,
     pub source_origin_sha256: [u8; 32],
     pub expected: crate::general_source_admission::resource::SourceCacheFilePin,
+    pub expected_binding: Option<crate::shadow_tree::ExpectedBindingPin>,
     pub shadow_origin: n2r_win32::shadow_native::private_tree::recovery::ExternalOriginPins,
     pub prior_spend: n2r_win32::shadow_native::private_tree::recovery::PartialPlacementSpend,
     pub placement_limits: n2r_win32::shadow_native::private_tree::recovery::RecoveryLimits,
@@ -542,7 +543,7 @@ where
         let aux_scratch = SourceScratch::new_auxiliary_in_arena(source_budget, aux_group)?;
         let projection_dir = output.join("projection");
         std::fs::create_dir(&projection_dir)?;
-        let projection = if resume.is_none() || context.cache_metadata_refreshed() {
+        let projection = if resume.is_none() {
             Some(context.derive_projection(admission, &projection_dir, &aux_scratch)?)
         } else { None };
         if let Some(projection) = projection.as_ref() {
@@ -560,7 +561,7 @@ where
             ArtifactGroup::Expected,
             admission.expected_page_budget()?.max_file_bytes,
         )?;
-        let expected = if let Some(saved) = resume.filter(|_| !context.cache_metadata_refreshed()) {
+        let expected = if let Some(saved) = resume {
             ensure!(
                 saved.expected.sha256 == hex::encode(saved.shadow_origin.expected_pages_sha256),
                 "cached expected and recovered shadow origin differ"
@@ -585,10 +586,25 @@ where
             }else{(saved.expected.path.clone(),expected_group.adopt_existing(
                 &saved.expected.path, &saved.expected.sha256, saved.expected.bytes,
             )?)};
-            let expected = PagedExpectedTree::open_revalidated_with_resources_in_group(
-                &expected_path, &saved.expected.sha256, admission,
-                &expected_group, artifact,
-            )?;
+            let expected = if context.cache_metadata_refreshed() {
+                let mut body=PagedExpectedTree::open_cached_body_in_group(
+                    &expected_path,&saved.expected.sha256,admission,&expected_group,artifact)?;
+                let proof=context.authorize_cached_expected_rebind(&body)?;
+                body.rebind_cached_body(proof,&expected_group,&output.join("expected-source-binding.json"))?;
+                body
+            } else if let Some(binding)=saved.expected_binding.as_ref() {
+                // Exact source continuity still needs this invocation's source
+                // relation; a saved binding cannot issue a live rebind witness.
+                // The current semantic verifier remains required after refresh.
+                let mut body=PagedExpectedTree::open_cached_body_in_group(
+                    &expected_path,&saved.expected.sha256,admission,&expected_group,artifact)?;
+                binding.facts.validate(binding.facts.effective_admission,&saved.expected.sha256,
+                    &binding.facts.body_semantic_sha256)?;
+                let proof=context.authorize_cached_expected_exact_rebind(&body)?;
+                body.rebind_cached_body(proof,&expected_group,&output.join("expected-source-binding.json"))?;
+                body
+            } else {PagedExpectedTree::open_revalidated_with_resources_in_group(
+                &expected_path, &saved.expected.sha256, admission,&expected_group, artifact)?};
             events.observer.note(&serde_json::json!({
                 "kind":"preparation-resume-expected-reused-v1",
                 "file_sha256":expected.file_sha256(),
@@ -619,6 +635,7 @@ where
             let artifact=expected.artifact_lease().context("resumed expected actual owner absent")?;
             current.expected=crate::general_source_admission::resource::SourceCacheFilePin{
                 path:artifact.path().to_path_buf(),sha256:expected.file_sha256().to_owned(),bytes:expected.byte_len()};
+            current.expected_binding=expected.binding_pin().cloned();
             current.shadow_origin.expected_pages_sha256=hex::decode(expected.file_sha256())?
                 .try_into().map_err(|_|anyhow::anyhow!("expected digest width differs"))?;
             Ok(current)

@@ -70,13 +70,14 @@ impl ReopenedVerificationMetadata {
         let publication_file = publication.file.try_clone()?;
         let publication_snapshot = publication.snapshot.clone();
         let artifact = recovery.expected_artifact();
-        let expected = PagedExpectedTree::open_recovery_with_resources(
+        let expected = PagedExpectedTree::open_recovery_with_binding(
             artifact.file,
             artifact.snapshot,
             &hex::encode(artifact.sha256),
             recovery.expected_semantic_sha256(),
             admission,
             arena,
+            recovery.expected_binding(),
         )?;
         ensure!(
             expected.len() as u64 == recovery.expected_objects(),
@@ -182,22 +183,29 @@ impl ReopenedVerificationMetadata {
         owner: &n2r_win32::PartitionOwnerToken,
     ) -> Result<Self> {
         witness.require_owner(owner)?;
-        Self::open_partition_actual(recovery,owner)
+        Self::open_partition_actual(recovery, owner)
     }
     /// Actual closed-HND witness, never a fabricated spent replay capability.
     pub(crate) fn open_closed_partition(
         recovery:&crate::selected_journal::resource_domain::reopen::envelope::ReopenedPartitionResourceRecovery,
-        closed:&n2r_win32::PartitionClosedJournalObservation,
-        owner:&n2r_win32::PartitionOwnerToken,
-    )->Result<Self>{
+        closed: &n2r_win32::PartitionClosedJournalObservation,
+        owner: &n2r_win32::PartitionOwnerToken,
+    ) -> Result<Self> {
         closed.require_owner(owner)?;
-        ensure!(closed.kind()==n2r_win32::PartitionTerminalKind::Handoff,"closed metadata requires actual HND");
-        Self::open_partition_actual(recovery,owner)
+        ensure!(
+            closed.kind() == n2r_win32::PartitionTerminalKind::Handoff,
+            "closed metadata requires actual HND"
+        );
+        Self::open_partition_actual(recovery, owner)
     }
     fn open_partition_actual(
         recovery:&crate::selected_journal::resource_domain::reopen::envelope::ReopenedPartitionResourceRecovery,
-        owner:&n2r_win32::PartitionOwnerToken,
-    )->Result<Self>{
+        owner: &n2r_win32::PartitionOwnerToken,
+    ) -> Result<Self> {
+        ensure!(
+            recovery.expected_binding().is_none(),
+            "partition recovery cannot import a Windows expected binding"
+        );
         let scratch = recovery.runtime_scratch();
         let group = scratch.artifact_group().context("recovery arena absent")?;
         let arena = group.arena();
@@ -343,21 +351,35 @@ impl ReopenedVerificationMetadata {
     }
 
     pub(crate) fn compare_partition(
-        &self, owner: &n2r_win32::PartitionOwnerToken,
+        &self,
+        owner: &n2r_win32::PartitionOwnerToken,
         observed: &n2r_win32::PartitionTerminalNativeObservation,
     ) -> Result<u64> {
-        let expected=self.partition_source.as_ref().context("actual partition metadata source absent")?;
-        ensure!(self.partition_owner.as_ref().is_some_and(|p|p.same_owner(owner))
-            && observed.filesystem()=="ReFS"
-            && observed.report().pair.source.identity==expected.identity
-            && observed.report().pair.source.disk_number==expected.disk_number
-            && !observed.report().conversion_qualified,
-            "actual partition terminal metadata owner/source differs");
-        let count=self.compare_actual_report(observed.report(),true)?;
-        let known=observed.report().content_observation.as_ref().and_then(|c|c.known_content.as_ref())
+        let expected = self
+            .partition_source
+            .as_ref()
+            .context("actual partition metadata source absent")?;
+        ensure!(
+            self.partition_owner
+                .as_ref()
+                .is_some_and(|p| p.same_owner(owner))
+                && observed.filesystem() == "ReFS"
+                && observed.report().pair.source.identity == expected.identity
+                && observed.report().pair.source.disk_number == expected.disk_number
+                && !observed.report().conversion_qualified,
+            "actual partition terminal metadata owner/source differs"
+        );
+        let count = self.compare_actual_report(observed.report(), true)?;
+        let known = observed
+            .report()
+            .content_observation
+            .as_ref()
+            .and_then(|c| c.known_content.as_ref())
             .context("actual terminal known-content observation absent")?;
-        ensure!(self.maps.is_some()||known.streams_without_content_baseline==0,
-            "partition terminal unknown-content streams require actual authenticated maps");
+        ensure!(
+            self.maps.is_some() || known.streams_without_content_baseline == 0,
+            "partition terminal unknown-content streams require actual authenticated maps"
+        );
         Ok(count)
     }
 
@@ -401,8 +423,9 @@ impl ReopenedVerificationMetadata {
             (if partition {
                 converted.pair.source.identity == maps.header.source.identity
                     && converted.pair.source.disk_number == maps.header.source.disk_number
-            } else { converted.pair.source == maps.header.source })
-                && converted.pair.shadow == maps.header.shadow
+            } else {
+                converted.pair.source == maps.header.source
+            }) && converted.pair.shadow == maps.header.shadow
                 && converted.native.binding.identity == maps.header.source.identity,
             "converted native device differs from reopened map"
         );
@@ -429,6 +452,6 @@ impl ReopenedVerificationMetadata {
     }
 }
 
-#[path="reopened/offline_prepared.rs"]
+#[path = "reopened/offline_prepared.rs"]
 mod offline_prepared;
 pub(crate) use offline_prepared::OfflinePreparedVerification;

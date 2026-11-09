@@ -191,6 +191,15 @@ impl Checkpoints {
             "resume-request",
             &facts,
         )?;
+        let mut initial_artifacts=vec![source_cache,expected_pin.clone(),native.clone(),request_pin];
+        if let Some(binding)=expected.binding_pin(){
+            ensure!(saved.expected_binding.as_ref().is_some_and(|saved|saved.sha256==binding.sha256
+                &&saved.path==binding.path),"effective resume lost actual expected binding");
+            let lease=arena.retained_artifact(&binding.path)?;
+            ensure!(lease.sha256()==binding.sha256&&lease.wire_bytes()==binding.bytes,
+                "checkpoint expected binding actual owner differs");
+            initial_artifacts.push(accounted_lease(&lease,"expected-binding")?);owners.push(lease);
+        }
         let intent = ResumeIntent {
             schema_version: 1,
             kind: ResumeIntent::kind().to_owned(),
@@ -204,12 +213,7 @@ impl Checkpoints {
             profiles: FormatProfiles::current(),
             origin,
             new_preparation_intent: new_guard,
-            initial_artifacts: vec![
-                source_cache,
-                expected_pin.clone(),
-                native.clone(),
-                request_pin,
-            ],
+            initial_artifacts,
         };
         let mut journal = DurableResume::create(
             &directory,

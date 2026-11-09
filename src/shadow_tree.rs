@@ -10,6 +10,8 @@ pub use n2r_win32::sparse_layout::{LogicalRange, SparseLayout};
 #[cfg(windows)]
 pub(crate) use pages::ExpectedTreeView;
 #[cfg(windows)]
+pub(crate) use pages::{ExpectedBindingFacts, ExpectedBindingPin};
+#[cfg(windows)]
 pub use pages::{
     ExpectedTreePageCounts, ExpectedTreePageHeader, ExpectedTreePageReceipt, PagedExpectedTree,
 };

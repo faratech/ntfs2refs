@@ -372,6 +372,51 @@ fn build_object(
 }
 
 impl SourceExpectedDomain {
+    /// Linear current-code equality proof for an authenticated saved body.
+    /// Native rows are visited in source ordinal order; no projection stores,
+    /// sort runs or replacement expected file are produced.
+    pub(crate) fn verify_cached_body(
+        source:&PagedInspection,native:&impl NativeObservationDomain,
+        admission:SourceResourceAdmission,aliases:&crate::boot_alias::WindowsAliasDomain,
+        expected:&crate::shadow_tree::PagedExpectedTree,scratch:&SourceScratch,
+    )->Result<()> {
+        aliases.require_source(source)?;
+        source.require_paged_source(admission.source_pages,admission.semantic_byte_budget())?;
+        ensure!(native.header().request.source_inspection_sha256==source.canonical_sha256()?
+            &&native.header().request.resource_profile==Some(n2r_win32::attestation::ResourceProfile::ResourceBoundedV4(Some(admission)))
+            &&native.len() as u64==source.file_count()&&expected.len() as u64==admission.objects()?
+            &&expected.profile()==crate::ntfs_admission::ResourceProfile::ResourceBoundedV4(Some(admission)).ordinary_shadow_profile(),
+            "cached expected current projection profile/source coverage differs");
+        let index_bytes=(expected.len() as u64).checked_mul(256).and_then(|n|n.checked_add(65536))
+            .context("cached expected equality index RAM overflow")?;
+        let _index=scratch.lease_ram(index_bytes)?;
+        let _row=scratch.lease_ram(admission.budget.max_row_bytes.checked_mul(16)
+            .and_then(|n|n.checked_add(8*1024*1024)).context("cached expected equality row RAM overflow")?)?;
+        let mut hashes=std::collections::BTreeMap::new();
+        for index in 0..expected.len() {
+            let object=expected.object_leased(index)?;
+            let hash:[u8;32]=Sha256::digest(serde_json::to_vec(&*object)?).into();
+            ensure!(hashes.insert(object.record_number,hash).is_none(),"cached expected repeats a source identity");
+        }
+        let mut logical=0u64;
+        let mut roles=Vec::new();
+        for ordinal in 0..source.file_count() {
+            let file=source.file(ordinal)?;
+            if let Some(role)=ntfs_admission::paged::internal_role(source,&file)?{roles.push(role);continue;}
+            let (object,_)=build_object(source,native,ordinal,&file,admission,Some(aliases))?;
+            let hash:[u8;32]=Sha256::digest(serde_json::to_vec(&object)?).into();
+            ensure!(hashes.remove(&object.record_number)==Some(hash),
+                "cached expected differs from current typed projection at FILE {}",object.record_number);
+            for stream in object.data_streams(){logical=logical.checked_add(stream.length).context("cached expected logical total overflow")?;}
+            if file.record_number==5&&file.attributes.iter().any(ntfs_admission::recognized_root_txf){
+                roles.push("root:$TXF_DATA (not yet admitted for replacement)".to_owned());
+            }
+        }
+        ensure!(hashes.is_empty()&&logical==expected.logical_bytes()
+            &&roles.as_slice()==expected.internal_replacement_pending(),"cached expected user coverage/logical total/roles differ");
+        source.revalidate()?;native.revalidate()?;expected.revalidate()?;
+        Ok(())
+    }
     pub fn derive(
         source: &PagedInspection,
         native: &impl NativeObservationDomain,

@@ -130,17 +130,32 @@ impl Target {
         let rounded = length.checked_next_multiple_of(4096).ok_or_else(|| invalid("recovered sparse EOF overflow"))?;
         unwritten::recovery::require_zero_storage_vdl(&file, rounded)?;
         let standard = info(&file, 1, 24)?;
-        // A nonsparse ADS target is created by SetEndOfFile and can already
-        // own unwritten clusters. Its complete storage-VDL-zero proof above
-        // remains mandatory; the later carrier clone replaces its dense EOF.
-        // Actual sparse targets must still have no allocated islands yet.
+        // SetEndOfFile can allocate unwritten storage even for a sparse ReFS
+        // placeholder. Accept only allocations inside the admitted islands:
+        // the carrier clone replaces them; every declared hole stays a hole.
         let allocation=layout::u64_at(&standard,0)?;
         let actual_sparse=layout::u32_at(&info(&file,9,8)?,0)?&0x200!=0;
-        if (sparse_mode && allocation != 0)
-            || layout::u32_at(&standard, 16)? != 1
+        if layout::u32_at(&standard, 16)? != 1
             || actual_sparse != sparse_mode
         {
             return Err(io::Error::other(format!("recovered carrier target allocation/flags differ: path={path:?}, allocation={allocation}, sparse={actual_sparse}, expected_sparse={sparse_mode}")));
+        }
+        if sparse_mode && allocation != 0 {
+            let (runs,_)=capture(&file,rounded)?;
+            for run in runs.iter().filter(|run|run.lcn.is_some()) {
+                let start=run.vcn.checked_mul(4096).ok_or_else(||invalid("recovered sparse VCN overflow"))?;
+                let end=run.clusters.checked_mul(4096).and_then(|n|start.checked_add(n))
+                    .ok_or_else(||invalid("recovered sparse interval overflow"))?;
+                let mut cursor=start;
+                for island in &layout.allocated {
+                    let stop=island.offset.checked_add(island.length).ok_or_else(||invalid("recovered island overflow"))?;
+                    if stop<=cursor {continue;}
+                    if island.offset>cursor {break;}
+                    cursor=end.min(stop);if cursor==end {break;}
+                }
+                if cursor!=end {return Err(io::Error::other(format!(
+                    "recovered sparse placeholder allocates a declared hole: path={path:?}, vcn={}, clusters={}",run.vcn,run.clusters)));}
+            }
         }
         let mut dense = 0u64;
         let mut islands = Vec::new();

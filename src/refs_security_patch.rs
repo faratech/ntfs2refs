@@ -378,9 +378,21 @@ impl<R: Read + Seek> Walker<'_, R> {
             &mut visited,
             &mut counts,
         )?;
+        let expected_rows = expected_rows.context("trust-label tree root count absent")?;
+        // The security table's header count is exact. The Object Table's is
+        // not once the table is large: on an untouched Windows-sized shadow
+        // the driver's own tree held 6159 ordered, CRC-valid leaf rows under a
+        // header count of 6158. Every page here is CRC-checked and its keys
+        // are strictly ordered, so a walk cannot invent rows; what it must not
+        // do is miss any the header knows about.
+        let count_acceptable = match kind {
+            Tree::Objects(_) => counts.leaves >= expected_rows,
+            Tree::Security => counts.leaves == expected_rows,
+        };
         ensure!(
-            counts.leaves == expected_rows.context("trust-label tree root count absent")?,
-            "trust-label tree leaf count differs from its root descriptor"
+            count_acceptable,
+            "trust-label tree leaf count differs from its root descriptor: table OID 0x{:x}, leaf rows walked {}, root descriptor count {}, pages read so far {}",
+            kind.oid(), counts.leaves, expected_rows, self.pages
         );
         if matches!(kind, Tree::Objects(_)) {
             ensure!(

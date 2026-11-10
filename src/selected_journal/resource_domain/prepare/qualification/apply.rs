@@ -318,6 +318,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
     ) -> Result<ResourceAppliedConversion<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>>
     {
         checkpoint_native_events(events, &mut checkpoint_events)?;
+        n2r_win32::perf::step("revalidate before apply");
         self.prepared.revalidate(events)?;
         checkpoint_native_events(events, &mut checkpoint_events)?;
         self.admission.require_binding(
@@ -358,6 +359,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
             new_selected_sha256: ticket.new_selected_sha256,
         };
         let (source, _) = prepared.context.source_and_inspection()?;
+        n2r_win32::perf::step("verify journal and source, write apply marker");
         let mut target = prepared.inner._journal.begin_sealed_fresh_apply(
             source, index.policy(), &pins, events,
         )?;
@@ -373,6 +375,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
             "fresh activation changed source exclusion or the protected shadow"
         );
         checkpoint_native_events(events, &mut checkpoint_events)?;
+        n2r_win32::perf::step("write changed ranges");
         let domain = prepared.inner._domain;
         for ordinal in 0..u64::from(ticket.range_count) {
             let row = domain.row(ordinal)?;
@@ -392,6 +395,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
                 events,
             )?;
         }
+        n2r_win32::perf::step("flush and write boot sector");
         target.sync_all()?;
         // Preserve the existing selected-journal protocol: boot granule last,
         // after every other target range has crossed its durability barrier.
@@ -414,6 +418,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
         }
         ensure!(first_write_fault.is_none(), "diagnostic interruption requested but no actual changed write occurred");
         target.sync_all()?;
+        n2r_win32::perf::step("read back changed ranges");
         let digest = check_selected(
             &mut target,
             domain,
@@ -429,6 +434,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
             conversion_qualified: false,
             old_restoration_bytes: None,
         };
+        n2r_win32::perf::step("flush and read back again");
         after_apply(&applied)?;
         ensure!(
             sj::classify(prepared.inner._journal, ticket)? == sj::SelectedLifecycle::ApplyIntent,
@@ -452,6 +458,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
             sj::classify(prepared.inner._journal, ticket)? == sj::SelectedLifecycle::ApplyIntent,
             "fresh journal intent changed before HND"
         );
+        n2r_win32::perf::step("write handoff marker");
         sj::write_lifecycle_marker(prepared.inner._journal, ticket, MarkerKind::Handoff)?;
         prepared
             .inner
@@ -531,6 +538,7 @@ impl ResourceAppliedConversion<'_, '_, '_, '_, '_, '_> {
             new_selected_sha256: ticket.new_selected_sha256,
         };
         let (source, _) = prepared.context.source_and_inspection()?;
+        n2r_win32::perf::step("seal handoff");
         prepared.inner._journal.seal_sealed_handoff_for_observation(
             source, &index.policy(), &pins, events,
         )?;

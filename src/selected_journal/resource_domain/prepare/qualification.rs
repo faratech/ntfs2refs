@@ -767,25 +767,46 @@ fn require_owners_between_frozen_checks(
         receipt.require_same_sealed_journal(prepared.inner._journal, &prepared.inner.ticket)?;
     } else {
         // Before the live receipt exists, retain the complete original
-        // payload/descriptor/COPY readback at each publication boundary.
-        let _memory = prepared
-            .inner
-            ._domain
-            .scratch
-            .lease_ram(12 * BUFFER as u64)?;
-        let mut buffer = vec![0; BUFFER];
-        let mut compare = vec![0; BUFFER];
-        let (immutable, _) = validate_readback(
-            prepared.inner._domain,
-            prepared.inner._journal,
-            &prepared.inner.ticket,
-            &mut buffer,
-            &mut compare,
-        )?;
-        ensure!(
-            immutable == prepared.inner.ticket.immutable_sha256,
-            "prepared journal immutable bytes changed before qualification"
-        );
+        // payload/descriptor/COPY readback at each publication boundary --
+        // unless this journal body was already read back in full and matched
+        // in this process: it does not change once written and sealed.
+        const MARKERLESS_BODY: u64 = 8192;
+        let immutable_sha256 = prepared.inner.ticket.immutable_sha256;
+        let body_bytes = prepared.inner.ticket.journal_length - MARKERLESS_BODY;
+        let markerless = prepared.inner.ticket.marker_profile.is_none();
+        if !(markerless
+            && n2r_win32::sha256_native::journal_body_already_verified(
+                &immutable_sha256,
+                MARKERLESS_BODY,
+                body_bytes,
+            ))
+        {
+            let _memory = prepared
+                .inner
+                ._domain
+                .scratch
+                .lease_ram(12 * BUFFER as u64)?;
+            let mut buffer = vec![0; BUFFER];
+            let mut compare = vec![0; BUFFER];
+            let (immutable, _) = validate_readback(
+                prepared.inner._domain,
+                prepared.inner._journal,
+                &prepared.inner.ticket,
+                &mut buffer,
+                &mut compare,
+            )?;
+            ensure!(
+                immutable == immutable_sha256,
+                "prepared journal immutable bytes changed before qualification"
+            );
+            if markerless {
+                n2r_win32::sha256_native::note_journal_body_verified(
+                    &immutable_sha256,
+                    MARKERLESS_BODY,
+                    body_bytes,
+                );
+            }
+        }
     }
     frozen.require(prepared)
 }

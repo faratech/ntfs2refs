@@ -104,6 +104,10 @@ pub(crate) fn recover_resource_allocation_with_observer<O: PreparationObserver>(
     drop(scratch);
     drop(group);
     drop(arena);
+    // From here on nothing is written to the source from the journal. Each
+    // recovery file is hashed as it is reopened and then held; it need not be
+    // hashed again at every later step of the finalizer.
+    n2r_win32::verify_policy::check_once();
     let finalized = crate::resource_finalize::finalize_resource_handoff_with_observer(
         pair, journal, publication, publication_sha256, resources,
         &output.join("finalization"), observer,

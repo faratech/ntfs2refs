@@ -292,7 +292,15 @@ fn check_side(
     mut aggregate: Option<&mut PinHash>,
     immutable: &mut PinHash,
     buffer: &mut [u8],
+    descriptors_only: bool,
 ) -> Result<()> {
+    if descriptors_only {
+        if stored {
+            let position = journal.stream_position()?;
+            journal.seek(SeekFrom::Start(add(position, length)?))?;
+        }
+        return Ok(());
+    }
     if let Some(aggregate) = aggregate.as_deref_mut() {
         frame(aggregate, range)?;
     }
@@ -425,6 +433,14 @@ impl<'a> JournalObservation<'a> {
             ticket.journal_length >= add(add(body, HEADER as u64)?, FOOTER as u64)?,
             "recovery journal is shorter than its fixed framing"
         );
+        // A body that was already read in full and matched its ticket in this
+        // process does not change. Rebuilding the index then needs only the
+        // record descriptors, not another pass over every payload byte.
+        let descriptors_only = n2r_win32::sha256_native::journal_body_already_verified(
+            &ticket.immutable_sha256,
+            body,
+            ticket.journal_length - body,
+        );
         at(journal, body, &mut header)?;
         let fmt = JournalFormat::decode(&header, ticket)?;
         ensure!(
@@ -498,6 +514,7 @@ impl<'a> JournalObservation<'a> {
                     None,
                     &mut immutable,
                     &mut buffer,
+                    descriptors_only,
                 )?;
             } else {
                 if row.old_kind == 1 {
@@ -512,6 +529,7 @@ impl<'a> JournalObservation<'a> {
                     Some(&mut old),
                     &mut immutable,
                     &mut buffer,
+                    descriptors_only,
                 )?;
             }
             ensure!(
@@ -532,6 +550,7 @@ impl<'a> JournalObservation<'a> {
                     new.as_mut(),
                     &mut immutable,
                     &mut buffer,
+                    descriptors_only,
                 )?;
             }
             ensure!(
@@ -566,17 +585,25 @@ impl<'a> JournalObservation<'a> {
                 && footer[40..72] == ticket.new_selected_sha256
                 && get_u64(&footer, 72) == ticket.journal_length
                 && journal.stream_position()? == ticket.journal_length
-                && finish(old)?
-                    == ticket
-                        .old_restored_selected_sha256
-                        .unwrap_or(ticket.old_selected_sha256)
-                && finish(immutable)? == ticket.immutable_sha256,
+                && (descriptors_only
+                    || finish(old)?
+                        == ticket
+                            .old_restored_selected_sha256
+                            .unwrap_or(ticket.old_selected_sha256))
+                && (descriptors_only || finish(immutable)? == ticket.immutable_sha256),
             "recovery immutable body, footer or OLD aggregate differs"
         );
         if let Some(new) = new {
             ensure!(
-                finish(new)? == ticket.new_selected_sha256,
+                descriptors_only || finish(new)? == ticket.new_selected_sha256,
                 "recovery NEW aggregate differs"
+            );
+        }
+        if !descriptors_only {
+            n2r_win32::sha256_native::note_journal_body_verified(
+                &ticket.immutable_sha256,
+                body,
+                ticket.journal_length - body,
             );
         }
         let mut index_footer = [0u8; FOOTER_BYTES as usize];
@@ -614,7 +641,7 @@ impl<'a> JournalObservation<'a> {
             _memory: memory,
         };
         result.revalidate_index()?;
-        if copy_seen {
+        if copy_seen && !descriptors_only {
             result.validate_resolved_new()?;
         }
         // Enforce all ordinary lifecycle and torn-marker refusals, but do not

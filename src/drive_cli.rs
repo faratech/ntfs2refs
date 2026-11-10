@@ -79,6 +79,11 @@ pub struct DriveArgs {
     /// written to the source. The source volume is left as NTFS.
     #[arg(long, requires = "drive", conflicts_with_all = ["list", "recover", "rollback"])]
     pub diagnose: bool,
+    /// Re-read every working file and the whole source at every checkpoint
+    /// instead of once, immediately before the first write to the source.
+    /// Much slower; the result is the same.
+    #[arg(long, requires = "drive", conflicts_with_all = ["list", "recover", "rollback"])]
+    pub recheck_everything: bool,
     /// Qualification-only: use bounded thin temporary storage on the V4 route.
     #[arg(
         long,
@@ -569,6 +574,9 @@ mod windows {
         if args.diagnose {
             crate::resource_preparation::set_diagnose();
             println!("Diagnose mode: every per-object failure is reported and nothing is written to the source.");
+        }
+        if args.recheck_everything {
+            crate::resource_preparation::set_recheck_everything();
         }
         if !confirm("Convert this partition to ReFS in place, preserving supported files? [y/N]")? {
             println!("Cancelled. No conversion started.");

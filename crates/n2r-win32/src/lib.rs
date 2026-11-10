@@ -110,6 +110,7 @@ pub use windows_txf::VerifiedWindowsTxfMarkers;
 pub mod windows_object_ids;
 #[cfg(windows)]
 pub use windows_object_ids::VerifiedWindowsObjectIds;
+pub mod verify_policy;
 pub mod volume_label;
 pub mod volume_manifest;
 #[cfg(windows)]

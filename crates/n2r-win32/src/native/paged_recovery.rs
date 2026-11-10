@@ -557,7 +557,7 @@ fn verify_paged_handoff<R: Read + Seek>(
     let before = verify_journal_owner(journal, pins, facts.journal_length)?;
     let modified = journal.metadata()?.modified()?;
     check_handoff_lifecycle(journal, pins)?;
-    if crate::sha256_native::hash_range(journal, BODY, facts.journal_length - BODY)?
+    if crate::sha256_native::journal_body(journal, BODY, facts.journal_length - BODY, &pins.immutable_sha256)?
         != pins.immutable_sha256
     {
         return Err(invalid("handoff journal immutable body differs"));
@@ -565,7 +565,7 @@ fn verify_paged_handoff<R: Read + Seek>(
     verify_index_against_journal(journal, policy, pins)?;
     verify_selected_digest(source, policy, pins.new_selected_sha256)?;
     check_handoff_lifecycle(journal, pins)?;
-    if crate::sha256_native::hash_range(journal, BODY, facts.journal_length - BODY)?
+    if crate::sha256_native::journal_body(journal, BODY, facts.journal_length - BODY, &pins.immutable_sha256)?
         != pins.immutable_sha256
     {
         return Err(invalid(
@@ -613,7 +613,7 @@ fn verify_paged_abort<R: Read + Seek>(
     let before = verify_journal_owner(journal, pins, facts.journal_length)?;
     let modified = journal.metadata()?.modified()?;
     let abandoned = check_aborted_lifecycle(journal, pins)?;
-    if crate::sha256_native::hash_range(journal, BODY, facts.journal_length - BODY)? != pins.immutable_sha256 {
+    if crate::sha256_native::journal_body(journal, BODY, facts.journal_length - BODY, &pins.immutable_sha256)? != pins.immutable_sha256 {
         return Err(invalid("rollback journal immutable body differs"));
     }
     verify_index_against_journal(journal, policy, pins)?;
@@ -633,7 +633,7 @@ fn verify_paged_abort<R: Read + Seek>(
         return Err(invalid("restored source does not contain an NTFS boot sector"));
     }
     if check_aborted_lifecycle(journal, pins)? != abandoned { return Err(invalid("rollback intent changed during source verification")); }
-    if crate::sha256_native::hash_range(journal, BODY, facts.journal_length - BODY)? != pins.immutable_sha256 {
+    if crate::sha256_native::journal_body(journal, BODY, facts.journal_length - BODY, &pins.immutable_sha256)? != pins.immutable_sha256 {
         return Err(invalid("rollback journal changed during source verification"));
     }
     verify_index_against_journal(journal, policy, pins)?;
@@ -1030,7 +1030,7 @@ impl GeneralFrozenPartition {
         let journal_before = verify_journal_owner(journal, pins, facts.journal_length)?;
         let modified = journal.metadata()?.modified()?;
         check_lifecycle(journal, pins, direction)?;
-        if crate::sha256_native::hash_range(journal, BODY, facts.journal_length - BODY)?
+        if crate::sha256_native::journal_body(journal, BODY, facts.journal_length - BODY, &pins.immutable_sha256)?
             != pins.immutable_sha256
         {
             return Err(invalid("protected recovery journal immutable body differs"));
@@ -1043,7 +1043,7 @@ impl GeneralFrozenPartition {
             ));
         }
         check_lifecycle(journal, pins, direction)?;
-        if crate::sha256_native::hash_range(journal, BODY, facts.journal_length - BODY)?
+        if crate::sha256_native::journal_body(journal, BODY, facts.journal_length - BODY, &pins.immutable_sha256)?
             != pins.immutable_sha256
         {
             return Err(invalid(
@@ -1116,7 +1116,7 @@ impl GeneralFrozenPartition {
         let journal_before = verify_journal_owner(journal, pins, facts.journal_length)?;
         let modified = journal.metadata()?.modified()?;
         check_clear_lifecycle(journal)?;
-        if crate::sha256_native::hash_range(journal, BODY, facts.journal_length - BODY)?
+        if crate::sha256_native::journal_body(journal, BODY, facts.journal_length - BODY, &pins.immutable_sha256)?
             != pins.immutable_sha256
         {
             return Err(invalid("fresh held journal immutable body differs"));
@@ -1131,7 +1131,7 @@ impl GeneralFrozenPartition {
         check_clear_lifecycle(journal)?;
         // Ordinary sharing excludes new file writers, not privileged raw
         // aliases. Preserve a complete closing body hash before publishing AP.
-        if crate::sha256_native::hash_range(journal, BODY, facts.journal_length - BODY)?
+        if crate::sha256_native::journal_body(journal, BODY, facts.journal_length - BODY, &pins.immutable_sha256)?
             != pins.immutable_sha256
         {
             return Err(invalid(
@@ -1351,7 +1351,7 @@ impl GeneralExclusiveRecoveryTarget {
             Err(error) => return Err(error),
         }
         check_lifecycle(journal, pins, direction)?;
-        if crate::sha256_native::hash_range(journal, BODY, facts.journal_length - BODY)?
+        if crate::sha256_native::journal_body(journal, BODY, facts.journal_length - BODY, &pins.immutable_sha256)?
             != pins.immutable_sha256
         {
             return Err(invalid(
@@ -1463,7 +1463,7 @@ pub(super) fn authenticate_partition_paged_source(
         Err(error) => return Err(error),
     }
     check_lifecycle(journal, pins, PagedRecoveryDirection::Resume)?;
-    if crate::sha256_native::hash_range(journal, BODY, facts.journal_length - BODY)?
+    if crate::sha256_native::journal_body(journal, BODY, facts.journal_length - BODY, &pins.immutable_sha256)?
         != pins.immutable_sha256
     {
         return Err(invalid("partition held journal immutable body differs"));
@@ -1479,7 +1479,7 @@ pub(super) fn authenticate_partition_paged_source(
         },
     )?;
     check_lifecycle(journal, pins, PagedRecoveryDirection::Resume)?;
-    if crate::sha256_native::hash_range(journal, BODY, facts.journal_length - BODY)?
+    if crate::sha256_native::journal_body(journal, BODY, facts.journal_length - BODY, &pins.immutable_sha256)?
         != pins.immutable_sha256
     {
         return Err(invalid(

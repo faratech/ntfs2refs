@@ -401,7 +401,7 @@ impl Writer {
         self.file.seek(SeekFrom::Start(bytes - FOOTER))?;
         self.file.write_all(&footer)?;
         self.file.flush()?;
-        crate::perf::flush(crate::perf::Point::FileFlush, &self.file)?;
+        crate::verify_policy::flush_working_file(&self.file)?;
         let before = Snapshot::observe(&self.file)?;
         require(
             before.bytes == bytes,
@@ -553,6 +553,7 @@ pub struct Reader {
     file: File,
     snapshot: Snapshot,
     sha256: [u8; 32],
+    last_full: crate::verify_policy::LastFull,
     budget: PageBudget,
     records: u64,
     pages: u64,
@@ -726,6 +727,7 @@ impl Reader {
             file,
             snapshot,
             sha256,
+            last_full: crate::verify_policy::LastFull::new(),
             budget,
             records,
             pages,
@@ -954,6 +956,15 @@ impl Reader {
         Err(io::Error::other("metadata indexed record absent"))
     }
     pub fn revalidate(&mut self) -> io::Result<()> {
+        // The whole file was hashed when this reader opened it, and every page
+        // is hashed again as it is loaded. Unless a full check is due, confirm
+        // that the held file still has the same identity, size and timestamp.
+        if !crate::verify_policy::full(&self.last_full) {
+            return require(
+                Snapshot::observe(&self.file)? == self.snapshot,
+                "held metadata identity changed",
+            );
+        }
         require(
             Snapshot::observe(&self.file)? == self.snapshot
                 && file_hash(&mut self.file, self.snapshot.bytes)? == self.sha256

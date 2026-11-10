@@ -902,6 +902,14 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     };
     let (immutable, whole) = validate_readback(domain, file, &ticket, &mut buffer, &mut compare)?;
     ticket.immutable_sha256 = immutable;
+    // The whole body was just read back and compared with its sources.
+    if ticket.marker_profile.is_none() {
+        n2r_win32::sha256_native::note_journal_body_verified(
+            &immutable,
+            BODY,
+            ticket.journal_length - BODY,
+        );
+    }
     revalidate_preparation_domain(domain, capture_witness)?;
     Ok((ticket, whole))
 }

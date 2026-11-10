@@ -174,6 +174,7 @@ struct FilePin {
     sha256: String,
     _parents: Vec<File>,
     external_origin: Option<Arc<ExternalOriginRoot>>,
+    last_full: n2r_win32::verify_policy::LastFull,
 }
 struct SealedPins {
     pins: Vec<Arc<FilePin>>,
@@ -2056,6 +2057,7 @@ impl ArtifactPathPermit {
             sha256: verified.sha256.clone(),
             _parents: std::mem::take(&mut self._parents),
             external_origin: self.external_origin.clone(),
+            last_full: n2r_win32::verify_policy::LastFull::new(),
         });
         let mut state = self
             .group
@@ -2193,6 +2195,21 @@ impl FilePin {
             .file
             .lock()
             .map_err(|_| anyhow::anyhow!("artifact file lock poisoned"))?;
+        // The file was hashed when it was sealed and has been held open,
+        // denying writers, ever since. Unless a full check is due, confirm
+        // that it is still the same file with the same size and timestamp.
+        if !n2r_win32::verify_policy::full(&self.last_full) {
+            let held = file.as_ref().context("artifact owner closed")?;
+            ensure!(
+                reference_file::observe_reference_file_handle_with_limit(
+                    held,
+                    self.snapshot.file_bytes
+                )? == self.snapshot
+                    && held.metadata()?.modified()? == self.modified,
+                "artifact held identity changed"
+            );
+            return Ok(());
+        }
         let current = inspect(
             file.as_mut().context("artifact owner closed")?,
             self.snapshot.file_bytes,
@@ -2277,7 +2294,20 @@ impl ArtifactLease {
         let _hash_ram = group
             .arena
             .reserve_ram(pin.snapshot.file_bytes.min(HASH_WORKSPACE))?;
-        let verified = inspect(&mut file, pin.snapshot.file_bytes, &pin.sha256)?;
+        // A file about to be deleted needs its identity confirmed, not its
+        // contents hashed again.
+        let verified = if n2r_win32::verify_policy::checks_once() {
+            Verified {
+                snapshot: reference_file::observe_reference_file_handle_with_limit(
+                    &file,
+                    pin.snapshot.file_bytes,
+                )?,
+                modified: file.metadata()?.modified()?,
+                sha256: pin.sha256.clone(),
+            }
+        } else {
+            inspect(&mut file, pin.snapshot.file_bytes, &pin.sha256)?
+        };
         if verified.snapshot != pin.snapshot || verified.modified != pin.modified {
             let _diagnostic_ram = group.arena.reserve_ram(8192)?;
             let route: String = verified.snapshot.final_path.chars().take(512).collect();

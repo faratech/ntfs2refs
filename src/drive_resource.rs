@@ -256,6 +256,12 @@ pub(crate) fn convert_owned_with_provider_commitment(
     };
     request.validate()?;
     let prepared_output = run.join("conversion");
+    // Working files are hashed when written and then held; the source is
+    // offline, read-only and held. Re-read them in full once, at the gate
+    // below, instead of at every checkpoint in between.
+    if !crate::resource_preparation::recheck_everything() {
+        n2r_win32::verify_policy::check_once();
+    }
     let result = (|| -> Result<()> {
         let (publication, sha) = crate::resource_preparation::prepare_with(
             request,
@@ -264,9 +270,14 @@ pub(crate) fn convert_owned_with_provider_commitment(
             |prepared, events, observer| {
                 let path = prepared.publication_path().to_path_buf();
                 let sha = parse_sha(prepared.publication_sha256())?;
+                // Everything the apply step depends on is verified in full
+                // here, immediately before the first write to the source.
+                n2r_win32::perf::phase("source-activation");
+                let gate = n2r_win32::verify_policy::Gate::enter();
                 let fresh = prepared.into_fresh_apply(events, |batch| {
                     observer.native_events("source-activation", batch)
                 })?;
+                n2r_win32::perf::phase("source-apply-and-handoff");
                 let mut applied = fresh.apply_and_handoff(
                     events,
                     |batch| observer.native_events("source-apply-and-handoff", batch),
@@ -276,6 +287,7 @@ pub(crate) fn convert_owned_with_provider_commitment(
                         Ok(())
                     },
                 )?;
+                drop(gate);
                 applied.seal_handoff_readonly(events, |batch| {
                     observer.native_events("source-handoff-readonly", batch)
                 })?;

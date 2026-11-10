@@ -939,6 +939,7 @@ impl ResourceSourceContext {
         let length = source.byte_len();
         *phase = "source-inspection";
         let mut reopened_cache=None;
+        n2r_win32::perf::step("read NTFS records");
         let (raw, read_coverage) = if let Some((origin,pin))=cached_origin {
             *phase="source-cache-exact-byte-revalidation";
             let (arena,group,_)=groups.as_ref().context("cache reopening requires actual source/native arena permits")?;
@@ -982,6 +983,7 @@ impl ResourceSourceContext {
             native_batch(events, |batch| proof.revalidate(source, batch))?;
             Some(proof)
         } else { None };
+        n2r_win32::perf::step("plan short-name links");
         let mut windows_aliases = if binding.layout_profile
             == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows {
             let mut aliases = crate::boot_alias::WindowsAliasDomain::derive(
@@ -1014,6 +1016,7 @@ impl ResourceSourceContext {
             &mut metadata,
             &mut reservations,
         )?;
+        n2r_win32::perf::step("build and read source fingerprint");
         let fingerprint = if let Some(cache)=reopened_cache.as_mut(){
             cache.fingerprint.take().context("cached fingerprint owner already consumed")?
         } else { PagedSourceFingerprint::for_inspection(
@@ -1035,6 +1038,7 @@ impl ResourceSourceContext {
             &mut metadata,
             &mut reservations,
         )?;
+        n2r_win32::perf::step("verify backup boot sector, log and label");
         let backups = ntfs_backup::verify_domain(&mut source, length, &raw)?;
         let log = ntfs_log::verify_domain(&mut source, &raw)?;
         let label_frozen = source_volume_label::verify_domain(&mut source, &raw, label.label())?;
@@ -1048,6 +1052,7 @@ impl ResourceSourceContext {
             &mut reservations,
         )?;
         *phase = "source-observation-selectors";
+        n2r_win32::perf::step("select objects and check target security");
         let selectors = PagedObservationRequest::new(&raw, &binding, budget, policy)?;
         let admission = selectors.admission();
         if binding.layout_profile == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows {
@@ -1081,6 +1086,7 @@ impl ResourceSourceContext {
             .map(|_| scratch.lease_ram(std::mem::size_of::<SourceNativeMemory>() as u64 + 128))
             .transpose()?;
         let mut cached_native_artifact=None;
+        n2r_win32::perf::step("observe source through Windows");
         let native = if let Some(cache)=reopened_cache.as_mut(){
             *phase="source-cache-fresh-protected-runtime";
             let (arena,_,native_group)=groups.as_ref().context("cache native arena permit absent")?;
@@ -1183,6 +1189,7 @@ impl ResourceSourceContext {
             &mut reservations,
         )?;
         *phase = "source-admission";
+        n2r_win32::perf::step("re-read source fingerprint");
         let after_hash = fingerprint.hash(&mut source)?;
         let after = native_batch(events, |batch| source.state(batch))?;
         ensure!(
@@ -1191,6 +1198,7 @@ impl ResourceSourceContext {
                 && raw.canonical_sha256()? == inspection_sha,
             "frozen source changed across actual native observation"
         );
+        n2r_win32::perf::step("object ids and transactions");
         let mut indexes = if let Some(proof) = native.windows_object_ids_owned() {
             ensure!(raw.is_windows_conversion() && proof.binding() == &binding,
                 "Windows object-ID witness belongs to another actual frozen source");
@@ -1247,6 +1255,7 @@ impl ResourceSourceContext {
             SortedRecordWriter::new(&output.join("storage-hint-normalizations"), *b"WINDSC01", &scratch)
         }).transpose()?;
         let mut storage_hint_count = 0u64;
+        n2r_win32::perf::step("compare raw and Windows views");
         let comparison = compare_domain(&raw, &binding, budget, policy, native.domain(), |row| {
             let file = raw
                 .find_record(row.record_number, Some(row.sequence_number))?
@@ -1363,6 +1372,7 @@ impl ResourceSourceContext {
         // Existing data admission still requires no DOS aliases. An explicit
         // Windows owner may account for them in its held, exact derived plan;
         // actual target preservation remains a separate final obligation.
+        n2r_win32::perf::step("short names and admission gates");
         let short_policy = short_names(&raw, &native, no_dos || windows_aliases.is_some());
         let mut unresolved_writer = SortedRecordWriter::new(
             &output.join("unresolved-source-blockers"),
@@ -1592,6 +1602,7 @@ impl ResourceSourceContext {
             &source_views,
             scratch.budget().scratch_bytes / 2,
         )?;
+        n2r_win32::perf::step("reopen comparison stores");
         let rows = SortedRecordStore::open(&rows_pin, &scratch)?;
         let unresolved = SortedRecordStore::open(&unresolved_pin, &scratch)?;
         let replacements = SortedRecordStore::open(&replacements_pin, &scratch)?;
@@ -1642,6 +1653,7 @@ impl ResourceSourceContext {
             _output_basis: output_basis,
             _cache_artifacts: reopened_cache,
         };
+        n2r_win32::perf::step("finish source evidence");
         let finishing = (|| -> Result<()> {
         context.revalidate_evidence()?;
         let mut metadata = std::mem::take(&mut context._metadata);
@@ -1946,6 +1958,10 @@ impl ResourceSourceContext {
                     && pin.held.metadata()?.file_attributes() & 0x400 == 0,
                 "held source metadata identity changed"
             );
+            // Held open since it was hashed; re-read only when a full check is due.
+            if !n2r_win32::verify_policy::full_unremembered() {
+                continue;
+            }
             let mut file = pin.held.try_clone()?;
             file.seek(SeekFrom::Start(0))?;
             let mut bytes = [0u8; 65536];
@@ -1989,6 +2005,14 @@ impl ResourceSourceContext {
             before == self.before && before.disk_attributes == 3,
             "original frozen source state changed"
         );
+        // The source is offline, read-only and held, which the state check
+        // above confirms. Reading all of its metadata again is a full check:
+        // it runs at the gate before the first write to the source.
+        static LAST_FULL: n2r_win32::verify_policy::LastFull =
+            n2r_win32::verify_policy::LastFull::new();
+        if !n2r_win32::verify_policy::full(&LAST_FULL) {
+            return Ok(());
+        }
         let digest = self.fingerprint.hash(self.source.require_dedicated_mut()?)?;
         let after = native_batch(events, |batch| self.source.state(batch))?;
         ensure!(

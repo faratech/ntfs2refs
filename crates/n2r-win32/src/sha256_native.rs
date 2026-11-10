@@ -276,6 +276,57 @@ impl Drop for Overlapped {
 
 /// Hash every requested byte, with a fixed 4 MiB buffer and exact reads. No
 /// sampling, skipped zero ranges, alternate digest or source mutation.
+type VerifiedBody = ([u8; 32], u64, u64);
+static VERIFIED_JOURNAL_BODIES: std::sync::Mutex<Vec<VerifiedBody>> = std::sync::Mutex::new(Vec::new());
+static JOURNAL_BODY_LAST_FULL: crate::verify_policy::LastFull = crate::verify_policy::LastFull::new();
+
+/// Records that a recovery journal body with this digest was read in full and
+/// matched, in this process.
+pub fn note_journal_body_verified(expected: &[u8; 32], offset: u64, length: u64) {
+    let mut verified = VERIFIED_JOURNAL_BODIES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !verified.contains(&(*expected, offset, length)) {
+        verified.push((*expected, offset, length));
+    }
+}
+
+/// Whether a full read of this journal body can be skipped: it already
+/// matched in this process, the route checks once, and the single full read
+/// due inside the gate before the first source write has been made (or no
+/// gate is open). The body never changes once written; only the marker area
+/// in front of it does.
+pub fn journal_body_already_verified(expected: &[u8; 32], offset: u64, length: u64) -> bool {
+    if !crate::verify_policy::checks_once() {
+        return false;
+    }
+    let known = VERIFIED_JOURNAL_BODIES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains(&(*expected, offset, length));
+    known && !crate::verify_policy::full(&JOURNAL_BODY_LAST_FULL)
+}
+
+/// SHA-256 of a held recovery journal's immutable body, to compare with
+/// `expected`. Gigabytes long and compared at every step of apply and
+/// finalization; see [`journal_body_already_verified`] for when the read is
+/// skipped and `expected` returned.
+pub fn journal_body(
+    reader: &mut (impl Read + Seek),
+    offset: u64,
+    length: u64,
+    expected: &[u8; 32],
+) -> io::Result<[u8; 32]> {
+    if journal_body_already_verified(expected, offset, length) {
+        return Ok(*expected);
+    }
+    let actual = hash_range(reader, offset, length)?;
+    if actual == *expected {
+        note_journal_body_verified(expected, offset, length);
+    }
+    Ok(actual)
+}
+
 pub fn hash_range(
     reader: &mut (impl Read + Seek),
     offset: u64,
@@ -297,4 +348,54 @@ pub fn hash_range(
         left -= count as u64;
     }
     hash.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sha2::Digest;
+
+    struct CountingReader {
+        inner: io::Cursor<Vec<u8>>,
+        reads: usize,
+    }
+    impl Read for CountingReader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            self.reads += 1;
+            self.inner.read(buffer)
+        }
+    }
+    impl Seek for CountingReader {
+        fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+            self.inner.seek(position)
+        }
+    }
+
+    // The process-wide "check once" switch is off in tests, as it is for
+    // every route that does not run a gate before its first source write.
+    #[test]
+    fn a_journal_body_is_read_every_time_unless_the_route_checks_once() {
+        let data: Vec<u8> = (0..8192u32).map(|value| value as u8).collect();
+        let expected: [u8; 32] = sha2::Sha256::digest(&data[1024..]).into();
+        let mut reader = CountingReader {
+            inner: io::Cursor::new(data),
+            reads: 0,
+        };
+        assert_eq!(journal_body(&mut reader, 1024, 7168, &expected).unwrap(), expected);
+        let first = reader.reads;
+        assert!(first > 0);
+        assert!(!journal_body_already_verified(&expected, 1024, 7168));
+        assert_eq!(journal_body(&mut reader, 1024, 7168, &expected).unwrap(), expected);
+        assert!(reader.reads > first, "the second comparison must read the body again");
+    }
+
+    #[test]
+    fn a_changed_journal_body_is_reported_as_different() {
+        let mut data = vec![3u8; 4096];
+        let expected: [u8; 32] = sha2::Sha256::digest(&data[..]).into();
+        data[100] ^= 1;
+        let mut reader = io::Cursor::new(data);
+        assert_ne!(journal_body(&mut reader, 0, 4096, &expected).unwrap(), expected);
+        assert!(!journal_body_already_verified(&expected, 0, 4096));
+    }
 }

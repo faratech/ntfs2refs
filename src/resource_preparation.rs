@@ -40,8 +40,6 @@ mod resume_checkpoint;
 pub(crate) mod resume_origin;
 pub(crate) mod resume_session_inputs;
 pub(crate) mod resume_workspace;
-/// Process-wide diagnose switch, set once by the command line before
-/// preparation starts. In diagnose mode preparation collects per-object
 use anyhow::{Context, Result, ensure};
 
 /// Process-wide diagnose switch, set once by the command line before
@@ -53,6 +51,18 @@ pub(crate) fn set_diagnose() {
 }
 fn diagnose() -> bool {
     DIAGNOSE.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Process-wide switch for `--recheck-everything`: re-read every working file
+/// and the whole source at every checkpoint, as the converter always used to,
+/// instead of once at the gate before the first write to the source.
+static RECHECK_EVERYTHING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+pub(crate) fn set_recheck_everything() {
+    RECHECK_EVERYTHING.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+pub(crate) fn recheck_everything() -> bool {
+    RECHECK_EVERYTHING.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 use n2r_win32::{
@@ -642,6 +652,7 @@ where
             ArtifactGroup::Expected,
             admission.expected_page_budget()?.max_file_bytes,
         )?;
+        n2r_win32::perf::step("build expected tree");
         let expected = if let Some(saved) = resume {
             ensure!(
                 saved.expected.sha256 == hex::encode(saved.shadow_origin.expected_pages_sha256),
@@ -774,6 +785,7 @@ where
                 artifact,
             )?
         };
+        n2r_win32::perf::step("seal expected tree");
         let _expected_seal = expected_group.seal()?;
         expected.require_shared_memory(&arena)?;
         expected.require_resource_owner(admission)?;
@@ -798,6 +810,7 @@ where
                 Ok(current)
             })
             .transpose()?;
+        n2r_win32::perf::step("build short-name link inputs");
         let alias_inputs = context
             .windows_aliases()
             .map(|owner| {
@@ -830,6 +843,7 @@ where
             projection_memory_after: memory_after_projection_drop,
             projection_wire_bytes: projection_seal.wire_bytes(),
         })?;
+        n2r_win32::perf::step("prepare shadow inputs and checkpoints");
         let maximum_source_read_bytes = request.source_read_budget(&expected, admission)?;
         let backing_guard = events.observer.backing_resource_guard();
         let diagnose_failures = diagnose().then(general_shadow::DeferredFailures::default);
@@ -1142,6 +1156,7 @@ where
                 Some(state.allocated(batch, &private.allocation_observation()?)?)
             } else { None };
             events.phase("shadow-placement");
+            n2r_win32::perf::step("place extents");
             let placement = match private.place_source_prefixes_resource_domain(
                 &inputs,
                 request.maximum_placement_bytes,
@@ -1174,6 +1189,7 @@ where
         }))?;
         drop(placement);
         if completed_payloads.is_none() {
+            n2r_win32::perf::step("mark placed data valid");
             private
                 .prepare_source_backed_prefixes()
                 .context("prepare source-backed shadow prefixes")?;
@@ -1188,6 +1204,7 @@ where
                         let mut bytes = PagedSourceByteAdapterWithScope::new_scoped(
                             scope, raw, admission, maximum_source_read_bytes,
                         )?;
+                        n2r_win32::perf::step("plan and supply payloads");
                         let routed = if let Some(proof) = completed_payloads {
                             general_shadow::paged_supply::routed::prepare_recovered(
                                 &mut bytes, &expected, &mut private,
@@ -1206,6 +1223,7 @@ where
                             drop(indexer);
                             routed
                         };
+                        n2r_win32::perf::step("verify payloads");
                         let receipt = routed.verify()
                             .context("verify routed shadow payload supply")?;
                         bytes.finish()?;
@@ -1224,6 +1242,7 @@ where
         }
         let metadata_batch=resume_checkpoints.as_mut()
             .map(resume_checkpoint::Checkpoints::begin_metadata).transpose()?;
+        n2r_win32::perf::step("restore metadata and create short-name links");
         let verified_aliases = if let Some(aliases) = &alias_inputs {
             let compare = |a: &[u8], b: &[u8]| {
                 crate::ntfs_attestation::same_security_null_sacl_as_absent(a, b).map_err(std::io::Error::other)

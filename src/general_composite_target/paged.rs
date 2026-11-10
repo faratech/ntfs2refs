@@ -939,6 +939,17 @@ impl ProtectedPagedTargetSelection {
             .paged_residuals()
             .context("protected target residual owner absent")?
             .revalidate()?;
+        // The shadow is read-only and held. Reading all of its metadata again
+        // is a full check: it runs at the gate before the first source write.
+        static LAST_FULL: n2r_win32::verify_policy::LastFull =
+            n2r_win32::verify_policy::LastFull::new();
+        if !n2r_win32::verify_policy::full(&LAST_FULL) {
+            ensure!(
+                target.state(events)? == before,
+                "protected target frozen identity changed after capture"
+            );
+            return Ok(());
+        }
         let _timed = n2r_win32::perf::scope(n2r_win32::perf::Point::ShadowMetadataRead);
         let (digest, bytes, _) =
             PagedShadowClosing::new(target, &self.scope.consumed)?.finish(target)?;
@@ -1149,6 +1160,7 @@ fn observe_and_select_scoped(
         context.inspection().budget(),
         capture_group.clone(),
     )?;
+    n2r_win32::perf::step("derive source projection");
     let source_projection=context.derive_projection(admission,&projection_dir,&projection_scratch)?;
     ensure!(
         crate::general_qualification::pretty_json_sha256(&source_projection)?
@@ -1196,6 +1208,7 @@ fn observe_and_select_scoped(
     // per-object queries/retained rows and the paged residual writer.
     let native_wrapper_ram = scratch.lease_ram(32 * 1024 * 1024)?;
     drop(stage_ram);
+    n2r_win32::perf::step("walk shadow (opening)");
     let (preliminary,opening_aliases) = context.observe_target(
         target, pair.clone(),
         &input,
@@ -1219,6 +1232,7 @@ fn observe_and_select_scoped(
     // and bounded sort. Do not hold the unrelated raw/interval workspace
     // across those independently accounted allocations.
     drop(stage_ram);
+    n2r_win32::perf::step("capture payload routes (opening)");
     let opening_routes = context.with_bytes(admission, 1, events, |bytes| {
         crate::general_shadow::paged_candidate::PagedPayloadRoutes::capture(
             &preliminary,
@@ -1236,6 +1250,7 @@ fn observe_and_select_scoped(
         image,
         &scratch,
     )?;
+    n2r_win32::perf::step("find data already in place");
     let in_place = context.with_bytes(admission, 1, events, |bytes| {
         source_in_place(
             bytes,
@@ -1299,6 +1314,7 @@ fn observe_and_select_scoped(
         &scratch,
         *b"N2RTCON1",
     )?;
+    n2r_win32::perf::step("read shadow metadata (opening)");
     let opening = PagedShadowClosing::new(target, &consumed)?.finish(target)?;
     // The opening report's complete rows are no longer consumed below. Keep
     // its closed artifact owner and the exact serialized allocation digest,
@@ -1324,6 +1340,7 @@ fn observe_and_select_scoped(
     let closing_result_ram = capture_group.arena().reserve_ram(result_ram_bytes)?;
     let closing_permit = capture_group.reserve_file(&closing_path, result_budget.max_file_bytes)?;
     drop(stage_ram);
+    n2r_win32::perf::step("walk shadow (closing)");
     let (native,windows_aliases) = context.observe_target(
         target, pair.clone(),
         &input,
@@ -1343,6 +1360,7 @@ fn observe_and_select_scoped(
         .context("protected closing tail owner absent")?;
     let closing_lease = closing_permit.verify_closed(closing_results.sha256())?;
     drop(stage_ram);
+    n2r_win32::perf::step("capture payload routes (closing)");
     let closing_routes = context.with_bytes(admission, 1, events, |bytes| {
         crate::general_shadow::paged_candidate::PagedPayloadRoutes::capture(
             &native,
@@ -1464,12 +1482,14 @@ fn observe_and_select_scoped(
             .context("closing hash workspace overflow")?,
     )?;
     drop(_stage_ram);
+    n2r_win32::perf::step("compare shadow with source");
     let mut closing = PagedShadowClosing::new(target, &scope.consumed)?;
     let captured = consume(context, target, expected, closing_routes, &scope, &mut closing, events)?;
     ensure!(
         captured.is_for_scope(&scope),
         "consumer returned a capture from another or unqualified target scope"
     );
+    n2r_win32::perf::step("read shadow metadata (closing)");
     let closing = closing.finish(target)?;
     ensure!(
         opening.0 == closing.0 && opening.1 == closing.1,

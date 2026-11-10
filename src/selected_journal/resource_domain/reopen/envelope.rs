@@ -356,6 +356,7 @@ impl HeldFile {
         maximum: u64,
         scratch: &SourceScratch,
     ) -> Result<Self> {
+        let _timed = n2r_win32::perf::scope(n2r_win32::perf::Point::RecoveryFileOpen);
         ordinary_path(path)?;
         let mut file = OpenOptions::new()
             .read(true)
@@ -396,6 +397,18 @@ impl HeldFile {
             binding.revalidate(scratch)?;
         }
         let _ram = scratch.lease_ram(4 * 1024 * 1024)?;
+        // Hashed when it was reopened and held open, denying writers, since.
+        if n2r_win32::verify_policy::checks_once() {
+            ensure!(
+                n2r_win32::reference_file::observe_reference_file_handle_with_limit(
+                    &self.file,
+                    self.snapshot.file_bytes
+                )? == self.snapshot
+                    && self.file.metadata()?.modified()? == self.modified,
+                "held recovery artifact changed"
+            );
+            return Ok(());
+        }
         ensure!(
             n2r_win32::reference_file::observe_reference_file_handle_with_limit(
                 &self.file,
@@ -1796,6 +1809,7 @@ impl ReopenedResourceRecovery {
             "recovery publication exceeds admission"
         );
         let memory = scratch.lease_ram(reserve)?;
+        n2r_win32::perf::step("reopen publication and locator");
         let mut publication_file = HeldFile::open(
             path,
             independently_supplied_sha256,
@@ -1881,6 +1895,7 @@ impl ReopenedResourceRecovery {
                 )? != n2r_win32::layout::guid_bytes(&publication.shadow.identity.disk_guid)?,
             "recovery artifacts are not on the independent journal volume"
         );
+        n2r_win32::perf::step("reopen expected pages, maps and alias records");
         let mut expected = HeldFile::open(
             Path::new(&publication.expected.file.path),
             digest(&publication.expected.file.sha256)?,
@@ -1940,6 +1955,7 @@ impl ReopenedResourceRecovery {
             .marker_profile
             .is_some()
             .then_some(&identity);
+        n2r_win32::perf::step("reopen journal");
         let (mut journal, _) = BoundNativeRecoveryJournal::open(
             locator.journal_path(),
             locator.journal_binding(),
@@ -1963,6 +1979,7 @@ impl ReopenedResourceRecovery {
         }
         let _index_parent = hold_index_parent(index_path, &volume)
             .with_context(|| format!("holding the directory of {}", index_path.display()))?;
+        n2r_win32::perf::step("scan journal");
         let mut observation = BoundJournalObservation::open(
             &mut journal,
             locator.ticket(),
@@ -1973,7 +1990,9 @@ impl ReopenedResourceRecovery {
         )
         .context("observing the reopened recovery journal")?;
         let initial_lifecycle = observation.lifecycle()?;
+        n2r_win32::perf::step("retire journal index");
         observation.retire()?;
+        n2r_win32::perf::step("reopen converted source");
         let online = if allow_online_terminal
             && matches!(
                 initial_lifecycle,
@@ -2022,6 +2041,7 @@ impl ReopenedResourceRecovery {
                 (Some(target), state, None)
             }
         };
+        n2r_win32::perf::step("reopen guards and revalidate");
         // AP/RB and terminal states are reachable only after the original
         // pre-AP cancellation guard was durably delegated. Never promote an
         // old Frozen record after AP merely because an envelope exists.
@@ -2206,7 +2226,7 @@ impl ReopenedResourceRecovery {
             "actual native terminal journal lifecycle changed"
         );
         ensure!(
-            n2r_win32::sha256_native::hash_range(journal, super::BODY, body_bytes)? == immutable,
+            n2r_win32::sha256_native::journal_body(journal, super::BODY, body_bytes, &immutable)? == immutable,
             "mounted terminal journal immutable body changed"
         );
         ensure!(

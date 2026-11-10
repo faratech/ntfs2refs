@@ -821,7 +821,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             basic(handle, item)?;
         }
         if !item.directory {
-            handle.sync_all()?;
+            crate::perf::flush(crate::perf::Point::FileFlush, &handle)?;
         }
         Ok(())
         })()
@@ -829,7 +829,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
     }
     metadata_progress(6, ordered.len() as u64);
     input.before_mutation(0)?;
-    volume.sync_all()?;
+    crate::perf::flush(crate::perf::Point::VolumeFlush, &volume)?;
     namespace(true,aliases.as_deref())?;
     for index in 0..input.len() {
         metadata_progress(8, index as u64);

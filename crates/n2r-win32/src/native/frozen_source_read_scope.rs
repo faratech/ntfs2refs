@@ -44,6 +44,7 @@ impl GeneralFrozenSourceReadScope<'_> {
         if self.poisoned.get() {
             return Err(io::Error::other("failed frozen source read scope cannot validate"));
         }
+        let _timed = crate::perf::scope(crate::perf::Point::ReadProtection);
         let result = native_step(events, |batch| {
             let actual = general_disk_state_held_geometry(
                 &self.source.file, &self.source.binding, batch,

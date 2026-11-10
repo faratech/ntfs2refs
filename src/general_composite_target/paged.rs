@@ -939,6 +939,7 @@ impl ProtectedPagedTargetSelection {
             .paged_residuals()
             .context("protected target residual owner absent")?
             .revalidate()?;
+        let _timed = n2r_win32::perf::scope(n2r_win32::perf::Point::ShadowMetadataRead);
         let (digest, bytes, _) =
             PagedShadowClosing::new(target, &self.scope.consumed)?.finish(target)?;
         ensure!(

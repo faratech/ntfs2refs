@@ -290,7 +290,7 @@ pub(super) fn run_domain(
             file.set_len(0)?;
             file.seek(SeekFrom::Start(0))?;
             writer(index, &mut file)?;
-            file.sync_all()?;
+            crate::perf::flush(crate::perf::Point::FileFlush, &file)?;
         } else {
             let target = Input {
                 components: item.components,
@@ -339,7 +339,7 @@ pub(super) fn run_domain(
         written_bytes = written_bytes.saturating_add(item.logical_length());
     }
     tree.before_backing_mutation(0)?;
-    tree.volume.sync_all()?;
+    crate::perf::flush(crate::perf::Point::VolumeFlush, &tree.volume)?;
     require_owned_directories(tree, input)?;
     tree.require_source_excluded()?;
     tree.system_payloads_complete = true;

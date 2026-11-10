@@ -567,6 +567,7 @@ impl PreparedArenaClosure {
         )
     }
     pub(crate) fn revalidate(&self) -> Result<()> {
+        let _timed = n2r_win32::perf::scope(n2r_win32::perf::Point::ArenaRevalidation);
         let hash_bytes = add(
             self.ordinary
                 .iter()

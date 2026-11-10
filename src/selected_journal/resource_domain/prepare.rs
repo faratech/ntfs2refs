@@ -1002,6 +1002,7 @@ fn validate_readback<J: ReadSeek>(
     buffer: &mut [u8],
     compare: &mut [u8],
 ) -> Result<([u8; 32], [u8; 32])> {
+    let _timed = n2r_win32::perf::scope(n2r_win32::perf::Point::JournalRead);
     let f = domain.facts;
     ensure!(
         ticket.image_length == f.image_length

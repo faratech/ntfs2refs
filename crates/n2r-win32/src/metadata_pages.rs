@@ -215,6 +215,8 @@ impl Snapshot {
     }
 }
 fn file_hash(file: &mut File, bytes: u64) -> io::Result<[u8; 32]> {
+    let _timed = crate::perf::scope(crate::perf::Point::FileHash);
+    crate::perf::add_bytes(crate::perf::Point::FileHash, bytes);
     file.seek(SeekFrom::Start(0))?;
     let mut hash = Sha256::new();
     let mut buffer = [0; 65536];
@@ -399,7 +401,7 @@ impl Writer {
         self.file.seek(SeekFrom::Start(bytes - FOOTER))?;
         self.file.write_all(&footer)?;
         self.file.flush()?;
-        self.file.sync_all()?;
+        crate::perf::flush(crate::perf::Point::FileFlush, &self.file)?;
         let before = Snapshot::observe(&self.file)?;
         require(
             before.bytes == bytes,
@@ -469,6 +471,8 @@ fn load_page(
             && e.count <= budget.max_records_per_page,
         "metadata page budget/count differs",
     )?;
+    let _timed = crate::perf::scope(crate::perf::Point::PageLoad);
+    crate::perf::add_bytes(crate::perf::Point::PageLoad, e.bytes as u64);
     let mut frame = [0; 64];
     read_at(file, e.offset, &mut frame)?;
     require(

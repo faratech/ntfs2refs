@@ -1973,6 +1973,7 @@ impl ResourceSourceContext {
         Ok(())
     }
     pub fn recheck_source(&mut self, events: &mut Vec<NativeEvent>) -> Result<()> {
+        let _timed = n2r_win32::perf::scope(n2r_win32::perf::Point::SourceRecheck);
         ensure!(
             self.source.freeze_observation().is_some(),
             "original live NTFS freeze witness was consumed by an apply-intent attempt"

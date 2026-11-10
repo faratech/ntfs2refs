@@ -123,7 +123,11 @@ pub fn run(args: DriveArgs) -> Result<u8> {
         std::thread::Builder::new()
             .name("ntfs2refs-drive".to_owned())
             .stack_size(16 * 1024 * 1024)
-            .spawn(move || windows::run(args))
+            .spawn(move || {
+                let result = windows::run(args);
+                n2r_win32::perf::finish();
+                result
+            })
             .context("could not create the drive worker stack")?
             .join()
             .map_err(|_| anyhow::anyhow!("drive worker panicked; preserve its recovery records"))?

@@ -806,7 +806,7 @@ pub(crate) fn general_disk_state(
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<GeneralDiskState> {
     binding.validate()?;
-    offline_windows::require_detached_roles(disk,binding, events)?;
+    { let _timed = crate::perf::scope(crate::perf::Point::DetachedRoles); offline_windows::require_detached_roles(disk,binding, events)?; }
     general_disk_state_held_geometry(disk, binding, events)
 }
 
@@ -857,6 +857,7 @@ pub fn observe_general_disk_state_readonly(
     binding: GeneralDiskBinding,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<GeneralDiskState> {
+    let _timed = crate::perf::scope(crate::perf::Point::DiskState);
     binding.validate()?;
     if current_windows_disk(events)? == binding.disk_number {
         return Err(invalid("current Windows disk is excluded"));
@@ -4113,6 +4114,8 @@ impl Write for GeneralJournaledPartition {
         if input.is_empty() {
             return Ok(0);
         }
+        let _timed = crate::perf::scope(crate::perf::Point::DeviceWrite);
+        crate::perf::add_bytes(crate::perf::Point::DeviceWrite, input.len() as u64);
         if self.policy.is_none() && self.paged_policy.is_none() {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -4294,6 +4297,8 @@ impl Read for GeneralFrozenPartition {
         if output.is_empty() || self.position == self.byte_len() {
             return Ok(0);
         }
+        let _timed = crate::perf::scope(crate::perf::Point::DeviceRead);
+        crate::perf::add_bytes(crate::perf::Point::DeviceRead, output.len() as u64);
         let aligned = self.position / GRANULE * GRANULE;
         let prefix = (self.position - aligned) as usize;
         let wanted = output

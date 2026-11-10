@@ -720,6 +720,7 @@ pub(crate) fn collect_file_metadata_with_routes(
         .as_deref()
         .map(|sink| usize::try_from(sink.maximum_row_bytes()).unwrap_or(usize::MAX));
     for index in 0..selectors.len() {
+        let _timed = crate::perf::scope(crate::perf::Point::SourceObject);
         let selected = selectors.row(index)?;
         let identity = &selected.identity;
         let row_request;

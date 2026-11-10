@@ -292,7 +292,7 @@ impl PrivateTree {
             directory.retire()?;
         }
         self.before_backing_mutation(0)?;
-        self.volume.sync_all()?;
+        crate::perf::flush(crate::perf::Point::VolumeFlush, &self.volume)?;
         Ok((result, tails))
     }
     fn file_by_slot(&self, slot: usize) -> io::Result<&unwritten::PrivatePlaceholder> {
@@ -1058,6 +1058,7 @@ impl PrivateTree {
     }
 
     fn require_source_excluded(&self) -> io::Result<()> {
+        let _timed = crate::perf::scope(crate::perf::Point::Fence);
         if let Some(admission) = self.metadata_resource_admission {
             admission.validate()?;
             let held = (self.files.len() as u64)
@@ -2220,7 +2221,7 @@ fn allocate_domain_with_memory(
     .map_err(|error| super::cache_refresh::at_object(input, "shadow allocation", failing_object.get(), error))?;
     allocation_progress(1, input.len() as u64);
     input.before_mutation(0)?;
-    volume.sync_all()?;
+    crate::perf::flush(crate::perf::Point::VolumeFlush, &volume)?;
     let mut stream_slots = BTreeMap::new();
     let mut next = input.len();
     for key in files.keys() {

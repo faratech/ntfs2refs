@@ -2534,7 +2534,7 @@ fn create(
     } else {
         f.write_all(i.payload)?;
     }
-    f.sync_all()?;
+    crate::perf::flush(crate::perf::Point::FileFlush, &f)?;
     Ok(())
 }
 fn basic(file: &File, i: &Input<'_>) -> io::Result<()> {
@@ -5641,6 +5641,7 @@ fn run_role_content_domain_accounted(
             memory.observe_object_capacity(result.capacity())?;
         }
         input.for_each(|_, item| {
+            let _timed = crate::perf::scope(crate::perf::Point::ShadowObject);
             let peak = if memory_accountant.is_some() {
                 report_memory::row_peak(item, sd_limit.unwrap_or(0))?
             } else {

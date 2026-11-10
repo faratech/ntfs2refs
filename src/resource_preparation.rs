@@ -283,6 +283,7 @@ impl<'a, O: PreparationObserver> EventLog<'a, O> {
     }
     pub(crate) fn phase(&mut self, phase: &'static str) {
         self.phase = phase;
+        n2r_win32::perf::phase(phase);
         use n2r_win32::progress::{Phase,Unit,Update};
         let typed=match phase {
             "source-preparation"|"source-recheck"=>Some(Phase::SourceEvidence),

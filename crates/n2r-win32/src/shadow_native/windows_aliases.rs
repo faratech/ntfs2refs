@@ -939,7 +939,7 @@ impl StagedWindowsAliases {
                 super::basic(&staged.file, &expected)?;
             }
             if !entry.directory {
-                staged.file.sync_all()?;
+                crate::perf::flush(crate::perf::Point::FileFlush, &staged.file)?;
             }
             let actual = super::metadata_snapshot_with_limit(
                 &staged.file,

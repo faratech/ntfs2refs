@@ -1027,6 +1027,7 @@ impl PagedSourceFingerprint {
         self.validate_inspection_reads(reads)
     }
     pub fn hash(&self, source: &mut n2r_win32::GeneralFrozenPartition) -> Result<String> {
+        let _timed = n2r_win32::perf::scope(n2r_win32::perf::Point::SourceFingerprint);
         use crate::parallel_digest::{Chunk, MAX_CHUNK_BYTES, digest_frozen_chunks};
         ensure!(
             source.byte_len() == self.pins.partition_bytes,

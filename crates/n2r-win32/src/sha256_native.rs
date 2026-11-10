@@ -284,6 +284,8 @@ pub fn hash_range(
     offset
         .checked_add(length)
         .ok_or_else(|| io::Error::other("SHA-256 range overflow"))?;
+    let _timed = crate::perf::scope(crate::perf::Point::FileHash);
+    crate::perf::add_bytes(crate::perf::Point::FileHash, length);
     reader.seek(SeekFrom::Start(offset))?;
     let mut hash = Sha256::new()?;
     let mut buffer = vec![0; length.min(4 * 1024 * 1024) as usize];

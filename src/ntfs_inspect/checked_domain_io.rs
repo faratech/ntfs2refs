@@ -291,6 +291,7 @@ fn actual_assembly<R: Read + Seek>(
 
 impl CheckedMftDomain {
     pub(crate) fn open<R: Read + Seek>(reader: &mut R, source: &PagedInspection) -> Result<Self> {
+        let _timed = n2r_win32::perf::scope(n2r_win32::perf::Point::RecordReaderOpen);
         ensure!(
             source.header().inventory_complete,
             "complete paged source is required"

@@ -2077,7 +2077,7 @@ fn run_domain_inner(
             trace["source_exclusion_checked_before"] = true.into();
             trace["status"] = "flushing-owned-shadow-volume".into();
             let started = std::time::Instant::now();
-            let flushed = tree.volume.sync_all();
+            let flushed = crate::perf::flush(crate::perf::Point::VolumeFlush, &tree.volume);
             trace["flush_elapsed_microseconds"] = u64::try_from(started.elapsed().as_micros())
                 .map_err(|_| invalid("barrier flush timing overflow"))?
                 .into();

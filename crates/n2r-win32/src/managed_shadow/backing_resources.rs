@@ -137,6 +137,7 @@ impl BackingResourceGuard {
     }
 
     pub fn observe(&self, operation_bytes: u64) -> io::Result<BackingResourceObservation> {
+        let _timed = crate::perf::scope(crate::perf::Point::BackingGuard);
         require_disk(&self.provider, self.disk_number)?;
         if query(&self.provider, GET_VIRTUAL_DISK_INFO_VIRTUAL_DISK_ID)?.get(8..24)
             != Some(self.virtual_disk_id.as_slice()) {

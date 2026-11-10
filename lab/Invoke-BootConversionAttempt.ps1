@@ -127,11 +127,11 @@ try {
     Start-VM -VM $vm
     $session = Wait-Guest 15 $null
     if (-not $session) { throw 'Control OS did not accept a PowerShell Direct session within 15 minutes' }
-    $guest = Invoke-Command -Session $session -ArgumentList $ScratchFileSystem -ScriptBlock {
-        param($fileSystem)
+    $guest = Invoke-Command -Session $session -ArgumentList $ScratchFileSystem, ([long]$ScratchGB * 1GB) -ScriptBlock {
+        param($fileSystem, $scratchBytes)
         $ErrorActionPreference = 'Stop'
-        $raw = @(Get-Disk | Where-Object PartitionStyle -EQ 'RAW')
-        if ($raw.Count -ne 1) { throw "Expected one blank scratch disk, found $($raw.Count)" }
+        $raw = @(Get-Disk | Where-Object { $_.PartitionStyle -eq 'RAW' -and $_.Size -eq $scratchBytes })
+        if ($raw.Count -ne 1) { throw "Expected one blank scratch disk of $scratchBytes bytes, found $($raw.Count)" }
         if ($raw[0].IsOffline) { Set-Disk -Number $raw[0].Number -IsOffline $false }
         if ($raw[0].IsReadOnly) { Set-Disk -Number $raw[0].Number -IsReadOnly $false }
         Initialize-Disk -Number $raw[0].Number -PartitionStyle GPT
@@ -236,6 +236,23 @@ try {
         Say "converter exit: $exit. stderr: $((@($state.stderr) -join ' | '))"; Remove-PSSession $session; return
     }
     Say 'converter exit 0'
+    if (-not $Diagnose) {
+        # Independent of the converter: does Windows itself mount the result as ReFS?
+        $mounted = Invoke-Command -Session $session -ArgumentList $guest.source_disk, $guest.source_partition -ScriptBlock {
+            param($disk, $number)
+            $partition = Get-Partition -DiskNumber $disk -PartitionNumber $number; $volume = Get-Volume -Partition $partition
+            $letter = [string]$partition.DriveLetter
+            $refs = if ($letter) { @(& "$env:SystemRoot\System32\fsutil.exe" fsinfo refsinfo "${letter}:" 2>&1) -join "`n" } else { '' }
+            $scan = if ($letter) { try { [string](Repair-Volume -DriveLetter $letter -Scan) } catch { "scan failed: $($_.Exception.Message)" } } else { 'no drive letter' }
+            $sample = if ($letter) { @(Get-ChildItem -LiteralPath "${letter}:\" -Force -ErrorAction SilentlyContinue | Select-Object -First 40 -ExpandProperty Name) } else { @() }
+            [pscustomobject]@{ letter = $letter; filesystem = [string]$volume.FileSystem; health = [string]$volume.HealthStatus
+                cluster_bytes = $volume.AllocationUnitSize; used_bytes = $volume.Size - $volume.SizeRemaining
+                refs_version = ($refs -replace '(?s).*ReFS Version\s*:\s*([\d.]+).*', '$1'); scan = $scan; root_entries = $sample }
+        }
+        $verdict.mounted = $mounted | Select-Object * -ExcludeProperty PSComputerName, RunspaceId, PSShowComputerName
+        Say "source partition now mounts as $($mounted.filesystem) $($mounted.refs_version), health $($mounted.health), scan: $($mounted.scan)"
+        if ($mounted.filesystem -ne 'ReFS') { $verdict.outcome = 'converter-ok-but-not-refs'; Remove-PSSession $session; return }
+    }
     if ($Diagnose -or $NoBoot) { $verdict.outcome = if ($Diagnose) { 'diagnose-clean' } else { 'converted-not-booted' }; Remove-PSSession $session; return }
 
     # ---- boot disk0 alone ------------------------------------------------------

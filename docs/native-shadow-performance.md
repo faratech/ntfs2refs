@@ -24,6 +24,7 @@ installation has not yet been shown booting from its converted original disk.
 | --- | --- |
 | Metadata amplification | Two prepaid authenticated page slots; a direct-ordinal compact alias path projection; one authenticated compact-row read shared by the unchanged allocation preflight and typed JSON decoder. Full metadata/security operations still decode their complete objects. |
 | Completed payload reuse | A closed private `Payloads` state can be freshly adopted and verified without repeating materialization. A payload receipt alone cannot admit a partly restored public namespace. |
+| Mixed metadata reuse | A fresh native shape selector distinguishes private payloads from final targets. After carrier transfer, the new owner audits canonical and optional names, mappings, validity, and hybrid logical contents; it reconciles existing/missing links, aliases, ACLs, EAs, reparse points and times. A durable metadata intent precedes mutation. Trust-label repair and protected capture still follow normally. |
 | First-attempt recovery | Supported offline Windows preparations create a durable source/Expected checkpoint before native allocation, an allocation intent before mutation, then closed allocation and placement evidence. Interrupted allocation explicitly refuses partial-namespace reuse. |
 | Source cache continuity | The latest verified raw/Expected generation is promoted while retaining its original native baseline. Changed sources and renewed COMPLETE-stream evidence still require fresh checks. |
 | Capture work | The closing route owner is reused, capacity and literal/index credits are batched by the already-read chunk, and later source-byte phases use bounded native read scopes with full entry/error-safe exit checks. |
@@ -39,8 +40,20 @@ The second batch passed the frozen-source component check recorded in
 [`performance-resume-second-build-20261109.json`](../evidence/performance-resume-second-build-20261109.json)
 (43.16 seconds, shared target reused, all recorded source hashes unchanged).
 No new unit-test suite
-or competing VM benchmark was started. Mixed-metadata recovery, captured-state
-adoption and end-to-end native qualification remain separate completion gates.
+or competing VM benchmark was started. The mixed-metadata integration passed
+the exact-source check recorded in
+[`native-metadata-resume-build-20261109.json`](../evidence/native-metadata-resume-build-20261109.json)
+(41.69 seconds). It has not yet been exercised in the VM. Interrupted allocation,
+partial carrier transfer and captured-state adoption remain explicit refusals.
+End-to-end native qualification is still required.
+
+Recovered COMPLETE streams use the existing hybrid rule: freshly proven
+same-coordinate source references contribute original source bytes, while
+materialized regions contribute shadow bytes and sparse holes contribute zeros.
+Hashing the whole shadow stream would reject deliberately unmaterialized retained
+prefixes. Data-file reopening excludes payload-write access; existing read-only
+files keep their attributes. The Windows read-only access rule is documented in
+[Microsoft's filesystem algorithm](https://winprotocoldoc.z19.web.core.windows.net/MS-FSA/%5BMS-FSA%5D-200304.pdf).
 
 ### Findings that explain the delays
 

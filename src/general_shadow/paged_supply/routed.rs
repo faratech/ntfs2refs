@@ -289,7 +289,7 @@ struct RoutedPlan {
 /// Check every declared physical source proposal before native target scans.
 /// This reads only the already held raw metadata model: no source payload,
 /// native file query, disk-role probe, or target observation occurs here.
-fn preflight_source_references(bytes:&PagedSourceByteAdapterWithScope<'_, '_>,expected:&PagedExpectedTree)->Result<()> {
+pub(crate) fn preflight_source_references(bytes:&PagedSourceByteAdapterWithScope<'_, '_>,expected:&PagedExpectedTree)->Result<()> {
     use crate::ntfs_inspect::RootFileDomain;
     let raw=bytes.raw_source();
     let admission=expected.header().resource_admission.context("reference preflight expected admission absent")?;

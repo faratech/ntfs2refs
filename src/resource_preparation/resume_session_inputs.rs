@@ -791,9 +791,13 @@ impl ResumeSessionInputs {
             "resume epoch published/delegated; route existing publication recovery"
         );
         ensure!(
-            journal.stage().is_none_or(|stage| stage <= Stage::Payloads),
-            "resume stage later than Payloads requires its metadata/capture native reconciler; preserve artifacts, no restart"
+            journal.stage().is_none_or(|stage| stage <= Stage::Metadata),
+            "resume stage later than Metadata requires its capture native reconciler; preserve artifacts, no restart"
         );
+        if journal.stage()==Some(Stage::Metadata) {
+            ensure!(journal.pending_batch().is_none_or(|batch|batch.operation=="native_reconcile_metadata"),
+                "unknown metadata batch cannot be reconciled by this native adapter");
+        }
         ensure!(!journal.pending_batch().is_some_and(|batch|batch.operation=="native_allocate_shadow"),
             "shadow allocation was interrupted; partial namespace reconciliation is not supported yet; preserve the shadow before source revalidation");
         let initial = &journal.intent().initial_artifacts;
@@ -833,7 +837,8 @@ impl ResumeSessionInputs {
             _ => anyhow::bail!("saved completed placement initial pin is absent or ambiguous"),
         }
         let current =
-            if matches!(journal.stage(),Some(Stage::Placing|Stage::Payloads)) && journal.pending_batch().is_none() {
+            if (matches!(journal.stage(),Some(Stage::Placing|Stage::Payloads)) && journal.pending_batch().is_none())
+                ||journal.stage()==Some(Stage::Metadata) {
                 journal.completed_placement_evidence()
             } else {
                 None
@@ -859,7 +864,8 @@ impl ResumeSessionInputs {
             (Some(pin),[actual])=>ensure!(pin==*actual,"saved completed payload initial pin differs"),
             _=>anyhow::bail!("saved completed payload initial pin is absent or ambiguous"),
         }
-        let current_payloads=if journal.stage()==Some(Stage::Payloads)&&journal.pending_batch().is_none(){
+        let current_payloads=if (journal.stage()==Some(Stage::Payloads)&&journal.pending_batch().is_none())
+            ||journal.stage()==Some(Stage::Metadata){
             journal.completed_payloads_evidence()
         }else{None};
         let completed_payloads=current_payloads.or(saved.completed_payloads.as_ref())
@@ -868,6 +874,10 @@ impl ResumeSessionInputs {
         if journal.stage()==Some(Stage::Payloads) {
             ensure!(journal.pending_batch().is_none()&&completed_payloads.is_some()&&completed_placement.is_some(),
                 "Payloads retry requires closed supply and placement evidence; pending work needs native batch reconciliation");
+        }
+        if journal.stage()==Some(Stage::Metadata) {
+            ensure!(completed_payloads.is_some()&&completed_placement.is_some(),
+                "metadata retry requires held completed payload and placement facts");
         }
         let binding_pins: Vec<_> = initial
             .iter()

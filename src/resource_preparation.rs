@@ -275,6 +275,7 @@ impl<'a, O: PreparationObserver> EventLog<'a, O> {
             "expected-preparation"=>Some(Phase::ExpectedPreparation),
             "shadow-allocation"=>Some(Phase::ShadowAllocation),
             "shadow-placement"=>Some(Phase::Placement),
+            "metadata-recovery-verification"=>Some(Phase::PayloadVerification),
             "protected-target-capture"=>Some(Phase::TargetCapture),
             "native-journal-preparation"=>Some(Phase::RecoveryJournal),
             _=>None,
@@ -916,6 +917,82 @@ where
             }))?;
         }
 
+        let pending_metadata = if completed_payloads.is_some() {
+            if let (Some(saved),Some(aliases))=(effective_resume.as_ref(),alias_inputs.as_ref()) {
+                let (source,_) = context.source_and_inspection()?;
+                let native_profile=profile.native_profile().context("native metadata profile absent")?;
+                let mut enrollment=n2r_win32::shadow_native::private_tree::enroll_with_resource_profile(
+                    source,&request.pair,native_profile)?;
+                let memory=Arc::new(ArenaReportMemory(arena.clone()));
+                use n2r_win32::shadow_native::private_tree::recovery::metadata_transition::{
+                    self,PayloadsShape,
+                };
+                match metadata_transition::classify_payloads_domain(&mut enrollment,&inputs,memory.as_ref())? {
+                    PayloadsShape::PrivatePayloads=>None,
+                    PayloadsShape::FinalTargets=>Some(metadata_transition::adopt_domain(
+                        enrollment,&inputs,aliases,native_profile,memory,saved.shadow_origin.clone(),
+                    ).context("fresh native final-target metadata adoption")?),
+                }
+            }else{None}
+        }else{None};
+        let verified_aliases = if let Some(pending) = pending_metadata {
+            let aliases=alias_inputs.as_ref().context("metadata recovery aliases absent")?;
+            events.phase("metadata-recovery-verification");
+            let verified={
+                let (source,raw)=context.source_and_inspection()?;
+                let memory=ArenaReportMemory(arena.clone());
+                source.with_readonly_source_bytes(&memory,&mut events,|scope| {
+                    (||->Result<_>{
+                        let mut bytes=PagedSourceByteAdapterWithScope::new_scoped(
+                            scope,raw,admission,maximum_source_read_bytes)?;
+                        general_shadow::paged_supply::routed::preflight_source_references(&bytes,&expected)?;
+                        let body=pending.verify_payloads(&inputs,aliases,|index,name,offset,physical,output| {
+                            (||->Result<()>{
+                                let object=expected.object_leased(index)?;
+                                let stream=object.data_streams().find(|stream|stream.name_utf16==name)
+                                    .context("metadata recovery source stream absent")?;
+                                let id=general_shadow::source_backed::PagedStreamIdentity {
+                                    record_number:object.record_number,sequence_number:object.sequence_number,
+                                    name_utf16:stream.name_utf16,length:stream.length,sha256:stream.sha256,
+                                    allow_sparse:stream.sparse.is_some(),
+                                };
+                                if let Some(physical)=physical {
+                                    bytes.require_reference(&id,offset,physical,output.len() as u64)?;
+                                }
+                                bytes.read_into(&id,offset,output)?;
+                                // The adapter closes the previous session on
+                                // identity change and its last session at the
+                                // enclosing finish; keep one per stream here.
+                                Ok(())
+                            })().map_err(std::io::Error::other)
+                        });
+                        let closing=bytes.finish();
+                        match (body,closing) {
+                            (Ok(value),Ok(_))=>Ok(value),
+                            (Err(error),Ok(_))=>Err(error.into()),
+                            (Ok(_),Err(error))=>Err(error),
+                            (Err(error),Err(closing))=>Err(closing.context(format!("metadata payload verification also failed: {error}"))),
+                        }
+                    })().map_err(std::io::Error::other)
+                }).context("metadata recovery source-byte closing")?
+            };
+            let observed=verified.observation();
+            events.observer.note(&observed)?;
+            if let Some(state)=resume_checkpoints.as_mut(){state.metadata_adopted(&observed)?;}
+            let batch=resume_checkpoints.as_mut().map(resume_checkpoint::Checkpoints::begin_metadata).transpose()?;
+            let placeholders=trust_recipes.as_ref().is_some_and(|recipes|!recipes.is_empty());
+            let (report,aliases)=verified.complete(&inputs,aliases,placeholders,|a,b| {
+                crate::ntfs_attestation::same_security(a,b).map_err(std::io::Error::other)
+            }).context("reconcile existing final-target metadata")?;
+            events.observer.note(&serde_json::json!({"kind":"Windows-recovered-metadata-completion",
+                "report":report,"original_security_native_verification_pending":true}))?;
+            if let (Some(state),Some(batch))=(resume_checkpoints.as_mut(),batch) {
+                state.metadata_completed(batch,&serde_json::json!({"kind":"metadata-reconciliation-completed-v1",
+                    "expected_sha256":expected.file_sha256(),"objects":expected.len(),"aliases":aliases.len(),
+                    "original_security_native_verification_pending":true,"protected_target_capture_required":true}))?;
+            }
+            Some(Arc::new(aliases))
+        } else {
         // Recovery acquires fresh native ownership of the existing tree. It
         // never calls the allocator or recreates the shadow's files.
         let (mut private, placement) = if let Some(saved) = effective_resume.as_ref()
@@ -1122,6 +1199,8 @@ where
                 )?;
             }
         }
+        let metadata_batch=resume_checkpoints.as_mut()
+            .map(resume_checkpoint::Checkpoints::begin_metadata).transpose()?;
         let verified_aliases = if let Some(aliases) = &alias_inputs {
             let compare = |a: &[u8], b: &[u8]| {
                 crate::ntfs_attestation::same_security(a, b).map_err(std::io::Error::other)
@@ -1147,6 +1226,17 @@ where
             })?;
             None
         };
+        if let (Some(state),Some(batch))=(resume_checkpoints.as_mut(),metadata_batch) {
+            state.metadata_completed(batch,&serde_json::json!({"kind":"metadata-completion-v1",
+                "expected_sha256":expected.file_sha256(),"objects":expected.len(),
+                "aliases":verified_aliases.as_ref().map_or(0,|aliases|aliases.len()),
+                "original_security_native_verification_pending":true,"protected_target_capture_required":true}))?;
+        }
+        verified_aliases
+        };
+        events.observer.note(&serde_json::json!({"kind":"expected-metadata-work-counters-v1",
+            "phase":"metadata-completed","page_cache":expected.page_cache_statistics(),
+            "alias_projection":expected.alias_projection_statistics(),"diagnostic_only":true}))?;
         events.phase("source-after-shadow-construction");
         context.recheck_source(&mut events)?;
         events.checkpoint()?;

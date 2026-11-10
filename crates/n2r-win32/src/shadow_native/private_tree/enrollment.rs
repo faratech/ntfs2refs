@@ -149,7 +149,7 @@ impl ConstructionEnrollment<'_> {
     }
 }
 
-fn check_mounted_profile(volume: &File, partition_bytes: u64) -> io::Result<()> {
+pub(super) fn check_mounted_profile(volume: &File, partition_bytes: u64) -> io::Result<()> {
     query_refs_314_volume_data(volume, partition_bytes)?;
     let base = ctl(volume, stream_layout::GET_BASE, &[], 8)?;
     if base.len() != 8 || layout::u64_at(&base, 0)? != 0 {

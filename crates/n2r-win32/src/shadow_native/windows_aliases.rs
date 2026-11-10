@@ -919,7 +919,7 @@ impl StagedWindowsAliases {
                 Some(self.maximum_row_bytes),
                 )?;
             }
-            if !self.recovering||!super::basic_matches(&expected,super::query_bytes(before.as_ref().expect("recovery snapshot"),0,40)?) {
+            if !self.recovering||!super::basic_matches(&expected,&super::info(&staged.file,0,40)?) {
                 input.before_mutation(0)?;
                 super::basic(&staged.file, &expected)?;
             }

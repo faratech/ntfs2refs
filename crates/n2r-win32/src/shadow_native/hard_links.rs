@@ -263,7 +263,7 @@ pub(super) fn create_owned_domain(
     input: &impl InputDomain,
     handles: &BTreeMap<usize, File>,
 ) -> io::Result<Vec<serde_json::Value>> {
-    create_owned_domain_inner(input, handles, None)
+    create_owned_domain_inner(input, handles, None, false)
 }
 pub(super) fn create_owned_resource_domain(
     input: &impl InputDomain,
@@ -272,12 +272,19 @@ pub(super) fn create_owned_resource_domain(
     root: &str,
     payer: &dyn report_memory::ReportMemoryAccountant,
 ) -> io::Result<Vec<serde_json::Value>> {
-    create_owned_domain_inner(input, handles, Some((maximum_names, root, payer)))
+    create_owned_domain_inner(input, handles, Some((maximum_names, root, payer)), false)
+}
+pub(super) fn reconcile_owned_resource_domain(
+    input:&impl InputDomain,handles:&BTreeMap<usize,File>,maximum_names:usize,
+    root:&str,payer:&dyn report_memory::ReportMemoryAccountant,
+)->io::Result<Vec<serde_json::Value>>{
+    create_owned_domain_inner(input,handles,Some((maximum_names,root,payer)),true)
 }
 fn create_owned_domain_inner(
     input: &impl InputDomain,
     handles: &BTreeMap<usize, File>,
     resources: Option<(usize, &str, &dyn report_memory::ReportMemoryAccountant)>,
+    recovering:bool,
 ) -> io::Result<Vec<serde_json::Value>> {
     if !input.any(|i| !i.additional_names.is_empty())? {
         return Ok(Vec::new());
@@ -329,9 +336,11 @@ fn create_owned_domain_inner(
         let file = handles
             .get(&index)
             .ok_or_else(|| invalid("owned canonical link handle missing"))?;
-        validate_open_type(file, false)?;
+        if recovering&&crate::reparse_native::capture(file)?.is_some(){validate_bound_type(file,item)?;}
+        else{validate_open_type(file, false)?;}
         let identity = info(file, 18, 24)?;
-        if layout::u32_at(&info(file, 1, 24)?, 16)? != 1 {
+        let mut current_links=layout::u32_at(&info(file,1,24)?,16)?;
+        if (!recovering&&current_links!=1)||current_links==0||current_links>count(item)? {
             return Err(invalid("fresh canonical file already has additional links"));
         }
         for (number, path) in item.additional_names.iter().enumerate() {
@@ -359,19 +368,26 @@ fn create_owned_domain_inner(
                     .ok_or_else(|| invalid("resource hard-link enumeration RAM overflow"))?)?;
                 (Some(evidence), Some(memory))
             } else { (None, None) };
-            if parent_id[..8] != identity[..8]
-                || enumerate_with_resource_budget(parent, enumeration_budget)?
-                    .iter()
-                    .any(|e| e.name_utf16 == name.encode_utf16().collect::<Vec<_>>())
-            {
+            let native_name:Vec<u16>=name.encode_utf16().collect();
+            let existing:Vec<_>=enumerate_with_resource_budget(parent,enumeration_budget)?.into_iter()
+                .filter(|entry|entry.name_utf16==native_name).collect();
+            if parent_id[..8] != identity[..8] {
                 return Err(invalid(
                     "hard-link destination exists or is on a different volume",
                 ));
             }
+            if !existing.is_empty(){
+                if !recovering||existing.len()!=1||existing[0].file_id!=identity[8..24]
+                    ||(existing[0].attributes&16!=0)||info(file,18,24)?!=identity
+                    ||info(parent,18,24)?!=parent_id {
+                    return Err(invalid("existing hard-link destination differs from the held canonical identity"));
+                }
+                continue;
+            }
             input.before_mutation(0)?;
             create_link(file, parent, name)?;
-            let expected =
-                u32::try_from(number + 2).map_err(|_| invalid("hard-link count overflow"))?;
+            let expected =if recovering {current_links.checked_add(1).ok_or_else(||invalid("recovered link count overflow"))?}
+                else{u32::try_from(number + 2).map_err(|_| invalid("hard-link count overflow"))?};
             if info(file, 18, 24)? != identity
                 || info(parent, 18, 24)? != parent_id
                 || layout::u32_at(&info(file, 1, 24)?, 16)? != expected
@@ -394,6 +410,10 @@ fn create_owned_domain_inner(
                 serde_json::json!({"components":path,"canonical_components":item.components,
                 "file_id":&identity[8..24],"link_count":expected,"replace_if_exists":false}),
             );
+            current_links=expected;
+        }
+        if layout::u32_at(&info(file,1,24)?,16)?!=count(item)?||info(file,18,24)?!=identity{
+            return Err(invalid("complete recovered hard-link count or identity differs"));
         }
     }
     Ok(created)

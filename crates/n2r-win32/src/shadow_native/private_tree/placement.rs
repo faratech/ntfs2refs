@@ -810,7 +810,7 @@ fn intersects_desired(avoid: &[(u64, u64)], offset: u64, length: u64) -> bool {
         .is_some_and(|&(start, _)| start < offset + length)
 }
 
-fn source_runs(item: &Input<'_>, partition: u64) -> io::Result<Vec<SourceRun>> {
+pub(super) fn source_runs(item: &Input<'_>, partition: u64) -> io::Result<Vec<SourceRun>> {
     let prefix = item.logical_length() / 4096 * 4096;
     if item.source_offset.is_some() && !item.source_runs.is_empty() {
         return Err(invalid("mixed source placement forms"));

@@ -3,6 +3,8 @@
 //! describe provenance only; fresh enrollment and complete native audits issue
 //! the new owner. No old PrivateTree, creator flags, or move log is restored.
 use super::*;
+#[path="metadata_recovery.rs"]
+pub mod metadata_transition;
 
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct ExternalOriginPins {

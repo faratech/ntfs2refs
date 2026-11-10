@@ -421,6 +421,35 @@ impl Checkpoints {
         self.owners.push(owner);
         self.journal.record_stage(stage, vec![proof])
     }
+    /// Fresh native verification has adopted the already final-target shape.
+    /// Prior placement/payload receipts remain explicit initial-artifact facts;
+    /// this new observation describes the live reissued owner, not old writes.
+    pub(super) fn metadata_adopted(&mut self, observation:&serde_json::Value)->Result<()> {
+        ensure!(self.journal.stage()==Some(Stage::SourceVerified),
+            "metadata adoption must follow this epoch's source verification");
+        let (proof,owner)=persist(&self.group,&self.directory.join("native-metadata-adopted.json"),
+            "native-metadata-adopted",observation)?;
+        self.owners.push(owner);
+        for stage in [Stage::ShadowAllocated,Stage::Placing,Stage::Payloads] {
+            self.journal.record_stage(stage,vec![proof.clone()])?;
+        }
+        Ok(())
+    }
+    pub(super) fn begin_metadata(&mut self)->Result<DurableBatchIntent> {
+        ensure!(self.journal.stage()==Some(Stage::Payloads),
+            "metadata transition requires completed payload state");
+        self.journal.begin_batch(Stage::Metadata,BatchIntent{id:3,
+            operation:"native_reconcile_metadata".to_owned(),first_ordinal:0,end_ordinal:1,
+            operation_catalog:self.expected.clone(),
+            before_state:vec![self.expected.clone(),self.journal.intent().new_preparation_intent.clone()]})
+    }
+    pub(super) fn metadata_completed(&mut self,token:DurableBatchIntent,report:&serde_json::Value)->Result<()> {
+        let (proof,owner)=persist(&self.group,&self.directory.join("native-metadata-completed.json"),
+            "native-metadata-completed",report)?;
+        self.owners.push(owner);
+        self.journal.complete_batch(token,BatchOutcome{id:3,
+            disposition:BatchDisposition::ObservedApplied,evidence:vec![proof]})
+    }
     pub(super) fn published(&mut self, path: &Path) -> Result<()> {
         let proof = accounted(self.group.arena(), path, "published-conversion")?;
         self.journal.record_journal_publication(proof)

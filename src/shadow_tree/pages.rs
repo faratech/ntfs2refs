@@ -1385,8 +1385,20 @@ impl PagedExpectedTree {
         // Only resource-owned Expected readers opt in. Keep legacy/general
         // metadata readers at one page, and avoid paying for a second buffer
         // when the actual authenticated file contains only one page.
+        // Prefer every page resident: completion looks objects up in canonical
+        // order across all pages, and a two-slot cache then re-reads and
+        // re-hashes a page on almost every lookup. Fall back to the second
+        // slot only when the arena cannot pay for the whole body.
         if let Some(arena) = &arena {
             if reader.page_count() > 1 {
+                if let Ok(lease) = arena.reserve_ram(reader.resident_page_bytes()?) {
+                    reader.install_resident_pages()?;
+                    second_page_ram = Some(lease);
+                }
+            }
+        }
+        if let Some(arena) = &arena {
+            if reader.page_count() > 1 && !reader.pages_resident() {
                 let capacity = Reader::body_capacity_for_file(budget, reader.byte_len())?;
                 let lease = arena.reserve_ram(capacity as u64)?;
                 let mut body = Vec::new();

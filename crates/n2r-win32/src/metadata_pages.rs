@@ -564,7 +564,16 @@ pub struct Reader {
     // caller. The primary slot is most recently used; swaps retain each page's
     // own record cursor and never share buffers across Reader/file ownership.
     secondary: Option<CachedPage>,
+    // Every authenticated page, with each record's start offset. When present,
+    // lookups do no file I/O, no re-hash and no in-page scan.
+    resident: Option<Vec<ResidentPage>>,
     statistics: PageCacheStatistics,
+}
+
+struct ResidentPage {
+    first: u64,
+    starts: Vec<u32>,
+    body: Vec<u8>,
 }
 impl Reader {
     /// Pre-allocation body bound for an actual held ordinary file length.
@@ -722,8 +731,73 @@ impl Reader {
             body,
             body_limit,
             secondary: None,
+            resident: None,
             statistics,
         })
+    }
+    /// Upper bound of what `install_resident_pages` retains: every page body,
+    /// one offset per record, and the per-page bookkeeping.
+    pub fn resident_page_bytes(&self) -> io::Result<u64> {
+        let offsets = self
+            .records
+            .checked_mul(4)
+            .ok_or_else(|| io::Error::other("resident metadata offsets overflow"))?;
+        let pages = self
+            .pages
+            .checked_mul(std::mem::size_of::<ResidentPage>() as u64)
+            .ok_or_else(|| io::Error::other("resident metadata pages overflow"))?;
+        add(add(self.index - HEADER, offsets)?, pages)
+    }
+    /// Keep every page in memory. Each page is read and SHA-checked once more
+    /// against the already authenticated index, so a random lookup afterwards
+    /// costs a binary search over pages instead of a 4 MiB read and hash. The
+    /// caller reserves `resident_page_bytes` first and holds that payment
+    /// until this Reader has dropped.
+    pub fn install_resident_pages(&mut self) -> io::Result<()> {
+        require(self.resident.is_none(), "metadata pages are already resident")?;
+        let mut pages = Vec::new();
+        pages
+            .try_reserve_exact(usize::try_from(self.pages).map_err(io::Error::other)?)
+            .map_err(io::Error::other)?;
+        for page in 0..self.pages {
+            let e = entry(&mut self.file, self.index, page)?;
+            let mut body = Vec::new();
+            body.try_reserve_exact(e.bytes as usize - FRAME as usize)
+                .map_err(io::Error::other)?;
+            load_page(
+                &mut self.file,
+                e,
+                self.budget,
+                self.index,
+                self.body_limit,
+                &mut body,
+                &mut self.statistics,
+            )?;
+            let mut starts = Vec::new();
+            starts
+                .try_reserve_exact(e.count as usize)
+                .map_err(io::Error::other)?;
+            let mut at = 0;
+            for _ in 0..e.count {
+                starts.push(u32::try_from(at).map_err(io::Error::other)?);
+                at = record_at(&body, at)?.0;
+            }
+            require(at == body.len(), "resident metadata page length differs")?;
+            pages.push(ResidentPage {
+                first: e.first,
+                starts,
+                body,
+            });
+        }
+        require(
+            Snapshot::observe(&self.file)? == self.snapshot,
+            "metadata file changed while its pages became resident",
+        )?;
+        self.resident = Some(pages);
+        Ok(())
+    }
+    pub fn pages_resident(&self) -> bool {
+        self.resident.is_some()
     }
     pub fn len(&self) -> u64 {
         self.records
@@ -787,6 +861,20 @@ impl Reader {
         callback: impl FnOnce(&[u8], &[u8]) -> io::Result<T>,
     ) -> io::Result<T> {
         require(ordinal < self.records, "metadata ordinal is out of bounds")?;
+        if let Some(pages) = &self.resident {
+            self.statistics.hits = self.statistics.hits.saturating_add(1);
+            let page = pages
+                .partition_point(|page| page.first <= ordinal)
+                .checked_sub(1)
+                .map(|index| &pages[index])
+                .ok_or_else(|| io::Error::other("metadata indexed ordinal absent"))?;
+            let start = usize::try_from(ordinal - page.first)
+                .ok()
+                .and_then(|record| page.starts.get(record))
+                .ok_or_else(|| io::Error::other("metadata indexed ordinal has a gap"))?;
+            let (_, key, payload) = record_at(&page.body, *start as usize)?;
+            return callback(key, payload);
+        }
         if self
             .cached
             .is_some_and(|e| ordinal >= e.first && ordinal - e.first < e.count as u64)

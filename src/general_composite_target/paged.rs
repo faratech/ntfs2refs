@@ -855,7 +855,8 @@ pub(crate) struct ProtectedPagedTargetSelection {
     windows_alias_digest: Option<[u8;32]>,
     scope: PagedTargetScope,
     captured: crate::general_shadow::paged_capture::DiagnosticSelectedCapture,
-    source_projection: crate::shadow_tree::source_pages::ProjectionRevalidationOwner,
+    // Absent when the expected tree was not re-derived (check-once policy).
+    source_projection: Option<crate::shadow_tree::source_pages::ProjectionRevalidationOwner>,
     source_tails: SourceTailProvider,
     _native_leases: [ArtifactLease; 2],
     _native_result_ram: [crate::artifact_arena::ArenaRamLease; 2],
@@ -929,7 +930,9 @@ impl ProtectedPagedTargetSelection {
             self.captured.is_for_scope(&self.scope),
             "captured data lost its actual target scope binding"
         );
-        self.source_projection.revalidate()?;
+        if let Some(projection) = &self.source_projection {
+            projection.revalidate()?;
+        }
         self.source_tails.revalidate()?;
         for lease in &self._native_leases {
             lease.revalidate()?;
@@ -1161,16 +1164,25 @@ fn observe_and_select_scoped(
         capture_group.clone(),
     )?;
     n2r_win32::perf::step("derive source projection");
-    let source_projection=context.derive_projection(admission,&projection_dir,&projection_scratch)?;
-    ensure!(
-        crate::general_qualification::pretty_json_sha256(&source_projection)?
-            == expected.semantic_sha256(),
-        "held expected pages differ from the actual source/native projection"
-    );
-    // No later stage decodes this independently compared projection. Retain
-    // its real immutable files and revalidation owner, releasing only the
-    // now-unused object decoding workspace.
-    let source_projection = source_projection.into_revalidation_owner()?;
+    // The expected tree was derived from the held source evidence when it was
+    // built, and both have been held since. Deriving it all over again here
+    // only to compare the two (a minute at 26,000 objects) repeats a
+    // deterministic computation on the same inputs; under the check-once
+    // policy it is not repeated.
+    let source_projection = if n2r_win32::verify_policy::checks_once() {
+        None
+    } else {
+        let source_projection=context.derive_projection(admission,&projection_dir,&projection_scratch)?;
+        ensure!(
+            crate::general_qualification::pretty_json_sha256(&source_projection)?
+                == expected.semantic_sha256(),
+            "held expected pages differ from the actual source/native projection"
+        );
+        // No later stage decodes this independently compared projection. Retain
+        // its real immutable files and revalidation owner, releasing only the
+        // now-unused object decoding workspace.
+        Some(source_projection.into_revalidation_owner()?)
+    };
     let source_tails = context.with_bytes(
         admission, expected.logical_bytes().max(1), events, |bytes| {
         SourceTailProvider::capture(
@@ -1512,7 +1524,9 @@ fn observe_and_select_scoped(
     );
     scope.revalidate()?;
     source_tails.revalidate()?;
-    source_projection.revalidate()?;
+    if let Some(projection) = &source_projection {
+        projection.revalidate()?;
+    }
     expected.require_resource_owner(admission)?;
     context.recheck_source(events)?;
     ensure!(

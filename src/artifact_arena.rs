@@ -2095,11 +2095,10 @@ impl ArtifactPathPermit {
             .saturating_sub(verified.snapshot.file_bytes);
         let next_overhead = state
             .overhead
-            .checked_sub(
-                self.allocation_slack
-                    .checked_sub(extra)
-                    .context("artifact allocation slack exceeded")?,
-            )
+            // Return whatever part of the reserved slack this file did not use.
+            // Filesystem append pre-allocation, admitted above, can exceed the
+            // slack while the file is open; then none of it is returned.
+            .checked_sub(self.allocation_slack.saturating_sub(extra))
             .context("artifact slack underflow")?;
         let group = state.groups.get(&self.group.group).unwrap();
         ensure!(

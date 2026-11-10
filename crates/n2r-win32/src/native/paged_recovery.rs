@@ -540,11 +540,18 @@ pub fn note_selected_new_bytes_verified(immutable_sha256: &[u8; 32], new_selecte
 }
 
 fn selected_new_bytes_already_verified(pins: &PagedRecoveryPins<'_>) -> bool {
+    selected_new_bytes_verified(&pins.immutable_sha256, &pins.new_selected_sha256)
+}
+
+/// Whether [`note_selected_new_bytes_verified`] was called for this journal in
+/// this process and the route checks once. Never true in a recovery process,
+/// which has read nothing back itself.
+pub fn selected_new_bytes_verified(immutable_sha256: &[u8; 32], new_selected_sha256: &[u8; 32]) -> bool {
     crate::verify_policy::checks_once()
         && NEW_BYTES_VERIFIED
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .contains(&(pins.immutable_sha256, pins.new_selected_sha256))
+            .contains(&(*immutable_sha256, *new_selected_sha256))
 }
 
 /// Authenticate HND and the complete selected NEW bytes using held owners.

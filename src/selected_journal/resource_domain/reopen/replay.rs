@@ -275,9 +275,23 @@ impl BoundJournalObservation<'_> {
             "a durable handoff is required before target verification"
         );
         let expected = self.observation.ticket.new_selected_sha256;
-        let digest =
+        // The apply step read every changed range back after writing it and
+        // the source has been offline and read-only since. When that happened
+        // in this same process the read-back is not made a second time; a
+        // recovery process always makes it.
+        let digest = if n2r_win32::selected_new_bytes_verified(
+            &self.observation.ticket.immutable_sha256,
+            &expected,
+        ) {
+            ensure!(
+                target_length == self.observation.ticket.image_length,
+                "replay target length differs"
+            );
+            expected
+        } else {
             self.observation
-                .check_target_reader(target, target_length, Some(expected), false)?;
+                .check_target_reader(target, target_length, Some(expected), false)?
+        };
         ensure!(
             self.observation.lifecycle()? == SelectedLifecycle::Handoff,
             "handoff lifecycle changed during target verification"

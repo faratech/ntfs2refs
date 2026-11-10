@@ -157,7 +157,7 @@ pub use native::{
     PagedRecoveryPins, PartitionSnapshot,
     WritePolicy, capture_mount_paths_for_journal, capture_mount_paths_general, mounted_filesystem_general,
     observe_general_disk_state_readonly, probe_general, current_windows_directory, rediscover_general_volume,
-    rediscover_general_volume_wait, restore_drive_letter_general, note_selected_new_bytes_verified,
+    rediscover_general_volume_wait, restore_drive_letter_general, note_selected_new_bytes_verified, selected_new_bytes_verified,
 };
 
 #[cfg(windows)]

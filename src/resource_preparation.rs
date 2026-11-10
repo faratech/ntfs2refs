@@ -1431,6 +1431,7 @@ where
         };
         events.checkpoint()?;
         events.phase("native-journal-preparation");
+        n2r_win32::perf::step("revalidate and write journal");
         let mut prepared = prepare_native_from_protected_capture(
             &domain,
             &mut context,

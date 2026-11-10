@@ -1011,6 +1011,7 @@ fn validate_readback<J: ReadSeek>(
     compare: &mut [u8],
 ) -> Result<([u8; 32], [u8; 32])> {
     let _timed = n2r_win32::perf::scope(n2r_win32::perf::Point::JournalRead);
+    n2r_win32::perf::step("read journal back: stored bytes");
     let f = domain.facts;
     ensure!(
         ticket.image_length == f.image_length
@@ -1147,6 +1148,7 @@ fn validate_readback<J: ReadSeek>(
             "diagnostic NEW aggregate differs"
         );
     } else {
+        n2r_win32::perf::step("read journal back: resolve copied ranges");
         let mut aggregate = aggregate_pin_hash()?;
         for ordinal in 0..u64::from(f.range_count) {
             let row = domain.row(ordinal)?;
@@ -1202,6 +1204,7 @@ fn validate_readback<J: ReadSeek>(
         compare.len() >= BUFFER && buffer.len() >= BUFFER,
         "diagnostic I/O buffers differ"
     );
+    n2r_win32::perf::step("after journal read-back");
     Ok((finish(immutable)?, finish(whole)?))
 }
 

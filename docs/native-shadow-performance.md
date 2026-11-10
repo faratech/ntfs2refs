@@ -47,6 +47,12 @@ the exact-source check recorded in
 partial carrier transfer and captured-state adoption remain explicit refusals.
 End-to-end native qualification is still required.
 
+The optimized executable was built from commit `5011c45` using the shared target
+in 332.41 seconds. The saved storage increase was 52,449,892 bytes; no additional
+VM run was launched. The manifest and executable hashes are recorded in
+[`performance-resume-candidate-5011c45.json`](../evidence/performance-resume-candidate-5011c45.json).
+The currently running VM continues with its frozen `1f4f3c9` executable.
+
 Recovered COMPLETE streams use the existing hybrid rule: freshly proven
 same-coordinate source references contribute original source bytes, while
 materialized regions contribute shadow bytes and sparse holes contribute zeros.

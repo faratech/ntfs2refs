@@ -140,6 +140,8 @@ pub struct ExpectedTreePageReceipt {
 
 pub struct PagedExpectedTree {
     reader: RefCell<Reader>,
+    alias_projection: RefCell<Option<AliasProjection>>,
+    alias_projection_lookups: Cell<u64>,
     header: ExpectedTreePageHeader,
     counts: ExpectedTreePageCounts,
     file_sha256: String,
@@ -191,6 +193,77 @@ struct ObjectEntry {
     start: u64,
     chunks: u64,
     bytes: u64,
+}
+
+/// Private runtime projection of this exact held Expected owner. Paths use
+/// compact length framing instead of retaining a Vec/String allocation for
+/// every component. No serialized receipt can construct this projection.
+struct AliasProjectionRow {
+    paths: Vec<u8>,
+    directory: bool,
+    is_reparse: bool,
+    _ram: crate::artifact_arena::ArenaRamLease,
+}
+struct AliasProjection {
+    rows: Vec<AliasProjectionRow>,
+    path_bytes: u64,
+    _ram: crate::artifact_arena::ArenaRamLease,
+}
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+pub struct AliasProjectionStatistics {
+    pub objects: u64,
+    pub encoded_path_bytes: u64,
+    pub lookups: u64,
+}
+
+fn alias_path_bytes(object: &Object) -> Result<usize> {
+    std::iter::once(&object.path).chain(&object.additional_names).try_fold(8usize, |bytes, path| {
+        path.iter().try_fold(bytes.checked_add(8).context("alias path framing overflow")?, |bytes, part| {
+            bytes.checked_add(8).and_then(|n| n.checked_add(part.len()))
+                .context("alias component framing overflow")
+        })
+    })
+}
+fn alias_take<'a>(bytes: &mut &'a [u8], length: usize) -> io::Result<&'a [u8]> {
+    if length > bytes.len() { return Err(io::Error::other("held alias projection frame differs")); }
+    let (value, rest) = bytes.split_at(length);
+    *bytes = rest;
+    Ok(value)
+}
+fn alias_number(bytes: &mut &[u8]) -> io::Result<usize> {
+    let raw: [u8; 8] = alias_take(bytes, 8)?.try_into().map_err(io::Error::other)?;
+    usize::try_from(u64::from_le_bytes(raw)).map_err(io::Error::other)
+}
+fn alias_path_matches(bytes: &mut &[u8], expected: &[String]) -> io::Result<bool> {
+    let parts = alias_number(bytes)?;
+    if parts > bytes.len() / 8 { return Err(io::Error::other("held alias component count differs")); }
+    let mut matched = parts == expected.len();
+    for ordinal in 0..parts {
+        let length = alias_number(bytes)?;
+        let part = alias_take(bytes, length)?;
+        matched &= expected.get(ordinal).is_some_and(|wanted| wanted.as_bytes() == part);
+    }
+    Ok(matched)
+}
+impl n2r_win32::shadow_native::input_domain::AliasObjectShape for AliasProjectionRow {
+    fn directory(&self) -> bool { self.directory }
+    fn is_reparse(&self) -> bool { self.is_reparse }
+    fn primary_path_matches(&self, path: &[String]) -> io::Result<bool> {
+        let mut bytes = self.paths.as_slice();
+        if alias_number(&mut bytes)? == 0 { return Err(io::Error::other("held alias primary path absent")); }
+        alias_path_matches(&mut bytes, path)
+    }
+    fn contains_path(&self, path: &[String]) -> io::Result<bool> {
+        let mut bytes = self.paths.as_slice();
+        let paths = alias_number(&mut bytes)?;
+        if paths == 0 || paths > bytes.len() / 8 {
+            return Err(io::Error::other("held alias path count differs"));
+        }
+        let mut found = false;
+        for _ in 0..paths { found |= alias_path_matches(&mut bytes, path)?; }
+        if !bytes.is_empty() { return Err(io::Error::other("held alias projection has trailing bytes")); }
+        Ok(found)
+    }
 }
 
 fn chunk_bytes(budget: PageBudget) -> Result<usize> {
@@ -1467,6 +1540,8 @@ impl PagedExpectedTree {
         );
         let mut view = Self {
             reader: RefCell::new(reader),
+            alias_projection: RefCell::new(None),
+            alias_projection_lookups: Cell::new(0),
             header,
             counts: ExpectedTreePageCounts::default(),
             file_sha256: file_sha256.into(),
@@ -1577,6 +1652,9 @@ impl PagedExpectedTree {
         let admission = self
             .resource_admission
             .context("expected arena row lacks admission")?;
+        // The row allowance includes its actual compact JSON buffer as well
+        // as the preflight/typed decoder. object_memory_bytes and MemorySeed
+        // both charge compact bytes before accepting decoded allocations.
         let bytes = admission
             .budget
             .max_row_bytes
@@ -1611,6 +1689,84 @@ impl PagedExpectedTree {
     /// counters are diagnostic and never replace authentication/owner checks.
     pub fn page_cache_statistics(&self) -> n2r_win32::metadata_pages::PageCacheStatistics {
         self.reader.borrow().page_cache_statistics()
+    }
+    pub fn alias_projection_statistics(&self) -> AliasProjectionStatistics {
+        let projection = self.alias_projection.borrow();
+        AliasProjectionStatistics {
+            objects: projection.as_ref().map_or(0, |value| value.rows.len() as u64),
+            encoded_path_bytes: projection.as_ref().map_or(0, |value| value.path_bytes),
+            lookups: self.alias_projection_lookups.get(),
+        }
+    }
+    fn build_alias_projection(&self) -> Result<AliasProjection> {
+        let admission = self.resource_admission.context("alias projection resource owner absent")?;
+        let arena = self.arena.as_ref().context("alias projection shared payer absent")?;
+        self.require_resource_owner(admission)?;
+        // Pay only the actual ordinal table and then each observed encoded
+        // path size. There is no maximum-row-times-object-count allocation.
+        let row_bytes = self.len().checked_mul(std::mem::size_of::<AliasProjectionRow>())
+            .and_then(|n| n.checked_add(std::mem::size_of::<AliasProjection>()))
+            .context("alias ordinal projection RAM overflow")?;
+        let ram = arena.reserve_ram(row_bytes as u64)?;
+        let mut rows = Vec::new();
+        rows.try_reserve_exact(self.len())?;
+        ensure!(rows.capacity().checked_mul(std::mem::size_of::<AliasProjectionRow>())
+            .and_then(|n| n.checked_add(std::mem::size_of::<AliasProjection>()))
+            .is_some_and(|n| n <= row_bytes), "alias ordinal allocation exceeds its payment");
+        let mut path_bytes = 0u64;
+        for index in 0..self.len() {
+            let object = self.object_leased(index)?;
+            let length = alias_path_bytes(&object)?;
+            let row_ram = arena.reserve_ram(length as u64)?;
+            let mut paths = Vec::new();
+            paths.try_reserve_exact(length)?;
+            ensure!(paths.capacity() == length, "alias path allocation exceeds its exact payment");
+            let count = object.additional_names.len().checked_add(1).context("alias name count overflow")?;
+            paths.extend_from_slice(&(count as u64).to_le_bytes());
+            for path in std::iter::once(&object.path).chain(&object.additional_names) {
+                paths.extend_from_slice(&(path.len() as u64).to_le_bytes());
+                for part in path {
+                    paths.extend_from_slice(&(part.len() as u64).to_le_bytes());
+                    paths.extend_from_slice(part.as_bytes());
+                }
+            }
+            ensure!(paths.len() == length, "alias path projection size changed after admission");
+            path_bytes = path_bytes.checked_add(length as u64).context("alias path total overflow")?;
+            rows.push(AliasProjectionRow {
+                paths,
+                directory: object.directory,
+                is_reparse: object.reparse.is_some(),
+                _ram: row_ram,
+            });
+        }
+        self.require_resource_owner(admission)?;
+        Ok(AliasProjection { rows, path_bytes, _ram: ram })
+    }
+    pub(crate) fn with_alias_shape<T>(&self, index: usize,
+        visit: impl FnOnce(&dyn n2r_win32::shadow_native::input_domain::AliasObjectShape) -> io::Result<T>)
+        -> io::Result<T> {
+        if index >= self.len() || self.cached_body_pending {
+            return Err(io::Error::other("alias lookup requires a complete bound Expected ordinal"));
+        }
+        if self.arena.is_none() {
+            let object = self.object(index).map_err(io::Error::other)?;
+            return visit(&n2r_win32::shadow_native::input_domain::AliasObjectShapeRef {
+                components: &object.path,
+                additional_names: &object.additional_names,
+                directory: object.directory,
+                is_reparse: object.reparse.is_some(),
+            });
+        }
+        let needs_projection = self.alias_projection.borrow().is_none();
+        if needs_projection {
+            let projection = self.build_alias_projection().map_err(io::Error::other)?;
+            *self.alias_projection.borrow_mut() = Some(projection);
+        }
+        let projection = self.alias_projection.borrow();
+        let row = projection.as_ref().and_then(|value| value.rows.get(index))
+            .ok_or_else(|| io::Error::other("held alias projection ordinal absent"))?;
+        self.alias_projection_lookups.set(self.alias_projection_lookups.get().saturating_add(1));
+        visit(row)
     }
     pub(crate) fn require_shared_memory(
         &self,
@@ -1648,25 +1804,58 @@ impl PagedExpectedTree {
                 entry.bytes <= admission.budget.max_row_bytes,
                 "resource object compact bytes exceed budget"
             );
+        }
+        // Both callers prepay reserve_decode_ram before entering this private
+        // decoder. For an actual arena-owned row, retain exactly its admitted
+        // compact bytes so the two validation passes need only one authenticated
+        // chunk/base64 read. Legacy and non-arena owners keep the streaming path.
+        let compact = if self.arena.is_some() && self.resource_admission.is_some() {
+            let length = usize::try_from(entry.bytes).context("compact object exceeds address space")?;
+            let mut bytes = Vec::new();
+            bytes.try_reserve_exact(length)?;
+            ensure!(bytes.capacity() == length,
+                "compact object allocation exceeds its paid byte count");
+            bytes.resize(length, 0);
+            {
+                let mut source = chunks();
+                source.read_exact(&mut bytes)
+                    .context("read complete bounded expected-object chunks")?;
+                // Exercise ChunkReader's complete chunk-count/byte-count gate,
+                // including a malformed extra chunk after the declared bytes.
+                let mut extra = [0u8; 1];
+                ensure!(source.read(&mut extra)? == 0,
+                    "expected object has bytes beyond its authenticated directory row");
+            }
+            Some(bytes)
+        } else {
+            None
+        };
+        if let Some(admission) = self.resource_admission {
             let used = Cell::new(
                 entry
                     .bytes
                     .checked_add(std::mem::size_of::<Object>() as u64)
                     .context("object memory counter overflow")?,
             );
-            let mut decoder = serde_json::Deserializer::from_reader(chunks());
-            serde::de::DeserializeSeed::deserialize(
-                MemorySeed {
-                    kind: MemoryKind::Object,
-                    used: &used,
-                    limit: admission.budget.max_row_bytes,
-                },
-                &mut decoder,
-            )?;
-            decoder.end()?;
+            let seed = MemorySeed {
+                kind: MemoryKind::Object,
+                used: &used,
+                limit: admission.budget.max_row_bytes,
+            };
+            if let Some(bytes) = &compact {
+                let mut decoder = serde_json::Deserializer::from_slice(bytes);
+                serde::de::DeserializeSeed::deserialize(seed, &mut decoder)?;
+                decoder.end()?;
+            } else {
+                let mut decoder = serde_json::Deserializer::from_reader(chunks());
+                serde::de::DeserializeSeed::deserialize(seed, &mut decoder)?;
+                decoder.end()?;
+            }
         }
-        let object: Object = serde_json::from_reader(chunks())
-            .context("decode complete expected-tree object chunks")?;
+        let object: Object = match &compact {
+            Some(bytes) => serde_json::from_slice(bytes),
+            None => serde_json::from_reader(chunks()),
+        }.context("decode complete expected-tree object chunks")?;
         if let Some(admission) = self.resource_admission {
             check_object_memory(&object, entry.bytes, admission.budget.max_row_bytes)?;
         }

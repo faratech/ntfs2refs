@@ -44,6 +44,7 @@ pub mod layout;
 #[cfg(windows)]
 pub mod layout_residual_pages;
 pub mod logical_hash;
+pub mod progress;
 #[cfg(windows)]
 pub mod managed_shadow;
 #[cfg(windows)]

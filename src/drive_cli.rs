@@ -664,6 +664,11 @@ mod windows {
             &run.join("drive-selection.json"),
             &serde_json::json!({"selected":selected,"source":before,"confirmation":"interactive affirmative","journal_budget_bytes":journal_bytes,"requested_target_format":target_format,"explicit_trust_or_filter_configuration_requested":false,"source_write_authority":false}),
         )?;
+        let native_creation_admission = if thin_shadow { None } else {
+            let admitted = n2r_win32::managed_shadow::admit_fresh_native_backing(&run.join("shadow.vhdx"))?;
+            save_new(&run.join("native-shadow-creation-admission.json"), &admitted.observe()?)?;
+            Some(admitted)
+        };
         let before = if before.binding.layout_profile
             == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows {
             super::boot::normalize_geometry(before, &run)?
@@ -710,6 +715,8 @@ mod windows {
                 owner.format(before.binding.identity.partition_bytes, target_format)?,
             )
         } else {
+            native_creation_admission.as_ref()
+                .context("native shadow creation capacity owner absent")?.check()?;
             super::staging::StageOwner::Vhdx(n2r_win32::managed_shadow::create_with_profile(
                 &run.join("shadow.vhdx"),
                 before.binding.identity.partition_bytes,
@@ -718,6 +725,7 @@ mod windows {
                 target_format,
             )?)
         };
+        if let Some(admitted) = &native_creation_admission { admitted.check()?; }
         let provider_commitment = staged.initial_host_backing_commitment()?;
         // Record the provider identity as well as the disk identity: a guest
         // reboot can remove the attachment while leaving the recovery backing

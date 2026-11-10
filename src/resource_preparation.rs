@@ -7,7 +7,7 @@ use crate::{
     general_reconstruct::selected_native_journal::BoundNativeCreationJournal,
     general_shadow::{
         self, PagedInputs,
-        paged_candidate::{PagedPayloadRoutes, PagedSourceBackedCandidate},
+        paged_candidate::{PagedPayloadRoutes, PagedSourceBackedCandidateWithScope},
         paged_capture::capture_target_selected,
         source_backed::{CaptureBudget, CaptureProgress, PagedSourceByteAdapter, PagedSourceByteAdapterWithScope},
     },
@@ -90,6 +90,7 @@ pub(crate) struct ResumePreparation {
     pub expected_binding: Option<crate::shadow_tree::ExpectedBindingPin>,
     pub completed_placement: Option<resume_session_inputs::HeldCompletedPlacement>,
     pub completed_payloads: Option<resume_session_inputs::HeldCompletedPayloads>,
+    pub shadow_start: resume_session_inputs::ShadowStart,
     pub shadow_origin: n2r_win32::shadow_native::private_tree::recovery::ExternalOriginPins,
     pub prior_spend: n2r_win32::shadow_native::private_tree::recovery::PartialPlacementSpend,
     pub placement_limits: n2r_win32::shadow_native::private_tree::recovery::RecoveryLimits,
@@ -195,6 +196,12 @@ pub(crate) trait PreparationObserver {
     ) -> Option<std::sync::Arc<n2r_win32::managed_shadow::BackingResourceGuard>> {
         None
     }
+    fn progress_reporter(&self) -> n2r_win32::progress::Reporter {
+        n2r_win32::progress::Reporter::default()
+    }
+    fn parent_public_resources(&self) -> Option<&resume_origin::ParentPublicResources> {
+        None
+    }
     fn preparation_created(&mut self, _pin: &early_guard::GuardPin) -> Result<()> {
         Ok(())
     }
@@ -262,6 +269,19 @@ impl<'a, O: PreparationObserver> EventLog<'a, O> {
     }
     pub(crate) fn phase(&mut self, phase: &'static str) {
         self.phase = phase;
+        use n2r_win32::progress::{Phase,Unit,Update};
+        let typed=match phase {
+            "source-preparation"|"source-recheck"=>Some(Phase::SourceEvidence),
+            "expected-preparation"=>Some(Phase::ExpectedPreparation),
+            "shadow-allocation"=>Some(Phase::ShadowAllocation),
+            "shadow-placement"=>Some(Phase::Placement),
+            "protected-target-capture"=>Some(Phase::TargetCapture),
+            "native-journal-preparation"=>Some(Phase::RecoveryJournal),
+            _=>None,
+        };
+        if let Some(phase)=typed {
+            self.observer.progress_reporter().report(Update::new(phase,Unit::Operations,0,None));
+        }
     }
     pub(crate) fn checkpoint(&mut self) -> Result<()> {
         self.observer.native_events(self.phase, &mut self.events)?;
@@ -562,6 +582,7 @@ where
         events.checkpoint()?;
         events.observer.source_prepared(&context)?;
         let admission = context.resource_admission();
+        events.phase("expected-preparation");
         let profile = crate::ntfs_admission::ResourceProfile::ResourceBoundedV4(Some(admission));
         request
             .pair
@@ -791,7 +812,7 @@ where
         let backing_guard = events.observer.backing_resource_guard();
         let inputs = general_shadow::GuardedInputs::new(
             PagedInputs(&expected), backing_guard.clone(), &request.pair.shadow,
-        )?;
+        )?.with_progress(events.observer.progress_reporter());
         let trust_recipes = if trust_repair_allocation.is_some() {
             Some(crate::refs_security_integration::collect_recipes(
                 &inputs, &arena,
@@ -799,19 +820,28 @@ where
         } else {
             None
         };
-        let mut resume_checkpoints = effective_resume
-            .as_ref()
-            .map(|saved| {
-                resume_checkpoint::Checkpoints::create(
+        let mut resume_checkpoints = if let Some(saved) = effective_resume.as_ref() {
+            Some(resume_checkpoint::Checkpoints::create(
                     saved,
                     &context,
                     &expected,
                     &request,
                     &locator_group,
                     output,
+                )?)
+        } else if request.pair.source.layout_profile
+            == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+            && request.verification_policy == VerificationPolicy::ExtentIdentityV1
+            && request.marker_use == MarkerStorageUse::QualifiedProduction
+        {
+            events.observer.parent_public_resources().map(|parent| {
+                resume_checkpoint::Checkpoints::create_fresh(
+                    &context, &expected, &request, parent, &locator_group, output,
                 )
-            })
-            .transpose()?;
+            }).transpose()?
+        } else {
+            None
+        };
 
         // Placement and later target capture share one actual quota. Keep
         // every complete placement proof in its constructor-owned page files.
@@ -888,7 +918,8 @@ where
 
         // Recovery acquires fresh native ownership of the existing tree. It
         // never calls the allocator or recreates the shadow's files.
-        let (mut private, placement) = if let Some(saved) = effective_resume.as_ref() {
+        let (mut private, placement) = if let Some(saved) = effective_resume.as_ref()
+            .filter(|saved| saved.shadow_start == resume_session_inputs::ShadowStart::AdoptExisting) {
             let (source, _) = context.source_and_inspection()?;
             let native_profile = profile
                 .native_profile()
@@ -951,6 +982,7 @@ where
                 .as_mut()
                 .map(|state| state.adopted(&observation))
                 .transpose()?;
+            events.phase("shadow-placement");
             let placement_result = if placed_ready.is_some() {
                 recovered.rehydrate_placed_domain(&inputs, &mut placement_evidence)
             } else {
@@ -975,6 +1007,10 @@ where
             }
             (recovered.into_placed_tree()?, placement)
         } else {
+            ensure!(completed_payloads.is_none(), "empty allocation cannot reuse completed payloads");
+            events.phase("shadow-allocation");
+            let allocation_batch = resume_checkpoints.as_mut()
+                .map(resume_checkpoint::Checkpoints::begin_allocation).transpose()?;
             // Every native allocation uses this actual shared arena accountant.
             let mut private = {
                 let (source, _) = context.source_and_inspection()?;
@@ -1001,6 +1037,11 @@ where
             if let Some(guard) = &backing_guard {
                 private.attach_backing_resource_guard(Arc::clone(guard))?;
             }
+            let placement_batch = if let (Some(state), Some(batch)) =
+                (resume_checkpoints.as_mut(), allocation_batch) {
+                Some(state.allocated(batch, &private.allocation_observation()?)?)
+            } else { None };
+            events.phase("shadow-placement");
             let placement = match private.place_source_prefixes_resource_domain(
                 &inputs,
                 request.maximum_placement_bytes,
@@ -1019,6 +1060,9 @@ where
                     return Err(error.into());
                 }
             };
+            if let (Some(state), Some(batch)) = (resume_checkpoints.as_mut(), placement_batch) {
+                state.placed(batch, &placement)?;
+            }
             (private, placement)
         };
         events.observer.note(&serde_json::json!({
@@ -1035,6 +1079,7 @@ where
                 .context("prepare source-backed shadow prefixes")?;
         }
         {
+            let supply_progress=events.observer.progress_reporter();
             let (source, raw) = context.source_and_inspection()?;
             let scope_memory = ArenaReportMemory(arena.clone());
             let supply_receipt = source.with_readonly_source_bytes(
@@ -1048,11 +1093,13 @@ where
                                 &mut bytes, &expected, &mut private,
                                 request.maximum_materialized_bytes, request.verification_policy,
                                 proof.routed_plan_sha256(),
+                                &supply_progress,
                             ).context("revalidate completed routed payload supply")?
                         } else {
                             let mut routed = general_shadow::paged_supply::routed::prepare(
                                 &mut bytes, &expected, &mut private,
                                 request.maximum_materialized_bytes, request.verification_policy,
+                                &supply_progress,
                             ).context("prepare routed shadow payload materialization")?;
                             let (_system, indexer) = routed.materialize_system_payloads()
                                 .context("materialize routed system payloads")?;
@@ -1145,6 +1192,7 @@ where
         };
         let journal_root = format!("{}\\", request.journal.disk.volume_path()?);
         events.phase("protected-target-capture");
+        let capture_progress=events.observer.progress_reporter();
         let proof = crate::general_composite_target::paged::observe_and_select_paged_optional_windows_aliases(
             &mut context,
             &mut shadow,
@@ -1154,28 +1202,38 @@ where
             &output.join("target"),
             &mut events,
             verified_aliases.as_ref().zip(alias_inputs.as_ref()),
-            |context, target, expected, routes, scope, closing| {
+            |context, target, expected, routes, scope, closing, native_events| {
                 let (source, raw) = context.source_and_inspection()?;
-                let bytes =
-                    PagedSourceByteAdapter::new(source, raw, admission, maximum_source_read_bytes)?;
-                let candidate = PagedSourceBackedCandidate::new(bytes, target, expected, routes)?
-                    .with_closing_bytes(closing);
-                let mut guard = |p: CaptureProgress| -> Result<()> {
-                    let space = n2r_win32::discovery::observe_volume_space(&journal_root)?;
-                    ensure!(
-                        space.available_bytes_to_caller >= p.required_available_bytes()?,
-                        "capture does not have its remaining journal and reserve capacity"
-                    );
-                    Ok(())
-                };
-                capture_target_selected(
-                    candidate,
-                    scope,
-                    &capture_dir.join("literal.bin"),
-                    &capture_dir.join("capture.index"),
-                    capture_budget,
-                    &mut guard,
-                )
+                let memory = ArenaReportMemory(arena.clone());
+                source.with_readonly_source_bytes(&memory, native_events, |source_scope| {
+                    (|| -> Result<_> {
+                        let bytes = PagedSourceByteAdapterWithScope::new_scoped(
+                            source_scope, raw, admission, maximum_source_read_bytes,
+                        )?;
+                        let candidate = PagedSourceBackedCandidateWithScope::new(
+                            bytes, target, expected, routes,
+                        )?.with_closing_bytes(closing);
+                        let mut guard = |p: CaptureProgress| -> Result<()> {
+                            let space = n2r_win32::discovery::observe_volume_space(&journal_root)?;
+                            ensure!(
+                                space.available_bytes_to_caller >= p.required_available_bytes()?,
+                                "capture does not have its remaining journal and reserve capacity"
+                            );
+                            capture_progress.report(n2r_win32::progress::Update::new(
+                                n2r_win32::progress::Phase::TargetCapture,
+                                n2r_win32::progress::Unit::Bytes,p.literal_backing_bytes,None,
+                            ).with_counters(n2r_win32::progress::Counters {
+                                payload_bytes_written:Some(p.literal_backing_bytes),
+                                ..Default::default()
+                            }));
+                            Ok(())
+                        };
+                        capture_target_selected(
+                            candidate, scope, &capture_dir.join("literal.bin"),
+                            &capture_dir.join("capture.index"), capture_budget, &mut guard,
+                        )
+                    })().map_err(std::io::Error::other)
+                }).context("capture source-byte scope full closing validation")
             },
         )?;
         events.checkpoint()?;

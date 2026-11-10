@@ -150,6 +150,7 @@ pub(crate) struct PagedInputs<'a>(pub &'a crate::shadow_tree::PagedExpectedTree)
 pub(crate) struct GuardedInputs<D> {
     inner: D,
     guard: Option<std::sync::Arc<n2r_win32::managed_shadow::BackingResourceGuard>>,
+    progress: n2r_win32::progress::Reporter,
 }
 impl<D: n2r_win32::shadow_native::input_domain::InputDomain> GuardedInputs<D> {
     pub(crate) fn new(inner: D,
@@ -157,7 +158,11 @@ impl<D: n2r_win32::shadow_native::input_domain::InputDomain> GuardedInputs<D> {
         shadow: &n2r_win32::general_layout::GeneralDiskBinding) -> std::io::Result<Self> {
         inner.require_mutation_binding(shadow)?;
         if let Some(guard) = &guard { guard.require_binding(shadow)?; }
-        Ok(Self { inner, guard })
+        Ok(Self { inner, guard, progress: n2r_win32::progress::Reporter::default() })
+    }
+    pub(crate) fn with_progress(mut self, progress: n2r_win32::progress::Reporter) -> Self {
+        self.progress = progress;
+        self
     }
 }
 impl<D: n2r_win32::shadow_native::input_domain::InputDomain>
@@ -165,6 +170,13 @@ impl<D: n2r_win32::shadow_native::input_domain::InputDomain>
     type Object = D::Object;
     fn len(&self) -> usize { self.inner.len() }
     fn object(&self, index: usize) -> std::io::Result<Self::Object> { self.inner.object(index) }
+    fn progress(&self, update: n2r_win32::progress::Update) {
+        self.inner.progress(update);
+        self.progress.report(update);
+    }
+    fn with_alias_shape<T>(&self, index: usize,
+        visit: impl FnOnce(&dyn n2r_win32::shadow_native::input_domain::AliasObjectShape) -> std::io::Result<T>)
+        -> std::io::Result<T> { self.inner.with_alias_shape(index, visit) }
     fn require_paged_metadata(&self, budget: n2r_win32::metadata_pages::PageBudget,
         semantic_bytes: u64) -> std::io::Result<()> {
         self.inner.require_paged_metadata(budget, semantic_bytes)
@@ -220,6 +232,9 @@ impl n2r_win32::shadow_native::input_domain::InputDomain for PagedInputs<'_> {
                 .map_err(std::io::Error::other)
         }
     }
+    fn with_alias_shape<T>(&self, index: usize,
+        visit: impl FnOnce(&dyn n2r_win32::shadow_native::input_domain::AliasObjectShape) -> std::io::Result<T>)
+        -> std::io::Result<T> { self.0.with_alias_shape(index, visit) }
     fn require_paged_metadata(
         &self,
         budget: n2r_win32::metadata_pages::PageBudget,

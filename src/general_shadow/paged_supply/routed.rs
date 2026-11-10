@@ -3,6 +3,16 @@
 //! into the private shadow. This stage issues no conversion authority.
 use super::*;
 use crate::shadow_tree::SourceStreamEvidence;
+use n2r_win32::progress::{Counters, Phase, Reporter, Unit, Update};
+
+fn supply_progress(reporter:&Reporter, phase:Phase, pass:u32, completed:usize, total:usize,
+    source_read:u64, written:Option<u64>) {
+    reporter.report(Update::new(phase,Unit::Objects,completed as u64,Some(total as u64))
+        .with_pass(pass).with_counters(Counters {
+            logical_source_bytes_read:Some(source_read),payload_bytes_written:written,
+            ..Counters::default()
+        }));
+}
 
 // Fixed receipts and source-range proofs contain only bounded scalars and
 // digests. Both data windows are paid separately below. Variable stream-name
@@ -308,22 +318,38 @@ fn preflight_source_references(bytes:&PagedSourceByteAdapterWithScope<'_, '_>,ex
                 &&attribute.initialized_size==source.initialized_size,
                 "reference preflight DATA attribute/model binding differs: FILE {}/{} path={:?} stream={:?}",
                 object.record_number,object.sequence_number,object.path,stream.name_utf16);
-            let check=|offset:u64,physical:u64,length:u64|->Result<()> {
+            // Both mappings are ordered by logical position. Retain the raw
+            // cursor across proposed runs instead of rescanning from run zero
+            // for every fragment (quadratic work on fragmented files).
+            let mut previous_source_end=0u64;
+            for run in &source.extents {
+                ensure!(run.length>0 && run.logical_offset>=previous_source_end,
+                    "preflight raw source extents overlap or are unordered");
+                previous_source_end=run.logical_offset.checked_add(run.length)
+                    .context("preflight source extent overflow")?;
+            }
+            let mut source_index=0usize;
+            let mut previous_reference_end=0u64;
+            let mut check=|offset:u64,physical:u64,length:u64|->Result<()> {
                 let context=||format!("declared retained reference preflight: object_index={index}, FILE {}/{}, path={:?}, stream={:?}, flags=0x{:04x}, compression_unit={}, resident={}, VDL={}, EOF={}, offset={offset}, length={length}, physical={physical}",
                     object.record_number,object.sequence_number,object.path,stream.name_utf16,
                     attribute.flags,attribute.compression_unit,attribute.resident,attribute.initialized_size,attribute.logical_size);
                 crate::ntfs_inspect::require_initialized_uncompressed_range(attribute,offset,length).with_context(||context())?;
                 let end=offset.checked_add(length).context("preflight reference end overflow")?;
+                ensure!(offset>=previous_reference_end,"{}: declared references overlap or are unordered",context());
+                previous_reference_end=end;
                 let mut cursor=offset;
-                for run in &source.extents {
+                while cursor<end && source_index<source.extents.len() {
+                    let run=&source.extents[source_index];
                     let stop=run.logical_offset.checked_add(run.length).context("preflight source extent overflow")?;
-                    if stop<=cursor{continue;} if cursor==end{break;}
+                    if stop<=cursor{source_index+=1;continue;}
                     ensure!(run.logical_offset<=cursor,"{}: source mapping gap",context());
                     let actual=run.physical_offset.with_context(||format!("{}: source range is a hole",context()))?
                         .checked_add(cursor-run.logical_offset).context("preflight actual physical overflow")?;
                     let wanted=physical.checked_add(cursor-offset).context("preflight wanted physical overflow")?;
                     ensure!(actual==wanted,"{}: current physical mapping differs",context());
                     cursor=end.min(stop);
+                    if cursor==stop {source_index+=1;}
                 }
                 ensure!(cursor==end,"{}: physical source coverage incomplete",context());Ok(())
             };
@@ -347,12 +373,14 @@ fn scan_plan(
     expected: &PagedExpectedTree,
     template: &PrivateTree,
     row_window: u64,
+    progress: &Reporter,
 ) -> Result<RoutedPlan> {
     let mut hash = Sha256::new();
     hash.update(b"n2r-private-routed-prefix-plan-v1\0");
     let (mut logical, mut referenced, mut routed, mut materialized, mut holes) =
         (0u64, 0u64, 0u64, 0u64, 0u64);
     for index in 0..expected.len() {
+        supply_progress(progress,Phase::PayloadSupply,1,index,expected.len(),0,None);
         let object = expected.object_leased(index)?;
         if object.directory || system(&object) {
             continue;
@@ -419,6 +447,7 @@ fn scan_plan(
             == Some(logical),
         "routed supply does not cover the complete logical domain"
     );
+    supply_progress(progress,Phase::PayloadSupply,1,expected.len(),expected.len(),0,None);
     Ok(RoutedPlan {
         sha256: hex::encode(hash.finalize()),
         logical,
@@ -439,6 +468,7 @@ pub(crate) struct RoutedSupplyOwner<'a, 'source, 'scope> {
     plan: RoutedPlan,
     row_window: u64,
     recovered: bool,
+    progress: Reporter,
     _ram: crate::ntfs_inspect::paged_storage::SourceRamLease,
 }
 
@@ -448,6 +478,7 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
     template: &'a mut PrivateTree,
     maximum_materialized_bytes: u64,
     policy: VerificationPolicy,
+    progress: &Reporter,
 ) -> Result<RoutedSupplyOwner<'a, 'source, 'scope>> {
     ensure!(
         policy.is_fast(),
@@ -465,7 +496,7 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
             .checked_add(2 * WINDOW as u64)
             .context("routed supply RAM overflow")?,
     )?;
-    let plan = scan_plan(bytes, expected, template, row_window)?;
+    let plan = scan_plan(bytes, expected, template, row_window, progress)?;
     ensure!(
         plan.materialized <= maximum_materialized_bytes,
         "necessary routed-plan materialization exceeds explicit payload budget: logical_bytes={}, materialize_bytes={}, same_coordinate_reference_bytes={}, routed_prefix_bytes={}, hole_bytes={}, maximum_materialized_bytes={}, supply_plan_sha256={}",
@@ -479,7 +510,9 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
     );
     let mut buffer = vec![0u8; WINDOW];
     let mut written = 0u64;
+    let before_reads=bytes.logical_bytes_read();
     for index in 0..expected.len() {
+        supply_progress(progress,Phase::PayloadSupply,2,index,expected.len(),bytes.logical_bytes_read()-before_reads,Some(written));
         let object = expected.object_leased(index)?;
         if object.directory || system(&object) {
             continue;
@@ -553,6 +586,7 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
         written == plan.materialized,
         "routed materialization byte count differs from preflight"
     );
+    supply_progress(progress,Phase::PayloadSupply,2,expected.len(),expected.len(),bytes.logical_bytes_read()-before_reads,Some(written));
     phase(bytes, expected, template)?;
     Ok(RoutedSupplyOwner {
         bytes,
@@ -561,6 +595,7 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
         plan,
         row_window,
         recovered: false,
+        progress:progress.clone(),
         _ram: ram,
     })
 }
@@ -572,6 +607,7 @@ pub(crate) fn prepare_recovered<'a,'source,'scope>(
     bytes:&'a mut PagedSourceByteAdapterWithScope<'source,'scope>,
     expected:&'a PagedExpectedTree,template:&'a mut PrivateTree,
     maximum_materialized_bytes:u64,policy:VerificationPolicy,prior_plan_sha256:&str,
+    progress:&Reporter,
 )->Result<RoutedSupplyOwner<'a,'source,'scope>> {
     ensure!(policy.is_fast(),"recovered routed supply requires extent identity policy");
     preflight_source_references(bytes,expected)?;
@@ -579,11 +615,11 @@ pub(crate) fn prepare_recovered<'a,'source,'scope>(
     let row_window=admission.budget.max_row_bytes.checked_mul(8).context("recovered routed row RAM overflow")?;
     let ram=bytes.lease_working_ram(ROUTED_RECEIPT_RAM.checked_add(2*WINDOW as u64)
         .context("recovered routed supply RAM overflow")?)?;
-    let plan=scan_plan(bytes,expected,template,row_window)?;
+    let plan=scan_plan(bytes,expected,template,row_window,progress)?;
     ensure!(plan.materialized<=maximum_materialized_bytes&&plan.sha256==prior_plan_sha256,
         "recovered payload plan differs from the authenticated completed supply");
     template.revalidate_recovered_system_payloads_domain(&PagedInputs(expected))?;
-    Ok(RoutedSupplyOwner{bytes,expected,template,plan,row_window,recovered:true,_ram:ram})
+    Ok(RoutedSupplyOwner{bytes,expected,template,plan,row_window,recovered:true,progress:progress.clone(),_ram:ram})
 }
 
 impl RoutedSupplyOwner<'_, '_, '_> {
@@ -613,6 +649,7 @@ impl RoutedSupplyOwner<'_, '_, '_> {
         let mut plan_hash = Sha256::new();
         plan_hash.update(b"n2r-private-routed-prefix-plan-v1\0");
         for index in 0..self.expected.len() {
+            supply_progress(&self.progress,Phase::PayloadVerification,0,index,self.expected.len(),self.bytes.logical_bytes_read()-before_reads,None);
             let object = self.expected.object_leased(index)?;
             if object.directory || system(&object) {
                 continue;
@@ -767,6 +804,7 @@ impl RoutedSupplyOwner<'_, '_, '_> {
             final_plan == self.plan,
             "routed source/target mappings changed across preparation"
         );
+        supply_progress(&self.progress,Phase::PayloadVerification,0,self.expected.len(),self.expected.len(),self.bytes.logical_bytes_read()-before_reads,None);
         phase(self.bytes, self.expected, self.template)?;
         Ok(
             serde_json::json!({"kind":"private-routed-prefix-verification", "success":true,

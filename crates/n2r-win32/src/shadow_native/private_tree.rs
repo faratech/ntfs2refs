@@ -130,6 +130,25 @@ fn register_sparse(
 }
 
 impl PrivateTree {
+    /// Records an already completed native allocation. This compact observation
+    /// is not an ownership token and cannot recreate a native tree on resume.
+    pub fn allocation_observation(&self) -> io::Result<serde_json::Value> {
+        self.require_source_excluded()?;
+        let observation = serde_json::json!({
+            "kind":"native-private-shadow-allocation-v1",
+            "pair":self.pair,
+            "input_sha256":hex::encode(self.metadata_input_sha256),
+            "objects":self.metadata_object_limit,
+            "streams":self.files.len(),
+            "system_objects":self.system_identities.len(),
+            "allocation_ram_accounted":self.allocation_ram_accounted(),
+            "source_payload_writes":0,
+            "conversion_authorized":false,
+        });
+        self.require_source_excluded()?;
+        Ok(observation)
+    }
+
     pub fn attach_backing_resource_guard(&mut self,
         guard: std::sync::Arc<crate::managed_shadow::BackingResourceGuard>) -> io::Result<()> {
         if self.backing_guard.is_some() {
@@ -1885,9 +1904,14 @@ fn allocate_domain_with_memory(
     };
     let mut metadata_targets = BTreeMap::new();
     metadata_targets.insert(0, root_handle);
+    let allocation_progress = |pass, completed| input.progress(crate::progress::Update::new(
+        crate::progress::Phase::ShadowAllocation, crate::progress::Unit::Objects,
+        completed, Some(input.len() as u64),
+    ).with_pass(pass));
     // Pin every formatter object the constructor admitted. Subsequent system
     // supply must update these same objects, not a caller-selected path.
     for index in 0..input.len() {
+        allocation_progress(0, index as u64);
         let owner = input.object(index)?;
         let item = owner.input();
         if let Some(id) = system_identities.get(item.components) {
@@ -1904,6 +1928,7 @@ fn allocate_domain_with_memory(
             metadata_targets.insert(index, handle);
         }
     }
+    allocation_progress(0, input.len() as u64);
     let global_query_memory = memory
         .as_ref()
         .map(|m| {
@@ -1929,6 +1954,7 @@ fn allocate_domain_with_memory(
     let sd = private_descriptor()?;
     let mut system_directory_indices = Vec::new();
     for index in 0..input.len() {
+        allocation_progress(1, index as u64);
         let owner = input.object(index)?;
         let item = owner.input();
         let row_memory = memory
@@ -2166,6 +2192,7 @@ fn allocate_domain_with_memory(
             )?;
         }
     }
+    allocation_progress(1, input.len() as u64);
     input.before_mutation(0)?;
     volume.sync_all()?;
     let mut stream_slots = BTreeMap::new();

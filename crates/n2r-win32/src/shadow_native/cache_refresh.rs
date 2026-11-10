@@ -324,7 +324,12 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
     // decode every paged object for every native directory entry.
     let mut namespace_index = BTreeMap::new();
     let mut expected_children: BTreeMap<Vec<String>, BTreeSet<Vec<String>>> = BTreeMap::new();
+    let metadata_progress = |pass, completed| input.progress(crate::progress::Update::new(
+        crate::progress::Phase::MetadataRestoration, crate::progress::Unit::Objects,
+        completed, Some(input.len() as u64),
+    ).with_pass(pass));
     for index in 0..input.len() {
+        metadata_progress(0, index as u64);
         let owned = input.object(index)?;
         let view = owned.input();
         let item = &view;
@@ -404,6 +409,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             }
         }
     }
+    metadata_progress(0, input.len() as u64);
     if let Some(aliases)=aliases.as_deref(){
         for path in aliases.paths(){
             if namespace_index.contains_key(path){return Err(invalid("derived alias collides with a canonical source name"));}
@@ -412,6 +418,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
     }
     let namespace = |points_installed: bool, aliases: Option<&super::windows_aliases::StagedWindowsAliases>| -> io::Result<()> {
         for index in 0..input.len() {
+            metadata_progress(if points_installed { 7 } else { 1 }, index as u64);
             let owned = input.object(index)?;
             let directory = owned.input();
             if !directory.directory {
@@ -464,6 +471,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                 return Err(invalid("missing owned metadata namespace entry"));
             }
         }
+        metadata_progress(if points_installed { 7 } else { 1 }, input.len() as u64);
         Ok(())
     };
     namespace(false,aliases.as_deref())?;
@@ -477,27 +485,30 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
     );
     let mut ordered = Vec::new();
     input.for_each(|index, item| {
+        metadata_progress(2, index as u64);
         let flags = (u8::from(item.directory) * DIRECTORY)
             | (u8::from(item.extended_attributes.is_some()) * EXTENDED_ATTRIBUTES)
             | (u8::from(item.reparse.is_some()) * REPARSE);
         ordered.push((index, item.components.len(), flags));
         Ok(())
     })?;
+    metadata_progress(2, input.len() as u64);
     ordered.sort_by_key(|(_, depth, _)| *depth);
     let mut dacl_protection_updates = 0usize;
     let mut sacl_protection_updates = 0usize;
     let mut provisional_security_objects = 0usize;
     // Finish every directory's inheritance propagation before restoring any
     // file. A shallow canonical file may also have a name under a deep parent.
-    for &(index, _, _) in ordered
+    for (ordinal, &(index, _, _)) in ordered
         .iter()
         .filter(|(_, _, flags)| *flags & DIRECTORY != 0)
         .chain(
             ordered
                 .iter()
                 .filter(|(_, _, flags)| *flags & DIRECTORY == 0),
-        )
+        ).enumerate()
     {
+        metadata_progress(3, ordinal as u64);
         let owned = input.object(index)?;
         let original_view = owned.input();
         let temporary = if security_placeholders {
@@ -555,12 +566,14 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             }
         }
     }
+    metadata_progress(3, ordered.len() as u64);
     // Only actual constructor-owned canonical handles reach this operation.
     // EAs belong to the file identity and are set once, not per DATA stream or
     // hard-link name. Native mutation precedes final timestamp restoration.
     let mut ea_objects = 0usize;
     let mut ea_entries = 0usize;
-    for &(index, _, flags) in &ordered {
+    for (ordinal, &(index, _, flags)) in ordered.iter().enumerate() {
+        metadata_progress(4, ordinal as u64);
         if flags & EXTENDED_ATTRIBUTES == 0 {
             continue;
         }
@@ -579,11 +592,13 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             ea_entries += expected.entries.len();
         }
     }
+    metadata_progress(4, ordered.len() as u64);
     // Security propagation and all children finish before basic metadata.
     // Install points only after all parent-first ACL propagation has finished;
     // no security operation may traverse a newly installed junction target.
     let mut reparse_objects = 0usize;
-    for &(index, _, flags) in &ordered {
+    for (ordinal, &(index, _, flags)) in ordered.iter().enumerate() {
+        metadata_progress(5, ordinal as u64);
         if flags & REPARSE == 0 {
             continue;
         }
@@ -607,12 +622,14 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             reparse_objects += 1;
         }
     }
+    metadata_progress(5, ordered.len() as u64);
     let provisional_aliases = if let Some(aliases)=aliases.as_deref_mut(){
         if security_placeholders { aliases.restore_metadata_with_security_placeholders(input,handles,&same_security)? }
         else { aliases.restore_metadata(input,handles,&same_security)?; 0 }
     } else { 0 };
     // Reverse depth order finalizes root last, using the same held handles.
-    for &(index, _, _) in ordered.iter().rev() {
+    for (ordinal, &(index, _, _)) in ordered.iter().rev().enumerate() {
+        metadata_progress(6, ordinal as u64);
         let owned = input.object(index)?;
         let view = owned.input();
         let item = &view;
@@ -626,10 +643,12 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             handle.sync_all()?;
         }
     }
+    metadata_progress(6, ordered.len() as u64);
     input.before_mutation(0)?;
     volume.sync_all()?;
     namespace(true,aliases.as_deref())?;
     for index in 0..input.len() {
+        metadata_progress(8, index as u64);
         let owned = input.object(index)?;
         let original_view = owned.input();
         let temporary = if security_placeholders {
@@ -699,6 +718,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             }
         }
     }
+    metadata_progress(8, input.len() as u64);
     target.revalidate_route(&mut events)?;
     pair.shadow
         .validate_volume_extent(&ctl(volume, 0x00560000, &[], 1024)?)?;

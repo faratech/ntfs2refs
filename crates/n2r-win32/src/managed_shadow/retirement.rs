@@ -77,7 +77,7 @@ impl OwnedBacking {
         })
     }
 
-    fn observe(&self) -> io::Result<ReferenceFileSnapshot> {
+    pub(super) fn observe(&self) -> io::Result<ReferenceFileSnapshot> {
         ordinary(&self.path)?;
         let actual = snapshot(&self.file)?;
         same_identity(&self.identity, &actual)?;

@@ -7,12 +7,40 @@ sizes, file counts, features, faults, or power loss.
 
 ## Windows conversion: performance and retry plan, November 9, 2026
 
-This section is an implementation plan, not a claim that the changes below have
-been made. It reviews the running `1f4f3c9` candidate and the current source.
+The findings below describe the running `1f4f3c9` candidate. Host implementation
+has since begun; the status table distinguishes that code from native results.
 The live VM converter must continue unless it actually fails. Do not replace its
 binary, restore a VM checkpoint, recreate the shadow, or run competing benchmarks.
 The end state remains the original Windows partition converted in place, with
 trust labels preserved, booting with only its original disk attached.
+
+### Implementation status
+
+The host changes preserve the existing on-disk page, content-digest and recovery
+contracts. They have not replaced the running VM binary. The original Windows
+installation has not yet been shown booting from its converted original disk.
+
+| Change | Current implementation |
+| --- | --- |
+| Metadata amplification | Two prepaid authenticated page slots; a direct-ordinal compact alias path projection; one authenticated compact-row read shared by the unchanged allocation preflight and typed JSON decoder. Full metadata/security operations still decode their complete objects. |
+| Completed payload reuse | A closed private `Payloads` state can be freshly adopted and verified without repeating materialization. A payload receipt alone cannot admit a partly restored public namespace. |
+| First-attempt recovery | Supported offline Windows preparations create a durable source/Expected checkpoint before native allocation, an allocation intent before mutation, then closed allocation and placement evidence. Interrupted allocation explicitly refuses partial-namespace reuse. |
+| Source cache continuity | The latest verified raw/Expected generation is promoted while retaining its original native baseline. Changed sources and renewed COMPLETE-stream evidence still require fresh checks. |
+| Capture work | The closing route owner is reused, capacity and literal/index credits are batched by the already-read chunk, and later source-byte phases use bounded native read scopes with full entry/error-safe exit checks. |
+| Fragmented source preflight | One ordered raw-extent cursor replaces restarting the raw scan for every proposed extent. Gaps, holes, overflow and physical mismatch remain refusals. |
+| Capacity | Initial VHDX creation/partitioning/formatting and later native allocation consult the actual backing volume independently of the recovery volume. Headroom is sampled; this is not a physical reservation or a bound on all formatter amplification. |
+| Progress | Throttled phase/pass/ordinal output covers native allocation, system payloads, aliases, metadata restoration and routed supply. ETA is emitted only from observed progress within the same phase/pass, never for the entire conversion. |
+| Build reuse | The shared build directory remains; package-aware source contracts avoid cleaning an unchanged native package for root-only changes. |
+| Journal preparation | One held capture witness covers the nested preparation calls. Full opening and error-safe closing checks replace seven full capture checks with two; source/target, offset/layout, independent journal readback and sealing remain. |
+
+The first batch passed the focused component check recorded in
+[`performance-resume-integrated-build-20261109.json`](../evidence/performance-resume-integrated-build-20261109.json).
+The second batch passed the frozen-source component check recorded in
+[`performance-resume-second-build-20261109.json`](../evidence/performance-resume-second-build-20261109.json)
+(43.16 seconds, shared target reused, all recorded source hashes unchanged).
+No new unit-test suite
+or competing VM benchmark was started. Mixed-metadata recovery, captured-state
+adoption and end-to-end native qualification remain separate completion gates.
 
 ### Findings that explain the delays
 
@@ -76,8 +104,9 @@ names. These are lower-bound counts, not independent timing measurements:
 
 ### Execution order
 
-The first three workstreams can proceed independently after the current run
-closes. Do not defer real resume support behind a broad optimization rewrite.
+The user authorized independent host implementation while the current run
+continues. Native replay/benchmark work waits for that run to close. Do not defer
+real resume support behind a broad optimization rewrite.
 
 | Priority | Deliverable | Completion condition |
 | --- | --- | --- |

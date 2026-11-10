@@ -265,6 +265,9 @@ impl FormatProfiles {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Origin {
+    FreshPreparation {
+        source_cache_manifest: ArtifactPin,
+    },
     LegacyCancelledPreparation {
         preparation_intent: ArtifactPin,
         terminal: ArtifactPin,
@@ -284,6 +287,7 @@ pub(crate) enum Origin {
 impl Origin {
     fn pins(&self) -> Vec<&ArtifactPin> {
         match self {
+            Self::FreshPreparation{source_cache_manifest}=>vec![source_cache_manifest],
             Self::LegacyCancelledPreparation {
                 preparation_intent,
                 terminal,

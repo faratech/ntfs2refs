@@ -31,6 +31,15 @@ use std::{
 };
 
 const SAVED_KIND: &str = "saved-prepublication-resume-request-v1";
+/// Chooses a fresh native issuer. It never proves an empty namespace, restores
+/// a lock, or authorizes reuse of partially created native objects.
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq,Serialize,Deserialize)]
+#[serde(rename_all="snake_case")]
+pub(crate) enum ShadowStart {
+    #[default]
+    AdoptExisting,
+    AllocateEmpty,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SavedPreparationRequest {
@@ -171,6 +180,8 @@ pub(crate) struct SavedResumeRequest {
     pub legacy_terminal: Option<SourceCacheFilePin>,
     pub prior_spend: SavedPlacementSpend,
     pub placement_limits: SavedRecoveryLimits,
+    #[serde(default)]
+    pub shadow_start: ShadowStart,
 }
 impl SavedResumeRequest {
     pub(crate) fn from_actual(
@@ -213,9 +224,31 @@ impl SavedResumeRequest {
                     saved.placement_limits.cumulative_maximum_submissions,
                 )?,
             },
+            shadow_start:saved.shadow_start,
         };
         value.validate(request.resources)?;
         Ok(value)
+    }
+    pub(crate) fn from_fresh(
+        parent:&ParentPublicResources,request:&ResourcePreparationRequest,arena_root:&Path,
+        source:&SourceCacheOriginPins,expected:&crate::shadow_tree::PagedExpectedTree,
+    )->Result<Self>{
+        let actual=expected.artifact_lease().context("fresh resume Expected owner absent")?;
+        actual.revalidate()?;
+        ensure!(source.schema_version==2&&source.resource_admission.budget==request.resources
+            &&source.generation.as_ref().is_some_and(|generation|generation.prior_origin_sha256.is_none()),
+            "fresh checkpoint requires a current initial source generation");
+        let value=Self{schema_version:1,kind:SAVED_KIND.to_owned(),arena_root:arena_root.to_path_buf(),
+            parent_resources:parent.clone(),request:SavedPreparationRequest::from_actual(parent,request)?,
+            source_origin_sha256:hex::encode(source.canonical_sha256()?),
+            expected:SourceCacheFilePin{path:actual.path().to_path_buf(),sha256:actual.sha256().to_owned(),bytes:actual.wire_bytes()},
+            expected_binding:expected.binding_pin().cloned(),completed_placement:None,completed_payloads:None,legacy_terminal:None,
+            prior_spend:SavedPlacementSpend{prior_submissions_upper:0,prior_move_bytes_upper:0,
+                uncertain_tail_submissions:0,uncertain_tail_move_bytes:0},
+            placement_limits:SavedRecoveryLimits{cumulative_maximum_move_bytes:request.maximum_placement_bytes,
+                cumulative_maximum_submissions:u64::try_from(request.maximum_placement_submissions)?},
+            shadow_start:ShadowStart::AllocateEmpty};
+        value.validate(request.resources)?;Ok(value)
     }
     fn validate(&self, main: ResourceBudget) -> Result<()> {
         ensure!(
@@ -674,6 +707,7 @@ pub(crate) struct ResumeSessionInputs {
     pub workspace_origin: Option<(PathBuf, GeneralJournalStorageBinding)>,
     pub completed_placement: Option<HeldCompletedPlacement>,
     pub completed_payloads: Option<HeldCompletedPayloads>,
+    pub shadow_start:ShadowStart,
     _facts: Vec<HeldArtifact>,
     _metadata_owners: Vec<ArtifactLease>,
     _index_memory: Vec<ArenaRamLease>,
@@ -760,6 +794,8 @@ impl ResumeSessionInputs {
             journal.stage().is_none_or(|stage| stage <= Stage::Payloads),
             "resume stage later than Payloads requires its metadata/capture native reconciler; preserve artifacts, no restart"
         );
+        ensure!(!journal.pending_batch().is_some_and(|batch|batch.operation=="native_allocate_shadow"),
+            "shadow allocation was interrupted; partial namespace reconciliation is not supported yet; preserve the shadow before source revalidation");
         let initial = &journal.intent().initial_artifacts;
         let find = |key: &str| -> Result<ArtifactPin> {
             let rows: Vec<_> = initial.iter().filter(|p| p.key == key).collect();
@@ -782,6 +818,8 @@ impl ResumeSessionInputs {
         let saved: SavedResumeRequest = decode(&request_file, limits.max_intent_bytes, group)?;
         let source: SourceCacheOriginPins = decode(&cache_file, limits.max_intent_bytes, group)?;
         saved.validate(journal.intent().resources)?;
+        let shadow_start=if journal.stage().is_none_or(|stage|stage<=Stage::SourceVerified){saved.shadow_start}
+            else{ShadowStart::AdoptExisting};
         let carried: Vec<_> = initial
             .iter()
             .filter(|pin| pin.key == "placement-completed")
@@ -889,6 +927,12 @@ impl ResumeSessionInputs {
                 "current source generation lost its exact guard or Expected dependency");
         }
         match &journal.intent().origin {
+            Origin::FreshPreparation{source_cache_manifest}=>{
+                ensure!(source_cache_manifest==&cache_pin&&saved.legacy_terminal.is_none()
+                    &&saved.shadow_start==ShadowStart::AllocateEmpty&&source.schema_version==2
+                    &&source.generation.as_ref().is_some_and(|generation|generation.prior_origin_sha256.is_none()),
+                    "fresh preparation checkpoint provenance differs");
+            }
             Origin::LegacyCancelledPreparation {
                 preparation_intent,
                 terminal,
@@ -973,6 +1017,7 @@ impl ResumeSessionInputs {
             workspace_origin,
             completed_placement,
             completed_payloads,
+            shadow_start,
             _facts: vec![request_file, cache_file],
             _metadata_owners: metadata_owners,
             _index_memory: payments,

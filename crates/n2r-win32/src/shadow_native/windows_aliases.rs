@@ -5,6 +5,7 @@ use super::{
     *,
 };
 use crate::tree_resources::SourceResourceAdmission;
+use crate::progress::{Phase, Unit, Update};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub struct WindowsAliasInputRef<'a> {
@@ -571,23 +572,14 @@ fn row_digest(hash: &mut Sha256, row: &WindowsAliasInputRef<'_>) {
         }
     }
 }
-fn validate_row(
+pub(super) fn validate_row(
     input: &impl InputDomain,
     row: &WindowsAliasInputRef<'_>,
     root: &str,
 ) -> io::Result<bool> {
-    let canonical_owned = input.object(row.canonical_object_index)?;
-    let canonical = canonical_owned.input();
-    let parent_owned = input.object(row.parent_object_index)?;
-    let parent = parent_owned.input();
-    if !parent.directory
-        || parent.reparse.is_some()
-        || row.components.is_empty()
+    if row.components.is_empty()
         || row.canonical_components.is_empty()
         || row.components == row.canonical_components
-        || row.components[..row.components.len() - 1] != *parent.components
-        || row.canonical_components[..row.canonical_components.len() - 1] != *parent.components
-        || !super::hard_links::paths(&canonical).any(|path| path == row.canonical_components)
         || !super::hard_links::resource_path_valid(root, row.components)
         || row
             .components
@@ -598,7 +590,21 @@ fn validate_row(
             "derived Windows alias is not an admitted same-parent canonical sibling",
         ));
     }
-    Ok(canonical.directory)
+    input.with_alias_shape(row.canonical_object_index, |canonical| {
+        input.with_alias_shape(row.parent_object_index, |parent| {
+            if !parent.directory()
+                || parent.is_reparse()
+                || !parent.primary_path_matches(&row.components[..row.components.len() - 1])?
+                || !parent.primary_path_matches(&row.canonical_components[..row.canonical_components.len() - 1])?
+                || !canonical.contains_path(row.canonical_components)?
+            {
+                return Err(invalid(
+                    "derived Windows alias is not an admitted same-parent canonical sibling",
+                ));
+            }
+            Ok(canonical.directory())
+        })
+    })
 }
 struct StagedAlias {
     entry: VerifiedAlias,
@@ -611,6 +617,7 @@ pub(super) struct StagedWindowsAliases {
     input_digest: [u8; 32],
     plan_digest: [u8; 32],
     maximum_row_bytes: u64,
+    recovering: bool,
     _memory: Box<dyn report_memory::ReportMemoryLease>,
     _working: Box<dyn report_memory::ReportMemoryLease>,
 }
@@ -628,6 +635,25 @@ impl StagedWindowsAliases {
         admission: SourceResourceAdmission,
         payer: &dyn report_memory::ReportMemoryAccountant,
     ) -> io::Result<Self> {
+        Self::create_inner(input,aliases,pair,handles,admission,payer,None)
+    }
+    /// Existing aliases are actual held no-follow files from the complete
+    /// native recovery namespace audit, never deserialized identities.
+    pub(super) fn reconcile(
+        input:&impl InputDomain,aliases:&impl WindowsAliasInputDomain,
+        pair:&GeneralSourceShadowBinding,handles:&BTreeMap<usize,File>,
+        admission:SourceResourceAdmission,payer:&dyn report_memory::ReportMemoryAccountant,
+        existing:BTreeMap<Vec<String>,File>,
+    )->io::Result<Self>{
+        Self::create_inner(input,aliases,pair,handles,admission,payer,Some(existing))
+    }
+    fn create_inner(
+        input:&impl InputDomain,aliases:&impl WindowsAliasInputDomain,
+        pair:&GeneralSourceShadowBinding,handles:&BTreeMap<usize,File>,
+        admission:SourceResourceAdmission,payer:&dyn report_memory::ReportMemoryAccountant,
+        mut existing:Option<BTreeMap<Vec<String>,File>>,
+    )->io::Result<Self>{
+        let recovering=existing.is_some();
         if pair.source.layout_profile
             != crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows
             || aliases.source_inspection_sha256() != admission.source_inspection_sha256
@@ -652,6 +678,7 @@ impl StagedWindowsAliases {
         let working = payer.reserve(workspace)?;
         let mut bytes = 4096u64;
         let mut preflight = Sha256::new();
+        input.progress(Update::new(Phase::AliasValidation, Unit::Aliases, 0, Some(aliases.len() as u64)));
         for index in 0..aliases.len() {
             let row = aliases.alias(index)?;
             let view = row.input();
@@ -660,6 +687,8 @@ impl StagedWindowsAliases {
                 .checked_add(row_memory(&view)?)
                 .ok_or_else(|| invalid("alias total RAM overflow"))?;
             row_digest(&mut preflight, &view);
+            input.progress(Update::new(Phase::AliasValidation, Unit::Aliases,
+                index as u64 + 1, Some(aliases.len() as u64)));
         }
         let memory = payer.reserve(
             bytes
@@ -670,6 +699,7 @@ impl StagedWindowsAliases {
         let mut actual = Sha256::new();
         let mut charged = 4096u64;
         let private = super::private_tree::private_descriptor()?;
+        input.progress(Update::new(Phase::AliasCreation, Unit::Aliases, 0, Some(aliases.len() as u64)));
         for index in 0..aliases.len() {
             let owner = aliases.alias(index)?;
             let row = owner.input();
@@ -714,9 +744,17 @@ impl StagedWindowsAliases {
                 sparse: None,
             };
             let path = format!("{root}{}", row.components.join("\\"));
-            input.before_mutation(0)?;
-            super::create(&path, &initial, 0, None)?;
-            let file = super::open(&path, directory, true)?;
+            let file=if let Some(file)=existing.as_mut().and_then(|held|held.remove(row.components)) {
+                if !crate::file_storage::final_path_guid(&file)?.eq_ignore_ascii_case(&path)
+                    ||crate::reparse_native::capture(&file)?.as_ref().is_some_and(|actual|actual!=&point) {
+                    return Err(invalid("held recovery alias path or reparse point differs"));
+                }
+                file
+            }else{
+                input.before_mutation(0)?;
+                super::create(&path, &initial, 0, None)?;
+                super::open(&path, directory, true)?
+            };
             let id: [u8; 24] = super::info(&file, 18, 24)?
                 .try_into()
                 .map_err(|_| invalid("alias native ID width differs"))?;
@@ -742,10 +780,13 @@ impl StagedWindowsAliases {
             {
                 return Err(invalid("duplicate derived alias path"));
             }
+            input.progress(Update::new(Phase::AliasCreation, Unit::Aliases,
+                index as u64 + 1, Some(aliases.len() as u64)));
         }
         if preflight.finalize() != actual.finalize() {
             return Err(invalid("derived alias rows changed during construction"));
         }
+        if existing.as_ref().is_some_and(|held|!held.is_empty()){return Err(invalid("recovery alias handles exceed the admitted alias plan"));}
         aliases.revalidate()?;
         if aliases.semantic_sha256()? != plan_digest {
             return Err(invalid("derived alias plan changed during construction"));
@@ -757,6 +798,7 @@ impl StagedWindowsAliases {
             input_digest,
             plan_digest,
             maximum_row_bytes: admission.budget.max_row_bytes,
+            recovering,
             _memory: memory,
             _working: working,
         })
@@ -797,7 +839,9 @@ impl StagedWindowsAliases {
         input.require_mutation_binding(&self.pair.shadow)?;
         let root = format!("{}\\", self.pair.shadow.volume_path()?);
         let mut provisional_aliases = 0usize;
-        for staged in self.rows.values_mut() {
+        let total = self.rows.len() as u64;
+        input.progress(Update::new(Phase::MetadataRestoration, Unit::Aliases, 0, Some(total)));
+        for (ordinal, staged) in self.rows.values_mut().enumerate() {
             let entry = &mut staged.entry;
             let owner = input.object(entry.canonical_object_index)?;
             let canonical = owner.input();
@@ -813,8 +857,13 @@ impl StagedWindowsAliases {
             {
                 return Err(invalid("derived alias canonical link identity changed"));
             }
-            input.before_mutation(0)?;
-            crate::windows_alias_native::install_fresh_owned(
+            let relative:Vec<u16>=entry.canonical_components.last().unwrap().encode_utf16().collect();
+            if self.recovering&&crate::reparse_native::capture(&staged.file)?.is_some(){
+                crate::windows_alias_native::verify_owned(&handles[&entry.parent_object_index],&target,
+                    &staged.file,entry.directory,&relative)?;
+            }else{
+                input.before_mutation(0)?;
+                crate::windows_alias_native::install_fresh_owned(
                 &handles[&entry.parent_object_index],
                 &target,
                 &staged.file,
@@ -825,7 +874,8 @@ impl StagedWindowsAliases {
                     .unwrap()
                     .encode_utf16()
                     .collect::<Vec<_>>(),
-            )?;
+                )?;
+            }
             entry.attributes =
                 (canonical.attributes & 0x2027) | 0x400 | if entry.directory { 16 } else { 0 };
             let temporary = if security_placeholders {
@@ -854,20 +904,25 @@ impl StagedWindowsAliases {
                 named_streams: Vec::new(),
                 sparse: None,
             };
-            input.before_mutation(expected.security.len() as u64)?;
-            super::cache_refresh::restore_acl_protection_with_limit(
+            let before=self.recovering.then(||super::metadata_snapshot_with_limit(&staged.file,&expected,Some(self.maximum_row_bytes)));
+            if !self.recovering||!super::security_matches(&expected,before.as_ref().expect("recovery snapshot"),same)? {
+                input.before_mutation(expected.security.len() as u64)?;
+                super::cache_refresh::restore_acl_protection_with_limit(
                 &staged.file,
                 &expected,
                 Some(self.maximum_row_bytes),
-            )?;
-            input.before_mutation(expected.security.len() as u64)?;
-            super::backup_security_with_limit(
+                )?;
+                input.before_mutation(expected.security.len() as u64)?;
+                super::backup_security_with_limit(
                 &staged.file,
                 expected.security,
                 Some(self.maximum_row_bytes),
-            )?;
-            input.before_mutation(0)?;
-            super::basic(&staged.file, &expected)?;
+                )?;
+            }
+            if !self.recovering||!super::basic_matches(&expected,super::query_bytes(before.as_ref().expect("recovery snapshot"),0,40)?) {
+                input.before_mutation(0)?;
+                super::basic(&staged.file, &expected)?;
+            }
             if !entry.directory {
                 staged.file.sync_all()?;
             }
@@ -883,6 +938,8 @@ impl StagedWindowsAliases {
             {
                 return Err(invalid("derived alias metadata verification differs"));
             }
+            input.progress(Update::new(Phase::MetadataRestoration, Unit::Aliases,
+                ordinal as u64 + 1, Some(total)));
         }
         Ok(provisional_aliases)
     }

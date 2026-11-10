@@ -5,6 +5,8 @@ use super::*;
 use n2r_win32::reference_file::ReferenceFileSnapshot;
 use sha2::{Digest, Sha256};
 use std::io::{self, BufWriter, Seek, SeekFrom};
+#[path = "progress_observer.rs"]
+mod progress_observer;
 
 const HEADER: u64 = 128;
 const FRAME: u64 = 80;
@@ -24,11 +26,13 @@ pub(crate) struct FilePreparationObserver {
     chain: [u8; 32],
     ram_bytes: u64,
     phase: Option<&'static str>,
+    progress: std::sync::Arc<progress_observer::ConsoleProgress>,
     started: std::time::Instant,
     finished: bool,
     staging_meter: Option<n2r_win32::managed_shadow::StagingAllocationMeter>,
     staging_meter_error: Option<String>,
     backing_guard: Option<std::sync::Arc<n2r_win32::managed_shadow::BackingResourceGuard>>,
+    parent_public_resources: Option<resume_origin::ParentPublicResources>,
     durable_preparation_cancellation: bool,
     preparation_pin: Option<early_guard::GuardPin>,
 }
@@ -66,6 +70,20 @@ impl Write for WrittenHash<'_> {
     }
 }
 impl FilePreparationObserver {
+    pub(crate) fn attach_parent_public_resources(
+        &mut self, value: resume_origin::ParentPublicResources,
+    ) -> Result<()> {
+        ensure!(!self.finished && self.parent_public_resources.is_none(),
+            "live parent resource envelope may be attached exactly once before observer close");
+        value.resources.validate()?;
+        self.parent_public_resources = Some(value);
+        Ok(())
+    }
+
+    pub(crate) fn progress_reporter(&self) -> n2r_win32::progress::Reporter {
+        self.progress.reporter()
+    }
+
     pub(crate) fn attach_backing_guard(
         &mut self,
         guard: std::sync::Arc<n2r_win32::managed_shadow::BackingResourceGuard>,
@@ -252,11 +270,13 @@ impl FilePreparationObserver {
             chain: [0; 32],
             ram_bytes: required_ram,
             phase: None,
+            progress: progress_observer::ConsoleProgress::new(),
             started: std::time::Instant::now(),
             finished: false,
             staging_meter: None,
             staging_meter_error: None,
             backing_guard: None,
+            parent_public_resources: None,
             durable_preparation_cancellation: false,
             preparation_pin: None,
         })
@@ -407,6 +427,7 @@ impl FilePreparationObserver {
         Ok(())
     }
     pub(crate) fn finish(&mut self) -> Result<serde_json::Value> {
+        let progress = self.progress.summary();
         let prior_records = self.records;
         let prior_chain = hex::encode(self.chain);
         self.append(&serde_json::json!({"kind":"native-event-ledger-closed","records_before_close":prior_records,"prior_chain_sha256":prior_chain}))?;
@@ -422,6 +443,7 @@ impl FilePreparationObserver {
             "reserved_file_bytes":self.capacity,"maximum_budget_bytes":self.maximum_capacity,"actual_allocation_bytes":self.snapshot.allocation_bytes,
             "reserved_ram_bytes":self.ram_bytes,"held_parent_handles":self.parents.len(),
             "observer_elapsed_ms":self.started.elapsed().as_millis(),
+            "diagnostic_progress":progress,
             "observer_close_process_io":counters.as_ref().ok(),
             "process_io_error":counters.as_ref().err().map(ToString::to_string),
             "process_io_is_advisory_not_physical_disk_traffic":true,
@@ -430,6 +452,14 @@ impl FilePreparationObserver {
     }
 }
 impl PreparationObserver for FilePreparationObserver {
+    fn parent_public_resources(&self) -> Option<&resume_origin::ParentPublicResources> {
+        self.parent_public_resources.as_ref()
+    }
+
+    fn progress_reporter(&self) -> n2r_win32::progress::Reporter {
+        FilePreparationObserver::progress_reporter(self)
+    }
+
     fn backing_resource_guard(&self)
         -> Option<std::sync::Arc<n2r_win32::managed_shadow::BackingResourceGuard>> {
         FilePreparationObserver::backing_resource_guard(self)

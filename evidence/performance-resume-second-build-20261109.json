@@ -1,0 +1,162 @@
+{
+  "schema_version": 1,
+  "kind": "performance-resume-second-integrated-build",
+  "base_commit": "4ab37e2",
+  "check": {
+    "capacity": {
+      "actual_bytes": 253241607456,
+      "free_bytes": 54072958976,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 2147483648,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "exit_code": 0,
+    "unit_tests_run": false,
+    "native_run": false,
+    "kind": "preparation-resume-components-focused-check",
+    "absolute_boot_cap": 279866334601,
+    "wall_seconds": 43.1575939,
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+    "shared_target_reused": true
+  },
+  "source_snapshot_unchanged": true,
+  "native_qualified": false,
+  "current_vm_binary_unchanged": true,
+  "unit_tests_run": false,
+  "implemented": [
+    "compact-paid-alias-projection",
+    "one-authenticated-row-read-with-two-bounded-validation-passes",
+    "first-attempt-durable-allocation-and-placement-checkpoints",
+    "actual-volume-fresh-provider-admission",
+    "typed-throttled-phase-progress",
+    "scoped-source-reads-through-target-capture",
+    "linear-fragmented-source-preflight",
+    "protected-journal-full-capture-checks-seven-to-two"
+  ],
+  "remaining": [
+    "mixed-metadata-recovery-integration",
+    "Captured-state-adoption",
+    "native-qualification-of-new-build",
+    "original-Windows-original-disk-only-ReFS-boot"
+  ],
+  "source_files": [
+    {
+      "path": "crates/n2r-win32/src/lib.rs",
+      "sha256": "09efead3d13d1e0087dbfd5a49458b139652bbdb065747f72500b60eaca36836"
+    },
+    {
+      "path": "crates/n2r-win32/src/managed_shadow.rs",
+      "sha256": "b38329ae1b4f143fcb2c0280ef9a7d89cb85b90df7433e85a40db9ff2712c840"
+    },
+    {
+      "path": "crates/n2r-win32/src/managed_shadow/creation_resources.rs",
+      "sha256": "dd80fa5828136e696c12d89247bb9e07950a571db23c89ea8e5ba3a264df5d47"
+    },
+    {
+      "path": "crates/n2r-win32/src/managed_shadow/retirement.rs",
+      "sha256": "57a2049adfa943fa79cd3e14b559934b2848bf92ef4d77abe0d2e102e53735bf"
+    },
+    {
+      "path": "crates/n2r-win32/src/progress.rs",
+      "sha256": "5d7561850d9b91cc2e538d78da6179c650ceb326a45e0988a215130002aa6f34"
+    },
+    {
+      "path": "crates/n2r-win32/src/shadow_native/cache_refresh.rs",
+      "sha256": "a506bd2e6a40a7357bced7588347df08c4ac9357d720f9408ee973a6ef4107d7"
+    },
+    {
+      "path": "crates/n2r-win32/src/shadow_native/input_domain.rs",
+      "sha256": "68f50b213e540ee60eadc40056baaba7ac503574240dce962efe78b1d9f6b32e"
+    },
+    {
+      "path": "crates/n2r-win32/src/shadow_native/private_tree.rs",
+      "sha256": "fdb5efd4a48bde52284ec3734a9ec1c24bdbc39ecfd06491fa5843eb8e020af7"
+    },
+    {
+      "path": "crates/n2r-win32/src/shadow_native/private_tree/metadata.rs",
+      "sha256": "ae0a11d737ee9ba79a7b9589a5931e4e9536f54501a911cc578e2299d804b798"
+    },
+    {
+      "path": "crates/n2r-win32/src/shadow_native/private_tree/system_payloads.rs",
+      "sha256": "b30fb1a7f018bbadf13e983ed0c666185abe05d2510ceb5afad8bfcaac4db985"
+    },
+    {
+      "path": "crates/n2r-win32/src/shadow_native/windows_aliases.rs",
+      "sha256": "43c74e6cc0f108e666b27a037985cbeb6175e6bcd9252f79a2de423c4dfd1b4d"
+    },
+    {
+      "path": "src/drive_cli.rs",
+      "sha256": "0f289ab24ffb56dd9102b249f56ae9d0802a9ebcf6e17dbdb93741a2548b4693"
+    },
+    {
+      "path": "src/drive_resource_resume.rs",
+      "sha256": "34f73a7c79fd5c1e008473902fb40323c99a2c3985d2581761343e6e4ff8b141"
+    },
+    {
+      "path": "src/drive_resource.rs",
+      "sha256": "f0e64fd5a7fe727b1cc8d66aafb1b228421dd4905becc838f23888a1531d008f"
+    },
+    {
+      "path": "src/general_composite_target/paged.rs",
+      "sha256": "5f44b3acaa0998bfb64f82cb4c6e0ffcb175d616bad5e8492dd21e0986ab8662"
+    },
+    {
+      "path": "src/general_composite_target/partition_context.rs",
+      "sha256": "d42000e195390e6d8d74b73bfe73a5c4fcfa6b4bb17d5751d729e92358c1cd3f"
+    },
+    {
+      "path": "src/general_shadow.rs",
+      "sha256": "3aede2e1753d214c497953b848a4cd6ac7b375d47d9034408a5d73f9152631f8"
+    },
+    {
+      "path": "src/general_shadow/paged_candidate.rs",
+      "sha256": "978f6a97a9574fd10113c14e7464c3cd5f2564c7b9a961e365248cf09f6a7993"
+    },
+    {
+      "path": "src/general_shadow/paged_capture.rs",
+      "sha256": "eac64593d8cd76c491d3048fc93987f2d0171d0b1155c2c48a1445d5b8da0013"
+    },
+    {
+      "path": "src/general_shadow/paged_supply/routed.rs",
+      "sha256": "241efeab9da663ba9298b5c4ae1b4db2aeef641aea77424657e7cb1bc4edf83f"
+    },
+    {
+      "path": "src/preparation_resume.rs",
+      "sha256": "96af5b13e5cda1dac1ace0f087d05f38de555e5120ac9c16774cc9ca8800cc34"
+    },
+    {
+      "path": "src/resource_partition_target.rs",
+      "sha256": "6f2dfeb2c29faccdca7508219e5c589bfe56a141ad7eb08654e7c254d54d55c2"
+    },
+    {
+      "path": "src/resource_preparation.rs",
+      "sha256": "3a2dee180204b8536419fd31332047ae05565c32adbecb69c6858c789b2a48a9"
+    },
+    {
+      "path": "src/resource_preparation/file_observer.rs",
+      "sha256": "2fead88e5c7ac940e08f77585b3a457aca0f02ddd8cf5d9ae76226bd44d81edb"
+    },
+    {
+      "path": "src/resource_preparation/progress_observer.rs",
+      "sha256": "305a5128233f054e14f9f4527ba65d0d9fa05c0bc1f0e575edfc9e467bcf6f92"
+    },
+    {
+      "path": "src/resource_preparation/resume_checkpoint.rs",
+      "sha256": "619031f138ec2ba0d91b550bfa6a1900b25bc208302cc1d22b197311f18ea08a"
+    },
+    {
+      "path": "src/resource_preparation/resume_session_inputs.rs",
+      "sha256": "d422c30625f284076214725fd0a3fd831b3b2687ddaac59d996a3dd5da423a8c"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/prepare.rs",
+      "sha256": "80fa7f23f1106da43317f7811f147f9341019a1400f6042e76ce59c338ef19a8"
+    },
+    {
+      "path": "src/shadow_tree/pages.rs",
+      "sha256": "4b472e459e849364c1ff8c64f40343e8c389f897e5c457f251b86ffd73fc04e6"
+    }
+  ]
+}

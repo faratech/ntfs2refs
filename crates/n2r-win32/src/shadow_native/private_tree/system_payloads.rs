@@ -164,9 +164,18 @@ pub(super) fn revalidate_completed_domain(
         .ok_or_else(||invalid("system recovery workspace overflow"))?)?;
     require_owned_directories(tree, input)?;
     let mut files = 0u64;
+    let mut verified_bytes = 0u64;
+    let progress = |completed, bytes| input.progress(crate::progress::Update::new(
+        crate::progress::Phase::PayloadVerification, crate::progress::Unit::Objects,
+        completed, Some(input.len() as u64),
+    ).with_pass(1).with_counters(crate::progress::Counters {
+        authenticated_bytes_hashed: Some(bytes), payload_bytes_written: Some(0),
+        ..Default::default()
+    }));
     let mut digest = Sha256::new();
     digest.update(b"n2r-recovered-system-payload-readback-v1\0");
     for index in 0..input.len() {
+        progress(index as u64, verified_bytes);
         let owner = input.object(index)?;
         let item = owner.input();
         if item.directory || !item.components.first().is_some_and(|s|s=="System Volume Information") {continue;}
@@ -192,12 +201,14 @@ pub(super) fn revalidate_completed_domain(
         digest.update((index as u64).to_le_bytes());
         digest.update(&before);digest.update(actual.as_bytes());
         files+=1;
+        verified_bytes = verified_bytes.saturating_add(item.logical_length());
     }
     if files!=checked.files as u64 {return Err(invalid("recovered system payload coverage differs"));}
     require_owned_directories(tree,input)?;
     tree.require_source_excluded()?;
     tree.system_payloads_started=true;
     tree.system_payloads_complete=true;
+    progress(input.len() as u64, verified_bytes);
     Ok(serde_json::json!({"kind":"private-system-payload-revalidated-v1",
         "files":files,"logical_bytes":checked.logical_bytes,"ordered_sha256":hex::encode(digest.finalize()),
         "payload_bytes_written":0,"source_payload_writes":0,"conversion_qualified":false}))
@@ -243,8 +254,16 @@ pub(super) fn run_domain(
     let root = format!("{}\\", tree.pair.shadow.volume_path()?);
     let private = private_descriptor()?;
     let mut receipts = Vec::new();
+    let mut written_bytes = 0u64;
+    let progress = |completed, bytes| input.progress(crate::progress::Update::new(
+        crate::progress::Phase::PayloadSupply, crate::progress::Unit::Objects,
+        completed, Some(input.len() as u64),
+    ).with_pass(1).with_counters(crate::progress::Counters {
+        payload_bytes_written: Some(bytes), ..Default::default()
+    }));
     require_owned_directories(tree, input)?;
     for index in 0..input.len() {
+        progress(index as u64, written_bytes);
         let owner = input.object(index)?;
         let item = owner.input();
         if item.directory || !item.components.first().is_some_and(|s| s == system) {
@@ -317,12 +336,14 @@ pub(super) fn run_domain(
             serde_json::json!({"object_index":index,"components":item.components,
             "bytes":item.logical_length(),"sha256":actual,"readback_verified":true}),
         );
+        written_bytes = written_bytes.saturating_add(item.logical_length());
     }
     tree.before_backing_mutation(0)?;
     tree.volume.sync_all()?;
     require_owned_directories(tree, input)?;
     tree.require_source_excluded()?;
     tree.system_payloads_complete = true;
+    progress(input.len() as u64, written_bytes);
     Ok(
         serde_json::json!({"kind":"private-system-payload-supply","files":receipts,
         "owned_system_directories_verified":tree.system_directory_indices.len(),

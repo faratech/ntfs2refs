@@ -265,7 +265,12 @@ fn complete_domain_body(
             |a| crate::attestation::ResourceProfile::ResourceBoundedV4(Some(a)),
         )))?;
     let mut extent_only_tails = Vec::new();
-    for (key, file) in &tree.files {
+    let stream_progress = |pass, completed, total| input.progress(crate::progress::Update::new(
+        crate::progress::Phase::MetadataRestoration, crate::progress::Unit::Streams,
+        completed, Some(total),
+    ).with_pass(pass));
+    for (ordinal, (key, file)) in tree.files.iter().enumerate() {
+        stream_progress(0, ordinal as u64, tree.files.len() as u64);
         let owner = input.object(key.object_index)?;
         let object = owner.input();
         let item = streams::view_object(&object, &key.name_utf16)?;
@@ -286,6 +291,7 @@ fn complete_domain_body(
             extent_only_tails.push(proof);
         }
     }
+    stream_progress(0, tree.files.len() as u64, tree.files.len() as u64);
     let (sparse_files, sparse_tails) = tree.finish_sparse_streams()?;
     for proof in &extent_only_tails {
         let key = StreamKey::named(proof.object_index, &proof.stream_name_utf16);
@@ -307,21 +313,28 @@ fn complete_domain_body(
         }
     }
     let mut guards = BTreeMap::new();
-    for (key, file) in &tree.files {
+    for (ordinal, (key, file)) in tree.files.iter().enumerate() {
+        stream_progress(1, ordinal as u64, tree.files.len() as u64);
         // Exclusive placeholders cannot be reopened for metadata rights while
         // their read/write handle lives. First hold a zero-access identity
         // guard, which blocks delete/rename continuously across the transfer.
         let guard = reopen(file.metadata_handle(), 0)?;
         guards.insert(key.clone(), (info(file.metadata_handle(), 18, 24)?, guard));
     }
-    for (key, file) in sparse_files {
+    stream_progress(1, tree.files.len() as u64, tree.files.len() as u64);
+    let sparse_count = sparse_files.len() as u64;
+    for (ordinal, (key, file)) in sparse_files.into_iter().enumerate() {
+        stream_progress(2, ordinal as u64, sparse_count);
         let guard = reopen(&file, 0)?;
         guards.insert(key, (info(&file, 18, 24)?, guard));
         drop(file);
     }
+    stream_progress(2, sparse_count, sparse_count);
     tree.files.clear();
     let mut named_guards = BTreeMap::new();
-    for (key, (identity, guard)) in guards {
+    let guard_count = guards.len() as u64;
+    for (ordinal, (key, (identity, guard))) in guards.into_iter().enumerate() {
+        stream_progress(3, ordinal as u64, guard_count);
         let handle = reopen(&guard, 0x011e01ff)?;
         suppress_access(&handle)?;
         validate_open_type(&handle, false)?;
@@ -340,6 +353,7 @@ fn complete_domain_body(
             named_guards.insert(key, handle);
         }
     }
+    stream_progress(3, guard_count, guard_count);
     tree.require_source_excluded()?;
     let enumeration_payer = if tree.metadata_resource_admission.is_some() {
         Some(tree.memory.as_ref().ok_or_else(|| invalid("resource metadata enumeration payer absent"))?.payer())

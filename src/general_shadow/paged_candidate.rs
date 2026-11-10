@@ -4,7 +4,7 @@ use super::{
     PagedInputs,
     source_backed::{
         CandidateChunk, CandidateReadSpans, ClosingShadowBytes, ClosingSourceBytes,
-        PagedSourceByteAdapter, PagedStreamIdentity, ReadCounts, candidate_span_workspace_bytes,
+        PagedSourceByteAdapterWithScope, PagedStreamIdentity, ReadCounts, candidate_span_workspace_bytes,
     },
 };
 use crate::{
@@ -150,7 +150,7 @@ impl<'observation> PagedPayloadRoutes<'observation> {
     pub fn capture(
         observation: &'observation GeneralLiveRefsLayoutObservation,
         expected: &PagedExpectedTree,
-        bytes: &mut PagedSourceByteAdapter<'_>,
+        bytes: &mut PagedSourceByteAdapterWithScope<'_, '_>,
         output: &Path,
         capture_group: &crate::artifact_arena::ArtifactGroupPermit,
     ) -> Result<Self> {
@@ -367,8 +367,11 @@ impl PagedCandidateChunk<'_> {
     }
 }
 
-pub struct PagedSourceBackedCandidate<'source, 'observation> {
-    bytes: PagedSourceByteAdapter<'source>,
+pub type PagedSourceBackedCandidate<'source, 'observation> =
+    PagedSourceBackedCandidateWithScope<'source, 'observation, 'source>;
+
+pub struct PagedSourceBackedCandidateWithScope<'source, 'observation, 'scope> {
+    bytes: PagedSourceByteAdapterWithScope<'source, 'scope>,
     expected: &'source PagedExpectedTree,
     shadow: &'source mut GeneralFrozenPartition,
     routes: PagedPayloadRoutes<'observation>,
@@ -383,9 +386,9 @@ pub struct PagedSourceBackedCandidate<'source, 'observation> {
     poisoned: bool,
     _ram: SourceRamLease,
 }
-impl<'source, 'observation> PagedSourceBackedCandidate<'source, 'observation> {
+impl<'source, 'observation, 'scope> PagedSourceBackedCandidateWithScope<'source, 'observation, 'scope> {
     pub fn new(
-        mut bytes: PagedSourceByteAdapter<'source>,
+        mut bytes: PagedSourceByteAdapterWithScope<'source, 'scope>,
         shadow: &'source mut GeneralFrozenPartition,
         expected: &'source PagedExpectedTree,
         routes: PagedPayloadRoutes<'observation>,
@@ -786,7 +789,7 @@ impl<'source, 'observation> PagedSourceBackedCandidate<'source, 'observation> {
         Ok(self.counts)
     }
 }
-impl Read for PagedSourceBackedCandidate<'_, '_> {
+impl Read for PagedSourceBackedCandidateWithScope<'_, '_, '_> {
     fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
         match self.read_observed(output, false) {
             Ok((count, _)) => Ok(count),
@@ -797,7 +800,7 @@ impl Read for PagedSourceBackedCandidate<'_, '_> {
         }
     }
 }
-impl Seek for PagedSourceBackedCandidate<'_, '_> {
+impl Seek for PagedSourceBackedCandidateWithScope<'_, '_, '_> {
     fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
         if self.poisoned {
             return Err(io::Error::other("poisoned paged candidate cannot seek"));

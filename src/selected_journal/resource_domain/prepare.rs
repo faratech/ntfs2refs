@@ -8,6 +8,7 @@ use crate::selected_journal::{
     put_u64, verify_zero_selected,
 };
 use crate::{
+    general_shadow::paged_capture::CaptureRevalidation,
     general_reconstruct::selected_native_journal::{
         BoundNativeCreationFacts, BoundNativeCreationJournal, NativeSelectedJournal,
     },
@@ -225,7 +226,7 @@ pub(crate) fn prepare_native_partition_from_protected_capture<'journal,'domain,'
         admission.revalidate_publication_handoff(source,facts.guard_pin,events)?;
         // Unchanged core performs complete source/capture descriptors, payload,
         // COPY, canonical-zero/source-free framing and independent readback.
-        let result=prepare_inner(domain,source,candidate,journal,true);
+        let result=prepare_inner(domain,source,candidate,journal,true,None);
         let closing=admission.revalidate_publication_handoff(source,facts.guard_pin,events);
         match (result,closing) {
             (Ok(value),Ok(()))=>Ok(value),
@@ -579,7 +580,7 @@ pub(crate) fn prepare_diagnostic<'domain, 'capture, R: ReadSeek, S: ReadSeek>(
         file.metadata()?.len() == 0,
         "diagnostic journal is not fresh"
     );
-    let (ticket, whole) = prepare_inner(domain, source, candidate, &mut file, false)?;
+    let (ticket, whole) = prepare_inner(domain, source, candidate, &mut file, false, None)?;
     let readonly = n2r_win32::file_storage::duplicate_readonly(&file)?;
     drop(file);
     let lease = permit.verify_closed_handle(&readonly, &hex::encode(whole))?;
@@ -604,7 +605,7 @@ pub(crate) fn prepare_native_diagnostic<'journal, 'domain, 'capture, S: ReadSeek
     creation: &'journal mut BoundNativeCreationJournal,
     events: &mut Vec<n2r_win32::NativeEvent>,
 ) -> Result<NativeDiagnosticPreparedJournal<'journal, 'domain, 'capture>> {
-    prepare_native_inner(domain, source, shadow, candidate, creation, events, false)
+    prepare_native_inner(domain, source, shadow, candidate, creation, events, false, None)
 }
 
 /// The only optimized construction entry takes the actual private protected
@@ -620,18 +621,55 @@ pub(crate) fn prepare_native_from_protected_capture<'journal, 'domain, 'capture,
     events: &mut Vec<n2r_win32::NativeEvent>,
 ) -> Result<ProtectedPreparedJournal<'journal, 'domain, 'capture, 'proof, 'scope>> {
     candidate.require_domain(domain)?;
-    candidate.revalidate(context, shadow, events)?;
-    let prepared = {
-        let (source, _) = context.source_and_inspection()?;
-        prepare_native_inner(domain, source, shadow, candidate, creation, events, true)?
-    };
-    candidate.revalidate(context, shadow, events)?;
-    Ok(ProtectedPreparedJournal {
-        inner: prepared,
-        context,
-        shadow,
-        candidate,
-    })
+    let proof = candidate.protected_proof();
+    // This scope reads the same held capture and writes only the separately
+    // owned native journal. Its witness cannot escape into the returned owner.
+    // Full capture hashes bracket the whole operation; nested consumers still
+    // validate their actual index/layout and source/target owners.
+    let prepared = proof.captured().with_revalidation(move |witness| {
+        let opening = candidate.revalidate_with_capture_witness(context, shadow, events, witness);
+        let result = match opening {
+            Ok(()) => match context.source_and_inspection() {
+                Ok((source, _)) => prepare_native_inner(
+                    domain, source, shadow, candidate, creation, events, true, Some(witness),
+                ),
+                Err(error) => Err(error),
+            },
+            Err(error) => Err(error),
+        };
+        // Attempt source/target closing even if opening or preparation failed.
+        let closing = candidate.revalidate_with_capture_witness(context, shadow, events, witness);
+        let prepared = close_preparation(result, closing, "protected journal source/target closing")?;
+        Ok(ProtectedPreparedJournal {
+            inner: prepared,
+            context,
+            shadow,
+            candidate,
+        })
+    });
+    // Do not use `?` before this closing: failed callbacks and failed opening
+    // capture checks must still attempt complete held index/literal validation.
+    let closing = proof.captured().revalidate();
+    close_preparation(prepared, closing, "protected journal capture closing")
+}
+
+fn close_preparation<T>(result: Result<T>, closing: Result<()>, label: &str) -> Result<T> {
+    match (result, closing) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Err(close)) => Err(error.context(format!("{label} also failed: {close:#}"))),
+        (Err(error), _) => Err(error),
+        (_, Err(error)) => Err(error.context(label.to_owned())),
+    }
+}
+
+fn revalidate_preparation_domain(
+    domain: &ResourceJournalDomain<'_>,
+    witness: Option<&CaptureRevalidation<'_>>,
+) -> Result<()> {
+    match witness {
+        Some(witness) => domain.revalidate_with_witness(witness),
+        None => domain.revalidate(),
+    }
 }
 
 fn prepare_native_inner<'journal, 'domain, 'capture, S: ReadSeek>(
@@ -642,8 +680,9 @@ fn prepare_native_inner<'journal, 'domain, 'capture, S: ReadSeek>(
     creation: &'journal mut BoundNativeCreationJournal,
     events: &mut Vec<n2r_win32::NativeEvent>,
     same_captured_source: bool,
+    capture_witness: Option<&CaptureRevalidation<'_>>,
 ) -> Result<NativeDiagnosticPreparedJournal<'journal, 'domain, 'capture>> {
-    domain.revalidate()?;
+    revalidate_preparation_domain(domain, capture_witness)?;
     let before_source = source.state(events)?;
     let before_shadow = shadow.state(events)?;
     ensure!(
@@ -687,7 +726,7 @@ fn prepare_native_inner<'journal, 'domain, 'capture, S: ReadSeek>(
         space.available_bytes_to_caller >= f.journal_length,
         "native journal volume lacks the calculated available space"
     );
-    let (ticket, _whole) = prepare_inner(domain, source, candidate, journal, same_captured_source)?;
+    let (ticket, _whole) = prepare_inner(domain, source, candidate, journal, same_captured_source, capture_witness)?;
     if ticket.marker_profile.is_some() {
         journal.seal_redundant(&ticket)?;
         let marker = journal
@@ -716,7 +755,7 @@ fn prepare_native_inner<'journal, 'domain, 'capture, S: ReadSeek>(
             && shadow.state(events)? == before_shadow,
         "native journal or frozen source/shadow changed during preparation"
     );
-    domain.revalidate()?;
+    revalidate_preparation_domain(domain, capture_witness)?;
     drop(memory);
     Ok(NativeDiagnosticPreparedJournal {
         _journal: journal,
@@ -734,6 +773,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     candidate: &mut S,
     mut file: &mut J,
     same_captured_source: bool,
+    capture_witness: Option<&CaptureRevalidation<'_>>,
 ) -> Result<(SelectedTicket, [u8; 32])> {
     let f = domain.facts;
     ensure!(file.byte_len()? == 0, "new native journal is not empty");
@@ -862,7 +902,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     };
     let (immutable, whole) = validate_readback(domain, file, &ticket, &mut buffer, &mut compare)?;
     ticket.immutable_sha256 = immutable;
-    domain.revalidate()?;
+    revalidate_preparation_domain(domain, capture_witness)?;
     Ok((ticket, whole))
 }
 

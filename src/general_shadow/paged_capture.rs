@@ -3,7 +3,7 @@
 //! conversion into the legacy DeltaLayout/SelectedPlan exists here.
 use super::{
     capture_index::{CaptureBatchRange, CaptureIndexRange, ClosedCaptureIndex, OwnedCaptureIndex},
-    paged_candidate::PagedSourceBackedCandidate,
+    paged_candidate::PagedSourceBackedCandidateWithScope,
     source_backed::{CaptureBudget, CaptureProgress, ChangedClassCounters, ReadCounts},
 };
 use crate::{
@@ -457,7 +457,7 @@ fn literal_file(path: &Path, index_path: &Path, limit: u64) -> Result<File> {
 /// fresh capture caller owns the journal consumer; this function never writes
 /// the source, opens a journal, changes protection or returns a legacy Vec plan.
 pub(crate) fn capture_diagnostic_selected(
-    mut candidate: PagedSourceBackedCandidate<'_, '_>,
+    mut candidate: PagedSourceBackedCandidateWithScope<'_, '_, '_>,
     selection: &DiagnosticCaptureSelection,
     literal_path: &Path,
     index_path: &Path,
@@ -478,7 +478,7 @@ pub(crate) fn capture_diagnostic_selected(
 /// Only the live protected target producer can supply the in-place omission
 /// owner. This remains diagnostic until the enclosing raw/source gates close.
 pub(crate) fn capture_target_selected(
-    candidate: PagedSourceBackedCandidate<'_, '_>,
+    candidate: PagedSourceBackedCandidateWithScope<'_, '_, '_>,
     scope: &crate::general_composite_target::paged::PagedTargetScope,
     literal_path: &Path,
     index_path: &Path,
@@ -498,7 +498,7 @@ pub(crate) fn capture_target_selected(
 
 #[allow(clippy::too_many_arguments)]
 fn capture_selected_inner(
-    mut candidate: PagedSourceBackedCandidate<'_, '_>,
+    mut candidate: PagedSourceBackedCandidateWithScope<'_, '_, '_>,
     selection: &DiagnosticCaptureSelection,
     literal_path: &Path,
     index_path: &Path,

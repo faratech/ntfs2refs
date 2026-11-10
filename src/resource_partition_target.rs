@@ -244,6 +244,7 @@ fn prepare_partition_target_capture_inner(
             &mut private,
             request.maximum_materialized_bytes,
             policy,
+            &n2r_win32::progress::Reporter::default(),
         )?;
         let (_system, indexer) = routed.materialize_system_payloads()?;
         drop(indexer);
@@ -273,13 +274,13 @@ fn prepare_partition_target_capture_inner(
         &capture_group,
         &output.join("target"),
         events,
-        |context, target, expected, routes, scope, closing| {
+        |context, target, expected, routes, scope, closing, _native_events| {
             let bytes = PagedSourceByteAdapter::new_partition(
                 context,
                 admission,
                 request.maximum_source_read_bytes,
             )?;
-            let candidate = PagedSourceBackedCandidate::new(bytes, target, expected, routes)?
+            let candidate = PagedSourceBackedCandidateWithScope::new(bytes, target, expected, routes)?
                 .with_closing_bytes(closing);
             let mut capacity = |progress: CaptureProgress| -> Result<()> {
                 let available = n2r_win32::discovery::observe_volume_space(&scratch_root)?;

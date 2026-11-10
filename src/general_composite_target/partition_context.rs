@@ -128,6 +128,52 @@ impl ScopedSourceContext<'_> {
             Self::Partition(c) => PagedSourceByteAdapter::new_partition(c, admission, maximum),
         }
     }
+    /// A bounded read-only phase over the actual source owner. Dedicated
+    /// sources keep complete critical-role fences at entry and every Result
+    /// exit; per-stream checks retain actual geometry/GPT/exclusion reads.
+    pub(super) fn with_bytes<T>(
+        &mut self,
+        admission: SourceResourceAdmission,
+        maximum: u64,
+        events: &mut Vec<NativeEvent>,
+        consume: impl for<'bytes, 'scope> FnOnce(
+            &mut crate::general_shadow::source_backed::PagedSourceByteAdapterWithScope<'bytes, 'scope>,
+        ) -> Result<T>,
+    ) -> Result<T> {
+        use crate::general_shadow::source_backed::PagedSourceByteAdapterWithScope;
+        fn close<T>(body: Result<T>, closing: Result<u64>) -> Result<T> {
+            match (body, closing) {
+                (Ok(value), Ok(_)) => Ok(value),
+                (Err(error), Ok(_)) => Err(error),
+                (Ok(_), Err(error)) => Err(error),
+                (Err(body), Err(closing)) => Err(closing.context(format!(
+                    "source-byte phase also failed: {body:#}"
+                ))),
+            }
+        }
+        match self {
+            Self::Dedicated(context) => {
+                let memory = crate::general_composite_target::paged_memory::ArenaReportMemory(
+                    context.arena().context("source-byte scope arena absent")?.clone(),
+                );
+                let (source, raw) = context.source_and_inspection()?;
+                source.with_readonly_source_bytes(&memory, events, |scope| {
+                    (|| -> Result<T> {
+                        let mut bytes = PagedSourceByteAdapterWithScope::new_scoped(
+                            scope, raw, admission, maximum,
+                        )?;
+                        let body = consume(&mut bytes);
+                        close(body, bytes.finish())
+                    })().map_err(io::Error::other)
+                }).map_err(anyhow::Error::from)
+            }
+            Self::Partition(context) => {
+                let mut bytes = PagedSourceByteAdapter::new_partition(context, admission, maximum)?;
+                let body = consume(&mut bytes);
+                close(body, bytes.finish())
+            }
+        }
+    }
     pub(super) fn derive_projection(
         &mut self,
         admission: SourceResourceAdmission,

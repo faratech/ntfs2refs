@@ -49,6 +49,10 @@ pub use recovery::{ReattachedShadow, reattach_existing};
 mod retirement;
 mod backing_resources;
 pub use backing_resources::{BackingResourceGuard, BackingResourceObservation};
+mod creation_resources;
+pub use creation_resources::{NativeCreationAdmission, NativeCreationObservation, admit_fresh_native_backing};
+/// This is the constructor's actual configured dynamic VHDX allocation block.
+pub const NATIVE_VHDX_ALLOCATION_QUANTUM_BYTES: u32 = 2 << 20;
 pub use retirement::{
     ShadowRetirementReceipt, StagingAllocationMeter, StagingAllocationObservation,
 };
@@ -673,6 +677,9 @@ pub fn create_with_profile(
             return Err(invalid("ordinary staging ancestry required"));
         }
     }
+    // Hold the actual ordinary parent route and its independently sampled free
+    // floor before CreateVirtualDisk can allocate any backing bytes.
+    let capacity = admit_fresh_native_backing(path)?;
     let size = partition_bytes
         .checked_add(MARGIN)
         .filter(|v| *v <= i64::MAX as u64)
@@ -692,7 +699,7 @@ pub fn create_with_profile(
         Version2: CREATE_VIRTUAL_DISK_PARAMETERS_0_1 {
             UniqueId: id,
             MaximumSize: size,
-            BlockSizeInBytes: 2 << 20,
+            BlockSizeInBytes: NATIVE_VHDX_ALLOCATION_QUANTUM_BYTES,
             SectorSizeInBytes: logical_sector,
             PhysicalSectorSizeInBytes: physical_sector,
             ..Default::default()
@@ -701,6 +708,7 @@ pub fn create_with_profile(
     // Refuse an unavailable management privilege before creating any backing.
     // The lease restores its actual previous state on every error path.
     let mut privileges = Privileges::enable_for(&["SeManageVolumePrivilege"])?;
+    capacity.check()?;
     let mut handle = ptr::null_mut();
     // SAFETY: version2 default-zero parameters have no parent/source path;
     // zero flags select dynamic allocation. Creation refuses an existing file.
@@ -728,10 +736,17 @@ pub fn create_with_profile(
         physical: physical_sector,
     };
     let backing = retirement::OwnedBacking::enroll(path)?;
+    capacity.require_backing(&backing)?;
+    capacity.check()?;
     let attached = created.attach()?;
+    capacity.check()?;
     let binding = attached.initialize(partition_bytes, path)?;
     privileges.restore()?;
+    capacity.require_backing(&backing)?;
+    capacity.check()?;
     let (binding, format_policy, _) = format_new_owned(&attached, binding, path, target_format)?;
+    capacity.require_backing(&backing)?;
+    capacity.check()?;
     Ok(ManagedShadow {
         _owned_binding: binding.clone(),
         binding,

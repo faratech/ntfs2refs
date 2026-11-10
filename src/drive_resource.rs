@@ -225,6 +225,9 @@ pub(crate) fn convert_owned_with_provider_commitment(
         maximum_combined_bytes: combined,
     };
     save(&run.join("resource-plan.json"), &plan)?;
+    // The checkpoint owns the exact live public envelope already written
+    // above, including the real provider and independently paid evidence fields.
+    observer.attach_parent_public_resources(serde_json::from_value(serde_json::to_value(&plan)?)?)?;
     let maximum_placement_bytes = pair
         .source
         .identity

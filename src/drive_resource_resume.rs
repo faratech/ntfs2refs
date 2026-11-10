@@ -175,6 +175,7 @@ pub(super) fn resume_preparation_in_workspace(
         expected_binding: None,
         completed_placement: None,
         completed_payloads: None,
+        shadow_start: crate::resource_preparation::resume_session_inputs::ShadowStart::AdoptExisting,
         legacy_terminal: Some(origin.terminal.clone()),
         prior_resume_intent: None,
         workspace_origin: None,
@@ -493,14 +494,16 @@ fn resume_session(directory: &Path, intent_sha: [u8; 32], workspace: Option<&Pat
         "saved session bootstrap changed before paid adoption"
     );
     println!(
-        "Resume checkpoint: {}\nSource: disk {}, partition {}.\nCompleted shadow placement will be reused; source collection and shadow creation are disabled.",
+        "Resume checkpoint: {}\nSource: disk {}, partition {}.\nSaved source evidence will be revalidated before continuing.",
         directory.display(),
         pair.source.disk_number,
         pair.source.identity.partition_number
     );
     println!("Authenticated completed placement: {}. Recovery will {}.",
         session.completed_placement.is_some(),
-        if session.completed_placement.is_some() {"revalidate initialized mappings without moves"}
+        if session.shadow_start == crate::resource_preparation::resume_session_inputs::ShadowStart::AllocateEmpty {
+            "verify the existing shadow is empty, then allocate its file tree"
+        } else if session.completed_placement.is_some() {"revalidate initialized mappings without moves"}
         else {"adopt unwritten mappings and finish placement"});
     if let Some(root) = &migrated_root {
         println!(
@@ -626,6 +629,7 @@ fn resume_session(directory: &Path, intent_sha: [u8; 32], workspace: Option<&Pat
             expected_binding: session.saved.expected_binding.clone(),
             completed_placement: session.completed_placement.clone(),
             completed_payloads: session.completed_payloads.clone(),
+            shadow_start: session.shadow_start,
             legacy_terminal: session.saved.legacy_terminal.clone(),
             prior_resume_intent: Some(session.journal.intent_pin().clone()),
             workspace_origin: if workspace.is_some() {

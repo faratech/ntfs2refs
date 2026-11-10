@@ -4,7 +4,7 @@ use crate::{
     artifact_arena::{ArtifactGroup, ArtifactGroupPermit, ArtifactLease},
     general_shadow::{
         PagedInputs,
-        source_backed::{PagedSourceByteAdapter, PagedStreamIdentity},
+        source_backed::{PagedSourceByteAdapter, PagedSourceByteAdapterWithScope, PagedStreamIdentity},
     },
     ntfs_inspect::{
         external_sort::ExternalSort,
@@ -224,7 +224,7 @@ struct SourceTailProvider {
 }
 impl SourceTailProvider {
     fn capture(
-        bytes: &mut PagedSourceByteAdapter<'_>,
+        bytes: &mut PagedSourceByteAdapterWithScope<'_, '_>,
         expected: &PagedExpectedTree,
         path: &Path,
         scratch: &SourceScratch,
@@ -727,7 +727,7 @@ fn route_intervals(
     Ok((output, hex::encode(hash.finalize())))
 }
 fn source_in_place(
-    bytes: &mut PagedSourceByteAdapter<'_>,
+    bytes: &mut PagedSourceByteAdapterWithScope<'_, '_>,
     expected: &PagedExpectedTree,
     routes: &crate::general_shadow::paged_candidate::PagedPayloadRoutes<'_>,
     path: &Path,
@@ -803,7 +803,7 @@ impl PagedTargetScope {
     }
     pub(crate) fn matches_candidate(
         &self,
-        candidate: &crate::general_shadow::paged_candidate::PagedSourceBackedCandidate<'_, '_>,
+        candidate: &crate::general_shadow::paged_candidate::PagedSourceBackedCandidateWithScope<'_, '_, '_>,
     ) -> bool {
         candidate.source_owner_identity() == self.source_owner
             && candidate.matches_native_report(&self.native_report)
@@ -991,12 +991,13 @@ pub(crate) fn observe_and_select_paged(
         crate::general_shadow::paged_candidate::PagedPayloadRoutes<'_>,
         &PagedTargetScope,
         &mut dyn crate::general_shadow::source_backed::ClosingShadowBytes,
+        &mut Vec<n2r_win32::NativeEvent>,
     ) -> Result<crate::general_shadow::paged_capture::DiagnosticSelectedCapture>,
 ) -> Result<ProtectedPagedTargetSelection> {
     let mut scoped=ScopedSourceContext::Dedicated(context);
     observe_and_select_scoped(&mut scoped,target,pair,expected,capture_group,output,events,None,
-        |scoped,target,expected,routes,scope,closing| match scoped {
-            ScopedSourceContext::Dedicated(context)=>consume(context,target,expected,routes,scope,closing),
+        |scoped,target,expected,routes,scope,closing,native_events| match scoped {
+            ScopedSourceContext::Dedicated(context)=>consume(context,target,expected,routes,scope,closing,native_events),
             ScopedSourceContext::Partition(_)=>anyhow::bail!("dedicated target callback received partition source"),
         })
 }
@@ -1014,6 +1015,7 @@ pub(crate) fn observe_and_select_paged_windows_aliases(
         &mut n2r_win32::GeneralFrozenPartition,&PagedExpectedTree,
         crate::general_shadow::paged_candidate::PagedPayloadRoutes<'_>,&PagedTargetScope,
         &mut dyn crate::general_shadow::source_backed::ClosingShadowBytes,
+        &mut Vec<n2r_win32::NativeEvent>,
     )->Result<crate::general_shadow::paged_capture::DiagnosticSelectedCapture>,
 )->Result<ProtectedPagedTargetSelection> {
     let owner=context.windows_aliases().context("actual Windows source alias owner absent")?;
@@ -1024,8 +1026,8 @@ pub(crate) fn observe_and_select_paged_windows_aliases(
     let aliases=WindowsAliasSelection{constructor:aliases,owner,digest};
     let mut scoped=ScopedSourceContext::Dedicated(context);
     observe_and_select_scoped(&mut scoped,target,pair,expected,capture_group,output,events,Some(aliases),
-        |scoped,target,expected,routes,scope,closing|match scoped {
-            ScopedSourceContext::Dedicated(context)=>consume(context,target,expected,routes,scope,closing),
+        |scoped,target,expected,routes,scope,closing,native_events|match scoped {
+            ScopedSourceContext::Dedicated(context)=>consume(context,target,expected,routes,scope,closing,native_events),
             ScopedSourceContext::Partition(_)=>anyhow::bail!("Windows alias observer received an ordinary partition source"),
         })
 }
@@ -1048,6 +1050,7 @@ pub(crate) fn observe_and_select_paged_optional_windows_aliases(
         &mut n2r_win32::GeneralFrozenPartition,&PagedExpectedTree,
         crate::general_shadow::paged_candidate::PagedPayloadRoutes<'_>,&PagedTargetScope,
         &mut dyn crate::general_shadow::source_backed::ClosingShadowBytes,
+        &mut Vec<n2r_win32::NativeEvent>,
     )->Result<crate::general_shadow::paged_capture::DiagnosticSelectedCapture>,
 )->Result<ProtectedPagedTargetSelection> {
     if let Some((verified,mapped))=aliases {
@@ -1072,12 +1075,13 @@ pub(crate) fn observe_and_select_partition_paged(
         crate::general_shadow::paged_candidate::PagedPayloadRoutes<'_>,
         &PagedTargetScope,
         &mut dyn crate::general_shadow::source_backed::ClosingShadowBytes,
+        &mut Vec<n2r_win32::NativeEvent>,
     ) -> Result<crate::general_shadow::paged_capture::DiagnosticSelectedCapture>,
 ) -> Result<ProtectedPagedTargetSelection> {
     let mut scoped=ScopedSourceContext::Partition(context);
     observe_and_select_scoped(&mut scoped,target,pair,expected,capture_group,output,events,None,
-        |scoped,target,expected,routes,scope,closing| match scoped {
-            ScopedSourceContext::Partition(context)=>consume(context,target,expected,routes,scope,closing),
+        |scoped,target,expected,routes,scope,closing,native_events| match scoped {
+            ScopedSourceContext::Partition(context)=>consume(context,target,expected,routes,scope,closing,native_events),
             ScopedSourceContext::Dedicated(_)=>anyhow::bail!("partition target callback received dedicated source"),
         })
 }
@@ -1098,6 +1102,7 @@ fn observe_and_select_scoped(
         crate::general_shadow::paged_candidate::PagedPayloadRoutes<'_>,
         &PagedTargetScope,
         &mut dyn crate::general_shadow::source_backed::ClosingShadowBytes,
+        &mut Vec<n2r_win32::NativeEvent>,
     ) -> Result<crate::general_shadow::paged_capture::DiagnosticSelectedCapture>,
 ) -> Result<ProtectedPagedTargetSelection> {
     let admission = context.resource_admission();
@@ -1153,17 +1158,15 @@ fn observe_and_select_scoped(
     // its real immutable files and revalidation owner, releasing only the
     // now-unused object decoding workspace.
     let source_projection = source_projection.into_revalidation_owner()?;
-    let source_tails = {
-        let mut bytes=context.bytes(admission,expected.logical_bytes().max(1))?;
-        let provider = SourceTailProvider::capture(
-            &mut bytes,
+    let source_tails = context.with_bytes(
+        admission, expected.logical_bytes().max(1), events, |bytes| {
+        SourceTailProvider::capture(
+            bytes,
             expected,
             &output.join("source-tails"),
             &scratch,
-        )?;
-        bytes.finish()?;
-        provider
-    };
+        )
+    })?;
     // Source projection and tail capture carry their own row/name/writer
     // leases. Their temporary source adapter has now closed, before the
     // additional workspace needed by the following native target operations.
@@ -1215,18 +1218,15 @@ fn observe_and_select_scoped(
     // and bounded sort. Do not hold the unrelated raw/interval workspace
     // across those independently accounted allocations.
     drop(stage_ram);
-    let opening_routes = {
-        let mut bytes=context.bytes(admission,1)?;
-        let routes = crate::general_shadow::paged_candidate::PagedPayloadRoutes::capture(
+    let opening_routes = context.with_bytes(admission, 1, events, |bytes| {
+        crate::general_shadow::paged_candidate::PagedPayloadRoutes::capture(
             &preliminary,
             expected,
-            &mut bytes,
+            bytes,
             &output.join("opening-routes"),
             capture_group,
-        )?;
-        bytes.finish()?;
-        routes
-    };
+        )
+    })?;
     let stage_ram = scratch.lease_ram(stage_ram_bytes)?;
     let (exclusions, route_sha) = route_intervals(
         &opening_routes,
@@ -1234,19 +1234,16 @@ fn observe_and_select_scoped(
         image,
         &scratch,
     )?;
-    let in_place = {
-        let mut bytes=context.bytes(admission,1)?;
-        let result = source_in_place(
-            &mut bytes,
+    let in_place = context.with_bytes(admission, 1, events, |bytes| {
+        source_in_place(
+            bytes,
             expected,
             &opening_routes,
             &output.join("in-place"),
             image,
             &scratch,
-        )?;
-        bytes.finish()?;
-        result
-    };
+        )
+    })?;
     let allocation = allocated(
         &preliminary,
         &output.join("opening-allocation"),
@@ -1344,18 +1341,15 @@ fn observe_and_select_scoped(
         .context("protected closing tail owner absent")?;
     let closing_lease = closing_permit.verify_closed(closing_results.sha256())?;
     drop(stage_ram);
-    let closing_routes = {
-        let mut bytes=context.bytes(admission,1)?;
-        let routes = crate::general_shadow::paged_candidate::PagedPayloadRoutes::capture(
+    let closing_routes = context.with_bytes(admission, 1, events, |bytes| {
+        crate::general_shadow::paged_candidate::PagedPayloadRoutes::capture(
             &native,
             expected,
-            &mut bytes,
+            bytes,
             &output.join("closing-routes"),
             capture_group,
-        )?;
-        bytes.finish()?;
-        routes
-    };
+        )
+    })?;
     let _stage_ram = scratch.lease_ram(stage_ram_bytes)?;
     let (closing_exclusions, closing_route_sha) = route_intervals(
         &closing_routes,
@@ -1468,7 +1462,7 @@ fn observe_and_select_scoped(
     )?;
     drop(_stage_ram);
     let mut closing = PagedShadowClosing::new(target, &scope.consumed)?;
-    let captured = consume(context, target, expected, closing_routes, &scope, &mut closing)?;
+    let captured = consume(context, target, expected, closing_routes, &scope, &mut closing, events)?;
     ensure!(
         captured.is_for_scope(&scope),
         "consumer returned a capture from another or unqualified target scope"

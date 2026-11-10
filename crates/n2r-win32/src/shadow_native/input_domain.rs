@@ -12,10 +12,55 @@ pub trait ObjectInput {
     fn input(&self) -> Input<'_>;
 }
 
+/// A borrowed namespace-only view. It grants no metadata/native authority and
+/// cannot stand in for the complete Input used by security/content checks.
+pub trait AliasObjectShape {
+    fn directory(&self) -> bool;
+    fn is_reparse(&self) -> bool;
+    fn primary_path_matches(&self, path: &[String]) -> io::Result<bool>;
+    fn contains_path(&self, path: &[String]) -> io::Result<bool>;
+}
+
+pub struct AliasObjectShapeRef<'a> {
+    pub components: &'a [String],
+    pub additional_names: &'a [Vec<String>],
+    pub directory: bool,
+    pub is_reparse: bool,
+}
+impl AliasObjectShape for AliasObjectShapeRef<'_> {
+    fn directory(&self) -> bool { self.directory }
+    fn is_reparse(&self) -> bool { self.is_reparse }
+    fn primary_path_matches(&self, path: &[String]) -> io::Result<bool> {
+        Ok(self.components == path)
+    }
+    fn contains_path(&self, path: &[String]) -> io::Result<bool> {
+        Ok(self.components == path || self.additional_names.iter().any(|name| name.as_slice() == path))
+    }
+}
+
 pub trait InputDomain {
     type Object: ObjectInput;
     fn len(&self) -> usize;
     fn object(&self, index: usize) -> io::Result<Self::Object>;
+    /// Diagnostic only: progress cannot fail or authorize an operation.
+    fn progress(&self, _update: crate::progress::Update) {}
+    /// Legacy domains keep their existing object path. Authenticated paged
+    /// owners may supply a paid immutable projection from that exact domain.
+    /// The callback prevents a borrowed view escaping its actual owner.
+    fn with_alias_shape<T>(
+        &self,
+        index: usize,
+        visit: impl FnOnce(&dyn AliasObjectShape) -> io::Result<T>,
+    ) -> io::Result<T> {
+        let owner = self.object(index)?;
+        let input = owner.input();
+        visit(&AliasObjectShapeRef {
+            components: input.components,
+            additional_names: input.additional_names,
+            directory: input.directory,
+            is_reparse: input.reparse.is_some(),
+        })
+    }
     /// Optional capacity policy, never native write authority. Call only
     /// immediately before a bounded allocating operation, not on reads.
     fn before_mutation(&self, _operation_bytes: u64) -> io::Result<()> { Ok(()) }

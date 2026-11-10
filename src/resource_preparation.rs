@@ -40,7 +40,21 @@ mod resume_checkpoint;
 pub(crate) mod resume_origin;
 pub(crate) mod resume_session_inputs;
 pub(crate) mod resume_workspace;
+/// Process-wide diagnose switch, set once by the command line before
+/// preparation starts. In diagnose mode preparation collects per-object
 use anyhow::{Context, Result, ensure};
+
+/// Process-wide diagnose switch, set once by the command line before
+/// preparation starts. In diagnose mode preparation collects per-object
+/// failures and always stops before publication.
+static DIAGNOSE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub(crate) fn set_diagnose() {
+    DIAGNOSE.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+fn diagnose() -> bool {
+    DIAGNOSE.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 use n2r_win32::{
     GeneralFrozenPartition, NativeEvent,
     general_layout::GeneralSourceShadowBinding,
@@ -811,9 +825,11 @@ where
         })?;
         let maximum_source_read_bytes = request.source_read_budget(&expected, admission)?;
         let backing_guard = events.observer.backing_resource_guard();
+        let diagnose_failures = diagnose().then(general_shadow::DeferredFailures::default);
         let inputs = general_shadow::GuardedInputs::new(
             PagedInputs(&expected), backing_guard.clone(), &request.pair.shadow,
-        )?.with_progress(events.observer.progress_reporter());
+        )?.with_progress(events.observer.progress_reporter())
+            .with_deferred_failures(diagnose_failures.clone());
         let trust_recipes = if trust_repair_allocation.is_some() {
             Some(crate::refs_security_integration::collect_recipes(
                 &inputs, &arena,
@@ -1241,6 +1257,16 @@ where
         events.observer.note(&serde_json::json!({"kind":"expected-metadata-work-counters-v1",
             "phase":"metadata-completed","page_cache":expected.page_cache_statistics(),
             "alias_projection":expected.alias_projection_statistics(),"diagnostic_only":true}))?;
+        // Diagnose gate. Nothing has been published or written to the source
+        // yet; returning an error here takes the ordinary cancellation path,
+        // which restores NTFS access.
+        if let Some(sink) = &diagnose_failures {
+            let failures = sink.take();
+            for failure in &failures {
+                eprintln!("diagnose: {failure}");
+            }
+            anyhow::bail!("diagnose complete: {} per-object failures; nothing was published or written to the source", failures.len());
+        }
         events.phase("source-after-shadow-construction");
         context.recheck_source(&mut events)?;
         events.checkpoint()?;

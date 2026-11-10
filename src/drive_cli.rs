@@ -74,6 +74,11 @@ pub struct DriveArgs {
     /// rollback. Requires fast verification and no VSS snapshots/diff areas.
     #[arg(long, requires = "drive", conflicts_with_all = ["whole_image_verification", "verify_full_content"])]
     pub minimize_scratch: bool,
+    /// Build the complete ReFS shadow, report every per-object failure instead
+    /// of stopping at the first, then stop before anything is published or
+    /// written to the source. The source volume is left as NTFS.
+    #[arg(long, requires = "drive", conflicts_with_all = ["list", "recover", "rollback"])]
+    pub diagnose: bool,
     /// Qualification-only: use bounded thin temporary storage on the V4 route.
     #[arg(
         long,
@@ -557,6 +562,10 @@ mod windows {
             );
         }
         if args.windows_boot_volume { super::boot::describe_geometry(&before.binding); }
+        if args.diagnose {
+            crate::resource_preparation::set_diagnose();
+            println!("Diagnose mode: every per-object failure is reported and nothing is written to the source.");
+        }
         if !confirm("Convert this partition to ReFS in place, preserving supported files? [y/N]")? {
             println!("Cancelled. No conversion started.");
             return Ok(0);

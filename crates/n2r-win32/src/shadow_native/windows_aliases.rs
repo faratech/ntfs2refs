@@ -961,7 +961,7 @@ impl StagedWindowsAliases {
             }
             Ok(())
             })()
-            .map_err(|error| at_alias("alias metadata restoration", &staged.entry.components, error))?;
+            .or_else(|error| input.defer_failure(at_alias("alias metadata restoration", &staged.entry.components, error)))?;
             input.progress(Update::new(Phase::MetadataRestoration, Unit::Aliases,
                 ordinal as u64 + 1, Some(total)));
         }

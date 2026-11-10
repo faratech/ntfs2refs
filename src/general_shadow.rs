@@ -145,12 +145,32 @@ impl<'a> n2r_win32::shadow_native::input_domain::InputDomain for TreeInputs<'a> 
 
 pub(crate) struct PagedInputs<'a>(pub &'a crate::shadow_tree::PagedExpectedTree);
 
+/// Per-object failures collected by a diagnose run. Collecting never grants
+/// anything: the owner that installs this must refuse to publish afterwards.
+#[derive(Clone, Default)]
+pub(crate) struct DeferredFailures(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+impl DeferredFailures {
+    /// Past this many the run is not learning anything new; stop it.
+    const LIMIT: usize = 5000;
+    fn record(&self, error: std::io::Error) -> std::io::Result<()> {
+        let mut failures = self.0.lock().map_err(|_| std::io::Error::other("diagnose sink poisoned"))?;
+        if failures.len() >= Self::LIMIT {
+            return Err(std::io::Error::new(error.kind(), format!("diagnose limit of {} failures reached; last: {error}", Self::LIMIT)));
+        }
+        failures.push(error.to_string());
+        Ok(())
+    }
+    pub(crate) fn take(&self) -> Vec<String> {
+        self.0.lock().map(|mut failures| std::mem::take(&mut *failures)).unwrap_or_default()
+    }
+}
 /// Capacity policy over the real authenticated input owner. This adapter
 /// grants no metadata admission, native authority, or synthesized objects.
 pub(crate) struct GuardedInputs<D> {
     inner: D,
     guard: Option<std::sync::Arc<n2r_win32::managed_shadow::BackingResourceGuard>>,
     progress: n2r_win32::progress::Reporter,
+    deferred: Option<DeferredFailures>,
 }
 impl<D: n2r_win32::shadow_native::input_domain::InputDomain> GuardedInputs<D> {
     pub(crate) fn new(inner: D,
@@ -158,10 +178,15 @@ impl<D: n2r_win32::shadow_native::input_domain::InputDomain> GuardedInputs<D> {
         shadow: &n2r_win32::general_layout::GeneralDiskBinding) -> std::io::Result<Self> {
         inner.require_mutation_binding(shadow)?;
         if let Some(guard) = &guard { guard.require_binding(shadow)?; }
-        Ok(Self { inner, guard, progress: n2r_win32::progress::Reporter::default() })
+        Ok(Self { inner, guard, progress: n2r_win32::progress::Reporter::default(), deferred: None })
     }
     pub(crate) fn with_progress(mut self, progress: n2r_win32::progress::Reporter) -> Self {
         self.progress = progress;
+        self
+    }
+    /// Diagnose mode: record per-object failures here instead of stopping.
+    pub(crate) fn with_deferred_failures(mut self, sink: Option<DeferredFailures>) -> Self {
+        self.deferred = sink;
         self
     }
 }
@@ -188,6 +213,12 @@ impl<D: n2r_win32::shadow_native::input_domain::InputDomain>
         self.inner.require_mutation_binding(shadow)?;
         if let Some(guard) = &self.guard { guard.require_binding(shadow)?; }
         Ok(())
+    }
+    fn defer_failure(&self, error: std::io::Error) -> std::io::Result<()> {
+        match &self.deferred {
+            Some(sink) => sink.record(error),
+            None => Err(error),
+        }
     }
     fn before_mutation(&self, operation_bytes: u64) -> std::io::Result<()> {
         self.inner.before_mutation(operation_bytes)?;

@@ -64,6 +64,11 @@ pub trait InputDomain {
     /// Optional capacity policy, never native write authority. Call only
     /// immediately before a bounded allocating operation, not on reads.
     fn before_mutation(&self, _operation_bytes: u64) -> io::Result<()> { Ok(()) }
+    /// Called with a failure confined to one object in a pass where that object
+    /// can be left behind. The default refuses, which stops the pass as before.
+    /// A diagnostic owner may record it and return Ok so the pass continues and
+    /// reports every such object; that owner must then refuse to publish.
+    fn defer_failure(&self, error: io::Error) -> io::Result<()> { Err(error) }
     fn require_mutation_binding(&self, _shadow: &crate::general_layout::GeneralDiskBinding)
         -> io::Result<()> { Ok(()) }
     /// New paged admissions require an actual immutable page owner. Legacy

@@ -620,7 +620,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         }
         Ok(())
         })()
-        .map_err(|error| at_object(input, "security restoration", index, error))?;
+        .or_else(|error| input.defer_failure(at_object(input, "security restoration", index, error)))?;
     }
     metadata_progress(3, ordered.len() as u64);
     // Only actual constructor-owned canonical handles reach this operation.
@@ -653,7 +653,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         }
         Ok(())
         })()
-        .map_err(|error| at_object(input, "extended-attribute restoration", index, error))?;
+        .or_else(|error| input.defer_failure(at_object(input, "extended-attribute restoration", index, error)))?;
     }
     metadata_progress(4, ordered.len() as u64);
     // Security propagation and all children finish before basic metadata.
@@ -692,7 +692,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         }
         Ok(())
         })()
-        .map_err(|error| at_object(input, "reparse installation", index, error))?;
+        .or_else(|error| input.defer_failure(at_object(input, "reparse installation", index, error)))?;
     }
     metadata_progress(5, ordered.len() as u64);
     let provisional_aliases = if let Some(aliases)=aliases.as_deref_mut(){
@@ -811,7 +811,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         }
         Ok(())
         })()
-        .map_err(|error| at_object(input, "final metadata readback", index, error))?;
+        .or_else(|error| input.defer_failure(at_object(input, "final metadata readback", index, error)))?;
     }
     metadata_progress(8, input.len() as u64);
     target.revalidate_route(&mut events)?;

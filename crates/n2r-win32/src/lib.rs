@@ -2,8 +2,11 @@
 //! No formatter is exposed. An offline partition remains offline when dropped;
 //! making it mountable requires a separate explicit handoff operation.
 /// Most native control events one batch may hold before it must be drained
-/// into the event log. Reaching it means a loop is missing a drain.
-pub const MAX_BATCH_EVENTS: usize = 128;
+/// into the event log. It bounds an in-memory diagnostic list, nothing on disk.
+/// It was 128, which the Windows-volume target capture exceeds: observing the
+/// shadow with its short-name aliases issues more controls between drains than
+/// any data-volume path did.
+pub const MAX_BATCH_EVENTS: usize = 1024;
 pub mod attestation;
 #[cfg(windows)]
 pub mod attestation_partition;

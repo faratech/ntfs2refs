@@ -583,7 +583,7 @@ fn control_admitted(
     }
     let limit=budget.input_limit();
     if input.len()>limit||capacity>65536||events.len()>=crate::MAX_BATCH_EVENTS {
-        return Err(invalid(&format!("native control budget exceeded: operation={name}, code=0x{code:08x}, input_bytes={}, output_capacity={capacity}, events={}, limits(input_bytes<={limit}, output_capacity<=65536, events<128)",input.len(),events.len())));
+        return Err(invalid(&format!("native control budget exceeded: operation={name}, code=0x{code:08x}, input_bytes={}, output_capacity={capacity}, events={}, limits(input_bytes<={limit}, output_capacity<=65536, events<{})",input.len(),events.len(),crate::MAX_BATCH_EVENTS)));
     }
     let mut output = vec![0; capacity];
     let mut returned = 0_u32;

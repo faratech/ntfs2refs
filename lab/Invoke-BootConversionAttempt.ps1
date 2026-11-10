@@ -28,6 +28,9 @@ param(
     [int]$ScratchGB = 120,
     [ValidateSet('ReFS', 'NTFS')][string]$ScratchFileSystem = 'ReFS',
     [string[]]$ConverterArgs = @(),
+    # Record where the converter spends its time: stacks.txt in the attempt
+    # folder, one line per distinct call stack with its sample count.
+    [switch]$SampleStacks,
     [switch]$Fixture,
     [switch]$Diagnose,
     [switch]$NoBoot,
@@ -253,9 +256,15 @@ try {
         else { @('--drive', $guest.source_letter, '--windows-boot-volume', '--scratch-directory', $scratchDirectory, '--target-format', 'dev-drive') }
     if ($Diagnose) { $arguments += '--diagnose' }
     $arguments += $ConverterArgs
+    $symbols = [IO.Path]::ChangeExtension($Binary, '.pdb')
+    if ($SampleStacks) {
+        if (-not (Test-Path -LiteralPath $symbols)) { throw "-SampleStacks needs the symbols beside the binary: $symbols" }
+        $arguments += @('--sample-stacks', "$guestRoot\stacks.txt")
+    }
     Invoke-Command -Session $session -ArgumentList $guestRoot, $scratchDirectory -ScriptBlock {
         param($root, $scratch) $null = New-Item -ItemType Directory -Path $root -Force; $null = New-Item -ItemType Directory -Path $scratch -Force }
     Copy-Item -LiteralPath $Binary -Destination "$guestRoot\ntfs2refs.exe" -ToSession $session
+    if ($SampleStacks) { Copy-Item -LiteralPath $symbols -Destination "$guestRoot\ntfs2refs.pdb" -ToSession $session }
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'guest\Invoke-ConverterRun.ps1') -Destination "$guestRoot\worker.ps1" -ToSession $session
     $manifestExe = "$guestRoot\lab-volume-manifest.exe"
     if (-not $NoManifest -and -not $Diagnose) {
@@ -354,7 +363,7 @@ try {
         $verdict.outcome = 'vm-stopped'; Phase 'convert'; return
     }
     # ---- collect evidence -------------------------------------------------------
-    foreach ($leaf in 'stdout.log', 'stderr.log', 'native-process.json', 'native-terminal.json', 'worker-error.txt', 'run.json') {
+    foreach ($leaf in 'stdout.log', 'stderr.log', 'native-process.json', 'native-terminal.json', 'worker-error.txt', 'run.json', 'stacks.txt') {
         try { Copy-Item -LiteralPath "$guestRoot\$leaf" -Destination (Join-Path $case $leaf) -FromSession $session -ErrorAction Stop } catch { }
     }
     try {

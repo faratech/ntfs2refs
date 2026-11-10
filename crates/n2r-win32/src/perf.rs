@@ -143,6 +143,7 @@ static STEPS: Mutex<Steps> = Mutex::new(Steps {
 /// Starts a named step inside the current phase; the previous step ends.
 /// For the handful of large steps of a phase, not for anything per object.
 pub fn step(name: &'static str) {
+    crate::stack_sampler::note_step(name);
     let mut steps = STEPS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some((previous, started)) = steps.current.take() {
         let seconds = started.elapsed().as_secs_f64();
@@ -176,6 +177,7 @@ fn finish_steps(phase: &str) {
 
 /// Starts a named phase and prints what the previous one cost.
 pub fn phase(name: &str) {
+    crate::stack_sampler::note_phase(name);
     let now = snapshot();
     PROCESS_START
         .lock()
@@ -203,6 +205,7 @@ pub fn phase(name: &str) {
 
 /// Prints the last phase and the totals. Safe to call more than once.
 pub fn finish() {
+    crate::stack_sampler::finish();
     let now = snapshot();
     let previous = CURRENT
         .lock()

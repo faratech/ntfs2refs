@@ -27,6 +27,9 @@ tempfile = "3"
 
 [profile.release]
 overflow-checks = true
+# Function names and line numbers in the separate .pdb, for --sample-stacks.
+# The executable itself is unchanged.
+debug = "line-tables-only"
 
 # Keep native-lab development builds from exhausting the image reserve.
 [profile.dev]

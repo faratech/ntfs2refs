@@ -51,6 +51,7 @@ pub mod layout;
 pub mod layout_residual_pages;
 pub mod logical_hash;
 pub mod perf;
+pub mod stack_sampler;
 pub mod progress;
 #[cfg(windows)]
 pub mod managed_shadow;

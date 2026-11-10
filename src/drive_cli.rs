@@ -84,6 +84,10 @@ pub struct DriveArgs {
     /// Much slower; the result is the same.
     #[arg(long, requires = "drive", conflicts_with_all = ["list", "recover", "rollback"])]
     pub recheck_everything: bool,
+    /// Laboratory: sample the worker's call stack a hundred times a second
+    /// and write the profile to this file. Needs the .pdb beside the executable.
+    #[arg(long, hide = true, value_name = "FILE")]
+    pub sample_stacks: Option<PathBuf>,
     /// Qualification-only: use bounded thin temporary storage on the V4 route.
     #[arg(
         long,
@@ -125,6 +129,9 @@ pub fn run(args: DriveArgs) -> Result<u8> {
         // thread. The paged metadata inspectors have nested bounded decode
         // frames; keep them on an explicitly sized worker instead of changing
         // the frozen executable entrypoint or every dependency's link flags.
+        if let Some(output) = &args.sample_stacks {
+            n2r_win32::stack_sampler::start(output.clone());
+        }
         std::thread::Builder::new()
             .name("ntfs2refs-drive".to_owned())
             .stack_size(16 * 1024 * 1024)

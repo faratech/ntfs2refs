@@ -858,8 +858,9 @@ pub(crate) struct ProtectedPagedTargetSelection {
     // Absent when the expected tree was not re-derived (check-once policy).
     source_projection: Option<crate::shadow_tree::source_pages::ProjectionRevalidationOwner>,
     source_tails: SourceTailProvider,
-    _native_leases: [ArtifactLease; 2],
-    _native_result_ram: [crate::artifact_arena::ArenaRamLease; 2],
+    // One per observation of the shadow: two, or one under the check-once policy.
+    _native_leases: Vec<ArtifactLease>,
+    _native_result_ram: Vec<crate::artifact_arena::ArenaRamLease>,
     _scratch: SourceScratch,
     opening_sha256: String,
     closing_sha256: String,
@@ -1208,9 +1209,6 @@ fn observe_and_select_scoped(
         .checked_mul(3)
         .and_then(|n| n.checked_add(65536 + 16384))
         .context("native residual owner RAM overflow")?;
-    let opening_result_ram = capture_group.arena().reserve_ram(result_ram_bytes)?;
-    let prelim_path = output.join("opening-native-tails.pages");
-    let prelim_permit = capture_group.reserve_file(&prelim_path, result_budget.max_file_bytes)?;
     let input = PagedInputs(expected);
     let same_security =
         |a: &[u8], b: &[u8]| crate::ntfs_attestation::same_security_null_sacl_as_absent(a, b).map_err(io::Error::other);
@@ -1220,138 +1218,160 @@ fn observe_and_select_scoped(
     // per-object queries/retained rows and the paged residual writer.
     let native_wrapper_ram = scratch.lease_ram(32 * 1024 * 1024)?;
     drop(stage_ram);
-    n2r_win32::perf::step("walk shadow (opening)");
-    let (preliminary,opening_aliases) = context.observe_target(
-        target, pair.clone(),
-        &input,
-        &source_tails,
-        prelim_permit.path(),
-        result_budget,
-        same_security,
-        resources.native_profile(),
-        &memory,
-        aliases.as_ref().map(|a|a.constructor.as_ref()),
-        events,
-    )?;
-    let stage_ram = scratch.lease_ram(stage_ram_bytes)?;
-    let prelim_results = preliminary
-        .report()
-        .paged_residuals()
-        .context("protected opening tail owner absent")?;
-    let preliminary_lease = prelim_permit.verify_closed(prelim_results.sha256())?;
     let image = target.byte_len();
-    // Route capture pays its own source session, row codec, native visitor
-    // and bounded sort. Do not hold the unrelated raw/interval workspace
-    // across those independently accounted allocations.
-    drop(stage_ram);
-    n2r_win32::perf::step("capture payload routes (opening)");
-    let opening_routes = context.with_bytes(admission, 1, events, |bytes| {
-        crate::general_shadow::paged_candidate::PagedPayloadRoutes::capture(
-            &preliminary,
-            expected,
-            bytes,
-            &output.join("opening-routes"),
-            capture_group,
-            aliases.as_ref().map(|a| a.constructor.as_ref()),
-        )
-    })?;
-    let stage_ram = scratch.lease_ram(stage_ram_bytes)?;
-    let (exclusions, route_sha) = route_intervals(
-        &opening_routes,
-        &output.join("route-exclusions"),
-        image,
-        &scratch,
-    )?;
-    n2r_win32::perf::step("find data already in place");
-    let in_place = context.with_bytes(admission, 1, events, |bytes| {
-        source_in_place(
-            bytes,
-            expected,
+    // The shadow is observed twice, before and after its raw metadata is
+    // read, and the two observations must agree. It is offline, read-only and
+    // held throughout, so under the check-once policy it is observed once and
+    // everything below comes from that one observation.
+    let opening = if n2r_win32::verify_policy::checks_once() {
+        None
+    } else {
+        let opening_result_ram = capture_group.arena().reserve_ram(result_ram_bytes)?;
+        let prelim_path = output.join("opening-native-tails.pages");
+        let prelim_permit = capture_group.reserve_file(&prelim_path, result_budget.max_file_bytes)?;
+        n2r_win32::perf::step("walk shadow (opening)");
+        let (preliminary,opening_aliases) = context.observe_target(
+            target, pair.clone(),
+            &input,
+            &source_tails,
+            prelim_permit.path(),
+            result_budget,
+            same_security,
+            resources.native_profile(),
+            &memory,
+            aliases.as_ref().map(|a|a.constructor.as_ref()),
+            events,
+        )?;
+        let stage_ram = scratch.lease_ram(stage_ram_bytes)?;
+        let prelim_results = preliminary
+            .report()
+            .paged_residuals()
+            .context("protected opening tail owner absent")?;
+        let preliminary_lease = prelim_permit.verify_closed(prelim_results.sha256())?;
+        // Route capture pays its own source session, row codec, native visitor
+        // and bounded sort. Do not hold the unrelated raw/interval workspace
+        // across those independently accounted allocations.
+        drop(stage_ram);
+        n2r_win32::perf::step("capture payload routes (opening)");
+        let opening_routes = context.with_bytes(admission, 1, events, |bytes| {
+            crate::general_shadow::paged_candidate::PagedPayloadRoutes::capture(
+                &preliminary,
+                expected,
+                bytes,
+                &output.join("opening-routes"),
+                capture_group,
+                aliases.as_ref().map(|a| a.constructor.as_ref()),
+            )
+        })?;
+        let stage_ram = scratch.lease_ram(stage_ram_bytes)?;
+        let (exclusions, route_sha) = route_intervals(
             &opening_routes,
-            &output.join("in-place"),
+            &output.join("route-exclusions"),
             image,
             &scratch,
-        )
-    })?;
-    let allocation = allocated(
-        &preliminary,
-        &output.join("opening-allocation"),
-        image,
-        &scratch,
-    )?;
-    ensure!(
-        exclusions
-            .subtract(
-                &allocation,
-                &output.join("bad-payload-allocation"),
+        )?;
+        n2r_win32::perf::step("find data already in place");
+        let in_place = context.with_bytes(admission, 1, events, |bytes| {
+            source_in_place(
+                bytes,
+                expected,
+                &opening_routes,
+                &output.join("in-place"),
+                image,
                 &scratch,
-                *b"N2RTBAD1"
-            )?
-            .bytes
-            == 0,
-        "actual protected payload routes escape complete native allocation"
-    );
-    let opening_dir = output.join("opening-raw");
-    std::fs::create_dir(&opening_dir)?;
-    let (opening_anchors, opening_reads, _opening_error) =
-        anchors(target, image, resources, &opening_dir, &scratch)?;
-    for known in [&opening_anchors, &opening_reads] {
+            )
+        })?;
+        let allocation = allocated(
+            &preliminary,
+            &output.join("opening-allocation"),
+            image,
+            &scratch,
+        )?;
         ensure!(
-            known
+            exclusions
                 .subtract(
-                    &exclusions,
-                    &output.join(if std::ptr::eq(known, &opening_anchors) {
-                        "opening-anchors-safe"
-                    } else {
-                        "opening-reads-safe"
-                    }),
+                    &allocation,
+                    &output.join("bad-payload-allocation"),
                     &scratch,
-                    *b"N2RTSAF1"
+                    *b"N2RTBAD1"
                 )?
                 .bytes
-                == known.bytes,
-            "raw metadata anchors/reads overlap excluded payload"
+                == 0,
+            "actual protected payload routes escape complete native allocation"
         );
-    }
-    let opening_required = union_rows(
-        &[&allocation, &opening_anchors, &opening_reads],
-        &output.join("opening-required"),
-        image,
-        &scratch,
-        *b"N2RSEL01",
-    )?;
-    let consumed = opening_required.subtract(
-        &exclusions,
-        &output.join("consumed"),
-        &scratch,
-        *b"N2RTCON1",
-    )?;
-    n2r_win32::perf::step("read shadow metadata (opening)");
-    let opening = PagedShadowClosing::new(target, &consumed)?.finish(target)?;
-    // The opening report's complete rows are no longer consumed below. Keep
-    // its closed artifact owner and the exact serialized allocation digest,
-    // then release the decoded rows before collecting the closing report.
-    ensure!(
-        preliminary.report().native().retained_rows_ram_accounted(),
-        "protected opening report lacks actual retained-row RAM leases"
-    );
-    ensure!(
-        preliminary.before() == &target_before
-            && preliminary.after() == &target_before
-            && preliminary.observed_readonly().disk_attributes == 2
-            && preliminary.report().pair() == &pair,
-        "protected opening target identity/exclusion changed"
-    );
-    let opening_allocation_sha256 = crate::general_qualification::pretty_json_sha256(
-        &preliminary.report().native().metadata_allocation.as_ref(),
-    )?;
-    opening_routes.retire()?;
-    drop(preliminary);
-    drop(opening_aliases);
+        let opening_dir = output.join("opening-raw");
+        std::fs::create_dir(&opening_dir)?;
+        let (opening_anchors, opening_reads, _opening_error) =
+            anchors(target, image, resources, &opening_dir, &scratch)?;
+        for known in [&opening_anchors, &opening_reads] {
+            ensure!(
+                known
+                    .subtract(
+                        &exclusions,
+                        &output.join(if std::ptr::eq(known, &opening_anchors) {
+                            "opening-anchors-safe"
+                        } else {
+                            "opening-reads-safe"
+                        }),
+                        &scratch,
+                        *b"N2RTSAF1"
+                    )?
+                    .bytes
+                    == known.bytes,
+                "raw metadata anchors/reads overlap excluded payload"
+            );
+        }
+        let opening_required = union_rows(
+            &[&allocation, &opening_anchors, &opening_reads],
+            &output.join("opening-required"),
+            image,
+            &scratch,
+            *b"N2RSEL01",
+        )?;
+        let consumed = opening_required.subtract(
+            &exclusions,
+            &output.join("consumed"),
+            &scratch,
+            *b"N2RTCON1",
+        )?;
+        n2r_win32::perf::step("read shadow metadata (opening)");
+        let digest = PagedShadowClosing::new(target, &consumed)?.finish(target)?;
+        // The opening report's complete rows are no longer consumed below. Keep
+        // its closed artifact owner and the exact serialized allocation digest,
+        // then release the decoded rows before collecting the closing report.
+        ensure!(
+            preliminary.report().native().retained_rows_ram_accounted(),
+            "protected opening report lacks actual retained-row RAM leases"
+        );
+        ensure!(
+            preliminary.before() == &target_before
+                && preliminary.after() == &target_before
+                && preliminary.observed_readonly().disk_attributes == 2
+                && preliminary.report().pair() == &pair,
+            "protected opening target identity/exclusion changed"
+        );
+        let allocation_sha256 = crate::general_qualification::pretty_json_sha256(
+            &preliminary.report().native().metadata_allocation.as_ref(),
+        )?;
+        opening_routes.retire()?;
+        drop(preliminary);
+        drop(opening_aliases);
+        drop(stage_ram);
+        Some((
+            exclusions,
+            route_sha,
+            in_place,
+            allocation,
+            consumed,
+            digest,
+            allocation_sha256,
+            preliminary_lease,
+            opening_result_ram,
+        ))
+    };
     let closing_path = output.join("closing-native-tails.pages");
     let closing_result_ram = capture_group.arena().reserve_ram(result_ram_bytes)?;
     let closing_permit = capture_group.reserve_file(&closing_path, result_budget.max_file_bytes)?;
-    drop(stage_ram);
     n2r_win32::perf::step("walk shadow (closing)");
     let (native,windows_aliases) = context.observe_target(
         target, pair.clone(),
@@ -1390,21 +1410,66 @@ fn observe_and_select_scoped(
         image,
         &scratch,
     )?;
-    ensure!(
-        route_sha == closing_route_sha && exclusions.same(&closing_exclusions)?,
-        "protected native stream IDs/maps changed during raw bracket"
-    );
     // Keep the exact closing routing owner for the capture consumer.
     let closing_allocation =
         allocated(&native, &output.join("closing-allocation"), image, &scratch)?;
-    ensure!(
-        allocation.same(&closing_allocation)?
-            && opening_allocation_sha256
-                == crate::general_qualification::pretty_json_sha256(
-                    &native.report().native().metadata_allocation.as_ref(),
-                )?,
-        "protected complete allocation changed during raw bracket"
-    );
+    let (exclusions, in_place, opening_consumed, opening_digest, mut native_leases, mut native_result_ram) =
+        match opening {
+            Some((
+                exclusions,
+                route_sha,
+                in_place,
+                allocation,
+                consumed,
+                digest,
+                allocation_sha256,
+                lease,
+                ram,
+            )) => {
+                ensure!(
+                    route_sha == closing_route_sha && exclusions.same(&closing_exclusions)?,
+                    "protected native stream IDs/maps changed during raw bracket"
+                );
+                ensure!(
+                    allocation.same(&closing_allocation)?
+                        && allocation_sha256
+                            == crate::general_qualification::pretty_json_sha256(
+                                &native.report().native().metadata_allocation.as_ref(),
+                            )?,
+                    "protected complete allocation changed during raw bracket"
+                );
+                (exclusions, in_place, Some(consumed), Some(digest), vec![lease], vec![ram])
+            }
+            None => {
+                n2r_win32::perf::step("find data already in place");
+                let in_place = context.with_bytes(admission, 1, events, |bytes| {
+                    source_in_place(
+                        bytes,
+                        expected,
+                        &closing_routes,
+                        &output.join("in-place"),
+                        image,
+                        &scratch,
+                    )
+                })?;
+                ensure!(
+                    closing_exclusions
+                        .subtract(
+                            &closing_allocation,
+                            &output.join("bad-payload-allocation"),
+                            &scratch,
+                            *b"N2RTBAD1"
+                        )?
+                        .bytes
+                        == 0,
+                    "actual protected payload routes escape complete native allocation"
+                );
+                n2r_win32::perf::step("read raw metadata anchors");
+                (closing_exclusions, in_place, None, None, Vec::new(), Vec::new())
+            }
+        };
+    native_leases.push(closing_lease);
+    native_result_ram.push(closing_result_ram);
     let closing_dir = output.join("closing-raw");
     std::fs::create_dir(&closing_dir)?;
     let (closing_anchors, closing_reads, _closing_error) =
@@ -1434,18 +1499,24 @@ fn observe_and_select_scoped(
         &scratch,
         *b"N2RTCON1",
     )?;
-    ensure!(
-        closing_consumed
-            .subtract(
-                &consumed,
-                &output.join("unbracketed"),
-                &scratch,
-                *b"N2RTBAD1"
-            )?
-            .bytes
-            == 0,
-        "closing target metadata requires unbracketed raw bytes"
-    );
+    let consumed = match opening_consumed {
+        Some(consumed) => {
+            ensure!(
+                closing_consumed
+                    .subtract(
+                        &consumed,
+                        &output.join("unbracketed"),
+                        &scratch,
+                        *b"N2RTBAD1"
+                    )?
+                    .bytes
+                    == 0,
+                "closing target metadata requires unbracketed raw bytes"
+            );
+            consumed
+        }
+        None => closing_consumed,
+    };
     let compared =
         required.subtract(&in_place, &output.join("compared"), &scratch, *b"N2RSEL01")?;
     ensure!(
@@ -1503,10 +1574,12 @@ fn observe_and_select_scoped(
     );
     n2r_win32::perf::step("read shadow metadata (closing)");
     let closing = closing.finish(target)?;
-    ensure!(
-        opening.0 == closing.0 && opening.1 == closing.1,
-        "protected target consumed bytes changed across native observation/capture"
-    );
+    if let Some(opening) = &opening_digest {
+        ensure!(
+            opening.0 == closing.0 && opening.1 == closing.1,
+            "protected target consumed bytes changed across native observation/capture"
+        );
+    }
     ensure!(
         native.report().native().retained_rows_ram_accounted(),
         "protected closing report lacks actual retained-row RAM leases"
@@ -1542,10 +1615,10 @@ fn observe_and_select_scoped(
         captured,
         source_projection,
         source_tails,
-        _native_leases: [preliminary_lease, closing_lease],
-        _native_result_ram: [opening_result_ram, closing_result_ram],
+        _native_leases: native_leases,
+        _native_result_ram: native_result_ram,
         _scratch: scratch,
-        opening_sha256: opening.0,
+        opening_sha256: opening_digest.map_or_else(|| closing.0.clone(), |opening| opening.0),
         closing_sha256: closing.0,
         raw_consumed_bytes: closing.1,
         raw_reused_bytes: closing.2,

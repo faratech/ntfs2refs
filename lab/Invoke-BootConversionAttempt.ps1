@@ -137,8 +137,14 @@ try {
         Initialize-Disk -Number $raw[0].Number -PartitionStyle GPT
         $letter = @('S', 'T', 'U', 'V', 'W') | Where-Object { -not (Test-Path "${_}:\") } | Select-Object -First 1
         $partition = New-Partition -DiskNumber $raw[0].Number -UseMaximumSize -DriveLetter $letter
-        try { $null = Format-Volume -Partition $partition -FileSystem $fileSystem -NewFileSystemLabel 'N2R_SCRATCH' -Confirm:$false }
-        catch { $null = Format-Volume -Partition $partition -FileSystem NTFS -NewFileSystemLabel 'N2R_SCRATCH' -Confirm:$false }
+        if ($fileSystem -eq 'ReFS') {
+            # Windows client editions format ReFS only as a Dev Drive. The converter's
+            # working files were always kept on ReFS; NTFS pre-allocates differently
+            # and trips its allocation checks, so do not fall back silently.
+            $null = Format-Volume -Partition $partition -FileSystem NTFS -Confirm:$false
+            $formatted = cmd /c "format.com ${letter}: /FS:ReFS /DevDrv /Q /Y /V:N2R_SCRATCH" 2>&1
+            if ($LASTEXITCODE -ne 0 -or (Get-Volume -DriveLetter $letter).FileSystem -ne 'ReFS') { throw "Scratch ReFS format failed: $($formatted | Select-Object -Last 3)" }
+        } else { $null = Format-Volume -Partition $partition -FileSystem NTFS -NewFileSystemLabel 'N2R_SCRATCH' -Confirm:$false }
         $system = Get-Partition -DriveLetter $env:SystemDrive[0]
         # The source is the largest lettered NTFS partition on a disk other than the running one.
         $source = Get-Partition | Where-Object { $_.DriveLetter -and $_.DiskNumber -ne $system.DiskNumber -and $_.DiskNumber -ne $raw[0].Number } |

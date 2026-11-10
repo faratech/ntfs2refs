@@ -295,6 +295,8 @@ pub struct PagedNativeObservation {
     sha256: String,
     _refreshed_header_memory:
         Option<Box<dyn crate::shadow_native::report_memory::ReportMemoryLease>>,
+    // Paid for the pages each reader keeps in memory; released after them.
+    _resident_memory: Vec<Box<dyn crate::shadow_native::report_memory::ReportMemoryLease>>,
     // Drop decoded/header/index/cache storage before returning shared RAM.
     memory: Option<memory::Memory>,
 }
@@ -516,7 +518,22 @@ impl PagedNativeObservation {
             total_bytes: total,
             sha256: sha256.to_owned(),
             _refreshed_header_memory: None,
+            _resident_memory: Vec::new(),
         };
+        // Rows and directory listings are looked up in every order by the
+        // stages that follow. With one page per reader, each lookup that
+        // lands on another page re-reads and re-hashes 4 MiB; at 26,000
+        // objects that was most of three stages. Keep every page in memory
+        // when the same ledger can pay; a refusal keeps the paged reader.
+        if let Some(memory) = &result.memory {
+            for reader in [&result.reader, &result.namespace_reader] {
+                let bytes = reader.borrow().resident_page_bytes()?;
+                if let Ok(lease) = memory.accountant.reserve(bytes) {
+                    reader.borrow_mut().install_resident_pages()?;
+                    result._resident_memory.push(lease);
+                }
+            }
+        }
         for i in 0..result.len() {
             let row = result.row_view(i)?;
             require(

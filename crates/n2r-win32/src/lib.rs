@@ -111,6 +111,7 @@ pub mod windows_object_ids;
 #[cfg(windows)]
 pub use windows_object_ids::VerifiedWindowsObjectIds;
 pub mod volume_label;
+pub mod volume_manifest;
 #[cfg(windows)]
 pub mod volume_policy;
 #[cfg(windows)]

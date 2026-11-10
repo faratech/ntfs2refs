@@ -529,7 +529,8 @@ impl DurableRecoveryLocator {
             .read(true)
             .share_mode(1)
             .custom_flags(0x0020_0000)
-            .open(path)?;
+            .open(path)
+            .with_context(|| format!("reopening recovery locator {} read-only", path.display()))?;
         let size = file.metadata()?.len();
         ensure!(
             size >= HEADER_BYTES && size <= max_bytes,

@@ -361,7 +361,8 @@ impl HeldFile {
             .read(true)
             .share_mode(1)
             .custom_flags(0x0020_0000)
-            .open(path)?;
+            .open(path)
+            .with_context(|| format!("reopening recovery artifact {} read-only", path.display()))?;
         n2r_win32::file_storage::require_readonly_access(&file)?;
         let snapshot =
             n2r_win32::reference_file::observe_reference_file_handle_with_limit(&file, maximum)?;

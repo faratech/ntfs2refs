@@ -79,6 +79,50 @@ pub(super) fn restore_acl_protection_with_limit(
     if !changed.dacl && !changed.sacl {
         return Ok(changed);
     }
+    // Change this object only. SetSecurityInfo, used below as the fallback,
+    // also propagates inheritance to every existing descendant and marks their
+    // ACLs auto-inherited. Called on the root of a Windows volume, whose SACL
+    // protection differs from the formatter's, it stamped SACL flags on the
+    // whole shadow tree that no later descriptor restore removes. The kernel
+    // object interface takes the protection and auto-inherited flags from the
+    // descriptor's own control word and touches nothing else.
+    {
+        use windows_sys::Win32::Security::SetKernelObjectSecurity;
+        let mut information = 0;
+        let mut expressible = true;
+        if changed.dacl {
+            if source.dacl.presence != Presence::Absent {
+                information |= DACL_SECURITY_INFORMATION;
+            } else {
+                expressible = false;
+            }
+        }
+        if changed.sacl {
+            if source.sacl.presence != Presence::Absent {
+                information |= SACL_SECURITY_INFORMATION;
+            } else {
+                expressible = false;
+            }
+        }
+        if expressible && information != 0 {
+            if let Some(maximum) = maximum {
+                descriptor_with_limit(item.security, maximum)?;
+            } else {
+                descriptor(item.security)?;
+            }
+            let mut request = item.security.to_vec();
+            let control = u16::from_le_bytes([request[2], request[3]])
+                | SE_DACL_AUTO_INHERIT_REQ
+                | SE_SACL_AUTO_INHERIT_REQ;
+            request[2..4].copy_from_slice(&control.to_le_bytes());
+            // SAFETY: live authorized metadata handle; `request` is the validated
+            // self-relative source descriptor with only its control word changed.
+            check(unsafe {
+                SetKernelObjectSecurity(file.as_raw_handle(), information, request.as_mut_ptr().cast())
+            })?;
+            return Ok(changed);
+        }
+    }
     let mut sd = if let Some(maximum) = maximum {
         descriptor_with_limit(item.security, maximum)?
     } else {

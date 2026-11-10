@@ -191,7 +191,7 @@ impl<'observation> PagedPayloadRoutes<'observation> {
         let validated = SourceBackedRoutes::validate_protected_layout_domain_with_memory(
             observation,
             &input,
-            |a, b| crate::ntfs_attestation::same_security(a, b).map_err(io::Error::other),
+            |a, b| crate::ntfs_attestation::same_security_null_sacl_as_absent(a, b).map_err(io::Error::other),
             &memory,
             aliases,
         )?;

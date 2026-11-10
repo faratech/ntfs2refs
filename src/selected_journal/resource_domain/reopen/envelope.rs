@@ -3110,7 +3110,7 @@ impl ReopenedPartitionResourceRecovery {
                     pair,
                     &crate::general_shadow::PagedInputs(metadata.expected()),
                     None,
-                    |a, b| crate::ntfs_attestation::same_security(a, b).map_err(io::Error::other),
+                    |a, b| crate::ntfs_attestation::same_security_null_sacl_as_absent(a, b).map_err(io::Error::other),
                     n2r_win32::attestation::ResourceProfile::ResourceBoundedV4(Some(admission)),
                     &crate::general_composite_target::paged_memory::ArenaReportMemory(
                         arena.clone(),

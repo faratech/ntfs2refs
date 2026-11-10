@@ -1004,7 +1004,7 @@ where
             let batch=resume_checkpoints.as_mut().map(resume_checkpoint::Checkpoints::begin_metadata).transpose()?;
             let placeholders=trust_recipes.as_ref().is_some_and(|recipes|!recipes.is_empty());
             let (report,aliases)=verified.complete(&inputs,aliases,placeholders,|a,b| {
-                crate::ntfs_attestation::same_security(a,b).map_err(std::io::Error::other)
+                crate::ntfs_attestation::same_security_null_sacl_as_absent(a,b).map_err(std::io::Error::other)
             }).context("reconcile existing final-target metadata")?;
             events.observer.note(&serde_json::json!({"kind":"Windows-recovered-metadata-completion",
                 "report":report,"original_security_native_verification_pending":true}))?;

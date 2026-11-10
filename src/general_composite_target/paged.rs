@@ -1188,7 +1188,7 @@ fn observe_and_select_scoped(
     let prelim_permit = capture_group.reserve_file(&prelim_path, result_budget.max_file_bytes)?;
     let input = PagedInputs(expected);
     let same_security =
-        |a: &[u8], b: &[u8]| crate::ntfs_attestation::same_security(a, b).map_err(io::Error::other);
+        |a: &[u8], b: &[u8]| crate::ntfs_attestation::same_security_null_sacl_as_absent(a, b).map_err(io::Error::other);
     // The native wrapper has at most 128 control events with <=64 KiB
     // replies, plus fixed-size disk-state clones. Keep a separate allowance
     // for those real owners; the SDK independently prepays indexes, root,

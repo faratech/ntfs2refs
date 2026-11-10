@@ -237,7 +237,7 @@ pub(crate) fn finalize_resource_handoff_with_windows_aliases_observer<O: Prepara
         aliases.require_canonical_input(&input)?;
         let (native,observed)=protected.source_mut()?.observe_converted_protected_with_memory_windows_aliases(
             native_pair.clone(),&input,Some(&desired_label),
-            |a,b|crate::ntfs_attestation::same_security(a,b).map_err(std::io::Error::other),
+            |a,b|crate::ntfs_attestation::same_security_null_sacl_as_absent(a,b).map_err(std::io::Error::other),
             n2r_win32::attestation::ResourceProfile::ResourceBoundedV4(Some(admission)),&payer,aliases,&mut events)?;
         observed.require_converted_scope(&native_pair,admission.source_inspection_sha256,aliases.plan_digest())?;
         observed.require_input(&input)?;
@@ -248,7 +248,7 @@ pub(crate) fn finalize_resource_handoff_with_windows_aliases_observer<O: Prepara
         let plan_digest=aliases.semantic_sha256()?;
         let (native,observed)=protected.source_mut()?.observe_converted_protected_with_memory_windows_alias_expectations(
             native_pair.clone(),&input,Some(&desired_label),
-            |a,b|crate::ntfs_attestation::same_security(a,b).map_err(std::io::Error::other),
+            |a,b|crate::ntfs_attestation::same_security_null_sacl_as_absent(a,b).map_err(std::io::Error::other),
             n2r_win32::attestation::ResourceProfile::ResourceBoundedV4(Some(admission)),&payer,aliases,&mut events)?;
         observed.require_converted_scope(&native_pair,admission.source_inspection_sha256,plan_digest)?;
         observed.require_input(&input)?;
@@ -260,7 +260,7 @@ pub(crate) fn finalize_resource_handoff_with_windows_aliases_observer<O: Prepara
             native_pair,
             &input,
             Some(&desired_label),
-            |a, b| crate::ntfs_attestation::same_security(a, b).map_err(std::io::Error::other),
+            |a, b| crate::ntfs_attestation::same_security_null_sacl_as_absent(a, b).map_err(std::io::Error::other),
             n2r_win32::attestation::ResourceProfile::ResourceBoundedV4(Some(admission)),
             &payer,
             &mut events,

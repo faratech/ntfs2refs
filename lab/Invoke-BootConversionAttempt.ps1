@@ -43,6 +43,10 @@ param(
     [switch]$Recover,
     [int]$SourceDisk = 0,
     [int]$SourcePartition = 3,
+    # Independent check: list the source before conversion and the converted
+    # volume after, and require the two listings to match.
+    [string]$ManifestBinary,
+    [switch]$NoManifest,
     [int]$MinHostFreeGB = 40,
     [int]$ConvertTimeoutMinutes = 720,
     [int]$BootTimeoutMinutes = 25
@@ -54,6 +58,7 @@ $case = Join-Path $workspace ".lab\hyperv\attempts\$Name"
 if (Test-Path -LiteralPath $case) { throw "Attempt directory already exists: $case" }
 $null = New-Item -ItemType Directory -Path $case
 if (-not $Binary) { $Binary = Join-Path $workspace 'target\release\ntfs2refs.exe' }
+if (-not $ManifestBinary) { $ManifestBinary = Join-Path $workspace 'target\release\lab-volume-manifest.exe' }
 $progressLog = Join-Path $case 'progress.log'
 $verdict = [ordered]@{ name = $Name; fixture = [bool]$Fixture; diagnose = [bool]$Diagnose; started_utc = [DateTime]::UtcNow.ToString('o')
     phases = [ordered]@{}; converter = $null; boot = $null; outcome = 'incomplete' }
@@ -251,6 +256,17 @@ try {
         param($root, $scratch) $null = New-Item -ItemType Directory -Path $root -Force; $null = New-Item -ItemType Directory -Path $scratch -Force }
     Copy-Item -LiteralPath $Binary -Destination "$guestRoot\ntfs2refs.exe" -ToSession $session
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'guest\Invoke-ConverterRun.ps1') -Destination "$guestRoot\worker.ps1" -ToSession $session
+    $manifestExe = "$guestRoot\lab-volume-manifest.exe"
+    if (-not $NoManifest -and -not $Diagnose) {
+        if (-not (Test-Path -LiteralPath $ManifestBinary)) { throw "Listing tool not found: $ManifestBinary (cargo build --release --bin lab-volume-manifest)" }
+        Copy-Item -LiteralPath $ManifestBinary -Destination $manifestExe -ToSession $session
+        if (-not $Recover) {
+            $listed = Invoke-Command -Session $session -ArgumentList $manifestExe, "$($guest.source_letter):\", "$guestRoot\manifest-before.jsonl" -ScriptBlock {
+                param($exe, $root, $output) $text = & $exe capture --root $root --output $output 2>&1; [pscustomobject]@{ exit = $LASTEXITCODE; text = ($text -join ' ') } }
+            if ($listed.exit -ne 0) { throw "Listing the source before conversion failed: $($listed.text)" }
+            Say "source listed before conversion: $($listed.text)"; Phase 'list-before'
+        }
+    }
     $taskName = "N2R-Attempt-$Name"
     Invoke-Command -Session $session -ArgumentList $guestRoot, $taskName, ($arguments -join "`t") -ScriptBlock {
         param($root, $task, $joined)
@@ -361,6 +377,28 @@ try {
         $verdict.mounted = $mounted | Select-Object * -ExcludeProperty PSComputerName, RunspaceId, PSShowComputerName
         Say "source partition now mounts as $($mounted.filesystem) $($mounted.refs_version), health $($mounted.health), scan: $($mounted.scan)"
         if ($mounted.filesystem -ne 'ReFS') { $verdict.outcome = 'converter-ok-but-not-refs'; Remove-PSSession $session; return }
+        if (-not $NoManifest) {
+            if (-not $mounted.letter) { $verdict.outcome = 'converted-but-no-drive-letter'; Remove-PSSession $session; return }
+            $compared = Invoke-Command -Session $session -ArgumentList $manifestExe, "$($mounted.letter):\", $guestRoot -ScriptBlock {
+                param($exe, $root, $directory)
+                # A -Recover attempt has no listing of its own; use the one the original run took.
+                $before = @("$directory\manifest-before.jsonl") + @(Get-ChildItem 'C:\n2r' -Directory | Sort-Object LastWriteTime -Descending |
+                        ForEach-Object { Join-Path $_.FullName 'manifest-before.jsonl' }) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+                if (-not $before) { return [pscustomobject]@{ exit = -1; listed = 'no listing from before the conversion exists'; summary = ''; before = $null } }
+                $listed = & $exe capture --root $root --output "$directory\manifest-after.jsonl" 2>&1
+                if ($LASTEXITCODE -ne 0) { return [pscustomobject]@{ exit = $LASTEXITCODE; listed = ($listed -join ' '); summary = ''; before = $before } }
+                $summary = & $exe compare --before $before --after "$directory\manifest-after.jsonl" --report "$directory\manifest-report.json" 2>&1
+                [pscustomobject]@{ exit = $LASTEXITCODE; listed = ($listed -join ' '); summary = ($summary -join ' '); before = $before }
+            }
+            foreach ($pair in @(@($compared.before, 'manifest-before.jsonl'), @("$guestRoot\manifest-after.jsonl", 'manifest-after.jsonl'), @("$guestRoot\manifest-report.json", 'manifest-report.json'))) {
+                if ($pair[0]) { try { Copy-Item -LiteralPath $pair[0] -Destination (Join-Path $case $pair[1]) -FromSession $session -ErrorAction Stop } catch { } }
+            }
+            $verdict.manifest = [ordered]@{ exit = $compared.exit; listed = $compared.listed; summary = $compared.summary }
+            Say "listing after conversion: $($compared.listed)"
+            Say "before/after comparison (exit $($compared.exit)): $($compared.summary)"
+            Phase 'compare'
+            if ($compared.exit -ne 0) { $verdict.outcome = 'converted-but-listing-differs'; Remove-PSSession $session; return }
+        }
     }
     if ($Diagnose -or $NoBoot) { $verdict.outcome = if ($Diagnose) { 'diagnose-clean' } else { 'converted-not-booted' }; Remove-PSSession $session; return }
 

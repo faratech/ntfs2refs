@@ -148,7 +148,13 @@ impl<'expected> ReopenedWindowsAliasNativeDomain<'expected> {
             group.group() == ArtifactGroup::RecoveryCopy,
             "reopened aliases require recovery-copy quota"
         );
-        expected.require_shared_memory(group.arena())?;
+        // The expected pages are owned either by the run that built them or,
+        // after a restart, by the file reopened from the published recovery
+        // records. Both are accounted in this arena.
+        expected
+            .require_shared_memory(group.arena())
+            .or_else(|_| expected.require_recovery_memory(group.arena()))
+            .context("reopened aliases need the expected pages accounted in the recovery arena")?;
         let owner_ram = scratch.lease_ram(std::mem::size_of::<Self>() as u64 + 16384)?;
         for (pin, file) in [
             (&pin.data, &held_files[0]),

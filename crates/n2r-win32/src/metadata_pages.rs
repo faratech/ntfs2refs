@@ -549,6 +549,9 @@ struct CachedPage {
     body: Vec<u8>,
 }
 
+/// The largest file a reader will decide by itself to hold in memory.
+const AUTO_RESIDENT_FILE_BYTES: u64 = 1024 * 1024 * 1024;
+
 pub struct Reader {
     file: File,
     snapshot: Snapshot,
@@ -899,6 +902,17 @@ impl Reader {
             self.statistics.hits = self.statistics.hits.saturating_add(1);
         } else {
             self.statistics.misses = self.statistics.misses.saturating_add(1);
+            // A reader that has had to load twice as many pages as its file
+            // holds is being read in several passes or at random, and every
+            // further miss costs a 4 MiB read and hash. Hold the whole file
+            // from here on: one more pass over it, then no I/O at all.
+            if crate::verify_policy::checks_once()
+                && self.snapshot.bytes <= AUTO_RESIDENT_FILE_BYTES
+                && self.statistics.misses > self.pages.saturating_mul(2).max(8)
+            {
+                self.install_resident_pages()?;
+                return self.with_record(ordinal, callback);
+            }
             let (mut low, mut high) = (0, self.pages);
             while low < high {
                 let mid = low + (high - low) / 2;

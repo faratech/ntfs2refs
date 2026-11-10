@@ -69,6 +69,13 @@ pub fn full_unremembered() -> bool {
     !ONCE.load(SeqCst) || GATE.load(SeqCst) != 0
 }
 
+/// Whether bytes read earlier from the frozen source may be served again
+/// from memory: the route checks once and no gate is open. Inside the gate
+/// every read goes to the disk.
+pub fn may_reuse_frozen_reads() -> bool {
+    ONCE.load(SeqCst) && GATE.load(SeqCst) == 0
+}
+
 /// A check of state that cannot change while the converter holds its disks
 /// (source offline and read-only, shadow attached to this process alone) but
 /// that costs dozens of device calls. Under [`check_once`] it is repeated at

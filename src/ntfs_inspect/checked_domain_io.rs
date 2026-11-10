@@ -289,6 +289,86 @@ fn actual_assembly<R: Read + Seek>(
     Ok(ram)
 }
 
+/// Recently read stretches of the MFT. Every pass over the files reads each
+/// file's record again, one uncached 4 KiB device read at a time: 124,000 of
+/// them (77 s) for 26,000 objects. The source is frozen, so a stretch read
+/// once is kept and its neighbours come with it. Not used inside the gate.
+/// Bounded at 64 MiB; it holds no memory lease so that it cannot keep the
+/// preparation arena alive.
+const RECORD_WINDOW: u64 = 256 * 1024;
+const RECORD_WINDOWS: usize = 256;
+#[derive(Default)]
+struct RecordWindows {
+    source_pin: String,
+    windows: BTreeMap<u64, Vec<u8>>,
+    order: std::collections::VecDeque<u64>,
+}
+thread_local! {
+    static RECORD_WINDOWS_CACHE: RefCell<RecordWindows> = RefCell::new(RecordWindows::default());
+}
+
+/// Reads one stretch of the MFT's data, through the window cache when the
+/// policy allows and the stretch lies inside one window.
+fn read_mft_bytes<R: Read + Seek>(
+    reader: &mut R,
+    data: &Attribute,
+    source_pin: &str,
+    offset: u64,
+    output: &mut [u8],
+    geometry: &NtfsGeometry,
+) -> Result<()> {
+    let window = offset / RECORD_WINDOW;
+    let start = window * RECORD_WINDOW;
+    let within = (offset - start) as usize;
+    let available = data.report.initialized_size.min(data.report.logical_size);
+    if !n2r_win32::verify_policy::may_reuse_frozen_reads()
+        || within + output.len() > RECORD_WINDOW as usize
+        || start >= available
+    {
+        RECORD_WINDOWS_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            cache.windows.clear();
+            cache.order.clear();
+        });
+        return read_attribute_range(reader, data, offset, output, geometry);
+    }
+    let cached = RECORD_WINDOWS_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.source_pin != source_pin {
+            cache.source_pin = source_pin.to_owned();
+            cache.windows.clear();
+            cache.order.clear();
+        }
+        cache.windows.get(&window).and_then(|bytes| {
+            bytes.get(within..within + output.len()).map(|bytes| output.copy_from_slice(bytes))
+        })
+    });
+    if cached.is_some() {
+        return Ok(());
+    }
+    let length = (available - start).min(RECORD_WINDOW) as usize;
+    if within + output.len() > length {
+        return read_attribute_range(reader, data, offset, output, geometry);
+    }
+    let mut bytes = vec![0; length];
+    if read_attribute_range(reader, data, start, &mut bytes, geometry).is_err() {
+        // Whatever stops the whole stretch being read must not stop the record.
+        return read_attribute_range(reader, data, offset, output, geometry);
+    }
+    output.copy_from_slice(&bytes[within..within + output.len()]);
+    RECORD_WINDOWS_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.order.len() >= RECORD_WINDOWS {
+            if let Some(oldest) = cache.order.pop_front() {
+                cache.windows.remove(&oldest);
+            }
+        }
+        cache.order.push_back(window);
+        cache.windows.insert(window, bytes);
+    });
+    Ok(())
+}
+
 /// What opening the reader establishes about the MFT itself: where its data
 /// lives and its own record. It holds no memory lease, so it can outlive the
 /// reader that produced it.
@@ -440,9 +520,10 @@ impl CheckedMftDomain {
         );
         let geometry = &source.header().geometry;
         let mut raw = vec![0; geometry.file_record_size as usize];
-        read_attribute_range(
+        read_mft_bytes(
             reader,
             &self.data,
+            &self.source_pin,
             number
                 .checked_mul(u64::from(geometry.file_record_size))
                 .context("actual FILE offset overflow")?,

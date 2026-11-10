@@ -219,6 +219,14 @@ pub fn final_path_guid(file: &std::fs::File) -> io::Result<String> {
         path.resize(count, 0);
     }
 }
+/// How far a file's on-disk allocation may run ahead of its length because
+/// the filesystem pre-allocates for appends. ReFS on a large volume was seen
+/// holding 442 KiB for a 220 KiB index that was still open; the surplus is
+/// released when the last handle closes. Allow up to the file's own length,
+/// and at least 16 MiB, on top of the cluster-rounding slack. fn append_preallocation_allowance(file_bytes: u64) -> u64 {
+    file_bytes.max(16 * 1024 * 1024)
+}
+
 /// Query actual filesystem and operating-system allocation quanta for an
 /// already-held ordinary directory. No probe file is created.
 pub fn artifact_allocation_slack(file: &std::fs::File) -> io::Result<u64> {

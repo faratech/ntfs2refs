@@ -2036,7 +2036,10 @@ impl ArtifactPathPermit {
         );
         ensure!(
             verified.snapshot.allocation_bytes
-                <= add(verified.snapshot.file_bytes, self.allocation_slack)?,
+                <= add(
+                    add(verified.snapshot.file_bytes, self.allocation_slack)?,
+                    n2r_win32::file_storage::append_preallocation_allowance(verified.snapshot.file_bytes),
+                )?,
             "artifact physical allocation exceeds reserved slack: path={:?}, EOF={}, allocation={}, grant_max_EOF={}, reserved_slack={}",
             verified.snapshot.final_path,
             verified.snapshot.file_bytes,

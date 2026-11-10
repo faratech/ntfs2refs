@@ -142,8 +142,8 @@ impl PagedPolicyIndexBuilder {
         )?;
         let produced_modified = self.file.metadata()?.modified()?;
         let maximum_allocation = add(
-            produced.file_bytes,
-            file_storage::artifact_allocation_slack(&self.file)?,
+            add(produced.file_bytes, file_storage::artifact_allocation_slack(&self.file)?)?,
+            file_storage::append_preallocation_allowance(produced.file_bytes),
         )?;
         if produced.allocation_bytes > maximum_allocation {
             return Err(invalid(

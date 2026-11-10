@@ -32,6 +32,18 @@ param(
     [switch]$Diagnose,
     [switch]$NoBoot,
     [switch]$NoConvert,
+    # Leave the scratch disk (and the control OS, if still up) for inspection.
+    [switch]$KeepScratch,
+    # If the converter stops after it has written ReFS to the source, shut the
+    # VM down and save that state under this checkpoint name. Finalization can
+    # then be retried in minutes with -Recover instead of a whole new run.
+    [string]$CheckpointAfterConvert,
+    # Restore -Checkpoint (one saved by -CheckpointAfterConvert) and run
+    # `ntfs2refs --recover` with the command the original run printed.
+    [switch]$Recover,
+    [int]$SourceDisk = 0,
+    [int]$SourcePartition = 3,
+    [int]$MinHostFreeGB = 40,
     [int]$ConvertTimeoutMinutes = 720,
     [int]$BootTimeoutMinutes = 25
 )
@@ -60,6 +72,23 @@ function Save-Verdict {
     $script:verdict | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $case 'verdict.json') -Encoding UTF8
 }
 function Get-LabVm { Get-VM -Id $vmId }
+function Get-HostFreeBytes { [long](Get-Volume -FilePath $case).SizeRemaining }
+function Remove-Scratch {
+    # A dynamic scratch disk grows to several GB per run; left behind, they fill
+    # the host volume and Hyper-V pauses the VM in the middle of a conversion.
+    $path = Join-Path $case 'scratch.vhdx'
+    if (-not (Test-Path -LiteralPath $path)) { return }
+    try {
+        $vm = Get-LabVm
+        $attached = @(Get-VMHardDiskDrive -VM $vm | Where-Object Path -EQ $path)
+        if ($attached.Count) {
+            if ($vm.State -ne 'Off') { Stop-VM -VM $vm -TurnOff -Force }
+            $attached | Remove-VMHardDiskDrive
+        }
+        Remove-Item -LiteralPath $path -Force
+        Say ("scratch disk removed; host has {0:N0} GB free" -f ((Get-HostFreeBytes) / 1GB))
+    } catch { Say "scratch disk not removed: $($_.Exception.Message)" }
+}
 function Get-GuestCredential {
     $saved = Import-Clixml -LiteralPath (Join-Path $workspace '.lab\hyperv\win11\secrets\guest-credential.xml')
     [pscredential]::new('LabAdmin', $saved.Password)
@@ -105,6 +134,13 @@ try {
     $wanted = if ($Fixture) { $FixtureCheckpoint } else { $Checkpoint }
     $snapshots = @(Get-VMSnapshot -VM $vm | Where-Object Name -Like $wanted)
     if ($snapshots.Count -ne 1) { throw "Expected exactly one checkpoint matching '$wanted', found $($snapshots.Count)" }
+    if ($CheckpointAfterConvert -and (Get-VMSnapshot -VM $vm | Where-Object Name -EQ $CheckpointAfterConvert)) {
+        throw "Checkpoint '$CheckpointAfterConvert' already exists; pick another name or remove it"
+    }
+    $hostFreeDisk = Get-HostFreeBytes
+    if ($hostFreeDisk -lt [long]$MinHostFreeGB * 1GB) {
+        throw ("Host volume has {0:N1} GB free; an attempt needs {1} GB. Free space first (old attempts' scratch.vhdx files)." -f ($hostFreeDisk / 1GB), $MinHostFreeGB)
+    }
     Say "attempt ${Name}: restoring checkpoint '$($snapshots[0].Name)'"
     if ($vm.State -ne 'Off') { Stop-VM -VM $vm -TurnOff -Force }
     Restore-VMSnapshot -VMSnapshot $snapshots[0] -Confirm:$false
@@ -116,9 +152,11 @@ try {
     if ($memory -lt 8GB) { throw "Host has too little free memory for the VM: $([Math]::Round($hostFree/1GB,1)) GB free" }
     Set-VM -VM $vm -StaticMemory -MemoryStartupBytes $memory
     Set-VMProcessor -VM $vm -Count ([Math]::Min($Processors, [Environment]::ProcessorCount))
-    $scratchPath = Join-Path $case 'scratch.vhdx'
-    $null = New-VHD -Path $scratchPath -SizeBytes ([long]$ScratchGB * 1GB) -Dynamic
-    Add-VMHardDiskDrive -VM $vm -ControllerType SCSI -ControllerNumber 0 -Path $scratchPath
+    if (-not $Recover) {
+        $scratchPath = Join-Path $case 'scratch.vhdx'
+        $null = New-VHD -Path $scratchPath -SizeBytes ([long]$ScratchGB * 1GB) -Dynamic
+        Add-VMHardDiskDrive -VM $vm -ControllerType SCSI -ControllerNumber 0 -Path $scratchPath
+    }
     $verdict.vm = @{ memory_bytes = $memory; processors = (Get-VMProcessor -VM $vm).Count; checkpoint = $snapshots[0].Name
         host_free_disk_bytes = (Get-Volume -FilePath $case).SizeRemaining }
     Phase 'restore'
@@ -127,7 +165,36 @@ try {
     Start-VM -VM $vm
     $session = Wait-Guest 15 $null
     if (-not $session) { throw 'Control OS did not accept a PowerShell Direct session within 15 minutes' }
-    $guest = Invoke-Command -Session $session -ArgumentList $ScratchFileSystem, ([long]$ScratchGB * 1GB) -ScriptBlock {
+    $guest = if ($Recover) {
+        # The saved state already holds the original run's scratch volume and
+        # its records; the source disk is offline and holds the ReFS image.
+        Invoke-Command -Session $session -ArgumentList $SourceDisk, $SourcePartition -ScriptBlock {
+            param($sourceDisk, $sourcePartition)
+            $ErrorActionPreference = 'Stop'
+            $scratch = @(Get-Volume | Where-Object { $_.FileSystemLabel -eq 'N2R_SCRATCH' -and $_.DriveLetter })
+            if ($scratch.Count -ne 1) { throw "Expected one lettered N2R_SCRATCH volume, found $($scratch.Count)" }
+            $printed = Get-ChildItem 'C:\n2r' -Directory | Sort-Object LastWriteTime -Descending | ForEach-Object {
+                $log = Join-Path $_.FullName 'stdout.log'
+                if (Test-Path -LiteralPath $log) { Select-String -LiteralPath $log -Pattern '^To recover: ntfs2refs --recover "(.+)" --recovery-sha256 ([0-9a-f]{64})' | Select-Object -Last 1 }
+            } | Select-Object -First 1
+            if (-not $printed) { throw 'No "To recover:" line found in any earlier run log under C:\n2r' }
+            $system = Get-Partition -DriveLetter $env:SystemDrive[0]; $os = Get-CimInstance Win32_OperatingSystem
+            $disk = Get-Disk -Number $sourceDisk
+            [pscustomobject]@{
+                scratch_letter = [string]$scratch[0].DriveLetter; scratch_filesystem = [string]$scratch[0].FileSystem
+                scratch_free_bytes = $scratch[0].SizeRemaining
+                control_disk = $system.DiskNumber; control_filesystem = (Get-Volume -DriveLetter $env:SystemDrive[0]).FileSystem
+                control_free_bytes = (Get-Volume -DriveLetter $env:SystemDrive[0]).SizeRemaining
+                source_letter = ''; source_disk = $sourceDisk; source_partition = $sourcePartition
+                source_bytes = (Get-Partition -DiskNumber $sourceDisk -PartitionNumber $sourcePartition).Size; source_used_bytes = 0
+                source_guid = (Get-Partition -DiskNumber $sourceDisk -PartitionNumber $sourcePartition).Guid
+                source_offline = $disk.IsOffline; source_readonly = $disk.IsReadOnly
+                recover_directory = $printed.Matches[0].Groups[1].Value; recover_sha256 = $printed.Matches[0].Groups[2].Value
+                free_memory_bytes = $os.FreePhysicalMemory * 1KB; build = $os.BuildNumber
+                disks = @(Get-Disk | Select-Object Number, Size, PartitionStyle, IsOffline, IsBoot)
+            }
+        }
+    } else { Invoke-Command -Session $session -ArgumentList $ScratchFileSystem, ([long]$ScratchGB * 1GB) -ScriptBlock {
         param($fileSystem, $scratchBytes)
         $ErrorActionPreference = 'Stop'
         $raw = @(Get-Disk | Where-Object { $_.PartitionStyle -eq 'RAW' -and $_.Size -eq $scratchBytes })
@@ -165,7 +232,7 @@ try {
             source_guid = $source.Guid; free_memory_bytes = $os.FreePhysicalMemory * 1KB; build = $os.BuildNumber
             disks = @(Get-Disk | Select-Object Number, Size, PartitionStyle, IsOffline, IsBoot)
         }
-    }
+    } }
     $verdict.guest = $guest | Select-Object * -ExcludeProperty PSComputerName, RunspaceId, PSShowComputerName
     Say ("control OS up: source {0}: disk {1} partition {2}, {3:N1} GB used; scratch {4}: {5}, {6:N0} GB free; RAM free {7:N1} GB" -f `
         $guest.source_letter, $guest.source_disk, $guest.source_partition, ($guest.source_used_bytes / 1GB), $guest.scratch_letter,
@@ -176,7 +243,8 @@ try {
     # ---- run the converter ------------------------------------------------------
     if (-not (Test-Path -LiteralPath $Binary)) { throw "Converter binary not found: $Binary (build with cargo build --release)" }
     $guestRoot = "C:\n2r\$Name"; $scratchDirectory = "$($guest.scratch_letter):\runs"
-    $arguments = @('--drive', $guest.source_letter, '--windows-boot-volume', '--scratch-directory', $scratchDirectory, '--target-format', 'dev-drive')
+    $arguments = if ($Recover) { @('--recover', $guest.recover_directory, '--recovery-sha256', $guest.recover_sha256) }
+        else { @('--drive', $guest.source_letter, '--windows-boot-volume', '--scratch-directory', $scratchDirectory, '--target-format', 'dev-drive') }
     if ($Diagnose) { $arguments += '--diagnose' }
     $arguments += $ConverterArgs
     Invoke-Command -Session $session -ArgumentList $guestRoot, $scratchDirectory -ScriptBlock {
@@ -196,9 +264,16 @@ try {
         Start-ScheduledTask -TaskName $task
     }
     Say "converter started: ntfs2refs.exe $($arguments -join ' ')"
-    $deadline = (Get-Date).AddMinutes($ConvertTimeoutMinutes); $lastLine = ''; $state = $null; $polls = 0
+    $deadline = (Get-Date).AddMinutes($ConvertTimeoutMinutes); $lastLine = ''; $state = $null; $polls = 0; $failedPolls = 0; $vmStopped = $null
     while ($true) {
         Start-Sleep -Seconds 20; $polls++
+        # Hyper-V pauses the VM when the host volume fills and turns it off
+        # later. Either way the converter is not running; say so and stop.
+        $vmState = (Get-LabVm).State.ToString()
+        if ($vmState -ne 'Running') {
+            $vmStopped = "VM is $vmState; host volume has {0:N1} GB free" -f ((Get-HostFreeBytes) / 1GB)
+            Say "converter cannot continue: $vmStopped"; break
+        }
         try {
             if ($session.State -ne 'Opened') { Remove-PSSession $session -ErrorAction SilentlyContinue; $session = Wait-Guest 5 $null; if (-not $session) { throw 'guest session lost' } }
             $state = Invoke-Command -Session $session -ArgumentList $guestRoot, $taskName, $guest.scratch_letter -ErrorAction Stop -ScriptBlock {
@@ -213,7 +288,12 @@ try {
                     control_free = (Get-Volume -DriveLetter $env:SystemDrive[0]).SizeRemaining
                 }
             }
-        } catch { Say "poll failed: $($_.Exception.Message)"; continue }
+            $failedPolls = 0
+        } catch {
+            $failedPolls++; Say "poll failed ($failedPolls): $($_.Exception.Message)"
+            if ($failedPolls -ge 9) { $vmStopped = 'control OS stopped answering'; break }
+            continue
+        }
         $line = @($state.stdout) | Select-Object -Last 1
         # The converter reports progress as JSON; show the short form.
         if ($line -like '{"kind":"conversion-progress-v1"*') { try { $p = $line | ConvertFrom-Json; $line = '{0}: {1} pass {2}, {3}/{4} {5}' -f $p.label, $p.progress.phase, $p.progress.pass, $p.progress.completed, $p.progress.total, $p.progress.unit } catch { } }
@@ -224,6 +304,10 @@ try {
         }
         if ($state.terminal -or $state.worker_error -or ($state.task -ne 'Running' -and $polls -gt 3)) { break }
         if ((Get-Date) -gt $deadline) { Say 'converter timed out; leaving it running for inspection'; break }
+    }
+    if ($vmStopped) {
+        $verdict.converter = [ordered]@{ arguments = $arguments; exit = $null; stopped = $vmStopped }
+        $verdict.outcome = 'vm-stopped'; Phase 'convert'; return
     }
     # ---- collect evidence -------------------------------------------------------
     foreach ($leaf in 'stdout.log', 'stderr.log', 'native-process.json', 'native-terminal.json', 'worker-error.txt', 'run.json') {
@@ -247,7 +331,18 @@ try {
     Phase 'convert'
     if ($null -eq $exit -or $exit -ne 0) {
         $verdict.outcome = if ($null -eq $exit) { 'converter-did-not-finish' } else { 'converter-failed' }
-        Say "converter exit: $exit. stderr: $((@($state.stderr) -join ' | '))"; Remove-PSSession $session; return
+        Say "converter exit: $exit. stderr: $((@($state.stderr) -join ' | '))"; Remove-PSSession $session
+        if ($CheckpointAfterConvert) {
+            $log = Join-Path $case 'stdout.log'
+            if ((Test-Path -LiteralPath $log) -and (Select-String -LiteralPath $log -Pattern 'Source changes verified' -Quiet)) {
+                try { Stop-VM -VM (Get-LabVm) -Force } catch { Stop-VM -VM (Get-LabVm) -TurnOff -Force }
+                Checkpoint-VM -VM (Get-LabVm) -SnapshotName $CheckpointAfterConvert
+                # The checkpoint's disk chain starts at this attempt's scratch.vhdx.
+                $KeepScratch = [switch]$true; $verdict.applied_checkpoint = $CheckpointAfterConvert
+                Say "saved the applied-but-not-finalized state as checkpoint '$CheckpointAfterConvert'; retry finalization with -Recover -Checkpoint '$CheckpointAfterConvert'"
+            } else { Say 'no checkpoint saved: the converter stopped before it changed the source' }
+        }
+        return
     }
     Say 'converter exit 0'
     if (-not $Diagnose) {
@@ -325,5 +420,6 @@ try {
 } catch {
     $verdict.outcome = 'harness-error'; $verdict.error = ($_ | Out-String); Say "HARNESS ERROR: $($_.Exception.Message)"; throw
 } finally {
+    if (-not $KeepScratch -and -not $NoConvert) { Remove-Scratch }
     Save-Verdict; Say "outcome: $($verdict.outcome). Records: $case"
 }

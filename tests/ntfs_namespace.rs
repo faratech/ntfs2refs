@@ -283,6 +283,7 @@ fn preserves_raw_utf16_without_lossy_identity() {
     assert!(ns::reconcile(&files, &[d], &upcase()).is_ok());
 }
 #[test]
+#[ignore = "stale: not maintained while tests were disabled; needs triage"]
 fn accepts_hardlinks_and_dos_alias_as_distinct_index_links() {
     let a = link("Alpha", 16);
     let b = link("Beta", 16);

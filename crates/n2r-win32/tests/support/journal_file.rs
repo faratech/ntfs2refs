@@ -139,6 +139,7 @@ fn general_journal_binding_accepts_distinct_dedicated_disk_geometry() {
         disk_number: fixed.disk_number,
         volume_guid: fixed.volume_guid.clone(),
         identity: fixed.identity.clone(),
+        layout_profile: Default::default(),
     };
     disk.identity.disk_bytes = 12 * 1024 * 1024 * 1024;
     put64(&mut evidence.disk_length, 0, disk.identity.disk_bytes);
@@ -160,6 +161,7 @@ fn external_journal_layout_allows_a_separate_system_disk_partition_set() {
         disk_number: fixed.disk_number,
         volume_guid: fixed.volume_guid.clone(),
         identity: fixed.identity.clone(),
+        layout_profile: Default::default(),
     };
     disk.identity.disk_bytes = 12 * 1024 * 1024 * 1024;
     put64(&mut evidence.disk_length, 0, disk.identity.disk_bytes);

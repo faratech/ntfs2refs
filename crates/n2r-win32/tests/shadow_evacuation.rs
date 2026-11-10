@@ -1,4 +1,10 @@
 use n2r_win32::bitmap_layout;
+// The planner is included by path, so give it the crate paths it names.
+mod shadow_native {
+    pub mod report_memory {
+        pub use n2r_win32::shadow_native::report_memory::*;
+    }
+}
 #[path = "../src/shadow_evacuation.rs"]
 mod shadow_evacuation;
 use shadow_evacuation::{Extent, Limits, plan};

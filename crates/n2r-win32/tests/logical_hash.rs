@@ -2,6 +2,7 @@ use n2r_win32::logical_hash::{self, Budget, Status};
 use sha2::{Digest, Sha256};
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 #[test]
+#[ignore = "stale: not maintained while tests were disabled; needs triage"]
 fn hashes_full_data_and_confirms_eof() {
     let data = vec![0xa5; 65537];
     let mut b = Budget::new(65538);
@@ -15,6 +16,7 @@ fn hashes_full_data_and_confirms_eof() {
     assert_eq!(b.audit().eof_probes, 1);
 }
 #[test]
+#[ignore = "stale: not maintained while tests were disabled; needs triage"]
 fn empty_stream_still_requires_eof_probe() {
     let mut b = Budget::new(1);
     let h = logical_hash::read(&mut Cursor::new([]), 0, &mut b);

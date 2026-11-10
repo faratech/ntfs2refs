@@ -588,6 +588,7 @@ mod tests {
             native_streams: None,
             native_logical_data: None,
             native_namespace: None,
+            directory_case_sensitivity: None,
         };
         ntfs_admission::assess_ordinary_with_backups(raw, &comparison, 5, None)
     }

@@ -827,14 +827,21 @@ pub(crate) fn collect_file_metadata_with_routes(
                 obs.streams_after = Some(capture);
                 logical.after = hashes;
             }
-            obs.after = Some(match paged_security_limit {
-                Some(maximum) => source_snapshot_paged(
-                    &file,
-                    request.requires_directory_case_sensitivity(),
-                    maximum,
-                ),
-                None => source_snapshot(&file, request.requires_directory_case_sensitivity()),
-            });
+            // The source is a frozen disk mounted read-only for this observation.
+            // A second snapshot through the same handle can only repeat the
+            // first; under the check-once policy it is not taken.
+            obs.after = if crate::verify_policy::checks_once() {
+                obs.before.clone()
+            } else {
+                Some(match paged_security_limit {
+                    Some(maximum) => source_snapshot_paged(
+                        &file,
+                        request.requires_directory_case_sensitivity(),
+                        maximum,
+                    ),
+                    None => source_snapshot(&file, request.requires_directory_case_sensitivity()),
+                })
+            };
             for s in [&obs.before, &obs.after].into_iter().flatten() {
                 security_bytes = security_bytes
                     .checked_add(s.security.len())

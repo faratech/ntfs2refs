@@ -1671,9 +1671,17 @@ fn validate_existing_content_domain_with_memory_and_windows_aliases(
                 && !cache_directory_times)
             || o.before != o.after
         {
-            return Err(invalid(
-                "existing shadow path, basic metadata or stability differs",
-            ));
+            // Creation, last access, last write and change time (8 bytes each),
+            // then attributes.
+            return Err(invalid(&format!(
+                "existing shadow path, basic metadata or stability differs: \\{}: path_same={}, stable={}, {} hard-link names, expected basic {}, actual basic {}",
+                i.components.join("\\"),
+                i.components == o.components,
+                o.before == o.after,
+                i.additional_names.len(),
+                hex::encode(expected_basic),
+                hex::encode(actual_basic),
+            )));
         }
         let id = query_bytes(&o.before, 18, 24)?[8..24].to_vec();
         if id == [0; 16]

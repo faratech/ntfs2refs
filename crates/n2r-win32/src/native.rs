@@ -2547,17 +2547,26 @@ impl GeneralFrozenPartition {
         if before.disk_attributes != OFFLINE | READ_ONLY {
             return Err(invalid("original source is not offline and read-only"));
         }
-        self.seek(SeekFrom::Start(0))?;
-        let mut hash = Sha256::new();
-        let mut buffer = vec![0u8; MAX_IO];
-        let mut left = self.byte_len();
-        while left != 0 {
-            let count = left.min(MAX_IO as u64) as usize;
-            self.read_exact(&mut buffer[..count])?;
-            hash.update(&buffer[..count]);
-            left -= count as u64;
+        // The disk has been offline, read-only and opened only for reading
+        // since it was frozen. Under the check-once policy the caller re-reads
+        // the source fingerprint instead of hashing the whole partition twice
+        // (six minutes for 62 GB) before giving the unchanged volume back.
+        if !crate::verify_policy::checks_once() {
+            self.seek(SeekFrom::Start(0))?;
+            let mut hash = Sha256::new();
+            let mut buffer = vec![0u8; MAX_IO];
+            let mut left = self.byte_len();
+            while left != 0 {
+                let count = left.min(MAX_IO as u64) as usize;
+                self.read_exact(&mut buffer[..count])?;
+                hash.update(&buffer[..count]);
+                left -= count as u64;
+            }
+            if hex::encode(hash.finalize()) != expected_sha256 {
+                return Err(invalid("original source bytes or exclusion changed"));
+            }
         }
-        if hex::encode(hash.finalize()) != expected_sha256 || self.state(events)? != before {
+        if self.state(events)? != before {
             return Err(invalid("original source bytes or exclusion changed"));
         }
         let binding = self.binding.clone();

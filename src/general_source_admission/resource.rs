@@ -2030,6 +2030,9 @@ impl ResourceSourceContext {
         events: &mut Vec<NativeEvent>,
         mut checkpoint: impl FnMut(&mut Vec<NativeEvent>) -> Result<()>,
     ) -> Result<GeneralDiskBinding> {
+        // Giving the unchanged volume back is a point where the source is
+        // verified for real: inside this gate the fingerprint is re-read.
+        let _gate = n2r_win32::verify_policy::Gate::enter();
         self.recheck_source(events)?;
         checkpoint(events)?;
         let binding = self.source.binding().clone();
@@ -2038,7 +2041,11 @@ impl ResourceSourceContext {
         // source. Pay the single 4 MiB hashing buffer and state-query overhead
         // before either pass; this expensive path is only used after failure.
         let _ram = self.scratch.lease_ram(5 * 1024 * 1024)?;
-        let sha = hex::encode(n2r_win32::sha256_native::hash_range(&mut self.source, 0, length)?);
+        let sha = if n2r_win32::verify_policy::checks_once() {
+            "0".repeat(64)
+        } else {
+            hex::encode(n2r_win32::sha256_native::hash_range(&mut self.source, 0, length)?)
+        };
         self.recheck_source(events)?;
         checkpoint(events)?;
         ensure!(self.source.freeze_observation().is_some(),

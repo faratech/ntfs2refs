@@ -368,14 +368,18 @@ try {
             $partition = Get-Partition -DiskNumber $disk -PartitionNumber $number; $volume = Get-Volume -Partition $partition
             $letter = [string]$partition.DriveLetter
             $refs = if ($letter) { @(& "$env:SystemRoot\System32\fsutil.exe" fsinfo refsinfo "${letter}:" 2>&1) -join "`n" } else { '' }
-            $scan = if ($letter) { try { [string](Repair-Volume -DriveLetter $letter -Scan) } catch { "scan failed: $($_.Exception.Message)" } } else { 'no drive letter' }
+            # Repair-Volume -Scan is not offered for a Dev Drive. What the ReFS
+            # driver itself logged while mounting and reading the volume is.
+            $refsEvents = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; Level = 1, 2, 3; StartTime = (Get-Date).AddHours(-2) } -ErrorAction SilentlyContinue |
+                    Where-Object ProviderName -Match 'ReFS' | Select-Object -First 20 | ForEach-Object { '{0:HH:mm:ss} {1} {2}: {3}' -f $_.TimeCreated, $_.Id, $_.LevelDisplayName, (($_.Message -split "`n")[0]) })
+            $scan = if ($refsEvents.Count) { "$($refsEvents.Count) ReFS warning/error events: $($refsEvents -join ' || ')" } else { 'no ReFS warnings or errors logged' }
             $sample = if ($letter) { @(Get-ChildItem -LiteralPath "${letter}:\" -Force -ErrorAction SilentlyContinue | Select-Object -First 40 -ExpandProperty Name) } else { @() }
             [pscustomobject]@{ letter = $letter; filesystem = [string]$volume.FileSystem; health = [string]$volume.HealthStatus
                 cluster_bytes = $volume.AllocationUnitSize; used_bytes = $volume.Size - $volume.SizeRemaining
-                refs_version = ($refs -replace '(?s).*ReFS Version\s*:\s*([\d.]+).*', '$1'); scan = $scan; root_entries = $sample }
+                refs_version = ($refs -replace '(?s).*REFS Volume Version\s*:\s*([\d.]+).*', '$1'); scan = $scan; root_entries = $sample }
         }
         $verdict.mounted = $mounted | Select-Object * -ExcludeProperty PSComputerName, RunspaceId, PSShowComputerName
-        Say "source partition now mounts as $($mounted.filesystem) $($mounted.refs_version), health $($mounted.health), scan: $($mounted.scan)"
+        Say "source partition now mounts as $($mounted.filesystem) $($mounted.refs_version), health $($mounted.health), $([math]::Round($mounted.used_bytes / 1GB, 2)) GB used; $($mounted.scan)"
         if ($mounted.filesystem -ne 'ReFS') { $verdict.outcome = 'converter-ok-but-not-refs'; Remove-PSSession $session; return }
         if (-not $NoManifest) {
             if (-not $mounted.letter) { $verdict.outcome = 'converted-but-no-drive-letter'; Remove-PSSession $session; return }
@@ -440,7 +444,7 @@ try {
             boot_utc = $os.LastBootUpTime.ToUniversalTime().ToString('o'); newer_than_control_boot = $os.LastBootUpTime.ToUniversalTime() -gt [DateTime]::Parse($controlBoot).ToUniversalTime()
             windows_directory = $os.WindowsDirectory; build = $os.BuildNumber; disk = $partition.DiskNumber; partition = $partition.PartitionNumber
             partition_guid = $partition.Guid; filesystem = [string]$volume.FileSystem; cluster_bytes = $volume.AllocationUnitSize
-            health = [string]$volume.HealthStatus; refs_version = (($refs -join "`n") -replace '(?s).*ReFS Version\s*:\s*([\d.]+).*', '$1')
+            health = [string]$volume.HealthStatus; refs_version = (($refs -join "`n") -replace '(?s).*REFS Volume Version\s*:\s*([\d.]+).*', '$1')
             secure_boot = (Confirm-SecureBootUEFI); setup_in_progress = $setup.SystemSetupInProgress; oobe_in_progress = $setup.OOBEInProgress
             signatures = @($signatures); disks = @(Get-Disk | Select-Object Number, Size)
         }

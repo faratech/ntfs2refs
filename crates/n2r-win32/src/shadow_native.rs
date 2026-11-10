@@ -1400,8 +1400,18 @@ pub fn basic_input_allowed(item: &Input<'_>) -> bool {
         && attributes_allowed(item)
         && (item.attributes & 16 != 0) == item.directory
 }
+/// Windows reports a file that has no attributes as FILE_ATTRIBUTE_NORMAL
+/// (0x80); the stored NTFS value for the same state is zero.
 fn basic_matches(i: &Input<'_>, actual: &[u8]) -> bool {
-    actual == basic_bytes(i)
+    let expected = basic_bytes(i);
+    if actual.len() != expected.len() {
+        return false;
+    }
+    let mut actual = actual.to_vec();
+    if actual[32..36] == 0x80u32.to_le_bytes() {
+        actual[32..36].fill(0);
+    }
+    actual == expected
 }
 // Only a pre-restoration diagnosis. Final comparisons never normalize control
 // flags: BACKUP_SECURITY_DATA must restore the exact original descriptor.
@@ -2544,6 +2554,12 @@ fn basic(file: &File, i: &Input<'_>) -> io::Result<()> {
             return Err(invalid("reparse data differs before basic metadata"));
         }
         b[4] &= !0x400;
+    }
+    // Zero means "leave the attributes alone" to SetFileInformationByHandle, so
+    // a source file with no attributes would keep the ARCHIVE bit it was created
+    // with. FILE_ATTRIBUTE_NORMAL is how to ask for none.
+    if b[4] == 0 {
+        b[4] = 0x80;
     }
     // SAFETY: FILE_BASIC_INFO layout, aligned initialized forty-byte buffer.
     check(unsafe { SetFileInformationByHandle(file.as_raw_handle(), 0, b.as_ptr().cast(), 40) })?;
@@ -5981,6 +5997,35 @@ mod tests {
         actual.kernel_security.as_mut().unwrap().bytes = vec![1];
         actual.security = vec![1];
         assert!(!security_matches(&input, &actual, &same).unwrap());
+    }
+    #[test]
+    fn a_file_with_no_attributes_matches_the_normal_attribute_windows_reports() {
+        let input = Input {
+            components: &[],
+            additional_names: &[],
+            directory: false,
+            times: [1, 2, 3, 4],
+            attributes: 0,
+            security: &[],
+            expected_api_security: None,
+            extended_attributes: None,
+            reparse: None,
+            payload: &[],
+            expected_length: None,
+            expected_sha256: None,
+            source_offset: None,
+            source_runs: vec![],
+            named_streams: Vec::new(),
+            sparse: None,
+        };
+        let mut actual = basic_bytes(&input);
+        assert!(basic_matches(&input, &actual));
+        actual[32..36].copy_from_slice(&0x80u32.to_le_bytes());
+        assert!(basic_matches(&input, &actual));
+        // ARCHIVE left over from creation is a real difference.
+        actual[32..36].copy_from_slice(&0x20u32.to_le_bytes());
+        assert!(!basic_matches(&input, &actual));
+        assert!(!basic_matches(&input, &actual[..32]));
     }
     #[test]
     fn auto_inherited_acls_names_exactly_the_flagged_acls() {

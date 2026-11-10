@@ -861,6 +861,9 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         let ea_same = extended_attributes_match(item, &actual)?;
         let reparse_same = reparse_matches(item, &actual)?;
         if !(identity_same && basic_same && security_same && ea_same && reparse_same) {
+            let basic_detail = if basic_same { String::new() } else {
+                format!(" expected_basic={} actual_basic={}", hex::encode(basic_bytes(item)), hex::encode(query_bytes(&actual, 0, 40)?))
+            };
             let detail = if security_same {
                 String::new()
             } else {
@@ -871,7 +874,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                 format!(
                     "final owned source metadata readback differs: identity_same={identity_same} \
                      basic_same={basic_same} security_same={security_same} ea_same={ea_same} \
-                     reparse_same={reparse_same}{detail}"
+                     reparse_same={reparse_same}{basic_detail}{detail}"
                 ),
             ));
         }

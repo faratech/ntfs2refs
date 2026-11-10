@@ -620,6 +620,7 @@ fn inspect_paged_internal<R: Read + Seek>(
         limit: u64::MAX,
         used: 0,
     };
+    n2r_win32::perf::step("NTFS: scan MFT records");
     let (mut root_seen, mut volume_bitmap, mut ext_byte) = (false, None, 0u8);
     for number in 0..record_count {
         let mut allocated = [0u8; 1];
@@ -754,6 +755,7 @@ fn inspect_paged_internal<R: Read + Seek>(
     }
     drop(mft_data);
     drop(bootstrap_record);
+    n2r_win32::perf::step("NTFS: finish raw file store");
     let extension_pin = extension_writer.finish()?;
     let file_pin = files_writer.finish()?;
     ensure!(
@@ -773,6 +775,7 @@ fn inspect_paged_internal<R: Read + Seek>(
     };
     report.allocated_clusters = Some(summary.allocated_clusters);
     report.free_clusters = Some(summary.free_clusters);
+    n2r_win32::perf::step("NTFS: open raw file store");
     let mut files = PagedRawFiles::from_live_bitmap(
         header(&report, false, hash_budget.used),
         &file_pin,
@@ -780,17 +783,20 @@ fn inspect_paged_internal<R: Read + Seek>(
         &extension_pin,
         &scratch,
     )?;
+    n2r_win32::perf::step("NTFS: resolve attribute lists and classify roles");
     let assemblies = resolver.finish(&files)?;
     super::paged_roles::classify(&mut files, &root.join("roles"), &scratch,
         purpose == InspectionPurpose::WindowsConversion, |item| {
         emit_blocker(&mut blockers, &mut blocker_count, &item)
     })?;
+    n2r_win32::perf::step("NTFS: finish and reconcile namespace");
     let directories = namespace.finish()?;
     let namespace_entries = if purpose == InspectionPurpose::WindowsConversion {
         crate::ntfs_namespace::reconcile_windows_domains(&files, &directories)?
     } else {
         crate::ntfs_namespace::reconcile_domains(&files, &directories)?
     };
+    n2r_win32::perf::step("NTFS: reconcile allocation");
     let allocation = {
         let mut bits = AttributeBitmapReader {
             reader,
@@ -812,6 +818,7 @@ fn inspect_paged_internal<R: Read + Seek>(
         allocation.status == AllocationReconciliationStatus::ConsistentRawModel,
         "complete raw allocation closure absent"
     );
+    n2r_win32::perf::step("NTFS: decide stream evidence and rewrite file store");
     if policy.is_fast() && !preparation_only {
         let mut output =
             SortedRecordWriter::new(&root.join("hashed-files"), *b"N2RFILE1", &scratch)?;
@@ -888,6 +895,7 @@ fn inspect_paged_internal<R: Read + Seek>(
         }
         files.replace_files(&output.finish()?)?;
     }
+    n2r_win32::perf::step("NTFS: reconcile security");
     let security_input = security.finish()?;
     let security = crate::ntfs_security::reconcile_paged(
         &security_input,
@@ -899,6 +907,7 @@ fn inspect_paged_internal<R: Read + Seek>(
         !preparation_only || hash_budget.used == 0,
         "preparation inspection unexpectedly hashed logical DATA"
     );
+    n2r_win32::perf::step("NTFS: close inspection");
     files.set_header(header(&report, true, hash_budget.used))?;
     for (code, message) in [
         (

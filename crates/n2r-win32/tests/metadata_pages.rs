@@ -94,3 +94,22 @@ fn a_corrupt_page_is_refused_when_opened() {
     drop(file);
     assert!(Reader::open(&path, &sha, PURPOSE, budget()).is_err());
 }
+
+#[test]
+fn a_derived_alias_symlink_carries_a_print_name() {
+    // ReFS refuses a symbolic link with an empty print name, so the alias
+    // point must name its target in both the substitute and the print name.
+    let target: Vec<u16> = "Program Files".encode_utf16().collect();
+    let point = n2r_win32::reparse_layout::Point::relative_component_alias(&target).unwrap();
+    let bytes = &point.buffer;
+    let word = |at: usize| u16::from_le_bytes([bytes[at], bytes[at + 1]]) as usize;
+    let size = target.len() * 2;
+    assert_eq!(u32::from_le_bytes(bytes[..4].try_into().unwrap()), 0xa000_000c);
+    assert_eq!(word(4), 12 + 2 * size);
+    assert_eq!((word(8), word(10)), (0, size));
+    assert_eq!((word(12), word(14)), (size, size));
+    assert_eq!(u32::from_le_bytes(bytes[16..20].try_into().unwrap()), 1);
+    assert_eq!(bytes.len(), 20 + 2 * size);
+    assert_eq!(bytes[20..20 + size], bytes[20 + size..]);
+    n2r_win32::reparse_layout::parse(bytes).unwrap();
+}

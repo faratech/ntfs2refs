@@ -74,13 +74,18 @@ impl Point {
             return Err(invalid("relative alias target is not valid UTF-16"));
         }
         let size=u16::try_from(target.len()*2).map_err(|_|invalid("relative alias name length overflow"))?;
-        let mut buffer=Vec::with_capacity(20+usize::from(size));
+        // Substitute name then an identical print name, as mklink writes them.
+        // ReFS refuses a symbolic link whose print name is empty with
+        // ERROR_INVALID_REPARSE_DATA (observed on Windows 11 build 26300).
+        let mut buffer=Vec::with_capacity(20+2*usize::from(size));
         buffer.extend_from_slice(&IO_REPARSE_TAG_SYMLINK.to_le_bytes());
-        buffer.extend_from_slice(&(12+size).to_le_bytes());buffer.extend_from_slice(&[0,0]);
+        buffer.extend_from_slice(&(12+2*size).to_le_bytes());buffer.extend_from_slice(&[0,0]);
         buffer.extend_from_slice(&0u16.to_le_bytes());buffer.extend_from_slice(&size.to_le_bytes());
-        buffer.extend_from_slice(&size.to_le_bytes());buffer.extend_from_slice(&0u16.to_le_bytes());
+        buffer.extend_from_slice(&size.to_le_bytes());buffer.extend_from_slice(&size.to_le_bytes());
         buffer.extend_from_slice(&1u32.to_le_bytes());
-        for c in target {buffer.extend_from_slice(&c.to_le_bytes());}
+        for _ in 0..2 {
+            for c in target {buffer.extend_from_slice(&c.to_le_bytes());}
+        }
         let point=Self{buffer};point.validate()?;Ok(point)
     }
     /// Raw tag only. Malformed short buffers return zero and must still fail

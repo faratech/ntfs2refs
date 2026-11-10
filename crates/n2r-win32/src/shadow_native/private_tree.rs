@@ -162,8 +162,16 @@ impl PrivateTree {
 
     pub(super) fn before_backing_mutation(&self, operation_bytes: u64) -> io::Result<()> {
         if let Some(guard) = &self.backing_guard {
+            // A free-space sample of the volume behind the shadow, with a
+            // floor of gigabytes. Sampling a few times a second, instead of
+            // before every small write, cannot let that floor be crossed.
+            static PACED: crate::verify_policy::Paced = crate::verify_policy::Paced::new();
+            if !PACED.due(250) {
+                return Ok(());
+            }
             guard.require_binding(&self.pair.shadow)?;
             guard.check_before_operation(operation_bytes)?;
+            PACED.passed();
         }
         Ok(())
     }
@@ -1058,6 +1066,22 @@ impl PrivateTree {
     }
 
     fn require_source_excluded(&self) -> io::Result<()> {
+        // The source stays offline and read-only and the shadow stays attached
+        // to this process for the whole construction; a change to either is
+        // still caught within the interval, and always at the end of a stage.
+        static PACED: crate::verify_policy::Paced = crate::verify_policy::Paced::new();
+        const INTERVAL_MS: u64 = 250;
+        if self.partition_source.is_none() && !PACED.due(INTERVAL_MS) {
+            return Ok(());
+        }
+        let result = self.require_source_excluded_now();
+        if result.is_ok() {
+            PACED.passed();
+        }
+        result
+    }
+
+    fn require_source_excluded_now(&self) -> io::Result<()> {
         let _timed = crate::perf::scope(crate::perf::Point::Fence);
         if let Some(admission) = self.metadata_resource_admission {
             admission.validate()?;

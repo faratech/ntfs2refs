@@ -38,6 +38,23 @@ impl BorrowedPagedSource<'_, '_> {
         }
     }
     pub(super) fn validate(&mut self, before: Option<&n2r_win32::GeneralDiskState>) -> Result<()> {
+        // A dedicated source is offline, read-only and held for the whole
+        // run. Supply asks this several times for every 64 KiB it copies;
+        // asking a few times a second still catches a change promptly.
+        static PACED: n2r_win32::verify_policy::Paced = n2r_win32::verify_policy::Paced::new();
+        if !matches!(self, Self::Partition { .. }) {
+            if !PACED.due(250) {
+                return Ok(());
+            }
+            let result = self.validate_now(before);
+            if result.is_ok() {
+                PACED.passed();
+            }
+            return result;
+        }
+        self.validate_now(before)
+    }
+    fn validate_now(&mut self, before: Option<&n2r_win32::GeneralDiskState>) -> Result<()> {
         match self {
             Self::Dedicated(owner) => {
                 let before = before.context("original dedicated state absent")?;

@@ -164,7 +164,15 @@ impl BackingResourceGuard {
     }
 
     pub fn check_before_operation(&self, operation_bytes: u64) -> io::Result<()> {
+        // A free-space sample of the volume behind the shadow, against a
+        // floor of gigabytes. A few samples a second cannot let that floor be
+        // crossed; one before every small write cost more than the writes.
+        static PACED: crate::verify_policy::Paced = crate::verify_policy::Paced::new();
+        if !PACED.due(250) {
+            return Ok(());
+        }
         let observed = self.observe(operation_bytes)?;
+        PACED.passed();
         let required = observed.minimum_free_bytes.checked_add(observed.pending_growth_bytes)
             .ok_or_else(|| invalid("backing free-space allowance overflow"))?;
         if observed.available_bytes < required {

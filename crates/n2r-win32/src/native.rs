@@ -806,7 +806,18 @@ pub(crate) fn general_disk_state(
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<GeneralDiskState> {
     binding.validate()?;
-    { let _timed = crate::perf::scope(crate::perf::Point::DetachedRoles); offline_windows::require_detached_roles(disk,binding, events)?; }
+    if binding.layout_profile == crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows {
+        // Whether the running Windows keeps a page file, dump file or boot
+        // role on this disk. The disk is offline, so none can be added; the
+        // answer (four WMI queries) is refreshed every two seconds rather
+        // than on every state query.
+        static PACED: crate::verify_policy::Paced = crate::verify_policy::Paced::new();
+        if PACED.due(2000) {
+            let _timed = crate::perf::scope(crate::perf::Point::DetachedRoles);
+            offline_windows::require_detached_roles(disk, binding, events)?;
+            PACED.passed();
+        }
+    }
     general_disk_state_held_geometry(disk, binding, events)
 }
 
@@ -1298,6 +1309,7 @@ pub fn rediscover_general_volume_wait(
     binding: GeneralDiskBinding,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<GeneralDiskBinding> {
+    let _timed = crate::perf::scope(crate::perf::Point::VolumeWait);
     for attempt in 0..60 {
         match rediscover_general_volume(binding.clone(), events) {
             Ok(found) => return Ok(found),

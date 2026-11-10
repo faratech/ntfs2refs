@@ -145,6 +145,10 @@ try {
             $formatted = cmd /c "format.com ${letter}: /FS:ReFS /DevDrv /Q /Y /V:N2R_SCRATCH" 2>&1
             if ($LASTEXITCODE -ne 0 -or (Get-Volume -DriveLetter $letter).FileSystem -ne 'ReFS') { throw "Scratch ReFS format failed: $($formatted | Select-Object -Last 3)" }
         } else { $null = Format-Volume -Partition $partition -FileSystem NTFS -NewFileSystemLabel 'N2R_SCRATCH' -Confirm:$false }
+        # A Dev Drive is scanned by Defender in deferred mode: files are opened
+        # again shortly after they are closed. The converter reopens its own
+        # working files exclusively and then fails with a sharing violation.
+        try { Add-MpPreference -ExclusionPath "${letter}:\" -ExclusionProcess 'ntfs2refs.exe' -ErrorAction Stop } catch { Write-Warning "Defender exclusion not set: $($_.Exception.Message)" }
         $system = Get-Partition -DriveLetter $env:SystemDrive[0]
         # The source is the largest lettered NTFS partition on a disk other than the running one.
         $source = Get-Partition | Where-Object { $_.DriveLetter -and $_.DiskNumber -ne $system.DiskNumber -and $_.DiskNumber -ne $raw[0].Number } |

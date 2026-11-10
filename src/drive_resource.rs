@@ -308,7 +308,8 @@ pub(crate) fn convert_owned_with_provider_commitment(
             &run.join("finalization"),
             &mut observer,
             windows_aliases,
-        )?;
+        )
+        .context("finalizing the applied conversion (the source already holds the ReFS image)")?;
         if let Err(error) = observer.note(&finalized) {
             eprintln!("Conversion completed; the final evidence log could not be updated: {error}");
         }

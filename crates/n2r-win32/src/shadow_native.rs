@@ -1665,9 +1665,12 @@ fn validate_existing_content_domain_with_memory_and_windows_aliases(
         } else {
             false
         };
+        // A file with no attributes is stored by NTFS as zero and reported by
+        // Windows as NORMAL. That equivalence holds for every object, not
+        // only sparse files; the root keeps its own exact expectation.
         if i.components != o.components
             || (actual_basic != expected_basic
-                && !(has_sparse(i) && basic_matches(i, actual_basic))
+                && !((has_sparse(i) || !i.components.is_empty()) && basic_matches(i, actual_basic))
                 && !cache_directory_times)
             || o.before != o.after
         {

@@ -31,7 +31,18 @@ foreach ($name in 'pagefile.sys', 'swapfile.sys') {
 $copy = Join-Path $env:TEMP ("n2r-system-{0}.hiv" -f [guid]::NewGuid().ToString('N'))
 Copy-Item -LiteralPath (Join-Path $root 'Windows\System32\config\SYSTEM') -Destination $copy
 $mount = 'N2R_SOURCE_SYSTEM'
-$null = & reg.exe load "HKLM\$mount" $copy 2>&1
+# A native tool writing to stderr must not end the script; its exit code decides.
+$ErrorActionPreference = 'Continue'
+$loaded = & reg.exe load "HKLM\$mount" $copy 2>&1
+$loadExit = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+if ($loadExit -ne 0) {
+    Remove-Item -LiteralPath $copy -Force -ErrorAction SilentlyContinue
+    $findings.Add("the SYSTEM hive copy could not be loaded: $($loaded -join ' ')")
+    $result.ready = $false
+    $result | ConvertTo-Json -Depth 6
+    return
+}
 try {
     $select = Get-ItemProperty -LiteralPath "HKLM:\$mount\Select"
     $control = 'ControlSet{0:D3}' -f $select.Current
@@ -67,7 +78,9 @@ try {
     $result.fast_startup = if ($power -and $power.PSObject.Properties['HiberbootEnabled']) { $power.HiberbootEnabled } else { $null }
 } finally {
     [GC]::Collect(); [GC]::WaitForPendingFinalizers()
+    $ErrorActionPreference = 'Continue'
     $null = & reg.exe unload "HKLM\$mount" 2>&1
+    $ErrorActionPreference = 'Stop'
     Remove-Item -LiteralPath $copy -Force -ErrorAction SilentlyContinue
     Get-ChildItem -LiteralPath $env:TEMP -Filter ((Split-Path -Leaf $copy) + '*') -Force -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
 }

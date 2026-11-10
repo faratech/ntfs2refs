@@ -271,9 +271,21 @@ try {
         # What would stop this installation booting once its file system has changed.
         try {
             Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'guest\Test-SourceBootReadiness.ps1') -Destination "$guestRoot\readiness.ps1" -ToSession $session
-            $readiness = Invoke-Command -Session $session -ArgumentList "$guestRoot\readiness.ps1", $guest.source_letter -ScriptBlock {
-                param($script, $letter)
-                & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $script -SourceLetter $letter } | Out-String | ConvertFrom-Json
+            # Loading a copy of the source's SYSTEM hive needs backup and restore
+            # privileges, so the check runs as SYSTEM, like the converter.
+            $readiness = Invoke-Command -Session $session -ArgumentList "$guestRoot\readiness.ps1", $guest.source_letter, "$guestRoot\readiness.json", "N2R-Readiness-$Name" -ScriptBlock {
+                param($script, $letter, $output, $task)
+                $command = "& '$script' -SourceLetter $letter | Set-Content -LiteralPath '$output' -Encoding UTF8"
+                $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+                    -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command `"$command`""
+                $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+                $null = Register-ScheduledTask -TaskName $task -Action $action -Principal $principal -Force
+                Start-ScheduledTask -TaskName $task
+                $deadline = (Get-Date).AddSeconds(120)
+                do { Start-Sleep -Milliseconds 500 } until ((Get-ScheduledTask -TaskName $task).State -ne 'Running' -or (Get-Date) -gt $deadline)
+                Unregister-ScheduledTask -TaskName $task -Confirm:$false
+                if (Test-Path -LiteralPath $output) { Get-Content -LiteralPath $output -Raw } else { throw 'the readiness check wrote no report' }
+            } | Out-String | ConvertFrom-Json
             $verdict.boot_readiness = $readiness
             $readiness | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $case 'boot-readiness.json') -Encoding UTF8
             Say ("boot readiness: {0}; hiberfil {1}; early drivers {2}; file-system drivers {3}" -f `

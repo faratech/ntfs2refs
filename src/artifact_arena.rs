@@ -2095,10 +2095,12 @@ impl ArtifactPathPermit {
             .saturating_sub(verified.snapshot.file_bytes);
         let next_overhead = state
             .overhead
-            // Return whatever part of the reserved slack this file did not use.
-            // Filesystem append pre-allocation, admitted above, can exceed the
-            // slack while the file is open; then none of it is returned.
-            .checked_sub(self.allocation_slack.saturating_sub(extra))
+            // Replace this file's reserved slack with its actual surplus, so the
+            // ledger stays exactly "allocation minus length" over all files.
+            // Filesystem append pre-allocation, admitted above, can make the
+            // surplus larger than the slack that was reserved.
+            .checked_sub(self.allocation_slack)
+            .and_then(|overhead| overhead.checked_add(extra))
             .context("artifact slack underflow")?;
         let group = state.groups.get(&self.group.group).unwrap();
         ensure!(

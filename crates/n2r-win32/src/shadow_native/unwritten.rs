@@ -550,7 +550,7 @@ impl PrivatePlaceholder {
             self.materialized_bytes += n as u64;
             self.valid_prefix = self.valid_prefix.max(offset + written as u64);
         }
-        crate::perf::flush(crate::perf::Point::FileFlush, &self.file)?;
+        crate::verify_policy::flush_working_file(&self.file)?;
         let mut check = [0u8; 65536];
         self.file.seek(SeekFrom::Start(offset))?;
         let mut read = 0;
@@ -870,7 +870,7 @@ impl PrivatePlaceholder {
         if unsafe { SetFileValidData(self.file.as_raw_handle(), bytes as i64) } == 0 {
             return Err(io::Error::last_os_error());
         }
-        crate::perf::flush(crate::perf::Point::FileFlush, &self.file)?;
+        crate::verify_policy::flush_working_file(&self.file)?;
         self.verify_placements()?;
         self.valid_prefix = bytes;
         self.poisoned = false;

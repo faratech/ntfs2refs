@@ -290,7 +290,7 @@ pub(super) fn run_domain(
             file.set_len(0)?;
             file.seek(SeekFrom::Start(0))?;
             writer(index, &mut file)?;
-            crate::perf::flush(crate::perf::Point::FileFlush, &file)?;
+            crate::verify_policy::flush_working_file(&file)?;
         } else {
             let target = Input {
                 components: item.components,

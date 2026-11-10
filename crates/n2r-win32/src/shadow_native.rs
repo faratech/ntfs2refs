@@ -2534,7 +2534,7 @@ fn create(
     } else {
         f.write_all(i.payload)?;
     }
-    crate::perf::flush(crate::perf::Point::FileFlush, &f)?;
+    crate::verify_policy::flush_working_file(&f)?;
     Ok(())
 }
 fn basic(file: &File, i: &Input<'_>) -> io::Result<()> {

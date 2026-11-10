@@ -821,7 +821,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             basic(handle, item)?;
         }
         if !item.directory {
-            crate::perf::flush(crate::perf::Point::FileFlush, &handle)?;
+            crate::verify_policy::flush_working_file(&handle)?;
         }
         Ok(())
         })()

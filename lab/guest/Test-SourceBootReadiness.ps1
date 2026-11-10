@@ -49,6 +49,18 @@ try {
     $file_systems = @($early | Where-Object { $_.name -match '^(refs|refsv1|ntfs|fastfat|wof|fileinfo|bindflt|wcifs|cldflt)$' } | ForEach-Object { "$($_.name)=$($_.start)" })
     $result.file_system_drivers = $file_systems
     if (-not ($early | Where-Object name -EQ 'refs')) { $findings.Add('the ReFS driver is not a boot-start driver in this installation') }
+    # The control OS is the same Windows build installed on ReFS and it boots.
+    # Any difference in how the two configure their file-system drivers is a
+    # candidate for why a converted installation would not.
+    $compare = foreach ($name in 'ReFS', 'ReFSv1', 'Ntfs', 'Wof', 'FileInfo') {
+        $settings = foreach ($hive in "HKLM:\$mount\$control\Services\$name", "HKLM:\SYSTEM\CurrentControlSet\Services\$name") {
+            $p = Get-ItemProperty -LiteralPath $hive -ErrorAction SilentlyContinue
+            if ($p) { 'Start={0} Group={1}' -f $(if ($p.PSObject.Properties['Start']) { $p.Start } else { '-' }), $(if ($p.PSObject.Properties['Group']) { $p.Group } else { '-' }) } else { 'absent' }
+        }
+        [pscustomobject]@{ service = $name; source = $settings[0]; control_os = $settings[1] }
+    }
+    $result.driver_settings = @($compare)
+    foreach ($row in $compare) { if ($row.source -ne $row.control_os) { $findings.Add("$($row.service) is configured as '$($row.source)' on the source but '$($row.control_os)' on the ReFS-installed control OS") } }
     $session = Get-ItemProperty -LiteralPath "HKLM:\$mount\$control\Control\Session Manager"
     $result.boot_execute = @($session.BootExecute)
     $power = Get-ItemProperty -LiteralPath "HKLM:\$mount\$control\Control\Session Manager\Power" -ErrorAction SilentlyContinue

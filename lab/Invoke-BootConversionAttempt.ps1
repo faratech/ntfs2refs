@@ -1,0 +1,298 @@
+<#
+.SYNOPSIS
+  One disposable Windows boot-volume conversion attempt, start to finish.
+
+.DESCRIPTION
+  Restores the baseline checkpoint, gives the VM a fresh scratch disk, boots
+  the control OS, runs the converter against the original Windows partition,
+  then (unless told otherwise) boots disk0 alone and records what came up.
+
+  Every attempt starts from the checkpoint and may be thrown away. Nothing here
+  is pinned to a particular run: no PIDs, hashes or sizes. Results land in
+  .lab\hyperv\attempts\<Name>\ with a verdict.json and a progress.log.
+
+.EXAMPLE
+  lab\Invoke-BootConversionAttempt.ps1 -Fixture            # thinned fixture, full route, boot
+  lab\Invoke-BootConversionAttempt.ps1 -Diagnose           # full Windows, report every failure, write nothing
+  lab\Invoke-BootConversionAttempt.ps1                     # full Windows, convert and boot
+  lab\Invoke-BootConversionAttempt.ps1 -NoConvert          # restore and prepare only, leave the control OS up
+#>
+[CmdletBinding()]
+param(
+    [string]$Name = (Get-Date -Format 'yyyyMMdd-HHmmss'),
+    [string]$Checkpoint = 'N2R-Qualification-NTFS-*',
+    [string]$FixtureCheckpoint = 'N2R-Thinned-Fixture',
+    [string]$Binary,
+    [int]$MemoryGB = 24,
+    [int]$Processors = 8,
+    [int]$ScratchGB = 120,
+    [ValidateSet('ReFS', 'NTFS')][string]$ScratchFileSystem = 'ReFS',
+    [string[]]$ConverterArgs = @(),
+    [switch]$Fixture,
+    [switch]$Diagnose,
+    [switch]$NoBoot,
+    [switch]$NoConvert,
+    [int]$ConvertTimeoutMinutes = 720,
+    [int]$BootTimeoutMinutes = 25
+)
+$ErrorActionPreference = 'Stop'; Set-StrictMode -Version Latest
+$workspace = Split-Path -Parent $PSScriptRoot
+$vmId = '8f7fc646-8c9f-41d0-b65a-ecfadccfc36a'
+$case = Join-Path $workspace ".lab\hyperv\attempts\$Name"
+if (Test-Path -LiteralPath $case) { throw "Attempt directory already exists: $case" }
+$null = New-Item -ItemType Directory -Path $case
+if (-not $Binary) { $Binary = Join-Path $workspace 'target\release\ntfs2refs.exe' }
+$progressLog = Join-Path $case 'progress.log'
+$verdict = [ordered]@{ name = $Name; fixture = [bool]$Fixture; diagnose = [bool]$Diagnose; started_utc = [DateTime]::UtcNow.ToString('o')
+    phases = [ordered]@{}; converter = $null; boot = $null; outcome = 'incomplete' }
+$phaseWatch = [Diagnostics.Stopwatch]::StartNew()
+
+function Say([string]$Text) {
+    $line = '{0} {1}' -f (Get-Date -Format 'HH:mm:ss'), $Text
+    Add-Content -LiteralPath $progressLog -Value $line -Encoding UTF8; Write-Host $line
+}
+function Phase([string]$PhaseName) {
+    $script:verdict.phases[$PhaseName] = [Math]::Round($script:phaseWatch.Elapsed.TotalSeconds, 1)
+    $script:phaseWatch.Restart(); Say "done: $PhaseName"
+}
+function Save-Verdict {
+    $script:verdict.finished_utc = [DateTime]::UtcNow.ToString('o')
+    $script:verdict | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $case 'verdict.json') -Encoding UTF8
+}
+function Get-LabVm { Get-VM -Id $vmId }
+function Get-GuestCredential {
+    $saved = Import-Clixml -LiteralPath (Join-Path $workspace '.lab\hyperv\win11\secrets\guest-credential.xml')
+    [pscredential]::new('LabAdmin', $saved.Password)
+}
+function Wait-Guest([int]$Minutes, [scriptblock]$EachMinute) {
+    $deadline = (Get-Date).AddMinutes($Minutes); $credential = Get-GuestCredential; $tick = 0
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $session = New-PSSession -VMId $vmId -Credential $credential -ErrorAction Stop
+            $null = Invoke-Command -Session $session -ScriptBlock { $env:COMPUTERNAME } -ErrorAction Stop
+            return $session
+        } catch { Start-Sleep -Seconds 10 }
+        $tick++
+        if ($EachMinute -and $tick % 6 -eq 0) { & $EachMinute ([int]($tick / 6)) }
+    }
+    return $null
+}
+function Save-VmScreen([string]$Path) {
+    # A picture of the console is the fastest way to read a boot failure.
+    try {
+        Add-Type -AssemblyName System.Drawing
+        $ns = 'root\virtualization\v2'
+        $system = Get-CimInstance -Namespace $ns -ClassName Msvm_ComputerSystem -Filter "Name='$($vmId.ToUpperInvariant())'"
+        $settings = Get-CimAssociatedInstance -InputObject $system -ResultClassName Msvm_VirtualSystemSettingData |
+            Where-Object VirtualSystemType -eq 'Microsoft:Hyper-V:System:Realized'
+        $service = Get-CimInstance -Namespace $ns -ClassName Msvm_VirtualSystemManagementService
+        $width = 1024; $height = 768
+        $result = Invoke-CimMethod -InputObject $service -MethodName GetVirtualSystemThumbnailImage -Arguments @{
+            TargetSystem = $settings; WidthPixels = [uint16]$width; HeightPixels = [uint16]$height }
+        if ($result.ReturnValue -ne 0 -or -not $result.ImageData) { return $false }
+        $bitmap = [Drawing.Bitmap]::new($width, $height, [Drawing.Imaging.PixelFormat]::Format16bppRgb565)
+        $area = [Drawing.Rectangle]::new(0, 0, $width, $height)
+        $data = $bitmap.LockBits($area, [Drawing.Imaging.ImageLockMode]::WriteOnly, $bitmap.PixelFormat)
+        [Runtime.InteropServices.Marshal]::Copy([byte[]]$result.ImageData, 0, $data.Scan0, [Math]::Min($result.ImageData.Length, $data.Stride * $height))
+        $bitmap.UnlockBits($data); $bitmap.Save($Path, [Drawing.Imaging.ImageFormat]::Png); $bitmap.Dispose()
+        return $true
+    } catch { Say "screen capture failed: $($_.Exception.Message)"; return $false }
+}
+
+try {
+    # ---- restore the baseline ------------------------------------------------
+    $vm = Get-LabVm
+    $wanted = if ($Fixture) { $FixtureCheckpoint } else { $Checkpoint }
+    $snapshots = @(Get-VMSnapshot -VM $vm | Where-Object Name -Like $wanted)
+    if ($snapshots.Count -ne 1) { throw "Expected exactly one checkpoint matching '$wanted', found $($snapshots.Count)" }
+    Say "attempt ${Name}: restoring checkpoint '$($snapshots[0].Name)'"
+    if ($vm.State -ne 'Off') { Stop-VM -VM $vm -TurnOff -Force }
+    Restore-VMSnapshot -VMSnapshot $snapshots[0] -Confirm:$false
+    $vm = Get-LabVm
+    if ($vm.State -eq 'Saved') { Remove-VMSavedState -VM $vm; $vm = Get-LabVm }
+    if ($vm.State -ne 'Off') { Stop-VM -VM $vm -TurnOff -Force; $vm = Get-LabVm }
+    $hostFree = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory * 1KB
+    $memory = [Math]::Min([long]$MemoryGB * 1GB, [long]($hostFree * 0.8 / 1GB) * 1GB)
+    if ($memory -lt 8GB) { throw "Host has too little free memory for the VM: $([Math]::Round($hostFree/1GB,1)) GB free" }
+    Set-VM -VM $vm -StaticMemory -MemoryStartupBytes $memory
+    Set-VMProcessor -VM $vm -Count ([Math]::Min($Processors, [Environment]::ProcessorCount))
+    $scratchPath = Join-Path $case 'scratch.vhdx'
+    $null = New-VHD -Path $scratchPath -SizeBytes ([long]$ScratchGB * 1GB) -Dynamic
+    Add-VMHardDiskDrive -VM $vm -ControllerType SCSI -ControllerNumber 0 -Path $scratchPath
+    $verdict.vm = @{ memory_bytes = $memory; processors = (Get-VMProcessor -VM $vm).Count; checkpoint = $snapshots[0].Name
+        host_free_disk_bytes = (Get-Volume -FilePath $case).SizeRemaining }
+    Phase 'restore'
+
+    # ---- control OS up, scratch disk ready --------------------------------------
+    Start-VM -VM $vm
+    $session = Wait-Guest 15 $null
+    if (-not $session) { throw 'Control OS did not accept a PowerShell Direct session within 15 minutes' }
+    $guest = Invoke-Command -Session $session -ArgumentList $ScratchFileSystem -ScriptBlock {
+        param($fileSystem)
+        $ErrorActionPreference = 'Stop'
+        $raw = @(Get-Disk | Where-Object PartitionStyle -EQ 'RAW')
+        if ($raw.Count -ne 1) { throw "Expected one blank scratch disk, found $($raw.Count)" }
+        if ($raw[0].IsOffline) { Set-Disk -Number $raw[0].Number -IsOffline $false }
+        if ($raw[0].IsReadOnly) { Set-Disk -Number $raw[0].Number -IsReadOnly $false }
+        Initialize-Disk -Number $raw[0].Number -PartitionStyle GPT
+        $letter = @('S', 'T', 'U', 'V', 'W') | Where-Object { -not (Test-Path "${_}:\") } | Select-Object -First 1
+        $partition = New-Partition -DiskNumber $raw[0].Number -UseMaximumSize -DriveLetter $letter
+        try { $null = Format-Volume -Partition $partition -FileSystem $fileSystem -NewFileSystemLabel 'N2R_SCRATCH' -Confirm:$false }
+        catch { $null = Format-Volume -Partition $partition -FileSystem NTFS -NewFileSystemLabel 'N2R_SCRATCH' -Confirm:$false }
+        $system = Get-Partition -DriveLetter $env:SystemDrive[0]
+        # The source is the largest lettered NTFS partition on a disk other than the running one.
+        $source = Get-Partition | Where-Object { $_.DriveLetter -and $_.DiskNumber -ne $system.DiskNumber -and $_.DiskNumber -ne $raw[0].Number } |
+            Where-Object { (Get-Volume -Partition $_).FileSystem -eq 'NTFS' } | Sort-Object Size -Descending | Select-Object -First 1
+        if (-not $source) { throw 'No lettered NTFS source partition found off the control disk' }
+        $os = Get-CimInstance Win32_OperatingSystem
+        [pscustomobject]@{
+            scratch_letter = $letter; scratch_filesystem = (Get-Volume -DriveLetter $letter).FileSystem
+            scratch_free_bytes = (Get-Volume -DriveLetter $letter).SizeRemaining
+            control_disk = $system.DiskNumber; control_filesystem = (Get-Volume -DriveLetter $env:SystemDrive[0]).FileSystem
+            control_free_bytes = (Get-Volume -DriveLetter $env:SystemDrive[0]).SizeRemaining
+            source_letter = [string]$source.DriveLetter; source_disk = $source.DiskNumber; source_partition = $source.PartitionNumber
+            source_bytes = $source.Size; source_used_bytes = $source.Size - (Get-Volume -Partition $source).SizeRemaining
+            source_guid = $source.Guid; free_memory_bytes = $os.FreePhysicalMemory * 1KB; build = $os.BuildNumber
+            disks = @(Get-Disk | Select-Object Number, Size, PartitionStyle, IsOffline, IsBoot)
+        }
+    }
+    $verdict.guest = $guest | Select-Object * -ExcludeProperty PSComputerName, RunspaceId, PSShowComputerName
+    Say ("control OS up: source {0}: disk {1} partition {2}, {3:N1} GB used; scratch {4}: {5}, {6:N0} GB free; RAM free {7:N1} GB" -f `
+        $guest.source_letter, $guest.source_disk, $guest.source_partition, ($guest.source_used_bytes / 1GB), $guest.scratch_letter,
+        $guest.scratch_filesystem, ($guest.scratch_free_bytes / 1GB), ($guest.free_memory_bytes / 1GB))
+    Phase 'prepare'
+    if ($NoConvert) { $verdict.outcome = 'prepared-only'; Remove-PSSession $session; return }
+
+    # ---- run the converter ------------------------------------------------------
+    if (-not (Test-Path -LiteralPath $Binary)) { throw "Converter binary not found: $Binary (build with cargo build --release)" }
+    $guestRoot = "C:\n2r\$Name"; $scratchDirectory = "$($guest.scratch_letter):\runs"
+    $arguments = @('--drive', $guest.source_letter, '--windows-boot-volume', '--scratch-directory', $scratchDirectory, '--target-format', 'dev-drive')
+    if ($Diagnose) { $arguments += '--diagnose' }
+    $arguments += $ConverterArgs
+    Invoke-Command -Session $session -ArgumentList $guestRoot, $scratchDirectory -ScriptBlock {
+        param($root, $scratch) $null = New-Item -ItemType Directory -Path $root -Force; $null = New-Item -ItemType Directory -Path $scratch -Force }
+    Copy-Item -LiteralPath $Binary -Destination "$guestRoot\ntfs2refs.exe" -ToSession $session
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'guest\Invoke-ConverterRun.ps1') -Destination "$guestRoot\worker.ps1" -ToSession $session
+    $taskName = "N2R-Attempt-$Name"
+    Invoke-Command -Session $session -ArgumentList $guestRoot, $taskName, (, $arguments) -ScriptBlock {
+        param($root, $task, $arguments)
+        [IO.File]::WriteAllText("$root\run.json", (@{ arguments = $arguments } | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+        $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+            -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File $root\worker.ps1 -Root $root"
+        $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+        $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+        $null = Register-ScheduledTask -TaskName $task -Action $action -Principal $principal -Settings $settings
+        Start-ScheduledTask -TaskName $task
+    }
+    Say "converter started: ntfs2refs.exe $($arguments -join ' ')"
+    $deadline = (Get-Date).AddMinutes($ConvertTimeoutMinutes); $lastLine = ''; $state = $null; $polls = 0
+    while ($true) {
+        Start-Sleep -Seconds 20; $polls++
+        try {
+            if ($session.State -ne 'Opened') { Remove-PSSession $session -ErrorAction SilentlyContinue; $session = Wait-Guest 5 $null; if (-not $session) { throw 'guest session lost' } }
+            $state = Invoke-Command -Session $session -ArgumentList $guestRoot, $taskName, $guest.scratch_letter -ErrorAction Stop -ScriptBlock {
+                param($root, $task, $letter)
+                $tail = { param($path) if (Test-Path -LiteralPath $path) { @(Get-Content -LiteralPath $path -Tail 3 -Encoding UTF8) } else { @() } }
+                [pscustomobject]@{
+                    task = (Get-ScheduledTask -TaskName $task).State.ToString()
+                    terminal = if (Test-Path "$root\native-terminal.json") { Get-Content "$root\native-terminal.json" -Raw | ConvertFrom-Json } else { $null }
+                    worker_error = if (Test-Path "$root\worker-error.txt") { Get-Content "$root\worker-error.txt" -Raw } else { $null }
+                    stdout = & $tail "$root\stdout.log"; stderr = & $tail "$root\stderr.log"
+                    scratch_free = (Get-Volume -DriveLetter $letter).SizeRemaining
+                    control_free = (Get-Volume -DriveLetter $env:SystemDrive[0]).SizeRemaining
+                }
+            }
+        } catch { Say "poll failed: $($_.Exception.Message)"; continue }
+        $line = @($state.stdout) | Select-Object -Last 1
+        if (($line -and $line -ne $lastLine) -or $polls % 30 -eq 0) {
+            $lastLine = $line
+            Say ("[{0:N0} min] {1} | scratch free {2:N1} GB, control free {3:N1} GB" -f ($phaseWatch.Elapsed.TotalMinutes), $line, ($state.scratch_free / 1GB), ($state.control_free / 1GB))
+        }
+        if ($state.terminal -or $state.worker_error -or ($state.task -ne 'Running' -and $polls -gt 3)) { break }
+        if ((Get-Date) -gt $deadline) { Say 'converter timed out; leaving it running for inspection'; break }
+    }
+    # ---- collect evidence -------------------------------------------------------
+    foreach ($leaf in 'stdout.log', 'stderr.log', 'native-process.json', 'native-terminal.json', 'worker-error.txt', 'run.json') {
+        try { Copy-Item -LiteralPath "$guestRoot\$leaf" -Destination (Join-Path $case $leaf) -FromSession $session -ErrorAction Stop } catch { }
+    }
+    try {
+        $records = Invoke-Command -Session $session -ArgumentList $scratchDirectory -ScriptBlock {
+            param($scratch) @(Get-ChildItem -LiteralPath $scratch -Recurse -File -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Extension -in '.json', '.txt', '.log' -and $_.Length -le 4MB } | Select-Object -First 400 -ExpandProperty FullName) }
+        foreach ($record in $records) {
+            $relative = $record.Substring($scratchDirectory.Length).TrimStart('\'); $target = Join-Path (Join-Path $case 'run') $relative
+            $null = New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force
+            try { Copy-Item -LiteralPath $record -Destination $target -FromSession $session -ErrorAction Stop } catch { }
+        }
+    } catch { Say "run record collection failed: $($_.Exception.Message)" }
+    $exit = if ($state -and $state.terminal) { [int]$state.terminal.native_exit } else { $null }
+    $verdict.converter = [ordered]@{ arguments = $arguments; exit = $exit
+        wall_seconds = if ($state -and $state.terminal) { $state.terminal.wall_seconds } else { $null }
+        peak_working_set_bytes = if ($state -and $state.terminal) { $state.terminal.peak_working_set_bytes } else { $null }
+        stderr_tail = if ($state) { @($state.stderr) } else { @() }; worker_error = if ($state) { $state.worker_error } else { $null } }
+    Phase 'convert'
+    if ($null -eq $exit -or $exit -ne 0) {
+        $verdict.outcome = if ($null -eq $exit) { 'converter-did-not-finish' } else { 'converter-failed' }
+        Say "converter exit: $exit. stderr: $((@($state.stderr) -join ' | '))"; Remove-PSSession $session; return
+    }
+    Say 'converter exit 0'
+    if ($Diagnose -or $NoBoot) { $verdict.outcome = if ($Diagnose) { 'diagnose-clean' } else { 'converted-not-booted' }; Remove-PSSession $session; return }
+
+    # ---- boot disk0 alone ------------------------------------------------------
+    $controlBoot = Invoke-Command -Session $session -ScriptBlock { (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o') }
+    Remove-PSSession $session
+    try { Stop-VM -VM (Get-LabVm) -Force } catch { Stop-VM -VM (Get-LabVm) -TurnOff -Force }
+    $vm = Get-LabVm
+    Get-VMHardDiskDrive -VM $vm | Where-Object { -not ($_.ControllerNumber -eq 0 -and $_.ControllerLocation -eq 0) } | Remove-VMHardDiskDrive
+    Get-VMDvdDrive -VM $vm | Remove-VMDvdDrive
+    $disk0 = Get-VMHardDiskDrive -VM $vm
+    if (@($disk0).Count -ne 1) { throw 'Expected exactly disk0 to remain attached' }
+    Set-VMFirmware -VM $vm -FirstBootDevice $disk0
+    Say 'booting the original disk0 alone, Secure Boot on'
+    Start-VM -VM $vm
+    $shots = 0
+    $session = Wait-Guest $BootTimeoutMinutes {
+        param($minute)
+        if ($minute -le 5 -or $minute % 5 -eq 0) { $script:shots++; $null = Save-VmScreen (Join-Path $case ('boot-{0:D2}min.png' -f $minute)) }
+        $heartbeat = (Get-VMIntegrationService -VM (Get-LabVm) -Name 'Heartbeat').PrimaryStatusDescription
+        Say "waiting for Windows on disk0: minute $minute, VM $((Get-LabVm).State), heartbeat $heartbeat"
+    }
+    $null = Save-VmScreen (Join-Path $case 'boot-final.png')
+    if (-not $session) {
+        $verdict.boot = @{ reached_windows = $false; vm_state = (Get-LabVm).State.ToString()
+            heartbeat = (Get-VMIntegrationService -VM (Get-LabVm) -Name 'Heartbeat').PrimaryStatusDescription }
+        $verdict.outcome = 'boot-failed'; Say "disk0 did not reach a usable Windows within $BootTimeoutMinutes minutes; see boot-*.png"; Phase 'boot'; return
+    }
+    $observed = Invoke-Command -Session $session -ArgumentList $controlBoot -ScriptBlock {
+        param($controlBoot)
+        $os = Get-CimInstance Win32_OperatingSystem; $partition = Get-Partition -DriveLetter $env:SystemDrive[0]; $volume = Get-Volume -DriveLetter $env:SystemDrive[0]
+        $refs = @(& "$env:SystemRoot\System32\fsutil.exe" fsinfo refsinfo "$env:SystemDrive" 2>&1)
+        $setup = Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\Setup'
+        $signatures = foreach ($relative in 'System32\winload.efi', 'System32\drivers\refs.sys') {
+            $signature = Get-AuthenticodeSignature -LiteralPath (Join-Path $env:SystemRoot $relative)
+            [pscustomobject]@{ file = $relative; status = [string]$signature.Status; signer = $signature.SignerCertificate.Subject }
+        }
+        [pscustomobject]@{
+            boot_utc = $os.LastBootUpTime.ToUniversalTime().ToString('o'); newer_than_control_boot = $os.LastBootUpTime.ToUniversalTime() -gt [DateTime]::Parse($controlBoot).ToUniversalTime()
+            windows_directory = $os.WindowsDirectory; build = $os.BuildNumber; disk = $partition.DiskNumber; partition = $partition.PartitionNumber
+            partition_guid = $partition.Guid; filesystem = [string]$volume.FileSystem; cluster_bytes = $volume.AllocationUnitSize
+            health = [string]$volume.HealthStatus; refs_version = (($refs -join "`n") -replace '(?s).*ReFS Version\s*:\s*([\d.]+).*', '$1')
+            secure_boot = (Confirm-SecureBootUEFI); setup_in_progress = $setup.SystemSetupInProgress; oobe_in_progress = $setup.OOBEInProgress
+            signatures = @($signatures); disks = @(Get-Disk | Select-Object Number, Size)
+        }
+    }
+    Remove-PSSession $session
+    $observed = $observed | Select-Object * -ExcludeProperty PSComputerName, RunspaceId, PSShowComputerName
+    $ok = $observed.filesystem -eq 'ReFS' -and $observed.refs_version -eq '3.14' -and $observed.cluster_bytes -eq 4096 -and
+        $observed.partition -eq $guest.source_partition -and $observed.partition_guid -eq $guest.source_guid -and @($observed.disks).Count -eq 1 -and
+        $observed.secure_boot -eq $true -and $observed.newer_than_control_boot -and $observed.health -eq 'Healthy' -and
+        -not (@($observed.signatures) | Where-Object status -NE 'Valid')
+    $verdict.boot = @{ reached_windows = $true; observed = $observed }
+    $verdict.outcome = if ($ok) { 'BOOTED-ON-REFS' } else { 'booted-but-checks-failed' }
+    Say "disk0 booted: $($observed.filesystem) $($observed.refs_version), cluster $($observed.cluster_bytes), partition $($observed.partition), health $($observed.health) => $($verdict.outcome)"
+    Phase 'boot'
+} catch {
+    $verdict.outcome = 'harness-error'; $verdict.error = ($_ | Out-String); Say "HARNESS ERROR: $($_.Exception.Message)"; throw
+} finally {
+    Save-Verdict; Say "outcome: $($verdict.outcome). Records: $case"
+}

@@ -1,3 +1,8 @@
 [target.x86_64-pc-windows-msvc]
 # The recovery environment and a fresh guest need no VC++ redistributable.
 rustflags = ["-C", "target-feature=+crt-static"]
+
+[build]
+# The user-level cargo config points target-dir at another project. Keep this
+# workspace's output in its own target directory.
+target-dir = "target"

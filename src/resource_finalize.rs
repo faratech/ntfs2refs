@@ -158,7 +158,8 @@ pub(crate) fn finalize_resource_handoff_with_windows_aliases_observer<O: Prepara
         .scratch_bytes
         .min(available.scratch_available_bytes / 2);
     available.validate_budget(resources)?;
-    let _ancestry = create_external_output(output, &journal)?;
+    let _ancestry = create_external_output(output, &journal)
+        .context("finalization: creating its output directory")?;
     let arena = ArtifactArena::new(
         output,
         resources,
@@ -180,7 +181,8 @@ pub(crate) fn finalize_resource_handoff_with_windows_aliases_observer<O: Prepara
         &output.join("reopened-journal.index"),
         budget.scratch_bytes,
         &mut events,
-    )?;
+    )
+    .context("finalization: reopening the published recovery records")?;
     events.checkpoint()?;
     events.phase("resource-handoff-authentication");
     let handoff = recovery.verify_handoff(
@@ -188,8 +190,10 @@ pub(crate) fn finalize_resource_handoff_with_windows_aliases_observer<O: Prepara
         &output.join("verified-handoff.index"),
         budget.scratch_bytes,
         &mut events,
-    )?;
-    let metadata = ReopenedVerificationMetadata::open(&handoff)?;
+    )
+    .context("finalization: authenticating the handoff")?;
+    let metadata = ReopenedVerificationMetadata::open(&handoff)
+        .context("finalization: reopening verification metadata")?;
     events.checkpoint()?;
     events.phase("resource-protected-verification");
     let mut protected = handoff.seal_for_protected_verification(
@@ -197,7 +201,8 @@ pub(crate) fn finalize_resource_handoff_with_windows_aliases_observer<O: Prepara
         &output.join("protected-handoff.index"),
         budget.scratch_bytes,
         &mut events,
-    )?;
+    )
+    .context("finalization: sealing for protected verification")?;
     events.checkpoint()?;
     // The two GUID strings and expected-label copy remain paid through the
     // native callback; the decoded tree and report carry their own leases.

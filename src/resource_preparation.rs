@@ -350,11 +350,15 @@ pub(crate) fn create_external_output(
             meta.is_dir() && meta.file_attributes() & 0x400 == 0,
             "output ancestry must be ordinary directories"
         );
+        // Attribute-only handles used to pin the route. Share everything,
+        // including delete: another holder with delete access on a working
+        // directory must not turn this into a sharing violation.
         let handle = OpenOptions::new()
             .access_mode(0x80)
-            .share_mode(3)
+            .share_mode(7)
             .custom_flags(0x0200_0000 | 0x0020_0000)
-            .open(ancestor)?;
+            .open(ancestor)
+            .with_context(|| format!("holding output ancestor {}", ancestor.display()))?;
         let actual = handle.metadata()?;
         ensure!(
             actual.is_dir() && actual.file_attributes() & 0x400 == 0,
@@ -377,21 +381,23 @@ pub(crate) fn create_external_output(
     );
     let checked = OpenOptions::new()
         .access_mode(0x80)
-        .share_mode(3)
+        .share_mode(7)
         .custom_flags(0x0200_0000 | 0x0020_0000)
-        .open(parent)?;
+        .open(parent)
+        .with_context(|| format!("rechecking output parent {}", parent.display()))?;
     ensure!(
         n2r_win32::file_storage::file_id_info(&checked)? == first_id
             && n2r_win32::file_storage::final_path_guid(&checked)?.eq_ignore_ascii_case(&route),
         "output parent route changed before creation"
     );
     held.push(checked);
-    std::fs::create_dir(output)?;
+    std::fs::create_dir(output).with_context(|| format!("creating output {}", output.display()))?;
     let created = OpenOptions::new()
         .access_mode(0x80)
-        .share_mode(3)
+        .share_mode(7)
         .custom_flags(0x0200_0000 | 0x0020_0000)
-        .open(output)?;
+        .open(output)
+        .with_context(|| format!("holding created output {}", output.display()))?;
     let created_meta = created.metadata()?;
     let created_route = n2r_win32::file_storage::final_path_guid(&created)?;
     ensure!(

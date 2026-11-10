@@ -1896,7 +1896,8 @@ impl ReopenedResourceRecovery {
                 && on_volume(&expected.snapshot.final_path, &volume),
             "reopened expected pages route differs"
         );
-        hold_expected_binding(&publication, &volume, &mut expected, scratch)?;
+        hold_expected_binding(&publication, &volume, &mut expected, scratch)
+            .context("reopening the expected-tree binding")?;
         let maps = if let Some(pin) = &publication.recovery_maps {
             ensure!(pin.records > 0, "empty V4 recovery map is invalid");
             let held = HeldFile::open(
@@ -1917,7 +1918,8 @@ impl ReopenedResourceRecovery {
         } else {
             None
         };
-        let windows_aliases = open_windows_alias_files(&publication, &volume, &expected, scratch)?;
+        let windows_aliases = open_windows_alias_files(&publication, &volume, &expected, scratch)
+            .context("reopening the Windows alias records")?;
         ensure!(
             locator
                 .snapshot()
@@ -1945,7 +1947,8 @@ impl ReopenedResourceRecovery {
             locator.ticket(),
             marker_identity,
             locator.marker_use(),
-        )?;
+        )
+        .with_context(|| format!("reopening the recovery journal {}", locator.journal_path().display()))?;
         {
             let (_, facts) = journal.split_for_observation()?;
             ensure!(
@@ -1958,7 +1961,8 @@ impl ReopenedResourceRecovery {
                 "native journal owner and published locator differ"
             );
         }
-        let _index_parent = hold_index_parent(index_path, &volume)?;
+        let _index_parent = hold_index_parent(index_path, &volume)
+            .with_context(|| format!("holding the directory of {}", index_path.display()))?;
         let mut observation = BoundJournalObservation::open(
             &mut journal,
             locator.ticket(),
@@ -1966,7 +1970,8 @@ impl ReopenedResourceRecovery {
             scratch,
             index_path,
             maximum_index_bytes,
-        )?;
+        )
+        .context("observing the reopened recovery journal")?;
         let initial_lifecycle = observation.lifecycle()?;
         observation.retire()?;
         let online = if allow_online_terminal
@@ -2007,7 +2012,8 @@ impl ReopenedResourceRecovery {
         let (target, initial_state, mounted) = match online {
             Some((mounted, state)) => (None, state, Some(mounted)),
             None => {
-                let target = ObservedTarget::reopen(publication.source.clone(), events)?;
+                let target = ObservedTarget::reopen(publication.source.clone(), events)
+                    .context("reopening the converted source partition")?;
                 let state = target.state(events)?;
                 ensure!(
                     matches!(state.disk_attributes, 1 | 3),

@@ -1158,7 +1158,7 @@ pub(super) fn available_efi(expected:&EfiIdentity,state:&crate::offline_environm
                 crate::native::offline_environment::kernel_ram_backing::require_held(ram_root,&file),
                 Ok(actual)if actual.positive_native_kernel_ramdisk&&actual==*ram_backing);
             if same_current_ram {
-                need(events.len()<128,"terminal EFI publication native event budget exceeded")?;
+                need(events.len()<crate::MAX_BATCH_EVENTS,"terminal EFI publication native event budget exceeded")?;
                 events.push(NativeEvent {
                     operation:"terminal-boot-EFI-publication-current-kernel-RAM-nonsource".into(),
                     control_code:0,input:Vec::new(),succeeded:true,native_error:None,

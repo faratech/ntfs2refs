@@ -1,6 +1,9 @@
 //! Native I/O boundary. The main converter crate continues to forbid unsafe Rust.
 //! No formatter is exposed. An offline partition remains offline when dropped;
 //! making it mountable requires a separate explicit handoff operation.
+/// Most native control events one batch may hold before it must be drained
+/// into the event log. Reaching it means a loop is missing a drain.
+pub const MAX_BATCH_EVENTS: usize = 128;
 pub mod attestation;
 #[cfg(windows)]
 pub mod attestation_partition;

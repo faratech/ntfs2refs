@@ -514,7 +514,7 @@ pub(super) fn observe_configured_dump_locations(
     binding.validate()?;
     budget.validate()?;
     require(
-        budget.ram_bytes >= WORKING_RAM_BYTES && events.len() + MAX_LOCATIONS < 128,
+        budget.ram_bytes >= WORKING_RAM_BYTES && events.len() + MAX_LOCATIONS < crate::MAX_BATCH_EVENTS,
         "Configured dump collector lacks bounded metadata/event workspace",
     )?;
     let crash = registry_snapshot(CRASH_KEY, false)?;

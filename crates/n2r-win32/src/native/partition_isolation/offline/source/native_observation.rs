@@ -328,7 +328,7 @@ fn actual_phase_label(
         )
     } != 0;
     let error = (!ok).then(io::Error::last_os_error);
-    require(events.len() < 128, "actual label event workspace exhausted")?;
+    require(events.len() < crate::MAX_BATCH_EVENTS, "actual label event workspace exhausted")?;
     events.push(NativeEvent {
         operation: "offline-before-lock-native-volume-label".into(),
         control_code: 0,

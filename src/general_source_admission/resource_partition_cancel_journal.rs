@@ -302,7 +302,7 @@ impl LiveClearJournal {
         value: serde_json::Value,
     ) -> Result<()> {
         ensure!(
-            events.len() < 128,
+            events.len() < n2r_win32::MAX_BATCH_EVENTS,
             "live J cancellation native event budget exhausted"
         );
         let output = serde_json::to_vec(&value)?;

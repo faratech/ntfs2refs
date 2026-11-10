@@ -146,7 +146,7 @@ fn native_layout(
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<Vec<u8>> {
     budget.validate()?;
-    require(events.len() < 128, "partition layout event budget exceeded")?;
+    require(events.len() < crate::MAX_BATCH_EVENTS, "partition layout event budget exceeded")?;
     let retained = events
         .iter()
         .filter(|event| event.operation == "partition-observer-native-gpt")

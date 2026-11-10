@@ -582,7 +582,7 @@ fn control_admitted(
         return Err(invalid("typed GPT setter control shape differs from fixed SDK contract"));
     }
     let limit=budget.input_limit();
-    if input.len()>limit||capacity>65536||events.len()>=128 {
+    if input.len()>limit||capacity>65536||events.len()>=crate::MAX_BATCH_EVENTS {
         return Err(invalid(&format!("native control budget exceeded: operation={name}, code=0x{code:08x}, input_bytes={}, output_capacity={capacity}, events={}, limits(input_bytes<={limit}, output_capacity<=65536, events<128)",input.len(),events.len())));
     }
     let mut output = vec![0; capacity];
@@ -696,7 +696,7 @@ pub(crate) fn flush_persisted_attributes(events: &mut Vec<NativeEvent>) -> io::R
     use windows_sys::Win32::System::Registry::{
         HKEY, HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, RegCloseKey, RegFlushKey, RegOpenKeyExW,
     };
-    if events.len() >= 128 {
+    if events.len() >= crate::MAX_BATCH_EVENTS {
         return Err(invalid("native control budget exceeded"));
     }
     let name: Vec<u16> = "SYSTEM\0".encode_utf16().collect();
@@ -1683,7 +1683,7 @@ fn allocation_bitmap(
     let mut assembler = crate::bitmap_paging::Assembler::default();
     let mut page = 0;
     while assembler.response_capacity() != 0 {
-        if events.len() >= 128 {
+        if events.len() >= crate::MAX_BATCH_EVENTS {
             return Err(invalid("allocation query audit budget exceeded"));
         }
         let page_input = crate::bitmap_paging::page_input(input, assembler.next_lcn())?;

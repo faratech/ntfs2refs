@@ -863,7 +863,7 @@ impl PartitionPreparationGuard {
             .clone()
             .ok_or_else(|| invalid("actual prior BasicRO protection required for live relock"))?;
         self.checkpoint("partition-basic-ro-relock-opening", events)?;
-        require(events.len()<128,"fresh BasicRO open event budget exhausted")?;
+        require(events.len()<crate::MAX_BATCH_EVENTS,"fresh BasicRO open event budget exhausted")?;
         let path = self.binding.storage.volume_path()?;
         let opened = OpenOptions::new()
             .read(true)

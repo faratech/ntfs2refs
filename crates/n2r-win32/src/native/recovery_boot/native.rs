@@ -177,7 +177,7 @@ pub(super) fn diagnose<T>(result:io::Result<T>,operation:&str,phase:&str,context
     if let Err(error)=&result {
         // Preserve existing event limits and every prior record. On a full
         // vector the original failure still wins; no diagnostics mask it.
-        if events.len()<128 {
+        if events.len()<crate::MAX_BATCH_EVENTS {
             let route:String=context.chars().take(4096).collect();
             let message:String=error.to_string().chars().take(4096).collect();
             if let Ok(output)=serde_json::to_vec(&serde_json::json!({

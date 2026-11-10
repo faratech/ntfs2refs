@@ -575,7 +575,7 @@ fn metadata_file(
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<std::fs::File> {
     need(
-        events.len() < 128,
+        events.len() < crate::MAX_BATCH_EVENTS,
         "Storage metadata open event budget exhausted",
     )?;
     let opened = device_file(path, false, false);
@@ -913,7 +913,7 @@ fn observe_partition_storage_roles_impl(
         };
         let output = serde_json::to_vec(&result).map_err(io::Error::other)?;
         need(
-            output.len() <= 65536 && events.len() < 128,
+            output.len() <= 65536 && events.len() < crate::MAX_BATCH_EVENTS,
             "Storage role evidence exceeds native event bound",
         )?;
         events.push(NativeEvent {

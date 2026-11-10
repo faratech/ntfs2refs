@@ -561,6 +561,10 @@ pub struct SourceRamLease {
     _arena_ram: Option<crate::artifact_arena::ArenaRamLease>,
 }
 impl SourceRamLease {
+    /// How much working memory this lease holds.
+    pub(crate) fn held_bytes(&self) -> u64 {
+        self.bytes
+    }
     /// Return only verified unused RAM while retaining the same local/global
     /// owner. The source ledger and shared arena receive exactly one credit.
     pub fn shrink_to(&mut self, bytes: u64) -> Result<()> {

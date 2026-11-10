@@ -289,9 +289,22 @@ fn actual_assembly<R: Read + Seek>(
     Ok(ram)
 }
 
+/// What opening the reader establishes about the MFT itself: where its data
+/// lives and its own record. It holds no memory lease, so it can outlive the
+/// reader that produced it.
+struct VerifiedRoot {
+    source_pin: String,
+    data: Attribute,
+    root: Record,
+    assembly_bytes: Option<u64>,
+}
+thread_local! {
+    static VERIFIED_ROOT: RefCell<Option<VerifiedRoot>> = const { RefCell::new(None) };
+}
+static ROOT_PACED: n2r_win32::verify_policy::Paced = n2r_win32::verify_policy::Paced::new();
+
 impl CheckedMftDomain {
     pub(crate) fn open<R: Read + Seek>(reader: &mut R, source: &PagedInspection) -> Result<Self> {
-        let _timed = n2r_win32::perf::scope(n2r_win32::perf::Point::RecordReaderOpen);
         ensure!(
             source.header().inventory_complete,
             "complete paged source is required"
@@ -300,6 +313,33 @@ impl CheckedMftDomain {
         let working = row_workspace(source, 0)?;
         let ram = source.lease_working_ram(working)
             .with_context(|| format!("FILE 0 checked MFT open requires {working} bytes"))?;
+        // Opening reads the boot sector, the MFT's own record and attribute
+        // list, and hashes the whole MFT bitmap three times. It was done once
+        // for every file, several times over. The source is frozen: keep what
+        // one open established and repeat the open once a second, and always
+        // inside the gate before the first source write.
+        let source_pin = source.canonical_sha256()?;
+        if !ROOT_PACED.due(1000) {
+            let known = VERIFIED_ROOT.with(|cache| {
+                cache.borrow().as_ref().filter(|known| known.source_pin == source_pin).map(|known| {
+                    (known.data.clone(), clone_record(&known.root), known.assembly_bytes)
+                })
+            });
+            if let Some((data, root, assembly_bytes)) = known {
+                let assembly_ram = assembly_bytes
+                    .map(|bytes| source.lease_working_ram(bytes))
+                    .transpose()
+                    .context("FILE 0 checked MFT assembly memory")?;
+                return Ok(Self {
+                    data,
+                    root,
+                    source_pin,
+                    _mapping_ram: ram,
+                    _assembly_ram: assembly_ram,
+                });
+            }
+        }
+        let _timed = n2r_win32::perf::scope(n2r_win32::perf::Point::RecordReaderOpen);
         let mut boot = [0; 512];
         read_at(reader, 0, &mut boot, geometry.volume_size)?;
         ensure!(
@@ -350,10 +390,19 @@ impl CheckedMftDomain {
         };
         view.revalidate()?;
         drop(view);
+        VERIFIED_ROOT.with(|cache| {
+            *cache.borrow_mut() = Some(VerifiedRoot {
+                source_pin: source_pin.clone(),
+                data: data.clone(),
+                root: clone_record(&record),
+                assembly_bytes: assembly_ram.as_ref().map(|lease| lease.held_bytes()),
+            });
+        });
+        ROOT_PACED.passed();
         Ok(Self {
             data,
             root: record,
-            source_pin: source.canonical_sha256()?,
+            source_pin,
             _mapping_ram: ram,
             _assembly_ram: assembly_ram,
         })

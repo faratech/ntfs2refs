@@ -286,6 +286,17 @@ struct RoutedPlan {
     holes: u64,
 }
 
+/// Names the object a supply pass stopped on. The loops that use this run
+/// inside a closure only so the failing ordinal is known; their control flow
+/// is unchanged.
+fn at_object(expected: &PagedExpectedTree, pass: &str, index: usize, error: anyhow::Error) -> anyhow::Error {
+    let path = expected
+        .object_leased(index)
+        .map(|object| format!("{:?}", object.path))
+        .unwrap_or_else(|_| "<path unavailable>".to_owned());
+    error.context(format!("{pass}: object {index} path={path}"))
+}
+
 /// Check every declared physical source proposal before native target scans.
 /// This reads only the already held raw metadata model: no source payload,
 /// native file query, disk-role probe, or target observation occurs here.
@@ -379,7 +390,10 @@ fn scan_plan(
     hash.update(b"n2r-private-routed-prefix-plan-v1\0");
     let (mut logical, mut referenced, mut routed, mut materialized, mut holes) =
         (0u64, 0u64, 0u64, 0u64, 0u64);
+    let failing_object = std::cell::Cell::new(0usize);
+    (|| -> Result<()> {
     for index in 0..expected.len() {
+        failing_object.set(index);
         supply_progress(progress,Phase::PayloadSupply,1,index,expected.len(),0,None);
         let object = expected.object_leased(index)?;
         if object.directory || system(&object) {
@@ -439,6 +453,9 @@ fn scan_plan(
             bytes.finish_stream()?;
         }
     }
+    Ok(())
+    })()
+    .map_err(|error| at_object(expected, "payload supply planning", failing_object.get(), error))?;
     ensure!(
         referenced
             .checked_add(routed)
@@ -511,7 +528,10 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
     let mut buffer = vec![0u8; WINDOW];
     let mut written = 0u64;
     let before_reads=bytes.logical_bytes_read();
+    let failing_object = std::cell::Cell::new(0usize);
+    (|| -> Result<()> {
     for index in 0..expected.len() {
+        failing_object.set(index);
         supply_progress(progress,Phase::PayloadSupply,2,index,expected.len(),bytes.logical_bytes_read()-before_reads,Some(written));
         let object = expected.object_leased(index)?;
         if object.directory || system(&object) {
@@ -582,6 +602,9 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
             );
         }
     }
+    Ok(())
+    })()
+    .map_err(|error| at_object(expected, "payload materialization", failing_object.get(), error))?;
     ensure!(
         written == plan.materialized,
         "routed materialization byte count differs from preflight"
@@ -648,7 +671,10 @@ impl RoutedSupplyOwner<'_, '_, '_> {
         receipt_hash.update(b"n2r-private-routed-prefix-verification-v1\0");
         let mut plan_hash = Sha256::new();
         plan_hash.update(b"n2r-private-routed-prefix-plan-v1\0");
+        let failing_object = std::cell::Cell::new(0usize);
+        (|| -> Result<()> {
         for index in 0..self.expected.len() {
+            failing_object.set(index);
             supply_progress(&self.progress,Phase::PayloadVerification,0,index,self.expected.len(),self.bytes.logical_bytes_read()-before_reads,None);
             let object = self.expected.object_leased(index)?;
             if object.directory || system(&object) {
@@ -790,6 +816,9 @@ impl RoutedSupplyOwner<'_, '_, '_> {
                 )?;
             }
         }
+        Ok(())
+        })()
+        .map_err(|error| at_object(self.expected, "payload verification", failing_object.get(), error))?;
         ensure!(
             logical == self.plan.logical
                 && referenced == self.plan.referenced

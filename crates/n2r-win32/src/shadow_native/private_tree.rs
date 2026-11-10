@@ -1910,7 +1910,12 @@ fn allocate_domain_with_memory(
     ).with_pass(pass));
     // Pin every formatter object the constructor admitted. Subsequent system
     // supply must update these same objects, not a caller-selected path.
+    // The loops below run inside a closure only so that a failure can name
+    // the object it stopped on; their control flow is unchanged.
+    let failing_object = std::cell::Cell::new(0usize);
+    (|| -> io::Result<()> {
     for index in 0..input.len() {
+        failing_object.set(index);
         allocation_progress(0, index as u64);
         let owner = input.object(index)?;
         let item = owner.input();
@@ -1928,6 +1933,9 @@ fn allocate_domain_with_memory(
             metadata_targets.insert(index, handle);
         }
     }
+    Ok(())
+    })()
+    .map_err(|error| super::cache_refresh::at_object(input, "system object pinning", failing_object.get(), error))?;
     allocation_progress(0, input.len() as u64);
     let global_query_memory = memory
         .as_ref()
@@ -1953,7 +1961,9 @@ fn allocate_domain_with_memory(
     // Its descriptor is constant rather than derived from source ACLs.
     let sd = private_descriptor()?;
     let mut system_directory_indices = Vec::new();
+    (|| -> io::Result<()> {
     for index in 0..input.len() {
+        failing_object.set(index);
         allocation_progress(1, index as u64);
         let owner = input.object(index)?;
         let item = owner.input();
@@ -2192,6 +2202,9 @@ fn allocate_domain_with_memory(
             )?;
         }
     }
+    Ok(())
+    })()
+    .map_err(|error| super::cache_refresh::at_object(input, "shadow allocation", failing_object.get(), error))?;
     allocation_progress(1, input.len() as u64);
     input.before_mutation(0)?;
     volume.sync_all()?;

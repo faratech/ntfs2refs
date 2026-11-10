@@ -47,6 +47,8 @@ const MAX_LAYOUT: usize = 48 + 128 * 144;
 mod recovery;
 pub use recovery::{ReattachedShadow, reattach_existing};
 mod retirement;
+mod backing_resources;
+pub use backing_resources::{BackingResourceGuard, BackingResourceObservation};
 pub use retirement::{
     ShadowRetirementReceipt, StagingAllocationMeter, StagingAllocationObservation,
 };

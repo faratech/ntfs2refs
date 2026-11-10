@@ -243,7 +243,7 @@ pub(crate) struct FormatProfiles {
 impl FormatProfiles {
     pub(crate) fn current() -> Self {
         Self {
-            source_cache_schema: 1,
+            source_cache_schema: 2,
             raw_source_schema: 1,
             native_purpose: *b"N2RNAT01",
             expected_purpose: *b"N2REXP01",
@@ -253,6 +253,12 @@ impl FormatProfiles {
             cluster_bytes: 4096,
             placement_archive_schema: 3,
         }
+    }
+    pub(crate) fn supported(&self)->bool {
+        let mut compatible=self.clone();
+        if !matches!(compatible.source_cache_schema,1|2){return false;}
+        compatible.source_cache_schema=2;
+        compatible==Self::current()
     }
 }
 /// An origin is evidence only. No method here opens or reactivates its guard.
@@ -333,7 +339,7 @@ impl ResumeIntent {
                     .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
                 && self.created_unix_ms > 0
                 && self.resources == arena.budget()
-                && self.profiles == FormatProfiles::current(),
+                && self.profiles.supported(),
             "resume epoch/budget/format differs"
         );
         self.pair.validate()?;
@@ -569,6 +575,7 @@ pub(crate) struct DurableResume {
     stage: Option<Stage>,
     pending: Option<BatchIntent>,
     completed_placement: Option<std::sync::Arc<CompletedPlacementFact>>,
+    completed_payloads: Option<std::sync::Arc<CompletedPlacementFact>>,
     publication: Option<ArtifactPin>,
     uncertain: Vec<UncertainCheckpoint>,
     records: Vec<RecordOwners>,
@@ -612,6 +619,7 @@ impl DurableResume {
             stage: None,
             pending: None,
             completed_placement: None,
+            completed_payloads: None,
             publication: None,
             uncertain: Vec::new(),
             records: Vec::new(),
@@ -706,6 +714,7 @@ impl DurableResume {
             stage: None,
             pending: None,
             completed_placement: None,
+            completed_payloads: None,
             publication: None,
             uncertain: Vec::new(),
             records: Vec::new(),
@@ -777,6 +786,25 @@ impl DurableResume {
     /// the actual placed tree before this can affect any runtime owner.
     pub(crate) fn completed_placement_evidence(&self) -> Option<&ArtifactPin> {
         self.completed_placement.as_ref().map(|fact| &fact.pin)
+    }
+    pub(crate) fn completed_payloads_evidence(&self) -> Option<&ArtifactPin> {
+        self.completed_payloads.as_ref().map(|fact| &fact.pin)
+    }
+    fn observe_completed_payloads(&mut self,stage:Stage,artifacts:&[ArtifactPin])->Result<()> {
+        if stage!=Stage::Payloads{return Ok(());}
+        let mut pins=artifacts.iter().filter(|pin|pin.key=="payloads-ready");
+        let Some(pin)=pins.next() else{return Ok(());};
+        ensure!(pins.next().is_none()&&pin.path==self.directory.join("payloads-ready.json"),
+            "completed payload report is ambiguous or outside its epoch");
+        let retained=(std::mem::size_of::<CompletedPlacementFact>() as u64)
+            .checked_add((pin.path.as_os_str().as_encoded_bytes().len() as u64).checked_mul(4)
+                .context("payload fact path RAM overflow")?)
+            .and_then(|n|n.checked_add((pin.final_path.len() as u64)*4))
+            .and_then(|n|n.checked_add(pin.key.len() as u64+pin.sha256.len() as u64+4096))
+            .context("payload fact RAM overflow")?;
+        let memory=self.group.arena().reserve_ram(retained)?;
+        self.completed_payloads=Some(std::sync::Arc::new(CompletedPlacementFact{pin:pin.clone(),_memory:memory}));
+        Ok(())
     }
     fn observe_completed_placement(&mut self, stage: Stage, outcome: &BatchOutcome) -> Result<()> {
         if stage != Stage::Placing
@@ -954,6 +982,7 @@ impl DurableResume {
                     "stage crossed unresolved batch/copy"
                 );
                 validate_pins(artifacts, self.limits.max_artifacts)?;
+                self.observe_completed_payloads(b.stage,artifacts)?;
             }
             Change::BatchIntent { batch } => {
                 ensure!(
@@ -971,6 +1000,7 @@ impl DurableResume {
                 if b.stage == Stage::Placing {
                     self.completed_placement = None;
                 }
+                if matches!(b.stage,Stage::Placing|Stage::Payloads) {self.completed_payloads=None;}
                 self.pending = Some(batch.clone());
             }
             Change::BatchOutcome { outcome } => {
@@ -1060,6 +1090,7 @@ impl DurableResume {
             self.publication.clone(),
             self.uncertain.clone(),
             self.completed_placement.clone(),
+            self.completed_payloads.clone(),
         );
         let validation = self.apply(&body, false);
         (
@@ -1068,6 +1099,7 @@ impl DurableResume {
             self.publication,
             self.uncertain,
             self.completed_placement,
+            self.completed_payloads,
         ) = old;
         validation?;
         self.poisoned = true;

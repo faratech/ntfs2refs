@@ -636,6 +636,7 @@ impl StagedWindowsAliases {
                 "derived alias construction requires the explicit bound Windows source",
             ));
         }
+        input.require_mutation_binding(&pair.shadow)?;
         input.require_resource_metadata(admission)?;
         aliases.require_resource_metadata(admission)?;
         aliases.revalidate()?;
@@ -713,6 +714,7 @@ impl StagedWindowsAliases {
                 sparse: None,
             };
             let path = format!("{root}{}", row.components.join("\\"));
+            input.before_mutation(0)?;
             super::create(&path, &initial, 0, None)?;
             let file = super::open(&path, directory, true)?;
             let id: [u8; 24] = super::info(&file, 18, 24)?
@@ -779,6 +781,7 @@ impl StagedWindowsAliases {
         handles: &BTreeMap<usize, File>,
         same: &impl Fn(&[u8], &[u8]) -> io::Result<bool>,
     ) -> io::Result<usize> {
+        input.require_mutation_binding(&self.pair.shadow)?;
         if self.pair.source.layout_profile != crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows {
             return Err(invalid("provisional alias security requires the explicit Windows constructor"));
         }
@@ -791,6 +794,7 @@ impl StagedWindowsAliases {
         same: &impl Fn(&[u8], &[u8]) -> io::Result<bool>,
         security_placeholders: bool,
     ) -> io::Result<usize> {
+        input.require_mutation_binding(&self.pair.shadow)?;
         let root = format!("{}\\", self.pair.shadow.volume_path()?);
         let mut provisional_aliases = 0usize;
         for staged in self.rows.values_mut() {
@@ -809,6 +813,7 @@ impl StagedWindowsAliases {
             {
                 return Err(invalid("derived alias canonical link identity changed"));
             }
+            input.before_mutation(0)?;
             crate::windows_alias_native::install_fresh_owned(
                 &handles[&entry.parent_object_index],
                 &target,
@@ -849,16 +854,19 @@ impl StagedWindowsAliases {
                 named_streams: Vec::new(),
                 sparse: None,
             };
+            input.before_mutation(expected.security.len() as u64)?;
             super::cache_refresh::restore_acl_protection_with_limit(
                 &staged.file,
                 &expected,
                 Some(self.maximum_row_bytes),
             )?;
+            input.before_mutation(expected.security.len() as u64)?;
             super::backup_security_with_limit(
                 &staged.file,
                 expected.security,
                 Some(self.maximum_row_bytes),
             )?;
+            input.before_mutation(0)?;
             super::basic(&staged.file, &expected)?;
             if !entry.directory {
                 staged.file.sync_all()?;

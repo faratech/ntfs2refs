@@ -115,9 +115,29 @@ pub(crate) fn convert_owned_with_provider_commitment(
     staging_meter: std::io::Result<Option<n2r_win32::managed_shadow::StagingAllocationMeter>>,
 ) -> Result<()> {
     let first = n2r_win32::resource_native::observe_available_resources(run)?;
+    let staging_meter = staging_meter.context("observe actual staging backing owner")?;
+    let backing_guard = staging_meter.as_ref().map(|meter| -> Result<_> {
+        if meter.observe()?.backing_kind != "native-vhdx-outer-backing" {
+            return Ok(None);
+        }
+        Ok(Some(std::sync::Arc::new(n2r_win32::managed_shadow::BackingResourceGuard::new(
+            meter.try_clone()?, &pair.shadow, provider_minimum_free_bytes,
+        )?)))
+    }).transpose()?.flatten();
+    // The legacy plan field denotes a complete maximum. Native VHDX has a
+    // rolling allowance instead; its separate admission receipt states that
+    // native metadata amplification has no established bound.
+    let provider_maximum = if backing_guard.is_some() { 0 } else { provider_commitment };
+    let provider_on_working_volume = backing_guard.as_ref()
+        .map(|guard| guard.shares_volume_with(run)).transpose()?.unwrap_or(true);
+    let working_provider_commitment = if provider_on_working_volume { provider_commitment } else { 0 };
+    let working_provider_floor = if provider_on_working_volume {
+        backing_guard.as_ref().map(|guard| guard.minimum_free_bytes())
+            .unwrap_or(provider_minimum_free_bytes)
+    } else { 0 };
     let keep = reserve(first.scratch_available_bytes)
-        .max(provider_minimum_free_bytes)
-        .checked_add(provider_commitment)
+        .max(working_provider_floor)
+        .checked_add(working_provider_commitment)
         .context("provider and working-storage reserve overflow")?;
     let usable = first
         .scratch_available_bytes
@@ -133,7 +153,14 @@ pub(crate) fn convert_owned_with_provider_commitment(
         log_ram,
         keep,
     )?;
-    observer.attach_staging_meter(staging_meter);
+    observer.attach_staging_meter(Ok(staging_meter));
+    if let Some(guard) = backing_guard {
+        observer.note(&serde_json::json!({"kind":"native-shadow-backing-admission-v1",
+            "backing":guard.observe(0)?,"shares_working_volume":provider_on_working_volume,
+            "working_pending_provider_growth_bytes":working_provider_commitment,
+            "virtual_capacity_reserved":false,"existing_allocation_charged_again":false}))?;
+        observer.attach_backing_guard(guard)?;
+    }
     // The public CLI selects this policy for --minimize-scratch. Prealignment
     // runs on live NTFS before the final frozen source certificate exists.
     if selected_capacity_policy == SelectedCapacityPolicy::SourceFreeActualBytesV1 {
@@ -188,7 +215,7 @@ pub(crate) fn convert_owned_with_provider_commitment(
         observed: available,
         resources,
         reserve_bytes: keep,
-        provider_maximum_additional_backing_bytes: provider_commitment,
+        provider_maximum_additional_backing_bytes: provider_maximum,
         provider_minimum_host_free_bytes: provider_minimum_free_bytes,
         evidence_allocation_bytes: observer.allocation_bytes(),
         evidence_maximum_bytes: observer.maximum_bytes(),

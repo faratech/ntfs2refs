@@ -368,6 +368,7 @@ fn create_owned_domain_inner(
                     "hard-link destination exists or is on a different volume",
                 ));
             }
+            input.before_mutation(0)?;
             create_link(file, parent, name)?;
             let expected =
                 u32::try_from(number + 2).map_err(|_| invalid("hard-link count overflow"))?;

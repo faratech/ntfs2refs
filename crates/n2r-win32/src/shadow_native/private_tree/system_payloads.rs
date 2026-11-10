@@ -137,6 +137,72 @@ pub(super) fn run(
     run_domain(tree, &SliceInputs(input), writer)
 }
 
+/// Fresh read-only adoption of completed system supply. The historical receipt
+/// selects this audit; it cannot set either completion bit. Keep the complete
+/// namespace and native identity checks used by the writing path.
+pub(super) fn revalidate_completed_domain(
+    tree: &mut PrivateTree,
+    input: &impl InputDomain,
+) -> io::Result<serde_json::Value> {
+    tree.require_source_excluded()?;
+    tree.require_bound_input_domain(input)?;
+    if tree.recovery_origin.is_none() || !tree.placement_complete
+        || tree.system_payloads_started || input.len() != tree.initial_objects.len() {
+        return Err(invalid("fresh recovered placement required for system readback"));
+    }
+    // Previously created source files are legal here, unlike a fresh formatter
+    // collision. Their exact canonical identity, contents and coverage are
+    // proven below; no extra SVI name is admitted.
+    let checked = validate_input_domain(input, |_| false)?;
+    if checked.directories != tree.system_directory_indices.len() {
+        return Err(invalid("recovered system directory coverage differs"));
+    }
+    let memory = tree.memory.as_ref().ok_or_else(||invalid("system recovery payer absent"))?;
+    let _work = memory.working((namespace_layout::CAPACITY as u64)
+        .checked_mul(namespace_layout::MAX_CALLS as u64)
+        .and_then(|n|n.checked_mul(8)).and_then(|n|n.checked_add(1024*1024))
+        .ok_or_else(||invalid("system recovery workspace overflow"))?)?;
+    require_owned_directories(tree, input)?;
+    let mut files = 0u64;
+    let mut digest = Sha256::new();
+    digest.update(b"n2r-recovered-system-payload-readback-v1\0");
+    for index in 0..input.len() {
+        let owner = input.object(index)?;
+        let item = owner.input();
+        if item.directory || !item.components.first().is_some_and(|s|s=="System Volume Information") {continue;}
+        let handle = tree.metadata_targets.get(&index)
+            .ok_or_else(||invalid("completed system payload native handle absent"))?;
+        let before = info(handle,18,24)?;
+        let standard = info(handle,1,24)?;
+        if tree.system_identities.get(item.components).is_none_or(|id|*id!=before[8..24])
+            || layout::u64_at(&standard,8)?!=item.logical_length()
+            || layout::u32_at(&standard,16)?!=1 || standard[20]!=0 || standard[21]!=0 {
+            return Err(invalid("recovered system payload native identity or shape differs"));
+        }
+        let raw = info(handle,7,stream_layout::MAX_STREAM_BUFFER)?;
+        let (streams,_) = stream_layout::parse_streams(&raw)?;
+        if streams.len()!=1 || !streams[0].name.is_empty() {return Err(invalid("recovered system stream set differs"));}
+        let mut file = crate::file_storage::duplicate_readonly(handle)?;
+        file.seek(SeekFrom::Start(0))?;
+        let actual = hash_exact_stream(&mut file,item.logical_length())?;
+        if item.logical_sha256().as_deref()!=Some(actual.as_str())
+            || info(handle,18,24)?!=before || info(handle,1,24)?!=standard {
+            return Err(invalid("recovered system payload readback or identity differs"));
+        }
+        digest.update((index as u64).to_le_bytes());
+        digest.update(&before);digest.update(actual.as_bytes());
+        files+=1;
+    }
+    if files!=checked.files as u64 {return Err(invalid("recovered system payload coverage differs"));}
+    require_owned_directories(tree,input)?;
+    tree.require_source_excluded()?;
+    tree.system_payloads_started=true;
+    tree.system_payloads_complete=true;
+    Ok(serde_json::json!({"kind":"private-system-payload-revalidated-v1",
+        "files":files,"logical_bytes":checked.logical_bytes,"ordered_sha256":hex::encode(digest.finalize()),
+        "payload_bytes_written":0,"source_payload_writes":0,"conversion_qualified":false}))
+}
+
 pub(super) fn run_domain(
     tree: &mut PrivateTree,
     input: &impl InputDomain,
@@ -201,6 +267,7 @@ pub(super) fn run_domain(
             if streams.len() != 1 || !streams[0].name.is_empty() {
                 return Err(invalid("system ADS unsupported"));
             }
+            tree.before_backing_mutation(item.logical_length())?;
             file.set_len(0)?;
             file.seek(SeekFrom::Start(0))?;
             writer(index, &mut file)?;
@@ -224,6 +291,7 @@ pub(super) fn run_domain(
                 named_streams: Vec::new(),
                 sparse: None,
             };
+            tree.before_backing_mutation(item.logical_length())?;
             create(&path, &target, index, Some(&mut *writer))?;
         }
         let mut file = open(&path, false, false)?;
@@ -250,6 +318,7 @@ pub(super) fn run_domain(
             "bytes":item.logical_length(),"sha256":actual,"readback_verified":true}),
         );
     }
+    tree.before_backing_mutation(0)?;
     tree.volume.sync_all()?;
     require_owned_directories(tree, input)?;
     tree.require_source_excluded()?;

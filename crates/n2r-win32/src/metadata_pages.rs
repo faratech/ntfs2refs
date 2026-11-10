@@ -457,6 +457,7 @@ fn load_page(
     data_end: u64,
     body_limit: usize,
     body: &mut Vec<u8>,
+    statistics: &mut PageCacheStatistics,
 ) -> io::Result<()> {
     require(
         e.bytes as u64 > FRAME
@@ -481,6 +482,8 @@ fn load_page(
     )?;
     body.resize(e.bytes as usize - FRAME as usize, 0);
     file.read_exact(body)?;
+    statistics.page_loads = statistics.page_loads.saturating_add(1);
+    statistics.page_hash_bytes = statistics.page_hash_bytes.saturating_add(body.len() as u64);
     require(
         Sha256::digest(&*body).as_slice() == e.sha,
         "metadata page SHA differs",
@@ -524,6 +527,24 @@ pub fn has_magic(path: &Path) -> io::Result<bool> {
     Ok(magic == MAGIC)
 }
 
+/// Bounded diagnostic counters, never validation or recovery authority. Page
+/// loads/hash bytes include complete opening validation and failed page hashes;
+/// hits/misses describe subsequent record requests. Overflow saturates rather
+/// than changing the outcome of an otherwise valid metadata operation.
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+pub struct PageCacheStatistics {
+    pub hits: u64,
+    pub misses: u64,
+    pub page_loads: u64,
+    pub page_hash_bytes: u64,
+}
+
+struct CachedPage {
+    entry: Option<Entry>,
+    record: Option<(u64, usize, usize)>,
+    body: Vec<u8>,
+}
+
 pub struct Reader {
     file: File,
     snapshot: Snapshot,
@@ -539,6 +560,11 @@ pub struct Reader {
     cached_record: Option<(u64, usize, usize)>,
     body: Vec<u8>,
     body_limit: usize,
+    // Optional second authenticated page, supplied by an explicitly prepaid
+    // caller. The primary slot is most recently used; swaps retain each page's
+    // own record cursor and never share buffers across Reader/file ownership.
+    secondary: Option<CachedPage>,
+    statistics: PageCacheStatistics,
 }
 impl Reader {
     /// Pre-allocation body bound for an actual held ordinary file length.
@@ -643,13 +669,22 @@ impl Reader {
         let mut count = 0;
         let mut previous: Option<Vec<u8>> = None;
         let mut cached = None;
+        let mut statistics = PageCacheStatistics::default();
         for page in 0..pages {
             let e = entry(&mut file, index, page)?;
             require(
                 e.offset == cursor && e.first == count && add(cursor, e.bytes as u64)? <= index,
                 "metadata page index has a gap/overlap or missing records",
             )?;
-            load_page(&mut file, e, budget, index, body_limit, &mut body)?;
+            load_page(
+                &mut file,
+                e,
+                budget,
+                index,
+                body_limit,
+                &mut body,
+                &mut statistics,
+            )?;
             let mut at = 0;
             for _ in 0..e.count {
                 let (end, key, payload) = record_at(&body, at)?;
@@ -686,6 +721,8 @@ impl Reader {
             cached_record: None,
             body,
             body_limit,
+            secondary: None,
+            statistics,
         })
     }
     pub fn len(&self) -> u64 {
@@ -703,6 +740,26 @@ impl Reader {
     /// Actual retained allocation, for the caller's prepaid bound check.
     pub fn body_capacity(&self) -> usize {
         self.body.capacity()
+            + self.secondary.as_ref().map_or(0, |page| page.body.capacity())
+    }
+    /// Opt in without allocating inside this generic reader. The caller must
+    /// reserve the actual additional capacity before allocating this empty
+    /// buffer, and retain that payment until this Reader has dropped. Ordinary
+    /// open/open_held callers continue to retain exactly one page buffer.
+    pub fn install_second_page_cache(&mut self, body: Vec<u8>) -> io::Result<()> {
+        require(
+            self.secondary.is_none() && body.is_empty() && body.capacity() == self.body_limit,
+            "second metadata cache must be fresh and exactly bounded by the held file",
+        )?;
+        self.secondary = Some(CachedPage {
+            entry: None,
+            record: None,
+            body,
+        });
+        Ok(())
+    }
+    pub fn page_cache_statistics(&self) -> PageCacheStatistics {
+        self.statistics
     }
     /// Actual retained-handle route, for the caller's independent-volume gate.
     pub fn final_path(&self) -> &str {
@@ -730,10 +787,24 @@ impl Reader {
         callback: impl FnOnce(&[u8], &[u8]) -> io::Result<T>,
     ) -> io::Result<T> {
         require(ordinal < self.records, "metadata ordinal is out of bounds")?;
-        if !self
+        if self
             .cached
             .is_some_and(|e| ordinal >= e.first && ordinal - e.first < e.count as u64)
         {
+            self.statistics.hits = self.statistics.hits.saturating_add(1);
+        } else if self
+            .secondary
+            .as_ref()
+            .and_then(|page| page.entry)
+            .is_some_and(|e| ordinal >= e.first && ordinal - e.first < e.count as u64)
+        {
+            let secondary = self.secondary.as_mut().unwrap();
+            std::mem::swap(&mut self.cached, &mut secondary.entry);
+            std::mem::swap(&mut self.cached_record, &mut secondary.record);
+            std::mem::swap(&mut self.body, &mut secondary.body);
+            self.statistics.hits = self.statistics.hits.saturating_add(1);
+        } else {
+            self.statistics.misses = self.statistics.misses.saturating_add(1);
             let (mut low, mut high) = (0, self.pages);
             while low < high {
                 let mid = low + (high - low) / 2;
@@ -750,6 +821,16 @@ impl Reader {
                 ordinal >= e.first && ordinal - e.first < e.count as u64,
                 "metadata indexed ordinal has a gap",
             )?;
+            // Evict the less recently used slot. Clear its advertised entry
+            // before I/O so a failed load/hash can never expose overwritten
+            // bytes under the previous page identity on a later request.
+            if let Some(secondary) = &mut self.secondary {
+                std::mem::swap(&mut self.cached, &mut secondary.entry);
+                std::mem::swap(&mut self.cached_record, &mut secondary.record);
+                std::mem::swap(&mut self.body, &mut secondary.body);
+            }
+            self.cached = None;
+            self.cached_record = None;
             load_page(
                 &mut self.file,
                 e,
@@ -757,6 +838,7 @@ impl Reader {
                 self.index,
                 self.body_limit,
                 &mut self.body,
+                &mut self.statistics,
             )?;
             self.cached = Some(e);
             self.cached_record = None;

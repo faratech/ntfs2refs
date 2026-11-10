@@ -35,6 +35,7 @@ pub struct RecoveredOrigin {
     pins: ExternalOriginPins,
     namespace_sha256: [u8; 32],
     placed_ready: bool,
+    payloads_ready: bool,
     _memory: Box<dyn report_memory::ReportMemoryLease>,
 }
 impl RecoveredOrigin {
@@ -53,8 +54,9 @@ impl RecoveredOrigin {
     pub(super) fn remaining(&self) -> (u64, usize) {
         (self.remaining_bytes, self.remaining_submissions)
     }
+    pub(super) fn payloads_ready(&self) -> bool { self.payloads_ready }
     pub(super) fn receipt(&self) -> serde_json::Value {
-        serde_json::json!({"kind":if self.placed_ready {"fresh-native-recovered-source-backed-origin-v1"}else{"fresh-native-recovered-unwritten-origin-v1"},
+        serde_json::json!({"kind":if self.payloads_ready {"fresh-native-recovered-initialized-payload-origin-v1"}else if self.placed_ready {"fresh-native-recovered-source-backed-origin-v1"}else{"fresh-native-recovered-unwritten-origin-v1"},
             "pins":self.pins,"namespace_sha256":hex::encode(self.namespace_sha256),
             "prior_submissions_upper":self.prior_submissions,"prior_move_bytes_upper":self.prior_bytes,
             "remaining_submissions":self.remaining_submissions,"remaining_move_bytes":self.remaining_bytes,
@@ -68,6 +70,11 @@ pub struct RecoveredPrivateTree {
     attempted: bool,
 }
 impl RecoveredPrivateTree {
+    pub fn attach_backing_resource_guard(&mut self,
+        guard: std::sync::Arc<crate::managed_shadow::BackingResourceGuard>) -> io::Result<()> {
+        self.tree.attach_backing_resource_guard(guard)
+    }
+
     /// Diagnostic progress only. It cannot recreate or transfer this owner.
     pub fn placement_progress(&self) -> &serde_json::Value {
         self.tree.placement_progress()
@@ -339,7 +346,7 @@ pub fn adopt_unwritten_domain(
     profile:crate::attestation::ResourceProfile,payer:Arc<dyn report_memory::ReportMemoryAccountant>,
     spend:PartialPlacementSpend,limits:RecoveryLimits,pins:ExternalOriginPins,
 )->io::Result<RecoveredPrivateTree>{
-    adopt_recovery_domain(enrollment,input,profile,payer,spend,limits,pins,false)
+    adopt_recovery_domain(enrollment,input,profile,payer,spend,limits,pins,false,false)
 }
 
 /// Fresh native private-tree and initialized-prefix audit. Historical payload
@@ -349,7 +356,19 @@ pub fn adopt_placed_domain(
     profile:crate::attestation::ResourceProfile,payer:Arc<dyn report_memory::ReportMemoryAccountant>,
     spend:PartialPlacementSpend,limits:RecoveryLimits,pins:ExternalOriginPins,
 )->io::Result<RecoveredPrivateTree>{
-    adopt_recovery_domain(enrollment,input,profile,payer,spend,limits,pins,true)
+    adopt_recovery_domain(enrollment,input,profile,payer,spend,limits,pins,true,false)
+}
+/// Adopt a fully initialized but still private payload tree. This does not
+/// trust the previous supply verdict: callers must freshly verify user bytes,
+/// native routes and system payloads before metadata completion. A tree whose
+/// metadata transition began is deliberately rejected by the private namespace
+/// and security audits, rather than downgraded to an unwritten tree.
+pub fn adopt_payloads_domain(
+    enrollment:ConstructionEnrollment<'_>,input:&impl InputDomain,
+    profile:crate::attestation::ResourceProfile,payer:Arc<dyn report_memory::ReportMemoryAccountant>,
+    spend:PartialPlacementSpend,limits:RecoveryLimits,pins:ExternalOriginPins,
+)->io::Result<RecoveredPrivateTree>{
+    adopt_recovery_domain(enrollment,input,profile,payer,spend,limits,pins,true,true)
 }
 fn adopt_recovery_domain(
     mut enrollment: ConstructionEnrollment<'_>,
@@ -360,6 +379,7 @@ fn adopt_recovery_domain(
     limits: RecoveryLimits,
     pins: ExternalOriginPins,
     placed_ready: bool,
+    payloads_ready: bool,
 ) -> io::Result<RecoveredPrivateTree> {
     let admission = profile
         .resource_admission()?
@@ -491,7 +511,8 @@ fn adopt_recovery_domain(
         )?;
     }
     let mut files = BTreeMap::new();
-    let reopen_placeholder=if placed_ready {unwritten::PrivatePlaceholder::reopen_placed}
+    let reopen_placeholder=if payloads_ready {unwritten::PrivatePlaceholder::reopen_payloads}
+        else if placed_ready {unwritten::PrivatePlaceholder::reopen_placed}
         else {unwritten::PrivatePlaceholder::reopen_unwritten};
     let mut sparse_targets = BTreeMap::new();
     let mut metadata_targets = BTreeMap::new();
@@ -520,13 +541,19 @@ fn adopt_recovery_domain(
         let system = item.components[0] == "System Volume Information";
         if system {
             let path = format!("{root}{}", item.components.join("\\"));
+            if payloads_ready && !std::path::Path::new(&path).try_exists()? {
+                return Err(invalid("completed payload system object is absent"));
+            }
             // All source SVI directories must exist already. Only the narrow
             // formatter files may be absent or contain native cache data.
             if item.directory || std::path::Path::new(&path).try_exists()? {
-                if !item.directory && !formatter_cache_name(&item.components[1]) {
+                if !item.directory && !formatter_cache_name(&item.components[1]) && !payloads_ready {
                     return Err(invalid("recovered SVI file is outside formatter exception"));
                 }
                 let handle = open(&path, item.directory, true)?;
+                if payloads_ready && !item.directory && !formatter_cache_name(&item.components[1]) {
+                    require_private_security(&handle, false)?;
+                }
                 if item.components.len() == 2 && item.directory {
                     require_private_security(&handle, true)?;
                 }
@@ -740,6 +767,7 @@ fn adopt_recovery_domain(
         carrier_directory,
         volume: enrollment.volume,
         pair: enrollment.pair,
+        backing_guard: None,
         source_before: enrollment.source_before,
         partition_source: None,
         dedicated_source: Some(dedicated),
@@ -774,6 +802,7 @@ fn adopt_recovery_domain(
     tree.memory.as_ref().unwrap().close_base(&tree)?;
     let origin = RecoveredOrigin {
         placed_ready,
+        payloads_ready,
         token,
         prior_submissions,
         prior_bytes,
@@ -797,4 +826,38 @@ fn require_base_identity(namespace: &Namespace, path: &[String], file: &File) ->
         ));
     }
     Ok(())
+}
+
+impl PrivateTree {
+    /// Reissue system-supply readiness from current native bytes, never a flag.
+    pub fn revalidate_recovered_system_payloads_domain(
+        &mut self,input:&impl InputDomain,
+    )->io::Result<serde_json::Value>{
+        system_payloads::revalidate_completed_domain(self,input)
+    }
+
+    /// Renew the partial-tail witness after source/target comparison. This
+    /// reads the native tail again under the retained identity and does not
+    /// write, initialize, resize or clone a stream.
+    pub fn revalidate_recovered_materialized_tail_named(
+        &mut self,index:usize,name:&[u16],components:&[String],logical_length:u64,
+        offset:u64,expected:&[u8],
+    )->io::Result<()> {
+        let prefix=logical_length/4096*4096;
+        let end=offset.checked_add(expected.len() as u64).ok_or_else(||invalid("recovered tail interval overflow"))?;
+        if prefix==0 || prefix==logical_length || offset>prefix || end<logical_length {return Ok(());}
+        if self.recovery_origin.is_none() || expected.len()>65536 {return Err(invalid("recovered tail owner or range differs"));}
+        self.validate_stream_shape_named(index,name,components,logical_length)?;
+        let key=StreamKey::named(index,name);
+        let native_id=if let Some(target)=self.sparse_targets.get(&key){info(&target.file,18,24)?}
+            else{info(self.files.get(&key).ok_or_else(||invalid("recovered tail file absent"))?.metadata_handle(),18,24)?};
+        let _work=self.memory.as_ref().ok_or_else(||invalid("recovered tail payer absent"))?.working(4096)?;
+        let mut actual=[0u8;4096];
+        let count=(logical_length-prefix) as usize;
+        self.read_materialized_range_named(index,name,prefix,&mut actual[..count])?;
+        let start=(prefix-offset) as usize;
+        if actual[..count]!=expected[start..start+count] {return Err(invalid("recovered materialized tail differs from source"));}
+        self.record_materialized_tail(&key,logical_length,offset,expected,native_id)?;
+        self.validate_stream_shape_named(index,name,components,logical_length)
+    }
 }

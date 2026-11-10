@@ -28,6 +28,7 @@ pub(crate) struct FilePreparationObserver {
     finished: bool,
     staging_meter: Option<n2r_win32::managed_shadow::StagingAllocationMeter>,
     staging_meter_error: Option<String>,
+    backing_guard: Option<std::sync::Arc<n2r_win32::managed_shadow::BackingResourceGuard>>,
     durable_preparation_cancellation: bool,
     preparation_pin: Option<early_guard::GuardPin>,
 }
@@ -65,6 +66,21 @@ impl Write for WrittenHash<'_> {
     }
 }
 impl FilePreparationObserver {
+    pub(crate) fn attach_backing_guard(
+        &mut self,
+        guard: std::sync::Arc<n2r_win32::managed_shadow::BackingResourceGuard>,
+    ) -> Result<()> {
+        ensure!(self.backing_guard.is_none(), "backing resource owner already attached");
+        guard.check_before_operation(0)?;
+        self.backing_guard = Some(guard);
+        Ok(())
+    }
+
+    pub(crate) fn backing_resource_guard(&self)
+        -> Option<std::sync::Arc<n2r_win32::managed_shadow::BackingResourceGuard>> {
+        self.backing_guard.clone()
+    }
+
     pub(crate) fn attach_staging_meter(
         &mut self,
         meter: std::io::Result<Option<n2r_win32::managed_shadow::StagingAllocationMeter>>,
@@ -240,6 +256,7 @@ impl FilePreparationObserver {
             finished: false,
             staging_meter: None,
             staging_meter_error: None,
+            backing_guard: None,
             durable_preparation_cancellation: false,
             preparation_pin: None,
         })
@@ -413,6 +430,11 @@ impl FilePreparationObserver {
     }
 }
 impl PreparationObserver for FilePreparationObserver {
+    fn backing_resource_guard(&self)
+        -> Option<std::sync::Arc<n2r_win32::managed_shadow::BackingResourceGuard>> {
+        FilePreparationObserver::backing_resource_guard(self)
+    }
+
     fn restore_source_on_pre_ap_failure(&self) -> bool {
         true
     }
@@ -425,12 +447,12 @@ impl PreparationObserver for FilePreparationObserver {
     }
     fn native_events(&mut self, phase: &'static str, events: &mut Vec<NativeEvent>) -> Result<()> {
         if self.phase != Some(phase) {
-            let label = if phase.contains("source") {
-                "Inspecting NTFS"
+            let label = if phase.contains("apply") || phase.contains("handoff") {
+                "Applying conversion"
             } else if phase.contains("journal") || phase.contains("publication") {
                 "Preparing recovery records"
-            } else if phase.contains("apply") || phase.contains("handoff") {
-                "Applying conversion"
+            } else if phase.contains("source") {
+                "Inspecting NTFS"
             } else {
                 "Verifying ReFS metadata"
             };

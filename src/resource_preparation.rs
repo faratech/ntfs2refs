@@ -89,6 +89,7 @@ pub(crate) struct ResumePreparation {
     pub expected: crate::general_source_admission::resource::SourceCacheFilePin,
     pub expected_binding: Option<crate::shadow_tree::ExpectedBindingPin>,
     pub completed_placement: Option<resume_session_inputs::HeldCompletedPlacement>,
+    pub completed_payloads: Option<resume_session_inputs::HeldCompletedPayloads>,
     pub shadow_origin: n2r_win32::shadow_native::private_tree::recovery::ExternalOriginPins,
     pub prior_spend: n2r_win32::shadow_native::private_tree::recovery::PartialPlacementSpend,
     pub placement_limits: n2r_win32::shadow_native::private_tree::recovery::RecoveryLimits,
@@ -186,6 +187,13 @@ pub(crate) trait PreparationObserver {
     }
     fn remaining_scratch_reservation_bytes(&self) -> u64 {
         0
+    }
+    /// Actual provider/backing owner, not a serialized capacity claim. Long
+    /// native loops must consult this before their bounded allocating work.
+    fn backing_resource_guard(
+        &self,
+    ) -> Option<std::sync::Arc<n2r_win32::managed_shadow::BackingResourceGuard>> {
+        None
     }
     fn preparation_created(&mut self, _pin: &early_guard::GuardPin) -> Result<()> {
         Ok(())
@@ -780,7 +788,10 @@ where
             projection_wire_bytes: projection_seal.wire_bytes(),
         })?;
         let maximum_source_read_bytes = request.source_read_budget(&expected, admission)?;
-        let inputs = PagedInputs(&expected);
+        let backing_guard = events.observer.backing_resource_guard();
+        let inputs = general_shadow::GuardedInputs::new(
+            PagedInputs(&expected), backing_guard.clone(), &request.pair.shadow,
+        )?;
         let trust_recipes = if trust_repair_allocation.is_some() {
             Some(crate::refs_security_integration::collect_recipes(
                 &inputs, &arena,
@@ -861,6 +872,20 @@ where
             placement_scratch,
         )?;
 
+        let completed_payloads = effective_resume
+            .as_ref()
+            .and_then(|saved| saved.completed_payloads.as_ref());
+        if let Some(proof) = completed_payloads {
+            proof.require_arena(&arena)?;
+            proof.require_expected(expected.file_sha256())?;
+            events.observer.note(&serde_json::json!({
+                "kind":"completed-payload-recovery-selected-v1",
+                "payload_receipt":proof.pin(),"selection_only":true,
+                "fresh_native_payload_verification_required":true,
+                "payload_rematerialization_requested":false,
+            }))?;
+        }
+
         // Recovery acquires fresh native ownership of the existing tree. It
         // never calls the allocator or recreates the shadow's files.
         let (mut private, placement) = if let Some(saved) = effective_resume.as_ref() {
@@ -882,7 +907,19 @@ where
                     "requires_fresh_native_placed_audit":true,"placement_moves_requested":false}),
                 )?;
             }
-            let mut recovered = if placed_ready.is_some() {
+            let mut recovered = if completed_payloads.is_some() {
+                ensure!(placed_ready.is_some(), "completed payloads require held placement evidence");
+                n2r_win32::shadow_native::private_tree::recovery::adopt_payloads_domain(
+                    enrollment,
+                    &inputs,
+                    native_profile,
+                    Arc::new(ArenaReportMemory(arena.clone())),
+                    saved.prior_spend,
+                    saved.placement_limits,
+                    saved.shadow_origin.clone(),
+                )
+                .context("fresh native completed-payload shadow adoption")?
+            } else if placed_ready.is_some() {
                 n2r_win32::shadow_native::private_tree::recovery::adopt_placed_domain(
                     enrollment,
                     &inputs,
@@ -905,6 +942,9 @@ where
                 )
                 .context("fresh native unwritten-shadow adoption")?
             };
+            if let Some(guard) = &backing_guard {
+                recovered.attach_backing_resource_guard(Arc::clone(guard))?;
+            }
             let observation = recovered.origin_observation();
             events.observer.note(&observation)?;
             let batch = resume_checkpoints
@@ -958,6 +998,9 @@ where
                 private.allocation_ram_accounted(),
                 "native private-tree allocation lease is absent"
             );
+            if let Some(guard) = &backing_guard {
+                private.attach_backing_resource_guard(Arc::clone(guard))?;
+            }
             let placement = match private.place_source_prefixes_resource_domain(
                 &inputs,
                 request.maximum_placement_bytes,
@@ -986,9 +1029,11 @@ where
             "conversion_authorized":false,
         }))?;
         drop(placement);
-        private
-            .prepare_source_backed_prefixes()
-            .context("prepare source-backed shadow prefixes")?;
+        if completed_payloads.is_none() {
+            private
+                .prepare_source_backed_prefixes()
+                .context("prepare source-backed shadow prefixes")?;
+        }
         {
             let (source, raw) = context.source_and_inspection()?;
             let scope_memory = ArenaReportMemory(arena.clone());
@@ -998,13 +1043,22 @@ where
                         let mut bytes = PagedSourceByteAdapterWithScope::new_scoped(
                             scope, raw, admission, maximum_source_read_bytes,
                         )?;
-                        let mut routed = general_shadow::paged_supply::routed::prepare(
-                            &mut bytes, &expected, &mut private,
-                            request.maximum_materialized_bytes, request.verification_policy,
-                        ).context("prepare routed shadow payload materialization")?;
-                        let (_system, indexer) = routed.materialize_system_payloads()
-                            .context("materialize routed system payloads")?;
-                        drop(indexer);
+                        let routed = if let Some(proof) = completed_payloads {
+                            general_shadow::paged_supply::routed::prepare_recovered(
+                                &mut bytes, &expected, &mut private,
+                                request.maximum_materialized_bytes, request.verification_policy,
+                                proof.routed_plan_sha256(),
+                            ).context("revalidate completed routed payload supply")?
+                        } else {
+                            let mut routed = general_shadow::paged_supply::routed::prepare(
+                                &mut bytes, &expected, &mut private,
+                                request.maximum_materialized_bytes, request.verification_policy,
+                            ).context("prepare routed shadow payload materialization")?;
+                            let (_system, indexer) = routed.materialize_system_payloads()
+                                .context("materialize routed system payloads")?;
+                            drop(indexer);
+                            routed
+                        };
                         let receipt = routed.verify()
                             .context("verify routed shadow payload supply")?;
                         bytes.finish()?;
@@ -1100,17 +1154,10 @@ where
             &output.join("target"),
             &mut events,
             verified_aliases.as_ref().zip(alias_inputs.as_ref()),
-            |context, target, expected, native, scope, closing| {
+            |context, target, expected, routes, scope, closing| {
                 let (source, raw) = context.source_and_inspection()?;
-                let mut bytes =
+                let bytes =
                     PagedSourceByteAdapter::new(source, raw, admission, maximum_source_read_bytes)?;
-                let routes = PagedPayloadRoutes::capture(
-                    native,
-                    expected,
-                    &mut bytes,
-                    &capture_dir.join("routes"),
-                    &capture_group,
-                )?;
                 let candidate = PagedSourceBackedCandidate::new(bytes, target, expected, routes)?
                     .with_closing_bytes(closing);
                 let mut guard = |p: CaptureProgress| -> Result<()> {

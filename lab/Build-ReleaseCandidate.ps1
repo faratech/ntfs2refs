@@ -50,6 +50,7 @@ $initialLabActual = [long]0; $lastSharedBytes = [long]0
 $stagingInitialBytes=[long]0;$lastStagingBytes=[long]0
 $sourceState=$null;$sourceRefresh=$null;$stableSourcePins=$null;$sourceHelper=$null;$sourceAfterVerified=$false
 $sourceContractSha256=$null;$sourceOwnPackagesRebuilt=$false
+$packageContracts=$null;$packageInvalidation=$null;$ownPackageCleanList=@()
 $sourceCacheTag=$null
 
 function Need([bool]$Condition,[string]$Message) { if (-not $Condition) { throw $Message } }
@@ -399,16 +400,24 @@ try {
         # Cargo's mtime checks alone are insufficient after timestamp collision
         # or clock rollback. Reuse owning-package outputs only when the exact
         # byte/tool/config contract previously completed successfully here.
-        $contract=[ordered]@{source_files=$sourcePins.ToArray();cargo_sha256=$cargo.sha256;rustc_sha256=$rustc.sha256;toolchain=$channel;target=$targetTriple;cargo_home_config=$ExpectedCargoHomeConfigSha256;builder_sha256=(Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant();helper_sha256=$sourceHelper.sha256}
-        $contractBytes=[Text.UTF8Encoding]::new($false).GetBytes(($contract|ConvertTo-Json -Depth 12 -Compress))
-        $contractHash=[Security.Cryptography.SHA256]::Create();try{$sourceContractSha256=[Convert]::ToHexString($contractHash.ComputeHash($contractBytes)).ToLowerInvariant()}finally{$contractHash.Dispose()}
+        $contractInputs=[ordered]@{cargo_sha256=$cargo.sha256;rustc_sha256=$rustc.sha256;rustup_sha256=$rustup.sha256;git_sha256=$git.sha256;toolchain=$channel;target=$targetTriple;cargo_home=$cargoHome;cargo_home_config=$ExpectedCargoHomeConfigSha256;builder_sha256=(Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant();helper_sha256=$sourceHelper.sha256;profile='release';locked=$true;offline=$true;jobs=$Jobs;cargo_incremental='0';rustc_wrapper='';rustc_workspace_wrapper='';inherited_cargo_rust_environment_removed=$true;features='manifest-defaults'}
+        $packageContracts=Get-SharedSourcePackageContracts ($sourcePins.ToArray()) $contractInputs
+        $sourceContractSha256=$packageContracts.contract_sha256
         GuardWorkingSpace
         $sourceCacheTag=Ensure-SharedExperimentalCargoTag $sourceState $sharedBaseline
         WriteRecord 'shared-cargo-cache-tag.json' $sourceCacheTag
         GuardWorkingSpace
         $previous=Get-SharedSourceSuccessfulContract $sourceState
-        if($previous-cne$sourceContractSha256-or$sourceRefresh.updated_files.Count-ne0-or$sourceRefresh.removed_files.Count-ne0-or$sourceRefresh.case_only_tree_reset){
-            RunOwned 'cargo-clean-own-packages' $cargo.path @('--config',(Join-Path $source '.cargo\config.toml'),'clean','--manifest-path',(Join-Path $source 'Cargo.toml'),'--release','--locked','--offline','--target',$targetTriple,'--target-dir',$target,'--package','ntfs2refs','--package','n2r-win32') $cargoDirectory
+        $packageInvalidation=Select-SharedSourcePackageInvalidation $previous $packageContracts $sourceRefresh
+        $ownPackageCleanList=@($packageInvalidation.packages)
+        # A failed or interrupted Cargo invocation must not leave the previous
+        # successful contract authorizing any later reuse of partial outputs.
+        Clear-SharedSourceSuccessfulContract $sourceState
+        WriteRecord 'shared-package-invalidation.json' @{schema_version=2;kind='content-pinned-package-invalidation';package_contracts=$packageContracts;decision=$packageInvalidation;previous_success_schema=if($null-eq$previous){$null}else{$previous.schema_version};previous_contract_sha256=if($null-eq$previous){$null}else{$previous.contract_sha256};exclusive_cache_lock_held=$true;success_tag_invalidated_before_cargo=$true}
+        if($ownPackageCleanList.Count-ne0){
+            $cleanArguments=@('--config',(Join-Path $source '.cargo\config.toml'),'clean','--manifest-path',(Join-Path $source 'Cargo.toml'),'--release','--locked','--offline','--target',$targetTriple,'--target-dir',$target)
+            foreach($package in $ownPackageCleanList){$cleanArguments+=@('--package',$package)}
+            RunOwned 'cargo-clean-own-packages' $cargo.path $cleanArguments $cargoDirectory
             $sourceOwnPackagesRebuilt=$true
         }
         Assert-SharedExperimentalSource $sourceState $expected $stableSourcePins
@@ -469,14 +478,17 @@ try {
             $manifestRecord['source_path_file_ids_verified']=$true
             $manifestRecord['source_directory_no_delete_handles_held']=$true
             $manifestRecord['source_contract_sha256']=$sourceContractSha256
+            $manifestRecord['package_contracts']=$packageContracts
+            $manifestRecord['package_invalidation']=$packageInvalidation
             $manifestRecord['shared_target_cargo_tag']=$sourceCacheTag
             $manifestRecord['own_packages_cleaned_for_changed_or_unproven_contract']=$sourceOwnPackagesRebuilt
-            $manifestRecord['own_package_clean_list']=@('ntfs2refs','n2r-win32')
+            $manifestRecord['own_package_clean_list']=$ownPackageCleanList
+            $manifestRecord['success_tag_invalidated_before_cargo']=$true
             $manifestRecord['dependency_artifacts_preserved']=$true
         }
     }
     WriteRecord 'manifest.json' $manifestRecord
-    if($UseSharedExperimentalSource){Save-SharedSourceSuccessfulContract $sourceState $sourceContractSha256 $SourceCommit (Join-Path $root 'manifest.json') (Get-FileHash -LiteralPath (Join-Path $root 'manifest.json') -Algorithm SHA256).Hash.ToLowerInvariant()}
+    if($UseSharedExperimentalSource){Save-SharedSourceSuccessfulContract $sourceState $sourceContractSha256 $SourceCommit (Join-Path $root 'manifest.json') (Get-FileHash -LiteralPath (Join-Path $root 'manifest.json') -Algorithm SHA256).Hash.ToLowerInvariant() $packageContracts}
     [pscustomobject]@{output_directory=$root;manifest_sha256=(Get-FileHash -LiteralPath (Join-Path $root 'manifest.json') -Algorithm SHA256).Hash.ToLowerInvariant();source_commit=$SourceCommit;binaries=$binaryPins.Count;stable_release=$false;qualification_inherited=$false} | ConvertTo-Json
 } catch {
     if ($created) { WriteRecord 'build-failed.json' @{schema_version=1;kind='committed-source-candidate-build-failure';source_commit=$SourceCommit;error=$_.Exception.Message;commands=$commands.ToArray();retained_for_review=$true;unit_tests_run=$false;native_tools_invoked=$false;qualification_inherited=$false} }

@@ -71,9 +71,14 @@ impl StageOwner {
         }
     }
 
-    pub(crate) fn maximum_additional_host_backing_commitment(&self) -> Result<u64> {
+    pub(crate) fn initial_host_backing_commitment(&self) -> Result<u64> {
         match self {
-            Self::Vhdx(_) => Ok(0),
+            // Native VHDX uses a rolling, provider-quantum allowance. This is
+            // pending operational growth, not the entire virtual disk size or
+            // a claimed maximum for native metadata amplification.
+            Self::Vhdx(owner) => Ok(n2r_win32::managed_shadow::BackingResourceGuard::new(
+                owner.staging_allocation_meter()?, &owner.binding, 0,
+            )?.allocation_quantum_bytes()),
             Self::Thin(owner) => owner
                 .maximum_additional_host_backing_bytes()
                 .context("observe remaining private thin host-backing commitment"),

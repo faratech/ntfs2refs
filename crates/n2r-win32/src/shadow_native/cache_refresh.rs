@@ -268,6 +268,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
     security_placeholders: bool,
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
 ) -> io::Result<serde_json::Value> {
+    input.require_mutation_binding(&pair.shadow)?;
     let resource_root = format!("{}\\", pair.shadow.volume_path()?);
     if resource_admission.is_some() != enumeration_payer.is_some() {
         return Err(invalid("resource metadata enumeration requires its actual constructor payer"));
@@ -526,6 +527,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             ),
             &same_security,
         )? {
+            input.before_mutation(item.security.len() as u64)?;
             let restored = restore_acl_protection_with_limit(
                 handle,
                 item,
@@ -533,6 +535,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             )?;
             dacl_protection_updates += usize::from(restored.dacl);
             sacl_protection_updates += usize::from(restored.sacl);
+            input.before_mutation(item.security.len() as u64)?;
             backup_security_with_limit(
                 handle,
                 item.security,
@@ -569,6 +572,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             if info(handle, 18, 24)? != identities[&index] {
                 return Err(invalid("owned identity changed before EA restoration"));
             }
+            input.before_mutation(0)?;
             crate::extended_attributes_native::restore_fresh_owned(handle, expected)
                 .map_err(io::Error::other)?;
             ea_objects += 1;
@@ -593,6 +597,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                     "owned identity changed before reparse installation",
                 ));
             }
+            input.before_mutation(0)?;
             crate::reparse_native::restore_fresh_owned(handle, point).map_err(|error| {
                 io::Error::new(
                     error.kind(),
@@ -615,11 +620,13 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         if info(handle, 18, 24)? != identities[&index] {
             return Err(invalid("owned identity changed before basic restoration"));
         }
+        input.before_mutation(0)?;
         basic(handle, item)?;
         if !item.directory {
             handle.sync_all()?;
         }
     }
+    input.before_mutation(0)?;
     volume.sync_all()?;
     namespace(true,aliases.as_deref())?;
     for index in 0..input.len() {

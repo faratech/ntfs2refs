@@ -300,6 +300,10 @@ pub struct StagingAllocationObservation {
     pub measured_peak_or_physical_usage: bool,
 }
 impl StagingAllocationMeter {
+    pub fn try_clone(&self) -> io::Result<Self> {
+        Self::from_held(&self.file, &self.identity, self.kind)
+    }
+
     pub(super) fn from_held(
         file: &File,
         identity: &ReferenceFileSnapshot,

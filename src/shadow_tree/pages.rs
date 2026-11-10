@@ -160,6 +160,9 @@ pub struct PagedExpectedTree {
     _reopened_file: Option<File>,
     _reopened_binding: Option<(File,n2r_win32::reference_file::ReferenceFileSnapshot,std::time::SystemTime)>,
     _reader_ram: Option<crate::artifact_arena::ArenaRamLease>,
+    // This separate payment is acquired before allocating the optional second
+    // authenticated page and outlives the Reader that retains its buffer.
+    _second_page_ram: Option<crate::artifact_arena::ArenaRamLease>,
     _directory_ram: Option<crate::artifact_arena::ArenaRamLease>,
     _header_ram: Option<crate::artifact_arena::ArenaRamLease>,
 }
@@ -1287,6 +1290,9 @@ impl PagedExpectedTree {
             (Some(a), Some(bytes)) => Some(a.reserve_ram(bytes)?),
             _ => None,
         };
+        // Declare before Reader so its additional buffer also drops before
+        // this payment on every later opening/validation error path.
+        let mut second_page_ram = None;
         let mut reader = Reader::open(path, file_sha256, PURPOSE, budget)?;
         if let Some(owner) = &memory {
             if let Some(artifact) = &owner.artifact {
@@ -1301,6 +1307,23 @@ impl PagedExpectedTree {
                     reader.same_file_as(file)?,
                     "expected reader differs from held recovery file"
                 );
+            }
+        }
+        // Only resource-owned Expected readers opt in. Keep legacy/general
+        // metadata readers at one page, and avoid paying for a second buffer
+        // when the actual authenticated file contains only one page.
+        if let Some(arena) = &arena {
+            if reader.page_count() > 1 {
+                let capacity = Reader::body_capacity_for_file(budget, reader.byte_len())?;
+                let lease = arena.reserve_ram(capacity as u64)?;
+                let mut body = Vec::new();
+                body.try_reserve_exact(capacity)?;
+                ensure!(
+                    body.capacity() == capacity,
+                    "second Expected cache allocation differs from its prepaid bound"
+                );
+                reader.install_second_page_cache(body)?;
+                second_page_ram = Some(lease);
             }
         }
         ensure!(
@@ -1462,6 +1485,7 @@ impl PagedExpectedTree {
             _reopened_file: memory.and_then(|owner| owner.reopened),
             _reopened_binding: None,
             _reader_ram: reader_ram,
+            _second_page_ram: second_page_ram,
             _directory_ram: directory_ram,
             _header_ram: header_ram,
         };
@@ -1582,6 +1606,11 @@ impl PagedExpectedTree {
                 .context("expected leased native-view RAM overflow")?,
         )?;
         Ok(LeasedExpectedObject { object, _ram: ram })
+    }
+    /// Snapshot only: no file reads, allocations or per-record logging. These
+    /// counters are diagnostic and never replace authentication/owner checks.
+    pub fn page_cache_statistics(&self) -> n2r_win32::metadata_pages::PageCacheStatistics {
+        self.reader.borrow().page_cache_statistics()
     }
     pub(crate) fn require_shared_memory(
         &self,

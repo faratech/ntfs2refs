@@ -240,6 +240,7 @@ fn complete_domain_body(
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
 ) -> io::Result<(serde_json::Value, Option<super::super::windows_aliases::VerifiedWindowsAliases>)> {
     tree.require_bound_input_domain(input)?;
+    input.require_mutation_binding(&tree.pair.shadow)?;
     tree.require_source_excluded()?;
     // Pay for one bounded row's temporary stored/API views before allocating
     // them. The original admitted InputDomain and all of its digests stay held.

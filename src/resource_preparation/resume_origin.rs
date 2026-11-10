@@ -768,7 +768,8 @@ impl LegacyResumeOrigin {
             native_witness: witness_file.pin.clone(),
             native_pages: native.pin.clone(),
             cancelled_preparation_intent: intent.pin.clone(),
-            cancelled_preparation_state: state.pin.clone(),
+            cancelled_preparation_state: Some(state.pin.clone()),
+            generation: None,
         };
         let origin_sha256 = origin.canonical_sha256()?;
         let old_work_upper_bytes = pair

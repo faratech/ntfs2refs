@@ -111,7 +111,7 @@ impl PrivatePlaceholder {
         payer: Arc<dyn super::super::report_memory::ReportMemoryAccountant>,
     ) -> io::Result<Self> {
         Self::reopen_recovered(root,components,name,bytes,partition,retire,admission,
-            tracked,moves,move_bytes,payer,false)
+            tracked,moves,move_bytes,payer,false,false)
     }
     pub(in crate::shadow_native) fn reopen_placed(
         root:&str,components:&[String],name:&[u16],bytes:u64,partition:u64,retire:bool,
@@ -119,13 +119,23 @@ impl PrivatePlaceholder {
         move_bytes:u64,payer:Arc<dyn super::super::report_memory::ReportMemoryAccountant>,
     )->io::Result<Self>{
         Self::reopen_recovered(root,components,name,bytes,partition,retire,admission,
-            tracked,moves,move_bytes,payer,true)
+            tracked,moves,move_bytes,payer,true,false)
+    }
+    /// Reissue initialized readability only after observing storage VDL through
+    /// the complete logical EOF. Payload contents still require fresh comparison.
+    pub(in crate::shadow_native) fn reopen_payloads(
+        root:&str,components:&[String],name:&[u16],bytes:u64,partition:u64,retire:bool,
+        admission:crate::tree_resources::SourceResourceAdmission,tracked:usize,moves:usize,
+        move_bytes:u64,payer:Arc<dyn super::super::report_memory::ReportMemoryAccountant>,
+    )->io::Result<Self>{
+        Self::reopen_recovered(root,components,name,bytes,partition,retire,admission,
+            tracked,moves,move_bytes,payer,true,true)
     }
     fn reopen_recovered(
         root:&str,components:&[String],name:&[u16],bytes:u64,partition:u64,retire:bool,
         admission:crate::tree_resources::SourceResourceAdmission,tracked:usize,moves:usize,
         move_bytes:u64,payer:Arc<dyn super::super::report_memory::ReportMemoryAccountant>,
-        placed_ready:bool,
+        placed_ready:bool,payloads_ready:bool,
     )->io::Result<Self>{
         let path = super::super::streams::path(root, components, name)?;
         let file = File::options()
@@ -159,6 +169,11 @@ impl PrivatePlaceholder {
         let mut retrieval_extents=0;
         if let Some(resource)=placed_resource.as_mut() {
             let _work=resource.tracking_workspace(bytes)?;
+            if payloads_ready && bytes>0 {
+                file.sync_all()?;
+                super::super::initialized_regions::capture_initialized_logical(
+                    &file,bytes,2,resource.retrieval_bytes)?.validate_logical(bytes,2)?;
+            }
             if prefix>0 {
                 super::super::initialized_regions::capture_initialized(
                     &file,prefix,2,resource.retrieval_bytes)?.validate(prefix,2)?;
@@ -206,7 +221,7 @@ impl PrivatePlaceholder {
             partition,
             placed: placed_map,
             valid_data_submitted: placed_ready && prefix>0,
-            valid_prefix: if placed_ready {prefix}else{0},
+            valid_prefix: if payloads_ready {bytes}else if placed_ready {prefix}else{0},
             materialized_bytes: 0,
             readback_bytes: 0,
             verification_read_bytes: 0,
@@ -229,7 +244,7 @@ impl PrivatePlaceholder {
     /// Fresh readiness only; no previously written payload bytes are trusted.
     pub(in crate::shadow_native) fn revalidate_recovered_prefix(&self,prefix:u64)->io::Result<bool>{
         if !self.recovered_origin || !self.valid_data_submitted {return Ok(false);}
-        if self.poisoned || self.valid_prefix!=prefix || prefix==0 {
+        if self.poisoned || self.valid_prefix<prefix || self.valid_prefix>self.bytes || prefix==0 {
             return Err(invalid("recovered placed prefix state differs"));
         }
         let resource=self.resource.as_ref().ok_or_else(||invalid("placed prefix payer absent"))?;

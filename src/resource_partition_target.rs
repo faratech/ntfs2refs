@@ -273,18 +273,11 @@ fn prepare_partition_target_capture_inner(
         &capture_group,
         &output.join("target"),
         events,
-        |context, target, expected, native, scope, closing| {
-            let mut bytes = PagedSourceByteAdapter::new_partition(
+        |context, target, expected, routes, scope, closing| {
+            let bytes = PagedSourceByteAdapter::new_partition(
                 context,
                 admission,
                 request.maximum_source_read_bytes,
-            )?;
-            let routes = PagedPayloadRoutes::capture(
-                native,
-                expected,
-                &mut bytes,
-                &capture_dir.join("routes"),
-                &capture_group,
             )?;
             let candidate = PagedSourceBackedCandidate::new(bytes, target, expected, routes)?
                 .with_closing_bytes(closing);

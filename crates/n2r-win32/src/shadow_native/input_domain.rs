@@ -16,6 +16,11 @@ pub trait InputDomain {
     type Object: ObjectInput;
     fn len(&self) -> usize;
     fn object(&self, index: usize) -> io::Result<Self::Object>;
+    /// Optional capacity policy, never native write authority. Call only
+    /// immediately before a bounded allocating operation, not on reads.
+    fn before_mutation(&self, _operation_bytes: u64) -> io::Result<()> { Ok(()) }
+    fn require_mutation_binding(&self, _shadow: &crate::general_layout::GeneralDiskBinding)
+        -> io::Result<()> { Ok(()) }
     /// New paged admissions require an actual immutable page owner. Legacy
     /// slices intentionally cannot supply that owner from their metadata.
     fn require_paged_metadata(

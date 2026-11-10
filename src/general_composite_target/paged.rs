@@ -988,15 +988,15 @@ pub(crate) fn observe_and_select_paged(
         &mut crate::general_source_admission::resource::ResourceSourceContext,
         &mut n2r_win32::GeneralFrozenPartition,
         &PagedExpectedTree,
-        &n2r_win32::GeneralLiveRefsLayoutObservation,
+        crate::general_shadow::paged_candidate::PagedPayloadRoutes<'_>,
         &PagedTargetScope,
         &mut dyn crate::general_shadow::source_backed::ClosingShadowBytes,
     ) -> Result<crate::general_shadow::paged_capture::DiagnosticSelectedCapture>,
 ) -> Result<ProtectedPagedTargetSelection> {
     let mut scoped=ScopedSourceContext::Dedicated(context);
     observe_and_select_scoped(&mut scoped,target,pair,expected,capture_group,output,events,None,
-        |scoped,target,expected,native,scope,closing| match scoped {
-            ScopedSourceContext::Dedicated(context)=>consume(context,target,expected,native,scope,closing),
+        |scoped,target,expected,routes,scope,closing| match scoped {
+            ScopedSourceContext::Dedicated(context)=>consume(context,target,expected,routes,scope,closing),
             ScopedSourceContext::Partition(_)=>anyhow::bail!("dedicated target callback received partition source"),
         })
 }
@@ -1012,7 +1012,7 @@ pub(crate) fn observe_and_select_paged_windows_aliases(
     consume:impl FnOnce(
         &mut crate::general_source_admission::resource::ResourceSourceContext,
         &mut n2r_win32::GeneralFrozenPartition,&PagedExpectedTree,
-        &n2r_win32::GeneralLiveRefsLayoutObservation,&PagedTargetScope,
+        crate::general_shadow::paged_candidate::PagedPayloadRoutes<'_>,&PagedTargetScope,
         &mut dyn crate::general_shadow::source_backed::ClosingShadowBytes,
     )->Result<crate::general_shadow::paged_capture::DiagnosticSelectedCapture>,
 )->Result<ProtectedPagedTargetSelection> {
@@ -1024,8 +1024,8 @@ pub(crate) fn observe_and_select_paged_windows_aliases(
     let aliases=WindowsAliasSelection{constructor:aliases,owner,digest};
     let mut scoped=ScopedSourceContext::Dedicated(context);
     observe_and_select_scoped(&mut scoped,target,pair,expected,capture_group,output,events,Some(aliases),
-        |scoped,target,expected,native,scope,closing|match scoped {
-            ScopedSourceContext::Dedicated(context)=>consume(context,target,expected,native,scope,closing),
+        |scoped,target,expected,routes,scope,closing|match scoped {
+            ScopedSourceContext::Dedicated(context)=>consume(context,target,expected,routes,scope,closing),
             ScopedSourceContext::Partition(_)=>anyhow::bail!("Windows alias observer received an ordinary partition source"),
         })
 }
@@ -1046,7 +1046,7 @@ pub(crate) fn observe_and_select_paged_optional_windows_aliases(
     consume:impl FnOnce(
         &mut crate::general_source_admission::resource::ResourceSourceContext,
         &mut n2r_win32::GeneralFrozenPartition,&PagedExpectedTree,
-        &n2r_win32::GeneralLiveRefsLayoutObservation,&PagedTargetScope,
+        crate::general_shadow::paged_candidate::PagedPayloadRoutes<'_>,&PagedTargetScope,
         &mut dyn crate::general_shadow::source_backed::ClosingShadowBytes,
     )->Result<crate::general_shadow::paged_capture::DiagnosticSelectedCapture>,
 )->Result<ProtectedPagedTargetSelection> {
@@ -1069,15 +1069,15 @@ pub(crate) fn observe_and_select_partition_paged(
         &mut crate::general_source_admission::resource::partition::PartitionResourceSourceContext,
         &mut n2r_win32::GeneralFrozenPartition,
         &PagedExpectedTree,
-        &n2r_win32::GeneralLiveRefsLayoutObservation,
+        crate::general_shadow::paged_candidate::PagedPayloadRoutes<'_>,
         &PagedTargetScope,
         &mut dyn crate::general_shadow::source_backed::ClosingShadowBytes,
     ) -> Result<crate::general_shadow::paged_capture::DiagnosticSelectedCapture>,
 ) -> Result<ProtectedPagedTargetSelection> {
     let mut scoped=ScopedSourceContext::Partition(context);
     observe_and_select_scoped(&mut scoped,target,pair,expected,capture_group,output,events,None,
-        |scoped,target,expected,native,scope,closing| match scoped {
-            ScopedSourceContext::Partition(context)=>consume(context,target,expected,native,scope,closing),
+        |scoped,target,expected,routes,scope,closing| match scoped {
+            ScopedSourceContext::Partition(context)=>consume(context,target,expected,routes,scope,closing),
             ScopedSourceContext::Dedicated(_)=>anyhow::bail!("partition target callback received dedicated source"),
         })
 }
@@ -1095,7 +1095,7 @@ fn observe_and_select_scoped(
         &mut ScopedSourceContext<'_>,
         &mut n2r_win32::GeneralFrozenPartition,
         &PagedExpectedTree,
-        &n2r_win32::GeneralLiveRefsLayoutObservation,
+        crate::general_shadow::paged_candidate::PagedPayloadRoutes<'_>,
         &PagedTargetScope,
         &mut dyn crate::general_shadow::source_backed::ClosingShadowBytes,
     ) -> Result<crate::general_shadow::paged_capture::DiagnosticSelectedCapture>,
@@ -1367,7 +1367,7 @@ fn observe_and_select_scoped(
         route_sha == closing_route_sha && exclusions.same(&closing_exclusions)?,
         "protected native stream IDs/maps changed during raw bracket"
     );
-    closing_routes.retire()?;
+    // Keep the exact closing routing owner for the capture consumer.
     let closing_allocation =
         allocated(&native, &output.join("closing-allocation"), image, &scratch)?;
     ensure!(
@@ -1468,7 +1468,7 @@ fn observe_and_select_scoped(
     )?;
     drop(_stage_ram);
     let mut closing = PagedShadowClosing::new(target, &scope.consumed)?;
-    let captured = consume(context, target, expected, &native, &scope, &mut closing)?;
+    let captured = consume(context, target, expected, closing_routes, &scope, &mut closing)?;
     ensure!(
         captured.is_for_scope(&scope),
         "consumer returned a capture from another or unqualified target scope"

@@ -164,6 +164,8 @@ pub(crate) struct SavedResumeRequest {
     pub expected_binding: Option<crate::shadow_tree::ExpectedBindingPin>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_placement: Option<ArtifactPin>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_payloads: Option<ArtifactPin>,
     /// Original legacy import receipt, when present. NEVER a current-session
     /// process terminal or a requirement that a crashed process wrote one.
     pub legacy_terminal: Option<SourceCacheFilePin>,
@@ -195,6 +197,7 @@ impl SavedResumeRequest {
                 .completed_placement
                 .as_ref()
                 .map(|proof| proof.pin().clone()),
+            completed_payloads: saved.completed_payloads.as_ref().map(|proof|proof.pin().clone()),
             legacy_terminal: saved.legacy_terminal.clone(),
             prior_spend: SavedPlacementSpend {
                 prior_submissions_upper: u64::try_from(saved.prior_spend.prior_submissions_upper)?,
@@ -262,6 +265,12 @@ impl SavedResumeRequest {
                         .is_some_and(|name| name == "placement-completed.json"),
                 "saved completed placement selector pin differs"
             );
+            digest(&pin.sha256)?;
+        }
+        if let Some(pin)=&self.completed_payloads {
+            ensure!(pin.key=="payloads-ready"&&pin.bytes>0
+                &&pin.path.file_name().is_some_and(|name|name=="payloads-ready.json"),
+                "saved completed payload selector differs");
             digest(&pin.sha256)?;
         }
         self.prior_spend.into_actual()?;
@@ -499,7 +508,7 @@ pub(crate) fn peek_resume_intent(
     ensure!(
         intent.schema_version == 1
             && intent.kind == ResumeIntent::kind()
-            && intent.profiles == FormatProfiles::current()
+            && intent.profiles.supported()
             && before
                 .final_path
                 .to_ascii_lowercase()
@@ -611,6 +620,50 @@ impl HeldCompletedPlacement {
     }
 }
 
+/// A held selector for fresh Payloads adoption and verification. These fields
+/// cannot create a PrivateTree, mark VDL or grant source-write authority.
+#[derive(Clone)]
+pub(crate) struct HeldCompletedPayloads {
+    file:std::sync::Arc<HeldArtifact>,
+    arena:crate::artifact_arena::ArtifactArena,
+    expected_sha256:String,
+    routed_plan_sha256:String,
+    _memory:std::sync::Arc<ArenaRamLease>,
+}
+impl HeldCompletedPayloads {
+    fn open(pin:&ArtifactPin,expected_sha256:&str,maximum:u64,group:&ArtifactGroupPermit)->Result<Self>{
+        ensure!(pin.key=="payloads-ready"&&pin.path.file_name().is_some_and(|name|name=="payloads-ready.json"),
+            "completed payload selector path/key differs");
+        let file=adopt_pin(pin,maximum,group)?;
+        let report:serde_json::Value=decode(&file,maximum,group)?;
+        ensure!(report["kind"]=="private-routed-prefix-verification"&&report["success"]==true
+            &&report["source_payload_writes"]==0&&report["conversion_qualified"]==false,
+            "completed payload receipt kind/closure differs");
+        let plan=report["routed_plan_sha256"].as_str().context("completed payload plan digest absent")?;
+        digest(plan)?;digest(expected_sha256)?;
+        let logical=report["logical_bytes"].as_u64().context("completed payload logical total absent")?;
+        let mut total=0u64;
+        for key in ["same_coordinate_reference_bytes","relocated_prefix_routed_bytes","shadow_materialized_bytes","hole_bytes"] {
+            total=total.checked_add(report[key].as_u64().with_context(||format!("completed payload {key} absent"))?)
+                .context("completed payload coverage overflow")?;
+        }
+        ensure!(total==logical,"completed payload coverage differs");
+        let memory=group.arena().reserve_ram(4096)?;
+        Ok(Self{file:std::sync::Arc::new(file),arena:group.arena().clone(),expected_sha256:expected_sha256.to_owned(),
+            routed_plan_sha256:plan.to_owned(),_memory:std::sync::Arc::new(memory)})
+    }
+    pub(crate) fn pin(&self)->&ArtifactPin{self.file.pin()}
+    pub(crate) fn require_arena(&self,arena:&crate::artifact_arena::ArtifactArena)->Result<()> {
+        ensure!(self.arena.same_arena(arena),"completed payload selector belongs to another actual arena");
+        self.file.revalidate_identity()
+    }
+    pub(crate) fn require_expected(&self,expected_sha256:&str)->Result<()> {
+        ensure!(self.expected_sha256==expected_sha256,"completed payload Expected generation differs");
+        self.file.revalidate_identity()
+    }
+    pub(crate) fn routed_plan_sha256(&self)->&str{&self.routed_plan_sha256}
+}
+
 pub(crate) struct ResumeSessionInputs {
     pub journal: DurableResume,
     pub saved: SavedResumeRequest,
@@ -620,6 +673,7 @@ pub(crate) struct ResumeSessionInputs {
     pub actual_guard_phase: String,
     pub workspace_origin: Option<(PathBuf, GeneralJournalStorageBinding)>,
     pub completed_placement: Option<HeldCompletedPlacement>,
+    pub completed_payloads: Option<HeldCompletedPayloads>,
     _facts: Vec<HeldArtifact>,
     _metadata_owners: Vec<ArtifactLease>,
     _index_memory: Vec<ArenaRamLease>,
@@ -703,8 +757,8 @@ impl ResumeSessionInputs {
             "resume epoch published/delegated; route existing publication recovery"
         );
         ensure!(
-            journal.stage().is_none_or(|stage| stage <= Stage::Placing),
-            "resume stage later than Placing is explicitly unsupported by the first unwritten adopter; preserve artifacts, no restart"
+            journal.stage().is_none_or(|stage| stage <= Stage::Payloads),
+            "resume stage later than Payloads requires its metadata/capture native reconciler; preserve artifacts, no restart"
         );
         let initial = &journal.intent().initial_artifacts;
         let find = |key: &str| -> Result<ArtifactPin> {
@@ -741,7 +795,7 @@ impl ResumeSessionInputs {
             _ => anyhow::bail!("saved completed placement initial pin is absent or ambiguous"),
         }
         let current =
-            if journal.stage() == Some(Stage::Placing) && journal.pending_batch().is_none() {
+            if matches!(journal.stage(),Some(Stage::Placing|Stage::Payloads)) && journal.pending_batch().is_none() {
                 journal.completed_placement_evidence()
             } else {
                 None
@@ -761,6 +815,22 @@ impl ResumeSessionInputs {
                 })
             })
             .transpose()?;
+        let carried_payloads:Vec<_>=initial.iter().filter(|pin|pin.key=="payloads-ready").collect();
+        match (&saved.completed_payloads,carried_payloads.as_slice()) {
+            (None,[])=>{},
+            (Some(pin),[actual])=>ensure!(pin==*actual,"saved completed payload initial pin differs"),
+            _=>anyhow::bail!("saved completed payload initial pin is absent or ambiguous"),
+        }
+        let current_payloads=if journal.stage()==Some(Stage::Payloads)&&journal.pending_batch().is_none(){
+            journal.completed_payloads_evidence()
+        }else{None};
+        let completed_payloads=current_payloads.or(saved.completed_payloads.as_ref())
+            .map(|pin|HeldCompletedPayloads::open(pin,&saved.expected.sha256,limits.max_checkpoint_bytes,group))
+            .transpose()?;
+        if journal.stage()==Some(Stage::Payloads) {
+            ensure!(journal.pending_batch().is_none()&&completed_payloads.is_some()&&completed_placement.is_some(),
+                "Payloads retry requires closed supply and placement evidence; pending work needs native batch reconciliation");
+        }
         let binding_pins: Vec<_> = initial
             .iter()
             .filter(|p| p.key == "expected-binding")
@@ -803,17 +873,29 @@ impl ResumeSessionInputs {
                 && saved.expected.sha256 == expected_pin.sha256
                 && saved.expected.bytes == expected_pin.bytes
                 && directory.starts_with(&saved.arena_root)
-                && source.cancelled_preparation_intent.path
-                    != journal.intent().new_preparation_intent.path,
+                && (source.schema_version==2 || source.cancelled_preparation_intent.path
+                    != journal.intent().new_preparation_intent.path),
             "saved resume source origin/request/expected or new guard differs"
         );
+        if let Some(generation)=&source.generation {
+            let guard=&journal.intent().new_preparation_intent;
+            ensure!(source.schema_version==2&&generation.schema_version==1
+                &&source.cancelled_preparation_intent.path==guard.path
+                &&source.cancelled_preparation_intent.sha256==guard.sha256
+                &&source.cancelled_preparation_intent.bytes==guard.bytes
+                &&generation.expected.path==saved.expected.path
+                &&generation.expected.sha256==saved.expected.sha256
+                &&generation.expected.bytes==saved.expected.bytes,
+                "current source generation lost its exact guard or Expected dependency");
+        }
         match &journal.intent().origin {
             Origin::LegacyCancelledPreparation {
                 preparation_intent,
                 terminal,
                 source_cache_manifest,
             } => {
-                let old = &source.cancelled_preparation_intent;
+                let old = source.generation.as_ref().and_then(|generation|generation.prior_preparation_intent.as_ref())
+                    .unwrap_or(&source.cancelled_preparation_intent);
                 ensure!(
                     preparation_intent.path == old.path
                         && preparation_intent.sha256 == old.sha256
@@ -866,7 +948,8 @@ impl ResumeSessionInputs {
                 )?;
                 ensure!(
                     prior.pair == journal.intent().pair
-                        && source.source_manifest.path.starts_with(prior_arena_root),
+                        && (source.source_manifest.path.starts_with(prior_arena_root)
+                            || (source.schema_version==2&&source.source_manifest.path.starts_with(&saved.arena_root))),
                     "migrated origin source/shadow/cache root differs"
                 );
             }
@@ -889,6 +972,7 @@ impl ResumeSessionInputs {
             actual_guard_phase: actual.actual_guard_phase,
             workspace_origin,
             completed_placement,
+            completed_payloads,
             _facts: vec![request_file, cache_file],
             _metadata_owners: metadata_owners,
             _index_memory: payments,
@@ -898,6 +982,7 @@ impl ResumeSessionInputs {
         if let Some(proof) = &self.completed_placement {
             proof.require_arena(&proof.arena)?;
         }
+        if let Some(proof)=&self.completed_payloads {proof.require_arena(&proof.arena)?;}
         for file in &self._facts {
             file.revalidate_identity()?;
         }

@@ -312,6 +312,61 @@ function Assert-SharedExperimentalSource($State,$Expected,$HeldSourcePins) {
     }
 }
 
+function Get-SharedSourceContractHash($Value) {
+    $bytes=[Text.UTF8Encoding]::new($false).GetBytes(($Value|ConvertTo-Json -Depth 20 -Compress))
+    Need ($bytes.Length-le4MB) 'Package build contract exceeds its bounded source manifest.'
+    $hash=[Security.Cryptography.SHA256]::Create()
+    try{return [Convert]::ToHexString($hash.ComputeHash($bytes)).ToLowerInvariant()}finally{$hash.Dispose()}
+}
+
+function Get-SharedSourcePackageScope([string]$Path) {
+    if($Path.StartsWith('crates/n2r-win32/',[StringComparison]::Ordinal)){return 'native'}
+    if($Path.StartsWith('src/',[StringComparison]::Ordinal)-or$Path-ceq'evidence/qualification-registry.json'){return 'root'}
+    # Root Cargo.toml can contain workspace dependencies/profiles. All other
+    # shared or newly admitted paths conservatively invalidate both packages.
+    return 'common'
+}
+
+function Get-SharedSourcePackageContracts([object[]]$SourcePins,$BuildInputs) {
+    $pins=[Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
+    foreach($pin in $SourcePins){
+        Need ($pin.path-cmatch'\A[A-Za-z0-9_./-]+\z'-and-not$pin.path.Contains('..')-and$pin.bytes-ge0-and$pin.sha256-cmatch'\A[0-9a-f]{64}\z'-and$pin.git_blob-cmatch'\A[0-9a-f]{40}\z'-and$pins.TryAdd($pin.path,$pin)) 'Exact unique content-pinned package input required.'
+    }
+    $names=[Collections.Generic.List[string]]::new();foreach($name in $pins.Keys){$names.Add($name)};$names.Sort([StringComparer]::Ordinal)
+    $common=[Collections.Generic.List[object]]::new();$native=[Collections.Generic.List[object]]::new();$root=[Collections.Generic.List[object]]::new()
+    foreach($name in $names){
+        $pin=$pins[$name];$row=[ordered]@{path=$name;bytes=[long]$pin.bytes;sha256=[string]$pin.sha256;git_blob=[string]$pin.git_blob}
+        switch(Get-SharedSourcePackageScope $name){'native'{$native.Add($row)} 'root'{$root.Add($row)} 'common'{$common.Add($row)}}
+    }
+    Need ($native.Count-gt0-and$root.Count-gt0-and$pins.ContainsKey('Cargo.toml')-and$pins.ContainsKey('Cargo.lock')-and$pins.ContainsKey('rust-toolchain.toml')-and$pins.ContainsKey('.cargo/config.toml')-and$pins.ContainsKey('crates/n2r-win32/Cargo.toml')) 'Complete two-package source contract required.'
+    $commonSha=Get-SharedSourceContractHash ([ordered]@{schema_version=2;kind='shared-package-common-inputs';source_files=$common.ToArray();build_inputs=$BuildInputs})
+    $nativeSha=Get-SharedSourceContractHash ([ordered]@{schema_version=2;package='n2r-win32';common_sha256=$commonSha;source_files=$native.ToArray()})
+    $rootSha=Get-SharedSourceContractHash ([ordered]@{schema_version=2;package='ntfs2refs';common_sha256=$commonSha;n2r_win32_sha256=$nativeSha;source_files=$root.ToArray()})
+    $contract=[ordered]@{schema_version=2;common_sha256=$commonSha;n2r_win32_sha256=$nativeSha;ntfs2refs_sha256=$rootSha}
+    $contract['contract_sha256']=Get-SharedSourceContractHash $contract
+    return [pscustomobject]$contract
+}
+
+function Select-SharedSourcePackageInvalidation($Previous,$Current,$Refresh) {
+    Need ($Current.schema_version-eq2) 'Current package contract version differs.'
+    $both=$null-eq$Previous-or$Previous.schema_version-ne2
+    $root=$both;$reasons=[Collections.Generic.List[string]]::new()
+    if($both){$reasons.Add('missing-or-legacy-successful-package-contract')}
+    else{
+        $old=$Previous.package_contracts
+        if($old.common_sha256-cne$Current.common_sha256){$both=$true;$reasons.Add('common-content-tool-or-configuration-changed')}
+        if($old.n2r_win32_sha256-cne$Current.n2r_win32_sha256){$both=$true;$reasons.Add('native-package-contract-changed')}
+        if($old.ntfs2refs_sha256-cne$Current.ntfs2refs_sha256){$root=$true;$reasons.Add('root-package-contract-changed')}
+    }
+    if($Refresh.case_only_tree_reset){$both=$true;$reasons.Add('staging-path-case-reset')}
+    foreach($path in @($Refresh.updated_files)+@($Refresh.removed_files)){
+        if((Get-SharedSourcePackageScope $path)-ceq'root'){$root=$true}else{$both=$true}
+    }
+    if($Refresh.updated_files.Count-ne0-or$Refresh.removed_files.Count-ne0){$reasons.Add('staging-content-refreshed')}
+    $packages=if($both){@('ntfs2refs','n2r-win32')}elseif($root){@('ntfs2refs')}else{@()}
+    return [pscustomobject]@{schema_version=2;packages=@($packages);reasons=$reasons.ToArray();identical_successful_contract_reused=(-not$both-and-not$root);content_pins_authoritative=$true;mtime_authority=$false}
+}
+
 function Get-SharedSourceSuccessfulContract($State) {
     $null=Assert-SharedSourceDirectoryGuard $State $State.stage_root
     if(-not(Test-Path -LiteralPath $State.success_path)){return $null}
@@ -324,19 +379,42 @@ function Get-SharedSourceSuccessfulContract($State) {
         $reader=[IO.StreamReader]::new($file,[Text.UTF8Encoding]::new($false,$true))
         $value=$reader.ReadToEnd()|ConvertFrom-Json
     }finally{if($null-ne$reader){$reader.Dispose()};if($null-ne$file){$file.Dispose()}else{$handle.Dispose()}}
-    Need ($value.schema_version-eq1-and$value.kind-ceq'successful-shared-source-contract'-and$value.source_path-ceq$State.source-and$value.target_path-ceq'D:\code\ntfs2refs\target\shared-experiments'-and$value.contract_sha256-cmatch'\A[0-9a-f]{64}\z') 'Successful source contract differs.'
-    return $value.contract_sha256
+    Need ($value.schema_version-in@(1,2)-and$value.kind-ceq'successful-shared-source-contract'-and$value.source_path-ceq$State.source-and$value.target_path-ceq'D:\code\ntfs2refs\target\shared-experiments'-and$value.contract_sha256-cmatch'\A[0-9a-f]{64}\z') 'Successful source contract differs.'
+    if($value.schema_version-eq1){return $value} # Legacy tags force both packages once.
+    $packages=$value.package_contracts
+    Need ($packages.schema_version-eq2-and$packages.contract_sha256-ceq$value.contract_sha256-and$packages.common_sha256-cmatch'\A[0-9a-f]{64}\z'-and$packages.n2r_win32_sha256-cmatch'\A[0-9a-f]{64}\z'-and$packages.ntfs2refs_sha256-cmatch'\A[0-9a-f]{64}\z') 'Successful package contract pins differ.'
+    $body=[ordered]@{schema_version=2;common_sha256=$packages.common_sha256;n2r_win32_sha256=$packages.n2r_win32_sha256;ntfs2refs_sha256=$packages.ntfs2refs_sha256}
+    Need ((Get-SharedSourceContractHash $body)-ceq$value.contract_sha256) 'Successful package contract framing differs.'
+    $manifestPath=[IO.Path]::GetFullPath($value.manifest_path)
+    $candidateRoot=Join-Path $State.workspace '.lab\development\release-candidates'
+    Need ($manifestPath.StartsWith($candidateRoot+'\',[StringComparison]::OrdinalIgnoreCase)-and(Split-Path $manifestPath -Leaf)-ceq'manifest.json'-and$value.manifest_sha256-cmatch'\A[0-9a-f]{64}\z') 'Successful build manifest escaped its candidate custody.'
+    $manifestPin=PinFile $manifestPath $value.manifest_sha256 4MB
+    $manifest=Read-SharedSourceJsonPin $manifestPin
+    Need ($manifest.schema_version-eq1-and$manifest.kind-ceq'experimental-committed-source-shared-target-and-source'-and$manifest.source_commit-ceq$value.source_commit-and$manifest.source_contract_sha256-ceq$value.contract_sha256-and$manifest.source_before_after_verified-and$manifest.package_contracts.contract_sha256-ceq$value.contract_sha256) 'Successful package tag is not bound to a verified candidate manifest.'
+    Need (@($manifest.binaries).Count-gt0) 'Successful candidate has no pinned executable outputs.'
+    foreach($binary in $manifest.binaries){
+        Need ($binary.name-cmatch'\A[A-Za-z0-9_-]+\z'-and$binary.path-ceq('bin/'+$binary.name+'.exe')-and$binary.bytes-gt0-and$binary.bytes-le64MB-and$binary.sha256-cmatch'\A[0-9a-f]{64}\z') 'Successful output pin differs.'
+        $pin=PinFile (Join-Path (Split-Path $manifestPath -Parent) $binary.path) $binary.sha256 64MB
+        Need ($pin.bytes-eq$binary.bytes) 'Successful copied executable length differs.'
+    }
+    return $value
 }
-function Save-SharedSourceSuccessfulContract($State,[string]$Contract,[string]$Commit,[string]$Manifest,[string]$ManifestSha) {
+
+function Clear-SharedSourceSuccessfulContract($State) {
     $null=Assert-SharedSourceScope $State $State.source $true
-    Need ($State.success_path-ceq(Join-Path $State.stage_root 'last-successful-build.json')-and$Contract-cmatch'\A[0-9a-f]{64}\z') 'Literal successful contract path/pin required.'
+    Need ($State.success_path-ceq(Join-Path $State.stage_root 'last-successful-build.json')) 'Literal successful contract path required.'
     $null=Assert-SharedSourceDirectoryGuard $State $State.stage_root
     if(Test-Path -LiteralPath $State.success_path){
         $handle=[N2RSharedSourceIdentityV2]::ObserveFile($State.success_path)
         try{$old=[pscustomobject]@{FullName=$State.success_path;id=[N2RSharedSourceIdentityV2]::Id($handle)}}finally{$handle.Dispose()}
         Remove-SharedSourceFile $State $old $true
     }
-    $value=@{schema_version=1;kind='successful-shared-source-contract';source_path=$State.source;target_path='D:\code\ntfs2refs\target\shared-experiments';contract_sha256=$Contract;source_commit=$Commit;manifest_path=$Manifest;manifest_sha256=$ManifestSha;utc=[DateTime]::UtcNow.ToString('o')}
+}
+
+function Save-SharedSourceSuccessfulContract($State,[string]$Contract,[string]$Commit,[string]$Manifest,[string]$ManifestSha,$PackageContracts) {
+    Need ($Contract-cmatch'\A[0-9a-f]{64}\z'-and$PackageContracts.schema_version-eq2-and$PackageContracts.contract_sha256-ceq$Contract) 'Versioned successful package contract required.'
+    Clear-SharedSourceSuccessfulContract $State
+    $value=@{schema_version=2;kind='successful-shared-source-contract';source_path=$State.source;target_path='D:\code\ntfs2refs\target\shared-experiments';contract_sha256=$Contract;package_contracts=$PackageContracts;source_commit=$Commit;manifest_path=$Manifest;manifest_sha256=$ManifestSha;utc=[DateTime]::UtcNow.ToString('o')}
     $bytes=[Text.UTF8Encoding]::new($false).GetBytes(($value|ConvertTo-Json -Depth 8));$file=[IO.File]::Open($State.success_path,'CreateNew','Write','Read')
     try{$file.Write($bytes,0,$bytes.Length);$file.Flush($true)}finally{$file.Dispose()}
 }

@@ -718,7 +718,7 @@ mod windows {
                 target_format,
             )?)
         };
-        let provider_commitment = staged.maximum_additional_host_backing_commitment()?;
+        let provider_commitment = staged.initial_host_backing_commitment()?;
         // Record the provider identity as well as the disk identity: a guest
         // reboot can remove the attachment while leaving the recovery backing
         // intact. These facts locate the original shadow; they never grant

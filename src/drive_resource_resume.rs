@@ -16,6 +16,39 @@ use n2r_win32::shadow_native::private_tree::recovery::{
     ExternalOriginPins, PartialPlacementSpend, RecoveryLimits,
 };
 
+fn resume_backing_guard(pair: &GeneralSourceShadowBinding)
+    -> Result<std::sync::Arc<n2r_win32::managed_shadow::BackingResourceGuard>> {
+    let meter = n2r_win32::managed_shadow::StagingAllocationMeter::discover_attached_native(
+        &pair.shadow,
+    ).context("bind resumed shadow to its actual native VHDX backing volume")?;
+    Ok(std::sync::Arc::new(n2r_win32::managed_shadow::BackingResourceGuard::new(
+        meter, &pair.shadow, 0,
+    )?))
+}
+
+fn resume_working_reserve(available: AvailableResources, run: &Path,
+    guard: &n2r_win32::managed_shadow::BackingResourceGuard) -> Result<u64> {
+    guard.check_before_operation(0)?;
+    let keep = reserve(available.scratch_available_bytes);
+    if guard.shares_volume_with(run)? {
+        keep.max(guard.minimum_free_bytes()).checked_add(guard.allocation_quantum_bytes())
+            .context("resume shared-volume backing allowance overflow")
+    } else {
+        // C: backing growth must not be subtracted from or credited to R:.
+        Ok(keep)
+    }
+}
+
+fn attach_resume_backing(observer: &mut FilePreparationObserver, run: &Path,
+    guard: std::sync::Arc<n2r_win32::managed_shadow::BackingResourceGuard>) -> Result<()> {
+    observer.attach_staging_meter(Ok(Some(guard.meter()?)));
+    observer.note(&serde_json::json!({"kind":"resumed-shadow-backing-admission-v1",
+        "backing":guard.observe(0)?,"shares_working_volume":guard.shares_volume_with(run)?,
+        "virtual_capacity_reserved":false,"existing_allocation_charged_again":false,
+        "backing_discovery":"native attached disk dependency and provider route"}))?;
+    observer.attach_backing_guard(guard)
+}
+
 fn launch_root(directory: &Path) -> Result<PathBuf> {
     let candidates: Vec<_> = directory
         .ancestors()
@@ -77,6 +110,7 @@ pub(super) fn resume_preparation_in_workspace(
             && origin.parent_resources.resources == parent.resources,
         "legacy budget/root changed during resume discovery"
     );
+    let backing_guard = resume_backing_guard(&origin.pair)?;
     println!(
         "Resume saved preparation: disk {}, partition {}.\nReusing source evidence, expected tree and existing private ReFS shadow.\nThe remaining placement is planned from current native mappings.",
         origin.pair.source.disk_number, origin.pair.source.identity.partition_number
@@ -104,7 +138,7 @@ pub(super) fn resume_preparation_in_workspace(
     let run = root.join(format!("resume-{}", hex::encode(epoch)));
     let _run_ancestry = crate::resource_preparation::create_external_output(&run, &origin.journal)?;
     let available = n2r_win32::resource_native::observe_available_resources(&run)?;
-    let keep = reserve(available.scratch_available_bytes);
+    let keep = resume_working_reserve(available, &run, &backing_guard)?;
     let log = run.join("native-events.log");
     let log_ram = FilePreparationObserver::required_ram(&log)?;
     let ceiling = aligned(
@@ -122,6 +156,7 @@ pub(super) fn resume_preparation_in_workspace(
         log_ram,
         keep,
     )?;
+    attach_resume_backing(&mut observer, &run, backing_guard)?;
     let source_bytes = origin.pair.source.identity.partition_bytes;
     let new_work = source_bytes
         .checked_mul(4)
@@ -139,6 +174,7 @@ pub(super) fn resume_preparation_in_workspace(
         expected: origin.expected.clone(),
         expected_binding: None,
         completed_placement: None,
+        completed_payloads: None,
         legacy_terminal: Some(origin.terminal.clone()),
         prior_resume_intent: None,
         workspace_origin: None,
@@ -367,6 +403,9 @@ fn resume_session(directory: &Path, intent_sha: [u8; 32], workspace: Option<&Pat
     )?
     .main;
     let pair = bootstrap.request.pair.clone();
+    // Independently admit the real shadow backing before new workspace files,
+    // source freezing, cached metadata refresh, or native shadow mutations.
+    let backing_guard = resume_backing_guard(&pair)?;
     let migrated_working = workspace
         .map(|parent| crate::resource_preparation::resume_workspace::discover(parent, &pair))
         .transpose()?;
@@ -485,7 +524,7 @@ fn resume_session(directory: &Path, intent_sha: [u8; 32], workspace: Option<&Pat
         .unwrap_or(&session.saved.request.journal);
     let _ancestry = crate::resource_preparation::create_external_output(&run, working)?;
     let available = n2r_win32::resource_native::observe_available_resources(&run)?;
-    let keep = reserve(available.scratch_available_bytes);
+    let keep = resume_working_reserve(available, &run, &backing_guard)?;
     let log = run.join("native-events.log");
     let log_ram = FilePreparationObserver::required_ram(&log)?;
     let ceiling = aligned(
@@ -497,6 +536,7 @@ fn resume_session(directory: &Path, intent_sha: [u8; 32], workspace: Option<&Pat
     );
     let mut observer =
         FilePreparationObserver::create(&log, &pair, working, ceiling, log_ram, keep)?;
+    attach_resume_backing(&mut observer, &run, backing_guard)?;
     // A dead process's old guard must perform its real cancellation protocol.
     // Do this before asking the fresh guard to isolate the original partition.
     let mut execution_started = false;
@@ -585,6 +625,7 @@ fn resume_session(directory: &Path, intent_sha: [u8; 32], workspace: Option<&Pat
             expected: session.saved.expected.clone(),
             expected_binding: session.saved.expected_binding.clone(),
             completed_placement: session.completed_placement.clone(),
+            completed_payloads: session.completed_payloads.clone(),
             legacy_terminal: session.saved.legacy_terminal.clone(),
             prior_resume_intent: Some(session.journal.intent_pin().clone()),
             workspace_origin: if workspace.is_some() {

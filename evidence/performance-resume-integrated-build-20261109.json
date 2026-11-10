@@ -1,0 +1,187 @@
+{
+  "schema_version": 1,
+  "kind": "performance-resume-first-integrated-build",
+  "base_commit": "b9c4b9b",
+  "check": {
+    "exit_code": 0,
+    "native_run": false,
+    "absolute_boot_cap": 279866334601,
+    "shared_target_reused": true,
+    "capacity": {
+      "actual_bytes": 253018382508,
+      "free_bytes": 54273036288,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 2147483648,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "wall_seconds": 60.7342417,
+    "kind": "preparation-resume-components-focused-check",
+    "unit_tests_run": false,
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+  },
+  "implemented": [
+    "paid-two-page-authenticated-Expected-cache",
+    "exact-capture-capacity-batches",
+    "closing-route-owner-reuse-removes-third-route-capture",
+    "closed-private-Payloads-adoption-and-readback-without-rematerialization",
+    "latest-source-cache-generation-with-original-native-baseline",
+    "actual-backing-volume-admission-and-native-mutation-guards",
+    "package-aware-release-invalidation"
+  ],
+  "native_qualified": false,
+  "current_vm_binary_unchanged": true,
+  "current_vm_pid": 4232,
+  "current_vm_birth_ms": 1794261614589,
+  "remaining": [
+    "fresh-attempt-batch-journals",
+    "mixed-metadata-native-recovery",
+    "Captured-native-adoption",
+    "inner-loop-progress",
+    "compact-alias-projection-and-bounded-single-pass-decode",
+    "later-capture-source-scope-extension",
+    "nested-journal-validation-fusion"
+  ],
+  "capacity_limitations": "Backing guard is sampled rolling allocation-quantum headroom, not a physical reservation or proven bound on native metadata amplification.",
+  "tests_added": false,
+  "unit_tests_run": false,
+  "source_files": [
+    {
+      "path": "crates/n2r-win32/src/managed_shadow.rs",
+      "sha256": "7ebb7204e7a726a77a8b881a689d4ac8895ef4d2c1edfaca39556904a1f1df48"
+    },
+    {
+      "path": "crates/n2r-win32/src/managed_shadow/retirement.rs",
+      "sha256": "864bc4536e6d99a204dbe12502e5ad26ba2fa5f987aa47cf69a0299aca2a2b86"
+    },
+    {
+      "path": "crates/n2r-win32/src/metadata_pages.rs",
+      "sha256": "1661c4af886db3524bbe0c2422db3b390f4482f28b68a90e4b29bc531ce53f6b"
+    },
+    {
+      "path": "crates/n2r-win32/src/shadow_native/cache_refresh.rs",
+      "sha256": "eb20f6b716b5c5947d142c6bd2a3c999163f23c209d83ee92ab12119288fb5c8"
+    },
+    {
+      "path": "crates/n2r-win32/src/shadow_native/hard_links.rs",
+      "sha256": "29c150c60542b97786d244cacc14a652740b1eb5cf371766560721049bae8a31"
+    },
+    {
+      "path": "crates/n2r-win32/src/shadow_native/input_domain.rs",
+      "sha256": "ca11a0b8599393242bb7d32692bb761e6d44ab177bab880d9d9db70be36631a2"
+    },
+    {
+      "path": "crates/n2r-win32/src/shadow_native/private_tree.rs",
+      "sha256": "4a6874c16d17abb77ef21e3e4221c137134f9dd2a53b2b4ea1f7d9935e84c9a7"
+    },
+    {
+      "path": "crates/n2r-win32/src/shadow_native/private_tree/metadata.rs",
+      "sha256": "b64b18e57ed117e8554df1bb972b5c07ea60f852cbaa4fe58b43b8415a378215"
+    },
+    {
+      "path": "crates/n2r-win32/src/shadow_native/private_tree/placement.rs",
+      "sha256": "ba7959675f0e4974110b897165515c010d676dad51434d14b1a09bc16c10e290"
+    },
+    {
+      "path": "crates/n2r-win32/src/shadow_native/private_tree/recovery.rs",
+      "sha256": "1c3697b6e73b894a74a48df54102e177a7ede8abd4e9fac77eafe5b6ef4dd3e6"
+    },
+    {
+      "path": "crates/n2r-win32/src/shadow_native/private_tree/system_payloads.rs",
+      "sha256": "b87e164e1ae6bc001115fc79e7ec6f51a7ae9ef010f493a04f45982e6052bc6f"
+    },
+    {
+      "path": "crates/n2r-win32/src/shadow_native/unwritten/recovery.rs",
+      "sha256": "bcfe34a6a70238a3e09ebe0cad11d55cdf0745e782e25470dd6645a11894c1b1"
+    },
+    {
+      "path": "crates/n2r-win32/src/shadow_native/windows_aliases.rs",
+      "sha256": "c969cb4053b284b9ddce644a8fbacde642a7da7dc7bca5c0d3fcae3c5f98e36b"
+    },
+    {
+      "path": "lab/Build-ReleaseCandidate.ps1",
+      "sha256": "873dec4fef7516096a7b64421156bbf4e2fd9517a23fc3c19cfdd19c263073c1"
+    },
+    {
+      "path": "lab/SharedExperimentalSourceSupport.ps1",
+      "sha256": "402648b9cf63edcf6284ee84a91a14c79a99dc05792a47f0cb274c7d89eac1b1"
+    },
+    {
+      "path": "src/drive_cli.rs",
+      "sha256": "7edcd945239ee9cd6a4d131c8aca19fcf904a6c800952dcb0d522452e25b0ee3"
+    },
+    {
+      "path": "src/drive_resource.rs",
+      "sha256": "8e472287a9b66246e711e1785afe08987c73ac380f048d61691b385c03bbd8e6"
+    },
+    {
+      "path": "src/drive_resource_resume.rs",
+      "sha256": "3f6a2484111f5416c7cde29e01ef56bdfb19af73351c9679d50ebb0a2881cb5e"
+    },
+    {
+      "path": "src/drive_staging.rs",
+      "sha256": "adf7c149c3828a92fba0303e510b1c0426130928eea1f456b20696369e9e4829"
+    },
+    {
+      "path": "src/general_composite_target/paged.rs",
+      "sha256": "8deb8df0018b5e69019473080e9fcae9ecb1a1910b8a3706c0758c0a8444a12f"
+    },
+    {
+      "path": "src/general_shadow.rs",
+      "sha256": "f084926782d29528a29ee31dd579a57f08de1c232e6dbcc90a52190591071b07"
+    },
+    {
+      "path": "src/general_shadow/capture_index.rs",
+      "sha256": "dbda05e457c15f72d70eecbae25f6cadbe385b3cef5cd3f7a9296741a7f9834f"
+    },
+    {
+      "path": "src/general_shadow/paged_capture.rs",
+      "sha256": "40f3ccd08eedb1c945c6a3c66cb9c242ab1687f07f6c13b08ba1ef7111cc7781"
+    },
+    {
+      "path": "src/general_shadow/paged_supply/routed.rs",
+      "sha256": "16b47e558a998bd0bb6e4f410c1e91eb12952e77868ebd00dde34d1d3428791b"
+    },
+    {
+      "path": "src/general_source_admission/resource_cache.rs",
+      "sha256": "5590d9f133a1df7ac7d14b2bc5d38d65429d19a64aa485c7ad72f3f6b98fb8ee"
+    },
+    {
+      "path": "src/preparation_resume.rs",
+      "sha256": "cfa462c677d78ab74e53a256be396571dcbe75110bde0713934cea26ba34ce9a"
+    },
+    {
+      "path": "src/resource_partition_target.rs",
+      "sha256": "a290d7c3e3c9f90108d7a783cd2ed2d2a3e848a5083380a7a46f09b9f68e9f49"
+    },
+    {
+      "path": "src/resource_preparation.rs",
+      "sha256": "9c7ecc98367ffa0dc16327ebb30804e1d2ee3175a8bf92ca85cff4dc2d9421a4"
+    },
+    {
+      "path": "src/resource_preparation/file_observer.rs",
+      "sha256": "87b938a1d66c8be7ce01a333760fddff9f104cc0d8145717cfb38e9a86d3e4ee"
+    },
+    {
+      "path": "src/resource_preparation/resume_checkpoint.rs",
+      "sha256": "c328beeebc34a96348760ad77eb36d53305efe77d12834848c7bb1154ffecd94"
+    },
+    {
+      "path": "src/resource_preparation/resume_origin.rs",
+      "sha256": "1131b84f4b93cb9c6d2dafa6596be4389605b2845fca3aa2bd3e80a79a2b973d"
+    },
+    {
+      "path": "src/resource_preparation/resume_session_inputs.rs",
+      "sha256": "911f95a5c5807333ca4fe2c5c0a94c99cb6b2fbc8f819811e7f5aac946634cbb"
+    },
+    {
+      "path": "src/shadow_tree/pages.rs",
+      "sha256": "d5544dd0b2eac41f3e8668343ea26620cbb4ed127c84748d430151d69c0a29eb"
+    },
+    {
+      "path": "crates/n2r-win32/src/managed_shadow/backing_resources.rs",
+      "sha256": "bc343e086b61a6d99a2775255959f0aecbc37a5b72ffcf5e2875ccb9bdbe59e3"
+    }
+  ]
+}

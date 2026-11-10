@@ -92,6 +92,54 @@ impl PendingCaptureRange {
     }
 }
 
+/// Descriptive, bounded preflight only. These rows cannot supply an acceptance
+/// token or bypass the writer's actual OLD/COPY prefix checks during commit.
+#[derive(Clone, Copy)]
+pub(crate) struct CaptureBatchRange {
+    pub range: CaptureIndexRange,
+    pub may_extend_previous: bool,
+    pub projected: CaptureIndexRange,
+    pub extends_previous: bool,
+}
+
+fn project_range(
+    image: u64,
+    previous: Option<CaptureIndexRange>,
+    range: CaptureIndexRange,
+    may_extend_previous: bool,
+) -> Result<(bool, CaptureIndexRange)> {
+    range.validate(image)?;
+    let extends = if let Some(tail) = previous {
+        ensure!(range.offset >= tail.end()?, "accepted capture ranges overlap or regress");
+        may_extend_previous
+            && range.offset == tail.end()?
+            && range.new_is_zero == tail.new_is_zero
+            && range.old_is_source_free == tail.old_is_source_free
+            && tail.copy_source_offset.is_none_or(|source| {
+                source.checked_add(tail.length)
+                    .and_then(|end| end.checked_add(range.length))
+                    .is_some_and(|end| end <= tail.offset)
+            })
+            && match (tail.copy_source_offset, range.copy_source_offset) {
+                (None, None) => true,
+                (Some(a), Some(b)) => a.checked_add(tail.length) == Some(b),
+                _ => false,
+            }
+    } else {
+        false
+    };
+    let projected = if extends {
+        let mut tail = previous.context("projected capture tail absent")?;
+        tail.length = tail.length.checked_add(range.length).context("projected range overflow")?;
+        tail.old_is_zero &= range.old_is_zero;
+        tail.validate(image)?;
+        tail
+    } else {
+        range
+    };
+    Ok((extends, projected))
+}
+
 #[derive(Clone, PartialEq, Eq)]
 struct Snapshot {
     id: String,
@@ -134,6 +182,8 @@ pub(crate) struct OwnedCaptureIndex {
     tail: Option<CaptureIndexRange>,
     generation: u64,
     pending: Option<u64>,
+    prepaid_rows: u64,
+    batch_active: bool,
     hash: Sha256,
     poisoned: bool,
     artifact: Option<crate::artifact_arena::ArtifactPathPermit>,
@@ -399,6 +449,8 @@ impl OwnedCaptureIndex {
             tail: None,
             generation: 0,
             pending: None,
+            prepaid_rows: 0,
+            batch_active: false,
             hash,
             poisoned: false,
             artifact: Some(artifact),
@@ -412,6 +464,72 @@ impl OwnedCaptureIndex {
     }
     pub(crate) fn last_range(&self) -> Option<CaptureIndexRange> {
         self.tail
+    }
+
+    pub(crate) fn project_batch_range(
+        &self,
+        previous: Option<CaptureIndexRange>,
+        range: CaptureIndexRange,
+        may_extend_previous: bool,
+    ) -> Result<(bool, CaptureIndexRange)> {
+        ensure!(!self.poisoned && self.pending.is_none() && self.prepaid_rows == 0 && !self.batch_active,
+            "incomplete capture writer cannot plan a batch");
+        let packed = previous.map_or(Ok(self.packed), |tail| {
+            tail.packed_offset.checked_add(tail.literal_bytes()).context("planned packed prefix overflow")
+        })?;
+        ensure!(range.packed_offset == packed, "planned capture packed prefix differs");
+        project_range(self.image, previous, range, may_extend_previous)
+    }
+
+    /// Query committed OLD rows plus already compared, earlier batch granules.
+    /// This is preflight only; reserve_next rechecks the committed prefix after
+    /// those granules have actually been accepted in their original order.
+    pub(crate) fn covers_prior_with_batch(
+        &mut self,
+        batch: &[CaptureBatchRange],
+        source: u64,
+        length: u64,
+        destination: u64,
+    ) -> Result<bool> {
+        ensure!(!self.poisoned && self.pending.is_none() && self.prepaid_rows == 0 && !self.batch_active,
+            "incomplete capture prefix cannot plan COPY membership");
+        let committed = self.len();
+        let rows = committed.checked_add(batch.len() as u64).context("capture batch row overflow")?;
+        covers_prefix(rows, source, length, destination, self.image, |ordinal| {
+            if ordinal < committed {
+                self.range(ordinal)
+            } else {
+                Ok(batch[usize::try_from(ordinal - committed)?].range)
+            }
+        })
+    }
+
+    /// Pay only the exact additional rows in one already classified chunk.
+    /// No speculative blanket growth or allocation credit is introduced.
+    pub(crate) fn reserve_batch_rows(&mut self, rows: u64) -> Result<()> {
+        self.require_batch_complete()?;
+        ensure!(rows <= (crate::ntfs_inspect::SESSION_READ_BYTES / 4096) as u64,
+            "capture row batch exceeds the bounded comparison chunk");
+        if rows != 0 {
+            self.artifact.as_mut().context("capture index arena permit absent")?
+                .extend(rows.checked_mul(ROW).context("capture batch reservation overflow")?)?;
+            self.prepaid_rows = rows;
+        }
+        self.batch_active = true;
+        Ok(())
+    }
+
+    pub(crate) fn require_batch_complete(&self) -> Result<()> {
+        ensure!(!self.poisoned && self.pending.is_none() && self.prepaid_rows == 0 && !self.batch_active,
+            "capture row batch has unconsumed reservations or acceptance");
+        Ok(())
+    }
+
+    pub(crate) fn finish_batch(&mut self) -> Result<()> {
+        ensure!(!self.poisoned && self.pending.is_none() && self.prepaid_rows == 0 && self.batch_active,
+            "capture row batch did not consume its exact admission");
+        self.batch_active = false;
+        Ok(())
     }
 
     /// Reserve before the backing/index write. The fresh capture engine calls
@@ -437,34 +555,17 @@ impl OwnedCaptureIndex {
             range.packed_offset == self.packed,
             "accepted capture packed prefix differs"
         );
-        let extends = if let Some(tail) = self.tail {
-            ensure!(
-                range.offset >= tail.end()?,
-                "accepted capture ranges overlap or regress"
-            );
-            may_extend_previous
-                && range.offset == tail.end()?
-                && range.new_is_zero == tail.new_is_zero
-                && range.old_is_source_free == tail.old_is_source_free
-                && tail.copy_source_offset.is_none_or(|source| {
-                    source
-                        .checked_add(tail.length)
-                        .and_then(|end| end.checked_add(range.length))
-                        .is_some_and(|end| end <= tail.offset)
-                })
-                && match (tail.copy_source_offset, range.copy_source_offset) {
-                    (None, None) => true,
-                    (Some(a), Some(b)) => a.checked_add(tail.length) == Some(b),
-                    _ => false,
-                }
-        } else {
-            false
-        };
+        let (extends, projected) = project_range(self.image, self.tail, range, may_extend_previous)?;
         if !extends {
-            self.artifact
-                .as_mut()
-                .context("capture index arena permit absent")?
-                .extend(ROW)?;
+            if self.batch_active {
+                ensure!(self.prepaid_rows != 0, "capture row exceeds the admitted batch");
+                self.prepaid_rows -= 1;
+            } else {
+                self.artifact
+                    .as_mut()
+                    .context("capture index arena permit absent")?
+                    .extend(ROW)?;
+            }
         }
         let generation = self
             .generation
@@ -472,18 +573,6 @@ impl OwnedCaptureIndex {
             .context("capture index acceptance generation overflow")?;
         self.generation = generation;
         self.pending = Some(generation);
-        let projected = if extends {
-            let mut tail = self.tail.context("projected capture tail absent")?;
-            tail.length = tail
-                .length
-                .checked_add(range.length)
-                .context("projected range overflow")?;
-            tail.old_is_zero &= range.old_is_zero;
-            tail.validate(self.image)?;
-            tail
-        } else {
-            range
-        };
         Ok(PendingCaptureRange {
             owner: self.owner,
             generation,
@@ -614,6 +703,7 @@ impl OwnedCaptureIndex {
         )
     }
     pub(crate) fn finish(mut self, scratch: &SourceScratch) -> Result<ClosedCaptureIndex> {
+        self.require_batch_complete()?;
         ensure!(
             !self.poisoned && self.pending.is_none(),
             "incomplete capture index cannot close"

@@ -50,6 +50,7 @@ pub struct PrivateTree {
     carrier_directory: Option<sparse_stream::CarrierDirectory>,
     volume: File,
     pair: GeneralSourceShadowBinding,
+    backing_guard: Option<std::sync::Arc<crate::managed_shadow::BackingResourceGuard>>,
     source_before: source_scope::ConstructionSourceState,
     partition_source: Option<source_scope::PartitionShadowConstructionLease>,
     dedicated_source: Option<source_scope::DedicatedShadowConstructionLease>,
@@ -129,6 +130,25 @@ fn register_sparse(
 }
 
 impl PrivateTree {
+    pub fn attach_backing_resource_guard(&mut self,
+        guard: std::sync::Arc<crate::managed_shadow::BackingResourceGuard>) -> io::Result<()> {
+        if self.backing_guard.is_some() {
+            return Err(invalid("private tree backing capacity owner already attached"));
+        }
+        guard.require_binding(&self.pair.shadow)?;
+        guard.check_before_operation(0)?;
+        self.backing_guard = Some(guard);
+        Ok(())
+    }
+
+    pub(super) fn before_backing_mutation(&self, operation_bytes: u64) -> io::Result<()> {
+        if let Some(guard) = &self.backing_guard {
+            guard.require_binding(&self.pair.shadow)?;
+            guard.check_before_operation(operation_bytes)?;
+        }
+        Ok(())
+    }
+
     fn record_materialized_tail(
         &mut self,
         key: &StreamKey,
@@ -241,6 +261,7 @@ impl PrivateTree {
         let mut result = BTreeMap::new();
         let mut tails = Vec::new();
         for (key, target) in std::mem::take(&mut self.sparse_targets) {
+            self.before_backing_mutation(4096)?;
             let (file, tail) = target.finish(self.files.remove(&key))?;
             if let Some(tail) = tail {
                 tails.push((key.clone(), tail));
@@ -248,8 +269,10 @@ impl PrivateTree {
             result.insert(key, file);
         }
         if let Some(directory) = self.carrier_directory.take() {
+            self.before_backing_mutation(0)?;
             directory.retire()?;
         }
+        self.before_backing_mutation(0)?;
         self.volume.sync_all()?;
         Ok((result, tails))
     }
@@ -316,6 +339,7 @@ impl PrivateTree {
         guard: impl FnMut(&unwritten::DestinationWindows) -> io::Result<()>,
     ) -> io::Result<unwritten::ResourceMoveValue> {
         self.require_source_excluded()?;
+        self.before_backing_mutation(u64::from(clusters) * 4096)?;
         if self.metadata_resource_admission.is_none() || self.memory.is_none() {
             return Err(invalid("actual resource construction owner absent"));
         }
@@ -436,9 +460,11 @@ impl PrivateTree {
                 "complete placement required for source-backed preparation",
             ));
         }
+        let backing_guard = self.backing_guard.clone();
         for file in self.files.values_mut() {
             let prefix = file.logical_length() / 4096 * 4096;
             if prefix > 0 && !file.revalidate_recovered_prefix(prefix)? {
+                if let Some(guard) = &backing_guard { guard.check_before_operation(0)?; }
                 file.advance_valid_data(prefix, true).map_err(|e|io::Error::new(e.kind(),
                     format!("source-backed prefix initialization failed: path={:?}, prefix={prefix}: {e}",file.path)))?;
             }
@@ -696,6 +722,7 @@ impl PrivateTree {
         guard: impl FnMut(&unwritten::DestinationWindows) -> io::Result<()>,
     ) -> io::Result<serde_json::Value> {
         self.require_source_excluded()?;
+        self.before_backing_mutation(u64::from(clusters) * 4096)?;
         self.placement_complete = false;
         self.original_coordinates.clear();
         let file = self
@@ -739,6 +766,7 @@ impl PrivateTree {
         guard: impl FnMut(&unwritten::DestinationWindows) -> io::Result<()>,
     ) -> io::Result<serde_json::Value> {
         self.require_source_excluded()?;
+        self.before_backing_mutation(u64::from(clusters) * 4096)?;
         self.placement_complete = false;
         self.original_coordinates.clear();
         let file = self
@@ -778,6 +806,7 @@ impl PrivateTree {
             }
             return Ok(());
         }
+        self.before_backing_mutation(0)?;
         self.files
             .get_mut(&StreamKey::named(object_index, name))
             .ok_or_else(|| invalid("private user file absent"))?
@@ -815,6 +844,7 @@ impl PrivateTree {
                 serde_json::json!({"object_index":object_index,"stream_name_utf16":name,"sparse_carrier_prepared":true}),
             );
         }
+        self.before_backing_mutation(0)?;
         self.files
             .get_mut(&StreamKey::named(object_index, name))
             .ok_or_else(|| invalid("private tail file absent"))?
@@ -937,6 +967,7 @@ impl PrivateTree {
             let mut proofs = Vec::new();
             let mut readback = vec![0u8; bytes.len()];
             if !parts.is_empty() {
+                let backing_guard = self.backing_guard.clone();
                 let file = self
                     .files
                     .get_mut(&key)
@@ -944,6 +975,7 @@ impl PrivateTree {
                 for part in parts {
                     let local = (part.logical - offset) as usize;
                     let stop = local + part.length as usize;
+                    if let Some(guard) = &backing_guard { guard.check_before_operation(part.length)?; }
                     proofs.push(file.initialize_at(part.dense, &bytes[local..stop])?);
                     file.read_initialized_at(part.dense, &mut readback[local..stop])?;
                 }
@@ -981,6 +1013,7 @@ impl PrivateTree {
             ));
         }
         let expected_path = streams::path(&self.pair.shadow.volume_path()?, components, name)?;
+        self.before_backing_mutation(bytes.len() as u64)?;
         let file = self
             .files
             .get_mut(&key)
@@ -1649,6 +1682,7 @@ fn allocate_domain_with_memory(
     resource_profile: Option<crate::attestation::ResourceProfile>,
     memory: Option<memory::Owner>,
 ) -> io::Result<PrivateTree> {
+    input.require_mutation_binding(&pair.shadow)?;
     let payer = memory.as_ref().map(|owner| owner.payer());
     let resource_root = format!("{}\\", pair.shadow.volume_path()?);
     preflight_input_domain(
@@ -1844,6 +1878,7 @@ fn allocate_domain_with_memory(
             })
     })?;
     let carrier_directory = if needs_carriers {
+        input.before_mutation(0)?;
         Some(sparse_stream::CarrierDirectory::create(&root)?)
     } else {
         None
@@ -1945,6 +1980,7 @@ fn allocate_domain_with_memory(
                 let path = format!("{root}{}", item.components.join("\\"));
                 // Fresh-only CreateDirectory refuses every collision. Do not
                 // merge, adopt, clear or delete an existing child directory.
+                input.before_mutation(0)?;
                 create(&path, &private, index, None)?;
                 let handle = open(&path, true, true)?;
                 let id = info(&handle, 18, 24)?;
@@ -2015,6 +2051,7 @@ fn allocate_domain_with_memory(
                 named_streams: Vec::new(),
                 sparse: None,
             };
+            input.before_mutation(0)?;
             create(
                 &format!("{root}{}", item.components.join("\\")),
                 &private,
@@ -2027,6 +2064,7 @@ fn allocate_domain_with_memory(
             );
         } else {
             let key = StreamKey::unnamed(index);
+            input.before_mutation(0)?;
             if let Some(layout) = item.sparse {
                 let target = sparse_stream::Target::create(
                     &root,
@@ -2057,6 +2095,7 @@ fn allocate_domain_with_memory(
                 );
             }
             for named in &item.named_streams {
+                input.before_mutation(0)?;
                 let base = if let Some(target) = sparse_targets.get(&key) {
                     &target.file
                 } else {
@@ -2127,6 +2166,7 @@ fn allocate_domain_with_memory(
             )?;
         }
     }
+    input.before_mutation(0)?;
     volume.sync_all()?;
     let mut stream_slots = BTreeMap::new();
     let mut next = input.len();
@@ -2158,6 +2198,7 @@ fn allocate_domain_with_memory(
         carrier_directory,
         volume,
         pair: pair.clone(),
+        backing_guard: None,
         source_before,
         partition_source,
         dedicated_source,

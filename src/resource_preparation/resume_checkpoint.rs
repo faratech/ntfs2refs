@@ -119,11 +119,14 @@ impl Checkpoints {
         let arena = group.arena();
         let directory = output.join("resume");
         std::fs::create_dir(&directory)?;
+        let mut promoted=saved.clone();
+        promoted.source=context.current_cache_origin(expected,Some(&saved.source))?;
+        promoted.source_origin_sha256=promoted.source.canonical_sha256()?;
         let (source_cache, cache_owner) = persist(
             group,
             &directory.join("source-cache-origin.json"),
             "source-cache-origin",
-            &saved.source,
+            &promoted.source,
         )?;
         let mut owners = vec![cache_owner];
         let origin = if let Some(prior) = &saved.prior_resume_intent {
@@ -198,7 +201,7 @@ impl Checkpoints {
         let new_guard = accounted_lease(&guard_owner, "new-preparation")?;
         owners.push(guard_owner);
         let expected_pin = accounted(arena, &saved.expected.path, "expected")?;
-        let native = accounted(arena, &saved.source.native_pages.path, "source-native")?;
+        let native = accounted(arena, &promoted.source.native_pages.path, "source-native")?;
         let (source_report, source_report_owner) = persist(
             group,
             &directory.join("source-revalidated.json"),
@@ -208,7 +211,7 @@ impl Checkpoints {
         let facts = super::resume_session_inputs::SavedResumeRequest::from_actual(
             &saved.parent_resources,
             request,
-            saved,
+            &promoted,
         )?;
         let (request_pin, request_owner) = persist(
             group,
@@ -224,6 +227,11 @@ impl Checkpoints {
         ];
         if let Some(proof) = &saved.completed_placement {
             proof.require_arena(arena)?;
+            initial_artifacts.push(proof.pin().clone());
+        }
+        if let Some(proof)=&saved.completed_payloads {
+            proof.require_arena(arena)?;
+            proof.require_expected(expected.file_sha256())?;
             initial_artifacts.push(proof.pin().clone());
         }
         if let Some(binding) = expected.binding_pin() {

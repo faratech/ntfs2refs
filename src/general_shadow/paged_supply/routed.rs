@@ -438,6 +438,7 @@ pub(crate) struct RoutedSupplyOwner<'a, 'source, 'scope> {
     template: &'a mut PrivateTree,
     plan: RoutedPlan,
     row_window: u64,
+    recovered: bool,
     _ram: crate::ntfs_inspect::paged_storage::SourceRamLease,
 }
 
@@ -559,13 +560,36 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
         template,
         plan,
         row_window,
+        recovered: false,
         _ram: ram,
     })
+}
+
+/// Reuse completed payloads only after fresh native adoption and full source/
+/// target verification. The prior plan digest is an authenticated selector;
+/// this constructor performs no materialization or system stream writes.
+pub(crate) fn prepare_recovered<'a,'source,'scope>(
+    bytes:&'a mut PagedSourceByteAdapterWithScope<'source,'scope>,
+    expected:&'a PagedExpectedTree,template:&'a mut PrivateTree,
+    maximum_materialized_bytes:u64,policy:VerificationPolicy,prior_plan_sha256:&str,
+)->Result<RoutedSupplyOwner<'a,'source,'scope>> {
+    ensure!(policy.is_fast(),"recovered routed supply requires extent identity policy");
+    preflight_source_references(bytes,expected)?;
+    let admission=phase(bytes,expected,template)?;
+    let row_window=admission.budget.max_row_bytes.checked_mul(8).context("recovered routed row RAM overflow")?;
+    let ram=bytes.lease_working_ram(ROUTED_RECEIPT_RAM.checked_add(2*WINDOW as u64)
+        .context("recovered routed supply RAM overflow")?)?;
+    let plan=scan_plan(bytes,expected,template,row_window)?;
+    ensure!(plan.materialized<=maximum_materialized_bytes&&plan.sha256==prior_plan_sha256,
+        "recovered payload plan differs from the authenticated completed supply");
+    template.revalidate_recovered_system_payloads_domain(&PagedInputs(expected))?;
+    Ok(RoutedSupplyOwner{bytes,expected,template,plan,row_window,recovered:true,_ram:ram})
 }
 
 impl RoutedSupplyOwner<'_, '_, '_> {
     /// System data remains on the existing checked/materialized path.
     pub(crate) fn materialize_system_payloads(&mut self) -> Result<(serde_json::Value, Vec<u8>)> {
+        ensure!(!self.recovered,"recovered payload owner permits verification only");
         super::materialize_private_system_payloads_paged_domain(
             self.bytes,
             self.expected,
@@ -586,6 +610,8 @@ impl RoutedSupplyOwner<'_, '_, '_> {
         let mut target_buffer = vec![0u8; WINDOW];
         let mut receipt_hash = Sha256::new();
         receipt_hash.update(b"n2r-private-routed-prefix-verification-v1\0");
+        let mut plan_hash = Sha256::new();
+        plan_hash.update(b"n2r-private-routed-prefix-plan-v1\0");
         for index in 0..self.expected.len() {
             let object = self.expected.object_leased(index)?;
             if object.directory || system(&object) {
@@ -612,6 +638,12 @@ impl RoutedSupplyOwner<'_, '_, '_> {
                 let summary = &observed.summary;
                 let ranges = &observed.ranges;
                 let prefix = decision.as_ref().map(|(prefix, _)| *prefix);
+                let target_pin=decision.as_ref().map(|(_,pin)|pin);
+                let plan_frame_ram=frame_ram(self.bytes,stream.name_utf16.len())?;
+                frame(&mut plan_hash,&serde_json::json!({"object_index":index,"record_number":object.record_number,
+                    "sequence_number":object.sequence_number,"stream_name_utf16":stream.name_utf16,
+                    "summary":summary,"target_readiness_sha256":target_pin}))?;
+                drop(plan_frame_ram);
                 logical = logical
                     .checked_add(summary.logical_bytes)
                     .context("routed verification total overflow")?;
@@ -676,6 +708,10 @@ impl RoutedSupplyOwner<'_, '_, '_> {
                                         source_buffer[..n] == target_buffer[..n],
                                         "routed remaining materialization differs from actual source"
                                     );
+                                    if self.recovered {
+                                        self.template.revalidate_recovered_materialized_tail_named(
+                                            index,stream.name_utf16,&object.path,stream.length,at,&source_buffer[..n])?;
+                                    }
                                 }
                             }
                             if stream.sha256.is_some() {
@@ -705,6 +741,8 @@ impl RoutedSupplyOwner<'_, '_, '_> {
                     *summary == observe_stream(self.template, index, &object, stream)?,
                     "native stream mapping changed during routed verification"
                 );
+                ensure!(route_decision(self.template,index,&object,stream,ranges)?==decision,
+                    "native routed prefix readiness changed during verification");
                 let _frame_ram = frame_ram(self.bytes, stream.name_utf16.len())?;
                 frame(
                     &mut receipt_hash,
@@ -723,7 +761,8 @@ impl RoutedSupplyOwner<'_, '_, '_> {
                 && holes == self.plan.holes,
             "routed verification counts differ from the complete preflight"
         );
-        let final_plan = scan_plan(self.bytes, self.expected, self.template, self.row_window)?;
+        let final_plan = RoutedPlan {sha256:hex::encode(plan_hash.finalize()),logical,
+            referenced,routed,materialized,holes};
         ensure!(
             final_plan == self.plan,
             "routed source/target mappings changed across preparation"
@@ -737,6 +776,7 @@ impl RoutedSupplyOwner<'_, '_, '_> {
             "ordered_receipt_sha256":hex::encode(receipt_hash.finalize()),"routed_plan_sha256":self.plan.sha256,
             "target_route_capture_pending":true,"journal_copy_literal_split_pending":true,
             "source_payload_writes":0,"source_admitted":false,"execution_authorized":false,
+            "completed_payloads_reused":self.recovered,"payload_bytes_rematerialized":if self.recovered {Some(0u64)}else{None},
             "conversion_qualified":false}),
         )
     }

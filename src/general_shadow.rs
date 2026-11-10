@@ -144,6 +144,45 @@ impl<'a> n2r_win32::shadow_native::input_domain::InputDomain for TreeInputs<'a> 
 }
 
 pub(crate) struct PagedInputs<'a>(pub &'a crate::shadow_tree::PagedExpectedTree);
+
+/// Capacity policy over the real authenticated input owner. This adapter
+/// grants no metadata admission, native authority, or synthesized objects.
+pub(crate) struct GuardedInputs<D> {
+    inner: D,
+    guard: Option<std::sync::Arc<n2r_win32::managed_shadow::BackingResourceGuard>>,
+}
+impl<D: n2r_win32::shadow_native::input_domain::InputDomain> GuardedInputs<D> {
+    pub(crate) fn new(inner: D,
+        guard: Option<std::sync::Arc<n2r_win32::managed_shadow::BackingResourceGuard>>,
+        shadow: &n2r_win32::general_layout::GeneralDiskBinding) -> std::io::Result<Self> {
+        inner.require_mutation_binding(shadow)?;
+        if let Some(guard) = &guard { guard.require_binding(shadow)?; }
+        Ok(Self { inner, guard })
+    }
+}
+impl<D: n2r_win32::shadow_native::input_domain::InputDomain>
+    n2r_win32::shadow_native::input_domain::InputDomain for GuardedInputs<D> {
+    type Object = D::Object;
+    fn len(&self) -> usize { self.inner.len() }
+    fn object(&self, index: usize) -> std::io::Result<Self::Object> { self.inner.object(index) }
+    fn require_paged_metadata(&self, budget: n2r_win32::metadata_pages::PageBudget,
+        semantic_bytes: u64) -> std::io::Result<()> {
+        self.inner.require_paged_metadata(budget, semantic_bytes)
+    }
+    fn require_resource_metadata(&self, admission: n2r_win32::tree_resources::SourceResourceAdmission)
+        -> std::io::Result<()> { self.inner.require_resource_metadata(admission) }
+    fn require_mutation_binding(&self, shadow: &n2r_win32::general_layout::GeneralDiskBinding)
+        -> std::io::Result<()> {
+        self.inner.require_mutation_binding(shadow)?;
+        if let Some(guard) = &self.guard { guard.require_binding(shadow)?; }
+        Ok(())
+    }
+    fn before_mutation(&self, operation_bytes: u64) -> std::io::Result<()> {
+        self.inner.before_mutation(operation_bytes)?;
+        if let Some(guard) = &self.guard { guard.check_before_operation(operation_bytes)?; }
+        Ok(())
+    }
+}
 pub(crate) enum PagedInputObject {
     Legacy(crate::shadow_tree::Object),
     Shared(crate::shadow_tree::pages::LeasedExpectedObject),

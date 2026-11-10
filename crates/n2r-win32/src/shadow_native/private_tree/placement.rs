@@ -1325,7 +1325,7 @@ pub(super) fn rehydrate_recovered_resource_domain(
         let prefix=item.logical_length()/4096*4096;
         if file.logical_length()!=item.logical_length()
             ||file.path!=placement_path(tree,key,&item)?
-            ||file.valid_prefix()!=prefix {
+            ||file.valid_prefix()!=if origin.payloads_ready(){item.logical_length()}else{prefix} {
             return Err(invalid("placed recovery stream shape or initialized prefix differs"));
         }
         if prefix>0&&!file.revalidate_recovered_prefix(prefix)? {

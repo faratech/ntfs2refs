@@ -2,7 +2,7 @@
 //! A generic selection store is diagnostic only. No activation constructor or
 //! conversion into the legacy DeltaLayout/SelectedPlan exists here.
 use super::{
-    capture_index::{CaptureIndexRange, ClosedCaptureIndex, OwnedCaptureIndex},
+    capture_index::{CaptureBatchRange, CaptureIndexRange, ClosedCaptureIndex, OwnedCaptureIndex},
     paged_candidate::PagedSourceBackedCandidate,
     source_backed::{CaptureBudget, CaptureProgress, ChangedClassCounters, ReadCounts},
 };
@@ -544,6 +544,10 @@ fn capture_selected_inner(
     >() as u64)?;
     let mut allocation = candidate.allocation_cursor()?;
     guard(progress(budget, 0, 0, 0, 0, 0, 0, 0, 0, 256)?)?;
+    let mut capacity_guard_calls = 1u64;
+    let mut capacity_batches = 0u64;
+    let mut literal_growth_admissions = 0u64;
+    let mut index_growth_admissions = 0u64;
     let mut index = OwnedCaptureIndex::create(index_path, image, &scratch, &capture_group)?;
     let mut literal_permit = capture_group.reserve_file(literal_path, 0)?;
     let literal_path = literal_permit.path().to_path_buf();
@@ -579,6 +583,17 @@ fn capture_selected_inner(
     let mut original = vec![0; CHUNK];
     let mut new_bytes = vec![0; CHUNK];
     let mut copy_check = [0; GRANULE];
+    // One plan retains only this already-read comparison chunk. Pay its actual
+    // bounded vector before allocation and retain the payment through drop.
+    let maximum_batch = CHUNK / GRANULE;
+    let batch_bytes = maximum_batch.checked_mul(std::mem::size_of::<CaptureBatchRange>())
+        .and_then(|n| n.checked_mul(2)).and_then(|n| n.checked_add(256))
+        .context("capture batch RAM overflow")?;
+    let _batch_ram = scratch.lease_ram(batch_bytes as u64)?;
+    let mut batch: Vec<CaptureBatchRange> = Vec::new();
+    batch.try_reserve_exact(maximum_batch)?;
+    ensure!(batch.capacity().checked_mul(std::mem::size_of::<CaptureBatchRange>())
+        .is_some_and(|n| n <= batch_bytes), "capture batch allocation exceeds its payment");
     for ordinal in 0..selection.store.len() {
         let selected = selection.range(ordinal)?;
         source_digest.update(selected.offset.to_le_bytes());
@@ -599,6 +614,11 @@ fn capture_selected_inner(
             if let Some(hash) = &mut raw_digest {
                 hash.update(&original[..count])?;
             }
+            batch.clear();
+            let packed_before = packed;
+            let ranges_before = index.len();
+            let mut planned_ranges = ranges_before;
+            let mut planned_tail = index.last_range();
             for local in (0..count).step_by(GRANULE) {
                 let old = &original[local..local + GRANULE];
                 let new = &chunk.bytes()[local..local + GRANULE];
@@ -615,7 +635,7 @@ fn capture_selected_inner(
                 if !new_zero {
                     if let Some(source) = candidate.copy_source_for(&chunk, local, GRANULE)? {
                         if source.is_multiple_of(4096)
-                            && index.covers_prior(source, GRANULE as u64, destination)?
+                            && index.covers_prior_with_batch(&batch, source, GRANULE as u64, destination)?
                         {
                             candidate.raw_source().require_allocated_range(
                                 source,
@@ -642,18 +662,18 @@ fn capture_selected_inner(
                     old_is_source_free: free && !was_zero,
                     copy_source_offset: copy,
                 };
-                let previous = index.last_range();
+                let previous = planned_tail;
                 let may_extend = !budget.selected_capacity_policy.allows_source_free()
                     || (previous_free == free
                         && previous.is_none_or(|r| r.old_is_zero == was_zero));
-                let pending = index.reserve_next(range, may_extend)?;
-                let projected = pending.projected_range();
-                let next_ranges = index.len() + u64::from(!pending.extends_previous());
+                let (extends, projected) = index.project_batch_range(previous, range, may_extend)?;
+                let next_ranges = planned_ranges.checked_add(u64::from(!extends))
+                    .context("capture planned range overflow")?;
                 let next_changed = changed
                     .checked_add(GRANULE as u64)
                     .context("changed byte count overflow")?;
                 let mut next_zero = old_zero;
-                if pending.extends_previous() {
+                if extends {
                     if let Some(previous) = previous {
                         if previous.old_is_zero {
                             next_zero -= previous.length;
@@ -677,7 +697,10 @@ fn capture_selected_inner(
                 let next_new_zero = new_zero_total
                     .checked_add(if new_zero { GRANULE as u64 } else { 0 })
                     .context("new zero byte count overflow")?;
-                guard(progress(
+                // Preserve every exact granule budget/arithmetic refusal,
+                // including OLD-zero credit lost when a prior tail extends.
+                // The native guard runs once after this actual batch is known.
+                let _ = progress(
                     budget,
                     next_changed,
                     next_zero,
@@ -687,16 +710,18 @@ fn capture_selected_inner(
                     next_copied,
                     next_new_zero,
                     next_ranges,
-                    if pending.extends_previous() { 0 } else { 80 },
-                )?)?;
-                if append != 0 {
-                    // Charge aggregate actual backing before its first byte.
-                    literal_permit.extend(append)?;
-                    literal.write_all(new)?;
-                    packed_digest.update(new);
-                    add(&mut packed, append)?;
-                }
-                index.append_accepted(pending)?;
+                    if extends { 0 } else { 80 },
+                )?;
+                ensure!(batch.len() < maximum_batch, "capture plan exceeds its paid granule bound");
+                batch.push(CaptureBatchRange {
+                    range,
+                    may_extend_previous: may_extend,
+                    projected,
+                    extends_previous: extends,
+                });
+                add(&mut packed, append)?;
+                planned_ranges = next_ranges;
+                planned_tail = Some(projected);
                 changed = next_changed;
                 old_zero = next_zero;
                 source_free = next_free;
@@ -739,6 +764,48 @@ fn capture_selected_inner(
                 if was_zero {
                     add(&mut classes.changed_bytes_old_is_zero, GRANULE as u64)?;
                 }
+            }
+            if !batch.is_empty() {
+                let literal_append = packed.checked_sub(packed_before)
+                    .context("capture batch literal accounting regressed")?;
+                let additional_rows = planned_ranges.checked_sub(ranges_before)
+                    .context("capture batch index accounting regressed")?;
+                let index_append = additional_rows.checked_mul(80)
+                    .context("capture batch index append overflow")?;
+                // Reserve exact classified growth, not a worst-case chunk.
+                // Tight volumes therefore need only the bytes this batch will
+                // actually append. No writes precede all three admissions.
+                guard(progress(budget, changed, old_zero, source_free, packed_before,
+                    literal_append, copied, new_zero_total, planned_ranges, index_append)?)?;
+                capacity_guard_calls = capacity_guard_calls.saturating_add(1);
+                if literal_append != 0 {
+                    literal_permit.extend(literal_append)?;
+                    literal_growth_admissions = literal_growth_admissions.saturating_add(1);
+                }
+                index.reserve_batch_rows(additional_rows)?;
+                if additional_rows != 0 {
+                    index_growth_admissions = index_growth_admissions.saturating_add(1);
+                }
+                for planned in &batch {
+                    // Actual pending tokens and COPY checks remain ordered:
+                    // earlier planned OLD rows must now be genuinely accepted.
+                    let pending = index.reserve_next(planned.range, planned.may_extend_previous)?;
+                    ensure!(pending.projected_range() == planned.projected
+                        && pending.extends_previous() == planned.extends_previous,
+                        "capture coalescing differs from its exact batch admission");
+                    if !planned.range.new_is_zero && planned.range.copy_source_offset.is_none() {
+                        let local = usize::try_from(planned.range.offset - at)?;
+                        let bytes = &chunk.bytes()[local..local + GRANULE];
+                        literal.write_all(bytes)?;
+                        packed_digest.update(bytes);
+                    }
+                    index.append_accepted(pending)?;
+                }
+                index.finish_batch()?;
+                ensure!(index.len() == planned_ranges && index.packed_bytes() == packed
+                    && index.last_range() == planned_tail,
+                    "actual capture acceptance differs from its admitted batch");
+                capacity_batches = capacity_batches.saturating_add(1);
             }
             done += count as u64;
             add(&mut compared, count as u64)?;
@@ -807,6 +874,8 @@ fn capture_selected_inner(
         "selected_digest":SELECTED_DIGEST,"source_selected_sha256":hex::encode(source_digest.finalize()),
         "candidate_selected_sha256":hex::encode(candidate_digest.finalize()),"source_raw_sha256":raw_sha,
         "index":index.pin(),"literal":literal.pin(),"selection":selection.pin(),"read_counts":counts,"changed_classes":classes,
+        "capacity_admission":{"batches":capacity_batches,"guard_calls":capacity_guard_calls,
+            "literal_growth_checks":literal_growth_admissions,"index_growth_checks":index_growth_admissions},
         "activation_authorized":false,"conversion_qualified":false,"source_payload_writes":0,
         "required_byte_completeness_verified":false,"journal_preparation_pending":true,
         "old_free_foreign_detection_hashes_pending":true,"journal_length_projection_is_authority":false});

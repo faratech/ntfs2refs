@@ -951,18 +951,13 @@ struct ResidentMetadataCache {
 }
 impl ResidentMetadataCache {
     fn try_new(purpose: [u8; 8], length: u64, scratch: &SourceScratch) -> Option<Self> {
-        // Only canonical metadata stores qualify; source payload ranges never do.
-        let divisor = if purpose == *b"N2RFILE1" {
-            4
-        } else if purpose == *b"N2RNSD01" || purpose == *b"N2RNSE01"
-            || purpose == *b"N2RSCEN1" || purpose == *b"N2RSLEG1" || purpose == *b"N2RSBND1" {
-            // Namespace/security joins revisit entries in different key orders.
-            // Keep modest complete tables cached when the SAME aggregate
-            // ledger can pay for them; refusal still uses paged fallback.
-            32
-        } else {
-            return None;
-        };
+        // A store that is not held in memory is read through one or two
+        // 4 MiB pages, each re-read, re-hashed and re-decoded on every miss.
+        // Lookups jump between pages, so that cost more than everything else
+        // in source inspection. Keep any store in memory when the SAME
+        // aggregate ledger can pay for it; a refusal still uses the paged
+        // reader. The file store may take a larger share than the others.
+        let divisor = if purpose == *b"N2RFILE1" { 4 } else { 8 };
         let charge = length.checked_add(std::mem::size_of::<Self>() as u64)?;
         if length == 0 || charge > scratch.budget().ram_bytes / divisor { return None; }
         let size = usize::try_from(length).ok()?;

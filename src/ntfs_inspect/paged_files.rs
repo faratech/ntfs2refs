@@ -83,10 +83,13 @@ impl PagedRawFiles {
         self.scratch.budget()
     }
     pub(super) fn release_inventory_resident_cache(&mut self) {
-        // Projection consumes file records sequentially. Preserve the compact
-        // lookup directory and hot parent-directory rows, but release the
-        // optional full file-data copy and its actual RAM credit.
-        self.files.clear_resident_cache();
+        // Projection consumes file records sequentially, but it also walks
+        // parents and security rows, and later stages look files up in every
+        // order. Release the full file-data copy and its RAM credit only when
+        // it is a large share of the budget.
+        if self.files.pin().data.logical_bytes > self.scratch.budget().ram_bytes / 8 {
+            self.files.clear_resident_cache();
+        }
     }
     pub(super) fn set_header(&mut self, header: SourceHeader) -> Result<()> {
         ensure!(

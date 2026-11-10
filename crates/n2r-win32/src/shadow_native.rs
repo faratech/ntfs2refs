@@ -1842,7 +1842,7 @@ fn validate_existing_content_domain_with_memory_and_windows_aliases(
             }
             let &(child_origin, expected_attributes) = expected
                 .get(&entry.name_utf16)
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("unexpected existing shadow directory entry: {:?} in \\{} (attributes 0x{:x})", String::from_utf16_lossy(&entry.name_utf16), components.join("\\"), entry.attributes)))?;
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("unexpected existing shadow directory entry: {:?} in \\{} (attributes 0x{:x}; alias overlay {}; before_restore={before_restore} verify_contents={verify_contents} allow_post_mount_svi={allow_post_mount_svi} accounted={})", String::from_utf16_lossy(&entry.name_utf16), components.join("\\"), entry.attributes, aliases.map_or_else(|| "absent".to_owned(), |a| format!("{} entries", a.entries.len())), memory.is_some())))?;
             let (child_components, identity_matches) = match NamespaceChild::decode(child_origin) {
                 NamespaceChild::Source(child_index) => {
                     let child = report.objects.get(child_index)

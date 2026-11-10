@@ -153,6 +153,7 @@ impl<'observation> PagedPayloadRoutes<'observation> {
         bytes: &mut PagedSourceByteAdapterWithScope<'_, '_>,
         output: &Path,
         capture_group: &crate::artifact_arena::ArtifactGroupPermit,
+        aliases: Option<&n2r_win32::shadow_native::windows_aliases::VerifiedWindowsAliases>,
     ) -> Result<Self> {
         let admission = expected
             .header()
@@ -192,6 +193,7 @@ impl<'observation> PagedPayloadRoutes<'observation> {
             &input,
             |a, b| crate::ntfs_attestation::same_security(a, b).map_err(io::Error::other),
             &memory,
+            aliases,
         )?;
         let ram = scratch.lease_ram(
             admission

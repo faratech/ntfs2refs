@@ -108,12 +108,14 @@ impl SourceBackedRoutes {
         input: &'input D,
         same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
         memory: &dyn report_memory::ReportMemoryAccountant,
+        aliases: Option<&windows_aliases::VerifiedWindowsAliases>,
     ) -> io::Result<ValidatedSourceBackedRoutes<'observation, 'input, D>> {
         Self::validate_protected_layout_domain_accounted(
             observation,
             input,
             same_security,
             Some(memory),
+            aliases,
         )
     }
     fn visit_protected_layout_domain_accounted(
@@ -123,7 +125,7 @@ impl SourceBackedRoutes {
         memory: Option<&dyn report_memory::ReportMemoryAccountant>,
         emit: impl FnMut(PayloadRoute) -> io::Result<()>,
     ) -> io::Result<u64> {
-        Self::validate_protected_layout_domain_accounted(observation, input, same_security, memory)?
+        Self::validate_protected_layout_domain_accounted(observation, input, same_security, memory, None)?
             .visit(emit)
     }
 
@@ -132,6 +134,7 @@ impl SourceBackedRoutes {
         input: &'input D,
         same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
         memory: Option<&dyn report_memory::ReportMemoryAccountant>,
+        aliases: Option<&windows_aliases::VerifiedWindowsAliases>,
     ) -> io::Result<ValidatedSourceBackedRoutes<'observation, 'input, D>> {
         let observed = observation.report();
         if let Some(admission) = observed
@@ -143,7 +146,9 @@ impl SourceBackedRoutes {
         {
             input.require_resource_metadata(admission)?;
         }
-        validate_existing_content_domain_with_memory(
+        // The observation that produced this report admitted the derived Windows
+        // aliases; validating it again without them would reject every alias.
+        validate_existing_content_domain_with_memory_and_windows_aliases(
             observed.native(),
             input,
             &same_security,
@@ -152,6 +157,7 @@ impl SourceBackedRoutes {
             false,
             false,
             memory,
+            aliases,
         )?;
         if input.len() != observed.expected_stream_sha256.len() {
             return Err(invalid("protected route input coverage differs"));

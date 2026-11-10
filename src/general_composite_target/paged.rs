@@ -1225,6 +1225,7 @@ fn observe_and_select_scoped(
             bytes,
             &output.join("opening-routes"),
             capture_group,
+            aliases.as_ref().map(|a| a.constructor.as_ref()),
         )
     })?;
     let stage_ram = scratch.lease_ram(stage_ram_bytes)?;
@@ -1348,6 +1349,7 @@ fn observe_and_select_scoped(
             bytes,
             &output.join("closing-routes"),
             capture_group,
+            aliases.as_ref().map(|a| a.constructor.as_ref()),
         )
     })?;
     let _stage_ram = scratch.lease_ram(stage_ram_bytes)?;

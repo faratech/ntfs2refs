@@ -63,6 +63,7 @@ $progressLog = Join-Path $case 'progress.log'
 $verdict = [ordered]@{ name = $Name; fixture = [bool]$Fixture; diagnose = [bool]$Diagnose; started_utc = [DateTime]::UtcNow.ToString('o')
     phases = [ordered]@{}; converter = $null; boot = $null; outcome = 'incomplete' }
 $phaseWatch = [Diagnostics.Stopwatch]::StartNew()
+$listingDiffers = $false
 
 function Say([string]$Text) {
     $line = '{0} {1}' -f (Get-Date -Format 'HH:mm:ss'), $Text
@@ -428,7 +429,10 @@ try {
             Say "listing after conversion: $($compared.listed)"
             Say "before/after comparison (exit $($compared.exit)): $($compared.summary)"
             Phase 'compare'
-            if ($compared.exit -ne 0) { $verdict.outcome = 'converted-but-listing-differs'; Remove-PSSession $session; return }
+            # A listing that differs is a failed conversion, but whether the result
+            # boots is separate evidence worth having from the same run.
+            $listingDiffers = $compared.exit -ne 0
+            if ($listingDiffers -and ($NoBoot -or $Diagnose)) { $verdict.outcome = 'converted-but-listing-differs'; Remove-PSSession $session; return }
         }
     }
     if ($Diagnose -or $NoBoot) { $verdict.outcome = if ($Diagnose) { 'diagnose-clean' } else { 'converted-not-booted' }; Remove-PSSession $session; return }
@@ -483,7 +487,7 @@ try {
         $observed.secure_boot -eq $true -and $observed.newer_than_control_boot -and $observed.health -eq 'Healthy' -and
         -not (@($observed.signatures) | Where-Object status -NE 'Valid')
     $verdict.boot = @{ reached_windows = $true; observed = $observed }
-    $verdict.outcome = if ($ok) { 'BOOTED-ON-REFS' } else { 'booted-but-checks-failed' }
+    $verdict.outcome = if (-not $ok) { 'booted-but-checks-failed' } elseif ($listingDiffers) { 'booted-but-listing-differs' } else { 'BOOTED-ON-REFS' }
     Say "disk0 booted: $($observed.filesystem) $($observed.refs_version), cluster $($observed.cluster_bytes), partition $($observed.partition), health $($observed.health) => $($verdict.outcome)"
     Phase 'boot'
 } catch {

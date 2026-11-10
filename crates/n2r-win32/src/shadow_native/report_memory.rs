@@ -312,10 +312,20 @@ pub(super) fn row_bytes(r: &ObjectReport) -> io::Result<u64> {
     }
     Ok(n)
 }
+/// The largest security descriptor Windows can produce. An ACL records its own
+/// size in sixteen bits, so a descriptor holds at most two 64 KiB ACLs and two
+/// SIDs, whatever larger limit the resource profile accepts for a row.
+const LARGEST_DESCRIPTOR_BYTES: u64 = 256 * 1024;
+
 fn snapshot_peak(maximum: u64) -> io::Result<u64> {
+    // `maximum` is the row limit (RAM / 64: 246 MB on a 24 GB machine). Paying
+    // eight of those for every snapshot made one file with four hard-link
+    // names ask for 15.7 GB and stop the conversion.
     add(
         mul(
-            maximum.max(crate::attestation::MAX_SECURITY_BYTES as u64),
+            maximum
+                .min(LARGEST_DESCRIPTOR_BYTES)
+                .max(crate::attestation::MAX_SECURITY_BYTES as u64),
             8,
         )?,
         1024 * 1024,

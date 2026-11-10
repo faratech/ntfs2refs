@@ -117,6 +117,8 @@ impl Budget {
 /// Read exactly `expected` bytes then confirm EOF; `Outcome::sha256` carries
 /// the stream's [`crate::content_digest`] (historical field name).
 pub fn read<R: Read + Seek>(reader: &mut R, expected: u64, budget: &mut Budget) -> Outcome {
+    let _timed = crate::perf::scope(crate::perf::Point::ContentRead);
+    crate::perf::add_bytes(crate::perf::Point::ContentRead, expected);
     let mut out = Outcome {
         status: Status::BudgetExceeded,
         bytes_read: 0,

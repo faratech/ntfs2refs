@@ -461,6 +461,7 @@ impl JournalObservation<'_> {
         expected: Option<[u8; 32]>,
         fresh_old: bool,
     ) -> Result<[u8; 32]> {
+        let _timed = n2r_win32::perf::scope(n2r_win32::perf::Point::TargetCheck);
         ensure!(
             target_length == self.ticket.image_length,
             "replay target length differs"

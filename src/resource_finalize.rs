@@ -170,6 +170,7 @@ pub(crate) fn finalize_resource_handoff_with_windows_aliases_observer<O: Prepara
     let scratch = SourceScratch::new_auxiliary_in_arena(budget, group.clone())?;
     let mut events = EventLog::new(observer);
     events.phase("resource-finalization-reopen");
+    n2r_win32::perf::step("reopen recovery records");
     let mut recovery = ReopenedResourceRecovery::open_observed(
         publication,
         publication_sha256,
@@ -185,6 +186,7 @@ pub(crate) fn finalize_resource_handoff_with_windows_aliases_observer<O: Prepara
     .context("finalization: reopening the published recovery records")?;
     events.checkpoint()?;
     events.phase("resource-handoff-authentication");
+    n2r_win32::perf::step("authenticate handoff");
     let handoff = recovery.verify_handoff(
         &group,
         &output.join("verified-handoff.index"),
@@ -192,10 +194,12 @@ pub(crate) fn finalize_resource_handoff_with_windows_aliases_observer<O: Prepara
         &mut events,
     )
     .context("finalization: authenticating the handoff")?;
+    n2r_win32::perf::step("reopen verification metadata");
     let metadata = ReopenedVerificationMetadata::open(&handoff)
         .context("finalization: reopening verification metadata")?;
     events.checkpoint()?;
     events.phase("resource-protected-verification");
+    n2r_win32::perf::step("seal for protected verification");
     let mut protected = handoff.seal_for_protected_verification(
         &group,
         &output.join("protected-handoff.index"),
@@ -222,6 +226,7 @@ pub(crate) fn finalize_resource_handoff_with_windows_aliases_observer<O: Prepara
     // A restarted process cannot carry the constructor's live witness. Open
     // only the alias expectations authenticated by this actual HND/publication;
     // the protected native observer below must issue a fresh observed witness.
+    n2r_win32::perf::step("reopen alias records");
     let reopened_windows_aliases = if native_pair.source.layout_profile
         == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows
         && windows_aliases.is_none()
@@ -232,6 +237,7 @@ pub(crate) fn finalize_resource_handoff_with_windows_aliases_observer<O: Prepara
     } else {
         None
     };
+    n2r_win32::perf::step("observe converted volume");
     let (native,observed_windows_aliases) = if let Some(aliases)=windows_aliases.as_deref(){
         aliases.require_scope(&native_pair,admission.source_inspection_sha256,aliases.plan_digest())?;
         aliases.require_canonical_input(&input)?;
@@ -266,9 +272,11 @@ pub(crate) fn finalize_resource_handoff_with_windows_aliases_observer<O: Prepara
             &mut events,
         )?,None)};
     events.checkpoint()?;
+    n2r_win32::perf::step("compare maps");
     let maps = metadata.compare_protected(&protected, &native)?;
     let matching_bindings = maps.bindings();
     events.phase("resource-verified-handoff-online");
+    n2r_win32::perf::step("bring online");
     let mounted = protected.bring_online_after_verified_observation(
         &native,
         &maps,
@@ -279,7 +287,9 @@ pub(crate) fn finalize_resource_handoff_with_windows_aliases_observer<O: Prepara
     )?;
     let finish_online = (|| -> Result<serde_json::Value> {
         events.checkpoint()?;
+        n2r_win32::perf::step("revalidate after mount");
         let converted = mounted.revalidate_handoff_artifacts_after_mount(&mut events)?;
+        n2r_win32::perf::step("restore label and mount paths");
         let current_label = n2r_win32::volume_label::observe_label(converted.clone(), "ReFS")?;
         let restored = n2r_win32::volume_label::restore_verified_label(
             mounted.source(),
@@ -316,6 +326,7 @@ pub(crate) fn finalize_resource_handoff_with_windows_aliases_observer<O: Prepara
             expected_paths == actual_paths,
             "original volume mount paths were not preserved"
         );
+        n2r_win32::perf::step("revalidate after mount, again");
         mounted.revalidate_handoff_artifacts_after_mount(&mut events)?;
         events.checkpoint()?;
         let known = native

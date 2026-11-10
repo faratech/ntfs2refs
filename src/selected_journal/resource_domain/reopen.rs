@@ -377,6 +377,7 @@ impl<'a> JournalObservation<'a> {
         path: &Path,
         max_index_bytes: u64,
     ) -> Result<Self> {
+        let _timed = n2r_win32::perf::scope(n2r_win32::perf::Point::JournalScan);
         ensure!(
             matches!(
                 group.group(),

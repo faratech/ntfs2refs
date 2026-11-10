@@ -826,20 +826,24 @@ impl GeneralFrozenPartition {
                     _ if actual_label == enrollment_label => None,
                     _ => return Err(invalid("converted label is neither enrollment nor original source label")),
                 };
+                crate::perf::step("check recovered alias links");
                 let aliases = crate::shadow_native::windows_aliases::VerifiedWindowsAliases::
                     from_recovered_expectations_readonly(
                         &pair, input, expectations, admission, protected, memory, &same_security,
                     )?;
                 aliases.require_scope(&pair, admission.source_inspection_sha256, plan_digest)?;
+                crate::perf::step("walk converted metadata");
                 let (report, observed_aliases) = crate::shadow_native::
                     observe_general_converted_metadata_domain_readonly_with_windows_aliases(
                         pair.clone(), input, effective_label, &same_security,
                         resource_profile, memory, protected, &aliases,
                     )?;
+                crate::perf::step("check converted file contents");
                 let report = crate::shadow_native::
                     verify_known_contents_in_accounted_report_with_lease_windows_aliases(
                         report, input, admission, memory, &same_security, Some(protected), &aliases,
                     )?;
+                crate::perf::step("close converted observation");
                 observed_aliases.require_converted_scope(
                     &pair, admission.source_inspection_sha256, plan_digest,
                 )?;

@@ -40,6 +40,12 @@ points! {
     DeviceWrite => "device write",
     SourceObject => "source object observation",
     ShadowObject => "shadow object observation",
+    JournalScan => "journal scan",
+    TargetCheck => "changed-range check",
+    ContentRead => "file content read",
+    VolumeWait => "wait for volume",
+    RecoveryFileOpen => "recovery file reopen",
+    NativeWalk => "native tree walk",
 }
 const COUNT: usize = LABELS.len();
 
@@ -125,6 +131,49 @@ fn line(name: &str, seconds: f64, from: &[Row; COUNT], to: &[Row; COUNT]) -> Str
     text
 }
 
+struct Steps {
+    current: Option<(&'static str, Instant)>,
+    done: Vec<(&'static str, f64)>,
+}
+static STEPS: Mutex<Steps> = Mutex::new(Steps {
+    current: None,
+    done: Vec::new(),
+});
+
+/// Starts a named step inside the current phase; the previous step ends.
+/// For the handful of large steps of a phase, not for anything per object.
+pub fn step(name: &'static str) {
+    let mut steps = STEPS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((previous, started)) = steps.current.take() {
+        let seconds = started.elapsed().as_secs_f64();
+        match steps.done.iter_mut().find(|(done, _)| *done == previous) {
+            Some((_, total)) => *total += seconds,
+            None => steps.done.push((previous, seconds)),
+        }
+    }
+    steps.current = Some((name, Instant::now()));
+}
+
+/// Ends the current step and prints every step of the phase that just ended.
+fn finish_steps(phase: &str) {
+    let mut steps = STEPS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((previous, started)) = steps.current.take() {
+        let seconds = started.elapsed().as_secs_f64();
+        match steps.done.iter_mut().find(|(done, _)| *done == previous) {
+            Some((_, total)) => *total += seconds,
+            None => steps.done.push((previous, seconds)),
+        }
+    }
+    if steps.done.is_empty() {
+        return;
+    }
+    let mut text = format!("timing-steps: {phase}");
+    for (name, seconds) in steps.done.drain(..) {
+        text.push_str(&format!(" | {name} {seconds:.1}s"));
+    }
+    eprintln!("{text}");
+}
+
 /// Starts a named phase and prints what the previous one cost.
 pub fn phase(name: &str) {
     let now = snapshot();
@@ -143,6 +192,7 @@ pub fn phase(name: &str) {
                 &now
             )
         );
+        finish_steps(&previous.name);
     }
     *current = Some(Current {
         name: name.to_owned(),
@@ -168,6 +218,7 @@ pub fn finish() {
                 &now
             )
         );
+        finish_steps(&previous.name);
     }
     let started = PROCESS_START
         .lock()

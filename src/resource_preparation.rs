@@ -1211,19 +1211,23 @@ where
             {
                 private.complete_source_metadata_windows_aliases_domain_with_security_placeholders(
                     &inputs, aliases, compare,
-                )?
+                )
+                .context("shadow metadata completion with Windows aliases and security placeholders")?
             } else {
                 private
-                    .complete_source_metadata_windows_aliases_domain(&inputs, aliases, compare)?
+                    .complete_source_metadata_windows_aliases_domain(&inputs, aliases, compare)
+                    .context("shadow metadata completion with Windows aliases")?
             };
             events.observer.note(&serde_json::json!({"kind":"Windows-constructor-metadata-completion",
                 "trust_label_descriptors_requiring_raw_repair":trust_recipes.as_ref().map_or(0,|recipes|recipes.len()),
                 "report":report,"original_security_native_verification_pending":true}))?;
             Some(std::sync::Arc::new(verified))
         } else {
-            private.complete_source_metadata_domain(&inputs, |a, b| {
-                crate::ntfs_attestation::same_security(a, b).map_err(std::io::Error::other)
-            })?;
+            private
+                .complete_source_metadata_domain(&inputs, |a, b| {
+                    crate::ntfs_attestation::same_security(a, b).map_err(std::io::Error::other)
+                })
+                .context("shadow metadata completion")?;
             None
         };
         if let (Some(state),Some(batch))=(resume_checkpoints.as_mut(),metadata_batch) {

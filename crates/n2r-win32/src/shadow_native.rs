@@ -5965,6 +5965,7 @@ mod tests {
             extended_attributes: None,
             reparse: None,
             extended_attributes_error: None,
+            directory_case_sensitivity: None,
             queries: vec![],
             security: vec![2],
             security_error: None,
@@ -5980,6 +5981,64 @@ mod tests {
         actual.kernel_security.as_mut().unwrap().bytes = vec![1];
         actual.security = vec![1];
         assert!(!security_matches(&input, &actual, &same).unwrap());
+    }
+    #[test]
+    fn a_metadata_failure_names_its_object_and_both_descriptors() {
+        let path = ["Windows".to_owned(), "System32".to_owned(), "lsass.exe".to_owned()];
+        let input = Input {
+            components: &path,
+            additional_names: &[],
+            directory: false,
+            times: [1; 4],
+            attributes: 32,
+            security: &[0xaa, 0x01],
+            expected_api_security: Some(&[0xbb, 0x02]),
+            extended_attributes: None,
+            reparse: None,
+            payload: &[],
+            expected_length: None,
+            expected_sha256: None,
+            source_offset: None,
+            source_runs: vec![],
+            named_streams: Vec::new(),
+            sparse: None,
+        };
+        let actual = Snapshot {
+            extended_attributes: None,
+            reparse: None,
+            extended_attributes_error: None,
+            directory_case_sensitivity: None,
+            queries: vec![],
+            security: vec![0xcc, 0x03],
+            security_error: None,
+            kernel_security: Some(crate::attestation::SecurityQuery {
+                bytes: vec![0xdd, 0x04],
+                native_error: None,
+            }),
+        };
+        let difference = cache_refresh::security_difference(&input, &actual);
+        assert_eq!(
+            difference,
+            "expected_stored=aa01 expected_api=bb02 actual_api=cc03 actual_kernel=dd04"
+        );
+        let inputs = [input];
+        let error = cache_refresh::at_object(
+            &input_domain::SliceInputs(&inputs),
+            "security restoration",
+            0,
+            io::Error::new(io::ErrorKind::InvalidData, difference),
+        );
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        let text = error.to_string();
+        assert!(text.starts_with(r"security restoration: object 0 \Windows\System32\lsass.exe: "));
+        assert!(text.contains("actual_kernel=dd04"));
+        let absent = cache_refresh::at_object(
+            &input_domain::SliceInputs(&inputs),
+            "security restoration",
+            9,
+            io::Error::other("x"),
+        );
+        assert!(absent.to_string().contains("object 9 \\<path unavailable>"));
     }
     #[test]
     fn ordinary_shadow_names_allow_internal_spaces_but_refuse_devices() {

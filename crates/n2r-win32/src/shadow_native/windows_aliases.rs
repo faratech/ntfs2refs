@@ -606,6 +606,13 @@ pub(super) fn validate_row(
         })
     })
 }
+/// Names the alias a per-alias pass failed on.
+fn at_alias(pass: &str, components: &[String], error: io::Error) -> io::Error {
+    io::Error::new(
+        error.kind(),
+        format!("{pass}: alias \\{}: {error}", components.join("\\")),
+    )
+}
 struct StagedAlias {
     entry: VerifiedAlias,
     file: File,
@@ -682,7 +689,8 @@ impl StagedWindowsAliases {
         for index in 0..aliases.len() {
             let row = aliases.alias(index)?;
             let view = row.input();
-            validate_row(input, &view, &root)?;
+            validate_row(input, &view, &root)
+                .map_err(|error| at_alias("alias validation", view.components, error))?;
             bytes = bytes
                 .checked_add(row_memory(&view)?)
                 .ok_or_else(|| invalid("alias total RAM overflow"))?;
@@ -703,6 +711,7 @@ impl StagedWindowsAliases {
         for index in 0..aliases.len() {
             let owner = aliases.alias(index)?;
             let row = owner.input();
+            (|| -> io::Result<()> {
             let directory = validate_row(input, &row, &root)?;
             charged = charged
                 .checked_add(row_memory(&row)?)
@@ -780,6 +789,9 @@ impl StagedWindowsAliases {
             {
                 return Err(invalid("duplicate derived alias path"));
             }
+            Ok(())
+            })()
+            .map_err(|error| at_alias("alias creation", row.components, error))?;
             input.progress(Update::new(Phase::AliasCreation, Unit::Aliases,
                 index as u64 + 1, Some(aliases.len() as u64)));
         }
@@ -841,7 +853,10 @@ impl StagedWindowsAliases {
         let mut provisional_aliases = 0usize;
         let total = self.rows.len() as u64;
         input.progress(Update::new(Phase::MetadataRestoration, Unit::Aliases, 0, Some(total)));
+        let recovering = self.recovering;
+        let maximum_row_bytes = self.maximum_row_bytes;
         for (ordinal, staged) in self.rows.values_mut().enumerate() {
+            (|| -> io::Result<()> {
             let entry = &mut staged.entry;
             let owner = input.object(entry.canonical_object_index)?;
             let canonical = owner.input();
@@ -858,7 +873,7 @@ impl StagedWindowsAliases {
                 return Err(invalid("derived alias canonical link identity changed"));
             }
             let relative:Vec<u16>=entry.canonical_components.last().unwrap().encode_utf16().collect();
-            if self.recovering&&crate::reparse_native::capture(&staged.file)?.is_some(){
+            if recovering&&crate::reparse_native::capture(&staged.file)?.is_some(){
                 crate::windows_alias_native::verify_owned(&handles[&entry.parent_object_index],&target,
                     &staged.file,entry.directory,&relative)?;
             }else{
@@ -882,7 +897,7 @@ impl StagedWindowsAliases {
                 crate::refs_security_descriptor::ConstructorSecurityViews::prepare(
                     canonical.security,
                     canonical.expected_api_security,
-                    self.maximum_row_bytes,
+                    maximum_row_bytes,
                 )?
             } else { None };
             if temporary.is_some() { provisional_aliases += 1; }
@@ -904,22 +919,22 @@ impl StagedWindowsAliases {
                 named_streams: Vec::new(),
                 sparse: None,
             };
-            let before=self.recovering.then(||super::metadata_snapshot_with_limit(&staged.file,&expected,Some(self.maximum_row_bytes)));
-            if !self.recovering||!super::security_matches(&expected,before.as_ref().expect("recovery snapshot"),same)? {
+            let before=recovering.then(||super::metadata_snapshot_with_limit(&staged.file,&expected,Some(maximum_row_bytes)));
+            if !recovering||!super::security_matches(&expected,before.as_ref().expect("recovery snapshot"),same)? {
                 input.before_mutation(expected.security.len() as u64)?;
                 super::cache_refresh::restore_acl_protection_with_limit(
                 &staged.file,
                 &expected,
-                Some(self.maximum_row_bytes),
+                Some(maximum_row_bytes),
                 )?;
                 input.before_mutation(expected.security.len() as u64)?;
                 super::backup_security_with_limit(
                 &staged.file,
                 expected.security,
-                Some(self.maximum_row_bytes),
+                Some(maximum_row_bytes),
                 )?;
             }
-            if !self.recovering||!super::basic_matches(&expected,&super::info(&staged.file,0,40)?) {
+            if !recovering||!super::basic_matches(&expected,&super::info(&staged.file,0,40)?) {
                 input.before_mutation(0)?;
                 super::basic(&staged.file, &expected)?;
             }
@@ -929,15 +944,24 @@ impl StagedWindowsAliases {
             let actual = super::metadata_snapshot_with_limit(
                 &staged.file,
                 &expected,
-                Some(self.maximum_row_bytes),
+                Some(maximum_row_bytes),
             );
-            if super::query_bytes(&actual, 18, 24)? != entry.file_id_info
-                || !super::basic_matches(&expected, super::query_bytes(&actual, 0, 40)?)
-                || !super::security_matches(&expected, &actual, same)?
-                || !super::reparse_matches(&expected, &actual)?
-            {
-                return Err(invalid("derived alias metadata verification differs"));
+            let identity_same = super::query_bytes(&actual, 18, 24)? == entry.file_id_info;
+            let basic_same = super::basic_matches(&expected, super::query_bytes(&actual, 0, 40)?);
+            let security_same = super::security_matches(&expected, &actual, same)?;
+            let reparse_same = super::reparse_matches(&expected, &actual)?;
+            if !(identity_same && basic_same && security_same && reparse_same) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "derived alias metadata verification differs: identity_same={identity_same} \
+                         basic_same={basic_same} security_same={security_same} reparse_same={reparse_same}"
+                    ),
+                ));
             }
+            Ok(())
+            })()
+            .map_err(|error| at_alias("alias metadata restoration", &staged.entry.components, error))?;
             input.progress(Update::new(Phase::MetadataRestoration, Unit::Aliases,
                 ordinal as u64 + 1, Some(total)));
         }

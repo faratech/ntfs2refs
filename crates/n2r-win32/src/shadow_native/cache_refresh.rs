@@ -4,6 +4,35 @@ use super::input_domain::{InputDomain, ObjectInput, SliceInputs};
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Names the object a per-object metadata pass failed on. The path is read
+/// only on the error path, so the passes cost what they did before.
+pub(super) fn at_object(input: &impl InputDomain, pass: &str, index: usize, error: io::Error) -> io::Error {
+    let path = input
+        .object(index)
+        .map(|owned| owned.input().components.join("\\"))
+        .unwrap_or_else(|_| "<path unavailable>".to_owned());
+    io::Error::new(
+        error.kind(),
+        format!("{pass}: object {index} \\{path}: {error}"),
+    )
+}
+
+/// Both sides of a descriptor comparison, so a mismatch can be diagnosed from
+/// the message alone.
+pub(super) fn security_difference(item: &Input<'_>, actual: &Snapshot) -> String {
+    format!(
+        "expected_stored={} expected_api={} actual_api={} actual_kernel={}",
+        hex::encode(item.security),
+        item.expected_api_security
+            .map_or_else(|| "same-as-stored".to_owned(), hex::encode),
+        hex::encode(&actual.security),
+        actual
+            .kernel_security
+            .as_ref()
+            .map_or_else(|| "absent".to_owned(), |query| hex::encode(&query.bytes)),
+    )
+}
+
 #[derive(Clone, Copy, Default)]
 pub(super) struct ProtectionRestore {
     dacl: bool,
@@ -344,6 +373,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
     ).with_pass(pass));
     for index in 0..input.len() {
         metadata_progress(0, index as u64);
+        (|| -> io::Result<()> {
         let owned = input.object(index)?;
         let view = owned.input();
         let item = &view;
@@ -423,6 +453,9 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                 mappings.insert(index, (canonical.len(), Sha256::digest(&canonical)));
             }
         }
+        Ok(())
+        })()
+        .map_err(|error| at_object(input, "metadata shape", index, error))?;
     }
     metadata_progress(0, input.len() as u64);
     if let Some(aliases)=aliases.as_deref(){
@@ -527,6 +560,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         ).enumerate()
     {
         metadata_progress(3, ordinal as u64);
+        (|| -> io::Result<()> {
         let owned = input.object(index)?;
         let original_view = owned.input();
         let temporary = if security_placeholders {
@@ -570,19 +604,23 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                 item.security,
                 resource_admission.map(|a| a.budget.max_row_bytes),
             )?;
-            if !security_matches(
-                item,
-                &security_snapshot_with_limit(
-                    handle,
-                    resource_admission.map(|a| a.budget.max_row_bytes),
-                ),
-                &same_security,
-            )? {
-                return Err(invalid(
-                    "owned source security views differ after restoration",
+            let restored_view = security_snapshot_with_limit(
+                handle,
+                resource_admission.map(|a| a.budget.max_row_bytes),
+            );
+            if !security_matches(item, &restored_view, &same_security)? {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "owned source security views differ after restoration: {}",
+                        security_difference(item, &restored_view)
+                    ),
                 ));
             }
         }
+        Ok(())
+        })()
+        .map_err(|error| at_object(input, "security restoration", index, error))?;
     }
     metadata_progress(3, ordered.len() as u64);
     // Only actual constructor-owned canonical handles reach this operation.
@@ -595,6 +633,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         if flags & EXTENDED_ATTRIBUTES == 0 {
             continue;
         }
+        (|| -> io::Result<()> {
         let owned = input.object(index)?;
         let view = owned.input();
         let item = &view;
@@ -612,6 +651,9 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             ea_objects += 1;
             ea_entries += expected.entries.len();
         }
+        Ok(())
+        })()
+        .map_err(|error| at_object(input, "extended-attribute restoration", index, error))?;
     }
     metadata_progress(4, ordered.len() as u64);
     // Security propagation and all children finish before basic metadata.
@@ -623,6 +665,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         if flags & REPARSE == 0 {
             continue;
         }
+        (|| -> io::Result<()> {
         let owned = input.object(index)?;
         let view = owned.input();
         let item = &view;
@@ -647,6 +690,9 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             }
             reparse_objects += 1;
         }
+        Ok(())
+        })()
+        .map_err(|error| at_object(input, "reparse installation", index, error))?;
     }
     metadata_progress(5, ordered.len() as u64);
     let provisional_aliases = if let Some(aliases)=aliases.as_deref_mut(){
@@ -656,6 +702,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
     // Reverse depth order finalizes root last, using the same held handles.
     for (ordinal, &(index, _, _)) in ordered.iter().rev().enumerate() {
         metadata_progress(6, ordinal as u64);
+        (|| -> io::Result<()> {
         let owned = input.object(index)?;
         let view = owned.input();
         let item = &view;
@@ -670,6 +717,9 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         if !item.directory {
             handle.sync_all()?;
         }
+        Ok(())
+        })()
+        .map_err(|error| at_object(input, "basic metadata restoration", index, error))?;
     }
     metadata_progress(6, ordered.len() as u64);
     input.before_mutation(0)?;
@@ -677,6 +727,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
     namespace(true,aliases.as_deref())?;
     for index in 0..input.len() {
         metadata_progress(8, index as u64);
+        (|| -> io::Result<()> {
         let owned = input.object(index)?;
         let original_view = owned.input();
         let temporary = if security_placeholders {
@@ -697,13 +748,26 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             item,
             resource_admission.map(|a| a.budget.max_row_bytes),
         );
-        if query_bytes(&actual, 18, 24)? != identities[&index]
-            || !basic_matches(item, query_bytes(&actual, 0, 40)?)
-            || !security_matches(item, &actual, &same_security)?
-            || !extended_attributes_match(item, &actual)?
-            || !reparse_matches(item, &actual)?
-        {
-            return Err(invalid("final owned source metadata readback differs"));
+        // Report which facet differs; one combined refusal cannot be acted on.
+        let identity_same = query_bytes(&actual, 18, 24)? == identities[&index];
+        let basic_same = basic_matches(item, query_bytes(&actual, 0, 40)?);
+        let security_same = security_matches(item, &actual, &same_security)?;
+        let ea_same = extended_attributes_match(item, &actual)?;
+        let reparse_same = reparse_matches(item, &actual)?;
+        if !(identity_same && basic_same && security_same && ea_same && reparse_same) {
+            let detail = if security_same {
+                String::new()
+            } else {
+                format!(" {}", security_difference(item, &actual))
+            };
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "final owned source metadata readback differs: identity_same={identity_same} \
+                     basic_same={basic_same} security_same={security_same} ea_same={ea_same} \
+                     reparse_same={reparse_same}{detail}"
+                ),
+            ));
         }
         if let Some(mapping) = mappings.get(&index) {
             let canonical = crate::stream_native::retrieval_capture(handle)?.canonical;
@@ -745,6 +809,9 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                 super::sparse_stream::observe(handle, layout, item.logical_length())?;
             }
         }
+        Ok(())
+        })()
+        .map_err(|error| at_object(input, "final metadata readback", index, error))?;
     }
     metadata_progress(8, input.len() as u64);
     target.revalidate_route(&mut events)?;

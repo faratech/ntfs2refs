@@ -73,7 +73,7 @@ not count. Power-cut resume during preparation is out of scope until this works.
   `-Diagnose` reports every per-object failure and writes nothing.
   `-CheckpointAfterConvert <name>` saves a run that stopped after apply;
   `-Recover -Checkpoint <name>` retries its finalization with `--recover`.
-  Records land in `.lab\hypervttempts\<n>\`. The scratch disk is deleted when
+  Records land in `.lab/hyperv/attempts/<n>/`. The scratch disk is deleted when
   the attempt ends; the host volume must keep 40 GB free.
 - Build both binaries first: `cargo build --locked --release --bin ntfs2refs
   --bin lab-volume-manifest`.

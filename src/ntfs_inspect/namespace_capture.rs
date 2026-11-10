@@ -130,6 +130,38 @@ pub(super) struct PagedNamespaceCapture {
     failed: bool,
 }
 
+/// One directory index attribute, held in memory while its index is walked.
+#[cfg(windows)]
+struct HeldAttribute {
+    bytes: Vec<u8>,
+    _ram: super::paged_storage::SourceRamLease,
+}
+#[cfg(windows)]
+impl SourceMetadataRange for HeldAttribute {
+    fn byte_len(&self) -> u64 {
+        self.bytes.len() as u64
+    }
+    fn read_exact_at(&self, offset: u64, output: &mut [u8]) -> Result<()> {
+        let start = usize::try_from(offset)?;
+        let end = start
+            .checked_add(output.len())
+            .filter(|end| *end <= self.bytes.len())
+            .context("held index attribute read escapes its bytes")?;
+        output.copy_from_slice(&self.bytes[start..end]);
+        Ok(())
+    }
+    fn revalidate(&self) -> Result<()> {
+        Ok(())
+    }
+}
+/// A directory's index is walked once and never read again. Writing its root,
+/// allocation and bitmap to three scratch files, hashing each several times
+/// and reopening them cost more than everything else in source inspection.
+/// An index this small is held in memory instead; a larger one, or one the
+/// memory ledger refuses, still goes through scratch files.
+#[cfg(windows)]
+const HELD_ATTRIBUTE_BYTES: u64 = 256 * 1024 * 1024;
+
 #[cfg(windows)]
 pub(super) fn capture_attribute<R: Read + Seek>(
     reader: &mut R,
@@ -140,6 +172,58 @@ pub(super) fn capture_attribute<R: Read + Seek>(
     scratch: &SourceScratch,
     evidence: Option<&mut Sha256>,
 ) -> Result<SourcePagePin> {
+    let mut input = attribute_input(reader, attribute, geometry, evidence)?;
+    PagedMetadataRange::capture(path, purpose, &mut input, attribute.report.logical_size, scratch)
+}
+
+/// The same bytes and the same evidence as [`capture_attribute`], in memory.
+/// Returns None, having read nothing, when the attribute is too large to hold.
+#[cfg(windows)]
+fn hold_attribute<R: Read + Seek>(
+    reader: &mut R,
+    attribute: &Attribute,
+    geometry: &NtfsGeometry,
+    scratch: &SourceScratch,
+    evidence: Option<&mut Sha256>,
+) -> Result<Option<HeldAttribute>> {
+    let length = attribute.report.logical_size;
+    if length > HELD_ATTRIBUTE_BYTES {
+        return Ok(None);
+    }
+    let Ok(ram) = scratch.lease_ram(length + 4096) else {
+        return Ok(None);
+    };
+    let mut input = attribute_input(reader, attribute, geometry, evidence)?;
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(usize::try_from(length)?)?;
+    bytes.resize(usize::try_from(length)?, 0);
+    input.read_exact(&mut bytes)?;
+    Ok(Some(HeldAttribute { bytes, _ram: ram }))
+}
+
+#[cfg(windows)]
+struct AttributeInput<'a, R> {
+    source: AttributeBitmapReader<'a, R>,
+    evidence: Option<&'a mut Sha256>,
+}
+#[cfg(windows)]
+impl<R: Read + Seek> Read for AttributeInput<'_, R> {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        let count = self.source.read(output)?;
+        if let Some(evidence) = &mut self.evidence {
+            evidence.update(&output[..count]);
+        }
+        Ok(count)
+    }
+}
+
+#[cfg(windows)]
+fn attribute_input<'a, R: Read + Seek>(
+    reader: &'a mut R,
+    attribute: &'a Attribute,
+    geometry: &'a NtfsGeometry,
+    evidence: Option<&'a mut Sha256>,
+) -> Result<AttributeInput<'a, R>> {
     let a = &attribute.report;
     ensure!(
         a.flags == 0 && a.compression_unit == 0 && a.lowest_vcn == 0,
@@ -174,20 +258,7 @@ pub(super) fn capture_attribute<R: Read + Seek>(
             .all(|extent| extent.physical_offset.is_some()),
         "metadata capture cannot reinterpret sparse allocation"
     );
-    struct Input<'a, R> {
-        source: AttributeBitmapReader<'a, R>,
-        evidence: Option<&'a mut Sha256>,
-    }
-    impl<R: Read + Seek> Read for Input<'_, R> {
-        fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
-            let count = self.source.read(output)?;
-            if let Some(evidence) = &mut self.evidence {
-                evidence.update(&output[..count]);
-            }
-            Ok(count)
-        }
-    }
-    let mut input = Input {
+    Ok(AttributeInput {
         source: AttributeBitmapReader {
             reader,
             attribute,
@@ -196,8 +267,7 @@ pub(super) fn capture_attribute<R: Read + Seek>(
             position: 0,
         },
         evidence,
-    };
-    PagedMetadataRange::capture(path, purpose, &mut input, a.logical_size, scratch)
+    })
 }
 
 #[cfg(windows)]
@@ -305,79 +375,103 @@ impl PagedNamespaceCapture {
             .context("resident I30 bytes absent")?;
         evidence.update((root_bytes.len() as u64).to_le_bytes());
         evidence.update(root_bytes);
-        let root_pin = PagedMetadataRange::capture(
-            &self.root.join(format!("i30-{number}-root.pages")),
-            *b"N2RI30R1",
-            &mut io::Cursor::new(root_bytes),
-            root_bytes.len() as u64,
-            &self.scratch,
-        )?;
+        // Each of the three ranges is held in memory when it can be, and
+        // otherwise captured to a scratch file exactly as before. Either way
+        // the same bytes are read in the same order into the same evidence.
+        let scratch = self.scratch.clone();
+        let held_root = scratch.lease_ram(root_bytes.len() as u64 + 4096).ok().map(|ram| {
+            HeldAttribute {
+                bytes: root_bytes.to_vec(),
+                _ram: ram,
+            }
+        });
+        let root_range = if held_root.is_some() {
+            None
+        } else {
+            let pin = PagedMetadataRange::capture(
+                &self.root.join(format!("i30-{number}-root.pages")),
+                *b"N2RI30R1",
+                &mut io::Cursor::new(root_bytes),
+                root_bytes.len() as u64,
+                &scratch,
+            )?;
+            Some(PagedMetadataRange::open(&pin, &scratch)?)
+        };
         let allocation = attributes.get(&0xa0);
         let bitmap = attributes.get(&0xb0);
         ensure!(
             allocation.is_some() == bitmap.is_some(),
             "I30 allocation/bitmap pair incomplete"
         );
-        let allocation_pin = if let Some(attribute) = allocation {
+        let (held_allocation, allocation_range) = if let Some(attribute) = allocation {
             ensure!(
                 !attribute.report.resident,
                 "I30 allocation must be nonresident"
             );
             evidence.update(attribute.report.logical_size.to_le_bytes());
-            Some(capture_attribute(
-                reader,
-                attribute,
-                geometry,
-                &self.root.join(format!("i30-{number}-allocation.pages")),
-                *b"N2RI30A1",
-                &self.scratch,
-                Some(&mut evidence),
-            )?)
+            match hold_attribute(reader, attribute, geometry, &scratch, Some(&mut evidence))? {
+                Some(held) => (Some(held), None),
+                None => {
+                    let pin = capture_attribute(
+                        reader,
+                        attribute,
+                        geometry,
+                        &self.root.join(format!("i30-{number}-allocation.pages")),
+                        *b"N2RI30A1",
+                        &scratch,
+                        Some(&mut evidence),
+                    )?;
+                    (None, Some(PagedMetadataRange::open(&pin, &scratch)?))
+                }
+            }
         } else {
             evidence.update(0u64.to_le_bytes());
-            None
+            (None, None)
         };
-        let bitmap_pin = if let Some(attribute) = bitmap {
+        let (held_bitmap, bitmap_range) = if let Some(attribute) = bitmap {
             require_bitmap_bytes(&attribute.report, attribute.report.logical_size)?;
             evidence.update(attribute.report.logical_size.to_le_bytes());
-            Some(capture_attribute(
-                reader,
-                attribute,
-                geometry,
-                &self.root.join(format!("i30-{number}-bitmap.pages")),
-                *b"N2RI30B1",
-                &self.scratch,
-                Some(&mut evidence),
-            )?)
+            match hold_attribute(reader, attribute, geometry, &scratch, Some(&mut evidence))? {
+                Some(held) => (Some(held), None),
+                None => {
+                    let pin = capture_attribute(
+                        reader,
+                        attribute,
+                        geometry,
+                        &self.root.join(format!("i30-{number}-bitmap.pages")),
+                        *b"N2RI30B1",
+                        &scratch,
+                        Some(&mut evidence),
+                    )?;
+                    (None, Some(PagedMetadataRange::open(&pin, &scratch)?))
+                }
+            }
         } else {
             evidence.update(0u64.to_le_bytes());
-            None
+            (None, None)
         };
-        let root_range = PagedMetadataRange::open(&root_pin, &self.scratch)?;
-        let allocation_range = allocation_pin
-            .as_ref()
-            .map(|pin| PagedMetadataRange::open(pin, &self.scratch))
-            .transpose()?;
-        let bitmap_range = bitmap_pin
-            .as_ref()
-            .map(|pin| PagedMetadataRange::open(pin, &self.scratch))
-            .transpose()?;
+        fn either<'a>(
+            held: &'a Option<HeldAttribute>,
+            paged: &'a Option<PagedMetadataRange>,
+        ) -> Option<&'a dyn SourceMetadataRange> {
+            match (held, paged) {
+                (Some(held), _) => Some(held as &dyn SourceMetadataRange),
+                (None, Some(paged)) => Some(paged as &dyn SourceMetadataRange),
+                (None, None) => None,
+            }
+        }
         let mut ordinal = 0u64;
         let summary = crate::ntfs_index::paged::walk_ranges(
             SourceIndexRanges {
-                root: &root_range,
-                allocation: allocation_range
-                    .as_ref()
-                    .map(|range| range as &dyn SourceMetadataRange),
-                bitmap: bitmap_range
-                    .as_ref()
-                    .map(|range| range as &dyn SourceMetadataRange),
+                root: either(&held_root, &root_range).context("directory index root absent")?,
+                allocation: either(&held_allocation, &allocation_range),
+                bitmap: either(&held_bitmap, &bitmap_range),
                 initialized_allocation_bytes: allocation
                     .map_or(0, |attribute| attribute.report.initialized_size),
             },
             crate::ntfs_index::Profile::FILE_NAME,
             geometry.cluster_size,
-            &self.scratch,
+            &scratch,
             &self.root.join(format!("i30-{number}-visited.bits")),
             |header, key, _| {
                 ensure!(key.len() >= 68, "short FILE_NAME index key");

@@ -113,17 +113,34 @@ impl Bitmap<'_> {
         Ok(self.body[(offset - start) as usize] & (1 << (slot % 8)) != 0)
     }
 }
-struct Seen {
-    file: File,
-    bytes: u64,
-    _lease: SourceTemporaryLease,
+/// Which index blocks have been visited. One bit per block: a scratch file,
+/// or memory when the whole set is small (a few bytes for most directories).
+enum Seen {
+    File {
+        file: File,
+        bytes: u64,
+        _lease: SourceTemporaryLease,
+    },
+    Memory {
+        bits: Vec<u8>,
+        _ram: crate::ntfs_inspect::paged_storage::SourceRamLease,
+    },
 }
+const SEEN_MEMORY_BYTES: u64 = 16 * 1024 * 1024;
 impl Seen {
     fn new(path: &Path, slots: u64, scratch: &SourceScratch) -> Result<Option<Self>> {
         if slots == 0 {
             return Ok(None);
         }
         let bytes = slots.div_ceil(8);
+        if bytes <= SEEN_MEMORY_BYTES {
+            if let Ok(ram) = scratch.lease_ram(bytes + 4096) {
+                let mut bits = Vec::new();
+                bits.try_reserve_exact(bytes as usize)?;
+                bits.resize(bytes as usize, 0);
+                return Ok(Some(Self::Memory { bits, _ram: ram }));
+            }
+        }
         let lease = scratch.reserve_temporary_file(path, bytes, 4096)?;
         ensure!(
             path.is_absolute(),
@@ -176,7 +193,7 @@ impl Seen {
             "fresh visited-index scratch file required"
         );
         file.set_len(bytes)?;
-        Ok(Some(Self {
+        Ok(Some(Self::File {
             file,
             bytes,
             _lease: lease,
@@ -184,18 +201,29 @@ impl Seen {
     }
     fn insert(&mut self, slot: u64) -> Result<()> {
         let at = slot / 8;
-        ensure!(at < self.bytes, "visited index escapes scratch");
-        self.file.seek(SeekFrom::Start(at))?;
-        let mut byte = [0u8; 1];
-        self.file.read_exact(&mut byte)?;
         let mask = 1 << (slot % 8);
-        ensure!(
-            byte[0] & mask == 0,
-            "cycle or multiply referenced INDX block"
-        );
-        byte[0] |= mask;
-        self.file.seek(SeekFrom::Start(at))?;
-        self.file.write_all(&byte)?;
+        match self {
+            Self::Memory { bits, .. } => {
+                let byte = bits
+                    .get_mut(usize::try_from(at)?)
+                    .context("visited index escapes scratch")?;
+                ensure!(*byte & mask == 0, "cycle or multiply referenced INDX block");
+                *byte |= mask;
+            }
+            Self::File { file, bytes, .. } => {
+                ensure!(at < *bytes, "visited index escapes scratch");
+                file.seek(SeekFrom::Start(at))?;
+                let mut byte = [0u8; 1];
+                file.read_exact(&mut byte)?;
+                ensure!(
+                    byte[0] & mask == 0,
+                    "cycle or multiply referenced INDX block"
+                );
+                byte[0] |= mask;
+                file.seek(SeekFrom::Start(at))?;
+                file.write_all(&byte)?;
+            }
+        }
         Ok(())
     }
 }

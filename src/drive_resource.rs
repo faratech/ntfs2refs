@@ -257,7 +257,6 @@ pub(crate) fn convert_owned_with_provider_commitment(
     request.validate()?;
     let prepared_output = run.join("conversion");
     let result = (|| -> Result<()> {
-        let mut windows_aliases=None;
         let (publication, sha) = crate::resource_preparation::prepare_with(
             request,
             &prepared_output,
@@ -284,12 +283,17 @@ pub(crate) fn convert_owned_with_provider_commitment(
                     applied.source() == &pair.source,
                     "completed apply source identity differs"
                 );
-                windows_aliases=applied.windows_aliases().cloned();
+                // Nothing of the preparation may outlive this point. Its arena
+                // holds a read-only duplicate of the recovery journal, and the
+                // finalizer reopens that journal exclusively. The alias ledger
+                // built during preparation is paid from that arena, so it is
+                // released too; the finalizer rebuilds it from the published
+                // records, exactly as a restarted `--recover` does.
                 drop(applied);
                 Ok((path, sha))
             },
         )?;
-        // Every original source/shadow/journal borrow has dropped above. The
+        // Every original source/shadow/journal owner has dropped above. The
         // common finalizer reopens the independently pinned publication, proves
         // real HND/NEW bytes, and verifies native files before enabling normal use.
         let current = n2r_win32::resource_native::observe_available_resources(run)?;
@@ -307,7 +311,7 @@ pub(crate) fn convert_owned_with_provider_commitment(
             final_resources,
             &run.join("finalization"),
             &mut observer,
-            windows_aliases,
+            None,
         )
         .context("finalizing the applied conversion (the source already holds the ReFS image)")?;
         if let Err(error) = observer.note(&finalized) {

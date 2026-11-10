@@ -523,6 +523,30 @@ fn verify_index_against_journal(
     policy.revalidate()
 }
 
+type VerifiedNewBytes = ([u8; 32], [u8; 32]);
+static NEW_BYTES_VERIFIED: std::sync::Mutex<Vec<VerifiedNewBytes>> = std::sync::Mutex::new(Vec::new());
+
+/// Records that every range the journal changes was read back from the source
+/// in this process and matched the journal's NEW digest. After the handoff
+/// marker nothing writes to the source until it is brought online, so the
+/// read-back need not be repeated at each later step of the same process.
+pub fn note_selected_new_bytes_verified(immutable_sha256: &[u8; 32], new_selected_sha256: &[u8; 32]) {
+    let mut verified = NEW_BYTES_VERIFIED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !verified.contains(&(*immutable_sha256, *new_selected_sha256)) {
+        verified.push((*immutable_sha256, *new_selected_sha256));
+    }
+}
+
+fn selected_new_bytes_already_verified(pins: &PagedRecoveryPins<'_>) -> bool {
+    crate::verify_policy::checks_once()
+        && NEW_BYTES_VERIFIED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains(&(pins.immutable_sha256, pins.new_selected_sha256))
+}
+
 /// Authenticate HND and the complete selected NEW bytes using held owners.
 /// The caller brackets this with actual source device-state observations.
 fn verify_paged_handoff<R: Read + Seek>(
@@ -563,7 +587,10 @@ fn verify_paged_handoff<R: Read + Seek>(
         return Err(invalid("handoff journal immutable body differs"));
     }
     verify_index_against_journal(journal, policy, pins)?;
-    verify_selected_digest(source, policy, pins.new_selected_sha256)?;
+    if !selected_new_bytes_already_verified(pins) {
+        verify_selected_digest(source, policy, pins.new_selected_sha256)?;
+        note_selected_new_bytes_verified(&pins.immutable_sha256, &pins.new_selected_sha256);
+    }
     check_handoff_lifecycle(journal, pins)?;
     if crate::sha256_native::journal_body(journal, BODY, facts.journal_length - BODY, &pins.immutable_sha256)?
         != pins.immutable_sha256

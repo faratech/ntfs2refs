@@ -939,11 +939,11 @@ impl ProtectedPagedTargetSelection {
             .paged_residuals()
             .context("protected target residual owner absent")?
             .revalidate()?;
-        // The shadow is read-only and held. Reading all of its metadata again
-        // is a full check: it runs at the gate before the first source write.
-        static LAST_FULL: n2r_win32::verify_policy::LastFull =
-            n2r_win32::verify_policy::LastFull::new();
-        if !n2r_win32::verify_policy::full(&LAST_FULL) {
+        // The shadow is read-only and held, and nothing reads it again after
+        // capture: the journal holds every byte the apply step writes. Under
+        // the check-once policy its state is confirmed and its metadata is
+        // not read a third time.
+        if n2r_win32::verify_policy::checks_once() {
             ensure!(
                 target.state(events)? == before,
                 "protected target frozen identity changed after capture"

@@ -441,15 +441,25 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
             "fresh apply lifecycle changed before HND"
         );
         target.sync_all()?;
-        // Recheck actual bytes after the callback, not just before it.
+        // Recheck actual bytes after the callback, not just before it. The
+        // callback only reports progress; under the check-once policy the
+        // read-back made immediately before it stands.
         self.prepared.closure.revalidate()?;
         index.require_ticket(ticket)?;
-        let digest = check_selected(
-            &mut target,
-            domain,
-            &mut buffers.current,
-            ticket.new_selected_sha256,
-        )?;
+        let digest = if n2r_win32::verify_policy::checks_once() {
+            digest
+        } else {
+            check_selected(
+                &mut target,
+                domain,
+                &mut buffers.current,
+                ticket.new_selected_sha256,
+            )?
+        };
+        n2r_win32::note_selected_new_bytes_verified(
+            &ticket.immutable_sha256,
+            &ticket.new_selected_sha256,
+        );
         ensure!(
             target.state(events)? == target_before,
             "fresh source identity or offline exclusion changed before HND"

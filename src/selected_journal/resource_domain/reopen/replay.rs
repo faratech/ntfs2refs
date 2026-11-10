@@ -285,6 +285,10 @@ impl BoundJournalObservation<'_> {
         self.observation
             .journal
             .require_native_mount_barriers(self.observation.ticket)?;
+        n2r_win32::note_selected_new_bytes_verified(
+            &self.observation.ticket.immutable_sha256,
+            &expected,
+        );
         Ok(digest)
     }
 

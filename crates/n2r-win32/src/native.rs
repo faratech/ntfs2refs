@@ -38,7 +38,7 @@ pub mod recovery_boot;
 pub use paged_write_policy::{
     HeldPagedWritePolicy, PagedPolicyIndexBuilder, PagedPolicyIndexFacts, PagedPolicyIndexRow,
 };
-pub use paged_recovery::{BorrowedPagedWriter, GeneralLiveConvertedObservation, PagedRecoveryDirection, PagedRecoveryPins};
+pub use paged_recovery::{BorrowedPagedWriter, GeneralLiveConvertedObservation, PagedRecoveryDirection, PagedRecoveryPins, note_selected_new_bytes_verified};
 pub use paged_recovery::{PartitionClosedJournalObservation, PartitionHandoffWitness,
     PartitionTerminalKind, authenticate_partition_closed_journal};
 

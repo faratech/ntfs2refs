@@ -272,7 +272,8 @@ try {
         try {
             Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'guest\Test-SourceBootReadiness.ps1') -Destination "$guestRoot\readiness.ps1" -ToSession $session
             $readiness = Invoke-Command -Session $session -ArgumentList "$guestRoot\readiness.ps1", $guest.source_letter -ScriptBlock {
-                param($script, $letter) & $script -SourceLetter $letter } | Out-String | ConvertFrom-Json
+                param($script, $letter)
+                & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $script -SourceLetter $letter } | Out-String | ConvertFrom-Json
             $verdict.boot_readiness = $readiness
             $readiness | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $case 'boot-readiness.json') -Encoding UTF8
             Say ("boot readiness: {0}; hiberfil {1}; early drivers {2}; file-system drivers {3}" -f `

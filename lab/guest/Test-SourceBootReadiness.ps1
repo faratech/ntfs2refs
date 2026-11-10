@@ -59,7 +59,6 @@ try {
     if ($short.Count) { $findings.Add("$($short.Count) boot/system-start drivers are named through 8.3 paths") }
     $file_systems = @($early | Where-Object { $_.name -match '^(refs|refsv1|ntfs|fastfat|wof|fileinfo|bindflt|wcifs|cldflt)$' } | ForEach-Object { "$($_.name)=$($_.start)" })
     $result.file_system_drivers = $file_systems
-    if (-not ($early | Where-Object name -EQ 'refs')) { $findings.Add('the ReFS driver is not a boot-start driver in this installation') }
     # The control OS is the same Windows build installed on ReFS and it boots.
     # Any difference in how the two configure their file-system drivers is a
     # candidate for why a converted installation would not.

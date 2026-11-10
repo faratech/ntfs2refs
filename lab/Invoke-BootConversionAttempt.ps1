@@ -267,6 +267,20 @@ try {
             Say "source listed before conversion: $($listed.text)"; Phase 'list-before'
         }
     }
+    if (-not $Recover) {
+        # What would stop this installation booting once its file system has changed.
+        try {
+            Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'guest\Test-SourceBootReadiness.ps1') -Destination "$guestRoot\readiness.ps1" -ToSession $session
+            $readiness = Invoke-Command -Session $session -ArgumentList "$guestRoot\readiness.ps1", $guest.source_letter -ScriptBlock {
+                param($script, $letter) & $script -SourceLetter $letter } | Out-String | ConvertFrom-Json
+            $verdict.boot_readiness = $readiness
+            $readiness | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $case 'boot-readiness.json') -Encoding UTF8
+            Say ("boot readiness: {0}; hiberfil {1}; early drivers {2}; file-system drivers {3}" -f `
+                $(if ($readiness.ready) { 'no findings' } else { @($readiness.findings) -join '; ' }),
+                $(if ($readiness.hiberfil) { "$($readiness.hiberfil.bytes) bytes, signature $($readiness.hiberfil.signature)" } else { 'absent' }),
+                $readiness.early_drivers, (@($readiness.file_system_drivers) -join ' '))
+        } catch { Say "boot readiness check failed: $($_.Exception.Message)" }
+    }
     $taskName = "N2R-Attempt-$Name"
     Invoke-Command -Session $session -ArgumentList $guestRoot, $taskName, ($arguments -join "`t") -ScriptBlock {
         param($root, $task, $joined)

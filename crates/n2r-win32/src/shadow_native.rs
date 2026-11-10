@@ -5983,6 +5983,28 @@ mod tests {
         assert!(!security_matches(&input, &actual, &same).unwrap());
     }
     #[test]
+    fn acl_control_repair_applies_only_to_sacl_presence_and_auto_inherit_flags() {
+        // The descriptors the thinned Windows fixture reported for
+        // \System Volume Information: same owner, group and DACL; the shadow
+        // adds SACL present + SACL auto-inherited with a null SACL.
+        let expected = hex::decode("010004903000000040000000000000001400000002001c000100000000031400ff011f0001010000000000051200000001020000000000052000000020020000010100000000000512000000").unwrap();
+        let actual = hex::decode("01001498140000002400000000000000300000000102000000000005200000002002000001010000000000051200000002001c000100000000031400ff011f00010100000000000512000000").unwrap();
+        use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, SACL_SECURITY_INFORMATION};
+        assert_eq!(cache_refresh::acl_control_repair(&expected, &actual), SACL_SECURITY_INFORMATION);
+        assert_eq!(cache_refresh::acl_control_repair(&expected, &expected), 0);
+        let mut dacl_inherited = expected.clone();
+        dacl_inherited[3] |= 0x04;
+        assert_eq!(cache_refresh::acl_control_repair(&expected, &dacl_inherited), DACL_SECURITY_INFORMATION);
+        // A protection or DACL-presence difference is not this repair's business.
+        let mut unprotected = expected.clone();
+        unprotected[3] &= !0x10;
+        assert_eq!(cache_refresh::acl_control_repair(&expected, &unprotected), 0);
+        let mut no_dacl = expected.clone();
+        no_dacl[2] &= !0x04;
+        assert_eq!(cache_refresh::acl_control_repair(&expected, &no_dacl), 0);
+        assert_eq!(cache_refresh::acl_control_repair(&expected[..8], &actual), 0);
+    }
+    #[test]
     fn a_metadata_failure_names_its_object_and_both_descriptors() {
         let path = ["Windows".to_owned(), "System32".to_owned(), "lsass.exe".to_owned()];
         let input = Input {

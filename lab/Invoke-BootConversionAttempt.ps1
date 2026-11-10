@@ -174,9 +174,10 @@ try {
     Copy-Item -LiteralPath $Binary -Destination "$guestRoot\ntfs2refs.exe" -ToSession $session
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'guest\Invoke-ConverterRun.ps1') -Destination "$guestRoot\worker.ps1" -ToSession $session
     $taskName = "N2R-Attempt-$Name"
-    Invoke-Command -Session $session -ArgumentList $guestRoot, $taskName, (, $arguments) -ScriptBlock {
-        param($root, $task, $arguments)
-        [IO.File]::WriteAllText("$root\run.json", (@{ arguments = $arguments } | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+    Invoke-Command -Session $session -ArgumentList $guestRoot, $taskName, ($arguments -join "`t") -ScriptBlock {
+        param($root, $task, $joined)
+        $arguments = [string[]]$joined.Split("`t")
+        [IO.File]::WriteAllText("$root\run.json", (@{ arguments = @($arguments) } | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
         $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
             -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File $root\worker.ps1 -Root $root"
         $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
@@ -204,8 +205,11 @@ try {
             }
         } catch { Say "poll failed: $($_.Exception.Message)"; continue }
         $line = @($state.stdout) | Select-Object -Last 1
-        if (($line -and $line -ne $lastLine) -or $polls % 30 -eq 0) {
-            $lastLine = $line
+        # The converter reports progress as JSON; show the short form.
+        if ($line -like '{"kind":"conversion-progress-v1"*') { try { $p = $line | ConvertFrom-Json; $line = '{0}: {1} pass {2}, {3}/{4} {5}' -f $p.label, $p.progress.phase, $p.progress.pass, $p.progress.completed, $p.progress.total, $p.progress.unit } catch { } }
+        $phaseKey = ($line -replace '\d+/', '')
+        if (($line -and $phaseKey -ne $lastLine) -or $polls % 15 -eq 0) {
+            $lastLine = $phaseKey
             Say ("[{0:N0} min] {1} | scratch free {2:N1} GB, control free {3:N1} GB" -f ($phaseWatch.Elapsed.TotalMinutes), $line, ($state.scratch_free / 1GB), ($state.control_free / 1GB))
         }
         if ($state.terminal -or $state.worker_error -or ($state.task -ne 'Running' -and $polls -gt 3)) { break }

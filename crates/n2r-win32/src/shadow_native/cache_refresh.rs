@@ -156,6 +156,61 @@ pub(super) fn restore_acl_protection_with_limit(
     Ok(changed)
 }
 
+const SE_DACL_AUTO_INHERIT_REQ: u16 = 0x0100;
+const SE_SACL_AUTO_INHERIT_REQ: u16 = 0x0200;
+const SE_DACL_AUTO_INHERITED: u16 = 0x0400;
+const SE_SACL_AUTO_INHERITED: u16 = 0x0800;
+const SE_SACL_PRESENT: u16 = 0x0010;
+
+/// Which ACLs still need their control flags reconciled after a full
+/// descriptor restore, as SECURITY_INFORMATION bits; zero when this repair
+/// does not apply. It applies only when the remaining difference is confined
+/// to SACL presence and the two auto-inherited flags.
+///
+/// An object the ReFS formatter created (System Volume Information) starts
+/// with "SACL present, auto-inherited" and a null SACL. BackupWrite restores
+/// owner, group and DACL from a source descriptor that has no SACL and leaves
+/// those flags behind, so the object can never equal its source.
+pub(super) fn acl_control_repair(expected: &[u8], actual: &[u8]) -> u32 {
+    use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, SACL_SECURITY_INFORMATION};
+    if expected.len() < 20 || actual.len() < 20 {
+        return 0;
+    }
+    let control = |bytes: &[u8]| u16::from_le_bytes([bytes[2], bytes[3]]);
+    let difference = control(expected) ^ control(actual);
+    let sacl = SE_SACL_PRESENT | SE_SACL_AUTO_INHERITED;
+    if difference == 0 || difference & !(sacl | SE_DACL_AUTO_INHERITED) != 0 {
+        return 0;
+    }
+    let mut information = 0;
+    if difference & sacl != 0 {
+        information |= SACL_SECURITY_INFORMATION;
+    }
+    if difference & SE_DACL_AUTO_INHERITED != 0 {
+        information |= DACL_SECURITY_INFORMATION;
+    }
+    information
+}
+
+/// Set the ACLs named by `information` from the expected descriptor through
+/// the kernel object interface, asking it to take the auto-inherited flags
+/// from that descriptor too. Unlike SetSecurityInfo this neither propagates
+/// inheritance nor sets auto-inherited on its own.
+fn reconcile_acl_control(file: &File, expected: &[u8], information: u32) -> io::Result<()> {
+    use windows_sys::Win32::Security::SetKernelObjectSecurity;
+    let mut request = expected.to_vec();
+    let control = u16::from_le_bytes([request[2], request[3]])
+        | SE_DACL_AUTO_INHERIT_REQ
+        | SE_SACL_AUTO_INHERIT_REQ;
+    request[2..4].copy_from_slice(&control.to_le_bytes());
+    // SAFETY: live metadata handle holding WRITE_DAC and ACCESS_SYSTEM_SECURITY;
+    // `request` is the already validated self-relative descriptor with only
+    // its control word changed, and outlives the call.
+    check(unsafe {
+        SetKernelObjectSecurity(file.as_raw_handle(), information, request.as_mut_ptr().cast())
+    })
+}
+
 fn guid_payload(bytes: &[u8]) -> bool {
     if bytes.len() != 76 {
         return false;
@@ -604,10 +659,24 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                 item.security,
                 resource_admission.map(|a| a.budget.max_row_bytes),
             )?;
-            let restored_view = security_snapshot_with_limit(
+            let mut restored_view = security_snapshot_with_limit(
                 handle,
                 resource_admission.map(|a| a.budget.max_row_bytes),
             );
+            if !security_matches(item, &restored_view, &same_security)? {
+                let repair = restored_view
+                    .kernel_security
+                    .as_ref()
+                    .map_or(0, |kernel| acl_control_repair(item.security, &kernel.bytes));
+                if repair != 0 {
+                    input.before_mutation(item.security.len() as u64)?;
+                    reconcile_acl_control(handle, item.security, repair)?;
+                    restored_view = security_snapshot_with_limit(
+                        handle,
+                        resource_admission.map(|a| a.budget.max_row_bytes),
+                    );
+                }
+            }
             if !security_matches(item, &restored_view, &same_security)? {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,

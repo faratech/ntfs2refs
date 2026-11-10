@@ -107,6 +107,7 @@ fn main() -> Result<ExitCode> {
                     "short_names_as_links": comparison.short_names_as_links,
                     "allowed": comparison.allowed,
                     "differences": comparison.difference_count,
+                    "kinds": comparison.difference_kinds,
                 })
             );
             Ok(if comparison.identical() { ExitCode::SUCCESS } else { ExitCode::from(2) })

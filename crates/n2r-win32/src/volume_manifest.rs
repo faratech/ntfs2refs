@@ -48,9 +48,13 @@ pub struct Record {
     /// For a relative symbolic link, the name it points at.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relative_link_target: Option<String>,
-    /// SHA-256 over the extended attributes, if there are any.
+    /// SHA-256 over the extended attributes other than kernel caches, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extended_attributes: Option<String>,
+    /// `$Kernel.Purge.*` attributes: caches the kernel discards whenever a
+    /// file changes. Counted, not hashed.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub kernel_cache_attributes: u32,
     pub links: u32,
     /// Identifies the file behind several hard links. Only meaningful within
     /// one listing; never compared across listings.
@@ -58,6 +62,10 @@ pub struct Record {
     pub link_group: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<String>,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,6 +83,8 @@ pub struct Comparison {
     /// Expected differences, counted by kind.
     pub allowed: BTreeMap<String, usize>,
     pub difference_count: usize,
+    /// Every difference, counted by kind (numbers replaced by N).
+    pub difference_kinds: BTreeMap<String, usize>,
     /// The first differences, in path order.
     pub differences: Vec<Difference>,
 }
@@ -241,6 +251,11 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
         if record.extended_attributes != now.extended_attributes {
             differ("extended attributes differ".to_owned());
         }
+        if now.kernel_cache_attributes > record.kernel_cache_attributes {
+            differ("kernel cache attributes appeared".to_owned());
+        } else if now.kernel_cache_attributes < record.kernel_cache_attributes {
+            allow("kernel cache attributes dropped", &mut result.allowed);
+        }
         if record.links != now.links {
             differ(format!("hard-link count {} became {}", record.links, now.links));
         }
@@ -282,6 +297,22 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
 
     differences.sort_by(|a, b| a.path.cmp(&b.path).then_with(|| a.what.cmp(&b.what)));
     result.difference_count = differences.len();
+    for difference in &differences {
+        let mut kind = String::new();
+        let mut in_number = false;
+        for character in difference.what.chars().take(60) {
+            if character.is_ascii_digit() {
+                if !in_number {
+                    kind.push('N');
+                }
+                in_number = true;
+            } else {
+                in_number = false;
+                kind.push(character);
+            }
+        }
+        *result.difference_kinds.entry(kind).or_default() += 1;
+    }
     differences.truncate(DIFFERENCE_LIMIT);
     result.differences = differences;
     result
@@ -322,7 +353,6 @@ mod capture {
         written: i64,
         changed: i64,
         bytes: u64,
-        ea_bytes: u32,
         short_name: Option<String>,
     }
 
@@ -392,7 +422,6 @@ mod capture {
                         written: i64_at(entry, 24),
                         changed: i64_at(entry, 32),
                         bytes: i64_at(entry, 40) as u64,
-                        ea_bytes: u32_at(entry, 64),
                         short_name: (!short.is_empty()).then_some(short),
                     });
                 }
@@ -558,11 +587,31 @@ mod capture {
             Ok(text) => record.security = Some(text),
             Err(error) => note(&mut record, "security", &error),
         }
+        // A directory entry carries a copy of these that NTFS refreshes
+        // lazily, per name. The values held by the object are the true ones.
+        let mut basic = [0u64; 5];
+        // FileBasicInfo
+        match information(&file, 0, &mut basic) {
+            Ok(()) => {
+                let basic = bytes_of(&basic);
+                record.created = i64_at(basic, 0);
+                record.written = i64_at(basic, 16);
+                record.changed = i64_at(basic, 24);
+                record.attributes = u32_at(basic, 32);
+            }
+            Err(error) => note(&mut record, "times and attributes", &error),
+        }
         let mut standard = [0u64; 3];
         // FileStandardInfo
         match information(&file, 1, &mut standard) {
-            Ok(()) => record.links = u32_at(bytes_of(&standard), 16),
-            Err(error) => note(&mut record, "link count", &error),
+            Ok(()) => {
+                let standard = bytes_of(&standard);
+                record.links = u32_at(standard, 16);
+                if !directory {
+                    record.bytes = i64_at(standard, 8) as u64;
+                }
+            }
+            Err(error) => note(&mut record, "size and link count", &error),
         }
         if record.links > 1 && !directory {
             let mut identity = [0u64; 3];
@@ -582,18 +631,29 @@ mod capture {
                 Ok(None) => note(&mut record, "reparse point", &"attribute set but no reparse data"),
                 Err(error) => note(&mut record, "reparse point", &error),
             }
-        } else if pending.ea_bytes != 0 {
+        } else {
+            // Asked of the object itself: the size a directory entry reports
+            // for extended attributes can be stale.
             match crate::extended_attributes_native::capture(&file) {
                 Ok(set) if !set.is_empty() => {
                     let mut hasher = Sha256::new();
+                    let mut ordinary = 0usize;
                     for entry in &set.entries {
+                        let name = entry.name.to_ascii_uppercase();
+                        if name.starts_with(b"$KERNEL.PURGE.") {
+                            record.kernel_cache_attributes += 1;
+                            continue;
+                        }
+                        ordinary += 1;
                         hasher.update([entry.flags]);
-                        hasher.update((entry.name.len() as u32).to_le_bytes());
-                        hasher.update(entry.name.to_ascii_uppercase());
+                        hasher.update((name.len() as u32).to_le_bytes());
+                        hasher.update(&name);
                         hasher.update((entry.value.len() as u32).to_le_bytes());
                         hasher.update(&entry.value);
                     }
-                    record.extended_attributes = Some(hex::encode(hasher.finalize()));
+                    if ordinary != 0 {
+                        record.extended_attributes = Some(hex::encode(hasher.finalize()));
+                    }
                 }
                 Ok(_) => (),
                 Err(error) => note(&mut record, "extended attributes", &format!("{error:?}")),
@@ -640,7 +700,6 @@ mod capture {
             written: i64_at(basic, 16),
             changed: i64_at(basic, 24),
             bytes: 0,
-            ea_bytes: 0,
             short_name: None,
         }];
         let mut listing_errors = Vec::new();
@@ -799,6 +858,35 @@ mod tests {
         real_sacl.security = Some("O:SYG:SYD:(A;;FA;;;SY)S:(AU;SA;FA;;;WD)".to_owned());
         let stricter = compare(&[directory("\\"), file("\\s", "22")], &[directory("\\"), real_sacl]);
         assert_eq!(stricter.difference_count, 1);
+    }
+
+    #[test]
+    fn only_kernel_cache_attributes_may_disappear() {
+        let mut cached = file("\\a", "11");
+        cached.kernel_cache_attributes = 2;
+        cached.extended_attributes = Some("ee".to_owned());
+        let mut kept = file("\\a", "11");
+        kept.extended_attributes = Some("ee".to_owned());
+        let comparison = compare(&[directory("\\"), cached.clone()], &[directory("\\"), kept.clone()]);
+        assert!(comparison.identical(), "{comparison:?}");
+        assert_eq!(comparison.allowed["kernel cache attributes dropped"], 1);
+
+        let mut lost = kept.clone();
+        lost.extended_attributes = None;
+        let comparison = compare(&[directory("\\"), cached], &[directory("\\"), lost]);
+        assert_eq!(comparison.difference_count, 1);
+        assert_eq!(comparison.difference_kinds["extended attributes differ"], 1);
+    }
+
+    #[test]
+    fn differences_are_counted_by_kind() {
+        let before = vec![directory("\\"), file("\\a", "11"), file("\\b", "22")];
+        let mut a = file("\\a", "11");
+        a.changed = 99;
+        let mut b = file("\\b", "22");
+        b.changed = 77;
+        let comparison = compare(&before, &[directory("\\"), a, b]);
+        assert_eq!(comparison.difference_kinds["change time N became N"], 2);
     }
 
     #[test]

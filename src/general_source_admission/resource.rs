@@ -412,29 +412,26 @@ fn gate(gates: &mut Vec<Gate>, code: &str, satisfied: bool, detail: &str) {
     });
 }
 fn output_independent(binding: &GeneralDiskBinding, output: &Path) -> Result<()> {
-    let system = std::env::var("SystemRoot").context("Windows system path unavailable")?;
-    let os_root = format!(
-        "{}\\",
-        system
-            .get(..2)
-            .context("Windows system drive unavailable")?
-    );
     let text = output
         .to_str()
         .context("Unicode source output path required")?;
+    // The working volume is whichever local drive holds the output; it is
+    // bound natively below and must be on a disk other than the source.
+    let work_root = text
+        .get(..3)
+        .filter(|root| root.as_bytes()[0].is_ascii_alphabetic() && &root[1..] == ":\\")
+        .context("resource source artifacts require an absolute drive-letter path")?
+        .to_ascii_uppercase();
     ensure!(
         output.is_absolute()
-            && text
-                .get(..3)
-                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&os_root))
             && !text[3..].contains(':')
             && !output
                 .components()
                 .any(|c| matches!(c, std::path::Component::ParentDir)),
-        "resource source artifacts must stay on the Windows OS volume"
+        "resource source artifacts must be an ordinary path on their working volume"
     );
     let journal = n2r_win32::discovery::discover(
-        &os_root,
+        &work_root,
         n2r_win32::discovery::Role::Journal {
             allow_additional_partitions: true,
         },

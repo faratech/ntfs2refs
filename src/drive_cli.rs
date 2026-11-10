@@ -599,8 +599,26 @@ mod windows {
                 .get(..2)
                 .context("Windows system drive unavailable")?
         );
+        // Working storage (run records, shadow VHDX, journal) lives on the
+        // volume that holds the scratch directory. It defaults to the Windows
+        // volume but may be any local volume on a disk other than the source,
+        // so a large shadow cannot fill the running operating system's disk.
+        let work_root = match &scratch {
+            Some(path) => {
+                let root = path
+                    .to_str()
+                    .and_then(|text| text.get(..3))
+                    .context("scratch directory must be a Unicode drive-letter path")?;
+                ensure!(
+                    root.as_bytes()[0].is_ascii_alphabetic() && &root[1..] == ":\\",
+                    "scratch directory must be an absolute drive-letter path"
+                );
+                root.to_ascii_uppercase()
+            }
+            None => os_root.clone(),
+        };
         let journal = discovery::discover(
-            &os_root,
+            &work_root,
             Role::Journal {
                 allow_additional_partitions: true,
             },
@@ -612,7 +630,8 @@ mod windows {
         let space = discovery::observe_volume_space(&journal.volume_guid_path)?;
         ensure!(
             space.available_bytes_to_caller >= 4 * 1024 * 1024 * 1024,
-            "Windows volume lacks working space for the conversion"
+            "working volume {work_root} lacks space for the conversion: {} bytes available, 4 GiB required",
+            space.available_bytes_to_caller
         );
         let reserve = (space.available_bytes_to_caller / 4).min(16 * 1024 * 1024 * 1024);
         // Encoded selection stores D old bytes and L literal-new bytes, with
@@ -650,12 +669,12 @@ mod windows {
             parent.is_absolute()
                 && text
                     .get(..3)
-                    .is_some_and(|s| s.eq_ignore_ascii_case(&os_root))
+                    .is_some_and(|s| s.eq_ignore_ascii_case(&work_root))
                 && !text[3..].contains(':')
                 && !parent
                     .components()
                     .any(|p| matches!(p, std::path::Component::ParentDir)),
-            "scratch directory must be an ordinary path on the Windows OS volume"
+            "scratch directory must be an ordinary path on its working volume"
         );
         ordinary_parents(&parent)?;
         let run = parent.join(&id);

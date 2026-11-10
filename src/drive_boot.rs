@@ -48,8 +48,11 @@ pub(super) fn normalize_geometry(before:n2r_win32::discovery::VolumeDiscovery,ru
         .context("resize-record GUID volume root absent")?;
     let run_root=&native_run[..root_end];
     let journal=discovery::discover(&run_root,Role::Journal{allow_additional_partitions:true})?;
-    ensure!(journal.binding.disk_number==before.windows_disk_number
-        &&journal.binding.disk_number!=before.binding.disk_number,"resize recovery records must be on the actual current Windows disk outside the source");
+    // Any working disk other than the source may hold these records; it need
+    // not be the disk the maintenance Windows booted from.
+    ensure!(journal.binding.disk_number!=before.binding.disk_number,
+        "resize recovery records must be on a disk other than the source: records on disk {}, source disk {}",
+        journal.binding.disk_number,before.binding.disk_number);
     let intent=serde_json::json!({"kind":"confirmed-offline-Windows-NTFS-geometry-maintenance-v1",
         "source_before":before,"clean_native_before":clean,"native_events_before":events,
         "requested_partition_bytes":target,"shrink_bytes":remainder,"formatter_geometry_unit_bytes":REFS_GEOMETRY_UNIT,

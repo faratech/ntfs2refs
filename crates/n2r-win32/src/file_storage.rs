@@ -223,7 +223,8 @@ pub fn final_path_guid(file: &std::fs::File) -> io::Result<String> {
 /// the filesystem pre-allocates for appends. ReFS on a large volume was seen
 /// holding 442 KiB for a 220 KiB index that was still open; the surplus is
 /// released when the last handle closes. Allow up to the file's own length,
-/// and at least 16 MiB, on top of the cluster-rounding slack. fn append_preallocation_allowance(file_bytes: u64) -> u64 {
+/// and at least 16 MiB, on top of the cluster-rounding slack.
+pub fn append_preallocation_allowance(file_bytes: u64) -> u64 {
     file_bytes.max(16 * 1024 * 1024)
 }
 

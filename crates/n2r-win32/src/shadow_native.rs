@@ -1868,7 +1868,11 @@ fn validate_existing_content_domain_with_memory_and_windows_aliases(
                 }
             };
             let duplicate = !seen.insert(entry.name_utf16.clone());
-            if duplicate || entry.attributes != expected_attributes || !identity_matches {
+            // A file with no attributes is listed by Windows as NORMAL (0x80);
+            // the NTFS value it was created from is zero.
+            let attributes_match = entry.attributes == expected_attributes
+                || (expected_attributes == 0 && entry.attributes == 0x80);
+            if duplicate || !attributes_match || !identity_matches {
                 let context = serde_json::json!({
                     "path": child_components,
                     "duplicate": duplicate,

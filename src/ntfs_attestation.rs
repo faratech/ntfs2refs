@@ -683,6 +683,31 @@ pub fn same_security(a: &[u8], b: &[u8]) -> Result<bool> {
     same_security_with_limit(a, b, ntfs_security::MAX_DESCRIPTOR_BYTES as u64)
 }
 
+/// As `same_security`, except that a SACL marked present but null equals no
+/// SACL at all: neither audits anything.
+///
+/// ReFS cannot clear the SACL-present flag once it is set, and its formatter
+/// sets it (with a null SACL) on System Volume Information. Such an object can
+/// therefore never be made bit-identical to an NTFS source with no SACL. Every
+/// other field, including a real SACL, must still match exactly.
+pub fn same_security_null_sacl_as_absent(a: &[u8], b: &[u8]) -> Result<bool> {
+    const SE_SACL_PRESENT: u16 = 0x0010;
+    let maximum = ntfs_security::MAX_DESCRIPTOR_BYTES as u64;
+    let a = ntfs_security::parse_descriptor_with_limit(a, maximum)?;
+    let b = ntfs_security::parse_descriptor_with_limit(b, maximum)?;
+    let empty = |acl: &Acl| matches!(acl.state, ntfs_security::AclState::Absent | ntfs_security::AclState::Null);
+    let (control_mask, sacl_same) = if empty(&a.sacl) && empty(&b.sacl) {
+        (!SE_SACL_PRESENT, true)
+    } else {
+        (u16::MAX, acl_equal(&a, &a.sacl, &b, &b.sacl)?)
+    };
+    Ok(a.control & control_mask == b.control & control_mask
+        && a.rm_control == b.rm_control
+        && a.owner_sid == b.owner_sid
+        && a.group_sid == b.group_sid
+        && acl_equal(&a, &a.dacl, &b, &b.dacl)?
+        && sacl_same)
+}
 /// The resource profile changes the storage bound, never descriptor meaning.
 /// SID/control/ACL states, ACE ordering and all complete ACE bytes still match.
 pub fn same_security_with_limit(a: &[u8], b: &[u8], maximum: u64) -> Result<bool> {

@@ -1219,7 +1219,7 @@ where
             .map(resume_checkpoint::Checkpoints::begin_metadata).transpose()?;
         let verified_aliases = if let Some(aliases) = &alias_inputs {
             let compare = |a: &[u8], b: &[u8]| {
-                crate::ntfs_attestation::same_security(a, b).map_err(std::io::Error::other)
+                crate::ntfs_attestation::same_security_null_sacl_as_absent(a, b).map_err(std::io::Error::other)
             };
             let (report, verified) = if trust_recipes
                 .as_ref()
@@ -1241,7 +1241,7 @@ where
         } else {
             private
                 .complete_source_metadata_domain(&inputs, |a, b| {
-                    crate::ntfs_attestation::same_security(a, b).map_err(std::io::Error::other)
+                    crate::ntfs_attestation::same_security_null_sacl_as_absent(a, b).map_err(std::io::Error::other)
                 })
                 .context("shadow metadata completion")?;
             None
@@ -1262,9 +1262,6 @@ where
         // which restores NTFS access.
         if let Some(sink) = &diagnose_failures {
             let failures = sink.take();
-            for failure in &failures {
-                eprintln!("diagnose: {failure}");
-            }
             anyhow::bail!("diagnose complete: {} per-object failures; nothing was published or written to the source", failures.len());
         }
         events.phase("source-after-shadow-construction");

@@ -469,3 +469,25 @@ fn inherited_ace_flags_are_not_masked() {
     b[41] = 0x10;
     assert!(!same_security(&a, &b).unwrap());
 }
+
+#[test]
+fn a_null_sacl_marked_present_equals_no_sacl_and_nothing_else_is_relaxed() {
+    use ntfs2refs::ntfs_attestation::{same_security, same_security_null_sacl_as_absent as relaxed};
+    // \System Volume Information on the NTFS source (control 0x9004)...
+    let source = hex::decode("010004903000000040000000000000001400000002001c000100000000031400ff011f0001010000000000051200000001020000000000052000000020020000010100000000000512000000").unwrap();
+    // ...and on ReFS after restore: same owner, group and DACL, plus "SACL present" with a null SACL.
+    let mut refs = hex::decode("01001498140000002400000000000000300000000102000000000005200000002002000001010000000000051200000002001c000100000000031400ff011f00010100000000000512000000").unwrap();
+    refs[2..4].copy_from_slice(&0x9014u16.to_le_bytes());
+    assert!(!same_security(&source, &refs).unwrap());
+    assert!(relaxed(&source, &refs).unwrap());
+    assert!(relaxed(&refs, &source).unwrap());
+    assert!(relaxed(&source, &source).unwrap());
+    // The auto-inherited flag is still a difference.
+    let mut inherited = refs.clone();
+    inherited[2..4].copy_from_slice(&0x9814u16.to_le_bytes());
+    assert!(!relaxed(&source, &inherited).unwrap());
+    // So is DACL protection.
+    let mut unprotected = refs.clone();
+    unprotected[2..4].copy_from_slice(&0x8014u16.to_le_bytes());
+    assert!(!relaxed(&source, &unprotected).unwrap());
+}

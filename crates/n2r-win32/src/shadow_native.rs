@@ -5983,26 +5983,27 @@ mod tests {
         assert!(!security_matches(&input, &actual, &same).unwrap());
     }
     #[test]
-    fn acl_control_repair_applies_only_to_sacl_presence_and_auto_inherit_flags() {
-        // The descriptors the thinned Windows fixture reported for
-        // \System Volume Information: same owner, group and DACL; the shadow
-        // adds SACL present + SACL auto-inherited with a null SACL.
-        let expected = hex::decode("010004903000000040000000000000001400000002001c000100000000031400ff011f0001010000000000051200000001020000000000052000000020020000010100000000000512000000").unwrap();
-        let actual = hex::decode("01001498140000002400000000000000300000000102000000000005200000002002000001010000000000051200000002001c000100000000031400ff011f00010100000000000512000000").unwrap();
+    fn auto_inherited_acls_names_exactly_the_flagged_acls() {
         use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, SACL_SECURITY_INFORMATION};
-        assert_eq!(cache_refresh::acl_control_repair(&expected, &actual), SACL_SECURITY_INFORMATION);
-        assert_eq!(cache_refresh::acl_control_repair(&expected, &expected), 0);
-        let mut dacl_inherited = expected.clone();
-        dacl_inherited[3] |= 0x04;
-        assert_eq!(cache_refresh::acl_control_repair(&expected, &dacl_inherited), DACL_SECURITY_INFORMATION);
-        // A protection or DACL-presence difference is not this repair's business.
-        let mut unprotected = expected.clone();
-        unprotected[3] &= !0x10;
-        assert_eq!(cache_refresh::acl_control_repair(&expected, &unprotected), 0);
-        let mut no_dacl = expected.clone();
-        no_dacl[2] &= !0x04;
-        assert_eq!(cache_refresh::acl_control_repair(&expected, &no_dacl), 0);
-        assert_eq!(cache_refresh::acl_control_repair(&expected[..8], &actual), 0);
+        // System Volume Information as the ReFS formatter leaves it: SACL
+        // present, null and auto-inherited (control 0x9814).
+        let formatter = hex::decode("01001498140000002400000000000000300000000102000000000005200000002002000001010000000000051200000002001c000100000000031400ff011f00010100000000000512000000").unwrap();
+        assert_eq!(cache_refresh::auto_inherited_acls(&formatter), SACL_SECURITY_INFORMATION);
+        let mut both = formatter.clone();
+        both[3] |= 0x04;
+        assert_eq!(
+            cache_refresh::auto_inherited_acls(&both),
+            SACL_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION
+        );
+        // Its NTFS source (control 0x9004) needs nothing.
+        let mut clean = formatter.clone();
+        clean[2..4].copy_from_slice(&0x9004u16.to_le_bytes());
+        assert_eq!(cache_refresh::auto_inherited_acls(&clean), 0);
+        // DACL auto-inherited without a DACL present is left alone.
+        let mut no_dacl = clean.clone();
+        no_dacl[2..4].copy_from_slice(&0x9400u16.to_le_bytes());
+        assert_eq!(cache_refresh::auto_inherited_acls(&no_dacl), 0);
+        assert_eq!(cache_refresh::auto_inherited_acls(&formatter[..8]), 0);
     }
     #[test]
     fn a_metadata_failure_names_its_object_and_both_descriptors() {

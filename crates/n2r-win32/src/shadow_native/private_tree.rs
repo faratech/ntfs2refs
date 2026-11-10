@@ -1896,6 +1896,10 @@ fn allocate_domain_with_memory(
                     || s.sparse.is_some_and(|v| !v.allocated.is_empty())
             })
     })?;
+    // The formatter's root would hand its ACL auto-inherit flags to every
+    // object created below it; clear them before the first creation.
+    input.before_mutation(0)?;
+    super::cache_refresh::clear_acl_auto_inheritance(&root_handle)?;
     let carrier_directory = if needs_carriers {
         input.before_mutation(0)?;
         Some(sparse_stream::CarrierDirectory::create(&root)?)
@@ -1937,6 +1941,15 @@ fn allocate_domain_with_memory(
     })()
     .map_err(|error| super::cache_refresh::at_object(input, "system object pinning", failing_object.get(), error))?;
     allocation_progress(0, input.len() as u64);
+    // The same for every other formatter directory pinned above, such as
+    // System Volume Information, before children are created inside it.
+    for (index, handle) in &metadata_targets {
+        if *index != 0 && input.object(*index)?.input().directory {
+            input.before_mutation(0)?;
+            super::cache_refresh::clear_acl_auto_inheritance(handle)
+                .map_err(|error| super::cache_refresh::at_object(input, "formatter directory auto-inheritance reset", *index, error))?;
+        }
+    }
     let global_query_memory = memory
         .as_ref()
         .map(|m| {

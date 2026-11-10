@@ -280,6 +280,24 @@ pub(super) fn reconcile_owned_resource_domain(
 )->io::Result<Vec<serde_json::Value>>{
     create_owned_domain_inner(input,handles,Some((maximum_names,root,payer)),true)
 }
+/// The directory entry a path names: its file identity and attributes, or
+/// None when there is no such entry. A name is unique in its directory, so
+/// this one lookup answers what listing the whole parent and filtering for
+/// the name answered.
+fn entry_by_name(path: &str) -> io::Result<Option<(Vec<u8>, u32)>> {
+    use std::os::windows::fs::OpenOptionsExt;
+    // FILE_READ_ATTRIBUTES; backup semantics; the entry itself, never its target.
+    match File::options().access_mode(0x80).share_mode(7).custom_flags(0x0220_0000).open(path) {
+        Ok(file) => {
+            let identity = info(&file, 18, 24)?;
+            let basic = info(&file, 0, 40)?;
+            Ok(Some((identity[8..24].to_vec(), layout::u32_at(&basic, 32)?)))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 fn create_owned_domain_inner(
     input: &impl InputDomain,
     handles: &BTreeMap<usize, File>,
@@ -357,6 +375,10 @@ fn create_owned_domain_inner(
             // Final canonical/additional-name count bounds the parent at
             // every intermediate link step. The same real tree payer owns
             // both complete enumeration passes before either native query.
+            // With the volume root known, the new name is looked up directly.
+            // Listing the whole parent before and after every link was
+            // quadratic: thousands of links into a directory of thousands.
+            let by_name = resources.map(|(_, root, _)| format!("{root}{}", path.join("\\")));
             let (enumeration_budget, _enumeration_memory) = if let Some((maximum_names, _, payer)) = resources {
                 if parent_children > maximum_names {
                     return Err(invalid("resource hard-link parent exceeds admitted namespace"));
@@ -364,21 +386,31 @@ fn create_owned_domain_inner(
                 let evidence = parent_children.checked_add(2).and_then(|n| n.checked_mul(4096))
                     .and_then(|n| n.checked_add(namespace_layout::CAPACITY * 4))
                     .ok_or_else(|| invalid("resource hard-link enumeration overflow"))?;
-                let memory = payer.reserve((evidence as u64).checked_mul(2)
-                    .ok_or_else(|| invalid("resource hard-link enumeration RAM overflow"))?)?;
-                (Some(evidence), Some(memory))
+                let memory = if by_name.is_some() { None } else {
+                    Some(payer.reserve((evidence as u64).checked_mul(2)
+                        .ok_or_else(|| invalid("resource hard-link enumeration RAM overflow"))?)?)
+                };
+                (Some(evidence), memory)
             } else { (None, None) };
             let native_name:Vec<u16>=name.encode_utf16().collect();
-            let existing:Vec<_>=enumerate_with_resource_budget(parent,enumeration_budget)?.into_iter()
-                .filter(|entry|entry.name_utf16==native_name).collect();
+            let named = |parent: &File| -> io::Result<Vec<(Vec<u8>, u32)>> {
+                match &by_name {
+                    Some(path) => Ok(entry_by_name(path)?.into_iter().collect()),
+                    None => Ok(enumerate_with_resource_budget(parent, enumeration_budget)?.into_iter()
+                        .filter(|entry| entry.name_utf16 == native_name)
+                        .map(|entry| (entry.file_id.to_vec(), entry.attributes))
+                        .collect()),
+                }
+            };
+            let existing = named(parent)?;
             if parent_id[..8] != identity[..8] {
                 return Err(invalid(
                     "hard-link destination exists or is on a different volume",
                 ));
             }
             if !existing.is_empty(){
-                if !recovering||existing.len()!=1||existing[0].file_id!=identity[8..24]
-                    ||(existing[0].attributes&16!=0)||info(file,18,24)?!=identity
+                if !recovering||existing.len()!=1||existing[0].0!=identity[8..24]
+                    ||(existing[0].1&16!=0)||info(file,18,24)?!=identity
                     ||info(parent,18,24)?!=parent_id {
                     return Err(invalid("existing hard-link destination differs from the held canonical identity"));
                 }
@@ -394,13 +426,10 @@ fn create_owned_domain_inner(
             {
                 return Err(invalid("hard-link identity or incremented count differs"));
             }
-            let entries: Vec<_> = enumerate_with_resource_budget(parent, enumeration_budget)?
-                .into_iter()
-                .filter(|e| e.name_utf16 == name.encode_utf16().collect::<Vec<_>>())
-                .collect();
+            let entries = named(parent)?;
             if entries.len() != 1
-                || entries[0].file_id != identity[8..24]
-                || entries[0].attributes & (16 | 0x400) != 0
+                || entries[0].0 != identity[8..24]
+                || entries[0].1 & (16 | 0x400) != 0
             {
                 return Err(invalid(
                     "created hard-link namespace does not refer to its canonical file",

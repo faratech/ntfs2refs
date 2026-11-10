@@ -5404,7 +5404,13 @@ fn run_role_content_domain_accounted(
                     if i.reparse.is_some() {
                         Vec::new()
                     } else {
-                        enumerate(&h)?
+                        // On the resource route a directory is bounded by the
+                        // admitted row size, not by the fixed 4,096 entries of
+                        // the unaccounted path: WinSxS alone has several times
+                        // that, before its short-name links are counted.
+                        enumerate_with_resource_budget(&h, initialized_region_bytes)
+                            .map_err(|error| io::Error::new(error.kind(), format!(
+                                "listing directory \\{}: {error}", i.components.join("\\"))))?
                     },
                 )
             } else {

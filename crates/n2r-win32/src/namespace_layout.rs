@@ -148,7 +148,12 @@ fn decode_pass_with_limits(
                         .checked_add(batch.len())
                         .is_none_or(|n| n > maximum_entries)
                 {
-                    return Err(invalid("directory evidence bounds differ"));
+                    return Err(invalid(&format!(
+                        "directory evidence bounds differ: call {i} decoded {used} of {} bytes; {} + {} entries against a limit of {maximum_entries}",
+                        q.bytes.len(),
+                        entries.len(),
+                        batch.len()
+                    )));
                 }
                 entries.extend(batch);
             }

@@ -29,6 +29,12 @@ not count. Power-cut resume during preparation is out of scope until this works.
   finalize (`src/resource_finalize.rs`).
 - Nothing is written to the source before the journal apply step. Everything
   earlier is preparation and is safe to abandon.
+- Working files are hashed when written and then held open; the source is
+  offline, read-only and held. Full re-reads happen once, at the gate before
+  the first source write (`crates/n2r-win32/src/verify_policy.rs`), not at every
+  checkpoint. `--recheck-everything` restores the old behaviour.
+- Each stage prints a `timing:` line to stderr (`crates/n2r-win32/src/perf.rs`).
+  Measure before and after any speed change.
 
 ## Working rules
 
@@ -36,6 +42,8 @@ not count. Power-cut resume during preparation is out of scope until this works.
   not build or extend resume/adoption code to rescue a failed lab run; fix the
   forward path and run again.
 - Find problems on the thinned fixture (minutes), not on the full volume (hours).
+- A conversion is correct only if the harness's before/after listing comparison
+  (`lab-volume-manifest`) is identical. Do not widen its allow-list to pass.
 - An error must name the object, path, phase and OS error. Fix the message
   before fixing the bug if it does not.
 - Use `cargo test --locked --workspace --all-targets`. Add a test with each fix
@@ -56,7 +64,19 @@ not count. Power-cut resume during preparation is out of scope until this works.
   generation 2, Secure Boot on, no network adapter. Guest credential:
   `.lab/hyperv/win11/secrets/guest-credential.xml` (user `LabAdmin`).
 - Baseline: checkpoint `0821c0da-3905-4032-a798-e1024092b795`
-  (`N2R-Qualification-NTFS-…`). Restore it before every attempt.
+  (`N2R-Qualification-NTFS-…`). Fixtures made from it: `N2R-Thinned-Fixture`
+  (1 file in 10, about 26,000 objects) and `N2R-Thinned-Fixture-40` (1 in 40,
+  about 8,000 objects). The harness restores one before every attempt.
+- Harness: `lab\Invoke-BootConversionAttempt.ps1 -Name <n> -Fixture
+  -FixtureCheckpoint N2R-Thinned-Fixture-40 -NoBoot`. Without `-Fixture` it uses
+  the full baseline; without `-NoBoot` it boots disk0 alone afterwards.
+  `-Diagnose` reports every per-object failure and writes nothing.
+  `-CheckpointAfterConvert <name>` saves a run that stopped after apply;
+  `-Recover -Checkpoint <name>` retries its finalization with `--recover`.
+  Records land in `.lab\hypervttempts\<n>\`. The scratch disk is deleted when
+  the attempt ends; the host volume must keep 40 GB free.
+- Build both binaries first: `cargo build --locked --release --bin ntfs2refs
+  --bin lab-volume-manifest`.
 - Disks (SCSI 0), under `.lab/hyperv/isolated-reference-20261026-review/disks/`:
   - location 0: disk0, the original NTFS Windows (`os.vhdx` chain), the source.
   - location 1: control OS, natively ReFS (`target.vhdx` chain); runs the converter.
@@ -70,13 +90,13 @@ not count. Power-cut resume during preparation is out of scope until this works.
 
 In order; each step is finished when its check passes.
 
-1. Per-object error context in the shadow metadata, alias, allocation and
-   supply loops.
-2. Expected tree pages held in memory (`crates/n2r-win32/src/metadata_pages.rs`).
-3. Scratch and shadow on any non-source volume; one named event-limit constant.
-4. One harness, `lab/Invoke-BootConversionAttempt.ps1`: restore, run, stop,
-   boot disk0 alone, observe, write a verdict.
-5. Thinned real-Windows fixture; full route through apply and finalize to green.
-6. `--diagnose`: collect every skippable per-object failure, refuse to publish.
-7. Full Windows in diagnose mode until the failure list is empty.
-8. Convert the real disk0, run pre-boot checks, boot it.
+1. Small fixture: a whole run (not only `--recover`) ends `converted-not-booted`
+   with an identical before/after listing, twice from a fresh restore.
+2. Remove repeated work until the 1-in-10 fixture converts in under 6 minutes;
+   use the `timing:` lines to pick each target. Full Windows must fit in 30.
+3. 1-in-10 fixture: converted, identical listing.
+4. Full Windows with `-Diagnose` until the failure list is empty.
+5. Pre-boot checks on the offline source (no resumable `hiberfil.sys` or BCD
+   resume object, no WOF/CompactOS files, no `~N` paths in boot-start services),
+   boot logging and EMS on.
+6. Convert the real disk0, compare listings, boot it alone with Secure Boot on.

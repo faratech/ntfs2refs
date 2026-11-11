@@ -3352,6 +3352,14 @@ impl PlainStreamRangeSession {
         raw: &PagedInspection,
     ) -> Result<()> {
         ensure!(!self.poisoned, "failed plain stream session cannot finish");
+        // Finishing re-derives the stream's mapping from the source only to
+        // see that it is what the session opened with. The source is frozen
+        // for the whole conversion; under the check-once policy that second
+        // derivation is made inside the gate before a source write and not
+        // for each of the several sessions every stream gets.
+        if n2r_win32::verify_policy::may_reuse_frozen_reads() {
+            return Ok(());
+        }
         let after = checked_data_attribute_domain(
             reader,
             raw,

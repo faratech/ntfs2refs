@@ -41,6 +41,11 @@ param(
     # VM down and save that state under this checkpoint name. Finalization can
     # then be retried in minutes with -Recover instead of a whole new run.
     [string]$CheckpointAfterConvert,
+    # Save the converted, not yet booted state under this checkpoint name
+    # before the boot attempt, with the control OS and scratch disk still
+    # attached, so a failed boot can be examined and tried again without
+    # converting again. Keeps the scratch disk, which the checkpoint uses.
+    [string]$CheckpointBeforeBoot,
     # Restore -Checkpoint (one saved by -CheckpointAfterConvert) and run
     # `ntfs2refs --recover` with the command the original run printed.
     [switch]$Recover,
@@ -146,6 +151,9 @@ try {
     if ($snapshots.Count -ne 1) { throw "Expected exactly one checkpoint matching '$wanted', found $($snapshots.Count)" }
     if ($CheckpointAfterConvert -and (Get-VMSnapshot -VM $vm | Where-Object Name -EQ $CheckpointAfterConvert)) {
         throw "Checkpoint '$CheckpointAfterConvert' already exists; pick another name or remove it"
+    }
+    if ($CheckpointBeforeBoot -and (Get-VMSnapshot -VM $vm | Where-Object Name -EQ $CheckpointBeforeBoot)) {
+        throw "Checkpoint '$CheckpointBeforeBoot' already exists; pick another name or remove it"
     }
     $hostFreeDisk = Get-HostFreeBytes
     if ($hostFreeDisk -lt [long]$MinHostFreeGB * 1GB) {
@@ -457,6 +465,11 @@ try {
     $controlBoot = Invoke-Command -Session $session -ScriptBlock { (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o') }
     Remove-PSSession $session
     try { Stop-VM -VM (Get-LabVm) -Force } catch { Stop-VM -VM (Get-LabVm) -TurnOff -Force }
+    if ($CheckpointBeforeBoot) {
+        Checkpoint-VM -VM (Get-LabVm) -SnapshotName $CheckpointBeforeBoot
+        $KeepScratch = [switch]$true; $verdict.converted_checkpoint = $CheckpointBeforeBoot
+        Say "saved the converted, not yet booted state as checkpoint '$CheckpointBeforeBoot'"
+    }
     $vm = Get-LabVm
     Get-VMHardDiskDrive -VM $vm | Where-Object { -not ($_.ControllerNumber -eq 0 -and $_.ControllerLocation -eq 0) } | Remove-VMHardDiskDrive
     Get-VMDvdDrive -VM $vm | Remove-VMDvdDrive

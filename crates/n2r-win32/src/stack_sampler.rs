@@ -251,6 +251,8 @@ mod imp {
             let count = unsafe { capture(handle, &mut frames) };
             if count > 0 {
                 *samples.entry((label, frames[..count].into())).or_default() += 1;
+                #[cfg(test)]
+                tests::OBSERVED_THREADS.fetch_or(1, Relaxed);
             }
             // A helper is never stopped while it holds this lock, because the
             // lock is held here; nothing is allocated while one is stopped.
@@ -265,6 +267,8 @@ mod imp {
                     *samples
                         .entry((label | HELPER_SAMPLE, frames[..count].into()))
                         .or_default() += 1;
+                    #[cfg(test)]
+                    tests::OBSERVED_THREADS.fetch_or(2, Relaxed);
                 }
             }
         }
@@ -508,33 +512,44 @@ mod imp {
 
     #[cfg(test)]
     mod tests {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
         use std::time::{Duration, Instant};
+
+        pub(super) static OBSERVED_THREADS: AtomicUsize = AtomicUsize::new(0);
 
         #[test]
         fn a_busy_thread_is_sampled_and_its_frames_are_named() {
             let directory = tempfile::tempdir().unwrap();
             let output = directory.path().join("stacks.txt");
+            OBSERVED_THREADS.store(0, Relaxed);
             super::start(output.clone());
             super::note(Some("sampler-test"), None);
             #[inline(never)]
-            fn busy_helper(until: Instant) -> u64 {
-                let _sampled = super::helper();
+            fn busy_helper(stop: &AtomicBool) -> u64 {
+                let _sampled = super::helper().expect("register the sampled helper");
                 let mut value = 3u64;
-                while Instant::now() < until {
+                while !stop.load(Relaxed) {
                     value = std::hint::black_box(value.wrapping_mul(33).wrapping_add(5));
                 }
                 value
             }
+            let stop = Arc::new(AtomicBool::new(false));
+            let helper_stop = Arc::clone(&stop);
+            let helper = std::thread::spawn(move || busy_helper(&helper_stop));
             let started = Instant::now();
-            let until = started + Duration::from_millis(500);
-            let helper = std::thread::spawn(move || busy_helper(until));
             let mut value = 1u64;
-            while started.elapsed() < Duration::from_millis(500) {
+            // Wait for actual captures, not a fixed window that can expire
+            // before the helper or sampler is scheduled on a loaded runner.
+            while OBSERVED_THREADS.load(Relaxed) != 3 && started.elapsed() < Duration::from_secs(10)
+            {
                 value = std::hint::black_box(value.wrapping_mul(31).wrapping_add(7));
             }
+            stop.store(true, Relaxed);
             helper.join().unwrap();
             super::finish();
             let text = std::fs::read_to_string(&output).unwrap();
+            assert_eq!(OBSERVED_THREADS.load(Relaxed), 3, "{text}");
             assert!(text.lines().any(|line| line.starts_with("K ")), "{text}");
             assert!(text.contains("sampler-test;"), "{text}");
             assert!(text.contains("a_busy_thread_is_sampled"), "{text}");

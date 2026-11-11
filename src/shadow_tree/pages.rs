@@ -144,6 +144,8 @@ pub struct PagedExpectedTree {
     alias_projection_lookups: Cell<u64>,
     // The digest of every object's native input; this tree never changes.
     input_digest: n2r_win32::shadow_native::input_domain::InputDigestMemo,
+    // Objects already decoded from it, while the arena can spare the memory.
+    decoded: RefCell<DecodedObjects>,
     header: ExpectedTreePageHeader,
     counts: ExpectedTreePageCounts,
     file_sha256: String,
@@ -170,6 +172,31 @@ pub struct PagedExpectedTree {
     _directory_ram: Option<crate::artifact_arena::ArenaRamLease>,
     _header_ram: Option<crate::artifact_arena::ArenaRamLease>,
 }
+
+/// The objects a tree has decoded so far, by ordinal.
+///
+/// Every pass over the volume asks the tree for every object, and each
+/// answer was read from its page, taken out of base64 and parsed from JSON
+/// again: about 0.2 ms an object, 28 s a pass on the full Windows volume and
+/// a hundred seconds before the journal was even started. The tree cannot
+/// change while it is open and its pages are checked as they are loaded, so
+/// an object decoded once is kept and handed out as a copy. The memory is
+/// optional (see `ArtifactArena::reserve_optional_ram`), paid for a block at
+/// a time; when the arena refuses a block, what is kept stays, the rest are
+/// decoded as before, and a block is asked for again a few thousand objects
+/// later, when a stage's own reservations may have been returned. Inside the
+/// gate before the first write to the source, and without the check-once
+/// policy, nothing is served from here.
+#[derive(Default)]
+struct DecodedObjects {
+    rows: Vec<Option<Box<Object>>>,
+    leases: Vec<crate::artifact_arena::ArenaRamLease>,
+    unspent: u64,
+    // Objects still to pass by before the arena is asked again.
+    refused_for: u32,
+}
+const DECODED_BLOCK_BYTES: u64 = 16 * 1024 * 1024;
+const DECODED_RETRY_OBJECTS: u32 = 4096;
 
 struct ExpectedMemoryOwner {
     arena: crate::artifact_arena::ArtifactArena,
@@ -1539,6 +1566,7 @@ impl PagedExpectedTree {
             alias_projection: RefCell::new(None),
             alias_projection_lookups: Cell::new(0),
             input_digest: n2r_win32::shadow_native::input_domain::InputDigestMemo::new(),
+            decoded: RefCell::new(DecodedObjects::default()),
             header,
             counts: ExpectedTreePageCounts::default(),
             file_sha256: file_sha256.into(),
@@ -1781,11 +1809,80 @@ impl PagedExpectedTree {
         );
         Ok(())
     }
+    /// Whether decoded objects are kept and served again: on the arena-owned
+    /// resource route, under the check-once policy, outside its gate.
+    fn keeps_decoded(&self) -> bool {
+        self.arena.is_some()
+            && self.resource_admission.is_some()
+            && !self.cached_body_pending
+            && !n2r_win32::verify_policy::full_unremembered()
+    }
+    fn keep_decoded(&self, index: usize, object: &Object) {
+        let (Some(arena), Some(admission)) = (&self.arena, self.resource_admission) else {
+            return;
+        };
+        let mut decoded = self.decoded.borrow_mut();
+        if decoded.rows.get(index).is_some_and(Option::is_some) {
+            return;
+        }
+        if decoded.refused_for > 0 {
+            decoded.refused_for -= 1;
+            return;
+        }
+        let Ok(mut bytes) = object_memory_bytes(object, 0, admission.budget.max_row_bytes) else {
+            return;
+        };
+        let slots = decoded.rows.is_empty();
+        if slots {
+            bytes = bytes
+                .saturating_add((self.len() * std::mem::size_of::<Option<Box<Object>>>()) as u64);
+        }
+        if decoded.unspent < bytes {
+            let block = DECODED_BLOCK_BYTES.max(bytes);
+            match arena.reserve_optional_ram(block) {
+                Ok(lease) => {
+                    decoded.leases.push(lease);
+                    decoded.unspent += block;
+                }
+                Err(_) => {
+                    decoded.refused_for = DECODED_RETRY_OBJECTS;
+                    return;
+                }
+            }
+        }
+        if slots {
+            if decoded.rows.try_reserve_exact(self.len()).is_err() {
+                decoded.refused_for = DECODED_RETRY_OBJECTS;
+                return;
+            }
+            decoded.rows.resize_with(self.len(), || None);
+        }
+        decoded.unspent -= bytes;
+        decoded.rows[index] = Some(Box::new(object.clone()));
+    }
     fn decode_object(&self, index: usize) -> Result<Object> {
         ensure!(
             index < self.len(),
             "expected-tree ordinal outside complete object domain"
         );
+        let keeps = self.keeps_decoded();
+        if keeps
+            && let Some(object) = self
+                .decoded
+                .borrow()
+                .rows
+                .get(index)
+                .and_then(Option::as_deref)
+        {
+            return Ok(object.clone());
+        }
+        let object = self.decode_object_from_pages(index)?;
+        if keeps {
+            self.keep_decoded(index, &object);
+        }
+        Ok(object)
+    }
+    fn decode_object_from_pages(&self, index: usize) -> Result<Object> {
         let entry = self.directory[index];
         let chunks = || ChunkReader {
             tree: self,

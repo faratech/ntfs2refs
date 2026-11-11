@@ -121,6 +121,24 @@ pub fn flush_working_file(file: &std::fs::File) -> std::io::Result<()> {
     crate::perf::flush(crate::perf::Point::FileFlush, file)
 }
 
+/// `CreateFile` flags for a data file of the disposable shadow volume.
+///
+/// The shadow's files were opened with FILE_FLAG_WRITE_THROUGH, which makes
+/// every small write wait for the disk: the full Windows volume spent 73 s
+/// in 200,000 such writes while supplying payloads. Under [`check_once`] the
+/// flag is dropped, for the same reason [`flush_working_file`] does nothing:
+/// the volume is flushed at the end of each construction stage and again
+/// when it is frozen, and nothing depends on a file surviving a power cut
+/// before then.
+pub fn shadow_file_flags(flags: u32) -> u32 {
+    const FILE_FLAG_WRITE_THROUGH: u32 = 0x8000_0000;
+    if ONCE.load(SeqCst) {
+        flags & !FILE_FLAG_WRITE_THROUGH
+    } else {
+        flags
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

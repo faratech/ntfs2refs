@@ -1300,7 +1300,8 @@ where
                 .context("shadow native RAM overflow")?,
         )?;
         events.phase("shadow-freeze");
-        let mut shadow = GeneralFrozenPartition::isolate(request.pair.shadow.clone(), &mut events)?;
+        let mut shadow = GeneralFrozenPartition::isolate(request.pair.shadow.clone(), &mut events)
+            .context("freezing the finished shadow volume")?;
         let _trust_repair_owner = if let Some(recipes) =
             trust_recipes.as_ref().filter(|recipes| !recipes.is_empty())
         {

@@ -369,7 +369,7 @@ impl PrivatePlaceholder {
                 0,
                 &sa,
                 1,
-                0x80200080,
+                crate::verify_policy::shadow_file_flags(0x80200080),
                 ptr::null_mut(),
             )
         };

@@ -2406,11 +2406,48 @@ impl GeneralFrozenPartition {
             events,
         )?;
         binding.validate_volume_extent(&extents)?;
-        control(volume, "general-lock-volume", LOCK, &[], 0, events)?;
-        control(volume, "general-dismount-volume", DISMOUNT, &[], 0, events)?;
+        // The lock is refused while anything has a handle open on the volume.
+        // Right after hundreds of thousands of files were created and closed
+        // on it, something else (an on-access scanner, the indexer) can still
+        // be holding one for a moment; the full Windows volume failed here
+        // with a bare "Access is denied". Nothing has been written to any
+        // source yet, so wait for the handle to go, for up to a minute.
+        let mut attempts = 0;
+        loop {
+            match control(volume, "general-lock-volume", LOCK, &[], 0, events) {
+                Ok(_) => break,
+                Err(error)
+                    if attempts < 120
+                        && matches!(error.raw_os_error(), Some(5) | Some(32)) =>
+                {
+                    attempts += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+                Err(error) => {
+                    return Err(io::Error::new(
+                        error.kind(),
+                        format!(
+                            "locking volume {} of disk {} to freeze it, after {attempts} retries (something still has a handle open on it): {error}",
+                            binding.volume_guid, binding.disk_number
+                        ),
+                    ));
+                }
+            }
+        }
+        control(volume, "general-dismount-volume", DISMOUNT, &[], 0, events).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("dismounting volume {} of disk {} to freeze it: {error}", binding.volume_guid, binding.disk_number),
+            )
+        })?;
         }
         let buffer = AlignedBuffer::new()?;
-        set_attributes(&management, OFFLINE | READ_ONLY, events)?;
+        set_attributes(&management, OFFLINE | READ_ONLY, events).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("setting disk {} offline and read-only to freeze it: {error}", binding.disk_number),
+            )
+        })?;
         if let Some(volume) = volume { close_file(volume, "close-general-volume-lock", events)?; }
         for volume in sibling_locks.drain(..) { close_file(volume, "close-offline-windows-volume-lock", events)?; }
         let frozen = general_disk_state(&management, &binding, events)?;

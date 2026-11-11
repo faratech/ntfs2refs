@@ -22,37 +22,56 @@ fn check(status: i32, operation: &str) -> io::Result<()> {
     }
 }
 
-/// A single-use hash. Construct on its consuming thread; native handles are
+/// The SHA-256 algorithm provider, opened once and kept for the life of the
+/// process. Finding, loading and initializing a provider is slow (Windows'
+/// documentation says to keep the handle for that reason): opened for every
+/// hash, it cost 16 s while the full Windows journal was written, three
+/// hashes to a row. A provider handle may create hash objects on any thread;
+/// each hash object still belongs to one thread.
+fn provider() -> io::Result<BCRYPT_ALG_HANDLE> {
+    static PROVIDER: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    if let Some(handle) = PROVIDER.get() {
+        return Ok(*handle as BCRYPT_ALG_HANDLE);
+    }
+    let mut handle: BCRYPT_ALG_HANDLE = ptr::null_mut();
+    // SAFETY: live output handle storage and static, NUL-terminated strings.
+    check(
+        unsafe {
+            BCryptOpenAlgorithmProvider(
+                &mut handle,
+                BCRYPT_SHA256_ALGORITHM,
+                MS_PRIMITIVE_PROVIDER,
+                0,
+            )
+        },
+        "open SHA-256 provider",
+    )?;
+    if PROVIDER.set(handle as usize).is_err() {
+        // Another thread opened it first; this one is not needed.
+        // SAFETY: a provider handle this call opened and nothing else uses.
+        unsafe { BCryptCloseAlgorithmProvider(handle, 0) };
+    }
+    Ok(*PROVIDER.get().expect("provider stored above") as BCRYPT_ALG_HANDLE)
+}
+
+/// A single-use hash. Construct on its consuming thread; the hash object is
 /// never shared with another thread or reused after finishing.
 pub struct Sha256 {
-    algorithm: BCRYPT_ALG_HANDLE,
     hash: BCRYPT_HASH_HANDLE,
 }
 
 impl Sha256 {
     pub fn new() -> io::Result<Self> {
+        let algorithm = provider()?;
         let mut value = Self {
-            algorithm: ptr::null_mut(),
             hash: ptr::null_mut(),
         };
-        // SAFETY: live output handle storage and static, NUL-terminated strings.
-        check(
-            unsafe {
-                BCryptOpenAlgorithmProvider(
-                    &mut value.algorithm,
-                    BCRYPT_SHA256_ALGORITHM,
-                    MS_PRIMITIVE_PROVIDER,
-                    0,
-                )
-            },
-            "open SHA-256 provider",
-        )?;
         // SAFETY: live provider/output handle; Windows allocates the hash object
         // when the object buffer is NULL/zero (supported since Windows 7).
         check(
             unsafe {
                 BCryptCreateHash(
-                    value.algorithm,
+                    algorithm,
                     &mut value.hash,
                     ptr::null_mut(),
                     0,
@@ -91,51 +110,35 @@ impl Sha256 {
 
 impl Drop for Sha256 {
     fn drop(&mut self) {
-        // SAFETY: each non-null handle is uniquely owned here. Destroy the hash
-        // (including its CNG-owned buffer) before closing its provider.
+        // SAFETY: the hash object (and its CNG-owned buffer) is uniquely
+        // owned here; the provider it came from stays open for the process.
         unsafe {
             if !self.hash.is_null() {
                 BCryptDestroyHash(self.hash);
-            }
-            if !self.algorithm.is_null() {
-                BCryptCloseAlgorithmProvider(self.algorithm, 0);
             }
         }
     }
 }
 
-/// Many independent short digests on one thread: one provider and one reusable
-/// hash object (`BCRYPT_HASH_REUSABLE_FLAG`), finished once per digest. Construct
-/// on its consuming thread; handles are never shared with another thread.
+/// Many independent short digests on one thread: one reusable hash object
+/// (`BCRYPT_HASH_REUSABLE_FLAG`), finished once per digest. Construct on its
+/// consuming thread; the hash object is never shared with another thread.
 pub struct Sha256Reusable {
-    algorithm: BCRYPT_ALG_HANDLE,
     hash: BCRYPT_HASH_HANDLE,
 }
 
 impl Sha256Reusable {
     pub fn new() -> io::Result<Self> {
+        let algorithm = provider()?;
         let mut value = Self {
-            algorithm: ptr::null_mut(),
             hash: ptr::null_mut(),
         };
-        // SAFETY: live output handle storage and static, NUL-terminated strings.
-        check(
-            unsafe {
-                BCryptOpenAlgorithmProvider(
-                    &mut value.algorithm,
-                    BCRYPT_SHA256_ALGORITHM,
-                    MS_PRIMITIVE_PROVIDER,
-                    0,
-                )
-            },
-            "open SHA-256 provider",
-        )?;
         // SAFETY: live provider/output handle; Windows allocates the object, and
         // the reusable flag (Windows 8+) resets the state after each finish.
         check(
             unsafe {
                 BCryptCreateHash(
-                    value.algorithm,
+                    algorithm,
                     &mut value.hash,
                     ptr::null_mut(),
                     0,
@@ -171,14 +174,11 @@ impl Sha256Reusable {
 
 impl Drop for Sha256Reusable {
     fn drop(&mut self) {
-        // SAFETY: each non-null handle is uniquely owned here. Destroy the hash
-        // before closing its provider.
+        // SAFETY: the hash object is uniquely owned here; the provider it
+        // came from stays open for the process.
         unsafe {
             if !self.hash.is_null() {
                 BCryptDestroyHash(self.hash);
-            }
-            if !self.algorithm.is_null() {
-                BCryptCloseAlgorithmProvider(self.algorithm, 0);
             }
         }
     }
@@ -349,9 +349,36 @@ pub fn hash_range(
     let _timed = crate::perf::scope(crate::perf::Point::FileHash);
     crate::perf::add_bytes(crate::perf::Point::FileHash, length);
     reader.seek(SeekFrom::Start(offset))?;
+    hash_next(reader, length)
+}
+
+/// SHA-256 of the next `length` bytes of `reader`, all of them read.
+///
+/// A long range is hashed on a second thread while this one reads the next
+/// megabyte: the gate before the first write to the source reads every
+/// working file again (16 GB on the full Windows volume), and reading and
+/// hashing took turns on one thread. The two megabyte buffers of that path
+/// are less than the four-megabyte buffer of the serial one, which callers
+/// pay for; the digest is the same.
+pub fn hash_next(reader: &mut impl Read, length: u64) -> io::Result<[u8; 32]> {
+    const OVERLAP_FROM: u64 = 32 * 1024 * 1024;
+    const OVERLAP_CHUNK: usize = 1024 * 1024;
+    let mut left = length;
+    if length >= OVERLAP_FROM
+        && std::thread::available_parallelism().is_ok_and(|cores| cores.get() >= 2)
+    {
+        let mut hash = Overlapped::new(OVERLAP_CHUNK)?;
+        let mut buffer = vec![0; OVERLAP_CHUNK];
+        while left > 0 {
+            let count = left.min(buffer.len() as u64) as usize;
+            reader.read_exact(&mut buffer[..count])?;
+            hash.update(&buffer[..count])?;
+            left -= count as u64;
+        }
+        return hash.finish();
+    }
     let mut hash = Sha256::new()?;
     let mut buffer = vec![0; length.min(4 * 1024 * 1024) as usize];
-    let mut left = length;
     while left > 0 {
         let count = left.min(buffer.len() as u64) as usize;
         reader.read_exact(&mut buffer[..count])?;
@@ -420,6 +447,25 @@ mod tests {
         assert!(overlapped.update_parts(&[&body, &frame, &frame, &[0]]).is_err());
         let expected: [u8; 32] = serial.finalize().into();
         assert_eq!(overlapped.finish().unwrap(), expected);
+    }
+
+    #[test]
+    fn a_long_range_hashed_on_two_threads_has_the_digest_of_its_bytes() {
+        // Forty megabytes and a ragged tail: past the size from which the
+        // range is hashed while the next megabyte is read.
+        let data: Vec<u8> = (0..40 * 1024 * 1024 + 12_345u32)
+            .map(|value| (value ^ (value >> 11)) as u8)
+            .collect();
+        for (offset, length) in [(0u64, data.len() as u64), (4097, 33 * 1024 * 1024), (100, 5000)] {
+            let expected: [u8; 32] =
+                sha2::Sha256::digest(&data[offset as usize..(offset + length) as usize]).into();
+            let mut reader = io::Cursor::new(&data);
+            assert_eq!(hash_range(&mut reader, offset, length).unwrap(), expected);
+            assert_eq!(reader.position(), offset + length, "exactly the range is read");
+        }
+        // A range that ends before its length is an error, not a short digest.
+        let mut reader = io::Cursor::new(&data);
+        assert!(hash_range(&mut reader, 1024, data.len() as u64).is_err());
     }
 
     #[test]

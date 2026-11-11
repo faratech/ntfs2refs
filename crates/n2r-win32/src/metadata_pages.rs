@@ -229,16 +229,7 @@ fn file_hash(file: &mut File, bytes: u64) -> io::Result<[u8; 32]> {
     let _timed = crate::perf::scope(crate::perf::Point::FileHash);
     crate::perf::add_bytes(crate::perf::Point::FileHash, bytes);
     file.seek(SeekFrom::Start(0))?;
-    let mut hash = crate::sha256_native::Sha256::new()?;
-    let mut buffer = vec![0; 1024 * 1024];
-    let mut left = bytes;
-    while left > 0 {
-        let count = left.min(buffer.len() as u64) as usize;
-        file.read_exact(&mut buffer[..count])?;
-        hash.update(&buffer[..count])?;
-        left -= count as u64;
-    }
-    hash.finish()
+    crate::sha256_native::hash_next(file, bytes)
 }
 /// A file a [`Writer`] in this process finished.
 struct Written {

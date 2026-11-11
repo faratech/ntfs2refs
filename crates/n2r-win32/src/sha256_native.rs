@@ -222,7 +222,16 @@ impl Overlapped {
     }
 
     pub fn update(&mut self, bytes: &[u8]) -> io::Result<()> {
-        if bytes.len() > self.chunk_bytes {
+        self.update_parts(&[bytes])
+    }
+
+    /// As [`Self::update`] for `parts` one after another, handed to the worker
+    /// together; their total length is bounded like a single chunk's.
+    pub fn update_parts(&mut self, parts: &[&[u8]]) -> io::Result<()> {
+        let total = parts
+            .iter()
+            .try_fold(0usize, |total, part| total.checked_add(part.len()));
+        if total.is_none_or(|total| total > self.chunk_bytes) {
             return Err(io::Error::other("overlapped digest chunk exceeds bound"));
         }
         let buffer = match self.spare.take() {
@@ -233,7 +242,9 @@ impl Overlapped {
             return Err(self.stopped());
         };
         buffer.clear();
-        buffer.extend_from_slice(bytes);
+        for part in parts {
+            buffer.extend_from_slice(part);
+        }
         let sent = self.input.as_ref().is_some_and(|i| i.send(buffer).is_ok());
         if !sent {
             return Err(self.stopped());
@@ -387,6 +398,28 @@ mod tests {
         assert!(!journal_body_already_verified(&expected, 1024, 7168));
         assert_eq!(journal_body(&mut reader, 1024, 7168, &expected).unwrap(), expected);
         assert!(reader.reads > first, "the second comparison must read the body again");
+    }
+
+    #[test]
+    fn parts_handed_to_the_digest_thread_hash_as_the_bytes_in_order() {
+        let frame = 7u64.to_le_bytes();
+        let body: Vec<u8> = (0..5000u32).map(|value| (value * 7) as u8).collect();
+        let mut overlapped = Overlapped::new(body.len() + 16).unwrap();
+        let mut serial = sha2::Sha256::new();
+        overlapped.update(b"head").unwrap();
+        serial.update(b"head");
+        for round in 0..5u64 {
+            let at = round.to_le_bytes();
+            overlapped.update_parts(&[&at, &frame, &body]).unwrap();
+            serial.update(at);
+            serial.update(frame);
+            serial.update(&body);
+        }
+        overlapped.update_parts(&[]).unwrap();
+        // One byte more than the bound, split over parts, is refused whole.
+        assert!(overlapped.update_parts(&[&body, &frame, &frame, &[0]]).is_err());
+        let expected: [u8; 32] = serial.finalize().into();
+        assert_eq!(overlapped.finish().unwrap(), expected);
     }
 
     #[test]

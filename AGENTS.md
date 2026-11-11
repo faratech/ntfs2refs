@@ -75,6 +75,17 @@ not count. Power-cut resume during preparation is out of scope until this works.
   `-Recover -Checkpoint <name>` retries its finalization with `--recover`.
   Records land in `.lab/hyperv/attempts/<n>/`. The scratch disk is deleted when
   the attempt ends; the host volume must keep 40 GB free.
+  `-SampleStacks` records the worker's call stack a hundred times a second and
+  writes `stacks.txt` (phase, step and stack per line) into the attempt folder:
+  use it to find where unnamed time goes before changing anything for speed.
+- Second VM `ntfs2refs-reference-b`, Id `7c687062-37b5-4309-b28a-486a44305202`,
+  made by `lab/New-LabVmClone.ps1`: same shape, disks are differencing children
+  of the reference VM's baseline disks under `.lab/hyperv/ntfs2refs-reference-b/`.
+  It has only the baseline checkpoint. Pass `-VmId` to the harness to run a
+  full-volume attempt on it while fixtures run on the reference VM (give the
+  two VMs no more than about 48 GB between them). Never delete the reference
+  VM's baseline checkpoint: that merges into the shared parents and breaks the
+  clone.
 - Build both binaries first: `cargo build --locked --release --bin ntfs2refs
   --bin lab-volume-manifest`.
 - Disks (SCSI 0), under `.lab/hyperv/isolated-reference-20261026-review/disks/`:

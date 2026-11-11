@@ -229,19 +229,31 @@ fn file_hash(file: &mut File, bytes: u64) -> io::Result<[u8; 32]> {
     }
     Ok(hash.finalize().into())
 }
-/// Files a [`Writer`] in this process finished: identity and final path, then
-/// length, timestamp and the SHA-256 it computed.
-type WrittenFiles = std::collections::HashMap<(String, String), (u64, SystemTime, [u8; 32])>;
+/// A file a [`Writer`] in this process finished.
+struct Written {
+    bytes: u64,
+    modified: SystemTime,
+    sha256: [u8; 32],
+    // XXH3-64 of each page body, in page order.
+    page_sums: std::sync::Arc<Vec<u64>>,
+}
+/// By file identity and final path.
+type WrittenFiles = std::collections::HashMap<(String, String), Written>;
 static WRITTEN: std::sync::Mutex<Option<WrittenFiles>> = std::sync::Mutex::new(None);
 
-fn note_written(snapshot: &Snapshot, sha256: [u8; 32]) {
+fn note_written(snapshot: &Snapshot, sha256: [u8; 32], page_sums: Vec<u64>) {
     WRITTEN
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .get_or_insert_with(WrittenFiles::new)
         .insert(
             (snapshot.id.clone(), snapshot.final_path.clone()),
-            (snapshot.bytes, snapshot.modified, sha256),
+            Written {
+                bytes: snapshot.bytes,
+                modified: snapshot.modified,
+                sha256,
+                page_sums: std::sync::Arc::new(page_sums),
+            },
         );
 }
 
@@ -249,20 +261,26 @@ fn note_written(snapshot: &Snapshot, sha256: [u8; 32]) {
 /// SHA-256. Its writer refused any record that was not valid JSON under a
 /// strictly increasing key and hashed every byte, so under the check-once
 /// policy a reader need not hash and parse the whole file again to open it.
-/// Each page is still hashed against the index whenever it is loaded. Inside
-/// the gate before the first write to the source this is never true.
-fn written_here(snapshot: &Snapshot, sha256: &[u8; 32]) -> bool {
+/// Each page is still checked whenever it is loaded: against the checksum the
+/// writer kept in memory (returned here), which costs a few percent of the
+/// SHA-256 in the page index and catches the same damage to a file nobody
+/// else can have written. Inside the gate before the first write to the
+/// source this is never true, and pages are checked by their SHA-256.
+fn written_here(snapshot: &Snapshot, sha256: &[u8; 32]) -> Option<std::sync::Arc<Vec<u64>>> {
     if crate::verify_policy::full_unremembered() {
-        return false;
+        return None;
     }
     WRITTEN
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .as_ref()
         .and_then(|written| written.get(&(snapshot.id.clone(), snapshot.final_path.clone())))
-        .is_some_and(|(bytes, modified, known)| {
-            *bytes == snapshot.bytes && *modified == snapshot.modified && known == sha256
+        .filter(|known| {
+            known.bytes == snapshot.bytes
+                && known.modified == snapshot.modified
+                && known.sha256 == *sha256
         })
+        .map(|known| std::sync::Arc::clone(&known.page_sums))
 }
 
 /// One start offset for every this many records of a page.
@@ -312,6 +330,8 @@ pub struct Writer {
     poisoned: bool,
     // Every byte in file order as it is written: the complete-file SHA-256.
     hash: Sha256,
+    // XXH3-64 of each page body written, for this process's own readers.
+    page_sums: Vec<u64>,
 }
 impl Writer {
     pub fn new(path: &Path, purpose: [u8; 8], budget: PageBudget) -> io::Result<Self> {
@@ -344,6 +364,7 @@ impl Writer {
             last_key: None,
             poisoned: false,
             hash,
+            page_sums: Vec::new(),
         })
     }
     /// Keys are strictly increasing binary strings; only the first may be empty.
@@ -410,6 +431,7 @@ impl Writer {
         self.file.write_all(&self.body)?;
         self.hash.update(frame);
         self.hash.update(&self.body);
+        self.page_sums.push(xxhash_rust::xxh3::xxh3_64(&self.body));
         self.data_end = next;
         self.pages += 1;
         self.pending = 0;
@@ -483,7 +505,7 @@ impl Writer {
             Snapshot::observe(&self.file)? == before,
             "metadata file changed while finishing",
         )?;
-        note_written(&before, written);
+        note_written(&before, written, std::mem::take(&mut self.page_sums));
         let sha256 = hex::encode(written);
         Ok(Summary {
             sha256,
@@ -533,6 +555,9 @@ fn load_page(
     body_limit: usize,
     body: &mut Vec<u8>,
     statistics: &mut PageCacheStatistics,
+    // The writer's in-memory checksum of this page, when the file is one this
+    // process wrote: checked in place of the page's SHA-256.
+    written_sum: Option<u64>,
 ) -> io::Result<()> {
     require(
         e.bytes as u64 > FRAME
@@ -560,6 +585,12 @@ fn load_page(
     body.resize(e.bytes as usize - FRAME as usize, 0);
     file.read_exact(body)?;
     statistics.page_loads = statistics.page_loads.saturating_add(1);
+    if let Some(sum) = written_sum {
+        return require(
+            xxhash_rust::xxh3::xxh3_64(body) == sum,
+            "metadata page differs from the page this process wrote",
+        );
+    }
     statistics.page_hash_bytes = statistics.page_hash_bytes.saturating_add(body.len() as u64);
     require(
         Sha256::digest(&*body).as_slice() == e.sha,
@@ -645,6 +676,8 @@ pub struct Reader {
     starts: Vec<u32>,
     // Opened as a file this process wrote, without reading all of it again.
     written_here: bool,
+    // That writer's checksum of each page, when there is one per page.
+    page_sums: Option<std::sync::Arc<Vec<u64>>>,
     body_limit: usize,
     // Optional second authenticated page, supplied by an explicitly prepaid
     // caller. The primary slot is most recently used; swaps retain each page's
@@ -717,7 +750,8 @@ impl Reader {
         let snapshot = Snapshot::observe(&file)?;
         ordinary(Path::new(&snapshot.final_path))?;
         let body_limit = Self::body_capacity_for_file(budget, snapshot.bytes)?;
-        let written_here = written_here(&snapshot, &sha256);
+        let page_sums = written_here(&snapshot, &sha256);
+        let written_here = page_sums.is_some();
         if !written_here {
             require(
                 file_hash(&mut file, snapshot.bytes)? == sha256,
@@ -790,6 +824,7 @@ impl Reader {
                 body_limit,
                 &mut body,
                 &mut statistics,
+                None,
             )?;
             let mut at = 0;
             for _ in 0..e.count {
@@ -829,6 +864,7 @@ impl Reader {
             body,
             starts: Vec::new(),
             written_here,
+            page_sums: page_sums.filter(|sums| sums.len() as u64 == pages),
             body_limit,
             secondary: None,
             resident: None,
@@ -864,6 +900,7 @@ impl Reader {
             let mut body = Vec::new();
             body.try_reserve_exact(e.bytes as usize - FRAME as usize)
                 .map_err(io::Error::other)?;
+            let written_sum = self.written_sum(page);
             load_page(
                 &mut self.file,
                 e,
@@ -872,6 +909,7 @@ impl Reader {
                 self.body_limit,
                 &mut body,
                 &mut self.statistics,
+                written_sum,
             )?;
             let mut starts = Vec::new();
             starts
@@ -901,6 +939,14 @@ impl Reader {
         /// caller with a whole-content check of its own may then leave it out.
     pub fn written_by_this_process(&self) -> bool {
         self.written_here
+    }
+    /// The checksum to check page `page` by, in place of its SHA-256: only for
+    /// a file this process wrote, and never inside a gate.
+    fn written_sum(&self, page: u64) -> Option<u64> {
+        if crate::verify_policy::full_unremembered() {
+            return None;
+        }
+        self.page_sums.as_ref()?.get(usize::try_from(page).ok()?).copied()
     }
     pub fn pages_resident(&self) -> bool {
         self.resident.is_some()
@@ -1040,6 +1086,7 @@ impl Reader {
             self.cached = None;
             self.cached_record = None;
             self.starts.clear();
+            let written_sum = self.written_sum(low - 1);
             load_page(
                 &mut self.file,
                 e,
@@ -1048,6 +1095,7 @@ impl Reader {
                 self.body_limit,
                 &mut self.body,
                 &mut self.statistics,
+                written_sum,
             )?;
             // Without its offsets the page is still read correctly, by
             // scanning; a malformed page is reported by that scan as before.

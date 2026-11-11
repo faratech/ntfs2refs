@@ -128,7 +128,7 @@ fn a_file_changed_after_it_was_written_is_refused() {
     }
 
     // Even with the timestamp put back, the changed page is refused the
-    // moment it is loaded: each page is hashed against the index.
+    // moment it is loaded: each page is checked against what was written.
     let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
     file.set_modified(modified).unwrap();
     drop(file);
@@ -136,7 +136,10 @@ fn a_file_changed_after_it_was_written_is_refused() {
         Err(error) => assert!(error.to_string().contains("SHA differs"), "{error}"),
         Ok(mut reader) => {
             let error = reader.get(0).err().unwrap();
-            assert!(error.to_string().contains("metadata page SHA differs"), "{error}");
+            assert!(
+                error.to_string().contains("differs from the page this process wrote"),
+                "{error}"
+            );
         }
     }
 }

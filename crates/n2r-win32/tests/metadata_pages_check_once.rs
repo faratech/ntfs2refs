@@ -143,3 +143,34 @@ fn a_file_changed_after_it_was_written_is_refused() {
         }
     }
 }
+
+#[test]
+fn large_pages_hashed_on_two_threads_give_the_sha_of_the_file() {
+    let _turn = GATE_TURN.lock().unwrap();
+    verify_policy::check_once();
+    let directory = tempfile::tempdir().unwrap();
+    let path = fixture(&directory, "large.bin");
+    let budget = PageBudget {
+        max_page_bytes: 1024 * 1024,
+        max_records_per_page: 4096,
+        max_records: 100_000,
+        max_pages: 10_000,
+        max_file_bytes: 64 * 1024 * 1024,
+    };
+    let mut writer = Writer::new(&path, PURPOSE, budget).unwrap();
+    // Sixty records of 100 KiB: nine to a page, seven pages.
+    for ordinal in 0..60u64 {
+        let payload = format!("\"{}\"", "ab".repeat(50 * 1024 + ordinal as usize));
+        writer.push(&key(ordinal), payload.as_bytes()).unwrap();
+    }
+    let summary = writer.finish().unwrap();
+    assert!(summary.pages >= 6, "fixture must span several large pages");
+    let bytes = std::fs::read(&path).unwrap();
+    assert_eq!(summary.sha256, hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes)));
+    let mut reader = Reader::open(&path, &summary.sha256, PURPOSE, budget).unwrap();
+    for ordinal in [59u64, 0, 30, 9, 8] {
+        let record = reader.get(ordinal).unwrap();
+        assert_eq!(record.key, key(ordinal));
+        assert_eq!(record.payload.len(), 2 + 2 * (50 * 1024 + ordinal as usize));
+    }
+}

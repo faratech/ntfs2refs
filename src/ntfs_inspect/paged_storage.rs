@@ -577,7 +577,7 @@ impl SourceScratch {
             body,
             logical_bytes: 0,
             chunks: 0,
-            hash: Sha256::new(),
+            hash: Some(crate::retained_compare::stream_digest::StreamDigest::new(cfg!(windows))?),
             reserved: 1024,
             charged: 1024,
             complete: false,
@@ -879,7 +879,10 @@ pub struct SourceRangeWriter {
     body: Vec<u8>,
     logical_bytes: u64,
     chunks: u64,
-    hash: Sha256,
+    // SHA-256 of the content, taken a whole chunk at a time as each chunk is
+    // closed: callers write a few bytes at a time (a JSON serializer writes
+    // every token), and a megabyte per call is what the fast hash needs.
+    hash: Option<crate::retained_compare::stream_digest::StreamDigest>,
     reserved: u64,
     charged: u64,
     complete: bool,
@@ -927,6 +930,10 @@ impl SourceRangeWriter {
         if self.body.is_empty() {
             return Ok(());
         }
+        self.hash
+            .as_mut()
+            .context("source writer content hash absent")?
+            .update(&self.body)?;
         let payload = encode_json_base64(&self.body)?;
         // Reserve the full encoded row plus its own page and index frames.
         // Shared concurrent writers cannot overrun aggregate scratch first.
@@ -952,7 +959,12 @@ impl SourceRangeWriter {
     }
     pub fn finish(mut self) -> Result<SourcePagePin> {
         self.chunk()?;
-        let logical_sha256 = hex::encode(self.hash.clone().finalize());
+        let logical_sha256 = hex::encode(
+            self.hash
+                .take()
+                .context("source writer content hash absent")?
+                .finish()?,
+        );
         let footer = RangeFooter {
             logical_bytes: self.logical_bytes,
             chunks: self.chunks,
@@ -1004,7 +1016,6 @@ impl Write for SourceRangeWriter {
                 .logical_bytes
                 .checked_add(total as u64)
                 .context("source logical length overflow")?;
-            self.hash.update(bytes);
             while !bytes.is_empty() {
                 let n = bytes.len().min(self.chunk_bytes as usize - self.body.len());
                 self.body.extend_from_slice(&bytes[..n]);

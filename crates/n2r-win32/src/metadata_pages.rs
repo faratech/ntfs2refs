@@ -214,20 +214,31 @@ impl Snapshot {
         })
     }
 }
+/// SHA-256 of megabytes at a time goes through Windows' implementation, which
+/// is about half again as fast here as the portable one used for the small
+/// fixed-size records below.
+fn bulk_sha256(bytes: &[u8]) -> io::Result<[u8; 32]> {
+    let mut hash = crate::sha256_native::Sha256::new()?;
+    hash.update(bytes)?;
+    hash.finish()
+}
+/// A page this large is hashed on a second thread while the writer's own
+/// thread brings the file hash up to date with the page before it.
+const OVERLAP_PAGE_BYTES: usize = 256 * 1024;
 fn file_hash(file: &mut File, bytes: u64) -> io::Result<[u8; 32]> {
     let _timed = crate::perf::scope(crate::perf::Point::FileHash);
     crate::perf::add_bytes(crate::perf::Point::FileHash, bytes);
     file.seek(SeekFrom::Start(0))?;
-    let mut hash = Sha256::new();
-    let mut buffer = [0; 65536];
+    let mut hash = crate::sha256_native::Sha256::new()?;
+    let mut buffer = vec![0; 1024 * 1024];
     let mut left = bytes;
     while left > 0 {
         let count = left.min(buffer.len() as u64) as usize;
         file.read_exact(&mut buffer[..count])?;
-        hash.update(&buffer[..count]);
+        hash.update(&buffer[..count])?;
         left -= count as u64;
     }
-    Ok(hash.finalize().into())
+    hash.finish()
 }
 /// A file a [`Writer`] in this process finished.
 struct Written {
@@ -329,7 +340,10 @@ pub struct Writer {
     last_key: Option<Vec<u8>>,
     poisoned: bool,
     // Every byte in file order as it is written: the complete-file SHA-256.
-    hash: Sha256,
+    // It runs one page behind (`lagging`), so that a page's own hash and the
+    // file hash of the page before it can be computed at the same time.
+    hash: Option<crate::sha256_native::Sha256>,
+    lagging: Option<([u8; 64], Vec<u8>)>,
     // XXH3-64 of each page body written, for this process's own readers.
     page_sums: Vec<u64>,
 }
@@ -350,8 +364,8 @@ impl Writer {
             "new empty metadata file required",
         )?;
         file.write_all(&header(purpose, budget))?;
-        let mut hash = Sha256::new();
-        hash.update(header(purpose, budget));
+        let mut hash = crate::sha256_native::Sha256::new()?;
+        hash.update(&header(purpose, budget))?;
         Ok(Self {
             file,
             purpose,
@@ -363,7 +377,8 @@ impl Writer {
             data_end: HEADER,
             last_key: None,
             poisoned: false,
-            hash,
+            hash: Some(hash),
+            lagging: None,
             page_sums: Vec::new(),
         })
     }
@@ -425,23 +440,64 @@ impl Writer {
         frame[8..12].copy_from_slice(&(self.body.len() as u32).to_le_bytes());
         frame[12..16].copy_from_slice(&self.pending.to_le_bytes());
         frame[16..24].copy_from_slice(&(self.records - self.pending as u64).to_le_bytes());
-        frame[32..].copy_from_slice(&Sha256::digest(&self.body));
+        let previous = self.lagging.take();
+        let file_hash = self
+            .hash
+            .as_mut()
+            .ok_or_else(|| io::Error::other("metadata writer hash absent"))?;
+        let mut catch_up = || -> io::Result<()> {
+            if let Some((frame, body)) = &previous {
+                file_hash.update(frame)?;
+                file_hash.update(body)?;
+            }
+            Ok(())
+        };
+        let body = &self.body;
+        let page = if body.len() >= OVERLAP_PAGE_BYTES && previous.is_some() {
+            let (page, caught_up) = std::thread::scope(|scope| {
+                let page = scope.spawn(move || bulk_sha256(body));
+                let caught_up = catch_up();
+                (page.join(), caught_up)
+            });
+            caught_up?;
+            page.map_err(|_| io::Error::other("metadata page hashing thread panicked"))??
+        } else {
+            catch_up()?;
+            bulk_sha256(body)?
+        };
+        frame[32..].copy_from_slice(&page);
         self.file.seek(SeekFrom::Start(self.data_end))?;
         self.file.write_all(&frame)?;
         self.file.write_all(&self.body)?;
-        self.hash.update(frame);
-        self.hash.update(&self.body);
         self.page_sums.push(xxhash_rust::xxh3::xxh3_64(&self.body));
         self.data_end = next;
         self.pages += 1;
         self.pending = 0;
-        self.body.clear();
+        // This page waits for the file hash; the page before it gives up its
+        // buffer for the records that come next.
+        let mut spare = previous.map(|(_, buffer)| buffer).unwrap_or_default();
+        spare.clear();
+        if spare.capacity() == 0 {
+            spare
+                .try_reserve_exact(self.body.capacity())
+                .map_err(io::Error::other)?;
+        }
+        let written = std::mem::replace(&mut self.body, spare);
+        self.lagging = Some((frame, written));
         Ok(())
     }
     pub fn finish(mut self) -> io::Result<Summary> {
         require(!self.poisoned, "metadata writer is poisoned")?;
         self.flush_page()?;
         let bytes = projected(self.data_end, self.pages, self.budget)?;
+        let mut running = self
+            .hash
+            .take()
+            .ok_or_else(|| io::Error::other("metadata writer hash absent"))?;
+        if let Some((frame, body)) = self.lagging.take() {
+            running.update(&frame)?;
+            running.update(&body)?;
+        }
         let mut at = HEADER;
         let mut first = 0;
         let mut index_hash = Sha256::new();
@@ -461,7 +517,7 @@ impl Writer {
                 .seek(SeekFrom::Start(add(self.data_end, page * INDEX)?))?;
             self.file.write_all(&frame)?;
             index_hash.update(frame);
-            self.hash.update(frame);
+            running.update(&frame)?;
             at = add(at, encoded)?;
         }
         require(
@@ -483,7 +539,7 @@ impl Writer {
         footer[80..112].copy_from_slice(&Sha256::digest(header(self.purpose, self.budget)));
         self.file.seek(SeekFrom::Start(bytes - FOOTER))?;
         self.file.write_all(&footer)?;
-        self.hash.update(footer);
+        running.update(&footer)?;
         self.file.flush()?;
         crate::verify_policy::flush_working_file(&self.file)?;
         let before = Snapshot::observe(&self.file)?;
@@ -494,7 +550,7 @@ impl Writer {
         // The file is written front to back, so its SHA-256 is known from the
         // bytes handed to it. Reading it all back to hash it again is left out
         // under the check-once policy.
-        let written: [u8; 32] = std::mem::take(&mut self.hash).finalize().into();
+        let written: [u8; 32] = running.finish()?;
         if !crate::verify_policy::checks_once() {
             require(
                 file_hash(&mut self.file, bytes)? == written,
@@ -592,10 +648,7 @@ fn load_page(
         );
     }
     statistics.page_hash_bytes = statistics.page_hash_bytes.saturating_add(body.len() as u64);
-    require(
-        Sha256::digest(&*body).as_slice() == e.sha,
-        "metadata page SHA differs",
-    )
+    require(bulk_sha256(body)? == e.sha, "metadata page SHA differs")
 }
 fn record_at(body: &[u8], at: usize) -> io::Result<(usize, &[u8], &[u8])> {
     require(

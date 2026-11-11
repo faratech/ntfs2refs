@@ -294,6 +294,25 @@ fn written_here(snapshot: &Snapshot, sha256: &[u8; 32]) -> Option<std::sync::Arc
         .map(|known| std::sync::Arc::clone(&known.page_sums))
 }
 
+/// The SHA-256 a [`Writer`] in this process computed for exactly this file
+/// (same identity, final path, length and timestamp), when the check-once
+/// policy lets it stand for hashing the file again: outside a gate only. An
+/// owner that pins a freshly written store by its SHA can use it instead of
+/// reading the whole file back.
+pub fn sha256_if_written_here(file: &File) -> Option<[u8; 32]> {
+    if crate::verify_policy::full_unremembered() {
+        return None;
+    }
+    let snapshot = Snapshot::observe(file).ok()?;
+    WRITTEN
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .and_then(|written| written.get(&(snapshot.id.clone(), snapshot.final_path.clone())))
+        .filter(|known| known.bytes == snapshot.bytes && known.modified == snapshot.modified)
+        .map(|known| known.sha256)
+}
+
 /// One start offset for every this many records of a page.
 const START_STRIDE: u64 = 16;
 

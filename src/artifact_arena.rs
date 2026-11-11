@@ -378,10 +378,20 @@ fn inspect(file: &mut File, maximum: u64, expected: &str) -> Result<Verified> {
         "artifact must have exactly one link"
     );
     let modified = file.metadata()?.modified()?;
-    let position = file.stream_position()?;
-    let hash = n2r_win32::sha256_native::hash_range(file, 0, snapshot.file_bytes);
-    file.seek(SeekFrom::Start(position))?;
-    let sha = hex::encode(hash?);
+    // A record store this process has just written already has its SHA-256,
+    // computed from the bytes written; pinning it read the whole file back to
+    // hash it again (every store, gigabytes in all). Under the check-once
+    // policy the writer's SHA stands, when it is the expected one and the
+    // file is still exactly the file that writer closed.
+    let written = n2r_win32::metadata_pages::sha256_if_written_here(file).map(hex::encode);
+    let sha = if written.as_deref() == Some(expected) {
+        expected.to_owned()
+    } else {
+        let position = file.stream_position()?;
+        let hash = n2r_win32::sha256_native::hash_range(file, 0, snapshot.file_bytes);
+        file.seek(SeekFrom::Start(position))?;
+        hex::encode(hash?)
+    };
     ensure!(
         sha == expected
             && reference_file::observe_reference_file_handle_with_limit(file, maximum)? == snapshot

@@ -407,13 +407,16 @@ impl<'a> Evidence<'a> {
     }
 
     fn push_move(&mut self, value: serde_json::Value) -> Result<(), String> {
-        let compact = compact_size(&value)?
+        // Measured once: every move's proof was serialized twice here only to
+        // count its bytes, before being serialized a third time to be stored.
+        let size = compact_size(&value)?;
+        let compact = size
             .checked_add(self.compact_bytes)
             .ok_or("placement evidence accounting overflow")?;
         if let Some(sink) = &mut self.sink {
             let total = self
                 .saved_bytes
-                .checked_add(compact_size(&value)?)
+                .checked_add(size)
                 .filter(|n| *n <= self.maximum)
                 .ok_or("paged placement evidence resource exhausted")?;
             sink.push("move", &value).map_err(|e| e.to_string())?;

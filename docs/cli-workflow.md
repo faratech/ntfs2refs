@@ -1,491 +1,88 @@
-# Owning-machine conversion and recovery CLI
+# Operating and recovery guide: 0.0.1-alpha
 
-## Drive selection
+This guide describes the [published experimental Windows boot-volume alpha](https://github.com/faratech/ntfs2refs/releases/tag/0.0.1-alpha).
+See [release qualification](release-0.0.1-alpha.md) for the tested scope and
+[the archived workflow](history/cli-workflow-before-boot-alpha-closeout-20261111.md)
+for older experiments.
 
-```powershell
-ntfs2refs --list
-ntfs2refs --drive d
-ntfs2refs --drive d --partition 2
-ntfs2refs --drive d partition 2
-ntfs2refs --drive 3 partition 2
-```
+## Prepare
 
-`--list` shows disks, partition numbers, drive letters/mounts, filesystems,
-sizes, labels and available status, including unmounted partitions and query
-errors. Listing does not lock, dismount or modify a disk. Numeric disk selection
-requires an explicit partition number. When a drive letter and partition are
-both supplied, the number must match that letter's actual partition.
+1. Make an independent backup of the source and retain access to the control OS.
+2. Boot a separate Windows installation capable of creating a ReFS Dev Drive.
+   The installed Windows being converted must be offline, attached as a data
+   volume. This does not require a VM; the VM is the lab environment.
+3. Provide independent working storage off the source disk. Leave all working
+   and recovery files in place until conversion and verification are complete.
+4. Open an elevated terminal, verify the downloaded ZIP against its published
+   SHA-256, then extract it. The current ZIP SHA-256 is
+   `4966456f4c0bac93095cd6112a0eb5f06262842b3965ae6c7e86845cf17d713e`.
 
-The drive workflow shows the selected identity and asks `[y/N]` before creating
-working storage or starting conversion. No, empty input and EOF cancel. After
-an affirmative response, the source identity is checked again. Eligible NTFS
-data volumes use the same live source admission and compact conversion engine;
-running Windows volumes and unsupported layouts/features still refuse.
+The measured lab source had 22.9 GB used and consumed about 30 GB of working
+storage. Actual requirements depend on metadata, placement, rewritten data and
+recovery records. Do not interpret the lab value as a fixed maximum.
 
-### Conversion mode
-
-The default is **allocation-bounded** conversion (the ntfs2btrfs model). The
-source is bound by a digest of its NTFS-allocated ranges, and only the ranges
-the new ReFS allocates are compared, journaled and written. Bytes that neither
-filesystem allocates are not compared and not proven unchanged. Writes stay
-restricted to the planned ranges, the journal keeps the old and new bytes of each,
-and the mounted ReFS tree is verified afterwards, including every file's content
-hash. The prompt shows `Mode: allocation-bounded …` before you confirm.
-
-File-content hashes (the inspection, the Windows read of each source file and the
-final ReFS check) are XXH3-128, in canonical big-endian hex, in fields that keep
-their historical `*sha256` names. XXH3 detects accidental difference but is not a
-cryptographic hash, and these values do not match `Get-FileHash`. Artifact pins
-(requests, journals, backing files, recovery bundles) remain SHA-256.
+## Select and convert
 
 ```powershell
-ntfs2refs --drive d --partition 2                             # allocation-bounded (default)
-ntfs2refs --drive d --partition 2 --whole-image-verification  # compare every byte; much slower
+.\ntfs2refs.exe --list
+.\ntfs2refs.exe --drive D --windows-boot-volume --scratch-directory S:\runs --target-format dev-drive
 ```
 
-`--whole-image-verification` runs the earlier whole-image comparison and journal.
-On the 52 GiB lab fixture it took about 47 minutes, against under 2 minutes for
-the default; see [the selective plan](selective-conversion-plan.md).
-`--recover` handles interrupted runs of either mode from their published bundle.
+Confirm the source disk and partition shown by the program. In this example,
+`D:` is the old Windows installation and `S:` is independent working storage.
+The demonstrated boot profile uses `dev-drive`; standard ReFS formatting and
+other Windows versions do not inherit this qualification.
 
-Working storage is prepared automatically on the Windows OS volume under
-`ProgramData\ntfs2refs\runs`: a new dynamic VHDX holds the native ReFS shadow,
-and the journal/recovery artifacts stay independent of the selected source.
-The native formatter receives only the partition on that newly created owned
-virtual disk. [Windows format supports volume names and ReFS Dev Drives](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/format).
-The provider and formatter must support the requested geometry; staging is kept
-on failure for inspection. The isolated native staging smoke passed on the
-current Windows11 guest: owned VHDX creation, attachment, empty-GPT/MSR setup,
-native formatting and ReFS3.14/4KiB verification all succeeded for60GiB. Its
-backing file was100MiB. This proves staging on that profile, independently of
-the manually prepared shadow experiments. The complete affirmative
-`--drive F --partition 2` workflow then passed on the existing 52 GiB NTFS
-partition: actual native exit 0, automatic shadow/journal selection, 157 patches
-writing 70,660,096 bytes, and a 141,354,590-byte recovery journal. Native ReFS
-matched 15 objects and 10 stream hashes. All seven earlier user files
-(8,594,391,095 logical bytes) matched again after cold boot, with the original
-label and F: mount preserved. The original run recorded its checkpoints before
-the user-authorized cleanup; obsolete checkpoints have since been removed. The
-current retained branches are listed in [AGENTS.md](../AGENTS.md), and the
-[automatic CLI observation](../evidence/drive-cli-native-20261028.json)
-pins the reports and exact executable. Most logical bytes are in a zero-filled
-fixture file; this does not prove payload-independent scratch or arbitrary-volume
-support. The current executable also shows phases and elapsed time; that later
-display change is separate from the recorded run.
+The drive interface also accepts explicit selection such as `--drive D --partition 3`.
+That syntax is not a claim that every data-volume layout or feature is qualified.
+The program refuses unsupported conditions instead of silently omitting them.
 
-Run conversion from an elevated Windows terminal. `--scratch-directory` can
-choose another ordinary working folder on the Windows OS volume. The current
-experimental filesystem and resource limits remain visible through
-`ntfs2refs-compact profile`; drive selection does not bypass them.
+The converter takes the source offline and read-only during preparation. It
+builds ReFS metadata through Windows and preserves eligible payload extents.
+The source conversion patches are applied only after preparation and the
+pre-write verification gate succeed. The final installation remains on the
+original source disk; the temporary shadow is working storage.
 
-Conversion and recovery report their current phase on stderr. Full image scans
-can take substantially longer than the patch writes. Compact handoff now hashes
-the fresh target and its packed-change overlay from one target scan, using two
-1 MiB buffers, instead of rereading unchanged target bytes. Both complete hashes
-and the existing journal, device and handoff checks remain required. This saves
-one partition length minus changed bytes of target reads at that phase; other
-full-volume passes remain. Target preparation also combines its final frozen
-source and candidate scans, retaining raw and framed hashes for both. The native
-shadow is rechecked before that final source scan and the packed backing is
-rechecked afterward. This removes another partition length minus changed bytes
-of source reads. These optimizations ran in the frozen `fb5548...` candidate,
-which passed normal conversion, mutation and reboot on the recorded fixture.
+## If a run stops
 
-Later development folds another source hash into the complete capture and
-shares the first journal-comparison source read with the candidate overlay.
-The two subsequent full-image rechecks remain. The final frozen-source and
-candidate digests can also use two bounded workers. These later changes pass
-the release build but have not yet been qualified natively. A host-only
-[memory benchmark](../evidence/paired-hash-host-benchmark-20261029.json)
-measured the four digest streams over 512 MiB each at 4.63 seconds serially
-and 2.74 seconds with the pipeline; it does not measure disk throughput or
-establish a conversion speedup.
-Compact apply and recovery also reuse the fresh target scan for the complete
-candidate digest, avoiding another partition length minus changed bytes of
-logical reads. The source normalization, foreign-byte checks, complete image
-hashes, and post-write verification remain in place. This recovery change has
-not yet been qualified in a native conversion or recovery run.
-Journal loading also computes its complete immutable pin while checking each
-payload digest in the same sequential pass, saving one immutable-journal read
-per load. It still checks the complete pin before allowing reconstruction; this
-change likewise awaits native qualification.
-Journal preparation hashes the bytes as they are written, then independently
-reads and verifies the flushed journal, saving another complete journal read.
-Compact capture also batches adjacent changed clusters into bounded writes;
-the byte budget and packed image remain unchanged. These changes are awaiting
-native qualification and have not been measured end to end.
-The capture's full source and candidate hashes use CNG; on multicore systems
-the candidate hash runs on a bounded worker while the source is processed.
-Their framing and complete-byte checks are unchanged. This change also awaits
-native qualification and an end-to-end measurement.
-After a complete capture, its report estimates how many changed bytes lie
-outside the observed allocation bitmap and known ranges. Those estimates do
-not authorize omitting those bytes: the complete ReFS allocation graph is not
-yet proven, and the converter continues to capture the full address space.
-
-For the Windows streaming-v2 profile, whole-image reconstruction and recovery
-hashes now use the existing fallible CNG SHA-256 backend, including normalized
-source checks and paired digest workers. Patch, record, metadata and immutable
-journal hashes retain their separate paths. Legacy and non-Windows hashing
-retain the Rust backend. The frozen candidate passed its scoped native run;
-the result does not by itself establish a speedup over other builds.
-
-## Recovering a drive run
-
-New compact conversions save `compact-recovery-bundle.json` before source
-activation and print its **Recovery directory** and **Recovery checksum**.
-Keep that original checksum with the recovery files. It pins the original
-request, ticket, journal location, capture, packed backing, expectation and
-optional managed-shadow identity; it cannot replace the native recovery checks.
+- **Before apply:** the source has not received conversion patches. Preparation
+  can be started again; arbitrary power-cut resume during preparation is outside
+  this alpha's qualification.
+- **After source writes begin:** retain the working storage and use the exact
+  recovery command and checksum printed before the write. Do not start another
+  fresh conversion over the unfinished target.
 
 ```powershell
-ntfs2refs --recover C:\ProgramData\ntfs2refs\runs\RUN_ID\conversion `
-  --recovery-sha256 ORIGINAL_PRINTED_CHECKSUM
-
-ntfs2refs --recover C:\ProgramData\ntfs2refs\runs\RUN_ID\conversion `
-  --recovery-sha256 ORIGINAL_PRINTED_CHECKSUM --rollback
+.\ntfs2refs.exe --recover <printed-directory> --recovery-sha256 <printed-checksum>
 ```
 
-Recovery displays the pinned disk/partition identity and action, then defaults
-to No. Declining or giving empty input creates no recovery directory and opens
-no target or journal. A wrong checksum refuses before the prompt. After an
-affirmative answer, the existing engine checks actual device identity, exclusion,
-original input hashes, journal ownership and barriers. Managed staging is reopened
-with its exact original provider and GPT identity. Default recovery resumes the
-exact image, then finalizes ReFS only if resume succeeds; `--rollback` restores
-NTFS instead. Failures do not trigger an alternate action.
+The CLI also exposes `--rollback` before handoff. Do not infer a qualified
+Windows boot-volume rollback matrix from older data-volume experiments. Once
+ordinary writable ReFS use has begun, restoring old NTFS metadata is unsafe.
 
-For an excluded offline source, the current CLI also classifies both actual
-journal lifecycle sectors while holding that journal exclusively. An exact ReFS
-handoff selects only the existing ReFS completion path; `--rollback` refuses.
-An exact NTFS rollback selects only NTFS completion with `--rollback`; default
-ReFS recovery refuses. Partial, foreign or contradictory sectors refuse. These
-paths still verify the complete immutable journal, compact binding and images;
-the classifier grants no replay or mount authority. Already online completed
-volumes are not automatically offlined. This routing change is release-built
-and still needs native qualification.
+The recovered `rec-04` record establishes successful post-apply finalization and
+a healthy ReFS mount. Its independent before/after comparison was unavailable;
+it is not an arbitrary power-loss or full-content recovery qualification.
 
-HND/ABT close replay: a completed writable filesystem must not be recovered with
-an old journal. Older runs without a bundle still require the explicit pinned
-`ntfs2refs-compact` recovery inputs below. Sealed main `2cac76...` passed actual
-public Resume/Finalize after the controlled one-write interruption and reboot:
-15 native objects, 10 complete stream hashes, label/mount preservation and HND.
-Separate public `--rollback` on that saved interrupted state also passed native
-exit 0, exact original pre-mount NTFS hash, ABT, original label and F: mount.
-This rollback result does not claim a separate post-mount per-file hash pass.
-Later read optimizations and lifecycle routing do not inherit that binary's
-native qualification. Those builds have separate release-build evidence.
+## Verify the result
 
-## Experimental compact backend
+For the lab boot claim, the harness checks that only the original disk is
+attached, Secure Boot is enabled, the running OS uses the original partition,
+C: is healthy ReFS 3.14 with 4 KiB clusters, the stock loader and ReFS driver have
+valid signatures, and sign-in reaches the desktop. A separate listing tool
+compares source and target metadata and logical stream hashes.
 
-`ntfs2refs-compact` exposes native-shadow compact construction and its typed
-recovery operations in a separate executable. It runs on the Windows machine
-owning the disks and does not depend on Hyper-V. The original frozen laboratory
-alpha and the older `ntfs2refs convert` backend remain separate.
+A normal user's storage and boot setup requires its own validation. The alpha
+has not established compatibility with physical hardware, BitLocker, arbitrary
+Windows builds, every NTFS feature combination or very large volumes.
 
-The selected-device path replaces fixture computer names, disk numbers and GUIDs
-with live construction enrollment from the original observed NTFS freeze. It
-checks the selected shadow's actual GPT/volume route, root identity, writable
-ReFS3.14/4KiB/512-byte geometry and zero retrieval base, then transfers its held
-handles into the private constructor. It still requires a fresh prepared shadow
-labelled `n2r-retained-shadow`, a separate journal disk, matching source/shadow
-partition lengths, supported source semantics and the original source certificate.
-Current Windows disks and incompatible dedicated-data GPT layouts remain refused.
+## Visible differences
 
-After preparing those volumes, use the existing read-only binder with the
-explicit streaming profile. These letters are placeholders for selected volumes:
+Every preserved 8.3 short name is represented by a visible relative symbolic
+link beside its long name. For example, Explorer can show `PROGRA~1` in C:.
+NTFS-compressed files are represented without the NTFS compression flag.
+The exact listing exceptions and counts are in the release qualification.
 
-```powershell
-ntfs2refs-bind --source X:\ --shadow Y:\ --journal Z:\ `
-  --experimental-large-journal --experimental-large-tree --experimental-streaming-payload `
-  --experiment-id 0123456789abcdef0123456789abcdef --max-journal-bytes 1073741824 `
-  --output C:\ntfs2refs\devices.json
-
-$pin = (Get-FileHash -LiteralPath C:\ntfs2refs\devices.json).Hash.ToLowerInvariant()
-ntfs2refs-compact convert --acknowledge-experimental-compact `
-  --request C:\ntfs2refs\devices.json --request-sha256 $pin `
-  --maximum-placement-bytes 1073741824 --output C:\ntfs2refs\runs\fresh-run
-```
-
-Use a new experiment ID and output paths for every operation. Placement and
-journal ceilings are explicit budgets, not reservations or universal estimates.
-`profile` prints the shared implementation bounds without opening devices.
-Conversion checks live routing, filesystem and source geometry before freezing;
-neither binder output nor an acknowledgment supplies source-write authority.
-
-`resume`, `rollback`, `finalize`, `finalize-after-marker` and `finalize-rollback`
-take the original request, ticket, capture, packed backing and expectation with
-their independent SHA-256 pins, plus the actual journal and a fresh output path.
-They use the existing compact recovery engine; none can activate a new Apply.
-HND/ABT replay boundaries still apply. See `ntfs2refs-compact <operation> --help`
-and [the recovery contract](native-composite-experimental.md#recovery).
-
-If a reboot removed an automatically managed shadow's attachment, recovery can
-also take the paired `--managed-shadow <original.vhdx>` and
-`--managed-shadow-id <original-provider-GUID>` options. The original provider ID
-is saved in `managed-shadow.json` by the drive workflow. Reattachment opens the
-existing backing read-only and checks its provider identity, geometry, exact
-original disk number and GPT layout. Windows can restore the provider's hardware
-write protection without restoring the software disk attributes. The converter
-therefore queries native write protection before adding any missing persistent
-offline/read-only restrictions. It never clears protection bits, brings the
-shadow online or changes an actually writable device to pass the gate. It
-cannot create, format or rewrite a stale request/ticket.
-All existing recovery inputs and independent pins are still required. This
-reattachment path has release-build evidence; native recovery qualification
-remains pending; a real post-reboot recovery run is now exercising this path.
-
-The selected-device backend completed a separately prepared 60 GiB native
-conversion, with five ordinary user files and a successful cold-boot hash
-readback. The [selected native observation](../evidence/selected-native-compact-20261028.json)
-pins the exact executable and closed reports, including the separate wrapper's
-missing exit-code observation and terminal status 1. This result is separate from the automatic drive workflow
-and the earlier pinned laboratory executables.
-Boot volumes, arbitrary geometry and general low-scratch behavior are unfinished.
-
-## Existing full-shadow backend
-
-`ntfs2refs convert --request` runs the certificate-backed workflow on the
-machine owning the disks. It has no Hyper-V dependency. Run it in an elevated
-Windows process with the required volume/backup/security privileges.
-
-```powershell
-$pin = (Get-FileHash -LiteralPath .\devices.json -Algorithm SHA256).Hash.ToLowerInvariant()
-ntfs2refs convert --request .\devices.json --request-sha256 $pin --output C:\ntfs2refs\runs\run-001
-```
-
-The output directory must be fresh, on the Windows OS volume, with ordinary
-directory ancestry; missing parents are created and checked before use. The request is a bounded ordinary JSON file, at most
-16 KiB, matching `general_conversion::Request`. Its fields are:
-
-- `schema_version`: `1` for the existing journal profile, or `2` for the
-  explicitly selected experimental large-journal profile.
-- `experiment_id`: a fresh 32-character lowercase hexadecimal identifier.
-- `pair`: actual source and shadow `GeneralDiskBinding` values, including disk
-  number, volume GUID, GPT identities, partition bounds and sector geometry.
-- `journal`: an independent `GeneralJournalStorageBinding`.
-- `max_journal_bytes`: a positive journal ceiling within the current limit.
-- `verify_existing_shadow`: normally `false`; `true` requires an existing
-  shadow to match the newly frozen source through the complete native verifier.
-
-Source and shadow partitions must have matching geometry on different data
-disks. The shadow must already be a separately prepared ReFS volume with label
-`n2r-retained-shadow`. Normal construction requires an empty shadow namespace
-apart from the explicitly supported Windows system-cache entries. The journal
-must be independent of both data disks. Native identities are checked against
-the actual devices; a caller-provided success flag cannot qualify a source.
-
-The current profile is deliberately bounded: NTFS 3.1 with 512-byte logical
-sectors, 4 KiB clusters and 1 KiB records; ReFS 3.14 with 4 KiB clusters; up to
-128 ordinary files, 32 directories and 256 MiB of logical contents. Source
-policy qualification currently targets Windows build 26300. Unsupported
-semantics and unknown layouts are refused. Boot/system volumes remain excluded.
-
-The opt-in `--experimental-large-tree` binding profile raises the source tree
-budget to 1,024 ordinary files, 256 directories including the root, and 4 GiB
-of logical contents. It requires `--experimental-large-journal`. The source
-geometry may use power-of-two clusters from 4 KiB through 2 MiB, with 512-byte
-sectors, 1 KiB MFT records and 4 KiB index records. The default alpha still
-requires 4 KiB source clusters. ReFS target clusters remain 4 KiB in both paths;
-the source planner translates compatible physical byte ranges rather than
-equating NTFS and ReFS cluster numbers. Backup admission checks the geometry-sized
-MFT mirror completely with fixed record buffers. The four bootstrap records
-remain byte-identical, while extra allocated slots must either match or be
-recognized inactive format padding; unknown discrepancies still refuse. Both
-complete regions remain hashed and all record/USA structures checked. See the
-[actual larger-cluster observation](native-shadow-large-beta.md); allocated
-stream length is not treated as a guarantee of live mirror synchronization.
-The source profile is bound to the journal and recovery ticket; use the same executable
-for conversion and recovery. Its partition routing budget is 2 PiB, derived from
-the streaming 4 KiB target-bitmap budget. Default/unprofiled routes retain the
-128 GiB limit. Other semantic, evidence and storage limits still apply. This larger-tree path has
-not yet been qualified by a native conversion or interruption run.
-The native shadow still initializes the logical file contents on separate
-storage. Eligible source extents can remain in place during cutover, but
-shadow I/O and scratch usage are not independent of payload size.
-
-The converter does not yet support arbitrary volume sizes. In particular, the
-default live partition limit is 128 GiB, the default source uses 4 KiB clusters, and the
-full-image comparison reads both partitions twice. A 1,000 TB NTFS volume
-requires larger source clusters under Windows' documented NTFS limits; merely
-removing an internal size check would not make it convertible. The experimental
-routing budget is not native large-volume qualification. It does
-not remove tree/data, journal or scratch constraints, and full-image scans and
-shadow construction remain expensive. All exact admission and recovery checks
-still apply. A small or large volume can still be refused by format, layout or
-capacity checks. See
-[Microsoft's NTFS volume limits](https://learn.microsoft.com/en-us/windows-server/storage/file-server/ntfs-overview).
-The formatter and target profile must independently establish whether a small
-volume, including a 10 MiB example, can hold a valid ReFS filesystem.
-
-Journal profile 1 retains the existing 768 MiB journal ceiling. The opt-in
-profile 2 permits a maximum journal budget up to 16 GiB, with the changed-byte
-budget derived from that value after reserving metadata and both old and new
-bytes. Select it with `ntfs2refs-bind --experimental-large-journal` and an
-appropriate `--max-journal-bytes`. Conversion, resume, rollback and handoff bind
-the request and immutable journal ticket to the same profile. Profile 2 has not
-been qualified by a native VM conversion or interruption test; it does not raise
-the source file/tree limits or imply broader filesystem feature support. Older
-executables refuse its request/ticket version. Use the executable corresponding
-to the run for every recovery operation.
-
-The workflow captures a live source freeze, checks the semantic source model,
-constructs or verifies the native ReFS shadow, freezes it, and creates the
-source certificate. It then saves the external journal and trusted ticket,
-applies the admitted patch set, records the handoff barrier and verifies the
-mounted ReFS tree. The source remains persistently excluded while raw writes
-are in progress. A failed run leaves phase diagnostics and any completed
-recovery inputs under the output directory.
-
-An image `plan` report remains non-executable. `convert --plan plan.json`
-retains its refusal behavior; it cannot be used to bypass live qualification.
-
-To inspect an existing public run, `operation-state` requires the intent file's
-SHA-256 and the exact pins of any frozen-source, mount-path, reconstruction-request
-and ticket artifacts already present. The separate Rust
-[`ntfs2refs-state-command` helper](operation-state-command.md) prepares this
-read-only command without executing it or changing the frozen alpha engine.
-It hashes artifact files themselves; the source image hash inside
-`source-frozen.json` is a different value. Run the prepared command in the owning
-machine's elevated context and use its observed lifecycle report before considering
-`cancel` or recovery. Preparing pins grants no mutation authority and does not
-establish that a conversion worker stopped. `cancel` is limited to unchanged NTFS
-before reconstruction activation; it cannot cancel an activated or handed-off run.
-
-For recovery, use the run's generated `request.json`, `ticket.json` and the
-journal location from `journal-location.json`. Each input is pinned separately:
-
-```powershell
-$requestPin = (Get-FileHash -LiteralPath C:\ntfs2refs\runs\run-001\request.json).Hash.ToLowerInvariant()
-$ticketPin = (Get-FileHash -LiteralPath C:\ntfs2refs\runs\run-001\ticket.json).Hash.ToLowerInvariant()
-ntfs2refs resume --journal J:\ntfs2refs-shadow\EXPERIMENT\reconstruction.journal `
-  --request C:\ntfs2refs\runs\run-001\request.json --request-sha256 $requestPin `
-  --ticket C:\ntfs2refs\runs\run-001\ticket.json --ticket-sha256 $ticketPin `
-  --output C:\ntfs2refs\runs\resume-001
-```
-
-`rollback` uses the same pinned envelope and restores the exact admitted NTFS
-preimage before completing its rollback marker. `finalize` additionally
-requires `--expectation` and `--expectation-sha256`, matching the request's
-expected-tree hash. `rollback --after-marker` and `finalize --after-marker`
-complete an already durable marker after process death only while their existing
-exact-image proof still passes. A writable ReFS mount or label update can change
-the image; the old raw-recovery/finalization path must then refuse it.
-Recovery never starts
-a fresh apply, silently clears a foreign device's exclusion, or crosses the
-closed rollback boundary. A shadow-backed recovery needs the bound shadow
-available in its required protected state.
-
-`rollback --without-shadow` explicitly selects journal-old-byte recovery when
-the enrolled shadow is unavailable. It still requires the exact pinned request,
-ticket, actual journal identity, expected target state and permitted pre-handoff
-lifecycle. It grants no forward resume or finalization authority. This public
-command passed a bounded native first-flushed-write interruption with the shadow
-detached, exact NTFS preimage proof before writable mounting and original NTFS
-availability afterward. A later clean-boot check matched four known user-file
-hashes and the original mount/label/partition identity; it did not reverify all
-twelve objects' security/timestamps or post-mount whole-image equality.
-See [the result and limits](general-native-conversion-results.md#public-shadowless-rollback-after-one-flushed-write).
-
-For a label-only failure after handoff and the first writable ReFS mount, use
-the separate native-only command. Its pinned request must contain
-`expected_source_label`:
-
-```powershell
-ntfs2refs complete-label --request request.json --request-sha256 REQUEST_SHA256 `
-  --ticket ticket.json --ticket-sha256 TICKET_SHA256 --journal reconstruction.journal `
-  --expectation expectation.json --expectation-sha256 TREE_SHA256 `
-  --output C:\ntfs2refs\runs\label-completion-001
-```
-
-This command reads the journal exclusively and read-only to validate its native
-file identity, full immutable contents, comparison binding and exact HND marker.
-That receipt does not assert a current raw target hash or authorize replay.
-The source must already be online/writable ReFS on the original bound hardware
-partition, with the enrollment or desired label. The full strict native tree is
-verified before and after guarded label restoration, flush and readback. It
-does not open the old shadow, issue raw source writes, change disk attributes
-or rewrite journal markers. Partial failures are saved in the fresh output
-directory. An already-desired label is flushed and verified without a second
-setter call. See [the label contract](source-volume-label.md).
-
-`capabilities` reports command availability. It does not claim a production
-qualification matrix or a standalone raw ReFS formatter/writer.
-
-The separate, unqualified streaming-payload source profile is selected during
-binding with `--experimental-streaming-payload --experimental-large-tree
---experimental-large-journal`. It serializes as
-`experimental_streaming_tree_v2`; the existing larger-tree v1 profile retains
-its 4 GiB payload budget. V2 bounds total/per-stream logical payload by the
-existing 2 PiB partition-routing envelope, using fixed-size streaming copy/hash
-buffers. Native/raw logical-read budgets allow four times that envelope for
-source collection/internal streams, with separately bounded read-call counts.
-The per-stream call guard scales for long streams rather than imposing the old
-roughly 64 GiB full-read ceiling; unprofiled and v1 effective guards remain.
-
-This is a resource envelope, not evidence that a volume of that size converts.
-The 1,024-file/256-directory and metadata-evidence limits, supported semantics,
-same-sized independent shadow, initialized shadow payload, complete image scans,
-dual target bitmap checks, exact changed-byte/journal capacity, and recovery
-barriers all still apply. The v2 journal still has a 16 GiB ceiling. A placement
-requiring too much relocation or free-space replacement must refuse. Requests,
-native observations, source/target certificates, expectation profiles, tickets
-and recovery retain the exact selected resource profile; imported JSON cannot
-substitute for live source/target capabilities. The new profile has compilation
-evidence only and has not run in the native lab. The active candidate-3 beta
-continues using v1 and its original executable.
-
-On a machine with at least two CPUs, v2's shadow-backed apply/resume/rollback
-preflight interleaves the complete shadow read with target normalization against
-the old/new journal payloads. The shadow SHA-256 uses the bounded worker while
-the owning thread reads storage, checks every affected byte and hashes the
-normalized full target. Both complete image pins must pass before the existing
-patch-writing path is entered. Shadowless recovery and older profiles retain
-their sequential checks. This overlaps CPU work with a fixed extra buffer; it
-removes no reads, pin checks, patch checks, flushes or handoff barriers. The
-change has compilation/format evidence only and no measured native speedup.
-
-The same streaming profile now overlaps the final target/shadow digests at
-handoff for images of at least 64 MiB with two available CPUs. The target is
-flushed before both complete images are read; their separately checked pins
-still precede the irreversible handoff marker. All device reads remain on the
-owning thread, with fixed-size buffers and one digest worker. Read/worker/pin
-failures leave the marker unwritten. Legacy profiles and small/single-CPU paths
-keep their existing order. This reduces serial CPU work without reducing image
-reads or shadow allocation, and has compilation evidence only.
-
-For streaming-payload v2, a wholly blocked placement plan now reuses its two
-complete planning bitmap observations in no-submit diagnostics. Wider runs use
-the same snapshots for their bounded diagnostic chunks. The native file mapping
-is still captured, and both candidate ranges/domain sizes must match the exact
-request. Reuse with a submitted move or an assembled-map path is rejected.
-Every actual move still captures fresh legacy and metadata-inclusive views.
-Final native semantics, actual mappings and frozen allocation/image checks stay
-independent. This removes duplicate diagnostic bitmap queries without treating
-their earlier observations as move authority. Alpha and larger-tree v1 retain
-their existing query order. The change has compilation evidence only.
-
-Expanded native shadow/converted-volume observation now obtains geometry from
-the already checked ReFS volume-data query, keeping the total cluster count as
-64 bits through retrieval-map bounds checking. The previous protected route
-narrowed that count to a DWORD, imposing a roughly 16 TiB ceiling at 4 KiB;
-the unprotected expanded route also relied on `GetDiskFreeSpaceW`'s DWORD count.
-Both expanded routes now use the same exact version/sector/cluster/partition
-checks. Unprofiled mounted access keeps its legacy query. This removes that
-specific representational limit, not other metadata/resource/capacity limits;
-volumes above the recorded native sizes remain unqualified.
-
-The streaming-payload v2 profile also accepts well-formed Unicode names up to
-255 UTF-16 code units per component, with the existing 16-component path bound.
-The original strings are preserved; no normalization or case rewrite is applied
-to filesystem paths. A conservative Unicode-uppercase key detects collisions
-in both semantic-tree construction and expected-tree validation. It can refuse
-pairs that Windows would distinguish; native CREATE_NEW remains the final
-compatibility check before any source reconstruction. Controls, separators,
-traversal/trailing-dot/space forms and reserved device names are refused.
-Unpaired UTF-16 surrogates remain refused by the existing strict path decoder.
-Alpha and larger-tree v1 keep their ASCII/100-byte naming policy. The pinned
-streaming-v2 native composite run converted names including `café`, `資料`,
-`Grüße` and an emoji, then passed native readback, mutation and reboot checks.
-Maximum-length and maximum-depth boundary cases remain unqualified; see
-[the recorded experiment](native-composite-experimental.md).
+`--recheck-everything` restores the older repeated verification mode and can be
+much slower. Normal mode still performs the verification gate before the first
+source write. Neither mode establishes hardware compatibility by itself.

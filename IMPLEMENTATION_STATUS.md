@@ -1,3 +1,6 @@
+<!-- Current release closeout -->
+> This file is a historical implementation log. The current Windows boot-volume alpha and its evidence are documented in [release qualification](docs/release-0.0.1-alpha.md) and [AGENTS.md](AGENTS.md). Older pending statements below retain their original dates and do not override the current release.
+
 # Implementation handoff
 
 Current bounded evidence is recorded in

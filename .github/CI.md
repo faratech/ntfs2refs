@@ -36,5 +36,7 @@ source on October 25, 2026. See the
 and the official
 [Windows 2025 runner image inventory](https://github.com/actions/runner-images/blob/main/images/windows/Windows2025-Readme.md).
 
-The workflow's first hosted run must be observed after it is pushed; creating
-this file does not establish a passing GitHub Actions result.
+A passing result must be observed for the revision being integrated; the
+workflow file or a green run for an earlier revision is not sufficient.
+Formatting and documentation closeout does not replace the independently
+qualified release executable or transfer its native evidence to another binary.

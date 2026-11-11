@@ -423,9 +423,28 @@ impl PagedNativeObservation {
         let mut header_index = None;
         let mut at = 0;
         let mut total = 0;
+        // Building the index needs each chunk's key and decoded length. For a
+        // file this process wrote and has not seen change (check-once policy)
+        // the length is taken from the chunk's hex text, twice as long plus
+        // its quotes, instead of decoding every chunk only to measure it.
+        let written_here = reader.written_by_this_process();
+        let chunk_at = |reader: &mut Reader, at: u64| -> io::Result<((u8, u64, u64), usize)> {
+            if written_here {
+                reader.with_record(at, |key, payload| {
+                    require(
+                        payload.len() >= 2 && payload.len().is_multiple_of(2),
+                        "noncanonical native observation chunk",
+                    )?;
+                    Ok((decode_key(key)?, (payload.len() - 2) / 2))
+                })
+            } else {
+                let record = reader.get(at)?;
+                let bytes = decode_chunk(&record.payload, budget.chunk_bytes())?;
+                Ok((decode_key(&record.key)?, bytes.len()))
+            }
+        };
         while at < reader.len() {
-            let first = reader.get(at)?;
-            let (phase, ordinal, chunk) = decode_key(&first.key)?;
+            let ((phase, ordinal, chunk), _) = chunk_at(&mut reader, at)?;
             require(
                 chunk == 0
                     && match phase {
@@ -457,20 +476,19 @@ impl PagedNativeObservation {
                     at < reader.len(),
                     "native observation lacks terminal row chunk",
                 )?;
-                let record = reader.get(at)?;
+                let (key, length) = chunk_at(&mut reader, at)?;
                 require(
-                    decode_key(&record.key)? == (phase, ordinal, index.records),
+                    key == (phase, ordinal, index.records),
                     "native observation chunk sequence differs",
                 )?;
-                let bytes = decode_chunk(&record.payload, budget.chunk_bytes())?;
-                index.bytes = add(index.bytes, bytes.len() as u64)?;
+                index.bytes = add(index.bytes, length as u64)?;
                 index.records = add(index.records, 1)?;
                 at = add(at, 1)?;
                 require(
                     index.bytes <= budget.max_row_bytes,
                     "native observation row budget exceeded",
                 )?;
-                if bytes.len() < budget.chunk_bytes() {
+                if length < budget.chunk_bytes() {
                     break;
                 }
             }

@@ -16,7 +16,7 @@ concurrency:
 jobs:
   windows-msvc:
     name: Rust 1.98.1 / x64 MSVC
-    runs-on: windows-2025
+    runs-on: windows-2022
     # Preserve the complete check/build sequence; cold builds exceeded 45 minutes.
     timeout-minutes: 90
     defaults:

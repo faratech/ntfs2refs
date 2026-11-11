@@ -1,7 +1,7 @@
 # Windows CI
 
 `workflows/windows.yml` runs on pushes to `main`, pull requests and manual
-dispatch. The hosted `windows-2025` runner installs Rust 1.98.1 with rustfmt
+dispatch. The hosted `windows-2022` runner installs Rust 1.98.1 with rustfmt
 and Clippy, verifies the x86-64 MSVC host and targets
 `x86_64-pc-windows-msvc`. This compiles the `cfg(windows)` modules and uses the
 repository's static CRT configuration.
@@ -36,7 +36,10 @@ The checkout action is pinned to full commit
 source on October 25, 2026. See the
 [pinned checkout commit](https://github.com/actions/checkout/commit/fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09)
 and the official
-[Windows 2025 runner image inventory](https://github.com/actions/runner-images/blob/main/images/windows/Windows2025-Readme.md).
+[Windows 2022 runner image inventory](https://github.com/actions/runner-images/blob/main/images/windows/Windows2022-Readme.md).
+
+The CI host is a build/test environment, not the native conversion qualification
+target. The frozen Windows 11 release and its native evidence remain unchanged.
 
 A passing result must be observed for the revision being integrated; the
 workflow file or a green run for an earlier revision is not sufficient.

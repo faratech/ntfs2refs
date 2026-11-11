@@ -32,9 +32,18 @@ not count. Power-cut resume during preparation is out of scope until this works.
 - Working files are hashed when written and then held open; the source is
   offline, read-only and held. Full re-reads happen once, at the gate before
   the first source write (`crates/n2r-win32/src/verify_policy.rs`), not at every
-  checkpoint. `--recheck-everything` restores the old behaviour.
+  checkpoint. Outside that gate a store this process wrote is opened without
+  being re-read and its pages are checked by an in-memory checksum; a digest
+  of an immutable tree is computed once; the frozen shadow is observed once
+  during capture; the journal is hashed in file order as it is written.
+  `--recheck-everything` restores the old behaviour everywhere.
+- In-memory copies of stores are optional: they lease through
+  `reserve_optional_ram` (a third of the RAM budget in total, and only while
+  the arena is under half full), so they cannot starve a required reservation.
 - Each stage prints a `timing:` line to stderr (`crates/n2r-win32/src/perf.rs`).
-  Measure before and after any speed change.
+  Measure before and after any speed change, and take a `-SampleStacks`
+  profile before deciding what to change: most time was in places no timer
+  named.
 
 ## Working rules
 
@@ -104,7 +113,9 @@ In order; each step is finished when its check passes.
 1. Small fixture: a whole run (not only `--recover`) ends `converted-not-booted`
    with an identical before/after listing, twice from a fresh restore.
 2. Remove repeated work until the 1-in-10 fixture converts in under 6 minutes;
-   use the `timing:` lines to pick each target. Full Windows must fit in 30.
+   use the `timing:` lines and a stack profile to pick each target. Full
+   Windows must fit in 30. What is left is mostly per-object Windows calls
+   (one thread) and SHA-256 over the changed ranges.
 3. 1-in-10 fixture: converted, identical listing.
 4. Full Windows with `-Diagnose` until the failure list is empty.
 5. Pre-boot checks on the offline source (no resumable `hiberfil.sys` or BCD

@@ -38,10 +38,44 @@ impl AliasObjectShape for AliasObjectShapeRef<'_> {
     }
 }
 
+/// Where an immutable input domain keeps its input digest between uses.
+///
+/// The digest covers every object of the domain; computing it decodes all of
+/// them. Under the check-once policy it is computed once, and once more
+/// inside each gate before a first write to the source.
+#[derive(Debug, Default)]
+pub struct InputDigestMemo {
+    digest: std::sync::Mutex<Option<[u8; 32]>>,
+    last_full: crate::verify_policy::LastFull,
+}
+impl InputDigestMemo {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub(crate) fn get(&self) -> Option<[u8; 32]> {
+        if !crate::verify_policy::checks_once() {
+            return None;
+        }
+        let known = *self.digest.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if known.is_some() && crate::verify_policy::full(&self.last_full) {
+            return None;
+        }
+        known
+    }
+    pub(crate) fn set(&self, digest: [u8; 32]) {
+        *self.digest.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(digest);
+    }
+}
+
 pub trait InputDomain {
     type Object: ObjectInput;
     fn len(&self) -> usize;
     fn object(&self, index: usize) -> io::Result<Self::Object>;
+    /// An immutable domain may offer a place to keep its input digest. The
+    /// default keeps nothing, so the digest is computed on every use.
+    fn input_digest_memo(&self) -> Option<&InputDigestMemo> {
+        None
+    }
     /// Diagnostic only: progress cannot fail or authorize an operation.
     fn progress(&self, _update: crate::progress::Update) {}
     /// Legacy domains keep their existing object path. Authenticated paged

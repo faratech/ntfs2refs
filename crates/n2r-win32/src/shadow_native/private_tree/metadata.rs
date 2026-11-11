@@ -11,6 +11,18 @@ pub(super) fn input_digest(input: &[Input<'_>]) -> [u8; 32] {
 }
 
 pub(in crate::shadow_native) fn input_digest_domain(input: &impl InputDomain) -> io::Result<[u8; 32]> {
+    let Some(memo) = input.input_digest_memo() else {
+        return compute_input_digest_domain(input);
+    };
+    if let Some(known) = memo.get() {
+        return Ok(known);
+    }
+    let digest = compute_input_digest_domain(input)?;
+    memo.set(digest);
+    Ok(digest)
+}
+
+fn compute_input_digest_domain(input: &impl InputDomain) -> io::Result<[u8; 32]> {
     fn bytes(hash: &mut Sha256, value: &[u8]) {
         hash.update((value.len() as u64).to_le_bytes());
         hash.update(value);

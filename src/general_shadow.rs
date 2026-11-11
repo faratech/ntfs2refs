@@ -197,6 +197,9 @@ impl<D: n2r_win32::shadow_native::input_domain::InputDomain>
     type Object = D::Object;
     fn len(&self) -> usize { self.inner.len() }
     fn object(&self, index: usize) -> std::io::Result<Self::Object> { self.inner.object(index) }
+    fn input_digest_memo(&self) -> Option<&n2r_win32::shadow_native::input_domain::InputDigestMemo> {
+        self.inner.input_digest_memo()
+    }
     fn progress(&self, update: n2r_win32::progress::Update) {
         self.inner.progress(update);
         self.progress.report(update);
@@ -264,6 +267,9 @@ impl n2r_win32::shadow_native::input_domain::InputDomain for PagedInputs<'_> {
                 .map(PagedInputObject::Legacy)
                 .map_err(std::io::Error::other)
         }
+    }
+    fn input_digest_memo(&self) -> Option<&n2r_win32::shadow_native::input_domain::InputDigestMemo> {
+        Some(self.0.input_digest_memo())
     }
     fn with_alias_shape<T>(&self, index: usize,
         visit: impl FnOnce(&dyn n2r_win32::shadow_native::input_domain::AliasObjectShape) -> std::io::Result<T>)

@@ -60,6 +60,8 @@ pub struct PagedInspection {
     // Baseline readers retain the actual newly accounted immutable owners.
     _fact_artifacts: Vec<crate::artifact_arena::ArtifactLease>,
     _fact_artifact_ram: Option<paged_storage::SourceRamLease>,
+    // `canonical_sha256` of the pin above, which never changes once built.
+    canonical: std::cell::OnceCell<String>,
 }
 impl PagedInspection {
     /// Historical FACTS only. Every ordinary page must already have a real
@@ -121,6 +123,7 @@ impl PagedInspection {
             blockers:SortedRecordStore::open(&pin.blockers,scratch)?,pin:pin.clone(),scratch:scratch.clone(),
             purpose:InspectionPurpose::CachedFacts,_closed:ClosedSource,
             _fact_artifacts:owners,_fact_artifact_ram:Some(owners_ram),
+            canonical: std::cell::OnceCell::new(),
         };
         ensure!(value.canonical_sha256()?==inspection_sha256,"cached-fact canonical source pin differs");
         value.revalidate()?;drop(work);Ok(value)
@@ -167,6 +170,7 @@ impl PagedInspection {
             pin: pin.clone(), scratch: scratch.clone(),
             purpose: InspectionPurpose::WindowsConversion, _closed: ClosedSource,
             _fact_artifacts: Vec::new(), _fact_artifact_ram: None,
+            canonical: std::cell::OnceCell::new(),
         };
         ensure!(value.canonical_sha256()? == hex::encode(continuity.inspection_sha256()),
             "cached raw canonical source pin differs from actual byte-continuity proof");
@@ -313,7 +317,18 @@ impl PagedInspection {
     pub fn blocker(&self, ordinal: u64) -> Result<InspectionBlocker> {
         self.blockers.get(ordinal)
     }
+    /// The digest of this inspection's pinned summary. The summary is fixed
+    /// when the inspection is built, and serializing it costs milliseconds;
+    /// it is asked for on every stream opened and every object admitted, so
+    /// it is computed once.
     pub fn canonical_sha256(&self) -> Result<String> {
+        if let Some(known) = self.canonical.get() {
+            return Ok(known.clone());
+        }
+        let computed = self.compute_canonical_sha256()?;
+        Ok(self.canonical.get_or_init(|| computed).clone())
+    }
+    fn compute_canonical_sha256(&self) -> Result<String> {
         struct Hash {
             hash: Sha256,
             bytes: u64,
@@ -990,6 +1005,7 @@ fn inspect_paged_internal<R: Read + Seek>(
         purpose,
         _closed: ClosedSource,
         _fact_artifacts: Vec::new(), _fact_artifact_ram: None,
+        canonical: std::cell::OnceCell::new(),
     };
     value.revalidate()?;
     let _ = value.canonical_sha256()?;

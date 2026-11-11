@@ -142,6 +142,8 @@ pub struct PagedExpectedTree {
     reader: RefCell<Reader>,
     alias_projection: RefCell<Option<AliasProjection>>,
     alias_projection_lookups: Cell<u64>,
+    // The digest of every object's native input; this tree never changes.
+    input_digest: n2r_win32::shadow_native::input_domain::InputDigestMemo,
     header: ExpectedTreePageHeader,
     counts: ExpectedTreePageCounts,
     file_sha256: String,
@@ -1554,6 +1556,7 @@ impl PagedExpectedTree {
             reader: RefCell::new(reader),
             alias_projection: RefCell::new(None),
             alias_projection_lookups: Cell::new(0),
+            input_digest: n2r_win32::shadow_native::input_domain::InputDigestMemo::new(),
             header,
             counts: ExpectedTreePageCounts::default(),
             file_sha256: file_sha256.into(),
@@ -1940,6 +1943,11 @@ impl PagedExpectedTree {
     }
 }
 
+impl PagedExpectedTree {
+    pub(crate) fn input_digest_memo(&self) -> &n2r_win32::shadow_native::input_domain::InputDigestMemo {
+        &self.input_digest
+    }
+}
 impl ExpectedObjectDomain for PagedExpectedTree {
     fn object_count(&self) -> usize {
         self.len()

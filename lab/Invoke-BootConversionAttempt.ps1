@@ -203,6 +203,26 @@ try {
     if ($memory -lt 8GB) { throw "Host has too little free memory for the VM: $([Math]::Round($hostFree/1GB,1)) GB free" }
     Set-VM -VM $vm -StaticMemory -MemoryStartupBytes $memory
     Set-VMProcessor -VM $vm -Count ([Math]::Min($Processors, [Environment]::ProcessorCount))
+    # The boot step of an earlier attempt detached everything but disk0, and
+    # Hyper-V then withdrew this VM's access to the DVD image it detached. The
+    # restored checkpoint names the image again without that access, and the
+    # VM does not start ("Access is denied"). Attaching it again grants it.
+    # For some five seconds after a drive is emptied the Hyper-V cmdlets still
+    # hold its old state and refuse the new image ("object was not found").
+    foreach ($dvd in @(Get-VMDvdDrive -VM $vm | Where-Object Path)) {
+        $image = $dvd.Path; $number = $dvd.ControllerNumber; $location = $dvd.ControllerLocation
+        if ((& icacls $image 2>$null) -match [regex]::Escape($vmId)) { continue }
+        Say "giving the VM back its access to $image"
+        $dvd | Set-VMDvdDrive -Path $null
+        for ($try = 1; ; $try++) {
+            try {
+                Get-VMDvdDrive -VM (Get-LabVm) | Where-Object { $_.ControllerNumber -eq $number -and $_.ControllerLocation -eq $location } |
+                    Set-VMDvdDrive -Path $image -ErrorAction Stop
+                break
+            } catch { if ($try -ge 60) { throw }; Start-Sleep -Milliseconds 500 }
+        }
+        $vm = Get-LabVm
+    }
     if (-not $Recover) {
         $scratchPath = Join-Path $case 'scratch.vhdx'
         $null = New-VHD -Path $scratchPath -SizeBytes ([long]$ScratchGB * 1GB) -Dynamic

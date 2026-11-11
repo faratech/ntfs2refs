@@ -176,28 +176,59 @@ pub(crate) struct HeldWindowsPreparedBundle {
 }
 impl HeldWindowsPreparedBundle {
     pub(crate) fn open(
-        path:&Path,independently_expected_sha256:&str,maximum_bytes:u64,
-        environment:&mut OfflineOwningEnvironment,actual_journal_volume:&File,
-        scratch:&SourceScratch,events:&mut Vec<NativeEvent>,
-    )->Result<Self>{
-        Self::open_impl(path,independently_expected_sha256,maximum_bytes,Some(environment),None,actual_journal_volume,scratch,events)
+        path: &Path,
+        independently_expected_sha256: &str,
+        maximum_bytes: u64,
+        environment: &mut OfflineOwningEnvironment,
+        actual_journal_volume: &File,
+        scratch: &SourceScratch,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<Self> {
+        Self::open_impl(
+            path,
+            independently_expected_sha256,
+            maximum_bytes,
+            Some(environment),
+            None,
+            actual_journal_volume,
+            scratch,
+            events,
+        )
     }
     /// Metadata-only preboot authentication. It does not inspect source bytes,
     /// claim PE execution or issue source readiness/write authority. Caller
     /// separately binds current protected source and PreparedClear native J.
     pub(crate) fn open_metadata_on_journal(
-        path:&Path,independently_expected_sha256:&str,maximum_bytes:u64,
-        actual_journal:&GeneralJournalStorageBinding,actual_journal_volume:&File,
-        scratch:&SourceScratch,events:&mut Vec<NativeEvent>,
-    )->Result<Self>{
-        Self::open_impl(path,independently_expected_sha256,maximum_bytes,None,Some(actual_journal),actual_journal_volume,scratch,events)
+        path: &Path,
+        independently_expected_sha256: &str,
+        maximum_bytes: u64,
+        actual_journal: &GeneralJournalStorageBinding,
+        actual_journal_volume: &File,
+        scratch: &SourceScratch,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<Self> {
+        Self::open_impl(
+            path,
+            independently_expected_sha256,
+            maximum_bytes,
+            None,
+            Some(actual_journal),
+            actual_journal_volume,
+            scratch,
+            events,
+        )
     }
     #[allow(clippy::too_many_arguments)]
     fn open_impl(
-        path:&Path,independently_expected_sha256:&str,maximum_bytes:u64,
-        mut environment:Option<&mut OfflineOwningEnvironment>,expected_journal:Option<&GeneralJournalStorageBinding>,
-        actual_journal_volume:&File,scratch:&SourceScratch,events:&mut Vec<NativeEvent>,
-    )->Result<Self>{
+        path: &Path,
+        independently_expected_sha256: &str,
+        maximum_bytes: u64,
+        mut environment: Option<&mut OfflineOwningEnvironment>,
+        expected_journal: Option<&GeneralJournalStorageBinding>,
+        actual_journal_volume: &File,
+        scratch: &SourceScratch,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<Self> {
         // Reserve the actual bounded decoder/DTO representation before parsing;
         // the reservation lives as long as the decoded bundle and its paths.
         let _io_memory = scratch.lease_ram(5 * 1024 * 1024)?;
@@ -234,18 +265,33 @@ impl HeldWindowsPreparedBundle {
         c.shadow.validate()?;
         c.journal_binding.validate()?;
         c.source_preparation.validate()?;
-        if let Some(environment)=environment.as_mut(){
-            environment.require_journal_disjoint(&c.journal_binding,actual_journal_volume,events)?;
+        if let Some(environment) = environment.as_mut() {
+            environment.require_journal_disjoint(
+                &c.journal_binding,
+                actual_journal_volume,
+                events,
+            )?;
         }
-        ensure!(expected_journal.is_none_or(|expected|expected==&c.journal_binding),
-            "authenticated bundle names another independently enrolled J");
-        let profile=JournalProfile::from_schema_and_capacity(c.journal_profile_version,Some(c.journal_profile_max_bytes))?;
-        let actual_storage=n2r_win32::journal_file::observe_general_journal_file_on_held_volume(
-            &outer.file,actual_journal_volume,&c.journal_binding,profile)?;
-        ensure!(actual_storage.identity.volume_serial_number==outer.snapshot.volume_serial_number
-            &&actual_storage.identity.file_id_128==outer.snapshot.file_id_128
-            &&actual_storage.file_bytes==outer.snapshot.file_bytes,
-            "actual held outer/held J-volume/full native storage observations differ");
+        ensure!(
+            expected_journal.is_none_or(|expected| expected == &c.journal_binding),
+            "authenticated bundle names another independently enrolled J"
+        );
+        let profile = JournalProfile::from_schema_and_capacity(
+            c.journal_profile_version,
+            Some(c.journal_profile_max_bytes),
+        )?;
+        let actual_storage = n2r_win32::journal_file::observe_general_journal_file_on_held_volume(
+            &outer.file,
+            actual_journal_volume,
+            &c.journal_binding,
+            profile,
+        )?;
+        ensure!(
+            actual_storage.identity.volume_serial_number == outer.snapshot.volume_serial_number
+                && actual_storage.identity.file_id_128 == outer.snapshot.file_id_128
+                && actual_storage.file_bytes == outer.snapshot.file_bytes,
+            "actual held outer/held J-volume/full native storage observations differ"
+        );
         outer.require_volume(&c.journal_binding)?;
         ensure!(
             bundle.schema_version == 1
@@ -275,7 +321,11 @@ impl HeldWindowsPreparedBundle {
                 && n2r_win32::layout::guid_bytes(&c.source.identity.disk_guid)?
                     != n2r_win32::layout::guid_bytes(&c.journal_binding.disk.identity.disk_guid)?
                 && c.source_preparation.binding.storage == c.source
-                && environment.as_ref().is_none_or(|environment|environment.facts().source.storage==c.source)
+                && environment.as_ref().is_none_or(|environment| environment
+                    .facts()
+                    .source
+                    .storage
+                    == c.source)
                 && c.ticket.image_length == c.source.identity.partition_bytes
                 && c.ticket.marker_profile.is_none()
                 && bundle.postclose_prepared_journal_prefix_bytes == 8192
@@ -471,22 +521,52 @@ impl HeldWindowsPreparedBundle {
 }
 
 impl HeldWindowsPreparedBundle {
-    pub(crate) fn outer_sha256(&self)->[u8;32]{self.outer.sha256}
-    pub(crate) fn outer_snapshot(&self)->&ReferenceFileSnapshot{&self.outer.snapshot}
+    pub(crate) fn outer_sha256(&self) -> [u8; 32] {
+        self.outer.sha256
+    }
+    pub(crate) fn outer_snapshot(&self) -> &ReferenceFileSnapshot {
+        &self.outer.snapshot
+    }
     /// Same held, individually authenticated Windows metadata; no source or J
     /// File escapes and serialized role data cannot construct this owner.
-    pub(crate) fn require_ready_artifacts(&self)->Result<()> {
+    pub(crate) fn require_ready_artifacts(&self) -> Result<()> {
         self.revalidate()?;
-        let c=self.core();
-        ensure!(c.source_certificate_issued&&c.source_semantic_readiness_qualified&&!c.source_write_gate_issued
-            &&!c.source_apply_intent_attempted&&!c.sealed_bundle_grants_writer_permission,
-            "actual sealed Windows semantic readiness contract absent");
-        for role in ["expected-tree","native-write-index","source-native-pages","publication","recovery-locator"]{
-            let matches:Vec<_>=c.artifacts.iter().enumerate().filter(|(_,p)|p.role==role).collect();
-            ensure!(matches.len()==1,"required same held prepared semantic artifact absent");
-            let(i,pin)=matches[0];let actual=self.artifacts.get(i).context("actual held artifact absent")?;
-            actual.revalidate()?;ensure!(actual.sha256==digest(&pin.sha256)?&&actual.snapshot.file_bytes==pin.bytes,
-                "same held semantic artifact lost its exact authenticated Windows pin");
+        let c = self.core();
+        ensure!(
+            c.source_certificate_issued
+                && c.source_semantic_readiness_qualified
+                && !c.source_write_gate_issued
+                && !c.source_apply_intent_attempted
+                && !c.sealed_bundle_grants_writer_permission,
+            "actual sealed Windows semantic readiness contract absent"
+        );
+        for role in [
+            "expected-tree",
+            "native-write-index",
+            "source-native-pages",
+            "publication",
+            "recovery-locator",
+        ] {
+            let matches: Vec<_> = c
+                .artifacts
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.role == role)
+                .collect();
+            ensure!(
+                matches.len() == 1,
+                "required same held prepared semantic artifact absent"
+            );
+            let (i, pin) = matches[0];
+            let actual = self
+                .artifacts
+                .get(i)
+                .context("actual held artifact absent")?;
+            actual.revalidate()?;
+            ensure!(
+                actual.sha256 == digest(&pin.sha256)? && actual.snapshot.file_bytes == pin.bytes,
+                "same held semantic artifact lost its exact authenticated Windows pin"
+            );
         }
         Ok(())
     }

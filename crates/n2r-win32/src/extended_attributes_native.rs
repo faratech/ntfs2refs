@@ -261,55 +261,85 @@ fn capture_into(file: &File, storage: &mut [u64]) -> Result<Set, Error> {
 /// The caller owns volume durability barriers and source exclusion; this
 /// function claims semantic readback only, not durable media persistence.
 pub fn restore_fresh_owned(file: &File, expected: &Set) -> Result<Set, Error> {
-    restore_owned(file,expected,false)
+    restore_owned(file, expected, false)
 }
 /// Reconcile only an exact subset of the expected native EA set. A conflicting
 /// existing value/name/flag refuses; completed entries are never overwritten.
-pub fn reconcile_owned(file:&File,expected:&Set)->Result<Set,Error>{
-    restore_owned(file,expected,true)
+pub fn reconcile_owned(file: &File, expected: &Set) -> Result<Set, Error> {
+    restore_owned(file, expected, true)
 }
 /// Bounded read-only preflight for an actually held recovery object. No write,
 /// owner reconstruction, or permission follows from this observation.
-pub fn validate_recovery_subset(file:&File,expected:Option<&Set>)->Result<(),Error>{
-    let before=identity(file)?;
-    let actual=capture(file)?;
-    if let Some(expected)=expected {
-        checked("EA recovery expected set",expected.validate())?;
-        require_recovery_subset(&actual,expected)?;
-    }else if !actual.is_empty(){
-        return Err(invalid("EA recovery absence","unexpected native extended attributes"));
+pub fn validate_recovery_subset(file: &File, expected: Option<&Set>) -> Result<(), Error> {
+    let before = identity(file)?;
+    let actual = capture(file)?;
+    if let Some(expected) = expected {
+        checked("EA recovery expected set", expected.validate())?;
+        require_recovery_subset(&actual, expected)?;
+    } else if !actual.is_empty() {
+        return Err(invalid(
+            "EA recovery absence",
+            "unexpected native extended attributes",
+        ));
     }
-    if identity(file)?!=before{return Err(invalid("EA recovery preflight","held identity changed"));}
+    if identity(file)? != before {
+        return Err(invalid("EA recovery preflight", "held identity changed"));
+    }
     Ok(())
 }
-fn require_recovery_subset(current:&Set,expected:&Set)->Result<(),Error>{
-    let compare=|a:&[u8],b:&[u8]|a.iter().map(|c|c.to_ascii_uppercase()).cmp(b.iter().map(|c|c.to_ascii_uppercase()));
+fn require_recovery_subset(current: &Set, expected: &Set) -> Result<(), Error> {
+    let compare = |a: &[u8], b: &[u8]| {
+        a.iter()
+            .map(|c| c.to_ascii_uppercase())
+            .cmp(b.iter().map(|c| c.to_ascii_uppercase()))
+    };
     for entry in &current.entries {
-        let index=expected.entries.binary_search_by(|wanted|compare(&wanted.name,&entry.name))
-            .map_err(|_|invalid("EA recovery subset","unexpected existing EA name"))?;
-        let wanted=&expected.entries[index];
-        if entry.flags!=wanted.flags||entry.value!=wanted.value{
-            return Err(invalid("EA recovery subset","existing EA flags or value conflicts"));
+        let index = expected
+            .entries
+            .binary_search_by(|wanted| compare(&wanted.name, &entry.name))
+            .map_err(|_| invalid("EA recovery subset", "unexpected existing EA name"))?;
+        let wanted = &expected.entries[index];
+        if entry.flags != wanted.flags || entry.value != wanted.value {
+            return Err(invalid(
+                "EA recovery subset",
+                "existing EA flags or value conflicts",
+            ));
         }
     }
     Ok(())
 }
-fn restore_owned(file:&File,expected:&Set,recovering:bool)->Result<Set,Error>{
+fn restore_owned(file: &File, expected: &Set, recovering: bool) -> Result<Set, Error> {
     checked("EA expected set", expected.validate())?;
     let before = identity(file)?;
     let current = capture(file)?;
-    if !recovering&&!current.is_empty() {
+    if !recovering && !current.is_empty() {
         return Err(invalid(
             "EA fresh target",
             "constructor target already has EAs",
         ));
     }
-    let compare=|a:&[u8],b:&[u8]|a.iter().map(|c|c.to_ascii_uppercase()).cmp(b.iter().map(|c|c.to_ascii_uppercase()));
+    let compare = |a: &[u8], b: &[u8]| {
+        a.iter()
+            .map(|c| c.to_ascii_uppercase())
+            .cmp(b.iter().map(|c| c.to_ascii_uppercase()))
+    };
     if recovering {
-        require_recovery_subset(&current,expected)?;
+        require_recovery_subset(&current, expected)?;
     }
-    let missing=Set{entries:expected.entries.iter().filter(|entry|!recovering
-        ||current.entries.binary_search_by(|present|compare(&present.name,&entry.name)).is_err()).cloned().collect()};
+    let missing = Set {
+        entries: expected
+            .entries
+            .iter()
+            .filter(|entry| {
+                !recovering
+                    || current
+                        .entries
+                        .binary_search_by(|present| compare(&present.name, &entry.name))
+                        .is_err()
+            })
+            .cloned()
+            .collect(),
+    };
     if !missing.is_empty() {
         let bytes = extended_attributes::encode_native(&missing)
             .map_err(|error| invalid("native EA encode", error.to_string()))?;

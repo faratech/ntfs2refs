@@ -256,8 +256,9 @@ fn write_partition_span(
         "partition span escapes actual descriptor"
     );
     let original = {
-        let mut journal = writer.journal_read_view()
-            .context("partition apply: opening same-J read view after pending source flush/readback")?;
+        let mut journal = writer.journal_read_view().context(
+            "partition apply: opening same-J read view after pending source flush/readback",
+        )?;
         super::apply::record(row, domain, &mut journal)?
     };
     let mut done = 0;
@@ -268,8 +269,9 @@ fn write_partition_span(
         at(writer, offset, &mut buffers.current[..count])
             .with_context(||format!("partition apply: current-source read request offset={offset},bytes={count} (includes pending flush/readback)"))?;
         {
-            let mut journal = writer.journal_read_view()
-            .context("partition apply: opening same-J read view after pending source flush/readback")?;
+            let mut journal = writer.journal_read_view().context(
+                "partition apply: opening same-J read view after pending source flush/readback",
+            )?;
             super::apply::read_new(
                 domain,
                 &mut journal,
@@ -320,8 +322,12 @@ impl<'j, 'd, 'c, 'p, 's, 'e> PartitionFreshApply<'j, 'd, 'c, 'p, 's, 'e> {
         checkpoint: impl FnMut(&mut Vec<NativeEvent>) -> Result<()>,
         after_apply: impl FnOnce(&SelectedResult) -> Result<()>,
     ) -> PartitionExecutionOutcome {
-        self.apply_and_handoff_inner(events, checkpoint, after_apply,
-            None::<fn(&PartitionPostFlushReceipt, &mut Vec<NativeEvent>) -> Result<()>>)
+        self.apply_and_handoff_inner(
+            events,
+            checkpoint,
+            after_apply,
+            None::<fn(&PartitionPostFlushReceipt, &mut Vec<NativeEvent>) -> Result<()>>,
+        )
     }
     /// Explicit lab progress observer. The default entry above stays hook-free.
     /// Returning an error preserves actual AP/private recovery state; no retry.
@@ -339,7 +345,9 @@ impl<'j, 'd, 'c, 'p, 's, 'e> PartitionFreshApply<'j, 'd, 'c, 'p, 's, 'e> {
         events: &mut Vec<NativeEvent>,
         mut checkpoint: impl FnMut(&mut Vec<NativeEvent>) -> Result<()>,
         after_apply: impl FnOnce(&SelectedResult) -> Result<()>,
-        post_flush: Option<impl FnOnce(&PartitionPostFlushReceipt, &mut Vec<NativeEvent>) -> Result<()>>,
+        post_flush: Option<
+            impl FnOnce(&PartitionPostFlushReceipt, &mut Vec<NativeEvent>) -> Result<()>,
+        >,
     ) -> PartitionExecutionOutcome {
         let source = self.published.prepared.context.owner_token();
         let scope = self
@@ -364,7 +372,9 @@ impl<'j, 'd, 'c, 'p, 's, 'e> PartitionFreshApply<'j, 'd, 'c, 'p, 's, 'e> {
         events: &mut Vec<NativeEvent>,
         checkpoint: &mut impl FnMut(&mut Vec<NativeEvent>) -> Result<()>,
         after_apply: impl FnOnce(&SelectedResult) -> Result<()>,
-        post_flush: Option<impl FnOnce(&PartitionPostFlushReceipt, &mut Vec<NativeEvent>) -> Result<()>>,
+        post_flush: Option<
+            impl FnOnce(&PartitionPostFlushReceipt, &mut Vec<NativeEvent>) -> Result<()>,
+        >,
     ) -> Result<PartitionApplyOutcome> {
         checkpoint_native_events(events, checkpoint)?;
         self.published.revalidate(events)?;
@@ -434,11 +444,15 @@ impl<'j, 'd, 'c, 'p, 's, 'e> PartitionFreshApply<'j, 'd, 'c, 'p, 's, 'e> {
                 &mut buffers,
             )?;
         }
-        writer.sync_all().context("partition apply: non-discovery pending source flush/readback")?;
+        writer
+            .sync_all()
+            .context("partition apply: non-discovery pending source flush/readback")?;
         if let Some(observe) = post_flush {
             let native_bytes_written = writer.native_bytes_written();
-            ensure!(native_bytes_written > 0,
-                "post-flush progress requires an actual completed source write");
+            ensure!(
+                native_bytes_written > 0,
+                "post-flush progress requires an actual completed source write"
+            );
             let first = p.domain.row(0)?;
             let receipt = PartitionPostFlushReceipt {
                 kind: "partition-nondiscovery-source-writes-flushed-v1",
@@ -446,19 +460,28 @@ impl<'j, 'd, 'c, 'p, 's, 'e> PartitionFreshApply<'j, 'd, 'c, 'p, 's, 'e> {
                 selected_bytes: ticket.selected_bytes,
                 range_count: ticket.range_count,
                 native_bytes_written,
-                delayed_discovery_bytes: if first.capture.offset == 0 { GRANULE } else { 0 },
+                delayed_discovery_bytes: if first.capture.offset == 0 {
+                    GRANULE
+                } else {
+                    0
+                },
                 immutable_journal_sha256: ticket.immutable_sha256,
                 flush_and_pending_readback_succeeded: true,
                 first_flushed_write_qualified: false,
             };
             observe(&receipt, events)?;
-            ensure!(events.is_empty(), "post-flush observer did not drain actual native events");
+            ensure!(
+                events.is_empty(),
+                "post-flush observer did not drain actual native events"
+            );
         }
         let first = p.domain.row(0)?;
         if first.capture.offset == 0 {
             write_partition_span(&mut writer, p.domain, 0, first, 0, GRANULE, &mut buffers)?;
         }
-        writer.sync_all().context("partition apply: discovery pending source flush/readback")?;
+        writer
+            .sync_all()
+            .context("partition apply: discovery pending source flush/readback")?;
         writer.revalidate(events)?;
         let digest = super::apply::check_selected(
             &mut writer,
@@ -677,129 +700,280 @@ impl PartitionApplyOutcome {
     }
 }
 
-
 /// Getter-derived prepared bundle facts only. No deserializer, apply issuer,
 /// source certificate, native replay grant or AP/HND claim is supplied here.
 use std::path::PathBuf;
-#[derive(Clone,Serialize)]
+#[derive(Clone, Serialize)]
 pub(crate) struct WindowsPreparedArtifact {
-    pub role:&'static str,pub path:PathBuf,pub bytes:u64,pub sha256:String,
-    pub snapshot:Option<n2r_win32::reference_file::ReferenceFileSnapshot>,
+    pub role: &'static str,
+    pub path: PathBuf,
+    pub bytes: u64,
+    pub sha256: String,
+    pub snapshot: Option<n2r_win32::reference_file::ReferenceFileSnapshot>,
 }
 #[derive(Serialize)]
 pub(crate) struct WindowsPreparedBundleCore {
-    pub schema_version:u32,pub kind:&'static str,
-    pub source:n2r_win32::general_layout::GeneralDiskBinding,
-    pub shadow:n2r_win32::general_layout::GeneralDiskBinding,
-    pub source_preparation:n2r_win32::partition_lifecycle::PartitionPreparationPin,
-    pub source_readonly_gpt_sha256:String,
-    pub journal_binding:n2r_win32::journal_file::GeneralJournalStorageBinding,
-    pub journal_identity:n2r_win32::journal_file::JournalFileIdentity,
-    pub journal_path:PathBuf,pub journal_profile_version:u32,pub journal_profile_max_bytes:u64,
-    pub ticket:crate::selected_journal::SelectedTicket,
-    pub publication_path:PathBuf,pub publication_sha256:String,pub locator_path:String,pub locator_sha256:[u8;32],
-    pub artifacts:Vec<WindowsPreparedArtifact>,pub source_resource_admission:n2r_win32::tree_resources::SourceResourceAdmission,
-    pub source_sha256:String,pub source_inspection_sha256:String,pub source_views_sha256:String,
-    pub source_fingerprint:crate::source_fingerprint::resource::FingerprintPins,
-    pub journal_contains_source_free_rows:bool,pub native_journal_body_sealed:bool,pub journal_prepared_clear:bool,
-    pub source_payload_write_calls:u64,pub source_apply_intent_attempted:bool,pub source_certificate_issued:bool,
-    pub source_semantic_readiness_qualified:bool,pub source_write_gate_issued:bool,
-    pub sealed_bundle_grants_writer_permission:bool,pub requires_new_pe_bootguard_and_actual_apply_gate:bool,
+    pub schema_version: u32,
+    pub kind: &'static str,
+    pub source: n2r_win32::general_layout::GeneralDiskBinding,
+    pub shadow: n2r_win32::general_layout::GeneralDiskBinding,
+    pub source_preparation: n2r_win32::partition_lifecycle::PartitionPreparationPin,
+    pub source_readonly_gpt_sha256: String,
+    pub journal_binding: n2r_win32::journal_file::GeneralJournalStorageBinding,
+    pub journal_identity: n2r_win32::journal_file::JournalFileIdentity,
+    pub journal_path: PathBuf,
+    pub journal_profile_version: u32,
+    pub journal_profile_max_bytes: u64,
+    pub ticket: crate::selected_journal::SelectedTicket,
+    pub publication_path: PathBuf,
+    pub publication_sha256: String,
+    pub locator_path: String,
+    pub locator_sha256: [u8; 32],
+    pub artifacts: Vec<WindowsPreparedArtifact>,
+    pub source_resource_admission: n2r_win32::tree_resources::SourceResourceAdmission,
+    pub source_sha256: String,
+    pub source_inspection_sha256: String,
+    pub source_views_sha256: String,
+    pub source_fingerprint: crate::source_fingerprint::resource::FingerprintPins,
+    pub journal_contains_source_free_rows: bool,
+    pub native_journal_body_sealed: bool,
+    pub journal_prepared_clear: bool,
+    pub source_payload_write_calls: u64,
+    pub source_apply_intent_attempted: bool,
+    pub source_certificate_issued: bool,
+    pub source_semantic_readiness_qualified: bool,
+    pub source_write_gate_issued: bool,
+    pub sealed_bundle_grants_writer_permission: bool,
+    pub requires_new_pe_bootguard_and_actual_apply_gate: bool,
 }
-fn prepared_artifact(role:&'static str,lease:&crate::artifact_arena::ArtifactLease)->WindowsPreparedArtifact{
-    WindowsPreparedArtifact{role,path:lease.path().to_owned(),bytes:lease.wire_bytes(),sha256:lease.sha256().into(),snapshot:Some(lease.snapshot().clone())}
+fn prepared_artifact(
+    role: &'static str,
+    lease: &crate::artifact_arena::ArtifactLease,
+) -> WindowsPreparedArtifact {
+    WindowsPreparedArtifact {
+        role,
+        path: lease.path().to_owned(),
+        bytes: lease.wire_bytes(),
+        sha256: lease.sha256().into(),
+        snapshot: Some(lease.snapshot().clone()),
+    }
 }
 fn prepared_fingerprint(
-    source:&crate::source_fingerprint::resource::FingerprintPins,
-    journal:&n2r_win32::journal_file::GeneralJournalStorageBinding,
-    arena:&crate::artifact_arena::ArtifactArena,
-)->Result<(crate::source_fingerprint::resource::FingerprintPins,Vec<WindowsPreparedArtifact>)>{
-    let _memory=arena.reserve_ram(5*1024*1024)?;
-    let mut pins=source.clone();let mut files=Vec::new();
-    let prefix=format!("{}\\",journal.disk.volume_path()?);
-    for (data_role,directory_role,store) in [
-        ("fingerprint-allocated-data","fingerprint-allocated-directory",&mut pins.allocated),
-        ("fingerprint-covered-data","fingerprint-covered-directory",&mut pins.covered),
-        ("fingerprint-omitted-data","fingerprint-omitted-directory",&mut pins.omitted),
-    ]{
-        for (role,page) in [(data_role,&mut store.data),(directory_role,&mut store.directory)]{
-            let mut file=std::fs::OpenOptions::new().read(true).share_mode(1).custom_flags(0x0020_0000).open(&page.path)?;
+    source: &crate::source_fingerprint::resource::FingerprintPins,
+    journal: &n2r_win32::journal_file::GeneralJournalStorageBinding,
+    arena: &crate::artifact_arena::ArtifactArena,
+) -> Result<(
+    crate::source_fingerprint::resource::FingerprintPins,
+    Vec<WindowsPreparedArtifact>,
+)> {
+    let _memory = arena.reserve_ram(5 * 1024 * 1024)?;
+    let mut pins = source.clone();
+    let mut files = Vec::new();
+    let prefix = format!("{}\\", journal.disk.volume_path()?);
+    for (data_role, directory_role, store) in [
+        (
+            "fingerprint-allocated-data",
+            "fingerprint-allocated-directory",
+            &mut pins.allocated,
+        ),
+        (
+            "fingerprint-covered-data",
+            "fingerprint-covered-directory",
+            &mut pins.covered,
+        ),
+        (
+            "fingerprint-omitted-data",
+            "fingerprint-omitted-directory",
+            &mut pins.omitted,
+        ),
+    ] {
+        for (role, page) in [
+            (data_role, &mut store.data),
+            (directory_role, &mut store.directory),
+        ] {
+            let mut file = std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(1)
+                .custom_flags(0x0020_0000)
+                .open(&page.path)?;
             n2r_win32::file_storage::require_readonly_access(&file)?;
-            let actual=n2r_win32::reference_file::observe_reference_file_handle_with_limit(&file,page.wire_bytes)?;
-            ensure!(actual.file_bytes==page.wire_bytes&&actual.number_of_links==1
-                &&actual.final_path.get(..prefix.len()).is_some_and(|p|p.eq_ignore_ascii_case(&prefix)),
-                "fingerprint pages must belong to the actual independent journal GUID volume");
-            ensure!(hex::encode(n2r_win32::sha256_native::hash_range(&mut file,0,actual.file_bytes)?)==page.file_sha256
-                &&n2r_win32::reference_file::observe_reference_file_handle_with_limit(&file,page.wire_bytes)?==actual,
-                "actual fingerprint page changed before cold route pinning");
-            page.path=PathBuf::from(&actual.final_path);
-            files.push(WindowsPreparedArtifact{role,path:page.path.clone(),bytes:page.wire_bytes,
-                sha256:page.file_sha256.clone(),snapshot:Some(actual)});
+            let actual = n2r_win32::reference_file::observe_reference_file_handle_with_limit(
+                &file,
+                page.wire_bytes,
+            )?;
+            ensure!(
+                actual.file_bytes == page.wire_bytes
+                    && actual.number_of_links == 1
+                    && actual
+                        .final_path
+                        .get(..prefix.len())
+                        .is_some_and(|p| p.eq_ignore_ascii_case(&prefix)),
+                "fingerprint pages must belong to the actual independent journal GUID volume"
+            );
+            ensure!(
+                hex::encode(n2r_win32::sha256_native::hash_range(
+                    &mut file,
+                    0,
+                    actual.file_bytes
+                )?) == page.file_sha256
+                    && n2r_win32::reference_file::observe_reference_file_handle_with_limit(
+                        &file,
+                        page.wire_bytes
+                    )? == actual,
+                "actual fingerprint page changed before cold route pinning"
+            );
+            page.path = PathBuf::from(&actual.final_path);
+            files.push(WindowsPreparedArtifact {
+                role,
+                path: page.path.clone(),
+                bytes: page.wire_bytes,
+                sha256: page.file_sha256.clone(),
+                snapshot: Some(actual),
+            });
         }
     }
-    Ok((pins,files))
+    Ok((pins, files))
 }
-impl PartitionResourcePreparedConversion<'_,'_,'_,'_,'_,'_> {
+impl PartitionResourcePreparedConversion<'_, '_, '_, '_, '_, '_> {
     /// This function stops at clear J/publication. It never calls the root
     /// source-certificate issuer, into_fresh_apply or any SDK source writer.
-    pub(crate) fn snapshot_for_offline_apply(&mut self,events:&mut Vec<NativeEvent>)->Result<WindowsPreparedBundleCore>{
+    pub(crate) fn snapshot_for_offline_apply(
+        &mut self,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<WindowsPreparedBundleCore> {
         self.revalidate(events)?;
-        let p=&mut self.prepared;
+        let p = &mut self.prepared;
         // Close the SAME complete source/target/expected/arena conjunction as
         // live apply, without asking the SDK for an apply gate or publishing AP.
-        let readiness=p.context.qualify_prepared_target(
-            p.candidate.protected_proof(),self.expected,&self.closure,events)?;
-        readiness.require_partition_binding(p.context,p.candidate.protected_proof(),self.expected,&self.closure)?;
-        let source=p.context.binding().storage.clone();
-        let token=p.context.owner_token();
-        let (owner,admission,_)=p.context.source_admission_and_inspection();
+        let readiness = p.context.qualify_prepared_target(
+            p.candidate.protected_proof(),
+            self.expected,
+            &self.closure,
+            events,
+        )?;
+        readiness.require_partition_binding(
+            p.context,
+            p.candidate.protected_proof(),
+            self.expected,
+            &self.closure,
+        )?;
+        let source = p.context.binding().storage.clone();
+        let token = p.context.owner_token();
+        let (owner, admission, _) = p.context.source_admission_and_inspection();
         owner.revalidate(events)?;
-        ensure!(owner.data_profile()==n2r_win32::partition_lifecycle::PartitionDataProfile::BasicReadonlyPhysicalV3
-            &&token.same_owner(&owner.owner_token())&&!owner.state().source_admission_issued
-            &&owner.state().partition.gpt.target_attributes==0x1000_0000_0000_0000,
-            "prepare-only requires actual unactivated BASIC+READONLY source");
-        let actual_journal=admission.external_intent_journal().context("actual external-journal intent enrollment absent")?;
-        ensure!(actual_journal==p.facts.native.binding&&actual_journal.disk.disk_number!=source.disk_number
-            &&n2r_win32::layout::guid_bytes(&actual_journal.disk.identity.disk_guid)?!=n2r_win32::layout::guid_bytes(&source.identity.disk_guid)?,
-            "prepared source intent/J must remain on the same independently enrolled external disk");
-        let source_preparation=admission.durable_preparation_pin()?;
-        let gpt=&owner.state().partition.gpt;let mut hash=sha2::Sha256::new();
-        hash.update(&gpt.primary_header);hash.update(&gpt.entries);hash.update(&gpt.backup_header);hash.update(&gpt.native_layout);
-        let source_readonly_gpt_sha256=hex::encode(hash.finalize());
-        ensure!(p.ticket.marker_profile.is_none()&&crate::selected_journal::classify(p.journal,&p.ticket)?==crate::selected_journal::SelectedLifecycle::PreparedClear,
-            "offline preparation must retain actual zero completion/intent before AP");
-        p.write_index.require_same_sealed_journal(p.journal,&p.ticket)?;
-        let mut artifacts=vec![
-            prepared_artifact("publication",self.metadata.publication_lease()),
-            prepared_artifact("publication-checksum",self.metadata.checksum_lease()),
-            prepared_artifact("native-write-index",p.write_index.artifact_lease()),
-            prepared_artifact("expected-tree",self.expected.artifact_lease().context("actual expected artifact absent")?),
+        ensure!(
+            owner.data_profile()
+                == n2r_win32::partition_lifecycle::PartitionDataProfile::BasicReadonlyPhysicalV3
+                && token.same_owner(&owner.owner_token())
+                && !owner.state().source_admission_issued
+                && owner.state().partition.gpt.target_attributes == 0x1000_0000_0000_0000,
+            "prepare-only requires actual unactivated BASIC+READONLY source"
+        );
+        let actual_journal = admission
+            .external_intent_journal()
+            .context("actual external-journal intent enrollment absent")?;
+        ensure!(
+            actual_journal == p.facts.native.binding
+                && actual_journal.disk.disk_number != source.disk_number
+                && n2r_win32::layout::guid_bytes(&actual_journal.disk.identity.disk_guid)?
+                    != n2r_win32::layout::guid_bytes(&source.identity.disk_guid)?,
+            "prepared source intent/J must remain on the same independently enrolled external disk"
+        );
+        let source_preparation = admission.durable_preparation_pin()?;
+        let gpt = &owner.state().partition.gpt;
+        let mut hash = sha2::Sha256::new();
+        hash.update(&gpt.primary_header);
+        hash.update(&gpt.entries);
+        hash.update(&gpt.backup_header);
+        hash.update(&gpt.native_layout);
+        let source_readonly_gpt_sha256 = hex::encode(hash.finalize());
+        ensure!(
+            p.ticket.marker_profile.is_none()
+                && crate::selected_journal::classify(p.journal, &p.ticket)?
+                    == crate::selected_journal::SelectedLifecycle::PreparedClear,
+            "offline preparation must retain actual zero completion/intent before AP"
+        );
+        p.write_index
+            .require_same_sealed_journal(p.journal, &p.ticket)?;
+        let mut artifacts = vec![
+            prepared_artifact("publication", self.metadata.publication_lease()),
+            prepared_artifact("publication-checksum", self.metadata.checksum_lease()),
+            prepared_artifact("native-write-index", p.write_index.artifact_lease()),
+            prepared_artifact(
+                "expected-tree",
+                self.expected
+                    .artifact_lease()
+                    .context("actual expected artifact absent")?,
+            ),
         ];
-        artifacts.push(WindowsPreparedArtifact{role:"recovery-locator",path:PathBuf::from(&self.locator.snapshot().final_path),
-            bytes:self.locator.snapshot().file_bytes,sha256:hex::encode(self.locator.external_sha256()),snapshot:Some(self.locator.snapshot().clone())});
-        let domain=p.context.native().domain();
-        artifacts.push(WindowsPreparedArtifact{role:"source-native-pages",path:PathBuf::from(domain.final_path()),bytes:domain.byte_len(),sha256:domain.sha256().into(),snapshot:None});
-        artifacts.push(WindowsPreparedArtifact{role:"source-preparation-intent",path:PathBuf::from(&source_preparation.intent_file.final_path),
-            bytes:source_preparation.intent_file.file_bytes,sha256:source_preparation.intent_prefix_sha256.clone(),snapshot:Some(source_preparation.intent_file.clone())});
-        if let Some(maps)=&self.maps{artifacts.push(prepared_artifact("recovery-maps",maps.artifact_lease()));}
+        artifacts.push(WindowsPreparedArtifact {
+            role: "recovery-locator",
+            path: PathBuf::from(&self.locator.snapshot().final_path),
+            bytes: self.locator.snapshot().file_bytes,
+            sha256: hex::encode(self.locator.external_sha256()),
+            snapshot: Some(self.locator.snapshot().clone()),
+        });
+        let domain = p.context.native().domain();
+        artifacts.push(WindowsPreparedArtifact {
+            role: "source-native-pages",
+            path: PathBuf::from(domain.final_path()),
+            bytes: domain.byte_len(),
+            sha256: domain.sha256().into(),
+            snapshot: None,
+        });
+        artifacts.push(WindowsPreparedArtifact {
+            role: "source-preparation-intent",
+            path: PathBuf::from(&source_preparation.intent_file.final_path),
+            bytes: source_preparation.intent_file.file_bytes,
+            sha256: source_preparation.intent_prefix_sha256.clone(),
+            snapshot: Some(source_preparation.intent_file.clone()),
+        });
+        if let Some(maps) = &self.maps {
+            artifacts.push(prepared_artifact("recovery-maps", maps.artifact_lease()));
+        }
         p.context.fingerprint().revalidate()?;
-        let (source_fingerprint,fingerprint_artifacts)=prepared_fingerprint(
-            p.context.fingerprint().pins(),p.facts.native.binding,p.context.arena())?;
+        let (source_fingerprint, fingerprint_artifacts) = prepared_fingerprint(
+            p.context.fingerprint().pins(),
+            p.facts.native.binding,
+            p.context.arena(),
+        )?;
         artifacts.extend(fingerprint_artifacts);
-        let result=WindowsPreparedBundleCore{schema_version:1,kind:"windows-native-prepared-offline-apply-core-v1",source,
-            shadow:p.facts.native.shadow.clone(),source_preparation,source_readonly_gpt_sha256,
-            journal_binding:p.facts.native.binding.clone(),journal_identity:p.facts.native.identity.clone(),journal_path:p.facts.native.path.to_owned(),
-            journal_profile_version:p.facts.native.profile.version(),journal_profile_max_bytes:p.facts.native.profile.max_journal_bytes(),
-            ticket:p.ticket.clone(),publication_path:self.metadata.publication_lease().path().to_owned(),publication_sha256:self.metadata.publication_lease().sha256().into(),
-            locator_path:self.locator.snapshot().final_path.clone(),locator_sha256:self.locator.external_sha256(),artifacts,
-            source_resource_admission:p.context.resource_admission(),source_sha256:p.context.source_sha256().into(),
-            source_inspection_sha256:p.context.inspection_sha256().into(),source_views_sha256:p.context.source_views_sha256().into(),
+        let result = WindowsPreparedBundleCore {
+            schema_version: 1,
+            kind: "windows-native-prepared-offline-apply-core-v1",
+            source,
+            shadow: p.facts.native.shadow.clone(),
+            source_preparation,
+            source_readonly_gpt_sha256,
+            journal_binding: p.facts.native.binding.clone(),
+            journal_identity: p.facts.native.identity.clone(),
+            journal_path: p.facts.native.path.to_owned(),
+            journal_profile_version: p.facts.native.profile.version(),
+            journal_profile_max_bytes: p.facts.native.profile.max_journal_bytes(),
+            ticket: p.ticket.clone(),
+            publication_path: self.metadata.publication_lease().path().to_owned(),
+            publication_sha256: self.metadata.publication_lease().sha256().into(),
+            locator_path: self.locator.snapshot().final_path.clone(),
+            locator_sha256: self.locator.external_sha256(),
+            artifacts,
+            source_resource_admission: p.context.resource_admission(),
+            source_sha256: p.context.source_sha256().into(),
+            source_inspection_sha256: p.context.inspection_sha256().into(),
+            source_views_sha256: p.context.source_views_sha256().into(),
             source_fingerprint,
-            journal_contains_source_free_rows:p.domain.facts().source_free_bytes>0,native_journal_body_sealed:true,journal_prepared_clear:true,
-            source_payload_write_calls:0,source_apply_intent_attempted:false,source_certificate_issued:true,
-            source_semantic_readiness_qualified:true,source_write_gate_issued:false,sealed_bundle_grants_writer_permission:false,
-            requires_new_pe_bootguard_and_actual_apply_gate:true};
+            journal_contains_source_free_rows: p.domain.facts().source_free_bytes > 0,
+            native_journal_body_sealed: true,
+            journal_prepared_clear: true,
+            source_payload_write_calls: 0,
+            source_apply_intent_attempted: false,
+            source_certificate_issued: true,
+            source_semantic_readiness_qualified: true,
+            source_write_gate_issued: false,
+            sealed_bundle_grants_writer_permission: false,
+            requires_new_pe_bootguard_and_actual_apply_gate: true,
+        };
         drop(readiness);
-        self.revalidate(events)?;Ok(result)
+        self.revalidate(events)?;
+        Ok(result)
     }
 }

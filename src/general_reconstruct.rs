@@ -1825,7 +1825,7 @@ mod tests {
                 allow_additional_partitions: false,
                 disk: GeneralDiskBinding {
                     layout_profile: Default::default(),
-            disk_number: 2,
+                    disk_number: 2,
                     volume_guid: "77777777-7777-7777-7777-777777777777".into(),
                     identity: PartitionIdentity {
                         disk_guid: "88888888-8888-8888-8888-888888888888".into(),

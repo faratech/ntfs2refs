@@ -577,7 +577,9 @@ impl SourceScratch {
             body,
             logical_bytes: 0,
             chunks: 0,
-            hash: Some(crate::retained_compare::stream_digest::StreamDigest::new(cfg!(windows))?),
+            hash: Some(crate::retained_compare::stream_digest::StreamDigest::new(
+                cfg!(windows),
+            )?),
             reserved: 1024,
             charged: 1024,
             complete: false,
@@ -1079,12 +1081,16 @@ impl ResidentMetadataCache {
         // reader. The file store may take a larger share than the others.
         let divisor = if purpose == *b"N2RFILE1" { 4 } else { 8 };
         let charge = length.checked_add(std::mem::size_of::<Self>() as u64)?;
-        if length == 0 || charge > scratch.budget().ram_bytes / divisor { return None; }
+        if length == 0 || charge > scratch.budget().ram_bytes / divisor {
+            return None;
+        }
         let size = usize::try_from(length).ok()?;
         // Optional quota/allocation refusals preserve the ordinary chunk reader.
         let ram = scratch.lease_optional_ram(charge).ok()?;
         let mut bytes = Vec::new();
-        if bytes.try_reserve_exact(size).is_err() || bytes.capacity() != size { return None; }
+        if bytes.try_reserve_exact(size).is_err() || bytes.capacity() != size {
+            return None;
+        }
         Some(Self { bytes, _ram: ram })
     }
 }
@@ -1127,7 +1133,8 @@ impl PagedMetadataRange {
         ensure!(
             pin.wire_bytes <= scratch.budget().scratch_bytes,
             "source range wire bytes exceed owner scratch: wire={}, owner={}",
-            pin.wire_bytes, scratch.budget().scratch_bytes
+            pin.wire_bytes,
+            scratch.budget().scratch_bytes
         );
         let declared_chunk = pin
             .page_budget
@@ -1168,11 +1175,16 @@ impl PagedMetadataRange {
         // not a request to allocate that maximum in a different boot's owner.
         // Admit only the actual held-file body/decode bounds under this SAME
         // owner's existing page cap; the normal aggregate leases still follow.
-        ensure!(body <= u64::from(scratch.budget().page_bytes)
-            && initial_decoded <= u64::from(scratch.budget().page_bytes),
+        ensure!(
+            body <= u64::from(scratch.budget().page_bytes)
+                && initial_decoded <= u64::from(scratch.budget().page_bytes),
             "source range held buffers exceed owner page cap: wire={}, format_page={}, body={}, decoded={}, owner_page={}",
-            metadata.len(), pin.page_budget.max_page_bytes, body, initial_decoded,
-            scratch.budget().page_bytes);
+            metadata.len(),
+            pin.page_budget.max_page_bytes,
+            body,
+            initial_decoded,
+            scratch.budget().page_bytes
+        );
         let initial_cache = body
             .checked_add(
                 initial_decoded
@@ -1229,7 +1241,8 @@ impl PagedMetadataRange {
             )
             .context("source retained reader memory overflow")?,
         )?;
-        let mut resident = ResidentMetadataCache::try_new(pin.purpose, footer.logical_bytes, scratch);
+        let mut resident =
+            ResidentMetadataCache::try_new(pin.purpose, footer.logical_bytes, scratch);
         // A store this process wrote and has not seen change (check-once
         // policy) is not decoded and hashed in full again just to open it:
         // it is decoded only to be held in memory, and not hashed.
@@ -1267,8 +1280,11 @@ impl PagedMetadataRange {
         reader.revalidate()?;
         let created = scratch.reader_lease(pin)?;
         let second_chunk_cache = (pin.purpose == *b"N2RFILE1"
-            || pin.purpose == *b"N2RNSD01" || pin.purpose == *b"N2RNSE01"
-            || pin.purpose == *b"N2RSCEN1" || pin.purpose == *b"N2RSLEG1" || pin.purpose == *b"N2RSBND1")
+            || pin.purpose == *b"N2RNSD01"
+            || pin.purpose == *b"N2RNSE01"
+            || pin.purpose == *b"N2RSCEN1"
+            || pin.purpose == *b"N2RSLEG1"
+            || pin.purpose == *b"N2RSBND1")
             && footer.logical_bytes > u64::from(declared_chunk)
             && u64::from(declared_chunk) <= scratch.budget().ram_bytes / 64;
         // Both decoded slots were prepaid above, including the old/new overlap
@@ -1321,10 +1337,17 @@ impl PagedMetadataRange {
         );
         let size = usize::try_from(bytes).context("source record exceeds address space")?;
         if let Some(cache) = &self.resident {
-            let start = usize::try_from(offset).context("resident source address exceeds address space")?;
-            let end = start.checked_add(size).context("resident source address overflow")?;
-            return visit(cache.bytes.get(start..end)
-                .context("resident source range differs from complete metadata")?);
+            let start =
+                usize::try_from(offset).context("resident source address exceeds address space")?;
+            let end = start
+                .checked_add(size)
+                .context("resident source address overflow")?;
+            return visit(
+                cache
+                    .bytes
+                    .get(start..end)
+                    .context("resident source range differs from complete metadata")?,
+            );
         }
         let mut buffer = Vec::new();
         buffer.try_reserve_exact(size)?;
@@ -1358,10 +1381,17 @@ impl SourceMetadataRange for PagedMetadataRange {
             "source range read escapes metadata"
         );
         if let Some(cache) = &self.resident {
-            let start = usize::try_from(offset).context("resident source address exceeds address space")?;
-            let end = start.checked_add(output.len()).context("resident source address overflow")?;
-            output.copy_from_slice(cache.bytes.get(start..end)
-                .context("resident source range differs from complete metadata")?);
+            let start =
+                usize::try_from(offset).context("resident source address exceeds address space")?;
+            let end = start
+                .checked_add(output.len())
+                .context("resident source address overflow")?;
+            output.copy_from_slice(
+                cache
+                    .bytes
+                    .get(start..end)
+                    .context("resident source range differs from complete metadata")?,
+            );
             return Ok(());
         }
         let mut at = offset;
@@ -1466,7 +1496,11 @@ mod base64_tests {
         for length in (1..=67).chain([4096, 100_001]) {
             let bytes = sample(length);
             let encoded = encode_json_base64(&bytes).unwrap();
-            assert_eq!(encoded, serde_json::to_vec(&Base64(&bytes)).unwrap(), "length {length}");
+            assert_eq!(
+                encoded,
+                serde_json::to_vec(&Base64(&bytes)).unwrap(),
+                "length {length}"
+            );
             assert_eq!(decode(&encoded, length).unwrap(), bytes, "length {length}");
         }
     }
@@ -1482,6 +1516,9 @@ mod base64_tests {
         ] {
             assert!(decode(text.as_bytes(), 64).is_err(), "{text}");
         }
-        assert!(decode(b"\"QUJD\"", 2).is_err(), "longer than the working window");
+        assert!(
+            decode(b"\"QUJD\"", 2).is_err(),
+            "longer than the working window"
+        );
     }
 }

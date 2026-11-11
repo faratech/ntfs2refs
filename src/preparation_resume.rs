@@ -254,11 +254,13 @@ impl FormatProfiles {
             placement_archive_schema: 3,
         }
     }
-    pub(crate) fn supported(&self)->bool {
-        let mut compatible=self.clone();
-        if !matches!(compatible.source_cache_schema,1|2){return false;}
-        compatible.source_cache_schema=2;
-        compatible==Self::current()
+    pub(crate) fn supported(&self) -> bool {
+        let mut compatible = self.clone();
+        if !matches!(compatible.source_cache_schema, 1 | 2) {
+            return false;
+        }
+        compatible.source_cache_schema = 2;
+        compatible == Self::current()
     }
 }
 /// An origin is evidence only. No method here opens or reactivates its guard.
@@ -287,7 +289,9 @@ pub(crate) enum Origin {
 impl Origin {
     fn pins(&self) -> Vec<&ArtifactPin> {
         match self {
-            Self::FreshPreparation{source_cache_manifest}=>vec![source_cache_manifest],
+            Self::FreshPreparation {
+                source_cache_manifest,
+            } => vec![source_cache_manifest],
             Self::LegacyCancelledPreparation {
                 preparation_intent,
                 terminal,
@@ -794,20 +798,36 @@ impl DurableResume {
     pub(crate) fn completed_payloads_evidence(&self) -> Option<&ArtifactPin> {
         self.completed_payloads.as_ref().map(|fact| &fact.pin)
     }
-    fn observe_completed_payloads(&mut self,stage:Stage,artifacts:&[ArtifactPin])->Result<()> {
-        if stage!=Stage::Payloads{return Ok(());}
-        let mut pins=artifacts.iter().filter(|pin|pin.key=="payloads-ready");
-        let Some(pin)=pins.next() else{return Ok(());};
-        ensure!(pins.next().is_none()&&pin.path==self.directory.join("payloads-ready.json"),
-            "completed payload report is ambiguous or outside its epoch");
-        let retained=(std::mem::size_of::<CompletedPlacementFact>() as u64)
-            .checked_add((pin.path.as_os_str().as_encoded_bytes().len() as u64).checked_mul(4)
-                .context("payload fact path RAM overflow")?)
-            .and_then(|n|n.checked_add((pin.final_path.len() as u64)*4))
-            .and_then(|n|n.checked_add(pin.key.len() as u64+pin.sha256.len() as u64+4096))
+    fn observe_completed_payloads(
+        &mut self,
+        stage: Stage,
+        artifacts: &[ArtifactPin],
+    ) -> Result<()> {
+        if stage != Stage::Payloads {
+            return Ok(());
+        }
+        let mut pins = artifacts.iter().filter(|pin| pin.key == "payloads-ready");
+        let Some(pin) = pins.next() else {
+            return Ok(());
+        };
+        ensure!(
+            pins.next().is_none() && pin.path == self.directory.join("payloads-ready.json"),
+            "completed payload report is ambiguous or outside its epoch"
+        );
+        let retained = (std::mem::size_of::<CompletedPlacementFact>() as u64)
+            .checked_add(
+                (pin.path.as_os_str().as_encoded_bytes().len() as u64)
+                    .checked_mul(4)
+                    .context("payload fact path RAM overflow")?,
+            )
+            .and_then(|n| n.checked_add((pin.final_path.len() as u64) * 4))
+            .and_then(|n| n.checked_add(pin.key.len() as u64 + pin.sha256.len() as u64 + 4096))
             .context("payload fact RAM overflow")?;
-        let memory=self.group.arena().reserve_ram(retained)?;
-        self.completed_payloads=Some(std::sync::Arc::new(CompletedPlacementFact{pin:pin.clone(),_memory:memory}));
+        let memory = self.group.arena().reserve_ram(retained)?;
+        self.completed_payloads = Some(std::sync::Arc::new(CompletedPlacementFact {
+            pin: pin.clone(),
+            _memory: memory,
+        }));
         Ok(())
     }
     fn observe_completed_placement(&mut self, stage: Stage, outcome: &BatchOutcome) -> Result<()> {
@@ -986,7 +1006,7 @@ impl DurableResume {
                     "stage crossed unresolved batch/copy"
                 );
                 validate_pins(artifacts, self.limits.max_artifacts)?;
-                self.observe_completed_payloads(b.stage,artifacts)?;
+                self.observe_completed_payloads(b.stage, artifacts)?;
             }
             Change::BatchIntent { batch } => {
                 ensure!(
@@ -1004,7 +1024,9 @@ impl DurableResume {
                 if b.stage == Stage::Placing {
                     self.completed_placement = None;
                 }
-                if matches!(b.stage,Stage::Placing|Stage::Payloads) {self.completed_payloads=None;}
+                if matches!(b.stage, Stage::Placing | Stage::Payloads) {
+                    self.completed_payloads = None;
+                }
                 self.pending = Some(batch.clone());
             }
             Change::BatchOutcome { outcome } => {

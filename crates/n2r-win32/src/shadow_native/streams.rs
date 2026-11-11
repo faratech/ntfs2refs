@@ -342,11 +342,22 @@ pub(super) fn observe(
                 region_pages.push(None);
                 continue;
             }
-            if let Some(maximum)=region_bytes {
-                let proof=initialized_regions::capture_initialized_logical(&file,named.expected_length,usage,maximum)
-                    .map_err(|e|io::Error::new(e.kind(),format!("named initialized regions {path:?}, usage={usage}: {e}")))?;
-                let (single,pages)=proof.into_transport();
-                regions.push(single);region_pages.push(pages);
+            if let Some(maximum) = region_bytes {
+                let proof = initialized_regions::capture_initialized_logical(
+                    &file,
+                    named.expected_length,
+                    usage,
+                    maximum,
+                )
+                .map_err(|e| {
+                    io::Error::new(
+                        e.kind(),
+                        format!("named initialized regions {path:?}, usage={usage}: {e}"),
+                    )
+                })?;
+                let (single, pages) = proof.into_transport();
+                regions.push(single);
+                region_pages.push(pages);
                 continue;
             }
             let mut q = [0; 24];
@@ -409,12 +420,30 @@ pub(super) fn verify(item: &Input<'_>, object: &ObjectReport, hash: bool) -> io:
         return Err(invalid("named stream report coverage differs"));
     }
     for (wanted, actual) in item.named_streams.iter().zip(&object.named_streams) {
-        for (single,pages,usage) in [(&actual.cached_validity,actual.cached_validity_pages.as_ref(),1),
-            (&actual.storage_validity,actual.storage_validity_pages.as_ref(),2)] {
-            if pages.is_some() && (wanted.sparse.is_some()||actual.resident_data) {
-                return Err(invalid("named sparse/resident stream cannot carry ordinary initialized-region pages"));
+        for (single, pages, usage) in [
+            (
+                &actual.cached_validity,
+                actual.cached_validity_pages.as_ref(),
+                1,
+            ),
+            (
+                &actual.storage_validity,
+                actual.storage_validity_pages.as_ref(),
+                2,
+            ),
+        ] {
+            if pages.is_some() && (wanted.sparse.is_some() || actual.resident_data) {
+                return Err(invalid(
+                    "named sparse/resident stream cannot carry ordinary initialized-region pages",
+                ));
             }
-            initialized_regions::validate_transport(single,pages,wanted.expected_length,usage,true)?;
+            initialized_regions::validate_transport(
+                single,
+                pages,
+                wanted.expected_length,
+                usage,
+                true,
+            )?;
         }
         if actual.name_utf16 != wanted.name_utf16
             || actual.expected_sha256.as_deref() != wanted.expected_sha256

@@ -472,7 +472,9 @@ fn inherited_ace_flags_are_not_masked() {
 
 #[test]
 fn a_null_sacl_marked_present_equals_no_sacl_and_nothing_else_is_relaxed() {
-    use ntfs2refs::ntfs_attestation::{same_security, same_security_null_sacl_as_absent as relaxed};
+    use ntfs2refs::ntfs_attestation::{
+        same_security, same_security_null_sacl_as_absent as relaxed,
+    };
     // \System Volume Information on the NTFS source (control 0x9004)...
     let source = hex::decode("010004903000000040000000000000001400000002001c000100000000031400ff011f0001010000000000051200000001020000000000052000000020020000010100000000000512000000").unwrap();
     // ...and on ReFS after restore: same owner, group and DACL, plus "SACL present" with a null SACL.

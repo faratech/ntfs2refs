@@ -172,7 +172,9 @@ pub(crate) fn extent_identity_stream_request_windows_domain(
     stream: &crate::ntfs_inspect::StreamInventory,
 ) -> Result<Option<n2r_win32::attestation::ExtentIdentityStream>> {
     extent_identity_stream_request_with_paths(&files.header().geometry, file, stream, || {
-        Ok(Some(crate::ntfs_admission::paged::canonical_paths_for_alias_preparation(files, file)?))
+        Ok(Some(
+            crate::ntfs_admission::paged::canonical_paths_for_alias_preparation(files, file)?,
+        ))
     })
 }
 
@@ -696,7 +698,12 @@ pub fn same_security_null_sacl_as_absent(a: &[u8], b: &[u8]) -> Result<bool> {
     remembered_comparison(1, a, b, maximum, || {
         let a = ntfs_security::parse_descriptor_with_limit(a, maximum)?;
         let b = ntfs_security::parse_descriptor_with_limit(b, maximum)?;
-        let empty = |acl: &Acl| matches!(acl.state, ntfs_security::AclState::Absent | ntfs_security::AclState::Null);
+        let empty = |acl: &Acl| {
+            matches!(
+                acl.state,
+                ntfs_security::AclState::Absent | ntfs_security::AclState::Null
+            )
+        };
         let (control_mask, sacl_same) = if empty(&a.sacl) && empty(&b.sacl) {
             (!SE_SACL_PRESENT, true)
         } else {
@@ -766,7 +773,9 @@ fn remembered_comparison(
         memory.borrow().buckets.get(&bucket).and_then(|entries| {
             entries
                 .iter()
-                .find(|known| known.kind == kind && known.maximum == maximum && known.a == a && known.b == b)
+                .find(|known| {
+                    known.kind == kind && known.maximum == maximum && known.a == a && known.b == b
+                })
                 .map(|known| known.same)
         })
     });
@@ -986,8 +995,11 @@ fn check_non_security_snapshot_scoped(
         (windows_counter_hint || usize::from(file.hard_link_count) == file.names.len())
             && usize::try_from(u32le(standard, 16))? == native_links,
         "native link count differs at FILE {}: native={}, canonical={}, raw={}, names={}",
-        file.record_number, u32le(standard, 16), native_links,
-        file.hard_link_count, file.names.len()
+        file.record_number,
+        u32le(standard, 16),
+        native_links,
+        file.hard_link_count,
+        file.names.len()
     );
     if let Some(stream) = file.streams.iter().find(|s| s.name_utf16.is_empty()) {
         ensure!(
@@ -1122,14 +1134,16 @@ pub(crate) fn check_partition_header_geometry(
     observed: &n2r_win32::attestation_partition::PartitionPagedNtfsObservation,
 ) -> Result<()> {
     use n2r_win32::attestation::NativeObservationDomain;
-    let native=observed.domain().header();
-    ensure!(observed.before()==observed.after()
-        && observed.before().partition_write_protect_error==19
-        && observed.before().physical_disk_is_writable_succeeded
-        && observed.before().volume_extents==native.volume_extents_before
-        && observed.before().ntfs_volume_data==native.ntfs_data_before
-        && observed.before().actual_physical_disk_attributes==native.disk_attributes_before,
-        "actual partition protection does not bind native header");
+    let native = observed.domain().header();
+    ensure!(
+        observed.before() == observed.after()
+            && observed.before().partition_write_protect_error == 19
+            && observed.before().physical_disk_is_writable_succeeded
+            && observed.before().volume_extents == native.volume_extents_before
+            && observed.before().ntfs_volume_data == native.ntfs_data_before
+            && observed.before().actual_physical_disk_attributes == native.disk_attributes_before,
+        "actual partition protection does not bind native header"
+    );
     ensure!(
         native.request.ntfs_serial == geometry.serial_number,
         "source serial differs"

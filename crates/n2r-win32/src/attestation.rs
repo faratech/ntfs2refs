@@ -982,7 +982,10 @@ pub trait NativeObservationDomain {
     /// A temporary SDK validation index must use the real source accountant
     /// when this domain owns one. Historical unaccounted diagnostics retain
     /// their existing behavior; this never issues source or write authority.
-    fn reserve_validation_working(&self, _bytes: u64) -> io::Result<Option<Box<dyn crate::shadow_native::report_memory::ReportMemoryLease>>> {
+    fn reserve_validation_working(
+        &self,
+        _bytes: u64,
+    ) -> io::Result<Option<Box<dyn crate::shadow_native::report_memory::ReportMemoryLease>>> {
         Ok(None)
     }
     fn is_paged(&self) -> bool {
@@ -1297,15 +1300,21 @@ pub fn measured_domain_resources(
     // them together, rather than decoding that same authenticated row three
     // times. Irregular and legacy domains retain their existing traversal.
     let parallel = domain.is_paged()
-        && header.logical_data.is_some() && header.namespace.is_some()
-        && domain.len() == domain.logical_len() && domain.len() == domain.namespace_len();
+        && header.logical_data.is_some()
+        && header.namespace.is_some()
+        && domain.len() == domain.logical_len()
+        && domain.len() == domain.namespace_len();
     if parallel {
         for index in 0..domain.len() {
-            let owner=domain.row_view(index)?;
-            out.merge(measured_row_resources(profile,Some(owner.observation()),
-                Some(owner.logical()?),Some(owner.namespace()?))?)?;
+            let owner = domain.row_view(index)?;
+            out.merge(measured_row_resources(
+                profile,
+                Some(owner.observation()),
+                Some(owner.logical()?),
+                Some(owner.namespace()?),
+            )?)?;
         }
-    }else{
+    } else {
         for index in 0..domain.len() {
             let owner = domain.row_view(index)?;
             let row = owner.observation();
@@ -1331,7 +1340,11 @@ pub fn measured_domain_resources(
     Ok(out)
 }
 
-fn measured_allocation_resources(out: &mut ResourceAudit, header: &Report, profile: ResourceProfile) -> io::Result<()> {
+fn measured_allocation_resources(
+    out: &mut ResourceAudit,
+    header: &Report,
+    profile: ResourceProfile,
+) -> io::Result<()> {
     fn add(total: &mut u64, n: usize) -> io::Result<()> {
         *total = total
             .checked_add(n as u64)
@@ -1376,7 +1389,6 @@ fn measured_allocation_resources(out: &mut ResourceAudit, header: &Report, profi
     Ok(())
 }
 
-
 /// Validate the same native evidence rules through borrowed or paged rows.
 pub fn validate_domain_resources(domain: &impl NativeObservationDomain) -> io::Result<()> {
     // The validation decodes every row and depends only on the domain, which
@@ -1399,25 +1411,40 @@ pub fn validate_domain_resources(domain: &impl NativeObservationDomain) -> io::R
 
 fn validate_domain_resources_now(domain: &impl NativeObservationDomain) -> io::Result<()> {
     let h = domain.header();
-    if domain.is_paged() && h.schema_version == 16 && h.request.schema_version == 8
-        && h.request.resource_profile.is_some() && h.logical_data.is_some() && h.namespace.is_some()
-        && domain.len() == domain.logical_len() && domain.len() == domain.namespace_len()
-        && domain.request_len().is_ok_and(|n| n == domain.len()) {
+    if domain.is_paged()
+        && h.schema_version == 16
+        && h.request.schema_version == 8
+        && h.request.resource_profile.is_some()
+        && h.logical_data.is_some()
+        && h.namespace.is_some()
+        && domain.len() == domain.logical_len()
+        && domain.len() == domain.namespace_len()
+        && domain.request_len().is_ok_and(|n| n == domain.len())
+    {
         return validate_regular_paged_resources(domain, domain.len());
     }
     validate_domain_resources_irregular(domain)
 }
 
-fn mark_native_identity(identities: &mut std::collections::BTreeMap<u64, u8>, identity: u64, bit: u8, count: usize) -> io::Result<u8> {
+fn mark_native_identity(
+    identities: &mut std::collections::BTreeMap<u64, u8>,
+    identity: u64,
+    bit: u8,
+    count: usize,
+) -> io::Result<u8> {
     if let Some(flags) = identities.get_mut(&identity) {
-        let old = *flags; *flags |= bit; return Ok(old);
+        let old = *flags;
+        *flags |= bit;
+        return Ok(old);
     }
     // A union larger than the number of unique requested identities cannot
     // satisfy any of the original same_ids checks. Refuse BEFORE allocating
     // an entry beyond the prepaid count, including on malformed domains.
     if identities.len() == count {
-        return Err(io::Error::new(io::ErrorKind::InvalidData,
-            "native report resource profile or accounting differs"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "native report resource profile or accounting differs",
+        ));
     }
     identities.insert(identity, bit);
     Ok(0)
@@ -1426,10 +1453,17 @@ fn mark_native_identity(identities: &mut std::collections::BTreeMap<u64, u8>, id
 /// The regular schema8/report16 parallel form decodes each authenticated
 /// file/namespace pair exactly once. Every legacy/irregular rule remains in
 /// the original validator below; this path repeats its complete predicates.
-fn validate_regular_paged_resources(domain: &impl NativeObservationDomain, count: usize) -> io::Result<()> {
+fn validate_regular_paged_resources(
+    domain: &impl NativeObservationDomain,
+    count: usize,
+) -> io::Result<()> {
     let header = domain.header();
-    let invalid = || io::Error::new(io::ErrorKind::InvalidData,
-        "native report resource profile or accounting differs");
+    let invalid = || {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "native report resource profile or accounting differs",
+        )
+    };
     let Some(profile) = header.request.resource_profile else {
         let legacy = (2..=7).contains(&header.schema_version)
             && matches!(header.request.schema_version, 1 | 2);
@@ -1500,12 +1534,19 @@ fn validate_regular_paged_resources(domain: &impl NativeObservationDomain, count
     }
     // Same conservative pinned-BTree bound used by domain_memory: three
     // complete internal nodes per insertion, including split/root growth.
-    let per_identity = (std::mem::size_of::<u64>() + std::mem::size_of::<u8>()
+    let per_identity = (std::mem::size_of::<u64>()
+        + std::mem::size_of::<u8>()
         + std::mem::size_of::<usize>()) as u64;
-    let identity_bytes = (count as u64).checked_mul(3)
-        .and_then(|n| per_identity.checked_mul(16).and_then(|node| node.checked_add(256))
-            .and_then(|node| n.checked_mul(node)))
-        .and_then(|n| n.checked_add(4096)).ok_or_else(invalid)?;
+    let identity_bytes = (count as u64)
+        .checked_mul(3)
+        .and_then(|n| {
+            per_identity
+                .checked_mul(16)
+                .and_then(|node| node.checked_add(256))
+                .and_then(|node| n.checked_mul(node))
+        })
+        .and_then(|n| n.checked_add(4096))
+        .ok_or_else(invalid)?;
     // Declared BEFORE the map so storage drops before its actual payment.
     let _identity_memory = domain.reserve_validation_working(identity_bytes)?;
     let mut identities = std::collections::BTreeMap::<u64, u8>::new();
@@ -1513,19 +1554,30 @@ fn validate_regular_paged_resources(domain: &impl NativeObservationDomain, count
     let mut observed = 0u64;
     let mut complete_reservations = 0u64;
     let mut complete_streams = 0u64;
-    if !matches!(header.content_passes, 1 | 2) { return Err(invalid()); }
+    if !matches!(header.content_passes, 1 | 2) {
+        return Err(invalid());
+    }
     let mut bad_logical = false;
     let mut bad_observation = false;
     let mut bad_namespace = false;
-    let mut actual = ResourceAudit { profile, security_bytes:0, stream_evidence_bytes:0,
-        bitmap_evidence_bytes:0, namespace_evidence_bytes:0 };
+    let mut actual = ResourceAudit {
+        profile,
+        security_bytes: 0,
+        stream_evidence_bytes: 0,
+        bitmap_evidence_bytes: 0,
+        namespace_evidence_bytes: 0,
+    };
     for index in 0..count {
         let owner = domain.row_view(index)?;
         let row = owner.request();
         validate_request_row(&header.request, &row)?;
         let flags = mark_native_identity(&mut identities, row.identity.reference(), 1, count)?;
-        if flags & 1 != 0 || (header.request.has_paged_selectors()
-            && previous.is_some_and(|n| n >= row.identity.record_number)) { return Err(invalid()); }
+        if flags & 1 != 0
+            || (header.request.has_paged_selectors()
+                && previous.is_some_and(|n| n >= row.identity.record_number))
+        {
+            return Err(invalid());
+        }
         previous = Some(row.identity.record_number);
         let file = owner.observation();
         if let Some(fallback) = &file.case_only_fallback {
@@ -1694,15 +1746,22 @@ fn validate_regular_paged_resources(domain: &impl NativeObservationDomain, count
                             .any(|q| q.bytes.len() > crate::namespace_layout::CAPACITY)
                 })
         };
-        actual.merge(measured_row_resources(profile, Some(owner.observation()),
-            Some(owner.logical()?), Some(owner.namespace()?))?)?;
+        actual.merge(measured_row_resources(
+            profile,
+            Some(owner.observation()),
+            Some(owner.logical()?),
+            Some(owner.namespace()?),
+        )?)?;
         // Preserve the old THREE same_ids set checks, including valid
         // permutations, rather than adding a stronger per-row identity rule.
         // All four columns have count rows. A union of count unique requested
         // IDs with all membership bits set is exactly those set equalities;
         // duplicate/missing/unrequested IDs necessarily fail.
-        for (identity, bit) in [(owner.observation().identity.reference(), 2),
-            (owner.logical()?.identity.reference(), 4), (owner.namespace()?.identity.reference(), 8)] {
+        for (identity, bit) in [
+            (owner.observation().identity.reference(), 2),
+            (owner.logical()?.identity.reference(), 4),
+            (owner.namespace()?.identity.reference(), 8),
+        ] {
             mark_native_identity(&mut identities, identity, bit, count)?;
         }
     }
@@ -1724,7 +1783,9 @@ fn validate_regular_paged_resources(domain: &impl NativeObservationDomain, count
         || a.security_bytes > limits.security_bytes as u64
         || a.stream_evidence_bytes > limits.stream_evidence_bytes as u64
         || a.bitmap_evidence_bytes
-            > resource_admission.map_or(MAX_TOTAL_BITMAP_BYTES as u64, |a| a.native_semantic_byte_budget())
+            > resource_admission.map_or(MAX_TOTAL_BITMAP_BYTES as u64, |a| {
+                a.native_semantic_byte_budget()
+            })
         || a.namespace_evidence_bytes > limits.namespace_evidence_bytes as u64
         || identities.len() != count
         || identities.values().any(|flags| *flags != 15)
@@ -2077,7 +2138,9 @@ fn validate_domain_resources_irregular(domain: &impl NativeObservationDomain) ->
         || a.security_bytes > limits.security_bytes as u64
         || a.stream_evidence_bytes > limits.stream_evidence_bytes as u64
         || a.bitmap_evidence_bytes
-            > resource_admission.map_or(MAX_TOTAL_BITMAP_BYTES as u64, |a| a.native_semantic_byte_budget())
+            > resource_admission.map_or(MAX_TOTAL_BITMAP_BYTES as u64, |a| {
+                a.native_semantic_byte_budget()
+            })
         || a.namespace_evidence_bytes > limits.namespace_evidence_bytes as u64
         || !same_ids(
             (0..domain.len())

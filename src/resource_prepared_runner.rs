@@ -52,26 +52,37 @@ pub fn run_prepared_offline(
     mut held_ram_bootstrap: File,
     acknowledge: bool,
 ) -> Result<()> {
-    run_prepared_offline_mode(request,held_ram_bootstrap,acknowledge,false,false)
+    run_prepared_offline_mode(request, held_ram_bootstrap, acknowledge, false, false)
 }
 /// Metadata-only continuation of an authenticated HND/ABT. This route cannot
 /// admit PreparedClear/AP/RB or obtain a source payload writer.
-pub fn finalize_closed_boot_only(request:PreparedOfflineRequest,held_ram_bootstrap:File,
-    acknowledge:bool) -> Result<()> {
-    run_prepared_offline_mode(request,held_ram_bootstrap,acknowledge,true,false)
+pub fn finalize_closed_boot_only(
+    request: PreparedOfflineRequest,
+    held_ram_bootstrap: File,
+    acknowledge: bool,
+) -> Result<()> {
+    run_prepared_offline_mode(request, held_ram_bootstrap, acknowledge, true, false)
 }
 /// Updated helper for the CURRENT authenticated AP/RB only. The original
 /// kernel-bound request and nonce stay unchanged; no fresh apply is admitted.
-pub fn recover_current_interruption_only(request:PreparedOfflineRequest,held_ram_bootstrap:File,
-    acknowledge:bool) -> Result<()> {
-    run_prepared_offline_mode(request,held_ram_bootstrap,acknowledge,false,true)
+pub fn recover_current_interruption_only(
+    request: PreparedOfflineRequest,
+    held_ram_bootstrap: File,
+    acknowledge: bool,
+) -> Result<()> {
+    run_prepared_offline_mode(request, held_ram_bootstrap, acknowledge, false, true)
 }
 fn run_prepared_offline_mode(
-    request:PreparedOfflineRequest,mut held_ram_bootstrap:File,acknowledge:bool,
-    closed_only_boot_repair:bool,interrupted_recovery_boot_repair:bool,
+    request: PreparedOfflineRequest,
+    mut held_ram_bootstrap: File,
+    acknowledge: bool,
+    closed_only_boot_repair: bool,
+    interrupted_recovery_boot_repair: bool,
 ) -> Result<()> {
-    ensure!(!(closed_only_boot_repair&&interrupted_recovery_boot_repair),
-        "closed-only and interrupted-recovery helper modes are exclusive");
+    ensure!(
+        !(closed_only_boot_repair && interrupted_recovery_boot_repair),
+        "closed-only and interrupted-recovery helper modes are exclusive"
+    );
     ensure!(
         acknowledge && request.schema_version == 1,
         "explicit owning-machine offline execution required"
@@ -143,10 +154,13 @@ fn run_prepared_offline_mode(
             // Preserve actual constructor events on RAM even when the first
             // positive-owner checkpoint was never reached. No source/J writer
             // has been issued; this does not turn a failure into admission.
-            let closing = observer.checkpoint("offline-RAM-environment-observation-failed", &mut events);
+            let closing =
+                observer.checkpoint("offline-RAM-environment-observation-failed", &mut events);
             return match closing {
                 Ok(()) => Err(error).context("observe actual RAM-Windows/source environment"),
-                Err(close) => Err(anyhow::Error::from(error).context(format!("environment observation failed; RAM event preservation also failed: {close}"))),
+                Err(close) => Err(anyhow::Error::from(error).context(format!(
+                    "environment observation failed; RAM event preservation also failed: {close}"
+                ))),
             };
         }
     };
@@ -173,8 +187,10 @@ fn run_prepared_offline_mode(
         "offline output parent is not the actual independently enrolled J"
     );
     let ordinary_output_parent = environment.ordinary_journal_directory(
-        &request.journal, &volume,
-        _parents.first().context("held J output parent absent")?, &mut events,
+        &request.journal,
+        &volume,
+        _parents.first().context("held J output parent absent")?,
+        &mut events,
     )?;
     // Retain every ordinary ancestor on the same native directory before any
     // arena/index output is admitted. Sealed bundle/J/bootstrap paths stay GUID.
@@ -199,8 +215,7 @@ fn run_prepared_offline_mode(
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_millis();
-    let output = ordinary_output_parent
-        .join(format!("offline-{stamp}-{}", std::process::id()));
+    let output = ordinary_output_parent.join(format!("offline-{stamp}-{}", std::process::id()));
     fs::create_dir(&output)?;
     let _output = ordinary_directory(&output)?;
     fs::create_dir(output.join("arena"))?;
@@ -315,16 +330,27 @@ fn run_prepared_offline_mode(
     };
     use crate::selected_journal::SelectedLifecycle;
     if closed_only_boot_repair {
-        ensure!(matches!(lifecycle,SelectedLifecycle::Handoff|SelectedLifecycle::Aborted)
-            &&request.controlled_pause_nonce.is_none(),
-            "closed-only boot repair rejects unactivated/AP/RB journals and pause hooks; no payload writer admitted");
-        observer.lock()?.record(&serde_json::json!({"kind":"closed-only-boot-repair-authenticated-entry",
+        ensure!(
+            matches!(
+                lifecycle,
+                SelectedLifecycle::Handoff | SelectedLifecycle::Aborted
+            ) && request.controlled_pause_nonce.is_none(),
+            "closed-only boot repair rejects unactivated/AP/RB journals and pause hooks; no payload writer admitted"
+        );
+        observer.lock()?.record(
+            &serde_json::json!({"kind":"closed-only-boot-repair-authenticated-entry",
             "source_payload_writer_allowed":false,"already_closed_lifecycle":true,
-            "uses_original_boot_bound_request":true}))?;
+            "uses_original_boot_bound_request":true}),
+        )?;
     }
     if interrupted_recovery_boot_repair {
-        ensure!(matches!(lifecycle,SelectedLifecycle::ApplyIntent|SelectedLifecycle::RollbackIntent),
-            "updated interrupted helper requires CURRENT AP/RB; fresh apply and closed J are forbidden");
+        ensure!(
+            matches!(
+                lifecycle,
+                SelectedLifecycle::ApplyIntent | SelectedLifecycle::RollbackIntent
+            ),
+            "updated interrupted helper requires CURRENT AP/RB; fresh apply and closed J are forbidden"
+        );
         observer.lock()?.record(&serde_json::json!({"kind":"current-interrupted-recovery-helper-authenticated-entry",
             "actual_AP_or_RB":true,"fresh_apply_allowed":false,
             "uses_original_boot_bound_request_and_nonce":true,"recovery_pause_hook_repeated":false}))?;

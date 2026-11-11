@@ -78,42 +78,81 @@ pub fn run_recovery(
     struct RecoveryRoute {
         schema_version: u32,
         kind: String,
-        source_scope: crate::selected_journal::resource_domain::source_scope::ResourceRecoverySourceScope,
+        source_scope:
+            crate::selected_journal::resource_domain::source_scope::ResourceRecoverySourceScope,
     }
     let routing_available = n2r_win32::resource_native::observe_available_resources(
-        request.publication.parent().context("publication parent absent")?)?;
-    let route_limit = (request.total_ram_bytes / 32).min(request.maximum_evidence_bytes)
+        request
+            .publication
+            .parent()
+            .context("publication parent absent")?,
+    )?;
+    let route_limit = (request.total_ram_bytes / 32)
+        .min(request.maximum_evidence_bytes)
         .min(routing_available.available_physical_bytes / 32);
-    let mut route_pin = OpenOptions::new().read(true).share_mode(1)
-        .custom_flags(0x0020_0000).open(&request.publication)?;
+    let mut route_pin = OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .custom_flags(0x0020_0000)
+        .open(&request.publication)?;
     let route_before = n2r_win32::reference_file::observe_reference_file_handle_with_limit(
-        &route_pin, route_limit)?;
-    ensure!(route_before.file_bytes > 0 && route_before.number_of_links == 1,
-        "ordinary bounded recovery publication required");
+        &route_pin,
+        route_limit,
+    )?;
+    ensure!(
+        route_before.file_bytes > 0 && route_before.number_of_links == 1,
+        "ordinary bounded recovery publication required"
+    );
     use std::io::{Read as _, Seek as _};
-    let routing_ram = route_before.file_bytes.checked_mul(4)
-        .and_then(|n| n.checked_add(65536)).context("routing memory overflow")?;
-    ensure!(routing_ram <= request.total_ram_bytes / 4,
-        "routing metadata exceeds prepaid memory");
+    let routing_ram = route_before
+        .file_bytes
+        .checked_mul(4)
+        .and_then(|n| n.checked_add(65536))
+        .context("routing memory overflow")?;
+    ensure!(
+        routing_ram <= request.total_ram_bytes / 4,
+        "routing metadata exceeds prepaid memory"
+    );
     let mut route_bytes = Vec::new();
     route_bytes.try_reserve_exact(usize::try_from(route_before.file_bytes + 1)?)?;
-    std::io::Read::by_ref(&mut route_pin).take(route_before.file_bytes + 1)
+    std::io::Read::by_ref(&mut route_pin)
+        .take(route_before.file_bytes + 1)
         .read_to_end(&mut route_bytes)?;
-    ensure!(route_bytes.len() as u64 == route_before.file_bytes
-        && <sha2::Sha256 as sha2::Digest>::digest(&route_bytes)[..] == publication_sha,
-        "recovery routing publication differs from the independent pin");
+    ensure!(
+        route_bytes.len() as u64 == route_before.file_bytes
+            && <sha2::Sha256 as sha2::Digest>::digest(&route_bytes)[..] == publication_sha,
+        "recovery routing publication differs from the independent pin"
+    );
     let route: RecoveryRoute = serde_json::from_slice(&route_bytes)?;
-    ensure!(route.source_scope.preparation_guard()?.intent_file.final_path.len() as u64
-        <= route_before.file_bytes, "recovery scope exceeds bounded publication");
-    route.source_scope.require_envelope_version(route.schema_version, &route.kind)?;
+    ensure!(
+        route
+            .source_scope
+            .preparation_guard()?
+            .intent_file
+            .final_path
+            .len() as u64
+            <= route_before.file_bytes,
+        "recovery scope exceeds bounded publication"
+    );
+    route
+        .source_scope
+        .require_envelope_version(route.schema_version, &route.kind)?;
     route.source_scope.require_partition()?;
-    ensure!(route.source_scope.partition_binding() == Some(&request.source),
-        "pinned recovery protocol names a different source");
-    ensure!(!route.source_scope.is_readonly_physical(),
-        "BASIC read-only physical write profile is unavailable after the native fresh-lock refusal; preserve the source and journal");
-    ensure!(n2r_win32::reference_file::observe_reference_file_handle_with_limit(
-        &route_pin, route_limit)? == route_before,
-        "held recovery routing publication changed");
+    ensure!(
+        route.source_scope.partition_binding() == Some(&request.source),
+        "pinned recovery protocol names a different source"
+    );
+    ensure!(
+        !route.source_scope.is_readonly_physical(),
+        "BASIC read-only physical write profile is unavailable after the native fresh-lock refusal; preserve the source and journal"
+    );
+    ensure!(
+        n2r_win32::reference_file::observe_reference_file_handle_with_limit(
+            &route_pin,
+            route_limit
+        )? == route_before,
+        "held recovery routing publication changed"
+    );
     route_pin.seek(std::io::SeekFrom::Start(0))?;
     drop(route_bytes);
     ensure!(
@@ -208,22 +247,42 @@ pub fn run_recovery(
         let mut basic_observer = observer.clone();
         // Positive Basic0 routing only: this lane can inspect current metadata
         // and closed J, but never restores/replays historical source bytes.
-        if let Some(source)=n2r_win32::partition_restoration::PartitionOperationalTerminal::open_if_actual_basic0(
-            request.source.clone(),request.observation_budget,&mut basic_observer,&mut events)? {
-            ensure!(source.binding().storage.disk_number==source.windows_volume().disk_number,
-                "operational terminal route requires same running Windows disk");
-            let destination=n2r_win32::partition_isolation::metadata_destination_outside_source(&request.source,parent,&mut events)?;
-            let windows=source.windows_volume();
-            ensure!(destination.disk_number==windows.disk_number&&destination.offset==windows.offset&&destination.length==windows.length,
-                "operational reconciliation records must be on actual Windows volume outside selected source");
-            observer.checkpoint("partition-operational-terminal-source",&mut events)?;
-            let arena=ArtifactArena::new(&output.join("arena"),resources,&[request.source.storage.clone(),request.shadow.clone()])?;
-            let budget=SourceMetadataBudget::from_resource_budget(resources)?;
-            let group=arena.reserve_group(ArtifactGroup::RecoveryCopy,budget.scratch_bytes)?;
-            let scratch=SourceScratch::new_auxiliary_in_arena(budget,group.clone())?;
-            let requested=match request.direction {
-                PartitionRecoveryDirection::Resume=>n2r_win32::PartitionTerminalKind::Handoff,
-                PartitionRecoveryDirection::Rollback=>n2r_win32::PartitionTerminalKind::Aborted,
+        if let Some(source) =
+            n2r_win32::partition_restoration::PartitionOperationalTerminal::open_if_actual_basic0(
+                request.source.clone(),
+                request.observation_budget,
+                &mut basic_observer,
+                &mut events,
+            )?
+        {
+            ensure!(
+                source.binding().storage.disk_number == source.windows_volume().disk_number,
+                "operational terminal route requires same running Windows disk"
+            );
+            let destination = n2r_win32::partition_isolation::metadata_destination_outside_source(
+                &request.source,
+                parent,
+                &mut events,
+            )?;
+            let windows = source.windows_volume();
+            ensure!(
+                destination.disk_number == windows.disk_number
+                    && destination.offset == windows.offset
+                    && destination.length == windows.length,
+                "operational reconciliation records must be on actual Windows volume outside selected source"
+            );
+            observer.checkpoint("partition-operational-terminal-source", &mut events)?;
+            let arena = ArtifactArena::new(
+                &output.join("arena"),
+                resources,
+                &[request.source.storage.clone(), request.shadow.clone()],
+            )?;
+            let budget = SourceMetadataBudget::from_resource_budget(resources)?;
+            let group = arena.reserve_group(ArtifactGroup::RecoveryCopy, budget.scratch_bytes)?;
+            let scratch = SourceScratch::new_auxiliary_in_arena(budget, group.clone())?;
+            let requested = match request.direction {
+                PartitionRecoveryDirection::Resume => n2r_win32::PartitionTerminalKind::Handoff,
+                PartitionRecoveryDirection::Rollback => n2r_win32::PartitionTerminalKind::Aborted,
             };
             return crate::selected_journal::resource_domain::reopen::envelope::reconcile_operational_partition(
                 source,&request.publication,publication_sha,budget.record_bytes,&request.shadow,&request.journal,

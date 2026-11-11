@@ -4,7 +4,8 @@ use super::{
     PagedInputs,
     source_backed::{
         CandidateChunk, CandidateReadSpans, ClosingShadowBytes, ClosingSourceBytes,
-        PagedSourceByteAdapterWithScope, PagedStreamIdentity, ReadCounts, candidate_span_workspace_bytes,
+        PagedSourceByteAdapterWithScope, PagedStreamIdentity, ReadCounts,
+        candidate_span_workspace_bytes,
     },
 };
 use crate::{
@@ -191,7 +192,10 @@ impl<'observation> PagedPayloadRoutes<'observation> {
         let validated = SourceBackedRoutes::validate_protected_layout_domain_with_memory(
             observation,
             &input,
-            |a, b| crate::ntfs_attestation::same_security_null_sacl_as_absent(a, b).map_err(io::Error::other),
+            |a, b| {
+                crate::ntfs_attestation::same_security_null_sacl_as_absent(a, b)
+                    .map_err(io::Error::other)
+            },
             &memory,
             aliases,
         )?;
@@ -388,7 +392,9 @@ pub struct PagedSourceBackedCandidateWithScope<'source, 'observation, 'scope> {
     poisoned: bool,
     _ram: SourceRamLease,
 }
-impl<'source, 'observation, 'scope> PagedSourceBackedCandidateWithScope<'source, 'observation, 'scope> {
+impl<'source, 'observation, 'scope>
+    PagedSourceBackedCandidateWithScope<'source, 'observation, 'scope>
+{
     pub fn new(
         mut bytes: PagedSourceByteAdapterWithScope<'source, 'scope>,
         shadow: &'source mut GeneralFrozenPartition,

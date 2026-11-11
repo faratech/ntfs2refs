@@ -174,8 +174,14 @@ pub(super) fn convert(
     let boot_wim = input(wim_path, &current.binding)?;
     let boot_sdi = input(sdi_path, &current.binding)?;
     let runner = input(runner_path, &current.binding)?;
-    ensure!(boot_wim.bytes.checked_add(boot_sdi.bytes).and_then(|n| n.checked_add(runner.bytes)) == Some(sizes),
-        "recovery input sizes changed after upfront capacity admission");
+    ensure!(
+        boot_wim
+            .bytes
+            .checked_add(boot_sdi.bytes)
+            .and_then(|n| n.checked_add(runner.bytes))
+            == Some(sizes),
+        "recovery input sizes changed after upfront capacity admission"
+    );
     let output = fresh(parent, "offline-conversion")?;
     let run_id = output
         .file_name()

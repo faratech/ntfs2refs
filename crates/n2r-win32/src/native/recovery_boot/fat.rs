@@ -72,7 +72,10 @@ impl<'a> Fat<'a> {
             // mutable-bit exception or replacement of the authenticated hash.
             return Err(bad(&format!(
                 "current EFI FAT32 boot sector differs: expected_sha256={}, observed_sha256={}, partition_offset={base}, logical_sector_bytes={}, signature_valid={signature_valid}, fat32_tag_valid={fat32_tag_valid}, observed_boot_hex={}",
-                hex::encode(expected), hex::encode(observed), boot.len(), hex::encode(&boot)
+                hex::encode(expected),
+                hex::encode(observed),
+                boot.len(),
+                hex::encode(&boot)
             )));
         }
         let sector = u64::from(u16::from_le_bytes(
@@ -331,7 +334,11 @@ pub(super) fn require_current_map_live(
     limit: u64,
 ) -> io::Result<()> {
     let fat = Fat::open_with_live_epoch(
-        file, efi, pin.fat_boot_sha256, Some(pin.fat_boot_sha256), limit,
+        file,
+        efi,
+        pin.fat_boot_sha256,
+        Some(pin.fat_boot_sha256),
+        limit,
     )?;
     require_current_map_inner(fat, efi, pin, limit)
 }
@@ -345,10 +352,16 @@ pub(super) fn require_live_boot(
     second_full_sha256: [u8; 32],
     limit: u64,
 ) -> io::Result<[u8; 32]> {
-    need(u64::from(efi.binding.identity.logical_sector_bytes) <= limit,
-        "live EFI boot-sector read exceeds metadata budget")?;
+    need(
+        u64::from(efi.binding.identity.logical_sector_bytes) <= limit,
+        "live EFI boot-sector read exceeds metadata budget",
+    )?;
     let fat = Fat::open_with_live_epoch(
-        file, efi, first_full_sha256, Some(second_full_sha256), limit,
+        file,
+        efi,
+        first_full_sha256,
+        Some(second_full_sha256),
+        limit,
     )?;
     Ok(fat.boot_sha256)
 }

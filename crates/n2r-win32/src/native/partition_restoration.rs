@@ -18,18 +18,23 @@ pub use physical_profile::open_readonly_physical_recovery;
 mod basic_ro;
 pub use basic_ro::PartitionBasicReadonlyTerminal;
 mod operational;
-pub use operational::{PartitionOperationalTerminal, OperationalPartitionMetadata};
+pub use operational::{OperationalPartitionMetadata, PartitionOperationalTerminal};
 
 // Actual terminal metadata only: no private-owner/admission/loaded flags.
-struct TerminalMetadataBaseline{
-    partition:partition_isolation::PartitionIsolationObservation,
-    configured_dump_locations:partition_dump_locations::ConfiguredDumpObservation,
-    storage_current_partition_roles:super::partition_storage_roles::PartitionStorageRoleObservation,
+struct TerminalMetadataBaseline {
+    partition: partition_isolation::PartitionIsolationObservation,
+    configured_dump_locations: partition_dump_locations::ConfiguredDumpObservation,
+    storage_current_partition_roles:
+        super::partition_storage_roles::PartitionStorageRoleObservation,
 }
-impl From<PartitionOwnerState> for TerminalMetadataBaseline{
-    fn from(value:PartitionOwnerState)->Self{Self{partition:value.partition,
-        configured_dump_locations:value.configured_dump_locations,
-        storage_current_partition_roles:value.storage_current_partition_roles}}
+impl From<PartitionOwnerState> for TerminalMetadataBaseline {
+    fn from(value: PartitionOwnerState) -> Self {
+        Self {
+            partition: value.partition,
+            configured_dump_locations: value.configured_dump_locations,
+            storage_current_partition_roles: value.storage_current_partition_roles,
+        }
+    }
 }
 
 const RO: u64 = 0x1000_0000_0000_0000;
@@ -319,15 +324,19 @@ impl Artifact {
     }
 }
 
-fn protected_info(original:&[u8],profile:PartitionDataProfile)->io::Result<Vec<u8>> {
-    need(original.len()==144,"original native partition info width differs")?;
-    let mut info=original.to_vec();
-    let (kind,attrs)=match profile {
-        PartitionDataProfile::PrivateVolumeV2=>(PRIVATE,0),
-        PartitionDataProfile::BasicReadonlyPhysicalV3=>(BASIC,RO),
+fn protected_info(original: &[u8], profile: PartitionDataProfile) -> io::Result<Vec<u8>> {
+    need(
+        original.len() == 144,
+        "original native partition info width differs",
+    )?;
+    let mut info = original.to_vec();
+    let (kind, attrs) = match profile {
+        PartitionDataProfile::PrivateVolumeV2 => (PRIVATE, 0),
+        PartitionDataProfile::BasicReadonlyPhysicalV3 => (BASIC, RO),
     };
     info[32..48].copy_from_slice(&crate::layout::guid_bytes(kind)?);
-    info[64..72].copy_from_slice(&attrs.to_le_bytes());Ok(info)
+    info[64..72].copy_from_slice(&attrs.to_le_bytes());
+    Ok(info)
 }
 struct Origin {
     data_profile: PartitionDataProfile,
@@ -420,8 +429,11 @@ impl PartitionRecoveredOrigin {
         )?;
         owner.revalidate(events)?;
         self.origin.revalidate()?;
-        need(self.origin.data_profile==owner.data_profile(),"authenticated source scope and actual owner data profile differ")?;
-        let current_info=owner.expected_protected_partition_info(&self.origin.original_info)?;
+        need(
+            self.origin.data_profile == owner.data_profile(),
+            "authenticated source scope and actual owner data profile differ",
+        )?;
+        let current_info = owner.expected_protected_partition_info(&self.origin.original_info)?;
         validate_origin_layout(
             &self.origin,
             &self.binding,
@@ -448,13 +460,16 @@ impl PartitionRecoveredOrigin {
         let closed = authenticate_partition_closed_journal(
             &mut owner, policy, journal, &pins, kind, events,
         )?;
-        need(self.origin.data_profile==owner.data_profile(),"recovered terminal source profile differs")?;
-        let current_info=owner.expected_protected_partition_info(&self.origin.original_info)?;
+        need(
+            self.origin.data_profile == owner.data_profile(),
+            "recovered terminal source profile differs",
+        )?;
+        let current_info = owner.expected_protected_partition_info(&self.origin.original_info)?;
         let parts = owner.into_terminal_restoration_parts(&closed, events)?;
         let mut guard = PartitionTerminalRestorationGuard {
             file: Some(parts.file),
-            data_profile:parts.data_profile,
-            physical_data:parts.physical_data,
+            data_profile: parts.data_profile,
+            physical_data: parts.physical_data,
             physical: parts.physical_readonly,
             binding: parts.binding.clone(),
             budget: parts.budget,
@@ -466,7 +481,11 @@ impl PartitionRecoveredOrigin {
             journal,
             pins,
             kind,
-            stage: if parts.data_profile==PartitionDataProfile::BasicReadonlyPhysicalV3{PartitionTerminalStage::ProtectedPhysical}else{PartitionTerminalStage::Private},
+            stage: if parts.data_profile == PartitionDataProfile::BasicReadonlyPhysicalV3 {
+                PartitionTerminalStage::ProtectedPhysical
+            } else {
+                PartitionTerminalStage::Private
+            },
             current_info,
             mounted_binding: parts.binding.storage,
             mounted: None,
@@ -526,10 +545,19 @@ impl Origin {
         )?;
         let envelope: Value =
             serde_json::from_slice(&publication.read(MAX_JSON)?).map_err(io::Error::other)?;
-        let data_profile=match (num_field(&envelope,"schema_version")?,str_field(&envelope,"kind")?) {
-            (2,"resource-partition-recovery-envelope-v2")=>PartitionDataProfile::PrivateVolumeV2,
-            (3,"resource-partition-readonly-physical-recovery-envelope-v3")=>PartitionDataProfile::BasicReadonlyPhysicalV3,
-            _=>return Err(bad("terminal restoration requires an explicit supported partition protocol")),
+        let data_profile = match (
+            num_field(&envelope, "schema_version")?,
+            str_field(&envelope, "kind")?,
+        ) {
+            (2, "resource-partition-recovery-envelope-v2") => PartitionDataProfile::PrivateVolumeV2,
+            (3, "resource-partition-readonly-physical-recovery-envelope-v3") => {
+                PartitionDataProfile::BasicReadonlyPhysicalV3
+            }
+            _ => {
+                return Err(bad(
+                    "terminal restoration requires an explicit supported partition protocol",
+                ));
+            }
         };
         let scope = envelope
             .get("source_scope")
@@ -537,8 +565,14 @@ impl Origin {
             .clone();
         need(
             match data_profile {
-                PartitionDataProfile::PrivateVolumeV2=>str_field(&scope,"kind")?=="partition-v2"&&num_field(&scope,"scope_version")?==2,
-                PartitionDataProfile::BasicReadonlyPhysicalV3=>str_field(&scope,"kind")?=="partition-ro-physical-v3"&&num_field(&scope,"scope_version")?==3,
+                PartitionDataProfile::PrivateVolumeV2 => {
+                    str_field(&scope, "kind")? == "partition-v2"
+                        && num_field(&scope, "scope_version")? == 2
+                }
+                PartitionDataProfile::BasicReadonlyPhysicalV3 => {
+                    str_field(&scope, "kind")? == "partition-ro-physical-v3"
+                        && num_field(&scope, "scope_version")? == 3
+                }
             },
             "unknown terminal restoration source scope",
         )?;
@@ -578,9 +612,16 @@ impl Origin {
         let loc: Value = serde_json::from_slice(&raw[64..]).map_err(io::Error::other)?;
         need(
             (match data_profile {
-                PartitionDataProfile::PrivateVolumeV2=>num_field(&loc,"schema_version")?==2&&str_field(&loc,"kind")?=="resource-partition-recovery-locator-v2",
-                PartitionDataProfile::BasicReadonlyPhysicalV3=>num_field(&loc,"schema_version")?==3&&str_field(&loc,"kind")?=="resource-partition-readonly-physical-recovery-locator-v3",
-            }) && loc["source_scope"]==scope,
+                PartitionDataProfile::PrivateVolumeV2 => {
+                    num_field(&loc, "schema_version")? == 2
+                        && str_field(&loc, "kind")? == "resource-partition-recovery-locator-v2"
+                }
+                PartitionDataProfile::BasicReadonlyPhysicalV3 => {
+                    num_field(&loc, "schema_version")? == 3
+                        && str_field(&loc, "kind")?
+                            == "resource-partition-readonly-physical-recovery-locator-v3"
+                }
+            }) && loc["source_scope"] == scope,
             "locator/publication source scope differs",
         )?;
         let ticket = &loc["ticket"];
@@ -611,8 +652,16 @@ impl Origin {
         let pin = &scope["complete_preparation_guard"];
         need(
             match data_profile {
-                PartitionDataProfile::PrivateVolumeV2=>num_field(pin,"version")?==1&&str_field(pin,"kind")?=="partition-target-only-preparation-v1"&&str_field(pin,"observed_stage")?=="PrivateLocked",
-                PartitionDataProfile::BasicReadonlyPhysicalV3=>num_field(pin,"version")?==2&&str_field(pin,"kind")?=="partition-readonly-physical-preparation-v2"&&str_field(pin,"observed_stage")?=="ReadonlyPhysicalLocked",
+                PartitionDataProfile::PrivateVolumeV2 => {
+                    num_field(pin, "version")? == 1
+                        && str_field(pin, "kind")? == "partition-target-only-preparation-v1"
+                        && str_field(pin, "observed_stage")? == "PrivateLocked"
+                }
+                PartitionDataProfile::BasicReadonlyPhysicalV3 => {
+                    num_field(pin, "version")? == 2
+                        && str_field(pin, "kind")? == "partition-readonly-physical-preparation-v2"
+                        && str_field(pin, "observed_stage")? == "ReadonlyPhysicalLocked"
+                }
             },
             "original preparation protocol differs",
         )?;
@@ -695,10 +744,18 @@ impl Origin {
             sequence += 1;
             need(
                 sequence <= 4
-                    && num_field(&frame,"sequence")?==sequence
-                    && (match (data_profile,sequence) {
-                        (PartitionDataProfile::BasicReadonlyPhysicalV3,2)=>num_field(&frame,"version")?==2&&str_field(&frame,"kind")?=="partition-readonly-physical-pre-AP-intent-v2",
-                        _=>num_field(&frame,"version")?==1&&str_field(&frame,"kind")?=="partition-target-only-pre-AP-intent",
+                    && num_field(&frame, "sequence")? == sequence
+                    && (match (data_profile, sequence) {
+                        (PartitionDataProfile::BasicReadonlyPhysicalV3, 2) => {
+                            num_field(&frame, "version")? == 2
+                                && str_field(&frame, "kind")?
+                                    == "partition-readonly-physical-pre-AP-intent-v2"
+                        }
+                        _ => {
+                            num_field(&frame, "version")? == 1
+                                && str_field(&frame, "kind")?
+                                    == "partition-target-only-pre-AP-intent"
+                        }
                     }),
                 "preparation frame protocol differs",
             )?;
@@ -721,18 +778,26 @@ impl Origin {
         let desired = json_bytes(&frame["desired_partition_info"])?;
         need(
             match data_profile {
-                PartitionDataProfile::PrivateVolumeV2=>desired.len()==144&&desired[32..48]==crate::layout::guid_bytes(PRIVATE)?&&crate::layout::u64_at(&desired,64)?==0,
-                PartitionDataProfile::BasicReadonlyPhysicalV3=>desired==protected_info(&original_info,data_profile)?&&sequence==2,
+                PartitionDataProfile::PrivateVolumeV2 => {
+                    desired.len() == 144
+                        && desired[32..48] == crate::layout::guid_bytes(PRIVATE)?
+                        && crate::layout::u64_at(&desired, 64)? == 0
+                }
+                PartitionDataProfile::BasicReadonlyPhysicalV3 => {
+                    desired == protected_info(&original_info, data_profile)? && sequence == 2
+                }
             },
             "last authenticated intent does not target the exact protected profile",
         )?;
-        if data_profile==PartitionDataProfile::BasicReadonlyPhysicalV3 {
-            need(str_field(&scope,"readonly_type_guid")?.eq_ignore_ascii_case(BASIC)
-                &&num_field(&scope,"readonly_attributes")?==RO
-                &&str_field(&scope,"original_basic_type_guid")?.eq_ignore_ascii_case(BASIC)
-                &&num_field(&scope,"original_attributes")?==0
-                &&json_bytes(&scope["original_name_utf16le"])?==original_info[72..144],
-                "physical source scope does not preserve original Basic0/native name")?;
+        if data_profile == PartitionDataProfile::BasicReadonlyPhysicalV3 {
+            need(
+                str_field(&scope, "readonly_type_guid")?.eq_ignore_ascii_case(BASIC)
+                    && num_field(&scope, "readonly_attributes")? == RO
+                    && str_field(&scope, "original_basic_type_guid")?.eq_ignore_ascii_case(BASIC)
+                    && num_field(&scope, "original_attributes")? == 0
+                    && json_bytes(&scope["original_name_utf16le"])? == original_info[72..144],
+                "physical source scope does not preserve original Basic0/native name",
+            )?;
         }
         let original_gpt = frame["original_gpt"].clone();
         let original_mbr = json_bytes(&frame["original_mbr"])?;
@@ -866,8 +931,8 @@ pub trait PartitionRestorationObserver {
 }
 pub struct PartitionTerminalRestorationGuard<'journal, 'pins> {
     file: Option<File>,
-    data_profile:PartitionDataProfile,
-    physical_data:Option<PartitionPhysicalDataOwner>,
+    data_profile: PartitionDataProfile,
+    physical_data: Option<PartitionPhysicalDataOwner>,
     physical: File,
     binding: PartitionSourceBinding,
     budget: PartitionObservationBudget,
@@ -933,12 +998,15 @@ impl PartitionTerminalRestorationGuard<'static, 'static> {
             origin.original_label == label && origin.mount_paths == mount_paths.paths,
             "publication label/mounts differ from consumed actual preparation guard",
         )?;
-        need(origin.data_profile==parts.data_profile,"terminal scope and consumed owner profile differ")?;
-        let current_info=protected_info(&origin.original_info,parts.data_profile)?;
+        need(
+            origin.data_profile == parts.data_profile,
+            "terminal scope and consumed owner profile differ",
+        )?;
+        let current_info = protected_info(&origin.original_info, parts.data_profile)?;
         let mut guard = PartitionTerminalRestorationGuard {
             file: Some(parts.file),
-            data_profile:parts.data_profile,
-            physical_data:parts.physical_data,
+            data_profile: parts.data_profile,
+            physical_data: parts.physical_data,
             physical: parts.physical_readonly,
             binding: parts.binding.clone(),
             budget: parts.budget,
@@ -950,7 +1018,11 @@ impl PartitionTerminalRestorationGuard<'static, 'static> {
             journal: &mut journal,
             pins,
             kind: PartitionTerminalKind::Handoff,
-            stage: if parts.data_profile==PartitionDataProfile::BasicReadonlyPhysicalV3{PartitionTerminalStage::ProtectedPhysical}else{PartitionTerminalStage::Private},
+            stage: if parts.data_profile == PartitionDataProfile::BasicReadonlyPhysicalV3 {
+                PartitionTerminalStage::ProtectedPhysical
+            } else {
+                PartitionTerminalStage::Private
+            },
             current_info,
             mounted_binding: parts.binding.storage,
             mounted: None,
@@ -983,12 +1055,15 @@ impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
             &parts.state.partition.windows_volume,
             &pins,
         )?;
-        need(origin.data_profile==parts.data_profile,"terminal scope and consumed owner profile differ")?;
-        let current_info=protected_info(&origin.original_info,parts.data_profile)?;
+        need(
+            origin.data_profile == parts.data_profile,
+            "terminal scope and consumed owner profile differ",
+        )?;
+        let current_info = protected_info(&origin.original_info, parts.data_profile)?;
         let mut guard = Self {
             file: Some(parts.file),
-            data_profile:parts.data_profile,
-            physical_data:parts.physical_data,
+            data_profile: parts.data_profile,
+            physical_data: parts.physical_data,
             physical: parts.physical_readonly,
             binding: parts.binding.clone(),
             budget: parts.budget,
@@ -1000,7 +1075,11 @@ impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
             journal,
             pins,
             kind,
-            stage: if parts.data_profile==PartitionDataProfile::BasicReadonlyPhysicalV3{PartitionTerminalStage::ProtectedPhysical}else{PartitionTerminalStage::Private},
+            stage: if parts.data_profile == PartitionDataProfile::BasicReadonlyPhysicalV3 {
+                PartitionTerminalStage::ProtectedPhysical
+            } else {
+                PartitionTerminalStage::Private
+            },
             current_info,
             mounted_binding: parts.binding.storage,
             mounted: None,
@@ -1015,7 +1094,9 @@ impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
     pub fn owner_token(&self) -> PartitionOwnerToken {
         self.token.clone()
     }
-    pub fn closed_journal_observation(&self)->&PartitionClosedJournalObservation{&self.closed}
+    pub fn closed_journal_observation(&self) -> &PartitionClosedJournalObservation {
+        &self.closed
+    }
     pub fn original_label(&self) -> &crate::volume_label::VolumeLabel {
         &self.origin.original_label
     }
@@ -1065,7 +1146,7 @@ impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
             "ABT finish requires actual terminal readonly stage",
         )?;
         self.require_readonly(events)?;
-        self.revalidate_closed_checkpoint(observer,"terminal-abt-closed-source",events)?;
+        self.revalidate_closed_checkpoint(observer, "terminal-abt-closed-source", events)?;
         let volume = self
             .mounted
             .as_ref()
@@ -1103,7 +1184,7 @@ impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
     ) -> io::Result<PartitionRestorationReceipt> {
         self.revalidate_metadata_checkpoint(observer, "terminal-finish-metadata-1", events)?;
         self.require_readonly(events)?;
-        self.revalidate_closed_checkpoint(observer,"terminal-finish-closed-source",events)?;
+        self.revalidate_closed_checkpoint(observer, "terminal-finish-closed-source", events)?;
         // Check every path before enabling writes; never steal another volume's
         // letter or replace a nonempty/unrelated mounted folder.
         preflight_mounts(
@@ -1200,8 +1281,16 @@ impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
             false,
             false,
         )?;
-        if self.data_profile==PartitionDataProfile::BasicReadonlyPhysicalV3 {
-            partition_isolation::observe_physical_only(&mut physical,&PartitionSourceBinding{storage:self.mounted_binding.clone()},self.budget,events,crate::layout::guid_bytes(BASIC)?)
+        if self.data_profile == PartitionDataProfile::BasicReadonlyPhysicalV3 {
+            partition_isolation::observe_physical_only(
+                &mut physical,
+                &PartitionSourceBinding {
+                    storage: self.mounted_binding.clone(),
+                },
+                self.budget,
+                events,
+                crate::layout::guid_bytes(BASIC)?,
+            )
         } else if self.current_info[32..48] == crate::layout::guid_bytes(PRIVATE)? {
             partition_isolation::observe_private(&mut physical, &self.binding, self.budget, events)
         } else {
@@ -1253,9 +1342,13 @@ impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
             self.budget,
             events,
         )?;
-        let roles=super::partition_storage_roles::observe_partition_storage_roles(&self.binding,self.budget,events)?;
-        let critical_unchanged=roles.catalog_complete
-            &&roles.same_critical_roles(&self.baseline.storage_current_partition_roles);
+        let roles = super::partition_storage_roles::observe_partition_storage_roles(
+            &self.binding,
+            self.budget,
+            events,
+        )?;
+        let critical_unchanged = roles.catalog_complete
+            && roles.same_critical_roles(&self.baseline.storage_current_partition_roles);
         need(
             dumps == self.baseline.configured_dump_locations && critical_unchanged,
             "terminal critical-volume bindings changed",
@@ -1276,35 +1369,50 @@ impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
         }
         Ok(actual)
     }
-    fn revalidate_closed_checkpoint(&mut self,observer:&mut impl PartitionRestorationObserver,
-        phase:&'static str,events:&mut Vec<NativeEvent>)->io::Result<()>{
-        publication_checkpoint(Ok(()),observer,"terminal-closed-source-opening",events)?;
-        let result=self.revalidate_closed(events);
-        publication_checkpoint(result,observer,phase,events)
+    fn revalidate_closed_checkpoint(
+        &mut self,
+        observer: &mut impl PartitionRestorationObserver,
+        phase: &'static str,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
+        publication_checkpoint(Ok(()), observer, "terminal-closed-source-opening", events)?;
+        let result = self.revalidate_closed(events);
+        publication_checkpoint(result, observer, phase, events)
     }
-    fn revalidate_closed(&mut self,events:&mut Vec<NativeEvent>) -> io::Result<()> {
+    fn revalidate_closed(&mut self, events: &mut Vec<NativeEvent>) -> io::Result<()> {
         self.origin.revalidate()?;
-        let file=if let Some(data)=self.physical_data.as_ref(){
+        let file = if let Some(data) = self.physical_data.as_ref() {
             data.revalidate_native(events)?;
             TerminalReadBacking::Held(data.duplicate_readonly(events)?)
-        }else if let Some(original)=self.file.as_ref(){
+        } else if let Some(original) = self.file.as_ref() {
             // The original FS lock admits access only through this SAME
             // FileObject. A reduced data duplicate shares its cursor mutex;
             // reopening the selected pathname can fail ERROR_NOT_READY21.
-            need(events.len()<=122,"terminal held source duplicate event budget exhausted")?;
+            need(
+                events.len() <= 122,
+                "terminal held source duplicate event budget exhausted",
+            )?;
             TerminalReadBacking::Held(super::partition_lifecycle::held_read::duplicate_bound(
-                original,&self.binding,&self.current_info,&self.token,events)?)
-        }else{
+                original,
+                &self.binding,
+                &self.current_info,
+                &self.token,
+                events,
+            )?)
+        } else {
             // Original locking objects have closed before mounted BasicRO.
             // This independent readonly route keeps the existing unlocked lane.
-            TerminalReadBacking::Independent(OpenOptions::new()
-            .read(true)
-            .share_mode(3)
-            .custom_flags(0xa000_0000)
-            .open(format!(
-                "\\\\?\\GLOBALROOT\\Device\\Harddisk{}\\Partition{}",
-                self.binding.storage.disk_number, self.binding.storage.identity.partition_number
-            ))?)
+            TerminalReadBacking::Independent(
+                OpenOptions::new()
+                    .read(true)
+                    .share_mode(3)
+                    .custom_flags(0xa000_0000)
+                    .open(format!(
+                        "\\\\?\\GLOBALROOT\\Device\\Harddisk{}\\Partition{}",
+                        self.binding.storage.disk_number,
+                        self.binding.storage.identity.partition_number
+                    ))?,
+            )
         };
         let mut reader = TerminalRawReader {
             file,
@@ -1423,7 +1531,12 @@ impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
     ) -> io::Result<()> {
         publication_checkpoint(Ok(()), observer, "terminal-partition-change-before", events)?;
         let result = self.change_checked(attrs, observer, events);
-        publication_checkpoint(result, observer, "terminal-partition-change-complete", events)
+        publication_checkpoint(
+            result,
+            observer,
+            "terminal-partition-change-complete",
+            events,
+        )
     }
     fn change_checked(
         &mut self,
@@ -1484,17 +1597,31 @@ impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<()> {
         need(
-            self.stage==PartitionTerminalStage::Private||self.stage==PartitionTerminalStage::ProtectedPhysical,
+            self.stage == PartitionTerminalStage::Private
+                || self.stage == PartitionTerminalStage::ProtectedPhysical,
             "terminal readonly transition is one-shot",
         )?;
-        self.revalidate_closed_checkpoint(observer,"terminal-before-readonly-closed-source",events)?;
-        if self.data_profile==PartitionDataProfile::BasicReadonlyPhysicalV3 {
-            need(self.stage==PartitionTerminalStage::ProtectedPhysical
-                &&self.current_info==protected_info(&self.origin.original_info,self.data_profile)?,
-                "physical terminal has not retained exact positive BasicRO")?;
-            self.revalidate_metadata_checkpoint(observer,"terminal-existing-physical-basic-ro",events)?;
+        self.revalidate_closed_checkpoint(
+            observer,
+            "terminal-before-readonly-closed-source",
+            events,
+        )?;
+        if self.data_profile == PartitionDataProfile::BasicReadonlyPhysicalV3 {
+            need(
+                self.stage == PartitionTerminalStage::ProtectedPhysical
+                    && self.current_info
+                        == protected_info(&self.origin.original_info, self.data_profile)?,
+                "physical terminal has not retained exact positive BasicRO",
+            )?;
+            self.revalidate_metadata_checkpoint(
+                observer,
+                "terminal-existing-physical-basic-ro",
+                events,
+            )?;
             // BASIC+RO already persists. No redundant type/attribute setter.
-        }else{self.change(RO,observer,events)?;}
+        } else {
+            self.change(RO, observer, events)?;
+        }
         // Persistent target-only RO precedes closing the old NTFS FileObject.
         // All root capture duplicates must also close before native publication.
         drop(self.file.take());
@@ -1504,7 +1631,11 @@ impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
         self.stage = PartitionTerminalStage::Readonly;
         self.revalidate_metadata(events)?;
         self.require_readonly(events)?;
-        self.revalidate_closed_checkpoint(observer,"terminal-after-readonly-closed-source",events)?;
+        self.revalidate_closed_checkpoint(
+            observer,
+            "terminal-after-readonly-closed-source",
+            events,
+        )?;
         Ok(())
     }
     pub fn readonly_volume(
@@ -1636,7 +1767,7 @@ pub(in crate::native) struct TerminalRawReader {
     position: u64,
     length: u64,
 }
-enum TerminalReadBacking{
+enum TerminalReadBacking {
     Held(super::partition_lifecycle::held_read::HeldSourceRead),
     Independent(File),
 }
@@ -1665,9 +1796,11 @@ impl Read for TerminalRawReader {
         let n = (lead + count).div_ceil(4096) * 4096;
         let at = self.position - lead as u64;
         need(at + n as u64 <= self.length, "terminal read leaves target")?;
-        let got=match &mut self.file{
-            TerminalReadBacking::Held(source)=>source.read_at(at,&mut self.buffer.bytes_mut()[..n])?,
-            TerminalReadBacking::Independent(file)=>{
+        let got = match &mut self.file {
+            TerminalReadBacking::Held(source) => {
+                source.read_at(at, &mut self.buffer.bytes_mut()[..n])?
+            }
+            TerminalReadBacking::Independent(file) => {
                 file.seek(SeekFrom::Start(at))?;
                 file.read(&mut self.buffer.bytes_mut()[..n])?
             }
@@ -2028,8 +2161,11 @@ pub(in crate::native) fn find_terminal_volume(
 // native/observer NotFound error, authorizes another publication attempt.
 #[derive(Debug)]
 struct NoTerminalTargetYet;
-pub(in crate::native) fn terminal_publication_pending(error:&io::Error)->bool{
-    error.kind()==io::ErrorKind::NotFound&&error.get_ref().is_some_and(|inner|inner.is::<NoTerminalTargetYet>())
+pub(in crate::native) fn terminal_publication_pending(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::NotFound
+        && error
+            .get_ref()
+            .is_some_and(|inner| inner.is::<NoTerminalTargetYet>())
 }
 impl std::fmt::Display for NoTerminalTargetYet {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -2073,8 +2209,8 @@ fn publication_checkpoint<T>(
 pub(super) struct PartitionTerminalTargetParts {
     pub(super) file: File,
     pub(super) physical_readonly: File,
-    pub(super) data_profile:PartitionDataProfile,
-    pub(super) physical_data:Option<PartitionPhysicalDataOwner>,
+    pub(super) data_profile: PartitionDataProfile,
+    pub(super) physical_data: Option<PartitionPhysicalDataOwner>,
     pub(super) binding: PartitionSourceBinding,
     pub(super) budget: PartitionObservationBudget,
     pub(super) state: PartitionOwnerState,

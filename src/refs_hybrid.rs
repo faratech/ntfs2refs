@@ -3,7 +3,7 @@
 //! here. A caller must independently establish complete required-byte coverage
 //! before this candidate can become a reconstruction target.
 use crate::refs_write_set::{ByteRange, WriteSetPlan};
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result, ensure};
 use serde::Serialize;
 use std::io::{self, Read, Seek, SeekFrom};
 

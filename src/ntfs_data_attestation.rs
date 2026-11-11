@@ -178,8 +178,16 @@ pub fn check_file_with_extent_evidence_domain(
     selector: &n2r_win32::attestation::NativeRequestRow,
     resources: n2r_win32::tree_resources::SourceResourceAdmission,
 ) -> Result<(u64, usize, u64)> {
-    check_file_with_extent_evidence_domain_scoped(source, file, logical, observation,
-        native, selector, resources, false)
+    check_file_with_extent_evidence_domain_scoped(
+        source,
+        file,
+        logical,
+        observation,
+        native,
+        selector,
+        resources,
+        false,
+    )
 }
 
 /// Native comparison scope only. The caller derives Windows scope from the
@@ -209,7 +217,9 @@ pub(crate) fn check_file_with_extent_evidence_domain_scoped(
         &selector.extent_identity_streams,
         |stream| {
             if windows_paths {
-                crate::ntfs_attestation::extent_identity_stream_request_windows_domain(source, file, stream)
+                crate::ntfs_attestation::extent_identity_stream_request_windows_domain(
+                    source, file, stream,
+                )
             } else {
                 crate::ntfs_attestation::extent_identity_stream_request_domain(
                     source, file, stream, true, true,

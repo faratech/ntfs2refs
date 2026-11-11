@@ -28,13 +28,21 @@ pub struct AliasObjectShapeRef<'a> {
     pub is_reparse: bool,
 }
 impl AliasObjectShape for AliasObjectShapeRef<'_> {
-    fn directory(&self) -> bool { self.directory }
-    fn is_reparse(&self) -> bool { self.is_reparse }
+    fn directory(&self) -> bool {
+        self.directory
+    }
+    fn is_reparse(&self) -> bool {
+        self.is_reparse
+    }
     fn primary_path_matches(&self, path: &[String]) -> io::Result<bool> {
         Ok(self.components == path)
     }
     fn contains_path(&self, path: &[String]) -> io::Result<bool> {
-        Ok(self.components == path || self.additional_names.iter().any(|name| name.as_slice() == path))
+        Ok(self.components == path
+            || self
+                .additional_names
+                .iter()
+                .any(|name| name.as_slice() == path))
     }
 }
 
@@ -56,14 +64,20 @@ impl InputDigestMemo {
         if !crate::verify_policy::checks_once() {
             return None;
         }
-        let known = *self.digest.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let known = *self
+            .digest
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if known.is_some() && crate::verify_policy::full(&self.last_full) {
             return None;
         }
         known
     }
     pub(crate) fn set(&self, digest: [u8; 32]) {
-        *self.digest.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(digest);
+        *self
+            .digest
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(digest);
     }
 }
 
@@ -97,14 +111,22 @@ pub trait InputDomain {
     }
     /// Optional capacity policy, never native write authority. Call only
     /// immediately before a bounded allocating operation, not on reads.
-    fn before_mutation(&self, _operation_bytes: u64) -> io::Result<()> { Ok(()) }
+    fn before_mutation(&self, _operation_bytes: u64) -> io::Result<()> {
+        Ok(())
+    }
     /// Called with a failure confined to one object in a pass where that object
     /// can be left behind. The default refuses, which stops the pass as before.
     /// A diagnostic owner may record it and return Ok so the pass continues and
     /// reports every such object; that owner must then refuse to publish.
-    fn defer_failure(&self, error: io::Error) -> io::Result<()> { Err(error) }
-    fn require_mutation_binding(&self, _shadow: &crate::general_layout::GeneralDiskBinding)
-        -> io::Result<()> { Ok(()) }
+    fn defer_failure(&self, error: io::Error) -> io::Result<()> {
+        Err(error)
+    }
+    fn require_mutation_binding(
+        &self,
+        _shadow: &crate::general_layout::GeneralDiskBinding,
+    ) -> io::Result<()> {
+        Ok(())
+    }
     /// New paged admissions require an actual immutable page owner. Legacy
     /// slices intentionally cannot supply that owner from their metadata.
     fn require_paged_metadata(

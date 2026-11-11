@@ -33,7 +33,9 @@ impl terminal::PartitionRestorationObserver for CancelObserver {
         // This adapter is used only by readonly volume-publication queries.
         // Actual changes must pass through the live guard's durable intent
         // and native setter; never synthesize a successful native I/O event.
-        Err(invalid("live cancellation partition changes require the owning guard"))
+        Err(invalid(
+            "live cancellation partition changes require the owning guard",
+        ))
     }
 }
 fn wait_volume(

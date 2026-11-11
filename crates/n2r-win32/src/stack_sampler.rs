@@ -135,7 +135,9 @@ mod imp {
         fn drop(&mut self) {
             // The sampler holds this lock while it uses the handles, so a
             // handle is never closed under it.
-            let mut helpers = HELPERS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut helpers = HELPERS
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if let Some(position) = helpers.iter().position(|(thread, _)| *thread == self.0) {
                 let (_, handle) = helpers.swap_remove(position);
                 // SAFETY: a thread handle `helper` opened, removed from the list.
@@ -145,7 +147,9 @@ mod imp {
     }
 
     pub fn start(output: PathBuf) {
-        let mut state = STATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = STATE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if state.is_some() {
             return;
         }
@@ -169,7 +173,9 @@ mod imp {
         if !ENABLED.load(Relaxed) {
             return;
         }
-        let mut state = STATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = STATE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let Some(state) = state.as_mut() else { return };
         if let Some(phase) = phase {
             state.phase = phase.to_owned();
@@ -248,7 +254,9 @@ mod imp {
             }
             // A helper is never stopped while it holds this lock, because the
             // lock is held here; nothing is allocated while one is stopped.
-            let helpers = HELPERS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let helpers = HELPERS
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             for (_, helper) in helpers.iter() {
                 // SAFETY: an open handle to another thread of this process
                 // with the same access, kept open by the lock held here.
@@ -395,10 +403,8 @@ mod imp {
                     while *line.FileName.add(length) != 0 {
                         length += 1;
                     }
-                    let file = String::from_utf16_lossy(std::slice::from_raw_parts(
-                        line.FileName,
-                        length,
-                    ));
+                    let file =
+                        String::from_utf16_lossy(std::slice::from_raw_parts(line.FileName, length));
                     let parts: Vec<&str> = file.split(['\\', '/']).collect();
                     let tail = parts[parts.len().saturating_sub(3)..].join("/");
                     format!("{tail}:{}", line.LineNumber)
@@ -469,7 +475,9 @@ mod imp {
             } else {
                 (label & !HELPER_SAMPLE) + labels.len()
             };
-            *merged.entry((label, innermost_place, functions)).or_default() += count;
+            *merged
+                .entry((label, innermost_place, functions))
+                .or_default() += count;
         }
         // SAFETY: releases the symbol handler initialized above.
         unsafe { SymCleanup(process) };

@@ -59,21 +59,29 @@ fn read(path: &Path) -> Result<Vec<Record>> {
 
 fn main() -> Result<ExitCode> {
     match Args::parse().command {
-        Command::Capture { root, output, threads } => {
+        Command::Capture {
+            root,
+            output,
+            threads,
+        } => {
             #[cfg(windows)]
             {
                 let started = std::time::Instant::now();
                 let records = volume_manifest::capture(&root, threads)
                     .with_context(|| format!("listing {}", root.display()))?;
                 let mut out = BufWriter::new(
-                    File::create(&output).with_context(|| format!("creating {}", output.display()))?,
+                    File::create(&output)
+                        .with_context(|| format!("creating {}", output.display()))?,
                 );
                 for record in &records {
                     serde_json::to_writer(&mut out, record)?;
                     out.write_all(b"\n")?;
                 }
                 out.flush()?;
-                let unreadable = records.iter().filter(|record| !record.errors.is_empty()).count();
+                let unreadable = records
+                    .iter()
+                    .filter(|record| !record.errors.is_empty())
+                    .count();
                 println!(
                     "{}",
                     serde_json::json!({
@@ -91,7 +99,11 @@ fn main() -> Result<ExitCode> {
                 anyhow::bail!("listing a volume requires Windows")
             }
         }
-        Command::Compare { before, after, report } => {
+        Command::Compare {
+            before,
+            after,
+            report,
+        } => {
             let comparison = volume_manifest::compare(&read(&before)?, &read(&after)?);
             let mut out = BufWriter::new(
                 File::create(&report).with_context(|| format!("creating {}", report.display()))?,
@@ -110,7 +122,11 @@ fn main() -> Result<ExitCode> {
                     "kinds": comparison.difference_kinds,
                 })
             );
-            Ok(if comparison.identical() { ExitCode::SUCCESS } else { ExitCode::from(2) })
+            Ok(if comparison.identical() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(2)
+            })
         }
     }
 }

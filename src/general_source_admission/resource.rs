@@ -92,7 +92,7 @@ pub struct ResourceSourceReport<'a> {
     pub gates: &'a [Gate],
     pub source_group_bytes: u64,
     pub source_native_groups_sealed: bool,
-    #[serde(skip_serializing_if="Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub native_observation_origin: Option<&'a n2r_win32::NativeSourceObservationOrigin>,
     pub source_group_allocated_bytes: Option<u64>,
     pub native_group_allocated_bytes: Option<u64>,
@@ -106,17 +106,18 @@ pub struct ResourceSourceReport<'a> {
 pub(crate) mod source_owner;
 use source_owner::ResourceSourceOwner;
 
-#[path = "resource_partition.rs"]
-pub(crate) mod partition;
-#[path = "raw_target_security.rs"]
-mod raw_target_security;
 #[path = "resource_cache.rs"]
 pub mod cache;
 #[path = "resource_cache_refresh.rs"]
 pub(crate) mod cache_refresh;
+#[path = "resource_partition.rs"]
+pub(crate) mod partition;
+#[path = "raw_target_security.rs"]
+mod raw_target_security;
 pub use cache::{SourceCacheFilePin, SourceCacheOriginPins};
 pub struct ResourceSourceContext {
-    early_preparation_guard: Option<crate::resource_preparation::early_guard::EarlyPreparationGuard>,
+    early_preparation_guard:
+        Option<crate::resource_preparation::early_guard::EarlyPreparationGuard>,
     source: ResourceSourceOwner,
     raw: PagedInspection,
     windows_aliases: Option<Arc<crate::boot_alias::WindowsAliasDomain>>,
@@ -171,12 +172,24 @@ pub(crate) struct CachedExpectedRebind {
     source_owner: usize,
 }
 impl CachedExpectedRebind {
-    pub(crate) fn into_parts(self,body:&crate::shadow_tree::PagedExpectedTree)
-        ->Result<(crate::shadow_tree::ExpectedBindingFacts,usize)>{
-        self.facts.validate(self.facts.effective_admission,body.file_sha256(),body.semantic_sha256())?;
-        ensure!(self.facts.original_admission==body.header().resource_admission.context("cached original header absent")?,
-            "live expected rebind witness belongs to another original body");
-        Ok((self.facts,self.source_owner))
+    pub(crate) fn into_parts(
+        self,
+        body: &crate::shadow_tree::PagedExpectedTree,
+    ) -> Result<(crate::shadow_tree::ExpectedBindingFacts, usize)> {
+        self.facts.validate(
+            self.facts.effective_admission,
+            body.file_sha256(),
+            body.semantic_sha256(),
+        )?;
+        ensure!(
+            self.facts.original_admission
+                == body
+                    .header()
+                    .resource_admission
+                    .context("cached original header absent")?,
+            "live expected rebind witness belongs to another original body"
+        );
+        Ok((self.facts, self.source_owner))
     }
 }
 
@@ -266,7 +279,9 @@ impl n2r_win32::shadow_native::report_memory::ReportMemoryAccountant for SourceN
         bytes: u64,
     ) -> io::Result<Box<dyn n2r_win32::shadow_native::report_memory::ReportMemoryLease>> {
         Ok(Box::new(SourceNativeMemoryLease(
-            self.0.reserve_optional_ram(bytes).map_err(io::Error::other)?,
+            self.0
+                .reserve_optional_ram(bytes)
+                .map_err(io::Error::other)?,
         )))
     }
     fn lease_heap_bytes(&self) -> u64 {
@@ -663,16 +678,25 @@ fn guarded_collection_failure(
     original: anyhow::Error,
     mut guard: Option<&mut crate::resource_preparation::early_guard::EarlyPreparationGuard>,
 ) -> anyhow::Error {
-    eprintln!("Source preparation refused before apply: {original:#}. Restoring unchanged NTFS; preserve the preparation recovery records until cleanup completes.");
+    eprintln!(
+        "Source preparation refused before apply: {original:#}. Restoring unchanged NTFS; preserve the preparation recovery records until cleanup completes."
+    );
     let _ = io::stderr().flush();
     let intent_error = if workspace.is_some() {
-        guard.as_deref_mut().and_then(|g| g.mark_live_cancel_intent().err())
-    } else { None };
+        guard
+            .as_deref_mut()
+            .and_then(|g| g.mark_live_cancel_intent().err())
+    } else {
+        None
+    };
     // Preserve the existing actual source/fingerprint/full-hash restoration.
     let mut error = crate::resource_preparation::abort::after_collection_failure(
-        source, workspace, geometry, events, original);
+        source, workspace, geometry, events, original,
+    );
     if let Some(intent_error) = intent_error {
-        error = error.context(format!("durable early cancellation intent did not close: {intent_error:#}"));
+        error = error.context(format!(
+            "durable early cancellation intent did not close: {intent_error:#}"
+        ));
     } else if workspace.is_some() {
         if let Some(guard) = guard {
             if let Err(closing) = guard.mark_live_cancelled(events) {
@@ -694,7 +718,9 @@ impl ResourceSourceContext {
         events: &mut Vec<NativeEvent>,
         phase: &mut &'static str,
     ) -> Result<Self> {
-        Self::collect(binding, budget, policy, output, events, phase, None, false, None, None)
+        Self::collect(
+            binding, budget, policy, output, events, phase, None, false, None, None,
+        )
     }
 
     /// Reserve real source and native groups before any source freeze or
@@ -708,7 +734,9 @@ impl ResourceSourceContext {
         events: &mut Vec<NativeEvent>,
         phase: &mut &'static str,
     ) -> Result<Self> {
-        Self::prepare_with_failure_restore(binding, budget, policy, output, arena, events, phase, false)
+        Self::prepare_with_failure_restore(
+            binding, budget, policy, output, arena, events, phase, false,
+        )
     }
 
     pub(crate) fn prepare_with_failure_restore(
@@ -721,7 +749,17 @@ impl ResourceSourceContext {
         phase: &mut &'static str,
         restore_on_failure: bool,
     ) -> Result<Self> {
-        Self::prepare_with_guard(binding, budget, policy, output, arena, events, phase, restore_on_failure, None)
+        Self::prepare_with_guard(
+            binding,
+            budget,
+            policy,
+            output,
+            arena,
+            events,
+            phase,
+            restore_on_failure,
+            None,
+        )
     }
 
     pub(crate) fn prepare_with_guard(
@@ -743,8 +781,10 @@ impl ResourceSourceContext {
             ArtifactGroup::Source,
             SourceMetadataBudget::from_resource_budget(budget)?.scratch_bytes,
         )?;
-        let native =
-            arena.reserve_group(ArtifactGroup::Native, arena.native_page_budget()?.max_file_bytes)?;
+        let native = arena.reserve_group(
+            ArtifactGroup::Native,
+            arena.native_page_budget()?.max_file_bytes,
+        )?;
         Self::collect(
             binding,
             budget,
@@ -762,25 +802,52 @@ impl ResourceSourceContext {
     /// bounds are retained; the caller supplies a freshly admitted real arena,
     /// source exclusion guard and independent canonical origin checksum.
     pub(crate) fn prepare_cached_exact_with_guard(
-        binding: GeneralDiskBinding, budget: ResourceBudget, policy: VerificationPolicy,
-        output: &Path, arena: &ArtifactArena, events: &mut Vec<NativeEvent>,
-        phase: &mut &'static str, restore_on_failure: bool,
+        binding: GeneralDiskBinding,
+        budget: ResourceBudget,
+        policy: VerificationPolicy,
+        output: &Path,
+        arena: &ArtifactArena,
+        events: &mut Vec<NativeEvent>,
+        phase: &mut &'static str,
+        restore_on_failure: bool,
         guard: crate::resource_preparation::early_guard::EarlyPreparationGuard,
-        origin: &SourceCacheOriginPins, origin_sha256: [u8;32],
+        origin: &SourceCacheOriginPins,
+        origin_sha256: [u8; 32],
     ) -> Result<Self> {
-        ensure!(arena.budget()==budget&&policy==VerificationPolicy::ExtentIdentityV1
-            && origin.canonical_sha256()?==origin_sha256,
-            "cached source requires exact origin pin, extent policy and new actual arena");
-        let native=arena.reserve_group(ArtifactGroup::Native,arena.native_page_budget()?.max_file_bytes)?;
+        ensure!(
+            arena.budget() == budget
+                && policy == VerificationPolicy::ExtentIdentityV1
+                && origin.canonical_sha256()? == origin_sha256,
+            "cached source requires exact origin pin, extent policy and new actual arena"
+        );
+        let native = arena.reserve_group(
+            ArtifactGroup::Native,
+            arena.native_page_budget()?.max_file_bytes,
+        )?;
         // Existing native pages already occupy working-volume space. Hash and
         // retain their real file owner before promising fresh Source/Auxiliary
         // capacity, so check_free credits only their actual allocation.
-        let native_owner=native.adopt_existing(&origin.native_pages.path,
-            &origin.native_pages.sha256,origin.native_pages.bytes)?;
-        let source=arena.reserve_group(ArtifactGroup::Source,
-            SourceMetadataBudget::from_resource_budget(budget)?.scratch_bytes)?;
-        let result=Self::collect(binding,budget,policy,output,events,phase,Some((arena.clone(),source,native)),
-            restore_on_failure,Some(guard),Some((origin,origin_sha256)));
+        let native_owner = native.adopt_existing(
+            &origin.native_pages.path,
+            &origin.native_pages.sha256,
+            origin.native_pages.bytes,
+        )?;
+        let source = arena.reserve_group(
+            ArtifactGroup::Source,
+            SourceMetadataBudget::from_resource_budget(budget)?.scratch_bytes,
+        )?;
+        let result = Self::collect(
+            binding,
+            budget,
+            policy,
+            output,
+            events,
+            phase,
+            Some((arena.clone(), source, native)),
+            restore_on_failure,
+            Some(guard),
+            Some((origin, origin_sha256)),
+        );
         drop(native_owner);
         result
     }
@@ -793,8 +860,10 @@ impl ResourceSourceContext {
         phase: &mut &'static str,
         groups: Option<(ArtifactArena, ArtifactGroupPermit, ArtifactGroupPermit)>,
         restore_on_failure: bool,
-        mut early_preparation_guard: Option<crate::resource_preparation::early_guard::EarlyPreparationGuard>,
-        cached_origin: Option<(&SourceCacheOriginPins,[u8;32])>,
+        mut early_preparation_guard: Option<
+            crate::resource_preparation::early_guard::EarlyPreparationGuard,
+        >,
+        cached_origin: Option<(&SourceCacheOriginPins, [u8; 32])>,
     ) -> Result<Self> {
         binding.validate()?;
         budget.validate()?;
@@ -808,13 +877,19 @@ impl ResourceSourceContext {
             output.parent().context("output parent absent")?,
         )?;
         if cached_origin.is_some() {
-            let (arena,_,_)=groups.as_ref().context("cached source requires actual resumed arena ownership")?;
-            ensure!(arena.budget()==budget&&budget.ram_bytes<=available.available_physical_bytes,
-                "cached source wire bounds lost actual current RAM/arena admission");
+            let (arena, _, _) = groups
+                .as_ref()
+                .context("cached source requires actual resumed arena ownership")?;
+            ensure!(
+                arena.budget() == budget && budget.ram_bytes <= available.available_physical_bytes,
+                "cached source wire bounds lost actual current RAM/arena admission"
+            );
             // Existing ordinary cache bytes already consume physical space.
             // The actual new_resuming arena and each adopted/future group
             // retain the current-free-space checks; do not charge old S again.
-        } else { available.validate_budget(budget)?; }
+        } else {
+            available.validate_budget(budget)?;
+        }
         ensure!(!output.exists(), "fresh resource source output required");
         let source_output = output.join("source");
         let native_output = output.join("native");
@@ -867,10 +942,13 @@ impl ResourceSourceContext {
             vss_before.source_volume_guid.eq_ignore_ascii_case(&volume),
             "VSS source route differs"
         );
-        let source_io_ram = scratch.lease_ram(GeneralFrozenPartition::read_buffer_memory_bytes_for(&binding))?;
+        let source_io_ram = scratch.lease_ram(
+            GeneralFrozenPartition::read_buffer_memory_bytes_for(&binding),
+        )?;
         *phase = "source-freeze";
-        let mut online = native_batch(events, |batch|
-            n2r_win32::GeneralPartitionReader::open(binding.clone(), batch))?;
+        let mut online = native_batch(events, |batch| {
+            n2r_win32::GeneralPartitionReader::open(binding.clone(), batch)
+        })?;
         let mut boot = [0; 512];
         online.read_exact(&mut boot)?;
         let geometry = ntfs_inspect::inspect_boot_sector(&boot, online.byte_len())?;
@@ -881,8 +959,9 @@ impl ResourceSourceContext {
         );
         native_batch(events, |batch| online.revalidate_route(batch))?;
         drop(online);
-        let mount_paths = native_batch(events, |batch|
-            n2r_win32::capture_mount_paths_general(binding.clone(), batch))?;
+        let mount_paths = native_batch(events, |batch| {
+            n2r_win32::capture_mount_paths_general(binding.clone(), batch)
+        })?;
         let label = n2r_win32::volume_label::capture_source_label(binding.clone())?;
         ensure!(
             mount_paths.binding == binding
@@ -924,46 +1003,73 @@ impl ResourceSourceContext {
             None
         };
         let source = if let Some(guard) = &mut early_preparation_guard {
-            native_batch(events, |batch| guard.isolate(binding.clone(), budget, batch))?
+            native_batch(events, |batch| {
+                guard.isolate(binding.clone(), budget, batch)
+            })?
         } else if restore_on_failure {
-            native_batch(events, |batch|
+            native_batch(events, |batch| {
                 GeneralFrozenPartition::isolate_observed_ntfs_with_resource_budget_restore_on_error(
-                    binding.clone(), budget, batch,
-                ))?
+                    binding.clone(),
+                    budget,
+                    batch,
+                )
+            })?
         } else {
-            native_batch(events, |batch|
+            native_batch(events, |batch| {
                 GeneralFrozenPartition::isolate_observed_ntfs_with_resource_budget(
-                    binding.clone(), budget, batch,
-                ))?
+                    binding.clone(),
+                    budget,
+                    batch,
+                )
+            })?
         };
         let mut source_slot = Some(source);
         let result = (|| -> Result<Self> {
-        let mut source = source_slot.as_mut().context("isolated source owner absent")?;
-        let before = native_batch(events, |batch| source.state(batch))?;
-        ensure!(
-            before.disk_attributes == 3 && source.freeze_observation().is_some(),
-            "actual observed source freeze absent"
-        );
-        let length = source.byte_len();
-        *phase = "source-inspection";
-        let mut reopened_cache=None;
-        n2r_win32::perf::step("read NTFS records");
-        let (raw, read_coverage) = if let Some((origin,pin))=cached_origin {
-            *phase="source-cache-exact-byte-revalidation";
-            let (arena,group,_)=groups.as_ref().context("cache reopening requires actual source/native arena permits")?;
-            let (raw,coverage,opened)=origin.open_raw(&mut source,budget,&scratch,group,arena,output,pin,events)?;
-            reopened_cache=Some(opened);(raw,coverage)
-        } else { fp::inspect_recorded_with_layout_scope(
-            &mut source,
-            length,
-            budget,
-            policy,
-            &output.join("recorded-source"),
-            &scratch,
-            binding.layout_profile,
-        )? };
-        if let Some(cache)=reopened_cache.as_ref(){
-            save(output,"source-cache-revalidation.json",&serde_json::json!({
+            let mut source = source_slot
+                .as_mut()
+                .context("isolated source owner absent")?;
+            let before = native_batch(events, |batch| source.state(batch))?;
+            ensure!(
+                before.disk_attributes == 3 && source.freeze_observation().is_some(),
+                "actual observed source freeze absent"
+            );
+            let length = source.byte_len();
+            *phase = "source-inspection";
+            let mut reopened_cache = None;
+            n2r_win32::perf::step("read NTFS records");
+            let (raw, read_coverage) = if let Some((origin, pin)) = cached_origin {
+                *phase = "source-cache-exact-byte-revalidation";
+                let (arena, group, _) = groups
+                    .as_ref()
+                    .context("cache reopening requires actual source/native arena permits")?;
+                let (raw, coverage, opened) = origin.open_raw(
+                    &mut source,
+                    budget,
+                    &scratch,
+                    group,
+                    arena,
+                    output,
+                    pin,
+                    events,
+                )?;
+                reopened_cache = Some(opened);
+                (raw, coverage)
+            } else {
+                fp::inspect_recorded_with_layout_scope(
+                    &mut source,
+                    length,
+                    budget,
+                    policy,
+                    &output.join("recorded-source"),
+                    &scratch,
+                    binding.layout_profile,
+                )?
+            };
+            if let Some(cache) = reopened_cache.as_ref() {
+                save(
+                    output,
+                    "source-cache-revalidation.json",
+                    &serde_json::json!({
                 "kind":"fresh-source-cache-revalidation-v2",
                 "origin_sha256":hex::encode(cache.origin_sha256),
                 "raw_inspection_origin":if cache.refresh.is_some(){"fresh_metadata_with_revalidated_cached_native_rows"}else{"cached_revalidated"},
@@ -974,727 +1080,917 @@ impl ResourceSourceContext {
                 "old_owner_or_guard_reused":false,"new_source_freeze_observed":true,
                 "native_per_file_recollection_performed":false,
                 "source_admitted":false,"execution_authorized":false}),
-                &scratch,&mut metadata,&mut reservations)?;
-        }
-        ensure!(
-            raw.header().geometry == geometry,
-            "frozen source geometry differs from online capture"
-        );
-        let inspection_sha = raw.canonical_sha256()?;
-        let storage_hint_ram = if binding.layout_profile
-            == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows {
-            Some(scratch.lease_ram(16384)?)
-        } else { None };
-        let storage_hint_normalization = if storage_hint_ram.is_some() {
-            let proof = Arc::new(native_batch(events, |batch|
-                source.observe_boot_storage_hint_normalization(batch))?);
-            native_batch(events, |batch| proof.revalidate(source, batch))?;
-            Some(proof)
-        } else { None };
-        n2r_win32::perf::step("plan short-name links");
-        let mut windows_aliases = if binding.layout_profile
-            == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows {
-            let mut aliases = crate::boot_alias::WindowsAliasDomain::derive(
-                &raw, &output.join("windows-aliases"), &scratch,
-            )?;
-            aliases.bind_storage_hint_normalization(&raw,
-                Arc::clone(storage_hint_normalization.as_ref().context("Windows storage normalization witness absent")?))?;
-            let aliases = Arc::new(aliases);
-            aliases.require_source(&raw)?;
-            save(output, "windows-alias-source.json", &serde_json::json!({
-                "kind":"frozen-Windows-derived-alias-plan-v1", "source_inspection_sha256":inspection_sha,
-                "aliases":aliases.pin(), "alias_count":aliases.len(),
-                "source_normalization_authorized":false, "target_preservation_verified":false,
-            }), &scratch, &mut metadata, &mut reservations)?;
-            Some(aliases)
-        } else { None };
-        save(
-            output,
-            "source-manifest.json",
-            raw.pin(),
-            &scratch,
-            &mut metadata,
-            &mut reservations,
-        )?;
-        save(
-            output,
-            "inspection-read-coverage.json",
-            &read_coverage.report()?,
-            &scratch,
-            &mut metadata,
-            &mut reservations,
-        )?;
-        n2r_win32::perf::step("build and read source fingerprint");
-        let fingerprint = if let Some(cache)=reopened_cache.as_mut(){
-            cache.fingerprint.take().context("cached fingerprint owner already consumed")?
-        } else { PagedSourceFingerprint::for_inspection(
-            &raw,
-            length,
-            policy,
-            &output.join("fingerprint"),
-        )? };
-        fingerprint.validate_inspection_reads(&read_coverage)?;
-        *phase = "source-fingerprint";
-        let source_sha = fingerprint.hash(&mut source)?;
-        save(
-            output,
-            "source-frozen.json",
-            &serde_json::json!({"binding":binding,"source_sha256":source_sha,
-            "inspection_sha256":inspection_sha,"fingerprint":fingerprint.pins(),"scope":fingerprint.report(),
-            "state":before,"freeze_observation":source.freeze_observation(),"source_payload_writes":0}),
-            &scratch,
-            &mut metadata,
-            &mut reservations,
-        )?;
-        n2r_win32::perf::step("verify backup boot sector, log and label");
-        let backups = ntfs_backup::verify_domain(&mut source, length, &raw)?;
-        let log = ntfs_log::verify_domain(&mut source, &raw)?;
-        let label_frozen = source_volume_label::verify_domain(&mut source, &raw, label.label())?;
-        save(
-            output,
-            "source-basis.json",
-            &serde_json::json!({"backups":backups,"log_restart":log,
-            "label":label_frozen,"source_admitted":false}),
-            &scratch,
-            &mut metadata,
-            &mut reservations,
-        )?;
-        *phase = "source-observation-selectors";
-        n2r_win32::perf::step("select objects and check target security");
-        let selectors = PagedObservationRequest::new(&raw, &binding, budget, policy)?;
-        let admission = selectors.admission();
-        if binding.layout_profile == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows {
-            *phase = "source-raw-target-security-preflight";
-            let report = raw_target_security::inspect(&raw, admission, &scratch)?;
+                    &scratch,
+                    &mut metadata,
+                    &mut reservations,
+                )?;
+            }
+            ensure!(
+                raw.header().geometry == geometry,
+                "frozen source geometry differs from online capture"
+            );
+            let inspection_sha = raw.canonical_sha256()?;
+            let storage_hint_ram = if binding.layout_profile
+                == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+            {
+                Some(scratch.lease_ram(16384)?)
+            } else {
+                None
+            };
+            let storage_hint_normalization = if storage_hint_ram.is_some() {
+                let proof = Arc::new(native_batch(events, |batch| {
+                    source.observe_boot_storage_hint_normalization(batch)
+                })?);
+                native_batch(events, |batch| proof.revalidate(source, batch))?;
+                Some(proof)
+            } else {
+                None
+            };
+            n2r_win32::perf::step("plan short-name links");
+            let mut windows_aliases = if binding.layout_profile
+                == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+            {
+                let mut aliases = crate::boot_alias::WindowsAliasDomain::derive(
+                    &raw,
+                    &output.join("windows-aliases"),
+                    &scratch,
+                )?;
+                aliases.bind_storage_hint_normalization(
+                    &raw,
+                    Arc::clone(
+                        storage_hint_normalization
+                            .as_ref()
+                            .context("Windows storage normalization witness absent")?,
+                    ),
+                )?;
+                let aliases = Arc::new(aliases);
+                aliases.require_source(&raw)?;
+                save(
+                    output,
+                    "windows-alias-source.json",
+                    &serde_json::json!({
+                        "kind":"frozen-Windows-derived-alias-plan-v1", "source_inspection_sha256":inspection_sha,
+                        "aliases":aliases.pin(), "alias_count":aliases.len(),
+                        "source_normalization_authorized":false, "target_preservation_verified":false,
+                    }),
+                    &scratch,
+                    &mut metadata,
+                    &mut reservations,
+                )?;
+                Some(aliases)
+            } else {
+                None
+            };
             save(
                 output,
-                "source-raw-target-security-preflight.json",
-                &report,
+                "source-manifest.json",
+                raw.pin(),
                 &scratch,
                 &mut metadata,
                 &mut reservations,
             )?;
-            ensure!(report.scan_complete && report.pure_security_eligible,
-                "raw Windows source security exceeds the pure target-construction profile; see source-raw-target-security-preflight.json; native source diagnostics were not started");
-        }
-        *phase = "source-observation";
-        if let Some((arena, _, _)) = &groups { arena.require_native_allocation(admission)?; }
-        let native_path = native_output.join("native.pages");
-        let native_permit = if reopened_cache.is_some(){None}else{groups
-            .as_ref()
-            .map(|(_, _, group)| {
-                group.reserve_file(&native_path, admission.native_page_budget()?.max_file_bytes)
-            })
-            .transpose()?};
-        let native_destination = native_permit
-            .as_ref()
-            .map_or(native_path.as_path(), |p| p.path());
-        let native_payer_ram = groups
-            .as_ref()
-            .map(|_| scratch.lease_ram(std::mem::size_of::<SourceNativeMemory>() as u64 + 128))
-            .transpose()?;
-        let mut cached_native_artifact=None;
-        n2r_win32::perf::step("observe source through Windows");
-        let native = if let Some(cache)=reopened_cache.as_mut(){
-            *phase="source-cache-fresh-protected-runtime";
-            let (arena,_,native_group)=groups.as_ref().context("cache native arena permit absent")?;
-            let artifact=match arena.retained_artifact(&cache.native.path) {
-                Ok(owner)=>{
-                    ensure!(owner.same_group(native_group)&&owner.sha256()==cache.native.sha256
-                        &&owner.wire_bytes()==cache.native.bytes,"cached native actual owner differs");
-                    owner.revalidate()?;
-                    owner
-                }
-                Err(_)=>native_group.adopt_existing(&cache.native.path,&cache.native.sha256,cache.native.bytes)?,
-            };
-            ensure!(artifact.wire_bytes()==cache.native.bytes,"cached native file byte count differs");
-            let proof=cache.continuity.take().context("cached source continuity owner already consumed")?;
-            let observed=if let Some(refresh)=cache.refresh.as_ref(){
-                native_batch(events,|batch|source.observe_metadata_refreshed_cached_ntfs_files_with_memory(
-                    &selectors,&cache.native.path,&cache.native.sha256,admission.native_observation_budget()?,
-                    proof,&fingerprint,refresh,Arc::new(SourceNativeMemory(arena.clone())),batch))?
-            }else{native_batch(events,|batch| source.observe_revalidated_cached_ntfs_files_with_memory(
-                &selectors,&cache.native.path,&cache.native.sha256,admission.native_observation_budget()?,
-                proof,&fingerprint,Arc::new(SourceNativeMemory(arena.clone())),batch))?};
-            cached_native_artifact=Some(artifact);observed
-        }else{native_batch(events, |batch| if let Some((arena, _, _)) = &groups {
-            source.observe_ntfs_files_paged_domain_with_memory(
-                &selectors,
-                native_destination,
-                admission.native_observation_budget()?,
-                true,
-                true,
-                Arc::new(SourceNativeMemory(arena.clone())),
-                batch,
-            )
-        } else {
-            source.observe_ntfs_files_paged_domain(
-                &selectors,
-                native_destination,
-                admission.native_observation_budget()?,
-                true,
-                true,
-                batch,
-            )
-        })?};
-        ensure!(
-            groups.is_none() || native.domain().retained_storage_ram_accounted(),
-            "actual native source owner lost its shared memory leases"
-        );
-        native.domain().revalidate()?;
-        let native_artifact = if let Some(artifact)=cached_native_artifact{Some(artifact)}else{native_permit
-            .map(|permit| permit.verify_closed(native.domain().sha256()))
-            .transpose()?};
-        let native_seal = groups
-            .as_ref()
-            .map(|(_, _, group)| group.seal())
-            .transpose()?;
-        save(
-            output,
-            "source-native-witness.json",
-            &serde_json::json!({
-                "schema_version":1,
-                "kind":"actual-protected-resource-source-native-witness",
-                "source_inspection_sha256":inspection_sha,
-                "source_fingerprint_before_native":source_sha,
-                "native_pages_sha256":native.domain().sha256(),
-                "native_observation_origin":native.origin(),
-                "protected_windows_txf_markers":native.windows_txf_markers().map(|proof| proof.audit()),
-                "protected_windows_object_ids":native.windows_object_ids().map(|proof| proof.audit()),
-                "txf":native.txf(),
-                "txf_error":native.txf_error(),
-                "before":native.before(),
-                "after":native.after(),
-                "source_admitted":false,
-                "execution_authorized":false
-            }),
-            &scratch,
-            &mut metadata,
-            &mut reservations,
-        )?;
-        let vss_inside = native
-            .vss_observation()
-            .context("protected native VSS absence evidence absent")?;
-        save(
-            output,
-            "source-vss-after-freeze.json",
-            vss_inside,
-            &scratch,
-            &mut metadata,
-            &mut reservations,
-        )?;
-        vss_inside.require_observed_snapshot_absence()?;
-        ensure!(
-            vss_before.same_source_and_provider_inventory(vss_inside),
-            "VSS source/provider inventory changed"
-        );
-        save(
-            output,
-            "native-source-header.json",
-            native.domain().header(),
-            &scratch,
-            &mut metadata,
-            &mut reservations,
-        )?;
-        *phase = "source-admission";
-        n2r_win32::perf::step("re-read source fingerprint");
-        let after_hash = fingerprint.hash(&mut source)?;
-        let after = native_batch(events, |batch| source.state(batch))?;
-        ensure!(
-            before == after
-                && source_sha == after_hash
-                && raw.canonical_sha256()? == inspection_sha,
-            "frozen source changed across actual native observation"
-        );
-        n2r_win32::perf::step("object ids and transactions");
-        let mut indexes = if let Some(proof) = native.windows_object_ids_owned() {
-            ensure!(raw.is_windows_conversion() && proof.binding() == &binding,
-                "Windows object-ID witness belongs to another actual frozen source");
-            ntfs_internal::verify_domain_windows(
-                &mut source, &raw, &output.join("internal-indexes"), &binding, proof,
-            )?
-        } else {
-            ntfs_internal::verify_domain(&mut source, &raw, &output.join("internal-indexes"))?
-        };
-        indexes.bind_native_quota(&native);
-        if let (Some(aliases), Some(proof)) = (windows_aliases.as_mut(), indexes.windows_object_ids_owned()) {
-            Arc::get_mut(aliases).context("Windows alias owner was shared before object-ID disposition binding")?
-                .bind_windows_object_ids(&raw, &binding, proof)?;
-        }
-        let transactions = ntfs_transactions::verify_domain(
-            &raw,
-            &log,
-            source
-                .freeze_observation()
-                .context("original freeze witness absent")?,
-            &native,
-        )?;
-        if let (Some(aliases), Some(proof)) = (windows_aliases.as_mut(), transactions.windows_txf_markers_owned()) {
-            Arc::get_mut(aliases).context("Windows alias owner was shared before TxF disposition binding")?
-                .bind_windows_txf_markers(&raw, &binding, proof)?;
-        }
-        save(
-            output,
-            "source-internal-proofs.json",
-            &serde_json::json!({"indexes":indexes,"transactions":transactions}),
-            &scratch,
-            &mut metadata,
-            &mut reservations,
-        )?;
-        let mut rows_writer =
-            SortedRecordWriter::new(&output.join("source-comparison"), *b"N2RSCMP1", &scratch)?;
-        let mut row_count = 0u64;
-        let mut policy_rejections = 0u64;
-        let mut no_dos = true;
-        let (mut files, mut directories, mut streams, mut logical_bytes) = (0u64, 0u64, 0u64, 0u64);
-        let (mut raw_directories, mut user_case_matched, mut internal_directories) =
-            (0u64, 0u64, 0u64);
-        let internal_bound = indexes.binds_domain(&raw)
-            && indexes.replacement_supported
-            && transactions.binds_domain(&raw)
-            && backups.binds_domain(&raw)
-            && log.binds_domain(&raw);
-        let mut replacements_writer = SortedRecordWriter::new(
-            &output.join("internal-replacements"),
-            *b"N2RREPL1",
-            &scratch,
-        )?;
-        let mut storage_hint_writer = storage_hint_normalization.as_ref().map(|_| {
-            SortedRecordWriter::new(&output.join("storage-hint-normalizations"), *b"WINDSC01", &scratch)
-        }).transpose()?;
-        let mut storage_hint_count = 0u64;
-        n2r_win32::perf::step("compare raw and Windows views");
-        let comparison = compare_domain(&raw, &binding, budget, policy, native.domain(), |row| {
-            let file = raw
-                .find_record(row.record_number, Some(row.sequence_number))?
-                .context("compared source identity absent")?;
-            if let Some(proof) = &storage_hint_normalization {
-                if let Some(normalization) = crate::ntfs_storage_class::normalize(&file, proof)? {
-                    storage_hint_writer.as_mut().context("storage normalization archive absent")?
-                        .push(key(file.record_number), &normalization)?;
-                    storage_hint_count = storage_hint_count.checked_add(1).context("storage normalization count overflow")?;
-                }
-            }
-            no_dos &= file.names.iter().all(|name| name.namespace != 2);
-            let role = ntfs_admission::paged::internal_role(&raw, &file)?;
-            ensure!(
-                role == row.internal_replacement_role,
-                "source replacement role changed"
-            );
-            let issues = if let Some(role) = &role {
-                let action = match role.as_str() {
-                    "$Volume" if indexes.covers_volume_object_id_domain(&raw, 3) => {
-                        "replace_filesystem_internal_volume_identity"
-                    }
-                    "$Extend\\$ObjId" if indexes.internal_volume_object_id().is_some() => {
-                        "replace_ntfs_internal_volume_identity_index"
-                    }
-                    "$LogFile" | "$Extend\\$UsnJrnl" => "start_new_filesystem_journal_epoch",
-                    "$Extend\\$RmMetadata\\$Repair" => "replace_ntfs_runtime_diagnostics",
-                    role if role.starts_with("$Extend\\$RmMetadata")
-                        || role == "$Extend\\$Deleted" =>
-                    {
-                        "replace_idle_default_transaction_metadata"
-                    }
-                    _ => "replace_with_native_refs_structure",
-                };
-                replacements_writer.push(
-                    key(file.record_number),
-                    &InternalReplacement {
-                        record_number: file.record_number,
-                        sequence_number: file.sequence_number,
-                        role: role.clone(),
-                        action,
-                    },
-                )?;
-                Vec::new()
-            } else {
-                if file.is_directory {
-                    directories = directories
-                        .checked_add(1)
-                        .context("directory count overflow")?;
-                } else {
-                    files = files.checked_add(1).context("file count overflow")?;
-                    streams = streams
-                        .checked_add(file.streams.len() as u64)
-                        .context("stream count overflow")?;
-                    for stream in &file.streams {
-                        logical_bytes = logical_bytes
-                            .checked_add(stream.logical_size)
-                            .context("logical total overflow")?;
-                    }
-                }
-                if let Some(aliases) = &windows_aliases {
-                    ntfs_admission::paged::ordinary_user_issues_windows(&raw, &file, admission, aliases)?
-                } else {
-                    ntfs_admission::paged::ordinary_user_issues(&raw, &file, admission)?
-                }
-            };
-            policy_rejections = policy_rejections
-                .checked_add(u64::from(!issues.is_empty()))
-                .context("policy refusal count overflow")?;
-            if file.is_directory {
-                raw_directories = raw_directories
-                    .checked_add(1)
-                    .context("raw directory count overflow")?;
-                if role.is_some() {
-                    internal_directories = internal_directories
-                        .checked_add(1)
-                        .context("internal directory count overflow")?;
-                } else if row.directory_case.as_ref().is_some_and(|c| c.matched) {
-                    user_case_matched = user_case_matched
-                        .checked_add(1)
-                        .context("case-match count overflow")?;
-                }
-            }
-            rows_writer.push(
-                key(file.record_number),
-                &ObjectRow {
-                    native: row,
-                    user_issues: issues,
-                    independent_internal_state_checks_passed: role.is_some() && internal_bound,
-                },
+            save(
+                output,
+                "inspection-read-coverage.json",
+                &read_coverage.report()?,
+                &scratch,
+                &mut metadata,
+                &mut reservations,
             )?;
-            row_count = row_count
-                .checked_add(1)
-                .context("comparison row count overflow")?;
-            Ok(())
-        })?;
-        let rows_pin = rows_writer.finish()?;
-        let replacements_pin = replacements_writer.finish()?;
-        let storage_hint_pin = storage_hint_writer.map(SortedRecordWriter::finish).transpose()?;
-        if let Some(proof) = &storage_hint_normalization {
-            native_batch(events, |batch| proof.revalidate(source, batch))?;
-            save(output, "source-storage-hint-normalizations.json", &serde_json::json!({
-                "kind":"explicit-default-Windows-storage-hint-normalization-v1",
-                "source_inspection_sha256":inspection_sha, "source_device_witness":proof.as_ref(),
-                "normalized_record_count":storage_hint_count, "records":storage_hint_pin.as_ref(),
-                "target_storage_class_property_preserved":false,
-                "policy":"archive exact default class2/flags0 placement hint on fixed non-Spaces storage; refuse all other values",
-            }), &scratch, &mut metadata, &mut reservations)?;
-        }
-        ensure!(
-            row_count == raw.file_count(),
-            "complete per-object source comparison coverage differs"
-        );
-        // Existing data admission still requires no DOS aliases. An explicit
-        // Windows owner may account for them in its held, exact derived plan;
-        // actual target preservation remains a separate final obligation.
-        n2r_win32::perf::step("short names and admission gates");
-        let short_policy = short_names(&raw, &native, no_dos || windows_aliases.is_some());
-        let mut unresolved_writer = SortedRecordWriter::new(
-            &output.join("unresolved-source-blockers"),
-            *b"N2RBLOCK",
-            &scratch,
-        )?;
-        let mut unresolved_count = 0u64;
-        for ordinal in 0..raw.blocker_count() {
-            let blocker = raw.blocker(ordinal)?;
-            let windows_alias_covered = if blocker.code == "dos_short_name" {
-                if let (Some(aliases), Some(number)) = (&windows_aliases, blocker.file_record_number) {
-                    let file = raw.find_record(number, None)?.context("Windows alias blocker identity absent")?;
-                    ensure!(file.names.iter().any(|name| name.namespace == 2), "Windows alias blocker has no DOS source name");
-                    let _ = aliases.user_paths(&raw, &file)?;
-                    true
-                } else { false }
-            } else { false };
-            if windows_alias_covered { continue; }
-            if blocker.code == "unsupported_attribute"
-                && blocker.message == "Attribute type 0x100 needs a preservation policy" {
-                if let (Some(proof), Some(number)) = (&storage_hint_normalization, blocker.file_record_number) {
-                    let file = raw.find_record(number, None)?.context("storage normalization blocker identity absent")?;
-                    if crate::ntfs_storage_class::normalize(&file, proof)?.is_some() {
-                        let role = ntfs_admission::paged::internal_role(&raw, &file)?;
-                        let windows_user_txf = if let Some(aliases) = &windows_aliases {
-                            aliases.windows_txf_accounted(&raw, &file)?
-                        } else { false };
-                        let root_txf_covered = transactions.binds_domain(&raw)
-                            && (number == 5 || role.as_deref() == Some("$Extend\\$RmMetadata\\$Txf") || windows_user_txf);
-                        let all_covered = file.attributes.iter().filter(|attribute| attribute.type_code == 0x100)
-                            .all(|attribute| crate::ntfs_storage_class::recognized_default(attribute)
-                                || (root_txf_covered && ntfs_admission::recognized_root_txf(attribute)));
-                        if all_covered { continue; }
+            n2r_win32::perf::step("build and read source fingerprint");
+            let fingerprint = if let Some(cache) = reopened_cache.as_mut() {
+                cache
+                    .fingerprint
+                    .take()
+                    .context("cached fingerprint owner already consumed")?
+            } else {
+                PagedSourceFingerprint::for_inspection(
+                    &raw,
+                    length,
+                    policy,
+                    &output.join("fingerprint"),
+                )?
+            };
+            fingerprint.validate_inspection_reads(&read_coverage)?;
+            *phase = "source-fingerprint";
+            let source_sha = fingerprint.hash(&mut source)?;
+            save(
+                output,
+                "source-frozen.json",
+                &serde_json::json!({"binding":binding,"source_sha256":source_sha,
+            "inspection_sha256":inspection_sha,"fingerprint":fingerprint.pins(),"scope":fingerprint.report(),
+            "state":before,"freeze_observation":source.freeze_observation(),"source_payload_writes":0}),
+                &scratch,
+                &mut metadata,
+                &mut reservations,
+            )?;
+            n2r_win32::perf::step("verify backup boot sector, log and label");
+            let backups = ntfs_backup::verify_domain(&mut source, length, &raw)?;
+            let log = ntfs_log::verify_domain(&mut source, &raw)?;
+            let label_frozen =
+                source_volume_label::verify_domain(&mut source, &raw, label.label())?;
+            save(
+                output,
+                "source-basis.json",
+                &serde_json::json!({"backups":backups,"log_restart":log,
+            "label":label_frozen,"source_admitted":false}),
+                &scratch,
+                &mut metadata,
+                &mut reservations,
+            )?;
+            *phase = "source-observation-selectors";
+            n2r_win32::perf::step("select objects and check target security");
+            let selectors = PagedObservationRequest::new(&raw, &binding, budget, policy)?;
+            let admission = selectors.admission();
+            if binding.layout_profile
+                == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+            {
+                *phase = "source-raw-target-security-preflight";
+                let report = raw_target_security::inspect(&raw, admission, &scratch)?;
+                save(
+                    output,
+                    "source-raw-target-security-preflight.json",
+                    &report,
+                    &scratch,
+                    &mut metadata,
+                    &mut reservations,
+                )?;
+                ensure!(
+                    report.scan_complete && report.pure_security_eligible,
+                    "raw Windows source security exceeds the pure target-construction profile; see source-raw-target-security-preflight.json; native source diagnostics were not started"
+                );
+            }
+            *phase = "source-observation";
+            if let Some((arena, _, _)) = &groups {
+                arena.require_native_allocation(admission)?;
+            }
+            let native_path = native_output.join("native.pages");
+            let native_permit = if reopened_cache.is_some() {
+                None
+            } else {
+                groups
+                    .as_ref()
+                    .map(|(_, _, group)| {
+                        group.reserve_file(
+                            &native_path,
+                            admission.native_page_budget()?.max_file_bytes,
+                        )
+                    })
+                    .transpose()?
+            };
+            let native_destination = native_permit
+                .as_ref()
+                .map_or(native_path.as_path(), |p| p.path());
+            let native_payer_ram = groups
+                .as_ref()
+                .map(|_| scratch.lease_ram(std::mem::size_of::<SourceNativeMemory>() as u64 + 128))
+                .transpose()?;
+            let mut cached_native_artifact = None;
+            n2r_win32::perf::step("observe source through Windows");
+            let native = if let Some(cache) = reopened_cache.as_mut() {
+                *phase = "source-cache-fresh-protected-runtime";
+                let (arena, _, native_group) = groups
+                    .as_ref()
+                    .context("cache native arena permit absent")?;
+                let artifact = match arena.retained_artifact(&cache.native.path) {
+                    Ok(owner) => {
+                        ensure!(
+                            owner.same_group(native_group)
+                                && owner.sha256() == cache.native.sha256
+                                && owner.wire_bytes() == cache.native.bytes,
+                            "cached native actual owner differs"
+                        );
+                        owner.revalidate()?;
+                        owner
+                    }
+                    Err(_) => native_group.adopt_existing(
+                        &cache.native.path,
+                        &cache.native.sha256,
+                        cache.native.bytes,
+                    )?,
+                };
+                ensure!(
+                    artifact.wire_bytes() == cache.native.bytes,
+                    "cached native file byte count differs"
+                );
+                let proof = cache
+                    .continuity
+                    .take()
+                    .context("cached source continuity owner already consumed")?;
+                let observed = if let Some(refresh) = cache.refresh.as_ref() {
+                    native_batch(events, |batch| {
+                        source.observe_metadata_refreshed_cached_ntfs_files_with_memory(
+                            &selectors,
+                            &cache.native.path,
+                            &cache.native.sha256,
+                            admission.native_observation_budget()?,
+                            proof,
+                            &fingerprint,
+                            refresh,
+                            Arc::new(SourceNativeMemory(arena.clone())),
+                            batch,
+                        )
+                    })?
+                } else {
+                    native_batch(events, |batch| {
+                        source.observe_revalidated_cached_ntfs_files_with_memory(
+                            &selectors,
+                            &cache.native.path,
+                            &cache.native.sha256,
+                            admission.native_observation_budget()?,
+                            proof,
+                            &fingerprint,
+                            Arc::new(SourceNativeMemory(arena.clone())),
+                            batch,
+                        )
+                    })?
+                };
+                cached_native_artifact = Some(artifact);
+                observed
+            } else {
+                native_batch(events, |batch| {
+                    if let Some((arena, _, _)) = &groups {
+                        source.observe_ntfs_files_paged_domain_with_memory(
+                            &selectors,
+                            native_destination,
+                            admission.native_observation_budget()?,
+                            true,
+                            true,
+                            Arc::new(SourceNativeMemory(arena.clone())),
+                            batch,
+                        )
+                    } else {
+                        source.observe_ntfs_files_paged_domain(
+                            &selectors,
+                            native_destination,
+                            admission.native_observation_budget()?,
+                            true,
+                            true,
+                            batch,
+                        )
+                    }
+                })?
+            };
+            ensure!(
+                groups.is_none() || native.domain().retained_storage_ram_accounted(),
+                "actual native source owner lost its shared memory leases"
+            );
+            native.domain().revalidate()?;
+            let native_artifact = if let Some(artifact) = cached_native_artifact {
+                Some(artifact)
+            } else {
+                native_permit
+                    .map(|permit| permit.verify_closed(native.domain().sha256()))
+                    .transpose()?
+            };
+            let native_seal = groups
+                .as_ref()
+                .map(|(_, _, group)| group.seal())
+                .transpose()?;
+            save(
+                output,
+                "source-native-witness.json",
+                &serde_json::json!({
+                    "schema_version":1,
+                    "kind":"actual-protected-resource-source-native-witness",
+                    "source_inspection_sha256":inspection_sha,
+                    "source_fingerprint_before_native":source_sha,
+                    "native_pages_sha256":native.domain().sha256(),
+                    "native_observation_origin":native.origin(),
+                    "protected_windows_txf_markers":native.windows_txf_markers().map(|proof| proof.audit()),
+                    "protected_windows_object_ids":native.windows_object_ids().map(|proof| proof.audit()),
+                    "txf":native.txf(),
+                    "txf_error":native.txf_error(),
+                    "before":native.before(),
+                    "after":native.after(),
+                    "source_admitted":false,
+                    "execution_authorized":false
+                }),
+                &scratch,
+                &mut metadata,
+                &mut reservations,
+            )?;
+            let vss_inside = native
+                .vss_observation()
+                .context("protected native VSS absence evidence absent")?;
+            save(
+                output,
+                "source-vss-after-freeze.json",
+                vss_inside,
+                &scratch,
+                &mut metadata,
+                &mut reservations,
+            )?;
+            vss_inside.require_observed_snapshot_absence()?;
+            ensure!(
+                vss_before.same_source_and_provider_inventory(vss_inside),
+                "VSS source/provider inventory changed"
+            );
+            save(
+                output,
+                "native-source-header.json",
+                native.domain().header(),
+                &scratch,
+                &mut metadata,
+                &mut reservations,
+            )?;
+            *phase = "source-admission";
+            n2r_win32::perf::step("re-read source fingerprint");
+            let after_hash = fingerprint.hash(&mut source)?;
+            let after = native_batch(events, |batch| source.state(batch))?;
+            ensure!(
+                before == after
+                    && source_sha == after_hash
+                    && raw.canonical_sha256()? == inspection_sha,
+                "frozen source changed across actual native observation"
+            );
+            n2r_win32::perf::step("object ids and transactions");
+            let mut indexes = if let Some(proof) = native.windows_object_ids_owned() {
+                ensure!(
+                    raw.is_windows_conversion() && proof.binding() == &binding,
+                    "Windows object-ID witness belongs to another actual frozen source"
+                );
+                ntfs_internal::verify_domain_windows(
+                    &mut source,
+                    &raw,
+                    &output.join("internal-indexes"),
+                    &binding,
+                    proof,
+                )?
+            } else {
+                ntfs_internal::verify_domain(&mut source, &raw, &output.join("internal-indexes"))?
+            };
+            indexes.bind_native_quota(&native);
+            if let (Some(aliases), Some(proof)) =
+                (windows_aliases.as_mut(), indexes.windows_object_ids_owned())
+            {
+                Arc::get_mut(aliases)
+                    .context("Windows alias owner was shared before object-ID disposition binding")?
+                    .bind_windows_object_ids(&raw, &binding, proof)?;
+            }
+            let transactions = ntfs_transactions::verify_domain(
+                &raw,
+                &log,
+                source
+                    .freeze_observation()
+                    .context("original freeze witness absent")?,
+                &native,
+            )?;
+            if let (Some(aliases), Some(proof)) = (
+                windows_aliases.as_mut(),
+                transactions.windows_txf_markers_owned(),
+            ) {
+                Arc::get_mut(aliases)
+                    .context("Windows alias owner was shared before TxF disposition binding")?
+                    .bind_windows_txf_markers(&raw, &binding, proof)?;
+            }
+            save(
+                output,
+                "source-internal-proofs.json",
+                &serde_json::json!({"indexes":indexes,"transactions":transactions}),
+                &scratch,
+                &mut metadata,
+                &mut reservations,
+            )?;
+            let mut rows_writer =
+                SortedRecordWriter::new(&output.join("source-comparison"), *b"N2RSCMP1", &scratch)?;
+            let mut row_count = 0u64;
+            let mut policy_rejections = 0u64;
+            let mut no_dos = true;
+            let (mut files, mut directories, mut streams, mut logical_bytes) =
+                (0u64, 0u64, 0u64, 0u64);
+            let (mut raw_directories, mut user_case_matched, mut internal_directories) =
+                (0u64, 0u64, 0u64);
+            let internal_bound = indexes.binds_domain(&raw)
+                && indexes.replacement_supported
+                && transactions.binds_domain(&raw)
+                && backups.binds_domain(&raw)
+                && log.binds_domain(&raw);
+            let mut replacements_writer = SortedRecordWriter::new(
+                &output.join("internal-replacements"),
+                *b"N2RREPL1",
+                &scratch,
+            )?;
+            let mut storage_hint_writer = storage_hint_normalization
+                .as_ref()
+                .map(|_| {
+                    SortedRecordWriter::new(
+                        &output.join("storage-hint-normalizations"),
+                        *b"WINDSC01",
+                        &scratch,
+                    )
+                })
+                .transpose()?;
+            let mut storage_hint_count = 0u64;
+            n2r_win32::perf::step("compare raw and Windows views");
+            let comparison =
+                compare_domain(&raw, &binding, budget, policy, native.domain(), |row| {
+                    let file = raw
+                        .find_record(row.record_number, Some(row.sequence_number))?
+                        .context("compared source identity absent")?;
+                    if let Some(proof) = &storage_hint_normalization {
+                        if let Some(normalization) =
+                            crate::ntfs_storage_class::normalize(&file, proof)?
+                        {
+                            storage_hint_writer
+                                .as_mut()
+                                .context("storage normalization archive absent")?
+                                .push(key(file.record_number), &normalization)?;
+                            storage_hint_count = storage_hint_count
+                                .checked_add(1)
+                                .context("storage normalization count overflow")?;
+                        }
+                    }
+                    no_dos &= file.names.iter().all(|name| name.namespace != 2);
+                    let role = ntfs_admission::paged::internal_role(&raw, &file)?;
+                    ensure!(
+                        role == row.internal_replacement_role,
+                        "source replacement role changed"
+                    );
+                    let issues = if let Some(role) = &role {
+                        let action = match role.as_str() {
+                            "$Volume" if indexes.covers_volume_object_id_domain(&raw, 3) => {
+                                "replace_filesystem_internal_volume_identity"
+                            }
+                            "$Extend\\$ObjId" if indexes.internal_volume_object_id().is_some() => {
+                                "replace_ntfs_internal_volume_identity_index"
+                            }
+                            "$LogFile" | "$Extend\\$UsnJrnl" => {
+                                "start_new_filesystem_journal_epoch"
+                            }
+                            "$Extend\\$RmMetadata\\$Repair" => "replace_ntfs_runtime_diagnostics",
+                            role if role.starts_with("$Extend\\$RmMetadata")
+                                || role == "$Extend\\$Deleted" =>
+                            {
+                                "replace_idle_default_transaction_metadata"
+                            }
+                            _ => "replace_with_native_refs_structure",
+                        };
+                        replacements_writer.push(
+                            key(file.record_number),
+                            &InternalReplacement {
+                                record_number: file.record_number,
+                                sequence_number: file.sequence_number,
+                                role: role.clone(),
+                                action,
+                            },
+                        )?;
+                        Vec::new()
+                    } else {
+                        if file.is_directory {
+                            directories = directories
+                                .checked_add(1)
+                                .context("directory count overflow")?;
+                        } else {
+                            files = files.checked_add(1).context("file count overflow")?;
+                            streams = streams
+                                .checked_add(file.streams.len() as u64)
+                                .context("stream count overflow")?;
+                            for stream in &file.streams {
+                                logical_bytes = logical_bytes
+                                    .checked_add(stream.logical_size)
+                                    .context("logical total overflow")?;
+                            }
+                        }
+                        if let Some(aliases) = &windows_aliases {
+                            ntfs_admission::paged::ordinary_user_issues_windows(
+                                &raw, &file, admission, aliases,
+                            )?
+                        } else {
+                            ntfs_admission::paged::ordinary_user_issues(&raw, &file, admission)?
+                        }
+                    };
+                    policy_rejections = policy_rejections
+                        .checked_add(u64::from(!issues.is_empty()))
+                        .context("policy refusal count overflow")?;
+                    if file.is_directory {
+                        raw_directories = raw_directories
+                            .checked_add(1)
+                            .context("raw directory count overflow")?;
+                        if role.is_some() {
+                            internal_directories = internal_directories
+                                .checked_add(1)
+                                .context("internal directory count overflow")?;
+                        } else if row.directory_case.as_ref().is_some_and(|c| c.matched) {
+                            user_case_matched = user_case_matched
+                                .checked_add(1)
+                                .context("case-match count overflow")?;
+                        }
+                    }
+                    rows_writer.push(
+                        key(file.record_number),
+                        &ObjectRow {
+                            native: row,
+                            user_issues: issues,
+                            independent_internal_state_checks_passed: role.is_some()
+                                && internal_bound,
+                        },
+                    )?;
+                    row_count = row_count
+                        .checked_add(1)
+                        .context("comparison row count overflow")?;
+                    Ok(())
+                })?;
+            let rows_pin = rows_writer.finish()?;
+            let replacements_pin = replacements_writer.finish()?;
+            let storage_hint_pin = storage_hint_writer
+                .map(SortedRecordWriter::finish)
+                .transpose()?;
+            if let Some(proof) = &storage_hint_normalization {
+                native_batch(events, |batch| proof.revalidate(source, batch))?;
+                save(
+                    output,
+                    "source-storage-hint-normalizations.json",
+                    &serde_json::json!({
+                        "kind":"explicit-default-Windows-storage-hint-normalization-v1",
+                        "source_inspection_sha256":inspection_sha, "source_device_witness":proof.as_ref(),
+                        "normalized_record_count":storage_hint_count, "records":storage_hint_pin.as_ref(),
+                        "target_storage_class_property_preserved":false,
+                        "policy":"archive exact default class2/flags0 placement hint on fixed non-Spaces storage; refuse all other values",
+                    }),
+                    &scratch,
+                    &mut metadata,
+                    &mut reservations,
+                )?;
+            }
+            ensure!(
+                row_count == raw.file_count(),
+                "complete per-object source comparison coverage differs"
+            );
+            // Existing data admission still requires no DOS aliases. An explicit
+            // Windows owner may account for them in its held, exact derived plan;
+            // actual target preservation remains a separate final obligation.
+            n2r_win32::perf::step("short names and admission gates");
+            let short_policy = short_names(&raw, &native, no_dos || windows_aliases.is_some());
+            let mut unresolved_writer = SortedRecordWriter::new(
+                &output.join("unresolved-source-blockers"),
+                *b"N2RBLOCK",
+                &scratch,
+            )?;
+            let mut unresolved_count = 0u64;
+            for ordinal in 0..raw.blocker_count() {
+                let blocker = raw.blocker(ordinal)?;
+                let windows_alias_covered = if blocker.code == "dos_short_name" {
+                    if let (Some(aliases), Some(number)) =
+                        (&windows_aliases, blocker.file_record_number)
+                    {
+                        let file = raw
+                            .find_record(number, None)?
+                            .context("Windows alias blocker identity absent")?;
+                        ensure!(
+                            file.names.iter().any(|name| name.namespace == 2),
+                            "Windows alias blocker has no DOS source name"
+                        );
+                        let _ = aliases.user_paths(&raw, &file)?;
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                if windows_alias_covered {
+                    continue;
+                }
+                if blocker.code == "unsupported_attribute"
+                    && blocker.message == "Attribute type 0x100 needs a preservation policy"
+                {
+                    if let (Some(proof), Some(number)) =
+                        (&storage_hint_normalization, blocker.file_record_number)
+                    {
+                        let file = raw
+                            .find_record(number, None)?
+                            .context("storage normalization blocker identity absent")?;
+                        if crate::ntfs_storage_class::normalize(&file, proof)?.is_some() {
+                            let role = ntfs_admission::paged::internal_role(&raw, &file)?;
+                            let windows_user_txf = if let Some(aliases) = &windows_aliases {
+                                aliases.windows_txf_accounted(&raw, &file)?
+                            } else {
+                                false
+                            };
+                            let root_txf_covered = transactions.binds_domain(&raw)
+                                && (number == 5
+                                    || role.as_deref() == Some("$Extend\\$RmMetadata\\$Txf")
+                                    || windows_user_txf);
+                            let all_covered = file
+                                .attributes
+                                .iter()
+                                .filter(|attribute| attribute.type_code == 0x100)
+                                .all(|attribute| {
+                                    crate::ntfs_storage_class::recognized_default(attribute)
+                                        || (root_txf_covered
+                                            && ntfs_admission::recognized_root_txf(attribute))
+                                });
+                            if all_covered {
+                                continue;
+                            }
+                        }
                     }
                 }
+                if ntfs_admission::paged::blocker_is_unresolved(
+                    &raw,
+                    &blocker,
+                    &backups,
+                    &log,
+                    &indexes,
+                    &transactions,
+                    short_policy,
+                )? {
+                    unresolved_writer.push(key(unresolved_count), &blocker)?;
+                    unresolved_count = unresolved_count
+                        .checked_add(1)
+                        .context("blocker count overflow")?;
+                }
             }
-            if ntfs_admission::paged::blocker_is_unresolved(
-                &raw,
-                &blocker,
-                &backups,
-                &log,
-                &indexes,
-                &transactions,
-                short_policy,
-            )? {
-                unresolved_writer.push(key(unresolved_count), &blocker)?;
-                unresolved_count = unresolved_count
-                    .checked_add(1)
-                    .context("blocker count overflow")?;
+            let unresolved_pin = unresolved_writer.finish()?;
+            let mut gates = Vec::new();
+            if let Some(aliases) = &windows_aliases {
+                aliases.require_source(&raw)?;
+                gate(
+                    &mut gates,
+                    "windows_alias_source_coverage",
+                    true,
+                    "every DOS source name is bound to a canonical same-parent derived target entry; native source identities remain unchanged",
+                );
+                gate(
+                    &mut gates,
+                    "windows_alias_target_preservation",
+                    aliases.is_empty(),
+                    "nonempty Windows alias plans require actual complete protected-target alias verification before writer admission",
+                );
             }
-        }
-        let unresolved_pin = unresolved_writer.finish()?;
-        let mut gates = Vec::new();
-        if let Some(aliases) = &windows_aliases {
-            aliases.require_source(&raw)?;
-            gate(&mut gates, "windows_alias_source_coverage", true,
-                "every DOS source name is bound to a canonical same-parent derived target entry; native source identities remain unchanged");
-            gate(&mut gates, "windows_alias_target_preservation", aliases.is_empty(),
-                "nonempty Windows alias plans require actual complete protected-target alias verification before writer admission");
-        }
-        if let Some(proof) = &storage_hint_normalization {
-            native_batch(events, |batch| proof.revalidate(source, batch))?;
-            gate(&mut gates, "default_storage_hint_normalization", storage_hint_pin.is_some(),
-                "exact default $DSC class2/flags0 metadata archived under the original frozen fixed non-Spaces device witness; ReFS property preservation is not claimed");
-        }
-        let clean = raw.header().dirty == Some(false)
-            && raw
-                .header()
-                .volume_flags
-                .is_some_and(|flags| flags & 1 == 0)
-            && raw.header().volume_version.as_deref() == Some("3.1");
-        let policy_flags = raw.header().volume_flags == Some(0) || short_policy;
-        let resource_counts = admission.validate_tree(files, directories, streams).is_ok()
-            && files > 0
-            && logical_bytes <= i64::MAX as u64;
-        let source_objects =
-            comparison.all_supported_user_views_compatible && policy_rejections == 0;
-        for (code, satisfied, detail) in [
-            (
-                "geometry",
-                ntfs_admission::ResourceProfile::ResourceBoundedV4(Some(admission))
-                    .supports_source_geometry(&raw.header().geometry),
-                "actual source geometry matches the implemented profile",
-            ),
-            (
-                "clean_volume",
-                clean,
-                "NTFS3.1 and clear persisted dirty state required",
-            ),
-            (
-                "volume_policy_flags",
-                policy_flags,
-                "only zero flags or exact live disabled-short-name interpretation accepted",
-            ),
-            (
-                "raw_allocation",
-                raw.allocation().status
-                    == ntfs_inspect::AllocationReconciliationStatus::ConsistentRawModel,
-                "complete physical ownership and bitmap closure",
-            ),
-            (
-                "raw_mft_record_coverage",
-                raw.header().inventory_complete,
-                "opaque producer closed canonical/physical extension and allocation domains",
-            ),
-            (
-                "raw_namespace",
-                raw.header().inventory_complete,
-                "opaque producer closed every directory index/name/reference domain",
-            ),
-            (
-                "raw_security",
-                raw.header().inventory_complete,
-                "opaque producer closed descriptors and every supported security binding",
-            ),
-            (
-                "native_profile",
-                native.domain().is_paged(),
-                "actual paged native lease, complete selectors and resource budgets",
-            ),
-            (
-                "native_identity_coverage",
-                row_count == raw.file_count(),
-                "every raw identity has one actual native row",
-            ),
-            (
-                "native_volume_allocation",
-                true,
-                "compare_domain checked both complete native bitmap summaries against frozen allocation",
-            ),
-            (
-                "objects",
-                source_objects,
-                "every transferred user object passes shared preservation policy and actual native views",
-            ),
-            (
-                "resource_limits",
-                resource_counts,
-                "exact source counts and logical total match pinned resources",
-            ),
-            (
-                "source_backups",
-                backups.binds_domain(&raw),
-                "actual boot and MFT mirror reads bind this source",
-            ),
-            (
-                "log_restart_pages",
-                log.binds_domain(&raw) && log.restart.candidate_clean_dismount,
-                "actual complete LogFile and agreeing clean restart copies",
-            ),
-            (
-                "remaining_inspection_refusals",
-                unresolved_count == 0,
-                "every other source blocker remains unresolved and is retained in pages",
-            ),
-            (
-                "frozen_device_basis",
-                before == after && source_sha == after_hash,
-                "same observed frozen device and complete scoped fingerprint bracket native reads",
-            ),
-            (
-                "internal_indexes",
-                indexes.binds_domain(&raw) && indexes.replacement_supported,
-                "actual object-ID/reparse/default-quota indexes plus native disabled quota policy",
-            ),
-            (
-                "transaction_freeze",
-                transactions.binds_domain(&raw),
-                "actual prefreeze RM, lock/dismount, clean restart and empty deferred namespaces",
-            ),
-            (
-                "native_resource_profile_support",
-                native.domain().header().request.resource_profile
-                    == Some(n2r_win32::attestation::ResourceProfile::ResourceBoundedV4(
-                        Some(admission),
-                    )),
-                "actual complete source/native/count/page profile equality",
-            ),
-        ] {
-            gate(&mut gates, code, satisfied, detail);
-        }
-        let replacement_ready = internal_bound
-            && clean
-            && policy_flags
-            && source_objects
-            && resource_counts
-            && unresolved_count == 0;
-        gate(
-            &mut gates,
-            "internal_replacement_state",
-            replacement_ready,
-            "exact internal roles are excluded only after all independent source obligations close",
-        );
-        gate(
-            &mut gates,
-            "native_directory_case_sensitivity",
-            directories > 0
-                && user_case_matched == directories
-                && (internal_directories == 0 || replacement_ready)
-                && raw_directories == directories + internal_directories,
-            "every transferred directory needs actual stable zero case flags; only exact proof-bound internals are excluded",
-        );
-        gate(
-            &mut gates,
-            "shared_artifact_arena",
-            false,
-            "source subgroup is bounded; cross-stage source/native/expected/plan/report/recovery arena ownership is not yet integrated",
-        );
-        gate(
-            &mut gates,
-            "security_timestamp_preservation",
-            false,
-            "actual same-tree native target round trip remains required",
-        );
-        gate(
-            &mut gates,
-            "target_resource_profile_support",
-            false,
-            "actual resource-selected target preservation remains required",
-        );
-        let mut source_views = serde_json::json!({"kind":"resource-source-views-v1","inspection":inspection_sha,
+            if let Some(proof) = &storage_hint_normalization {
+                native_batch(events, |batch| proof.revalidate(source, batch))?;
+                gate(
+                    &mut gates,
+                    "default_storage_hint_normalization",
+                    storage_hint_pin.is_some(),
+                    "exact default $DSC class2/flags0 metadata archived under the original frozen fixed non-Spaces device witness; ReFS property preservation is not claimed",
+                );
+            }
+            let clean = raw.header().dirty == Some(false)
+                && raw
+                    .header()
+                    .volume_flags
+                    .is_some_and(|flags| flags & 1 == 0)
+                && raw.header().volume_version.as_deref() == Some("3.1");
+            let policy_flags = raw.header().volume_flags == Some(0) || short_policy;
+            let resource_counts = admission.validate_tree(files, directories, streams).is_ok()
+                && files > 0
+                && logical_bytes <= i64::MAX as u64;
+            let source_objects =
+                comparison.all_supported_user_views_compatible && policy_rejections == 0;
+            for (code, satisfied, detail) in [
+                (
+                    "geometry",
+                    ntfs_admission::ResourceProfile::ResourceBoundedV4(Some(admission))
+                        .supports_source_geometry(&raw.header().geometry),
+                    "actual source geometry matches the implemented profile",
+                ),
+                (
+                    "clean_volume",
+                    clean,
+                    "NTFS3.1 and clear persisted dirty state required",
+                ),
+                (
+                    "volume_policy_flags",
+                    policy_flags,
+                    "only zero flags or exact live disabled-short-name interpretation accepted",
+                ),
+                (
+                    "raw_allocation",
+                    raw.allocation().status
+                        == ntfs_inspect::AllocationReconciliationStatus::ConsistentRawModel,
+                    "complete physical ownership and bitmap closure",
+                ),
+                (
+                    "raw_mft_record_coverage",
+                    raw.header().inventory_complete,
+                    "opaque producer closed canonical/physical extension and allocation domains",
+                ),
+                (
+                    "raw_namespace",
+                    raw.header().inventory_complete,
+                    "opaque producer closed every directory index/name/reference domain",
+                ),
+                (
+                    "raw_security",
+                    raw.header().inventory_complete,
+                    "opaque producer closed descriptors and every supported security binding",
+                ),
+                (
+                    "native_profile",
+                    native.domain().is_paged(),
+                    "actual paged native lease, complete selectors and resource budgets",
+                ),
+                (
+                    "native_identity_coverage",
+                    row_count == raw.file_count(),
+                    "every raw identity has one actual native row",
+                ),
+                (
+                    "native_volume_allocation",
+                    true,
+                    "compare_domain checked both complete native bitmap summaries against frozen allocation",
+                ),
+                (
+                    "objects",
+                    source_objects,
+                    "every transferred user object passes shared preservation policy and actual native views",
+                ),
+                (
+                    "resource_limits",
+                    resource_counts,
+                    "exact source counts and logical total match pinned resources",
+                ),
+                (
+                    "source_backups",
+                    backups.binds_domain(&raw),
+                    "actual boot and MFT mirror reads bind this source",
+                ),
+                (
+                    "log_restart_pages",
+                    log.binds_domain(&raw) && log.restart.candidate_clean_dismount,
+                    "actual complete LogFile and agreeing clean restart copies",
+                ),
+                (
+                    "remaining_inspection_refusals",
+                    unresolved_count == 0,
+                    "every other source blocker remains unresolved and is retained in pages",
+                ),
+                (
+                    "frozen_device_basis",
+                    before == after && source_sha == after_hash,
+                    "same observed frozen device and complete scoped fingerprint bracket native reads",
+                ),
+                (
+                    "internal_indexes",
+                    indexes.binds_domain(&raw) && indexes.replacement_supported,
+                    "actual object-ID/reparse/default-quota indexes plus native disabled quota policy",
+                ),
+                (
+                    "transaction_freeze",
+                    transactions.binds_domain(&raw),
+                    "actual prefreeze RM, lock/dismount, clean restart and empty deferred namespaces",
+                ),
+                (
+                    "native_resource_profile_support",
+                    native.domain().header().request.resource_profile
+                        == Some(n2r_win32::attestation::ResourceProfile::ResourceBoundedV4(
+                            Some(admission),
+                        )),
+                    "actual complete source/native/count/page profile equality",
+                ),
+            ] {
+                gate(&mut gates, code, satisfied, detail);
+            }
+            let replacement_ready = internal_bound
+                && clean
+                && policy_flags
+                && source_objects
+                && resource_counts
+                && unresolved_count == 0;
+            gate(
+                &mut gates,
+                "internal_replacement_state",
+                replacement_ready,
+                "exact internal roles are excluded only after all independent source obligations close",
+            );
+            gate(
+                &mut gates,
+                "native_directory_case_sensitivity",
+                directories > 0
+                    && user_case_matched == directories
+                    && (internal_directories == 0 || replacement_ready)
+                    && raw_directories == directories + internal_directories,
+                "every transferred directory needs actual stable zero case flags; only exact proof-bound internals are excluded",
+            );
+            gate(
+                &mut gates,
+                "shared_artifact_arena",
+                false,
+                "source subgroup is bounded; cross-stage source/native/expected/plan/report/recovery arena ownership is not yet integrated",
+            );
+            gate(
+                &mut gates,
+                "security_timestamp_preservation",
+                false,
+                "actual same-tree native target round trip remains required",
+            );
+            gate(
+                &mut gates,
+                "target_resource_profile_support",
+                false,
+                "actual resource-selected target preservation remains required",
+            );
+            let mut source_views = serde_json::json!({"kind":"resource-source-views-v1","inspection":inspection_sha,
             "source_fingerprint":source_sha,"native_pages_sha256":native.domain().sha256(),"comparison_rows":rows_pin});
-        if let Some(aliases) = &windows_aliases { source_views["windows_alias_plan"] = serde_json::to_value(aliases.pin())?; }
-        if let Some(pin) = &storage_hint_pin { source_views["storage_hint_normalizations"] = serde_json::to_value(pin)?; }
-        if reopened_cache.is_some(){source_views["native_observation_origin"]=serde_json::to_value(native.origin())?;}
-        let source_views_sha = json_sha(
-            &source_views,
-            scratch.budget().scratch_bytes / 2,
-        )?;
-        n2r_win32::perf::step("reopen comparison stores");
-        let rows = SortedRecordStore::open(&rows_pin, &scratch)?;
-        let unresolved = SortedRecordStore::open(&unresolved_pin, &scratch)?;
-        let replacements = SortedRecordStore::open(&replacements_pin, &scratch)?;
-        let storage_hint_records = storage_hint_pin.as_ref().map(|pin| SortedRecordStore::open(pin, &scratch)).transpose()?;
-        // All preceding fallible collection used the same live source owner.
-        // Move it only once the complete source context is ready to form.
-        let source = source_slot.take().context("isolated source owner absent")?;
-        let mut context = Self {
-            early_preparation_guard: early_preparation_guard.take(),
-            source: ResourceSourceOwner::dedicated(source),
-            raw,
-            windows_aliases,
-            storage_hint_normalization,
-            storage_hint_records,
-            _storage_hint_ram: storage_hint_ram,
-            native,
-            fingerprint,
-            read_coverage,
-            backups,
-            log,
-            indexes,
-            transactions,
-            label,
-            label_frozen,
-            mount_paths,
-            vss_before,
-            comparison,
-            rows,
-            unresolved,
-            replacements,
-            admission,
-            policy,
-            before,
-            after,
-            inspection_sha,
-            source_sha,
-            source_views_sha,
-            gates,
-            scratch,
-            _metadata: metadata,
-            _metadata_reservations: reservations,
-            arena: groups.as_ref().map(|(arena, _, _)| arena.clone()),
-            source_seal: None,
-            native_seal,
-            native_artifact,
-            _native_payer_ram: native_payer_ram,
-            _source_io_ram: source_io_ram,
-            _output_basis: output_basis,
-            _cache_artifacts: reopened_cache,
-        };
-        n2r_win32::perf::step("finish source evidence");
-        let finishing = (|| -> Result<()> {
-        context.revalidate_evidence()?;
-        let mut metadata = std::mem::take(&mut context._metadata);
-        let mut reservations = std::mem::take(&mut context._metadata_reservations);
-        save(
-            output,
-            "source-resource-assessment.json",
-            &context.report(),
-            &context.scratch,
-            &mut metadata,
-            &mut reservations,
-        )?;
-        context._metadata = metadata;
-        context._metadata_reservations = reservations;
-        if context.arena.is_some() {
-            context.source_seal = Some(context.scratch.seal()?);
-        }
-        context.revalidate_evidence()?;
-        Ok(())
-        })();
-        if let Err(error) = finishing {
-            return Err(guarded_collection_failure(
-                context.source.into_dedicated()?, cleanup_workspace.as_ref(), &geometry, events, error,
-                context.early_preparation_guard.as_mut(),
-            ));
-        }
-        Ok(context)
+            if let Some(aliases) = &windows_aliases {
+                source_views["windows_alias_plan"] = serde_json::to_value(aliases.pin())?;
+            }
+            if let Some(pin) = &storage_hint_pin {
+                source_views["storage_hint_normalizations"] = serde_json::to_value(pin)?;
+            }
+            if reopened_cache.is_some() {
+                source_views["native_observation_origin"] = serde_json::to_value(native.origin())?;
+            }
+            let source_views_sha = json_sha(&source_views, scratch.budget().scratch_bytes / 2)?;
+            n2r_win32::perf::step("reopen comparison stores");
+            let rows = SortedRecordStore::open(&rows_pin, &scratch)?;
+            let unresolved = SortedRecordStore::open(&unresolved_pin, &scratch)?;
+            let replacements = SortedRecordStore::open(&replacements_pin, &scratch)?;
+            let storage_hint_records = storage_hint_pin
+                .as_ref()
+                .map(|pin| SortedRecordStore::open(pin, &scratch))
+                .transpose()?;
+            // All preceding fallible collection used the same live source owner.
+            // Move it only once the complete source context is ready to form.
+            let source = source_slot.take().context("isolated source owner absent")?;
+            let mut context = Self {
+                early_preparation_guard: early_preparation_guard.take(),
+                source: ResourceSourceOwner::dedicated(source),
+                raw,
+                windows_aliases,
+                storage_hint_normalization,
+                storage_hint_records,
+                _storage_hint_ram: storage_hint_ram,
+                native,
+                fingerprint,
+                read_coverage,
+                backups,
+                log,
+                indexes,
+                transactions,
+                label,
+                label_frozen,
+                mount_paths,
+                vss_before,
+                comparison,
+                rows,
+                unresolved,
+                replacements,
+                admission,
+                policy,
+                before,
+                after,
+                inspection_sha,
+                source_sha,
+                source_views_sha,
+                gates,
+                scratch,
+                _metadata: metadata,
+                _metadata_reservations: reservations,
+                arena: groups.as_ref().map(|(arena, _, _)| arena.clone()),
+                source_seal: None,
+                native_seal,
+                native_artifact,
+                _native_payer_ram: native_payer_ram,
+                _source_io_ram: source_io_ram,
+                _output_basis: output_basis,
+                _cache_artifacts: reopened_cache,
+            };
+            n2r_win32::perf::step("finish source evidence");
+            let finishing = (|| -> Result<()> {
+                context.revalidate_evidence()?;
+                let mut metadata = std::mem::take(&mut context._metadata);
+                let mut reservations = std::mem::take(&mut context._metadata_reservations);
+                save(
+                    output,
+                    "source-resource-assessment.json",
+                    &context.report(),
+                    &context.scratch,
+                    &mut metadata,
+                    &mut reservations,
+                )?;
+                context._metadata = metadata;
+                context._metadata_reservations = reservations;
+                if context.arena.is_some() {
+                    context.source_seal = Some(context.scratch.seal()?);
+                }
+                context.revalidate_evidence()?;
+                Ok(())
+            })();
+            if let Err(error) = finishing {
+                return Err(guarded_collection_failure(
+                    context.source.into_dedicated()?,
+                    cleanup_workspace.as_ref(),
+                    &geometry,
+                    events,
+                    error,
+                    context.early_preparation_guard.as_mut(),
+                ));
+            }
+            Ok(context)
         })();
         match result {
             Ok(context) => Ok(context),
             Err(error) => match source_slot.take() {
                 Some(source) => Err(guarded_collection_failure(
-                    source, cleanup_workspace.as_ref(), &geometry, events, error,
+                    source,
+                    cleanup_workspace.as_ref(),
+                    &geometry,
+                    events,
+                    error,
                     early_preparation_guard.as_mut(),
                 )),
                 None => Err(error),
@@ -1719,11 +2015,18 @@ impl ResourceSourceContext {
             unresolved_blockers: self.unresolved.pin(),
             internal_replacements: self.replacements.pin(),
             windows_alias_plan: self.windows_aliases.as_ref().map(|aliases| aliases.pin()),
-            storage_hint_normalizations: self.storage_hint_records.as_ref().map(SortedRecordStore::pin),
+            storage_hint_normalizations: self
+                .storage_hint_records
+                .as_ref()
+                .map(SortedRecordStore::pin),
             gates: &self.gates,
             source_group_bytes: self.scratch.used_bytes(),
             source_native_groups_sealed: self.source_seal.is_some() && self.native_seal.is_some(),
-            native_observation_origin: matches!(self.native.origin(),n2r_win32::NativeSourceObservationOrigin::RevalidatedCachedRows{..}).then_some(self.native.origin()),
+            native_observation_origin: matches!(
+                self.native.origin(),
+                n2r_win32::NativeSourceObservationOrigin::RevalidatedCachedRows { .. }
+            )
+            .then_some(self.native.origin()),
             source_group_allocated_bytes: self.source_seal.as_ref().map(|s| s.allocated_bytes()),
             native_group_allocated_bytes: self.native_seal.as_ref().map(|s| s.allocated_bytes()),
             shared_artifact_arena_complete: false,
@@ -1733,49 +2036,119 @@ impl ResourceSourceContext {
             execution_authorized: false,
         }
     }
-    pub(crate) fn cache_metadata_refreshed(&self)->bool {
-        self._cache_artifacts.as_ref().is_some_and(|cache|cache.refresh.is_some())
+    pub(crate) fn cache_metadata_refreshed(&self) -> bool {
+        self._cache_artifacts
+            .as_ref()
+            .is_some_and(|cache| cache.refresh.is_some())
     }
-    pub(crate) fn authorize_cached_expected_rebind(&self,body:&crate::shadow_tree::PagedExpectedTree)
-        ->Result<CachedExpectedRebind>{
-        self.require_source_evidence()?;self.revalidate_evidence()?;
-        let cache=self._cache_artifacts.as_ref().context("actual source cache owner absent")?;
-        let join=cache.refresh.as_ref().context("actual live user semantic refresh absent")?;
-        ensure!(self.raw.is_windows_conversion()
-            &&matches!(self.native.origin(),n2r_win32::NativeSourceObservationOrigin::MetadataRefreshedCachedRows{..})
-            &&self.native.windows_txf_markers().is_some()&&self.native.windows_object_ids().is_some(),
-            "expected reuse requires actual metadata-refreshed Windows native owners");
-        let aliases=self.windows_aliases.as_ref().context("current Windows alias owner absent")?;
+    pub(crate) fn authorize_cached_expected_rebind(
+        &self,
+        body: &crate::shadow_tree::PagedExpectedTree,
+    ) -> Result<CachedExpectedRebind> {
+        self.require_source_evidence()?;
+        self.revalidate_evidence()?;
+        let cache = self
+            ._cache_artifacts
+            .as_ref()
+            .context("actual source cache owner absent")?;
+        let join = cache
+            .refresh
+            .as_ref()
+            .context("actual live user semantic refresh absent")?;
+        ensure!(
+            self.raw.is_windows_conversion()
+                && matches!(
+                    self.native.origin(),
+                    n2r_win32::NativeSourceObservationOrigin::MetadataRefreshedCachedRows { .. }
+                )
+                && self.native.windows_txf_markers().is_some()
+                && self.native.windows_object_ids().is_some(),
+            "expected reuse requires actual metadata-refreshed Windows native owners"
+        );
+        let aliases = self
+            .windows_aliases
+            .as_ref()
+            .context("current Windows alias owner absent")?;
         aliases.require_source(&self.raw)?;
-        let facts=join.expected_reuse_facts(&self.inspection_sha,self.native.domain().sha256(),body,self.admission)?;
+        let facts = join.expected_reuse_facts(
+            &self.inspection_sha,
+            self.native.domain().sha256(),
+            body,
+            self.admission,
+        )?;
         crate::shadow_tree::source_pages::SourceExpectedDomain::verify_cached_body(
-            &self.raw,self.native.domain(),self.admission,aliases,body,&self.scratch)?;
-        Ok(CachedExpectedRebind{facts,source_owner:self.source_owner_identity()})
+            &self.raw,
+            self.native.domain(),
+            self.admission,
+            aliases,
+            body,
+            &self.scratch,
+        )?;
+        Ok(CachedExpectedRebind {
+            facts,
+            source_owner: self.source_owner_identity(),
+        })
     }
-    pub(crate) fn cached_auxiliary_group(&self)->Option<ArtifactGroupPermit> {
-        self._cache_artifacts.as_ref().map(|cache|cache.auxiliary_group.clone())
+    pub(crate) fn cached_auxiliary_group(&self) -> Option<ArtifactGroupPermit> {
+        self._cache_artifacts
+            .as_ref()
+            .map(|cache| cache.auxiliary_group.clone())
     }
-    pub(crate) fn authorize_cached_expected_exact_rebind(&self,body:&crate::shadow_tree::PagedExpectedTree)
-        ->Result<CachedExpectedRebind>{
-        self.require_source_evidence()?;self.revalidate_evidence()?;
-        ensure!(self._cache_artifacts.is_some()&&self.raw.is_windows_conversion()
-            &&matches!(self.native.origin(),n2r_win32::NativeSourceObservationOrigin::RevalidatedCachedRows{..}),
-            "exact expected rebind requires actual byte-continuity native cache owner");
-        let aliases=self.windows_aliases.as_ref().context("current Windows aliases absent")?;
+    pub(crate) fn authorize_cached_expected_exact_rebind(
+        &self,
+        body: &crate::shadow_tree::PagedExpectedTree,
+    ) -> Result<CachedExpectedRebind> {
+        self.require_source_evidence()?;
+        self.revalidate_evidence()?;
+        ensure!(
+            self._cache_artifacts.is_some()
+                && self.raw.is_windows_conversion()
+                && matches!(
+                    self.native.origin(),
+                    n2r_win32::NativeSourceObservationOrigin::RevalidatedCachedRows { .. }
+                ),
+            "exact expected rebind requires actual byte-continuity native cache owner"
+        );
+        let aliases = self
+            .windows_aliases
+            .as_ref()
+            .context("current Windows aliases absent")?;
         crate::shadow_tree::source_pages::SourceExpectedDomain::verify_cached_body(
-            &self.raw,self.native.domain(),self.admission,aliases,body,&self.scratch)?;
-        let mut hash=Sha256::new();hash.update(b"n2r-exact-current-source-and-current-projection-v1\0");
-        hash.update(self.inspection_sha.as_bytes());hash.update(self.source_sha.as_bytes());
-        hash.update(self.native.domain().sha256().as_bytes());hash.update(body.file_sha256().as_bytes());
-        let facts=crate::shadow_tree::ExpectedBindingFacts{schema_version:1,
-            verification_kind:"exact-current-source-and-current-projection-v1".into(),
-            body_file_sha256:body.file_sha256().to_owned(),body_semantic_sha256:body.semantic_sha256().to_owned(),
-            original_admission:body.header().resource_admission.context("cached original admission absent")?,
-            effective_admission:self.admission,profile:body.profile().to_owned(),logical_bytes:body.logical_bytes(),
-            objects:body.len() as u64,pending_roles:body.internal_replacement_pending().to_vec(),
-            native_file_sha256:self.native.domain().sha256().to_owned(),user_join_sha256:hex::encode(hash.finalize())};
-        facts.validate(self.admission,body.file_sha256(),body.semantic_sha256())?;
-        Ok(CachedExpectedRebind{facts,source_owner:self.source_owner_identity()})
+            &self.raw,
+            self.native.domain(),
+            self.admission,
+            aliases,
+            body,
+            &self.scratch,
+        )?;
+        let mut hash = Sha256::new();
+        hash.update(b"n2r-exact-current-source-and-current-projection-v1\0");
+        hash.update(self.inspection_sha.as_bytes());
+        hash.update(self.source_sha.as_bytes());
+        hash.update(self.native.domain().sha256().as_bytes());
+        hash.update(body.file_sha256().as_bytes());
+        let facts = crate::shadow_tree::ExpectedBindingFacts {
+            schema_version: 1,
+            verification_kind: "exact-current-source-and-current-projection-v1".into(),
+            body_file_sha256: body.file_sha256().to_owned(),
+            body_semantic_sha256: body.semantic_sha256().to_owned(),
+            original_admission: body
+                .header()
+                .resource_admission
+                .context("cached original admission absent")?,
+            effective_admission: self.admission,
+            profile: body.profile().to_owned(),
+            logical_bytes: body.logical_bytes(),
+            objects: body.len() as u64,
+            pending_roles: body.internal_replacement_pending().to_vec(),
+            native_file_sha256: self.native.domain().sha256().to_owned(),
+            user_join_sha256: hex::encode(hash.finalize()),
+        };
+        facts.validate(self.admission, body.file_sha256(), body.semantic_sha256())?;
+        Ok(CachedExpectedRebind {
+            facts,
+            source_owner: self.source_owner_identity(),
+        })
     }
     pub fn require_source_evidence(&self) -> Result<()> {
         let failed: Vec<_> = self
@@ -1800,8 +2173,12 @@ impl ResourceSourceContext {
     }
     pub fn require_source_gates(&self) -> Result<()> {
         self.require_source_evidence()?;
-        ensure!(self.windows_aliases.as_ref().is_none_or(|aliases| aliases.is_empty()),
-            "Windows alias target preservation needs its opaque protected-target witness before source writer admission");
+        ensure!(
+            self.windows_aliases
+                .as_ref()
+                .is_none_or(|aliases| aliases.is_empty()),
+            "Windows alias target preservation needs its opaque protected-target witness before source writer admission"
+        );
         ensure!(
             self.gates
                 .iter()
@@ -1821,10 +2198,16 @@ impl ResourceSourceContext {
         closure: &crate::artifact_arena::PreparedArenaClosure,
         events: &mut Vec<NativeEvent>,
     ) -> Result<PreparedResourceSourceAdmission> {
-        native_batch(events, |batch| self.source.require_complete_partition_admission(batch))?;
+        native_batch(events, |batch| {
+            self.source.require_complete_partition_admission(batch)
+        })?;
         self.require_source_evidence()?;
-        if let Some(aliases)=&self.windows_aliases {
-            target.require_windows_alias_source(aliases,self.admission.source_inspection_sha256,expected)?;
+        if let Some(aliases) = &self.windows_aliases {
+            target.require_windows_alias_source(
+                aliases,
+                self.admission.source_inspection_sha256,
+                expected,
+            )?;
         }
         self.recheck_source(events)?;
         let arena = self
@@ -1901,10 +2284,16 @@ impl ResourceSourceContext {
     }
     pub fn revalidate_evidence(&self) -> Result<()> {
         self.admission.validate()?;
-        ensure!((self.admission.schema_version == 2) == self.raw.is_windows_conversion(),
-            "source purpose differs from the selected native artifact allocation");
-        if let Some(arena) = &self.arena { arena.require_native_allocation(self.admission)?; }
-        if let Some(guard) = &self.early_preparation_guard { guard.revalidate()?; }
+        ensure!(
+            (self.admission.schema_version == 2) == self.raw.is_windows_conversion(),
+            "source purpose differs from the selected native artifact allocation"
+        );
+        if let Some(arena) = &self.arena {
+            arena.require_native_allocation(self.admission)?;
+        }
+        if let Some(guard) = &self.early_preparation_guard {
+            guard.revalidate()?;
+        }
         if let Some(output) = &self._output_basis {
             output.revalidate(
                 self.source.binding(),
@@ -1912,12 +2301,22 @@ impl ResourceSourceContext {
             )?;
         }
         self.raw.revalidate()?;
-        if let Some(aliases) = &self.windows_aliases { aliases.require_source(&self.raw)?; }
+        if let Some(aliases) = &self.windows_aliases {
+            aliases.require_source(&self.raw)?;
+        }
         if let Some(proof) = &self.storage_hint_normalization {
-            ensure!(proof.binding() == self.source.binding()
-                && self.windows_aliases.as_ref().is_some_and(|aliases| aliases.has_storage_hint_owner(proof)),
-                "Windows storage normalization runtime owner changed");
-            self.storage_hint_records.as_ref().context("Windows storage normalization records absent")?.revalidate()?;
+            ensure!(
+                proof.binding() == self.source.binding()
+                    && self
+                        .windows_aliases
+                        .as_ref()
+                        .is_some_and(|aliases| aliases.has_storage_hint_owner(proof)),
+                "Windows storage normalization runtime owner changed"
+            );
+            self.storage_hint_records
+                .as_ref()
+                .context("Windows storage normalization records absent")?
+                .revalidate()?;
         }
         self.native.domain().revalidate()?;
         self.fingerprint.revalidate()?;
@@ -2003,7 +2402,8 @@ impl ResourceSourceContext {
             "original live NTFS freeze witness was consumed by an apply-intent attempt"
         );
         self.revalidate_evidence()?;
-        self.native.require_cache_owner(self.source.require_dedicated()?,events)?;
+        self.native
+            .require_cache_owner(self.source.require_dedicated()?, events)?;
         if let Some(proof) = &self.storage_hint_normalization {
             let source = self.source.require_dedicated()?;
             native_batch(events, |batch| proof.revalidate(source, batch))?;
@@ -2021,7 +2421,9 @@ impl ResourceSourceContext {
         if !n2r_win32::verify_policy::full(&LAST_FULL) {
             return Ok(());
         }
-        let digest = self.fingerprint.hash(self.source.require_dedicated_mut()?)?;
+        let digest = self
+            .fingerprint
+            .hash(self.source.require_dedicated_mut()?)?;
         let after = native_batch(events, |batch| self.source.state(batch))?;
         ensure!(
             after == before && digest == self.source_sha,
@@ -2052,23 +2454,40 @@ impl ResourceSourceContext {
         let sha = if n2r_win32::verify_policy::checks_once() {
             "0".repeat(64)
         } else {
-            hex::encode(n2r_win32::sha256_native::hash_range(&mut self.source, 0, length)?)
+            hex::encode(n2r_win32::sha256_native::hash_range(
+                &mut self.source,
+                0,
+                length,
+            )?)
         };
         self.recheck_source(events)?;
         checkpoint(events)?;
-        ensure!(self.source.freeze_observation().is_some(),
-            "pre-AP NTFS freeze witness was consumed");
-        if let Some(guard) = &mut self.early_preparation_guard { guard.mark_live_cancel_intent()?; }
-        native_batch(events, |batch| self.source.bring_original_online_unchanged(&sha, batch))
-            .context("original NTFS online transition failed; source may require rediscovery")?;
+        ensure!(
+            self.source.freeze_observation().is_some(),
+            "pre-AP NTFS freeze witness was consumed"
+        );
+        if let Some(guard) = &mut self.early_preparation_guard {
+            guard.mark_live_cancel_intent()?;
+        }
+        native_batch(events, |batch| {
+            self.source.bring_original_online_unchanged(&sha, batch)
+        })
+        .context("original NTFS online transition failed; source may require rediscovery")?;
         checkpoint(events)?;
-        let mounted = native_batch(events, |batch|
-            n2r_win32::rediscover_general_volume_wait(binding.clone(), batch))?;
+        let mounted = native_batch(events, |batch| {
+            n2r_win32::rediscover_general_volume_wait(binding.clone(), batch)
+        })?;
         n2r_win32::volume_label::validate_original_partition(&binding, &mounted)?;
-        ensure!(native_batch(events, |batch|
-            n2r_win32::mounted_filesystem_general(mounted.clone(), batch))? == "NTFS",
-            "original source did not return as NTFS");
-        if let Some(guard) = &mut self.early_preparation_guard { guard.mark_live_cancelled(events)?; }
+        ensure!(
+            native_batch(events, |batch| n2r_win32::mounted_filesystem_general(
+                mounted.clone(),
+                batch
+            ))? == "NTFS",
+            "original source did not return as NTFS"
+        );
+        if let Some(guard) = &mut self.early_preparation_guard {
+            guard.mark_live_cancelled(events)?;
+        }
         checkpoint(events)?;
         Ok(mounted)
     }
@@ -2076,24 +2495,46 @@ impl ResourceSourceContext {
     pub(crate) fn has_original_freeze_witness(&self) -> bool {
         self.source.freeze_observation().is_some()
     }
-    pub(crate) fn early_preparation_guard_pin(&self) -> Option<crate::resource_preparation::early_guard::GuardPin> {
-        self.early_preparation_guard.as_ref().map(|guard| guard.pin())
+    pub(crate) fn early_preparation_guard_pin(
+        &self,
+    ) -> Option<crate::resource_preparation::early_guard::GuardPin> {
+        self.early_preparation_guard
+            .as_ref()
+            .map(|guard| guard.pin())
     }
-    pub(crate) fn early_preparation_guard_artifact(&self)->Option<ArtifactLease> {
-        self.early_preparation_guard.as_ref().map(|guard|guard.intent_artifact())
+    pub(crate) fn early_preparation_guard_artifact(&self) -> Option<ArtifactLease> {
+        self.early_preparation_guard
+            .as_ref()
+            .map(|guard| guard.intent_artifact())
     }
-    pub(crate) fn delegate_preparation_guard(&mut self, publication: &Path, sha: &str,
-        events: &mut Vec<NativeEvent>) -> Result<()> {
-        self.early_preparation_guard.as_mut().context("fresh V4 preparation guard absent")?
+    pub(crate) fn delegate_preparation_guard(
+        &mut self,
+        publication: &Path,
+        sha: &str,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<()> {
+        self.early_preparation_guard
+            .as_mut()
+            .context("fresh V4 preparation guard absent")?
             .delegate(publication, sha, events)
     }
-    pub(crate) fn require_preparation_delegated(&self, publication: &Path, sha: &str,
-        events: &mut Vec<NativeEvent>) -> Result<()> {
-        self.early_preparation_guard.as_ref().context("fresh V4 preparation guard absent")?
+    pub(crate) fn require_preparation_delegated(
+        &self,
+        publication: &Path,
+        sha: &str,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<()> {
+        self.early_preparation_guard
+            .as_ref()
+            .context("fresh V4 preparation guard absent")?
             .require_delegated(publication, sha, events)
     }
     pub(crate) fn early_preparation_delegated(&self) -> Result<bool> {
-        self.early_preparation_guard.as_ref().map(|guard| guard.delegated()).transpose().map(|s| s.unwrap_or(false))
+        self.early_preparation_guard
+            .as_ref()
+            .map(|guard| guard.delegated())
+            .transpose()
+            .map(|s| s.unwrap_or(false))
     }
     pub fn inspection(&self) -> &PagedInspection {
         &self.raw
@@ -2102,7 +2543,10 @@ impl ResourceSourceContext {
         self.windows_aliases.as_ref().map(Arc::clone)
     }
     pub fn derive_projection(
-        &mut self, admission: SourceResourceAdmission, output: &Path, scratch: &SourceScratch,
+        &mut self,
+        admission: SourceResourceAdmission,
+        output: &Path,
+        scratch: &SourceScratch,
     ) -> Result<crate::shadow_tree::source_pages::SourceExpectedDomain> {
         // The frozen source evidence has already completed validation. Projection
         // walks its file domain in ordinal order, so return the optional
@@ -2111,11 +2555,20 @@ impl ResourceSourceContext {
         self.raw.release_inventory_resident_cache();
         if let Some(aliases) = &self.windows_aliases {
             crate::shadow_tree::source_pages::SourceExpectedDomain::derive_windows(
-                &self.raw, self.native.domain(), admission, output, scratch, aliases,
+                &self.raw,
+                self.native.domain(),
+                admission,
+                output,
+                scratch,
+                aliases,
             )
         } else {
             crate::shadow_tree::source_pages::SourceExpectedDomain::derive(
-                &self.raw, self.native.domain(), admission, output, scratch,
+                &self.raw,
+                self.native.domain(),
+                admission,
+                output,
+                scratch,
             )
         }
     }
@@ -2143,12 +2596,16 @@ impl ResourceSourceContext {
     pub fn expected_label(&self) -> &n2r_win32::volume_label::VolumeLabel {
         self.label.label()
     }
-    pub fn source_and_inspection(&mut self) -> Result<(&mut GeneralFrozenPartition, &PagedInspection)> {
+    pub fn source_and_inspection(
+        &mut self,
+    ) -> Result<(&mut GeneralFrozenPartition, &PagedInspection)> {
         // Existing dedicated callers keep exact native guards. Partition
         // scope cannot enter whole-disk transitions through this adapter.
         Ok((self.source.require_dedicated_mut()?, &self.raw))
     }
-    pub(crate) fn scoped_source_and_inspection(&mut self) -> (&mut ResourceSourceOwner, &PagedInspection) {
+    pub(crate) fn scoped_source_and_inspection(
+        &mut self,
+    ) -> (&mut ResourceSourceOwner, &PagedInspection) {
         (&mut self.source, &self.raw)
     }
     /// Runtime association with this exact retained frozen source. A saved

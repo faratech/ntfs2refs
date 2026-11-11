@@ -813,8 +813,14 @@ impl NativeObservationDomain for PagedNativeObservation {
     fn request_row(&self, i: usize) -> io::Result<Cow<'_, NativeRequestRow>> {
         Ok(Cow::Owned(self.file_row(i)?.request))
     }
-    fn reserve_validation_working(&self, bytes: u64) -> io::Result<Option<Box<dyn crate::shadow_native::report_memory::ReportMemoryLease>>> {
-        self.memory.as_ref().map(|memory| memory.accountant.reserve(bytes)).transpose()
+    fn reserve_validation_working(
+        &self,
+        bytes: u64,
+    ) -> io::Result<Option<Box<dyn crate::shadow_native::report_memory::ReportMemoryLease>>> {
+        self.memory
+            .as_ref()
+            .map(|memory| memory.accountant.reserve(bytes))
+            .transpose()
     }
     fn revalidate(&self) -> io::Result<()> {
         self.reader.borrow_mut().revalidate()?;
@@ -873,8 +879,10 @@ fn decode_row<T: serde::de::DeserializeOwned>(
     if row.records == 1 {
         return reader.with_record(row.first, |_, payload| {
             let bytes = decode_chunk(payload, budget.chunk_bytes())?;
-            require(bytes.len() as u64 == row.bytes,
-                "single-chunk native row length differs from its authenticated index")?;
+            require(
+                bytes.len() as u64 == row.bytes,
+                "single-chunk native row length differs from its authenticated index",
+            )?;
             serde_json::from_slice(&bytes).map_err(io::Error::other)
         });
     }

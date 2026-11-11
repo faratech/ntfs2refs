@@ -46,8 +46,10 @@ fn run() -> anyhow::Result<()> {
         recover_current_interruption_only: bool,
     }
     let args = Args::parse();
-    ensure!(!(args.finalize_closed_boot_only&&args.recover_current_interruption_only),
-        "closed-only and interrupted-recovery helper modes are exclusive");
+    ensure!(
+        !(args.finalize_closed_boot_only && args.recover_current_interruption_only),
+        "closed-only and interrupted-recovery helper modes are exclusive"
+    );
     ensure!(
         args.acknowledge_offline_conversion,
         "explicit offline conversion acknowledgement required"
@@ -66,30 +68,38 @@ fn run() -> anyhow::Result<()> {
         "request pin differs from actual current boot selection"
     );
     let maximum = n2r_win32::offline_environment::available_ram_bytes()
-        .context("sample RAM before opening boot-bound bootstrap")? / 256;
+        .context("sample RAM before opening boot-bound bootstrap")?
+        / 256;
     let mut file = OpenOptions::new()
         .read(true)
         .share_mode(1)
         .custom_flags(0x0020_0000)
-        .open(&path).with_context(|| format!("open boot-bound RAM bootstrap {}", path.display()))?;
+        .open(&path)
+        .with_context(|| format!("open boot-bound RAM bootstrap {}", path.display()))?;
     n2r_win32::file_storage::require_readonly_access(&file)
         .context("query actual bootstrap handle read-only access")?;
-    let length = file.metadata().context("query RAM bootstrap metadata")?.len();
+    let length = file
+        .metadata()
+        .context("query RAM bootstrap metadata")?
+        .len();
     ensure!(
         length > 0 && length <= maximum,
         "bounded RAM bootstrap required"
     );
     ensure!(
         n2r_win32::sha256_native::hash_range(&mut file, 0, length)
-            .context("hash actual held RAM bootstrap bytes")? == native,
+            .context("hash actual held RAM bootstrap bytes")?
+            == native,
         "actual held RAM request differs from native boot pin"
     );
-    file.seek(SeekFrom::Start(0)).context("seek held RAM bootstrap for decoding")?;
+    file.seek(SeekFrom::Start(0))
+        .context("seek held RAM bootstrap for decoding")?;
     let mut bytes = Vec::new();
     bytes.try_reserve_exact(usize::try_from(length)?)?;
     (&mut file)
         .take(length.checked_add(1).context("request length overflow")?)
-        .read_to_end(&mut bytes).context("read held RAM bootstrap for decoding")?;
+        .read_to_end(&mut bytes)
+        .context("read held RAM bootstrap for decoding")?;
     ensure!(
         bytes.len() as u64 == length
             && <[u8; 32]>::from(Sha256::digest(&bytes)) == native
@@ -104,17 +114,25 @@ fn run() -> anyhow::Result<()> {
     );
     drop(bytes);
     if args.rollback {
-        ensure!(!args.finalize_closed_boot_only&&!args.recover_current_interruption_only,
-            "helper repair selects direction only through the authenticated journal prompt");
+        ensure!(
+            !args.finalize_closed_boot_only && !args.recover_current_interruption_only,
+            "helper repair selects direction only through the authenticated journal prompt"
+        );
         request.action = ntfs2refs::resource_partition_alpha::PreparedOfflineAction::Rollback;
     }
     if args.finalize_closed_boot_only {
         return ntfs2refs::resource_partition_alpha::finalize_closed_boot_only(
-            request,file,args.acknowledge_offline_conversion);
+            request,
+            file,
+            args.acknowledge_offline_conversion,
+        );
     }
     if args.recover_current_interruption_only {
         return ntfs2refs::resource_partition_alpha::recover_current_interruption_only(
-            request,file,args.acknowledge_offline_conversion);
+            request,
+            file,
+            args.acknowledge_offline_conversion,
+        );
     }
     ntfs2refs::resource_partition_alpha::run_prepared_offline(
         request,

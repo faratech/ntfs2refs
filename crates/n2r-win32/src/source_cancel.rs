@@ -257,9 +257,13 @@ pub fn restore_ntfs_mount_paths(
     paths: &[String],
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<MountRestoration> {
-    let binding = preparation::native_batch(events, |batch| crate::rediscover_general_volume_wait(binding, batch))?;
+    let binding = preparation::native_batch(events, |batch| {
+        crate::rediscover_general_volume_wait(binding, batch)
+    })?;
     require(
-        preparation::native_batch(events, |batch| crate::mounted_filesystem_general(binding.clone(), batch))? == "NTFS",
+        preparation::native_batch(events, |batch| {
+            crate::mounted_filesystem_general(binding.clone(), batch)
+        })? == "NTFS",
         "cancelled source did not mount as NTFS",
     )?;
     let missing = preflight_paths(&binding, paths)?;
@@ -277,7 +281,9 @@ pub fn restore_ntfs_mount_paths(
         }
         changed.push(path);
     }
-    let after = preparation::native_batch(events, |batch| crate::capture_mount_paths_general(binding.clone(), batch))?;
+    let after = preparation::native_batch(events, |batch| {
+        crate::capture_mount_paths_general(binding.clone(), batch)
+    })?;
     let a: std::collections::BTreeSet<_> = after.paths.iter().map(|p| p.to_lowercase()).collect();
     let b: std::collections::BTreeSet<_> = paths.iter().map(|p| p.to_lowercase()).collect();
     require(

@@ -388,10 +388,13 @@ impl<R: Read + Seek> Seek for PagedReadRecorder<R> {
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag="kind",rename_all="snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum InspectionReadCoverageOrigin {
     FreshInspection,
-    CachedRevalidated { origin_sha256: String, source_fingerprint_sha256: String },
+    CachedRevalidated {
+        origin_sha256: String,
+        source_fingerprint_sha256: String,
+    },
 }
 #[derive(Serialize, Deserialize)]
 pub struct ReadCoverageReport {
@@ -403,7 +406,7 @@ pub struct ReadCoverageReport {
     pub ranges: RecordStorePin,
     pub actual_inspector_invocation_bound: bool,
     pub grants_source_admission: bool,
-    #[serde(default,skip_serializing_if="Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<InspectionReadCoverageOrigin>,
 }
 pub struct InspectionReadCoverage {
@@ -418,26 +421,47 @@ impl InspectionReadCoverage {
         scratch: &SourceScratch,
         partition_bytes: u64,
     ) -> Result<Self> {
-        ensure!(!report.grants_source_admission
-            && report.source_inspection_sha256 == hex::encode(continuity.inspection_sha256()),
-            "cached read coverage does not bind actual source continuity");
-        let store=SortedRecordStore::open(&report.ranges,scratch)?;
-        let mut previous=None;let mut bytes=0u64;
-        for ordinal in 0..store.len(){let row:Range=store.get(ordinal)?;
-            let row=span(row.offset,row.length,partition_bytes)?;
-            ensure!(store.key(ordinal)?==key(row.offset,0)
-                &&previous.is_none_or(|end|end<row.offset),"cached inspection-read range order/key differs");
-            bytes=bytes.checked_add(row.length).context("cached coverage total overflow")?;
-            previous=Some(row.end()?);
+        ensure!(
+            !report.grants_source_admission
+                && report.source_inspection_sha256 == hex::encode(continuity.inspection_sha256()),
+            "cached read coverage does not bind actual source continuity"
+        );
+        let store = SortedRecordStore::open(&report.ranges, scratch)?;
+        let mut previous = None;
+        let mut bytes = 0u64;
+        for ordinal in 0..store.len() {
+            let row: Range = store.get(ordinal)?;
+            let row = span(row.offset, row.length, partition_bytes)?;
+            ensure!(
+                store.key(ordinal)? == key(row.offset, 0)
+                    && previous.is_none_or(|end| end < row.offset),
+                "cached inspection-read range order/key differs"
+            );
+            bytes = bytes
+                .checked_add(row.length)
+                .context("cached coverage total overflow")?;
+            previous = Some(row.end()?);
         }
-        ensure!(store.len()==report.unique_ranges&&bytes==report.unique_bytes
-            &&report.returned_bytes>=bytes&&report.successful_reads>0,
-            "cached inspection-read coverage totals differ");
-        Ok(Self{coverage:UnboundReadCoverage{store,reads:report.successful_reads,
-            bytes:report.returned_bytes,length:partition_bytes},source_pin:report.source_inspection_sha256,
-            origin:InspectionReadCoverageOrigin::CachedRevalidated{
-                origin_sha256:hex::encode(continuity.origin_sha256()),
-                source_fingerprint_sha256:hex::encode(continuity.fingerprint_sha256())}})
+        ensure!(
+            store.len() == report.unique_ranges
+                && bytes == report.unique_bytes
+                && report.returned_bytes >= bytes
+                && report.successful_reads > 0,
+            "cached inspection-read coverage totals differ"
+        );
+        Ok(Self {
+            coverage: UnboundReadCoverage {
+                store,
+                reads: report.successful_reads,
+                bytes: report.returned_bytes,
+                length: partition_bytes,
+            },
+            source_pin: report.source_inspection_sha256,
+            origin: InspectionReadCoverageOrigin::CachedRevalidated {
+                origin_sha256: hex::encode(continuity.origin_sha256()),
+                source_fingerprint_sha256: hex::encode(continuity.fingerprint_sha256()),
+            },
+        })
     }
     pub fn report(&self) -> Result<ReadCoverageReport> {
         Ok(ReadCoverageReport {
@@ -447,7 +471,10 @@ impl InspectionReadCoverage {
             unique_ranges: self.coverage.store.len(),
             unique_bytes: range_bytes(&self.coverage.store)?,
             ranges: self.coverage.store.pin().clone(),
-            actual_inspector_invocation_bound: matches!(self.origin, InspectionReadCoverageOrigin::FreshInspection),
+            actual_inspector_invocation_bound: matches!(
+                self.origin,
+                InspectionReadCoverageOrigin::FreshInspection
+            ),
             grants_source_admission: false,
             origin: Some(self.origin.clone()),
         })
@@ -474,15 +501,26 @@ pub fn inspect_recorded_with_scratch<R: Read + Seek>(
     root: &Path,
     scratch: &SourceScratch,
 ) -> Result<(PagedInspection, InspectionReadCoverage)> {
-    inspect_recorded_with_layout_scope(reader,length,budget,policy,root,scratch,
-        n2r_win32::general_layout::GeneralDiskLayoutProfile::DedicatedData)
+    inspect_recorded_with_layout_scope(
+        reader,
+        length,
+        budget,
+        policy,
+        root,
+        scratch,
+        n2r_win32::general_layout::GeneralDiskLayoutProfile::DedicatedData,
+    )
 }
 
 pub(crate) fn inspect_recorded_with_layout_scope<R: Read + Seek>(
-    reader:&mut R,length:u64,budget:n2r_win32::tree_resources::ResourceBudget,
-    policy:VerificationPolicy,root:&Path,scratch:&SourceScratch,
-    layout:n2r_win32::general_layout::GeneralDiskLayoutProfile,
-) -> Result<(PagedInspection,InspectionReadCoverage)> {
+    reader: &mut R,
+    length: u64,
+    budget: n2r_win32::tree_resources::ResourceBudget,
+    policy: VerificationPolicy,
+    root: &Path,
+    scratch: &SourceScratch,
+    layout: n2r_win32::general_layout::GeneralDiskLayoutProfile,
+) -> Result<(PagedInspection, InspectionReadCoverage)> {
     ensure!(!root.exists(), "fresh recorded source directory required");
     fs::create_dir(root)?;
     let mut recorder = PagedReadRecorder::new(reader, length, root, scratch)?;
@@ -671,17 +709,36 @@ pub struct PagedSourceFingerprint {
     scratch: SourceScratch,
 }
 impl n2r_win32::SourceCacheFingerprintDomain for PagedSourceFingerprint {
-    fn partition_bytes(&self)->u64{self.pins.partition_bytes}
-    fn inspection_sha256(&self)->[u8;32]{
+    fn partition_bytes(&self) -> u64 {
+        self.pins.partition_bytes
+    }
+    fn inspection_sha256(&self) -> [u8; 32] {
         // Construction/open validated the canonical64-character digest.
-        let mut result=[0;32];if hex::decode_to_slice(&self.pins.source_inspection_sha256,&mut result).is_err(){return[0;32]};result
+        let mut result = [0; 32];
+        if hex::decode_to_slice(&self.pins.source_inspection_sha256, &mut result).is_err() {
+            return [0; 32];
+        };
+        result
     }
-    fn range_count(&self,omitted:bool)->u64{if omitted{self.omitted.len()}else{self.covered.len()}}
-    fn range(&self,omitted:bool,index:u64)->io::Result<(u64,u64)>{
-        let row:Range=if omitted{self.omitted.get(index)}else{self.covered.get(index)}.map_err(io::Error::other)?;
-        Ok((row.offset,row.length))
+    fn range_count(&self, omitted: bool) -> u64 {
+        if omitted {
+            self.omitted.len()
+        } else {
+            self.covered.len()
+        }
     }
-    fn revalidate(&self)->io::Result<()>{PagedSourceFingerprint::revalidate(self).map_err(io::Error::other)}
+    fn range(&self, omitted: bool, index: u64) -> io::Result<(u64, u64)> {
+        let row: Range = if omitted {
+            self.omitted.get(index)
+        } else {
+            self.covered.get(index)
+        }
+        .map_err(io::Error::other)?;
+        Ok((row.offset, row.length))
+    }
+    fn revalidate(&self) -> io::Result<()> {
+        PagedSourceFingerprint::revalidate(self).map_err(io::Error::other)
+    }
 }
 #[derive(Deserialize)]
 struct PhysicalCoordinate {
@@ -824,10 +881,13 @@ impl PagedSourceFingerprint {
                         crate::ntfs_attestation::extent_identity_stream_request_domain(
                             source, &file, stream, true, true,
                         )
-                    }).with_context(|| format!(
-                        "source fingerprint extent selector at FILE {} stream {:?}",
-                        file.record_number, stream.name_utf16,
-                    ))?
+                    })
+                    .with_context(|| {
+                        format!(
+                            "source fingerprint extent selector at FILE {} stream {:?}",
+                            file.record_number, stream.name_utf16,
+                        )
+                    })?
                     .is_some();
                 if stream.resident
                     || stream.flags != 0

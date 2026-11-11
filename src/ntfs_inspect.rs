@@ -23,9 +23,11 @@ pub mod allocation_domain;
 #[cfg(windows)]
 mod checked_domain_io;
 #[cfg(windows)]
-pub(crate) use checked_domain_io::{CheckedMftDomain, LeasedResidentBytes, read_resident_inventory_attribute_domain};
-#[cfg(windows)]
 use checked_domain_io::checked_data_attribute_domain;
+#[cfg(windows)]
+pub(crate) use checked_domain_io::{
+    CheckedMftDomain, LeasedResidentBytes, read_resident_inventory_attribute_domain,
+};
 #[cfg(windows)]
 pub mod external_sort;
 #[cfg(windows)]
@@ -44,11 +46,11 @@ pub mod source_domain;
 #[cfg(windows)]
 pub use paged_files::PagedRawFiles;
 #[cfg(windows)]
+pub(crate) use paged_inspection::inspect_paged_with_layout_scope;
+#[cfg(windows)]
 pub use paged_inspection::{
     PagedInspection, SourceInspectionPin, inspect_paged_with_policy, inspect_paged_with_scratch,
 };
-#[cfg(windows)]
-pub(crate) use paged_inspection::inspect_paged_with_layout_scope;
 pub use source_domain::{
     LegacySecurityRecord, RootDirectoryDomain, RootFileDomain, RootSecurityCaptureDomain,
     SourceDirectoryHeader, SourceHeader, SourceIndexRanges, SourceMetadataBudget,
@@ -970,10 +972,17 @@ fn parse_record(mut bytes: Vec<u8>, geometry: &NtfsGeometry) -> Result<Record> {
         let resident_metadata_hex = if matches!(
             type_code,
             0x10 | 0x30 | 0x40 | 0x50 | 0x70 | 0xc0 | 0xd0 | 0xe0
-        ) || (type_code == 0x100 && name_utf16 == [36, 68, 83, 67]
-            && resident_value.as_ref().is_some_and(|value| value.len() == 8))
-            || (type_code == 0x100 && name_utf16 == [36, 84, 88, 70, 95, 68, 65, 84, 65]
-                && resident_value.as_ref().is_some_and(|value| value.len() == 56)) {
+        ) || (type_code == 0x100
+            && name_utf16 == [36, 68, 83, 67]
+            && resident_value
+                .as_ref()
+                .is_some_and(|value| value.len() == 8))
+            || (type_code == 0x100
+                && name_utf16 == [36, 84, 88, 70, 95, 68, 65, 84, 65]
+                && resident_value
+                    .as_ref()
+                    .is_some_and(|value| value.len() == 56))
+        {
             resident_value.as_ref().map(hex::encode)
         } else {
             None
@@ -1850,7 +1859,8 @@ fn local_ancestry_issue(file: &FileInventory) -> Option<MetadataRoleIssue> {
 }
 
 fn local_ancestry_issue_with_link_counter_hint(
-    file: &FileInventory, header_is_hint: bool,
+    file: &FileInventory,
+    header_is_hint: bool,
 ) -> Option<MetadataRoleIssue> {
     use MetadataRoleIssue as Issue;
     if file.base_file_reference != 0 {
@@ -1861,8 +1871,8 @@ fn local_ancestry_issue_with_link_counter_hint(
         Some(Issue::ZeroSequenceNumber)
     } else if file.names.is_empty() {
         Some(Issue::MissingNames)
-    } else if !header_is_hint && (file.hard_link_count == 0
-        || usize::from(file.hard_link_count) != file.names.len())
+    } else if !header_is_hint
+        && (file.hard_link_count == 0 || usize::from(file.hard_link_count) != file.names.len())
     {
         // Ordinary inspection keeps its strict historical counter check.
         // The explicit Windows owner instead requires complete I30/name
@@ -2889,15 +2899,34 @@ pub struct StreamRangeReadProof {
 /// A sparse NTFS attribute may use compression-unit 4 without compressed
 /// encoding; compressed/encrypted flags and bytes beyond VDL remain excluded.
 pub(crate) fn require_initialized_uncompressed_range(
-    a:&AttributeInventory,offset:u64,length:u64,
-)->Result<()> {
-    let end=offset.checked_add(length).context("reference logical overflow")?;
-    let unit_supported=if a.flags==0x8000 {matches!(a.compression_unit,0|4)}
-        else {a.compression_unit==0};
-    ensure!(!a.resident&&a.flags&!0x8000==0&&unit_supported
-        &&end<=a.initialized_size&&end<=a.logical_size,
+    a: &AttributeInventory,
+    offset: u64,
+    length: u64,
+) -> Result<()> {
+    let end = offset
+        .checked_add(length)
+        .context("reference logical overflow")?;
+    let unit_supported = if a.flags == 0x8000 {
+        matches!(a.compression_unit, 0 | 4)
+    } else {
+        a.compression_unit == 0
+    };
+    ensure!(
+        !a.resident
+            && a.flags & !0x8000 == 0
+            && unit_supported
+            && end <= a.initialized_size
+            && end <= a.logical_size,
         "retained reference is not initialized uncompressed source DATA: resident={}, flags={:#x}, compression_unit={}, offset={}, length={}, end={}, initialized={}, logical={}",
-        a.resident,a.flags,a.compression_unit,offset,length,end,a.initialized_size,a.logical_size);
+        a.resident,
+        a.flags,
+        a.compression_unit,
+        offset,
+        length,
+        end,
+        a.initialized_size,
+        a.logical_size
+    );
     Ok(())
 }
 
@@ -2914,7 +2943,10 @@ pub struct PlainStreamRangeSession {
     poisoned: bool,
     // Paged DATA mapping remains charged for the complete session lifetime.
     #[cfg(windows)]
-    _domain_record_ram: Option<(paged_storage::SourceRamLease, Option<paged_storage::SourceRamLease>)>,
+    _domain_record_ram: Option<(
+        paged_storage::SourceRamLease,
+        Option<paged_storage::SourceRamLease>,
+    )>,
 }
 impl PlainStreamRangeSession {
     pub fn open<R: Read + Seek>(
@@ -3112,7 +3144,11 @@ impl PlainStreamRangeSession {
         if length == 0
             || a.resident
             || a.flags & !0x8000 != 0
-            || !(if a.flags==0x8000 {matches!(a.compression_unit,0|4)} else {a.compression_unit==0})
+            || !(if a.flags == 0x8000 {
+                matches!(a.compression_unit, 0 | 4)
+            } else {
+                a.compression_unit == 0
+            })
             || end > a.initialized_size
         {
             return Ok(None);
@@ -3161,10 +3197,16 @@ impl PlainStreamRangeSession {
         length: u64,
     ) -> Result<()> {
         let a = &self.attribute.report;
-        ensure!(!self.poisoned,"poisoned reference stream session");
-        require_initialized_uncompressed_range(a,offset,length).with_context(||format!(
-            "retained source FILE {} stream {:?}",self.record_number,self.stream_name_utf16))?;
-        let end=offset.checked_add(length).context("reference logical overflow")?;
+        ensure!(!self.poisoned, "poisoned reference stream session");
+        require_initialized_uncompressed_range(a, offset, length).with_context(|| {
+            format!(
+                "retained source FILE {} stream {:?}",
+                self.record_number, self.stream_name_utf16
+            )
+        })?;
+        let end = offset
+            .checked_add(length)
+            .context("reference logical overflow")?;
         let mut cursor = offset;
         for run in &a.extents {
             let run_end = run

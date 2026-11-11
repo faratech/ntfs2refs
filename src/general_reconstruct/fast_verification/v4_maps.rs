@@ -68,16 +68,76 @@ fn key(object: usize, stream: usize) -> Result<[u8; 16]> {
     Ok(key)
 }
 
-enum MapSourceContext<'a>{Dedicated(&'a ResourceSourceContext),Partition(&'a crate::general_source_admission::resource::partition::PartitionResourceSourceContext)}
-struct MapSourceReport<'a>{binding:&'a n2r_win32::general_layout::GeneralDiskBinding,source_sha256:&'a str,source_inspection_sha256:&'a str,source_views_sha256:&'a str}
-impl MapSourceContext<'_>{
- fn require_source_evidence(&self)->Result<()>{match self{Self::Dedicated(c)=>c.require_source_evidence(),Self::Partition(c)=>c.require_source_evidence()}}
- fn report(&self)->MapSourceReport<'_>{match self{Self::Dedicated(c)=>{let r=c.report();MapSourceReport{binding:r.binding,source_sha256:r.source_sha256,source_inspection_sha256:r.source_inspection_sha256,source_views_sha256:r.source_views_sha256}},Self::Partition(c)=>MapSourceReport{binding:&c.binding().storage,source_sha256:c.source_sha256(),source_inspection_sha256:c.inspection_sha256(),source_views_sha256:c.source_views_sha256()}}}
- fn resource_admission(&self)->n2r_win32::tree_resources::SourceResourceAdmission{match self{Self::Dedicated(c)=>c.resource_admission(),Self::Partition(c)=>c.resource_admission()}}
- fn arena(&self)->Option<&crate::artifact_arena::ArtifactArena>{match self{Self::Dedicated(c)=>c.arena(),Self::Partition(c)=>Some(c.arena())}}
- fn source_group_seal(&self)->Option<&ArtifactGroupSeal>{match self{Self::Dedicated(c)=>c.source_group_seal(),Self::Partition(c)=>Some(c.source_group_seal())}}
- fn source_owner_identity(&self)->usize{match self{Self::Dedicated(c)=>c.source_owner_identity(),Self::Partition(c)=>c.source_owner_identity()}}
- fn require_native_source(&self,proof:&ProtectedPagedTargetSelection)->Result<()>{if let Self::Partition(c)=self{proof.native().require_partition_source_owner(&c.owner_token())?;}Ok(())}
+enum MapSourceContext<'a> {
+    Dedicated(&'a ResourceSourceContext),
+    Partition(
+        &'a crate::general_source_admission::resource::partition::PartitionResourceSourceContext,
+    ),
+}
+struct MapSourceReport<'a> {
+    binding: &'a n2r_win32::general_layout::GeneralDiskBinding,
+    source_sha256: &'a str,
+    source_inspection_sha256: &'a str,
+    source_views_sha256: &'a str,
+}
+impl MapSourceContext<'_> {
+    fn require_source_evidence(&self) -> Result<()> {
+        match self {
+            Self::Dedicated(c) => c.require_source_evidence(),
+            Self::Partition(c) => c.require_source_evidence(),
+        }
+    }
+    fn report(&self) -> MapSourceReport<'_> {
+        match self {
+            Self::Dedicated(c) => {
+                let r = c.report();
+                MapSourceReport {
+                    binding: r.binding,
+                    source_sha256: r.source_sha256,
+                    source_inspection_sha256: r.source_inspection_sha256,
+                    source_views_sha256: r.source_views_sha256,
+                }
+            }
+            Self::Partition(c) => MapSourceReport {
+                binding: &c.binding().storage,
+                source_sha256: c.source_sha256(),
+                source_inspection_sha256: c.inspection_sha256(),
+                source_views_sha256: c.source_views_sha256(),
+            },
+        }
+    }
+    fn resource_admission(&self) -> n2r_win32::tree_resources::SourceResourceAdmission {
+        match self {
+            Self::Dedicated(c) => c.resource_admission(),
+            Self::Partition(c) => c.resource_admission(),
+        }
+    }
+    fn arena(&self) -> Option<&crate::artifact_arena::ArtifactArena> {
+        match self {
+            Self::Dedicated(c) => c.arena(),
+            Self::Partition(c) => Some(c.arena()),
+        }
+    }
+    fn source_group_seal(&self) -> Option<&ArtifactGroupSeal> {
+        match self {
+            Self::Dedicated(c) => c.source_group_seal(),
+            Self::Partition(c) => Some(c.source_group_seal()),
+        }
+    }
+    fn source_owner_identity(&self) -> usize {
+        match self {
+            Self::Dedicated(c) => c.source_owner_identity(),
+            Self::Partition(c) => c.source_owner_identity(),
+        }
+    }
+    fn require_native_source(&self, proof: &ProtectedPagedTargetSelection) -> Result<()> {
+        if let Self::Partition(c) = self {
+            proof
+                .native()
+                .require_partition_source_owner(&c.owner_token())?;
+        }
+        Ok(())
+    }
 }
 
 fn check_binding(
@@ -268,7 +328,16 @@ impl V4RecoveryMaps {
         scratch: &SourceScratch,
         path: &Path,
     ) -> Result<Self> {
-        Self::create_scoped(proof,expected,&MapSourceContext::Dedicated(context),domain,ticket,group,scratch,path)
+        Self::create_scoped(
+            proof,
+            expected,
+            &MapSourceContext::Dedicated(context),
+            domain,
+            ticket,
+            group,
+            scratch,
+            path,
+        )
     }
     pub(crate) fn create_partition(
         proof: &ProtectedPagedTargetSelection,
@@ -280,7 +349,16 @@ impl V4RecoveryMaps {
         scratch: &SourceScratch,
         path: &Path,
     ) -> Result<Self> {
-        Self::create_scoped(proof,expected,&MapSourceContext::Partition(context),domain,ticket,group,scratch,path)
+        Self::create_scoped(
+            proof,
+            expected,
+            &MapSourceContext::Partition(context),
+            domain,
+            ticket,
+            group,
+            scratch,
+            path,
+        )
     }
     fn create_scoped(
         proof: &ProtectedPagedTargetSelection,
@@ -495,7 +573,13 @@ impl V4RecoveryMaps {
         domain: &ResourceJournalDomain<'_>,
         ticket: &SelectedTicket,
     ) -> Result<()> {
-        self.require_binding_scoped(proof,expected,&MapSourceContext::Dedicated(context),domain,ticket)
+        self.require_binding_scoped(
+            proof,
+            expected,
+            &MapSourceContext::Dedicated(context),
+            domain,
+            ticket,
+        )
     }
     pub(crate) fn require_binding_partition(
         &self,
@@ -505,7 +589,13 @@ impl V4RecoveryMaps {
         domain: &ResourceJournalDomain<'_>,
         ticket: &SelectedTicket,
     ) -> Result<()> {
-        self.require_binding_scoped(proof,expected,&MapSourceContext::Partition(context),domain,ticket)
+        self.require_binding_scoped(
+            proof,
+            expected,
+            &MapSourceContext::Partition(context),
+            domain,
+            ticket,
+        )
     }
     fn require_binding_scoped(
         &self,
@@ -630,8 +720,13 @@ impl V4RecoveryMaps {
             report.objects.len() == expected.len(),
             "V4 converted object coverage differs"
         );
-        let bindings =
-            comparator::compare_records(&mut reader, expected, report, self.admission, self.records)?;
+        let bindings = comparator::compare_records(
+            &mut reader,
+            expected,
+            report,
+            self.admission,
+            self.records,
+        )?;
         drop(reader);
         self.revalidate()?;
         Ok(bindings)

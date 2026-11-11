@@ -862,7 +862,7 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
             source: BorrowedPagedSource::Dedicated(source),
             raw,
             admission,
-            before:Some(before),
+            before: Some(before),
             // Individual NTFS logical lengths have the native signed-width
             // bound. Aggregate actual reads retain the caller's explicit budget.
             budget: crate::ntfs_inspect::StreamTransferBudget::new(
@@ -925,7 +925,7 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
             source: BorrowedPagedSource::DedicatedScoped(source),
             raw,
             admission,
-            before:Some(before),
+            before: Some(before),
             // Individual NTFS logical lengths have the native signed-width
             // bound. Aggregate actual reads retain the caller's explicit budget.
             budget: crate::ntfs_inspect::StreamTransferBudget::new(
@@ -1124,7 +1124,7 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
 
     pub(crate) fn validate_protection(&mut self) -> Result<()> {
         ensure!(!self.poisoned, "failed source adapter cannot validate");
-        let result=self.source.validate(self.before.as_ref());
+        let result = self.source.validate(self.before.as_ref());
         if result.is_err() {
             self.poisoned = true;
         }

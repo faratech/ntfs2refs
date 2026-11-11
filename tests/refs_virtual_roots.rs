@@ -294,11 +294,15 @@ fn incomplete_unequal_or_unbound_container_maps_prohibit_every_read() {
             "root_slots" => f.containers.trees[0].root_lcn_slots[0] += 1,
             "root_crc" => f.containers.trees[0].pages[0].computed_crc64 = "0".repeat(16),
             "child_checksum" => f.containers.trees[0].pages[0].checksum_matches = false,
-            "raw_values" => f.containers.trees[0].mappings[0].value_bytes_hex = "01".repeat(160).into(),
+            "raw_values" => {
+                f.containers.trees[0].mappings[0].value_bytes_hex = "01".repeat(160).into()
+            }
             "mapping" => f.containers.trees[0].mappings[0].physical_start_lcn = 16384,
             "cpc" => f.containers.trees[0].mappings[0].clusters_per_container = 4096,
             "overflow" => f.containers.trees[0].mappings[0].physical_start_lcn = u64::MAX,
-            "raw_length" => f.containers.trees[0].mappings[0].value_bytes_hex = "00".repeat(161).into(),
+            "raw_length" => {
+                f.containers.trees[0].mappings[0].value_bytes_hex = "00".repeat(161).into()
+            }
             "duplicate_key" | "overlap" => {
                 let mut m = f.containers.trees[0].mappings[0].clone();
                 if scenario == "overlap" {

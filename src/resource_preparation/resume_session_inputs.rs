@@ -33,8 +33,8 @@ use std::{
 const SAVED_KIND: &str = "saved-prepublication-resume-request-v1";
 /// Chooses a fresh native issuer. It never proves an empty namespace, restores
 /// a lock, or authorizes reuse of partially created native objects.
-#[derive(Clone,Copy,Debug,Default,PartialEq,Eq,Serialize,Deserialize)]
-#[serde(rename_all="snake_case")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum ShadowStart {
     #[default]
     AdoptExisting,
@@ -208,7 +208,10 @@ impl SavedResumeRequest {
                 .completed_placement
                 .as_ref()
                 .map(|proof| proof.pin().clone()),
-            completed_payloads: saved.completed_payloads.as_ref().map(|proof|proof.pin().clone()),
+            completed_payloads: saved
+                .completed_payloads
+                .as_ref()
+                .map(|proof| proof.pin().clone()),
             legacy_terminal: saved.legacy_terminal.clone(),
             prior_spend: SavedPlacementSpend {
                 prior_submissions_upper: u64::try_from(saved.prior_spend.prior_submissions_upper)?,
@@ -224,31 +227,63 @@ impl SavedResumeRequest {
                     saved.placement_limits.cumulative_maximum_submissions,
                 )?,
             },
-            shadow_start:saved.shadow_start,
+            shadow_start: saved.shadow_start,
         };
         value.validate(request.resources)?;
         Ok(value)
     }
     pub(crate) fn from_fresh(
-        parent:&ParentPublicResources,request:&ResourcePreparationRequest,arena_root:&Path,
-        source:&SourceCacheOriginPins,expected:&crate::shadow_tree::PagedExpectedTree,
-    )->Result<Self>{
-        let actual=expected.artifact_lease().context("fresh resume Expected owner absent")?;
+        parent: &ParentPublicResources,
+        request: &ResourcePreparationRequest,
+        arena_root: &Path,
+        source: &SourceCacheOriginPins,
+        expected: &crate::shadow_tree::PagedExpectedTree,
+    ) -> Result<Self> {
+        let actual = expected
+            .artifact_lease()
+            .context("fresh resume Expected owner absent")?;
         actual.revalidate()?;
-        ensure!(source.schema_version==2&&source.resource_admission.budget==request.resources
-            &&source.generation.as_ref().is_some_and(|generation|generation.prior_origin_sha256.is_none()),
-            "fresh checkpoint requires a current initial source generation");
-        let value=Self{schema_version:1,kind:SAVED_KIND.to_owned(),arena_root:arena_root.to_path_buf(),
-            parent_resources:parent.clone(),request:SavedPreparationRequest::from_actual(parent,request)?,
-            source_origin_sha256:hex::encode(source.canonical_sha256()?),
-            expected:SourceCacheFilePin{path:actual.path().to_path_buf(),sha256:actual.sha256().to_owned(),bytes:actual.wire_bytes()},
-            expected_binding:expected.binding_pin().cloned(),completed_placement:None,completed_payloads:None,legacy_terminal:None,
-            prior_spend:SavedPlacementSpend{prior_submissions_upper:0,prior_move_bytes_upper:0,
-                uncertain_tail_submissions:0,uncertain_tail_move_bytes:0},
-            placement_limits:SavedRecoveryLimits{cumulative_maximum_move_bytes:request.maximum_placement_bytes,
-                cumulative_maximum_submissions:u64::try_from(request.maximum_placement_submissions)?},
-            shadow_start:ShadowStart::AllocateEmpty};
-        value.validate(request.resources)?;Ok(value)
+        ensure!(
+            source.schema_version == 2
+                && source.resource_admission.budget == request.resources
+                && source
+                    .generation
+                    .as_ref()
+                    .is_some_and(|generation| generation.prior_origin_sha256.is_none()),
+            "fresh checkpoint requires a current initial source generation"
+        );
+        let value = Self {
+            schema_version: 1,
+            kind: SAVED_KIND.to_owned(),
+            arena_root: arena_root.to_path_buf(),
+            parent_resources: parent.clone(),
+            request: SavedPreparationRequest::from_actual(parent, request)?,
+            source_origin_sha256: hex::encode(source.canonical_sha256()?),
+            expected: SourceCacheFilePin {
+                path: actual.path().to_path_buf(),
+                sha256: actual.sha256().to_owned(),
+                bytes: actual.wire_bytes(),
+            },
+            expected_binding: expected.binding_pin().cloned(),
+            completed_placement: None,
+            completed_payloads: None,
+            legacy_terminal: None,
+            prior_spend: SavedPlacementSpend {
+                prior_submissions_upper: 0,
+                prior_move_bytes_upper: 0,
+                uncertain_tail_submissions: 0,
+                uncertain_tail_move_bytes: 0,
+            },
+            placement_limits: SavedRecoveryLimits {
+                cumulative_maximum_move_bytes: request.maximum_placement_bytes,
+                cumulative_maximum_submissions: u64::try_from(
+                    request.maximum_placement_submissions,
+                )?,
+            },
+            shadow_start: ShadowStart::AllocateEmpty,
+        };
+        value.validate(request.resources)?;
+        Ok(value)
     }
     fn validate(&self, main: ResourceBudget) -> Result<()> {
         ensure!(
@@ -300,10 +335,16 @@ impl SavedResumeRequest {
             );
             digest(&pin.sha256)?;
         }
-        if let Some(pin)=&self.completed_payloads {
-            ensure!(pin.key=="payloads-ready"&&pin.bytes>0
-                &&pin.path.file_name().is_some_and(|name|name=="payloads-ready.json"),
-                "saved completed payload selector differs");
+        if let Some(pin) = &self.completed_payloads {
+            ensure!(
+                pin.key == "payloads-ready"
+                    && pin.bytes > 0
+                    && pin
+                        .path
+                        .file_name()
+                        .is_some_and(|name| name == "payloads-ready.json"),
+                "saved completed payload selector differs"
+            );
             digest(&pin.sha256)?;
         }
         self.prior_spend.into_actual()?;
@@ -657,44 +698,89 @@ impl HeldCompletedPlacement {
 /// cannot create a PrivateTree, mark VDL or grant source-write authority.
 #[derive(Clone)]
 pub(crate) struct HeldCompletedPayloads {
-    file:std::sync::Arc<HeldArtifact>,
-    arena:crate::artifact_arena::ArtifactArena,
-    expected_sha256:String,
-    routed_plan_sha256:String,
-    _memory:std::sync::Arc<ArenaRamLease>,
+    file: std::sync::Arc<HeldArtifact>,
+    arena: crate::artifact_arena::ArtifactArena,
+    expected_sha256: String,
+    routed_plan_sha256: String,
+    _memory: std::sync::Arc<ArenaRamLease>,
 }
 impl HeldCompletedPayloads {
-    fn open(pin:&ArtifactPin,expected_sha256:&str,maximum:u64,group:&ArtifactGroupPermit)->Result<Self>{
-        ensure!(pin.key=="payloads-ready"&&pin.path.file_name().is_some_and(|name|name=="payloads-ready.json"),
-            "completed payload selector path/key differs");
-        let file=adopt_pin(pin,maximum,group)?;
-        let report:serde_json::Value=decode(&file,maximum,group)?;
-        ensure!(report["kind"]=="private-routed-prefix-verification"&&report["success"]==true
-            &&report["source_payload_writes"]==0&&report["conversion_qualified"]==false,
-            "completed payload receipt kind/closure differs");
-        let plan=report["routed_plan_sha256"].as_str().context("completed payload plan digest absent")?;
-        digest(plan)?;digest(expected_sha256)?;
-        let logical=report["logical_bytes"].as_u64().context("completed payload logical total absent")?;
-        let mut total=0u64;
-        for key in ["same_coordinate_reference_bytes","relocated_prefix_routed_bytes","shadow_materialized_bytes","hole_bytes"] {
-            total=total.checked_add(report[key].as_u64().with_context(||format!("completed payload {key} absent"))?)
+    fn open(
+        pin: &ArtifactPin,
+        expected_sha256: &str,
+        maximum: u64,
+        group: &ArtifactGroupPermit,
+    ) -> Result<Self> {
+        ensure!(
+            pin.key == "payloads-ready"
+                && pin
+                    .path
+                    .file_name()
+                    .is_some_and(|name| name == "payloads-ready.json"),
+            "completed payload selector path/key differs"
+        );
+        let file = adopt_pin(pin, maximum, group)?;
+        let report: serde_json::Value = decode(&file, maximum, group)?;
+        ensure!(
+            report["kind"] == "private-routed-prefix-verification"
+                && report["success"] == true
+                && report["source_payload_writes"] == 0
+                && report["conversion_qualified"] == false,
+            "completed payload receipt kind/closure differs"
+        );
+        let plan = report["routed_plan_sha256"]
+            .as_str()
+            .context("completed payload plan digest absent")?;
+        digest(plan)?;
+        digest(expected_sha256)?;
+        let logical = report["logical_bytes"]
+            .as_u64()
+            .context("completed payload logical total absent")?;
+        let mut total = 0u64;
+        for key in [
+            "same_coordinate_reference_bytes",
+            "relocated_prefix_routed_bytes",
+            "shadow_materialized_bytes",
+            "hole_bytes",
+        ] {
+            total = total
+                .checked_add(
+                    report[key]
+                        .as_u64()
+                        .with_context(|| format!("completed payload {key} absent"))?,
+                )
                 .context("completed payload coverage overflow")?;
         }
-        ensure!(total==logical,"completed payload coverage differs");
-        let memory=group.arena().reserve_ram(4096)?;
-        Ok(Self{file:std::sync::Arc::new(file),arena:group.arena().clone(),expected_sha256:expected_sha256.to_owned(),
-            routed_plan_sha256:plan.to_owned(),_memory:std::sync::Arc::new(memory)})
+        ensure!(total == logical, "completed payload coverage differs");
+        let memory = group.arena().reserve_ram(4096)?;
+        Ok(Self {
+            file: std::sync::Arc::new(file),
+            arena: group.arena().clone(),
+            expected_sha256: expected_sha256.to_owned(),
+            routed_plan_sha256: plan.to_owned(),
+            _memory: std::sync::Arc::new(memory),
+        })
     }
-    pub(crate) fn pin(&self)->&ArtifactPin{self.file.pin()}
-    pub(crate) fn require_arena(&self,arena:&crate::artifact_arena::ArtifactArena)->Result<()> {
-        ensure!(self.arena.same_arena(arena),"completed payload selector belongs to another actual arena");
+    pub(crate) fn pin(&self) -> &ArtifactPin {
+        self.file.pin()
+    }
+    pub(crate) fn require_arena(&self, arena: &crate::artifact_arena::ArtifactArena) -> Result<()> {
+        ensure!(
+            self.arena.same_arena(arena),
+            "completed payload selector belongs to another actual arena"
+        );
         self.file.revalidate_identity()
     }
-    pub(crate) fn require_expected(&self,expected_sha256:&str)->Result<()> {
-        ensure!(self.expected_sha256==expected_sha256,"completed payload Expected generation differs");
+    pub(crate) fn require_expected(&self, expected_sha256: &str) -> Result<()> {
+        ensure!(
+            self.expected_sha256 == expected_sha256,
+            "completed payload Expected generation differs"
+        );
         self.file.revalidate_identity()
     }
-    pub(crate) fn routed_plan_sha256(&self)->&str{&self.routed_plan_sha256}
+    pub(crate) fn routed_plan_sha256(&self) -> &str {
+        &self.routed_plan_sha256
+    }
 }
 
 pub(crate) struct ResumeSessionInputs {
@@ -707,7 +793,7 @@ pub(crate) struct ResumeSessionInputs {
     pub workspace_origin: Option<(PathBuf, GeneralJournalStorageBinding)>,
     pub completed_placement: Option<HeldCompletedPlacement>,
     pub completed_payloads: Option<HeldCompletedPayloads>,
-    pub shadow_start:ShadowStart,
+    pub shadow_start: ShadowStart,
     _facts: Vec<HeldArtifact>,
     _metadata_owners: Vec<ArtifactLease>,
     _index_memory: Vec<ArenaRamLease>,
@@ -794,12 +880,20 @@ impl ResumeSessionInputs {
             journal.stage().is_none_or(|stage| stage <= Stage::Metadata),
             "resume stage later than Metadata requires its capture native reconciler; preserve artifacts, no restart"
         );
-        if journal.stage()==Some(Stage::Metadata) {
-            ensure!(journal.pending_batch().is_none_or(|batch|batch.operation=="native_reconcile_metadata"),
-                "unknown metadata batch cannot be reconciled by this native adapter");
+        if journal.stage() == Some(Stage::Metadata) {
+            ensure!(
+                journal
+                    .pending_batch()
+                    .is_none_or(|batch| batch.operation == "native_reconcile_metadata"),
+                "unknown metadata batch cannot be reconciled by this native adapter"
+            );
         }
-        ensure!(!journal.pending_batch().is_some_and(|batch|batch.operation=="native_allocate_shadow"),
-            "shadow allocation was interrupted; partial namespace reconciliation is not supported yet; preserve the shadow before source revalidation");
+        ensure!(
+            !journal
+                .pending_batch()
+                .is_some_and(|batch| batch.operation == "native_allocate_shadow"),
+            "shadow allocation was interrupted; partial namespace reconciliation is not supported yet; preserve the shadow before source revalidation"
+        );
         let initial = &journal.intent().initial_artifacts;
         let find = |key: &str| -> Result<ArtifactPin> {
             let rows: Vec<_> = initial.iter().filter(|p| p.key == key).collect();
@@ -822,8 +916,14 @@ impl ResumeSessionInputs {
         let saved: SavedResumeRequest = decode(&request_file, limits.max_intent_bytes, group)?;
         let source: SourceCacheOriginPins = decode(&cache_file, limits.max_intent_bytes, group)?;
         saved.validate(journal.intent().resources)?;
-        let shadow_start=if journal.stage().is_none_or(|stage|stage<=Stage::SourceVerified){saved.shadow_start}
-            else{ShadowStart::AdoptExisting};
+        let shadow_start = if journal
+            .stage()
+            .is_none_or(|stage| stage <= Stage::SourceVerified)
+        {
+            saved.shadow_start
+        } else {
+            ShadowStart::AdoptExisting
+        };
         let carried: Vec<_> = initial
             .iter()
             .filter(|pin| pin.key == "placement-completed")
@@ -836,13 +936,14 @@ impl ResumeSessionInputs {
             ),
             _ => anyhow::bail!("saved completed placement initial pin is absent or ambiguous"),
         }
-        let current =
-            if (matches!(journal.stage(),Some(Stage::Placing|Stage::Payloads)) && journal.pending_batch().is_none())
-                ||journal.stage()==Some(Stage::Metadata) {
-                journal.completed_placement_evidence()
-            } else {
-                None
-            };
+        let current = if (matches!(journal.stage(), Some(Stage::Placing | Stage::Payloads))
+            && journal.pending_batch().is_none())
+            || journal.stage() == Some(Stage::Metadata)
+        {
+            journal.completed_placement_evidence()
+        } else {
+            None
+        };
         let completed_placement = current
             .or(saved.completed_placement.as_ref())
             .map(|pin| -> Result<HeldCompletedPlacement> {
@@ -858,26 +959,50 @@ impl ResumeSessionInputs {
                 })
             })
             .transpose()?;
-        let carried_payloads:Vec<_>=initial.iter().filter(|pin|pin.key=="payloads-ready").collect();
-        match (&saved.completed_payloads,carried_payloads.as_slice()) {
-            (None,[])=>{},
-            (Some(pin),[actual])=>ensure!(pin==*actual,"saved completed payload initial pin differs"),
-            _=>anyhow::bail!("saved completed payload initial pin is absent or ambiguous"),
+        let carried_payloads: Vec<_> = initial
+            .iter()
+            .filter(|pin| pin.key == "payloads-ready")
+            .collect();
+        match (&saved.completed_payloads, carried_payloads.as_slice()) {
+            (None, []) => {}
+            (Some(pin), [actual]) => ensure!(
+                pin == *actual,
+                "saved completed payload initial pin differs"
+            ),
+            _ => anyhow::bail!("saved completed payload initial pin is absent or ambiguous"),
         }
-        let current_payloads=if (journal.stage()==Some(Stage::Payloads)&&journal.pending_batch().is_none())
-            ||journal.stage()==Some(Stage::Metadata){
+        let current_payloads = if (journal.stage() == Some(Stage::Payloads)
+            && journal.pending_batch().is_none())
+            || journal.stage() == Some(Stage::Metadata)
+        {
             journal.completed_payloads_evidence()
-        }else{None};
-        let completed_payloads=current_payloads.or(saved.completed_payloads.as_ref())
-            .map(|pin|HeldCompletedPayloads::open(pin,&saved.expected.sha256,limits.max_checkpoint_bytes,group))
+        } else {
+            None
+        };
+        let completed_payloads = current_payloads
+            .or(saved.completed_payloads.as_ref())
+            .map(|pin| {
+                HeldCompletedPayloads::open(
+                    pin,
+                    &saved.expected.sha256,
+                    limits.max_checkpoint_bytes,
+                    group,
+                )
+            })
             .transpose()?;
-        if journal.stage()==Some(Stage::Payloads) {
-            ensure!(journal.pending_batch().is_none()&&completed_payloads.is_some()&&completed_placement.is_some(),
-                "Payloads retry requires closed supply and placement evidence; pending work needs native batch reconciliation");
+        if journal.stage() == Some(Stage::Payloads) {
+            ensure!(
+                journal.pending_batch().is_none()
+                    && completed_payloads.is_some()
+                    && completed_placement.is_some(),
+                "Payloads retry requires closed supply and placement evidence; pending work needs native batch reconciliation"
+            );
         }
-        if journal.stage()==Some(Stage::Metadata) {
-            ensure!(completed_payloads.is_some()&&completed_placement.is_some(),
-                "metadata retry requires held completed payload and placement facts");
+        if journal.stage() == Some(Stage::Metadata) {
+            ensure!(
+                completed_payloads.is_some() && completed_placement.is_some(),
+                "metadata retry requires held completed payload and placement facts"
+            );
         }
         let binding_pins: Vec<_> = initial
             .iter()
@@ -921,34 +1046,50 @@ impl ResumeSessionInputs {
                 && saved.expected.sha256 == expected_pin.sha256
                 && saved.expected.bytes == expected_pin.bytes
                 && directory.starts_with(&saved.arena_root)
-                && (source.schema_version==2 || source.cancelled_preparation_intent.path
-                    != journal.intent().new_preparation_intent.path),
+                && (source.schema_version == 2
+                    || source.cancelled_preparation_intent.path
+                        != journal.intent().new_preparation_intent.path),
             "saved resume source origin/request/expected or new guard differs"
         );
-        if let Some(generation)=&source.generation {
-            let guard=&journal.intent().new_preparation_intent;
-            ensure!(source.schema_version==2&&generation.schema_version==1
-                &&source.cancelled_preparation_intent.path==guard.path
-                &&source.cancelled_preparation_intent.sha256==guard.sha256
-                &&source.cancelled_preparation_intent.bytes==guard.bytes
-                &&generation.expected.path==saved.expected.path
-                &&generation.expected.sha256==saved.expected.sha256
-                &&generation.expected.bytes==saved.expected.bytes,
-                "current source generation lost its exact guard or Expected dependency");
+        if let Some(generation) = &source.generation {
+            let guard = &journal.intent().new_preparation_intent;
+            ensure!(
+                source.schema_version == 2
+                    && generation.schema_version == 1
+                    && source.cancelled_preparation_intent.path == guard.path
+                    && source.cancelled_preparation_intent.sha256 == guard.sha256
+                    && source.cancelled_preparation_intent.bytes == guard.bytes
+                    && generation.expected.path == saved.expected.path
+                    && generation.expected.sha256 == saved.expected.sha256
+                    && generation.expected.bytes == saved.expected.bytes,
+                "current source generation lost its exact guard or Expected dependency"
+            );
         }
         match &journal.intent().origin {
-            Origin::FreshPreparation{source_cache_manifest}=>{
-                ensure!(source_cache_manifest==&cache_pin&&saved.legacy_terminal.is_none()
-                    &&saved.shadow_start==ShadowStart::AllocateEmpty&&source.schema_version==2
-                    &&source.generation.as_ref().is_some_and(|generation|generation.prior_origin_sha256.is_none()),
-                    "fresh preparation checkpoint provenance differs");
+            Origin::FreshPreparation {
+                source_cache_manifest,
+            } => {
+                ensure!(
+                    source_cache_manifest == &cache_pin
+                        && saved.legacy_terminal.is_none()
+                        && saved.shadow_start == ShadowStart::AllocateEmpty
+                        && source.schema_version == 2
+                        && source
+                            .generation
+                            .as_ref()
+                            .is_some_and(|generation| generation.prior_origin_sha256.is_none()),
+                    "fresh preparation checkpoint provenance differs"
+                );
             }
             Origin::LegacyCancelledPreparation {
                 preparation_intent,
                 terminal,
                 source_cache_manifest,
             } => {
-                let old = source.generation.as_ref().and_then(|generation|generation.prior_preparation_intent.as_ref())
+                let old = source
+                    .generation
+                    .as_ref()
+                    .and_then(|generation| generation.prior_preparation_intent.as_ref())
                     .unwrap_or(&source.cancelled_preparation_intent);
                 ensure!(
                     preparation_intent.path == old.path
@@ -1003,7 +1144,8 @@ impl ResumeSessionInputs {
                 ensure!(
                     prior.pair == journal.intent().pair
                         && (source.source_manifest.path.starts_with(prior_arena_root)
-                            || (source.schema_version==2&&source.source_manifest.path.starts_with(&saved.arena_root))),
+                            || (source.schema_version == 2
+                                && source.source_manifest.path.starts_with(&saved.arena_root))),
                     "migrated origin source/shadow/cache root differs"
                 );
             }
@@ -1037,7 +1179,9 @@ impl ResumeSessionInputs {
         if let Some(proof) = &self.completed_placement {
             proof.require_arena(&proof.arena)?;
         }
-        if let Some(proof)=&self.completed_payloads {proof.require_arena(&proof.arena)?;}
+        if let Some(proof) = &self.completed_payloads {
+            proof.require_arena(&proof.arena)?;
+        }
         for file in &self._facts {
             file.revalidate_identity()?;
         }

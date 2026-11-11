@@ -2,7 +2,9 @@
 //! Pins describe stored facts; they never grant device or conversion authority.
 use super::{
     SourceMetadataRange,
-    paged_storage::{PagedMetadataRange, SourcePagePin, SourceRamLease, SourceRangeWriter, SourceScratch},
+    paged_storage::{
+        PagedMetadataRange, SourcePagePin, SourceRamLease, SourceRangeWriter, SourceScratch,
+    },
 };
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -228,12 +230,20 @@ impl DirectoryCache {
         let budget = scratch.budget();
         let maximum = (budget.ram_bytes / 64).min(budget.record_bytes);
         let length = directory.byte_len();
-        let Some(charge) = length.checked_add(std::mem::size_of::<Self>() as u64)
-            .filter(|n| length > 0 && *n <= maximum) else { return Ok(None); };
-        let Ok(size) = usize::try_from(length) else { return Ok(None); };
+        let Some(charge) = length
+            .checked_add(std::mem::size_of::<Self>() as u64)
+            .filter(|n| length > 0 && *n <= maximum)
+        else {
+            return Ok(None);
+        };
+        let Ok(size) = usize::try_from(length) else {
+            return Ok(None);
+        };
         // This is an optional optimization, never a new admission requirement.
         // Reservation/allocation refusals retain the original paged reader.
-        let Ok(ram) = scratch.lease_optional_ram(charge) else { return Ok(None); };
+        let Ok(ram) = scratch.lease_optional_ram(charge) else {
+            return Ok(None);
+        };
         let mut bytes = Vec::new();
         if bytes.try_reserve_exact(size).is_err() || bytes.capacity() != size {
             return Ok(None);
@@ -314,12 +324,21 @@ impl SortedRecordStore {
             "record ordinal outside complete domain"
         );
         let mut bytes = [0u8; 32];
-        let at = ordinal.checked_mul(DIRECTORY_BYTES).context("record index overflow")?;
+        let at = ordinal
+            .checked_mul(DIRECTORY_BYTES)
+            .context("record index overflow")?;
         if let Some(cache) = &self.directory_cache {
-            let start = usize::try_from(at).context("resident record index exceeds address space")?;
-            let end = start.checked_add(bytes.len()).context("resident record index overflow")?;
-            bytes.copy_from_slice(cache.bytes.get(start..end)
-                .context("resident record index exceeds complete directory")?);
+            let start =
+                usize::try_from(at).context("resident record index exceeds address space")?;
+            let end = start
+                .checked_add(bytes.len())
+                .context("resident record index overflow")?;
+            bytes.copy_from_slice(
+                cache
+                    .bytes
+                    .get(start..end)
+                    .context("resident record index exceeds complete directory")?,
+            );
         } else {
             self.directory.read_exact_at(at, &mut bytes)?;
         }

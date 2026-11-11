@@ -146,7 +146,10 @@ fn native_layout(
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<Vec<u8>> {
     budget.validate()?;
-    require(events.len() < crate::MAX_BATCH_EVENTS, "partition layout event budget exceeded")?;
+    require(
+        events.len() < crate::MAX_BATCH_EVENTS,
+        "partition layout event budget exceeded",
+    )?;
     let retained = events
         .iter()
         .filter(|event| event.operation == "partition-observer-native-gpt")
@@ -708,16 +711,19 @@ fn observe_with_type(
     events: &mut Vec<NativeEvent>,
     target_type: [u8; 16],
 ) -> io::Result<PartitionIsolationObservation> {
-    observe_with_route(file,binding,budget,events,target_type,true)
+    observe_with_route(file, binding, budget, events, target_type, true)
 }
 /// Full physical GPT/C/page facts without opening the SELECTED volume. This
 /// deliberately makes no namespace, mounted-FSD or isolation authority claim.
 pub(in crate::native) fn observe_physical_only(
-    file:&mut File,binding:&PartitionSourceBinding,budget:PartitionObservationBudget,
-    events:&mut Vec<NativeEvent>,target_type:[u8;16],
-)->io::Result<PartitionIsolationObservation> {
-    let mut value=observe_with_route(file,binding,budget,events,target_type,false)?;
-    value.profile="partition_physical_metadata_no_source_volume_open_v1";
+    file: &mut File,
+    binding: &PartitionSourceBinding,
+    budget: PartitionObservationBudget,
+    events: &mut Vec<NativeEvent>,
+    target_type: [u8; 16],
+) -> io::Result<PartitionIsolationObservation> {
+    let mut value = observe_with_route(file, binding, budget, events, target_type, false)?;
+    value.profile = "partition_physical_metadata_no_source_volume_open_v1";
     Ok(value)
 }
 fn observe_with_route(
@@ -769,21 +775,25 @@ fn observe_with_route(
     let native = native_layout(file, budget, events)?;
     let gpt = gpt(file, storage, budget, native, target_type)?;
     let mode = PartitionObservationMode::from_attributes(gpt.target_attributes);
-    let (volume, volume_error) = if query_source_volume_route { match device_file(&storage.volume_path()?, false, false) {
-        Ok(volume) => {
-            let value = extent(&volume, "partition-observer-source-volume-extents", events)?;
-            require(
-                value.disk_number == storage.disk_number
-                    && value.offset == storage.identity.partition_offset
-                    && value.length == storage.identity.partition_bytes,
-                "source volume GUID resolves to a different partition",
-            )?;
-            (Some(value), None)
+    let (volume, volume_error) = if query_source_volume_route {
+        match device_file(&storage.volume_path()?, false, false) {
+            Ok(volume) => {
+                let value = extent(&volume, "partition-observer-source-volume-extents", events)?;
+                require(
+                    value.disk_number == storage.disk_number
+                        && value.offset == storage.identity.partition_offset
+                        && value.length == storage.identity.partition_bytes,
+                    "source volume GUID resolves to a different partition",
+                )?;
+                (Some(value), None)
+            }
+            // An offline provider can remove the volume namespace without setting
+            // the GPT offline bit. Missing volume proof never admits isolation.
+            Err(error) => (None, error.raw_os_error()),
         }
-        // An offline provider can remove the volume namespace without setting
-        // the GPT offline bit. Missing volume proof never admits isolation.
-        Err(error) => (None, error.raw_os_error()),
-    }} else { (None, None) }; // Explicitly NOT queried, never inferred absent.
+    } else {
+        (None, None)
+    }; // Explicitly NOT queried, never inferred absent.
     let paging = paging(storage, budget, events)?;
     require(
         !paging.source_hosts_active_pagefile,

@@ -35,8 +35,10 @@ impl<'a> PagedObservationRequest<'a> {
         // remains a separate boot-only shadow obligation and admission gate.
         let windows_paths = binding.layout_profile
             == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows;
-        ensure!(windows_paths == source.is_windows_conversion(),
-            "native Windows namespace policy differs from actual source inspection purpose");
+        ensure!(
+            windows_paths == source.is_windows_conversion(),
+            "native Windows namespace policy differs from actual source inspection purpose"
+        );
         let header = source.header();
         ensure!(
             header.inventory_complete
@@ -81,7 +83,11 @@ impl<'a> PagedObservationRequest<'a> {
                     .context("stream count overflow")?;
             }
         }
-        let admit = if windows_paths { SourceResourceAdmission::new_windows } else { SourceResourceAdmission::new };
+        let admit = if windows_paths {
+            SourceResourceAdmission::new_windows
+        } else {
+            SourceResourceAdmission::new
+        };
         let admission = admit(
             pin_bytes,
             header.mft_record_count,
@@ -137,42 +143,92 @@ impl NativeRequestDomain for PagedObservationRequest<'_> {
     }
     fn windows_txf_metadata_identity(&self, index: usize) -> io::Result<Option<FileIdentity>> {
         (|| -> Result<_> {
-            if !self.windows_paths { return Ok(None); }
-            ensure!(self.source.is_windows_conversion() && index < self.length,
-                "Windows TxF selector does not belong to the retained Windows source");
-            let file = self.source.file(index as u64)?;
-            if file.record_number != 5 && (file.record_number < 16
-                || file.metadata_role != crate::ntfs_inspect::MetadataRole::OutsideExtendCandidate) {
+            if !self.windows_paths {
                 return Ok(None);
             }
-            let mut attributes = file.attributes.iter().filter(|attribute| attribute.type_code == 0x100
-                && attribute.name_utf16 == [36,84,88,70,95,68,65,84,65]);
-            let Some(attribute) = attributes.next() else { return Ok(None); };
-            ensure!(attributes.next().is_none() && crate::ntfs_admission::recognized_root_txf(attribute)
-                && attribute.resident_metadata_hex.as_ref().is_some_and(|bytes| bytes.len() == 112),
-                "Windows TxF selector requires exact bounded resident marker bytes at FILE {}", file.record_number);
-            Ok(Some(FileIdentity { record_number: file.record_number, sequence_number: file.sequence_number }))
-        })().map_err(io::Error::other)
+            ensure!(
+                self.source.is_windows_conversion() && index < self.length,
+                "Windows TxF selector does not belong to the retained Windows source"
+            );
+            let file = self.source.file(index as u64)?;
+            if file.record_number != 5
+                && (file.record_number < 16
+                    || file.metadata_role
+                        != crate::ntfs_inspect::MetadataRole::OutsideExtendCandidate)
+            {
+                return Ok(None);
+            }
+            let mut attributes = file.attributes.iter().filter(|attribute| {
+                attribute.type_code == 0x100
+                    && attribute.name_utf16 == [36, 84, 88, 70, 95, 68, 65, 84, 65]
+            });
+            let Some(attribute) = attributes.next() else {
+                return Ok(None);
+            };
+            ensure!(
+                attributes.next().is_none()
+                    && crate::ntfs_admission::recognized_root_txf(attribute)
+                    && attribute
+                        .resident_metadata_hex
+                        .as_ref()
+                        .is_some_and(|bytes| bytes.len() == 112),
+                "Windows TxF selector requires exact bounded resident marker bytes at FILE {}",
+                file.record_number
+            );
+            Ok(Some(FileIdentity {
+                record_number: file.record_number,
+                sequence_number: file.sequence_number,
+            }))
+        })()
+        .map_err(io::Error::other)
     }
     fn windows_object_id_identity(&self, index: usize) -> io::Result<Option<FileIdentity>> {
         (|| -> Result<_> {
-            if !self.windows_paths { return Ok(None); }
-            ensure!(self.source.is_windows_conversion() && index < self.length,
-                "Windows object-ID selector does not belong to the retained Windows source");
+            if !self.windows_paths {
+                return Ok(None);
+            }
+            ensure!(
+                self.source.is_windows_conversion() && index < self.length,
+                "Windows object-ID selector does not belong to the retained Windows source"
+            );
             let file = self.source.file(index as u64)?;
-            if file.record_number < 16 { return Ok(None); }
-            let mut attributes = file.attributes.iter().filter(|attribute| attribute.type_code == 0x40);
-            let Some(attribute) = attributes.next() else { return Ok(None); };
-            ensure!(file.base_file_reference == 0
-                && file.metadata_role == crate::ntfs_inspect::MetadataRole::OutsideExtendCandidate
-                && attributes.next().is_none() && attribute.resident && attribute.name_utf16.is_empty()
-                && attribute.flags == 0 && attribute.logical_size == 16
-                && attribute.initialized_size == 16 && attribute.allocated_size == 16
-                && attribute.lowest_vcn == 0 && attribute.compression_unit == 0 && attribute.extents.is_empty()
-                && attribute.resident_metadata_hex.as_ref().is_some_and(|bytes| bytes.len() == 32),
-                "Windows object-ID selector requires exact resident16 bytes at FILE {}", file.record_number);
-            Ok(Some(FileIdentity { record_number: file.record_number, sequence_number: file.sequence_number }))
-        })().map_err(io::Error::other)
+            if file.record_number < 16 {
+                return Ok(None);
+            }
+            let mut attributes = file
+                .attributes
+                .iter()
+                .filter(|attribute| attribute.type_code == 0x40);
+            let Some(attribute) = attributes.next() else {
+                return Ok(None);
+            };
+            ensure!(
+                file.base_file_reference == 0
+                    && file.metadata_role
+                        == crate::ntfs_inspect::MetadataRole::OutsideExtendCandidate
+                    && attributes.next().is_none()
+                    && attribute.resident
+                    && attribute.name_utf16.is_empty()
+                    && attribute.flags == 0
+                    && attribute.logical_size == 16
+                    && attribute.initialized_size == 16
+                    && attribute.allocated_size == 16
+                    && attribute.lowest_vcn == 0
+                    && attribute.compression_unit == 0
+                    && attribute.extents.is_empty()
+                    && attribute
+                        .resident_metadata_hex
+                        .as_ref()
+                        .is_some_and(|bytes| bytes.len() == 32),
+                "Windows object-ID selector requires exact resident16 bytes at FILE {}",
+                file.record_number
+            );
+            Ok(Some(FileIdentity {
+                record_number: file.record_number,
+                sequence_number: file.sequence_number,
+            }))
+        })()
+        .map_err(io::Error::other)
     }
     fn row(&self, index: usize) -> io::Result<Cow<'_, NativeRequestRow>> {
         (|| -> Result<_> {
@@ -188,10 +244,18 @@ impl NativeRequestDomain for PagedObservationRequest<'_> {
             if self.policy.is_fast() {
                 for stream in &file.streams {
                     let selector = if self.windows_paths {
-                        super::extent_identity_stream_request_windows_domain(self.source, &file, stream)?
+                        super::extent_identity_stream_request_windows_domain(
+                            self.source,
+                            &file,
+                            stream,
+                        )?
                     } else {
                         super::extent_identity_stream_request_domain(
-                            self.source, &file, stream, true, true,
+                            self.source,
+                            &file,
+                            stream,
+                            true,
+                            true,
                         )?
                     };
                     if let Some(selector) = selector {
@@ -298,7 +362,15 @@ pub fn compare_domain(
     native: &impl NativeObservationDomain,
     emit: impl FnMut(PagedFileComparison) -> Result<()>,
 ) -> Result<PagedComparisonSummary> {
-    compare_domain_with_header(source,binding,budget,policy,native,emit,super::check_header_geometry)
+    compare_domain_with_header(
+        source,
+        binding,
+        budget,
+        policy,
+        native,
+        emit,
+        super::check_header_geometry,
+    )
 }
 /// Only an actual phase-bound wrapper may select partition protection rules.
 pub(crate) fn compare_partition_domain(
@@ -309,12 +381,19 @@ pub(crate) fn compare_partition_domain(
     observed: &n2r_win32::attestation_partition::PartitionPagedNtfsObservation,
     phase: &mut n2r_win32::partition_lifecycle::PartitionReadonlyPhase<'_>,
     events: &mut Vec<n2r_win32::NativeEvent>,
-    emit: impl FnMut(PagedFileComparison)->Result<()>,
+    emit: impl FnMut(PagedFileComparison) -> Result<()>,
 ) -> Result<PagedComparisonSummary> {
-    observed.require_phase(phase,events)?;
-    let result=compare_domain_with_header(source,binding,budget,policy,observed.domain(),emit,
-        |geometry,_|super::check_partition_header_geometry(geometry,observed))?;
-    observed.require_phase(phase,events)?;
+    observed.require_phase(phase, events)?;
+    let result = compare_domain_with_header(
+        source,
+        binding,
+        budget,
+        policy,
+        observed.domain(),
+        emit,
+        |geometry, _| super::check_partition_header_geometry(geometry, observed),
+    )?;
+    observed.require_phase(phase, events)?;
     Ok(result)
 }
 fn compare_domain_with_header(
@@ -324,7 +403,10 @@ fn compare_domain_with_header(
     policy: VerificationPolicy,
     native: &impl NativeObservationDomain,
     mut emit: impl FnMut(PagedFileComparison) -> Result<()>,
-    mut check_header: impl FnMut(&crate::ntfs_inspect::NtfsGeometry,&n2r_win32::attestation::Report)->Result<()>,
+    mut check_header: impl FnMut(
+        &crate::ntfs_inspect::NtfsGeometry,
+        &n2r_win32::attestation::Report,
+    ) -> Result<()>,
 ) -> Result<PagedComparisonSummary> {
     use crate::ntfs_stream_attestation::Check;
     let expected = PagedObservationRequest::new(source, binding, budget, policy)?;
@@ -469,12 +551,16 @@ fn compare_domain_with_header(
             )?);
             Ok(())
         })());
-        if expected.windows_paths && metadata.matched
-            && usize::from(file.hard_link_count) != file.names.len() {
+        if expected.windows_paths
+            && metadata.matched
+            && usize::from(file.hard_link_count) != file.names.len()
+        {
             metadata.detail = format!(
                 "raw FILE header link-counter hint preserved: raw={}, FILE_NAME={}, canonical={}; native before/after canonical counts match; complete native namespace coverage remains required",
-                file.hard_link_count, file.names.len(),
-                file.names.iter().filter(|name| name.namespace != 2).count());
+                file.hard_link_count,
+                file.names.len(),
+                file.names.iter().filter(|name| name.namespace != 2).count()
+            );
         }
         let streams = Check::from((|| {
             ensure!(
@@ -504,16 +590,17 @@ fn compare_domain_with_header(
                 observation.open_error.is_none(),
                 "native logical file open refused"
             );
-            logical_bytes = crate::ntfs_data_attestation::check_file_with_extent_evidence_domain_scoped(
-                source,
-                &file,
-                &logical,
-                &observation,
-                header,
-                &selector,
-                admission,
-                expected.windows_paths,
-            )?;
+            logical_bytes =
+                crate::ntfs_data_attestation::check_file_with_extent_evidence_domain_scoped(
+                    source,
+                    &file,
+                    &logical,
+                    &observation,
+                    header,
+                    &selector,
+                    admission,
+                    expected.windows_paths,
+                )?;
             Ok(())
         })());
         let directory = native_row.namespace()?;

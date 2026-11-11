@@ -953,7 +953,10 @@ impl Reader {
     /// caller reserves `resident_page_bytes` first and holds that payment
     /// until this Reader has dropped.
     pub fn install_resident_pages(&mut self) -> io::Result<()> {
-        require(self.resident.is_none(), "metadata pages are already resident")?;
+        require(
+            self.resident.is_none(),
+            "metadata pages are already resident",
+        )?;
         let mut pages = Vec::new();
         pages
             .try_reserve_exact(usize::try_from(self.pages).map_err(io::Error::other)?)
@@ -998,8 +1001,8 @@ impl Reader {
         Ok(())
     }
     /// Whether this reader accepted the file as one this process wrote
-        /// (check-once policy) instead of hashing and parsing all of it. A
-        /// caller with a whole-content check of its own may then leave it out.
+    /// (check-once policy) instead of hashing and parsing all of it. A
+    /// caller with a whole-content check of its own may then leave it out.
     pub fn written_by_this_process(&self) -> bool {
         self.written_here
     }
@@ -1009,7 +1012,10 @@ impl Reader {
         if crate::verify_policy::full_unremembered() {
             return None;
         }
-        self.page_sums.as_ref()?.get(usize::try_from(page).ok()?).copied()
+        self.page_sums
+            .as_ref()?
+            .get(usize::try_from(page).ok()?)
+            .copied()
     }
     pub fn pages_resident(&self) -> bool {
         self.resident.is_some()
@@ -1029,7 +1035,10 @@ impl Reader {
     /// Actual retained allocation, for the caller's prepaid bound check.
     pub fn body_capacity(&self) -> usize {
         self.body.capacity()
-            + self.secondary.as_ref().map_or(0, |page| page.body.capacity())
+            + self
+                .secondary
+                .as_ref()
+                .map_or(0, |page| page.body.capacity())
     }
     /// Opt in without allocating inside this generic reader. The caller must
     /// reserve the actual additional capacity before allocating this empty

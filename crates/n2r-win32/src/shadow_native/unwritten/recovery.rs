@@ -23,10 +23,8 @@ pub(in crate::shadow_native) fn require_zero_storage_vdl(
     // Settle cached writes before observing storage VDL. This is a flush, never
     // SetFileValidData, a payload write, or a saved-state inference.
     file.sync_all()?;
-    super::super::unwritten_regions::require(file,bytes)?;
-    if super::super::info(file, 18, 24)? != identity
-        || super::super::info(file, 1, 24)? != before
-    {
+    super::super::unwritten_regions::require(file, bytes)?;
+    if super::super::info(file, 18, 24)? != identity || super::super::info(file, 1, 24)? != before {
         return Err(invalid(
             "native unwritten region coverage or identity changed",
         ));
@@ -48,22 +46,27 @@ impl PrivatePlaceholder {
         let standard = super::super::info(&self.file, 1, 24)?;
         if u64::from_le_bytes(standard[8..16].try_into().unwrap()) != self.bytes
             || u32::from_le_bytes(standard[16..20].try_into().unwrap()) != 1
-            || standard[20] != 0 || standard[21] != 0
+            || standard[20] != 0
+            || standard[21] != 0
         {
-            return Err(invalid("recovered allocation EOF/link/type/delete state differs"));
+            return Err(invalid(
+                "recovered allocation EOF/link/type/delete state differs",
+            ));
         }
-        let (first, continuation) = crate::stream_native::retrieval_queries_resource(
-            &self.file, resource.retrieval_bytes)?;
+        let (first, continuation) =
+            crate::stream_native::retrieval_queries_resource(&self.file, resource.retrieval_bytes)?;
         // ReFS may report inline resident bytes as allocation (for example,
         // EOF174/allocation176) while correctly returning no payload LCNs.
         // Reuse the ordinary verifier's resident-allocation contract; cluster
         // allocations still require the complete native retrieval map.
         let allocation = u64::from_le_bytes(standard[..8].try_into().unwrap());
-        let no_payload_allocation = allocation == 0
-            || super::super::resident_allocation(self.bytes, allocation);
-        let empty = no_payload_allocation && continuation.is_empty()
+        let no_payload_allocation =
+            allocation == 0 || super::super::resident_allocation(self.bytes, allocation);
+        let empty = no_payload_allocation
+            && continuation.is_empty()
             && ((first.native_error == Some(38) && first.bytes.is_empty())
-                || (self.bytes == 0 && first.native_error.is_none()
+                || (self.bytes == 0
+                    && first.native_error.is_none()
                     && first.bytes.len() == 16
                     && u32::from_le_bytes(first.bytes[..4].try_into().unwrap()) == 0));
         if super::super::info(&self.file, 18, 24)? != identity
@@ -71,7 +74,9 @@ impl PrivatePlaceholder {
         {
             return Err(invalid("recovered allocation identity or lengths changed"));
         }
-        if empty { return Ok(Vec::new()); }
+        if empty {
+            return Ok(Vec::new());
+        }
         let capture = crate::retrieval_paging::assemble_queries_with_limits(
             &first, &continuation,
             crate::retrieval_paging::Limits::for_resource_bytes(resource.retrieval_bytes)?,
@@ -110,33 +115,64 @@ impl PrivatePlaceholder {
         move_bytes: u64,
         payer: Arc<dyn super::super::report_memory::ReportMemoryAccountant>,
     ) -> io::Result<Self> {
-        Self::reopen_recovered(root,components,name,bytes,partition,retire,admission,
-            tracked,moves,move_bytes,payer,false,false)
+        Self::reopen_recovered(
+            root, components, name, bytes, partition, retire, admission, tracked, moves,
+            move_bytes, payer, false, false,
+        )
     }
     pub(in crate::shadow_native) fn reopen_placed(
-        root:&str,components:&[String],name:&[u16],bytes:u64,partition:u64,retire:bool,
-        admission:crate::tree_resources::SourceResourceAdmission,tracked:usize,moves:usize,
-        move_bytes:u64,payer:Arc<dyn super::super::report_memory::ReportMemoryAccountant>,
-    )->io::Result<Self>{
-        Self::reopen_recovered(root,components,name,bytes,partition,retire,admission,
-            tracked,moves,move_bytes,payer,true,false)
+        root: &str,
+        components: &[String],
+        name: &[u16],
+        bytes: u64,
+        partition: u64,
+        retire: bool,
+        admission: crate::tree_resources::SourceResourceAdmission,
+        tracked: usize,
+        moves: usize,
+        move_bytes: u64,
+        payer: Arc<dyn super::super::report_memory::ReportMemoryAccountant>,
+    ) -> io::Result<Self> {
+        Self::reopen_recovered(
+            root, components, name, bytes, partition, retire, admission, tracked, moves,
+            move_bytes, payer, true, false,
+        )
     }
     /// Reissue initialized readability only after observing storage VDL through
     /// the complete logical EOF. Payload contents still require fresh comparison.
     pub(in crate::shadow_native) fn reopen_payloads(
-        root:&str,components:&[String],name:&[u16],bytes:u64,partition:u64,retire:bool,
-        admission:crate::tree_resources::SourceResourceAdmission,tracked:usize,moves:usize,
-        move_bytes:u64,payer:Arc<dyn super::super::report_memory::ReportMemoryAccountant>,
-    )->io::Result<Self>{
-        Self::reopen_recovered(root,components,name,bytes,partition,retire,admission,
-            tracked,moves,move_bytes,payer,true,true)
+        root: &str,
+        components: &[String],
+        name: &[u16],
+        bytes: u64,
+        partition: u64,
+        retire: bool,
+        admission: crate::tree_resources::SourceResourceAdmission,
+        tracked: usize,
+        moves: usize,
+        move_bytes: u64,
+        payer: Arc<dyn super::super::report_memory::ReportMemoryAccountant>,
+    ) -> io::Result<Self> {
+        Self::reopen_recovered(
+            root, components, name, bytes, partition, retire, admission, tracked, moves,
+            move_bytes, payer, true, true,
+        )
     }
     fn reopen_recovered(
-        root:&str,components:&[String],name:&[u16],bytes:u64,partition:u64,retire:bool,
-        admission:crate::tree_resources::SourceResourceAdmission,tracked:usize,moves:usize,
-        move_bytes:u64,payer:Arc<dyn super::super::report_memory::ReportMemoryAccountant>,
-        placed_ready:bool,payloads_ready:bool,
-    )->io::Result<Self>{
+        root: &str,
+        components: &[String],
+        name: &[u16],
+        bytes: u64,
+        partition: u64,
+        retire: bool,
+        admission: crate::tree_resources::SourceResourceAdmission,
+        tracked: usize,
+        moves: usize,
+        move_bytes: u64,
+        payer: Arc<dyn super::super::report_memory::ReportMemoryAccountant>,
+        placed_ready: bool,
+        payloads_ready: bool,
+    ) -> io::Result<Self> {
         let path = super::super::streams::path(root, components, name)?;
         let file = File::options()
             .access_mode(0xc1020000 | if retire { 0x10000 } else { 0 })
@@ -145,13 +181,16 @@ impl PrivatePlaceholder {
             .open(&path)?;
         super::super::validate_open_type(&file, false)?;
         super::super::private_tree::recovery::require_private_security(&file, false)?;
-        let recovered_id=super::super::info(&file,18,24)?;
+        let recovered_id = super::super::info(&file, 18, 24)?;
         let standard = super::super::info(&file, 1, 24)?;
         if u64::from_le_bytes(standard[8..16].try_into().unwrap()) != bytes
             || u32::from_le_bytes(standard[16..20].try_into().unwrap()) != 1
-            || standard[20] != 0 || standard[21] != 0
+            || standard[20] != 0
+            || standard[21] != 0
         {
-            return Err(invalid("recovered placeholder EOF/link/type/delete state differs"));
+            return Err(invalid(
+                "recovered placeholder EOF/link/type/delete state differs",
+            ));
         }
         // ReFS may store sub-cluster EOFs initialized inside metadata even
         // after allocation-only SetEndOfFile. No cluster from these streams
@@ -161,50 +200,95 @@ impl PrivatePlaceholder {
         if bytes >= 4096 && !placed_ready {
             require_zero_storage_vdl(&file, bytes)?;
         }
-        let prefix=bytes/4096*4096;
-        let mut placed_resource=if placed_ready {
-            Some(resource::ResourcePlacement::new(admission,tracked,moves,move_bytes,payer.clone())?)
-        }else{None};
-        let mut placed_map=Vec::new();
-        let mut retrieval_extents=0;
-        if let Some(resource)=placed_resource.as_mut() {
-            let _work=resource.tracking_workspace(bytes)?;
-            if payloads_ready && bytes>0 {
+        let prefix = bytes / 4096 * 4096;
+        let mut placed_resource = if placed_ready {
+            Some(resource::ResourcePlacement::new(
+                admission,
+                tracked,
+                moves,
+                move_bytes,
+                payer.clone(),
+            )?)
+        } else {
+            None
+        };
+        let mut placed_map = Vec::new();
+        let mut retrieval_extents = 0;
+        if let Some(resource) = placed_resource.as_mut() {
+            let _work = resource.tracking_workspace(bytes)?;
+            if payloads_ready && bytes > 0 {
                 file.sync_all()?;
                 super::super::initialized_regions::capture_initialized_logical(
-                    &file,bytes,2,resource.retrieval_bytes)?.validate_logical(bytes,2)?;
+                    &file,
+                    bytes,
+                    2,
+                    resource.retrieval_bytes,
+                )?
+                .validate_logical(bytes, 2)?;
             }
-            if prefix>0 {
+            if prefix > 0 {
                 super::super::initialized_regions::capture_initialized(
-                    &file,prefix,2,resource.retrieval_bytes)?.validate(prefix,2)?;
-                let capture=resource.capture(&file)?;
-                retrieval_extents=capture.runs.len();
-                let mut cursor=0u64;
+                    &file,
+                    prefix,
+                    2,
+                    resource.retrieval_bytes,
+                )?
+                .validate(prefix, 2)?;
+                let capture = resource.capture(&file)?;
+                retrieval_extents = capture.runs.len();
+                let mut cursor = 0u64;
                 for run in &capture.runs {
-                    if run.vcn>=prefix/4096 {break;}
-                    let lcn=run.lcn.ok_or_else(||invalid("placed recovery prefix has a native hole"))?;
-                    if run.vcn!=cursor || run.clusters==0 {
+                    if run.vcn >= prefix / 4096 {
+                        break;
+                    }
+                    let lcn = run
+                        .lcn
+                        .ok_or_else(|| invalid("placed recovery prefix has a native hole"))?;
+                    if run.vcn != cursor || run.clusters == 0 {
                         return Err(invalid("placed recovery prefix is not dense and complete"));
                     }
-                    let end=run.vcn.checked_add(run.clusters).ok_or_else(||invalid("placed recovery VCN overflow"))?
-                        .min(prefix/4096);
-                    let mut at=run.vcn;
-                    while at<end {
-                        if placed_map.len()==resource.max_tracked_slots {return Err(invalid("placed recovery map exceeds paid slots"));}
-                        let count=(end-at).min(u64::from(u32::MAX)) as u32;
-                        let physical=lcn.checked_add(at-run.vcn).ok_or_else(||invalid("placed recovery LCN overflow"))?;
-                        if physical.checked_add(u64::from(count)).is_none_or(|n|n>partition/4096){return Err(invalid("placed recovery map escapes shadow"));}
-                        placed_map.push((at,physical,count));at+=u64::from(count);
+                    let end = run
+                        .vcn
+                        .checked_add(run.clusters)
+                        .ok_or_else(|| invalid("placed recovery VCN overflow"))?
+                        .min(prefix / 4096);
+                    let mut at = run.vcn;
+                    while at < end {
+                        if placed_map.len() == resource.max_tracked_slots {
+                            return Err(invalid("placed recovery map exceeds paid slots"));
+                        }
+                        let count = (end - at).min(u64::from(u32::MAX)) as u32;
+                        let physical = lcn
+                            .checked_add(at - run.vcn)
+                            .ok_or_else(|| invalid("placed recovery LCN overflow"))?;
+                        if physical
+                            .checked_add(u64::from(count))
+                            .is_none_or(|n| n > partition / 4096)
+                        {
+                            return Err(invalid("placed recovery map escapes shadow"));
+                        }
+                        placed_map.push((at, physical, count));
+                        at += u64::from(count);
                     }
-                    cursor=end;
+                    cursor = end;
                 }
-                if cursor!=prefix/4096 {return Err(invalid("placed recovery prefix allocation ends early"));}
+                if cursor != prefix / 4096 {
+                    return Err(invalid("placed recovery prefix allocation ends early"));
+                }
                 super::super::initialized_regions::capture_initialized(
-                    &file,prefix,2,resource.retrieval_bytes)?.validate(prefix,2)?;
+                    &file,
+                    prefix,
+                    2,
+                    resource.retrieval_bytes,
+                )?
+                .validate(prefix, 2)?;
             }
-            if super::super::info(&file,1,24)?!=standard
-                ||super::super::info(&file,18,24)?!=recovered_id {return Err(invalid("placed recovery file identity or shape changed"));}
-            let lease=resource.reserve_placed(placed_map.len(),placed_map.capacity())?;
+            if super::super::info(&file, 1, 24)? != standard
+                || super::super::info(&file, 18, 24)? != recovered_id
+            {
+                return Err(invalid("placed recovery file identity or shape changed"));
+            }
+            let lease = resource.reserve_placed(placed_map.len(), placed_map.capacity())?;
             resource.replace_placed_lease(lease);
         }
         let retire_identity = if retire {
@@ -220,8 +304,14 @@ impl PrivatePlaceholder {
             bytes,
             partition,
             placed: placed_map,
-            valid_data_submitted: placed_ready && prefix>0,
-            valid_prefix: if payloads_ready {bytes}else if placed_ready {prefix}else{0},
+            valid_data_submitted: placed_ready && prefix > 0,
+            valid_prefix: if payloads_ready {
+                bytes
+            } else if placed_ready {
+                prefix
+            } else {
+                0
+            },
             materialized_bytes: 0,
             readback_bytes: 0,
             verification_read_bytes: 0,
@@ -233,7 +323,9 @@ impl PrivatePlaceholder {
             resource: placed_resource,
             recovered_origin: true,
         };
-        if placed_ready {return Ok(value);}
+        if placed_ready {
+            return Ok(value);
+        }
         value.enable_resource_placement(admission, tracked, moves, move_bytes, payer)?;
         // Pay and capture the complete CURRENT map, including holes. The old
         // move log is neither required nor replayed to reconstruct ownership.
@@ -242,16 +334,33 @@ impl PrivatePlaceholder {
     }
 
     /// Fresh readiness only; no previously written payload bytes are trusted.
-    pub(in crate::shadow_native) fn revalidate_recovered_prefix(&self,prefix:u64)->io::Result<bool>{
-        if !self.recovered_origin || !self.valid_data_submitted {return Ok(false);}
-        if self.poisoned || self.valid_prefix<prefix || self.valid_prefix>self.bytes || prefix==0 {
+    pub(in crate::shadow_native) fn revalidate_recovered_prefix(
+        &self,
+        prefix: u64,
+    ) -> io::Result<bool> {
+        if !self.recovered_origin || !self.valid_data_submitted {
+            return Ok(false);
+        }
+        if self.poisoned
+            || self.valid_prefix < prefix
+            || self.valid_prefix > self.bytes
+            || prefix == 0
+        {
             return Err(invalid("recovered placed prefix state differs"));
         }
-        let resource=self.resource.as_ref().ok_or_else(||invalid("placed prefix payer absent"))?;
-        let _work=resource.tracking_workspace(self.bytes)?;
+        let resource = self
+            .resource
+            .as_ref()
+            .ok_or_else(|| invalid("placed prefix payer absent"))?;
+        let _work = resource.tracking_workspace(self.bytes)?;
         self.file.sync_all()?;
-        super::super::initialized_regions::capture_initialized(&self.file,prefix,2,
-            resource.retrieval_bytes)?.validate(prefix,2)?;
+        super::super::initialized_regions::capture_initialized(
+            &self.file,
+            prefix,
+            2,
+            resource.retrieval_bytes,
+        )?
+        .validate(prefix, 2)?;
         self.verify_placements()?;
         Ok(true)
     }
@@ -281,9 +390,12 @@ impl PrivatePlaceholder {
             if !self.placed.is_empty()
                 || u64::from_le_bytes(standard[8..16].try_into().unwrap()) != self.bytes
                 || u32::from_le_bytes(standard[16..20].try_into().unwrap()) != 1
-                || standard[20] != 0 || standard[21] != 0
+                || standard[20] != 0
+                || standard[21] != 0
             {
-                return Err(invalid("recovered tiny-stream placement or EOF/link/type differs"));
+                return Err(invalid(
+                    "recovered tiny-stream placement or EOF/link/type differs",
+                ));
             }
             if super::super::info(&self.file, 18, 24)? != identity
                 || super::super::info(&self.file, 1, 24)? != standard

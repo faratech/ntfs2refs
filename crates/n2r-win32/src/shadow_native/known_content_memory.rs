@@ -90,7 +90,15 @@ pub(crate) fn verify_known_contents_in_accounted_report_with_lease(
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
     protected: Option<&dyn native::ProtectedReadonlyRefsAccess>,
 ) -> io::Result<GeneralConvertedReport> {
-    verify_known_contents_in_accounted_report_with_aliases(report,input,admission,payer,same_security,protected,None)
+    verify_known_contents_in_accounted_report_with_aliases(
+        report,
+        input,
+        admission,
+        payer,
+        same_security,
+        protected,
+        None,
+    )
 }
 pub(crate) fn verify_known_contents_in_accounted_report_with_lease_windows_aliases(
     report: GeneralConvertedReport,
@@ -99,10 +107,18 @@ pub(crate) fn verify_known_contents_in_accounted_report_with_lease_windows_alias
     payer: &dyn report_memory::ReportMemoryAccountant,
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
     protected: Option<&dyn native::ProtectedReadonlyRefsAccess>,
-    aliases:&windows_aliases::VerifiedWindowsAliases,
+    aliases: &windows_aliases::VerifiedWindowsAliases,
 ) -> io::Result<GeneralConvertedReport> {
     aliases.require_canonical_input(input)?;
-    verify_known_contents_in_accounted_report_with_aliases(report,input,admission,payer,same_security,protected,Some(aliases))
+    verify_known_contents_in_accounted_report_with_aliases(
+        report,
+        input,
+        admission,
+        payer,
+        same_security,
+        protected,
+        Some(aliases),
+    )
 }
 fn verify_known_contents_in_accounted_report_with_aliases(
     mut report: GeneralConvertedReport,
@@ -111,7 +127,7 @@ fn verify_known_contents_in_accounted_report_with_aliases(
     payer: &dyn report_memory::ReportMemoryAccountant,
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
     protected: Option<&dyn native::ProtectedReadonlyRefsAccess>,
-    aliases:Option<&windows_aliases::VerifiedWindowsAliases>,
+    aliases: Option<&windows_aliases::VerifiedWindowsAliases>,
 ) -> io::Result<GeneralConvertedReport> {
     admission.validate()?;
     input.require_resource_metadata(admission)?;

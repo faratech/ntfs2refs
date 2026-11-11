@@ -37,7 +37,7 @@ impl Buffers {
     }
 }
 
-pub(super) fn record<J: Read+Seek>(
+pub(super) fn record<J: Read + Seek>(
     row: JournalLayoutRow,
     domain: &ResourceJournalDomain<'_>,
     journal: &mut J,
@@ -79,7 +79,7 @@ pub(super) fn record<J: Read+Seek>(
     })
 }
 
-pub(super) fn read_new<J:Read+Seek>(
+pub(super) fn read_new<J: Read + Seek>(
     domain: &ResourceJournalDomain<'_>,
     journal: &mut J,
     row: JournalLayoutRow,
@@ -241,31 +241,52 @@ fn write_span(
             );
             if first_write_fault.is_some() {
                 let after = target.native_bytes_written();
-                ensure!(before == 0 && after.checked_sub(before) == Some(count as u64),
-                    "diagnostic interruption requires the first actual native write");
+                ensure!(
+                    before == 0 && after.checked_sub(before) == Some(count as u64),
+                    "diagnostic interruption requires the first actual native write"
+                );
                 target.sync_all()?;
                 at(target, offset, &mut buffers.current[..count])?;
-                ensure!(buffers.current[..count] == buffers.new[..count],
-                    "first flushed native write readback differs");
+                ensure!(
+                    buffers.current[..count] == buffers.new[..count],
+                    "first flushed native write readback differs"
+                );
                 let hash = hex::encode(Sha256::digest(&buffers.current[..count]));
-                ensure!(target.state(events)? == *target_before && target_before.disk_attributes == 1,
-                    "source exclusion changed after first flushed write");
-                ensure!(sj::classify(journal, ticket)? == sj::SelectedLifecycle::ApplyIntent,
-                    "actual AP lifecycle absent after first flushed write");
+                ensure!(
+                    target.state(events)? == *target_before && target_before.disk_attributes == 1,
+                    "source exclusion changed after first flushed write"
+                );
+                ensure!(
+                    sj::classify(journal, ticket)? == sj::SelectedLifecycle::ApplyIntent,
+                    "actual AP lifecycle absent after first flushed write"
+                );
                 let (remaining_offset, remaining_bytes) = find_remaining_difference(
-                    target, journal, domain, offset, count as u64, buffers,
-                )?.context("no independently observed remaining changed selected granule")?;
-                ensure!(target.state(events)? == *target_before
-                    && sj::classify(journal, ticket)? == sj::SelectedLifecycle::ApplyIntent,
-                    "source or AP changed during partial-progress observation");
+                    target,
+                    journal,
+                    domain,
+                    offset,
+                    count as u64,
+                    buffers,
+                )?
+                .context("no independently observed remaining changed selected granule")?;
+                ensure!(
+                    target.state(events)? == *target_before
+                        && sj::classify(journal, ticket)? == sj::SelectedLifecycle::ApplyIntent,
+                    "source or AP changed during partial-progress observation"
+                );
                 let observation = FirstFlushedWrite {
-                    offset, bytes: count as u64, native_bytes_before: before,
-                    native_bytes_after: after, readback_sha256: hash,
+                    offset,
+                    bytes: count as u64,
+                    native_bytes_before: before,
+                    native_bytes_after: after,
+                    readback_sha256: hash,
                     remaining_different_offset: remaining_offset,
                     remaining_different_bytes: remaining_bytes,
                 };
                 first_write_fault.take().expect("fault callback present")(&observation)?;
-                anyhow::bail!("intentional diagnostic interruption after the first flushed and read-back native write");
+                anyhow::bail!(
+                    "intentional diagnostic interruption after the first flushed and read-back native write"
+                );
             }
         }
         done = add(done, count as u64)?;
@@ -361,7 +382,10 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
         let (source, _) = prepared.context.source_and_inspection()?;
         n2r_win32::perf::step("verify journal and source, write apply marker");
         let mut target = prepared.inner._journal.begin_sealed_fresh_apply(
-            source, index.policy(), &pins, events,
+            source,
+            index.policy(),
+            &pins,
+            events,
         )?;
         ensure!(
             target.byte_len() == ticket.image_length,
@@ -423,7 +447,10 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
                 events,
             )?;
         }
-        ensure!(first_write_fault.is_none(), "diagnostic interruption requested but no actual changed write occurred");
+        ensure!(
+            first_write_fault.is_none(),
+            "diagnostic interruption requested but no actual changed write occurred"
+        );
         target.sync_all()?;
         n2r_win32::perf::step("read back changed ranges");
         target.set_read_ahead(true);
@@ -559,9 +586,10 @@ impl ResourceAppliedConversion<'_, '_, '_, '_, '_, '_> {
         };
         let (source, _) = prepared.context.source_and_inspection()?;
         n2r_win32::perf::step("seal handoff");
-        prepared.inner._journal.seal_sealed_handoff_for_observation(
-            source, &index.policy(), &pins, events,
-        )?;
+        prepared
+            .inner
+            ._journal
+            .seal_sealed_handoff_for_observation(source, &index.policy(), &pins, events)?;
         ensure!(
             source.binding() == facts.source && source.state(events)?.disk_attributes == 3,
             "terminal source did not retain its exact readonly exclusion"
@@ -581,7 +609,10 @@ impl ResourceAppliedConversion<'_, '_, '_, '_, '_, '_> {
     pub(crate) fn source(&self) -> &n2r_win32::general_layout::GeneralDiskBinding {
         self.owner.prepared.prepared.inner._facts.source
     }
-    pub(crate) fn windows_aliases(&self) -> Option<&std::sync::Arc<n2r_win32::shadow_native::windows_aliases::VerifiedWindowsAliases>> {
+    pub(crate) fn windows_aliases(
+        &self,
+    ) -> Option<&std::sync::Arc<n2r_win32::shadow_native::windows_aliases::VerifiedWindowsAliases>>
+    {
         self.owner.prepared.windows_aliases.as_ref()
     }
     pub(crate) fn publication_path(&self) -> &Path {

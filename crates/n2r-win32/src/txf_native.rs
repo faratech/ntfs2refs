@@ -442,7 +442,9 @@ fn observe_volume_scoped(
     let partition_read_only = if let Some(phase) = partition.as_deref_mut() {
         require_partition_volume(phase, &volume, events)?;
         true
-    } else { false };
+    } else {
+        false
+    };
     let readonly_root = disk_read_only || partition_read_only;
     // TxF resource-manager controls address the RM's root directory. The
     // direct volume handle remains separate for dirty/persistent-state FSCTLs.
@@ -664,14 +666,20 @@ pub struct PartitionTxfObservation {
     observation: Observation,
 }
 impl PartitionTxfObservation {
-    pub fn observation(&self) -> &Observation { &self.observation }
+    pub fn observation(&self) -> &Observation {
+        &self.observation
+    }
     pub(crate) fn require_phase(
         &self,
         phase: &mut crate::native::partition_lifecycle::PartitionReadonlyPhase<'_>,
         events: &mut Vec<crate::native::NativeEvent>,
     ) -> io::Result<()> {
-        if self.binding != *phase.binding() || !self.preparation.same_owner(&phase.preparation_token()) {
-            return Err(io::Error::other("TxF observation lost actual readonly partition preparation"));
+        if self.binding != *phase.binding()
+            || !self.preparation.same_owner(&phase.preparation_token())
+        {
+            return Err(io::Error::other(
+                "TxF observation lost actual readonly partition preparation",
+            ));
         }
         phase.revalidate(events)
     }
@@ -682,17 +690,27 @@ fn require_partition_volume(
     events: &mut Vec<crate::native::NativeEvent>,
 ) -> io::Result<()> {
     phase.revalidate(events)?;
-    let extent=control(volume,0x0056_0000).map_err(|n|io::Error::from_raw_os_error(n as i32))?;
+    let extent =
+        control(volume, 0x0056_0000).map_err(|n| io::Error::from_raw_os_error(n as i32))?;
     phase.binding().storage.validate_volume_extent(&extent)?;
-    let info=control(volume,0x0007_0048).map_err(|n|io::Error::from_raw_os_error(n as i32))?;
-    let protection=phase.protection();
-    let error=match control(volume,0x0007_0024) {
-        Ok(_)=>return Err(io::Error::other("TxF selected readonly partition reports writable")),
-        Err(n)=>n,
+    let info = control(volume, 0x0007_0048).map_err(|n| io::Error::from_raw_os_error(n as i32))?;
+    let protection = phase.protection();
+    let error = match control(volume, 0x0007_0024) {
+        Ok(_) => {
+            return Err(io::Error::other(
+                "TxF selected readonly partition reports writable",
+            ));
+        }
+        Err(n) => n,
     };
-    if error!=19 || protection.partition_write_protect_error!=19
-        || extent!=protection.volume_extents || info!=protection.readonly_partition_info {
-        return Err(io::Error::other("TxF native readonly partition identity/protection differs"));
+    if error != 19
+        || protection.partition_write_protect_error != 19
+        || extent != protection.volume_extents
+        || info != protection.readonly_partition_info
+    {
+        return Err(io::Error::other(
+            "TxF native readonly partition identity/protection differs",
+        ));
     }
     Ok(())
 }
@@ -703,16 +721,23 @@ pub(crate) fn observe_partition(
     events: &mut Vec<crate::native::NativeEvent>,
 ) -> io::Result<PartitionTxfObservation> {
     phase.revalidate(events)?;
-    let binding=phase.binding().clone();
-    let preparation=phase.preparation_token();
-    let volume=phase.open_readonly_volume(events)?;
-    let proxy=DiskBinding {disk_number:binding.storage.disk_number,
-        volume_guid:binding.storage.volume_guid.clone(),identity:binding.storage.identity.clone()};
-    let path=binding.storage.volume_path()?;
-    let observation=observe_volume_scoped(proxy,volume,&path,Some(phase),events)?;
+    let binding = phase.binding().clone();
+    let preparation = phase.preparation_token();
+    let volume = phase.open_readonly_volume(events)?;
+    let proxy = DiskBinding {
+        disk_number: binding.storage.disk_number,
+        volume_guid: binding.storage.volume_guid.clone(),
+        identity: binding.storage.identity.clone(),
+    };
+    let path = binding.storage.volume_path()?;
+    let observation = observe_volume_scoped(proxy, volume, &path, Some(phase), events)?;
     // The root/volume/disk files above are all closed before returning this fact.
-    let proof=PartitionTxfObservation{binding,preparation,observation};
-    proof.require_phase(phase,events)?;
+    let proof = PartitionTxfObservation {
+        binding,
+        preparation,
+        observation,
+    };
+    proof.require_phase(phase, events)?;
     Ok(proof)
 }
 
@@ -724,49 +749,77 @@ pub struct PartitionMountedTxfObservation {
     observation: Observation,
 }
 impl PartitionMountedTxfObservation {
-    pub fn binding(&self) -> &crate::native::partition_isolation::PartitionSourceBinding { &self.binding }
-    pub fn observation(&self) -> &Observation { &self.observation }
+    pub fn binding(&self) -> &crate::native::partition_isolation::PartitionSourceBinding {
+        &self.binding
+    }
+    pub fn observation(&self) -> &Observation {
+        &self.observation
+    }
 }
 pub(crate) fn observe_partition_before_freeze(
     binding: &crate::native::partition_isolation::PartitionSourceBinding,
     original_volume: &File,
 ) -> io::Result<PartitionMountedTxfObservation> {
     binding.validate()?;
-    let extent=control(original_volume,0x0056_0000).map_err(|n|io::Error::from_raw_os_error(n as i32))?;
+    let extent = control(original_volume, 0x0056_0000)
+        .map_err(|n| io::Error::from_raw_os_error(n as i32))?;
     binding.storage.validate_volume_extent(&extent)?;
-    let info=control(original_volume,0x0007_0048).map_err(|n|io::Error::from_raw_os_error(n as i32))?;
-    if info.len()!=144 || crate::layout::u32_at(&info,0)?!=1
-        || crate::layout::u64_at(&info,8)?!=binding.storage.identity.partition_offset
-        || crate::layout::u64_at(&info,16)?!=binding.storage.identity.partition_bytes
-        || info[32..48]!=crate::layout::guid_bytes("ebd0a0a2-b9e5-4433-87c0-68b6b72699c7")?
-        || info[48..64]!=crate::layout::guid_bytes(&binding.storage.identity.partition_guid)?
-        || crate::layout::u64_at(&info,64)?!=0 {
-        return Err(io::Error::other("pre-freeze TxF volume is not the original Basic0 partition"));
+    let info = control(original_volume, 0x0007_0048)
+        .map_err(|n| io::Error::from_raw_os_error(n as i32))?;
+    if info.len() != 144
+        || crate::layout::u32_at(&info, 0)? != 1
+        || crate::layout::u64_at(&info, 8)? != binding.storage.identity.partition_offset
+        || crate::layout::u64_at(&info, 16)? != binding.storage.identity.partition_bytes
+        || info[32..48] != crate::layout::guid_bytes("ebd0a0a2-b9e5-4433-87c0-68b6b72699c7")?
+        || info[48..64] != crate::layout::guid_bytes(&binding.storage.identity.partition_guid)?
+        || crate::layout::u64_at(&info, 64)? != 0
+    {
+        return Err(io::Error::other(
+            "pre-freeze TxF volume is not the original Basic0 partition",
+        ));
     }
-    let proxy=DiskBinding {disk_number:binding.storage.disk_number,
-        volume_guid:binding.storage.volume_guid.clone(),identity:binding.storage.identity.clone()};
-    let path=binding.storage.volume_path()?;
-    let observation=observe_volume(proxy,original_volume.try_clone()?,&path)?;
-    if observation.rm_handle_profile!="volume-root-directory-access-time-suppressed" {
-        return Err(io::Error::other("mounted partition TxF requires actual online/RW physical state"));
+    let proxy = DiskBinding {
+        disk_number: binding.storage.disk_number,
+        volume_guid: binding.storage.volume_guid.clone(),
+        identity: binding.storage.identity.clone(),
+    };
+    let path = binding.storage.volume_path()?;
+    let observation = observe_volume(proxy, original_volume.try_clone()?, &path)?;
+    if observation.rm_handle_profile != "volume-root-directory-access-time-suppressed" {
+        return Err(io::Error::other(
+            "mounted partition TxF requires actual online/RW physical state",
+        ));
     }
-    Ok(PartitionMountedTxfObservation {binding:binding.clone(),observation})
+    Ok(PartitionMountedTxfObservation {
+        binding: binding.clone(),
+        observation,
+    })
 }
 
 /// Actual opaque offline NTFS phase only; preserves the existing volume/RM
 /// engine and its physical0-vs2 root-access behavior. No caller bool bypass.
 pub(crate) fn observe_offline_bound_phase(
-    phase:&mut crate::offline_environment::OfflineReadonlyNtfsPhase<'_>,
-    events:&mut Vec<crate::native::NativeEvent>,
-)->io::Result<Observation>{
+    phase: &mut crate::offline_environment::OfflineReadonlyNtfsPhase<'_>,
+    events: &mut Vec<crate::native::NativeEvent>,
+) -> io::Result<Observation> {
     phase.require_current(events)?;
-    if !matches!(phase.expected_attributes(),0|2){return Err(io::Error::other("offline TxF phase is neither real original0 nor physicalreadonly2"));}
-    let binding=phase.binding().clone();let volume=phase.duplicate_volume()?;
-    let extent=control(&volume,0x0056_0000).map_err(|n|io::Error::from_raw_os_error(n as i32))?;
+    if !matches!(phase.expected_attributes(), 0 | 2) {
+        return Err(io::Error::other(
+            "offline TxF phase is neither real original0 nor physicalreadonly2",
+        ));
+    }
+    let binding = phase.binding().clone();
+    let volume = phase.duplicate_volume()?;
+    let extent =
+        control(&volume, 0x0056_0000).map_err(|n| io::Error::from_raw_os_error(n as i32))?;
     binding.validate_volume_extent(&extent)?;
-    let proxy=DiskBinding{disk_number:binding.disk_number,volume_guid:binding.volume_guid.clone(),identity:binding.identity.clone()};
-    let path=binding.volume_path()?;
-    let observed=observe_volume(proxy,volume,&path)?;
+    let proxy = DiskBinding {
+        disk_number: binding.disk_number,
+        volume_guid: binding.volume_guid.clone(),
+        identity: binding.identity.clone(),
+    };
+    let path = binding.volume_path()?;
+    let observed = observe_volume(proxy, volume, &path)?;
     phase.require_current(events)?;
     Ok(observed)
 }

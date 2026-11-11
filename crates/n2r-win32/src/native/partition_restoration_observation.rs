@@ -24,7 +24,13 @@ impl PartitionTerminalReadonlyVolume<'_, '_, '_> {
     ) -> io::Result<PartitionTerminalNativeObservation> {
         self.require_readonly(events)?;
         let result = crate::shadow_native::observe_partition_converted_readonly_with_memory(
-            self, pair, input, expected_label, same_security, profile, memory,
+            self,
+            pair,
+            input,
+            expected_label,
+            same_security,
+            profile,
+            memory,
             verify_known_contents,
         );
         let closing = self.require_readonly(events);

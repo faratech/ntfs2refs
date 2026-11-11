@@ -149,10 +149,14 @@ impl PrivateTree {
         Ok(observation)
     }
 
-    pub fn attach_backing_resource_guard(&mut self,
-        guard: std::sync::Arc<crate::managed_shadow::BackingResourceGuard>) -> io::Result<()> {
+    pub fn attach_backing_resource_guard(
+        &mut self,
+        guard: std::sync::Arc<crate::managed_shadow::BackingResourceGuard>,
+    ) -> io::Result<()> {
         if self.backing_guard.is_some() {
-            return Err(invalid("private tree backing capacity owner already attached"));
+            return Err(invalid(
+                "private tree backing capacity owner already attached",
+            ));
         }
         guard.require_binding(&self.pair.shadow)?;
         guard.check_before_operation(0)?;
@@ -411,7 +415,10 @@ impl PrivateTree {
         input: &impl InputDomain,
         aliases: &impl super::windows_aliases::WindowsAliasInputDomain,
         same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
-    ) -> io::Result<(serde_json::Value, super::windows_aliases::VerifiedWindowsAliases)> {
+    ) -> io::Result<(
+        serde_json::Value,
+        super::windows_aliases::VerifiedWindowsAliases,
+    )> {
         metadata::complete_windows_aliases_domain(self, input, aliases, same_security)
     }
 
@@ -424,8 +431,16 @@ impl PrivateTree {
         input: &impl InputDomain,
         aliases: &impl super::windows_aliases::WindowsAliasInputDomain,
         same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
-    ) -> io::Result<(serde_json::Value, super::windows_aliases::VerifiedWindowsAliases)> {
-        metadata::complete_windows_aliases_domain_with_security_placeholders(self, input, aliases, same_security)
+    ) -> io::Result<(
+        serde_json::Value,
+        super::windows_aliases::VerifiedWindowsAliases,
+    )> {
+        metadata::complete_windows_aliases_domain_with_security_placeholders(
+            self,
+            input,
+            aliases,
+            same_security,
+        )
     }
 
     pub fn materialize_system_payloads_domain(
@@ -491,7 +506,9 @@ impl PrivateTree {
         for file in self.files.values_mut() {
             let prefix = file.logical_length() / 4096 * 4096;
             if prefix > 0 && !file.revalidate_recovered_prefix(prefix)? {
-                if let Some(guard) = &backing_guard { guard.check_before_operation(0)?; }
+                if let Some(guard) = &backing_guard {
+                    guard.check_before_operation(0)?;
+                }
                 file.advance_valid_data(prefix, true).map_err(|e|io::Error::new(e.kind(),
                     format!("source-backed prefix initialization failed: path={:?}, prefix={prefix}: {e}",file.path)))?;
             }
@@ -536,14 +553,20 @@ impl PrivateTree {
         length: u64,
     ) -> io::Result<()> {
         self.require_source_excluded()?;
-        let key=self.validate_stream_shape_metadata(index,name,components,length)?;
-        self.files.get(&key).map_or(Ok(()),|file|file.check_placements())
+        let key = self.validate_stream_shape_metadata(index, name, components, length)?;
+        self.files
+            .get(&key)
+            .map_or(Ok(()), |file| file.check_placements())
     }
     /// Metadata half of the existing stream check. Only the scoped read-only
     /// snapshot pairs it with its same-FileObject complete-map observation.
     fn validate_stream_shape_metadata(
-        &self,index:usize,name:&[u16],components:&[String],length:u64,
-    )->io::Result<StreamKey>{
+        &self,
+        index: usize,
+        name: &[u16],
+        components: &[String],
+        length: u64,
+    ) -> io::Result<StreamKey> {
         let key = StreamKey::named(index, name);
         if let Some(target) = self.sparse_targets.get(&key) {
             if target.path != streams::path(&self.pair.shadow.volume_path()?, components, name)?
@@ -581,10 +604,23 @@ impl PrivateTree {
     /// One immutable native supply observation. The callback cannot mutate
     /// this tree, and native/file/source closing checks precede its output.
     pub fn with_readonly_supply_stream_snapshot<T>(
-        &self,index:usize,name:&[u16],components:&[String],logical:u64,maximum_range_bytes:u64,
-        consume:impl FnOnce(&NativeReadOnlySupplyStreamSnapshot<'_>)->io::Result<T>,
-    )->io::Result<T>{
-        supply_snapshot::with_snapshot(self,index,name,components,logical,maximum_range_bytes,consume)
+        &self,
+        index: usize,
+        name: &[u16],
+        components: &[String],
+        logical: u64,
+        maximum_range_bytes: u64,
+        consume: impl FnOnce(&NativeReadOnlySupplyStreamSnapshot<'_>) -> io::Result<T>,
+    ) -> io::Result<T> {
+        supply_snapshot::with_snapshot(
+            self,
+            index,
+            name,
+            components,
+            logical,
+            maximum_range_bytes,
+            consume,
+        )
     }
 
     /// Only materialization data is readable from the shadow in a hybrid
@@ -1002,7 +1038,9 @@ impl PrivateTree {
                 for part in parts {
                     let local = (part.logical - offset) as usize;
                     let stop = local + part.length as usize;
-                    if let Some(guard) = &backing_guard { guard.check_before_operation(part.length)?; }
+                    if let Some(guard) = &backing_guard {
+                        guard.check_before_operation(part.length)?;
+                    }
                     proofs.push(file.initialize_at(part.dense, &bytes[local..stop])?);
                     file.read_initialized_at(part.dense, &mut readback[local..stop])?;
                 }
@@ -1101,12 +1139,12 @@ impl PrivateTree {
         }
         let mut events = Vec::new();
         let result = (|| {
-            if let Some(lease)=&self.partition_source{
+            if let Some(lease) = &self.partition_source {
                 lease.check_shadow_operation(&mut events)?;
-            }else if let Some(lease)=&self.dedicated_source{
+            } else if let Some(lease) = &self.dedicated_source {
                 lease.check_shadow_operation(&self.pair, &self.source_before, &mut events)?;
-            }else{
-                self.source_before.require(&self.pair,None,&mut events)?;
+            } else {
+                self.source_before.require(&self.pair, None, &mut events)?;
             }
             if native::observe_general_disk_state_readonly(self.pair.shadow.clone(), &mut events)?
                 .disk_attributes
@@ -1119,7 +1157,7 @@ impl PrivateTree {
             Ok(())
         })();
         if let Some(lease) = &self.partition_source {
-            let witness=lease.witness();
+            let witness = lease.witness();
             let drained = witness.checkpoint_native_events(
                 "partition-private-tree-source-shadow-check",
                 &mut events,
@@ -1521,17 +1559,25 @@ pub fn preflight_resource_input_domain(
     memory: &dyn report_memory::ReportMemoryAccountant,
 ) -> io::Result<ConstructorInputPreflight> {
     admission.validate()?;
-    if partition_bytes == 0 || !partition_bytes.is_multiple_of(4096)
+    if partition_bytes == 0
+        || !partition_bytes.is_multiple_of(4096)
         || partition_bytes > i64::MAX as u64
-        || !volume_root.starts_with("\\\\?\\Volume{") || !volume_root.ends_with("}\\")
+        || !volume_root.starts_with("\\\\?\\Volume{")
+        || !volume_root.ends_with("}\\")
     {
-        return Err(invalid("pure constructor geometry or volume-root syntax differs"));
+        return Err(invalid(
+            "pure constructor geometry or volume-root syntax differs",
+        ));
     }
     let guid = &volume_root[11..volume_root.len() - 2];
     crate::layout::guid_bytes(guid)?;
     preflight_input_domain(
-        input, partition_bytes, volume_root,
-        Some(crate::attestation::ResourceProfile::ResourceBoundedV4(Some(admission))),
+        input,
+        partition_bytes,
+        volume_root,
+        Some(crate::attestation::ResourceProfile::ResourceBoundedV4(
+            Some(admission),
+        )),
         Some(memory),
     )
 }
@@ -1606,16 +1652,9 @@ fn preflight_input_domain(
             .filter(|count| *count <= maximum_streams)
             .ok_or_else(|| invalid("constructor complete stream domain exceeds bound"))?;
         if resource_admission.is_some() {
-            streams::validate_resource(
-                std::slice::from_ref(item),
-                partition_bytes,
-                maximum_streams,
-            )
+            streams::validate_resource(std::slice::from_ref(item), partition_bytes, maximum_streams)
         } else {
-            streams::validate(
-                std::slice::from_ref(item),
-                partition_bytes,
-            )
+            streams::validate(std::slice::from_ref(item), partition_bytes)
         }
     })?;
     let root_owner = if input.is_empty() {
@@ -1640,7 +1679,9 @@ fn preflight_input_domain(
         let owner = input.object(index)?;
         let item = owner.input();
         if !basic_input_allowed(&item) {
-            return Err(invalid("owning metadata input outside bounded source profile"));
+            return Err(invalid(
+                "owning metadata input outside bounded source profile",
+            ));
         }
         let key = crate::shadow_names::conservative_path_key(item.components);
         if resource_admission.map_or(item.components.len() > 16, |_| {
@@ -1730,8 +1771,11 @@ fn allocate_domain_with_memory(
     let payer = memory.as_ref().map(|owner| owner.payer());
     let resource_root = format!("{}\\", pair.shadow.volume_path()?);
     preflight_input_domain(
-        input, pair.shadow.identity.partition_bytes, &resource_root,
-        resource_profile, payer.as_deref(),
+        input,
+        pair.shadow.identity.partition_bytes,
+        &resource_root,
+        resource_profile,
+        payer.as_deref(),
     )?;
     let resource_admission = resource_profile
         .map(crate::attestation::ResourceProfile::resource_admission)
@@ -1740,44 +1784,54 @@ fn allocate_domain_with_memory(
     let maximum_objects = if let Some(value) = resource_admission {
         usize::try_from(value.objects()?).map_err(io::Error::other)?
     } else {
-        resource_profile.map(crate::attestation::ResourceProfile::count_admission)
-            .transpose()?.flatten().map_or(1280, |value| value.object_slots as usize)
+        resource_profile
+            .map(crate::attestation::ResourceProfile::count_admission)
+            .transpose()?
+            .flatten()
+            .map_or(1280, |value| value.object_slots as usize)
     };
     let mut events = Vec::new();
     let dedicated_source = match (resource_admission, payer.as_deref(), enrollment.as_ref()) {
         (Some(_), Some(payer), Some(owned))
-            if pair.source.layout_profile == crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows => {
+            if pair.source.layout_profile
+                == crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows =>
+        {
             match &owned.source {
-                source_scope::ConstructionSource::Dedicated(source) => Some(
-                    source_scope::DedicatedShadowConstructionLease::begin(
-                        source, pair, &owned.source_before, payer, &mut events,
-                    )?,
-                ),
+                source_scope::ConstructionSource::Dedicated(source) => {
+                    Some(source_scope::DedicatedShadowConstructionLease::begin(
+                        source,
+                        pair,
+                        &owned.source_before,
+                        payer,
+                        &mut events,
+                    )?)
+                }
                 source_scope::ConstructionSource::Partition(_) => None,
             }
         }
         _ => None,
     };
     let opening = (|| {
-        let source_before = if let (Some(lease), Some(owned)) = (&dedicated_source, enrollment.as_ref()) {
-            lease.check_shadow_operation(pair, &owned.source_before, &mut events)?;
-            owned.source_before.clone()
-        } else if let Some(owned) = enrollment
-            .as_ref()
-            .filter(|owned| owned.source.partition().is_some())
-        {
-            owned
-                .source_before
-                .require(pair, owned.source.partition(), &mut events)?;
-            owned.source_before.clone()
-        } else {
-            let source =
-                native::observe_general_disk_state_readonly(pair.source.clone(), &mut events)?;
-            if source.disk_attributes != 3 {
-                return Err(invalid("excluded dedicated source required"));
-            }
-            source_scope::ConstructionSourceState::Dedicated(source)
-        };
+        let source_before =
+            if let (Some(lease), Some(owned)) = (&dedicated_source, enrollment.as_ref()) {
+                lease.check_shadow_operation(pair, &owned.source_before, &mut events)?;
+                owned.source_before.clone()
+            } else if let Some(owned) = enrollment
+                .as_ref()
+                .filter(|owned| owned.source.partition().is_some())
+            {
+                owned
+                    .source_before
+                    .require(pair, owned.source.partition(), &mut events)?;
+                owned.source_before.clone()
+            } else {
+                let source =
+                    native::observe_general_disk_state_readonly(pair.source.clone(), &mut events)?;
+                if source.disk_attributes != 3 {
+                    return Err(invalid("excluded dedicated source required"));
+                }
+                source_scope::ConstructionSourceState::Dedicated(source)
+            };
         if native::observe_general_disk_state_readonly(pair.shadow.clone(), &mut events)?
             .disk_attributes
             != 0
@@ -1885,7 +1939,7 @@ fn allocate_domain_with_memory(
     // these enrolled disks and never touches the excluded source.
     let system = existing_system_entries_domain(&root, &initial, input, true, &mut events);
     let mut system_identities = if let Some(lease) = &partition_source {
-        let witness=lease.witness();
+        let witness = lease.witness();
         let drained = witness
             .checkpoint_native_events("partition-private-allocation-global-queries", &mut events);
         match (system, drained) {
@@ -1933,46 +1987,61 @@ fn allocate_domain_with_memory(
     };
     let mut metadata_targets = BTreeMap::new();
     metadata_targets.insert(0, root_handle);
-    let allocation_progress = |pass, completed| input.progress(crate::progress::Update::new(
-        crate::progress::Phase::ShadowAllocation, crate::progress::Unit::Objects,
-        completed, Some(input.len() as u64),
-    ).with_pass(pass));
+    let allocation_progress = |pass, completed| {
+        input.progress(
+            crate::progress::Update::new(
+                crate::progress::Phase::ShadowAllocation,
+                crate::progress::Unit::Objects,
+                completed,
+                Some(input.len() as u64),
+            )
+            .with_pass(pass),
+        )
+    };
     // Pin every formatter object the constructor admitted. Subsequent system
     // supply must update these same objects, not a caller-selected path.
     // The loops below run inside a closure only so that a failure can name
     // the object it stopped on; their control flow is unchanged.
     let failing_object = std::cell::Cell::new(0usize);
     (|| -> io::Result<()> {
-    for index in 0..input.len() {
-        failing_object.set(index);
-        allocation_progress(0, index as u64);
-        let owner = input.object(index)?;
-        let item = owner.input();
-        if let Some(id) = system_identities.get(item.components) {
-            let handle = open(
-                &format!("{root}{}", item.components.join("\\")),
-                item.directory,
-                true,
-            )?;
-            if query_bytes(&snapshot(&handle), 18, 24)?[8..24] != *id {
-                return Err(invalid(
-                    "system identity changed during constructor pinning",
-                ));
+        for index in 0..input.len() {
+            failing_object.set(index);
+            allocation_progress(0, index as u64);
+            let owner = input.object(index)?;
+            let item = owner.input();
+            if let Some(id) = system_identities.get(item.components) {
+                let handle = open(
+                    &format!("{root}{}", item.components.join("\\")),
+                    item.directory,
+                    true,
+                )?;
+                if query_bytes(&snapshot(&handle), 18, 24)?[8..24] != *id {
+                    return Err(invalid(
+                        "system identity changed during constructor pinning",
+                    ));
+                }
+                metadata_targets.insert(index, handle);
             }
-            metadata_targets.insert(index, handle);
         }
-    }
-    Ok(())
+        Ok(())
     })()
-    .map_err(|error| super::cache_refresh::at_object(input, "system object pinning", failing_object.get(), error))?;
+    .map_err(|error| {
+        super::cache_refresh::at_object(input, "system object pinning", failing_object.get(), error)
+    })?;
     allocation_progress(0, input.len() as u64);
     // The same for every other formatter directory pinned above, such as
     // System Volume Information, before children are created inside it.
     for (index, handle) in &metadata_targets {
         if *index != 0 && input.object(*index)?.input().directory {
             input.before_mutation(0)?;
-            super::cache_refresh::clear_acl_auto_inheritance(handle)
-                .map_err(|error| super::cache_refresh::at_object(input, "formatter directory auto-inheritance reset", *index, error))?;
+            super::cache_refresh::clear_acl_auto_inheritance(handle).map_err(|error| {
+                super::cache_refresh::at_object(
+                    input,
+                    "formatter directory auto-inheritance reset",
+                    *index,
+                    error,
+                )
+            })?;
         }
     }
     let global_query_memory = memory
@@ -2000,39 +2069,133 @@ fn allocate_domain_with_memory(
     let sd = private_descriptor()?;
     let mut system_directory_indices = Vec::new();
     (|| -> io::Result<()> {
-    for index in 0..input.len() {
-        failing_object.set(index);
-        allocation_progress(1, index as u64);
-        let owner = input.object(index)?;
-        let item = owner.input();
-        let row_memory = memory
-            .as_ref()
-            .map(|m| m.row_peak(&item).and_then(|n| m.working(n)))
-            .transpose()?;
-        let system = item
-            .components
-            .first()
-            .is_some_and(|s| s == "System Volume Information");
-        if system && item.directory {
-            // Pure preflight admits only the SVI root and ordinary empty
-            // immediate child directories. Global input order already proved
-            // parents precede children; pin that exact held parent again.
-            if item.components.len() == 2 {
-                let parent_index = *system_directory_indices.first()
-                    .ok_or_else(|| invalid("system child directory precedes its owned root"))?;
-                let parent = metadata_targets.get(&parent_index)
-                    .ok_or_else(|| invalid("owned system root metadata handle absent"))?;
-                validate_open_type(parent, true)?;
-                let parent_id = info(parent, 18, 24)?;
-                let parent_components = &item.components[..1];
-                if system_identities.get(parent_components)
-                    .is_none_or(|id| parent_id[8..24] != *id)
-                    || parent_id[..8] != info(&metadata_targets[&0], 18, 24)?[..8]
-                {
-                    return Err(invalid("owned system parent identity or volume differs"));
+        for index in 0..input.len() {
+            failing_object.set(index);
+            allocation_progress(1, index as u64);
+            let owner = input.object(index)?;
+            let item = owner.input();
+            let row_memory = memory
+                .as_ref()
+                .map(|m| m.row_peak(&item).and_then(|n| m.working(n)))
+                .transpose()?;
+            let system = item
+                .components
+                .first()
+                .is_some_and(|s| s == "System Volume Information");
+            if system && item.directory {
+                // Pure preflight admits only the SVI root and ordinary empty
+                // immediate child directories. Global input order already proved
+                // parents precede children; pin that exact held parent again.
+                if item.components.len() == 2 {
+                    let parent_index = *system_directory_indices
+                        .first()
+                        .ok_or_else(|| invalid("system child directory precedes its owned root"))?;
+                    let parent = metadata_targets
+                        .get(&parent_index)
+                        .ok_or_else(|| invalid("owned system root metadata handle absent"))?;
+                    validate_open_type(parent, true)?;
+                    let parent_id = info(parent, 18, 24)?;
+                    let parent_components = &item.components[..1];
+                    if system_identities
+                        .get(parent_components)
+                        .is_none_or(|id| parent_id[8..24] != *id)
+                        || parent_id[..8] != info(&metadata_targets[&0], 18, 24)?[..8]
+                    {
+                        return Err(invalid("owned system parent identity or volume differs"));
+                    }
                 }
+                if !system_identities.contains_key(item.components) {
+                    let private = Input {
+                        components: item.components,
+                        additional_names: &[],
+                        directory: true,
+                        times: item.times,
+                        attributes: 16,
+                        security: &sd,
+                        expected_api_security: None,
+                        extended_attributes: None,
+                        reparse: None,
+                        payload: &[],
+                        expected_length: None,
+                        expected_sha256: None,
+                        source_offset: None,
+                        source_runs: Vec::new(),
+                        named_streams: Vec::new(),
+                        sparse: None,
+                    };
+                    let path = format!("{root}{}", item.components.join("\\"));
+                    // Fresh-only CreateDirectory refuses every collision. Do not
+                    // merge, adopt, clear or delete an existing child directory.
+                    input.before_mutation(0)?;
+                    create(&path, &private, index, None)?;
+                    let handle = open(&path, true, true)?;
+                    let id = info(&handle, 18, 24)?;
+                    if id[..8] != info(&metadata_targets[&0], 18, 24)?[..8]
+                        || system_identities
+                            .values()
+                            .any(|old| old.as_slice() == &id[8..24])
+                        || enumerate(&handle)?
+                            .iter()
+                            .any(|entry| entry.name_utf16 != [46] && entry.name_utf16 != [46, 46])
+                    {
+                        return Err(invalid(
+                            "fresh system directory identity or empty namespace differs",
+                        ));
+                    }
+                    system_identities.insert(item.components.to_vec(), id[8..24].to_vec());
+                    if metadata_targets.insert(index, handle).is_some() {
+                        return Err(invalid("duplicate system directory metadata ordinal"));
+                    }
+                } else if !metadata_targets.contains_key(&index) {
+                    return Err(invalid(
+                        "existing system directory lacks its constructor metadata handle",
+                    ));
+                }
+                system_directory_indices
+                    .try_reserve_exact(1)
+                    .map_err(io::Error::other)?;
+                if system_directory_indices.capacity()
+                    > (system_directory_indices.len() + 1).saturating_mul(2)
+                {
+                    return Err(invalid(
+                        "system directory ordinal capacity exceeds paid state",
+                    ));
+                }
+                system_directory_indices.push(index);
             }
-            if !system_identities.contains_key(item.components) {
+            if item.components.is_empty() || system {
+                objects.push(
+                    serde_json::json!({"object_index":index,"components":item.components,
+                "disposition":"pending-system-or-root-metadata"}),
+                );
+                if let (Some(memory), Some(guard)) = (&memory, row_memory) {
+                    let mut retained = memory::object_bytes(
+                        index,
+                        &objects,
+                        &files,
+                        &sparse_targets,
+                        &metadata_targets,
+                    )?;
+                    if system && item.directory {
+                        // Own the new identity-map key/ID and directory ordinal
+                        // state in addition to object_bytes' metadata handle.
+                        let path_bytes = item.components.iter().try_fold(0u64, |sum, part| {
+                            sum.checked_add(part.len() as u64)
+                                .ok_or_else(|| invalid("system directory path RAM overflow"))
+                        })?;
+                        retained = retained
+                            .checked_add(8192)
+                            .and_then(|n| n.checked_add(path_bytes.checked_mul(8)?))
+                            .and_then(|n| {
+                                n.checked_add((item.components.len() as u64).checked_mul(256)?)
+                            })
+                            .ok_or_else(|| invalid("system directory retained RAM overflow"))?;
+                    }
+                    memory.retain(guard, retained)?;
+                }
+                continue;
+            }
+            if item.directory {
                 let private = Input {
                     components: item.components,
                     additional_names: &[],
@@ -2047,202 +2210,136 @@ fn allocate_domain_with_memory(
                     expected_length: None,
                     expected_sha256: None,
                     source_offset: None,
-                    source_runs: Vec::new(),
+                    source_runs: vec![],
                     named_streams: Vec::new(),
                     sparse: None,
                 };
-                let path = format!("{root}{}", item.components.join("\\"));
-                // Fresh-only CreateDirectory refuses every collision. Do not
-                // merge, adopt, clear or delete an existing child directory.
                 input.before_mutation(0)?;
-                create(&path, &private, index, None)?;
-                let handle = open(&path, true, true)?;
-                let id = info(&handle, 18, 24)?;
-                if id[..8] != info(&metadata_targets[&0], 18, 24)?[..8]
-                    || system_identities.values().any(|old| old.as_slice() == &id[8..24])
-                    || enumerate(&handle)?.iter().any(|entry|
-                        entry.name_utf16 != [46] && entry.name_utf16 != [46, 46])
-                {
-                    return Err(invalid("fresh system directory identity or empty namespace differs"));
+                create(
+                    &format!("{root}{}", item.components.join("\\")),
+                    &private,
+                    index,
+                    None,
+                )?;
+                metadata_targets.insert(
+                    index,
+                    open(&format!("{root}{}", item.components.join("\\")), true, true)?,
+                );
+            } else {
+                let key = StreamKey::unnamed(index);
+                input.before_mutation(0)?;
+                if let Some(layout) = item.sparse {
+                    let target = sparse_stream::Target::create(
+                        &root,
+                        item.components,
+                        &[],
+                        item.logical_length(),
+                        layout,
+                        None,
+                    )?;
+                    register_sparse(
+                        &root,
+                        &carrier_directory,
+                        key.clone(),
+                        target,
+                        &mut files,
+                        &mut sparse_targets,
+                        pair.shadow.identity.partition_bytes,
+                    )?;
+                } else {
+                    files.insert(
+                        key.clone(),
+                        unwritten::PrivatePlaceholder::allocate_named(
+                            &root,
+                            item.components,
+                            item.logical_length(),
+                            pair.shadow.identity.partition_bytes,
+                        )?,
+                    );
                 }
-                system_identities.insert(item.components.to_vec(), id[8..24].to_vec());
-                if metadata_targets.insert(index, handle).is_some() {
-                    return Err(invalid("duplicate system directory metadata ordinal"));
+                for named in &item.named_streams {
+                    input.before_mutation(0)?;
+                    let base = if let Some(target) = sparse_targets.get(&key) {
+                        &target.file
+                    } else {
+                        files[&key].metadata_handle()
+                    };
+                    if let Some(layout) = named.sparse {
+                        let target = sparse_stream::Target::create(
+                            &root,
+                            item.components,
+                            named.name_utf16,
+                            named.expected_length,
+                            layout,
+                            Some(base),
+                        )?;
+                        register_sparse(
+                            &root,
+                            &carrier_directory,
+                            StreamKey::named(index, named.name_utf16),
+                            target,
+                            &mut files,
+                            &mut sparse_targets,
+                            pair.shadow.identity.partition_bytes,
+                        )?;
+                    } else if named.expected_length >= 4096 {
+                        // ReFS may report success for MOVE_FILE on an ADS without
+                        // moving its extents. Place an ordinary owned carrier and
+                        // clone its validated extents into the exact named stream.
+                        let target = sparse_stream::Target::create_plain(
+                            &root,
+                            item.components,
+                            named.name_utf16,
+                            named.expected_length,
+                            Some(base),
+                        )?;
+                        register_sparse(
+                            &root,
+                            &carrier_directory,
+                            StreamKey::named(index, named.name_utf16),
+                            target,
+                            &mut files,
+                            &mut sparse_targets,
+                            pair.shadow.identity.partition_bytes,
+                        )?;
+                    } else {
+                        let stream = unwritten::PrivatePlaceholder::allocate_named_stream(
+                            &root,
+                            item.components,
+                            named.name_utf16,
+                            named.expected_length,
+                            pair.shadow.identity.partition_bytes,
+                            base,
+                        )?;
+                        files.insert(StreamKey::named(index, named.name_utf16), stream);
+                    }
                 }
-            } else if !metadata_targets.contains_key(&index) {
-                return Err(invalid("existing system directory lacks its constructor metadata handle"));
             }
-            system_directory_indices.try_reserve_exact(1).map_err(io::Error::other)?;
-            if system_directory_indices.capacity() > (system_directory_indices.len() + 1).saturating_mul(2) {
-                return Err(invalid("system directory ordinal capacity exceeds paid state"));
-            }
-            system_directory_indices.push(index);
-        }
-        if item.components.is_empty() || system {
             objects.push(
                 serde_json::json!({"object_index":index,"components":item.components,
-                "disposition":"pending-system-or-root-metadata"}),
+            "logical_length":item.logical_length(),"disposition":"private-uninitialized",
+            "payload_expected_sha256":item.expected_sha256,
+            "source_security_sha256":hex::encode(Sha256::digest(item.security)),
+            "source_metadata_restoration_pending":true,"payload_supply_pending":!item.directory}),
             );
             if let (Some(memory), Some(guard)) = (&memory, row_memory) {
-                let mut retained = memory::object_bytes(
+                memory.retain(
+                    guard,
+                    memory::object_bytes(
                         index,
                         &objects,
                         &files,
                         &sparse_targets,
                         &metadata_targets,
-                    )?;
-                if system && item.directory {
-                    // Own the new identity-map key/ID and directory ordinal
-                    // state in addition to object_bytes' metadata handle.
-                    let path_bytes = item.components.iter().try_fold(0u64, |sum, part|
-                        sum.checked_add(part.len() as u64)
-                            .ok_or_else(|| invalid("system directory path RAM overflow")))?;
-                    retained = retained.checked_add(8192)
-                        .and_then(|n| n.checked_add(path_bytes.checked_mul(8)?))
-                        .and_then(|n| n.checked_add((item.components.len() as u64).checked_mul(256)?))
-                        .ok_or_else(|| invalid("system directory retained RAM overflow"))?;
-                }
-                memory.retain(guard, retained)?;
-            }
-            continue;
-        }
-        if item.directory {
-            let private = Input {
-                components: item.components,
-                additional_names: &[],
-                directory: true,
-                times: item.times,
-                attributes: 16,
-                security: &sd,
-                expected_api_security: None,
-                extended_attributes: None,
-                reparse: None,
-                payload: &[],
-                expected_length: None,
-                expected_sha256: None,
-                source_offset: None,
-                source_runs: vec![],
-                named_streams: Vec::new(),
-                sparse: None,
-            };
-            input.before_mutation(0)?;
-            create(
-                &format!("{root}{}", item.components.join("\\")),
-                &private,
-                index,
-                None,
-            )?;
-            metadata_targets.insert(
-                index,
-                open(&format!("{root}{}", item.components.join("\\")), true, true)?,
-            );
-        } else {
-            let key = StreamKey::unnamed(index);
-            input.before_mutation(0)?;
-            if let Some(layout) = item.sparse {
-                let target = sparse_stream::Target::create(
-                    &root,
-                    item.components,
-                    &[],
-                    item.logical_length(),
-                    layout,
-                    None,
-                )?;
-                register_sparse(
-                    &root,
-                    &carrier_directory,
-                    key.clone(),
-                    target,
-                    &mut files,
-                    &mut sparse_targets,
-                    pair.shadow.identity.partition_bytes,
-                )?;
-            } else {
-                files.insert(
-                    key.clone(),
-                    unwritten::PrivatePlaceholder::allocate_named(
-                        &root,
-                        item.components,
-                        item.logical_length(),
-                        pair.shadow.identity.partition_bytes,
                     )?,
-                );
-            }
-            for named in &item.named_streams {
-                input.before_mutation(0)?;
-                let base = if let Some(target) = sparse_targets.get(&key) {
-                    &target.file
-                } else {
-                    files[&key].metadata_handle()
-                };
-                if let Some(layout) = named.sparse {
-                    let target = sparse_stream::Target::create(
-                        &root,
-                        item.components,
-                        named.name_utf16,
-                        named.expected_length,
-                        layout,
-                        Some(base),
-                    )?;
-                    register_sparse(
-                        &root,
-                        &carrier_directory,
-                        StreamKey::named(index, named.name_utf16),
-                        target,
-                        &mut files,
-                        &mut sparse_targets,
-                        pair.shadow.identity.partition_bytes,
-                    )?;
-                } else if named.expected_length >= 4096 {
-                    // ReFS may report success for MOVE_FILE on an ADS without
-                    // moving its extents. Place an ordinary owned carrier and
-                    // clone its validated extents into the exact named stream.
-                    let target = sparse_stream::Target::create_plain(
-                        &root,
-                        item.components,
-                        named.name_utf16,
-                        named.expected_length,
-                        Some(base),
-                    )?;
-                    register_sparse(
-                        &root,
-                        &carrier_directory,
-                        StreamKey::named(index, named.name_utf16),
-                        target,
-                        &mut files,
-                        &mut sparse_targets,
-                        pair.shadow.identity.partition_bytes,
-                    )?;
-                } else {
-                    let stream = unwritten::PrivatePlaceholder::allocate_named_stream(
-                        &root,
-                        item.components,
-                        named.name_utf16,
-                        named.expected_length,
-                        pair.shadow.identity.partition_bytes,
-                        base,
-                    )?;
-                    files.insert(StreamKey::named(index, named.name_utf16), stream);
-                }
+                )?;
             }
         }
-        objects.push(
-            serde_json::json!({"object_index":index,"components":item.components,
-            "logical_length":item.logical_length(),"disposition":"private-uninitialized",
-            "payload_expected_sha256":item.expected_sha256,
-            "source_security_sha256":hex::encode(Sha256::digest(item.security)),
-            "source_metadata_restoration_pending":true,"payload_supply_pending":!item.directory}),
-        );
-        if let (Some(memory), Some(guard)) = (&memory, row_memory) {
-            memory.retain(
-                guard,
-                memory::object_bytes(index, &objects, &files, &sparse_targets, &metadata_targets)?,
-            )?;
-        }
-    }
-    Ok(())
+        Ok(())
     })()
-    .map_err(|error| super::cache_refresh::at_object(input, "shadow allocation", failing_object.get(), error))?;
+    .map_err(|error| {
+        super::cache_refresh::at_object(input, "shadow allocation", failing_object.get(), error)
+    })?;
     allocation_progress(1, input.len() as u64);
     input.before_mutation(0)?;
     crate::perf::flush(crate::perf::Point::VolumeFlush, &volume)?;

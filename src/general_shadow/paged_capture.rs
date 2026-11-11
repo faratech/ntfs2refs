@@ -176,14 +176,23 @@ impl ClosedCaptureLiteral {
     }
     /// Same-held-file metadata only. This never hashes or scans literal bytes
     /// and never replaces the stricter capture/admission revalidation.
-    pub(crate) fn observe_allocation_bytes(&self)->Result<u64>{
-        let file=self.file.try_borrow().map_err(|_|anyhow::anyhow!("capture literal metadata handle already borrowed"))?;
-        let current=n2r_win32::reference_file::observe_reference_file_handle_with_limit(&file,self.limit)?;
-        let old=&self.pin.snapshot;
-        ensure!(current.final_path==old.final_path&&current.volume_serial_number==old.volume_serial_number
-            &&current.file_id_128==old.file_id_128&&current.file_bytes==old.file_bytes
-            &&current.file_attributes==old.file_attributes&&current.number_of_links==old.number_of_links,
-            "capture literal metadata identity differs from actual closed owner");
+    pub(crate) fn observe_allocation_bytes(&self) -> Result<u64> {
+        let file = self
+            .file
+            .try_borrow()
+            .map_err(|_| anyhow::anyhow!("capture literal metadata handle already borrowed"))?;
+        let current =
+            n2r_win32::reference_file::observe_reference_file_handle_with_limit(&file, self.limit)?;
+        let old = &self.pin.snapshot;
+        ensure!(
+            current.final_path == old.final_path
+                && current.volume_serial_number == old.volume_serial_number
+                && current.file_id_128 == old.file_id_128
+                && current.file_bytes == old.file_bytes
+                && current.file_attributes == old.file_attributes
+                && current.number_of_links == old.number_of_links,
+            "capture literal metadata identity differs from actual closed owner"
+        );
         Ok(current.allocation_bytes)
     }
     pub(crate) fn read_exact_at(&self, offset: u64, output: &mut [u8]) -> Result<()> {
@@ -586,14 +595,21 @@ fn capture_selected_inner(
     // One plan retains only this already-read comparison chunk. Pay its actual
     // bounded vector before allocation and retain the payment through drop.
     let maximum_batch = CHUNK / GRANULE;
-    let batch_bytes = maximum_batch.checked_mul(std::mem::size_of::<CaptureBatchRange>())
-        .and_then(|n| n.checked_mul(2)).and_then(|n| n.checked_add(256))
+    let batch_bytes = maximum_batch
+        .checked_mul(std::mem::size_of::<CaptureBatchRange>())
+        .and_then(|n| n.checked_mul(2))
+        .and_then(|n| n.checked_add(256))
         .context("capture batch RAM overflow")?;
     let _batch_ram = scratch.lease_ram(batch_bytes as u64)?;
     let mut batch: Vec<CaptureBatchRange> = Vec::new();
     batch.try_reserve_exact(maximum_batch)?;
-    ensure!(batch.capacity().checked_mul(std::mem::size_of::<CaptureBatchRange>())
-        .is_some_and(|n| n <= batch_bytes), "capture batch allocation exceeds its payment");
+    ensure!(
+        batch
+            .capacity()
+            .checked_mul(std::mem::size_of::<CaptureBatchRange>())
+            .is_some_and(|n| n <= batch_bytes),
+        "capture batch allocation exceeds its payment"
+    );
     for ordinal in 0..selection.store.len() {
         let selected = selection.range(ordinal)?;
         source_digest.update(selected.offset.to_le_bytes());
@@ -635,7 +651,12 @@ fn capture_selected_inner(
                 if !new_zero {
                     if let Some(source) = candidate.copy_source_for(&chunk, local, GRANULE)? {
                         if source.is_multiple_of(4096)
-                            && index.covers_prior_with_batch(&batch, source, GRANULE as u64, destination)?
+                            && index.covers_prior_with_batch(
+                                &batch,
+                                source,
+                                GRANULE as u64,
+                                destination,
+                            )?
                         {
                             candidate.raw_source().require_allocated_range(
                                 source,
@@ -666,8 +687,10 @@ fn capture_selected_inner(
                 let may_extend = !budget.selected_capacity_policy.allows_source_free()
                     || (previous_free == free
                         && previous.is_none_or(|r| r.old_is_zero == was_zero));
-                let (extends, projected) = index.project_batch_range(previous, range, may_extend)?;
-                let next_ranges = planned_ranges.checked_add(u64::from(!extends))
+                let (extends, projected) =
+                    index.project_batch_range(previous, range, may_extend)?;
+                let next_ranges = planned_ranges
+                    .checked_add(u64::from(!extends))
                     .context("capture planned range overflow")?;
                 let next_changed = changed
                     .checked_add(GRANULE as u64)
@@ -712,7 +735,10 @@ fn capture_selected_inner(
                     next_ranges,
                     if extends { 0 } else { 80 },
                 )?;
-                ensure!(batch.len() < maximum_batch, "capture plan exceeds its paid granule bound");
+                ensure!(
+                    batch.len() < maximum_batch,
+                    "capture plan exceeds its paid granule bound"
+                );
                 batch.push(CaptureBatchRange {
                     range,
                     may_extend_previous: may_extend,
@@ -766,17 +792,30 @@ fn capture_selected_inner(
                 }
             }
             if !batch.is_empty() {
-                let literal_append = packed.checked_sub(packed_before)
+                let literal_append = packed
+                    .checked_sub(packed_before)
                     .context("capture batch literal accounting regressed")?;
-                let additional_rows = planned_ranges.checked_sub(ranges_before)
+                let additional_rows = planned_ranges
+                    .checked_sub(ranges_before)
                     .context("capture batch index accounting regressed")?;
-                let index_append = additional_rows.checked_mul(80)
+                let index_append = additional_rows
+                    .checked_mul(80)
                     .context("capture batch index append overflow")?;
                 // Reserve exact classified growth, not a worst-case chunk.
                 // Tight volumes therefore need only the bytes this batch will
                 // actually append. No writes precede all three admissions.
-                guard(progress(budget, changed, old_zero, source_free, packed_before,
-                    literal_append, copied, new_zero_total, planned_ranges, index_append)?)?;
+                guard(progress(
+                    budget,
+                    changed,
+                    old_zero,
+                    source_free,
+                    packed_before,
+                    literal_append,
+                    copied,
+                    new_zero_total,
+                    planned_ranges,
+                    index_append,
+                )?)?;
                 capacity_guard_calls = capacity_guard_calls.saturating_add(1);
                 if literal_append != 0 {
                     literal_permit.extend(literal_append)?;
@@ -790,9 +829,11 @@ fn capture_selected_inner(
                     // Actual pending tokens and COPY checks remain ordered:
                     // earlier planned OLD rows must now be genuinely accepted.
                     let pending = index.reserve_next(planned.range, planned.may_extend_previous)?;
-                    ensure!(pending.projected_range() == planned.projected
-                        && pending.extends_previous() == planned.extends_previous,
-                        "capture coalescing differs from its exact batch admission");
+                    ensure!(
+                        pending.projected_range() == planned.projected
+                            && pending.extends_previous() == planned.extends_previous,
+                        "capture coalescing differs from its exact batch admission"
+                    );
                     if !planned.range.new_is_zero && planned.range.copy_source_offset.is_none() {
                         let local = usize::try_from(planned.range.offset - at)?;
                         let bytes = &chunk.bytes()[local..local + GRANULE];
@@ -802,9 +843,12 @@ fn capture_selected_inner(
                     index.append_accepted(pending)?;
                 }
                 index.finish_batch()?;
-                ensure!(index.len() == planned_ranges && index.packed_bytes() == packed
-                    && index.last_range() == planned_tail,
-                    "actual capture acceptance differs from its admitted batch");
+                ensure!(
+                    index.len() == planned_ranges
+                        && index.packed_bytes() == packed
+                        && index.last_range() == planned_tail,
+                    "actual capture acceptance differs from its admitted batch"
+                );
                 capacity_batches = capacity_batches.saturating_add(1);
             }
             done += count as u64;

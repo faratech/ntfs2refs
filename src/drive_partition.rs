@@ -93,11 +93,16 @@ fn require_parent_windows(path: &Path, windows: &GeneralDiskBinding) -> Result<(
         .custom_flags(0x0220_0000)
         .open(path)?;
     let metadata = directory.metadata()?;
-    ensure!(metadata.is_dir() && metadata.file_attributes() & 0x400 == 0,
-        "held metadata parent must be an ordinary directory");
+    ensure!(
+        metadata.is_dir() && metadata.file_attributes() & 0x400 == 0,
+        "held metadata parent must be an ordinary directory"
+    );
     let identity = n2r_win32::file_storage::file_id_info(&directory)?;
     let guid_path = n2r_win32::file_storage::final_path_guid(&directory)?;
-    let root_end = guid_path.find("}\\").context("held parent GUID volume root absent")? + 2;
+    let root_end = guid_path
+        .find("}\\")
+        .context("held parent GUID volume root absent")?
+        + 2;
     let route = discovery::discover(
         &guid_path[..root_end],
         Role::Journal {
@@ -111,8 +116,10 @@ fn require_parent_windows(path: &Path, windows: &GeneralDiskBinding) -> Result<(
             && &route.binding == windows,
         "metadata parent is not the actual current Windows volume; no directories were authorized"
     );
-    ensure!(n2r_win32::file_storage::file_id_info(&directory)? == identity,
-        "held metadata parent identity changed during volume discovery");
+    ensure!(
+        n2r_win32::file_storage::file_id_info(&directory)? == identity,
+        "held metadata parent identity changed during volume discovery"
+    );
     Ok(())
 }
 fn ordinary_existing(path: &Path) -> Result<()> {
@@ -199,7 +206,12 @@ struct Plan {
     keep: u64,
     planning_headroom: u64,
 }
-fn automatic(available: AvailableResources, ancestor: &Path, staging: bool, controlled_pause: bool) -> Result<Plan> {
+fn automatic(
+    available: AvailableResources,
+    ancestor: &Path,
+    staging: bool,
+    controlled_pause: bool,
+) -> Result<Plan> {
     let total = total_ram(available);
     let observation = observation_budget(total)?;
     let keep = (available.scratch_available_bytes / 4).min(16 * 1024 * 1024 * 1024);
@@ -223,16 +235,23 @@ fn automatic(available: AvailableResources, ancestor: &Path, staging: bool, cont
     let working = usable
         .checked_sub(evidence.checked_mul(2).context("evidence overflow")?)
         .and_then(|n| n.checked_sub(intent))
-        .and_then(|n| n.checked_sub(if controlled_pause {
-            resource_partition_alpha::CONTROLLED_POST_FLUSH_EVIDENCE_RESERVE_BYTES
-        } else { 0 }))
-        .context("space cannot cover independent intent/evidence and optional qualification control")?;
+        .and_then(|n| {
+            n.checked_sub(if controlled_pause {
+                resource_partition_alpha::CONTROLLED_POST_FLUSH_EVIDENCE_RESERVE_BYTES
+            } else {
+                0
+            })
+        })
+        .context(
+            "space cannot cover independent intent/evidence and optional qualification control",
+        )?;
     // Availability is sampled before directory creation/formatting. Do not
     // promise every remaining byte: provider/control filesystem metadata and
     // unrelated Windows activity can consume space between those samples.
     // Keep all actual capacity checks and named reservations intact.
     let planning_headroom = align(working / 64);
-    let working = working.checked_sub(planning_headroom)
+    let working = working
+        .checked_sub(planning_headroom)
         .context("planning headroom underflow")?;
     let stage = if staging { align(working / 3) } else { 0 };
     let arena = align(working - stage);
@@ -260,9 +279,11 @@ pub(super) fn convert(
         return offline::convert(args, selected, before);
     }
     require_shared_conversion_backend()?;
-    ensure!(args.controlled_post_flush_pause_nonce.is_some()
-        == args.acknowledge_controlled_post_flush_pause,
-        "controlled qualification pause requires both nonce and separate acknowledgement");
+    ensure!(
+        args.controlled_post_flush_pause_nonce.is_some()
+            == args.acknowledge_controlled_post_flush_pause,
+        "controlled qualification pause requires both nonce and separate acknowledgement"
+    );
     if let Some(nonce) = args.controlled_post_flush_pause_nonce.as_deref() {
         super::parse_controlled_pause_nonce(nonce).map_err(anyhow::Error::msg)?;
     }
@@ -342,9 +363,14 @@ pub(super) fn convert(
         "Working storage: {} (actual Windows volume only).",
         parent.display()
     );
-    println!("Uncommitted planning headroom: {} bytes; this is not a disk reservation.", plan.planning_headroom);
+    println!(
+        "Uncommitted planning headroom: {} bytes; this is not a disk reservation.",
+        plan.planning_headroom
+    );
     if controlled_pause {
-        println!("Qualification control: wait up to120seconds after actual non-discovery source flush/readback, then Continue or timeout. This does not qualify a first write or physical power loss.");
+        println!(
+            "Qualification control: wait up to120seconds after actual non-discovery source flush/readback, then Continue or timeout. This does not qualify a first write or physical power loss."
+        );
     }
     if !windows::confirm(
         "Convert this partition to ReFS in place, preserving supported files? [y/N]",
@@ -404,7 +430,8 @@ pub(super) fn convert(
         .stack_size(resource_partition_alpha::WORKER_STACK_BYTES)
         .spawn(move || match pause_nonce {
             Some(nonce) => resource_partition_alpha::run_with_controlled_post_flush_pause(
-                request, &output, true, nonce, pause_ack),
+                request, &output, true, nonce, pause_ack,
+            ),
             None => resource_partition_alpha::run(request, &output, true),
         })?;
     worker.join().map_err(|_| {
@@ -555,7 +582,11 @@ pub(super) fn try_recover(directory: &Path, checksum: &str, rollback: bool) -> R
     route
         .source_scope
         .require_envelope_version(route.schema_version, &route.kind)?;
-    route.source_scope.require_partition()?; let source_binding = route.source_scope.partition_binding().context("partition recovery binding absent")?;
+    route.source_scope.require_partition()?;
+    let source_binding = route
+        .source_scope
+        .partition_binding()
+        .context("partition recovery binding absent")?;
     ensure!(
         !route.serialized_publication_grants_authority && source_binding.storage == route.source,
         "foreign partition recovery publication route"

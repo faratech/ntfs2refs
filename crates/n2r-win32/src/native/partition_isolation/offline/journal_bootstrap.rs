@@ -14,64 +14,106 @@ impl OfflineOwningEnvironment {
         directory: &File,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<std::path::PathBuf> {
-        use std::{os::windows::fs::MetadataExt, path::{Component, Path, PathBuf}};
+        use std::{
+            os::windows::fs::MetadataExt,
+            path::{Component, Path, PathBuf},
+        };
         self.require_journal_disjoint(journal, journal_volume, events)?;
         let metadata = directory.metadata()?;
-        require(metadata.is_dir() && metadata.file_attributes() & 0x400 == 0,
-            "current J output parent must be an actual ordinary directory")?;
+        require(
+            metadata.is_dir() && metadata.file_attributes() & 0x400 == 0,
+            "current J output parent must be an actual ordinary directory",
+        )?;
         let identity = crate::file_storage::file_id_info(directory)?;
         let guid_path = crate::file_storage::final_path_guid(directory)?;
         let prefix = format!("{}\\", journal.disk.volume_path()?.trim_end_matches('\\'));
-        require(guid_path.get(..prefix.len()).is_some_and(|s| s.eq_ignore_ascii_case(&prefix)),
-            "actual output parent is not on held native J")?;
+        require(
+            guid_path
+                .get(..prefix.len())
+                .is_some_and(|s| s.eq_ignore_ascii_case(&prefix)),
+            "actual output parent is not on held native J",
+        )?;
         let relative = Path::new(&guid_path[prefix.len()..]);
-        require(!relative.as_os_str().is_empty(), "J output parent cannot be the volume root")?;
+        require(
+            !relative.as_os_str().is_empty(),
+            "J output parent cannot be the volume root",
+        )?;
         for component in relative.components() {
             let Component::Normal(name) = component else {
                 return Err(invalid("J output suffix contains a non-normal component"));
             };
-            let name = name.to_str().ok_or_else(|| invalid("Unicode J output component required"))?;
+            let name = name
+                .to_str()
+                .ok_or_else(|| invalid("Unicode J output component required"))?;
             let stem = name.split('.').next().unwrap_or("").to_ascii_uppercase();
-            require(!name.is_empty() && !name.ends_with([' ', '.'])
-                && !name.chars().any(|c| c.is_control() || matches!(c, ':'|'/'|'\\'|'"'|'<'|'>'|'|'|'?'|'*'))
-                && !matches!(stem.as_str(), "CON"|"PRN"|"AUX"|"NUL")
-                && !((stem.starts_with("COM") || stem.starts_with("LPT"))
-                    && stem.len() == 4 && stem.as_bytes()[3].is_ascii_digit()),
-                "J output suffix is not an unambiguous ordinary component")?;
+            require(
+                !name.is_empty()
+                    && !name.ends_with([' ', '.'])
+                    && !name.chars().any(|c| {
+                        c.is_control()
+                            || matches!(c, ':' | '/' | '\\' | '"' | '<' | '>' | '|' | '?' | '*')
+                    })
+                    && !matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+                    && !((stem.starts_with("COM") || stem.starts_with("LPT"))
+                        && stem.len() == 4
+                        && stem.as_bytes()[3].is_ascii_digit()),
+                "J output suffix is not an unambiguous ordinary component",
+            )?;
         }
         // Existing bounded Mount Manager enumeration independently reverse-
         // resolves every returned alias to this exact native volume GUID.
         let mounts = crate::native::capture_mount_paths_for_bound_volume(journal.disk.clone())?;
-        require(mounts.all_paths_resolve_to_bound_volume && mounts.binding == journal.disk,
-            "current J mount-route observation differs from held native owner")?;
-        let mut drives: Vec<_> = mounts.paths.iter().filter(|path| {
-            let bytes = path.as_bytes();
-            bytes.len() == 3 && bytes[0].is_ascii_alphabetic() && bytes[1..] == *b":\\"
-        }).collect();
+        require(
+            mounts.all_paths_resolve_to_bound_volume && mounts.binding == journal.disk,
+            "current J mount-route observation differs from held native owner",
+        )?;
+        let mut drives: Vec<_> = mounts
+            .paths
+            .iter()
+            .filter(|path| {
+                let bytes = path.as_bytes();
+                bytes.len() == 3 && bytes[0].is_ascii_alphabetic() && bytes[1..] == *b":\\"
+            })
+            .collect();
         drives.sort_by_key(|path| path.to_ascii_uppercase());
-        let drive = drives.first().ok_or_else(|| invalid("held J has no current ordinary drive-letter alias"))?;
+        let drive = drives
+            .first()
+            .ok_or_else(|| invalid("held J has no current ordinary drive-letter alias"))?;
         let candidate = PathBuf::from(drive.as_str()).join(relative);
-        let mapped = OpenOptions::new().access_mode(0x80).share_mode(3)
-            .custom_flags(0x0200_0000 | 0x0020_0000).open(&candidate)?;
+        let mapped = OpenOptions::new()
+            .access_mode(0x80)
+            .share_mode(3)
+            .custom_flags(0x0200_0000 | 0x0020_0000)
+            .open(&candidate)?;
         let mapped_meta = mapped.metadata()?;
-        require(mapped_meta.is_dir() && mapped_meta.file_attributes() & 0x400 == 0
-            && crate::file_storage::file_id_info(&mapped)? == identity
-            && crate::file_storage::final_path_guid(&mapped)?.eq_ignore_ascii_case(&guid_path),
-            "ordinary J output alias is not the same held directory identity/GUID")?;
+        require(
+            mapped_meta.is_dir()
+                && mapped_meta.file_attributes() & 0x400 == 0
+                && crate::file_storage::file_id_info(&mapped)? == identity
+                && crate::file_storage::final_path_guid(&mapped)?.eq_ignore_ascii_case(&guid_path),
+            "ordinary J output alias is not the same held directory identity/GUID",
+        )?;
         self.require_journal_disjoint(journal, journal_volume, events)?;
-        require(crate::file_storage::file_id_info(directory)? == identity
-            && crate::file_storage::file_id_info(&mapped)? == identity
-            && crate::file_storage::final_path_guid(directory)?.eq_ignore_ascii_case(&guid_path),
-            "held J output directory changed during ordinary alias resolution")?;
+        require(
+            crate::file_storage::file_id_info(directory)? == identity
+                && crate::file_storage::file_id_info(&mapped)? == identity
+                && crate::file_storage::final_path_guid(directory)?
+                    .eq_ignore_ascii_case(&guid_path),
+            "held J output directory changed during ordinary alias resolution",
+        )?;
         events.push(NativeEvent {
-            operation:"offline-current-J-ordinary-output-alias-bound".into(),
-            control_code:0,input:Vec::new(),succeeded:true,native_error:None,
-            output:serde_json::to_vec(&serde_json::json!({
+            operation: "offline-current-J-ordinary-output-alias-bound".into(),
+            control_code: 0,
+            input: Vec::new(),
+            succeeded: true,
+            native_error: None,
+            output: serde_json::to_vec(&serde_json::json!({
                 "actual_guid_directory":guid_path,"current_ordinary_directory":candidate,
                 "native_parent_file_id_and_volume_serial_equal":true,
                 "all_mount_aliases_reverse_resolve_to_native_J":true,
                 "sealed_GUID_inputs_changed":false,"source_write_authority":false,
-            })).map_err(io::Error::other)?,
+            }))
+            .map_err(io::Error::other)?,
         });
         Ok(candidate)
     }
@@ -171,8 +213,7 @@ fn require_bootstrap_source_protection(environment: &OfflineOwningEnvironment) -
         .collect();
     require(
         rows.len() == 1
-            && rows[0][32..48]
-                == layout::guid_bytes("ebd0a0a2-b9e5-4433-87c0-68b6b72699c7")?
+            && rows[0][32..48] == layout::guid_bytes("ebd0a0a2-b9e5-4433-87c0-68b6b72699c7")?
             && layout::u64_at(rows[0], 64)? == BASIC_READONLY,
         "J bootstrap source native partition row does not prove BASIC+READONLY",
     )?;

@@ -4,12 +4,14 @@ use crate::{
     artifact_arena::{ArtifactArena, ArtifactGroup},
     ntfs_inspect::{SourceMetadataBudget, paged_storage::SourceScratch},
     resource_preparation::{EventLog, PreparationObserver, create_external_output},
-    selected_journal::{SelectedLifecycle, resource_domain::reopen::envelope::ReopenedResourceRecovery},
+    selected_journal::{
+        SelectedLifecycle, resource_domain::reopen::envelope::ReopenedResourceRecovery,
+    },
 };
 use anyhow::{Context, Result, ensure};
 use n2r_win32::{
-    general_layout::GeneralSourceShadowBinding, journal_file::GeneralJournalStorageBinding,
-    tree_resources::ResourceBudget, PagedRecoveryDirection,
+    PagedRecoveryDirection, general_layout::GeneralSourceShadowBinding,
+    journal_file::GeneralJournalStorageBinding, tree_resources::ResourceBudget,
 };
 use std::{collections::BTreeSet, path::Path};
 
@@ -24,31 +26,52 @@ pub(crate) fn recover_resource_allocation_with_observer<O: PreparationObserver>(
     observer: &mut O,
 ) -> Result<serde_json::Value> {
     resources.validate()?;
-    ensure!(output.is_absolute() && !output.exists(), "fresh recovery output required");
+    ensure!(
+        output.is_absolute() && !output.exists(),
+        "fresh recovery output required"
+    );
     let available = n2r_win32::resource_native::observe_available_resources(
         output.parent().context("recovery parent absent")?,
     )?;
-    resources.scratch_bytes = resources.scratch_bytes.min(available.scratch_available_bytes / 2);
+    resources.scratch_bytes = resources
+        .scratch_bytes
+        .min(available.scratch_available_bytes / 2);
     available.validate_budget(resources)?;
     let _ancestry = create_external_output(output, &journal)?;
-    let arena = ArtifactArena::new(output, resources, &[pair.source.clone(), pair.shadow.clone()])?;
+    let arena = ArtifactArena::new(
+        output,
+        resources,
+        &[pair.source.clone(), pair.shadow.clone()],
+    )?;
     let budget = SourceMetadataBudget::from_resource_budget(resources)?;
     let group = arena.reserve_group(ArtifactGroup::RecoveryCopy, budget.scratch_bytes)?;
     let scratch = SourceScratch::new_auxiliary_in_arena(budget, group.clone())?;
     let mut events = EventLog::new(observer);
     events.phase("resource-recovery-reopen");
     let mut recovery = ReopenedResourceRecovery::open_observed_or_online_terminal(
-        publication, publication_sha256, budget.record_bytes, &pair, &journal,
-        &group, &scratch, &output.join("reopened-journal.index"), budget.scratch_bytes,
+        publication,
+        publication_sha256,
+        budget.record_bytes,
+        &pair,
+        &journal,
+        &group,
+        &scratch,
+        &output.join("reopened-journal.index"),
+        budget.scratch_bytes,
         &mut events,
     )?;
     let initial = recovery.observed_lifecycle();
     events.checkpoint()?;
     if recovery.mounted_source().is_some() {
-        ensure!(matches!((rollback, initial),
-            (false, SelectedLifecycle::Handoff) | (true, SelectedLifecycle::Aborted)),
-            "requested direction conflicts with the actual online terminal journal");
-        let reconciliation = crate::resource_finalize::reconcile_online_terminal(&mut recovery, &mut events)?;
+        ensure!(
+            matches!(
+                (rollback, initial),
+                (false, SelectedLifecycle::Handoff) | (true, SelectedLifecycle::Aborted)
+            ),
+            "requested direction conflicts with the actual online terminal journal"
+        );
+        let reconciliation =
+            crate::resource_finalize::reconcile_online_terminal(&mut recovery, &mut events)?;
         return Ok(serde_json::json!({
             "kind":"resource-allocation-recovery-v1",
             "direction":if rollback { "rollback" } else { "resume" },
@@ -61,28 +84,53 @@ pub(crate) fn recover_resource_allocation_with_observer<O: PreparationObserver>(
     match (rollback, initial) {
         (true, SelectedLifecycle::PreparedClear) => {
             events.phase("resource-abandon-clear");
-            recovery.abandon_clear(&group, &output.join("abandon-journal.index"), budget.scratch_bytes, &mut events)?;
+            recovery.abandon_clear(
+                &group,
+                &output.join("abandon-journal.index"),
+                budget.scratch_bytes,
+                &mut events,
+            )?;
             events.checkpoint()?;
         }
-        (false, SelectedLifecycle::ApplyIntent) | (true, SelectedLifecycle::ApplyIntent | SelectedLifecycle::RollbackIntent) => {
+        (false, SelectedLifecycle::ApplyIntent)
+        | (true, SelectedLifecycle::ApplyIntent | SelectedLifecycle::RollbackIntent) => {
             events.phase("resource-recovery-replay");
-            let direction = if rollback { PagedRecoveryDirection::Rollback } else { PagedRecoveryDirection::Resume };
+            let direction = if rollback {
+                PagedRecoveryDirection::Rollback
+            } else {
+                PagedRecoveryDirection::Resume
+            };
             let outcome = recovery.replay_markerless(
-                &group, &output.join("replay-journal.index"), budget.scratch_bytes,
-                direction, |_| Ok(()), &mut events,
+                &group,
+                &output.join("replay-journal.index"),
+                budget.scratch_bytes,
+                direction,
+                |_| Ok(()),
+                &mut events,
             )?;
             replayed = Some(outcome.selected);
             events.checkpoint()?;
         }
         (false, SelectedLifecycle::Handoff) | (true, SelectedLifecycle::Aborted) => (),
-        _ => anyhow::bail!("requested recovery direction conflicts with the actual durable journal lifecycle: {initial:?}"),
+        _ => anyhow::bail!(
+            "requested recovery direction conflicts with the actual durable journal lifecycle: {initial:?}"
+        ),
     }
     if rollback {
         events.phase("resource-rollback-finalization");
-        let mounted = recovery.restore_aborted(&group, &output.join("abort-journal.index"), budget.scratch_bytes, &mut events)?;
+        let mounted = recovery.restore_aborted(
+            &group,
+            &output.join("abort-journal.index"),
+            budget.scratch_bytes,
+            &mut events,
+        )?;
         events.checkpoint()?;
         let paths = n2r_win32::capture_mount_paths_general(mounted.clone(), &mut events)?;
-        let expected: BTreeSet<_> = recovery.expected_mount_paths().iter().map(|s| s.to_lowercase()).collect();
+        let expected: BTreeSet<_> = recovery
+            .expected_mount_paths()
+            .iter()
+            .map(|s| s.to_lowercase())
+            .collect();
         let actual: BTreeSet<_> = paths.paths.iter().map(|s| s.to_lowercase()).collect();
         events.checkpoint()?;
         return Ok(serde_json::json!({
@@ -109,8 +157,13 @@ pub(crate) fn recover_resource_allocation_with_observer<O: PreparationObserver>(
     // hashed again at every later step of the finalizer.
     n2r_win32::verify_policy::check_once();
     let finalized = crate::resource_finalize::finalize_resource_handoff_with_observer(
-        pair, journal, publication, publication_sha256, resources,
-        &output.join("finalization"), observer,
+        pair,
+        journal,
+        publication,
+        publication_sha256,
+        resources,
+        &output.join("finalization"),
+        observer,
     )?;
     Ok(serde_json::json!({
         "kind":"resource-allocation-recovery-v1", "direction":"resume",

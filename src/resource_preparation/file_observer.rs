@@ -71,10 +71,13 @@ impl Write for WrittenHash<'_> {
 }
 impl FilePreparationObserver {
     pub(crate) fn attach_parent_public_resources(
-        &mut self, value: resume_origin::ParentPublicResources,
+        &mut self,
+        value: resume_origin::ParentPublicResources,
     ) -> Result<()> {
-        ensure!(!self.finished && self.parent_public_resources.is_none(),
-            "live parent resource envelope may be attached exactly once before observer close");
+        ensure!(
+            !self.finished && self.parent_public_resources.is_none(),
+            "live parent resource envelope may be attached exactly once before observer close"
+        );
         value.resources.validate()?;
         self.parent_public_resources = Some(value);
         Ok(())
@@ -88,14 +91,18 @@ impl FilePreparationObserver {
         &mut self,
         guard: std::sync::Arc<n2r_win32::managed_shadow::BackingResourceGuard>,
     ) -> Result<()> {
-        ensure!(self.backing_guard.is_none(), "backing resource owner already attached");
+        ensure!(
+            self.backing_guard.is_none(),
+            "backing resource owner already attached"
+        );
         guard.check_before_operation(0)?;
         self.backing_guard = Some(guard);
         Ok(())
     }
 
-    pub(crate) fn backing_resource_guard(&self)
-        -> Option<std::sync::Arc<n2r_win32::managed_shadow::BackingResourceGuard>> {
+    pub(crate) fn backing_resource_guard(
+        &self,
+    ) -> Option<std::sync::Arc<n2r_win32::managed_shadow::BackingResourceGuard>> {
         self.backing_guard.clone()
     }
 
@@ -287,12 +294,17 @@ impl FilePreparationObserver {
     pub(crate) fn ram_bytes(&self) -> u64 {
         self.ram_bytes
     }
-    pub(crate) fn enable_durable_preparation_cancellation(&mut self)->Result<()> {
-        ensure!(!self.finished&&self.preparation_pin.is_none(),"preparation cleanup policy must precede its new guard");
-        self.durable_preparation_cancellation=true;
+    pub(crate) fn enable_durable_preparation_cancellation(&mut self) -> Result<()> {
+        ensure!(
+            !self.finished && self.preparation_pin.is_none(),
+            "preparation cleanup policy must precede its new guard"
+        );
+        self.durable_preparation_cancellation = true;
         Ok(())
     }
-    pub(crate) fn preparation_pin(&self)->Option<early_guard::GuardPin>{self.preparation_pin.clone()}
+    pub(crate) fn preparation_pin(&self) -> Option<early_guard::GuardPin> {
+        self.preparation_pin.clone()
+    }
     pub(crate) fn maximum_bytes(&self) -> u64 {
         self.maximum_capacity
     }
@@ -460,19 +472,27 @@ impl PreparationObserver for FilePreparationObserver {
         FilePreparationObserver::progress_reporter(self)
     }
 
-    fn backing_resource_guard(&self)
-        -> Option<std::sync::Arc<n2r_win32::managed_shadow::BackingResourceGuard>> {
+    fn backing_resource_guard(
+        &self,
+    ) -> Option<std::sync::Arc<n2r_win32::managed_shadow::BackingResourceGuard>> {
         FilePreparationObserver::backing_resource_guard(self)
     }
 
     fn restore_source_on_pre_ap_failure(&self) -> bool {
         true
     }
-    fn prefer_durable_preparation_cancellation(&self)->bool {self.durable_preparation_cancellation}
-    fn remaining_scratch_reservation_bytes(&self)->u64 {self.remaining_reservation_bytes()}
-    fn preparation_created(&mut self,pin:&early_guard::GuardPin)->Result<()> {
-        ensure!(self.preparation_pin.is_none(),"observer already owns a preparation route");
-        self.preparation_pin=Some(pin.clone());
+    fn prefer_durable_preparation_cancellation(&self) -> bool {
+        self.durable_preparation_cancellation
+    }
+    fn remaining_scratch_reservation_bytes(&self) -> u64 {
+        self.remaining_reservation_bytes()
+    }
+    fn preparation_created(&mut self, pin: &early_guard::GuardPin) -> Result<()> {
+        ensure!(
+            self.preparation_pin.is_none(),
+            "observer already owns a preparation route"
+        );
+        self.preparation_pin = Some(pin.clone());
         Ok(())
     }
     fn native_events(&mut self, phase: &'static str, events: &mut Vec<NativeEvent>) -> Result<()> {

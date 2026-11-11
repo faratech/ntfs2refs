@@ -472,7 +472,10 @@ fn query(
         // Continue the SAME enumeration within its existing total deadline;
         // only WBEM_S_FALSE proves complete coverage.
         if hr == 0x0004_0004 && count == 0 {
-            need(object.is_none(), "WMI timeout returned an unexpected object")?;
+            need(
+                object.is_none(),
+                "WMI timeout returned an unexpected object",
+            )?;
             continue;
         }
         let last_row = hr == 1;
@@ -608,20 +611,20 @@ pub(in crate::native) fn selected_from_physical_layout(
         "selected-physical-layout",
         events,
     )?;
-    selected_from_held_physical_layout(binding,budget,&file,events)
+    selected_from_held_physical_layout(binding, budget, &file, events)
 }
 
 /// Requery the selected physical identity/layout through the caller's actual
 /// retained FileObject. An exclusive cancellation owner must not be forced
 /// to open a second alias of its own device merely to collect readonly roles.
 pub(in crate::native) fn selected_from_held_physical_layout(
-    binding:&PartitionSourceBinding,
-    budget:PartitionObservationBudget,
-    file:&std::fs::File,
-    events:&mut Vec<NativeEvent>,
-) -> io::Result<(Vec<u8>,Vec<u8>)> {
-    let storage=&binding.storage;
-    let id=&storage.identity;
+    binding: &PartitionSourceBinding,
+    budget: PartitionObservationBudget,
+    file: &std::fs::File,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<(Vec<u8>, Vec<u8>)> {
+    let storage = &binding.storage;
+    let id = &storage.identity;
     let device = control(
         file,
         "storage-role-selected-physical-device",
@@ -764,14 +767,25 @@ pub(super) fn observe_partition_storage_roles(
 pub(super) fn observe_detached_windows_storage_roles(
     binding: &PartitionSourceBinding,
     budget: PartitionObservationBudget,
-    held_selected_disk:&std::fs::File,
+    held_selected_disk: &std::fs::File,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<PartitionStorageRoleObservation> {
-    let facts = observe_partition_storage_roles_impl(binding, budget, events, true, Some(held_selected_disk))?;
-    need(facts.current_windows.role.disk_number != binding.storage.disk_number
-        && facts.critical_partitions.iter().any(|p| p.role.is_system)
-        && facts.critical_partitions.iter().all(|p| p.role.disk_number != binding.storage.disk_number),
-        "offline Windows source disk contains a current boot/system role or the system role is unknown")?;
+    let facts = observe_partition_storage_roles_impl(
+        binding,
+        budget,
+        events,
+        true,
+        Some(held_selected_disk),
+    )?;
+    need(
+        facts.current_windows.role.disk_number != binding.storage.disk_number
+            && facts.critical_partitions.iter().any(|p| p.role.is_system)
+            && facts
+                .critical_partitions
+                .iter()
+                .all(|p| p.role.disk_number != binding.storage.disk_number),
+        "offline Windows source disk contains a current boot/system role or the system role is unknown",
+    )?;
     Ok(facts)
 }
 
@@ -780,15 +794,19 @@ fn observe_partition_storage_roles_impl(
     budget: PartitionObservationBudget,
     events: &mut Vec<NativeEvent>,
     detached_windows: bool,
-    held_selected_disk:Option<&std::fs::File>,
+    held_selected_disk: Option<&std::fs::File>,
 ) -> io::Result<PartitionStorageRoleObservation> {
     binding.validate()?;
     budget.validate()?;
     need(events.len() < 112, "Storage role event workspace exhausted")?;
     // A larger resource allowance must not invalidate a small, complete catalog.
     // Bound the workspace, then let query() refuse any additional actual row.
-    let maximum = usize::try_from((budget.gpt_entry_bytes / 128).min(budget.ram_bytes / 8192).min(8192))
-        .map_err(io::Error::other)?;
+    let maximum = usize::try_from(
+        (budget.gpt_entry_bytes / 128)
+            .min(budget.ram_bytes / 8192)
+            .min(8192),
+    )
+    .map_err(io::Error::other)?;
     need(
         maximum > 0 && maximum <= 8192,
         "Storage role catalog budget invalid",
@@ -821,8 +839,8 @@ fn observe_partition_storage_roles_impl(
             "WMI selected partition number names a different GUID",
         )?;
         let (target, native_layout) = match held_selected_disk {
-            Some(file)=>selected_from_held_physical_layout(binding,budget,file,events)?,
-            None=>selected_from_physical_layout(binding,budget,events)?,
+            Some(file) => selected_from_held_physical_layout(binding, budget, file, events)?,
+            None => selected_from_physical_layout(binding, budget, events)?,
         };
         need(
             target.len() == 144
@@ -847,14 +865,20 @@ fn observe_partition_storage_roles_impl(
             )?;
         } else {
             let detached_offline = if detached_windows {
-                let disk=held_selected_disk.ok_or_else(||invalid("detached Windows roles require the actual held physical device"))?;
+                let disk = held_selected_disk.ok_or_else(|| {
+                    invalid("detached Windows roles require the actual held physical device")
+                })?;
                 super::attributes(disk, events)? & 1 != 0
-            } else { false };
+            } else {
+                false
+            };
             need(
                 target[32..48] == layout::guid_bytes("b627aadb-a893-48b6-aa0b-71e5f30ee370")?
                     || detached_offline
-                        && binding.storage.layout_profile == crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows
-                        && target[32..48] == layout::guid_bytes("ebd0a0a2-b9e5-4433-87c0-68b6b72699c7")?,
+                        && binding.storage.layout_profile
+                            == crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+                        && target[32..48]
+                            == layout::guid_bytes("ebd0a0a2-b9e5-4433-87c0-68b6b72699c7")?,
                 "Selected Basic partition missing from complete live catalog",
             )?;
         }
@@ -889,8 +913,8 @@ fn observe_partition_storage_roles_impl(
             "Storage role catalog/Windows binding changed across native queries",
         )?;
         let (closing_target, closing_layout) = match held_selected_disk {
-            Some(file)=>selected_from_held_physical_layout(binding,budget,file,events)?,
-            None=>selected_from_physical_layout(binding,budget,events)?,
+            Some(file) => selected_from_held_physical_layout(binding, budget, file, events)?,
+            None => selected_from_physical_layout(binding, budget, events)?,
         };
         need(
             closing_target == target && closing_layout == native_layout,

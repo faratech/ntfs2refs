@@ -103,13 +103,13 @@ fn main() -> anyhow::Result<()> {
         pair: GeneralSourceShadowBinding {
             source: GeneralDiskBinding {
                 layout_profile: Default::default(),
-            disk_number: old.source.disk_number,
+                disk_number: old.source.disk_number,
                 volume_guid: old.source.volume_guid,
                 identity: old.source.identity,
             },
             shadow: GeneralDiskBinding {
                 layout_profile: Default::default(),
-            disk_number: old.shadow.disk_number,
+                disk_number: old.shadow.disk_number,
                 volume_guid: old.shadow.volume_guid,
                 identity: old.shadow.identity,
             },
@@ -118,7 +118,7 @@ fn main() -> anyhow::Result<()> {
         journal: GeneralJournalStorageBinding {
             disk: GeneralDiskBinding {
                 layout_profile: Default::default(),
-            disk_number: old.journal.disk_number,
+                disk_number: old.journal.disk_number,
                 volume_guid: old.journal.volume_guid,
                 identity: old.journal.identity,
             },

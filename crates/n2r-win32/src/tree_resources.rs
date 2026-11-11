@@ -180,8 +180,15 @@ impl SourceResourceAdmission {
         data_streams: u64,
         budget: ResourceBudget,
     ) -> io::Result<Self> {
-        let mut value = Self::new(source_inspection_sha256, mft_records, raw_identities,
-            files, directories, data_streams, budget)?;
+        let mut value = Self::new(
+            source_inspection_sha256,
+            mft_records,
+            raw_identities,
+            files,
+            directories,
+            data_streams,
+            budget,
+        )?;
         value.schema_version = 2;
         value.native_pages = budget.windows_native_page_budget()?;
         value.validate()?;

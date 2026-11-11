@@ -20,8 +20,13 @@ const WAIT_MILLISECONDS: u64 = 120_000;
 const MAX_COMMAND_BYTES: usize = 96;
 
 pub(super) fn require_nonce(nonce: &str) -> Result<()> {
-    ensure!(nonce.len() == 64 && nonce.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
-        "controlled pause requires an independently chosen canonical64-hex nonce");
+    ensure!(
+        nonce.len() == 64
+            && nonce
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        "controlled pause requires an independently chosen canonical64-hex nonce"
+    );
     Ok(())
 }
 
@@ -30,7 +35,8 @@ fn continue_command(expected: &str) -> std::result::Result<(), String> {
     let mut input = stdin.lock();
     let mut bytes = [0u8; MAX_COMMAND_BYTES];
     for at in 0..MAX_COMMAND_BYTES {
-        input.read_exact(&mut bytes[at..at + 1])
+        input
+            .read_exact(&mut bytes[at..at + 1])
             .map_err(|error| format!("controlled Continue input failed: {error}"))?;
         if bytes[at] == b'\n' {
             return if &bytes[..=at] == expected.as_bytes() {
@@ -66,8 +72,13 @@ pub(super) fn wait(
     // stdin read may remain until process exit; it cannot delay the worker.
     drop(reader);
     let began = Instant::now();
-    let now: u64 = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis().try_into()?;
-    let deadline = now.checked_add(WAIT_MILLISECONDS).context("pause deadline overflow")?;
+    let now: u64 = SystemTime::now()
+        .duration_since(UNIX_EPOCH)?
+        .as_millis()
+        .try_into()?;
+    let deadline = now
+        .checked_add(WAIT_MILLISECONDS)
+        .context("pause deadline overflow")?;
     let ready = serde_json::json!({
         "kind":"partition-postflush-controlled-pause-ready-v1",
         "pid":std::process::id(),"nonce":nonce,"pause_started_unix_ms":now,
@@ -81,7 +92,11 @@ pub(super) fn wait(
         "first_flushed_write_qualified":false,"physical_power_loss_qualified":false
     });
     observer.lock()?.record(&ready)?;
-    save(&output.join("control/postflush-pause-ready.json"), &ready, 512 * 1024)?;
+    save(
+        &output.join("control/postflush-pause-ready.json"),
+        &ready,
+        512 * 1024,
+    )?;
     let limit = Duration::from_millis(WAIT_MILLISECONDS);
     let outcome = match receive.recv_timeout(limit.saturating_sub(began.elapsed())) {
         Ok(Ok(())) => "nonce-bound-Continue",
@@ -116,6 +131,10 @@ pub(super) fn wait(
         "source_or_recovery_authority_from_command":false
     });
     observer.lock()?.record(&released)?;
-    save(&output.join("control/postflush-pause-released.json"), &released, 16 * 1024)?;
+    save(
+        &output.join("control/postflush-pause-released.json"),
+        &released,
+        16 * 1024,
+    )?;
     Ok(())
 }

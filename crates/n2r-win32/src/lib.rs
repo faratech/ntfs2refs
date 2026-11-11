@@ -9,9 +9,9 @@
 pub const MAX_BATCH_EVENTS: usize = 1024;
 pub mod attestation;
 #[cfg(windows)]
-pub mod attestation_partition;
-#[cfg(windows)]
 mod attestation_native;
+#[cfg(windows)]
+pub mod attestation_partition;
 pub mod bitmap_layout;
 #[cfg(windows)]
 mod bitmap_observation;
@@ -50,11 +50,6 @@ pub mod layout;
 #[cfg(windows)]
 pub mod layout_residual_pages;
 pub mod logical_hash;
-pub mod perf;
-#[cfg(windows)]
-pub(crate) mod query_scratch;
-pub mod stack_sampler;
-pub mod progress;
 #[cfg(windows)]
 pub mod managed_shadow;
 #[cfg(windows)]
@@ -66,29 +61,32 @@ mod namespace_native;
 pub mod ntfs_preparation;
 #[cfg(windows)]
 pub mod observation_pages;
+pub mod perf;
 #[cfg(windows)]
 pub mod preparation_shadow;
 #[cfg(windows)]
 pub mod process_io;
+pub mod progress;
 #[cfg(windows)]
-pub use native::recovery_image;
+pub(crate) mod query_scratch;
+pub mod stack_sampler;
 #[cfg(windows)]
 pub use native::recovery_boot;
+#[cfg(windows)]
+pub use native::recovery_image;
 pub mod reference_file;
 #[cfg(windows)]
 pub mod reference_import;
+pub mod refs_security_descriptor;
 pub mod region_layout;
 pub mod reparse_layout;
 #[cfg(windows)]
 pub mod reparse_native;
 #[cfg(windows)]
-pub mod windows_alias_native;
-#[cfg(windows)]
 pub mod resource_native;
 pub mod retention_layout;
 pub mod retrieval_paging;
 pub mod security_descriptor;
-pub mod refs_security_descriptor;
 #[cfg(windows)]
 pub mod sha256_native;
 #[cfg(windows)]
@@ -105,6 +103,8 @@ mod stream_native;
 pub mod tree_resources;
 #[cfg(windows)]
 pub mod txf_native;
+#[cfg(windows)]
+pub mod windows_alias_native;
 #[cfg(windows)]
 pub mod windows_txf;
 #[cfg(windows)]
@@ -125,42 +125,46 @@ pub use attestation_native::collect_file_metadata;
 #[cfg(windows)]
 mod native;
 #[cfg(windows)]
-pub use native::partition_isolation;
-#[cfg(windows)]
 pub use native::BootStorageHintNormalization;
 #[cfg(windows)]
+pub use native::PartitionMixedReplayGate;
+#[cfg(windows)]
+pub use native::PartitionTerminalNativeObservation;
+#[cfg(windows)]
 pub use native::offline_environment;
+#[cfg(windows)]
+pub use native::partition_isolation;
 #[cfg(windows)]
 pub use native::partition_lifecycle;
 #[cfg(windows)]
 pub use native::partition_restoration;
 #[cfg(windows)]
-pub use native::PartitionTerminalNativeObservation;
-#[cfg(windows)]
-pub use native::{PartitionOwnerState, PartitionOwnerToken, PartitionScopedOwner};
-#[cfg(windows)]
-pub use native::PartitionMixedReplayGate;
-#[cfg(windows)]
-pub use native::{PartitionClosedJournalObservation, PartitionHandoffWitness,
-    PartitionJournalReadView, PartitionPagedWriter, PartitionSourceAdmissionGate,
-    PartitionTerminalKind, authenticate_partition_closed_journal};
+pub use native::{
+    BorrowedPagedWriter, DriveLetterRestore, GeneralAllocationFreezeWitness,
+    GeneralAllocationPhase, GeneralAllocationSnapshot, GeneralDiskState,
+    GeneralExclusiveRecoveryTarget, GeneralFreezeObservation, GeneralFrozenLane,
+    GeneralFrozenPartition, GeneralFrozenSourceReadScope, GeneralJournalReadView,
+    GeneralJournaledPartition, GeneralLiveConvertedObservation, GeneralLiveNtfsObservation,
+    GeneralLivePagedNtfsObservation, GeneralLiveRefsLayoutObservation, GeneralLiveRefsObservation,
+    GeneralLockedPartition, GeneralPartitionReader, GeneralProbe, GeneralReadonlyAllocationWitness,
+    HeldPagedWritePolicy, LiveNtfsObservation, MountPathObservation, NativeEvent,
+    NativeSourceObservationOrigin, OfflinePartition, PagedPolicyIndexBuilder,
+    PagedPolicyIndexFacts, PagedPolicyIndexRow, PagedRecoveryDirection, PagedRecoveryPins,
+    PartitionSnapshot, SourceCacheContinuity, SourceCacheFingerprintDomain,
+    SourceCacheFingerprintMismatch, SourceCacheRefreshDomain, SourceCacheRefreshRow, WritePolicy,
+    capture_mount_paths_for_journal, capture_mount_paths_general, current_windows_directory,
+    mounted_filesystem_general, note_selected_new_bytes_verified,
+    observe_general_disk_state_readonly, probe_general, rediscover_general_volume,
+    rediscover_general_volume_wait, restore_drive_letter_general, selected_new_bytes_verified,
+};
 #[cfg(windows)]
 pub use native::{
-    BorrowedPagedWriter, DriveLetterRestore, GeneralAllocationFreezeWitness, GeneralAllocationPhase,
-    SourceCacheContinuity, SourceCacheFingerprintDomain, NativeSourceObservationOrigin,
-    SourceCacheFingerprintMismatch, SourceCacheRefreshDomain, SourceCacheRefreshRow,
-    GeneralAllocationSnapshot, GeneralDiskState, GeneralExclusiveRecoveryTarget,
-    GeneralFreezeObservation, GeneralFrozenLane, GeneralFrozenPartition, GeneralFrozenSourceReadScope, GeneralJournalReadView,
-    GeneralJournaledPartition, GeneralLiveConvertedObservation, GeneralLiveNtfsObservation, GeneralLivePagedNtfsObservation,
-    GeneralLiveRefsLayoutObservation, GeneralLiveRefsObservation, GeneralLockedPartition,
-    GeneralPartitionReader, GeneralProbe, GeneralReadonlyAllocationWitness, HeldPagedWritePolicy,
-    LiveNtfsObservation, MountPathObservation, NativeEvent, OfflinePartition,
-    PagedPolicyIndexBuilder, PagedPolicyIndexFacts, PagedPolicyIndexRow, PagedRecoveryDirection,
-    PagedRecoveryPins, PartitionSnapshot,
-    WritePolicy, capture_mount_paths_for_journal, capture_mount_paths_general, mounted_filesystem_general,
-    observe_general_disk_state_readonly, probe_general, current_windows_directory, rediscover_general_volume,
-    rediscover_general_volume_wait, restore_drive_letter_general, note_selected_new_bytes_verified, selected_new_bytes_verified,
+    PartitionClosedJournalObservation, PartitionHandoffWitness, PartitionJournalReadView,
+    PartitionPagedWriter, PartitionSourceAdmissionGate, PartitionTerminalKind,
+    authenticate_partition_closed_journal,
 };
+#[cfg(windows)]
+pub use native::{PartitionOwnerState, PartitionOwnerToken, PartitionScopedOwner};
 
 #[cfg(windows)]
 pub mod windows_boot_geometry;

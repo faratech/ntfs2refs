@@ -243,8 +243,10 @@ pub fn binding_from_evidence(
     let binding = GeneralDiskBinding {
         layout_profile: if role == Role::OfflineWindowsSource {
             crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows
-        } else { Default::default() },
-            disk_number: number,
+        } else {
+            Default::default()
+        },
+        disk_number: number,
         volume_guid: guid.to_ascii_lowercase(),
         identity: PartitionIdentity {
             disk_guid: guid_text(&raw[8..24])?,

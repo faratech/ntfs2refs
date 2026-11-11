@@ -13,11 +13,11 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+mod bcd_device;
 mod cold;
 mod fat;
 mod metadata;
 mod native;
-mod bcd_device;
 mod offreg;
 pub use cold::{RecoveryBootGuard, RecoveryBootGuardFacts, RecoveryBootRestorationReceipt};
 use metadata::{EfiIdentity, StorePin};
@@ -128,67 +128,134 @@ const BCD_DISPLAY_ORDER: u32 = 0x2400_0001;
 const BCD_TIMEOUT: u32 = 0x2500_0004;
 const BCD_BOOT_SEQUENCE: u32 = 0x2400_0002;
 const BCD_LOAD_OPTIONS: u32 = 0x1200_0030;
-fn encoded_string(value:&str,terminators:u32) -> Vec<u8> {
-    value.encode_utf16().chain(std::iter::repeat_n(0,terminators as usize))
-        .flat_map(u16::to_le_bytes).collect()
+fn encoded_string(value: &str, terminators: u32) -> Vec<u8> {
+    value
+        .encode_utf16()
+        .chain(std::iter::repeat_n(0, terminators as usize))
+        .flat_map(u16::to_le_bytes)
+        .collect()
 }
-fn decoded_guid_units(units:&[u16]) -> io::Result<String> {
-    need(units.len()==38 && !units.contains(&0),"BCD native GUID string width differs")?;
+fn decoded_guid_units(units: &[u16]) -> io::Result<String> {
+    need(
+        units.len() == 38 && !units.contains(&0),
+        "BCD native GUID string width differs",
+    )?;
     canonical_guid(&String::from_utf16(units).map_err(io::Error::other)?)
 }
-fn decoded_guid(value:&offreg::OfflineBcdElement) -> io::Result<String> {
-    need(value.registry_type==1 && value.bytes.len()==78 && value.bytes[76..]==[0,0],
-        "BCD object reference must be native REG_SZ GUID38 plus NUL")?;
-    let units:Vec<_>=value.bytes[..76].chunks_exact(2).map(|v|u16::from_le_bytes([v[0],v[1]])).collect();
+fn decoded_guid(value: &offreg::OfflineBcdElement) -> io::Result<String> {
+    need(
+        value.registry_type == 1 && value.bytes.len() == 78 && value.bytes[76..] == [0, 0],
+        "BCD object reference must be native REG_SZ GUID38 plus NUL",
+    )?;
+    let units: Vec<_> = value.bytes[..76]
+        .chunks_exact(2)
+        .map(|v| u16::from_le_bytes([v[0], v[1]]))
+        .collect();
     decoded_guid_units(&units)
 }
-fn decoded_guid_list(value:&offreg::OfflineBcdElement) -> io::Result<Vec<String>> {
-    need(value.registry_type==7 && value.bytes.len()>=4 && value.bytes.len()%2==0
-        && value.bytes[value.bytes.len()-4..]==[0,0,0,0],
-        "BCD object list must be native double-NUL REG_MULTI_SZ")?;
-    let units:Vec<_>=value.bytes[..value.bytes.len()-4].chunks_exact(2)
-        .map(|v|u16::from_le_bytes([v[0],v[1]])).collect();
-    units.split(|v|*v==0).map(decoded_guid_units).collect()
+fn decoded_guid_list(value: &offreg::OfflineBcdElement) -> io::Result<Vec<String>> {
+    need(
+        value.registry_type == 7
+            && value.bytes.len() >= 4
+            && value.bytes.len() % 2 == 0
+            && value.bytes[value.bytes.len() - 4..] == [0, 0, 0, 0],
+        "BCD object list must be native double-NUL REG_MULTI_SZ",
+    )?;
+    let units: Vec<_> = value.bytes[..value.bytes.len() - 4]
+        .chunks_exact(2)
+        .map(|v| u16::from_le_bytes([v[0], v[1]]))
+        .collect();
+    units.split(|v| *v == 0).map(decoded_guid_units).collect()
 }
-fn decoded_integer(value:&offreg::OfflineBcdElement) -> io::Result<u64> {
-    need(value.registry_type==3 && value.bytes.len()==8,
-        "BCD integer must be native REG_BINARY u64LE8")?;
-    Ok(u64::from_le_bytes(value.bytes.as_slice().try_into().map_err(io::Error::other)?))
+fn decoded_integer(value: &offreg::OfflineBcdElement) -> io::Result<u64> {
+    need(
+        value.registry_type == 3 && value.bytes.len() == 8,
+        "BCD integer must be native REG_BINARY u64LE8",
+    )?;
+    Ok(u64::from_le_bytes(
+        value
+            .bytes
+            .as_slice()
+            .try_into()
+            .map_err(io::Error::other)?,
+    ))
 }
-fn element<'a>(object:&'a offreg::OfflineBcdObject,id:u32)->io::Result<&'a offreg::OfflineBcdElement> {
-    object.elements.get(&id).ok_or_else(||bad(&format!("required encoded BCD element 0x{id:08x} absent")))
+fn element<'a>(
+    object: &'a offreg::OfflineBcdObject,
+    id: u32,
+) -> io::Result<&'a offreg::OfflineBcdElement> {
+    object
+        .elements
+        .get(&id)
+        .ok_or_else(|| bad(&format!("required encoded BCD element 0x{id:08x} absent")))
 }
-fn verify_original_mutable_encoding(object:&offreg::OfflineBcdObject,original:&Selection) -> io::Result<()> {
-    let timeout=original.timeout.parse::<u64>().map_err(io::Error::other)?;
-    need(decoded_guid(element(object,BCD_DEFAULT)?)?==original.default
-        && decoded_guid_list(element(object,BCD_DISPLAY_ORDER)?)?==original.displayorder
-        && decoded_integer(element(object,BCD_TIMEOUT)?)?==timeout
-        && !object.elements.contains_key(&BCD_BOOT_SEQUENCE),
-        "native original BCD raw default/order/timeout/sequence encoding differs")
+fn verify_original_mutable_encoding(
+    object: &offreg::OfflineBcdObject,
+    original: &Selection,
+) -> io::Result<()> {
+    let timeout = original.timeout.parse::<u64>().map_err(io::Error::other)?;
+    need(
+        decoded_guid(element(object, BCD_DEFAULT)?)? == original.default
+            && decoded_guid_list(element(object, BCD_DISPLAY_ORDER)?)? == original.displayorder
+            && decoded_integer(element(object, BCD_TIMEOUT)?)? == timeout
+            && !object.elements.contains_key(&BCD_BOOT_SEQUENCE),
+        "native original BCD raw default/order/timeout/sequence encoding differs",
+    )
 }
-fn verify_encoded_cold_objects(original:&offreg::OfflineBcdObject,current:&offreg::OfflineBcdObject,
-    loader:&offreg::OfflineBcdObject,options:&offreg::OfflineBcdObject,
-    intent:&BootIntent,intent_sha:[u8;32]) -> io::Result<()> {
-    verify_original_mutable_encoding(original,&intent.original)?;
-    let mut expected=original.clone();
-    let mut unrelated=current.clone();
-    for id in [BCD_DEFAULT,BCD_DISPLAY_ORDER,BCD_TIMEOUT] {
-        expected.elements.remove(&id);unrelated.elements.remove(&id);
+fn verify_encoded_cold_objects(
+    original: &offreg::OfflineBcdObject,
+    current: &offreg::OfflineBcdObject,
+    loader: &offreg::OfflineBcdObject,
+    options: &offreg::OfflineBcdObject,
+    intent: &BootIntent,
+    intent_sha: [u8; 32],
+) -> io::Result<()> {
+    verify_original_mutable_encoding(original, &intent.original)?;
+    let mut expected = original.clone();
+    let mut unrelated = current.clone();
+    for id in [BCD_DEFAULT, BCD_DISPLAY_ORDER, BCD_TIMEOUT] {
+        expected.elements.remove(&id);
+        unrelated.elements.remove(&id);
     }
-    need(unrelated==expected && decoded_guid(element(current,BCD_DEFAULT)?)?==intent.loader
-        && decoded_guid_list(element(current,BCD_DISPLAY_ORDER)?)?==std::slice::from_ref(&intent.loader)
-        && decoded_integer(element(current,BCD_TIMEOUT)?)?==0 && !current.elements.contains_key(&BCD_BOOT_SEQUENCE),
-        "actual encoded BootMgr selection or unrelated complete elements changed")?;
-    let private=intent.private_encoded_objects.as_ref()
-        .ok_or_else(||bad("native-boot-pinned private encoded objects absent"))?;
-    let mut expected_loader=private.loader.clone();
-    need(expected_loader.elements.get(&BCD_LOAD_OPTIONS)==Some(&offreg::OfflineBcdElement {
-        registry_type:1,bytes:encoded_string(&load_options([0u8;32],bootstrap_pin(intent)?),private.loadoptions_terminators) }),
-        "sealed native-created private loadoptions template differs")?;
-    expected_loader.elements.insert(BCD_LOAD_OPTIONS,offreg::OfflineBcdElement { registry_type:1,
-        bytes:encoded_string(&load_options(intent_sha,bootstrap_pin(intent)?),private.loadoptions_terminators) });
-    need(*loader==expected_loader && *options==private.options,
-        "actual complete private loader/ramdisk elements differ from native-created sealed maps")
+    need(
+        unrelated == expected
+            && decoded_guid(element(current, BCD_DEFAULT)?)? == intent.loader
+            && decoded_guid_list(element(current, BCD_DISPLAY_ORDER)?)?
+                == std::slice::from_ref(&intent.loader)
+            && decoded_integer(element(current, BCD_TIMEOUT)?)? == 0
+            && !current.elements.contains_key(&BCD_BOOT_SEQUENCE),
+        "actual encoded BootMgr selection or unrelated complete elements changed",
+    )?;
+    let private = intent
+        .private_encoded_objects
+        .as_ref()
+        .ok_or_else(|| bad("native-boot-pinned private encoded objects absent"))?;
+    let mut expected_loader = private.loader.clone();
+    need(
+        expected_loader.elements.get(&BCD_LOAD_OPTIONS)
+            == Some(&offreg::OfflineBcdElement {
+                registry_type: 1,
+                bytes: encoded_string(
+                    &load_options([0u8; 32], bootstrap_pin(intent)?),
+                    private.loadoptions_terminators,
+                ),
+            }),
+        "sealed native-created private loadoptions template differs",
+    )?;
+    expected_loader.elements.insert(
+        BCD_LOAD_OPTIONS,
+        offreg::OfflineBcdElement {
+            registry_type: 1,
+            bytes: encoded_string(
+                &load_options(intent_sha, bootstrap_pin(intent)?),
+                private.loadoptions_terminators,
+            ),
+        },
+    );
+    need(
+        *loader == expected_loader && *options == private.options,
+        "actual complete private loader/ramdisk elements differ from native-created sealed maps",
+    )
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct ImagePin {
@@ -317,7 +384,8 @@ impl OwnedRecoveryBoot {
             "UEFI Windows Boot Manager must already be first with no one-shot sequence",
         )?;
         native::flush_system_bcd_with_events(events)?;
-        let original_store = metadata::capture_active_store(&efi, budget, &tool, directory, events)?;
+        let original_store =
+            metadata::capture_active_store(&efi, budget, &tool, directory, events)?;
         let backup_path = directory.join("original-system-store.bcd");
         tool.export_owned_store(directory)?;
         let backup_sha256 = metadata::hash_external(
@@ -330,15 +398,25 @@ impl OwnedRecoveryBoot {
             image.journal_binding(),
             budget.maximum_store_bytes,
         )?;
-        let library_pin = image.artifact_pins().iter()
+        let library_pin = image
+            .artifact_pins()
+            .iter()
             .find(|p| p.role == "offline-registry-library")
             .ok_or_else(|| bad("owned image offline registry library absent"))?;
         let offline_registry = bcd_device::OfflineRegistryLibrary::open_sealed_journal(
-            &library_pin.path, library_pin.sha256, &library_pin.snapshot, image.journal_binding(), budget)?;
-        let original_encoded = bcd_device::observe_object(&backup_path,BOOTMGR,&offline_registry,budget,events)?;
-        need(original_encoded.file_sha256 == backup_sha256,
-            "original native BCD backup differs during encoded observation")?;
-        verify_original_mutable_encoding(&original_encoded.object,&original)?;
+            &library_pin.path,
+            library_pin.sha256,
+            &library_pin.snapshot,
+            image.journal_binding(),
+            budget,
+        )?;
+        let original_encoded =
+            bcd_device::observe_object(&backup_path, BOOTMGR, &offline_registry, budget, events)?;
+        need(
+            original_encoded.file_sha256 == backup_sha256,
+            "original native BCD backup differs during encoded observation",
+        )?;
+        verify_original_mutable_encoding(&original_encoded.object, &original)?;
         let marker =
             metadata::read_external(image.origin_marker_path(), image.journal_binding(), 65536)?;
         need(
@@ -460,37 +538,75 @@ impl OwnedRecoveryBoot {
         tool.set(
             &loader,
             "loadoptions",
-            &load_options([0u8;32], bootstrap_pin(&intent)?),
+            &load_options([0u8; 32], bootstrap_pin(&intent)?),
             directory,
         )?;
         image.revalidate()?;
         // Capture exact native-created private object elements before the
         // guard-intent hash. Only LoadOptions' fixed-width self-hash changes.
-        verify_loader(&tool.enum_object(None,&loader,directory)?,&intent,[0u8;32])?;
-        let warm_options = tool.enum_object(None,&ramdisk_options,directory)?;
-        cold::verify_cold_options(&warm_options,&intent)?;
+        verify_loader(
+            &tool.enum_object(None, &loader, directory)?,
+            &intent,
+            [0u8; 32],
+        )?;
+        let warm_options = tool.enum_object(None, &ramdisk_options, directory)?;
+        cold::verify_cold_options(&warm_options, &intent)?;
         native::flush_system_bcd_with_events(events)?;
-        let preselect = metadata::capture_active_store(&intent.efi, budget, &tool, directory, events)?;
+        let preselect =
+            metadata::capture_active_store(&intent.efi, budget, &tool, directory, events)?;
         let encoded_path = directory.join("private-encoded-before-guard.bcd");
-        let encoded_sha = metadata::raw_copy(&intent.efi,&preselect,&encoded_path,
-            budget.maximum_store_bytes,budget.maximum_control_bytes,events)?;
-        need(encoded_sha == preselect.sha256,"pre-guard private object copy differs from actual store")?;
-        let loader_encoded = bcd_device::observe_object(&encoded_path,&loader,&offline_registry,budget,events)?;
-        let options_encoded = bcd_device::observe_object(&encoded_path,&ramdisk_options,&offline_registry,budget,events)?;
-        need(loader_encoded.file_sha256 == encoded_sha && options_encoded.file_sha256 == encoded_sha,
-            "pre-guard native private object copy changed")?;
-        let placeholder = loader_encoded.object.elements.get(&BCD_LOAD_OPTIONS)
-            .ok_or_else(||bad("native-created private loadoptions element absent"))?;
-        let zero_options = load_options([0u8;32],bootstrap_pin(&intent)?);
-        need(placeholder.registry_type==1,"native private loadoptions must be REG_SZ")?;
-        let base=encoded_string(&zero_options,0);
-        let padding=placeholder.bytes.strip_prefix(base.as_slice())
-            .ok_or_else(||bad("native private loadoptions differs from exact placeholder UTF16"))?;
-        need(matches!(padding.len(),2|4) && padding.iter().all(|v|*v==0),
-            "native private loadoptions has unknown REG_SZ terminator format")?;
-        let loadoptions_terminators=(padding.len()/2) as u32;
+        let encoded_sha = metadata::raw_copy(
+            &intent.efi,
+            &preselect,
+            &encoded_path,
+            budget.maximum_store_bytes,
+            budget.maximum_control_bytes,
+            events,
+        )?;
+        need(
+            encoded_sha == preselect.sha256,
+            "pre-guard private object copy differs from actual store",
+        )?;
+        let loader_encoded =
+            bcd_device::observe_object(&encoded_path, &loader, &offline_registry, budget, events)?;
+        let options_encoded = bcd_device::observe_object(
+            &encoded_path,
+            &ramdisk_options,
+            &offline_registry,
+            budget,
+            events,
+        )?;
+        need(
+            loader_encoded.file_sha256 == encoded_sha && options_encoded.file_sha256 == encoded_sha,
+            "pre-guard native private object copy changed",
+        )?;
+        let placeholder = loader_encoded
+            .object
+            .elements
+            .get(&BCD_LOAD_OPTIONS)
+            .ok_or_else(|| bad("native-created private loadoptions element absent"))?;
+        let zero_options = load_options([0u8; 32], bootstrap_pin(&intent)?);
+        need(
+            placeholder.registry_type == 1,
+            "native private loadoptions must be REG_SZ",
+        )?;
+        let base = encoded_string(&zero_options, 0);
+        let padding = placeholder
+            .bytes
+            .strip_prefix(base.as_slice())
+            .ok_or_else(|| {
+                bad("native private loadoptions differs from exact placeholder UTF16")
+            })?;
+        need(
+            matches!(padding.len(), 2 | 4) && padding.iter().all(|v| *v == 0),
+            "native private loadoptions has unknown REG_SZ terminator format",
+        )?;
+        let loadoptions_terminators = (padding.len() / 2) as u32;
         intent.private_encoded_objects = Some(PrivateEncodedBootObjects {
-            loader: loader_encoded.object, options: options_encoded.object, loadoptions_terminators });
+            loader: loader_encoded.object,
+            options: options_encoded.object,
+            loadoptions_terminators,
+        });
         intent.guarded_store_map = Some(preselect.clone());
         intent.parent_original_intent_sha256 = Some(original_intent_sha256);
         let intent_path = directory.join("recovery-boot-guard-intent.json");
@@ -515,7 +631,8 @@ impl OwnedRecoveryBoot {
             &tool.enum_object(Some(&intent.efi.bcd_path), BOOTMGR, directory)?,
             &intent,
         )?;
-        let installed_store = metadata::capture_active_store(&intent.efi, budget, &tool, directory, events)?;
+        let installed_store =
+            metadata::capture_active_store(&intent.efi, budget, &tool, directory, events)?;
         need(
             installed_store.same_file_map(&preselect),
             "installed BCD physical mapping changed after immutable guard intent; no cold guard issued",
@@ -572,8 +689,16 @@ impl OwnedRecoveryBoot {
             &self.intent,
         )?;
         need(
-            metadata::capture_active_store(&self.intent.efi, self.budget, &tool, self.receipt.intent_path.parent().ok_or_else(||bad("boot directory absent"))?, events)?
-                == self.record.installed_store,
+            metadata::capture_active_store(
+                &self.intent.efi,
+                self.budget,
+                &tool,
+                self.receipt
+                    .intent_path
+                    .parent()
+                    .ok_or_else(|| bad("boot directory absent"))?,
+                events,
+            )? == self.record.installed_store,
             "actual installed boot bytes/mapping changed",
         )?;
         native::firmware(&self.intent.efi)?.require_same(&self.intent.firmware)
@@ -592,26 +717,37 @@ fn derived_guid(domain: &[u8], nonce: &str, bundle: [u8; 32]) -> io::Result<Stri
 // Private evidence from authenticated fresh owned copies, never a serialized
 // flag or rendered device alias. It grants no source/boot write authority.
 struct BootManagerDeviceProof {
-    original_store_sha256: [u8;32],
-    current_store_sha256: [u8;32],
-    element_sha256: [u8;32],
+    original_store_sha256: [u8; 32],
+    current_store_sha256: [u8; 32],
+    element_sha256: [u8; 32],
     element_bytes: u64,
 }
 impl BootManagerDeviceProof {
-    fn require_stores(&self, original:[u8;32], current:[u8;32]) -> io::Result<()> {
-        need(self.original_store_sha256==original&&self.current_store_sha256==current
-            &&self.element_bytes>0,"encoded BootMgr device proof belongs to another actual store epoch")
+    fn require_stores(&self, original: [u8; 32], current: [u8; 32]) -> io::Result<()> {
+        need(
+            self.original_store_sha256 == original
+                && self.current_store_sha256 == current
+                && self.element_bytes > 0,
+            "encoded BootMgr device proof belongs to another actual store epoch",
+        )
     }
 }
 fn verify_selection(fields: &BTreeMap<String, Vec<String>>, intent: &BootIntent) -> io::Result<()> {
-    verify_selection_inner(fields,intent,None)
+    verify_selection_inner(fields, intent, None)
 }
-fn verify_cold_selection(fields:&BTreeMap<String,Vec<String>>,intent:&BootIntent,
-    proof:&BootManagerDeviceProof,current:[u8;32]) -> io::Result<()> {
-    verify_selection_inner(fields,intent,Some((proof,current)))
+fn verify_cold_selection(
+    fields: &BTreeMap<String, Vec<String>>,
+    intent: &BootIntent,
+    proof: &BootManagerDeviceProof,
+    current: [u8; 32],
+) -> io::Result<()> {
+    verify_selection_inner(fields, intent, Some((proof, current)))
 }
-fn verify_selection_inner(fields: &BTreeMap<String, Vec<String>>, intent: &BootIntent,
-    device_proof:Option<(&BootManagerDeviceProof,[u8;32])>) -> io::Result<()> {
+fn verify_selection_inner(
+    fields: &BTreeMap<String, Vec<String>>,
+    intent: &BootIntent,
+    device_proof: Option<(&BootManagerDeviceProof, [u8; 32])>,
+) -> io::Result<()> {
     need(
         one(fields, "identifier")? == BOOTMGR
             && one(fields, "default")? == intent.loader
@@ -622,11 +758,13 @@ fn verify_selection_inner(fields: &BTreeMap<String, Vec<String>>, intent: &BootI
     )?;
     for (key, value) in &intent.original.all_fields {
         if !matches!(key.as_str(), "default" | "displayorder" | "timeout") {
-            if key=="device" {
-                if let Some((proof,current))=device_proof {
-                    need(value.len()==1&&fields.get(key).is_some_and(|v|v.len()==1),
-                        "BootMgr device element multiplicity changed")?;
-                    proof.require_stores(intent.backup_sha256,current)?;
+            if key == "device" {
+                if let Some((proof, current)) = device_proof {
+                    need(
+                        value.len() == 1 && fields.get(key).is_some_and(|v| v.len() == 1),
+                        "BootMgr device element multiplicity changed",
+                    )?;
+                    proof.require_stores(intent.backup_sha256, current)?;
                     continue;
                 }
             }
@@ -638,16 +776,28 @@ fn verify_selection_inner(fields: &BTreeMap<String, Vec<String>>, intent: &BootI
     }
     Ok(())
 }
-fn verify_original_selection(fields:&BTreeMap<String,Vec<String>>,intent:&BootIntent,
-    proof:&BootManagerDeviceProof,current:[u8;32]) -> io::Result<()> {
-    proof.require_stores(intent.backup_sha256,current)?;
-    need(!fields.contains_key("bootsequence"),"one-shot boot sequence appeared during restoration")?;
-    for (key,value) in &intent.original.all_fields {
-        if key=="device" {
-            need(value.len()==1&&fields.get(key).is_some_and(|v|v.len()==1),
-                "restored encoded BootMgr device multiplicity differs")?;
+fn verify_original_selection(
+    fields: &BTreeMap<String, Vec<String>>,
+    intent: &BootIntent,
+    proof: &BootManagerDeviceProof,
+    current: [u8; 32],
+) -> io::Result<()> {
+    proof.require_stores(intent.backup_sha256, current)?;
+    need(
+        !fields.contains_key("bootsequence"),
+        "one-shot boot sequence appeared during restoration",
+    )?;
+    for (key, value) in &intent.original.all_fields {
+        if key == "device" {
+            need(
+                value.len() == 1 && fields.get(key).is_some_and(|v| v.len() == 1),
+                "restored encoded BootMgr device multiplicity differs",
+            )?;
         } else {
-            need(fields.get(key)==Some(value),"restored original BootMgr field differs")?;
+            need(
+                fields.get(key) == Some(value),
+                "restored original BootMgr field differs",
+            )?;
         }
     }
     Ok(())
@@ -665,21 +815,36 @@ fn verify_loader(
             && one(fields, "systemroot")?.eq_ignore_ascii_case(r"\windows")
             && one(fields, "winpe")?.eq_ignore_ascii_case("Yes")
             && one(fields, "detecthal")?.eq_ignore_ascii_case("Yes")
-            && one(fields, "loadoptions")? == load_options(sha,bootstrap_pin(intent)?),
+            && one(fields, "loadoptions")? == load_options(sha, bootstrap_pin(intent)?),
         "actual private PE loader is not the sealed image/options/intent",
     )
 }
 
 /// Actual current kernel boot-options routing pin only; never write authority.
-pub fn current_recovery_intent_sha256()->io::Result<[u8;32]> {native::current_intent_sha()}
+pub fn current_recovery_intent_sha256() -> io::Result<[u8; 32]> {
+    native::current_intent_sha()
+}
 
 /// Actual current kernel bootstrap routing pin only; never source authority.
-pub fn current_recovery_bootstrap_sha256()->io::Result<[u8;32]>{native::current_bootstrap_sha()}
-fn bootstrap_pin(intent:&BootIntent)->io::Result<[u8;32]>{
-    let pins:Vec<_>=intent.image_pins.iter().filter(|p|p.role=="bootstrap").collect();
-    need(pins.len()==1,"exact owned recovery bootstrap artifact pin required")?;
+pub fn current_recovery_bootstrap_sha256() -> io::Result<[u8; 32]> {
+    native::current_bootstrap_sha()
+}
+fn bootstrap_pin(intent: &BootIntent) -> io::Result<[u8; 32]> {
+    let pins: Vec<_> = intent
+        .image_pins
+        .iter()
+        .filter(|p| p.role == "bootstrap")
+        .collect();
+    need(
+        pins.len() == 1,
+        "exact owned recovery bootstrap artifact pin required",
+    )?;
     Ok(pins[0].sha256)
 }
-fn load_options(intent:[u8;32],bootstrap:[u8;32])->String{
-    format!("N2RRECOVERYINTENT={} N2RRECOVERYBOOTSTRAP={}",hex::encode(intent),hex::encode(bootstrap))
+fn load_options(intent: [u8; 32], bootstrap: [u8; 32]) -> String {
+    format!(
+        "N2RRECOVERYINTENT={} N2RRECOVERYBOOTSTRAP={}",
+        hex::encode(intent),
+        hex::encode(bootstrap)
+    )
 }

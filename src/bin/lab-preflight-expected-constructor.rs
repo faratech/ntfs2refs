@@ -831,7 +831,9 @@ mod windows {
                 if n2r_win32::shadow_native::basic_input_allowed(&object.input()) {
                     Ok(())
                 } else {
-                    Err(std::io::Error::other("owning metadata input outside bounded source profile"))
+                    Err(std::io::Error::other(
+                        "owning metadata input outside bounded source profile",
+                    ))
                 },
             )?;
             if let Some(eas) = object.extended_attributes.as_ref() {

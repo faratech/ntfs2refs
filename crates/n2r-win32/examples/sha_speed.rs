@@ -31,5 +31,8 @@ fn main() {
         let hash = n2r_win32::sha256_native::Sha256::new().unwrap();
         let _ = hash.finish().unwrap();
     }
-    println!("2000 CNG hash objects opened and finished in {:.2} s", started.elapsed().as_secs_f64());
+    println!(
+        "2000 CNG hash objects opened and finished in {:.2} s",
+        started.elapsed().as_secs_f64()
+    );
 }

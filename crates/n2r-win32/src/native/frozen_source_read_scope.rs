@@ -3,14 +3,15 @@
 //! capability is exposed. Full critical-role checks bracket the entire scope;
 //! every inner state check still reads exact geometry/GPT/exclusion natively.
 use super::{
-    GeneralDiskState, GeneralFrozenPartition, NativeEvent,
-    general_disk_state_held_geometry,
+    GeneralDiskState, GeneralFrozenPartition, NativeEvent, general_disk_state_held_geometry,
 };
 use crate::{
-    general_layout::GeneralDiskBinding,
-    shadow_native::report_memory::ReportMemoryAccountant,
+    general_layout::GeneralDiskBinding, shadow_native::report_memory::ReportMemoryAccountant,
 };
-use std::{cell::Cell, io::{self, Read, Seek, SeekFrom}};
+use std::{
+    cell::Cell,
+    io::{self, Read, Seek, SeekFrom},
+};
 
 // Same already-accounted role/control workspace bound as the existing
 // frozen_shadow_source_query witness. This is paid before either full fence.
@@ -34,47 +35,64 @@ pub struct GeneralFrozenSourceReadScope<'source> {
     poisoned: Cell<bool>,
 }
 impl GeneralFrozenSourceReadScope<'_> {
-    pub fn binding(&self) -> &GeneralDiskBinding { self.source.binding() }
-    pub fn byte_len(&self) -> u64 { self.source.byte_len() }
+    pub fn binding(&self) -> &GeneralDiskBinding {
+        self.source.binding()
+    }
+    pub fn byte_len(&self) -> u64 {
+        self.source.byte_len()
+    }
     /// Descriptive identity of the actual original owner, never a capability.
     pub fn original_owner_identity(&self) -> usize {
         std::ptr::from_ref(&*self.source) as usize
     }
     pub fn state(&self, events: &mut Vec<NativeEvent>) -> io::Result<GeneralDiskState> {
         if self.poisoned.get() {
-            return Err(io::Error::other("failed frozen source read scope cannot validate"));
+            return Err(io::Error::other(
+                "failed frozen source read scope cannot validate",
+            ));
         }
         let _timed = crate::perf::scope(crate::perf::Point::ReadProtection);
         let result = native_step(events, |batch| {
-            let actual = general_disk_state_held_geometry(
-                &self.source.file, &self.source.binding, batch,
-            )?;
+            let actual =
+                general_disk_state_held_geometry(&self.source.file, &self.source.binding, batch)?;
             if actual != self.source.frozen_state || actual.disk_attributes != 3 {
-                return Err(io::Error::other("scoped source geometry or exclusion changed"));
+                return Err(io::Error::other(
+                    "scoped source geometry or exclusion changed",
+                ));
             }
             Ok(actual)
         });
-        if result.is_err() { self.poisoned.set(true); }
+        if result.is_err() {
+            self.poisoned.set(true);
+        }
         result
     }
 }
 impl Read for GeneralFrozenSourceReadScope<'_> {
     fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
         if self.poisoned.get() {
-            return Err(io::Error::other("failed frozen source read scope cannot read"));
+            return Err(io::Error::other(
+                "failed frozen source read scope cannot read",
+            ));
         }
         let result = self.source.read(output);
-        if result.is_err() { self.poisoned.set(true); }
+        if result.is_err() {
+            self.poisoned.set(true);
+        }
         result
     }
 }
 impl Seek for GeneralFrozenSourceReadScope<'_> {
     fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
         if self.poisoned.get() {
-            return Err(io::Error::other("failed frozen source read scope cannot seek"));
+            return Err(io::Error::other(
+                "failed frozen source read scope cannot seek",
+            ));
         }
         let result = self.source.seek(from);
-        if result.is_err() { self.poisoned.set(true); }
+        if result.is_err() {
+            self.poisoned.set(true);
+        }
         result
     }
 }
@@ -87,30 +105,37 @@ impl GeneralFrozenPartition {
         &mut self,
         payer: &dyn ReportMemoryAccountant,
         events: &mut Vec<NativeEvent>,
-        consume: impl for<'scope> FnOnce(
-            &mut GeneralFrozenSourceReadScope<'scope>,
-        ) -> io::Result<T>,
+        consume: impl for<'scope> FnOnce(&mut GeneralFrozenSourceReadScope<'scope>) -> io::Result<T>,
     ) -> io::Result<T> {
         let _memory = payer.reserve(SCOPE_MEMORY_BYTES)?;
         let opening = native_step(events, |batch| self.state(batch))?;
         if opening.disk_attributes != 3 {
-            return Err(io::Error::other("scoped source must remain offline and read-only"));
+            return Err(io::Error::other(
+                "scoped source must remain offline and read-only",
+            ));
         }
         let body = {
             let mut scope = GeneralFrozenSourceReadScope {
-                source: self, poisoned: Cell::new(false),
+                source: self,
+                poisoned: Cell::new(false),
             };
             let body = consume(&mut scope);
             if body.is_ok() && scope.poisoned.get() {
-                Err(io::Error::other("source scope swallowed a failed native operation"))
-            } else { body }
+                Err(io::Error::other(
+                    "source scope swallowed a failed native operation",
+                ))
+            } else {
+                body
+            }
         };
         // Deliberately independent of body/poison status. Always attempt the
         // complete original roles + geometry + persistent-exclusion closing.
         let closing = native_step(events, |batch| self.state(batch)).and_then(|actual| {
             if actual != opening || actual.disk_attributes != 3 {
                 Err(io::Error::other("scoped source full closing state changed"))
-            } else { Ok(()) }
+            } else {
+                Ok(())
+            }
         });
         match (body, closing) {
             (Ok(value), Ok(())) => Ok(value),

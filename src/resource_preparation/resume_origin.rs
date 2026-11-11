@@ -53,12 +53,19 @@ pub(crate) struct ParentPublicResources {
 /// this preliminary read grants no source, cache or shadow capability.
 pub(crate) fn peek_parent_resources(directory: &Path) -> Result<ParentPublicResources> {
     ordinary(directory)?;
-    let path = directory.parent().context("legacy workflow parent absent")?
+    let path = directory
+        .parent()
+        .context("legacy workflow parent absent")?
         .join("resource-plan.json");
-    let file = OpenOptions::new().read(true).share_mode(1)
-        .custom_flags(0x0020_0000).open(&path)?;
-    ensure!(file.metadata()?.is_file() && file.metadata()?.len() <= 65536,
-        "bounded ordinary preparation resource plan required");
+    let file = OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .custom_flags(0x0020_0000)
+        .open(&path)?;
+    ensure!(
+        file.metadata()?.is_file() && file.metadata()?.len() <= 65536,
+        "bounded ordinary preparation resource plan required"
+    );
     let value: ParentPublicResources = serde_json::from_reader(file.take(65537))?;
     value.resources.validate()?;
     Ok(value)

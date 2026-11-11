@@ -333,7 +333,9 @@ fn index_value_range(
         .page_offset
         .checked_add(usize::from(row.value_offset))
         .context("index value offset overflow")?;
-    let end = start.checked_add(48).context("index value length overflow")?;
+    let end = start
+        .checked_add(48)
+        .context("index value length overflow")?;
     ensure!(end <= PAGE, "index value outside authenticated page");
     Ok(start..end)
 }
@@ -425,7 +427,10 @@ impl<R: Read + Seek> Walker<'_, R> {
         ensure!(
             count_acceptable,
             "trust-label tree leaf count differs from its root descriptor: table OID 0x{:x}, leaf rows walked {}, root descriptor count {}, pages read so far {}",
-            kind.oid(), counts.leaves, expected_rows, self.pages
+            kind.oid(),
+            counts.leaves,
+            expected_rows,
+            self.pages
         );
         if matches!(kind, Tree::Objects(_)) {
             ensure!(
@@ -1087,22 +1092,39 @@ mod index_row_tests {
     fn the_last_row_of_an_index_page_may_be_keyless_or_keep_its_key() {
         // The last page of a level: keyed separators, then a keyless row.
         let last_page = [row(0, 0, 16, 0), row(1, 0, 16, 0), row(2, 2, 0, 0)];
-        assert_eq!(index_value_range(&last_page[0], &last_page, 2, 1).unwrap(), 1032..1080);
-        assert_eq!(index_value_range(&last_page[2], &last_page, 2, 1).unwrap(), 1016..1064);
+        assert_eq!(
+            index_value_range(&last_page[0], &last_page, 2, 1).unwrap(),
+            1032..1080
+        );
+        assert_eq!(
+            index_value_range(&last_page[2], &last_page, 2, 1).unwrap(),
+            1016..1064
+        );
         // The same keyless row as the full Windows volume's Object Table has it.
         let last_page = [row(0, 0, 16, 0), row(1, 2, 0, 65535)];
-        assert_eq!(index_value_range(&last_page[1], &last_page, 2, 1).unwrap(), 1016..1064);
+        assert_eq!(
+            index_value_range(&last_page[1], &last_page, 2, 1).unwrap(),
+            1016..1064
+        );
         // Any other page of the level, as on the full Windows volume: the
         // flagged last row has a key like the rest.
         let inner_page = [row(0, 0, 16, 0), row(1, 0, 16, 0), row(2, 2, 16, 65535)];
-        assert_eq!(index_value_range(&inner_page[2], &inner_page, 2, 1).unwrap(), 1032..1080);
+        assert_eq!(
+            index_value_range(&inner_page[2], &inner_page, 2, 1).unwrap(),
+            1032..1080
+        );
     }
 
     #[test]
     fn a_flagged_index_row_anywhere_else_or_of_another_shape_is_refused() {
         let misplaced = [row(0, 2, 16, 0), row(1, 0, 16, 0)];
-        let error = index_value_range(&misplaced[0], &misplaced, 2, 1).unwrap_err().to_string();
-        assert!(error.contains("row 0 of 2") && error.contains("flags 2"), "{error}");
+        let error = index_value_range(&misplaced[0], &misplaced, 2, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("row 0 of 2") && error.contains("flags 2"),
+            "{error}"
+        );
 
         let mut padded = [row(0, 0, 16, 0), row(1, 2, 16, 65535)];
         padded[1].size += 8;

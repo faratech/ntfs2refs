@@ -66,9 +66,7 @@ impl PartitionMixedObservation {
                     == self.ticket_sha256,
             "partition MIXED observation belongs to another actual owner/publication/journal"
         );
-        let current = observation.observe_partition_mixed(
-            owner, stable, publication, events,
-        )?;
+        let current = observation.observe_partition_mixed(owner, stable, publication, events)?;
         ensure!(
             current.lifecycle == self.lifecycle
                 && current.index_sha256 == self.index_sha256
@@ -131,7 +129,7 @@ impl BoundJournalObservation<'_> {
             "partition MIXED observation requires live AP/RB; clear/HND/ABT refuse raw recovery"
         );
         let source = owner.binding().clone();
-            let length = n2r_win32::PartitionScopedOwner::byte_len(owner);
+        let length = n2r_win32::PartitionScopedOwner::byte_len(owner);
         publication.revalidate_partition_mixed(
             owner,
             stable,
@@ -143,8 +141,9 @@ impl BoundJournalObservation<'_> {
 
         // None is intentional: Some(OLD/NEW) would only authenticate one
         // endpoint and would not validate an interrupted mixed target.
-        let current_selected_sha256 =
-            self.observation.check_target_reader(owner, length, None, false)?;
+        let current_selected_sha256 = self
+            .observation
+            .check_target_reader(owner, length, None, false)?;
 
         publication.revalidate_partition_mixed(
             owner,
@@ -523,19 +522,27 @@ impl JournalObservation<'_> {
                             &buffers.before[..count],
                             &buffers.after[..count],
                         ) {
-                            let foreign = buffers.current[..count].iter()
-                                .zip(&buffers.before[..count]).zip(&buffers.after[..count])
+                            let foreign = buffers.current[..count]
+                                .iter()
+                                .zip(&buffers.before[..count])
+                                .zip(&buffers.after[..count])
                                 .position(|((current, old), new)| current != old && current != new)
                                 .context("foreign-byte comparison has no differing position")?;
                             let start = foreign / GRANULE as usize * GRANULE as usize;
                             let end = (start + GRANULE as usize).min(count);
-                            let hash = |bytes: &[u8]| hex::encode(
-                                <sha2::Sha256 as sha2::Digest>::digest(bytes));
+                            let hash = |bytes: &[u8]| {
+                                hex::encode(<sha2::Sha256 as sha2::Digest>::digest(bytes))
+                            };
                             anyhow::bail!(
                                 "replay target contains a foreign byte: descriptor={ordinal}, range_offset={}, range_length={}, byte_offset={}, granule_offset={}, old_kind={}, new_kind={}, current_sha256={}, old_sha256={}, new_sha256={}",
-                                row.offset, row.length, add(add(row.offset, done)?, foreign as u64)?,
-                                add(add(row.offset, done)?, start as u64)?, row.old_kind, row.new_kind,
-                                hash(&buffers.current[start..end]), hash(&buffers.before[start..end]),
+                                row.offset,
+                                row.length,
+                                add(add(row.offset, done)?, foreign as u64)?,
+                                add(add(row.offset, done)?, start as u64)?,
+                                row.old_kind,
+                                row.new_kind,
+                                hash(&buffers.current[start..end]),
+                                hash(&buffers.before[start..end]),
                                 hash(&buffers.after[start..end]),
                             );
                         }
@@ -1045,13 +1052,17 @@ fn partition_read_new<J: Read + Seek>(
 // IO-only adapter for the two already-authorized native writer types.
 // It cannot construct either writer or obtain a File/raw handle.
 trait ReplayPagedWriter: Read + Seek + std::io::Write {
-    fn replay_journal_view(&mut self)->std::io::Result<impl Read+Seek+'_>;
+    fn replay_journal_view(&mut self) -> std::io::Result<impl Read + Seek + '_>;
 }
-impl ReplayPagedWriter for n2r_win32::PartitionPagedWriter<'_,'_>{
-    fn replay_journal_view(&mut self)->std::io::Result<impl Read+Seek+'_>{self.journal_read_view()}
+impl ReplayPagedWriter for n2r_win32::PartitionPagedWriter<'_, '_> {
+    fn replay_journal_view(&mut self) -> std::io::Result<impl Read + Seek + '_> {
+        self.journal_read_view()
+    }
 }
-impl ReplayPagedWriter for n2r_win32::offline_environment::OfflinePagedWriter<'_,'_>{
-    fn replay_journal_view(&mut self)->std::io::Result<impl Read+Seek+'_>{self.journal_read_view()}
+impl ReplayPagedWriter for n2r_win32::offline_environment::OfflinePagedWriter<'_, '_> {
+    fn replay_journal_view(&mut self) -> std::io::Result<impl Read + Seek + '_> {
+        self.journal_read_view()
+    }
 }
 fn partition_write_span(
     writer: &mut impl ReplayPagedWriter,
@@ -1080,8 +1091,9 @@ fn partition_write_span(
         at(writer, at_source, &mut buffers.current[..n])
             .with_context(||format!("partition replay: current-source read request offset={at_source},bytes={n} (includes pending flush/readback)"))?;
         {
-            let mut journal = writer.replay_journal_view()
-                .context("partition replay: opening same-J read view after pending source flush/readback")?;
+            let mut journal = writer.replay_journal_view().context(
+                "partition replay: opening same-J read view after pending source flush/readback",
+            )?;
             partition_read_new(
                 policy,
                 &mut journal,
@@ -1204,10 +1216,13 @@ impl BoundJournalObservation<'_> {
                 &mut buffers,
             )?;
         }
-        writer.sync_all().context("partition replay: non-discovery pending source flush/readback")?;
+        writer
+            .sync_all()
+            .context("partition replay: non-discovery pending source flush/readback")?;
         let first = {
-            let mut journal = writer.journal_read_view()
-                .context("partition replay: opening same-J read view after pending source flush/readback")?;
+            let mut journal = writer.journal_read_view().context(
+                "partition replay: opening same-J read view after pending source flush/readback",
+            )?;
             partition_record(&policy, &mut journal, format, ticket, 0)?
         };
         if first.offset == 0 {
@@ -1224,7 +1239,9 @@ impl BoundJournalObservation<'_> {
                 &mut buffers,
             )?;
         }
-        writer.sync_all().context("partition replay: discovery pending source flush/readback")?;
+        writer
+            .sync_all()
+            .context("partition replay: discovery pending source flush/readback")?;
         writer.revalidate(events)?;
         if forward {
             writer.finish_new(events)?;

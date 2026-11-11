@@ -231,7 +231,9 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     fn bytes(count: usize, seed: u8) -> Vec<u8> {
-        (0..count).map(|index| (index as u8).wrapping_mul(31).wrapping_add(seed)).collect()
+        (0..count)
+            .map(|index| (index as u8).wrapping_mul(31).wrapping_add(seed))
+            .collect()
     }
 
     #[test]
@@ -246,7 +248,10 @@ mod tests {
                 let parts = [
                     bytes(16, round as u8),
                     bytes(100, 3),
-                    bytes([0, 1, 4095, 70_000, 300_000, chunk - 1, chunk][round % 7], 7),
+                    bytes(
+                        [0, 1, 4095, 70_000, 300_000, chunk - 1, chunk][round % 7],
+                        7,
+                    ),
                 ];
                 for part in &parts {
                     pipeline.update(part).unwrap();

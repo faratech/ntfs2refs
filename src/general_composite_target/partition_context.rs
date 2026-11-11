@@ -137,7 +137,10 @@ impl ScopedSourceContext<'_> {
         maximum: u64,
         events: &mut Vec<NativeEvent>,
         consume: impl for<'bytes, 'scope> FnOnce(
-            &mut crate::general_shadow::source_backed::PagedSourceByteAdapterWithScope<'bytes, 'scope>,
+            &mut crate::general_shadow::source_backed::PagedSourceByteAdapterWithScope<
+                'bytes,
+                'scope,
+            >,
         ) -> Result<T>,
     ) -> Result<T> {
         use crate::general_shadow::source_backed::PagedSourceByteAdapterWithScope;
@@ -146,26 +149,32 @@ impl ScopedSourceContext<'_> {
                 (Ok(value), Ok(_)) => Ok(value),
                 (Err(error), Ok(_)) => Err(error),
                 (Ok(_), Err(error)) => Err(error),
-                (Err(body), Err(closing)) => Err(closing.context(format!(
-                    "source-byte phase also failed: {body:#}"
-                ))),
+                (Err(body), Err(closing)) => {
+                    Err(closing.context(format!("source-byte phase also failed: {body:#}")))
+                }
             }
         }
         match self {
             Self::Dedicated(context) => {
                 let memory = crate::general_composite_target::paged_memory::ArenaReportMemory(
-                    context.arena().context("source-byte scope arena absent")?.clone(),
+                    context
+                        .arena()
+                        .context("source-byte scope arena absent")?
+                        .clone(),
                 );
                 let (source, raw) = context.source_and_inspection()?;
-                source.with_readonly_source_bytes(&memory, events, |scope| {
-                    (|| -> Result<T> {
-                        let mut bytes = PagedSourceByteAdapterWithScope::new_scoped(
-                            scope, raw, admission, maximum,
-                        )?;
-                        let body = consume(&mut bytes);
-                        close(body, bytes.finish())
-                    })().map_err(io::Error::other)
-                }).map_err(anyhow::Error::from)
+                source
+                    .with_readonly_source_bytes(&memory, events, |scope| {
+                        (|| -> Result<T> {
+                            let mut bytes = PagedSourceByteAdapterWithScope::new_scoped(
+                                scope, raw, admission, maximum,
+                            )?;
+                            let body = consume(&mut bytes);
+                            close(body, bytes.finish())
+                        })()
+                        .map_err(io::Error::other)
+                    })
+                    .map_err(anyhow::Error::from)
             }
             Self::Partition(context) => {
                 let mut bytes = PagedSourceByteAdapter::new_partition(context, admission, maximum)?;
@@ -181,11 +190,7 @@ impl ScopedSourceContext<'_> {
         scratch: &SourceScratch,
     ) -> Result<crate::shadow_tree::source_pages::SourceExpectedDomain> {
         match self {
-            Self::Dedicated(c) => c.derive_projection(
-                admission,
-                path,
-                scratch,
-            ),
+            Self::Dedicated(c) => c.derive_projection(admission, path, scratch),
             Self::Partition(c) => crate::shadow_tree::source_pages::SourceExpectedDomain::derive(
                 c.inspection(),
                 c.native().domain(),
@@ -208,17 +213,29 @@ impl ScopedSourceContext<'_> {
         memory: &dyn n2r_win32::shadow_native::report_memory::ReportMemoryAccountant,
         aliases: Option<&n2r_win32::shadow_native::windows_aliases::VerifiedWindowsAliases>,
         events: &mut Vec<NativeEvent>,
-    ) -> Result<(GeneralLiveRefsLayoutObservation,
-        Option<n2r_win32::shadow_native::windows_aliases::ObservedWindowsAliases>)> {
+    ) -> Result<(
+        GeneralLiveRefsLayoutObservation,
+        Option<n2r_win32::shadow_native::windows_aliases::ObservedWindowsAliases>,
+    )> {
         match self {
             Self::Dedicated(_) if aliases.is_some() => {
-                let (native,proof)=target.observe_refs_layout_residuals_paged_domain_with_memory_windows_aliases(
-                    pair,input,provider,path,budget,same_security,profile,memory,aliases.unwrap(),events,
-                )?;
-                Ok((native,Some(proof)))
+                let (native, proof) = target
+                    .observe_refs_layout_residuals_paged_domain_with_memory_windows_aliases(
+                        pair,
+                        input,
+                        provider,
+                        path,
+                        budget,
+                        same_security,
+                        profile,
+                        memory,
+                        aliases.unwrap(),
+                        events,
+                    )?;
+                Ok((native, Some(proof)))
             }
-            Self::Dedicated(_) => Ok((target
-                .observe_refs_layout_residuals_paged_domain_with_memory(
+            Self::Dedicated(_) => Ok((
+                target.observe_refs_layout_residuals_paged_domain_with_memory(
                     pair,
                     input,
                     provider,
@@ -228,9 +245,14 @@ impl ScopedSourceContext<'_> {
                     profile,
                     memory,
                     events,
-                )?,None)),
+                )?,
+                None,
+            )),
             Self::Partition(c) => {
-                ensure!(aliases.is_none(),"Windows alias overlay cannot enter the ordinary shared-disk source path");
+                ensure!(
+                    aliases.is_none(),
+                    "Windows alias overlay cannot enter the ordinary shared-disk source path"
+                );
                 let token = c.owner_token();
                 let (owner, admission, _) = c.source_admission_and_inspection();
                 let result = target
@@ -248,7 +270,7 @@ impl ScopedSourceContext<'_> {
                         events,
                     )?;
                 result.require_partition_source_owner(&token)?;
-                Ok((result,None))
+                Ok((result, None))
             }
         }
     }

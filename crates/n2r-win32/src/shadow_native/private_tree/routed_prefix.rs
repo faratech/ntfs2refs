@@ -178,8 +178,12 @@ fn capture(
     if covered != prefix {
         return Err(bad("private routed prefix complete mapping absent"));
     }
-    let storage = initialized_regions::capture_initialized(file,prefix,2,row)
-        .map_err(|e|io::Error::new(e.kind(),format!("routed prefix first initialized-region observation {path:?}: {e}")))?;
+    let storage = initialized_regions::capture_initialized(file, prefix, 2, row).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!("routed prefix first initialized-region observation {path:?}: {e}"),
+        )
+    })?;
     let integrity = ctl(file, 0x9027c, &[], 16)?;
     if integrity.len() != 16 || integrity[..8] != [0; 8] || layout::u32_at(&integrity, 12)? != 4096
     {
@@ -193,8 +197,13 @@ fn capture(
         &continuation,
         crate::retrieval_paging::Limits::for_resource_bytes(row)?,
     )?;
-    let after_storage = initialized_regions::capture_initialized(file,prefix,2,row)
-        .map_err(|e|io::Error::new(e.kind(),format!("routed prefix second initialized-region observation {path:?}: {e}")))?;
+    let after_storage =
+        initialized_regions::capture_initialized(file, prefix, 2, row).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("routed prefix second initialized-region observation {path:?}: {e}"),
+            )
+        })?;
     if before != after
         || sd != after_sd
         || mapping.canonical != after_mapping.canonical
@@ -245,7 +254,7 @@ fn retained_bytes(e: &Evidence, path: &String) -> io::Result<u64> {
     for b in [&e.private_security, &e.retrieval, &e.integrity] {
         n = add(n, b.capacity() as u64)?;
     }
-    n=add(n,e.storage.retained_bytes()?)?;
+    n = add(n, e.storage.retained_bytes()?)?;
     add(n, e.digest.capacity() as u64)
 }
 impl RoutedPrefixReady {

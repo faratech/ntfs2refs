@@ -883,18 +883,28 @@ fn stream_record_identity(record: &RecordEvidence, complete_file: bool) -> Resul
     );
     let mut instances = BTreeSet::new();
     for attribute in &record.attributes {
-        let encoded_data = complete_file && attribute.type_code == 0x80 && attribute.flags == 1
-            && if attribute.resident { attribute.compression_unit == 0 }
-                else { attribute.compression_unit == 4 || attribute.lowest_vcn > 0 && attribute.compression_unit == 0 };
+        let encoded_data = complete_file
+            && attribute.type_code == 0x80
+            && attribute.flags == 1
+            && if attribute.resident {
+                attribute.compression_unit == 0
+            } else {
+                attribute.compression_unit == 4
+                    || attribute.lowest_vcn > 0 && attribute.compression_unit == 0
+            };
         ensure!(
             instances.insert(attribute.instance)
                 && (attribute.flags == 0 && attribute.compression_unit == 0 || encoded_data)
-                && (attribute.type_code == 0x80 || complete_file
-                    && matches!(attribute.type_code, 0x90 | 0xa0 | 0xb0 | 0x100)
+                && (attribute.type_code == 0x80
+                    || complete_file && matches!(attribute.type_code, 0x90 | 0xa0 | 0xb0 | 0x100)
                     || attribute.name_utf16.is_empty()),
             "unsupported physical attribute: FILE {}, instance {}, type={:#x}, flags={:#x}, compression_unit={}, name={:?}",
-            record.record_number,attribute.instance,attribute.type_code,attribute.flags,
-            attribute.compression_unit,attribute.name_utf16
+            record.record_number,
+            attribute.instance,
+            attribute.type_code,
+            attribute.flags,
+            attribute.compression_unit,
+            attribute.name_utf16
         );
     }
     Ok(())
@@ -980,15 +990,22 @@ pub fn assemble_streams_resource(
 /// Complete unencoded metadata/directory assembly. This conserves physical
 /// attributes; namespace, security and preservation admission remain separate.
 pub fn assemble_attributes_resource(
-    base: RecordEvidence, extensions: Vec<RecordEvidence>, list_value: &[u8],
-    geometry: &NtfsGeometry, limits: AssemblyLimits,
+    base: RecordEvidence,
+    extensions: Vec<RecordEvidence>,
+    list_value: &[u8],
+    geometry: &NtfsGeometry,
+    limits: AssemblyLimits,
 ) -> Result<(Vec<AttributeInventory>, Assembly)> {
     assemble_attributes_inner(base, extensions, list_value, geometry, limits, true)
 }
 
 fn assemble_attributes_inner(
-    base: RecordEvidence, extensions: Vec<RecordEvidence>, list_value: &[u8],
-    geometry: &NtfsGeometry, limits: AssemblyLimits, complete_file: bool,
+    base: RecordEvidence,
+    extensions: Vec<RecordEvidence>,
+    list_value: &[u8],
+    geometry: &NtfsGeometry,
+    limits: AssemblyLimits,
+    complete_file: bool,
 ) -> Result<(Vec<AttributeInventory>, Assembly)> {
     validate_working_assembly(&base, &extensions, list_value.len(), limits)?;
     let cluster = u64::from(geometry.cluster_size);
@@ -1034,7 +1051,7 @@ fn assemble_attributes_inner(
     let mut si_count = 0usize;
     let mut name_count = 0usize;
     let mut security_count = 0usize;
-    let mut streams: BTreeMap<(u32,Vec<u16>), Vec<(CanonicalOrigin, &AttributeInventory)>> =
+    let mut streams: BTreeMap<(u32, Vec<u16>), Vec<(CanonicalOrigin, &AttributeInventory)>> =
         BTreeMap::new();
     let mut canonical = Vec::new();
     for record in std::iter::once(&base).chain(&extensions) {
@@ -1079,8 +1096,10 @@ fn assemble_attributes_inner(
                     canonical.push((attribute.clone(), origin));
                 }
                 0x80 | 0x40 | 0x60 | 0x70 | 0x90 | 0xa0 | 0xb0 | 0xc0 | 0xd0 | 0xe0 | 0x100 => {
-                    ensure!(attribute.type_code == 0x80 || complete_file,
-                        "ordinary stream assembly cannot accept metadata attributes");
+                    ensure!(
+                        attribute.type_code == 0x80 || complete_file,
+                        "ordinary stream assembly cannot accept metadata attributes"
+                    );
                     ensure!(
                         attribute.name_utf16.len() <= 255,
                         "ordinary stream name exceeds bound"
@@ -1095,7 +1114,7 @@ fn assemble_attributes_inner(
                         );
                     }
                     streams
-                        .entry((attribute.type_code,attribute.name_utf16.clone()))
+                        .entry((attribute.type_code, attribute.name_utf16.clone()))
                         .or_default()
                         .push((origin, attribute));
                 }
@@ -1107,7 +1126,7 @@ fn assemble_attributes_inner(
         si_count == 1
             && name_count > 0
             && security_count <= 1
-            && (complete_file || streams.contains_key(&(0x80,Vec::new())))
+            && (complete_file || streams.contains_key(&(0x80, Vec::new())))
             && streams.len() <= limits.streams,
         "ordinary semantic metadata or DATA stream inventory differs"
     );
@@ -1179,7 +1198,9 @@ fn assemble_attributes_inner(
                     !segment.resident
                         && segment.flags == leader.flags
                         && (segment.compression_unit == leader.compression_unit
-                            || compressed && segment.lowest_vcn > 0 && segment.compression_unit == 0)
+                            || compressed
+                                && segment.lowest_vcn > 0
+                                && segment.compression_unit == 0)
                         && segment.lowest_vcn.checked_mul(cluster) == Some(next)
                         && (!segment.extents.is_empty()
                             || (segments.len() == 1 && leader.allocated_size == 0)),
@@ -1197,11 +1218,17 @@ fn assemble_attributes_inner(
                         "ordinary DATA run budget, coverage or alignment differs"
                     );
                     if let Some(start) = extent.physical_offset {
-                        let end = start.checked_add(extent.length).context("ordinary DATA physical overflow")?;
-                        ensure!(start.is_multiple_of(cluster) && end <= geometry.volume_size,
-                            "ordinary DATA physical run escapes volume or alignment");
-                        physical.push((start,end));
-                    } else { ensure!(compressed,"sparse ordinary DATA remains unsupported"); }
+                        let end = start
+                            .checked_add(extent.length)
+                            .context("ordinary DATA physical overflow")?;
+                        ensure!(
+                            start.is_multiple_of(cluster) && end <= geometry.volume_size,
+                            "ordinary DATA physical run escapes volume or alignment"
+                        );
+                        physical.push((start, end));
+                    } else {
+                        ensure!(compressed, "sparse ordinary DATA remains unsupported");
+                    }
                     next = next
                         .checked_add(extent.length)
                         .context("ordinary DATA VCN overflow")?;
@@ -1214,7 +1241,9 @@ fn assemble_attributes_inner(
             );
             merged.extents = extents;
         }
-        if compressed { crate::ntfs_compression::supported(&merged,geometry)?; }
+        if compressed {
+            crate::ntfs_compression::supported(&merged, geometry)?;
+        }
         canonical.push((merged, origin.clone()));
     }
     for extent in &list.extents {
@@ -1268,8 +1297,13 @@ fn assemble_attributes_inner(
     Ok((
         canonical,
         Assembly {
-            schema_version: if complete_file { if list.resident { 8 } else { 9 } }
-                else if list.resident { 5 } else { 6 },
+            schema_version: if complete_file {
+                if list.resident { 8 } else { 9 }
+            } else if list.resident {
+                5
+            } else {
+                6
+            },
             base,
             extensions,
             list_value_hex: hex::encode(list_value),

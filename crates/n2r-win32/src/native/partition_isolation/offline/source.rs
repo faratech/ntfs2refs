@@ -1,17 +1,15 @@
 //! Actual offline-machine source ownership. No legacy Windows-C/layout guard
 //! changes and no source writer or online/repair operation is exposed here.
 mod terminal;
-pub use terminal::{OfflinePreparedTerminalGuard,OfflineTerminalReadonlyVolume,OfflinePreparedTerminalReceipt};
+pub use terminal::{
+    OfflinePreparedTerminalGuard, OfflinePreparedTerminalReceipt, OfflineTerminalReadonlyVolume,
+};
 mod native_observation;
 mod paged;
 mod prepared;
 mod prepared_apply;
-mod prepared_replay;
 mod prepared_closed;
-pub use prepared_closed::OfflinePreparedClosedQualification;
-pub use prepared_replay::OfflinePreparedReplayQualification;
-pub use prepared_apply::{OfflinePreparedTerminalSource,OfflinePreparedAvailableSource};
-pub use prepared::{OfflinePreparedSource, OfflinePreparedJournalQualification, OfflinePreparedBootGuardRequirements};
+mod prepared_replay;
 use super::*;
 use crate::native::{
     AlignedBuffer, MAX_IO, close_file,
@@ -25,6 +23,13 @@ pub use paged::{
     OfflineClosedJournalObservation, OfflineJournalReadView, OfflinePagedWriter,
     OfflineSourceApplyGate, OfflineTerminalKind,
 };
+pub use prepared::{
+    OfflinePreparedBootGuardRequirements, OfflinePreparedJournalQualification,
+    OfflinePreparedSource,
+};
+pub use prepared_apply::{OfflinePreparedAvailableSource, OfflinePreparedTerminalSource};
+pub use prepared_closed::OfflinePreparedClosedQualification;
+pub use prepared_replay::OfflinePreparedReplayQualification;
 use std::{
     io::{Read, Seek, SeekFrom, Write},
     os::windows::fs::OpenOptionsExt,
@@ -247,16 +252,24 @@ fn lock_source_volumes(
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<Vec<File>> {
     fn context(error: io::Error, path: &str, drive_type: u32, operation: &str) -> io::Error {
-        io::Error::new(error.kind(), format!(
-            "offline source volume inventory {operation}: path={path:?}, drive_type={drive_type}, native_error={:?}; {error}",
-            error.raw_os_error(),
-        ))
+        io::Error::new(
+            error.kind(),
+            format!(
+                "offline source volume inventory {operation}: path={path:?}, drive_type={drive_type}, native_error={:?}; {error}",
+                error.raw_os_error(),
+            ),
+        )
     }
     checkpoint(sink, "offline-source-volume-inventory-opening", events)?;
     let mut name = [0u16; 1024];
     let handle = unsafe { FindFirstVolumeW(name.as_mut_ptr(), name.len() as u32) };
     if handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
-        return Err(context(io::Error::last_os_error(), "<volume-catalog>", 0, "FindFirstVolumeW"));
+        return Err(context(
+            io::Error::last_os_error(),
+            "<volume-catalog>",
+            0,
+            "FindFirstVolumeW",
+        ));
     }
     let enumeration = Volumes(handle);
     let maximum = env.budget.ram_bytes / 4096;
@@ -288,7 +301,8 @@ fn lock_source_volumes(
                 output: serde_json::to_vec(&serde_json::json!({
                     "path": &path, "drive_type": drive_type,
                     "positive_optical_classification": true, "source_data_io": false,
-                })).map_err(io::Error::other)?,
+                }))
+                .map_err(io::Error::other)?,
             });
         } else {
             // Metadata only; no source file enumeration/payload read.
@@ -297,14 +311,20 @@ fn lock_source_volumes(
                 .share_mode(3)
                 .open(path.trim_end_matches('\\'))
                 .map_err(|e| context(e, &path, drive_type, "metadata-open"))?;
-            let object = crate::native::offline_environment::kernel_ram_backing::object_name(&query);
-            if object.name.as_deref().is_some_and(|name|
-                name.eq_ignore_ascii_case(&env.facts.native_ram_backing.held_volume_object_name)) {
+            let object =
+                crate::native::offline_environment::kernel_ram_backing::object_name(&query);
+            if object.name.as_deref().is_some_and(|name| {
+                name.eq_ignore_ascii_case(&env.facts.native_ram_backing.held_volume_object_name)
+            }) {
                 let actual = crate::native::offline_environment::kernel_ram_backing::require_held(
-                    &env.facts.windows_directory, &query,
-                ).map_err(|e| context(e, &path, drive_type, "same-held-RAM-proof"))?;
-                require(actual == env.facts.native_ram_backing,
-                    "inventory current RAM volume differs from actual held environment")?;
+                    &env.facts.windows_directory,
+                    &query,
+                )
+                .map_err(|e| context(e, &path, drive_type, "same-held-RAM-proof"))?;
+                require(
+                    actual == env.facts.native_ram_backing,
+                    "inventory current RAM volume differs from actual held environment",
+                )?;
                 events.push(NativeEvent {
                     operation: "offline-volume-inventory-current-kernel-RAM-nonsource".into(),
                     control_code: 0,
@@ -314,120 +334,131 @@ fn lock_source_volumes(
                     output: serde_json::to_vec(&serde_json::json!({
                         "path": &path, "drive_type": drive_type,
                         "actual_ram_backing": actual, "source_data_io": false,
-                    })).map_err(io::Error::other)?,
+                    }))
+                    .map_err(io::Error::other)?,
                 });
                 close_file(query, "offline-current-RAM-volume-query-close", events)
                     .map_err(|e| context(e, &path, drive_type, "same-held-RAM-close"))?;
             } else {
-            let device = control(
-                &query,
-                "offline-volume-inventory-device",
-                DEVICE,
-                &[],
-                12,
-                events,
-            ).map_err(|e| context(e, &path, drive_type, "DEVICE"))?;
-            require(
-                device.len() == 12,
-                "source volume inventory device reply incomplete",
-            )?;
-            if layout::u32_at(&device, 0)? == 7
-                && layout::u32_at(&device, 4)? == env.source.storage.disk_number
-            {
-                let ext = control(
+                let device = control(
                     &query,
-                    "offline-volume-inventory-extents",
-                    VOLUME_EXTENTS,
+                    "offline-volume-inventory-device",
+                    DEVICE,
                     &[],
-                    32,
+                    12,
                     events,
-                ).map_err(|e| context(e, &path, drive_type, "VOLUME_EXTENTS"))?;
-                let info = control(
-                    &query,
-                    "offline-volume-inventory-native-info",
-                    0x0007_0048,
-                    &[],
-                    144,
-                    events,
-                ).map_err(|e| context(e, &path, drive_type, "PARTITION_INFO"))?;
+                )
+                .map_err(|e| context(e, &path, drive_type, "DEVICE"))?;
                 require(
-                    ext.len() == 32
-                        && layout::u32_at(&ext, 0)? == 1
-                        && layout::u32_at(&ext, 8)? == env.source.storage.disk_number
-                        && info.len() == 144
-                        && layout::u32_at(&info, 0)? == 1
-                        && layout::u64_at(&ext, 16)? == layout::u64_at(&info, 8)?
-                        && layout::u64_at(&ext, 24)? == layout::u64_at(&info, 16)?,
-                    "source disk has unsupported/ambiguous mounted extent",
+                    device.len() == 12,
+                    "source volume inventory device reply incomplete",
                 )?;
-                let matches = env.facts.source_physical.gpt.native_layout[48..]
-                    .chunks_exact(144)
-                    .filter(|r| *r == info.as_slice())
-                    .count();
-                require(
-                    matches == 1 && !identities.iter().any(|old| *old == info),
-                    "mounted source-disk volume is duplicate or absent from full GPT",
-                )?;
-                identities.push(info.clone());
-                selected_seen |= info[48..64]
-                    == layout::guid_bytes(&env.source.storage.identity.partition_guid)?;
-                close_file(
-                    query,
-                    "offline-source-volume-query-close-before-real-lock",
-                    events,
-                ).map_err(|e| context(e, &path, drive_type, "query-close-before-lock"))?;
-                let volume = OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .share_mode(3)
-                    .custom_flags(0xa000_0000)
-                    .open(path.trim_end_matches('\\'))
-                    .map_err(|e| context(e, &path, drive_type, "locking-open"))?;
-                require(
-                    control(
-                        &volume,
-                        "offline-real-lock-current-volume-info",
+                if layout::u32_at(&device, 0)? == 7
+                    && layout::u32_at(&device, 4)? == env.source.storage.disk_number
+                {
+                    let ext = control(
+                        &query,
+                        "offline-volume-inventory-extents",
+                        VOLUME_EXTENTS,
+                        &[],
+                        32,
+                        events,
+                    )
+                    .map_err(|e| context(e, &path, drive_type, "VOLUME_EXTENTS"))?;
+                    let info = control(
+                        &query,
+                        "offline-volume-inventory-native-info",
                         0x0007_0048,
                         &[],
                         144,
                         events,
-                    ).map_err(|e| context(e, &path, drive_type, "locking-PARTITION_INFO"))? == info,
-                    "new locking FileObject names another actual source-disk volume",
-                )?;
-                // These FileObjects provide quiescence only. Raw source I/O
-                // uses PhysicalDrive, so extended-DASD permission is unused.
-                for (code, phase) in [
-                    (crate::native::LOCK, "offline-source-volume-actual-LOCK"),
-                    (
-                        crate::native::DISMOUNT,
-                        "offline-source-volume-actual-DISMOUNT",
-                    ),
-                ] {
+                    )
+                    .map_err(|e| context(e, &path, drive_type, "PARTITION_INFO"))?;
                     require(
-                        control(&volume, phase, code, &[], 0, events)
-                            .map_err(|e| context(e, &path, drive_type, phase))?.is_empty(),
-                        "source-volume lock/dismount control reply differs",
+                        ext.len() == 32
+                            && layout::u32_at(&ext, 0)? == 1
+                            && layout::u32_at(&ext, 8)? == env.source.storage.disk_number
+                            && info.len() == 144
+                            && layout::u32_at(&info, 0)? == 1
+                            && layout::u64_at(&ext, 16)? == layout::u64_at(&info, 8)?
+                            && layout::u64_at(&ext, 24)? == layout::u64_at(&info, 16)?,
+                        "source disk has unsupported/ambiguous mounted extent",
                     )?;
-                }
-                // Real LOCK flushes cached data. Do not drop this FileObject
-                // until actual persistent whole-disk OFFLINE|READONLY is proved.
-                require(
-                    control(
-                        &volume,
-                        "offline-locked-source-volume-closing-info",
-                        0x0007_0048,
-                        &[],
-                        144,
+                    let matches = env.facts.source_physical.gpt.native_layout[48..]
+                        .chunks_exact(144)
+                        .filter(|r| *r == info.as_slice())
+                        .count();
+                    require(
+                        matches == 1 && !identities.iter().any(|old| *old == info),
+                        "mounted source-disk volume is duplicate or absent from full GPT",
+                    )?;
+                    identities.push(info.clone());
+                    selected_seen |= info[48..64]
+                        == layout::guid_bytes(&env.source.storage.identity.partition_guid)?;
+                    close_file(
+                        query,
+                        "offline-source-volume-query-close-before-real-lock",
                         events,
-                    ).map_err(|e| context(e, &path, drive_type, "locked-closing-PARTITION_INFO"))? == info,
-                    "locked source volume identity changed",
-                )?;
-                locked.push(volume);
-                locked_routes.push((path.clone(), drive_type));
-            } else {
-                close_file(query, "offline-nonsource-volume-query-close", events)
-                    .map_err(|e| context(e, &path, drive_type, "nonsource-query-close"))?;
-            }
+                    )
+                    .map_err(|e| context(e, &path, drive_type, "query-close-before-lock"))?;
+                    let volume = OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .share_mode(3)
+                        .custom_flags(0xa000_0000)
+                        .open(path.trim_end_matches('\\'))
+                        .map_err(|e| context(e, &path, drive_type, "locking-open"))?;
+                    require(
+                        control(
+                            &volume,
+                            "offline-real-lock-current-volume-info",
+                            0x0007_0048,
+                            &[],
+                            144,
+                            events,
+                        )
+                        .map_err(|e| context(e, &path, drive_type, "locking-PARTITION_INFO"))?
+                            == info,
+                        "new locking FileObject names another actual source-disk volume",
+                    )?;
+                    // These FileObjects provide quiescence only. Raw source I/O
+                    // uses PhysicalDrive, so extended-DASD permission is unused.
+                    for (code, phase) in [
+                        (crate::native::LOCK, "offline-source-volume-actual-LOCK"),
+                        (
+                            crate::native::DISMOUNT,
+                            "offline-source-volume-actual-DISMOUNT",
+                        ),
+                    ] {
+                        require(
+                            control(&volume, phase, code, &[], 0, events)
+                                .map_err(|e| context(e, &path, drive_type, phase))?
+                                .is_empty(),
+                            "source-volume lock/dismount control reply differs",
+                        )?;
+                    }
+                    // Real LOCK flushes cached data. Do not drop this FileObject
+                    // until actual persistent whole-disk OFFLINE|READONLY is proved.
+                    require(
+                        control(
+                            &volume,
+                            "offline-locked-source-volume-closing-info",
+                            0x0007_0048,
+                            &[],
+                            144,
+                            events,
+                        )
+                        .map_err(|e| {
+                            context(e, &path, drive_type, "locked-closing-PARTITION_INFO")
+                        })? == info,
+                        "locked source volume identity changed",
+                    )?;
+                    locked.push(volume);
+                    locked_routes.push((path.clone(), drive_type));
+                } else {
+                    close_file(query, "offline-nonsource-volume-query-close", events)
+                        .map_err(|e| context(e, &path, drive_type, "nonsource-query-close"))?;
+                }
             }
         }
         checkpoint(sink, "offline-source-volume-inventory-row-closed", events)?;
@@ -447,10 +478,13 @@ fn lock_source_volumes(
     )?;
     names.sort();
     require(
-        catalog_names(maximum).map_err(|e| context(e, "<volume-catalog>", 0, "closing-catalog"))? == names,
+        catalog_names(maximum).map_err(|e| context(e, "<volume-catalog>", 0, "closing-catalog"))?
+            == names,
         "native volume catalog changed while real source locks were acquired",
     )?;
-    for ((volume, expected), (path, drive_type)) in locked.iter().zip(&identities).zip(&locked_routes) {
+    for ((volume, expected), (path, drive_type)) in
+        locked.iter().zip(&identities).zip(&locked_routes)
+    {
         require(
             control(
                 volume,
@@ -459,7 +493,9 @@ fn lock_source_volumes(
                 &[],
                 144,
                 events,
-            ).map_err(|e| context(e, path, *drive_type, "all-locks-closing-PARTITION_INFO"))? == *expected,
+            )
+            .map_err(|e| context(e, path, *drive_type, "all-locks-closing-PARTITION_INFO"))?
+                == *expected,
             "original locking source FileObject changed before persistent exclusion",
         )?;
         checkpoint(sink, "offline-source-all-locks-closing-native-info", events)?;
@@ -484,18 +520,36 @@ pub(crate) struct OfflineBootMetadataWitness {
     basis: OfflineSourcePhysicalFacts,
 }
 impl OfflineBootMetadataWitness {
-    pub(crate) fn verify_file(&self, file: &mut File, owner: &OfflineSourceOwnerToken,
-        events: &mut Vec<NativeEvent>) -> io::Result<OfflineSourcePhysicalFacts> {
-        require(self.owner.same_owner(owner) && boot_identity()? == self.boot,
-            "boot metadata witness lost actual source owner/current boot")?;
+    pub(crate) fn verify_file(
+        &self,
+        file: &mut File,
+        owner: &OfflineSourceOwnerToken,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<OfflineSourcePhysicalFacts> {
+        require(
+            self.owner.same_owner(owner) && boot_identity()? == self.boot,
+            "boot metadata witness lost actual source owner/current boot",
+        )?;
         let before = attributes(file, events)?;
-        require(matches!(before, 1 | 3), "boot metadata source is not actually excluded")?;
-        let actual = source_facts_with_native_witness(file, &self.source, self.budget,
-            Some(&self.basis.gpt.native_layout), events)?;
-        require(actual.disk_attributes == before
-            && actual.device == self.basis.device && actual.length == self.basis.length
-            && actual.alignment == self.basis.alignment && actual.gpt == self.basis.gpt,
-            "boot metadata actual full raw GPT/device/protection differs from held source witness")?;
+        require(
+            matches!(before, 1 | 3),
+            "boot metadata source is not actually excluded",
+        )?;
+        let actual = source_facts_with_native_witness(
+            file,
+            &self.source,
+            self.budget,
+            Some(&self.basis.gpt.native_layout),
+            events,
+        )?;
+        require(
+            actual.disk_attributes == before
+                && actual.device == self.basis.device
+                && actual.length == self.basis.length
+                && actual.alignment == self.basis.alignment
+                && actual.gpt == self.basis.gpt,
+            "boot metadata actual full raw GPT/device/protection differs from held source witness",
+        )?;
         Ok(actual)
     }
 }
@@ -526,16 +580,46 @@ pub(super) fn require_physical_handle(
     held_native_layout: Option<&[u8]>,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<()> {
-    require(attributes(file, events)? == expected,
-        "actual physical gate lost protection before current identity queries")?;
-    let device = control(file, "offline-paged-gate-native-device", DEVICE, &[], 12, events)?;
-    let length = control(file, "offline-paged-gate-native-length", LENGTH, &[], 8, events)?;
+    require(
+        attributes(file, events)? == expected,
+        "actual physical gate lost protection before current identity queries",
+    )?;
+    let device = control(
+        file,
+        "offline-paged-gate-native-device",
+        DEVICE,
+        &[],
+        12,
+        events,
+    )?;
+    let length = control(
+        file,
+        "offline-paged-gate-native-length",
+        LENGTH,
+        &[],
+        8,
+        events,
+    )?;
     let mut query = [0u8; 12];
     query[0] = 6;
-    let alignment = control(file, "offline-paged-gate-native-alignment", ALIGNMENT, &query, 28, events)?;
+    let alignment = control(
+        file,
+        "offline-paged-gate-native-alignment",
+        ALIGNMENT,
+        &query,
+        28,
+        events,
+    )?;
     let native = match held_native_layout {
         Some(held) => held.to_vec(),
-        None => control(file, "offline-paged-gate-full-native-layout", LAYOUT, &[], 65536, events)?,
+        None => control(
+            file,
+            "offline-paged-gate-full-native-layout",
+            LAYOUT,
+            &[],
+            65536,
+            events,
+        )?,
     };
     let actual = attributes(file, events)?;
     require(
@@ -554,9 +638,18 @@ impl Core {
             require(!self.poisoned, "offline source owner poisoned")?;
             self.env
                 .require_current_at_attributes(self.expected_attributes, events)?;
-            if let Some(management) = self.prepared_exclusion.as_ref().and_then(|v| v.management.as_ref()) {
-                require_physical_handle(management, &self.env.facts.source_physical,
-                    self.expected_attributes, self.env.protected_native_layout(self.expected_attributes)?, events)?;
+            if let Some(management) = self
+                .prepared_exclusion
+                .as_ref()
+                .and_then(|v| v.management.as_ref())
+            {
+                require_physical_handle(
+                    management,
+                    &self.env.facts.source_physical,
+                    self.expected_attributes,
+                    self.env.protected_native_layout(self.expected_attributes)?,
+                    events,
+                )?;
             }
             // Raw GPT metadata reads need a separate buffered readonly object;
             // the source data object is NO_BUFFERING and its aligned window
@@ -569,10 +662,15 @@ impl Core {
                 false,
                 false,
             )?;
-            let actual = self.env.observe_held_source_file(&mut metadata,
-                self.expected_attributes, events)?;
-            require(attributes(&self.file, events)? == self.expected_attributes,
-                "source data FileObject lost protection before current identity queries")?;
+            let actual = self.env.observe_held_source_file(
+                &mut metadata,
+                self.expected_attributes,
+                events,
+            )?;
+            require(
+                attributes(&self.file, events)? == self.expected_attributes,
+                "source data FileObject lost protection before current identity queries",
+            )?;
             let device = control(
                 &self.file,
                 "offline-source-data-device",
@@ -592,8 +690,14 @@ impl Core {
             let held_native = self.env.protected_native_layout(self.expected_attributes)?;
             let layout = match held_native {
                 Some(held) => held.to_vec(),
-                None => control(&self.file, "offline-source-data-full-native-layout",
-                    LAYOUT, &[], 65536, events)?,
+                None => control(
+                    &self.file,
+                    "offline-source-data-full-native-layout",
+                    LAYOUT,
+                    &[],
+                    65536,
+                    events,
+                )?,
             };
             require(
                 device == actual.device
@@ -637,7 +741,9 @@ impl Core {
                 serialized_state_grants_authority: false,
                 native_layout_provenance: if held_native.is_some() {
                     "same-boot-before-exclusion-native-witness"
-                } else { "current-native-query" },
+                } else {
+                    "current-native-query"
+                },
                 native_layout_currently_requeried: held_native.is_none(),
                 current_complete_raw_gpt_revalidated: true,
             })

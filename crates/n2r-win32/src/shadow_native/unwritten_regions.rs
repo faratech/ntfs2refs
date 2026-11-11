@@ -1,7 +1,9 @@
 //! Bounded read-only proof of complete unwritten storage-region coverage.
-use std::{fs::File,io};
-fn invalid(message:&str)->io::Error {io::Error::other(message)}
-pub(super) fn require(file:&File,bytes:u64)->io::Result<()> {
+use std::{fs::File, io};
+fn invalid(message: &str) -> io::Error {
+    io::Error::other(message)
+}
+pub(super) fn require(file: &File, bytes: u64) -> io::Result<()> {
     let rounded = bytes
         .checked_add(4095)
         .ok_or_else(|| invalid("VDL EOF overflow"))?
@@ -23,7 +25,9 @@ pub(super) fn require(file:&File,bytes:u64)->io::Result<()> {
         }
         let total = u32::from_le_bytes(regions[4..8].try_into().unwrap()) as usize;
         let count = u32::from_le_bytes(regions[8..12].try_into().unwrap()) as usize;
-        if count == 0 || count > 1024 || total < count
+        if count == 0
+            || count > 1024
+            || total < count
             || regions.len() != 16 + 24 * count
             || (query.native_error.is_none() && total != count)
         {
@@ -34,12 +38,18 @@ pub(super) fn require(file:&File,bytes:u64)->io::Result<()> {
             let offset = i64::from_le_bytes(region[..8].try_into().unwrap());
             let length = i64::from_le_bytes(region[8..16].try_into().unwrap());
             let usage = u32::from_le_bytes(region[16..20].try_into().unwrap());
-            if offset < 0 || offset as u64 != cursor || length < 0 || usage != 0
+            if offset < 0
+                || offset as u64 != cursor
+                || length < 0
+                || usage != 0
                 || (length == 0 && bytes != 0)
             {
-                return Err(invalid("native storage-VDL has a gap or initialized region"));
+                return Err(invalid(
+                    "native storage-VDL has a gap or initialized region",
+                ));
             }
-            cursor = cursor.checked_add(length as u64)
+            cursor = cursor
+                .checked_add(length as u64)
                 .filter(|end| *end <= rounded)
                 .ok_or_else(|| invalid("native unwritten region escapes EOF"))?;
         }
@@ -50,7 +60,9 @@ pub(super) fn require(file:&File,bytes:u64)->io::Result<()> {
             break;
         }
         if cursor <= start || cursor >= bytes {
-            return Err(invalid("native unwritten region pagination made no progress"));
+            return Err(invalid(
+                "native unwritten region pagination made no progress",
+            ));
         }
     }
     Ok(())

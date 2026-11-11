@@ -6,8 +6,8 @@ pub struct PartitionBasicReadonlyTerminal {
     binding: PartitionSourceBinding,
     budget: PartitionObservationBudget,
     physical: File,
-    data_profile:PartitionDataProfile,
-    physical_data:Option<PartitionPhysicalDataOwner>,
+    data_profile: PartitionDataProfile,
+    physical_data: Option<PartitionPhysicalDataOwner>,
     baseline: TerminalMetadataBaseline,
     volume: File,
     mounted_binding: crate::general_layout::GeneralDiskBinding,
@@ -25,19 +25,37 @@ impl PartitionBasicReadonlyTerminal {
         observer: &mut impl PartitionRestorationObserver,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<Option<Self>> {
-        Self::open_with_profile(binding,budget,observer,events,PartitionDataProfile::PrivateVolumeV2)
+        Self::open_with_profile(
+            binding,
+            budget,
+            observer,
+            events,
+            PartitionDataProfile::PrivateVolumeV2,
+        )
     }
     /// Readonly-only route for the explicitly versioned physical protocol.
     /// No lock, admission, replay eligibility or source writer is inferred.
     pub fn open_if_actual_basic_ro_physical(
-        binding:PartitionSourceBinding,budget:PartitionObservationBudget,
-        observer:&mut impl PartitionRestorationObserver,events:&mut Vec<NativeEvent>
-    )->io::Result<Option<Self>> {
-        Self::open_with_profile(binding,budget,observer,events,PartitionDataProfile::BasicReadonlyPhysicalV3)
+        binding: PartitionSourceBinding,
+        budget: PartitionObservationBudget,
+        observer: &mut impl PartitionRestorationObserver,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<Option<Self>> {
+        Self::open_with_profile(
+            binding,
+            budget,
+            observer,
+            events,
+            PartitionDataProfile::BasicReadonlyPhysicalV3,
+        )
     }
-    fn open_with_profile(binding:PartitionSourceBinding,budget:PartitionObservationBudget,
-        observer:&mut impl PartitionRestorationObserver,events:&mut Vec<NativeEvent>,data_profile:PartitionDataProfile
-    )->io::Result<Option<Self>> {
+    fn open_with_profile(
+        binding: PartitionSourceBinding,
+        budget: PartitionObservationBudget,
+        observer: &mut impl PartitionRestorationObserver,
+        events: &mut Vec<NativeEvent>,
+        data_profile: PartitionDataProfile,
+    ) -> io::Result<Option<Self>> {
         binding.validate()?;
         budget.validate()?;
         publication_checkpoint(Ok(()), observer, "basic-ro-terminal-route-opening", events)?;
@@ -135,11 +153,19 @@ impl PartitionBasicReadonlyTerminal {
             reply.is_empty(),
             "BasicRO terminal extended DASD reply differs",
         )?;
-        let physical_data=if data_profile==PartitionDataProfile::BasicReadonlyPhysicalV3 {
-            Some(PartitionPhysicalDataOwner::open_readonly(&binding,token.clone(),&partition.gpt.native_layout,events)?)
-        }else{None};
+        let physical_data = if data_profile == PartitionDataProfile::BasicReadonlyPhysicalV3 {
+            Some(PartitionPhysicalDataOwner::open_readonly(
+                &binding,
+                token.clone(),
+                &partition.gpt.native_layout,
+                events,
+            )?)
+        } else {
+            None
+        };
         let value = Self {
-            data_profile,physical_data,
+            data_profile,
+            physical_data,
             binding,
             budget,
             physical,
@@ -280,9 +306,18 @@ impl PartitionBasicReadonlyTerminal {
         &self,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<TerminalRawReader> {
-        let data=if let Some(data)=self.physical_data.as_ref(){
-            data.revalidate_native(events)?;data.duplicate_readonly(events)?
-        }else{super::super::partition_lifecycle::held_read::duplicate_bound(&self.volume,&self.binding,&self.info,&self.token,events)?};
+        let data = if let Some(data) = self.physical_data.as_ref() {
+            data.revalidate_native(events)?;
+            data.duplicate_readonly(events)?
+        } else {
+            super::super::partition_lifecycle::held_read::duplicate_bound(
+                &self.volume,
+                &self.binding,
+                &self.info,
+                &self.token,
+                events,
+            )?
+        };
         Ok(TerminalRawReader {
             file: TerminalReadBacking::Held(data),
             buffer: AlignedBuffer::new()?,
@@ -344,7 +379,10 @@ impl PartitionBasicReadonlyTerminal {
             &self.baseline.partition.windows_volume,
             &pins,
         )?;
-        need(origin.data_profile==self.data_profile,"closed readonly route and authenticated source profile differ")?;
+        need(
+            origin.data_profile == self.data_profile,
+            "closed readonly route and authenticated source profile differ",
+        )?;
         let mut expected = origin.original_info.clone();
         expected[64..72].copy_from_slice(&RO.to_le_bytes());
         need(
@@ -361,8 +399,8 @@ impl PartitionBasicReadonlyTerminal {
         )?;
         let mut guard = PartitionTerminalRestorationGuard {
             file: None,
-            data_profile:self.data_profile,
-            physical_data:self.physical_data,
+            data_profile: self.data_profile,
+            physical_data: self.physical_data,
             physical: self.physical,
             binding: self.binding,
             budget: self.budget,

@@ -25,11 +25,15 @@ struct ResidentStates {
 impl ResidentStates {
     fn try_new(rows: u64, scratch: &SourceScratch) -> Option<Self> {
         let charge = rows.checked_add(std::mem::size_of::<Self>() as u64)?;
-        if rows == 0 || charge > scratch.budget().ram_bytes / 64 { return None; }
+        if rows == 0 || charge > scratch.budget().ram_bytes / 64 {
+            return None;
+        }
         let size = usize::try_from(rows).ok()?;
         let ram = scratch.lease_ram(charge).ok()?;
         let mut bytes = Vec::new();
-        if bytes.try_reserve_exact(size).is_err() || bytes.capacity() != size { return None; }
+        if bytes.try_reserve_exact(size).is_err() || bytes.capacity() != size {
+            return None;
+        }
         bytes.resize(size, 0);
         Some(Self { bytes, _ram: ram })
     }
@@ -80,7 +84,10 @@ impl States {
             "ancestry state escapes complete file domain"
         );
         let byte = if let Some(resident) = &self.resident {
-            *resident.bytes.get(usize::try_from(row)?).context("resident ancestry address differs")?
+            *resident
+                .bytes
+                .get(usize::try_from(row)?)
+                .context("resident ancestry address differs")?
         } else {
             let mut byte = [0];
             self.file.seek(SeekFrom::Start(row))?;
@@ -108,7 +115,10 @@ impl States {
             AncestryState::Unresolved(problem) => 4 + problem as u8,
         };
         if let Some(resident) = &mut self.resident {
-            *resident.bytes.get_mut(usize::try_from(row)?).context("resident ancestry address differs")? = byte;
+            *resident
+                .bytes
+                .get_mut(usize::try_from(row)?)
+                .context("resident ancestry address differs")? = byte;
         } else {
             self.file.seek(SeekFrom::Start(row))?;
             self.file.write_all(&[byte])?;
@@ -190,7 +200,9 @@ pub(super) fn classify(
                     _ => State::Unresolved(Issue::UnsupportedReservedParent),
                 },
             )?;
-        } else if let Some(problem) = local_ancestry_issue_with_link_counter_hint(&file, windows_link_counter_hint) {
+        } else if let Some(problem) =
+            local_ancestry_issue_with_link_counter_hint(&file, windows_link_counter_hint)
+        {
             states.set(ordinal, State::Unresolved(problem))?;
         }
     }

@@ -288,8 +288,10 @@ impl Drop for Overlapped {
 /// Hash every requested byte, with a fixed 4 MiB buffer and exact reads. No
 /// sampling, skipped zero ranges, alternate digest or source mutation.
 type VerifiedBody = ([u8; 32], u64, u64);
-static VERIFIED_JOURNAL_BODIES: std::sync::Mutex<Vec<VerifiedBody>> = std::sync::Mutex::new(Vec::new());
-static JOURNAL_BODY_LAST_FULL: crate::verify_policy::LastFull = crate::verify_policy::LastFull::new();
+static VERIFIED_JOURNAL_BODIES: std::sync::Mutex<Vec<VerifiedBody>> =
+    std::sync::Mutex::new(Vec::new());
+static JOURNAL_BODY_LAST_FULL: crate::verify_policy::LastFull =
+    crate::verify_policy::LastFull::new();
 
 /// Records that a recovery journal body with this digest was read in full and
 /// matched, in this process.
@@ -419,12 +421,21 @@ mod tests {
             inner: io::Cursor::new(data),
             reads: 0,
         };
-        assert_eq!(journal_body(&mut reader, 1024, 7168, &expected).unwrap(), expected);
+        assert_eq!(
+            journal_body(&mut reader, 1024, 7168, &expected).unwrap(),
+            expected
+        );
         let first = reader.reads;
         assert!(first > 0);
         assert!(!journal_body_already_verified(&expected, 1024, 7168));
-        assert_eq!(journal_body(&mut reader, 1024, 7168, &expected).unwrap(), expected);
-        assert!(reader.reads > first, "the second comparison must read the body again");
+        assert_eq!(
+            journal_body(&mut reader, 1024, 7168, &expected).unwrap(),
+            expected
+        );
+        assert!(
+            reader.reads > first,
+            "the second comparison must read the body again"
+        );
     }
 
     #[test]
@@ -444,7 +455,11 @@ mod tests {
         }
         overlapped.update_parts(&[]).unwrap();
         // One byte more than the bound, split over parts, is refused whole.
-        assert!(overlapped.update_parts(&[&body, &frame, &frame, &[0]]).is_err());
+        assert!(
+            overlapped
+                .update_parts(&[&body, &frame, &frame, &[0]])
+                .is_err()
+        );
         let expected: [u8; 32] = serial.finalize().into();
         assert_eq!(overlapped.finish().unwrap(), expected);
     }
@@ -456,12 +471,20 @@ mod tests {
         let data: Vec<u8> = (0..40 * 1024 * 1024 + 12_345u32)
             .map(|value| (value ^ (value >> 11)) as u8)
             .collect();
-        for (offset, length) in [(0u64, data.len() as u64), (4097, 33 * 1024 * 1024), (100, 5000)] {
+        for (offset, length) in [
+            (0u64, data.len() as u64),
+            (4097, 33 * 1024 * 1024),
+            (100, 5000),
+        ] {
             let expected: [u8; 32] =
                 sha2::Sha256::digest(&data[offset as usize..(offset + length) as usize]).into();
             let mut reader = io::Cursor::new(&data);
             assert_eq!(hash_range(&mut reader, offset, length).unwrap(), expected);
-            assert_eq!(reader.position(), offset + length, "exactly the range is read");
+            assert_eq!(
+                reader.position(),
+                offset + length,
+                "exactly the range is read"
+            );
         }
         // A range that ends before its length is an error, not a short digest.
         let mut reader = io::Cursor::new(&data);
@@ -474,7 +497,10 @@ mod tests {
         let expected: [u8; 32] = sha2::Sha256::digest(&data[..]).into();
         data[100] ^= 1;
         let mut reader = io::Cursor::new(data);
-        assert_ne!(journal_body(&mut reader, 0, 4096, &expected).unwrap(), expected);
+        assert_ne!(
+            journal_body(&mut reader, 0, 4096, &expected).unwrap(),
+            expected
+        );
         assert!(!journal_body_already_verified(&expected, 0, 4096));
     }
 }

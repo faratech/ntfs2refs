@@ -25,31 +25,38 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 use windows_sys::Win32::System::{IO::DeviceIoControl, SystemInformation::GetWindowsDirectoryW};
 
-mod paged_write_policy;
-mod paged_recovery;
 mod isolation_restore;
+mod paged_recovery;
+mod paged_write_policy;
 mod source_cache;
-pub use source_cache::{SourceCacheContinuity, SourceCacheFingerprintDomain, NativeSourceObservationOrigin,
-    SourceCacheFingerprintMismatch, SourceCacheRefreshDomain, SourceCacheRefreshRow};
-pub mod partition_isolation;
+pub use source_cache::{
+    NativeSourceObservationOrigin, SourceCacheContinuity, SourceCacheFingerprintDomain,
+    SourceCacheFingerprintMismatch, SourceCacheRefreshDomain, SourceCacheRefreshRow,
+};
 pub mod offline_environment;
-pub mod recovery_image;
+pub mod partition_isolation;
 pub mod recovery_boot;
+pub mod recovery_image;
+pub use paged_recovery::{
+    BorrowedPagedWriter, GeneralLiveConvertedObservation, PagedRecoveryDirection,
+    PagedRecoveryPins, note_selected_new_bytes_verified, selected_new_bytes_verified,
+};
+pub use paged_recovery::{
+    PartitionClosedJournalObservation, PartitionHandoffWitness, PartitionTerminalKind,
+    authenticate_partition_closed_journal,
+};
 pub use paged_write_policy::{
     HeldPagedWritePolicy, PagedPolicyIndexBuilder, PagedPolicyIndexFacts, PagedPolicyIndexRow,
 };
-pub use paged_recovery::{BorrowedPagedWriter, GeneralLiveConvertedObservation, PagedRecoveryDirection, PagedRecoveryPins, note_selected_new_bytes_verified, selected_new_bytes_verified};
-pub use paged_recovery::{PartitionClosedJournalObservation, PartitionHandoffWitness,
-    PartitionTerminalKind, authenticate_partition_closed_journal};
 
+mod frozen_shadow_source_query;
+mod frozen_source_read_scope;
+mod offline_windows;
 mod partition_dump_locations;
 mod partition_runtime_roles;
 mod partition_storage_roles;
-mod offline_windows;
-mod frozen_shadow_source_query;
-mod frozen_source_read_scope;
-pub use frozen_source_read_scope::GeneralFrozenSourceReadScope;
 pub(crate) use frozen_shadow_source_query::NativeFrozenShadowSourceQueryWitness;
+pub use frozen_source_read_scope::GeneralFrozenSourceReadScope;
 mod windows_storage_class;
 pub use windows_storage_class::BootStorageHintNormalization;
 mod partition_owner;
@@ -59,9 +66,11 @@ pub use partition_source_metadata::{PartitionSourceMetadataState, PartitionSourc
 pub mod partition_lifecycle;
 pub mod partition_restoration;
 mod partition_restoration_observation;
-pub use partition_owner::{PartitionOwnerState, PartitionOwnerToken, PartitionPagedWriter, PartitionScopedOwner};
-pub use partition_owner::{PartitionJournalReadView, PartitionSourceAdmissionGate};
 pub use partition_owner::PartitionMixedReplayGate;
+pub use partition_owner::{PartitionJournalReadView, PartitionSourceAdmissionGate};
+pub use partition_owner::{
+    PartitionOwnerState, PartitionOwnerToken, PartitionPagedWriter, PartitionScopedOwner,
+};
 
 const DEVICE: u32 = 0x002d1080;
 const LENGTH: u32 = 0x0007405c;
@@ -173,23 +182,40 @@ pub struct GeneralLivePagedNtfsObservation {
     cache_continuity: Option<SourceCacheContinuity>,
 }
 impl GeneralLivePagedNtfsObservation {
-    pub fn origin(&self) -> &NativeSourceObservationOrigin { &self.origin }
-    pub fn require_cache_owner(&self, source: &GeneralFrozenPartition, events: &mut Vec<NativeEvent>) -> io::Result<()> {
+    pub fn origin(&self) -> &NativeSourceObservationOrigin {
+        &self.origin
+    }
+    pub fn require_cache_owner(
+        &self,
+        source: &GeneralFrozenPartition,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
         if let Some(proof) = &self.cache_continuity {
-            proof.require_source(source, proof.inspection_sha256(), proof.origin_sha256(), events)?;
+            proof.require_source(
+                source,
+                proof.inspection_sha256(),
+                proof.origin_sha256(),
+                events,
+            )?;
         }
         Ok(())
     }
-    pub fn windows_object_ids(&self) -> Option<&crate::windows_object_ids::VerifiedWindowsObjectIds> {
+    pub fn windows_object_ids(
+        &self,
+    ) -> Option<&crate::windows_object_ids::VerifiedWindowsObjectIds> {
         self.windows_object_ids.as_deref()
     }
-    pub fn windows_object_ids_owned(&self) -> Option<Arc<crate::windows_object_ids::VerifiedWindowsObjectIds>> {
+    pub fn windows_object_ids_owned(
+        &self,
+    ) -> Option<Arc<crate::windows_object_ids::VerifiedWindowsObjectIds>> {
         self.windows_object_ids.as_ref().map(Arc::clone)
     }
     pub fn windows_txf_markers(&self) -> Option<&crate::windows_txf::VerifiedWindowsTxfMarkers> {
         self.windows_txf_markers.as_deref()
     }
-    pub fn windows_txf_markers_owned(&self) -> Option<Arc<crate::windows_txf::VerifiedWindowsTxfMarkers>> {
+    pub fn windows_txf_markers_owned(
+        &self,
+    ) -> Option<Arc<crate::windows_txf::VerifiedWindowsTxfMarkers>> {
         self.windows_txf_markers.as_ref().map(Arc::clone)
     }
     pub fn domain(&self) -> &crate::observation_pages::PagedNativeObservation {
@@ -276,8 +302,8 @@ pub(crate) struct GeneralReadonlyRefsVolume<'a> {
     expected_state: &'a GeneralDiskState,
 }
 mod readonly_refs_access;
-pub(crate) use readonly_refs_access::{ProtectedReadonlyRefsAccess, ReadonlyRefsScope};
 pub use crate::shadow_native::PartitionReadonlyFidelity as PartitionTerminalNativeObservation;
+pub(crate) use readonly_refs_access::{ProtectedReadonlyRefsAccess, ReadonlyRefsScope};
 impl GeneralReadonlyRefsVolume<'_> {
     pub(crate) fn binding(&self) -> &GeneralDiskBinding {
         self.binding
@@ -549,41 +575,97 @@ impl WritePolicy {
     }
 }
 
-#[derive(Clone,Copy)]
-enum ControlInputBudget { Ordinary64, GptPartitionInformation120 }
+#[derive(Clone, Copy)]
+enum ControlInputBudget {
+    Ordinary64,
+    GptPartitionInformation120,
+}
 impl ControlInputBudget {
-    fn input_limit(self)->usize {match self{Self::Ordinary64=>64,Self::GptPartitionInformation120=>120}}
+    fn input_limit(self) -> usize {
+        match self {
+            Self::Ordinary64 => 64,
+            Self::GptPartitionInformation120 => 120,
+        }
+    }
 }
 fn control(
-    file:&File,name:&str,code:u32,input:&[u8],capacity:usize,events:&mut Vec<NativeEvent>,
-)->io::Result<Vec<u8>> {
-    control_admitted(file,name,code,input,capacity,events,ControlInputBudget::Ordinary64)
+    file: &File,
+    name: &str,
+    code: u32,
+    input: &[u8],
+    capacity: usize,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<Vec<u8>> {
+    control_admitted(
+        file,
+        name,
+        code,
+        input,
+        capacity,
+        events,
+        ControlInputBudget::Ordinary64,
+    )
 }
 /// Fixed SDK single-GPT-partition setter only. The caller must already hold
 /// the actual source/intent/GPT lifecycle; this helper grants none of those.
 /// Ordinary control keeps its64-byte input ceiling and cannot select this case.
 fn control_set_gpt_partition(
-    file:&File,name:&str,input:&[u8;120],events:&mut Vec<NativeEvent>,
-)->io::Result<Vec<u8>> {
-    const _:()=assert!(std::mem::size_of::<windows_sys::Win32::System::Ioctl::SET_PARTITION_INFORMATION_EX>()==120
-        &&std::mem::offset_of!(windows_sys::Win32::System::Ioctl::SET_PARTITION_INFORMATION_EX,Anonymous)==8
-        &&std::mem::size_of::<windows_sys::Win32::System::Ioctl::PARTITION_INFORMATION_GPT>()==112);
-    if input[..4]!=1u32.to_le_bytes()||input[4..8]!=[0;4] {
-        return Err(invalid("typed partition setter requires exact GPT SDK header/padding"));
+    file: &File,
+    name: &str,
+    input: &[u8; 120],
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<Vec<u8>> {
+    const _: () = assert!(
+        std::mem::size_of::<windows_sys::Win32::System::Ioctl::SET_PARTITION_INFORMATION_EX>()
+            == 120
+            && std::mem::offset_of!(
+                windows_sys::Win32::System::Ioctl::SET_PARTITION_INFORMATION_EX,
+                Anonymous
+            ) == 8
+            && std::mem::size_of::<windows_sys::Win32::System::Ioctl::PARTITION_INFORMATION_GPT>()
+                == 112
+    );
+    if input[..4] != 1u32.to_le_bytes() || input[4..8] != [0; 4] {
+        return Err(invalid(
+            "typed partition setter requires exact GPT SDK header/padding",
+        ));
     }
-    control_admitted(file,name,windows_sys::Win32::System::Ioctl::IOCTL_DISK_SET_PARTITION_INFO_EX,
-        input,0,events,ControlInputBudget::GptPartitionInformation120)
+    control_admitted(
+        file,
+        name,
+        windows_sys::Win32::System::Ioctl::IOCTL_DISK_SET_PARTITION_INFO_EX,
+        input,
+        0,
+        events,
+        ControlInputBudget::GptPartitionInformation120,
+    )
 }
 fn control_admitted(
-    file:&File,name:&str,code:u32,input:&[u8],capacity:usize,events:&mut Vec<NativeEvent>,budget:ControlInputBudget,
-)->io::Result<Vec<u8>> {
-    if matches!(budget,ControlInputBudget::GptPartitionInformation120)
-        &&(code!=windows_sys::Win32::System::Ioctl::IOCTL_DISK_SET_PARTITION_INFO_EX||input.len()!=120||capacity!=0) {
-        return Err(invalid("typed GPT setter control shape differs from fixed SDK contract"));
+    file: &File,
+    name: &str,
+    code: u32,
+    input: &[u8],
+    capacity: usize,
+    events: &mut Vec<NativeEvent>,
+    budget: ControlInputBudget,
+) -> io::Result<Vec<u8>> {
+    if matches!(budget, ControlInputBudget::GptPartitionInformation120)
+        && (code != windows_sys::Win32::System::Ioctl::IOCTL_DISK_SET_PARTITION_INFO_EX
+            || input.len() != 120
+            || capacity != 0)
+    {
+        return Err(invalid(
+            "typed GPT setter control shape differs from fixed SDK contract",
+        ));
     }
-    let limit=budget.input_limit();
-    if input.len()>limit||capacity>65536||events.len()>=crate::MAX_BATCH_EVENTS {
-        return Err(invalid(&format!("native control budget exceeded: operation={name}, code=0x{code:08x}, input_bytes={}, output_capacity={capacity}, events={}, limits(input_bytes<={limit}, output_capacity<=65536, events<{})",input.len(),events.len(),crate::MAX_BATCH_EVENTS)));
+    let limit = budget.input_limit();
+    if input.len() > limit || capacity > 65536 || events.len() >= crate::MAX_BATCH_EVENTS {
+        return Err(invalid(&format!(
+            "native control budget exceeded: operation={name}, code=0x{code:08x}, input_bytes={}, output_capacity={capacity}, events={}, limits(input_bytes<={limit}, output_capacity<=65536, events<{})",
+            input.len(),
+            events.len(),
+            crate::MAX_BATCH_EVENTS
+        )));
     }
     let mut output = vec![0; capacity];
     let mut returned = 0_u32;
@@ -743,13 +825,18 @@ pub fn current_windows_directory() -> io::Result<std::path::PathBuf> {
             "current Windows volume cannot be safely identified",
         ));
     }
-    Ok(std::path::PathBuf::from(String::from_utf16(&name[..count])
-        .map_err(|_| invalid("current Windows directory UTF-16 differs"))?))
+    Ok(std::path::PathBuf::from(
+        String::from_utf16(&name[..count])
+            .map_err(|_| invalid("current Windows directory UTF-16 differs"))?,
+    ))
 }
 
 pub(crate) fn current_windows_disk(events: &mut Vec<NativeEvent>) -> io::Result<u32> {
     use std::os::windows::ffi::OsStrExt;
-    let name: Vec<u16> = current_windows_directory()?.as_os_str().encode_wide().collect();
+    let name: Vec<u16> = current_windows_directory()?
+        .as_os_str()
+        .encode_wide()
+        .collect();
     let letter =
         char::from_u32(u32::from(name[0])).ok_or_else(|| invalid("invalid system drive"))?;
     if !letter.is_ascii_alphabetic() {
@@ -1038,28 +1125,45 @@ pub fn capture_mount_paths_for_journal(
     // device/disk geometry, complete GPT non-overlap/identity, attributes,
     // Windows disk, requested role and two identical native snapshots.
     let before = crate::discovery::discover(&root, role)?;
-    if before.binding != journal.disk || !before.read_only || !before.observed_twice_unchanged
-        || before.source_write_requests != 0 {
-        return Err(invalid("journal mount-route binding differs before enumeration"));
+    if before.binding != journal.disk
+        || !before.read_only
+        || !before.observed_twice_unchanged
+        || before.source_write_requests != 0
+    {
+        return Err(invalid(
+            "journal mount-route binding differs before enumeration",
+        ));
     }
     let paths = capture_mount_paths_for_bound_volume(journal.disk.clone())?;
     let after = crate::discovery::discover(&root, role)?;
-    if after.binding != journal.disk || !after.read_only || !after.observed_twice_unchanged
-        || after.source_write_requests != 0 || before.evidence != after.evidence
+    if after.binding != journal.disk
+        || !after.read_only
+        || !after.observed_twice_unchanged
+        || after.source_write_requests != 0
+        || before.evidence != after.evidence
         || before.windows_disk_number != after.windows_disk_number
         || before.disk_is_windows_disk != after.disk_is_windows_disk
-        || before.filesystem != after.filesystem || before.filesystem_flags != after.filesystem_flags
+        || before.filesystem != after.filesystem
+        || before.filesystem_flags != after.filesystem_flags
         || before.volume_serial_low32 != after.volume_serial_low32
         || before.bytes_per_sector != after.bytes_per_sector
         || before.sectors_per_cluster != after.sectors_per_cluster
-        || !before.volume_guid_path.eq_ignore_ascii_case(&after.volume_guid_path)
-        || paths.binding != after.binding || !paths.all_paths_resolve_to_bound_volume {
-        return Err(invalid("journal mount-route identity changed during enumeration"));
+        || !before
+            .volume_guid_path
+            .eq_ignore_ascii_case(&after.volume_guid_path)
+        || paths.binding != after.binding
+        || !paths.all_paths_resolve_to_bound_volume
+    {
+        return Err(invalid(
+            "journal mount-route identity changed during enumeration",
+        ));
     }
     Ok(paths)
 }
 
-fn capture_mount_paths_for_bound_volume(binding: GeneralDiskBinding) -> io::Result<MountPathObservation> {
+fn capture_mount_paths_for_bound_volume(
+    binding: GeneralDiskBinding,
+) -> io::Result<MountPathObservation> {
     let root = format!("{}\\", binding.volume_path()?);
     let mut root_wide: Vec<u16> = root.encode_utf16().collect();
     root_wide.push(0);
@@ -1470,7 +1574,9 @@ impl ReadAhead {
         if self.length == 0 {
             return;
         }
-        let Some(window) = self.window.as_mut() else { return };
+        let Some(window) = self.window.as_mut() else {
+            return;
+        };
         let (start, end) = (self.start, self.start + self.length as u64);
         let (from, to) = (offset.max(start), (offset + bytes.len() as u64).min(end));
         if from < to {
@@ -2051,7 +2157,8 @@ impl GeneralExclusiveRecoveryTarget {
                     frozen_state,
                     position: 0,
                     buffer: AlignedBuffer::new()?,
-                    ahead: ReadAhead::default(), native_bytes_read: 0,
+                    ahead: ReadAhead::default(),
+                    native_bytes_read: 0,
                 },
                 policy: None,
                 paged_policy: None,
@@ -2098,9 +2205,13 @@ impl GeneralFrozenPartition {
     /// The Windows-source profile also pays the bounded native role workspace.
     pub fn read_buffer_memory_bytes_for(binding: &GeneralDiskBinding) -> u64 {
         Self::read_buffer_memory_bytes()
-            + if binding.layout_profile == crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows {
+            + if binding.layout_profile
+                == crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+            {
                 8 * 1024 * 1024
-            } else { 0 }
+            } else {
+                0
+            }
     }
 
     /// Pre-count source freeze with an explicit observed resource contract.
@@ -2169,8 +2280,11 @@ impl GeneralFrozenPartition {
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<(Self, GeneralAllocationFreezeWitness)> {
         binding.validate()?;
-        if binding.layout_profile != crate::general_layout::GeneralDiskLayoutProfile::DedicatedData {
-            return Err(invalid("allocation-capture isolation requires a dedicated shadow/data layout"));
+        if binding.layout_profile != crate::general_layout::GeneralDiskLayoutProfile::DedicatedData
+        {
+            return Err(invalid(
+                "allocation-capture isolation requires a dedicated shadow/data layout",
+            ));
         }
         let resource_admission = resource_profile
             .map(crate::attestation::ResourceProfile::resource_admission)
@@ -2335,7 +2449,8 @@ impl GeneralFrozenPartition {
                 frozen_state,
                 position: 0,
                 buffer,
-                ahead: ReadAhead::default(), native_bytes_read: 0,
+                ahead: ReadAhead::default(),
+                native_bytes_read: 0,
                 resource_budget: resource_admission.map(|a| a.budget),
                 freeze_observation: None,
                 allocation_capture: Some(token),
@@ -2392,64 +2507,83 @@ impl GeneralFrozenPartition {
         {
             return Err(invalid("general disk changed before lock"));
         }
-        let mut sibling_locks = if binding.layout_profile == crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows {
+        let mut sibling_locks = if binding.layout_profile
+            == crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+        {
             offline_windows::lock_all_volumes(&binding, &pre_lock.gpt_layout, events)?
-        } else { Vec::new() };
-        let volume = if sibling_locks.is_empty() { Some(device_file(&binding.volume_path()?, true, false)?) } else { None };
+        } else {
+            Vec::new()
+        };
+        let volume = if sibling_locks.is_empty() {
+            Some(device_file(&binding.volume_path()?, true, false)?)
+        } else {
+            None
+        };
         if let Some(volume) = &volume {
-        let extents = control(
-            volume,
-            "general-lock-volume-extents",
-            VOLUME_EXTENTS,
-            &[],
-            1024,
-            events,
-        )?;
-        binding.validate_volume_extent(&extents)?;
-        // The lock is refused while anything has a handle open on the volume.
-        // Right after hundreds of thousands of files were created and closed
-        // on it, something else (an on-access scanner, the indexer) can still
-        // be holding one for a moment; the full Windows volume failed here
-        // with a bare "Access is denied". Nothing has been written to any
-        // source yet, so wait for the handle to go, for up to a minute.
-        let mut attempts = 0;
-        loop {
-            match control(volume, "general-lock-volume", LOCK, &[], 0, events) {
-                Ok(_) => break,
-                Err(error)
-                    if attempts < 120
-                        && matches!(error.raw_os_error(), Some(5) | Some(32)) =>
-                {
-                    attempts += 1;
-                    std::thread::sleep(std::time::Duration::from_millis(500));
-                }
-                Err(error) => {
-                    return Err(io::Error::new(
-                        error.kind(),
-                        format!(
-                            "locking volume {} of disk {} to freeze it, after {attempts} retries (something still has a handle open on it): {error}",
-                            binding.volume_guid, binding.disk_number
-                        ),
-                    ));
+            let extents = control(
+                volume,
+                "general-lock-volume-extents",
+                VOLUME_EXTENTS,
+                &[],
+                1024,
+                events,
+            )?;
+            binding.validate_volume_extent(&extents)?;
+            // The lock is refused while anything has a handle open on the volume.
+            // Right after hundreds of thousands of files were created and closed
+            // on it, something else (an on-access scanner, the indexer) can still
+            // be holding one for a moment; the full Windows volume failed here
+            // with a bare "Access is denied". Nothing has been written to any
+            // source yet, so wait for the handle to go, for up to a minute.
+            let mut attempts = 0;
+            loop {
+                match control(volume, "general-lock-volume", LOCK, &[], 0, events) {
+                    Ok(_) => break,
+                    Err(error)
+                        if attempts < 120 && matches!(error.raw_os_error(), Some(5) | Some(32)) =>
+                    {
+                        attempts += 1;
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                    }
+                    Err(error) => {
+                        return Err(io::Error::new(
+                            error.kind(),
+                            format!(
+                                "locking volume {} of disk {} to freeze it, after {attempts} retries (something still has a handle open on it): {error}",
+                                binding.volume_guid, binding.disk_number
+                            ),
+                        ));
+                    }
                 }
             }
-        }
-        control(volume, "general-dismount-volume", DISMOUNT, &[], 0, events).map_err(|error| {
-            io::Error::new(
-                error.kind(),
-                format!("dismounting volume {} of disk {} to freeze it: {error}", binding.volume_guid, binding.disk_number),
-            )
-        })?;
+            control(volume, "general-dismount-volume", DISMOUNT, &[], 0, events).map_err(
+                |error| {
+                    io::Error::new(
+                        error.kind(),
+                        format!(
+                            "dismounting volume {} of disk {} to freeze it: {error}",
+                            binding.volume_guid, binding.disk_number
+                        ),
+                    )
+                },
+            )?;
         }
         let buffer = AlignedBuffer::new()?;
         set_attributes(&management, OFFLINE | READ_ONLY, events).map_err(|error| {
             io::Error::new(
                 error.kind(),
-                format!("setting disk {} offline and read-only to freeze it: {error}", binding.disk_number),
+                format!(
+                    "setting disk {} offline and read-only to freeze it: {error}",
+                    binding.disk_number
+                ),
             )
         })?;
-        if let Some(volume) = volume { close_file(volume, "close-general-volume-lock", events)?; }
-        for volume in sibling_locks.drain(..) { close_file(volume, "close-offline-windows-volume-lock", events)?; }
+        if let Some(volume) = volume {
+            close_file(volume, "close-general-volume-lock", events)?;
+        }
+        for volume in sibling_locks.drain(..) {
+            close_file(volume, "close-offline-windows-volume-lock", events)?;
+        }
         let frozen = general_disk_state(&management, &binding, events)?;
         if frozen.disk_attributes != OFFLINE | READ_ONLY
             || frozen.device != pre_lock.device
@@ -2474,7 +2608,8 @@ impl GeneralFrozenPartition {
             frozen_state: frozen,
             position: 0,
             buffer,
-            ahead: ReadAhead::default(), native_bytes_read: 0,
+            ahead: ReadAhead::default(),
+            native_bytes_read: 0,
             resource_budget: None,
             freeze_observation: None,
             allocation_capture: None,
@@ -2503,7 +2638,8 @@ impl GeneralFrozenPartition {
             frozen_state,
             position: 0,
             buffer: AlignedBuffer::new()?,
-            ahead: ReadAhead::default(), native_bytes_read: 0,
+            ahead: ReadAhead::default(),
+            native_bytes_read: 0,
             resource_budget: None,
             freeze_observation: None,
             allocation_capture: None,
@@ -2884,38 +3020,65 @@ impl GeneralFrozenPartition {
             self.observe_ntfs_files_with_collector(request, events, require_vss, |request| {
                 let _ = request;
                 let pending = if marker_binding.layout_profile
-                    == crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows {
+                    == crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+                {
                     Some(crate::windows_txf::PendingWindowsTxfMarkers::begin(
-                        &marker_binding, selectors, &memory,
+                        &marker_binding,
+                        selectors,
+                        &memory,
                     )?)
-                } else { None };
+                } else {
+                    None
+                };
                 let object_pending = if marker_binding.layout_profile
-                    == crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows {
+                    == crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+                {
                     match crate::windows_object_ids::PendingWindowsObjectIds::begin(
-                        &marker_binding, selectors, &memory,
+                        &marker_binding,
+                        selectors,
+                        &memory,
                     ) {
                         Ok(pending) => Some(pending),
-                        Err(error) => return Err(match pending { Some(pending) => pending.refuse(error), None => error }),
+                        Err(error) => {
+                            return Err(match pending {
+                                Some(pending) => pending.refuse(error),
+                                None => error,
+                            });
+                        }
                     }
-                } else { None };
-                let collected = crate::attestation_native::collect_file_metadata_paged_domain_with_memory(
-                    selectors,
-                    path,
-                    budget,
-                    single_content_pass,
-                    Arc::clone(&memory),
-                );
+                } else {
+                    None
+                };
+                let collected =
+                    crate::attestation_native::collect_file_metadata_paged_domain_with_memory(
+                        selectors,
+                        path,
+                        budget,
+                        single_content_pass,
+                        Arc::clone(&memory),
+                    );
                 let domain = match collected {
                     Ok(domain) => domain,
                     Err(error) => {
-                        let error = match object_pending { Some(pending) => pending.refuse(error), None => error };
-                        return Err(match pending { Some(pending) => pending.refuse(error), None => error });
+                        let error = match object_pending {
+                            Some(pending) => pending.refuse(error),
+                            None => error,
+                        };
+                        return Err(match pending {
+                            Some(pending) => pending.refuse(error),
+                            None => error,
+                        });
                     }
                 };
                 if let Some(pending) = pending {
                     let witness = match pending.finish(selectors) {
                         Ok(witness) => witness,
-                        Err(error) => return Err(match object_pending { Some(pending) => pending.refuse(error), None => error }),
+                        Err(error) => {
+                            return Err(match object_pending {
+                                Some(pending) => pending.refuse(error),
+                                None => error,
+                            });
+                        }
                     };
                     windows_txf_markers = Some(Arc::new(witness));
                 }
@@ -2927,18 +3090,39 @@ impl GeneralFrozenPartition {
         let collected = match collected {
             Ok(collected) => collected,
             Err(error) => {
-                let error = match windows_object_ids { Some(witness) => witness.refuse(error), None => error };
-                return Err(match windows_txf_markers { Some(witness) => witness.refuse(error), None => error });
+                let error = match windows_object_ids {
+                    Some(witness) => witness.refuse(error),
+                    None => error,
+                };
+                return Err(match windows_txf_markers {
+                    Some(witness) => witness.refuse(error),
+                    None => error,
+                });
             }
         };
         selectors.revalidate().map_err(|error| {
-            let error = match &windows_object_ids { Some(witness) => Arc::clone(witness).refuse(error), None => error };
-            match &windows_txf_markers { Some(witness) => Arc::clone(witness).refuse(error), None => error }
+            let error = match &windows_object_ids {
+                Some(witness) => Arc::clone(witness).refuse(error),
+                None => error,
+            };
+            match &windows_txf_markers {
+                Some(witness) => Arc::clone(witness).refuse(error),
+                None => error,
+            }
         })?;
-        if windows_txf_markers.is_some() && !collected.txf.as_ref().is_some_and(|txf|
-            txf.observation.default_rm_state() == crate::txf_native::DefaultRmState::Inactive) {
-            let error=invalid(&format!("Windows TxF markers require the existing protected inactive default RM witness: {:?}; {:?}",collected.txf,collected.txf_error));
-            let error=match windows_object_ids { Some(witness)=>witness.refuse(error),None=>error };
+        if windows_txf_markers.is_some()
+            && !collected.txf.as_ref().is_some_and(|txf| {
+                txf.observation.default_rm_state() == crate::txf_native::DefaultRmState::Inactive
+            })
+        {
+            let error = invalid(&format!(
+                "Windows TxF markers require the existing protected inactive default RM witness: {:?}; {:?}",
+                collected.txf, collected.txf_error
+            ));
+            let error = match windows_object_ids {
+                Some(witness) => witness.refuse(error),
+                None => error,
+            };
             return Err(windows_txf_markers.unwrap().refuse(error));
         }
         Ok(GeneralLivePagedNtfsObservation {
@@ -3565,15 +3749,27 @@ impl GeneralFrozenPartition {
         memory: &dyn crate::shadow_native::report_memory::ReportMemoryAccountant,
         aliases: &crate::shadow_native::windows_aliases::VerifiedWindowsAliases,
         events: &mut Vec<NativeEvent>,
-    ) -> io::Result<(GeneralLiveRefsLayoutObservation,
-        crate::shadow_native::windows_aliases::ObservedWindowsAliases)> {
-        if pair.source.layout_profile != crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows {
-            return Err(invalid("derived path aliases require the explicit Windows source profile"));
+    ) -> io::Result<(
+        GeneralLiveRefsLayoutObservation,
+        crate::shadow_native::windows_aliases::ObservedWindowsAliases,
+    )> {
+        if pair.source.layout_profile
+            != crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+        {
+            return Err(invalid(
+                "derived path aliases require the explicit Windows source profile",
+            ));
         }
-        let admission=resource_profile.ok_or_else(||invalid("Windows alias observation needs a resource profile"))?
-            .resource_admission()?.ok_or_else(||invalid("Windows alias observation requires V4"))?;
+        let admission = resource_profile
+            .ok_or_else(|| invalid("Windows alias observation needs a resource profile"))?
+            .resource_admission()?
+            .ok_or_else(|| invalid("Windows alias observation requires V4"))?;
         input.require_resource_metadata(admission)?;
-        aliases.require_scope(&pair,admission.source_inspection_sha256,aliases.plan_digest())?;
+        aliases.require_scope(
+            &pair,
+            admission.source_inspection_sha256,
+            aliases.plan_digest(),
+        )?;
         provider.revalidate()?;
         let ((report,observed_aliases),before,observed_readonly,after)=
             self.with_readonly_refs_observation(&pair,resource_profile,events,|protected| {
@@ -3583,8 +3779,20 @@ impl GeneralFrozenPartition {
                 )
             })?;
         provider.revalidate()?;
-        observed_aliases.require_scope(&pair,admission.source_inspection_sha256,aliases.plan_digest())?;
-        Ok((GeneralLiveRefsLayoutObservation{report,before,observed_readonly,after},observed_aliases))
+        observed_aliases.require_scope(
+            &pair,
+            admission.source_inspection_sha256,
+            aliases.plan_digest(),
+        )?;
+        Ok((
+            GeneralLiveRefsLayoutObservation {
+                report,
+                before,
+                observed_readonly,
+                after,
+            },
+            observed_aliases,
+        ))
     }
 
     fn with_readonly_refs_observation<T>(
@@ -3996,7 +4204,8 @@ impl GeneralJournaledPartition {
                 frozen_state,
                 position: 0,
                 buffer: AlignedBuffer::new()?,
-                ahead: ReadAhead::default(), native_bytes_read: 0,
+                ahead: ReadAhead::default(),
+                native_bytes_read: 0,
             },
             policy: None,
             paged_policy: None,
@@ -4420,11 +4629,18 @@ impl Read for GeneralFrozenPartition {
             return Ok(0);
         }
         if self.ahead.enabled && self.ahead.length != 0 {
-            let (start, end) = (self.ahead.start, self.ahead.start + self.ahead.length as u64);
+            let (start, end) = (
+                self.ahead.start,
+                self.ahead.start + self.ahead.length as u64,
+            );
             if (start..end).contains(&self.position) {
                 let at = (self.position - start) as usize;
                 let wanted = output.len().min(self.ahead.length - at);
-                let window = self.ahead.window.as_mut().ok_or_else(|| invalid("read-ahead window absent"))?;
+                let window = self
+                    .ahead
+                    .window
+                    .as_mut()
+                    .ok_or_else(|| invalid("read-ahead window absent"))?;
                 output[..wanted].copy_from_slice(&window.bytes_mut()[at..at + wanted]);
                 self.position += wanted as u64;
                 self.ahead.last_end = self.ahead.last_end.max(self.position);
@@ -4455,7 +4671,11 @@ impl Read for GeneralFrozenPartition {
             if self.ahead.window.is_none() {
                 self.ahead.window = Some(AlignedBuffer::new()?);
             }
-            let window = self.ahead.window.as_mut().ok_or_else(|| invalid("read-ahead window absent"))?;
+            let window = self
+                .ahead
+                .window
+                .as_mut()
+                .ok_or_else(|| invalid("read-ahead window absent"))?;
             self.ahead.length = 0;
             crate::perf::add_bytes(crate::perf::Point::DeviceRead, count as u64);
             let read = self.file.seek_read(
@@ -5393,7 +5613,10 @@ mod tests {
             (2_500_000, 300_000),
         ];
         for (at, length) in ranges {
-            assert_eq!(read_at(&mut frozen, at, length), bytes[at as usize..at as usize + length]);
+            assert_eq!(
+                read_at(&mut frozen, at, length),
+                bytes[at as usize..at as usize + length]
+            );
         }
         assert_eq!(frozen.ahead.length, 0, "no window outside a declared scope");
         let without = frozen.native_bytes_read;
@@ -5402,13 +5625,26 @@ mod tests {
         frozen.with_read_ahead(|frozen| {
             assert_eq!(read_at(frozen, 0, 4096), bytes[..4096]);
             let after_first = frozen.native_bytes_read;
-            assert_eq!(frozen.ahead.length, ReadAhead::BYTES, "the first forward read fetches a window");
+            assert_eq!(
+                frozen.ahead.length,
+                ReadAhead::BYTES,
+                "the first forward read fetches a window"
+            );
             for (at, length) in &ranges[1..4] {
-                assert_eq!(read_at(frozen, *at, *length), bytes[*at as usize..*at as usize + *length]);
+                assert_eq!(
+                    read_at(frozen, *at, *length),
+                    bytes[*at as usize..*at as usize + *length]
+                );
             }
-            assert_eq!(frozen.native_bytes_read, after_first, "ranges inside the window cost no device read");
+            assert_eq!(
+                frozen.native_bytes_read, after_first,
+                "ranges inside the window cost no device read"
+            );
             for (at, length) in &ranges[4..] {
-                assert_eq!(read_at(frozen, *at, *length), bytes[*at as usize..*at as usize + *length]);
+                assert_eq!(
+                    read_at(frozen, *at, *length),
+                    bytes[*at as usize..*at as usize + *length]
+                );
             }
             // A read behind the window comes from the device and is right.
             assert_eq!(read_at(frozen, 4096, 4096), bytes[4096..8192]);
@@ -5425,10 +5661,19 @@ mod tests {
             }
             assert!(start + length <= bytes.len() as u64);
         });
-        assert_eq!(frozen.ahead.length, 0, "the window is dropped with the scope");
-        assert!(frozen.native_bytes_read >= without, "read-ahead reads at least what was asked for");
+        assert_eq!(
+            frozen.ahead.length, 0,
+            "the window is dropped with the scope"
+        );
+        assert!(
+            frozen.native_bytes_read >= without,
+            "read-ahead reads at least what was asked for"
+        );
         for (at, length) in ranges {
-            assert_eq!(read_at(&mut frozen, at, length), bytes[at as usize..at as usize + length]);
+            assert_eq!(
+                read_at(&mut frozen, at, length),
+                bytes[at as usize..at as usize + length]
+            );
         }
     }
 
@@ -5544,7 +5789,8 @@ mod tests {
             identity: binding.identity,
         };
         let mut reader = GeneralFrozenPartition {
-            ahead: ReadAhead::default(), resource_budget: None,
+            ahead: ReadAhead::default(),
+            resource_budget: None,
             freeze_observation: None,
             allocation_capture: None,
             file,
@@ -5581,13 +5827,14 @@ mod tests {
         } = ordinary_stream();
         let mut target = GeneralJournaledPartition {
             inner: GeneralFrozenPartition {
-                ahead: ReadAhead::default(), resource_budget: None,
+                ahead: ReadAhead::default(),
+                resource_budget: None,
                 freeze_observation: None,
                 allocation_capture: None,
                 file,
                 binding: GeneralDiskBinding {
                     layout_profile: Default::default(),
-            disk_number: binding.disk_number,
+                    disk_number: binding.disk_number,
                     volume_guid: binding.volume_guid,
                     identity: binding.identity,
                 },

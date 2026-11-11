@@ -314,10 +314,19 @@ fn main() -> anyhow::Result<()> {
                 .context("corpus case has no creator binding")?;
             let flat_components = vec![creator.fresh_root_component.clone(), row.file_name];
             let mut source_components = vec![creator.fresh_root_component.clone()];
-            for component in row.source_context.get("first_source")
-                .and_then(|v| v.get("path")).and_then(|v| v.as_array())
-                .context("corpus source path context required")? {
-                source_components.push(component.as_str().context("corpus source component is not text")?.to_owned());
+            for component in row
+                .source_context
+                .get("first_source")
+                .and_then(|v| v.get("path"))
+                .and_then(|v| v.as_array())
+                .context("corpus source path context required")?
+            {
+                source_components.push(
+                    component
+                        .as_str()
+                        .context("corpus source component is not text")?
+                        .to_owned(),
+                );
             }
             ensure!(
                 file.original_sha256 == row.original_sha256

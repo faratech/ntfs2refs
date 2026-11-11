@@ -4,7 +4,9 @@ use crate::{
     artifact_arena::{ArtifactGroup, ArtifactGroupPermit, ArtifactLease},
     general_shadow::{
         PagedInputs,
-        source_backed::{PagedSourceByteAdapter, PagedSourceByteAdapterWithScope, PagedStreamIdentity},
+        source_backed::{
+            PagedSourceByteAdapter, PagedSourceByteAdapterWithScope, PagedStreamIdentity,
+        },
     },
     ntfs_inspect::{
         external_sort::ExternalSort,
@@ -823,7 +825,11 @@ impl PagedTargetScope {
     }
     pub(crate) fn matches_candidate(
         &self,
-        candidate: &crate::general_shadow::paged_candidate::PagedSourceBackedCandidateWithScope<'_, '_, '_>,
+        candidate: &crate::general_shadow::paged_candidate::PagedSourceBackedCandidateWithScope<
+            '_,
+            '_,
+            '_,
+        >,
     ) -> bool {
         candidate.source_owner_identity() == self.source_owner
             && candidate.matches_native_report(&self.native_report)
@@ -872,7 +878,7 @@ pub(crate) struct ProtectedPagedTargetSelection {
     native: n2r_win32::GeneralLiveRefsLayoutObservation,
     windows_aliases: Option<n2r_win32::shadow_native::windows_aliases::ObservedWindowsAliases>,
     windows_alias_owner: Option<Arc<crate::boot_alias::WindowsAliasDomain>>,
-    windows_alias_digest: Option<[u8;32]>,
+    windows_alias_digest: Option<[u8; 32]>,
     scope: PagedTargetScope,
     captured: crate::general_shadow::paged_capture::DiagnosticSelectedCapture,
     // Absent when the expected tree was not re-derived (check-once policy).
@@ -894,17 +900,30 @@ impl ProtectedPagedTargetSelection {
     /// Close boot-only alias preservation against the actual final protected
     /// observer, original source-plan owner and complete canonical input.
     pub(crate) fn require_windows_alias_source(
-        &self,owner:&Arc<crate::boot_alias::WindowsAliasDomain>,source_pin:[u8;32],
-        expected:&PagedExpectedTree,
-    )->Result<()> {
-        ensure!(self.windows_alias_owner.as_ref().is_some_and(|held|Arc::ptr_eq(held,owner)),
-            "target aliases do not retain the original Windows source-plan owner");
-        let observed=self.windows_aliases.as_ref().context("protected target alias witness absent")?;
-        let digest=self.windows_alias_digest.context("protected target alias digest absent")?;
-        ensure!(observed.len() as u64==owner.len()
-            && owner.source_inspection_sha256()==hex::encode(source_pin),
-            "protected target alias coverage or source differs");
-        observed.require_scope(self.scope.pair(),source_pin,digest)?;
+        &self,
+        owner: &Arc<crate::boot_alias::WindowsAliasDomain>,
+        source_pin: [u8; 32],
+        expected: &PagedExpectedTree,
+    ) -> Result<()> {
+        ensure!(
+            self.windows_alias_owner
+                .as_ref()
+                .is_some_and(|held| Arc::ptr_eq(held, owner)),
+            "target aliases do not retain the original Windows source-plan owner"
+        );
+        let observed = self
+            .windows_aliases
+            .as_ref()
+            .context("protected target alias witness absent")?;
+        let digest = self
+            .windows_alias_digest
+            .context("protected target alias digest absent")?;
+        ensure!(
+            observed.len() as u64 == owner.len()
+                && owner.source_inspection_sha256() == hex::encode(source_pin),
+            "protected target alias coverage or source differs"
+        );
+        observed.require_scope(self.scope.pair(), source_pin, digest)?;
         observed.require_input(&PagedInputs(expected))?;
         Ok(())
     }
@@ -1026,69 +1045,150 @@ pub(crate) fn observe_and_select_paged(
         &mut Vec<n2r_win32::NativeEvent>,
     ) -> Result<crate::general_shadow::paged_capture::DiagnosticSelectedCapture>,
 ) -> Result<ProtectedPagedTargetSelection> {
-    let mut scoped=ScopedSourceContext::Dedicated(context);
-    observe_and_select_scoped(&mut scoped,target,pair,expected,capture_group,output,events,None,
-        |scoped,target,expected,routes,scope,closing,native_events| match scoped {
-            ScopedSourceContext::Dedicated(context)=>consume(context,target,expected,routes,scope,closing,native_events),
-            ScopedSourceContext::Partition(_)=>anyhow::bail!("dedicated target callback received partition source"),
-        })
+    let mut scoped = ScopedSourceContext::Dedicated(context);
+    observe_and_select_scoped(
+        &mut scoped,
+        target,
+        pair,
+        expected,
+        capture_group,
+        output,
+        events,
+        None,
+        |scoped, target, expected, routes, scope, closing, native_events| match scoped {
+            ScopedSourceContext::Dedicated(context) => consume(
+                context,
+                target,
+                expected,
+                routes,
+                scope,
+                closing,
+                native_events,
+            ),
+            ScopedSourceContext::Partition(_) => {
+                anyhow::bail!("dedicated target callback received partition source")
+            }
+        },
+    )
 }
 
 pub(crate) fn observe_and_select_paged_windows_aliases(
-    context:&mut crate::general_source_admission::resource::ResourceSourceContext,
-    target:&mut n2r_win32::GeneralFrozenPartition,
-    pair:n2r_win32::general_layout::GeneralSourceShadowBinding,
-    expected:&PagedExpectedTree,capture_group:&ArtifactGroupPermit,output:&Path,
-    events:&mut Vec<n2r_win32::NativeEvent>,
-    aliases:&Arc<n2r_win32::shadow_native::windows_aliases::VerifiedWindowsAliases>,
-    mapped:&crate::boot_alias::WindowsAliasNativeDomain<'_>,
-    consume:impl FnOnce(
+    context: &mut crate::general_source_admission::resource::ResourceSourceContext,
+    target: &mut n2r_win32::GeneralFrozenPartition,
+    pair: n2r_win32::general_layout::GeneralSourceShadowBinding,
+    expected: &PagedExpectedTree,
+    capture_group: &ArtifactGroupPermit,
+    output: &Path,
+    events: &mut Vec<n2r_win32::NativeEvent>,
+    aliases: &Arc<n2r_win32::shadow_native::windows_aliases::VerifiedWindowsAliases>,
+    mapped: &crate::boot_alias::WindowsAliasNativeDomain<'_>,
+    consume: impl FnOnce(
         &mut crate::general_source_admission::resource::ResourceSourceContext,
-        &mut n2r_win32::GeneralFrozenPartition,&PagedExpectedTree,
-        crate::general_shadow::paged_candidate::PagedPayloadRoutes<'_>,&PagedTargetScope,
+        &mut n2r_win32::GeneralFrozenPartition,
+        &PagedExpectedTree,
+        crate::general_shadow::paged_candidate::PagedPayloadRoutes<'_>,
+        &PagedTargetScope,
         &mut dyn crate::general_shadow::source_backed::ClosingShadowBytes,
         &mut Vec<n2r_win32::NativeEvent>,
-    )->Result<crate::general_shadow::paged_capture::DiagnosticSelectedCapture>,
-)->Result<ProtectedPagedTargetSelection> {
-    let owner=context.windows_aliases().context("actual Windows source alias owner absent")?;
-    ensure!(mapped.uses_alias_owner(&owner)&&aliases.len() as u64==owner.len(),
-        "alias constructor does not cover the original Windows source plan");
-    let digest=mapped.semantic_digest();
-    aliases.require_scope(&pair,context.resource_admission().source_inspection_sha256,digest)?;
-    let aliases=WindowsAliasSelection{constructor:aliases,owner,digest};
-    let mut scoped=ScopedSourceContext::Dedicated(context);
-    observe_and_select_scoped(&mut scoped,target,pair,expected,capture_group,output,events,Some(aliases),
-        |scoped,target,expected,routes,scope,closing,native_events|match scoped {
-            ScopedSourceContext::Dedicated(context)=>consume(context,target,expected,routes,scope,closing,native_events),
-            ScopedSourceContext::Partition(_)=>anyhow::bail!("Windows alias observer received an ordinary partition source"),
-        })
+    ) -> Result<crate::general_shadow::paged_capture::DiagnosticSelectedCapture>,
+) -> Result<ProtectedPagedTargetSelection> {
+    let owner = context
+        .windows_aliases()
+        .context("actual Windows source alias owner absent")?;
+    ensure!(
+        mapped.uses_alias_owner(&owner) && aliases.len() as u64 == owner.len(),
+        "alias constructor does not cover the original Windows source plan"
+    );
+    let digest = mapped.semantic_digest();
+    aliases.require_scope(
+        &pair,
+        context.resource_admission().source_inspection_sha256,
+        digest,
+    )?;
+    let aliases = WindowsAliasSelection {
+        constructor: aliases,
+        owner,
+        digest,
+    };
+    let mut scoped = ScopedSourceContext::Dedicated(context);
+    observe_and_select_scoped(
+        &mut scoped,
+        target,
+        pair,
+        expected,
+        capture_group,
+        output,
+        events,
+        Some(aliases),
+        |scoped, target, expected, routes, scope, closing, native_events| match scoped {
+            ScopedSourceContext::Dedicated(context) => consume(
+                context,
+                target,
+                expected,
+                routes,
+                scope,
+                closing,
+                native_events,
+            ),
+            ScopedSourceContext::Partition(_) => {
+                anyhow::bail!("Windows alias observer received an ordinary partition source")
+            }
+        },
+    )
 }
 
-struct WindowsAliasSelection<'a>{
-    constructor:&'a Arc<n2r_win32::shadow_native::windows_aliases::VerifiedWindowsAliases>,
-    owner:Arc<crate::boot_alias::WindowsAliasDomain>,digest:[u8;32],
+struct WindowsAliasSelection<'a> {
+    constructor: &'a Arc<n2r_win32::shadow_native::windows_aliases::VerifiedWindowsAliases>,
+    owner: Arc<crate::boot_alias::WindowsAliasDomain>,
+    digest: [u8; 32],
 }
 
 pub(crate) fn observe_and_select_paged_optional_windows_aliases(
-    context:&mut crate::general_source_admission::resource::ResourceSourceContext,
-    target:&mut n2r_win32::GeneralFrozenPartition,
-    pair:n2r_win32::general_layout::GeneralSourceShadowBinding,
-    expected:&PagedExpectedTree,capture_group:&ArtifactGroupPermit,output:&Path,
-    events:&mut Vec<n2r_win32::NativeEvent>,
-    aliases:Option<(&Arc<n2r_win32::shadow_native::windows_aliases::VerifiedWindowsAliases>,
-        &crate::boot_alias::WindowsAliasNativeDomain<'_>)>,
-    consume:impl FnOnce(
+    context: &mut crate::general_source_admission::resource::ResourceSourceContext,
+    target: &mut n2r_win32::GeneralFrozenPartition,
+    pair: n2r_win32::general_layout::GeneralSourceShadowBinding,
+    expected: &PagedExpectedTree,
+    capture_group: &ArtifactGroupPermit,
+    output: &Path,
+    events: &mut Vec<n2r_win32::NativeEvent>,
+    aliases: Option<(
+        &Arc<n2r_win32::shadow_native::windows_aliases::VerifiedWindowsAliases>,
+        &crate::boot_alias::WindowsAliasNativeDomain<'_>,
+    )>,
+    consume: impl FnOnce(
         &mut crate::general_source_admission::resource::ResourceSourceContext,
-        &mut n2r_win32::GeneralFrozenPartition,&PagedExpectedTree,
-        crate::general_shadow::paged_candidate::PagedPayloadRoutes<'_>,&PagedTargetScope,
+        &mut n2r_win32::GeneralFrozenPartition,
+        &PagedExpectedTree,
+        crate::general_shadow::paged_candidate::PagedPayloadRoutes<'_>,
+        &PagedTargetScope,
         &mut dyn crate::general_shadow::source_backed::ClosingShadowBytes,
         &mut Vec<n2r_win32::NativeEvent>,
-    )->Result<crate::general_shadow::paged_capture::DiagnosticSelectedCapture>,
-)->Result<ProtectedPagedTargetSelection> {
-    if let Some((verified,mapped))=aliases {
-        observe_and_select_paged_windows_aliases(context,target,pair,expected,capture_group,output,events,verified,mapped,consume)
-    }else{
-        observe_and_select_paged(context,target,pair,expected,capture_group,output,events,consume)
+    ) -> Result<crate::general_shadow::paged_capture::DiagnosticSelectedCapture>,
+) -> Result<ProtectedPagedTargetSelection> {
+    if let Some((verified, mapped)) = aliases {
+        observe_and_select_paged_windows_aliases(
+            context,
+            target,
+            pair,
+            expected,
+            capture_group,
+            output,
+            events,
+            verified,
+            mapped,
+            consume,
+        )
+    } else {
+        observe_and_select_paged(
+            context,
+            target,
+            pair,
+            expected,
+            capture_group,
+            output,
+            events,
+            consume,
+        )
     }
 }
 
@@ -1110,12 +1210,31 @@ pub(crate) fn observe_and_select_partition_paged(
         &mut Vec<n2r_win32::NativeEvent>,
     ) -> Result<crate::general_shadow::paged_capture::DiagnosticSelectedCapture>,
 ) -> Result<ProtectedPagedTargetSelection> {
-    let mut scoped=ScopedSourceContext::Partition(context);
-    observe_and_select_scoped(&mut scoped,target,pair,expected,capture_group,output,events,None,
-        |scoped,target,expected,routes,scope,closing,native_events| match scoped {
-            ScopedSourceContext::Partition(context)=>consume(context,target,expected,routes,scope,closing,native_events),
-            ScopedSourceContext::Dedicated(_)=>anyhow::bail!("partition target callback received dedicated source"),
-        })
+    let mut scoped = ScopedSourceContext::Partition(context);
+    observe_and_select_scoped(
+        &mut scoped,
+        target,
+        pair,
+        expected,
+        capture_group,
+        output,
+        events,
+        None,
+        |scoped, target, expected, routes, scope, closing, native_events| match scoped {
+            ScopedSourceContext::Partition(context) => consume(
+                context,
+                target,
+                expected,
+                routes,
+                scope,
+                closing,
+                native_events,
+            ),
+            ScopedSourceContext::Dedicated(_) => {
+                anyhow::bail!("partition target callback received dedicated source")
+            }
+        },
+    )
 }
 
 fn observe_and_select_scoped(
@@ -1159,7 +1278,7 @@ fn observe_and_select_scoped(
     expected.require_shared_memory(&arena)?;
     let memory = super::paged_memory::ArenaReportMemory(arena);
     context.recheck_source(events)?;
-    let source_before = context.source_state(&pair,events)?;
+    let source_before = context.source_state(&pair, events)?;
     source_before.require_excluded()?;
     let target_before = target.state(events)?;
     ensure!(
@@ -1189,7 +1308,8 @@ fn observe_and_select_scoped(
     let source_projection = if n2r_win32::verify_policy::checks_once() {
         None
     } else {
-        let source_projection=context.derive_projection(admission,&projection_dir,&projection_scratch)?;
+        let source_projection =
+            context.derive_projection(admission, &projection_dir, &projection_scratch)?;
         ensure!(
             crate::general_qualification::pretty_json_sha256(&source_projection)?
                 == expected.semantic_sha256(),
@@ -1201,14 +1321,13 @@ fn observe_and_select_scoped(
         Some(source_projection.into_revalidation_owner()?)
     };
     let source_tails = context.with_bytes(
-        admission, expected.logical_bytes().max(1), events, |bytes| {
-        SourceTailProvider::capture(
-            bytes,
-            expected,
-            &output.join("source-tails"),
-            &scratch,
-        )
-    })?;
+        admission,
+        expected.logical_bytes().max(1),
+        events,
+        |bytes| {
+            SourceTailProvider::capture(bytes, expected, &output.join("source-tails"), &scratch)
+        },
+    )?;
     // Source projection and tail capture carry their own row/name/writer
     // leases. Their temporary source adapter has now closed, before the
     // additional workspace needed by the following native target operations.
@@ -1226,8 +1345,9 @@ fn observe_and_select_scoped(
         .and_then(|n| n.checked_add(65536 + 16384))
         .context("native residual owner RAM overflow")?;
     let input = PagedInputs(expected);
-    let same_security =
-        |a: &[u8], b: &[u8]| crate::ntfs_attestation::same_security_null_sacl_as_absent(a, b).map_err(io::Error::other);
+    let same_security = |a: &[u8], b: &[u8]| {
+        crate::ntfs_attestation::same_security_null_sacl_as_absent(a, b).map_err(io::Error::other)
+    };
     // The native wrapper has at most 128 control events with <=64 KiB
     // replies, plus fixed-size disk-state clones. Keep a separate allowance
     // for those real owners; the SDK independently prepays indexes, root,
@@ -1244,10 +1364,12 @@ fn observe_and_select_scoped(
     } else {
         let opening_result_ram = capture_group.arena().reserve_ram(result_ram_bytes)?;
         let prelim_path = output.join("opening-native-tails.pages");
-        let prelim_permit = capture_group.reserve_file(&prelim_path, result_budget.max_file_bytes)?;
+        let prelim_permit =
+            capture_group.reserve_file(&prelim_path, result_budget.max_file_bytes)?;
         n2r_win32::perf::step("walk shadow (opening)");
-        let (preliminary,opening_aliases) = context.observe_target(
-            target, pair.clone(),
+        let (preliminary, opening_aliases) = context.observe_target(
+            target,
+            pair.clone(),
             &input,
             &source_tails,
             prelim_permit.path(),
@@ -1255,7 +1377,7 @@ fn observe_and_select_scoped(
             same_security,
             resources.native_profile(),
             &memory,
-            aliases.as_ref().map(|a|a.constructor.as_ref()),
+            aliases.as_ref().map(|a| a.constructor.as_ref()),
             events,
         )?;
         let stage_ram = scratch.lease_ram(stage_ram_bytes)?;
@@ -1389,8 +1511,9 @@ fn observe_and_select_scoped(
     let closing_result_ram = capture_group.arena().reserve_ram(result_ram_bytes)?;
     let closing_permit = capture_group.reserve_file(&closing_path, result_budget.max_file_bytes)?;
     n2r_win32::perf::step("walk shadow (closing)");
-    let (native,windows_aliases) = context.observe_target(
-        target, pair.clone(),
+    let (native, windows_aliases) = context.observe_target(
+        target,
+        pair.clone(),
         &input,
         &source_tails,
         closing_permit.path(),
@@ -1398,7 +1521,7 @@ fn observe_and_select_scoped(
         same_security,
         resources.native_profile(),
         &memory,
-        aliases.as_ref().map(|a|a.constructor.as_ref()),
+        aliases.as_ref().map(|a| a.constructor.as_ref()),
         events,
     )?;
     let stage_ram = scratch.lease_ram(stage_ram_bytes)?;
@@ -1429,61 +1552,81 @@ fn observe_and_select_scoped(
     // Keep the exact closing routing owner for the capture consumer.
     let closing_allocation =
         allocated(&native, &output.join("closing-allocation"), image, &scratch)?;
-    let (exclusions, in_place, opening_consumed, opening_digest, mut native_leases, mut native_result_ram) =
-        match opening {
-            Some((
+    let (
+        exclusions,
+        in_place,
+        opening_consumed,
+        opening_digest,
+        mut native_leases,
+        mut native_result_ram,
+    ) = match opening {
+        Some((
+            exclusions,
+            route_sha,
+            in_place,
+            allocation,
+            consumed,
+            digest,
+            allocation_sha256,
+            lease,
+            ram,
+        )) => {
+            ensure!(
+                route_sha == closing_route_sha && exclusions.same(&closing_exclusions)?,
+                "protected native stream IDs/maps changed during raw bracket"
+            );
+            ensure!(
+                allocation.same(&closing_allocation)?
+                    && allocation_sha256
+                        == crate::general_qualification::pretty_json_sha256(
+                            &native.report().native().metadata_allocation.as_ref(),
+                        )?,
+                "protected complete allocation changed during raw bracket"
+            );
+            (
                 exclusions,
-                route_sha,
                 in_place,
-                allocation,
-                consumed,
-                digest,
-                allocation_sha256,
-                lease,
-                ram,
-            )) => {
-                ensure!(
-                    route_sha == closing_route_sha && exclusions.same(&closing_exclusions)?,
-                    "protected native stream IDs/maps changed during raw bracket"
-                );
-                ensure!(
-                    allocation.same(&closing_allocation)?
-                        && allocation_sha256
-                            == crate::general_qualification::pretty_json_sha256(
-                                &native.report().native().metadata_allocation.as_ref(),
-                            )?,
-                    "protected complete allocation changed during raw bracket"
-                );
-                (exclusions, in_place, Some(consumed), Some(digest), vec![lease], vec![ram])
-            }
-            None => {
-                n2r_win32::perf::step("find data already in place");
-                let in_place = context.with_bytes(admission, 1, events, |bytes| {
-                    source_in_place(
-                        bytes,
-                        expected,
-                        &closing_routes,
-                        &output.join("in-place"),
-                        image,
+                Some(consumed),
+                Some(digest),
+                vec![lease],
+                vec![ram],
+            )
+        }
+        None => {
+            n2r_win32::perf::step("find data already in place");
+            let in_place = context.with_bytes(admission, 1, events, |bytes| {
+                source_in_place(
+                    bytes,
+                    expected,
+                    &closing_routes,
+                    &output.join("in-place"),
+                    image,
+                    &scratch,
+                )
+            })?;
+            ensure!(
+                closing_exclusions
+                    .subtract(
+                        &closing_allocation,
+                        &output.join("bad-payload-allocation"),
                         &scratch,
-                    )
-                })?;
-                ensure!(
-                    closing_exclusions
-                        .subtract(
-                            &closing_allocation,
-                            &output.join("bad-payload-allocation"),
-                            &scratch,
-                            *b"N2RTBAD1"
-                        )?
-                        .bytes
-                        == 0,
-                    "actual protected payload routes escape complete native allocation"
-                );
-                n2r_win32::perf::step("read raw metadata anchors");
-                (closing_exclusions, in_place, None, None, Vec::new(), Vec::new())
-            }
-        };
+                        *b"N2RTBAD1"
+                    )?
+                    .bytes
+                    == 0,
+                "actual protected payload routes escape complete native allocation"
+            );
+            n2r_win32::perf::step("read raw metadata anchors");
+            (
+                closing_exclusions,
+                in_place,
+                None,
+                None,
+                Vec::new(),
+                Vec::new(),
+            )
+        }
+    };
     native_leases.push(closing_lease);
     native_result_ram.push(closing_result_ram);
     let closing_dir = output.join("closing-raw");
@@ -1550,7 +1693,7 @@ fn observe_and_select_scoped(
     // Charge the small Arc control block, both live Arc values and the token
     // before allocation. Its identity never enters a serialized receipt.
     let identity_ram = scratch.lease_ram(128)?;
-    let source_owner=context.source_owner_identity();
+    let source_owner = context.source_owner_identity();
     let scope = PagedTargetScope {
         required:
             crate::general_shadow::paged_capture::DiagnosticCaptureSelection::from_held_store(
@@ -1579,7 +1722,15 @@ fn observe_and_select_scoped(
     drop(_stage_ram);
     n2r_win32::perf::step("compare shadow with source");
     let mut closing = PagedShadowClosing::new(target, &scope.consumed)?;
-    let captured = consume(context, target, expected, closing_routes, &scope, &mut closing, events)?;
+    let captured = consume(
+        context,
+        target,
+        expected,
+        closing_routes,
+        &scope,
+        &mut closing,
+        events,
+    )?;
     ensure!(
         captured.is_for_scope(&scope),
         "consumer returned a capture from another or unqualified target scope"
@@ -1615,14 +1766,14 @@ fn observe_and_select_scoped(
     expected.require_resource_owner(admission)?;
     context.recheck_source(events)?;
     ensure!(
-        context.source_state(&pair,events)?.same(&source_before),
+        context.source_state(&pair, events)?.same(&source_before),
         "frozen source changed during target selection/capture"
     );
     Ok(ProtectedPagedTargetSelection {
         native,
         windows_aliases,
-        windows_alias_owner:aliases.as_ref().map(|a|Arc::clone(&a.owner)),
-        windows_alias_digest:aliases.as_ref().map(|a|a.digest),
+        windows_alias_owner: aliases.as_ref().map(|a| Arc::clone(&a.owner)),
+        windows_alias_digest: aliases.as_ref().map(|a| a.digest),
         scope,
         captured,
         source_projection,

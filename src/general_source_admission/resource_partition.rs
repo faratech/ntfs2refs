@@ -1,11 +1,11 @@
 //! Actual selected-partition source preparation. This parallel context never
 //! manufactures GeneralDiskState/GeneralFreezeObservation or enables a CLI.
-#[path = "resource_partition_terminal.rs"]
-mod terminal;
-#[path = "resource_partition_cancel.rs"]
-mod live_cancel;
 #[path = "resource_partition_cancel_journal.rs"]
 pub(crate) mod cancel_journal;
+#[path = "resource_partition_cancel.rs"]
+mod live_cancel;
+#[path = "resource_partition_terminal.rs"]
+mod terminal;
 use super::*;
 use n2r_win32::{
     PartitionOwnerState, PartitionOwnerToken, PartitionScopedOwner,
@@ -29,8 +29,8 @@ pub(crate) struct PartitionResourceSourceContext {
     native_artifact: ArtifactLease,
     output_basis: ArenaOutputBasis,
     binding: PartitionSourceBinding,
-    cancel_journal:cancel_journal::LiveCancellationJournal,
-    cancel_journal_memory:Option<crate::artifact_arena::ArenaRamLease>,
+    cancel_journal: cancel_journal::LiveCancellationJournal,
+    cancel_journal_memory: Option<crate::artifact_arena::ArenaRamLease>,
 }
 struct CollectedPartitionSource {
     raw: PagedInspection,
@@ -85,26 +85,67 @@ impl ResourceSourceContext {
     /// guard. Returns a distinct context until target/capture/recovery routing
     /// is explicitly partition-scoped; never enters legacy dedicated methods.
     pub(crate) fn prepare_partition(
-        binding:PartitionSourceBinding,observation_budget:PartitionObservationBudget,budget:ResourceBudget,
-        policy:VerificationPolicy,output:&Path,arena:&ArtifactArena,guard:PartitionPreparationGuard,events:&mut Vec<NativeEvent>,
-    )->Result<PartitionResourceSourceContext>{
-        Self::prepare_partition_with_issuer(binding,observation_budget,budget,policy,output,arena,guard,events,freeze_mounted_ntfs_partition)
+        binding: PartitionSourceBinding,
+        observation_budget: PartitionObservationBudget,
+        budget: ResourceBudget,
+        policy: VerificationPolicy,
+        output: &Path,
+        arena: &ArtifactArena,
+        guard: PartitionPreparationGuard,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<PartitionResourceSourceContext> {
+        Self::prepare_partition_with_issuer(
+            binding,
+            observation_budget,
+            budget,
+            policy,
+            output,
+            arena,
+            guard,
+            events,
+            freeze_mounted_ntfs_partition,
+        )
     }
     /// Explicit new issuer; no public/default routing is changed by adding it.
     /// Actual BasicRO19+FSLOCK+native preparation is issued inside the SDK.
     pub(crate) fn prepare_partition_readonly_physical(
-        binding:PartitionSourceBinding,observation_budget:PartitionObservationBudget,budget:ResourceBudget,
-        policy:VerificationPolicy,output:&Path,arena:&ArtifactArena,guard:PartitionPreparationGuard,events:&mut Vec<NativeEvent>,
-    )->Result<PartitionResourceSourceContext>{
-        Self::prepare_partition_with_issuer(binding,observation_budget,budget,policy,output,arena,guard,events,
-            n2r_win32::partition_lifecycle::freeze_mounted_ntfs_readonly_physical)
+        binding: PartitionSourceBinding,
+        observation_budget: PartitionObservationBudget,
+        budget: ResourceBudget,
+        policy: VerificationPolicy,
+        output: &Path,
+        arena: &ArtifactArena,
+        guard: PartitionPreparationGuard,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<PartitionResourceSourceContext> {
+        Self::prepare_partition_with_issuer(
+            binding,
+            observation_budget,
+            budget,
+            policy,
+            output,
+            arena,
+            guard,
+            events,
+            n2r_win32::partition_lifecycle::freeze_mounted_ntfs_readonly_physical,
+        )
     }
     fn prepare_partition_with_issuer(
-        binding:PartitionSourceBinding,observation_budget:PartitionObservationBudget,budget:ResourceBudget,
-        policy:VerificationPolicy,output:&Path,arena:&ArtifactArena,mut guard:PartitionPreparationGuard,events:&mut Vec<NativeEvent>,
-        issuer:fn(PartitionSourceBinding,PartitionObservationBudget,PartitionPreparationGuard,&mut Vec<NativeEvent>)
-            ->std::io::Result<(PartitionScopedOwner,PartitionNtfsAdmission)>,
-    )->Result<PartitionResourceSourceContext>{
+        binding: PartitionSourceBinding,
+        observation_budget: PartitionObservationBudget,
+        budget: ResourceBudget,
+        policy: VerificationPolicy,
+        output: &Path,
+        arena: &ArtifactArena,
+        mut guard: PartitionPreparationGuard,
+        events: &mut Vec<NativeEvent>,
+        issuer: fn(
+            PartitionSourceBinding,
+            PartitionObservationBudget,
+            PartitionPreparationGuard,
+            &mut Vec<NativeEvent>,
+        ) -> std::io::Result<(PartitionScopedOwner, PartitionNtfsAdmission)>,
+    ) -> Result<PartitionResourceSourceContext> {
         binding.validate()?;
         observation_budget.validate()?;
         budget.validate()?;
@@ -519,11 +560,14 @@ impl ResourceSourceContext {
             };
         }
         // Validate all collected owners before the one private transition.
-        let collected=collected.context("complete partition raw/native collection absent")?;
-        let native_artifact=native_artifact.context("actual partition native artifact owner absent")?;
-        let output_basis=output_basis.context("actual partition output directory owners absent")?;
-        let (mut source,native_admission)=issuer(binding.clone(),observation_budget,guard,events)?;
-        let ownership=(||->Result<_>{
+        let collected = collected.context("complete partition raw/native collection absent")?;
+        let native_artifact =
+            native_artifact.context("actual partition native artifact owner absent")?;
+        let output_basis =
+            output_basis.context("actual partition output directory owners absent")?;
+        let (mut source, native_admission) =
+            issuer(binding.clone(), observation_budget, guard, events)?;
+        let ownership = (|| -> Result<_> {
             source.revalidate(events)?;
             // Fast construction seals only disjoint C: metadata below. Its
             // mandatory context.recheck_source before returning performs this
@@ -531,25 +575,36 @@ impl ResourceSourceContext {
             // An earlier seal/error instead consumes cancel_collected, which
             // verifies the original fingerprint before any RW restoration.
             // Preserve the existing full-content behavior explicitly.
-            if !policy.is_fast(){
-                ensure!(collected.fingerprint.hash_partition_reader(&mut source,binding.storage.identity.partition_bytes)?==collected.source_sha,
-                    "partition source changed across actual private transition");
+            if !policy.is_fast() {
+                ensure!(
+                    collected.fingerprint.hash_partition_reader(
+                        &mut source,
+                        binding.storage.identity.partition_bytes
+                    )? == collected.source_sha,
+                    "partition source changed across actual private transition"
+                );
             }
-            let source_seal=collected.scratch.seal()?;
-            let native_seal=native_group.seal()?;
-            Ok((source_seal,native_seal))
+            let source_seal = collected.scratch.seal()?;
+            let native_seal = native_group.seal()?;
+            Ok((source_seal, native_seal))
         })();
-        let (source_seal,native_seal)=match ownership{
-            Ok(owners)=>owners,
-            Err(error)=>{
-                let cancellation=live_cancel::cancel_collected(source,native_admission,collected,&binding,events);
+        let (source_seal, native_seal) = match ownership {
+            Ok(owners) => owners,
+            Err(error) => {
+                let cancellation = live_cancel::cancel_collected(
+                    source,
+                    native_admission,
+                    collected,
+                    &binding,
+                    events,
+                );
                 return Err(match cancellation{
                     Ok(receipt)=>error.context(format!("private source construction failed; actual live NTFS cancellation completed: {receipt:?}")),
                     Err(cancel)=>error.context(format!("private source construction failed; live cancellation refused: {cancel:#}; preserve actual source state")),
                 });
             }
         };
-        let token=Box::new(source.owner_token());
+        let token = Box::new(source.owner_token());
         let mut context = PartitionResourceSourceContext {
             source,
             token,
@@ -561,11 +616,11 @@ impl ResourceSourceContext {
             native_artifact,
             output_basis,
             binding,
-            cancel_journal:cancel_journal::LiveCancellationJournal::NotStarted,
-            cancel_journal_memory:None,
+            cancel_journal: cancel_journal::LiveCancellationJournal::NotStarted,
+            cancel_journal_memory: None,
         };
-        if let Err(error)=context.recheck_source(events){
-            let cancellation=context.cancel_with_original_sink(events);
+        if let Err(error) = context.recheck_source(events) {
+            let cancellation = context.cancel_with_original_sink(events);
             return Err(match cancellation{
                 Ok(receipt)=>error.context(format!("private source construction failed; actual live NTFS cancellation completed: {receipt}")),
                 Err(cancel)=>error.context(format!("private source construction failed; live cancellation refused: {cancel:#}; preserve actual source state")),
@@ -581,15 +636,29 @@ impl PartitionResourceSourceContext {
     pub(crate) fn with_publication_handoff<T>(
         &mut self,
         events: &mut Vec<NativeEvent>,
-        action: impl FnOnce(&mut PartitionScopedOwner, &mut PartitionNtfsAdmission,
-            &PartitionOwnerToken, &mut Vec<NativeEvent>)->Result<T>,
-    )->Result<T> {
+        action: impl FnOnce(
+            &mut PartitionScopedOwner,
+            &mut PartitionNtfsAdmission,
+            &PartitionOwnerToken,
+            &mut Vec<NativeEvent>,
+        ) -> Result<T>,
+    ) -> Result<T> {
         self.require_source_evidence()?;
-        ensure!(self.token.same_owner(&self.source.owner_token()),"publication source owner changed");
-        let pin=self.native_admission.durable_preparation_pin()?;
-        self.native_admission.revalidate_publication_handoff(&mut self.source,&pin,events)?;
-        let result=action(&mut self.source,&mut self.native_admission,self.token.as_ref(),events)?;
-        self.native_admission.revalidate_publication_handoff(&mut self.source,&pin,events)?;
+        ensure!(
+            self.token.same_owner(&self.source.owner_token()),
+            "publication source owner changed"
+        );
+        let pin = self.native_admission.durable_preparation_pin()?;
+        self.native_admission
+            .revalidate_publication_handoff(&mut self.source, &pin, events)?;
+        let result = action(
+            &mut self.source,
+            &mut self.native_admission,
+            self.token.as_ref(),
+            events,
+        )?;
+        self.native_admission
+            .revalidate_publication_handoff(&mut self.source, &pin, events)?;
         Ok(result)
     }
     pub(crate) fn binding(&self) -> &PartitionSourceBinding {
@@ -601,8 +670,18 @@ impl PartitionResourceSourceContext {
     pub(crate) fn source_owner_identity(&self) -> usize {
         std::ptr::from_ref(self.token.as_ref()) as usize
     }
-    pub(crate) fn source_admission_and_inspection(&mut self)->(&mut PartitionScopedOwner,&PartitionNtfsAdmission,&PagedInspection) {
-        (&mut self.source,&self.native_admission,&self.collected.raw)
+    pub(crate) fn source_admission_and_inspection(
+        &mut self,
+    ) -> (
+        &mut PartitionScopedOwner,
+        &PartitionNtfsAdmission,
+        &PagedInspection,
+    ) {
+        (
+            &mut self.source,
+            &self.native_admission,
+            &self.collected.raw,
+        )
     }
     pub(crate) fn source_and_inspection(
         &mut self,
@@ -970,21 +1049,41 @@ pub(crate) struct PartitionAuxiliaryDirectory {
     token: PartitionOwnerToken,
 }
 impl PartitionAuxiliaryDirectory {
-    pub(crate) fn revalidate(&self,context:&mut PartitionResourceSourceContext,events:&mut Vec<NativeEvent>)->Result<()> {
-        ensure!(self.token.same_owner(&context.source.owner_token()),"auxiliary directory lost partition source owner");
+    pub(crate) fn revalidate(
+        &self,
+        context: &mut PartitionResourceSourceContext,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<()> {
+        ensure!(
+            self.token.same_owner(&context.source.owner_token()),
+            "auxiliary directory lost partition source owner"
+        );
         context.source.revalidate(events)?;
-        validate_partition_output(&self.basis,&context.binding,&context.arena)
+        validate_partition_output(&self.basis, &context.binding, &context.arena)
     }
 }
 impl PartitionResourceSourceContext {
-    pub(crate) fn create_auxiliary_directory(&mut self,path:&Path,events:&mut Vec<NativeEvent>)->Result<PartitionAuxiliaryDirectory> {
-        self.source.revalidate(events)?;self.require_source_evidence()?;
-        let mut basis=output_in_private_owner_arena(&mut self.source,path,&self.arena,events)?;
-        ensure!(!path.exists(),"fresh partition auxiliary directory required");
-        let guid=PathBuf::from(&basis.parent_guid).join(path.file_name().context("auxiliary output leaf absent")?);
-        basis.create_directory(path,&guid)?;
-        let result=PartitionAuxiliaryDirectory{basis,token:self.source.owner_token()};
-        result.revalidate(self,events)?;Ok(result)
+    pub(crate) fn create_auxiliary_directory(
+        &mut self,
+        path: &Path,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<PartitionAuxiliaryDirectory> {
+        self.source.revalidate(events)?;
+        self.require_source_evidence()?;
+        let mut basis = output_in_private_owner_arena(&mut self.source, path, &self.arena, events)?;
+        ensure!(
+            !path.exists(),
+            "fresh partition auxiliary directory required"
+        );
+        let guid = PathBuf::from(&basis.parent_guid)
+            .join(path.file_name().context("auxiliary output leaf absent")?);
+        basis.create_directory(path, &guid)?;
+        let result = PartitionAuxiliaryDirectory {
+            basis,
+            token: self.source.owner_token(),
+        };
+        result.revalidate(self, events)?;
+        Ok(result)
     }
 }
 fn output_in_private_owner_arena(
@@ -1078,59 +1177,110 @@ impl PartitionResourceSourceContext {
     /// Only this complete live source/native/target/arena closure creates the
     /// original one-shot root certificate. Observations/JSON cannot issue it.
     pub(crate) fn qualify_prepared_target(
-        &mut self,target:&crate::general_composite_target::paged::ProtectedPagedTargetSelection,
-        expected:&crate::shadow_tree::PagedExpectedTree,
-        closure:&crate::artifact_arena::PreparedArenaClosure,events:&mut Vec<NativeEvent>,
-    )->Result<PreparedResourceSourceAdmission>{
-        self.require_source_evidence()?;self.recheck_source(events)?;
-        n2r_win32::partition_lifecycle::require_complete_fresh_ntfs_admission(&self.source,&self.native_admission)?;
-        ensure!(self.arena.same_arena(closure.arena())&&self.arena.budget()==self.collected.admission.budget,
-            "partition source and complete prepared arena differ");
-        closure.revalidate()?;expected.require_resource_owner(self.collected.admission)?;expected.require_shared_memory(&self.arena)?;
-        let scope=target.scope();let native=target.native();native.require_partition_source_owner(self.token.as_ref())?;
-        ensure!(scope.matches_source_owner(self.source_owner_identity())
-            &&scope.pair().source==self.binding.storage&&scope.source_inspection_sha256()==self.collected.inspection_sha
-            &&scope.expected_tree_sha256()==expected.semantic_sha256()&&target.captured().is_for_scope(scope)
-            &&native.report().pair()==scope.pair()&&native.before()==native.after()
-            &&native.before().disk_attributes==3&&native.observed_readonly().disk_attributes==2
-            &&native.report().residual_contents_verified()&&native.report().paged_residuals().is_some()
-            &&native.report().native().retained_rows_ram_accounted()
-            &&native.report().native().resource_profile==Some(n2r_win32::attestation::ResourceProfile::ResourceBoundedV4(Some(self.collected.admission)))
-            &&native.report().native().objects.len()==expected.len(),
-            "actual target preservation does not close this actual partition source obligations");
+        &mut self,
+        target: &crate::general_composite_target::paged::ProtectedPagedTargetSelection,
+        expected: &crate::shadow_tree::PagedExpectedTree,
+        closure: &crate::artifact_arena::PreparedArenaClosure,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<PreparedResourceSourceAdmission> {
+        self.require_source_evidence()?;
+        self.recheck_source(events)?;
+        n2r_win32::partition_lifecycle::require_complete_fresh_ntfs_admission(
+            &self.source,
+            &self.native_admission,
+        )?;
+        ensure!(
+            self.arena.same_arena(closure.arena())
+                && self.arena.budget() == self.collected.admission.budget,
+            "partition source and complete prepared arena differ"
+        );
+        closure.revalidate()?;
+        expected.require_resource_owner(self.collected.admission)?;
+        expected.require_shared_memory(&self.arena)?;
+        let scope = target.scope();
+        let native = target.native();
+        native.require_partition_source_owner(self.token.as_ref())?;
+        ensure!(
+            scope.matches_source_owner(self.source_owner_identity())
+                && scope.pair().source == self.binding.storage
+                && scope.source_inspection_sha256() == self.collected.inspection_sha
+                && scope.expected_tree_sha256() == expected.semantic_sha256()
+                && target.captured().is_for_scope(scope)
+                && native.report().pair() == scope.pair()
+                && native.before() == native.after()
+                && native.before().disk_attributes == 3
+                && native.observed_readonly().disk_attributes == 2
+                && native.report().residual_contents_verified()
+                && native.report().paged_residuals().is_some()
+                && native.report().native().retained_rows_ram_accounted()
+                && native.report().native().resource_profile
+                    == Some(n2r_win32::attestation::ResourceProfile::ResourceBoundedV4(
+                        Some(self.collected.admission)
+                    ))
+                && native.report().native().objects.len() == expected.len(),
+            "actual target preservation does not close this actual partition source obligations"
+        );
         scope.revalidate()?;
-        let expected=expected.artifact_lease().context("actual expected artifact absent")?;
-        let memory=self.arena.reserve_ram(4096)?;
-        let result=PreparedResourceSourceAdmission {source_owner:self.source_owner_identity(),partition_owner:Some(self.owner_token()),
-            admission:self.collected.admission,source_sha256:source_admission_digest(&self.collected.source_sha)?,
-            inspection_sha256:source_admission_digest(&self.collected.inspection_sha)?,expected_sha256:source_admission_digest(scope.expected_tree_sha256())?,
-            target_scope:scope.capture_identity(),expected:expected.clone(),source:self.source_seal.clone(),native:self.native_seal.clone(),
-            arena:self.arena.clone(),_memory:memory};
-        closure.revalidate()?;Ok(result)
+        let expected = expected
+            .artifact_lease()
+            .context("actual expected artifact absent")?;
+        let memory = self.arena.reserve_ram(4096)?;
+        let result = PreparedResourceSourceAdmission {
+            source_owner: self.source_owner_identity(),
+            partition_owner: Some(self.owner_token()),
+            admission: self.collected.admission,
+            source_sha256: source_admission_digest(&self.collected.source_sha)?,
+            inspection_sha256: source_admission_digest(&self.collected.inspection_sha)?,
+            expected_sha256: source_admission_digest(scope.expected_tree_sha256())?,
+            target_scope: scope.capture_identity(),
+            expected: expected.clone(),
+            source: self.source_seal.clone(),
+            native: self.native_seal.clone(),
+            arena: self.arena.clone(),
+            _memory: memory,
+        };
+        closure.revalidate()?;
+        Ok(result)
     }
     /// Split original owners ONLY after the root fresh certificate closes.
     /// AP mutation must never call the old NTFS fingerprint/cancellation path.
-    pub(crate) fn source_and_admission_for_fresh_apply(&mut self)->(&mut PartitionScopedOwner,&mut PartitionNtfsAdmission){
-        (&mut self.source,&mut self.native_admission)
+    pub(crate) fn source_and_admission_for_fresh_apply(
+        &mut self,
+    ) -> (&mut PartitionScopedOwner, &mut PartitionNtfsAdmission) {
+        (&mut self.source, &mut self.native_admission)
     }
 }
 impl PreparedResourceSourceAdmission {
     pub(crate) fn require_partition_binding(
-        &self,context:&PartitionResourceSourceContext,
-        target:&crate::general_composite_target::paged::ProtectedPagedTargetSelection,
-        expected:&crate::shadow_tree::PagedExpectedTree,closure:&crate::artifact_arena::PreparedArenaClosure,
-    )->Result<()> {
-        let token=context.owner_token();target.native().require_partition_source_owner(&token)?;
-        ensure!(self.source_owner==context.source_owner_identity()
-            &&self.partition_owner.as_ref().is_some_and(|p|p.same_owner(&token))
-            &&self.admission==context.collected.admission&&self.arena.same_arena(closure.arena())
-            &&self.arena.same_arena(&context.arena)&&target.scope().matches_source_owner(self.source_owner)
-            &&Arc::ptr_eq(&self.target_scope,&target.scope().capture_identity())
-            &&expected.artifact_lease().is_some_and(|p|p.same_owner(&self.expected))
-            &&context.source_seal.same_owner(&self.source)&&context.native_seal.same_owner(&self.native)
-            &&source_admission_digest(context.source_sha256())?==self.source_sha256
-            &&source_admission_digest(context.inspection_sha256())?==self.inspection_sha256
-            &&source_admission_digest(expected.semantic_sha256())?==self.expected_sha256,
-            "prepared partition certificate lost actual original owners");Ok(())
+        &self,
+        context: &PartitionResourceSourceContext,
+        target: &crate::general_composite_target::paged::ProtectedPagedTargetSelection,
+        expected: &crate::shadow_tree::PagedExpectedTree,
+        closure: &crate::artifact_arena::PreparedArenaClosure,
+    ) -> Result<()> {
+        let token = context.owner_token();
+        target.native().require_partition_source_owner(&token)?;
+        ensure!(
+            self.source_owner == context.source_owner_identity()
+                && self
+                    .partition_owner
+                    .as_ref()
+                    .is_some_and(|p| p.same_owner(&token))
+                && self.admission == context.collected.admission
+                && self.arena.same_arena(closure.arena())
+                && self.arena.same_arena(&context.arena)
+                && target.scope().matches_source_owner(self.source_owner)
+                && Arc::ptr_eq(&self.target_scope, &target.scope().capture_identity())
+                && expected
+                    .artifact_lease()
+                    .is_some_and(|p| p.same_owner(&self.expected))
+                && context.source_seal.same_owner(&self.source)
+                && context.native_seal.same_owner(&self.native)
+                && source_admission_digest(context.source_sha256())? == self.source_sha256
+                && source_admission_digest(context.inspection_sha256())? == self.inspection_sha256
+                && source_admission_digest(expected.semantic_sha256())? == self.expected_sha256,
+            "prepared partition certificate lost actual original owners"
+        );
+        Ok(())
     }
 }

@@ -25,7 +25,9 @@ pub(crate) struct LeasedAttributeInventory {
 }
 impl std::ops::Deref for LeasedAttributeInventory {
     type Target = AttributeInventory;
-    fn deref(&self) -> &Self::Target { &self.value }
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
 }
 pub(crate) struct LeasedResidentBytes {
     value: Vec<u8>,
@@ -34,16 +36,22 @@ pub(crate) struct LeasedResidentBytes {
 }
 impl std::ops::Deref for LeasedResidentBytes {
     type Target = [u8];
-    fn deref(&self) -> &Self::Target { &self.value }
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
 }
 impl AsRef<[u8]> for LeasedResidentBytes {
-    fn as_ref(&self) -> &[u8] { &self.value }
+    fn as_ref(&self) -> &[u8] {
+        &self.value
+    }
 }
 fn row_workspace(source: &PagedInspection, number: u64) -> Result<u64> {
     let (file, assembly) = source.checked_record_wire_sizes(number)?;
     file.checked_mul(32)
         .and_then(|n| n.checked_add(assembly.unwrap_or(0).checked_mul(32)?))
-        .and_then(|n| n.checked_add(u64::from(source.header().geometry.file_record_size).checked_mul(32)?))
+        .and_then(|n| {
+            n.checked_add(u64::from(source.header().geometry.file_record_size).checked_mul(32)?)
+        })
         .and_then(|n| n.checked_add(1024 * 1024))
         .with_context(|| format!("FILE {number} checked-row workspace overflow"))
 }
@@ -126,31 +134,46 @@ fn actual_assembly<R: Read + Seek>(
     );
     let working = source.budget().ram_bytes / 4;
     let limits = lists::AssemblyLimits::from_working_bytes(working, geometry.file_record_size)?;
-    ensure!(expected.extensions.len() <= limits.extension_records
-        && expected.list_value_hex.len() <= limits.list_bytes.checked_mul(2)
-            .context("actual assembly list limit overflow")?,
-        "FILE {number} assembly exceeds its original admitted limits");
+    ensure!(
+        expected.extensions.len() <= limits.extension_records
+            && expected.list_value_hex.len()
+                <= limits
+                    .list_bytes
+                    .checked_mul(2)
+                    .context("actual assembly list limit overflow")?,
+        "FILE {number} assembly exceeds its original admitted limits"
+    );
     let extension_records = u64::try_from(expected.extensions.len())?
-        .checked_add(1).context("actual assembly record count overflow")?;
+        .checked_add(1)
+        .context("actual assembly record count overflow")?;
     let list_hex = u64::try_from(expected.list_value_hex.len())?;
-    ensure!(list_hex.is_multiple_of(2), "actual assembly list encoding differs");
+    ensure!(
+        list_hex.is_multiple_of(2),
+        "actual assembly list encoding differs"
+    );
     // Each extension can contribute resident bytes independently of its
     // serialized digest; include those actual record-size bounds as well as
     // replay/list decoding and cloned serialized evidence.
-    let assembly_bytes = source.checked_record_wire_sizes(number)?.1
+    let assembly_bytes = source
+        .checked_record_wire_sizes(number)?
+        .1
         .context("actual assembly wire size absent")?;
-    let bytes = extension_records.checked_mul(u64::from(geometry.file_record_size))
+    let bytes = extension_records
+        .checked_mul(u64::from(geometry.file_record_size))
         .and_then(|n| n.checked_mul(16))
         .and_then(|n| n.checked_add(assembly_bytes.checked_mul(64)?))
         .and_then(|n| n.checked_add(list_hex.checked_mul(8)?))
         .and_then(|n| n.checked_add(1024 * 1024))
         .with_context(|| format!("FILE {number} assembly workspace overflow"))?;
-    let ram = source.lease_working_ram(bytes)
+    let ram = source
+        .lease_working_ram(bytes)
         .with_context(|| format!("FILE {number} actual assembly requires {bytes} bytes"))?;
     let list = unnamed(record, 0x20)?;
     lists::validate_list_resource(&list.report, geometry, limits)?;
-    ensure!(list.report.logical_size == list_hex / 2,
-        "actual attribute-list length differs from the captured assembly");
+    ensure!(
+        list.report.logical_size == list_hex / 2,
+        "actual attribute-list length differs from the captured assembly"
+    );
     let value = read_small_attribute(reader, list, geometry, limits.list_bytes as u64)?;
     let mut residents = BTreeMap::new();
     for attribute in &record.attributes {
@@ -183,8 +206,9 @@ fn actual_assembly<R: Read + Seek>(
         let parsed = parse_record(bytes.clone(), geometry)?;
         let actual = assembled_io::evidence(wanted.record_number, &bytes, &parsed);
         ensure!(
-            actual == *wanted && (parsed.flags == 1
-                || matches!(expected.schema_version,8|9) && matches!(parsed.flags,3|9)),
+            actual == *wanted
+                && (parsed.flags == 1
+                    || matches!(expected.schema_version, 8 | 9) && matches!(parsed.flags, 3 | 9)),
             "actual physical extension bytes differ from the complete captured assembly"
         );
         for attribute in &parsed.attributes {
@@ -234,15 +258,12 @@ fn actual_assembly<R: Read + Seek>(
             matches!(expected.schema_version, 5 | 6 | 8 | 9) && expected.mft_bitmap_hex.is_none(),
             "resource ordinary assembly profile differs"
         );
-        let assemble = if matches!(expected.schema_version,8|9) { lists::assemble_attributes_resource }
-            else { lists::assemble_streams_resource };
-        assemble(
-            expected.base.clone(),
-            extensions,
-            &value,
-            geometry,
-            limits,
-        )?
+        let assemble = if matches!(expected.schema_version, 8 | 9) {
+            lists::assemble_attributes_resource
+        } else {
+            lists::assemble_streams_resource
+        };
+        assemble(expected.base.clone(), extensions, &value, geometry, limits)?
     };
     ensure!(
         replay == expected,
@@ -340,7 +361,9 @@ fn read_mft_bytes<R: Read + Seek>(
             cache.order.clear();
         }
         cache.windows.get(&window).and_then(|bytes| {
-            bytes.get(within..within + output.len()).map(|bytes| output.copy_from_slice(bytes))
+            bytes
+                .get(within..within + output.len())
+                .map(|bytes| output.copy_from_slice(bytes))
         })
     });
     if cached.is_some() {
@@ -391,7 +414,8 @@ impl CheckedMftDomain {
         );
         let geometry = &source.header().geometry;
         let working = row_workspace(source, 0)?;
-        let ram = source.lease_working_ram(working)
+        let ram = source
+            .lease_working_ram(working)
             .with_context(|| format!("FILE 0 checked MFT open requires {working} bytes"))?;
         // Opening reads the boot sector, the MFT's own record and attribute
         // list, and hashes the whole MFT bitmap three times. It was done once
@@ -401,9 +425,17 @@ impl CheckedMftDomain {
         let source_pin = source.canonical_sha256()?;
         if !ROOT_PACED.due(1000) {
             let known = VERIFIED_ROOT.with(|cache| {
-                cache.borrow().as_ref().filter(|known| known.source_pin == source_pin).map(|known| {
-                    (known.data.clone(), clone_record(&known.root), known.assembly_bytes)
-                })
+                cache
+                    .borrow()
+                    .as_ref()
+                    .filter(|known| known.source_pin == source_pin)
+                    .map(|known| {
+                        (
+                            known.data.clone(),
+                            clone_record(&known.root),
+                            known.assembly_bytes,
+                        )
+                    })
             });
             if let Some((data, root, assembly_bytes)) = known {
                 let assembly_ram = assembly_bytes
@@ -450,11 +482,22 @@ impl CheckedMftDomain {
         let mut record = parse_record(raw.clone(), geometry)?;
         same_identity(&record, &file)?;
         assembly_ram = match source.assembly_for_record(0)? {
-            Some(assembly) => Some(actual_assembly(reader, source, &data, 0, &raw, &mut record, assembly)?),
-            None => { ensure!(
-                !record.attributes.iter().any(|a| a.report.type_code == 0x20),
-                "actual MFT unexpectedly requires an assembly"
-            ); None },
+            Some(assembly) => Some(actual_assembly(
+                reader,
+                source,
+                &data,
+                0,
+                &raw,
+                &mut record,
+                assembly,
+            )?),
+            None => {
+                ensure!(
+                    !record.attributes.iter().any(|a| a.report.type_code == 0x20),
+                    "actual MFT unexpectedly requires an assembly"
+                );
+                None
+            }
         };
         let attrs: Vec<_> = record.attributes.iter().map(|a| a.report.clone()).collect();
         ensure!(
@@ -500,14 +543,25 @@ impl CheckedMftDomain {
         let mut working = row_workspace(source, number)?;
         if number == 0 {
             for attribute in &self.root.attributes {
-                working = working.checked_add(attribute.resident_value.as_ref().map_or(0, |v| v.capacity() as u64))
+                working = working
+                    .checked_add(
+                        attribute
+                            .resident_value
+                            .as_ref()
+                            .map_or(0, |v| v.capacity() as u64),
+                    )
                     .context("root resident clone workspace overflow")?;
             }
         }
-        let ram = source.lease_working_ram(working)
-            .with_context(|| format!("FILE {number} checked-record operation requires {working} bytes"))?;
+        let ram = source.lease_working_ram(working).with_context(|| {
+            format!("FILE {number} checked-record operation requires {working} bytes")
+        })?;
         if number == 0 {
-            return Ok(CheckedRecord { record: clone_record(&self.root), _ram: ram, _assembly_ram: None });
+            return Ok(CheckedRecord {
+                record: clone_record(&self.root),
+                _ram: ram,
+                _assembly_ram: None,
+            });
         }
         let file = source
             .find_record(number, None)?
@@ -544,17 +598,24 @@ impl CheckedMftDomain {
                 &mut record,
                 assembly,
             )?),
-            None => { ensure!(
-                !record.attributes.iter().any(|a| a.report.type_code == 0x20),
-                "actual FILE unexpectedly requires an assembly"
-            ); None },
+            None => {
+                ensure!(
+                    !record.attributes.iter().any(|a| a.report.type_code == 0x20),
+                    "actual FILE unexpectedly requires an assembly"
+                );
+                None
+            }
         };
         let attrs: Vec<_> = record.attributes.iter().map(|a| a.report.clone()).collect();
         ensure!(
             attrs == file.attributes,
             "actual canonical FILE attributes changed"
         );
-        Ok(CheckedRecord { record, _ram: ram, _assembly_ram: assembly_ram })
+        Ok(CheckedRecord {
+            record,
+            _ram: ram,
+            _assembly_ram: assembly_ram,
+        })
     }
     pub(crate) fn data<R: Read + Seek>(
         &self,
@@ -563,14 +624,22 @@ impl CheckedMftDomain {
         number: u64,
         name: &[u16],
     ) -> Result<LeasedAttributeInventory> {
-        let CheckedRecord { record, _ram, _assembly_ram } = self.record(reader, source, number)?;
+        let CheckedRecord {
+            record,
+            _ram,
+            _assembly_ram,
+        } = self.record(reader, source, number)?;
         let mut attrs = record
             .attributes
             .into_iter()
             .filter(|a| a.report.type_code == 0x80 && a.report.name_utf16 == name);
         let attribute = attrs.next().context("actual DATA attribute absent")?;
         ensure!(attrs.next().is_none(), "duplicate actual DATA attribute");
-        Ok(LeasedAttributeInventory { value: attribute.report, _ram, _assembly_ram })
+        Ok(LeasedAttributeInventory {
+            value: attribute.report,
+            _ram,
+            _assembly_ram,
+        })
     }
     pub(crate) fn verify_record<R: Read + Seek>(
         &self,
@@ -592,7 +661,11 @@ impl CheckedMftDomain {
             wanted.resident && wanted.logical_size <= source.budget().record_bytes,
             "resident source attribute exceeds admitted row"
         );
-        let CheckedRecord { record, _ram, _assembly_ram } = self.record(reader, source, file.record_number)?;
+        let CheckedRecord {
+            record,
+            _ram,
+            _assembly_ram,
+        } = self.record(reader, source, file.record_number)?;
         same_identity(&record, file)?;
         let mut attrs = record
             .attributes
@@ -604,8 +677,11 @@ impl CheckedMftDomain {
             "actual resident attribute changed"
         );
         Ok(LeasedResidentBytes {
-            value: actual.resident_value.context("actual resident bytes absent")?,
-            _ram, _assembly_ram,
+            value: actual
+                .resident_value
+                .context("actual resident bytes absent")?,
+            _ram,
+            _assembly_ram,
         })
     }
 }
@@ -642,10 +718,16 @@ pub(super) fn checked_data_attribute_domain<R: Read + Seek>(
     name: &[u16],
     max_bytes: u64,
     allow_sparse: bool,
-) -> Result<(Attribute, Option<String>, paged_storage::SourceRamLease, Option<paged_storage::SourceRamLease>)> {
+) -> Result<(
+    Attribute,
+    Option<String>,
+    paged_storage::SourceRamLease,
+    Option<paged_storage::SourceRamLease>,
+)> {
     let file_workspace = row_workspace(source, number)?;
-    let _file_ram = source.lease_working_ram(file_workspace)
-        .with_context(|| format!("FILE {number} checked DATA inventory requires {file_workspace} bytes"))?;
+    let _file_ram = source.lease_working_ram(file_workspace).with_context(|| {
+        format!("FILE {number} checked DATA inventory requires {file_workspace} bytes")
+    })?;
     let file = source
         .find_record(number, None)?
         .context("source file absent from complete inventory")?;
@@ -677,9 +759,10 @@ pub(super) fn checked_data_attribute_domain<R: Read + Seek>(
                     crate::ntfs_attestation::extent_identity_stream_request_domain(
                         source, &file, stream, true, true,
                     )
-                }).with_context(|| format!(
-                    "checked DATA extent selector at FILE {number} stream {name:?}",
-                ))?
+                })
+                .with_context(|| {
+                    format!("checked DATA extent selector at FILE {number} stream {name:?}",)
+                })?
                 .is_some()
         }
         _ => false,
@@ -691,7 +774,11 @@ pub(super) fn checked_data_attribute_domain<R: Read + Seek>(
         "unsupported stream or materialization budget"
     );
     let mapping = CheckedMftDomain::open(reader, source)?;
-    let CheckedRecord { record, _ram, _assembly_ram } = mapping.record(reader, source, number)?;
+    let CheckedRecord {
+        record,
+        _ram,
+        _assembly_ram,
+    } = mapping.record(reader, source, number)?;
     same_identity(&record, &file)?;
     let mut attrs = record
         .attributes

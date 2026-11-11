@@ -67,10 +67,18 @@ pub(crate) struct ProjectionRevalidationOwner {
 impl ProjectionRevalidationOwner {
     pub(crate) fn revalidate(&self) -> Result<()> {
         self.objects.revalidate()?;
-        if let Some(records) = &self.windows_ea_normalizations { records.revalidate()?; }
-        if let Some(records) = &self.windows_txf_dispositions { records.revalidate()?; }
-        if let Some(records) = &self.windows_object_id_dispositions { records.revalidate()?; }
-        if let Some(owner) = &self.windows_object_id_owner { owner.revalidate()?; }
+        if let Some(records) = &self.windows_ea_normalizations {
+            records.revalidate()?;
+        }
+        if let Some(records) = &self.windows_txf_dispositions {
+            records.revalidate()?;
+        }
+        if let Some(records) = &self.windows_object_id_dispositions {
+            records.revalidate()?;
+        }
+        if let Some(owner) = &self.windows_object_id_owner {
+            owner.revalidate()?;
+        }
         Ok(())
     }
 }
@@ -144,10 +152,15 @@ fn stream_evidence(
             ensure!(
                 stream.logical_sha256.is_none()
                     && (if aliases.is_some() {
-                        crate::ntfs_attestation::extent_identity_stream_request_windows_domain(source, file, stream)?
+                        crate::ntfs_attestation::extent_identity_stream_request_windows_domain(
+                            source, file, stream,
+                        )?
                     } else {
-                        crate::ntfs_attestation::extent_identity_stream_request_domain(source, file, stream, true, true)?
-                    }).is_some(),
+                        crate::ntfs_attestation::extent_identity_stream_request_domain(
+                            source, file, stream, true, true,
+                        )?
+                    })
+                    .is_some(),
                 "source extent-only stream is not eligible"
             );
             Ok(Some(if stream.logical_size.is_multiple_of(4096) {
@@ -166,10 +179,16 @@ fn build_object(
     file: &ntfs::FileInventory,
     admission: SourceResourceAdmission,
     aliases: Option<&crate::boot_alias::WindowsAliasDomain>,
-) -> Result<(Object, Option<crate::ntfs_extended_attributes::WindowsKernelPurgeEaNormalization>)> {
+) -> Result<(
+    Object,
+    Option<crate::ntfs_extended_attributes::WindowsKernelPurgeEaNormalization>,
+)> {
     let resources = ntfs_admission::ResourceProfile::ResourceBoundedV4(Some(admission));
-    let mut names = if let Some(aliases) = aliases { aliases.user_paths(source, file)? }
-        else { ntfs_admission::paged::user_paths(source, file)? };
+    let mut names = if let Some(aliases) = aliases {
+        aliases.user_paths(source, file)?
+    } else {
+        ntfs_admission::paged::user_paths(source, file)?
+    };
     ensure!(
         !names.is_empty() && (!file.is_directory || names.len() == 1),
         "missing names or unsupported directory links"
@@ -205,14 +224,17 @@ fn build_object(
                     || (matches!(a.type_code, 0x90 | 0xa0 | 0xb0)
                         && crate::ntfs_namespace::is_i30(&a.name_utf16))
                     || ntfs_admission::recognized_root_txf(a)
-                    || (aliases.is_some_and(|aliases| aliases.storage_hint_normalization().is_some())
+                    || (aliases
+                        .is_some_and(|aliases| aliases.storage_hint_normalization().is_some())
                         && crate::ntfs_storage_class::recognized_default(a)))),
             "unknown root attributes"
         );
     } else {
         let issues = if let Some(aliases) = aliases {
             ntfs_admission::paged::ordinary_user_issues_windows(source, file, admission, aliases)?
-        } else { ntfs_admission::paged::ordinary_user_issues(source, file, admission)? };
+        } else {
+            ntfs_admission::paged::ordinary_user_issues(source, file, admission)?
+        };
         ensure!(
             issues.is_empty(),
             "record {} exceeds shadow profile: {issues:?}",
@@ -239,7 +261,10 @@ fn build_object(
         .as_ref()
         .context("source native after snapshot absent")?;
     let check_metadata = if aliases.is_some() {
-        ensure!(source.is_windows_conversion(), "Windows projection requires its actual inspection purpose");
+        ensure!(
+            source.is_windows_conversion(),
+            "Windows projection requires its actual inspection purpose"
+        );
         crate::ntfs_source_view::check_metadata_windows_with_limit
     } else {
         crate::ntfs_source_view::check_metadata_with_limit
@@ -300,8 +325,12 @@ fn build_object(
     let (source_offset, source_extents, length, sha256, source_evidence, sparse) =
         if let Some(stream) = file.streams.iter().find(|s| s.name_utf16.is_empty()) {
             let decision = if let Some(aliases) = aliases {
-                ntfs_stream_plan::classify_stream_windows_domain(source, file, stream, admission, aliases)?
-            } else { ntfs_stream_plan::classify_stream_domain(source, file, stream, admission)? };
+                ntfs_stream_plan::classify_stream_windows_domain(
+                    source, file, stream, admission, aliases,
+                )?
+            } else {
+                ntfs_stream_plan::classify_stream_domain(source, file, stream, admission)?
+            };
             let (offset, extents) = planned_stream_source(Some(&decision), resources)?;
             (
                 offset,
@@ -318,8 +347,12 @@ fn build_object(
     for stream in file.streams.iter().filter(|s| !s.name_utf16.is_empty()) {
         ensure!(!file.is_directory, "named directory streams unsupported");
         let decision = if let Some(aliases) = aliases {
-            ntfs_stream_plan::classify_stream_windows_domain(source, file, stream, admission, aliases)?
-        } else { ntfs_stream_plan::classify_stream_domain(source, file, stream, admission)? };
+            ntfs_stream_plan::classify_stream_windows_domain(
+                source, file, stream, admission, aliases,
+            )?
+        } else {
+            ntfs_stream_plan::classify_stream_domain(source, file, stream, admission)?
+        };
         ensure!(
             decision.disposition != Disposition::Reject,
             "named source stream candidate refused"
@@ -338,37 +371,45 @@ fn build_object(
     }
     named_streams.sort_by(|a, b| a.name_utf16.cmp(&b.name_utf16));
     let (extended_attributes, ea_normalization) = if aliases.is_some() {
-        ensure!(source.is_windows_conversion(), "Windows EA projection requires its actual inspection purpose");
+        ensure!(
+            source.is_windows_conversion(),
+            "Windows EA projection requires its actual inspection purpose"
+        );
         crate::ntfs_extended_attributes::windows_target_projection(file)?
-    } else { (crate::ntfs_extended_attributes::file_set(file)?, None) };
-    Ok((Object {
-        record_number: file.record_number,
-        sequence_number: file.sequence_number,
-        path,
-        additional_names: names,
-        directory: file.is_directory,
-        stored_times: times,
-        attributes: crate::ntfs_attestation::default_stream_attributes(
-            file,
-            projected.win32_attributes,
-        )? & !if normalized { 0x800 } else { 0 },
-        ntfs_compression_normalized: normalized,
-        security: stored,
-        api_security: if views.api_matches_stored {
-            None
-        } else {
-            Some(hex::decode(views.api_descriptor_hex)?)
+    } else {
+        (crate::ntfs_extended_attributes::file_set(file)?, None)
+    };
+    Ok((
+        Object {
+            record_number: file.record_number,
+            sequence_number: file.sequence_number,
+            path,
+            additional_names: names,
+            directory: file.is_directory,
+            stored_times: times,
+            attributes: crate::ntfs_attestation::default_stream_attributes(
+                file,
+                projected.win32_attributes,
+            )? & !if normalized { 0x800 } else { 0 },
+            ntfs_compression_normalized: normalized,
+            security: stored,
+            api_security: if views.api_matches_stored {
+                None
+            } else {
+                Some(hex::decode(views.api_descriptor_hex)?)
+            },
+            extended_attributes: Some(extended_attributes),
+            reparse,
+            source_offset,
+            source_extents,
+            length,
+            sha256,
+            source_evidence,
+            named_streams,
+            sparse,
         },
-        extended_attributes: Some(extended_attributes),
-        reparse,
-        source_offset,
-        source_extents,
-        length,
-        sha256,
-        source_evidence,
-        named_streams,
-        sparse,
-    }, ea_normalization))
+        ea_normalization,
+    ))
 }
 
 impl SourceExpectedDomain {
@@ -376,45 +417,89 @@ impl SourceExpectedDomain {
     /// Native rows are visited in source ordinal order; no projection stores,
     /// sort runs or replacement expected file are produced.
     pub(crate) fn verify_cached_body(
-        source:&PagedInspection,native:&impl NativeObservationDomain,
-        admission:SourceResourceAdmission,aliases:&crate::boot_alias::WindowsAliasDomain,
-        expected:&crate::shadow_tree::PagedExpectedTree,scratch:&SourceScratch,
-    )->Result<()> {
+        source: &PagedInspection,
+        native: &impl NativeObservationDomain,
+        admission: SourceResourceAdmission,
+        aliases: &crate::boot_alias::WindowsAliasDomain,
+        expected: &crate::shadow_tree::PagedExpectedTree,
+        scratch: &SourceScratch,
+    ) -> Result<()> {
         aliases.require_source(source)?;
-        source.require_paged_source(admission.source_pages,admission.semantic_byte_budget())?;
-        ensure!(native.header().request.source_inspection_sha256==source.canonical_sha256()?
-            &&native.header().request.resource_profile==Some(n2r_win32::attestation::ResourceProfile::ResourceBoundedV4(Some(admission)))
-            &&native.len() as u64==source.file_count()&&expected.len() as u64==admission.objects()?
-            &&expected.profile()==crate::ntfs_admission::ResourceProfile::ResourceBoundedV4(Some(admission)).ordinary_shadow_profile(),
-            "cached expected current projection profile/source coverage differs");
-        let index_bytes=(expected.len() as u64).checked_mul(256).and_then(|n|n.checked_add(65536))
+        source.require_paged_source(admission.source_pages, admission.semantic_byte_budget())?;
+        ensure!(
+            native.header().request.source_inspection_sha256 == source.canonical_sha256()?
+                && native.header().request.resource_profile
+                    == Some(n2r_win32::attestation::ResourceProfile::ResourceBoundedV4(
+                        Some(admission)
+                    ))
+                && native.len() as u64 == source.file_count()
+                && expected.len() as u64 == admission.objects()?
+                && expected.profile()
+                    == crate::ntfs_admission::ResourceProfile::ResourceBoundedV4(Some(admission))
+                        .ordinary_shadow_profile(),
+            "cached expected current projection profile/source coverage differs"
+        );
+        let index_bytes = (expected.len() as u64)
+            .checked_mul(256)
+            .and_then(|n| n.checked_add(65536))
             .context("cached expected equality index RAM overflow")?;
-        let _index=scratch.lease_ram(index_bytes)?;
-        let _row=scratch.lease_ram(admission.budget.max_row_bytes.checked_mul(16)
-            .and_then(|n|n.checked_add(8*1024*1024)).context("cached expected equality row RAM overflow")?)?;
-        let mut hashes=std::collections::BTreeMap::new();
+        let _index = scratch.lease_ram(index_bytes)?;
+        let _row = scratch.lease_ram(
+            admission
+                .budget
+                .max_row_bytes
+                .checked_mul(16)
+                .and_then(|n| n.checked_add(8 * 1024 * 1024))
+                .context("cached expected equality row RAM overflow")?,
+        )?;
+        let mut hashes = std::collections::BTreeMap::new();
         for index in 0..expected.len() {
-            let object=expected.object_leased(index)?;
-            let hash:[u8;32]=Sha256::digest(serde_json::to_vec(&*object)?).into();
-            ensure!(hashes.insert(object.record_number,hash).is_none(),"cached expected repeats a source identity");
+            let object = expected.object_leased(index)?;
+            let hash: [u8; 32] = Sha256::digest(serde_json::to_vec(&*object)?).into();
+            ensure!(
+                hashes.insert(object.record_number, hash).is_none(),
+                "cached expected repeats a source identity"
+            );
         }
-        let mut logical=0u64;
-        let mut roles=Vec::new();
+        let mut logical = 0u64;
+        let mut roles = Vec::new();
         for ordinal in 0..source.file_count() {
-            let file=source.file(ordinal)?;
-            if let Some(role)=ntfs_admission::paged::internal_role(source,&file)?{roles.push(role);continue;}
-            let (object,_)=build_object(source,native,ordinal,&file,admission,Some(aliases))?;
-            let hash:[u8;32]=Sha256::digest(serde_json::to_vec(&object)?).into();
-            ensure!(hashes.remove(&object.record_number)==Some(hash),
-                "cached expected differs from current typed projection at FILE {}",object.record_number);
-            for stream in object.data_streams(){logical=logical.checked_add(stream.length).context("cached expected logical total overflow")?;}
-            if file.record_number==5&&file.attributes.iter().any(ntfs_admission::recognized_root_txf){
+            let file = source.file(ordinal)?;
+            if let Some(role) = ntfs_admission::paged::internal_role(source, &file)? {
+                roles.push(role);
+                continue;
+            }
+            let (object, _) =
+                build_object(source, native, ordinal, &file, admission, Some(aliases))?;
+            let hash: [u8; 32] = Sha256::digest(serde_json::to_vec(&object)?).into();
+            ensure!(
+                hashes.remove(&object.record_number) == Some(hash),
+                "cached expected differs from current typed projection at FILE {}",
+                object.record_number
+            );
+            for stream in object.data_streams() {
+                logical = logical
+                    .checked_add(stream.length)
+                    .context("cached expected logical total overflow")?;
+            }
+            if file.record_number == 5
+                && file
+                    .attributes
+                    .iter()
+                    .any(ntfs_admission::recognized_root_txf)
+            {
                 roles.push("root:$TXF_DATA (not yet admitted for replacement)".to_owned());
             }
         }
-        ensure!(hashes.is_empty()&&logical==expected.logical_bytes()
-            &&roles.as_slice()==expected.internal_replacement_pending(),"cached expected user coverage/logical total/roles differ");
-        source.revalidate()?;native.revalidate()?;expected.revalidate()?;
+        ensure!(
+            hashes.is_empty()
+                && logical == expected.logical_bytes()
+                && roles.as_slice() == expected.internal_replacement_pending(),
+            "cached expected user coverage/logical total/roles differ"
+        );
+        source.revalidate()?;
+        native.revalidate()?;
+        expected.revalidate()?;
         Ok(())
     }
     pub fn derive(
@@ -446,7 +531,10 @@ impl SourceExpectedDomain {
         aliases: Option<&crate::boot_alias::WindowsAliasDomain>,
     ) -> Result<Self> {
         admission.validate()?;
-        ensure!(aliases.is_none() || source.is_windows_conversion(), "Windows projection requires its actual inspection purpose");
+        ensure!(
+            aliases.is_none() || source.is_windows_conversion(),
+            "Windows projection requires its actual inspection purpose"
+        );
         source.require_paged_source(admission.source_pages, admission.semantic_byte_budget())?;
         native.revalidate()?;
         n2r_win32::attestation::validate_domain_resources(native)?;
@@ -474,10 +562,10 @@ impl SourceExpectedDomain {
             "actual source/native/resource projection ownership differs"
         );
         let row_working_bytes = admission
-                .budget
-                .max_row_bytes
-                .checked_mul(8)
-                .context("source object working RAM overflow")?;
+            .budget
+            .max_row_bytes
+            .checked_mul(8)
+            .context("source object working RAM overflow")?;
         let row_ram = scratch.lease_ram(row_working_bytes)?;
         // The complete source counts size batches only; extra names or large
         // rows still spill and merge without dropping any source evidence.
@@ -501,17 +589,36 @@ impl SourceExpectedDomain {
         )?;
         let mut roles = Vec::new();
         let mut role_ram = Vec::new();
-        let mut windows_ea_writer = aliases.map(|_| SortedRecordWriter::new(
-            &output.join("windows-kernel-purge-ea-normalizations"), *b"WINEAN01", scratch,
-        )).transpose()?;
+        let mut windows_ea_writer = aliases
+            .map(|_| {
+                SortedRecordWriter::new(
+                    &output.join("windows-kernel-purge-ea-normalizations"),
+                    *b"WINEAN01",
+                    scratch,
+                )
+            })
+            .transpose()?;
         let mut windows_ea_normalized_entries = 0u64;
-        let mut windows_txf_writer = aliases.map(|_| SortedRecordWriter::new(
-            &output.join("windows-nontransacted-txf-dispositions"), *b"WINTXF01", scratch,
-        )).transpose()?;
-        let windows_object_id_owner=aliases.and_then(|owner|owner.windows_object_ids_owned());
-        let mut windows_object_id_writer=windows_object_id_owner.as_ref().map(|_|SortedRecordWriter::new(
-            &output.join("windows-object-ID-dispositions"),*b"WINOIDP1",scratch,
-        )).transpose()?;
+        let mut windows_txf_writer = aliases
+            .map(|_| {
+                SortedRecordWriter::new(
+                    &output.join("windows-nontransacted-txf-dispositions"),
+                    *b"WINTXF01",
+                    scratch,
+                )
+            })
+            .transpose()?;
+        let windows_object_id_owner = aliases.and_then(|owner| owner.windows_object_ids_owned());
+        let mut windows_object_id_writer = windows_object_id_owner
+            .as_ref()
+            .map(|_| {
+                SortedRecordWriter::new(
+                    &output.join("windows-object-ID-dispositions"),
+                    *b"WINOIDP1",
+                    scratch,
+                )
+            })
+            .transpose()?;
         let (
             mut files,
             mut directories,
@@ -526,28 +633,48 @@ impl SourceExpectedDomain {
                 add_role(&mut roles, &mut role_ram, role, scratch)?;
                 continue;
             }
-            let (object, ea_normalization) = build_object(source, native, ordinal, &file, admission, aliases)?;
-            if aliases.map(|owner| owner.windows_txf_accounted(source, &file)).transpose()?.unwrap_or(false) {
-                let attribute = file.attributes.iter().find(|attribute| attribute.type_code == 0x100
-                    && attribute.name_utf16 == [36,84,88,70,95,68,65,84,65])
+            let (object, ea_normalization) =
+                build_object(source, native, ordinal, &file, admission, aliases)?;
+            if aliases
+                .map(|owner| owner.windows_txf_accounted(source, &file))
+                .transpose()?
+                .unwrap_or(false)
+            {
+                let attribute = file
+                    .attributes
+                    .iter()
+                    .find(|attribute| {
+                        attribute.type_code == 0x100
+                            && attribute.name_utf16 == [36, 84, 88, 70, 95, 68, 65, 84, 65]
+                    })
                     .context("verified Windows TxF source attribute disappeared")?;
-                windows_txf_writer.as_mut().context("Windows TxF disposition archive absent")?
-                    .push(ordered_key(ordinal, file.record_number), &WindowsTxfDisposition {
-                        record_number: file.record_number, sequence_number: file.sequence_number,
-                        source_attribute: attribute.clone(),
-                    })?;
+                windows_txf_writer
+                    .as_mut()
+                    .context("Windows TxF disposition archive absent")?
+                    .push(
+                        ordered_key(ordinal, file.record_number),
+                        &WindowsTxfDisposition {
+                            record_number: file.record_number,
+                            sequence_number: file.sequence_number,
+                            source_attribute: attribute.clone(),
+                        },
+                    )?;
             }
-            if let Some(owner)=&windows_object_id_owner {
-                if let Some(disposition)=owner.disposition(source,&file)? {
-                    windows_object_id_writer.as_mut().context("Windows object-ID disposition archive absent")?
-                        .push(ordered_key(ordinal,file.record_number),&disposition)?;
+            if let Some(owner) = &windows_object_id_owner {
+                if let Some(disposition) = owner.disposition(source, &file)? {
+                    windows_object_id_writer
+                        .as_mut()
+                        .context("Windows object-ID disposition archive absent")?
+                        .push(ordered_key(ordinal, file.record_number), &disposition)?;
                 }
             }
             if let Some(normalization) = ea_normalization {
                 windows_ea_normalized_entries = windows_ea_normalized_entries
                     .checked_add(u64::try_from(normalization.omitted.entries.len())?)
                     .context("Windows kernel EA normalization count overflow")?;
-                windows_ea_writer.as_mut().context("Windows EA normalization archive absent")?
+                windows_ea_writer
+                    .as_mut()
+                    .context("Windows EA normalization archive absent")?
                     .push(ordered_key(ordinal, file.record_number), &normalization)?;
             }
             if object.directory {
@@ -591,7 +718,12 @@ impl SourceExpectedDomain {
                     .checked_add(1)
                     .context("physical source interval count overflow")?;
             }
-            if file.record_number == 5 && file.attributes.iter().any(ntfs_admission::recognized_root_txf) {
+            if file.record_number == 5
+                && file
+                    .attributes
+                    .iter()
+                    .any(ntfs_admission::recognized_root_txf)
+            {
                 add_role(
                     &mut roles,
                     &mut role_ram,
@@ -613,7 +745,9 @@ impl SourceExpectedDomain {
                 let hash = Sha256::digest(folded.as_bytes());
                 let bucket = u64::from_be_bytes(hash[..8].try_into()?);
                 names.push(ordered_key(bucket, name_ordinal), &NameRow { folded })?;
-                name_ordinal = name_ordinal.checked_add(1).context("Windows alias namespace count overflow")?;
+                name_ordinal = name_ordinal
+                    .checked_add(1)
+                    .context("Windows alias namespace count overflow")?;
             }
             aliases.require_source(source)?;
         }
@@ -674,19 +808,23 @@ impl SourceExpectedDomain {
             "complete projected object domain differs"
         );
         let object_count = usize::try_from(objects.len())?;
-        let windows_ea_normalizations = windows_ea_writer.map(|writer| {
-            SortedRecordStore::open(&writer.finish()?, scratch)
-        }).transpose()?;
-        let windows_txf_dispositions = windows_txf_writer.map(|writer| {
-            SortedRecordStore::open(&writer.finish()?, scratch)
-        }).transpose()?;
-        let windows_object_id_dispositions=windows_object_id_writer.map(|writer|{
-            SortedRecordStore::open(&writer.finish()?,scratch)
-        }).transpose()?;
-        if let Some(owner)=&windows_object_id_owner {
+        let windows_ea_normalizations = windows_ea_writer
+            .map(|writer| SortedRecordStore::open(&writer.finish()?, scratch))
+            .transpose()?;
+        let windows_txf_dispositions = windows_txf_writer
+            .map(|writer| SortedRecordStore::open(&writer.finish()?, scratch))
+            .transpose()?;
+        let windows_object_id_dispositions = windows_object_id_writer
+            .map(|writer| SortedRecordStore::open(&writer.finish()?, scratch))
+            .transpose()?;
+        if let Some(owner) = &windows_object_id_owner {
             owner.require_source(source)?;
-            ensure!(windows_object_id_dispositions.as_ref().is_some_and(|records|records.len()==owner.len()),
-                "Windows object-ID projected disposition coverage differs");
+            ensure!(
+                windows_object_id_dispositions
+                    .as_ref()
+                    .is_some_and(|records| records.len() == owner.len()),
+                "Windows object-ID projected disposition coverage differs"
+            );
         }
         let mut roots = 0u64;
         for ordinal in 0..objects.len() {
@@ -741,10 +879,18 @@ impl SourceExpectedDomain {
 
     fn revalidate_stores(&self) -> Result<()> {
         self.objects.revalidate()?;
-        if let Some(records) = &self.windows_ea_normalizations { records.revalidate()?; }
-        if let Some(records) = &self.windows_txf_dispositions { records.revalidate()?; }
-        if let Some(records) = &self.windows_object_id_dispositions { records.revalidate()?; }
-        if let Some(owner) = &self.windows_object_id_owner { owner.revalidate()?; }
+        if let Some(records) = &self.windows_ea_normalizations {
+            records.revalidate()?;
+        }
+        if let Some(records) = &self.windows_txf_dispositions {
+            records.revalidate()?;
+        }
+        if let Some(records) = &self.windows_object_id_dispositions {
+            records.revalidate()?;
+        }
+        if let Some(owner) = &self.windows_object_id_owner {
+            owner.revalidate()?;
+        }
         Ok(())
     }
 
@@ -772,7 +918,7 @@ impl SourceExpectedDomain {
             "grants_source_or_replay_authority":false,
         })))
     }
-    pub(crate) fn windows_object_id_disposition_report(&self)->Result<Option<serde_json::Value>> {
+    pub(crate) fn windows_object_id_disposition_report(&self) -> Result<Option<serde_json::Value>> {
         self.revalidate_stores()?;
         Ok(self.windows_object_id_dispositions.as_ref().map(|records|serde_json::json!({
             "kind":"Windows-target-object-ID-epoch-disposition-v1",
@@ -789,7 +935,13 @@ impl SourceExpectedDomain {
     pub(crate) fn into_revalidation_owner(self) -> Result<ProjectionRevalidationOwner> {
         self.revalidate_stores()?;
         let Self {
-            objects, windows_ea_normalizations, windows_txf_dispositions, windows_object_id_dispositions, windows_object_id_owner, scratch, ..
+            objects,
+            windows_ea_normalizations,
+            windows_txf_dispositions,
+            windows_object_id_dispositions,
+            windows_object_id_owner,
+            scratch,
+            ..
         } = self;
         Ok(ProjectionRevalidationOwner {
             objects,

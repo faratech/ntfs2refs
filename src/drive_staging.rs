@@ -77,8 +77,11 @@ impl StageOwner {
             // pending operational growth, not the entire virtual disk size or
             // a claimed maximum for native metadata amplification.
             Self::Vhdx(owner) => Ok(n2r_win32::managed_shadow::BackingResourceGuard::new(
-                owner.staging_allocation_meter()?, &owner.binding, 0,
-            )?.allocation_quantum_bytes()),
+                owner.staging_allocation_meter()?,
+                &owner.binding,
+                0,
+            )?
+            .allocation_quantum_bytes()),
             Self::Thin(owner) => owner
                 .maximum_additional_host_backing_bytes()
                 .context("observe remaining private thin host-backing commitment"),

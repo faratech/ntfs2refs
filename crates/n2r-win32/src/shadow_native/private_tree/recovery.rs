@@ -3,7 +3,7 @@
 //! describe provenance only; fresh enrollment and complete native audits issue
 //! the new owner. No old PrivateTree, creator flags, or move log is restored.
 use super::*;
-#[path="metadata_recovery.rs"]
+#[path = "metadata_recovery.rs"]
 pub mod metadata_transition;
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -56,7 +56,9 @@ impl RecoveredOrigin {
     pub(super) fn remaining(&self) -> (u64, usize) {
         (self.remaining_bytes, self.remaining_submissions)
     }
-    pub(super) fn payloads_ready(&self) -> bool { self.payloads_ready }
+    pub(super) fn payloads_ready(&self) -> bool {
+        self.payloads_ready
+    }
     pub(super) fn receipt(&self) -> serde_json::Value {
         serde_json::json!({"kind":if self.payloads_ready {"fresh-native-recovered-initialized-payload-origin-v1"}else if self.placed_ready {"fresh-native-recovered-source-backed-origin-v1"}else{"fresh-native-recovered-unwritten-origin-v1"},
             "pins":self.pins,"namespace_sha256":hex::encode(self.namespace_sha256),
@@ -72,8 +74,10 @@ pub struct RecoveredPrivateTree {
     attempted: bool,
 }
 impl RecoveredPrivateTree {
-    pub fn attach_backing_resource_guard(&mut self,
-        guard: std::sync::Arc<crate::managed_shadow::BackingResourceGuard>) -> io::Result<()> {
+    pub fn attach_backing_resource_guard(
+        &mut self,
+        guard: std::sync::Arc<crate::managed_shadow::BackingResourceGuard>,
+    ) -> io::Result<()> {
         self.tree.attach_backing_resource_guard(guard)
     }
 
@@ -100,13 +104,15 @@ impl RecoveredPrivateTree {
     /// Reconstruct readiness from current native maps without submitting moves.
     /// The old completed batch selects this audit; it grants no native owner.
     pub fn rehydrate_placed_domain(
-        &mut self,input:&impl InputDomain,sink:&mut dyn PlacementEvidenceSink,
-    )->io::Result<ResourcePlacementReport>{
+        &mut self,
+        input: &impl InputDomain,
+        sink: &mut dyn PlacementEvidenceSink,
+    ) -> io::Result<ResourcePlacementReport> {
         if self.attempted || !self.origin.placed_ready {
             return Err(invalid("fresh placed-recovery audit required exactly once"));
         }
-        self.attempted=true;
-        placement::rehydrate_recovered_resource_domain(&mut self.tree,input,&self.origin,sink)
+        self.attempted = true;
+        placement::rehydrate_recovered_resource_domain(&mut self.tree, input, &self.origin, sink)
     }
     pub fn into_placed_tree(self) -> io::Result<PrivateTree> {
         if !self.attempted || !self.tree.placement_complete {
@@ -256,21 +262,27 @@ fn exact_children(
     path: &[String],
     namespace: &Namespace,
     hash: &mut Sha256,
-    payer:&dyn report_memory::ReportMemoryAccountant,
+    payer: &dyn report_memory::ReportMemoryAccountant,
 ) -> io::Result<()> {
     let before = info(file, 18, 24)?;
     let count = namespace.children.get(path).copied().unwrap_or(0);
     // A complete Windows directory can exceed the historical 4096-entry
     // fixture limit. Pay for response records, UTF-16 names, parsed entries
     // and the identity set from the actual expected child count instead.
-    let evidence=count.checked_add(2).and_then(|n|n.checked_mul(4096))
-        .and_then(|n|n.checked_add(namespace_layout::CAPACITY*4))
-        .ok_or_else(||invalid("recovered directory evidence workspace overflow"))?;
-    let _memory=payer.reserve((evidence as u64).checked_mul(2)
-        .ok_or_else(||invalid("recovered directory memory overflow"))?)?;
+    let evidence = count
+        .checked_add(2)
+        .and_then(|n| n.checked_mul(4096))
+        .and_then(|n| n.checked_add(namespace_layout::CAPACITY * 4))
+        .ok_or_else(|| invalid("recovered directory evidence workspace overflow"))?;
+    let _memory = payer.reserve(
+        (evidence as u64)
+            .checked_mul(2)
+            .ok_or_else(|| invalid("recovered directory memory overflow"))?,
+    )?;
     let mut seen = BTreeSet::new();
-    for child in enumerate_with_resource_budget(file,Some(evidence))
-        .map_err(|error|io::Error::other(format!("recovered directory {path:?}: {error}")))? {
+    for child in enumerate_with_resource_budget(file, Some(evidence))
+        .map_err(|error| io::Error::other(format!("recovered directory {path:?}: {error}")))?
+    {
         if child.name_utf16 == [46] || child.name_utf16 == [46, 46] {
             continue;
         }
@@ -344,21 +356,33 @@ fn exact_streams(file: &File, item: &Input<'_>) -> io::Result<()> {
 /// Requires fresh native exclusion; historical metadata can never issue it.
 /// There are no allocation, resize, deletion, initialization or payload reads.
 pub fn adopt_unwritten_domain(
-    enrollment:ConstructionEnrollment<'_>,input:&impl InputDomain,
-    profile:crate::attestation::ResourceProfile,payer:Arc<dyn report_memory::ReportMemoryAccountant>,
-    spend:PartialPlacementSpend,limits:RecoveryLimits,pins:ExternalOriginPins,
-)->io::Result<RecoveredPrivateTree>{
-    adopt_recovery_domain(enrollment,input,profile,payer,spend,limits,pins,false,false)
+    enrollment: ConstructionEnrollment<'_>,
+    input: &impl InputDomain,
+    profile: crate::attestation::ResourceProfile,
+    payer: Arc<dyn report_memory::ReportMemoryAccountant>,
+    spend: PartialPlacementSpend,
+    limits: RecoveryLimits,
+    pins: ExternalOriginPins,
+) -> io::Result<RecoveredPrivateTree> {
+    adopt_recovery_domain(
+        enrollment, input, profile, payer, spend, limits, pins, false, false,
+    )
 }
 
 /// Fresh native private-tree and initialized-prefix audit. Historical payload
 /// bytes are not trusted: the normal supply pass must replay all exceptions.
 pub fn adopt_placed_domain(
-    enrollment:ConstructionEnrollment<'_>,input:&impl InputDomain,
-    profile:crate::attestation::ResourceProfile,payer:Arc<dyn report_memory::ReportMemoryAccountant>,
-    spend:PartialPlacementSpend,limits:RecoveryLimits,pins:ExternalOriginPins,
-)->io::Result<RecoveredPrivateTree>{
-    adopt_recovery_domain(enrollment,input,profile,payer,spend,limits,pins,true,false)
+    enrollment: ConstructionEnrollment<'_>,
+    input: &impl InputDomain,
+    profile: crate::attestation::ResourceProfile,
+    payer: Arc<dyn report_memory::ReportMemoryAccountant>,
+    spend: PartialPlacementSpend,
+    limits: RecoveryLimits,
+    pins: ExternalOriginPins,
+) -> io::Result<RecoveredPrivateTree> {
+    adopt_recovery_domain(
+        enrollment, input, profile, payer, spend, limits, pins, true, false,
+    )
 }
 /// Adopt a fully initialized but still private payload tree. This does not
 /// trust the previous supply verdict: callers must freshly verify user bytes,
@@ -366,11 +390,17 @@ pub fn adopt_placed_domain(
 /// metadata transition began is deliberately rejected by the private namespace
 /// and security audits, rather than downgraded to an unwritten tree.
 pub fn adopt_payloads_domain(
-    enrollment:ConstructionEnrollment<'_>,input:&impl InputDomain,
-    profile:crate::attestation::ResourceProfile,payer:Arc<dyn report_memory::ReportMemoryAccountant>,
-    spend:PartialPlacementSpend,limits:RecoveryLimits,pins:ExternalOriginPins,
-)->io::Result<RecoveredPrivateTree>{
-    adopt_recovery_domain(enrollment,input,profile,payer,spend,limits,pins,true,true)
+    enrollment: ConstructionEnrollment<'_>,
+    input: &impl InputDomain,
+    profile: crate::attestation::ResourceProfile,
+    payer: Arc<dyn report_memory::ReportMemoryAccountant>,
+    spend: PartialPlacementSpend,
+    limits: RecoveryLimits,
+    pins: ExternalOriginPins,
+) -> io::Result<RecoveredPrivateTree> {
+    adopt_recovery_domain(
+        enrollment, input, profile, payer, spend, limits, pins, true, true,
+    )
 }
 fn adopt_recovery_domain(
     mut enrollment: ConstructionEnrollment<'_>,
@@ -513,9 +543,13 @@ fn adopt_recovery_domain(
         )?;
     }
     let mut files = BTreeMap::new();
-    let reopen_placeholder=if payloads_ready {unwritten::PrivatePlaceholder::reopen_payloads}
-        else if placed_ready {unwritten::PrivatePlaceholder::reopen_placed}
-        else {unwritten::PrivatePlaceholder::reopen_unwritten};
+    let reopen_placeholder = if payloads_ready {
+        unwritten::PrivatePlaceholder::reopen_payloads
+    } else if placed_ready {
+        unwritten::PrivatePlaceholder::reopen_placed
+    } else {
+        unwritten::PrivatePlaceholder::reopen_unwritten
+    };
     let mut sparse_targets = BTreeMap::new();
     let mut metadata_targets = BTreeMap::new();
     metadata_targets.insert(0, enrollment.root);
@@ -549,7 +583,8 @@ fn adopt_recovery_domain(
             // All source SVI directories must exist already. Only the narrow
             // formatter files may be absent or contain native cache data.
             if item.directory || std::path::Path::new(&path).try_exists()? {
-                if !item.directory && !formatter_cache_name(&item.components[1]) && !payloads_ready {
+                if !item.directory && !formatter_cache_name(&item.components[1]) && !payloads_ready
+                {
                     return Err(invalid("recovered SVI file is outside formatter exception"));
                 }
                 let handle = open(&path, item.directory, true)?;
@@ -731,7 +766,13 @@ fn adopt_recovery_domain(
         let owner = input.object(*index)?;
         let item = owner.input();
         if item.directory {
-            exact_children(file, item.components, &namespace, &mut namespace_hash,payer.as_ref())?;
+            exact_children(
+                file,
+                item.components,
+                &namespace,
+                &mut namespace_hash,
+                payer.as_ref(),
+            )?;
         }
     }
     if let Some(d) = &carrier_directory {
@@ -833,33 +874,61 @@ fn require_base_identity(namespace: &Namespace, path: &[String], file: &File) ->
 impl PrivateTree {
     /// Reissue system-supply readiness from current native bytes, never a flag.
     pub fn revalidate_recovered_system_payloads_domain(
-        &mut self,input:&impl InputDomain,
-    )->io::Result<serde_json::Value>{
-        system_payloads::revalidate_completed_domain(self,input)
+        &mut self,
+        input: &impl InputDomain,
+    ) -> io::Result<serde_json::Value> {
+        system_payloads::revalidate_completed_domain(self, input)
     }
 
     /// Renew the partial-tail witness after source/target comparison. This
     /// reads the native tail again under the retained identity and does not
     /// write, initialize, resize or clone a stream.
     pub fn revalidate_recovered_materialized_tail_named(
-        &mut self,index:usize,name:&[u16],components:&[String],logical_length:u64,
-        offset:u64,expected:&[u8],
-    )->io::Result<()> {
-        let prefix=logical_length/4096*4096;
-        let end=offset.checked_add(expected.len() as u64).ok_or_else(||invalid("recovered tail interval overflow"))?;
-        if prefix==0 || prefix==logical_length || offset>prefix || end<logical_length {return Ok(());}
-        if self.recovery_origin.is_none() || expected.len()>65536 {return Err(invalid("recovered tail owner or range differs"));}
-        self.validate_stream_shape_named(index,name,components,logical_length)?;
-        let key=StreamKey::named(index,name);
-        let native_id=if let Some(target)=self.sparse_targets.get(&key){info(&target.file,18,24)?}
-            else{info(self.files.get(&key).ok_or_else(||invalid("recovered tail file absent"))?.metadata_handle(),18,24)?};
-        let _work=self.memory.as_ref().ok_or_else(||invalid("recovered tail payer absent"))?.working(4096)?;
-        let mut actual=[0u8;4096];
-        let count=(logical_length-prefix) as usize;
-        self.read_materialized_range_named(index,name,prefix,&mut actual[..count])?;
-        let start=(prefix-offset) as usize;
-        if actual[..count]!=expected[start..start+count] {return Err(invalid("recovered materialized tail differs from source"));}
-        self.record_materialized_tail(&key,logical_length,offset,expected,native_id)?;
-        self.validate_stream_shape_named(index,name,components,logical_length)
+        &mut self,
+        index: usize,
+        name: &[u16],
+        components: &[String],
+        logical_length: u64,
+        offset: u64,
+        expected: &[u8],
+    ) -> io::Result<()> {
+        let prefix = logical_length / 4096 * 4096;
+        let end = offset
+            .checked_add(expected.len() as u64)
+            .ok_or_else(|| invalid("recovered tail interval overflow"))?;
+        if prefix == 0 || prefix == logical_length || offset > prefix || end < logical_length {
+            return Ok(());
+        }
+        if self.recovery_origin.is_none() || expected.len() > 65536 {
+            return Err(invalid("recovered tail owner or range differs"));
+        }
+        self.validate_stream_shape_named(index, name, components, logical_length)?;
+        let key = StreamKey::named(index, name);
+        let native_id = if let Some(target) = self.sparse_targets.get(&key) {
+            info(&target.file, 18, 24)?
+        } else {
+            info(
+                self.files
+                    .get(&key)
+                    .ok_or_else(|| invalid("recovered tail file absent"))?
+                    .metadata_handle(),
+                18,
+                24,
+            )?
+        };
+        let _work = self
+            .memory
+            .as_ref()
+            .ok_or_else(|| invalid("recovered tail payer absent"))?
+            .working(4096)?;
+        let mut actual = [0u8; 4096];
+        let count = (logical_length - prefix) as usize;
+        self.read_materialized_range_named(index, name, prefix, &mut actual[..count])?;
+        let start = (prefix - offset) as usize;
+        if actual[..count] != expected[start..start + count] {
+            return Err(invalid("recovered materialized tail differs from source"));
+        }
+        self.record_materialized_tail(&key, logical_length, offset, expected, native_id)?;
+        self.validate_stream_shape_named(index, name, components, logical_length)
     }
 }

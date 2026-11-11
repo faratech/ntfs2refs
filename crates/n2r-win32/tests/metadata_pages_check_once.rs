@@ -23,8 +23,11 @@ fn key(ordinal: u64) -> Vec<u8> {
     format!("key-{ordinal:08}").into_bytes()
 }
 fn payload(ordinal: u64) -> Vec<u8> {
-    format!("{{\"ordinal\":{ordinal},\"pad\":\"{}\"}}", "x".repeat((ordinal % 23) as usize))
-        .into_bytes()
+    format!(
+        "{{\"ordinal\":{ordinal},\"pad\":\"{}\"}}",
+        "x".repeat((ordinal % 23) as usize)
+    )
+    .into_bytes()
 }
 fn write(path: &std::path::Path) -> String {
     let mut writer = Writer::new(path, PURPOSE, budget()).unwrap();
@@ -67,7 +70,10 @@ fn a_file_this_process_wrote_opens_without_being_read_and_answers_any_order() {
     for order in orders {
         for ordinal in order {
             let record = reader.get(ordinal).unwrap();
-            assert_eq!((record.key, record.payload), (key(ordinal), payload(ordinal)));
+            assert_eq!(
+                (record.key, record.payload),
+                (key(ordinal), payload(ordinal))
+            );
         }
     }
 }
@@ -111,7 +117,11 @@ fn a_file_changed_after_it_was_written_is_refused() {
     let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
 
     // Flip one byte inside the first page's records.
-    let mut file = std::fs::OpenOptions::new().read(true).write(true).open(&path).unwrap();
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
     let mut byte = [0u8; 1];
     file.seek(SeekFrom::Start(64 + 64 + 40)).unwrap();
     file.read_exact(&mut byte).unwrap();
@@ -124,7 +134,10 @@ fn a_file_changed_after_it_was_written_is_refused() {
     // written here and is hashed in full.
     if std::fs::metadata(&path).unwrap().modified().unwrap() != modified {
         let error = Reader::open(&path, &sha, PURPOSE, budget()).err().unwrap();
-        assert!(error.to_string().contains("complete-file SHA differs"), "{error}");
+        assert!(
+            error.to_string().contains("complete-file SHA differs"),
+            "{error}"
+        );
     }
 
     // Even with the timestamp put back, the changed page is refused the
@@ -137,7 +150,9 @@ fn a_file_changed_after_it_was_written_is_refused() {
         Ok(mut reader) => {
             let error = reader.get(0).err().unwrap();
             assert!(
-                error.to_string().contains("differs from the page this process wrote"),
+                error
+                    .to_string()
+                    .contains("differs from the page this process wrote"),
                 "{error}"
             );
         }
@@ -166,7 +181,10 @@ fn large_pages_hashed_on_two_threads_give_the_sha_of_the_file() {
     let summary = writer.finish().unwrap();
     assert!(summary.pages >= 6, "fixture must span several large pages");
     let bytes = std::fs::read(&path).unwrap();
-    assert_eq!(summary.sha256, hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes)));
+    assert_eq!(
+        summary.sha256,
+        hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes))
+    );
     let mut reader = Reader::open(&path, &summary.sha256, PURPOSE, budget).unwrap();
     for ordinal in [59u64, 0, 30, 9, 8] {
         let record = reader.get(ordinal).unwrap();

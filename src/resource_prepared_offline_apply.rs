@@ -45,8 +45,10 @@ pub(crate) struct PreparedOfflineBootRequest {
 }
 impl PreparedOfflineBootRequest {
     pub(crate) fn validate_control(&self) -> Result<()> {
-        ensure!(!(self.closed_only_boot_repair&&self.interrupted_recovery_boot_repair),
-            "closed-only and interrupted-recovery helper modes are exclusive");
+        ensure!(
+            !(self.closed_only_boot_repair && self.interrupted_recovery_boot_repair),
+            "closed-only and interrupted-recovery helper modes are exclusive"
+        );
         ensure!(
             !self.closed_only_boot_repair || self.postflush_pause_nonce.is_none(),
             "closed-only boot repair cannot request a data-writer pause"
@@ -353,7 +355,7 @@ pub(crate) fn apply_prepared(
     mut checkpoint: impl FnMut(&mut Vec<NativeEvent>) -> Result<()>,
 ) -> Result<PreparedOfflineHandoff> {
     ensure!(
-        !boot_request.closed_only_boot_repair&&!boot_request.interrupted_recovery_boot_repair,
+        !boot_request.closed_only_boot_repair && !boot_request.interrupted_recovery_boot_repair,
         "closed-only boot repair cannot apply source patches or activate a journal"
     );
     checkpoint(events)?;
@@ -583,8 +585,10 @@ pub(crate) fn finalize_prepared_closed(
     mut checkpoint: impl FnMut(&mut Vec<NativeEvent>) -> Result<()>,
 ) -> Result<PreparedOfflineHandoff> {
     boot_request.validate_control()?;
-    ensure!(!boot_request.interrupted_recovery_boot_repair,
-        "interrupted recovery helper cannot adopt an already closed journal");
+    ensure!(
+        !boot_request.interrupted_recovery_boot_repair,
+        "interrupted recovery helper cannot adopt an already closed journal"
+    );
     checkpoint(events)?;
     ensure!(
         events.is_empty(),

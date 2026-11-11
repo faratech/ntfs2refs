@@ -89,7 +89,11 @@ impl Paced {
     fn now() -> u64 {
         static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
         // Never zero, which means "has not passed yet".
-        START.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64 + 1
+        START
+            .get_or_init(std::time::Instant::now)
+            .elapsed()
+            .as_millis() as u64
+            + 1
     }
     /// Whether the check should be made now.
     pub fn due(&self, interval_ms: u64) -> bool {
@@ -147,14 +151,23 @@ mod tests {
     #[test]
     fn full_checks_run_always_by_default_and_once_per_gate_when_selected() {
         let file = LastFull::new();
-        assert!(decide(false, 0, &file) && decide(false, 0, &file), "the default re-reads on every check");
+        assert!(
+            decide(false, 0, &file) && decide(false, 0, &file),
+            "the default re-reads on every check"
+        );
         assert!(decide(false, 7, &file), "with or without a gate");
 
         let file = LastFull::new();
-        assert!(!decide(true, 0, &file), "outside a gate only identity is checked");
+        assert!(
+            !decide(true, 0, &file),
+            "outside a gate only identity is checked"
+        );
         assert!(decide(true, 1, &file), "the gate re-reads for real");
         assert!(!decide(true, 1, &file), "but only once");
-        assert!(decide(true, 1, &LastFull::new()), "each object has its own turn");
+        assert!(
+            decide(true, 1, &LastFull::new()),
+            "each object has its own turn"
+        );
         assert!(!decide(true, 0, &file));
         assert!(decide(true, 2, &file), "a later gate re-reads again");
     }

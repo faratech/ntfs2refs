@@ -299,16 +299,33 @@ pub(crate) fn windows_target_projection(
     let raw = file_set(file)?;
     let mut omitted_count = 0usize;
     for entry in &raw.entries {
-        if entry.name.get(..KERNEL.len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case(KERNEL)) {
-            ensure!(entry.flags == 0 && entry.name.len() > PURGE.len()
-                && entry.name.get(..PURGE.len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case(PURGE)),
-                "Windows target EA projection refuses an unsupported $Kernel name or flags at FILE {}", file.record_number);
+        if entry
+            .name
+            .get(..KERNEL.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(KERNEL))
+        {
+            ensure!(
+                entry.flags == 0
+                    && entry.name.len() > PURGE.len()
+                    && entry
+                        .name
+                        .get(..PURGE.len())
+                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(PURGE)),
+                "Windows target EA projection refuses an unsupported $Kernel name or flags at FILE {}",
+                file.record_number
+            );
             omitted_count += 1;
         }
     }
-    if omitted_count == 0 { return Ok((raw, None)); }
-    let (omitted, target): (Vec<_>, Vec<_>) = raw.entries.iter().cloned().partition(|entry|
-        entry.name.get(..KERNEL.len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case(KERNEL)));
+    if omitted_count == 0 {
+        return Ok((raw, None));
+    }
+    let (omitted, target): (Vec<_>, Vec<_>) = raw.entries.iter().cloned().partition(|entry| {
+        entry
+            .name
+            .get(..KERNEL.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(KERNEL))
+    });
     let omitted = Set { entries: omitted };
     let target = Set { entries: target };
     omitted.validate()?;

@@ -116,25 +116,48 @@ pub(crate) fn convert_owned_with_provider_commitment(
 ) -> Result<()> {
     let first = n2r_win32::resource_native::observe_available_resources(run)?;
     let staging_meter = staging_meter.context("observe actual staging backing owner")?;
-    let backing_guard = staging_meter.as_ref().map(|meter| -> Result<_> {
-        if meter.observe()?.backing_kind != "native-vhdx-outer-backing" {
-            return Ok(None);
-        }
-        Ok(Some(std::sync::Arc::new(n2r_win32::managed_shadow::BackingResourceGuard::new(
-            meter.try_clone()?, &pair.shadow, provider_minimum_free_bytes,
-        )?)))
-    }).transpose()?.flatten();
+    let backing_guard = staging_meter
+        .as_ref()
+        .map(|meter| -> Result<_> {
+            if meter.observe()?.backing_kind != "native-vhdx-outer-backing" {
+                return Ok(None);
+            }
+            Ok(Some(std::sync::Arc::new(
+                n2r_win32::managed_shadow::BackingResourceGuard::new(
+                    meter.try_clone()?,
+                    &pair.shadow,
+                    provider_minimum_free_bytes,
+                )?,
+            )))
+        })
+        .transpose()?
+        .flatten();
     // The legacy plan field denotes a complete maximum. Native VHDX has a
     // rolling allowance instead; its separate admission receipt states that
     // native metadata amplification has no established bound.
-    let provider_maximum = if backing_guard.is_some() { 0 } else { provider_commitment };
-    let provider_on_working_volume = backing_guard.as_ref()
-        .map(|guard| guard.shares_volume_with(run)).transpose()?.unwrap_or(true);
-    let working_provider_commitment = if provider_on_working_volume { provider_commitment } else { 0 };
+    let provider_maximum = if backing_guard.is_some() {
+        0
+    } else {
+        provider_commitment
+    };
+    let provider_on_working_volume = backing_guard
+        .as_ref()
+        .map(|guard| guard.shares_volume_with(run))
+        .transpose()?
+        .unwrap_or(true);
+    let working_provider_commitment = if provider_on_working_volume {
+        provider_commitment
+    } else {
+        0
+    };
     let working_provider_floor = if provider_on_working_volume {
-        backing_guard.as_ref().map(|guard| guard.minimum_free_bytes())
+        backing_guard
+            .as_ref()
+            .map(|guard| guard.minimum_free_bytes())
             .unwrap_or(provider_minimum_free_bytes)
-    } else { 0 };
+    } else {
+        0
+    };
     let keep = reserve(first.scratch_available_bytes)
         .max(working_provider_floor)
         .checked_add(working_provider_commitment)
@@ -155,10 +178,12 @@ pub(crate) fn convert_owned_with_provider_commitment(
     )?;
     observer.attach_staging_meter(Ok(staging_meter));
     if let Some(guard) = backing_guard {
-        observer.note(&serde_json::json!({"kind":"native-shadow-backing-admission-v1",
+        observer.note(
+            &serde_json::json!({"kind":"native-shadow-backing-admission-v1",
             "backing":guard.observe(0)?,"shares_working_volume":provider_on_working_volume,
             "working_pending_provider_growth_bytes":working_provider_commitment,
-            "virtual_capacity_reserved":false,"existing_allocation_charged_again":false}))?;
+            "virtual_capacity_reserved":false,"existing_allocation_charged_again":false}),
+        )?;
         observer.attach_backing_guard(guard)?;
     }
     // The public CLI selects this policy for --minimize-scratch. Prealignment
@@ -227,7 +252,8 @@ pub(crate) fn convert_owned_with_provider_commitment(
     save(&run.join("resource-plan.json"), &plan)?;
     // The checkpoint owns the exact live public envelope already written
     // above, including the real provider and independently paid evidence fields.
-    observer.attach_parent_public_resources(serde_json::from_value(serde_json::to_value(&plan)?)?)?;
+    observer
+        .attach_parent_public_resources(serde_json::from_value(serde_json::to_value(&plan)?)?)?;
     let maximum_placement_bytes = pair
         .source
         .identity
@@ -315,17 +341,20 @@ pub(crate) fn convert_owned_with_provider_commitment(
             .and_then(|n| n.checked_sub(observer.remaining_reservation_bytes()))
             .context("finalization cannot preserve evidence and free-space reserves")?;
         let final_resources = budget(current, aligned(remaining / 2), observer.ram_bytes())?;
-        let finalized = crate::resource_finalize::finalize_resource_handoff_with_windows_aliases_observer(
-            pair,
-            journal,
-            &publication,
-            sha,
-            final_resources,
-            &run.join("finalization"),
-            &mut observer,
-            None,
-        )
-        .context("finalizing the applied conversion (the source already holds the ReFS image)")?;
+        let finalized =
+            crate::resource_finalize::finalize_resource_handoff_with_windows_aliases_observer(
+                pair,
+                journal,
+                &publication,
+                sha,
+                final_resources,
+                &run.join("finalization"),
+                &mut observer,
+                None,
+            )
+            .context(
+                "finalizing the applied conversion (the source already holds the ReFS image)",
+            )?;
         if let Err(error) = observer.note(&finalized) {
             eprintln!("Conversion completed; the final evidence log could not be updated: {error}");
         }
@@ -370,7 +399,10 @@ pub(super) fn preparation_intent_matches(directory: &Path, sha: &str) -> Result<
     let expected = parse_sha(sha)?;
     let old = directory.join("preparation-intent.json");
     let resumed = directory.join("resume-intent.json");
-    ensure!(!(old.exists() && resumed.exists()), "ambiguous preparation recovery protocol");
+    ensure!(
+        !(old.exists() && resumed.exists()),
+        "ambiguous preparation recovery protocol"
+    );
     let path = if resumed.exists() { resumed } else { old };
     ensure!(
         path.is_absolute()
@@ -403,22 +435,35 @@ pub(super) fn preparation_intent_matches(directory: &Path, sha: &str) -> Result<
 /// Cancel only an authenticated, still-unconsumed pre-AP preparation. A final
 /// publication, missing file, or serialized phase cannot recreate authority.
 pub(super) fn recover_preparation(directory: &Path, sha: &str, rollback: bool) -> Result<u8> {
-    recover_preparation_in_workspace(directory,sha,rollback,None)
+    recover_preparation_in_workspace(directory, sha, rollback, None)
 }
-pub(super) fn recover_preparation_in_workspace(directory:&Path,sha:&str,rollback:bool,
-    workspace:Option<&Path>)->Result<u8> {
+pub(super) fn recover_preparation_in_workspace(
+    directory: &Path,
+    sha: &str,
+    rollback: bool,
+    workspace: Option<&Path>,
+) -> Result<u8> {
     if !rollback {
-        return resumable::resume_preparation_in_workspace(directory, parse_sha(sha)?,workspace);
+        return resumable::resume_preparation_in_workspace(directory, parse_sha(sha)?, workspace);
     }
-    ensure!(workspace.is_none(),"preparation cancellation uses its original workspace");
+    ensure!(
+        workspace.is_none(),
+        "preparation cancellation uses its original workspace"
+    );
     let (intent, checksum) = if directory.join("resume-intent.json").try_exists()? {
         let probe = crate::resource_preparation::resume_session_inputs::probe_resume_session(
-            directory, parse_sha(sha)?, recovery_metadata_limit()?.min(8 << 20),
+            directory,
+            parse_sha(sha)?,
+            recovery_metadata_limit()?.min(8 << 20),
         )?;
-        ensure!(probe.publication_file_observed.is_none() || probe.delegated_publication.is_some(),
-            "publication observed without authenticated delegation; preserve state and use its independent publication pin");
-        (probe.intent.new_preparation_intent.path,
-            parse_sha(&probe.intent.new_preparation_intent.sha256)?)
+        ensure!(
+            probe.publication_file_observed.is_none() || probe.delegated_publication.is_some(),
+            "publication observed without authenticated delegation; preserve state and use its independent publication pin"
+        );
+        (
+            probe.intent.new_preparation_intent.path,
+            parse_sha(&probe.intent.new_preparation_intent.sha256)?,
+        )
     } else {
         (directory.join("preparation-intent.json"), parse_sha(sha)?)
     };

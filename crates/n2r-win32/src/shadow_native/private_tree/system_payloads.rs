@@ -146,9 +146,14 @@ pub(super) fn revalidate_completed_domain(
 ) -> io::Result<serde_json::Value> {
     tree.require_source_excluded()?;
     tree.require_bound_input_domain(input)?;
-    if tree.recovery_origin.is_none() || !tree.placement_complete
-        || tree.system_payloads_started || input.len() != tree.initial_objects.len() {
-        return Err(invalid("fresh recovered placement required for system readback"));
+    if tree.recovery_origin.is_none()
+        || !tree.placement_complete
+        || tree.system_payloads_started
+        || input.len() != tree.initial_objects.len()
+    {
+        return Err(invalid(
+            "fresh recovered placement required for system readback",
+        ));
     }
     // Previously created source files are legal here, unlike a fresh formatter
     // collision. Their exact canonical identity, contents and coverage are
@@ -157,61 +162,104 @@ pub(super) fn revalidate_completed_domain(
     if checked.directories != tree.system_directory_indices.len() {
         return Err(invalid("recovered system directory coverage differs"));
     }
-    let memory = tree.memory.as_ref().ok_or_else(||invalid("system recovery payer absent"))?;
-    let _work = memory.working((namespace_layout::CAPACITY as u64)
-        .checked_mul(namespace_layout::MAX_CALLS as u64)
-        .and_then(|n|n.checked_mul(8)).and_then(|n|n.checked_add(1024*1024))
-        .ok_or_else(||invalid("system recovery workspace overflow"))?)?;
+    let memory = tree
+        .memory
+        .as_ref()
+        .ok_or_else(|| invalid("system recovery payer absent"))?;
+    let _work = memory.working(
+        (namespace_layout::CAPACITY as u64)
+            .checked_mul(namespace_layout::MAX_CALLS as u64)
+            .and_then(|n| n.checked_mul(8))
+            .and_then(|n| n.checked_add(1024 * 1024))
+            .ok_or_else(|| invalid("system recovery workspace overflow"))?,
+    )?;
     require_owned_directories(tree, input)?;
     let mut files = 0u64;
     let mut verified_bytes = 0u64;
-    let progress = |completed, bytes| input.progress(crate::progress::Update::new(
-        crate::progress::Phase::PayloadVerification, crate::progress::Unit::Objects,
-        completed, Some(input.len() as u64),
-    ).with_pass(1).with_counters(crate::progress::Counters {
-        authenticated_bytes_hashed: Some(bytes), payload_bytes_written: Some(0),
-        ..Default::default()
-    }));
+    let progress = |completed, bytes| {
+        input.progress(
+            crate::progress::Update::new(
+                crate::progress::Phase::PayloadVerification,
+                crate::progress::Unit::Objects,
+                completed,
+                Some(input.len() as u64),
+            )
+            .with_pass(1)
+            .with_counters(crate::progress::Counters {
+                authenticated_bytes_hashed: Some(bytes),
+                payload_bytes_written: Some(0),
+                ..Default::default()
+            }),
+        )
+    };
     let mut digest = Sha256::new();
     digest.update(b"n2r-recovered-system-payload-readback-v1\0");
     for index in 0..input.len() {
         progress(index as u64, verified_bytes);
         let owner = input.object(index)?;
         let item = owner.input();
-        if item.directory || !item.components.first().is_some_and(|s|s=="System Volume Information") {continue;}
-        let handle = tree.metadata_targets.get(&index)
-            .ok_or_else(||invalid("completed system payload native handle absent"))?;
-        let before = info(handle,18,24)?;
-        let standard = info(handle,1,24)?;
-        if tree.system_identities.get(item.components).is_none_or(|id|*id!=before[8..24])
-            || layout::u64_at(&standard,8)?!=item.logical_length()
-            || layout::u32_at(&standard,16)?!=1 || standard[20]!=0 || standard[21]!=0 {
-            return Err(invalid("recovered system payload native identity or shape differs"));
+        if item.directory
+            || !item
+                .components
+                .first()
+                .is_some_and(|s| s == "System Volume Information")
+        {
+            continue;
         }
-        let raw = info(handle,7,stream_layout::MAX_STREAM_BUFFER)?;
-        let (streams,_) = stream_layout::parse_streams(&raw)?;
-        if streams.len()!=1 || !streams[0].name.is_empty() {return Err(invalid("recovered system stream set differs"));}
+        let handle = tree
+            .metadata_targets
+            .get(&index)
+            .ok_or_else(|| invalid("completed system payload native handle absent"))?;
+        let before = info(handle, 18, 24)?;
+        let standard = info(handle, 1, 24)?;
+        if tree
+            .system_identities
+            .get(item.components)
+            .is_none_or(|id| *id != before[8..24])
+            || layout::u64_at(&standard, 8)? != item.logical_length()
+            || layout::u32_at(&standard, 16)? != 1
+            || standard[20] != 0
+            || standard[21] != 0
+        {
+            return Err(invalid(
+                "recovered system payload native identity or shape differs",
+            ));
+        }
+        let raw = info(handle, 7, stream_layout::MAX_STREAM_BUFFER)?;
+        let (streams, _) = stream_layout::parse_streams(&raw)?;
+        if streams.len() != 1 || !streams[0].name.is_empty() {
+            return Err(invalid("recovered system stream set differs"));
+        }
         let mut file = crate::file_storage::duplicate_readonly(handle)?;
         file.seek(SeekFrom::Start(0))?;
-        let actual = hash_exact_stream(&mut file,item.logical_length())?;
-        if item.logical_sha256().as_deref()!=Some(actual.as_str())
-            || info(handle,18,24)?!=before || info(handle,1,24)?!=standard {
-            return Err(invalid("recovered system payload readback or identity differs"));
+        let actual = hash_exact_stream(&mut file, item.logical_length())?;
+        if item.logical_sha256().as_deref() != Some(actual.as_str())
+            || info(handle, 18, 24)? != before
+            || info(handle, 1, 24)? != standard
+        {
+            return Err(invalid(
+                "recovered system payload readback or identity differs",
+            ));
         }
         digest.update((index as u64).to_le_bytes());
-        digest.update(&before);digest.update(actual.as_bytes());
-        files+=1;
+        digest.update(&before);
+        digest.update(actual.as_bytes());
+        files += 1;
         verified_bytes = verified_bytes.saturating_add(item.logical_length());
     }
-    if files!=checked.files as u64 {return Err(invalid("recovered system payload coverage differs"));}
-    require_owned_directories(tree,input)?;
+    if files != checked.files as u64 {
+        return Err(invalid("recovered system payload coverage differs"));
+    }
+    require_owned_directories(tree, input)?;
     tree.require_source_excluded()?;
-    tree.system_payloads_started=true;
-    tree.system_payloads_complete=true;
+    tree.system_payloads_started = true;
+    tree.system_payloads_complete = true;
     progress(input.len() as u64, verified_bytes);
-    Ok(serde_json::json!({"kind":"private-system-payload-revalidated-v1",
+    Ok(
+        serde_json::json!({"kind":"private-system-payload-revalidated-v1",
         "files":files,"logical_bytes":checked.logical_bytes,"ordered_sha256":hex::encode(digest.finalize()),
-        "payload_bytes_written":0,"source_payload_writes":0,"conversion_qualified":false}))
+        "payload_bytes_written":0,"source_payload_writes":0,"conversion_qualified":false}),
+    )
 }
 
 pub(super) fn run_domain(
@@ -255,12 +303,21 @@ pub(super) fn run_domain(
     let private = private_descriptor()?;
     let mut receipts = Vec::new();
     let mut written_bytes = 0u64;
-    let progress = |completed, bytes| input.progress(crate::progress::Update::new(
-        crate::progress::Phase::PayloadSupply, crate::progress::Unit::Objects,
-        completed, Some(input.len() as u64),
-    ).with_pass(1).with_counters(crate::progress::Counters {
-        payload_bytes_written: Some(bytes), ..Default::default()
-    }));
+    let progress = |completed, bytes| {
+        input.progress(
+            crate::progress::Update::new(
+                crate::progress::Phase::PayloadSupply,
+                crate::progress::Unit::Objects,
+                completed,
+                Some(input.len() as u64),
+            )
+            .with_pass(1)
+            .with_counters(crate::progress::Counters {
+                payload_bytes_written: Some(bytes),
+                ..Default::default()
+            }),
+        )
+    };
     require_owned_directories(tree, input)?;
     for index in 0..input.len() {
         progress(index as u64, written_bytes);

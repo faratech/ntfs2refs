@@ -9,7 +9,9 @@ use super::partition_isolation::{
 use super::partition_runtime_roles::{
     RuntimeVolumeRoleDiagnostic, runtime_volume_role_diagnostics,
 };
-use super::partition_storage_roles::{PartitionStorageRoleObservation,observe_partition_storage_roles};
+use super::partition_storage_roles::{
+    PartitionStorageRoleObservation, observe_partition_storage_roles,
+};
 use super::{AlignedBuffer, HeldPagedWritePolicy, MAX_IO, NativeEvent, control};
 use serde::Serialize;
 use std::{
@@ -20,20 +22,40 @@ use std::{
 };
 
 mod physical_data;
-#[derive(Clone,Copy,Debug,PartialEq,Eq,Serialize)]
-pub enum PartitionDataProfile { PrivateVolumeV2, BasicReadonlyPhysicalV3 }
-struct PhysicalWritePermit { owner:PartitionOwnerToken, binding:PartitionSourceBinding }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum PartitionDataProfile {
+    PrivateVolumeV2,
+    BasicReadonlyPhysicalV3,
+}
+struct PhysicalWritePermit {
+    owner: PartitionOwnerToken,
+    binding: PartitionSourceBinding,
+}
 pub(in crate::native) struct PartitionPhysicalDataOwner(physical_data::Reader);
 impl PartitionPhysicalDataOwner {
-    pub(in crate::native) fn open_readonly(binding:&PartitionSourceBinding,token:PartitionOwnerToken,native_layout:&[u8],events:&mut Vec<NativeEvent>)->io::Result<Self>{
-        physical_data::Reader::open(binding,token,native_layout,events).map(Self)
+    pub(in crate::native) fn open_readonly(
+        binding: &PartitionSourceBinding,
+        token: PartitionOwnerToken,
+        native_layout: &[u8],
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<Self> {
+        physical_data::Reader::open(binding, token, native_layout, events).map(Self)
     }
-    pub(in crate::native) fn duplicate_readonly(&self,events:&mut Vec<NativeEvent>)
-        ->io::Result<super::partition_lifecycle::held_read::HeldSourceRead>{self.0.duplicate_lane(events)}
-    pub(in crate::native) fn revalidate_native(&self,events:&mut Vec<NativeEvent>)->io::Result<()>{self.0.revalidate(events)}
+    pub(in crate::native) fn duplicate_readonly(
+        &self,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<super::partition_lifecycle::held_read::HeldSourceRead> {
+        self.0.duplicate_lane(events)
+    }
+    pub(in crate::native) fn revalidate_native(
+        &self,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
+        self.0.revalidate(events)
+    }
 }
-const BASIC_TYPE:&str="ebd0a0a2-b9e5-4433-87c0-68b6b72699c7";
-const PARTITION_READONLY:u64=0x1000_0000_0000_0000;
+const BASIC_TYPE: &str = "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7";
+const PARTITION_READONLY: u64 = 0x1000_0000_0000_0000;
 const PRIVATE_TYPE: &str = "b627aadb-a893-48b6-aa0b-71e5f30ee370";
 const GRANULE: u64 = 4096;
 
@@ -44,7 +66,7 @@ pub struct PartitionOwnerState {
     // Optional provenance captured at owner opening only; never current-role authority.
     #[serde(rename = "vds_opening_volume_roles")]
     pub(super) vds_current_volume_roles: RuntimeVolumeRoleDiagnostic,
-    pub(super) storage_current_partition_roles:PartitionStorageRoleObservation,
+    pub(super) storage_current_partition_roles: PartitionStorageRoleObservation,
     pub source_admission_issued: bool,
     pub loaded_dump_exclusion_qualified: bool,
 }
@@ -75,15 +97,20 @@ pub struct PartitionOwnerToken(Arc<PartitionOwnerIdentity>);
 impl PartitionOwnerToken {
     // Metadata-only terminal capabilities mint equality identity only. They
     // cannot construct PartitionScopedOwner or any source-write gate.
-    pub(in crate::native) fn readonly_terminal_identity()->Self{
-        Self(Arc::new(PartitionOwnerIdentity{data_cursor:std::sync::Mutex::new(())}))
+    pub(in crate::native) fn readonly_terminal_identity() -> Self {
+        Self(Arc::new(PartitionOwnerIdentity {
+            data_cursor: std::sync::Mutex::new(()),
+        }))
     }
     pub fn same_owner(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }
     /// Private synchronization only; no handle or source permission is issued.
     pub(super) fn lock_data_cursor(&self) -> io::Result<MutexGuard<'_, ()>> {
-        self.0.data_cursor.lock().map_err(|_|io::Error::other("actual source FILE_OBJECT cursor lock poisoned"))
+        self.0
+            .data_cursor
+            .lock()
+            .map_err(|_| io::Error::other("actual source FILE_OBJECT cursor lock poisoned"))
     }
 }
 
@@ -100,15 +127,23 @@ pub struct PartitionSourceAdmissionGate {
 }
 
 impl PartitionSourceAdmissionGate {
-    fn require_bound(&self, owner: &PartitionScopedOwner,
+    fn require_bound(
+        &self,
+        owner: &PartitionScopedOwner,
         admission: &super::partition_lifecycle::PartitionNtfsAdmission,
-        policy: &HeldPagedWritePolicy, pins: &super::paged_recovery::PagedRecoveryPins<'_>) -> io::Result<()> {
+        policy: &HeldPagedWritePolicy,
+        pins: &super::paged_recovery::PagedRecoveryPins<'_>,
+    ) -> io::Result<()> {
         super::partition_lifecycle::require_complete_fresh_ntfs_admission(owner, admission)?;
-        if !Arc::ptr_eq(&self.owner_identity, &owner.identity) || self.binding != owner.binding
+        if !Arc::ptr_eq(&self.owner_identity, &owner.identity)
+            || self.binding != owner.binding
             || !self.preparation.same_owner(admission.preparation_token())
             || self.preparation_pin != admission.durable_preparation_pin()?
-            || self.index_sha256 != policy.facts()?.index_sha256 {
-            return Err(io::Error::other("partition apply gate owner/preparation/index differs"));
+            || self.index_sha256 != policy.facts()?.index_sha256
+        {
+            return Err(io::Error::other(
+                "partition apply gate owner/preparation/index differs",
+            ));
         }
         self.journal.require(pins)
     }
@@ -128,32 +163,55 @@ pub struct PartitionMixedReplayGate {
     used: bool,
 }
 impl PartitionMixedReplayGate {
-    fn require_bound(&self, owner: &PartitionScopedOwner, policy: &HeldPagedWritePolicy,
-        pins: &super::paged_recovery::PagedRecoveryPins<'_>) -> io::Result<()> {
-        if !self.owner.same_owner(&owner.owner_token()) || self.binding != *owner.binding()
-            || self.index_sha256 != policy.facts()?.index_sha256 {
-            return Err(io::Error::other("partition replay owner/index binding differs"));
+    fn require_bound(
+        &self,
+        owner: &PartitionScopedOwner,
+        policy: &HeldPagedWritePolicy,
+        pins: &super::paged_recovery::PagedRecoveryPins<'_>,
+    ) -> io::Result<()> {
+        if !self.owner.same_owner(&owner.owner_token())
+            || self.binding != *owner.binding()
+            || self.index_sha256 != policy.facts()?.index_sha256
+        {
+            return Err(io::Error::other(
+                "partition replay owner/index binding differs",
+            ));
         }
         self.journal.require(pins)
     }
 }
 
 impl PartitionScopedOwner {
-    pub fn qualify_partition_paged_replay(&mut self, policy: &HeldPagedWritePolicy,
-        journal: &mut File, pins: &super::paged_recovery::PagedRecoveryPins<'_>,
-        direction: super::paged_recovery::PagedRecoveryDirection, events: &mut Vec<NativeEvent>,
+    pub fn qualify_partition_paged_replay(
+        &mut self,
+        policy: &HeldPagedWritePolicy,
+        journal: &mut File,
+        pins: &super::paged_recovery::PagedRecoveryPins<'_>,
+        direction: super::paged_recovery::PagedRecoveryDirection,
+        events: &mut Vec<NativeEvent>,
     ) -> io::Result<PartitionMixedReplayGate> {
         self.require_supported_write_profile()?;
         if self.enrolled.source_admission_issued {
-            return Err(io::Error::other("partition source gate already issued; reopen actual recovery owner"));
+            return Err(io::Error::other(
+                "partition source gate already issued; reopen actual recovery owner",
+            ));
         }
         self.revalidate_current_critical_volume_policy(events)?;
-        let (current_sha256, lifecycle_sha256) = super::paged_recovery::authenticate_partition_mixed(
-            self, policy, journal, pins, direction)?;
+        let (current_sha256, lifecycle_sha256) =
+            super::paged_recovery::authenticate_partition_mixed(
+                self, policy, journal, pins, direction,
+            )?;
         self.revalidate_current_critical_volume_policy(events)?;
-        let gate = PartitionMixedReplayGate { owner: self.owner_token(), binding: self.binding.clone(),
+        let gate = PartitionMixedReplayGate {
+            owner: self.owner_token(),
+            binding: self.binding.clone(),
             journal: super::paged_recovery::OwnedPartitionJournalPins::capture(pins),
-            index_sha256: policy.facts()?.index_sha256, current_sha256, lifecycle_sha256, direction, used: false };
+            index_sha256: policy.facts()?.index_sha256,
+            current_sha256,
+            lifecycle_sha256,
+            direction,
+            used: false,
+        };
         self.enrolled.source_admission_issued = true;
         Ok(gate)
     }
@@ -161,18 +219,30 @@ impl PartitionScopedOwner {
     /// Recheck the ENTIRE same CURRENT mixed state. Retire the gate before any
     /// RB attempt or writer issuance. Resume requires AP; rollback durably
     /// writes/readbacks canonical RB before exposing the bounded writer.
-    pub fn begin_partition_paged_replay<'a, 'p>(&'a mut self,
-        gate: &'a mut PartitionMixedReplayGate, policy: HeldPagedWritePolicy,
-        journal: &'a mut File, pins: &'a super::paged_recovery::PagedRecoveryPins<'p>,
+    pub fn begin_partition_paged_replay<'a, 'p>(
+        &'a mut self,
+        gate: &'a mut PartitionMixedReplayGate,
+        policy: HeldPagedWritePolicy,
+        journal: &'a mut File,
+        pins: &'a super::paged_recovery::PagedRecoveryPins<'p>,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<PartitionPagedWriter<'a, 'p>> {
-        if gate.used { return Err(io::Error::other("partition replay gate spent")); }
+        if gate.used {
+            return Err(io::Error::other("partition replay gate spent"));
+        }
         gate.require_bound(self, &policy, pins)?;
         self.revalidate_current_critical_volume_policy(events)?;
         let (current, lifecycle) = super::paged_recovery::authenticate_partition_mixed(
-            self, &policy, journal, pins, gate.direction)?;
+            self,
+            &policy,
+            journal,
+            pins,
+            gate.direction,
+        )?;
         if current != gate.current_sha256 || lifecycle != gate.lifecycle_sha256 {
-            return Err(io::Error::other("partition CURRENT mixed state/lifecycle changed since qualification"));
+            return Err(io::Error::other(
+                "partition CURRENT mixed state/lifecycle changed since qualification",
+            ));
         }
         self.revalidate_current_critical_volume_policy(events)?;
         gate.used = true;
@@ -180,76 +250,143 @@ impl PartitionScopedOwner {
             if gate.direction == super::paged_recovery::PagedRecoveryDirection::Rollback {
                 super::paged_recovery::publish_partition_rollback_marker(journal, pins, events)?;
             }
-            super::paged_recovery::authenticate_scoped_partition_paged_source(self, &policy,
-                journal, pins, super::paged_recovery::PartitionJournalPhase::Replaying(gate.direction))?;
+            super::paged_recovery::authenticate_scoped_partition_paged_source(
+                self,
+                &policy,
+                journal,
+                pins,
+                super::paged_recovery::PartitionJournalPhase::Replaying(gate.direction),
+            )?;
             self.revalidate_current_critical_volume_policy(events)
         })();
-        if let Err(error) = activation { self.poisoned = true; return Err(error); }
-        let physical_writer=match self.writer_data_after_spent_gate(events){Ok(value)=>value,Err(error)=>{self.poisoned=true;return Err(error);}};
-        Ok(PartitionPagedWriter { owner: self, policy, journal, pins,
-            _admission: None, native_admission: None, replay_admission: Some(gate),
-            requested: 0, written: 0, pending: None, poisoned: false, physical_writer })
+        if let Err(error) = activation {
+            self.poisoned = true;
+            return Err(error);
+        }
+        let physical_writer = match self.writer_data_after_spent_gate(events) {
+            Ok(value) => value,
+            Err(error) => {
+                self.poisoned = true;
+                return Err(error);
+            }
+        };
+        Ok(PartitionPagedWriter {
+            owner: self,
+            policy,
+            journal,
+            pins,
+            _admission: None,
+            native_admission: None,
+            replay_admission: Some(gate),
+            requested: 0,
+            written: 0,
+            pending: None,
+            poisoned: false,
+            physical_writer,
+        })
     }
 
-    pub fn finish_partition_replay_handoff(&mut self, gate: PartitionMixedReplayGate,
-        policy: &HeldPagedWritePolicy, journal: &mut File,
-        pins: &super::paged_recovery::PagedRecoveryPins<'_>, events: &mut Vec<NativeEvent>,
+    pub fn finish_partition_replay_handoff(
+        &mut self,
+        gate: PartitionMixedReplayGate,
+        policy: &HeldPagedWritePolicy,
+        journal: &mut File,
+        pins: &super::paged_recovery::PagedRecoveryPins<'_>,
+        events: &mut Vec<NativeEvent>,
     ) -> io::Result<super::paged_recovery::PartitionHandoffWitness> {
         gate.require_bound(self, policy, pins)?;
         if !gate.used || gate.direction != super::paged_recovery::PagedRecoveryDirection::Resume {
-            return Err(io::Error::other("partition HND requires consumed Resume writer gate"));
+            return Err(io::Error::other(
+                "partition HND requires consumed Resume writer gate",
+            ));
         }
         self.revalidate_current_critical_volume_policy(events)?;
-        super::paged_recovery::PartitionHandoffWitness::from_spent_gate(self, policy, journal, pins, events)
+        super::paged_recovery::PartitionHandoffWitness::from_spent_gate(
+            self, policy, journal, pins, events,
+        )
     }
 
-    pub fn finish_partition_replay_abort(&mut self, gate: PartitionMixedReplayGate,
-        policy: &HeldPagedWritePolicy, journal: &mut File,
-        pins: &super::paged_recovery::PagedRecoveryPins<'_>, events: &mut Vec<NativeEvent>,
+    pub fn finish_partition_replay_abort(
+        &mut self,
+        gate: PartitionMixedReplayGate,
+        policy: &HeldPagedWritePolicy,
+        journal: &mut File,
+        pins: &super::paged_recovery::PagedRecoveryPins<'_>,
+        events: &mut Vec<NativeEvent>,
     ) -> io::Result<super::paged_recovery::PartitionClosedJournalObservation> {
         gate.require_bound(self, policy, pins)?;
         if !gate.used || gate.direction != super::paged_recovery::PagedRecoveryDirection::Rollback {
-            return Err(io::Error::other("partition ABT requires consumed Rollback writer gate"));
+            return Err(io::Error::other(
+                "partition ABT requires consumed Rollback writer gate",
+            ));
         }
-        super::paged_recovery::authenticate_partition_closed_journal(self, policy, journal, pins,
-            super::paged_recovery::PartitionTerminalKind::Aborted, events)
+        super::paged_recovery::authenticate_partition_closed_journal(
+            self,
+            policy,
+            journal,
+            pins,
+            super::paged_recovery::PartitionTerminalKind::Aborted,
+            events,
+        )
     }
 }
 
 impl PartitionScopedOwner {
     /// Consume only the original live, never-activated source owner. A saved
     /// flag or another reopened owner cannot match the actual admission token.
-    pub(super) fn into_unactivated_cancellation_parts(mut self,
-        admission:&mut super::partition_lifecycle::PartitionNtfsAdmission,
-        events:&mut Vec<NativeEvent>,
-    )->io::Result<super::partition_restoration::PartitionTerminalTargetParts>{
-        if self.enrolled.source_admission_issued{return Err(io::Error::other("source gate was already issued; live cancellation is permanently unavailable"));}
-        super::partition_lifecycle::require_complete_fresh_ntfs_admission(&self,admission)?;
-        let pin=admission.durable_preparation_pin()?;
-        admission.revalidate_publication_handoff(&mut self,&pin,events)?;
+    pub(super) fn into_unactivated_cancellation_parts(
+        mut self,
+        admission: &mut super::partition_lifecycle::PartitionNtfsAdmission,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<super::partition_restoration::PartitionTerminalTargetParts> {
+        if self.enrolled.source_admission_issued {
+            return Err(io::Error::other(
+                "source gate was already issued; live cancellation is permanently unavailable",
+            ));
+        }
+        super::partition_lifecycle::require_complete_fresh_ntfs_admission(&self, admission)?;
+        let pin = admission.durable_preparation_pin()?;
+        admission.revalidate_publication_handoff(&mut self, &pin, events)?;
         self.revalidate_current_critical_volume_policy(events)?;
-        if self.enrolled.source_admission_issued{return Err(io::Error::other("source gate issued during cancellation authentication"));}
-        let token=self.owner_token();
-        let data_profile=self.data_profile();
-        Ok(super::partition_restoration::PartitionTerminalTargetParts{file:self.file,physical_readonly:self.physical_readonly,
-            physical_data:self.physical_data,data_profile,
-            binding:self.binding,budget:self.budget,state:self.enrolled,token})
+        if self.enrolled.source_admission_issued {
+            return Err(io::Error::other(
+                "source gate issued during cancellation authentication",
+            ));
+        }
+        let token = self.owner_token();
+        let data_profile = self.data_profile();
+        Ok(super::partition_restoration::PartitionTerminalTargetParts {
+            file: self.file,
+            physical_readonly: self.physical_readonly,
+            physical_data: self.physical_data,
+            data_profile,
+            binding: self.binding,
+            budget: self.budget,
+            state: self.enrolled,
+            token,
+        })
     }
     /// Only the terminal restoration module receives these original retained
     /// objects. It must validate its BasicRO state independently after the
     /// target type transition; no path reopen or copied admission is involved.
-    pub(super) fn into_terminal_restoration_parts(mut self,
+    pub(super) fn into_terminal_restoration_parts(
+        mut self,
         closed: &super::paged_recovery::PartitionClosedJournalObservation,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<super::partition_restoration::PartitionTerminalTargetParts> {
         let token = self.owner_token();
         closed.require_owner(&token)?;
         self.revalidate_current_critical_volume_policy(events)?;
-        let data_profile=self.data_profile();
+        let data_profile = self.data_profile();
         Ok(super::partition_restoration::PartitionTerminalTargetParts {
-            file: self.file, physical_readonly: self.physical_readonly,
-            physical_data:self.physical_data,data_profile,
-            binding: self.binding, budget: self.budget, state: self.enrolled, token,
+            file: self.file,
+            physical_readonly: self.physical_readonly,
+            physical_data: self.physical_data,
+            data_profile,
+            binding: self.binding,
+            budget: self.budget,
+            state: self.enrolled,
+            token,
         })
     }
     /// Named current-critical-volume policy, not hidden loaded-driver proof.
@@ -257,63 +394,99 @@ impl PartitionScopedOwner {
     /// Windows/pagefiles, resolved configured dumps and private target baseline.
     /// The raw runtime_loaded_dump_locations_verified diagnostic stays false;
     /// existing unknown/custom-filter refusals remain in the collector.
-    pub(super) fn revalidate_current_critical_volume_policy(&mut self,
-        events: &mut Vec<NativeEvent>) -> io::Result<()> {
+    pub(super) fn revalidate_current_critical_volume_policy(
+        &mut self,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
         self.revalidate(events)?;
         let paging = &self.enrolled.partition.paging;
         let roles = &self.enrolled.storage_current_partition_roles;
-        if !paging.enumeration_succeeded || !paging.all_locations_resolved
+        if !paging.enumeration_succeeded
+            || !paging.all_locations_resolved
             || paging.source_hosts_active_pagefile
             || !roles.catalog_complete
-            || !self.enrolled.configured_dump_locations.configured_locations_outside_target {
-            return Err(io::Error::other("current-critical-volume partition policy unresolved"));
+            || !self
+                .enrolled
+                .configured_dump_locations
+                .configured_locations_outside_target
+        {
+            return Err(io::Error::other(
+                "current-critical-volume partition policy unresolved",
+            ));
         }
         Ok(())
     }
 
-    pub fn qualify_fresh_paged_apply(&mut self,
+    pub fn qualify_fresh_paged_apply(
+        &mut self,
         admission: &mut super::partition_lifecycle::PartitionNtfsAdmission,
-        policy: &HeldPagedWritePolicy, journal: &mut File,
-        pins: &super::paged_recovery::PagedRecoveryPins<'_>, events: &mut Vec<NativeEvent>,
+        policy: &HeldPagedWritePolicy,
+        journal: &mut File,
+        pins: &super::paged_recovery::PagedRecoveryPins<'_>,
+        events: &mut Vec<NativeEvent>,
     ) -> io::Result<PartitionSourceAdmissionGate> {
         self.require_supported_write_profile()?;
         if self.data_profile() == PartitionDataProfile::PrivateVolumeV2 {
-            return Err(io::Error::new(io::ErrorKind::Unsupported,
-                "legacy private-GPT source exclusion allowed NTFS metadata changes after restart; fresh shared-disk apply is unavailable until persistent exclusion is qualified"));
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "legacy private-GPT source exclusion allowed NTFS metadata changes after restart; fresh shared-disk apply is unavailable until persistent exclusion is qualified",
+            ));
         }
         if self.enrolled.source_admission_issued {
-            return Err(io::Error::other("partition fresh source admission already issued"));
+            return Err(io::Error::other(
+                "partition fresh source admission already issued",
+            ));
         }
         self.revalidate_current_critical_volume_policy(events)?;
         super::partition_lifecycle::require_complete_fresh_ntfs_admission(self, admission)?;
         let preparation_pin = admission.durable_preparation_pin()?;
         admission.revalidate_publication_handoff(self, &preparation_pin, events)?;
-        super::paged_recovery::authenticate_scoped_partition_paged_source(self, policy, journal,
-            pins, super::paged_recovery::PartitionJournalPhase::FreshOld)?;
+        super::paged_recovery::authenticate_scoped_partition_paged_source(
+            self,
+            policy,
+            journal,
+            pins,
+            super::paged_recovery::PartitionJournalPhase::FreshOld,
+        )?;
         admission.revalidate_publication_handoff(self, &preparation_pin, events)?;
         self.revalidate_current_critical_volume_policy(events)?;
-        let gate = PartitionSourceAdmissionGate { owner_identity: self.identity.clone(),
-            binding: self.binding.clone(), preparation: admission.preparation_token().clone(),
-            preparation_pin, journal: super::paged_recovery::OwnedPartitionJournalPins::capture(pins),
-            index_sha256: policy.facts()?.index_sha256, used: false };
+        let gate = PartitionSourceAdmissionGate {
+            owner_identity: self.identity.clone(),
+            binding: self.binding.clone(),
+            preparation: admission.preparation_token().clone(),
+            preparation_pin,
+            journal: super::paged_recovery::OwnedPartitionJournalPins::capture(pins),
+            index_sha256: policy.facts()?.index_sha256,
+            used: false,
+        };
         self.enrolled.source_admission_issued = true;
         Ok(gate)
     }
 
     /// Spend this actual gate BEFORE any AP write attempt. Flush/read back AP
     /// before returning the only bounded writer. No device setter is needed.
-    pub fn begin_fresh_partition_paged_apply<'a, 'p>(&'a mut self,
+    pub fn begin_fresh_partition_paged_apply<'a, 'p>(
+        &'a mut self,
         gate: &'a mut PartitionSourceAdmissionGate,
         admission: &'a mut super::partition_lifecycle::PartitionNtfsAdmission,
-        policy: HeldPagedWritePolicy, journal: &'a mut File,
-        pins: &'a super::paged_recovery::PagedRecoveryPins<'p>, events: &mut Vec<NativeEvent>,
+        policy: HeldPagedWritePolicy,
+        journal: &'a mut File,
+        pins: &'a super::paged_recovery::PagedRecoveryPins<'p>,
+        events: &mut Vec<NativeEvent>,
     ) -> io::Result<PartitionPagedWriter<'a, 'p>> {
-        if gate.used { return Err(io::Error::other("partition AP gate is spent")); }
+        if gate.used {
+            return Err(io::Error::other("partition AP gate is spent"));
+        }
         gate.require_bound(self, admission, &policy, pins)?;
         self.revalidate_current_critical_volume_policy(events)?;
         admission.revalidate_publication_handoff(self, &gate.preparation_pin, events)?;
-        super::paged_recovery::authenticate_scoped_partition_paged_source(self, &policy, journal,
-            pins, super::paged_recovery::PartitionJournalPhase::FreshOld)?;
+        super::paged_recovery::authenticate_scoped_partition_paged_source(
+            self,
+            &policy,
+            journal,
+            pins,
+            super::paged_recovery::PartitionJournalPhase::FreshOld,
+        )?;
         admission.revalidate_publication_handoff(self, &gate.preparation_pin, events)?;
         self.revalidate_current_critical_volume_policy(events)?;
         gate.used = true;
@@ -321,29 +494,63 @@ impl PartitionScopedOwner {
             super::paged_recovery::publish_partition_apply_marker(journal, pins, events)?;
             admission.revalidate_publication_handoff(self, &gate.preparation_pin, events)?;
             self.revalidate_current_critical_volume_policy(events)?;
-            super::paged_recovery::authenticate_scoped_partition_paged_source(self, &policy,
-                journal, pins, super::paged_recovery::PartitionJournalPhase::Applying)
+            super::paged_recovery::authenticate_scoped_partition_paged_source(
+                self,
+                &policy,
+                journal,
+                pins,
+                super::paged_recovery::PartitionJournalPhase::Applying,
+            )
         })();
-        if let Err(error) = activation { self.poisoned = true; return Err(error); }
-        let physical_writer=match self.writer_data_after_spent_gate(events){Ok(value)=>value,Err(error)=>{self.poisoned=true;return Err(error);}};
-        Ok(PartitionPagedWriter { owner: self, policy, journal, pins, _admission: Some(gate),
-            native_admission: Some(admission), replay_admission: None,
-            requested: 0, written: 0, pending: None, poisoned: false, physical_writer })
+        if let Err(error) = activation {
+            self.poisoned = true;
+            return Err(error);
+        }
+        let physical_writer = match self.writer_data_after_spent_gate(events) {
+            Ok(value) => value,
+            Err(error) => {
+                self.poisoned = true;
+                return Err(error);
+            }
+        };
+        Ok(PartitionPagedWriter {
+            owner: self,
+            policy,
+            journal,
+            pins,
+            _admission: Some(gate),
+            native_admission: Some(admission),
+            replay_admission: None,
+            requested: 0,
+            written: 0,
+            pending: None,
+            poisoned: false,
+            physical_writer,
+        })
     }
 
     /// Consume only the actual AP-spent gate. A readonly SAME-FileObject J
     /// duplicate is retained after canonical HND and complete NEW verification.
-    pub fn finish_fresh_partition_handoff(&mut self, gate: PartitionSourceAdmissionGate,
+    pub fn finish_fresh_partition_handoff(
+        &mut self,
+        gate: PartitionSourceAdmissionGate,
         admission: &mut super::partition_lifecycle::PartitionNtfsAdmission,
-        policy: &HeldPagedWritePolicy, journal: &mut File,
-        pins: &super::paged_recovery::PagedRecoveryPins<'_>, events: &mut Vec<NativeEvent>,
+        policy: &HeldPagedWritePolicy,
+        journal: &mut File,
+        pins: &super::paged_recovery::PagedRecoveryPins<'_>,
+        events: &mut Vec<NativeEvent>,
     ) -> io::Result<super::paged_recovery::PartitionHandoffWitness> {
-        if !gate.used { return Err(io::Error::other("partition HND requires spent actual AP gate")); }
+        if !gate.used {
+            return Err(io::Error::other(
+                "partition HND requires spent actual AP gate",
+            ));
+        }
         gate.require_bound(self, admission, policy, pins)?;
         admission.revalidate_publication_handoff(self, &gate.preparation_pin, events)?;
         self.revalidate_current_critical_volume_policy(events)?;
         let witness = super::paged_recovery::PartitionHandoffWitness::from_spent_gate(
-            self, policy, journal, pins, events)?;
+            self, policy, journal, pins, events,
+        )?;
         admission.revalidate_publication_handoff(self, &gate.preparation_pin, events)?;
         self.revalidate_current_critical_volume_policy(events)?;
         Ok(witness)
@@ -391,11 +598,9 @@ impl PartitionScopedOwner {
             events,
         )?;
         let dumps = observe_configured_dump_locations(&binding, budget, events)?;
-        let vds_roles = runtime_volume_role_diagnostics(&binding,budget,events);
-        let storage_roles=observe_partition_storage_roles(&binding,budget,events)?;
-        if !dumps.configured_locations_outside_target
-            || !storage_roles.catalog_complete
-        {
+        let vds_roles = runtime_volume_role_diagnostics(&binding, budget, events);
+        let storage_roles = observe_partition_storage_roles(&binding, budget, events)?;
+        if !dumps.configured_locations_outside_target || !storage_roles.catalog_complete {
             return Err(io::Error::other(
                 "configured dump routes or current Storage Management partition roles are unresolved",
             ));
@@ -404,7 +609,7 @@ impl PartitionScopedOwner {
             partition,
             configured_dump_locations: dumps,
             vds_current_volume_roles: vds_roles,
-            storage_current_partition_roles:storage_roles,
+            storage_current_partition_roles: storage_roles,
             source_admission_issued: false,
             loaded_dump_exclusion_qualified: false,
         };
@@ -419,7 +624,9 @@ impl PartitionScopedOwner {
             .custom_flags(0xa000_0000)
             .open(route)?;
         let mut owner = Self {
-            identity: Arc::new(PartitionOwnerIdentity { data_cursor: Mutex::new(()) }),
+            identity: Arc::new(PartitionOwnerIdentity {
+                data_cursor: Mutex::new(()),
+            }),
             file,
             physical_readonly,
             physical_data: None,
@@ -441,110 +648,233 @@ impl PartitionScopedOwner {
         budget: PartitionObservationBudget,
         file: File,
         mut physical_readonly: File,
-        events_sink:super::partition_lifecycle::PartitionNativeEventSink,
+        events_sink: super::partition_lifecycle::PartitionNativeEventSink,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<Self> {
         binding.validate()?;
         budget.validate()?;
         let partition = super::partition_isolation::observe_private(
-            &mut physical_readonly, &binding, budget, events,
+            &mut physical_readonly,
+            &binding,
+            budget,
+            events,
         )?;
         let dumps = observe_configured_dump_locations(&binding, budget, events)?;
-        let vds_roles = runtime_volume_role_diagnostics(&binding,budget,events);
-        let storage_roles=observe_partition_storage_roles(&binding,budget,events)?;
-        if !dumps.configured_locations_outside_target
-            || !storage_roles.catalog_complete
-        {
-            return Err(io::Error::other("lifecycle adoption lost critical-volume disjointness"));
+        let vds_roles = runtime_volume_role_diagnostics(&binding, budget, events);
+        let storage_roles = observe_partition_storage_roles(&binding, budget, events)?;
+        if !dumps.configured_locations_outside_target || !storage_roles.catalog_complete {
+            return Err(io::Error::other(
+                "lifecycle adoption lost critical-volume disjointness",
+            ));
         }
-        let info = control(&file, "adopt-original-partition-owner-info", 0x0007_0048, &[], 144, events)?;
+        let info = control(
+            &file,
+            "adopt-original-partition-owner-info",
+            0x0007_0048,
+            &[],
+            144,
+            events,
+        )?;
         let target = crate::layout::guid_bytes(&binding.storage.identity.partition_guid)?;
-        let expected = partition.gpt.native_layout[48..].chunks_exact(144)
+        let expected = partition.gpt.native_layout[48..]
+            .chunks_exact(144)
             .find(|row| row[48..64] == target)
             .ok_or_else(|| io::Error::other("adopted target native row missing"))?;
-        if info.as_slice() != expected || info[32..48] != crate::layout::guid_bytes(PRIVATE_TYPE)?
+        if info.as_slice() != expected
+            || info[32..48] != crate::layout::guid_bytes(PRIVATE_TYPE)?
             || crate::layout::u64_at(&info, 64)? != 0
         {
-            return Err(io::Error::other("original lifecycle File is not the actual private target"));
+            return Err(io::Error::other(
+                "original lifecycle File is not the actual private target",
+            ));
         }
         let mut owner = Self {
-            identity: Arc::new(PartitionOwnerIdentity { data_cursor: Mutex::new(()) }),
-            file, physical_readonly, physical_data:None, binding, budget,
+            identity: Arc::new(PartitionOwnerIdentity {
+                data_cursor: Mutex::new(()),
+            }),
+            file,
+            physical_readonly,
+            physical_data: None,
+            binding,
+            budget,
             enrolled: PartitionOwnerState {
-                partition, configured_dump_locations: dumps, vds_current_volume_roles: vds_roles,
-            storage_current_partition_roles:storage_roles,
-                source_admission_issued: false, loaded_dump_exclusion_qualified: false,
+                partition,
+                configured_dump_locations: dumps,
+                vds_current_volume_roles: vds_roles,
+                storage_current_partition_roles: storage_roles,
+                source_admission_issued: false,
+                loaded_dump_exclusion_qualified: false,
             },
-            buffer: AlignedBuffer::new()?, position: 0, poisoned: false, recovery_events:Some(events_sink),
+            buffer: AlignedBuffer::new()?,
+            position: 0,
+            poisoned: false,
+            recovery_events: Some(events_sink),
         };
         owner.revalidate(events)?;
         Ok(owner)
     }
     /// Reduced read duplicate of this actual retained source FileObject.
     /// Caller brackets construction with full actual owner revalidation.
-    pub(super) fn duplicate_source_read_lane(&self, events: &mut Vec<NativeEvent>)
-        -> io::Result<super::partition_lifecycle::held_read::HeldSourceRead> {
-        if self.poisoned { return Err(io::Error::other("poisoned source cannot issue a held read lane")); }
-        if let Some(data)=&self.physical_data{return data.duplicate_readonly(events);}
-        let guid=crate::layout::guid_bytes(&self.binding.storage.identity.partition_guid)?;
-        let expected=self.enrolled.partition.gpt.native_layout.get(48..)
-            .and_then(|rows|rows.chunks_exact(144).find(|row|row[48..64]==guid))
-            .ok_or_else(||io::Error::other("held read lane source native row absent"))?;
+    pub(super) fn duplicate_source_read_lane(
+        &self,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<super::partition_lifecycle::held_read::HeldSourceRead> {
+        if self.poisoned {
+            return Err(io::Error::other(
+                "poisoned source cannot issue a held read lane",
+            ));
+        }
+        if let Some(data) = &self.physical_data {
+            return data.duplicate_readonly(events);
+        }
+        let guid = crate::layout::guid_bytes(&self.binding.storage.identity.partition_guid)?;
+        let expected = self
+            .enrolled
+            .partition
+            .gpt
+            .native_layout
+            .get(48..)
+            .and_then(|rows| rows.chunks_exact(144).find(|row| row[48..64] == guid))
+            .ok_or_else(|| io::Error::other("held read lane source native row absent"))?;
         super::partition_lifecycle::held_read::duplicate_bound(
-            &self.file,&self.binding,expected,&self.owner_token(),events)
+            &self.file,
+            &self.binding,
+            expected,
+            &self.owner_token(),
+            events,
+        )
     }
-    pub fn data_profile(&self)->PartitionDataProfile {
-        if self.physical_data.is_some(){PartitionDataProfile::BasicReadonlyPhysicalV3}else{PartitionDataProfile::PrivateVolumeV2}
+    pub fn data_profile(&self) -> PartitionDataProfile {
+        if self.physical_data.is_some() {
+            PartitionDataProfile::BasicReadonlyPhysicalV3
+        } else {
+            PartitionDataProfile::PrivateVolumeV2
+        }
     }
-    pub(in crate::native) fn expected_protected_partition_info(&self,original:&[u8])->io::Result<Vec<u8>> {
-        if original.len()!=144{return Err(io::Error::other("original partition info width differs"));}
-        let mut info=original.to_vec();
-        match self.data_profile(){
-            PartitionDataProfile::PrivateVolumeV2=>{info[32..48].copy_from_slice(&crate::layout::guid_bytes(PRIVATE_TYPE)?);info[64..72].copy_from_slice(&0u64.to_le_bytes());}
-            PartitionDataProfile::BasicReadonlyPhysicalV3=>{info[32..48].copy_from_slice(&crate::layout::guid_bytes(BASIC_TYPE)?);info[64..72].copy_from_slice(&PARTITION_READONLY.to_le_bytes());}
-        }Ok(info)
+    pub(in crate::native) fn expected_protected_partition_info(
+        &self,
+        original: &[u8],
+    ) -> io::Result<Vec<u8>> {
+        if original.len() != 144 {
+            return Err(io::Error::other("original partition info width differs"));
+        }
+        let mut info = original.to_vec();
+        match self.data_profile() {
+            PartitionDataProfile::PrivateVolumeV2 => {
+                info[32..48].copy_from_slice(&crate::layout::guid_bytes(PRIVATE_TYPE)?);
+                info[64..72].copy_from_slice(&0u64.to_le_bytes());
+            }
+            PartitionDataProfile::BasicReadonlyPhysicalV3 => {
+                info[32..48].copy_from_slice(&crate::layout::guid_bytes(BASIC_TYPE)?);
+                info[64..72].copy_from_slice(&PARTITION_READONLY.to_le_bytes());
+            }
+        }
+        Ok(info)
     }
     /// Called ONLY by the actual live staged factory, which transfers the
     /// successful current Volume LOCK FileObject. Physical RW is NOT opened.
-    pub(super) fn adopt_readonly_physical_owner(binding:PartitionSourceBinding,budget:PartitionObservationBudget,
-        file:File,mut physical_readonly:File,events_sink:super::partition_lifecycle::PartitionNativeEventSink,
-        events:&mut Vec<NativeEvent>)->io::Result<Self>{
-        binding.validate()?;budget.validate()?;
-        events_sink.checkpoint("physical-source-adoption-before",events)?;
-        let partition=super::partition_isolation::observe_physical_only(&mut physical_readonly,&binding,budget,events,crate::layout::guid_bytes(BASIC_TYPE)?)?;
-        if partition.gpt.target_attributes!=PARTITION_READONLY{return Err(io::Error::other("physical source owner requires actual BASIC+READONLY"));}
-        events_sink.checkpoint("physical-source-adoption-critical-before",events)?;
-        let dumps=observe_configured_dump_locations(&binding,budget,events)?;
-        let roles=observe_partition_storage_roles(&binding,budget,events)?;
-        if !dumps.configured_locations_outside_target||!roles.catalog_complete{return Err(io::Error::other("physical source critical roles unresolved"));}
-        let enrolled=PartitionOwnerState{partition,configured_dump_locations:dumps,
-            vds_current_volume_roles:runtime_volume_role_diagnostics(&binding,budget,events),storage_current_partition_roles:roles,
-            source_admission_issued:false,loaded_dump_exclusion_qualified:false};
-        let identity=Arc::new(PartitionOwnerIdentity{data_cursor:Mutex::new(())});
-        let token=PartitionOwnerToken(identity.clone());
-        let data=physical_data::Reader::open(&binding,token,&enrolled.partition.gpt.native_layout,events)?;
-        let mut owner=Self{identity,file,physical_readonly,physical_data:Some(PartitionPhysicalDataOwner(data)),binding,budget,enrolled,
-            buffer:AlignedBuffer::new()?,position:0,poisoned:false,recovery_events:Some(events_sink)};
-        owner.revalidate(events)?;Ok(owner)
+    pub(super) fn adopt_readonly_physical_owner(
+        binding: PartitionSourceBinding,
+        budget: PartitionObservationBudget,
+        file: File,
+        mut physical_readonly: File,
+        events_sink: super::partition_lifecycle::PartitionNativeEventSink,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<Self> {
+        binding.validate()?;
+        budget.validate()?;
+        events_sink.checkpoint("physical-source-adoption-before", events)?;
+        let partition = super::partition_isolation::observe_physical_only(
+            &mut physical_readonly,
+            &binding,
+            budget,
+            events,
+            crate::layout::guid_bytes(BASIC_TYPE)?,
+        )?;
+        if partition.gpt.target_attributes != PARTITION_READONLY {
+            return Err(io::Error::other(
+                "physical source owner requires actual BASIC+READONLY",
+            ));
+        }
+        events_sink.checkpoint("physical-source-adoption-critical-before", events)?;
+        let dumps = observe_configured_dump_locations(&binding, budget, events)?;
+        let roles = observe_partition_storage_roles(&binding, budget, events)?;
+        if !dumps.configured_locations_outside_target || !roles.catalog_complete {
+            return Err(io::Error::other(
+                "physical source critical roles unresolved",
+            ));
+        }
+        let enrolled = PartitionOwnerState {
+            partition,
+            configured_dump_locations: dumps,
+            vds_current_volume_roles: runtime_volume_role_diagnostics(&binding, budget, events),
+            storage_current_partition_roles: roles,
+            source_admission_issued: false,
+            loaded_dump_exclusion_qualified: false,
+        };
+        let identity = Arc::new(PartitionOwnerIdentity {
+            data_cursor: Mutex::new(()),
+        });
+        let token = PartitionOwnerToken(identity.clone());
+        let data = physical_data::Reader::open(
+            &binding,
+            token,
+            &enrolled.partition.gpt.native_layout,
+            events,
+        )?;
+        let mut owner = Self {
+            identity,
+            file,
+            physical_readonly,
+            physical_data: Some(PartitionPhysicalDataOwner(data)),
+            binding,
+            budget,
+            enrolled,
+            buffer: AlignedBuffer::new()?,
+            position: 0,
+            poisoned: false,
+            recovery_events: Some(events_sink),
+        };
+        owner.revalidate(events)?;
+        Ok(owner)
     }
-    fn writer_data_after_spent_gate(&self,events:&mut Vec<NativeEvent>)->io::Result<Option<physical_data::Writer>> {
+    fn writer_data_after_spent_gate(
+        &self,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<Option<physical_data::Writer>> {
         self.require_supported_write_profile()?;
         match &self.physical_data {
-            None=>Ok(None),
-            Some(data)=>{
-                if !self.enrolled.source_admission_issued{return Err(io::Error::other("physical RW source requires actual issued J/AP gate"));}
-                data.0.open_writer(PhysicalWritePermit{owner:self.owner_token(),binding:self.binding.clone()},events).map(Some)
+            None => Ok(None),
+            Some(data) => {
+                if !self.enrolled.source_admission_issued {
+                    return Err(io::Error::other(
+                        "physical RW source requires actual issued J/AP gate",
+                    ));
+                }
+                data.0
+                    .open_writer(
+                        PhysicalWritePermit {
+                            owner: self.owner_token(),
+                            binding: self.binding.clone(),
+                        },
+                        events,
+                    )
+                    .map(Some)
             }
         }
     }
     fn require_supported_write_profile(&self) -> io::Result<()> {
         if self.data_profile() == PartitionDataProfile::BasicReadonlyPhysicalV3 {
-            return Err(io::Error::new(io::ErrorKind::Unsupported,
-                "BASIC read-only physical writes were rejected by the native fresh-lock control; no source gate or writer is available for this profile"));
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "BASIC read-only physical writes were rejected by the native fresh-lock control; no source gate or writer is available for this profile",
+            ));
         }
         Ok(())
     }
-    pub fn construction_metadata_memory_bytes(&self) -> u64 { self.budget.ram_bytes }
+    pub fn construction_metadata_memory_bytes(&self) -> u64 {
+        self.budget.ram_bytes
+    }
     /// Query-only duplicate of the original lifecycle FileObject. Neither a
     /// pathname nor serialized state can create this construction witness.
     pub fn construction_metadata_witness(
@@ -553,31 +883,64 @@ impl PartitionScopedOwner {
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<super::PartitionSourceMetadataWitness> {
         use crate::attestation::NativeObservationDomain;
-        admission.checkpoint_native_events("partition-construction-owner-opening",events)?;
-        let result=(|| {
-        self.revalidate(events)?;
-        super::partition_lifecycle::require_complete_fresh_ntfs_admission(self, admission)?;
-        admission.native().domain().revalidate()?;
-        let pin = admission.durable_preparation_pin()?;
-        let target_guid=crate::layout::guid_bytes(&self.binding.storage.identity.partition_guid)?;
-        let expected=self.enrolled.partition.gpt.native_layout.get(48..)
-            .and_then(|rows|rows.chunks_exact(144).find(|row|row[48..64]==target_guid))
-            .ok_or_else(||io::Error::other("construction source native GPT row absent before volume duplicate"))?;
-        let duplicate = super::partition_source_metadata::volume_query::duplicate_bound(
-            &self.file,&self.binding,expected,&self.owner_token(),events)?;
-        let witness = super::PartitionSourceMetadataWitness::from_live(
-            duplicate, self.binding.clone(), self.budget, self.owner_token(), self.enrolled.clone(),
-            admission.native().domain().sha256().to_owned(), pin.intent_prefix_sha256,
-            admission.native().domain().header().request.resource_profile,
-            admission.event_sink(), self.data_profile(),
-        )?;
-        witness.revalidate(events)?;
+        admission.checkpoint_native_events("partition-construction-owner-opening", events)?;
+        let result = (|| {
+            self.revalidate(events)?;
+            super::partition_lifecycle::require_complete_fresh_ntfs_admission(self, admission)?;
+            admission.native().domain().revalidate()?;
+            let pin = admission.durable_preparation_pin()?;
+            let target_guid =
+                crate::layout::guid_bytes(&self.binding.storage.identity.partition_guid)?;
+            let expected = self
+                .enrolled
+                .partition
+                .gpt
+                .native_layout
+                .get(48..)
+                .and_then(|rows| {
+                    rows.chunks_exact(144)
+                        .find(|row| row[48..64] == target_guid)
+                })
+                .ok_or_else(|| {
+                    io::Error::other(
+                        "construction source native GPT row absent before volume duplicate",
+                    )
+                })?;
+            let duplicate = super::partition_source_metadata::volume_query::duplicate_bound(
+                &self.file,
+                &self.binding,
+                expected,
+                &self.owner_token(),
+                events,
+            )?;
+            let witness = super::PartitionSourceMetadataWitness::from_live(
+                duplicate,
+                self.binding.clone(),
+                self.budget,
+                self.owner_token(),
+                self.enrolled.clone(),
+                admission.native().domain().sha256().to_owned(),
+                pin.intent_prefix_sha256,
+                admission
+                    .native()
+                    .domain()
+                    .header()
+                    .request
+                    .resource_profile,
+                admission.event_sink(),
+                self.data_profile(),
+            )?;
+            witness.revalidate(events)?;
 
-        self.revalidate(events)?;
-        Ok(witness)
+            self.revalidate(events)?;
+            Ok(witness)
         })();
-        let closed=admission.checkpoint_native_events("partition-construction-owner-closed",events);
-        match(result,closed){(Ok(value),Ok(()))=>Ok(value),(Err(error),_)|(_,Err(error))=>Err(error)}
+        let closed =
+            admission.checkpoint_native_events("partition-construction-owner-closed", events);
+        match (result, closed) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Err(error), _) | (_, Err(error)) => Err(error),
+        }
     }
     pub fn binding(&self) -> &PartitionSourceBinding {
         &self.binding
@@ -592,30 +955,56 @@ impl PartitionScopedOwner {
         self.binding.storage.identity.partition_bytes
     }
     pub fn revalidate(&mut self, events: &mut Vec<NativeEvent>) -> io::Result<()> {
-        if let Some(sink)=&self.recovery_events{
-            if let Err(error)=sink.checkpoint("partition-recovery-owner-before",events){self.poisoned=true;return Err(error);}
+        if let Some(sink) = &self.recovery_events {
+            if let Err(error) = sink.checkpoint("partition-recovery-owner-before", events) {
+                self.poisoned = true;
+                return Err(error);
+            }
         }
         let result = self.revalidate_inner(events);
-        let result=if let Some(sink)=&self.recovery_events{
-            let closed=sink.checkpoint("partition-recovery-owner-after",events);
-            match(result,closed){
-                (Ok(()),Ok(()))=>Ok(()),
-                (Err(error),Err(checkpoint))=>Err(io::Error::new(error.kind(),format!("{error}; recovery event checkpoint also failed: {checkpoint}"))),
-                (Err(error),_)|(_,Err(error))=>Err(error),
+        let result = if let Some(sink) = &self.recovery_events {
+            let closed = sink.checkpoint("partition-recovery-owner-after", events);
+            match (result, closed) {
+                (Ok(()), Ok(())) => Ok(()),
+                (Err(error), Err(checkpoint)) => Err(io::Error::new(
+                    error.kind(),
+                    format!("{error}; recovery event checkpoint also failed: {checkpoint}"),
+                )),
+                (Err(error), _) | (_, Err(error)) => Err(error),
             }
-        }else{result};
+        } else {
+            result
+        };
         if result.is_err() {
             self.poisoned = true;
         }
         result
     }
     fn revalidate_inner(&mut self, events: &mut Vec<NativeEvent>) -> io::Result<()> {
-        let current = if self.physical_data.is_some(){
-            let value=super::partition_isolation::observe_physical_only(&mut self.physical_readonly,&self.binding,self.budget,events,crate::layout::guid_bytes(BASIC_TYPE)?)?;
-            if value.gpt.target_attributes!=PARTITION_READONLY{return Err(io::Error::other("physical source lost actual BASIC+READONLY protection"));}value
-        }else{super::partition_isolation::observe_private(&mut self.physical_readonly,&self.binding,self.budget,events)?};
+        let current = if self.physical_data.is_some() {
+            let value = super::partition_isolation::observe_physical_only(
+                &mut self.physical_readonly,
+                &self.binding,
+                self.budget,
+                events,
+                crate::layout::guid_bytes(BASIC_TYPE)?,
+            )?;
+            if value.gpt.target_attributes != PARTITION_READONLY {
+                return Err(io::Error::other(
+                    "physical source lost actual BASIC+READONLY protection",
+                ));
+            }
+            value
+        } else {
+            super::partition_isolation::observe_private(
+                &mut self.physical_readonly,
+                &self.binding,
+                self.budget,
+                events,
+            )?
+        };
         let dumps = observe_configured_dump_locations(&self.binding, self.budget, events)?;
-        let storage_roles=observe_partition_storage_roles(&self.binding,self.budget,events)?;
+        let storage_roles = observe_partition_storage_roles(&self.binding, self.budget, events)?;
         if !super::partition_isolation::same_private_identity(&self.enrolled.partition, &current)
             || dumps != self.enrolled.configured_dump_locations
             || !dumps.configured_locations_outside_target
@@ -654,18 +1043,43 @@ impl PartitionScopedOwner {
             || crate::layout::u32_at(&number, 8)? != self.binding.storage.identity.partition_number
             || info.len() != 144
             || info != row
-            || info[32..48] != crate::layout::guid_bytes(if self.physical_data.is_some(){BASIC_TYPE}else{PRIVATE_TYPE})?
-            || crate::layout::u64_at(&info,64)? != if self.physical_data.is_some(){PARTITION_READONLY}else{0}
+            || info[32..48]
+                != crate::layout::guid_bytes(if self.physical_data.is_some() {
+                    BASIC_TYPE
+                } else {
+                    PRIVATE_TYPE
+                })?
+            || crate::layout::u64_at(&info, 64)?
+                != if self.physical_data.is_some() {
+                    PARTITION_READONLY
+                } else {
+                    0
+                }
         {
             self.poisoned = true;
             return Err(io::Error::other(
                 "same held partition handle identity/type/extent changed",
             ));
         }
-        if let Some(data)=&self.physical_data {
-            let at=events.len();let writable=control(&self.file,"physical-source-original-volume-READONLY19",0x0007_0024,&[],0,events);
-            if !writable.is_err()||!events.get(at).is_some_and(|e|!e.succeeded&&e.native_error==Some(19)) {
-                return Err(io::Error::other("BASIC+READONLY source requires actual native WRITE_PROTECT19"));}
+        if let Some(data) = &self.physical_data {
+            let at = events.len();
+            let writable = control(
+                &self.file,
+                "physical-source-original-volume-READONLY19",
+                0x0007_0024,
+                &[],
+                0,
+                events,
+            );
+            if !writable.is_err()
+                || !events
+                    .get(at)
+                    .is_some_and(|e| !e.succeeded && e.native_error == Some(19))
+            {
+                return Err(io::Error::other(
+                    "BASIC+READONLY source requires actual native WRITE_PROTECT19",
+                ));
+            }
             data.revalidate_native(events)?;
         }
         if self.poisoned {
@@ -684,7 +1098,11 @@ impl PartitionScopedOwner {
         pins: &'a super::paged_recovery::PagedRecoveryPins<'p>,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<PartitionPagedWriter<'a, 'p>> {
-        if self.physical_data.is_some(){return Err(io::Error::other("legacy lease cannot activate physical source data"));}
+        if self.physical_data.is_some() {
+            return Err(io::Error::other(
+                "legacy lease cannot activate physical source data",
+            ));
+        }
         if !Arc::ptr_eq(&admission.owner_identity, &self.identity)
             || admission.binding != self.binding
         {
@@ -720,20 +1138,30 @@ impl PartitionScopedOwner {
             written: 0,
             pending: None,
             poisoned: false,
-            physical_writer:None,
+            physical_writer: None,
         })
     }
 }
 
-impl PartitionScopedOwner{
+impl PartitionScopedOwner {
     /// Attach only an owned durable observation destination to this actual
     /// private owner. It grants no admission, direction, setter or writer.
     /// The callback remains live until this owner is consumed or dropped.
-    pub fn attach_recovery_observer(mut self,observer:Box<dyn super::partition_lifecycle::PartitionPreparationObserver>,
-        events:&mut Vec<NativeEvent>)->io::Result<Self>{
-        if self.recovery_events.is_some(){return Err(io::Error::other("recovery owner already has a durable event destination"));}
-        self.recovery_events=Some(super::partition_lifecycle::PartitionNativeEventSink::new(observer));
-        self.revalidate(events)?;Ok(self)
+    pub fn attach_recovery_observer(
+        mut self,
+        observer: Box<dyn super::partition_lifecycle::PartitionPreparationObserver>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<Self> {
+        if self.recovery_events.is_some() {
+            return Err(io::Error::other(
+                "recovery owner already has a durable event destination",
+            ));
+        }
+        self.recovery_events = Some(super::partition_lifecycle::PartitionNativeEventSink::new(
+            observer,
+        ));
+        self.revalidate(events)?;
+        Ok(self)
     }
 }
 
@@ -765,12 +1193,17 @@ impl Read for PartitionScopedOwner {
         let transfer = (lead + count).div_ceil(GRANULE as usize) * GRANULE as usize;
         let expected = self.position - lead as u64;
         let result = (|| {
-            let _cursor=self.identity.data_cursor.lock()
-                .map_err(|_|io::Error::other("actual source FILE_OBJECT cursor lock poisoned"))?;
-            if let Some(data)=&mut self.physical_data {
-                data.0.read_at(expected,&mut self.buffer.bytes_mut()[..transfer])
-            }else{
-                if self.file.seek(SeekFrom::Start(expected))? != expected {return Err(io::Error::other("partition read seek differs"));}
+            let _cursor =
+                self.identity.data_cursor.lock().map_err(|_| {
+                    io::Error::other("actual source FILE_OBJECT cursor lock poisoned")
+                })?;
+            if let Some(data) = &mut self.physical_data {
+                data.0
+                    .read_at(expected, &mut self.buffer.bytes_mut()[..transfer])
+            } else {
+                if self.file.seek(SeekFrom::Start(expected))? != expected {
+                    return Err(io::Error::other("partition read seek differs"));
+                }
                 self.file.read(&mut self.buffer.bytes_mut()[..transfer])
             }
         })();
@@ -807,7 +1240,7 @@ pub struct PartitionPagedWriter<'a, 'p> {
     written: u64,
     pending: Option<(u64, usize, [u8; 32])>,
     poisoned: bool,
-    physical_writer:Option<physical_data::Writer>,
+    physical_writer: Option<physical_data::Writer>,
 }
 impl PartitionPagedWriter<'_, '_> {
     fn poison(&mut self, error: io::Error) -> io::Error {
@@ -827,20 +1260,26 @@ impl PartitionPagedWriter<'_, '_> {
             if self.poisoned || self.owner.poisoned {
                 return Err(io::Error::other("partition paged writer poisoned"));
             }
-            let _cursor=self.owner.identity.data_cursor.lock()
-                .map_err(|_|io::Error::other("actual source FILE_OBJECT cursor lock poisoned"))?;
+            let _cursor =
+                self.owner.identity.data_cursor.lock().map_err(|_| {
+                    io::Error::other("actual source FILE_OBJECT cursor lock poisoned")
+                })?;
             if let Some((at, bytes, expected)) = self.pending {
                 // Every successful write creates pending; only verified
                 // flush/readback clears it. With None there is no dirty
                 // source write to flush, including the first J read view.
-                let got=if let Some(data)=&mut self.physical_writer {
-                    let token=PartitionOwnerToken(self.owner.identity.clone());
+                let got = if let Some(data) = &mut self.physical_writer {
+                    let token = PartitionOwnerToken(self.owner.identity.clone());
                     data.flush(&token)?;
-                    data.read_at(&token,at,&mut self.owner.buffer.bytes_mut()[..bytes])?
-                }else{
+                    data.read_at(&token, at, &mut self.owner.buffer.bytes_mut()[..bytes])?
+                } else {
                     self.owner.file.sync_all()?;
-                    if self.owner.file.seek(SeekFrom::Start(at))?!=at{return Err(io::Error::other("partition readback seek differs"));}
-                    self.owner.file.read(&mut self.owner.buffer.bytes_mut()[..bytes])?
+                    if self.owner.file.seek(SeekFrom::Start(at))? != at {
+                        return Err(io::Error::other("partition readback seek differs"));
+                    }
+                    self.owner
+                        .file
+                        .read(&mut self.owner.buffer.bytes_mut()[..bytes])?
                 };
                 if got != bytes
                     || <[u8; 32]>::from(Sha256::digest(&self.owner.buffer.bytes_mut()[..bytes]))
@@ -859,26 +1298,56 @@ impl PartitionPagedWriter<'_, '_> {
         self.sync_all()?;
         let length = self.policy.facts()?.journal_length;
         let position = self.journal.stream_position()?;
-        if position > length { return Err(self.poison(io::Error::other("partition J view position outside actual length"))); }
-        Ok(PartitionJournalReadView { journal: self.journal, length, position })
+        if position > length {
+            return Err(self.poison(io::Error::other(
+                "partition J view position outside actual length",
+            )));
+        }
+        Ok(PartitionJournalReadView {
+            journal: self.journal,
+            length,
+            position,
+        })
     }
     pub fn revalidate(&mut self, events: &mut Vec<NativeEvent>) -> io::Result<()> {
         let result = (|| {
             self.sync_all()?;
-            self.owner.revalidate_current_critical_volume_policy(events)?;
+            self.owner
+                .revalidate_current_critical_volume_policy(events)?;
             if let Some(admission) = self.native_admission.as_deref_mut() {
-                let gate = self._admission.ok_or_else(|| io::Error::other("fresh partition writer gate missing"))?;
+                let gate = self
+                    ._admission
+                    .ok_or_else(|| io::Error::other("fresh partition writer gate missing"))?;
                 gate.require_bound(self.owner, admission, &self.policy, self.pins)?;
-                admission.revalidate_publication_handoff(self.owner, &gate.preparation_pin, events)?;
-                super::paged_recovery::authenticate_scoped_partition_paged_source(self.owner,
-                    &self.policy, self.journal, self.pins, super::paged_recovery::PartitionJournalPhase::Applying)?;
+                admission.revalidate_publication_handoff(
+                    self.owner,
+                    &gate.preparation_pin,
+                    events,
+                )?;
+                super::paged_recovery::authenticate_scoped_partition_paged_source(
+                    self.owner,
+                    &self.policy,
+                    self.journal,
+                    self.pins,
+                    super::paged_recovery::PartitionJournalPhase::Applying,
+                )?;
             } else if let Some(gate) = self.replay_admission {
                 gate.require_bound(self.owner, &self.policy, self.pins)?;
-                if !gate.used { return Err(io::Error::other("partition replay writer gate not spent")); }
-                super::paged_recovery::authenticate_scoped_partition_paged_source(self.owner,
-                    &self.policy, self.journal, self.pins,
-                    super::paged_recovery::PartitionJournalPhase::Replaying(gate.direction))?;
-            } else { return Err(io::Error::other("legacy partition lease lacks current-policy admission")); }
+                if !gate.used {
+                    return Err(io::Error::other("partition replay writer gate not spent"));
+                }
+                super::paged_recovery::authenticate_scoped_partition_paged_source(
+                    self.owner,
+                    &self.policy,
+                    self.journal,
+                    self.pins,
+                    super::paged_recovery::PartitionJournalPhase::Replaying(gate.direction),
+                )?;
+            } else {
+                return Err(io::Error::other(
+                    "legacy partition lease lacks current-policy admission",
+                ));
+            }
             self.owner.revalidate_current_critical_volume_policy(events)
         })();
         result.map_err(|error| self.poison(error))
@@ -893,8 +1362,13 @@ impl PartitionPagedWriter<'_, '_> {
             }
             if self.native_admission.is_some() || self.replay_admission.is_some() {
                 self.revalidate(events)?;
-                super::paged_recovery::authenticate_scoped_partition_paged_source(self.owner,
-                    &self.policy, self.journal, self.pins, super::paged_recovery::PartitionJournalPhase::New)?;
+                super::paged_recovery::authenticate_scoped_partition_paged_source(
+                    self.owner,
+                    &self.policy,
+                    self.journal,
+                    self.pins,
+                    super::paged_recovery::PartitionJournalPhase::New,
+                )?;
                 return self.revalidate(events);
             }
             self.owner.revalidate(events)?;
@@ -914,13 +1388,20 @@ impl PartitionPagedWriter<'_, '_> {
     /// finish_partition_replay_abort to consume the spent direction-bound gate.
     pub fn finish_old(mut self, events: &mut Vec<NativeEvent>) -> io::Result<()> {
         let result = (|| {
-            let gate = self.replay_admission.ok_or_else(|| io::Error::other("finish OLD requires reopened Rollback gate"))?;
+            let gate = self
+                .replay_admission
+                .ok_or_else(|| io::Error::other("finish OLD requires reopened Rollback gate"))?;
             if gate.direction != super::paged_recovery::PagedRecoveryDirection::Rollback {
                 return Err(io::Error::other("Resume writer cannot finish OLD"));
             }
             self.revalidate(events)?;
-            super::paged_recovery::authenticate_scoped_partition_paged_source(self.owner,
-                &self.policy, self.journal, self.pins, super::paged_recovery::PartitionJournalPhase::Restored)?;
+            super::paged_recovery::authenticate_scoped_partition_paged_source(
+                self.owner,
+                &self.policy,
+                self.journal,
+                self.pins,
+                super::paged_recovery::PartitionJournalPhase::Restored,
+            )?;
             self.revalidate(events)
         })();
         result.map_err(|error| self.poison(error))
@@ -936,7 +1417,9 @@ pub struct PartitionJournalReadView<'a> {
 impl Read for PartitionJournalReadView<'_> {
     fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
         let count = (out.len().min(MAX_IO) as u64).min(self.length - self.position) as usize;
-        if count == 0 { return Ok(0); }
+        if count == 0 {
+            return Ok(0);
+        }
         if self.journal.seek(SeekFrom::Start(self.position))? != self.position {
             return Err(io::Error::other("partition J view seek differs"));
         }
@@ -947,10 +1430,14 @@ impl Read for PartitionJournalReadView<'_> {
 }
 impl Seek for PartitionJournalReadView<'_> {
     fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
-        let at = match from { SeekFrom::Start(n) => i128::from(n),
+        let at = match from {
+            SeekFrom::Start(n) => i128::from(n),
             SeekFrom::Current(n) => i128::from(self.position) + i128::from(n),
-            SeekFrom::End(n) => i128::from(self.length) + i128::from(n) };
-        if at < 0 || at > i128::from(self.length) { return Err(io::Error::other("partition J view outside bounds")); }
+            SeekFrom::End(n) => i128::from(self.length) + i128::from(n),
+        };
+        if at < 0 || at > i128::from(self.length) {
+            return Err(io::Error::other("partition J view outside bounds"));
+        }
         self.position = at as u64;
         Ok(self.position)
     }
@@ -1007,26 +1494,40 @@ impl Write for PartitionPagedWriter<'_, '_> {
         let requested = admission.map_err(|error| self.poison(error))?;
         let at = self.owner.position;
         let result = (|| {
-            let _cursor=self.owner.identity.data_cursor.lock()
-                .map_err(|_|io::Error::other("actual source FILE_OBJECT cursor lock poisoned"))?;
+            let _cursor =
+                self.owner.identity.data_cursor.lock().map_err(|_| {
+                    io::Error::other("actual source FILE_OBJECT cursor lock poisoned")
+                })?;
             self.owner.buffer.bytes_mut()[..input.len()].copy_from_slice(input);
-            let n=if let Some(data)=&mut self.physical_writer {
+            let n = if let Some(data) = &mut self.physical_writer {
                 self.requested = requested;
-                data.write_at(&PartitionOwnerToken(self.owner.identity.clone()),at,&self.owner.buffer.bytes_mut()[..input.len()])?
-            }else{
-                if self.owner.file.seek(SeekFrom::Start(at))?!=at{return Err(io::Error::other("partition write seek differs"));}
+                data.write_at(
+                    &PartitionOwnerToken(self.owner.identity.clone()),
+                    at,
+                    &self.owner.buffer.bytes_mut()[..input.len()],
+                )?
+            } else {
+                if self.owner.file.seek(SeekFrom::Start(at))? != at {
+                    return Err(io::Error::other("partition write seek differs"));
+                }
                 self.requested = requested;
-                self.owner.file.write(&self.owner.buffer.bytes_mut()[..input.len()])?
+                self.owner
+                    .file
+                    .write(&self.owner.buffer.bytes_mut()[..input.len()])?
             };
-            if n!=input.len() {return Err(io::Error::new(io::ErrorKind::WriteZero,
-                "short partition write; authenticated recovery required"));}
+            if n != input.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "short partition write; authenticated recovery required",
+                ));
+            }
             self.written += n as u64;
             self.owner.position += n as u64;
             self.pending = Some((at, n, Sha256::digest(input).into()));
             Ok(n)
         })();
         // The mutex guard is gone before poisoning either borrowed owner.
-        result.map_err(|error|self.poison(error))
+        result.map_err(|error| self.poison(error))
     }
     fn flush(&mut self) -> io::Result<()> {
         self.sync_all()

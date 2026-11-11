@@ -173,7 +173,13 @@ pub(super) fn capture_attribute<R: Read + Seek>(
     evidence: Option<&mut Sha256>,
 ) -> Result<SourcePagePin> {
     let mut input = attribute_input(reader, attribute, geometry, evidence)?;
-    PagedMetadataRange::capture(path, purpose, &mut input, attribute.report.logical_size, scratch)
+    PagedMetadataRange::capture(
+        path,
+        purpose,
+        &mut input,
+        attribute.report.logical_size,
+        scratch,
+    )
 }
 
 /// The same bytes and the same evidence as [`capture_attribute`], in memory.
@@ -379,12 +385,13 @@ impl PagedNamespaceCapture {
         // otherwise captured to a scratch file exactly as before. Either way
         // the same bytes are read in the same order into the same evidence.
         let scratch = self.scratch.clone();
-        let held_root = scratch.lease_ram(root_bytes.len() as u64 + 4096).ok().map(|ram| {
-            HeldAttribute {
+        let held_root = scratch
+            .lease_ram(root_bytes.len() as u64 + 4096)
+            .ok()
+            .map(|ram| HeldAttribute {
                 bytes: root_bytes.to_vec(),
                 _ram: ram,
-            }
-        });
+            });
         let root_range = if held_root.is_some() {
             None
         } else {

@@ -516,11 +516,23 @@ fn run_with_fixture_job(
     let final_journal = request.journal.clone();
     let final_resources = request.resources;
     let mut signal = if operation == ResourceDiagnosticOperation::InterruptAfterFirstFlushedWrite {
-        ensure!(request.lab_process_memory_limit_bytes >= request.resources.ram_bytes
-            .checked_add(first_write_signal::RAM_RESERVE).context("signal RAM reserve overflow")?,
-            "fixture Job has no prepaid diagnostic signal RAM headroom");
-        Some(first_write_signal::FirstWriteSignal::create(output, &request.journal, request.minimum_free_bytes)?)
-    } else { None };
+        ensure!(
+            request.lab_process_memory_limit_bytes
+                >= request
+                    .resources
+                    .ram_bytes
+                    .checked_add(first_write_signal::RAM_RESERVE)
+                    .context("signal RAM reserve overflow")?,
+            "fixture Job has no prepaid diagnostic signal RAM headroom"
+        );
+        Some(first_write_signal::FirstWriteSignal::create(
+            output,
+            &request.journal,
+            request.minimum_free_bytes,
+        )?)
+    } else {
+        None
+    };
     let generic = crate::resource_preparation::ResourcePreparationRequest {
         pair: request.pair,
         journal: request.journal,
@@ -563,9 +575,13 @@ fn run_with_fixture_job(
                     signal.as_mut().context("preallocated actual signal owner absent")?
                         .commit(observed, &publication_path, &publication_sha)
                 };
-                let fault = if operation == ResourceDiagnosticOperation::InterruptAfterFirstFlushedWrite {
+                let fault = if operation
+                    == ResourceDiagnosticOperation::InterruptAfterFirstFlushedWrite
+                {
                     Some(&mut callback as &mut dyn FnMut(&crate::selected_journal::resource_domain::prepare::FirstFlushedWrite) -> Result<()>)
-                } else { None };
+                } else {
+                    None
+                };
                 let mut applied = fresh.apply_and_handoff_with_first_write_fault(
                     events,
                     |batch| stream_native_events("fixture-selected-apply", batch),

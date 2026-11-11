@@ -66,27 +66,41 @@ impl Point {
     /// used by journaled Windows short-name preparation, never a filesystem
     /// short-name claim. The eventual creator owns file/directory semantics.
     pub fn relative_component_alias(target: &[u16]) -> io::Result<Self> {
-        if target.is_empty() || target.len()>255 || target==[46] || target==[46,46]
-            || target.iter().any(|c|matches!(*c,0|47|58|92)) {
-            return Err(invalid("relative alias requires one canonical name component"));
+        if target.is_empty()
+            || target.len() > 255
+            || target == [46]
+            || target == [46, 46]
+            || target.iter().any(|c| matches!(*c, 0 | 47 | 58 | 92))
+        {
+            return Err(invalid(
+                "relative alias requires one canonical name component",
+            ));
         }
-        if char::decode_utf16(target.iter().copied()).any(|c|c.is_err()) {
+        if char::decode_utf16(target.iter().copied()).any(|c| c.is_err()) {
             return Err(invalid("relative alias target is not valid UTF-16"));
         }
-        let size=u16::try_from(target.len()*2).map_err(|_|invalid("relative alias name length overflow"))?;
+        let size = u16::try_from(target.len() * 2)
+            .map_err(|_| invalid("relative alias name length overflow"))?;
         // Substitute name then an identical print name, as mklink writes them.
         // ReFS refuses a symbolic link whose print name is empty with
         // ERROR_INVALID_REPARSE_DATA (observed on Windows 11 build 26300).
-        let mut buffer=Vec::with_capacity(20+2*usize::from(size));
+        let mut buffer = Vec::with_capacity(20 + 2 * usize::from(size));
         buffer.extend_from_slice(&IO_REPARSE_TAG_SYMLINK.to_le_bytes());
-        buffer.extend_from_slice(&(12+2*size).to_le_bytes());buffer.extend_from_slice(&[0,0]);
-        buffer.extend_from_slice(&0u16.to_le_bytes());buffer.extend_from_slice(&size.to_le_bytes());
-        buffer.extend_from_slice(&size.to_le_bytes());buffer.extend_from_slice(&size.to_le_bytes());
+        buffer.extend_from_slice(&(12 + 2 * size).to_le_bytes());
+        buffer.extend_from_slice(&[0, 0]);
+        buffer.extend_from_slice(&0u16.to_le_bytes());
+        buffer.extend_from_slice(&size.to_le_bytes());
+        buffer.extend_from_slice(&size.to_le_bytes());
+        buffer.extend_from_slice(&size.to_le_bytes());
         buffer.extend_from_slice(&1u32.to_le_bytes());
         for _ in 0..2 {
-            for c in target {buffer.extend_from_slice(&c.to_le_bytes());}
+            for c in target {
+                buffer.extend_from_slice(&c.to_le_bytes());
+            }
         }
-        let point=Self{buffer};point.validate()?;Ok(point)
+        let point = Self { buffer };
+        point.validate()?;
+        Ok(point)
     }
     /// Raw tag only. Malformed short buffers return zero and must still fail
     /// validate(); this getter never makes serialized bytes trustworthy.
@@ -110,20 +124,42 @@ impl Point {
             // Observed Windows application-execution alias format. Preserve
             // every byte, including optional trailing strings; never resolve
             // or reinterpret the package, AUMID or executable path.
-            if dword(bytes,8)? != 3 { return Err(invalid("unsupported application-execution alias version")); }
-            let strings=bytes.get(12..).ok_or_else(||invalid("short application-execution alias"))?;
-            if !strings.len().is_multiple_of(2)||strings.last()!=Some(&0)||strings.get(strings.len().saturating_sub(2))!=Some(&0){
-                return Err(invalid("application-execution alias string framing differs"));
+            if dword(bytes, 8)? != 3 {
+                return Err(invalid("unsupported application-execution alias version"));
             }
-            let mut count=0usize;let mut length=0usize;
-            for c in char::decode_utf16(strings.chunks_exact(2).map(|b|u16::from_le_bytes([b[0],b[1]]))){
+            let strings = bytes
+                .get(12..)
+                .ok_or_else(|| invalid("short application-execution alias"))?;
+            if !strings.len().is_multiple_of(2)
+                || strings.last() != Some(&0)
+                || strings.get(strings.len().saturating_sub(2)) != Some(&0)
+            {
+                return Err(invalid(
+                    "application-execution alias string framing differs",
+                ));
+            }
+            let mut count = 0usize;
+            let mut length = 0usize;
+            for c in char::decode_utf16(
+                strings
+                    .chunks_exact(2)
+                    .map(|b| u16::from_le_bytes([b[0], b[1]])),
+            ) {
                 match c {
-                    Ok('\0') => { if count<3&&length==0{return Err(invalid("empty application-execution alias field"));}count+=1;length=0; }
-                    Ok(_) => length+=1,
+                    Ok('\0') => {
+                        if count < 3 && length == 0 {
+                            return Err(invalid("empty application-execution alias field"));
+                        }
+                        count += 1;
+                        length = 0;
+                    }
+                    Ok(_) => length += 1,
                     Err(_) => return Err(invalid("invalid application-execution alias UTF-16")),
                 }
             }
-            if count<3 {return Err(invalid("incomplete application-execution alias fields"));}
+            if count < 3 {
+                return Err(invalid("incomplete application-execution alias fields"));
+            }
             return Ok(());
         }
         let fixed = match self.tag() {

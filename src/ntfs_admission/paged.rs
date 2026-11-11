@@ -4,11 +4,14 @@ use crate::ntfs_inspect::{FileInventory, RootFileDomain};
 use anyhow::{Context, Result, ensure};
 
 fn directory_path(files: &impl RootFileDomain, current: u64) -> Result<Vec<String>> {
-    directory_path_for_alias_preparation(files,current,false)
+    directory_path_for_alias_preparation(files, current, false)
 }
 
-fn directory_path_for_alias_preparation(files: &impl RootFileDomain, mut current:u64,
-    alias_preparation:bool)->Result<Vec<String>> {
+fn directory_path_for_alias_preparation(
+    files: &impl RootFileDomain,
+    mut current: u64,
+    alias_preparation: bool,
+) -> Result<Vec<String>> {
     let mut components = Vec::new();
     let mut units = 0usize;
     // A canonical parent chain cannot contain more identities than the source.
@@ -19,10 +22,14 @@ fn directory_path_for_alias_preparation(files: &impl RootFileDomain, mut current
         let directory = files
             .find_record(number, Some(sequence))?
             .context("source parent identity is missing or stale")?;
-        let names:Vec<_>=directory.names.iter().filter(|n|!alias_preparation||n.namespace!=2).collect();
+        let names: Vec<_> = directory
+            .names
+            .iter()
+            .filter(|n| !alias_preparation || n.namespace != 2)
+            .collect();
         ensure!(
             directory.is_directory
-                && (alias_preparation || directory.hard_link_count==1)
+                && (alias_preparation || directory.hard_link_count == 1)
                 && names.len() == 1
                 && directory.base_file_reference == 0,
             "source parent is not a canonical single-name directory"
@@ -58,25 +65,42 @@ fn directory_path_for_alias_preparation(files: &impl RootFileDomain, mut current
 /// Canonical long paths for a separately journaled short-name preparation.
 /// This does not satisfy normal source admission or permit dropping aliases.
 pub(crate) fn canonical_paths_for_alias_preparation(
-    files:&impl RootFileDomain,file:&FileInventory,
-)->Result<Vec<Vec<String>>>{
-    ensure!(file.base_file_reference==0,"canonical base required for alias preparation");
-    let canonical:Vec<_>=file.names.iter().filter(|n|n.namespace!=2).collect();
+    files: &impl RootFileDomain,
+    file: &FileInventory,
+) -> Result<Vec<Vec<String>>> {
+    ensure!(
+        file.base_file_reference == 0,
+        "canonical base required for alias preparation"
+    );
+    let canonical: Vec<_> = file.names.iter().filter(|n| n.namespace != 2).collect();
     // The Windows path preserves the raw FILE counter as a hint; complete
     // MFT/I30 coverage and native canonical link counts establish the names.
-    ensure!(!canonical.is_empty()
-        &&canonical.iter().all(|n|matches!(n.namespace,0|1|3))
-        &&(!file.is_directory||canonical.len()==1),"canonical name/link coverage differs");
-    for alias in file.names.iter().filter(|n|n.namespace==2){
-        ensure!(canonical.iter().any(|n|n.parent_record_number==alias.parent_record_number
-            &&n.parent_sequence_number==alias.parent_sequence_number),"DOS alias has no canonical parent identity");
+    ensure!(
+        !canonical.is_empty()
+            && canonical.iter().all(|n| matches!(n.namespace, 0 | 1 | 3))
+            && (!file.is_directory || canonical.len() == 1),
+        "canonical name/link coverage differs"
+    );
+    for alias in file.names.iter().filter(|n| n.namespace == 2) {
+        ensure!(
+            canonical
+                .iter()
+                .any(|n| n.parent_record_number == alias.parent_record_number
+                    && n.parent_sequence_number == alias.parent_sequence_number),
+            "DOS alias has no canonical parent identity"
+        );
     }
-    let mut paths=Vec::new();
+    let mut paths = Vec::new();
     for name in canonical {
-        let parent=name.parent_record_number|(u64::from(name.parent_sequence_number)<<48);
-        let mut path=directory_path_for_alias_preparation(files,parent,true)?;
-        if file.record_number!=5 {path.push(String::from_utf16(&name.name_utf16)?);}
-        ensure!(crate::shadow_tree::expected_path_fits(&path,!file.is_directory),"alias preparation path exceeds native representation");
+        let parent = name.parent_record_number | (u64::from(name.parent_sequence_number) << 48);
+        let mut path = directory_path_for_alias_preparation(files, parent, true)?;
+        if file.record_number != 5 {
+            path.push(String::from_utf16(&name.name_utf16)?);
+        }
+        ensure!(
+            crate::shadow_tree::expected_path_fits(&path, !file.is_directory),
+            "alias preparation path exceeds native representation"
+        );
         paths.push(path);
     }
     Ok(paths)
@@ -134,7 +158,8 @@ pub(crate) fn internal_role(
     // slots are recognized before the closure is called by the shared policy.
     let path = if file.names.len() == 1 {
         user_paths(files, file)
-            .with_context(|| format!("NTFS internal-role path at FILE {}", file.record_number))?.pop()
+            .with_context(|| format!("NTFS internal-role path at FILE {}", file.record_number))?
+            .pop()
     } else {
         None
     };
@@ -184,10 +209,15 @@ pub(crate) fn blocker_is_unresolved(
     {
         return Ok(false);
     }
-    if blocker.code=="object_id" && source.is_windows_conversion() {
-        if let (Some(number),Some(domain))=(blocker.file_record_number,indexes.windows_object_ids_owned()) {
-            if let Some(file)=source.find_record(number,None)? {
-                if domain.accounted(source,&file)? {return Ok(false);}
+    if blocker.code == "object_id" && source.is_windows_conversion() {
+        if let (Some(number), Some(domain)) = (
+            blocker.file_record_number,
+            indexes.windows_object_ids_owned(),
+        ) {
+            if let Some(file) = source.find_record(number, None)? {
+                if domain.accounted(source, &file)? {
+                    return Ok(false);
+                }
             }
         }
     }
@@ -198,19 +228,30 @@ pub(crate) fn blocker_is_unresolved(
         if let Some(number) = blocker.file_record_number {
             if let Some(file) = source.find_record(number, None)? {
                 let role = internal_role(source, &file)?;
-                let windows_user_txf = if let Some(proof) = transactions.windows_txf_markers_owned() {
+                let windows_user_txf = if let Some(proof) = transactions.windows_txf_markers_owned()
+                {
                     crate::ntfs_transactions::windows_user_marker(source, &file, &proof)?
-                } else { false };
-                if (number == 5 || role.as_deref() == Some("$Extend\\$RmMetadata\\$Txf") || windows_user_txf)
+                } else {
+                    false
+                };
+                if (number == 5
+                    || role.as_deref() == Some("$Extend\\$RmMetadata\\$Txf")
+                    || windows_user_txf)
                     && file
                         .attributes
                         .iter()
-                        .filter(|a| a.type_code == 0x100
-                            && a.name_utf16 == [36, 84, 88, 70, 95, 68, 65, 84, 65])
+                        .filter(|a| {
+                            a.type_code == 0x100
+                                && a.name_utf16 == [36, 84, 88, 70, 95, 68, 65, 84, 65]
+                        })
                         .count()
                         == 1
                     && file.attributes.iter().any(super::recognized_root_txf)
-                    && file.attributes.iter().filter(|a| a.type_code == 0x100).all(super::recognized_root_txf)
+                    && file
+                        .attributes
+                        .iter()
+                        .filter(|a| a.type_code == 0x100)
+                        .all(super::recognized_root_txf)
                 {
                     return Ok(false);
                 }
@@ -309,7 +350,9 @@ fn ordinary_user_issues_scoped(
             let _ = crate::ntfs_storage_class::normalize(file, proof)?;
         }
         Some(aliases.user_paths(source, file)?)
-    } else { user_paths(source, file).ok() };
+    } else {
+        user_paths(source, file).ok()
+    };
     let names_supported = paths.is_some();
     let system_volume_information = paths.as_ref().is_some_and(|paths| {
         paths.iter().any(|path| {
@@ -347,12 +390,15 @@ fn ordinary_user_issues_scoped(
             crate::ntfs_inspect::LogicalHashStatus::NotReadExtentIdentityV1 => {
                 stream.logical_sha256.is_none()
                     && (if aliases.is_some() {
-                        crate::ntfs_attestation::extent_identity_stream_request_windows_domain(source, file, stream)?
+                        crate::ntfs_attestation::extent_identity_stream_request_windows_domain(
+                            source, file, stream,
+                        )?
                     } else {
                         crate::ntfs_attestation::extent_identity_stream_request_domain(
                             source, file, stream, true, true,
                         )?
-                    }).is_some()
+                    })
+                    .is_some()
             }
             _ => false,
         };
@@ -373,8 +419,16 @@ fn ordinary_user_issues_scoped(
         maximum_streams,
         aliases.is_some(),
         aliases.is_some_and(|aliases| aliases.storage_hint_normalization().is_some()),
-        if let Some(aliases) = aliases { aliases.windows_txf_accounted(source, file)? } else { false },
-        if let Some(aliases) = aliases { aliases.windows_object_id_accounted(source,file)? } else { false },
+        if let Some(aliases) = aliases {
+            aliases.windows_txf_accounted(source, file)?
+        } else {
+            false
+        },
+        if let Some(aliases) = aliases {
+            aliases.windows_object_id_accounted(source, file)?
+        } else {
+            false
+        },
         |stream| evidence.get(&stream.name_utf16).copied().unwrap_or(false),
     ))
 }

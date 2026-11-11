@@ -146,8 +146,10 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
     let allow = |kind: &str, allowed: &mut BTreeMap<String, usize>| {
         *allowed.entry(kind.to_owned()).or_default() += 1;
     };
-    let after_by_path: BTreeMap<&str, &Record> =
-        after.iter().map(|record| (record.path.as_str(), record)).collect();
+    let after_by_path: BTreeMap<&str, &Record> = after
+        .iter()
+        .map(|record| (record.path.as_str(), record))
+        .collect();
     let before_paths: BTreeSet<&str> = before.iter().map(|record| record.path.as_str()).collect();
     let mut explained_after: BTreeSet<String> = BTreeSet::new();
 
@@ -178,7 +180,9 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
                     Some(_) if before_paths.contains(alias.as_str()) => {
                         // A real object of that name exists; it is compared on its own.
                     }
-                    Some(_) => differ(format!("short name {short} exists but is not a link to {leaf}")),
+                    Some(_) => differ(format!(
+                        "short name {short} exists but is not a link to {leaf}"
+                    )),
                     None => differ(format!("short name {short} was lost")),
                 }
             }
@@ -210,7 +214,10 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
             if was & !COMPRESSED == is {
                 allow("NTFS compression flag removed", &mut result.allowed);
             } else {
-                differ(format!("attributes {:#x} became {:#x}", record.attributes, now.attributes));
+                differ(format!(
+                    "attributes {:#x} became {:#x}",
+                    record.attributes, now.attributes
+                ));
             }
         }
         for (name, was, is) in [
@@ -257,7 +264,10 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
             allow("kernel cache attributes dropped", &mut result.allowed);
         }
         if record.links != now.links {
-            differ(format!("hard-link count {} became {}", record.links, now.links));
+            differ(format!(
+                "hard-link count {} became {}",
+                record.links, now.links
+            ));
         }
     }
 
@@ -267,11 +277,17 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
         for record in records {
             if let Some(group) = &record.link_group {
                 if !inside_system_volume_information(&record.path) {
-                    by_group.entry(group).or_default().insert(record.path.clone());
+                    by_group
+                        .entry(group)
+                        .or_default()
+                        .insert(record.path.clone());
                 }
             }
         }
-        by_group.into_values().filter(|names| names.len() > 1).collect()
+        by_group
+            .into_values()
+            .filter(|names| names.len() > 1)
+            .collect()
     };
     let (before_groups, after_groups) = (groups(before), groups(after));
     for names in before_groups.difference(&after_groups) {
@@ -323,7 +339,7 @@ pub use capture::capture;
 
 #[cfg(windows)]
 mod capture {
-    use super::{Record, Stream, SYMLINK_TAG};
+    use super::{Record, SYMLINK_TAG, Stream};
     use sha2::{Digest, Sha256};
     use std::{
         fs::File,
@@ -335,7 +351,10 @@ mod capture {
     };
     use windows_sys::Win32::{
         Foundation::LocalFree,
-        Security::{Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW, GetKernelObjectSecurity},
+        Security::{
+            Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW,
+            GetKernelObjectSecurity,
+        },
         Storage::FileSystem::GetFileInformationByHandleEx,
     };
 
@@ -373,7 +392,11 @@ mod capture {
                 (buffer.len() * 8) as u32,
             )
         };
-        if ok == 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
+        if ok == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
     }
     fn bytes_of(buffer: &[u64]) -> &[u8] {
         // SAFETY: reinterpreting initialized u64 storage as bytes.
@@ -416,7 +439,11 @@ mod capture {
                     let short_bytes = entry[68] as usize;
                     let short = utf16(&entry[70..70 + short_bytes]);
                     out.push(Pending {
-                        path: if path == "\\" { format!("\\{name}") } else { format!("{path}\\{name}") },
+                        path: if path == "\\" {
+                            format!("\\{name}")
+                        } else {
+                            format!("{path}\\{name}")
+                        },
                         attributes: u32_at(entry, 56),
                         created: i64_at(entry, 8),
                         written: i64_at(entry, 24),
@@ -490,7 +517,10 @@ mod capture {
             }
             // SAFETY: `length` UTF-16 units including the terminator, owned until LocalFree.
             let units = unsafe { std::slice::from_raw_parts(text, length as usize) };
-            let end = units.iter().position(|unit| *unit == 0).unwrap_or(units.len());
+            let end = units
+                .iter()
+                .position(|unit| *unit == 0)
+                .unwrap_or(units.len());
             let value = String::from_utf16_lossy(&units[..end]);
             // SAFETY: allocated by the conversion call above.
             unsafe { LocalFree(text.cast()) };
@@ -513,7 +543,12 @@ mod capture {
         }
     }
 
-    fn named_streams(prefix: &str, path: &str, file: &File, buffer: &mut [u8]) -> io::Result<Vec<Stream>> {
+    fn named_streams(
+        prefix: &str,
+        path: &str,
+        file: &File,
+        buffer: &mut [u8],
+    ) -> io::Result<Vec<Stream>> {
         let mut listing = vec![0u64; 8192];
         // FileStreamInfo
         match information(file, 7, &mut listing) {
@@ -538,7 +573,11 @@ mod capture {
                     .custom_flags(OPEN_FLAGS)
                     .open(format!("{prefix}{path}{stream_name}"))?;
                 let (bytes, sha256) = hash(&mut stream, buffer)?;
-                streams.push(Stream { name, bytes, sha256 });
+                streams.push(Stream {
+                    name,
+                    bytes,
+                    sha256,
+                });
             }
             if next == 0 {
                 break;
@@ -628,7 +667,11 @@ mod capture {
                     record.reparse_sha256 = Some(hex::encode(Sha256::digest(&point.buffer)));
                     record.relative_link_target = relative_target(&point.buffer);
                 }
-                Ok(None) => note(&mut record, "reparse point", &"attribute set but no reparse data"),
+                Ok(None) => note(
+                    &mut record,
+                    "reparse point",
+                    &"attribute set but no reparse data",
+                ),
                 Err(error) => note(&mut record, "reparse point", &error),
             }
         } else {
@@ -675,9 +718,13 @@ mod capture {
     /// Lists every object on the volume mounted at `root` (for example `D:\`).
     pub fn capture(root: &Path, threads: usize) -> io::Result<Vec<Record>> {
         let text: Vec<u16> = root.as_os_str().encode_wide().collect();
-        let text = String::from_utf16(&text).map_err(|_| io::Error::other("volume root is not Unicode"))?;
+        let text = String::from_utf16(&text)
+            .map_err(|_| io::Error::other("volume root is not Unicode"))?;
         let drive = text.trim_end_matches('\\');
-        if drive.len() != 2 || !drive.as_bytes()[0].is_ascii_alphabetic() || drive.as_bytes()[1] != b':' {
+        if drive.len() != 2
+            || !drive.as_bytes()[0].is_ascii_alphabetic()
+            || drive.as_bytes()[1] != b':'
+        {
             return Err(io::Error::other("volume root must be a drive such as D:\\"));
         }
         let prefix = format!("\\\\?\\{drive}");
@@ -718,8 +765,10 @@ mod capture {
         }
 
         let total = pending.len();
-        let slots: Vec<std::sync::Mutex<Option<Pending>>> =
-            pending.into_iter().map(|entry| std::sync::Mutex::new(Some(entry))).collect();
+        let slots: Vec<std::sync::Mutex<Option<Pending>>> = pending
+            .into_iter()
+            .map(|entry| std::sync::Mutex::new(Some(entry)))
+            .collect();
         let cursor = AtomicUsize::new(0);
         let mut records: Vec<Record> = std::thread::scope(|scope| {
             let workers: Vec<_> = (0..threads.clamp(1, 64))
@@ -789,7 +838,11 @@ mod tests {
 
     #[test]
     fn identical_listings_have_no_differences() {
-        let listing = vec![directory("\\"), directory("\\Windows"), file("\\Windows\\a.txt", "aa")];
+        let listing = vec![
+            directory("\\"),
+            directory("\\Windows"),
+            file("\\Windows\\a.txt", "aa"),
+        ];
         let comparison = compare(&listing, &listing);
         assert!(comparison.identical(), "{comparison:?}");
         assert_eq!(comparison.before_objects, 3);
@@ -842,12 +895,22 @@ mod tests {
         compressed.attributes = 0x820;
         let mut audited = file("\\s", "22");
         audited.security = Some("O:SYG:SYD:(A;;FA;;;SY)".to_owned());
-        let before = vec![directory("\\"), compressed, audited, file("\\System Volume Information\\x", "33")];
+        let before = vec![
+            directory("\\"),
+            compressed,
+            audited,
+            file("\\System Volume Information\\x", "33"),
+        ];
         let mut plain = file("\\z", "11");
         plain.attributes = 0x20 | 0x8000;
         let mut empty_sacl = file("\\s", "22");
         empty_sacl.security = Some("O:SYG:SYD:(A;;FA;;;SY)S:".to_owned());
-        let after = vec![directory("\\"), plain, empty_sacl, file("\\System Volume Information\\y", "44")];
+        let after = vec![
+            directory("\\"),
+            plain,
+            empty_sacl,
+            file("\\System Volume Information\\y", "44"),
+        ];
         let comparison = compare(&before, &after);
         assert!(comparison.identical(), "{comparison:?}");
         assert_eq!(comparison.allowed["NTFS compression flag removed"], 1);
@@ -856,7 +919,10 @@ mod tests {
 
         let mut real_sacl = file("\\s", "22");
         real_sacl.security = Some("O:SYG:SYD:(A;;FA;;;SY)S:(AU;SA;FA;;;WD)".to_owned());
-        let stricter = compare(&[directory("\\"), file("\\s", "22")], &[directory("\\"), real_sacl]);
+        let stricter = compare(
+            &[directory("\\"), file("\\s", "22")],
+            &[directory("\\"), real_sacl],
+        );
         assert_eq!(stricter.difference_count, 1);
     }
 
@@ -867,7 +933,10 @@ mod tests {
         cached.extended_attributes = Some("ee".to_owned());
         let mut kept = file("\\a", "11");
         kept.extended_attributes = Some("ee".to_owned());
-        let comparison = compare(&[directory("\\"), cached.clone()], &[directory("\\"), kept.clone()]);
+        let comparison = compare(
+            &[directory("\\"), cached.clone()],
+            &[directory("\\"), kept.clone()],
+        );
         assert!(comparison.identical(), "{comparison:?}");
         assert_eq!(comparison.allowed["kernel cache attributes dropped"], 1);
 

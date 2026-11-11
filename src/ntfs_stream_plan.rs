@@ -499,16 +499,25 @@ fn classify_stream_domain_scoped(
         crate::ntfs_inspect::LogicalHashStatus::NotReadExtentIdentityV1 => {
             stream.logical_sha256.is_none()
                 && (if aliases.is_some() {
-                    ensure!(source.allocation().status == crate::ntfs_inspect::AllocationReconciliationStatus::ConsistentRawModel,
-                        "Windows stream allocation ownership is not closed");
-                    crate::ntfs_attestation::extent_identity_stream_request_windows_domain(source, file, stream)?
+                    ensure!(
+                    source.allocation().status
+                        == crate::ntfs_inspect::AllocationReconciliationStatus::ConsistentRawModel,
+                    "Windows stream allocation ownership is not closed"
+                );
+                    crate::ntfs_attestation::extent_identity_stream_request_windows_domain(
+                        source, file, stream,
+                    )?
                 } else {
                     crate::ntfs_attestation::extent_identity_stream_request_domain(
-                        source, file, stream,
-                        source.allocation().status == crate::ntfs_inspect::AllocationReconciliationStatus::ConsistentRawModel,
-                        true,
-                    )?
-                }).is_some()
+                    source,
+                    file,
+                    stream,
+                    source.allocation().status
+                        == crate::ntfs_inspect::AllocationReconciliationStatus::ConsistentRawModel,
+                    true,
+                )?
+                })
+                .is_some()
         }
         _ => false,
     };

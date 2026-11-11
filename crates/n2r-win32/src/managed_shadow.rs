@@ -46,11 +46,13 @@ const MAX_LAYOUT: usize = 48 + 128 * 144;
 
 mod recovery;
 pub use recovery::{ReattachedShadow, reattach_existing};
-mod retirement;
 mod backing_resources;
+mod retirement;
 pub use backing_resources::{BackingResourceGuard, BackingResourceObservation};
 mod creation_resources;
-pub use creation_resources::{NativeCreationAdmission, NativeCreationObservation, admit_fresh_native_backing};
+pub use creation_resources::{
+    NativeCreationAdmission, NativeCreationObservation, admit_fresh_native_backing,
+};
 /// This is the constructor's actual configured dynamic VHDX allocation block.
 pub const NATIVE_VHDX_ALLOCATION_QUANTUM_BYTES: u32 = 2 << 20;
 pub use retirement::{
@@ -468,7 +470,7 @@ fn initialize_new_owned(
     control(disk, IOCTL_DISK_UPDATE_PROPERTIES, &[], 0)?;
     let binding = GeneralDiskBinding {
         layout_profile: Default::default(),
-            disk_number: geometry.number,
+        disk_number: geometry.number,
         // Placeholder only for syntax validation: discovery replaces this
         // with the actual volume whose physical extents match this partition.
         volume_guid: guid_text(&partition_guid),

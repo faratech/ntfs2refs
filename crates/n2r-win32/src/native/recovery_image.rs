@@ -1,9 +1,9 @@
 //! Full-Windows owned recovery-WIM builder. NO BCD/firmware/source data writer.
 //! All DISM targets/copies/temporary hive live under one fresh independent-J root.
-#[path="recovery_image/reopen.rs"]
+#[path = "recovery_image/reopen.rs"]
 mod completed;
 pub use completed::reopen_completed;
-#[path="recovery_image/payload_replace.rs"]
+#[path = "recovery_image/payload_replace.rs"]
 mod payload_replace;
 use super::*;
 use crate::{
@@ -235,105 +235,198 @@ struct SystemRegistryLibrary {
     parent_ids: Vec<(String, [u32; 4])>,
 }
 fn system_parent_ids(parents: &[File]) -> io::Result<Vec<(String, [u32; 4])>> {
-    parents.iter().map(|file| {
-        let observed = crate::native::offline_environment::kernel_ram_backing::legacy52(file);
-        need(observed.succeeded, "held System32 parent identity unavailable")?;
-        let raw = observed.raw_u32.ok_or_else(|| bad("held System32 parent identity absent"))?;
-        need(raw.len() == 13 && raw[0] & 0x410 == 0x10,
-            "actual System32 ancestry must remain ordinary directories")?;
-        Ok((crate::file_storage::final_path_guid(file)?, [raw[0], raw[7], raw[11], raw[12]]))
-    }).collect()
+    parents
+        .iter()
+        .map(|file| {
+            let observed = crate::native::offline_environment::kernel_ram_backing::legacy52(file);
+            need(
+                observed.succeeded,
+                "held System32 parent identity unavailable",
+            )?;
+            let raw = observed
+                .raw_u32
+                .ok_or_else(|| bad("held System32 parent identity absent"))?;
+            need(
+                raw.len() == 13 && raw[0] & 0x410 == 0x10,
+                "actual System32 ancestry must remain ordinary directories",
+            )?;
+            Ok((
+                crate::file_storage::final_path_guid(file)?,
+                [raw[0], raw[7], raw[11], raw[12]],
+            ))
+        })
+        .collect()
 }
 impl SystemRegistryLibrary {
     fn revalidate(&mut self) -> io::Result<()> {
-        need(system_dir()?.join("offreg.dll") == self.input.path
-            && system_parent_ids(&self.parents)? == self.parent_ids
-            && crate::reference_file::observe_reference_file_handle_with_limit(
-                &self.file, OFFLINE_REGISTRY_MAX_BYTES)? == self.snapshot
-            && crate::sha256_native::hash_range(&mut self.file, 0, self.input.bytes)? == self.input.sha256
-            && crate::reference_file::observe_reference_file_handle_with_limit(
-                &self.file, OFFLINE_REGISTRY_MAX_BYTES)? == self.snapshot
-            && system_parent_ids(&self.parents)? == self.parent_ids,
-            "same held actual System32 offreg library or ancestry changed")
+        need(
+            system_dir()?.join("offreg.dll") == self.input.path
+                && system_parent_ids(&self.parents)? == self.parent_ids
+                && crate::reference_file::observe_reference_file_handle_with_limit(
+                    &self.file,
+                    OFFLINE_REGISTRY_MAX_BYTES,
+                )? == self.snapshot
+                && crate::sha256_native::hash_range(&mut self.file, 0, self.input.bytes)?
+                    == self.input.sha256
+                && crate::reference_file::observe_reference_file_handle_with_limit(
+                    &self.file,
+                    OFFLINE_REGISTRY_MAX_BYTES,
+                )? == self.snapshot
+                && system_parent_ids(&self.parents)? == self.parent_ids,
+            "same held actual System32 offreg library or ancestry changed",
+        )
     }
 }
-fn system_registry_library(source: &PartitionSourceBinding, budget: RecoveryImageBudget,
-    events: &mut Vec<NativeEvent>) -> io::Result<SystemRegistryLibrary> {
+fn system_registry_library(
+    source: &PartitionSourceBinding,
+    budget: RecoveryImageBudget,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<SystemRegistryLibrary> {
     let _owning_windows_disk = full_windows(events)?;
-    need(cfg!(target_arch = "x86_64"), "offline registry capture requires owning full Windows x64")?;
+    need(
+        cfg!(target_arch = "x86_64"),
+        "offline registry capture requires owning full Windows x64",
+    )?;
     let system = system_dir()?;
     let mut windows = [0u16; 32768];
-    let count = unsafe { GetWindowsDirectoryW(windows.as_mut_ptr(), windows.len() as u32) } as usize;
-    need(count > 0 && count < windows.len(), "actual Windows directory unavailable")?;
+    let count =
+        unsafe { GetWindowsDirectoryW(windows.as_mut_ptr(), windows.len() as u32) } as usize;
+    need(
+        count > 0 && count < windows.len(),
+        "actual Windows directory unavailable",
+    )?;
     let windows = PathBuf::from(String::from_utf16(&windows[..count]).map_err(io::Error::other)?);
-    need(path_text(&system)?.eq_ignore_ascii_case(&path_text(&windows.join("System32"))?),
-        "actual native System32 is not the owning Windows component directory")?;
+    need(
+        path_text(&system)?.eq_ignore_ascii_case(&path_text(&windows.join("System32"))?),
+        "actual native System32 is not the owning Windows component directory",
+    )?;
     let parents = parent_chain(&system)?;
     let parent_ids = system_parent_ids(&parents)?;
     let path = system.join("offreg.dll");
-    let mut file = OpenOptions::new().read(true).share_mode(1)
-        .custom_flags(0x0020_0000).open(&path)?;
+    let mut file = OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .custom_flags(0x0020_0000)
+        .open(&path)?;
     crate::file_storage::require_readonly_access(&file)?;
     let snapshot = crate::reference_file::observe_reference_file_handle_with_limit(
-        &file, OFFLINE_REGISTRY_MAX_BYTES)?;
-    need(snapshot.file_bytes >= 64 && snapshot.file_bytes <= budget.maximum_input_bytes
-        && snapshot.final_path.eq_ignore_ascii_case(
-            &format!("{}\\offreg.dll", parent_ids.first().ok_or_else(|| bad("System32 parent absent"))?.0))
-        && !snapshot.final_path.to_ascii_lowercase().starts_with(
-            &(source.storage.volume_path()?.to_ascii_lowercase() + "\\")),
-        "offreg input must be the actual held bounded System32 component, never source payload")?;
+        &file,
+        OFFLINE_REGISTRY_MAX_BYTES,
+    )?;
+    need(
+        snapshot.file_bytes >= 64
+            && snapshot.file_bytes <= budget.maximum_input_bytes
+            && snapshot.final_path.eq_ignore_ascii_case(&format!(
+                "{}\\offreg.dll",
+                parent_ids
+                    .first()
+                    .ok_or_else(|| bad("System32 parent absent"))?
+                    .0
+            ))
+            && !snapshot
+                .final_path
+                .to_ascii_lowercase()
+                .starts_with(&(source.storage.volume_path()?.to_ascii_lowercase() + "\\")),
+        "offreg input must be the actual held bounded System32 component, never source payload",
+    )?;
     // System32 components may be hardlinked into WinSxS. The original held
     // object permits links, while excluding writes/deletes throughout capture.
     let mut dos = [0u8; 64];
     file.read_exact(&mut dos)?;
     let pe = u64::from(u32::from_le_bytes(dos[60..64].try_into().unwrap()));
-    need(&dos[..2] == b"MZ" && pe >= 64
-        && pe.checked_add(26).is_some_and(|n| n <= snapshot.file_bytes),
-        "actual System32 offline registry component lacks bounded PE headers")?;
+    need(
+        &dos[..2] == b"MZ"
+            && pe >= 64
+            && pe.checked_add(26).is_some_and(|n| n <= snapshot.file_bytes),
+        "actual System32 offline registry component lacks bounded PE headers",
+    )?;
     file.seek(SeekFrom::Start(pe))?;
     let mut header = [0u8; 26];
     file.read_exact(&mut header)?;
-    need(&header[..4] == b"PE\0\0" && u16::from_le_bytes(header[4..6].try_into().unwrap()) == 0x8664
-        && u16::from_le_bytes(header[20..22].try_into().unwrap()) >= 2
-        && u16::from_le_bytes(header[22..24].try_into().unwrap()) & 0x2000 != 0
-        && u16::from_le_bytes(header[24..26].try_into().unwrap()) == 0x20b,
-        "actual System32 offline registry component must be an AMD64 PE32+ DLL")?;
+    need(
+        &header[..4] == b"PE\0\0"
+            && u16::from_le_bytes(header[4..6].try_into().unwrap()) == 0x8664
+            && u16::from_le_bytes(header[20..22].try_into().unwrap()) >= 2
+            && u16::from_le_bytes(header[22..24].try_into().unwrap()) & 0x2000 != 0
+            && u16::from_le_bytes(header[24..26].try_into().unwrap()) == 0x20b,
+        "actual System32 offline registry component must be an AMD64 PE32+ DLL",
+    )?;
     let sha256 = crate::sha256_native::hash_range(&mut file, 0, snapshot.file_bytes)?;
-    let mut held = SystemRegistryLibrary { input: RecoveryImageInput {
-        path, bytes: snapshot.file_bytes, sha256 }, file, snapshot, parents, parent_ids };
+    let mut held = SystemRegistryLibrary {
+        input: RecoveryImageInput {
+            path,
+            bytes: snapshot.file_bytes,
+            sha256,
+        },
+        file,
+        snapshot,
+        parents,
+        parent_ids,
+    };
     held.revalidate()?;
     Ok(held)
 }
-fn capture_registry_library(input: &mut SystemRegistryLibrary, target: &Path) -> io::Result<HeldArtifact> {
+fn capture_registry_library(
+    input: &mut SystemRegistryLibrary,
+    target: &Path,
+) -> io::Result<HeldArtifact> {
     input.revalidate()?;
     input.file.seek(SeekFrom::Start(0))?;
-    let mut output = OpenOptions::new().create_new(true).read(true).write(true)
-        .share_mode(1).custom_flags(0x0020_0000).open(target)?;
-    need(io::copy(&mut (&mut input.file).take(input.input.bytes), &mut output)? == input.input.bytes,
-        "held System32 offline registry copy became short")?;
+    let mut output = OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .share_mode(1)
+        .custom_flags(0x0020_0000)
+        .open(target)?;
+    need(
+        io::copy(&mut (&mut input.file).take(input.input.bytes), &mut output)? == input.input.bytes,
+        "held System32 offline registry copy became short",
+    )?;
     let mut tail = [0u8; 1];
-    need(input.file.read(&mut tail)? == 0, "held System32 offline registry EOF changed")?;
+    need(
+        input.file.read(&mut tail)? == 0,
+        "held System32 offline registry EOF changed",
+    )?;
     output.sync_all()?;
     let copied = crate::reference_file::observe_reference_file_handle_with_limit(
-        &output, OFFLINE_REGISTRY_MAX_BYTES)?;
-    need(copied.file_bytes == input.input.bytes && copied.number_of_links == 1
-        && crate::sha256_native::hash_range(&mut output, 0, copied.file_bytes)? == input.input.sha256
-        && crate::reference_file::observe_reference_file_handle_with_limit(
-            &output, OFFLINE_REGISTRY_MAX_BYTES)? == copied,
-        "new owned J offline registry copy failed identity/flush/readback")?;
+        &output,
+        OFFLINE_REGISTRY_MAX_BYTES,
+    )?;
+    need(
+        copied.file_bytes == input.input.bytes
+            && copied.number_of_links == 1
+            && crate::sha256_native::hash_range(&mut output, 0, copied.file_bytes)?
+                == input.input.sha256
+            && crate::reference_file::observe_reference_file_handle_with_limit(
+                &output,
+                OFFLINE_REGISTRY_MAX_BYTES,
+            )? == copied,
+        "new owned J offline registry copy failed identity/flush/readback",
+    )?;
     drop(output);
     input.revalidate()?;
-    let artifact = hold_artifact("offline-registry-library", target.to_path_buf(), OFFLINE_REGISTRY_MAX_BYTES)?;
+    let artifact = hold_artifact(
+        "offline-registry-library",
+        target.to_path_buf(),
+        OFFLINE_REGISTRY_MAX_BYTES,
+    )?;
     // Actual NTFS closes 262144 preallocated bytes down to 114688 EOF here.
     // Begin the immutable artifact epoch after writer close, retaining exact
     // object identity/content and accepting only bounded allocation shrink.
     let mut same_object = copied.clone();
     same_object.allocation_bytes = artifact.pin.snapshot.allocation_bytes;
     let closed_allocation = artifact.pin.snapshot.allocation_bytes;
-    if artifact.pin.snapshot != same_object || artifact.pin.sha256 != input.input.sha256
-        || closed_allocation < copied.file_bytes || closed_allocation > copied.allocation_bytes {
-        return Err(bad(format!("same new J offline registry object changed before immutable hold: before_writer_close={copied:?}, after_readonly_reopen={:?}, complete_sha_equal={}",
-            artifact.pin.snapshot, artifact.pin.sha256 == input.input.sha256)));
+    if artifact.pin.snapshot != same_object
+        || artifact.pin.sha256 != input.input.sha256
+        || closed_allocation < copied.file_bytes
+        || closed_allocation > copied.allocation_bytes
+    {
+        return Err(bad(format!(
+            "same new J offline registry object changed before immutable hold: before_writer_close={copied:?}, after_readonly_reopen={:?}, complete_sha_equal={}",
+            artifact.pin.snapshot,
+            artifact.pin.sha256 == input.input.sha256
+        )));
     }
     Ok(artifact)
 }
@@ -1016,9 +1109,13 @@ pub fn build(
     need(
         total <= b.maximum_input_bytes
             && b.admitted_working_bytes
-                >= total.checked_mul(2).and_then(|n| n.checked_add(OFFLINE_REGISTRY_MAX_BYTES))
+                >= total
+                    .checked_mul(2)
+                    .and_then(|n| n.checked_add(OFFLINE_REGISTRY_MAX_BYTES))
                     .ok_or_else(|| bad("workingoverflow"))?
-            && 16u64.checked_mul(1024 * 1024).and_then(|n| n.checked_add(offline_registry.input.bytes))
+            && 16u64
+                .checked_mul(1024 * 1024)
+                .and_then(|n| n.checked_add(offline_registry.input.bytes))
                 .is_some_and(|n| n <= b.ram_bytes),
         "actualcopy+workingbudget insufficient",
     )?;
@@ -1069,20 +1166,36 @@ pub fn build(
         copy_pin(&request.boot_sdi, &sdi, source, b.maximum_input_bytes)?;
         copy_pin(&request.runner, &runner, source, b.maximum_input_bytes)?;
         copy_pin(&request.bootstrap, &bootstrap, source, b.ram_bytes / 64)?;
-        registry_artifact = Some(capture_registry_library(&mut offline_registry, &registry_library)?);
+        registry_artifact = Some(capture_registry_library(
+            &mut offline_registry,
+            &registry_library,
+        )?);
         // Before a persistent loader can point at this image, prove that its
         // boot-bound routing describes the SAME actually enrolled source/J.
         // A later BootGuard refusal cannot undo an early wrong-disk online.
-        let mut route_file = OpenOptions::new().read(true).share_mode(1)
-            .custom_flags(0x0020_0000).open(&bootstrap)?;
+        let mut route_file = OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .custom_flags(0x0020_0000)
+            .open(&bootstrap)?;
         let mut route_bytes = Vec::new();
-        route_bytes.try_reserve_exact(usize::try_from(request.bootstrap.bytes).map_err(io::Error::other)?)
+        route_bytes
+            .try_reserve_exact(usize::try_from(request.bootstrap.bytes).map_err(io::Error::other)?)
             .map_err(io::Error::other)?;
-        (&mut route_file).take(request.bootstrap.bytes.checked_add(1)
-            .ok_or_else(|| bad("bootstrap route length overflow"))?).read_to_end(&mut route_bytes)?;
-        need(route_bytes.len() as u64 == request.bootstrap.bytes
-            && <[u8;32]>::from(sha2::Sha256::digest(&route_bytes)) == request.bootstrap.sha256,
-            "held copied bootstrap route differs from admitted image input")?;
+        (&mut route_file)
+            .take(
+                request
+                    .bootstrap
+                    .bytes
+                    .checked_add(1)
+                    .ok_or_else(|| bad("bootstrap route length overflow"))?,
+            )
+            .read_to_end(&mut route_bytes)?;
+        need(
+            route_bytes.len() as u64 == request.bootstrap.bytes
+                && <[u8; 32]>::from(sha2::Sha256::digest(&route_bytes)) == request.bootstrap.sha256,
+            "held copied bootstrap route differs from admitted image input",
+        )?;
         #[derive(Deserialize)]
         struct BootstrapRouting {
             schema_version: u32,
@@ -1090,10 +1203,15 @@ pub fn build(
             journal: GeneralJournalStorageBinding,
             prepared_bundle_sha256: String,
         }
-        let route: BootstrapRouting = serde_json::from_slice(&route_bytes).map_err(io::Error::other)?;
-        need(route.schema_version == 1 && route.source == *source && route.journal == *journal
-            && route.prepared_bundle_sha256 == hex::encode(request.prepared_bundle_sha256),
-            "RAM bootstrap must preserve exact actually enrolled image source/J/bundle domain")?;
+        let route: BootstrapRouting =
+            serde_json::from_slice(&route_bytes).map_err(io::Error::other)?;
+        need(
+            route.schema_version == 1
+                && route.source == *source
+                && route.journal == *journal
+                && route.prepared_bundle_sha256 == hex::encode(request.prepared_bundle_sha256),
+            "RAM bootstrap must preserve exact actually enrolled image source/J/bundle domain",
+        )?;
         drop(route_bytes);
         drop(route_file);
         write_bytes(
@@ -1129,22 +1247,45 @@ pub fn build(
         ]);
         mounted = true;
         checked_command(&dism, args, &root, b, &mut records, initial_free)?;
-        let payload_mount=payload_replace::mounted(&root,&mount,&wim,request.wim_index,
-            records.last().ok_or_else(||bad("actual completed mount command receipt missing"))?)?;
+        let payload_mount = payload_replace::mounted(
+            &root,
+            &mount,
+            &wim,
+            request.wim_index,
+            records
+                .last()
+                .ok_or_else(|| bad("actual completed mount command receipt missing"))?,
+        )?;
         let sys = mount.join("Windows/System32");
         image_subdir(&sys, &mount)?;
         need(
-            sys.join("wpeinit.exe").is_file() && sys.join("winpeshl.exe").is_file()
+            sys.join("wpeinit.exe").is_file()
+                && sys.join("winpeshl.exe").is_file()
                 && sys.join("drivers/refs.sys").is_file(),
             "selected owned image must contain WinPE startup and native ReFS driver",
         )?;
-        payload_replace::replace(&payload_mount,&runner,"n2r-runner.exe",b.maximum_input_bytes)?;
-        payload_replace::replace(&payload_mount,&registry_library,"offreg.dll",OFFLINE_REGISTRY_MAX_BYTES)?;
-        payload_replace::replace(&payload_mount,&bootstrap,"n2r-bootstrap.json",b.ram_bytes/64)?;
+        payload_replace::replace(
+            &payload_mount,
+            &runner,
+            "n2r-runner.exe",
+            b.maximum_input_bytes,
+        )?;
+        payload_replace::replace(
+            &payload_mount,
+            &registry_library,
+            "offreg.dll",
+            OFFLINE_REGISTRY_MAX_BYTES,
+        )?;
+        payload_replace::replace(
+            &payload_mount,
+            &bootstrap,
+            "n2r-bootstrap.json",
+            b.ram_bytes / 64,
+        )?;
         // Both stock startup and old custom payloads are backed up BEFORE
         // deletion, and only within the actual freshly copied mounted WIM.
-        for(from,name)in [(&script,"n2r-start.cmd"),(&ini,"winpeshl.ini")]{
-            payload_replace::replace(&payload_mount,from,name,65536)?;
+        for (from, name) in [(&script, "n2r-start.cmd"), (&ini, "winpeshl.ini")] {
+            payload_replace::replace(&payload_mount, from, name, 65536)?;
         }
         let mut args = common.clone();
         args.extend([
@@ -1210,7 +1351,12 @@ pub fn build(
         let marker_wire = serde_json::to_vec(&marker).map_err(io::Error::other)?;
         need(marker_wire.len() <= 65536, "originmarkerbound")?;
         write_bytes(&origin_marker, &marker_wire)?;
-        payload_replace::replace(&payload_mount,&origin_marker,"ntfs2refs-recovery-origin.json",65536)?;
+        payload_replace::replace(
+            &payload_mount,
+            &origin_marker,
+            "ntfs2refs-recovery-origin.json",
+            65536,
+        )?;
         store(
             &root.join("mounted-SAN3-startup-verified.json"),
             &serde_json::json!({"selectedControlSets":sets,"SANpolicy":3,"temporaryHiveUnloaded":true,"startupArgs":request.startup_args,"preparedOUTERbundleSHA":hex::encode(request.prepared_bundle_sha256),"verifiedMountedRunnerSHA":hex::encode(request.runner.sha256),"coldBootActuallyQualified":false}),
@@ -1245,7 +1391,11 @@ pub fn build(
     offline_registry.revalidate()?;
     enrollment(source, journal, journal_volume, request.observation, events)?;
     let mut artifacts = Vec::new();
-    artifacts.push(registry_artifact.take().ok_or_else(|| bad("captured offline registry artifact absent"))?);
+    artifacts.push(
+        registry_artifact
+            .take()
+            .ok_or_else(|| bad("captured offline registry artifact absent"))?,
+    );
     for (role, path, max) in [
         ("wim", wim.clone(), b.maximum_final_wim_bytes),
         ("sdi", sdi.clone(), b.maximum_input_bytes),

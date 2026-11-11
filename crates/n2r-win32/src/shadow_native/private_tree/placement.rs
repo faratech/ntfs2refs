@@ -1206,62 +1206,64 @@ pub(super) fn run_resource_domain(
 ) -> io::Result<ResourcePlacementReport> {
     tree.require_dedicated_shadow_boundary()?;
     let result = (|| {
-    let admission = tree
-        .metadata_resource_admission
-        .ok_or_else(|| invalid("actual resource private-tree admission absent"))?;
-    if tree.memory.is_none() {
-        return Err(invalid("actual resource placement payer absent"));
-    }
-    input.require_resource_metadata(admission)?;
-    let limits = PlacementLimits::resource(
-        admission,
-        tree.pair.shadow.identity.partition_bytes,
-        max_move_bytes,
-        max_moves,
-        sink.maximum_bytes(),
-    )?;
-    let payer = tree
-        .memory
-        .as_ref()
-        .ok_or_else(|| invalid("actual resource placement payer absent"))?
-        .payer();
-    for file in tree.files.values_mut() {
-        file.enable_resource_placement(
+        let admission = tree
+            .metadata_resource_admission
+            .ok_or_else(|| invalid("actual resource private-tree admission absent"))?;
+        if tree.memory.is_none() {
+            return Err(invalid("actual resource placement payer absent"));
+        }
+        input.require_resource_metadata(admission)?;
+        let limits = PlacementLimits::resource(
             admission,
-            limits.tracked,
-            limits.moves,
+            tree.pair.shadow.identity.partition_bytes,
             max_move_bytes,
-            payer.clone(),
+            max_moves,
+            sink.maximum_bytes(),
         )?;
-    }
-    let report_memory = payer.reserve(2 * 1024 * 1024)?;
-    let value = run_domain_inner(
-        tree,
-        input,
-        max_move_bytes,
-        limits.moves,
-        limits,
-        Some(sink),
-        None,
-    )?;
-    match ResourcePlacementReport::new(value, report_memory) {
-        Ok(report) => {
-            tree.placement_complete = true;
-            tree.placement_progress["placement_complete"] = true.into();
-            Ok(report)
+        let payer = tree
+            .memory
+            .as_ref()
+            .ok_or_else(|| invalid("actual resource placement payer absent"))?
+            .payer();
+        for file in tree.files.values_mut() {
+            file.enable_resource_placement(
+                admission,
+                limits.tracked,
+                limits.moves,
+                max_move_bytes,
+                payer.clone(),
+            )?;
         }
-        Err(error) => {
-            tree.placement_complete = false;
-            tree.original_coordinates.clear();
-            Err(error)
+        let report_memory = payer.reserve(2 * 1024 * 1024)?;
+        let value = run_domain_inner(
+            tree,
+            input,
+            max_move_bytes,
+            limits.moves,
+            limits,
+            Some(sink),
+            None,
+        )?;
+        match ResourcePlacementReport::new(value, report_memory) {
+            Ok(report) => {
+                tree.placement_complete = true;
+                tree.placement_progress["placement_complete"] = true.into();
+                Ok(report)
+            }
+            Err(error) => {
+                tree.placement_complete = false;
+                tree.original_coordinates.clear();
+                Err(error)
+            }
         }
-    }
     })();
     let closing = tree.require_dedicated_shadow_boundary();
     match (result, closing) {
         (Ok(value), Ok(())) => Ok(value),
-        (Err(error), Err(boundary)) => Err(io::Error::new(error.kind(),
-            format!("{error}; dedicated shadow placement closing roles also failed: {boundary}"))),
+        (Err(error), Err(boundary)) => Err(io::Error::new(
+            error.kind(),
+            format!("{error}; dedicated shadow placement closing roles also failed: {boundary}"),
+        )),
         (Err(error), _) | (_, Err(error)) => Err(error),
     }
 }
@@ -1269,146 +1271,259 @@ pub(super) fn run_resource_domain(
 /// Additional entry point requires a freshly issued native recovered origin;
 /// the fresh constructor's single-attempt checks above remain unchanged.
 pub(super) fn run_recovered_resource_domain(
-    tree:&mut PrivateTree, input:&impl InputDomain,
-    origin:&recovery::RecoveredOrigin, sink:&mut dyn PlacementEvidenceSink,
+    tree: &mut PrivateTree,
+    input: &impl InputDomain,
+    origin: &recovery::RecoveredOrigin,
+    sink: &mut dyn PlacementEvidenceSink,
 ) -> io::Result<ResourcePlacementReport> {
     origin.require_tree(tree)?;
     tree.require_dedicated_shadow_boundary()?;
-    let result=(|| {
-        let admission=tree.metadata_resource_admission.ok_or_else(||invalid("recovered admission absent"))?;
+    let result = (|| {
+        let admission = tree
+            .metadata_resource_admission
+            .ok_or_else(|| invalid("recovered admission absent"))?;
         input.require_resource_metadata(admission)?;
-        let (bytes,moves)=origin.remaining();
-        let limits=PlacementLimits::resource(admission,tree.pair.shadow.identity.partition_bytes,bytes,moves,sink.maximum_bytes())?;
-        if tree.files.values().any(|f|!f.resource_placement_enabled()) {
-            return Err(invalid("recovered file lacks fresh native map/resource owner"));
+        let (bytes, moves) = origin.remaining();
+        let limits = PlacementLimits::resource(
+            admission,
+            tree.pair.shadow.identity.partition_bytes,
+            bytes,
+            moves,
+            sink.maximum_bytes(),
+        )?;
+        if tree.files.values().any(|f| !f.resource_placement_enabled()) {
+            return Err(invalid(
+                "recovered file lacks fresh native map/resource owner",
+            ));
         }
-        let payer=tree.memory.as_ref().ok_or_else(||invalid("recovered payer absent"))?.payer();
-        let report_memory=payer.reserve(2*1024*1024)?;
-        let mut value=run_domain_inner(tree,input,bytes,limits.moves,limits,Some(sink),Some(origin))?;
-        value["recovered_origin"]=origin.receipt();
-        let report=ResourcePlacementReport::new(value,report_memory)?;
-        tree.placement_complete=true;
-        tree.placement_progress["placement_complete"]=true.into();
+        let payer = tree
+            .memory
+            .as_ref()
+            .ok_or_else(|| invalid("recovered payer absent"))?
+            .payer();
+        let report_memory = payer.reserve(2 * 1024 * 1024)?;
+        let mut value = run_domain_inner(
+            tree,
+            input,
+            bytes,
+            limits.moves,
+            limits,
+            Some(sink),
+            Some(origin),
+        )?;
+        value["recovered_origin"] = origin.receipt();
+        let report = ResourcePlacementReport::new(value, report_memory)?;
+        tree.placement_complete = true;
+        tree.placement_progress["placement_complete"] = true.into();
         Ok(report)
     })();
-    let closing=tree.require_dedicated_shadow_boundary();
-    match (result,closing) {
-        (Ok(report),Ok(()))=>Ok(report),
-        (Err(error),Err(boundary))=>Err(io::Error::new(error.kind(),format!("{error}; recovered closing roles also failed: {boundary}"))),
-        (Err(error),_)|(_,Err(error))=>{tree.placement_complete=false;Err(error)},
+    let closing = tree.require_dedicated_shadow_boundary();
+    match (result, closing) {
+        (Ok(report), Ok(())) => Ok(report),
+        (Err(error), Err(boundary)) => Err(io::Error::new(
+            error.kind(),
+            format!("{error}; recovered closing roles also failed: {boundary}"),
+        )),
+        (Err(error), _) | (_, Err(error)) => {
+            tree.placement_complete = false;
+            Err(error)
+        }
     }
 }
 
 /// Subtract only exact current logical-to-physical matches. Occupied ranges
 /// belonging to another coordinate remain work for the existing planner.
 pub(super) fn rehydrate_recovered_resource_domain(
-    tree:&mut PrivateTree,input:&impl InputDomain,origin:&recovery::RecoveredOrigin,
-    sink:&mut dyn PlacementEvidenceSink,
-)->io::Result<ResourcePlacementReport>{
+    tree: &mut PrivateTree,
+    input: &impl InputDomain,
+    origin: &recovery::RecoveredOrigin,
+    sink: &mut dyn PlacementEvidenceSink,
+) -> io::Result<ResourcePlacementReport> {
     origin.require_tree(tree)?;
     tree.require_dedicated_shadow_boundary()?;
     tree.require_bound_input_domain(input)?;
-    let admission=tree.metadata_resource_admission.ok_or_else(||invalid("placed recovery admission absent"))?;
+    let admission = tree
+        .metadata_resource_admission
+        .ok_or_else(|| invalid("placed recovery admission absent"))?;
     input.require_resource_metadata(admission)?;
-    if input.len()!=tree.initial_objects.len(){return Err(invalid("placed recovery object coverage differs"));}
-    let (bytes,moves)=origin.remaining();
-    let limits=PlacementLimits::resource(admission,tree.pair.shadow.identity.partition_bytes,bytes,moves,sink.maximum_bytes())?;
-    let payer=tree.memory.as_ref().ok_or_else(||invalid("placed recovery payer absent"))?.payer();
-    let mut memory=Some(payer.reserve((limits.tracked as u64).checked_mul(512)
-        .and_then(|n|n.checked_add(4*1024*1024)).ok_or_else(||invalid("placed recovery index RAM overflow"))?)?);
-    let report_memory=payer.reserve(2*1024*1024)?;
-    let mut retained_streams=BTreeMap::new();
-    let mut retained_bytes=0u64;
-    let mut retained_ranges=0usize;
-    for (&slot,key) in &tree.stream_slots {
-        let file=tree.file_by_slot(slot)?;
-        let owner=input.object(key.object_index)?;
-        let object=owner.input();
-        let item=tree.placement_view_object(&object,key)?;
-        let prefix=item.logical_length()/4096*4096;
-        if file.logical_length()!=item.logical_length()
-            ||file.path!=placement_path(tree,key,&item)?
-            ||file.valid_prefix()!=if origin.payloads_ready(){item.logical_length()}else{prefix} {
-            return Err(invalid("placed recovery stream shape or initialized prefix differs"));
+    if input.len() != tree.initial_objects.len() {
+        return Err(invalid("placed recovery object coverage differs"));
+    }
+    let (bytes, moves) = origin.remaining();
+    let limits = PlacementLimits::resource(
+        admission,
+        tree.pair.shadow.identity.partition_bytes,
+        bytes,
+        moves,
+        sink.maximum_bytes(),
+    )?;
+    let payer = tree
+        .memory
+        .as_ref()
+        .ok_or_else(|| invalid("placed recovery payer absent"))?
+        .payer();
+    let mut memory = Some(
+        payer.reserve(
+            (limits.tracked as u64)
+                .checked_mul(512)
+                .and_then(|n| n.checked_add(4 * 1024 * 1024))
+                .ok_or_else(|| invalid("placed recovery index RAM overflow"))?,
+        )?,
+    );
+    let report_memory = payer.reserve(2 * 1024 * 1024)?;
+    let mut retained_streams = BTreeMap::new();
+    let mut retained_bytes = 0u64;
+    let mut retained_ranges = 0usize;
+    for (&slot, key) in &tree.stream_slots {
+        let file = tree.file_by_slot(slot)?;
+        let owner = input.object(key.object_index)?;
+        let object = owner.input();
+        let item = tree.placement_view_object(&object, key)?;
+        let prefix = item.logical_length() / 4096 * 4096;
+        if file.logical_length() != item.logical_length()
+            || file.path != placement_path(tree, key, &item)?
+            || file.valid_prefix()
+                != if origin.payloads_ready() {
+                    item.logical_length()
+                } else {
+                    prefix
+                }
+        {
+            return Err(invalid(
+                "placed recovery stream shape or initialized prefix differs",
+            ));
         }
-        if prefix>0&&!file.revalidate_recovered_prefix(prefix)? {
-            return Err(invalid("placed recovery prefix lacks current native readiness"));
+        if prefix > 0 && !file.revalidate_recovered_prefix(prefix)? {
+            return Err(invalid(
+                "placed recovery prefix lacks current native readiness",
+            ));
         }
         file.check_placements()?;
-        let tracked=file.tracked_mappings();
-        let mut cursor=0u64;
-        for &(v,l,n) in tracked {
-            if n==0||v!=cursor||l.checked_add(u64::from(n)).is_none_or(|e|e>tree.pair.shadow.identity.partition_bytes/4096){
-                return Err(invalid("placed recovery mapping is not a complete dense prefix"));
+        let tracked = file.tracked_mappings();
+        let mut cursor = 0u64;
+        for &(v, l, n) in tracked {
+            if n == 0
+                || v != cursor
+                || l.checked_add(u64::from(n))
+                    .is_none_or(|e| e > tree.pair.shadow.identity.partition_bytes / 4096)
+            {
+                return Err(invalid(
+                    "placed recovery mapping is not a complete dense prefix",
+                ));
             }
-            cursor=cursor.checked_add(u64::from(n)).ok_or_else(||invalid("placed recovery logical map overflow"))?;
+            cursor = cursor
+                .checked_add(u64::from(n))
+                .ok_or_else(|| invalid("placed recovery logical map overflow"))?;
         }
-        if cursor!=prefix/4096 {return Err(invalid("placed recovery complete prefix map absent"));}
-        let mut ranges=Vec::new();
-        for source in source_runs(&item,tree.pair.shadow.identity.partition_bytes)? {
-            let wanted_vcn=source.logical_offset/4096;
-            let wanted_lcn=source.physical_offset.ok_or_else(||invalid("placed recovery source LCN absent"))?/4096;
-            let wanted_end=wanted_vcn.checked_add(source.length/4096).ok_or_else(||invalid("placed recovery source VCN overflow"))?;
-            let first=tracked.partition_point(|&(v,_,n)|v+u64::from(n)<=wanted_vcn);
-            for &(v,l,n) in &tracked[first..] {
-                if v>=wanted_end {break;}
-                let start=v.max(wanted_vcn);
-                let end=(v+u64::from(n)).min(wanted_end);
-                if start>=end||l+start-v!=wanted_lcn+start-wanted_vcn {continue;}
-                if retained_ranges==limits.tracked {return Err(invalid("placed recovery coordinate index exhausted"));}
-                retained_ranges+=1;
-                let row=(start*4096,(l+start-v)*4096,(end-start)*4096);
-                retained_bytes=retained_bytes.checked_add(row.2).ok_or_else(||invalid("placed recovery retained bytes overflow"))?;
-                let value=serde_json::json!({"object_index":slot,"logical_offset":row.0,
+        if cursor != prefix / 4096 {
+            return Err(invalid("placed recovery complete prefix map absent"));
+        }
+        let mut ranges = Vec::new();
+        for source in source_runs(&item, tree.pair.shadow.identity.partition_bytes)? {
+            let wanted_vcn = source.logical_offset / 4096;
+            let wanted_lcn = source
+                .physical_offset
+                .ok_or_else(|| invalid("placed recovery source LCN absent"))?
+                / 4096;
+            let wanted_end = wanted_vcn
+                .checked_add(source.length / 4096)
+                .ok_or_else(|| invalid("placed recovery source VCN overflow"))?;
+            let first = tracked.partition_point(|&(v, _, n)| v + u64::from(n) <= wanted_vcn);
+            for &(v, l, n) in &tracked[first..] {
+                if v >= wanted_end {
+                    break;
+                }
+                let start = v.max(wanted_vcn);
+                let end = (v + u64::from(n)).min(wanted_end);
+                if start >= end || l + start - v != wanted_lcn + start - wanted_vcn {
+                    continue;
+                }
+                if retained_ranges == limits.tracked {
+                    return Err(invalid("placed recovery coordinate index exhausted"));
+                }
+                retained_ranges += 1;
+                let row = (start * 4096, (l + start - v) * 4096, (end - start) * 4096);
+                retained_bytes = retained_bytes
+                    .checked_add(row.2)
+                    .ok_or_else(|| invalid("placed recovery retained bytes overflow"))?;
+                let value = serde_json::json!({"object_index":slot,"logical_offset":row.0,
                     "source_physical_offset":row.1,"target_physical_offset":row.1,"length":row.2,
                     "source_contents_verified":false,"derived_from_current_native_maps":true});
-                let maximum=serde_json::to_vec(&value).map_err(io::Error::other)?.len() as u64;
-                sink.reserve_next(maximum)?;sink.push("section",&value)?;
+                let maximum = serde_json::to_vec(&value).map_err(io::Error::other)?.len() as u64;
+                sink.reserve_next(maximum)?;
+                sink.push("section", &value)?;
                 ranges.push(row);
             }
         }
-        if !ranges.is_empty()&&retained_streams.insert(key.clone(),ranges).is_some(){return Err(invalid("placed recovery stream coordinates collide"));}
+        if !ranges.is_empty() && retained_streams.insert(key.clone(), ranges).is_some() {
+            return Err(invalid("placed recovery stream coordinates collide"));
+        }
     }
     // This is a fresh complete ownership audit, not an old placement verdict.
-    audit_recovered_maps(tree,bytes,moves)?;
+    audit_recovered_maps(tree, bytes, moves)?;
     tree.require_source_excluded()?;
     tree.require_dedicated_shadow_boundary()?;
-    let receipt=sink.finish()?;
-    let retained=memory::coordinate_map_bytes(&retained_streams)?;
-    tree.memory.as_ref().ok_or_else(||invalid("placed recovery memory absent"))?
-        .retain_from(&mut memory,retained)?;
-    let value=serde_json::json!({"schema_version":3,"kind":"private-source-backed-placement-revalidation-pages",
+    let receipt = sink.finish()?;
+    let retained = memory::coordinate_map_bytes(&retained_streams)?;
+    tree.memory
+        .as_ref()
+        .ok_or_else(|| invalid("placed recovery memory absent"))?
+        .retain_from(&mut memory, retained)?;
+    let value = serde_json::json!({"schema_version":3,"kind":"private-source-backed-placement-revalidation-pages",
         "recovered_origin":origin.receipt(),"paged_evidence":receipt,
         "original_coordinate_bytes":retained_bytes,"move_bytes_submitted":0,"move_count":0,
         "max_move_bytes":bytes,"max_move_submissions":moves,
         "counters":{"retained_ranges":retained_ranges,"native_move_submissions":0},
         "payload_contents_verified":false,"historical_payloads_trusted":false,"source_payload_writes":0,
         "conversion_qualified":false});
-    let report=ResourcePlacementReport::new(value,report_memory)?;
-    tree.original_coordinates=retained_streams;
-    tree.placement_complete=true;
-    tree.placement_progress=serde_json::json!({"phase":"current-native-placement-revalidated","placement_complete":true,"native_move_submissions":0});
+    let report = ResourcePlacementReport::new(value, report_memory)?;
+    tree.original_coordinates = retained_streams;
+    tree.placement_complete = true;
+    tree.placement_progress = serde_json::json!({"phase":"current-native-placement-revalidated","placement_complete":true,"native_move_submissions":0});
     Ok(report)
 }
 
-fn unfinished_runs(file:&unwritten::PrivatePlaceholder, run:&SourceRun, maximum:usize)->io::Result<Vec<SourceRun>> {
-    let start=run.logical_offset;
-    let end=start.checked_add(run.length).ok_or_else(||invalid("recovered desired logical range overflow"))?;
-    let wanted=run.physical_offset.ok_or_else(||invalid("recovered desired physical range absent"))?;
-    let mut cursor=start;
-    let mut out=Vec::new();
-    for &(v,l,n) in file.tracked_mappings() {
-        let a=(v*4096).max(start); let b=((v+u64::from(n))*4096).min(end);
-        if a>=b || l*4096+a-v*4096 != wanted+a-start {continue;}
-        if a>cursor {
-            if out.len()==maximum{return Err(invalid("recovered remaining-range index exhausted"));}
-            out.push(SourceRun {logical_offset:cursor,physical_offset:Some(wanted+cursor-start),length:a-cursor});
+fn unfinished_runs(
+    file: &unwritten::PrivatePlaceholder,
+    run: &SourceRun,
+    maximum: usize,
+) -> io::Result<Vec<SourceRun>> {
+    let start = run.logical_offset;
+    let end = start
+        .checked_add(run.length)
+        .ok_or_else(|| invalid("recovered desired logical range overflow"))?;
+    let wanted = run
+        .physical_offset
+        .ok_or_else(|| invalid("recovered desired physical range absent"))?;
+    let mut cursor = start;
+    let mut out = Vec::new();
+    for &(v, l, n) in file.tracked_mappings() {
+        let a = (v * 4096).max(start);
+        let b = ((v + u64::from(n)) * 4096).min(end);
+        if a >= b || l * 4096 + a - v * 4096 != wanted + a - start {
+            continue;
         }
-        cursor=cursor.max(b);
+        if a > cursor {
+            if out.len() == maximum {
+                return Err(invalid("recovered remaining-range index exhausted"));
+            }
+            out.push(SourceRun {
+                logical_offset: cursor,
+                physical_offset: Some(wanted + cursor - start),
+                length: a - cursor,
+            });
+        }
+        cursor = cursor.max(b);
     }
-    if cursor<end {
-        if out.len()==maximum{return Err(invalid("recovered remaining-range index exhausted"));}
-        out.push(SourceRun {logical_offset:cursor,physical_offset:Some(wanted+cursor-start),length:end-cursor});
+    if cursor < end {
+        if out.len() == maximum {
+            return Err(invalid("recovered remaining-range index exhausted"));
+        }
+        out.push(SourceRun {
+            logical_offset: cursor,
+            physical_offset: Some(wanted + cursor - start),
+            length: end - cursor,
+        });
     }
     Ok(out)
 }
@@ -1416,67 +1531,122 @@ fn unfinished_runs(file:&unwritten::PrivatePlaceholder, run:&SourceRun, maximum:
 /// Native audit of complete CURRENT retrievals against BOTH full bitmaps.
 /// Bitmap occupancy does not create ownership: every range came from a held
 /// recovered file's own complete retrieval capture, and aliases refuse.
-pub(super) fn audit_recovered_maps(tree:&PrivateTree,bytes:u64,moves:usize)->io::Result<()> {
-    let admission=tree.metadata_resource_admission.ok_or_else(||invalid("recovered admission absent"))?;
-    let limits=PlacementLimits::resource(admission,tree.pair.shadow.identity.partition_bytes,bytes,moves,admission.budget.scratch_bytes)?;
-    let payer=tree.memory.as_ref().ok_or_else(||invalid("recovered audit payer absent"))?.payer();
-    let _memory=payer.reserve((limits.tracked as u64).checked_mul(128).and_then(|n|n.checked_add(65536)).ok_or_else(||invalid("recovered allocation audit RAM overflow"))?)?;
-    let (legacy,metadata)=views(tree,limits)?;
-    let partition=tree.pair.shadow.identity.partition_bytes;
-    let a=legacy.view(partition)?;let b=metadata.view(partition)?;
-    let mut ranges=Vec::new();
+pub(super) fn audit_recovered_maps(tree: &PrivateTree, bytes: u64, moves: usize) -> io::Result<()> {
+    let admission = tree
+        .metadata_resource_admission
+        .ok_or_else(|| invalid("recovered admission absent"))?;
+    let limits = PlacementLimits::resource(
+        admission,
+        tree.pair.shadow.identity.partition_bytes,
+        bytes,
+        moves,
+        admission.budget.scratch_bytes,
+    )?;
+    let payer = tree
+        .memory
+        .as_ref()
+        .ok_or_else(|| invalid("recovered audit payer absent"))?
+        .payer();
+    let _memory = payer.reserve(
+        (limits.tracked as u64)
+            .checked_mul(128)
+            .and_then(|n| n.checked_add(65536))
+            .ok_or_else(|| invalid("recovered allocation audit RAM overflow"))?,
+    )?;
+    let (legacy, metadata) = views(tree, limits)?;
+    let partition = tree.pair.shadow.identity.partition_bytes;
+    let a = legacy.view(partition)?;
+    let b = metadata.view(partition)?;
+    let mut ranges = Vec::new();
     for target in tree.sparse_targets.values() {
-        let rounded=target.logical_length.checked_next_multiple_of(4096).ok_or_else(||invalid("recovered target EOF overflow"))?;
-        let identity=info(&target.file,18,24)?;
-        let standard=info(&target.file,1,24)?;
-        unwritten::recovery::require_zero_storage_vdl(&target.file,rounded)?;
-        let evidence_bytes=usize::try_from(admission.budget.max_row_bytes).map_err(io::Error::other)?;
-        let _retrieval_memory=payer.reserve((evidence_bytes as u64).checked_mul(8)
-            .and_then(|n|n.checked_add(4*1024*1024))
-            .ok_or_else(||invalid("recovered target retrieval RAM overflow"))?)?;
-        let (first,continuation)=crate::stream_native::retrieval_queries_resource(&target.file,evidence_bytes)?;
-        let empty_retrieval=continuation.is_empty() && layout::u64_at(&standard,0)?==0
-            && ((first.native_error==Some(38) && first.bytes.is_empty())
-                || (first.native_error.is_none() && first.bytes.len()==16
-                    && layout::u32_at(&first.bytes,0)?==0 && rounded==0));
+        let rounded = target
+            .logical_length
+            .checked_next_multiple_of(4096)
+            .ok_or_else(|| invalid("recovered target EOF overflow"))?;
+        let identity = info(&target.file, 18, 24)?;
+        let standard = info(&target.file, 1, 24)?;
+        unwritten::recovery::require_zero_storage_vdl(&target.file, rounded)?;
+        let evidence_bytes =
+            usize::try_from(admission.budget.max_row_bytes).map_err(io::Error::other)?;
+        let _retrieval_memory = payer.reserve(
+            (evidence_bytes as u64)
+                .checked_mul(8)
+                .and_then(|n| n.checked_add(4 * 1024 * 1024))
+                .ok_or_else(|| invalid("recovered target retrieval RAM overflow"))?,
+        )?;
+        let (first, continuation) =
+            crate::stream_native::retrieval_queries_resource(&target.file, evidence_bytes)?;
+        let empty_retrieval = continuation.is_empty()
+            && layout::u64_at(&standard, 0)? == 0
+            && ((first.native_error == Some(38) && first.bytes.is_empty())
+                || (first.native_error.is_none()
+                    && first.bytes.len() == 16
+                    && layout::u32_at(&first.bytes, 0)? == 0
+                    && rounded == 0));
         if !empty_retrieval {
-            let capture=crate::retrieval_paging::assemble_queries_with_limits(&first,&continuation,
-                crate::retrieval_paging::Limits::for_resource_bytes(evidence_bytes)?)?;
+            let capture = crate::retrieval_paging::assemble_queries_with_limits(
+                &first,
+                &continuation,
+                crate::retrieval_paging::Limits::for_resource_bytes(evidence_bytes)?,
+            )?;
             for run in &capture.runs {
-                let Some(lcn)=run.lcn else {continue;};
-                sparse_stream::require_recovered_island(&target.layout,&target.path,run)?;
-                if run.clusters==0 || ranges.len()==limits.tracked {
+                let Some(lcn) = run.lcn else {
+                    continue;
+                };
+                sparse_stream::require_recovered_island(&target.layout, &target.path, run)?;
+                if run.clusters == 0 || ranges.len() == limits.tracked {
                     return Err(invalid("recovered allocation range bound exhausted"));
                 }
-                let offset=lcn.checked_mul(4096).ok_or_else(||invalid("recovered target LCN overflow"))?;
-                let length=run.clusters.checked_mul(4096).ok_or_else(||invalid("recovered target allocation overflow"))?;
-                let aa=a.candidate(offset,length)?;
-                let bb=b.candidate(offset,length)?;
-                if aa.allocated_clusters!=run.clusters || bb.allocated_clusters!=run.clusters {
-                    return Err(invalid("native recovered target ownership is absent from a complete bitmap view"));
+                let offset = lcn
+                    .checked_mul(4096)
+                    .ok_or_else(|| invalid("recovered target LCN overflow"))?;
+                let length = run
+                    .clusters
+                    .checked_mul(4096)
+                    .ok_or_else(|| invalid("recovered target allocation overflow"))?;
+                let aa = a.candidate(offset, length)?;
+                let bb = b.candidate(offset, length)?;
+                if aa.allocated_clusters != run.clusters || bb.allocated_clusters != run.clusters {
+                    return Err(invalid(
+                        "native recovered target ownership is absent from a complete bitmap view",
+                    ));
                 }
-                ranges.push((lcn,lcn.checked_add(run.clusters).ok_or_else(||invalid("recovered target LCN end overflow"))?));
+                ranges.push((
+                    lcn,
+                    lcn.checked_add(run.clusters)
+                        .ok_or_else(|| invalid("recovered target LCN end overflow"))?,
+                ));
             }
         }
-        if info(&target.file,18,24)?!=identity || info(&target.file,1,24)?!=standard {
-            return Err(invalid("recovered target identity or lengths changed during allocation audit"));
+        if info(&target.file, 18, 24)? != identity || info(&target.file, 1, 24)? != standard {
+            return Err(invalid(
+                "recovered target identity or lengths changed during allocation audit",
+            ));
         }
-        unwritten::recovery::require_zero_storage_vdl(&target.file,rounded)?;
+        unwritten::recovery::require_zero_storage_vdl(&target.file, rounded)?;
     }
     for file in tree.files.values() {
         file.check_placements()?;
-        for (lcn,clusters) in file.current_allocated_ranges()? {
-            if clusters==0 || ranges.len()==limits.tracked {return Err(invalid("recovered allocation range bound exhausted"));}
-            let aa=a.candidate(lcn*4096,clusters*4096)?;
-            let bb=b.candidate(lcn*4096,clusters*4096)?;
-            if aa.allocated_clusters!=clusters || bb.allocated_clusters!=clusters {
-                return Err(invalid("native recovered ownership is absent from a complete bitmap view"));
+        for (lcn, clusters) in file.current_allocated_ranges()? {
+            if clusters == 0 || ranges.len() == limits.tracked {
+                return Err(invalid("recovered allocation range bound exhausted"));
             }
-            ranges.push((lcn,lcn+clusters));
+            let aa = a.candidate(lcn * 4096, clusters * 4096)?;
+            let bb = b.candidate(lcn * 4096, clusters * 4096)?;
+            if aa.allocated_clusters != clusters || bb.allocated_clusters != clusters {
+                return Err(invalid(
+                    "native recovered ownership is absent from a complete bitmap view",
+                ));
+            }
+            ranges.push((lcn, lcn + clusters));
         }
     }
     ranges.sort_unstable();
-    if ranges.windows(2).any(|w|w[0].1>w[1].0) {return Err(invalid("native recovered files have overlapping physical ownership"));}
+    if ranges.windows(2).any(|w| w[0].1 > w[1].0) {
+        return Err(invalid(
+            "native recovered files have overlapping physical ownership",
+        ));
+    }
     tree.require_source_excluded()?;
     Ok(())
 }
@@ -1821,15 +1991,17 @@ fn run_domain_inner(
             let runs = if recovered.is_some() {
                 remaining = unfinished_runs(file, run, limits.tracked)?;
                 remaining.as_slice()
-            } else { std::slice::from_ref(run) };
+            } else {
+                std::slice::from_ref(run)
+            };
             for run in runs {
-            eligible.push(shadow_evacuation::Extent {
-                file_index: u32::try_from(*index)
-                    .map_err(|_| invalid("placement slot exceeds planner identity"))?,
-                logical_offset: run.logical_offset,
-                physical_offset: run.physical_offset.unwrap(),
-                length: run.length,
-            });
+                eligible.push(shadow_evacuation::Extent {
+                    file_index: u32::try_from(*index)
+                        .map_err(|_| invalid("placement slot exceeds planner identity"))?,
+                    logical_offset: run.logical_offset,
+                    physical_offset: run.physical_offset.unwrap(),
+                    length: run.length,
+                });
             }
         }
     }
@@ -2177,148 +2349,150 @@ fn run_domain_inner(
             let runs = if recovered.is_some() {
                 remaining = unfinished_runs(tree.file_by_slot(index)?, run, limits.tracked)?;
                 remaining.as_slice()
-            } else { std::slice::from_ref(run) };
+            } else {
+                std::slice::from_ref(run)
+            };
             for run in runs {
-            loop {
-                let Some(remaining) = max_moves.checked_sub(evidence.len()).filter(|v| *v > 0)
-                else {
-                    return Err(refuse(
-                        tree,
-                        &counters,
-                        format!(
-                            "tree placement move budget exhausted: {} of {max_moves} submissions used",
-                            evidence.len()
-                        ),
-                    ));
-                };
-                let plan = planner.plan(
-                    retention_layout::SourceRun {
-                        logical_offset: run.logical_offset,
-                        physical_offset: run.physical_offset.unwrap(),
-                        length: run.length,
-                    },
-                    remaining.min(limits.subruns),
-                )?;
-                let required: usize = plan
-                    .subruns
-                    .iter()
-                    .map(|r| r.length.div_ceil(MOVE_BYTES) as usize)
-                    .sum();
-                if required > remaining {
-                    return Err(refuse(
-                        tree,
-                        &counters,
-                        format!(
-                            "final-placement split budget exceeded: {required} submissions needed, {remaining} of {max_moves} remaining"
-                        ),
-                    ));
-                }
-                let mut drifted = None;
-                'pieces: for subrun in plan.subruns.iter().copied() {
-                    let mut offset = 0;
-                    while offset < subrun.length {
-                        let length = (subrun.length - offset).min(MOVE_BYTES);
-                        let logical = subrun.logical_offset + offset;
-                        let physical = subrun.physical_offset + offset;
-                        progress(
+                loop {
+                    let Some(remaining) = max_moves.checked_sub(evidence.len()).filter(|v| *v > 0)
+                    else {
+                        return Err(refuse(
                             tree,
-                            "original-coordinate",
-                            move_bytes,
-                            &evidence,
-                            Some(serde_json::json!({
+                            &counters,
+                            format!(
+                                "tree placement move budget exhausted: {} of {max_moves} submissions used",
+                                evidence.len()
+                            ),
+                        ));
+                    };
+                    let plan = planner.plan(
+                        retention_layout::SourceRun {
+                            logical_offset: run.logical_offset,
+                            physical_offset: run.physical_offset.unwrap(),
+                            length: run.length,
+                        },
+                        remaining.min(limits.subruns),
+                    )?;
+                    let required: usize = plan
+                        .subruns
+                        .iter()
+                        .map(|r| r.length.div_ceil(MOVE_BYTES) as usize)
+                        .sum();
+                    if required > remaining {
+                        return Err(refuse(
+                            tree,
+                            &counters,
+                            format!(
+                                "final-placement split budget exceeded: {required} submissions needed, {remaining} of {max_moves} remaining"
+                            ),
+                        ));
+                    }
+                    let mut drifted = None;
+                    'pieces: for subrun in plan.subruns.iter().copied() {
+                        let mut offset = 0;
+                        while offset < subrun.length {
+                            let length = (subrun.length - offset).min(MOVE_BYTES);
+                            let logical = subrun.logical_offset + offset;
+                            let physical = subrun.physical_offset + offset;
+                            progress(
+                                tree,
+                                "original-coordinate",
+                                move_bytes,
+                                &evidence,
+                                Some(serde_json::json!({
                             "object_index":index,"logical_offset":logical,"destination":physical,"length":length,
                             "placement_result_recorded":false,"budget_charged":false})),
-                            &counters,
-                        );
-                        let current_extents = tree.file_by_slot(index)?.retrieval_extents();
-                        charge_move(&mut move_bytes, length, max_move_bytes)?;
-                        tree.placement_progress["charged_move_bytes"] = move_bytes.into();
-                        tree.placement_progress["pending"]["budget_charged"] = true.into();
-                        let attempt = resource::move_slot(
-                            tree,
-                            index,
-                            logical / 4096,
-                            physical / 4096,
-                            (length / 4096) as u32,
-                            true,
-                            limits.resource,
-                            |destination| {
-                                reserve_move(
-                                    &mut counters,
-                                    &mut evidence,
-                                    &reservation,
-                                    current_extents,
-                                    length,
-                                    destination,
-                                )
-                            },
-                        );
-                        tree.placement_progress["counters"]["move_evidence_reservation_bytes"] =
-                            counters.move_evidence_reservation_bytes.into();
-                        let proof = match attempt {
-                            Err(error) if destination_drifted(&error) => {
-                                uncharge_move(tree, &mut move_bytes, length);
-                                drifted = Some(error);
-                                break 'pieces;
-                            }
-                            result => result?,
-                        };
-                        progress(
-                            tree,
-                            "original-coordinate",
-                            move_bytes,
-                            &evidence,
-                            None,
-                            &counters,
-                        );
-                        if proof["native_error"] != serde_json::Value::Null
-                            || proof["all_placements_match"] != true
-                        {
-                            let message = format!(
-                                "original-coordinate reposition refused (native_error={}, mapping_matches={}, all_placements_match={}); preserve without retry",
-                                proof["native_error"],
-                                proof["mapping_matches"],
-                                proof["all_placements_match"]
+                                &counters,
                             );
-                            tree.placement_progress["failed_native_move"] = evidence
+                            let current_extents = tree.file_by_slot(index)?.retrieval_extents();
+                            charge_move(&mut move_bytes, length, max_move_bytes)?;
+                            tree.placement_progress["charged_move_bytes"] = move_bytes.into();
+                            tree.placement_progress["pending"]["budget_charged"] = true.into();
+                            let attempt = resource::move_slot(
+                                tree,
+                                index,
+                                logical / 4096,
+                                physical / 4096,
+                                (length / 4096) as u32,
+                                true,
+                                limits.resource,
+                                |destination| {
+                                    reserve_move(
+                                        &mut counters,
+                                        &mut evidence,
+                                        &reservation,
+                                        current_extents,
+                                        length,
+                                        destination,
+                                    )
+                                },
+                            );
+                            tree.placement_progress["counters"]["move_evidence_reservation_bytes"] =
+                                counters.move_evidence_reservation_bytes.into();
+                            let proof = match attempt {
+                                Err(error) if destination_drifted(&error) => {
+                                    uncharge_move(tree, &mut move_bytes, length);
+                                    drifted = Some(error);
+                                    break 'pieces;
+                                }
+                                result => result?,
+                            };
+                            progress(
+                                tree,
+                                "original-coordinate",
+                                move_bytes,
+                                &evidence,
+                                None,
+                                &counters,
+                            );
+                            if proof["native_error"] != serde_json::Value::Null
+                                || proof["all_placements_match"] != true
+                            {
+                                let message = format!(
+                                    "original-coordinate reposition refused (native_error={}, mapping_matches={}, all_placements_match={}); preserve without retry",
+                                    proof["native_error"],
+                                    proof["mapping_matches"],
+                                    proof["all_placements_match"]
+                                );
+                                tree.placement_progress["failed_native_move"] = evidence
                                 .failed_move(serde_json::json!({
                                     "object_index":index,"phase":"original-coordinate","proof":proof
                                 }))
                                 .map_err(|e| invalid(&e))?;
-                            return Err(invalid(&message));
-                        }
-                        counters.final_submissions += 1;
-                        let recorded = evidence.push_move(
+                                return Err(invalid(&message));
+                            }
+                            counters.final_submissions += 1;
+                            let recorded = evidence.push_move(
                             serde_json::json!({"object_index":index,"phase":"original-coordinate","proof":proof}),
                         );
-                        counters.move_evidence_bytes = evidence.compact_bytes;
-                        counters.placement_artifact_bytes = evidence.saved_bytes;
-                        if let Err(message) = recorded {
-                            return Err(refuse(tree, &counters, message));
+                            counters.move_evidence_bytes = evidence.compact_bytes;
+                            counters.placement_artifact_bytes = evidence.saved_bytes;
+                            if let Err(message) = recorded {
+                                return Err(refuse(tree, &counters, message));
+                            }
+                            offset += length;
                         }
-                        offset += length;
                     }
-                }
-                let Some(error) = drifted else {
-                    break;
-                };
-                if counters.final_drift_replans == MAX_DRIFT_REPLANS {
-                    return Err(refuse(
-                        tree,
-                        &counters,
-                        format!(
-                            "original-coordinate destination allocated after {MAX_DRIFT_REPLANS} \
+                    let Some(error) = drifted else {
+                        break;
+                    };
+                    if counters.final_drift_replans == MAX_DRIFT_REPLANS {
+                        return Err(refuse(
+                            tree,
+                            &counters,
+                            format!(
+                                "original-coordinate destination allocated after {MAX_DRIFT_REPLANS} \
                              fresh-snapshot re-plans: {error}; preserve shadow without retry"
-                        ),
-                    ));
+                            ),
+                        ));
+                    }
+                    counters.final_drift_replans += 1;
+                    drop(planner);
+                    (legacy, metadata) = views(tree, limits)?;
+                    planner =
+                        resource::planner(&legacy, &metadata, partition, limits, payer.as_deref())?;
+                    counters.phase_bitmap_snapshots += 1;
                 }
-                counters.final_drift_replans += 1;
-                drop(planner);
-                (legacy, metadata) = views(tree, limits)?;
-                planner =
-                    resource::planner(&legacy, &metadata, partition, limits, payer.as_deref())?;
-                counters.phase_bitmap_snapshots += 1;
-            }
             }
         }
     }

@@ -12,24 +12,26 @@ use super::super::partition_owner::{PartitionOwnerToken, PartitionScopedOwner};
 use super::super::partition_runtime_roles::{
     RuntimeVolumeRoleDiagnostic, runtime_volume_role_diagnostics,
 };
-use super::super::partition_storage_roles::{PartitionStorageRoleObservation,observe_partition_storage_roles};
+use super::super::partition_storage_roles::{
+    PartitionStorageRoleObservation, observe_partition_storage_roles,
+};
 use super::super::{AlignedBuffer, MAX_IO, NativeEvent, control, device_file};
 use crate::attestation_partition::PartitionPagedNtfsObservation;
 mod live_cancel;
 mod readonly_physical;
 pub use readonly_physical::freeze_mounted_ntfs_readonly_physical;
-mod physical_window;
 mod external_intent;
+mod physical_window;
 pub use live_cancel::PartitionLiveCancellationReceipt;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
+    cell::RefCell,
     fs::{File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     os::windows::fs::OpenOptionsExt,
-    sync::Arc,
     rc::Rc,
-    cell::RefCell,
+    sync::Arc,
 };
 
 const BASIC: &str = "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7";
@@ -151,16 +153,30 @@ pub(in crate::native) struct PartitionNativeEventSink {
     observer: Rc<RefCell<Box<dyn PartitionPreparationObserver>>>,
 }
 impl PartitionNativeEventSink {
-    pub(in crate::native) fn new(observer:Box<dyn PartitionPreparationObserver>)->Self {
-        Self{observer:Rc::new(RefCell::new(observer))}
+    pub(in crate::native) fn new(observer: Box<dyn PartitionPreparationObserver>) -> Self {
+        Self {
+            observer: Rc::new(RefCell::new(observer)),
+        }
     }
-    pub(in crate::native) fn checkpoint(&self,phase:&'static str,events:&mut Vec<NativeEvent>)->io::Result<()> {
-        let mut observer=self.observer.try_borrow_mut().map_err(|_|invalid("native event sink is already borrowed"))?;
-        observer.checkpoint(phase,events)?;
-        require(events.is_empty(),"actual durable native event checkpoint did not drain")
+    pub(in crate::native) fn checkpoint(
+        &self,
+        phase: &'static str,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
+        let mut observer = self
+            .observer
+            .try_borrow_mut()
+            .map_err(|_| invalid("native event sink is already borrowed"))?;
+        observer.checkpoint(phase, events)?;
+        require(
+            events.is_empty(),
+            "actual durable native event checkpoint did not drain",
+        )
     }
-    fn durable_intent(&self,receipt:&PartitionIntentReceipt)->io::Result<()> {
-        self.observer.try_borrow_mut().map_err(|_|invalid("intent event sink is already borrowed"))?
+    fn durable_intent(&self, receipt: &PartitionIntentReceipt) -> io::Result<()> {
+        self.observer
+            .try_borrow_mut()
+            .map_err(|_| invalid("intent event sink is already borrowed"))?
             .durable_intent(receipt)
     }
 }
@@ -283,20 +299,24 @@ impl IntentFile {
             IntentLocation::Windows => {
                 let c = &baseline.windows_volume;
                 require(
-            ext.len() == 32
-                && crate::layout::u32_at(&ext, 0)? == 1
-                && crate::layout::u32_at(&ext, 8)? == c.disk_number
-                && crate::layout::u64_at(&ext, 16)? == c.offset
-                && crate::layout::u64_at(&ext, 24)? == c.length,
-            "intent file is not on the actual running Windows C extent",
+                    ext.len() == 32
+                        && crate::layout::u32_at(&ext, 0)? == 1
+                        && crate::layout::u32_at(&ext, 8)? == c.disk_number
+                        && crate::layout::u64_at(&ext, 16)? == c.offset
+                        && crate::layout::u64_at(&ext, 24)? == c.length,
+                    "intent file is not on the actual running Windows C extent",
                 )?;
                 None
             }
-            IntentLocation::IndependentJournal(journal) => Some(
-                external_intent::ExternalIntentEnrollment::observe(
-                    journal, &baseline.binding, volume, &identity.final_path, events,
-                )?,
-            ),
+            IntentLocation::IndependentJournal(journal) => {
+                Some(external_intent::ExternalIntentEnrollment::observe(
+                    journal,
+                    &baseline.binding,
+                    volume,
+                    &identity.final_path,
+                    events,
+                )?)
+            }
         };
         Ok(Self {
             file,
@@ -380,10 +400,12 @@ impl IntentFile {
         // Normalize through the SAME exclusive RW intent owner before its
         // allocation becomes a durable external pin. NTFS can otherwise
         // discard transient append growth allocation only on final close.
-        let slack=self.max_allocation.checked_sub(MAX_INTENT)
-            .ok_or_else(||invalid("intent allocation reservation is inconsistent"))?;
-        let normalized=crate::file_storage::normalize_allocation_at_eof(
-            &self.file,next,MAX_INTENT,slack)?;
+        let slack = self
+            .max_allocation
+            .checked_sub(MAX_INTENT)
+            .ok_or_else(|| invalid("intent allocation reservation is inconsistent"))?;
+        let normalized =
+            crate::file_storage::normalize_allocation_at_eof(&self.file, next, MAX_INTENT, slack)?;
         let prefix = crate::sha256_native::hash_range(&mut self.file, 0, next)?;
         self.end = next;
         self.sequence += 1;
@@ -433,7 +455,7 @@ pub struct PartitionPreparationGuard {
     native: Option<PartitionPagedNtfsObservation>,
     dumps: ConfiguredDumpObservation,
     roles: PartitionStorageRoleObservation,
-    vds_diagnostics:RuntimeVolumeRoleDiagnostic,
+    vds_diagnostics: RuntimeVolumeRoleDiagnostic,
     vss: crate::vss_observation::Observation,
     mounted_ntfs: crate::txf_native::PartitionMountedTxfObservation,
     source_label: crate::volume_label::VolumeLabel,
@@ -490,9 +512,18 @@ impl<'guard> PartitionReadonlyPhase<'guard> {
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<PartitionReadonlyReader<'phase, 'guard>> {
         let file = self.open_readonly_volume(events)?;
-        let reply = control(&file, "partition-readonly-source-extended-dasd",
-            0x0009_0083, &[], 0, events)?;
-        require(reply.is_empty(), "readonly extended DASD returned unexpected data")?;
+        let reply = control(
+            &file,
+            "partition-readonly-source-extended-dasd",
+            0x0009_0083,
+            &[],
+            0,
+            events,
+        )?;
+        require(
+            reply.is_empty(),
+            "readonly extended DASD returned unexpected data",
+        )?;
         Ok(PartitionReadonlyReader {
             phase: self,
             file,
@@ -631,7 +662,14 @@ impl PartitionPreparationGuard {
         observer: Box<dyn PartitionPreparationObserver>,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<Self> {
-        Self::begin_at(binding, budget, intent_file, observer, IntentLocation::Windows, events)
+        Self::begin_at(
+            binding,
+            budget,
+            intent_file,
+            observer,
+            IntentLocation::Windows,
+            events,
+        )
     }
     /// Full-Windows preparation with an independently bound journal volume.
     /// The original constructor retains its Windows-volume requirement.
@@ -643,11 +681,22 @@ impl PartitionPreparationGuard {
         observer: Box<dyn PartitionPreparationObserver>,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<Self> {
-        Self::begin_at(binding, budget, intent_file, observer,
-            IntentLocation::IndependentJournal(journal), events)
+        Self::begin_at(
+            binding,
+            budget,
+            intent_file,
+            observer,
+            IntentLocation::IndependentJournal(journal),
+            events,
+        )
     }
-    pub fn external_intent_journal(&self) -> Option<&crate::journal_file::GeneralJournalStorageBinding> {
-        self.intent.external_journal.as_ref().map(|enrollment| enrollment.binding())
+    pub fn external_intent_journal(
+        &self,
+    ) -> Option<&crate::journal_file::GeneralJournalStorageBinding> {
+        self.intent
+            .external_journal
+            .as_ref()
+            .map(|enrollment| enrollment.binding())
     }
     fn begin_at(
         binding: PartitionSourceBinding,
@@ -684,11 +733,10 @@ impl PartitionPreparationGuard {
             "initial lifecycle checkpoint did not drain",
         )?;
         let dumps = observe_configured_dump_locations(&binding, budget, events)?;
-        let vds_diagnostics=runtime_volume_role_diagnostics(&binding,budget,events);
-        let roles=observe_partition_storage_roles(&binding,budget,events)?;
+        let vds_diagnostics = runtime_volume_role_diagnostics(&binding, budget, events);
+        let roles = observe_partition_storage_roles(&binding, budget, events)?;
         require(
-            dumps.configured_locations_outside_target
-                && roles.catalog_complete,
+            dumps.configured_locations_outside_target && roles.catalog_complete,
             "target intersects actual/configured critical volumes",
         )?;
         let vss = crate::vss_observation::observe_catalog(&format!(
@@ -758,7 +806,7 @@ impl PartitionPreparationGuard {
             source_label,
             mount_paths,
             intent,
-            observer:PartitionNativeEventSink::new(observer),
+            observer: PartitionNativeEventSink::new(observer),
         };
         guard.check_volume(guard.volume.as_ref().unwrap(), events)?;
         guard.lock_and_flush(events)?;
@@ -809,8 +857,13 @@ impl PartitionPreparationGuard {
         )
     }
     fn lock_and_flush(&mut self, events: &mut Vec<NativeEvent>) -> io::Result<()> {
-        if !self.locked && matches!(self.stage,
-            PartitionPreparationStage::BasicReadonly|PartitionPreparationStage::NativeReadonlyCaptured){
+        if !self.locked
+            && matches!(
+                self.stage,
+                PartitionPreparationStage::BasicReadonly
+                    | PartitionPreparationStage::NativeReadonlyCaptured
+            )
+        {
             return self.relock_mounted_readonly(events);
         }
         if !self.locked {
@@ -834,8 +887,14 @@ impl PartitionPreparationGuard {
             0,
             events,
         )?;
-        let reply = control(self.volume.as_ref().unwrap(),
-            "partition-preparation-extended-dasd", 0x0009_0083, &[], 0, events)?;
+        let reply = control(
+            self.volume.as_ref().unwrap(),
+            "partition-preparation-extended-dasd",
+            0x0009_0083,
+            &[],
+            0,
+            events,
+        )?;
         require(reply.is_empty(), "extended DASD returned unexpected data")?;
         self.volume.as_ref().unwrap().sync_all()
     }
@@ -863,7 +922,10 @@ impl PartitionPreparationGuard {
             .clone()
             .ok_or_else(|| invalid("actual prior BasicRO protection required for live relock"))?;
         self.checkpoint("partition-basic-ro-relock-opening", events)?;
-        require(events.len()<crate::MAX_BATCH_EVENTS,"fresh BasicRO open event budget exhausted")?;
+        require(
+            events.len() < crate::MAX_BATCH_EVENTS,
+            "fresh BasicRO open event budget exhausted",
+        )?;
         let path = self.binding.storage.volume_path()?;
         let opened = OpenOptions::new()
             .read(true)
@@ -1022,7 +1084,7 @@ impl PartitionPreparationGuard {
         // Adopt only the successfully locked (and thereby flushed), revalidated
         // replacement. This SAME live guard/token retains its native proof;
         // the original dismounted FileObject was closed before the lock.
-        self.volume=Some(fresh);
+        self.volume = Some(fresh);
         self.locked = true;
         self.stage = stage;
         Ok(())
@@ -1061,15 +1123,24 @@ impl PartitionPreparationGuard {
         )
     }
     fn revalidate_current(&mut self, events: &mut Vec<NativeEvent>) -> io::Result<()> {
-        self.revalidate_current_with_volume(None,events)
+        self.revalidate_current_with_volume(None, events)
     }
-    fn revalidate_current_with_volume(&mut self,actual:Option<&File>, events: &mut Vec<NativeEvent>) -> io::Result<()> {
+    fn revalidate_current_with_volume(
+        &mut self,
+        actual: Option<&File>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
         self.revalidate_current_metadata(events)?;
-        self.check_volume(actual.or(self.volume.as_ref()).ok_or_else(||invalid("volume transferred"))?,events)
+        self.check_volume(
+            actual
+                .or(self.volume.as_ref())
+                .ok_or_else(|| invalid("volume transferred"))?,
+            events,
+        )
     }
     // Complete metadata bookend while an actual live cancellation guard waits
     // for its readonly namespace. It grants no volume/writer capability.
-    fn revalidate_current_metadata(&mut self,events:&mut Vec<NativeEvent>)->io::Result<()>{
+    fn revalidate_current_metadata(&mut self, events: &mut Vec<NativeEvent>) -> io::Result<()> {
         self.checkpoint("partition-preparation-revalidate", events)?;
         let private = self.current_info[32..48] == crate::layout::guid_bytes(PRIVATE)?;
         let current = if private {
@@ -1104,7 +1175,7 @@ impl PartitionPreparationGuard {
         )?;
         self.checkpoint("partition-preparation-critical-role-check", events)?;
         let dumps = observe_configured_dump_locations(&self.binding, self.budget, events)?;
-        let roles=observe_partition_storage_roles(&self.binding,self.budget,events)?;
+        let roles = observe_partition_storage_roles(&self.binding, self.budget, events)?;
         require(
             dumps == self.dumps && roles.same_critical_roles(&self.roles),
             "configured/current critical-role bindings changed",
@@ -1338,14 +1409,22 @@ impl PartitionNtfsAdmission {
             },
         )
     }
-    pub fn checkpoint_native_events(&self,phase:&'static str,events:&mut Vec<NativeEvent>)->io::Result<()> {
-        self.guard.observer.checkpoint(phase,events)
+    pub fn checkpoint_native_events(
+        &self,
+        phase: &'static str,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
+        self.guard.observer.checkpoint(phase, events)
     }
-    pub(in crate::native) fn event_sink(&self)->PartitionNativeEventSink {self.guard.observer.clone()}
+    pub(in crate::native) fn event_sink(&self) -> PartitionNativeEventSink {
+        self.guard.observer.clone()
+    }
     pub fn native(&self) -> &PartitionPagedNtfsObservation {
         &self.native
     }
-    pub fn external_intent_journal(&self) -> Option<&crate::journal_file::GeneralJournalStorageBinding> {
+    pub fn external_intent_journal(
+        &self,
+    ) -> Option<&crate::journal_file::GeneralJournalStorageBinding> {
         self.guard.external_intent_journal()
     }
     pub fn preparation_token(&self) -> &PartitionPreparationToken {
@@ -1363,52 +1442,55 @@ impl PartitionNtfsAdmission {
         expected: &PartitionPreparationPin,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<()> {
-        self.checkpoint_native_events("partition-handoff-revalidation-opening",events)?;
-        let result=(||->io::Result<()> {
-        require_complete_fresh_ntfs_admission(owner, self)?;
-        owner.revalidate(events)?;
-        let pin = self.durable_preparation_pin()?;
-        require(&pin == expected, "live preparation pin changed")?;
-        let file = &mut self.guard.intent.file;
-        let before =
-            crate::reference_file::observe_reference_file_handle_with_limit(file, MAX_INTENT)?;
-        require(
-            before == pin.intent_file
-                && before.allocation_bytes <= self.guard.intent.max_allocation,
-            "live held preparation intent identity/allocation changed",
-        )?;
-        match OpenOptions::new()
-            .read(true)
-            .write(true)
-            .share_mode(3)
-            .custom_flags(0x0020_0000)
-            .open(&before.final_path)
-        {
-            Err(error) if error.raw_os_error() == Some(32) => (),
-            Err(error) => {
-                return Err(io::Error::new(
-                    error.kind(),
-                    format!("intent sharing recheck unknown: {error}"),
-                ));
+        self.checkpoint_native_events("partition-handoff-revalidation-opening", events)?;
+        let result = (|| -> io::Result<()> {
+            require_complete_fresh_ntfs_admission(owner, self)?;
+            owner.revalidate(events)?;
+            let pin = self.durable_preparation_pin()?;
+            require(&pin == expected, "live preparation pin changed")?;
+            let file = &mut self.guard.intent.file;
+            let before =
+                crate::reference_file::observe_reference_file_handle_with_limit(file, MAX_INTENT)?;
+            require(
+                before == pin.intent_file
+                    && before.allocation_bytes <= self.guard.intent.max_allocation,
+                "live held preparation intent identity/allocation changed",
+            )?;
+            match OpenOptions::new()
+                .read(true)
+                .write(true)
+                .share_mode(3)
+                .custom_flags(0x0020_0000)
+                .open(&before.final_path)
+            {
+                Err(error) if error.raw_os_error() == Some(32) => (),
+                Err(error) => {
+                    return Err(io::Error::new(
+                        error.kind(),
+                        format!("intent sharing recheck unknown: {error}"),
+                    ));
+                }
+                Ok(contender) => {
+                    drop(contender);
+                    return Err(invalid("preparation intent admitted another RW writer"));
+                }
             }
-            Ok(contender) => {
-                drop(contender);
-                return Err(invalid("preparation intent admitted another RW writer"));
-            }
-        }
-        let digest = crate::sha256_native::hash_range(file, 0, self.guard.intent.end)?;
-        require(
-            hex::encode(digest) == pin.intent_prefix_sha256
-                && crate::reference_file::observe_reference_file_handle_with_limit(
-                    file, MAX_INTENT,
-                )? == before,
-            "live preparation intent content/identity changed",
-        )?;
-        owner.revalidate(events)?;
-        Ok(())
+            let digest = crate::sha256_native::hash_range(file, 0, self.guard.intent.end)?;
+            require(
+                hex::encode(digest) == pin.intent_prefix_sha256
+                    && crate::reference_file::observe_reference_file_handle_with_limit(
+                        file, MAX_INTENT,
+                    )? == before,
+                "live preparation intent content/identity changed",
+            )?;
+            owner.revalidate(events)?;
+            Ok(())
         })();
-        let closed=self.checkpoint_native_events("partition-handoff-revalidation-closed",events);
-        match(result,closed){(Ok(value),Ok(()))=>Ok(value),(Err(error),_)|(_,Err(error))=>Err(error)}
+        let closed = self.checkpoint_native_events("partition-handoff-revalidation-closed", events);
+        match (result, closed) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Err(error), _) | (_, Err(error)) => Err(error),
+        }
     }
     pub fn original_label(&self) -> &crate::volume_label::VolumeLabel {
         &self.guard.source_label
@@ -1439,10 +1521,16 @@ impl PartitionNtfsAdmission {
         gpt.update(&self.guard.baseline.gpt.backup_header);
         gpt.update(&self.guard.baseline.gpt.native_layout);
         Ok(PartitionPreparationPin {
-            version: if self.guard.stage==PartitionPreparationStage::ReadonlyPhysicalLocked {2}else{1},
-            kind: if self.guard.stage==PartitionPreparationStage::ReadonlyPhysicalLocked {
+            version: if self.guard.stage == PartitionPreparationStage::ReadonlyPhysicalLocked {
+                2
+            } else {
+                1
+            },
+            kind: if self.guard.stage == PartitionPreparationStage::ReadonlyPhysicalLocked {
                 "partition-readonly-physical-preparation-v2"
-            }else{"partition-target-only-preparation-v1"},
+            } else {
+                "partition-target-only-preparation-v1"
+            },
             binding: self.guard.binding.clone(),
             original_partition_info: self.guard.original_info.clone(),
             original_gpt_sha256: hex::encode(gpt.finalize()),
@@ -1510,9 +1598,15 @@ pub fn require_complete_fresh_ntfs_admission(
         admission.owner.same_owner(&owner.owner_token())
             && admission.guard.binding == *owner.binding()
             && match (admission.guard.stage, owner.data_profile()) {
-                (PartitionPreparationStage::PrivateLocked,super::PartitionDataProfile::PrivateVolumeV2)=>true,
-                (PartitionPreparationStage::ReadonlyPhysicalLocked,super::PartitionDataProfile::BasicReadonlyPhysicalV3)=>admission.guard.locked,
-                _=>false,
+                (
+                    PartitionPreparationStage::PrivateLocked,
+                    super::PartitionDataProfile::PrivateVolumeV2,
+                ) => true,
+                (
+                    PartitionPreparationStage::ReadonlyPhysicalLocked,
+                    super::PartitionDataProfile::BasicReadonlyPhysicalV3,
+                ) => admission.guard.locked,
+                _ => false,
             }
             && admission
                 .native

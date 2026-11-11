@@ -226,16 +226,21 @@ pub fn observe_general_journal_file_with_profile(
 /// This binds that volume's native extents plus complete physical storage
 /// before/after; no output/create/write/locking authority is returned.
 pub fn observe_general_journal_file_on_held_volume(
-    file:&File,volume:&File,expected:&GeneralJournalStorageBinding,profile:JournalProfile,
-)->io::Result<JournalFileSnapshot>{
+    file: &File,
+    volume: &File,
+    expected: &GeneralJournalStorageBinding,
+    profile: JournalProfile,
+) -> io::Result<JournalFileSnapshot> {
     expected.validate()?;
-    let(before_path,mut before)=file_observation_with_profile(file,profile)?;
-    final_volume_path(&before_path,&guid_bytes(&expected.disk.volume_guid)?)?;
-    let disk=OpenOptions::new().read(true).share_mode(3)
-        .open(format!("\\\\.\\PhysicalDrive{}",expected.disk.disk_number))?;
-    storage_observation(volume,&disk,&mut before)?;
-    let snapshot=validate_general_evidence_for_profile(expected,&before_path,before,profile)?;
-    let(after_path,mut after)=file_observation_with_profile(file,profile)?;
-    storage_observation(volume,&disk,&mut after)?;
-    finish_observation(snapshot,&after_path,&after)
+    let (before_path, mut before) = file_observation_with_profile(file, profile)?;
+    final_volume_path(&before_path, &guid_bytes(&expected.disk.volume_guid)?)?;
+    let disk = OpenOptions::new()
+        .read(true)
+        .share_mode(3)
+        .open(format!("\\\\.\\PhysicalDrive{}", expected.disk.disk_number))?;
+    storage_observation(volume, &disk, &mut before)?;
+    let snapshot = validate_general_evidence_for_profile(expected, &before_path, before, profile)?;
+    let (after_path, mut after) = file_observation_with_profile(file, profile)?;
+    storage_observation(volume, &disk, &mut after)?;
+    finish_observation(snapshot, &after_path, &after)
 }

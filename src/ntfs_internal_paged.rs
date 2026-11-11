@@ -61,7 +61,9 @@ impl PagedVerifiedIndexes {
     pub fn internal_volume_object_id(&self) -> Option<&InternalVolumeObjectId> {
         self.internal_volume_object_id.as_ref()
     }
-    pub(crate) fn windows_object_ids_owned(&self)->Option<std::sync::Arc<crate::boot_alias::WindowsObjectIdDomain>> {
+    pub(crate) fn windows_object_ids_owned(
+        &self,
+    ) -> Option<std::sync::Arc<crate::boot_alias::WindowsObjectIdDomain>> {
         self.windows_object_ids.clone()
     }
     pub fn covers_volume_object_id_domain(&self, source: &PagedInspection, record: u64) -> bool {
@@ -190,7 +192,9 @@ impl PagedVerifiedIndexes {
         Ok(true)
     }
     pub fn revalidate(&self) -> Result<()> {
-        if let Some(domain)=&self.windows_object_ids {domain.revalidate()?;}
+        if let Some(domain) = &self.windows_object_ids {
+            domain.revalidate()?;
+        }
         for store in &self.stores {
             store.revalidate()?;
         }
@@ -425,19 +429,33 @@ pub fn verify_domain<R: Read + Seek>(
     source: &PagedInspection,
     root: &Path,
 ) -> Result<PagedVerifiedIndexes> {
-    verify_domain_with_windows(reader,source,root,None)
+    verify_domain_with_windows(reader, source, root, None)
 }
-pub fn verify_domain_windows<R:Read+Seek>(reader:&mut R,source:&PagedInspection,root:&Path,
-    binding:&n2r_win32::general_layout::GeneralDiskBinding,
-    proof:std::sync::Arc<n2r_win32::windows_object_ids::VerifiedWindowsObjectIds>)->Result<PagedVerifiedIndexes> {
-    ensure!(source.is_windows_conversion() && proof.binding()==binding
-        && binding.layout_profile==n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows,
-        "Windows object-ID reconciliation requires actual Windows/native source scope");
-    verify_domain_with_windows(reader,source,root,Some((binding,proof)))
+pub fn verify_domain_windows<R: Read + Seek>(
+    reader: &mut R,
+    source: &PagedInspection,
+    root: &Path,
+    binding: &n2r_win32::general_layout::GeneralDiskBinding,
+    proof: std::sync::Arc<n2r_win32::windows_object_ids::VerifiedWindowsObjectIds>,
+) -> Result<PagedVerifiedIndexes> {
+    ensure!(
+        source.is_windows_conversion()
+            && proof.binding() == binding
+            && binding.layout_profile
+                == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows,
+        "Windows object-ID reconciliation requires actual Windows/native source scope"
+    );
+    verify_domain_with_windows(reader, source, root, Some((binding, proof)))
 }
-fn verify_domain_with_windows<R:Read+Seek>(reader:&mut R,source:&PagedInspection,root:&Path,
-    windows:Option<(&n2r_win32::general_layout::GeneralDiskBinding,
-        std::sync::Arc<n2r_win32::windows_object_ids::VerifiedWindowsObjectIds>)>)->Result<PagedVerifiedIndexes> {
+fn verify_domain_with_windows<R: Read + Seek>(
+    reader: &mut R,
+    source: &PagedInspection,
+    root: &Path,
+    windows: Option<(
+        &n2r_win32::general_layout::GeneralDiskBinding,
+        std::sync::Arc<n2r_win32::windows_object_ids::VerifiedWindowsObjectIds>,
+    )>,
+) -> Result<PagedVerifiedIndexes> {
     source.revalidate()?;
     let geometry = &source.header().geometry;
     ensure!(
@@ -611,77 +629,156 @@ fn verify_domain_with_windows<R:Read+Seek>(reader:&mut R,source:&PagedInspection
         let entry_pin = writer.finish()?;
         let entry_store = SortedRecordStore::open(&entry_pin, &scratch)?;
         let supported = if slot == 0 {
-            if let Some((binding,proof))=windows.as_ref(){
-                let object_index_name:Vec<_>="$O".encode_utf16().collect();
-                ensure!(storage.root.len()<=4096 && storage.allocation.is_none() && storage.bitmap.is_none()
-                    && file.base_file_reference==0 && file.sequence_number!=0 && file.metadata_role_issue.is_none()
-                    && !file.attributes.iter().any(|a|matches!(a.type_code,0x20|0xa0|0xb0)
-                        || (a.type_code==0x90 && a.name_utf16!=object_index_name)),
-                    "Windows object-ID index exceeds complete resident-root profile");
-                ensure!(object_id_count==u64::try_from(entries.len())?,
-                    "Windows object-ID raw/index coverage differs");
-                let inspection:[u8;32]=hex::decode(source.canonical_sha256()?)?.try_into()
-                    .map_err(|_|anyhow::anyhow!("Windows object-ID inspection digest width differs"))?;
-                let mut archive=ExternalSort::new(&root.join("windows-object-ID-dispositions"),*b"WINOID01",&scratch)?;
-                let mut ordinary=0u64;let mut volume_entries=0u64;
-                for (key,indexed) in &entries {
-                    ensure!(key.len()==16 && key.iter().any(|b|*b!=0) && indexed.len()==56,
-                        "Windows object-ID index entry shape differs");
-                    let reference=u64::from_le_bytes(indexed[..8].try_into()?);
-                    let number=reference & 0x0000_ffff_ffff_ffff;let sequence=(reference>>48) as u16;
-                    ensure!(sequence!=0,"Windows object-ID index sequence is zero");
-                    let owner=source.find_record(number,Some(sequence))?
+            if let Some((binding, proof)) = windows.as_ref() {
+                let object_index_name: Vec<_> = "$O".encode_utf16().collect();
+                ensure!(
+                    storage.root.len() <= 4096
+                        && storage.allocation.is_none()
+                        && storage.bitmap.is_none()
+                        && file.base_file_reference == 0
+                        && file.sequence_number != 0
+                        && file.metadata_role_issue.is_none()
+                        && !file.attributes.iter().any(|a| matches!(
+                            a.type_code,
+                            0x20 | 0xa0 | 0xb0
+                        ) || (a.type_code == 0x90
+                            && a.name_utf16 != object_index_name)),
+                    "Windows object-ID index exceeds complete resident-root profile"
+                );
+                ensure!(
+                    object_id_count == u64::try_from(entries.len())?,
+                    "Windows object-ID raw/index coverage differs"
+                );
+                let inspection: [u8; 32] = hex::decode(source.canonical_sha256()?)?
+                    .try_into()
+                    .map_err(|_| {
+                        anyhow::anyhow!("Windows object-ID inspection digest width differs")
+                    })?;
+                let mut archive = ExternalSort::new(
+                    &root.join("windows-object-ID-dispositions"),
+                    *b"WINOID01",
+                    &scratch,
+                )?;
+                let mut ordinary = 0u64;
+                let mut volume_entries = 0u64;
+                for (key, indexed) in &entries {
+                    ensure!(
+                        key.len() == 16 && key.iter().any(|b| *b != 0) && indexed.len() == 56,
+                        "Windows object-ID index entry shape differs"
+                    );
+                    let reference = u64::from_le_bytes(indexed[..8].try_into()?);
+                    let number = reference & 0x0000_ffff_ffff_ffff;
+                    let sequence = (reference >> 48) as u16;
+                    ensure!(sequence != 0, "Windows object-ID index sequence is zero");
+                    let owner = source
+                        .find_record(number, Some(sequence))?
                         .context("Windows object-ID index source identity absent")?;
-                    let mut attributes=owner.attributes.iter().filter(|a|a.type_code==0x40);
-                    let attribute=attributes.next().context("Windows object-ID index lacks its raw attribute")?;
-                    ensure!(attributes.next().is_none(),"Windows object-ID raw attribute is duplicated");
-                    let raw=crate::boot_alias::windows_object_id_bytes(attribute)?;
-                    let actual=mapping.resident_attribute(reader,source,&owner,attribute)?;
-                    ensure!(raw.as_slice()==key.as_slice() && actual.as_ref()==raw,
-                        "Windows object-ID fresh raw/index bytes differ");
-                    if number==3 {
-                        volume_entries=volume_entries.checked_add(1).context("volume object-ID count overflow")?;
-                        ensure!(volume_entries==1,"duplicate Windows filesystem volume identity");
-                        internal_volume_object_id=volume_identity(reader,source,&mapping,&owner,attribute,
-                            file,&storage.root,&(key.clone(),indexed.clone()))?;
-                        ensure!(internal_volume_object_id.is_some(),"Windows filesystem volume identity exceeds strict profile");
-                    }else{
-                        ensure!(number>=16 && owner.base_file_reference==0 && !owner.is_metadata
-                            && owner.metadata_role==ntfs_inspect::MetadataRole::OutsideExtendCandidate
-                            && owner.metadata_role_issue.is_none(),"unknown Windows object-ID source role");
-                        let identity=n2r_win32::attestation::FileIdentity{record_number:number,sequence_number:sequence};
-                        let extended:[u8;48]=indexed[8..].try_into()?;
-                        proof.require_raw_object_id_scope(binding,inspection,&identity,&raw,&extended)?;
-                        let mut native=[0u8;64];native[..16].copy_from_slice(&raw);native[16..].copy_from_slice(&extended);
-                        archive.push(record_key(number),&crate::boot_alias::WindowsObjectIdDisposition{
-                            identity,source_inspection_sha256:hex::encode(inspection),source_attribute:attribute.clone(),
-                            index_key_hex:hex::encode(key),index_value_hex:hex::encode(indexed),native_object_id_hex:hex::encode(native),
-                        })?;
-                        ordinary=ordinary.checked_add(1).context("Windows ordinary object-ID count overflow")?;
+                    let mut attributes = owner.attributes.iter().filter(|a| a.type_code == 0x40);
+                    let attribute = attributes
+                        .next()
+                        .context("Windows object-ID index lacks its raw attribute")?;
+                    ensure!(
+                        attributes.next().is_none(),
+                        "Windows object-ID raw attribute is duplicated"
+                    );
+                    let raw = crate::boot_alias::windows_object_id_bytes(attribute)?;
+                    let actual = mapping.resident_attribute(reader, source, &owner, attribute)?;
+                    ensure!(
+                        raw.as_slice() == key.as_slice() && actual.as_ref() == raw,
+                        "Windows object-ID fresh raw/index bytes differ"
+                    );
+                    if number == 3 {
+                        volume_entries = volume_entries
+                            .checked_add(1)
+                            .context("volume object-ID count overflow")?;
+                        ensure!(
+                            volume_entries == 1,
+                            "duplicate Windows filesystem volume identity"
+                        );
+                        internal_volume_object_id = volume_identity(
+                            reader,
+                            source,
+                            &mapping,
+                            &owner,
+                            attribute,
+                            file,
+                            &storage.root,
+                            &(key.clone(), indexed.clone()),
+                        )?;
+                        ensure!(
+                            internal_volume_object_id.is_some(),
+                            "Windows filesystem volume identity exceeds strict profile"
+                        );
+                    } else {
+                        ensure!(
+                            number >= 16
+                                && owner.base_file_reference == 0
+                                && !owner.is_metadata
+                                && owner.metadata_role
+                                    == ntfs_inspect::MetadataRole::OutsideExtendCandidate
+                                && owner.metadata_role_issue.is_none(),
+                            "unknown Windows object-ID source role"
+                        );
+                        let identity = n2r_win32::attestation::FileIdentity {
+                            record_number: number,
+                            sequence_number: sequence,
+                        };
+                        let extended: [u8; 48] = indexed[8..].try_into()?;
+                        proof.require_raw_object_id_scope(
+                            binding, inspection, &identity, &raw, &extended,
+                        )?;
+                        let mut native = [0u8; 64];
+                        native[..16].copy_from_slice(&raw);
+                        native[16..].copy_from_slice(&extended);
+                        archive.push(
+                            record_key(number),
+                            &crate::boot_alias::WindowsObjectIdDisposition {
+                                identity,
+                                source_inspection_sha256: hex::encode(inspection),
+                                source_attribute: attribute.clone(),
+                                index_key_hex: hex::encode(key),
+                                index_value_hex: hex::encode(indexed),
+                                native_object_id_hex: hex::encode(native),
+                            },
+                        )?;
+                        ordinary = ordinary
+                            .checked_add(1)
+                            .context("Windows ordinary object-ID count overflow")?;
                     }
                 }
-                ensure!(ordinary==u64::try_from(proof.len())? && ordinary.checked_add(volume_entries)==Some(object_id_count),
-                    "Windows object-ID complete native/raw/index membership differs");
-                windows_object_ids=Some(std::sync::Arc::new(crate::boot_alias::WindowsObjectIdDomain::from_verified_archive(
-                    source,binding,std::sync::Arc::clone(proof),&archive.finish()?,&scratch)?));
-                internal_volume_object_id.is_some() || (object_id_count==0 && entries.is_empty())
-                    || (volume_entries==0 && ordinary==object_id_count)
-            }else{
-            if object_id_count == 1 && entries.len() == 1 {
-                if let Some((volume, attribute)) = &volume_id {
-                    internal_volume_object_id = volume_identity(
-                        reader,
+                ensure!(
+                    ordinary == u64::try_from(proof.len())?
+                        && ordinary.checked_add(volume_entries) == Some(object_id_count),
+                    "Windows object-ID complete native/raw/index membership differs"
+                );
+                windows_object_ids = Some(std::sync::Arc::new(
+                    crate::boot_alias::WindowsObjectIdDomain::from_verified_archive(
                         source,
-                        &mapping,
-                        volume,
-                        attribute,
-                        file,
-                        &storage.root,
-                        &entries[0],
-                    )?;
+                        binding,
+                        std::sync::Arc::clone(proof),
+                        &archive.finish()?,
+                        &scratch,
+                    )?,
+                ));
+                internal_volume_object_id.is_some()
+                    || (object_id_count == 0 && entries.is_empty())
+                    || (volume_entries == 0 && ordinary == object_id_count)
+            } else {
+                if object_id_count == 1 && entries.len() == 1 {
+                    if let Some((volume, attribute)) = &volume_id {
+                        internal_volume_object_id = volume_identity(
+                            reader,
+                            source,
+                            &mapping,
+                            volume,
+                            attribute,
+                            file,
+                            &storage.root,
+                            &entries[0],
+                        )?;
+                    }
                 }
-            }
-            internal_volume_object_id.is_some() || (object_id_count == 0 && entries.is_empty())
+                internal_volume_object_id.is_some() || (object_id_count == 0 && entries.is_empty())
             }
         } else if slot == 1 {
             let pin = actual_reparse

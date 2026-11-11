@@ -21,20 +21,29 @@ struct DirectoryRowCache {
 }
 impl DirectoryRowCache {
     fn clear(&mut self) {
-        self.rows.clear(); self.charged = 0; self.clock = 0;
+        self.rows.clear();
+        self.charged = 0;
+        self.clock = 0;
     }
     /// Drops the least recently used quarter of the rows (at least one).
     /// Dropping only the single oldest meant a scan of the whole cache for
     /// every row added once it was full.
     fn evict_oldest(&mut self) -> bool {
-        if self.rows.is_empty() { return false; }
+        if self.rows.is_empty() {
+            return false;
+        }
         let mut used: Vec<u64> = self.rows.values().map(|row| row.last_used).collect();
         let cut = used.len() / 4;
         used.select_nth_unstable(cut);
         let threshold = used[cut];
         let mut freed = 0u64;
         self.rows.retain(|_, row| {
-            if row.last_used <= threshold { freed += row.charged; false } else { true }
+            if row.last_used <= threshold {
+                freed += row.charged;
+                false
+            } else {
+                true
+            }
         });
         self.charged -= freed;
         true
@@ -149,37 +158,62 @@ impl PagedRawFiles {
         Ok(None)
     }
     pub(super) fn record_wire_bytes(&self, number: u64) -> Result<Option<u64>> {
-        self.ordinal(number)?.map(|ordinal| self.files.record_bytes(ordinal)).transpose()
+        self.ordinal(number)?
+            .map(|ordinal| self.files.record_bytes(ordinal))
+            .transpose()
     }
     pub(super) fn ordinal_wire_bytes(&self, ordinal: u64) -> Result<u64> {
         self.files.record_bytes(ordinal)
     }
     fn retain_directory(&self, ordinal: u64, file: &FileInventory) -> Result<()> {
-        if !file.is_directory { return Ok(()); }
+        if !file.is_directory {
+            return Ok(());
+        }
         let wire = self.files.record_bytes(ordinal)?;
         // Pay an oversized complete BTree node per row as well as the clone's
         // actual wire-derived bound. No file DATA contents live in this row.
         let node = (std::mem::size_of::<CachedDirectory>() as u64 + 8) * 16 + 4096;
-        let Some(charge) = wire.checked_mul(32).and_then(|bytes| bytes.checked_add(node))
-            else { return Ok(()); };
+        let Some(charge) = wire
+            .checked_mul(32)
+            .and_then(|bytes| bytes.checked_add(node))
+        else {
+            return Ok(());
+        };
         let limit = self.budget().ram_bytes / 32;
-        if charge > limit { return Ok(()); }
-        let actual = file_heap_bytes(file)?.checked_add(std::mem::size_of::<FileInventory>() as u64);
-        if actual.is_none_or(|bytes| bytes > charge - node) { return Ok(()); }
+        if charge > limit {
+            return Ok(());
+        }
+        let actual =
+            file_heap_bytes(file)?.checked_add(std::mem::size_of::<FileInventory>() as u64);
+        if actual.is_none_or(|bytes| bytes > charge - node) {
+            return Ok(());
+        }
         let mut cache = self.directory_rows.borrow_mut();
-        if cache.rows.contains_key(&file.record_number) { return Ok(()); }
+        if cache.rows.contains_key(&file.record_number) {
+            return Ok(());
+        }
         while cache.charged > limit - charge {
-            if !cache.evict_oldest() { return Ok(()); }
+            if !cache.evict_oldest() {
+                return Ok(());
+            }
         }
         // Optional cache pressure must not become a source admission limit.
         // The ordinary read below already belongs to the caller's row budget.
-        let Ok(ram) = self.scratch.lease_ram(charge) else { return Ok(()); };
+        let Ok(ram) = self.scratch.lease_ram(charge) else {
+            return Ok(());
+        };
         let retained = file.clone();
         cache.clock = cache.clock.saturating_add(1);
         let last_used = cache.clock;
-        cache.rows.insert(file.record_number, CachedDirectory {
-            file: retained, charged: charge, last_used, _ram: ram,
-        });
+        cache.rows.insert(
+            file.record_number,
+            CachedDirectory {
+                file: retained,
+                charged: charge,
+                last_used,
+                _ram: ram,
+            },
+        );
         cache.charged += charge;
         Ok(())
     }
@@ -281,22 +315,31 @@ impl RootFileDomain for PagedRawFiles {
         // Ordinal callers (notably ancestry DFS parent visits) must share the
         // same bounded directory cache as record-number callers. The complete
         // held ordinal index still establishes the identity on every hit.
-        let key=self.files.key(ordinal)?;
-        let number=u64::from_be_bytes(key[..8].try_into()?);
-        ensure!(key==file_key(number),"canonical ordinal key is not a file identity");
+        let key = self.files.key(ordinal)?;
+        let number = u64::from_be_bytes(key[..8].try_into()?);
+        ensure!(
+            key == file_key(number),
+            "canonical ordinal key is not a file identity"
+        );
         {
-            let mut cache=self.directory_rows.borrow_mut();
-            cache.clock=cache.clock.saturating_add(1);
-            let last_used=cache.clock;
-            if let Some(row)=cache.rows.get_mut(&number){
-                ensure!(row.file.record_number==number,"cached directory differs from its canonical ordinal");
-                row.last_used=last_used;
+            let mut cache = self.directory_rows.borrow_mut();
+            cache.clock = cache.clock.saturating_add(1);
+            let last_used = cache.clock;
+            if let Some(row) = cache.rows.get_mut(&number) {
+                ensure!(
+                    row.file.record_number == number,
+                    "cached directory differs from its canonical ordinal"
+                );
+                row.last_used = last_used;
                 return Ok(row.file.clone());
             }
         }
-        let file:FileInventory=self.files.get(ordinal)?;
-        ensure!(file_key(file.record_number)==key,"canonical ordinal row identity differs");
-        self.retain_directory(ordinal,&file)?;
+        let file: FileInventory = self.files.get(ordinal)?;
+        ensure!(
+            file_key(file.record_number) == key,
+            "canonical ordinal row identity differs"
+        );
+        self.retain_directory(ordinal, &file)?;
         Ok(file)
     }
     fn find_record(&self, number: u64, sequence: Option<u16>) -> Result<Option<FileInventory>> {
@@ -306,9 +349,13 @@ impl RootFileDomain for PagedRawFiles {
             let last_used = cache.clock;
             if let Some(row) = cache.rows.get_mut(&number) {
                 row.last_used = last_used;
-                return Ok(if sequence.is_none_or(|wanted| wanted == row.file.sequence_number) {
-                    Some(row.file.clone())
-                } else { None });
+                return Ok(
+                    if sequence.is_none_or(|wanted| wanted == row.file.sequence_number) {
+                        Some(row.file.clone())
+                    } else {
+                        None
+                    },
+                );
             }
         }
         let Some(ordinal) = self.ordinal(number)? else {

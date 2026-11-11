@@ -169,7 +169,9 @@ impl UnadmittedPartitionSource {
         let scratch = crate::ntfs_inspect::paged_storage::SourceScratch::new(
             crate::ntfs_inspect::SourceMetadataBudget::from_resource_budget(budget)?,
         )?;
-        let io_memory = scratch.lease_ram(GeneralFrozenPartition::read_buffer_memory_bytes_for(&owner.binding().storage))?;
+        let io_memory = scratch.lease_ram(GeneralFrozenPartition::read_buffer_memory_bytes_for(
+            &owner.binding().storage,
+        ))?;
         let length = owner.byte_len();
         let mut source = ResourceSourceOwner::private_unadmitted(owner);
         let (raw, coverage) = crate::source_fingerprint::resource::inspect_recorded_with_scratch(

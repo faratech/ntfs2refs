@@ -151,7 +151,10 @@ fn verify_creator_files(
             "creator file mapping, identity uniqueness or original descriptor differs"
         );
         let path = format!("{volume}\\{}", file.components.join("\\"));
-        ensure!(path.encode_utf16().count() < 32767, "creator path exceeds native bound");
+        ensure!(
+            path.encode_utf16().count() < 32767,
+            "creator path exceeds native bound"
+        );
         // Context-faithful cases retain their original parent hierarchy. Hold
         // and check each actual ancestor so a nested path cannot escape this
         // owned oracle root through a reparse point or directory replacement.
@@ -160,9 +163,13 @@ fn verify_creator_files(
             let parent_path = format!("{volume}\\{}", file.components[..end].join("\\"));
             let parent = open(&parent_path)?;
             let metadata = parent.metadata()?;
-            ensure!(metadata.is_dir() && metadata.file_attributes() & 0x400 == 0
-                && n2r_win32::file_storage::final_path_guid(&parent)?.eq_ignore_ascii_case(&parent_path),
-                "creator parent hierarchy is not the actual ordinary oracle subtree");
+            ensure!(
+                metadata.is_dir()
+                    && metadata.file_attributes() & 0x400 == 0
+                    && n2r_win32::file_storage::final_path_guid(&parent)?
+                        .eq_ignore_ascii_case(&parent_path),
+                "creator parent hierarchy is not the actual ordinary oracle subtree"
+            );
             parents.push(parent);
         }
         let held = open(&path)?;

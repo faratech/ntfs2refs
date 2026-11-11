@@ -7,7 +7,7 @@
 pub(crate) mod envelope;
 mod replay;
 pub(crate) use replay::PartitionMixedObservation;
-pub(crate) use replay::{PreparedOfflineRun,PreparedOfflineReplayRun,PreparedOfflineClosedRun};
+pub(crate) use replay::{PreparedOfflineClosedRun, PreparedOfflineReplayRun, PreparedOfflineRun};
 
 use super::*;
 use crate::{
@@ -210,8 +210,10 @@ impl PreparedJournalIndex {
         ticket: &SelectedTicket,
     ) -> Result<()> {
         self.require_ticket(ticket)?;
-        ensure!(std::ptr::from_ref(journal) as usize == self.journal_owner,
-            "prepared index belongs to a different native journal owner");
+        ensure!(
+            std::ptr::from_ref(journal) as usize == self.journal_owner,
+            "prepared index belongs to a different native journal owner"
+        );
         journal.require_prepared_body_seal()
     }
     pub(crate) fn policy(&self) -> n2r_win32::HeldPagedWritePolicy {
@@ -838,22 +840,48 @@ impl<'a> BoundJournalObservation<'a> {
     /// Cloned policy/artifact references retain authority provenance; no saved
     /// ticket/path can construct the private PreparedJournalIndex owner.
     pub(crate) fn from_prepared_creation(
-        journal:&'a mut NativeSelectedJournal,
-        facts:&crate::general_reconstruct::selected_native_journal::BoundNativeCreationFacts<'a>,
-        ticket:&'a SelectedTicket,index:&PreparedJournalIndex,scratch:&SourceScratch,
-    )->Result<Self>{
-        index.require_same_sealed_journal(journal,ticket)?;
-        journal.revalidate_resource_preparation(facts,ticket)?;
-        ensure!(ticket.marker_profile.is_none(),"partition publication requires actual markerless creation journal");
-        let memory=scratch.lease_ram(12*BUFFER as u64)?;
-        let mut header=[0u8;HEADER];at(journal,BODY,&mut header)?;
-        let format=JournalFormat::decode(&header,ticket)?;
-        let index_length=index.lease.wire_bytes();
-        let mut observation=JournalObservation {journal,ticket,index:index.policy.clone(),index_lease:index.lease.clone(),
-            format,index_length,_memory:memory};
+        journal: &'a mut NativeSelectedJournal,
+        facts: &crate::general_reconstruct::selected_native_journal::BoundNativeCreationFacts<'a>,
+        ticket: &'a SelectedTicket,
+        index: &PreparedJournalIndex,
+        scratch: &SourceScratch,
+    ) -> Result<Self> {
+        index.require_same_sealed_journal(journal, ticket)?;
+        journal.revalidate_resource_preparation(facts, ticket)?;
+        ensure!(
+            ticket.marker_profile.is_none(),
+            "partition publication requires actual markerless creation journal"
+        );
+        let memory = scratch.lease_ram(12 * BUFFER as u64)?;
+        let mut header = [0u8; HEADER];
+        at(journal, BODY, &mut header)?;
+        let format = JournalFormat::decode(&header, ticket)?;
+        let index_length = index.lease.wire_bytes();
+        let mut observation = JournalObservation {
+            journal,
+            ticket,
+            index: index.policy.clone(),
+            index_lease: index.lease.clone(),
+            format,
+            index_length,
+            _memory: memory,
+        };
         observation.revalidate_index()?;
-        ensure!(observation.lifecycle()?==SelectedLifecycle::PreparedClear,"creation J is not original clear state");
-        Ok(Self{observation,facts:BoundNativeJournalFacts{path:facts.path,binding:facts.binding,identity:facts.identity,
-            profile:facts.profile,journal_length:ticket.journal_length,marker_use:facts.marker_use,marker_native_qualified:None}})
+        ensure!(
+            observation.lifecycle()? == SelectedLifecycle::PreparedClear,
+            "creation J is not original clear state"
+        );
+        Ok(Self {
+            observation,
+            facts: BoundNativeJournalFacts {
+                path: facts.path,
+                binding: facts.binding,
+                identity: facts.identity,
+                profile: facts.profile,
+                journal_length: ticket.journal_length,
+                marker_use: facts.marker_use,
+                marker_native_qualified: None,
+            },
+        })
     }
 }

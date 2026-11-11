@@ -66,8 +66,10 @@ impl BorrowedPagedSource<'_, '_> {
             }
             Self::DedicatedScoped(scope) => {
                 let before = before.context("original scoped state absent")?;
-                ensure!(scope.state(&mut Vec::new())? == *before && before.disk_attributes == 3,
-                    "scoped original source identity or physical exclusion changed");
+                ensure!(
+                    scope.state(&mut Vec::new())? == *before && before.disk_attributes == 3,
+                    "scoped original source identity or physical exclusion changed"
+                );
                 Ok(())
             }
             Self::Partition {
@@ -96,9 +98,9 @@ impl BorrowedPagedSource<'_, '_> {
     ) -> Result<()> {
         match self {
             Self::Dedicated(owner) => observer.observe_original(owner, offset, bytes),
-            Self::DedicatedScoped(_) => anyhow::bail!(
-                "byte-supply scope cannot issue a capture closing-source witness"
-            ),
+            Self::DedicatedScoped(_) => {
+                anyhow::bail!("byte-supply scope cannot issue a capture closing-source witness")
+            }
             Self::Partition { .. } => anyhow::bail!(
                 "legacy whole-disk closing observer cannot authorize a partition source; V4 OLD/COPY closure remains required"
             ),

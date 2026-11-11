@@ -76,29 +76,44 @@ impl ConstructionSource<'_> {
 /// duplicate. No Read/Seek/Write, JSON or source writer issuer is exposed.
 /// Success explicitly closes with full source revalidation. On error Drop
 /// releases only this query reference; Root's full closing/FP check still runs.
-pub(super) struct PartitionShadowConstructionLease{
-    witness:native::PartitionSourceMetadataWitness,
-    pair:GeneralSourceShadowBinding,
-    expected:ConstructionSourceState,
+pub(super) struct PartitionShadowConstructionLease {
+    witness: native::PartitionSourceMetadataWitness,
+    pair: GeneralSourceShadowBinding,
+    expected: ConstructionSourceState,
 }
-impl PartitionShadowConstructionLease{
-    pub(super) fn begin(witness:native::PartitionSourceMetadataWitness,pair:&GeneralSourceShadowBinding,
-        expected:&ConstructionSourceState,events:&mut Vec<NativeEvent>)->io::Result<Self>{
-        expected.require(pair,Some(&witness),events)?;
-        Ok(Self{witness,pair:pair.clone(),expected:expected.clone()})
+impl PartitionShadowConstructionLease {
+    pub(super) fn begin(
+        witness: native::PartitionSourceMetadataWitness,
+        pair: &GeneralSourceShadowBinding,
+        expected: &ConstructionSourceState,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<Self> {
+        expected.require(pair, Some(&witness), events)?;
+        Ok(Self {
+            witness,
+            pair: pair.clone(),
+            expected: expected.clone(),
+        })
     }
-    pub(super) fn witness(&self)->&native::PartitionSourceMetadataWitness{&self.witness}
-    pub(super) fn check_shadow_operation(&self,events:&mut Vec<NativeEvent>)->io::Result<()>{
+    pub(super) fn witness(&self) -> &native::PartitionSourceMetadataWitness {
+        &self.witness
+    }
+    pub(super) fn check_shadow_operation(&self, events: &mut Vec<NativeEvent>) -> io::Result<()> {
         self.witness.require_binding(&self.pair.source)?;
-        let ConstructionSourceState::Partition(expected)=&self.expected else{
-            return Err(invalid("partition construction lease lacks actual source scope"));
+        let ConstructionSourceState::Partition(expected) = &self.expected else {
+            return Err(invalid(
+                "partition construction lease lacks actual source scope",
+            ));
         };
         self.witness.revalidate_held_shadow_identity(events)?;
-        if self.witness.state()!=expected{return Err(invalid("shadow construction original witness differs"));}
+        if self.witness.state() != expected {
+            return Err(invalid("shadow construction original witness differs"));
+        }
         Ok(())
     }
-    pub(super) fn finish(self,events:&mut Vec<NativeEvent>)->io::Result<()>{
-        self.expected.require(&self.pair,Some(&self.witness),events)
+    pub(super) fn finish(self, events: &mut Vec<NativeEvent>) -> io::Result<()> {
+        self.expected
+            .require(&self.pair, Some(&self.witness), events)
     }
 }
 
@@ -117,34 +132,54 @@ impl DedicatedShadowConstructionLease {
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<Self> {
         let ConstructionSourceState::Dedicated(state) = expected else {
-            return Err(invalid("dedicated shadow query lease requires original whole-disk state"));
+            return Err(invalid(
+                "dedicated shadow query lease requires original whole-disk state",
+            ));
         };
         if source.binding() != &pair.source {
-            return Err(invalid("dedicated shadow query source differs from actual enrollment"));
+            return Err(invalid(
+                "dedicated shadow query source differs from actual enrollment",
+            ));
         }
-        let witness = native::NativeFrozenShadowSourceQueryWitness::from_frozen(source, payer, events)?;
+        let witness =
+            native::NativeFrozenShadowSourceQueryWitness::from_frozen(source, payer, events)?;
         witness.require_binding_state(&pair.source, state)?;
         Ok(Self { witness })
     }
-    fn require_context(&self, pair: &GeneralSourceShadowBinding,
-        expected: &ConstructionSourceState) -> io::Result<()> {
+    fn require_context(
+        &self,
+        pair: &GeneralSourceShadowBinding,
+        expected: &ConstructionSourceState,
+    ) -> io::Result<()> {
         let ConstructionSourceState::Dedicated(state) = expected else {
             return Err(invalid("dedicated shadow source context changed scope"));
         };
         self.witness.require_binding_state(&pair.source, state)
     }
-    pub(super) fn check_shadow_operation(&self, pair: &GeneralSourceShadowBinding,
-        expected: &ConstructionSourceState, events: &mut Vec<NativeEvent>) -> io::Result<()> {
+    pub(super) fn check_shadow_operation(
+        &self,
+        pair: &GeneralSourceShadowBinding,
+        expected: &ConstructionSourceState,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
         self.require_context(pair, expected)?;
         self.witness.revalidate_held(events)
     }
-    pub(super) fn revalidate_boundary(&self, pair: &GeneralSourceShadowBinding,
-        expected: &ConstructionSourceState, events: &mut Vec<NativeEvent>) -> io::Result<()> {
+    pub(super) fn revalidate_boundary(
+        &self,
+        pair: &GeneralSourceShadowBinding,
+        expected: &ConstructionSourceState,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
         self.require_context(pair, expected)?;
         self.witness.revalidate_boundary(events)
     }
-    pub(super) fn finish(self, pair: &GeneralSourceShadowBinding,
-        expected: &ConstructionSourceState, events: &mut Vec<NativeEvent>) -> io::Result<()> {
+    pub(super) fn finish(
+        self,
+        pair: &GeneralSourceShadowBinding,
+        expected: &ConstructionSourceState,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
         self.require_context(pair, expected)?;
         self.witness.finish(events)
     }

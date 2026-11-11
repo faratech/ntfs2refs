@@ -153,9 +153,18 @@ impl DeferredFailures {
     /// Past this many the run is not learning anything new; stop it.
     const LIMIT: usize = 500;
     fn record(&self, error: std::io::Error) -> std::io::Result<()> {
-        let mut failures = self.0.lock().map_err(|_| std::io::Error::other("diagnose sink poisoned"))?;
+        let mut failures = self
+            .0
+            .lock()
+            .map_err(|_| std::io::Error::other("diagnose sink poisoned"))?;
         if failures.len() >= Self::LIMIT {
-            return Err(std::io::Error::new(error.kind(), format!("diagnose limit of {} failures reached; last: {error}", Self::LIMIT)));
+            return Err(std::io::Error::new(
+                error.kind(),
+                format!(
+                    "diagnose limit of {} failures reached; last: {error}",
+                    Self::LIMIT
+                ),
+            ));
         }
         // Print as it happens too, so the list survives a later hard stop.
         eprintln!("diagnose: {error}");
@@ -163,7 +172,10 @@ impl DeferredFailures {
         Ok(())
     }
     pub(crate) fn take(&self) -> Vec<String> {
-        self.0.lock().map(|mut failures| std::mem::take(&mut *failures)).unwrap_or_default()
+        self.0
+            .lock()
+            .map(|mut failures| std::mem::take(&mut *failures))
+            .unwrap_or_default()
     }
 }
 /// Capacity policy over the real authenticated input owner. This adapter
@@ -175,12 +187,21 @@ pub(crate) struct GuardedInputs<D> {
     deferred: Option<DeferredFailures>,
 }
 impl<D: n2r_win32::shadow_native::input_domain::InputDomain> GuardedInputs<D> {
-    pub(crate) fn new(inner: D,
+    pub(crate) fn new(
+        inner: D,
         guard: Option<std::sync::Arc<n2r_win32::managed_shadow::BackingResourceGuard>>,
-        shadow: &n2r_win32::general_layout::GeneralDiskBinding) -> std::io::Result<Self> {
+        shadow: &n2r_win32::general_layout::GeneralDiskBinding,
+    ) -> std::io::Result<Self> {
         inner.require_mutation_binding(shadow)?;
-        if let Some(guard) = &guard { guard.require_binding(shadow)?; }
-        Ok(Self { inner, guard, progress: n2r_win32::progress::Reporter::default(), deferred: None })
+        if let Some(guard) = &guard {
+            guard.require_binding(shadow)?;
+        }
+        Ok(Self {
+            inner,
+            guard,
+            progress: n2r_win32::progress::Reporter::default(),
+            deferred: None,
+        })
     }
     pub(crate) fn with_progress(mut self, progress: n2r_win32::progress::Reporter) -> Self {
         self.progress = progress;
@@ -193,30 +214,54 @@ impl<D: n2r_win32::shadow_native::input_domain::InputDomain> GuardedInputs<D> {
     }
 }
 impl<D: n2r_win32::shadow_native::input_domain::InputDomain>
-    n2r_win32::shadow_native::input_domain::InputDomain for GuardedInputs<D> {
+    n2r_win32::shadow_native::input_domain::InputDomain for GuardedInputs<D>
+{
     type Object = D::Object;
-    fn len(&self) -> usize { self.inner.len() }
-    fn object(&self, index: usize) -> std::io::Result<Self::Object> { self.inner.object(index) }
-    fn input_digest_memo(&self) -> Option<&n2r_win32::shadow_native::input_domain::InputDigestMemo> {
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+    fn object(&self, index: usize) -> std::io::Result<Self::Object> {
+        self.inner.object(index)
+    }
+    fn input_digest_memo(
+        &self,
+    ) -> Option<&n2r_win32::shadow_native::input_domain::InputDigestMemo> {
         self.inner.input_digest_memo()
     }
     fn progress(&self, update: n2r_win32::progress::Update) {
         self.inner.progress(update);
         self.progress.report(update);
     }
-    fn with_alias_shape<T>(&self, index: usize,
-        visit: impl FnOnce(&dyn n2r_win32::shadow_native::input_domain::AliasObjectShape) -> std::io::Result<T>)
-        -> std::io::Result<T> { self.inner.with_alias_shape(index, visit) }
-    fn require_paged_metadata(&self, budget: n2r_win32::metadata_pages::PageBudget,
-        semantic_bytes: u64) -> std::io::Result<()> {
+    fn with_alias_shape<T>(
+        &self,
+        index: usize,
+        visit: impl FnOnce(
+            &dyn n2r_win32::shadow_native::input_domain::AliasObjectShape,
+        ) -> std::io::Result<T>,
+    ) -> std::io::Result<T> {
+        self.inner.with_alias_shape(index, visit)
+    }
+    fn require_paged_metadata(
+        &self,
+        budget: n2r_win32::metadata_pages::PageBudget,
+        semantic_bytes: u64,
+    ) -> std::io::Result<()> {
         self.inner.require_paged_metadata(budget, semantic_bytes)
     }
-    fn require_resource_metadata(&self, admission: n2r_win32::tree_resources::SourceResourceAdmission)
-        -> std::io::Result<()> { self.inner.require_resource_metadata(admission) }
-    fn require_mutation_binding(&self, shadow: &n2r_win32::general_layout::GeneralDiskBinding)
-        -> std::io::Result<()> {
+    fn require_resource_metadata(
+        &self,
+        admission: n2r_win32::tree_resources::SourceResourceAdmission,
+    ) -> std::io::Result<()> {
+        self.inner.require_resource_metadata(admission)
+    }
+    fn require_mutation_binding(
+        &self,
+        shadow: &n2r_win32::general_layout::GeneralDiskBinding,
+    ) -> std::io::Result<()> {
         self.inner.require_mutation_binding(shadow)?;
-        if let Some(guard) = &self.guard { guard.require_binding(shadow)?; }
+        if let Some(guard) = &self.guard {
+            guard.require_binding(shadow)?;
+        }
         Ok(())
     }
     fn defer_failure(&self, error: std::io::Error) -> std::io::Result<()> {
@@ -227,7 +272,9 @@ impl<D: n2r_win32::shadow_native::input_domain::InputDomain>
     }
     fn before_mutation(&self, operation_bytes: u64) -> std::io::Result<()> {
         self.inner.before_mutation(operation_bytes)?;
-        if let Some(guard) = &self.guard { guard.check_before_operation(operation_bytes)?; }
+        if let Some(guard) = &self.guard {
+            guard.check_before_operation(operation_bytes)?;
+        }
         Ok(())
     }
 }
@@ -268,12 +315,20 @@ impl n2r_win32::shadow_native::input_domain::InputDomain for PagedInputs<'_> {
                 .map_err(std::io::Error::other)
         }
     }
-    fn input_digest_memo(&self) -> Option<&n2r_win32::shadow_native::input_domain::InputDigestMemo> {
+    fn input_digest_memo(
+        &self,
+    ) -> Option<&n2r_win32::shadow_native::input_domain::InputDigestMemo> {
         Some(self.0.input_digest_memo())
     }
-    fn with_alias_shape<T>(&self, index: usize,
-        visit: impl FnOnce(&dyn n2r_win32::shadow_native::input_domain::AliasObjectShape) -> std::io::Result<T>)
-        -> std::io::Result<T> { self.0.with_alias_shape(index, visit) }
+    fn with_alias_shape<T>(
+        &self,
+        index: usize,
+        visit: impl FnOnce(
+            &dyn n2r_win32::shadow_native::input_domain::AliasObjectShape,
+        ) -> std::io::Result<T>,
+    ) -> std::io::Result<T> {
+        self.0.with_alias_shape(index, visit)
+    }
     fn require_paged_metadata(
         &self,
         budget: n2r_win32::metadata_pages::PageBudget,

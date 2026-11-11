@@ -144,7 +144,9 @@ static STEPS: Mutex<Steps> = Mutex::new(Steps {
 /// For the handful of large steps of a phase, not for anything per object.
 pub fn step(name: &'static str) {
     crate::stack_sampler::note_step(name);
-    let mut steps = STEPS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut steps = STEPS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some((previous, started)) = steps.current.take() {
         let seconds = started.elapsed().as_secs_f64();
         match steps.done.iter_mut().find(|(done, _)| *done == previous) {
@@ -157,7 +159,9 @@ pub fn step(name: &'static str) {
 
 /// Ends the current step and prints every step of the phase that just ended.
 fn finish_steps(phase: &str) {
-    let mut steps = STEPS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut steps = STEPS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some((previous, started)) = steps.current.take() {
         let seconds = started.elapsed().as_secs_f64();
         match steps.done.iter_mut().find(|(done, _)| *done == previous) {
@@ -183,7 +187,9 @@ pub fn phase(name: &str) {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .get_or_insert_with(Instant::now);
-    let mut current = CURRENT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut current = CURRENT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(previous) = current.take() {
         eprintln!(
             "{}",
@@ -256,7 +262,10 @@ mod tests {
         assert_eq!(after[index].0 - before[index].0, 1);
         let text = line("example", 2.0, &before, &after);
         assert!(text.starts_with("timing: example 2.0s"), "{text}");
-        assert!(text.contains("journal read-back") && text.contains("x1 3.00 GB"), "{text}");
+        assert!(
+            text.contains("journal read-back") && text.contains("x1 3.00 GB"),
+            "{text}"
+        );
         assert!(!text.contains("freeze check"), "{text}");
     }
 }

@@ -9,7 +9,9 @@ use crate::{
         self, PagedInputs,
         paged_candidate::{PagedPayloadRoutes, PagedSourceBackedCandidateWithScope},
         paged_capture::capture_target_selected,
-        source_backed::{CaptureBudget, CaptureProgress, PagedSourceByteAdapter, PagedSourceByteAdapterWithScope},
+        source_backed::{
+            CaptureBudget, CaptureProgress, PagedSourceByteAdapter, PagedSourceByteAdapterWithScope,
+        },
     },
     general_source_admission::resource::ResourceSourceContext,
     ntfs_inspect::{SourceMetadataBudget, paged_storage::SourceScratch},
@@ -294,19 +296,21 @@ impl<'a, O: PreparationObserver> EventLog<'a, O> {
     pub(crate) fn phase(&mut self, phase: &'static str) {
         self.phase = phase;
         n2r_win32::perf::phase(phase);
-        use n2r_win32::progress::{Phase,Unit,Update};
-        let typed=match phase {
-            "source-preparation"|"source-recheck"=>Some(Phase::SourceEvidence),
-            "expected-preparation"=>Some(Phase::ExpectedPreparation),
-            "shadow-allocation"=>Some(Phase::ShadowAllocation),
-            "shadow-placement"=>Some(Phase::Placement),
-            "metadata-recovery-verification"=>Some(Phase::PayloadVerification),
-            "protected-target-capture"=>Some(Phase::TargetCapture),
-            "native-journal-preparation"=>Some(Phase::RecoveryJournal),
-            _=>None,
+        use n2r_win32::progress::{Phase, Unit, Update};
+        let typed = match phase {
+            "source-preparation" | "source-recheck" => Some(Phase::SourceEvidence),
+            "expected-preparation" => Some(Phase::ExpectedPreparation),
+            "shadow-allocation" => Some(Phase::ShadowAllocation),
+            "shadow-placement" => Some(Phase::Placement),
+            "metadata-recovery-verification" => Some(Phase::PayloadVerification),
+            "protected-target-capture" => Some(Phase::TargetCapture),
+            "native-journal-preparation" => Some(Phase::RecoveryJournal),
+            _ => None,
         };
-        if let Some(phase)=typed {
-            self.observer.progress_reporter().report(Update::new(phase,Unit::Operations,0,None));
+        if let Some(phase) = typed {
+            self.observer
+                .progress_reporter()
+                .report(Update::new(phase, Unit::Operations, 0, None));
         }
     }
     pub(crate) fn checkpoint(&mut self) -> Result<()> {
@@ -849,9 +853,12 @@ where
         let backing_guard = events.observer.backing_resource_guard();
         let diagnose_failures = diagnose().then(general_shadow::DeferredFailures::default);
         let inputs = general_shadow::GuardedInputs::new(
-            PagedInputs(&expected), backing_guard.clone(), &request.pair.shadow,
-        )?.with_progress(events.observer.progress_reporter())
-            .with_deferred_failures(diagnose_failures.clone());
+            PagedInputs(&expected),
+            backing_guard.clone(),
+            &request.pair.shadow,
+        )?
+        .with_progress(events.observer.progress_reporter())
+        .with_deferred_failures(diagnose_failures.clone());
         let trust_recipes = if trust_repair_allocation.is_some() {
             Some(crate::refs_security_integration::collect_recipes(
                 &inputs, &arena,
@@ -861,23 +868,32 @@ where
         };
         let mut resume_checkpoints = if let Some(saved) = effective_resume.as_ref() {
             Some(resume_checkpoint::Checkpoints::create(
-                    saved,
-                    &context,
-                    &expected,
-                    &request,
-                    &locator_group,
-                    output,
-                )?)
+                saved,
+                &context,
+                &expected,
+                &request,
+                &locator_group,
+                output,
+            )?)
         } else if request.pair.source.layout_profile
             == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows
             && request.verification_policy == VerificationPolicy::ExtentIdentityV1
             && request.marker_use == MarkerStorageUse::QualifiedProduction
         {
-            events.observer.parent_public_resources().map(|parent| {
-                resume_checkpoint::Checkpoints::create_fresh(
-                    &context, &expected, &request, parent, &locator_group, output,
-                )
-            }).transpose()?
+            events
+                .observer
+                .parent_public_resources()
+                .map(|parent| {
+                    resume_checkpoint::Checkpoints::create_fresh(
+                        &context,
+                        &expected,
+                        &request,
+                        parent,
+                        &locator_group,
+                        output,
+                    )
+                })
+                .transpose()?
         } else {
             None
         };
@@ -956,178 +972,151 @@ where
         }
 
         let pending_metadata = if completed_payloads.is_some() {
-            if let (Some(saved),Some(aliases))=(effective_resume.as_ref(),alias_inputs.as_ref()) {
-                let (source,_) = context.source_and_inspection()?;
-                let native_profile=profile.native_profile().context("native metadata profile absent")?;
-                let mut enrollment=n2r_win32::shadow_native::private_tree::enroll_with_resource_profile(
-                    source,&request.pair,native_profile)?;
-                let memory=Arc::new(ArenaReportMemory(arena.clone()));
+            if let (Some(saved), Some(aliases)) = (effective_resume.as_ref(), alias_inputs.as_ref())
+            {
+                let (source, _) = context.source_and_inspection()?;
+                let native_profile = profile
+                    .native_profile()
+                    .context("native metadata profile absent")?;
+                let mut enrollment =
+                    n2r_win32::shadow_native::private_tree::enroll_with_resource_profile(
+                        source,
+                        &request.pair,
+                        native_profile,
+                    )?;
+                let memory = Arc::new(ArenaReportMemory(arena.clone()));
                 use n2r_win32::shadow_native::private_tree::recovery::metadata_transition::{
-                    self,PayloadsShape,
+                    self, PayloadsShape,
                 };
-                match metadata_transition::classify_payloads_domain(&mut enrollment,&inputs,memory.as_ref())? {
-                    PayloadsShape::PrivatePayloads=>None,
-                    PayloadsShape::FinalTargets=>Some(metadata_transition::adopt_domain(
-                        enrollment,&inputs,aliases,native_profile,memory,saved.shadow_origin.clone(),
-                    ).context("fresh native final-target metadata adoption")?),
+                match metadata_transition::classify_payloads_domain(
+                    &mut enrollment,
+                    &inputs,
+                    memory.as_ref(),
+                )? {
+                    PayloadsShape::PrivatePayloads => None,
+                    PayloadsShape::FinalTargets => Some(
+                        metadata_transition::adopt_domain(
+                            enrollment,
+                            &inputs,
+                            aliases,
+                            native_profile,
+                            memory,
+                            saved.shadow_origin.clone(),
+                        )
+                        .context("fresh native final-target metadata adoption")?,
+                    ),
                 }
-            }else{None}
-        }else{None};
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let verified_aliases = if let Some(pending) = pending_metadata {
-            let aliases=alias_inputs.as_ref().context("metadata recovery aliases absent")?;
+            let aliases = alias_inputs
+                .as_ref()
+                .context("metadata recovery aliases absent")?;
             events.phase("metadata-recovery-verification");
-            let verified={
-                let (source,raw)=context.source_and_inspection()?;
-                let memory=ArenaReportMemory(arena.clone());
-                source.with_readonly_source_bytes(&memory,&mut events,|scope| {
-                    (||->Result<_>{
-                        let mut bytes=PagedSourceByteAdapterWithScope::new_scoped(
-                            scope,raw,admission,maximum_source_read_bytes)?;
-                        general_shadow::paged_supply::routed::preflight_source_references(&bytes,&expected)?;
-                        let body=pending.verify_payloads(&inputs,aliases,|index,name,offset,physical,output| {
-                            (||->Result<()>{
-                                let object=expected.object_leased(index)?;
-                                let stream=object.data_streams().find(|stream|stream.name_utf16==name)
-                                    .context("metadata recovery source stream absent")?;
-                                let id=general_shadow::source_backed::PagedStreamIdentity {
-                                    record_number:object.record_number,sequence_number:object.sequence_number,
-                                    name_utf16:stream.name_utf16,length:stream.length,sha256:stream.sha256,
-                                    allow_sparse:stream.sparse.is_some(),
-                                };
-                                if let Some(physical)=physical {
-                                    bytes.require_reference(&id,offset,physical,output.len() as u64)?;
-                                }
-                                bytes.read_into(&id,offset,output)?;
-                                // The adapter closes the previous session on
-                                // identity change and its last session at the
-                                // enclosing finish; keep one per stream here.
-                                Ok(())
-                            })().map_err(std::io::Error::other)
-                        });
-                        let closing=bytes.finish();
-                        match (body,closing) {
-                            (Ok(value),Ok(_))=>Ok(value),
-                            (Err(error),Ok(_))=>Err(error.into()),
-                            (Ok(_),Err(error))=>Err(error),
-                            (Err(error),Err(closing))=>Err(closing.context(format!("metadata payload verification also failed: {error}"))),
-                        }
-                    })().map_err(std::io::Error::other)
-                }).context("metadata recovery source-byte closing")?
+            let verified = {
+                let (source, raw) = context.source_and_inspection()?;
+                let memory = ArenaReportMemory(arena.clone());
+                source
+                    .with_readonly_source_bytes(&memory, &mut events, |scope| {
+                        (|| -> Result<_> {
+                            let mut bytes = PagedSourceByteAdapterWithScope::new_scoped(
+                                scope,
+                                raw,
+                                admission,
+                                maximum_source_read_bytes,
+                            )?;
+                            general_shadow::paged_supply::routed::preflight_source_references(
+                                &bytes, &expected,
+                            )?;
+                            let body = pending.verify_payloads(
+                                &inputs,
+                                aliases,
+                                |index, name, offset, physical, output| {
+                                    (|| -> Result<()> {
+                                        let object = expected.object_leased(index)?;
+                                        let stream = object
+                                            .data_streams()
+                                            .find(|stream| stream.name_utf16 == name)
+                                            .context("metadata recovery source stream absent")?;
+                                        let id =
+                                            general_shadow::source_backed::PagedStreamIdentity {
+                                                record_number: object.record_number,
+                                                sequence_number: object.sequence_number,
+                                                name_utf16: stream.name_utf16,
+                                                length: stream.length,
+                                                sha256: stream.sha256,
+                                                allow_sparse: stream.sparse.is_some(),
+                                            };
+                                        if let Some(physical) = physical {
+                                            bytes.require_reference(
+                                                &id,
+                                                offset,
+                                                physical,
+                                                output.len() as u64,
+                                            )?;
+                                        }
+                                        bytes.read_into(&id, offset, output)?;
+                                        // The adapter closes the previous session on
+                                        // identity change and its last session at the
+                                        // enclosing finish; keep one per stream here.
+                                        Ok(())
+                                    })()
+                                    .map_err(std::io::Error::other)
+                                },
+                            );
+                            let closing = bytes.finish();
+                            match (body, closing) {
+                                (Ok(value), Ok(_)) => Ok(value),
+                                (Err(error), Ok(_)) => Err(error.into()),
+                                (Ok(_), Err(error)) => Err(error),
+                                (Err(error), Err(closing)) => Err(closing.context(format!(
+                                    "metadata payload verification also failed: {error}"
+                                ))),
+                            }
+                        })()
+                        .map_err(std::io::Error::other)
+                    })
+                    .context("metadata recovery source-byte closing")?
             };
-            let observed=verified.observation();
+            let observed = verified.observation();
             events.observer.note(&observed)?;
-            if let Some(state)=resume_checkpoints.as_mut(){state.metadata_adopted(&observed)?;}
-            let batch=resume_checkpoints.as_mut().map(resume_checkpoint::Checkpoints::begin_metadata).transpose()?;
-            let placeholders=trust_recipes.as_ref().is_some_and(|recipes|!recipes.is_empty());
-            let (report,aliases)=verified.complete(&inputs,aliases,placeholders,|a,b| {
-                crate::ntfs_attestation::same_security_null_sacl_as_absent(a,b).map_err(std::io::Error::other)
-            }).context("reconcile existing final-target metadata")?;
-            events.observer.note(&serde_json::json!({"kind":"Windows-recovered-metadata-completion",
-                "report":report,"original_security_native_verification_pending":true}))?;
-            if let (Some(state),Some(batch))=(resume_checkpoints.as_mut(),batch) {
+            if let Some(state) = resume_checkpoints.as_mut() {
+                state.metadata_adopted(&observed)?;
+            }
+            let batch = resume_checkpoints
+                .as_mut()
+                .map(resume_checkpoint::Checkpoints::begin_metadata)
+                .transpose()?;
+            let placeholders = trust_recipes
+                .as_ref()
+                .is_some_and(|recipes| !recipes.is_empty());
+            let (report, aliases) = verified
+                .complete(&inputs, aliases, placeholders, |a, b| {
+                    crate::ntfs_attestation::same_security_null_sacl_as_absent(a, b)
+                        .map_err(std::io::Error::other)
+                })
+                .context("reconcile existing final-target metadata")?;
+            events.observer.note(
+                &serde_json::json!({"kind":"Windows-recovered-metadata-completion",
+                "report":report,"original_security_native_verification_pending":true}),
+            )?;
+            if let (Some(state), Some(batch)) = (resume_checkpoints.as_mut(), batch) {
                 state.metadata_completed(batch,&serde_json::json!({"kind":"metadata-reconciliation-completed-v1",
                     "expected_sha256":expected.file_sha256(),"objects":expected.len(),"aliases":aliases.len(),
                     "original_security_native_verification_pending":true,"protected_target_capture_required":true}))?;
             }
             Some(Arc::new(aliases))
         } else {
-        // Recovery acquires fresh native ownership of the existing tree. It
-        // never calls the allocator or recreates the shadow's files.
-        let (mut private, placement) = if let Some(saved) = effective_resume.as_ref()
-            .filter(|saved| saved.shadow_start == resume_session_inputs::ShadowStart::AdoptExisting) {
-            let (source, _) = context.source_and_inspection()?;
-            let native_profile = profile
-                .native_profile()
-                .context("native resource profile absent")?;
-            let enrollment = n2r_win32::shadow_native::private_tree::enroll_with_resource_profile(
-                source,
-                &request.pair,
-                native_profile,
-            )?;
-            let placed_ready = saved.completed_placement.as_ref();
-            if let Some(proof) = placed_ready {
-                proof.require_arena(&arena)?;
-                events.observer.note(
-                    &serde_json::json!({"kind":"placed-shadow-recovery-selected-v1",
-                    "closed_placement_report":proof.pin(),"selection_only":true,
-                    "requires_fresh_native_placed_audit":true,"placement_moves_requested":false}),
-                )?;
-            }
-            let mut recovered = if completed_payloads.is_some() {
-                ensure!(placed_ready.is_some(), "completed payloads require held placement evidence");
-                n2r_win32::shadow_native::private_tree::recovery::adopt_payloads_domain(
-                    enrollment,
-                    &inputs,
-                    native_profile,
-                    Arc::new(ArenaReportMemory(arena.clone())),
-                    saved.prior_spend,
-                    saved.placement_limits,
-                    saved.shadow_origin.clone(),
-                )
-                .context("fresh native completed-payload shadow adoption")?
-            } else if placed_ready.is_some() {
-                n2r_win32::shadow_native::private_tree::recovery::adopt_placed_domain(
-                    enrollment,
-                    &inputs,
-                    native_profile,
-                    Arc::new(ArenaReportMemory(arena.clone())),
-                    saved.prior_spend,
-                    saved.placement_limits,
-                    saved.shadow_origin.clone(),
-                )
-                .context("fresh native placed-shadow adoption")?
-            } else {
-                n2r_win32::shadow_native::private_tree::recovery::adopt_unwritten_domain(
-                    enrollment,
-                    &inputs,
-                    native_profile,
-                    Arc::new(ArenaReportMemory(arena.clone())),
-                    saved.prior_spend,
-                    saved.placement_limits,
-                    saved.shadow_origin.clone(),
-                )
-                .context("fresh native unwritten-shadow adoption")?
-            };
-            if let Some(guard) = &backing_guard {
-                recovered.attach_backing_resource_guard(Arc::clone(guard))?;
-            }
-            let observation = recovered.origin_observation();
-            events.observer.note(&observation)?;
-            let batch = resume_checkpoints
-                .as_mut()
-                .map(|state| state.adopted(&observation))
-                .transpose()?;
-            events.phase("shadow-placement");
-            let placement_result = if placed_ready.is_some() {
-                recovered.rehydrate_placed_domain(&inputs, &mut placement_evidence)
-            } else {
-                recovered.place_remaining_domain(&inputs, &mut placement_evidence)
-            };
-            let placement = match placement_result {
-                Ok(report) => report,
-                Err(error) => {
-                    let progress = recovered.placement_progress();
-                    events.observer.note(&serde_json::json!({
-                        "kind":"resource-placement-refusal","resumed":true,
-                        "phase":progress.get("phase"),"counters":progress.get("counters"),
-                        "move_bytes_submitted":progress.get("move_bytes_submitted"),
-                        "refusal":progress.get("refusal"),
-                        "source_payload_writes":0,"conversion_authorized":false,
-                    }))?;
-                    return Err(error.into());
-                }
-            };
-            if let (Some(state), Some(batch)) = (resume_checkpoints.as_mut(), batch) {
-                state.placed(batch, &placement)?;
-            }
-            (recovered.into_placed_tree()?, placement)
-        } else {
-            ensure!(completed_payloads.is_none(), "empty allocation cannot reuse completed payloads");
-            events.phase("shadow-allocation");
-            let allocation_batch = resume_checkpoints.as_mut()
-                .map(resume_checkpoint::Checkpoints::begin_allocation).transpose()?;
-            // Every native allocation uses this actual shared arena accountant.
-            let mut private = {
+            // Recovery acquires fresh native ownership of the existing tree. It
+            // never calls the allocator or recreates the shadow's files.
+            let (mut private, placement) = if let Some(saved) =
+                effective_resume.as_ref().filter(|saved| {
+                    saved.shadow_start == resume_session_inputs::ShadowStart::AdoptExisting
+                }) {
                 let (source, _) = context.source_and_inspection()?;
                 let native_profile = profile
                     .native_profile()
@@ -1138,158 +1127,288 @@ where
                         &request.pair,
                         native_profile,
                     )?;
-                n2r_win32::shadow_native::private_tree::allocate_enrolled_domain_with_memory(
-                    enrollment,
-                    &inputs,
-                    native_profile,
-                    Arc::new(ArenaReportMemory(arena.clone())),
-                )?
-            };
-            ensure!(
-                private.allocation_ram_accounted(),
-                "native private-tree allocation lease is absent"
-            );
-            if let Some(guard) = &backing_guard {
-                private.attach_backing_resource_guard(Arc::clone(guard))?;
-            }
-            let placement_batch = if let (Some(state), Some(batch)) =
-                (resume_checkpoints.as_mut(), allocation_batch) {
-                Some(state.allocated(batch, &private.allocation_observation()?)?)
-            } else { None };
-            events.phase("shadow-placement");
-            n2r_win32::perf::step("place extents");
-            let placement = match private.place_source_prefixes_resource_domain(
-                &inputs,
-                request.maximum_placement_bytes,
-                request.maximum_placement_submissions,
-                &mut placement_evidence,
-            ) {
-                Ok(report) => report,
-                Err(error) => {
-                    let progress = private.placement_progress();
-                    events.observer.note(&serde_json::json!({
-                        "kind":"resource-placement-refusal", "phase":progress.get("phase"),
-                        "counters":progress.get("counters"), "refusal":progress.get("refusal"),
-                        "move_bytes_submitted":progress.get("move_bytes_submitted"),
-                        "source_payload_writes":0, "conversion_authorized":false,
-                    }))?;
-                    return Err(error.into());
+                let placed_ready = saved.completed_placement.as_ref();
+                if let Some(proof) = placed_ready {
+                    proof.require_arena(&arena)?;
+                    events.observer.note(
+                        &serde_json::json!({"kind":"placed-shadow-recovery-selected-v1",
+                    "closed_placement_report":proof.pin(),"selection_only":true,
+                    "requires_fresh_native_placed_audit":true,"placement_moves_requested":false}),
+                    )?;
                 }
-            };
-            if let (Some(state), Some(batch)) = (resume_checkpoints.as_mut(), placement_batch) {
-                state.placed(batch, &placement)?;
-            }
-            (private, placement)
-        };
-        events.observer.note(&serde_json::json!({
-            "kind":"resource-placement-summary",
-            "original_coordinate_bytes":placement.get("original_coordinate_bytes"),
-            "move_bytes_submitted":placement.get("move_bytes_submitted"),
-            "counters":placement.get("counters"), "source_payload_writes":0,
-            "conversion_authorized":false,
-        }))?;
-        drop(placement);
-        if completed_payloads.is_none() {
-            n2r_win32::perf::step("mark placed data valid");
-            private
-                .prepare_source_backed_prefixes()
-                .context("prepare source-backed shadow prefixes")?;
-        }
-        {
-            let supply_progress=events.observer.progress_reporter();
-            let (source, raw) = context.source_and_inspection()?;
-            let scope_memory = ArenaReportMemory(arena.clone());
-            let supply_receipt = source.with_readonly_source_bytes(
-                &scope_memory, &mut events, |scope| {
-                    (|| -> Result<serde_json::Value> {
-                        let mut bytes = PagedSourceByteAdapterWithScope::new_scoped(
-                            scope, raw, admission, maximum_source_read_bytes,
+                let mut recovered = if completed_payloads.is_some() {
+                    ensure!(
+                        placed_ready.is_some(),
+                        "completed payloads require held placement evidence"
+                    );
+                    n2r_win32::shadow_native::private_tree::recovery::adopt_payloads_domain(
+                        enrollment,
+                        &inputs,
+                        native_profile,
+                        Arc::new(ArenaReportMemory(arena.clone())),
+                        saved.prior_spend,
+                        saved.placement_limits,
+                        saved.shadow_origin.clone(),
+                    )
+                    .context("fresh native completed-payload shadow adoption")?
+                } else if placed_ready.is_some() {
+                    n2r_win32::shadow_native::private_tree::recovery::adopt_placed_domain(
+                        enrollment,
+                        &inputs,
+                        native_profile,
+                        Arc::new(ArenaReportMemory(arena.clone())),
+                        saved.prior_spend,
+                        saved.placement_limits,
+                        saved.shadow_origin.clone(),
+                    )
+                    .context("fresh native placed-shadow adoption")?
+                } else {
+                    n2r_win32::shadow_native::private_tree::recovery::adopt_unwritten_domain(
+                        enrollment,
+                        &inputs,
+                        native_profile,
+                        Arc::new(ArenaReportMemory(arena.clone())),
+                        saved.prior_spend,
+                        saved.placement_limits,
+                        saved.shadow_origin.clone(),
+                    )
+                    .context("fresh native unwritten-shadow adoption")?
+                };
+                if let Some(guard) = &backing_guard {
+                    recovered.attach_backing_resource_guard(Arc::clone(guard))?;
+                }
+                let observation = recovered.origin_observation();
+                events.observer.note(&observation)?;
+                let batch = resume_checkpoints
+                    .as_mut()
+                    .map(|state| state.adopted(&observation))
+                    .transpose()?;
+                events.phase("shadow-placement");
+                let placement_result = if placed_ready.is_some() {
+                    recovered.rehydrate_placed_domain(&inputs, &mut placement_evidence)
+                } else {
+                    recovered.place_remaining_domain(&inputs, &mut placement_evidence)
+                };
+                let placement = match placement_result {
+                    Ok(report) => report,
+                    Err(error) => {
+                        let progress = recovered.placement_progress();
+                        events.observer.note(&serde_json::json!({
+                            "kind":"resource-placement-refusal","resumed":true,
+                            "phase":progress.get("phase"),"counters":progress.get("counters"),
+                            "move_bytes_submitted":progress.get("move_bytes_submitted"),
+                            "refusal":progress.get("refusal"),
+                            "source_payload_writes":0,"conversion_authorized":false,
+                        }))?;
+                        return Err(error.into());
+                    }
+                };
+                if let (Some(state), Some(batch)) = (resume_checkpoints.as_mut(), batch) {
+                    state.placed(batch, &placement)?;
+                }
+                (recovered.into_placed_tree()?, placement)
+            } else {
+                ensure!(
+                    completed_payloads.is_none(),
+                    "empty allocation cannot reuse completed payloads"
+                );
+                events.phase("shadow-allocation");
+                let allocation_batch = resume_checkpoints
+                    .as_mut()
+                    .map(resume_checkpoint::Checkpoints::begin_allocation)
+                    .transpose()?;
+                // Every native allocation uses this actual shared arena accountant.
+                let mut private = {
+                    let (source, _) = context.source_and_inspection()?;
+                    let native_profile = profile
+                        .native_profile()
+                        .context("native resource profile absent")?;
+                    let enrollment =
+                        n2r_win32::shadow_native::private_tree::enroll_with_resource_profile(
+                            source,
+                            &request.pair,
+                            native_profile,
                         )?;
-                        n2r_win32::perf::step("plan and supply payloads");
-                        let routed = if let Some(proof) = completed_payloads {
-                            general_shadow::paged_supply::routed::prepare_recovered(
-                                &mut bytes, &expected, &mut private,
-                                request.maximum_materialized_bytes, request.verification_policy,
-                                proof.routed_plan_sha256(),
-                                &supply_progress,
-                            ).context("revalidate completed routed payload supply")?
-                        } else {
-                            let mut routed = general_shadow::paged_supply::routed::prepare(
-                                &mut bytes, &expected, &mut private,
-                                request.maximum_materialized_bytes, request.verification_policy,
-                                &supply_progress,
-                            ).context("prepare routed shadow payload materialization")?;
-                            let (_system, indexer) = routed.materialize_system_payloads()
-                                .context("materialize routed system payloads")?;
-                            drop(indexer);
-                            routed
-                        };
-                        n2r_win32::perf::step("verify payloads");
-                        let receipt = routed.verify()
-                            .context("verify routed shadow payload supply")?;
-                        bytes.finish()?;
-                        Ok(receipt)
-                    })().map_err(std::io::Error::other)
-                },
-            ).context("routed source-byte scope full closing validation")?;
-            events.observer.note(&serde_json::to_value(&supply_receipt)?)?;
-            if let Some(state) = resume_checkpoints.as_mut() {
-                state.stage(
-                    crate::preparation_resume::Stage::Payloads,
-                    "payloads-ready",
-                    &supply_receipt,
-                )?;
-            }
-        }
-        let metadata_batch=resume_checkpoints.as_mut()
-            .map(resume_checkpoint::Checkpoints::begin_metadata).transpose()?;
-        n2r_win32::perf::step("restore metadata and create short-name links");
-        let verified_aliases = if let Some(aliases) = &alias_inputs {
-            let compare = |a: &[u8], b: &[u8]| {
-                crate::ntfs_attestation::same_security_null_sacl_as_absent(a, b).map_err(std::io::Error::other)
+                    n2r_win32::shadow_native::private_tree::allocate_enrolled_domain_with_memory(
+                        enrollment,
+                        &inputs,
+                        native_profile,
+                        Arc::new(ArenaReportMemory(arena.clone())),
+                    )?
+                };
+                ensure!(
+                    private.allocation_ram_accounted(),
+                    "native private-tree allocation lease is absent"
+                );
+                if let Some(guard) = &backing_guard {
+                    private.attach_backing_resource_guard(Arc::clone(guard))?;
+                }
+                let placement_batch = if let (Some(state), Some(batch)) =
+                    (resume_checkpoints.as_mut(), allocation_batch)
+                {
+                    Some(state.allocated(batch, &private.allocation_observation()?)?)
+                } else {
+                    None
+                };
+                events.phase("shadow-placement");
+                n2r_win32::perf::step("place extents");
+                let placement = match private.place_source_prefixes_resource_domain(
+                    &inputs,
+                    request.maximum_placement_bytes,
+                    request.maximum_placement_submissions,
+                    &mut placement_evidence,
+                ) {
+                    Ok(report) => report,
+                    Err(error) => {
+                        let progress = private.placement_progress();
+                        events.observer.note(&serde_json::json!({
+                            "kind":"resource-placement-refusal", "phase":progress.get("phase"),
+                            "counters":progress.get("counters"), "refusal":progress.get("refusal"),
+                            "move_bytes_submitted":progress.get("move_bytes_submitted"),
+                            "source_payload_writes":0, "conversion_authorized":false,
+                        }))?;
+                        return Err(error.into());
+                    }
+                };
+                if let (Some(state), Some(batch)) = (resume_checkpoints.as_mut(), placement_batch) {
+                    state.placed(batch, &placement)?;
+                }
+                (private, placement)
             };
-            let (report, verified) = if trust_recipes
-                .as_ref()
-                .is_some_and(|recipes| !recipes.is_empty())
+            events.observer.note(&serde_json::json!({
+                "kind":"resource-placement-summary",
+                "original_coordinate_bytes":placement.get("original_coordinate_bytes"),
+                "move_bytes_submitted":placement.get("move_bytes_submitted"),
+                "counters":placement.get("counters"), "source_payload_writes":0,
+                "conversion_authorized":false,
+            }))?;
+            drop(placement);
+            if completed_payloads.is_none() {
+                n2r_win32::perf::step("mark placed data valid");
+                private
+                    .prepare_source_backed_prefixes()
+                    .context("prepare source-backed shadow prefixes")?;
+            }
             {
-                private.complete_source_metadata_windows_aliases_domain_with_security_placeholders(
+                let supply_progress = events.observer.progress_reporter();
+                let (source, raw) = context.source_and_inspection()?;
+                let scope_memory = ArenaReportMemory(arena.clone());
+                let supply_receipt = source
+                    .with_readonly_source_bytes(&scope_memory, &mut events, |scope| {
+                        (|| -> Result<serde_json::Value> {
+                            let mut bytes = PagedSourceByteAdapterWithScope::new_scoped(
+                                scope,
+                                raw,
+                                admission,
+                                maximum_source_read_bytes,
+                            )?;
+                            n2r_win32::perf::step("plan and supply payloads");
+                            let routed = if let Some(proof) = completed_payloads {
+                                general_shadow::paged_supply::routed::prepare_recovered(
+                                    &mut bytes,
+                                    &expected,
+                                    &mut private,
+                                    request.maximum_materialized_bytes,
+                                    request.verification_policy,
+                                    proof.routed_plan_sha256(),
+                                    &supply_progress,
+                                )
+                                .context("revalidate completed routed payload supply")?
+                            } else {
+                                let mut routed = general_shadow::paged_supply::routed::prepare(
+                                    &mut bytes,
+                                    &expected,
+                                    &mut private,
+                                    request.maximum_materialized_bytes,
+                                    request.verification_policy,
+                                    &supply_progress,
+                                )
+                                .context("prepare routed shadow payload materialization")?;
+                                let (_system, indexer) = routed
+                                    .materialize_system_payloads()
+                                    .context("materialize routed system payloads")?;
+                                drop(indexer);
+                                routed
+                            };
+                            n2r_win32::perf::step("verify payloads");
+                            let receipt = routed
+                                .verify()
+                                .context("verify routed shadow payload supply")?;
+                            bytes.finish()?;
+                            Ok(receipt)
+                        })()
+                        .map_err(std::io::Error::other)
+                    })
+                    .context("routed source-byte scope full closing validation")?;
+                events
+                    .observer
+                    .note(&serde_json::to_value(&supply_receipt)?)?;
+                if let Some(state) = resume_checkpoints.as_mut() {
+                    state.stage(
+                        crate::preparation_resume::Stage::Payloads,
+                        "payloads-ready",
+                        &supply_receipt,
+                    )?;
+                }
+            }
+            let metadata_batch = resume_checkpoints
+                .as_mut()
+                .map(resume_checkpoint::Checkpoints::begin_metadata)
+                .transpose()?;
+            n2r_win32::perf::step("restore metadata and create short-name links");
+            let verified_aliases = if let Some(aliases) = &alias_inputs {
+                let compare = |a: &[u8], b: &[u8]| {
+                    crate::ntfs_attestation::same_security_null_sacl_as_absent(a, b)
+                        .map_err(std::io::Error::other)
+                };
+                let (report, verified) = if trust_recipes
+                    .as_ref()
+                    .is_some_and(|recipes| !recipes.is_empty())
+                {
+                    private.complete_source_metadata_windows_aliases_domain_with_security_placeholders(
                     &inputs, aliases, compare,
                 )
                 .context("shadow metadata completion with Windows aliases and security placeholders")?
-            } else {
-                private
-                    .complete_source_metadata_windows_aliases_domain(&inputs, aliases, compare)
-                    .context("shadow metadata completion with Windows aliases")?
-            };
-            events.observer.note(&serde_json::json!({"kind":"Windows-constructor-metadata-completion",
+                } else {
+                    private
+                        .complete_source_metadata_windows_aliases_domain(&inputs, aliases, compare)
+                        .context("shadow metadata completion with Windows aliases")?
+                };
+                events.observer.note(&serde_json::json!({"kind":"Windows-constructor-metadata-completion",
                 "trust_label_descriptors_requiring_raw_repair":trust_recipes.as_ref().map_or(0,|recipes|recipes.len()),
                 "report":report,"original_security_native_verification_pending":true}))?;
-            Some(std::sync::Arc::new(verified))
-        } else {
-            private
-                .complete_source_metadata_domain(&inputs, |a, b| {
-                    crate::ntfs_attestation::same_security_null_sacl_as_absent(a, b).map_err(std::io::Error::other)
-                })
-                .context("shadow metadata completion")?;
-            None
-        };
-        if let (Some(state),Some(batch))=(resume_checkpoints.as_mut(),metadata_batch) {
-            state.metadata_completed(batch,&serde_json::json!({"kind":"metadata-completion-v1",
+                Some(std::sync::Arc::new(verified))
+            } else {
+                private
+                    .complete_source_metadata_domain(&inputs, |a, b| {
+                        crate::ntfs_attestation::same_security_null_sacl_as_absent(a, b)
+                            .map_err(std::io::Error::other)
+                    })
+                    .context("shadow metadata completion")?;
+                None
+            };
+            if let (Some(state), Some(batch)) = (resume_checkpoints.as_mut(), metadata_batch) {
+                state.metadata_completed(batch,&serde_json::json!({"kind":"metadata-completion-v1",
                 "expected_sha256":expected.file_sha256(),"objects":expected.len(),
                 "aliases":verified_aliases.as_ref().map_or(0,|aliases|aliases.len()),
                 "original_security_native_verification_pending":true,"protected_target_capture_required":true}))?;
-        }
-        verified_aliases
+            }
+            verified_aliases
         };
-        events.observer.note(&serde_json::json!({"kind":"expected-metadata-work-counters-v1",
+        events.observer.note(
+            &serde_json::json!({"kind":"expected-metadata-work-counters-v1",
             "phase":"metadata-completed","page_cache":expected.page_cache_statistics(),
-            "alias_projection":expected.alias_projection_statistics(),"diagnostic_only":true}))?;
+            "alias_projection":expected.alias_projection_statistics(),"diagnostic_only":true}),
+        )?;
         // Diagnose gate. Nothing has been published or written to the source
         // yet; returning an error here takes the ordinary cancellation path,
         // which restores NTFS access.
         if let Some(sink) = &diagnose_failures {
             let failures = sink.take();
-            anyhow::bail!("diagnose complete: {} per-object failures; nothing was published or written to the source", failures.len());
+            anyhow::bail!(
+                "diagnose complete: {} per-object failures; nothing was published or written to the source",
+                failures.len()
+            );
         }
         events.phase("source-after-shadow-construction");
         context.recheck_source(&mut events)?;
@@ -1337,7 +1456,7 @@ where
         };
         let journal_root = format!("{}\\", request.journal.disk.volume_path()?);
         events.phase("protected-target-capture");
-        let capture_progress=events.observer.progress_reporter();
+        let capture_progress = events.observer.progress_reporter();
         let proof = crate::general_composite_target::paged::observe_and_select_paged_optional_windows_aliases(
             &mut context,
             &mut shadow,

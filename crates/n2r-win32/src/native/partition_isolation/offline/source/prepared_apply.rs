@@ -18,13 +18,27 @@ pub(super) struct PreparedPublicationPin {
     file_handle: usize,
 }
 impl PreparedPublicationPin {
-    pub(super) fn from_closed(qualification:&super::prepared_closed::OfflinePreparedClosedQualification,file:&File)->Self {
-        let facts=qualification.boot_guard_requirements();
-        Self{snapshot:facts.sealed_publication_file.clone(),sha256:facts.sealed_publication_sha256,file_handle:file.as_raw_handle()as usize}
+    pub(super) fn from_closed(
+        qualification: &super::prepared_closed::OfflinePreparedClosedQualification,
+        file: &File,
+    ) -> Self {
+        let facts = qualification.boot_guard_requirements();
+        Self {
+            snapshot: facts.sealed_publication_file.clone(),
+            sha256: facts.sealed_publication_sha256,
+            file_handle: file.as_raw_handle() as usize,
+        }
     }
-    pub(super) fn from_replay(qualification:&super::prepared_replay::OfflinePreparedReplayQualification,file:&File)->Self {
-        let facts=qualification.boot_guard_requirements();
-        Self{snapshot:facts.sealed_publication_file.clone(),sha256:facts.sealed_publication_sha256,file_handle:file.as_raw_handle()as usize}
+    pub(super) fn from_replay(
+        qualification: &super::prepared_replay::OfflinePreparedReplayQualification,
+        file: &File,
+    ) -> Self {
+        let facts = qualification.boot_guard_requirements();
+        Self {
+            snapshot: facts.sealed_publication_file.clone(),
+            sha256: facts.sealed_publication_sha256,
+            file_handle: file.as_raw_handle() as usize,
+        }
     }
     fn from_actual(qualification: &OfflinePreparedJournalQualification, file: &File) -> Self {
         let facts = qualification.boot_guard_requirements();
@@ -78,7 +92,9 @@ pub(super) struct PreparedWriteProtection<'a> {
     outer: &'a mut File,
 }
 impl<'a> PreparedWriteProtection<'a> {
-    pub(super) fn new(boot:&'a mut RecoveryBootGuard,outer:&'a mut File)->Self{Self{boot,outer}}
+    pub(super) fn new(boot: &'a mut RecoveryBootGuard, outer: &'a mut File) -> Self {
+        Self { boot, outer }
+    }
 
     pub(super) fn revalidate(
         &mut self,
@@ -223,16 +239,32 @@ impl OfflinePreparedSource {
         qualification: &OfflinePreparedJournalQualification,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<OfflinePreparedTerminalSource> {
-        qualification.require_terminal_binding(&self,pins)?;
-        let publication=PreparedPublicationPin::from_actual(qualification,outer);
-        self.into_closed_terminal_with_publication(closed,policy,journal,pins,boot,outer,publication,events)
+        qualification.require_terminal_binding(&self, pins)?;
+        let publication = PreparedPublicationPin::from_actual(qualification, outer);
+        self.into_closed_terminal_with_publication(
+            closed,
+            policy,
+            journal,
+            pins,
+            boot,
+            outer,
+            publication,
+            events,
+        )
     }
     // Shared ONLY by the actual fresh/replay qualification wrappers. This
     // consumes source write entrypoints after current closed-J authentication.
-    pub(super) fn into_closed_terminal_with_publication(mut self,closed:OfflineClosedJournalObservation,
-        policy:&HeldPagedWritePolicy,journal:&mut File,pins:&PagedRecoveryPins<'_>,boot:&mut RecoveryBootGuard,
-        outer:&mut File,publication:PreparedPublicationPin,events:&mut Vec<NativeEvent>)
-        ->io::Result<OfflinePreparedTerminalSource> {
+    pub(super) fn into_closed_terminal_with_publication(
+        mut self,
+        closed: OfflineClosedJournalObservation,
+        policy: &HeldPagedWritePolicy,
+        journal: &mut File,
+        pins: &PagedRecoveryPins<'_>,
+        boot: &mut RecoveryBootGuard,
+        outer: &mut File,
+        publication: PreparedPublicationPin,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<OfflinePreparedTerminalSource> {
         checkpoint(
             &self.core.sink,
             "offline-PREPARED-closed-terminal-transfer-opening",
@@ -335,13 +367,18 @@ impl OfflinePreparedTerminalSource {
             "offline-PREPARED-closed-before-availability-SET0",
             events,
         )?;
-        let retained = self.source.core.prepared_exclusion.as_mut().and_then(|v| v.management.take());
+        let retained = self
+            .source
+            .core
+            .prepared_exclusion
+            .as_mut()
+            .and_then(|v| v.management.take());
         let management = match retained {
             Some(file) => file,
             None => device_file(
-            &format!("\\\\.\\PhysicalDrive{}", self.binding().storage.disk_number),
-            true,
-            false,
+                &format!("\\\\.\\PhysicalDrive{}", self.binding().storage.disk_number),
+                true,
+                false,
             )?,
         };
         paged::gate_file_state(
@@ -356,10 +393,16 @@ impl OfflinePreparedTerminalSource {
         paged::gate_file_state(&management, &self.source.core, 0, events)?;
         self.source.core.expected_attributes = 0;
         if let Some(lease) = self.source.core.prepared_exclusion.take() {
-            require(lease.management.is_none(), "closed availability retained another management owner")?;
+            require(
+                lease.management.is_none(),
+                "closed availability retained another management owner",
+            )?;
             for volume in lease.locked_volumes {
-                close_file(volume,
-                    "offline-PREPARED-real-volume-lock-close-after-authenticated-SET0", events)?;
+                close_file(
+                    volume,
+                    "offline-PREPARED-real-volume-lock-close-after-authenticated-SET0",
+                    events,
+                )?;
             }
         }
         close_file(
@@ -375,7 +418,8 @@ impl OfflinePreparedTerminalSource {
         self.closed
             .revalidate_prepared(&mut self.source, policy, journal, pins, events)?;
         let mut available = OfflinePreparedAvailableSource {
-            source:self.source, closed:self.closed,
+            source: self.source,
+            closed: self.closed,
         };
         boot.accept_closed_available_source(&mut available, policy, journal, pins, events)?;
         checkpoint(

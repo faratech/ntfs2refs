@@ -97,18 +97,27 @@ impl PartitionPreparedTargetCapture {
             &mut GeneralFrozenPartition,
             &mut ProtectedCapturedCandidate<'_>,
             &mut Vec<NativeEvent>,
-        ) -> Result<crate::selected_journal::resource_domain::prepare::PartitionExecutionOutcome>,
+        ) -> Result<
+            crate::selected_journal::resource_domain::prepare::PartitionExecutionOutcome,
+        >,
     ) -> Result<crate::selected_journal::resource_domain::prepare::PartitionApplyOutcome> {
         use crate::selected_journal::resource_domain::prepare::PartitionExecutionOutcome;
         self._output_directory.revalidate(context, events)?;
         context.recheck_source(events)?;
         self.proof.recheck_frozen_target(&mut self.shadow, events)?;
         let domain = ResourceJournalDomain::from_capture(
-            self.proof.captured(), budget, &self.capture_group,
-            &self.capture_scratch, layout_index,
+            self.proof.captured(),
+            budget,
+            &self.capture_group,
+            &self.capture_scratch,
+            layout_index,
         )?;
         let mut candidate = ProtectedCapturedCandidate::open_partition(
-            &self.proof, &domain, context, &mut self.shadow, events,
+            &self.proof,
+            &domain,
+            context,
+            &mut self.shadow,
+            events,
         )?;
         match action(&domain, context, &mut self.shadow, &mut candidate, events) {
             Ok(PartitionExecutionOutcome::Handoff(mut outcome)) => {
@@ -118,7 +127,10 @@ impl PartitionPreparedTargetCapture {
             }
             Ok(PartitionExecutionOutcome::Interrupted(failure)) => {
                 failure.require_owner_scope(context, &self.proof)?;
-                anyhow::bail!("Partition execution interrupted; preserve the private partition and recovery files: {:#}", failure.error())
+                anyhow::bail!(
+                    "Partition execution interrupted; preserve the private partition and recovery files: {:#}",
+                    failure.error()
+                )
             }
             Err(error) => {
                 // An error cannot restore or grant replay. In particular, do
@@ -143,10 +155,17 @@ pub(crate) fn prepare_partition_target_capture(
     // source GPT/C/page/dump/StorageWMI and original fingerprint bracket BOTH
     // result paths; the typed native lease narrows only per-shadow-op checks.
     context.recheck_source(events)?;
-    checkpoint("partition-shadow-source-phase-opening",events)?;
-    let result=prepare_partition_target_capture_inner(context,expected,request,output,events,&mut checkpoint);
-    let closing=context.recheck_source(events);
-    let drained=checkpoint("partition-shadow-source-phase-closing",events);
+    checkpoint("partition-shadow-source-phase-opening", events)?;
+    let result = prepare_partition_target_capture_inner(
+        context,
+        expected,
+        request,
+        output,
+        events,
+        &mut checkpoint,
+    );
+    let closing = context.recheck_source(events);
+    let drained = checkpoint("partition-shadow-source-phase-closing", events);
     match(result,closing,drained){
         (Ok(value),Ok(()),Ok(()))=>Ok(value),
         (Err(error),Err(closing),Err(checkpoint))=>Err(error.context(format!("full source closing check also failed: {closing:#}; source phase event checkpoint also failed: {checkpoint:#}"))),
@@ -157,13 +176,13 @@ pub(crate) fn prepare_partition_target_capture(
     }
 }
 fn prepare_partition_target_capture_inner(
-    context:&mut PartitionResourceSourceContext,
-    expected:&PagedExpectedTree,
-    request:&PartitionTargetRequest,
-    output:&std::path::Path,
-    events:&mut Vec<NativeEvent>,
-    mut checkpoint:impl FnMut(&'static str,&mut Vec<NativeEvent>)->Result<()>,
-)->Result<PartitionPreparedTargetCapture>{
+    context: &mut PartitionResourceSourceContext,
+    expected: &PagedExpectedTree,
+    request: &PartitionTargetRequest,
+    output: &std::path::Path,
+    events: &mut Vec<NativeEvent>,
+    mut checkpoint: impl FnMut(&'static str, &mut Vec<NativeEvent>) -> Result<()>,
+) -> Result<PartitionPreparedTargetCapture> {
     let admission = context.resource_admission();
     let arena = context.arena().clone();
     let policy = context.verification_policy();
@@ -179,7 +198,10 @@ fn prepare_partition_target_capture_inner(
             && request.capture_arena_bytes > 0,
         "actual partition target request/limits differ"
     );
-    n2r_win32::shadow_native::private_tree::validate_placement_limits(request.maximum_placement_bytes,request.maximum_placement_submissions)?;
+    n2r_win32::shadow_native::private_tree::validate_placement_limits(
+        request.maximum_placement_bytes,
+        request.maximum_placement_submissions,
+    )?;
     request
         .capture_budget
         .validate(request.pair.source.identity.partition_bytes)?;
@@ -280,8 +302,9 @@ fn prepare_partition_target_capture_inner(
                 admission,
                 request.maximum_source_read_bytes,
             )?;
-            let candidate = PagedSourceBackedCandidateWithScope::new(bytes, target, expected, routes)?
-                .with_closing_bytes(closing);
+            let candidate =
+                PagedSourceBackedCandidateWithScope::new(bytes, target, expected, routes)?
+                    .with_closing_bytes(closing);
             let mut capacity = |progress: CaptureProgress| -> Result<()> {
                 let available = n2r_win32::discovery::observe_volume_space(&scratch_root)?;
                 ensure!(

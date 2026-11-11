@@ -513,15 +513,24 @@ mod tests {
         assert!(parent_device.starts_with(r"\Device\"), "{parent_device}");
         // A child's device path is its parent's, a separator and its name:
         // what the short-name link check relies on.
-        assert_eq!(file_device, format!(r"{parent_device}\Child With A Long Name.txt"));
+        assert_eq!(
+            file_device,
+            format!(r"{parent_device}\Child With A Long Name.txt")
+        );
 
         // Both forms end in the same path on the volume, and two handles on
         // one volume share the volume part of either form.
         let parent_guid = final_path_guid(&parent).unwrap();
         let file_guid = final_path_guid(&file).unwrap();
         let on_volume = |guid: &str| guid[guid.find('}').unwrap() + 1..].to_owned();
-        assert!(parent_device.ends_with(&on_volume(&parent_guid)), "{parent_device} / {parent_guid}");
-        assert!(file_device.ends_with(&on_volume(&file_guid)), "{file_device} / {file_guid}");
+        assert!(
+            parent_device.ends_with(&on_volume(&parent_guid)),
+            "{parent_device} / {parent_guid}"
+        );
+        assert!(
+            file_device.ends_with(&on_volume(&file_guid)),
+            "{file_device} / {file_guid}"
+        );
         let device_of = |path: &str| path[..path.len() - on_volume(&parent_guid).len()].to_owned();
         assert_eq!(
             device_of(&parent_device),

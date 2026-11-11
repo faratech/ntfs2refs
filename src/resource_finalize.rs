@@ -25,12 +25,21 @@ pub(crate) fn reconcile_online_terminal<O: PreparationObserver>(
 ) -> Result<serde_json::Value> {
     use crate::selected_journal::SelectedLifecycle;
     let lifecycle = recovery.observed_lifecycle();
-    ensure!(matches!(lifecycle, SelectedLifecycle::Handoff | SelectedLifecycle::Aborted),
-        "online reconciliation requires a durable terminal lifecycle");
+    ensure!(
+        matches!(
+            lifecycle,
+            SelectedLifecycle::Handoff | SelectedLifecycle::Aborted
+        ),
+        "online reconciliation requires a durable terminal lifecycle"
+    );
     events.phase("resource-online-terminal-reconcile");
     let mounted = recovery.revalidate_online_terminal(events)?;
     events.checkpoint()?;
-    let filesystem = if lifecycle == SelectedLifecycle::Handoff { "ReFS" } else { "NTFS" };
+    let filesystem = if lifecycle == SelectedLifecycle::Handoff {
+        "ReFS"
+    } else {
+        "NTFS"
+    };
     let desired = recovery.expected_source_label().clone();
     let initial = n2r_win32::volume_label::observe_label(mounted.clone(), filesystem)?;
     let mut label_action = "already-original";
@@ -38,24 +47,35 @@ pub(crate) fn reconcile_online_terminal<O: PreparationObserver>(
         let enrollment = n2r_win32::volume_label::VolumeLabel::from_text("n2r-retained-shadow")?;
         if lifecycle == SelectedLifecycle::Handoff && initial.label == enrollment {
             let restored = n2r_win32::volume_label::restore_verified_label(
-                recovery.source(), &desired, mounted.clone(), &enrollment,
+                recovery.source(),
+                &desired,
+                mounted.clone(),
+                &enrollment,
             )?;
-            ensure!(restored.success, "terminal volume label restoration did not complete");
+            ensure!(
+                restored.success,
+                "terminal volume label restoration did not complete"
+            );
             label_action = "restored-enrollment-label";
         } else {
             // A later application/user may have deliberately changed it.
             label_action = "different-current-label-preserved";
         }
     }
-    let expected: BTreeSet<_> = recovery.expected_mount_paths().iter()
-        .map(|s| s.to_lowercase()).collect();
+    let expected: BTreeSet<_> = recovery
+        .expected_mount_paths()
+        .iter()
+        .map(|s| s.to_lowercase())
+        .collect();
     let first = n2r_win32::capture_mount_paths_general(mounted.clone(), events)?;
     let actual_before: BTreeSet<_> = first.paths.iter().map(|s| s.to_lowercase()).collect();
     let mut attempted = Vec::new();
     for missing in expected.difference(&actual_before) {
         let bytes = missing.as_bytes();
-        let letter = bytes.len() == 3 && bytes[0].is_ascii_alphabetic()
-            && bytes[1] == b':' && bytes[2] == b'\\';
+        let letter = bytes.len() == 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && bytes[2] == b'\\';
         if lifecycle == SelectedLifecycle::Handoff && letter {
             events.checkpoint()?;
             n2r_win32::restore_drive_letter_general(mounted.clone(), missing, events)
@@ -130,19 +150,30 @@ pub(crate) fn finalize_resource_handoff_with_observer<O: PreparationObserver>(
     output: &Path,
     observer: &mut O,
 ) -> Result<serde_json::Value> {
-    finalize_resource_handoff_with_windows_aliases_observer(pair,journal,publication,publication_sha256,resources,output,observer,None)
+    finalize_resource_handoff_with_windows_aliases_observer(
+        pair,
+        journal,
+        publication,
+        publication_sha256,
+        resources,
+        output,
+        observer,
+        None,
+    )
 }
 
 pub(crate) fn finalize_resource_handoff_with_windows_aliases_observer<O: PreparationObserver>(
     pair: GeneralSourceShadowBinding,
     journal: GeneralJournalStorageBinding,
-    publication:&Path,
-    publication_sha256:[u8;32],
-    mut resources:ResourceBudget,
-    output:&Path,
-    observer:&mut O,
-    windows_aliases:Option<std::sync::Arc<n2r_win32::shadow_native::windows_aliases::VerifiedWindowsAliases>>,
-)->Result<serde_json::Value>{
+    publication: &Path,
+    publication_sha256: [u8; 32],
+    mut resources: ResourceBudget,
+    output: &Path,
+    observer: &mut O,
+    windows_aliases: Option<
+        std::sync::Arc<n2r_win32::shadow_native::windows_aliases::VerifiedWindowsAliases>,
+    >,
+) -> Result<serde_json::Value> {
     resources.validate()?;
     ensure!(
         output.is_absolute() && !output.exists(),
@@ -187,26 +218,28 @@ pub(crate) fn finalize_resource_handoff_with_windows_aliases_observer<O: Prepara
     events.checkpoint()?;
     events.phase("resource-handoff-authentication");
     n2r_win32::perf::step("authenticate handoff");
-    let handoff = recovery.verify_handoff(
-        &group,
-        &output.join("verified-handoff.index"),
-        budget.scratch_bytes,
-        &mut events,
-    )
-    .context("finalization: authenticating the handoff")?;
+    let handoff = recovery
+        .verify_handoff(
+            &group,
+            &output.join("verified-handoff.index"),
+            budget.scratch_bytes,
+            &mut events,
+        )
+        .context("finalization: authenticating the handoff")?;
     n2r_win32::perf::step("reopen verification metadata");
     let metadata = ReopenedVerificationMetadata::open(&handoff)
         .context("finalization: reopening verification metadata")?;
     events.checkpoint()?;
     events.phase("resource-protected-verification");
     n2r_win32::perf::step("seal for protected verification");
-    let mut protected = handoff.seal_for_protected_verification(
-        &group,
-        &output.join("protected-handoff.index"),
-        budget.scratch_bytes,
-        &mut events,
-    )
-    .context("finalization: sealing for protected verification")?;
+    let mut protected = handoff
+        .seal_for_protected_verification(
+            &group,
+            &output.join("protected-handoff.index"),
+            budget.scratch_bytes,
+            &mut events,
+        )
+        .context("finalization: sealing for protected verification")?;
     events.checkpoint()?;
     // The two GUID strings and expected-label copy remain paid through the
     // native callback; the decoded tree and report carry their own leases.
@@ -220,8 +253,10 @@ pub(crate) fn finalize_resource_handoff_with_windows_aliases_observer<O: Prepara
     let payer = ArenaReportMemory(arena.clone());
     // The old preparation's Arc remains a real owner. Charge its retained
     // ledger in this new arena as well before native queries/union indexes.
-    let _external_alias_memory=windows_aliases.as_deref().map(|aliases|
-        aliases.reserve_external_retained_memory(&payer)).transpose()?;
+    let _external_alias_memory = windows_aliases
+        .as_deref()
+        .map(|aliases| aliases.reserve_external_retained_memory(&payer))
+        .transpose()?;
     let admission = protected.recovery().resource_admission();
     // A restarted process cannot carry the constructor's live witness. Open
     // only the alias expectations authenticated by this actual HND/publication;
@@ -231,46 +266,101 @@ pub(crate) fn finalize_resource_handoff_with_windows_aliases_observer<O: Prepara
         == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows
         && windows_aliases.is_none()
     {
-        Some(protected.recovery().reopen_windows_alias_expectations(
-            metadata.expected(), &scratch, &output.join("reopened-windows-aliases"),
-        )?.context("Windows restart finalization lacks authenticated alias expectations")?)
+        Some(
+            protected
+                .recovery()
+                .reopen_windows_alias_expectations(
+                    metadata.expected(),
+                    &scratch,
+                    &output.join("reopened-windows-aliases"),
+                )?
+                .context("Windows restart finalization lacks authenticated alias expectations")?,
+        )
     } else {
         None
     };
     n2r_win32::perf::step("observe converted volume");
-    let (native,observed_windows_aliases) = if let Some(aliases)=windows_aliases.as_deref(){
-        aliases.require_scope(&native_pair,admission.source_inspection_sha256,aliases.plan_digest())?;
+    let (native, observed_windows_aliases) = if let Some(aliases) = windows_aliases.as_deref() {
+        aliases.require_scope(
+            &native_pair,
+            admission.source_inspection_sha256,
+            aliases.plan_digest(),
+        )?;
         aliases.require_canonical_input(&input)?;
-        let (native,observed)=protected.source_mut()?.observe_converted_protected_with_memory_windows_aliases(
-            native_pair.clone(),&input,Some(&desired_label),
-            |a,b|crate::ntfs_attestation::same_security_null_sacl_as_absent(a,b).map_err(std::io::Error::other),
-            n2r_win32::attestation::ResourceProfile::ResourceBoundedV4(Some(admission)),&payer,aliases,&mut events)?;
-        observed.require_converted_scope(&native_pair,admission.source_inspection_sha256,aliases.plan_digest())?;
+        let (native, observed) = protected
+            .source_mut()?
+            .observe_converted_protected_with_memory_windows_aliases(
+                native_pair.clone(),
+                &input,
+                Some(&desired_label),
+                |a, b| {
+                    crate::ntfs_attestation::same_security_null_sacl_as_absent(a, b)
+                        .map_err(std::io::Error::other)
+                },
+                n2r_win32::attestation::ResourceProfile::ResourceBoundedV4(Some(admission)),
+                &payer,
+                aliases,
+                &mut events,
+            )?;
+        observed.require_converted_scope(
+            &native_pair,
+            admission.source_inspection_sha256,
+            aliases.plan_digest(),
+        )?;
         observed.require_input(&input)?;
-        ensure!(observed.len()==aliases.len(),"converted Windows alias coverage differs");
-        (native,Some(observed))
-    }else if let Some(aliases)=reopened_windows_aliases.as_ref(){
+        ensure!(
+            observed.len() == aliases.len(),
+            "converted Windows alias coverage differs"
+        );
+        (native, Some(observed))
+    } else if let Some(aliases) = reopened_windows_aliases.as_ref() {
         use n2r_win32::shadow_native::windows_aliases::WindowsAliasInputDomain;
-        let plan_digest=aliases.semantic_sha256()?;
-        let (native,observed)=protected.source_mut()?.observe_converted_protected_with_memory_windows_alias_expectations(
-            native_pair.clone(),&input,Some(&desired_label),
-            |a,b|crate::ntfs_attestation::same_security_null_sacl_as_absent(a,b).map_err(std::io::Error::other),
-            n2r_win32::attestation::ResourceProfile::ResourceBoundedV4(Some(admission)),&payer,aliases,&mut events)?;
-        observed.require_converted_scope(&native_pair,admission.source_inspection_sha256,plan_digest)?;
+        let plan_digest = aliases.semantic_sha256()?;
+        let (native, observed) = protected
+            .source_mut()?
+            .observe_converted_protected_with_memory_windows_alias_expectations(
+                native_pair.clone(),
+                &input,
+                Some(&desired_label),
+                |a, b| {
+                    crate::ntfs_attestation::same_security_null_sacl_as_absent(a, b)
+                        .map_err(std::io::Error::other)
+                },
+                n2r_win32::attestation::ResourceProfile::ResourceBoundedV4(Some(admission)),
+                &payer,
+                aliases,
+                &mut events,
+            )?;
+        observed.require_converted_scope(
+            &native_pair,
+            admission.source_inspection_sha256,
+            plan_digest,
+        )?;
         observed.require_input(&input)?;
-        ensure!(observed.len()==aliases.len(),"reopened Windows alias coverage differs");
-        (native,Some(observed))
-    }else{(protected
-        .source_mut()?
-        .observe_converted_protected_with_memory(
-            native_pair,
-            &input,
-            Some(&desired_label),
-            |a, b| crate::ntfs_attestation::same_security_null_sacl_as_absent(a, b).map_err(std::io::Error::other),
-            n2r_win32::attestation::ResourceProfile::ResourceBoundedV4(Some(admission)),
-            &payer,
-            &mut events,
-        )?,None)};
+        ensure!(
+            observed.len() == aliases.len(),
+            "reopened Windows alias coverage differs"
+        );
+        (native, Some(observed))
+    } else {
+        (
+            protected
+                .source_mut()?
+                .observe_converted_protected_with_memory(
+                    native_pair,
+                    &input,
+                    Some(&desired_label),
+                    |a, b| {
+                        crate::ntfs_attestation::same_security_null_sacl_as_absent(a, b)
+                            .map_err(std::io::Error::other)
+                    },
+                    n2r_win32::attestation::ResourceProfile::ResourceBoundedV4(Some(admission)),
+                    &payer,
+                    &mut events,
+                )?,
+            None,
+        )
+    };
     events.checkpoint()?;
     n2r_win32::perf::step("compare maps");
     let maps = metadata.compare_protected(&protected, &native)?;
@@ -335,16 +425,17 @@ pub(crate) fn finalize_resource_handoff_with_windows_aliases_observer<O: Prepara
             .as_ref()
             .and_then(|o| o.known_content.as_ref())
             .context("known-content verification receipt absent")?;
-        let mut receipt=serde_json::json!({"kind":"resource-native-finalization-v1","success":true,
+        let mut receipt = serde_json::json!({"kind":"resource-native-finalization-v1","success":true,
         "publication_sha256":hex::encode(publication_sha256),"matching_map_bindings":matching_bindings,
         "known_streams_hashed":known.streams_hashed,"known_payload_bytes_read":known.payload_bytes_read,
         "extent_only_streams":known.streams_without_content_baseline,"source":converted,
         "label_restored":true,"mount_paths_preserved":true,"journal_handoff_closed":true});
-        if let Some(aliases)=observed_windows_aliases.as_ref(){
-            receipt["derived_windows_aliases_verified"]=true.into();
-            receipt["derived_windows_alias_count"]=aliases.len().into();
-            receipt["windows_alias_expectations_reopened"]=reopened_windows_aliases.is_some().into();
-            receipt["windows_alias_restart_recovery_qualified"]=false.into();
+        if let Some(aliases) = observed_windows_aliases.as_ref() {
+            receipt["derived_windows_aliases_verified"] = true.into();
+            receipt["derived_windows_alias_count"] = aliases.len().into();
+            receipt["windows_alias_expectations_reopened"] =
+                reopened_windows_aliases.is_some().into();
+            receipt["windows_alias_restart_recovery_qualified"] = false.into();
         }
         Ok(receipt)
     })();

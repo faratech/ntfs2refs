@@ -1964,7 +1964,12 @@ impl ReopenedResourceRecovery {
             marker_identity,
             locator.marker_use(),
         )
-        .with_context(|| format!("reopening the recovery journal {}", locator.journal_path().display()))?;
+        .with_context(|| {
+            format!(
+                "reopening the recovery journal {}",
+                locator.journal_path().display()
+            )
+        })?;
         {
             let (_, facts) = journal.split_for_observation()?;
             ensure!(
@@ -2226,7 +2231,8 @@ impl ReopenedResourceRecovery {
             "actual native terminal journal lifecycle changed"
         );
         ensure!(
-            n2r_win32::sha256_native::journal_body(journal, super::BODY, body_bytes, &immutable)? == immutable,
+            n2r_win32::sha256_native::journal_body(journal, super::BODY, body_bytes, &immutable)?
+                == immutable,
             "mounted terminal journal immutable body changed"
         );
         ensure!(
@@ -3130,7 +3136,10 @@ impl ReopenedPartitionResourceRecovery {
                     pair,
                     &crate::general_shadow::PagedInputs(metadata.expected()),
                     None,
-                    |a, b| crate::ntfs_attestation::same_security_null_sacl_as_absent(a, b).map_err(io::Error::other),
+                    |a, b| {
+                        crate::ntfs_attestation::same_security_null_sacl_as_absent(a, b)
+                            .map_err(io::Error::other)
+                    },
                     n2r_win32::attestation::ResourceProfile::ResourceBoundedV4(Some(admission)),
                     &crate::general_composite_target::paged_memory::ArenaReportMemory(
                         arena.clone(),

@@ -357,7 +357,10 @@ fn run() -> Result<u8> {
     if cli.drive.requested() {
         return ntfs2refs::drive_cli::run(cli.drive);
     }
-    match cli.command.context("use --list, --drive, or a subcommand")? {
+    match cli
+        .command
+        .context("use --list, --drive, or a subcommand")?
+    {
         Command::Inspect {
             image,
             output: destination,

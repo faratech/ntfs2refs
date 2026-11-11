@@ -153,47 +153,67 @@ impl PagedReconciliation {
             bindings: SortedRecordStore::open(&pin.bindings, scratch)?,
             pin: pin.clone(),
         };
-        ensure!(value.central.len() == pin.central_descriptors
-            && value.legacy.len() == pin.legacy_descriptors
-            && value.bindings.len() == pin.bound_files
-            && pin.sii_entries == pin.central_descriptors
-            && pin.sdh_entries == pin.central_descriptors,
-            "cached security count/index closure differs");
+        ensure!(
+            value.central.len() == pin.central_descriptors
+                && value.legacy.len() == pin.legacy_descriptors
+                && value.bindings.len() == pin.bound_files
+                && pin.sii_entries == pin.central_descriptors
+                && pin.sdh_entries == pin.central_descriptors,
+            "cached security count/index closure differs"
+        );
         let mut bytes = 0u64;
         let mut aces = 0u64;
         for ordinal in 0..value.descriptor_count() {
             let record = value.descriptor(ordinal)?;
             let raw = hex::decode(&record.descriptor.relative_hex)?;
             let parsed = parse_descriptor_with_limit(&raw, scratch.budget().record_bytes)?;
-            ensure!(serde_json::to_vec(&parsed)? == serde_json::to_vec(&record.descriptor)?,
-                "cached security descriptor parsed facts differ");
+            ensure!(
+                serde_json::to_vec(&parsed)? == serde_json::to_vec(&record.descriptor)?,
+                "cached security descriptor parsed facts differ"
+            );
             if ordinal < value.central.len() {
                 let header = descriptor_header(&record)?;
-                ensure!(record.legacy_record.is_none()
-                    && value.central.key(ordinal)? == identity_key(u64::from(header.id))
-                    && ntfs_hash(&raw)? == header.hash,
-                    "cached central security identity/hash differs");
+                ensure!(
+                    record.legacy_record.is_none()
+                        && value.central.key(ordinal)? == identity_key(u64::from(header.id))
+                        && ntfs_hash(&raw)? == header.hash,
+                    "cached central security identity/hash differs"
+                );
             } else {
-                let number = record.legacy_record.context("cached legacy identity absent")?;
-                ensure!(record.security_id.is_none()
-                    && value.legacy.key(ordinal - value.central.len())? == identity_key(number),
-                    "cached legacy security identity differs");
+                let number = record
+                    .legacy_record
+                    .context("cached legacy identity absent")?;
+                ensure!(
+                    record.security_id.is_none()
+                        && value.legacy.key(ordinal - value.central.len())? == identity_key(number),
+                    "cached legacy security identity differs"
+                );
             }
-            bytes = bytes.checked_add(raw.len() as u64).context("cached descriptor byte overflow")?;
-            aces = aces.checked_add((parsed.dacl.aces.len() + parsed.sacl.aces.len()) as u64)
+            bytes = bytes
+                .checked_add(raw.len() as u64)
+                .context("cached descriptor byte overflow")?;
+            aces = aces
+                .checked_add((parsed.dacl.aces.len() + parsed.sacl.aces.len()) as u64)
                 .context("cached descriptor ACE overflow")?;
         }
-        ensure!(bytes == pin.descriptor_bytes && aces == pin.aces,
-            "cached security byte/ACE totals differ");
+        ensure!(
+            bytes == pin.descriptor_bytes && aces == pin.aces,
+            "cached security byte/ACE totals differ"
+        );
         for ordinal in 0..value.bindings.len() {
             let binding = value.binding(ordinal)?;
-            let descriptor = if let Some(id) = binding.security_id { value.find_id(id)? }
-                else { value.find_legacy(binding.record_number)? }
-                .context("cached security binding descriptor absent")?;
-            ensure!(binding.sequence_number != 0
-                && value.bindings.key(ordinal)? == identity_key(binding.record_number)
-                && descriptor.descriptor.sha256 == binding.descriptor_sha256,
-                "cached security binding identity/digest differs");
+            let descriptor = if let Some(id) = binding.security_id {
+                value.find_id(id)?
+            } else {
+                value.find_legacy(binding.record_number)?
+            }
+            .context("cached security binding descriptor absent")?;
+            ensure!(
+                binding.sequence_number != 0
+                    && value.bindings.key(ordinal)? == identity_key(binding.record_number)
+                    && descriptor.descriptor.sha256 == binding.descriptor_sha256,
+                "cached security binding identity/digest differs"
+            );
         }
         value.revalidate()?;
         Ok(value)

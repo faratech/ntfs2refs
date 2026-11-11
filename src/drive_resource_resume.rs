@@ -16,22 +16,27 @@ use n2r_win32::shadow_native::private_tree::recovery::{
     ExternalOriginPins, PartialPlacementSpend, RecoveryLimits,
 };
 
-fn resume_backing_guard(pair: &GeneralSourceShadowBinding)
-    -> Result<std::sync::Arc<n2r_win32::managed_shadow::BackingResourceGuard>> {
-    let meter = n2r_win32::managed_shadow::StagingAllocationMeter::discover_attached_native(
-        &pair.shadow,
-    ).context("bind resumed shadow to its actual native VHDX backing volume")?;
-    Ok(std::sync::Arc::new(n2r_win32::managed_shadow::BackingResourceGuard::new(
-        meter, &pair.shadow, 0,
-    )?))
+fn resume_backing_guard(
+    pair: &GeneralSourceShadowBinding,
+) -> Result<std::sync::Arc<n2r_win32::managed_shadow::BackingResourceGuard>> {
+    let meter =
+        n2r_win32::managed_shadow::StagingAllocationMeter::discover_attached_native(&pair.shadow)
+            .context("bind resumed shadow to its actual native VHDX backing volume")?;
+    Ok(std::sync::Arc::new(
+        n2r_win32::managed_shadow::BackingResourceGuard::new(meter, &pair.shadow, 0)?,
+    ))
 }
 
-fn resume_working_reserve(available: AvailableResources, run: &Path,
-    guard: &n2r_win32::managed_shadow::BackingResourceGuard) -> Result<u64> {
+fn resume_working_reserve(
+    available: AvailableResources,
+    run: &Path,
+    guard: &n2r_win32::managed_shadow::BackingResourceGuard,
+) -> Result<u64> {
     guard.check_before_operation(0)?;
     let keep = reserve(available.scratch_available_bytes);
     if guard.shares_volume_with(run)? {
-        keep.max(guard.minimum_free_bytes()).checked_add(guard.allocation_quantum_bytes())
+        keep.max(guard.minimum_free_bytes())
+            .checked_add(guard.allocation_quantum_bytes())
             .context("resume shared-volume backing allowance overflow")
     } else {
         // C: backing growth must not be subtracted from or credited to R:.
@@ -39,13 +44,18 @@ fn resume_working_reserve(available: AvailableResources, run: &Path,
     }
 }
 
-fn attach_resume_backing(observer: &mut FilePreparationObserver, run: &Path,
-    guard: std::sync::Arc<n2r_win32::managed_shadow::BackingResourceGuard>) -> Result<()> {
+fn attach_resume_backing(
+    observer: &mut FilePreparationObserver,
+    run: &Path,
+    guard: std::sync::Arc<n2r_win32::managed_shadow::BackingResourceGuard>,
+) -> Result<()> {
     observer.attach_staging_meter(Ok(Some(guard.meter()?)));
-    observer.note(&serde_json::json!({"kind":"resumed-shadow-backing-admission-v1",
+    observer.note(
+        &serde_json::json!({"kind":"resumed-shadow-backing-admission-v1",
         "backing":guard.observe(0)?,"shares_working_volume":guard.shares_volume_with(run)?,
         "virtual_capacity_reserved":false,"existing_allocation_charged_again":false,
-        "backing_discovery":"native attached disk dependency and provider route"}))?;
+        "backing_discovery":"native attached disk dependency and provider route"}),
+    )?;
     observer.attach_backing_guard(guard)
 }
 
@@ -175,7 +185,8 @@ pub(super) fn resume_preparation_in_workspace(
         expected_binding: None,
         completed_placement: None,
         completed_payloads: None,
-        shadow_start: crate::resource_preparation::resume_session_inputs::ShadowStart::AdoptExisting,
+        shadow_start:
+            crate::resource_preparation::resume_session_inputs::ShadowStart::AdoptExisting,
         legacy_terminal: Some(origin.terminal.clone()),
         prior_resume_intent: None,
         workspace_origin: None,
@@ -499,12 +510,19 @@ fn resume_session(directory: &Path, intent_sha: [u8; 32], workspace: Option<&Pat
         pair.source.disk_number,
         pair.source.identity.partition_number
     );
-    println!("Authenticated completed placement: {}. Recovery will {}.",
+    println!(
+        "Authenticated completed placement: {}. Recovery will {}.",
         session.completed_placement.is_some(),
-        if session.shadow_start == crate::resource_preparation::resume_session_inputs::ShadowStart::AllocateEmpty {
+        if session.shadow_start
+            == crate::resource_preparation::resume_session_inputs::ShadowStart::AllocateEmpty
+        {
             "verify the existing shadow is empty, then allocate its file tree"
-        } else if session.completed_placement.is_some() {"revalidate initialized mappings without moves"}
-        else {"adopt unwritten mappings and finish placement"});
+        } else if session.completed_placement.is_some() {
+            "revalidate initialized mappings without moves"
+        } else {
+            "adopt unwritten mappings and finish placement"
+        }
+    );
     if let Some(root) = &migrated_root {
         println!(
             "New working directory: {}. Existing evidence remains read-only in {}.",

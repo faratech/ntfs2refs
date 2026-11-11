@@ -4,11 +4,11 @@ use crate::artifact_arena::ArenaRamLease;
 use anyhow::{Context, Result, ensure};
 use n2r_win32::{
     NativeEvent, PartitionOwnerToken, PartitionScopedOwner,
-    partition_lifecycle::PartitionNtfsAdmission,
     journal_file::{
         GeneralJournalStorageBinding, JournalFileIdentity, JournalFileSnapshot, JournalProfile,
         observe_general_journal_file_with_profile,
     },
+    partition_lifecycle::PartitionNtfsAdmission,
 };
 use std::{
     fs::{File, OpenOptions},
@@ -63,8 +63,10 @@ impl LiveClearJournal {
         n2r_win32::partition_lifecycle::require_complete_fresh_ntfs_admission(owner, admission)?;
         let location = match admission.external_intent_journal() {
             Some(enrolled) => {
-                ensure!(enrolled == binding,
-                    "actual external preparation intent and held native J enrollment differ");
+                ensure!(
+                    enrolled == binding,
+                    "actual external preparation intent and held native J enrollment differ"
+                );
                 LiveJournalLocation::ExternalPreparation(enrolled.clone())
             }
             None => LiveJournalLocation::CurrentWindows,
@@ -236,19 +238,28 @@ impl LiveClearJournal {
                 // Each snapshot above has already checked the actual held file,
                 // volume extents, native physical GUID/layout/alignment, and
                 // complete before/after identity against this exact binding.
-                ensure!(enrolled == binding
-                    && actual.number_of_links == 1
-                    && actual.observations_match_before_after
-                    && actual.disk_number == enrolled.disk.disk_number
-                    && actual.identity.disk_guid == n2r_win32::layout::guid_bytes(&enrolled.disk.identity.disk_guid)?
-                    && actual.identity.partition_guid == n2r_win32::layout::guid_bytes(&enrolled.disk.identity.partition_guid)?
-                    && actual.identity.partition_number == enrolled.disk.identity.partition_number
-                    && actual.identity.partition_offset == enrolled.disk.identity.partition_offset
-                    && actual.identity.partition_bytes == enrolled.disk.identity.partition_bytes
-                    && source.disk_number != enrolled.disk.disk_number
-                    && n2r_win32::layout::guid_bytes(&source.identity.disk_guid)?
-                        != n2r_win32::layout::guid_bytes(&enrolled.disk.identity.disk_guid)?,
-                    "actual held J lost the independent external preparation enrollment");
+                ensure!(
+                    enrolled == binding
+                        && actual.number_of_links == 1
+                        && actual.observations_match_before_after
+                        && actual.disk_number == enrolled.disk.disk_number
+                        && actual.identity.disk_guid
+                            == n2r_win32::layout::guid_bytes(&enrolled.disk.identity.disk_guid)?
+                        && actual.identity.partition_guid
+                            == n2r_win32::layout::guid_bytes(
+                                &enrolled.disk.identity.partition_guid
+                            )?
+                        && actual.identity.partition_number
+                            == enrolled.disk.identity.partition_number
+                        && actual.identity.partition_offset
+                            == enrolled.disk.identity.partition_offset
+                        && actual.identity.partition_bytes
+                            == enrolled.disk.identity.partition_bytes
+                        && source.disk_number != enrolled.disk.disk_number
+                        && n2r_win32::layout::guid_bytes(&source.identity.disk_guid)?
+                            != n2r_win32::layout::guid_bytes(&enrolled.disk.identity.disk_guid)?,
+                    "actual held J lost the independent external preparation enrollment"
+                );
             }
         }
         let source_guid = n2r_win32::layout::guid_bytes(&source.identity.disk_guid)?;

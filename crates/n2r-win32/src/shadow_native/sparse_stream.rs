@@ -32,21 +32,37 @@ pub(super) struct CarrierDirectory {
     id: Vec<u8>,
 }
 impl CarrierDirectory {
-    pub(in crate::shadow_native) fn reopen_unwritten(root: &str, component: String) -> io::Result<Self> {
-        if !component.strip_prefix("n2r-sparse-carriers-").is_some_and(|s|
-            s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+    pub(in crate::shadow_native) fn reopen_unwritten(
+        root: &str,
+        component: String,
+    ) -> io::Result<Self> {
+        if !component
+            .strip_prefix("n2r-sparse-carriers-")
+            .is_some_and(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
         {
-            return Err(invalid("recovered sparse carrier directory component differs"));
+            return Err(invalid(
+                "recovered sparse carrier directory component differs",
+            ));
         }
         let path = format!("{}\\{component}", root.trim_end_matches('\\'));
-        let file = File::options().access_mode(0x011f01ff).share_mode(3)
-            .custom_flags(0x02200000).open(&path)?;
+        let file = File::options()
+            .access_mode(0x011f01ff)
+            .share_mode(3)
+            .custom_flags(0x02200000)
+            .open(&path)?;
         validate_open_type(&file, true)?;
         private_tree::recovery::require_private_security(&file, true)?;
         let id = info(&file, 18, 24)?;
-        Ok(Self { path, component, file, id })
+        Ok(Self {
+            path,
+            component,
+            file,
+            id,
+        })
     }
-    pub(in crate::shadow_native) fn recovery_handle(&self) -> &File { &self.file }
+    pub(in crate::shadow_native) fn recovery_handle(&self) -> &File {
+        &self.file
+    }
     pub(super) fn retained_memory_bytes(&self) -> io::Result<u64> {
         (self.path.capacity() as u64)
             .checked_add(self.component.capacity() as u64)
@@ -118,41 +134,64 @@ impl CarrierDirectory {
 
 impl Target {
     pub(in crate::shadow_native) fn reopen_unwritten(
-        root: &str, components: &[String], name: &[u16], length: u64,
-        layout: &SparseLayout, sparse_mode: bool,
+        root: &str,
+        components: &[String],
+        name: &[u16],
+        length: u64,
+        layout: &SparseLayout,
+        sparse_mode: bool,
     ) -> io::Result<Self> {
         layout.validate(length)?;
         let path = streams::path(root, components, name)?;
-        let file = File::options().access_mode(0xc1020000).share_mode(0)
-            .custom_flags(0x80200080).open(&path)?;
+        let file = File::options()
+            .access_mode(0xc1020000)
+            .share_mode(0)
+            .custom_flags(0x80200080)
+            .open(&path)?;
         validate_open_type(&file, false)?;
         private_tree::recovery::require_private_security(&file, false)?;
-        let rounded = length.checked_next_multiple_of(4096).ok_or_else(|| invalid("recovered sparse EOF overflow"))?;
+        let rounded = length
+            .checked_next_multiple_of(4096)
+            .ok_or_else(|| invalid("recovered sparse EOF overflow"))?;
         unwritten::recovery::require_zero_storage_vdl(&file, rounded)?;
         let standard = info(&file, 1, 24)?;
         // SetEndOfFile can allocate unwritten storage even for a sparse ReFS
         // placeholder. Accept only allocations inside the admitted islands:
         // the carrier clone replaces them; every declared hole stays a hole.
-        let allocation=layout::u64_at(&standard,0)?;
-        let actual_sparse=layout::u32_at(&info(&file,9,8)?,0)?&0x200!=0;
-        if layout::u32_at(&standard, 16)? != 1
-            || actual_sparse != sparse_mode
-        {
-            return Err(io::Error::other(format!("recovered carrier target allocation/flags differ: path={path:?}, allocation={allocation}, sparse={actual_sparse}, expected_sparse={sparse_mode}")));
+        let allocation = layout::u64_at(&standard, 0)?;
+        let actual_sparse = layout::u32_at(&info(&file, 9, 8)?, 0)? & 0x200 != 0;
+        if layout::u32_at(&standard, 16)? != 1 || actual_sparse != sparse_mode {
+            return Err(io::Error::other(format!(
+                "recovered carrier target allocation/flags differ: path={path:?}, allocation={allocation}, sparse={actual_sparse}, expected_sparse={sparse_mode}"
+            )));
         }
         if sparse_mode && allocation != 0 {
-            let (runs,_)=capture(&file,rounded)?;
-            for run in runs.iter().filter(|run|run.lcn.is_some()) {
+            let (runs, _) = capture(&file, rounded)?;
+            for run in runs.iter().filter(|run| run.lcn.is_some()) {
                 require_recovered_island(layout, &path, run)?;
             }
         }
         let mut dense = 0u64;
         let mut islands = Vec::new();
         for range in &layout.allocated {
-            islands.push(Island { logical: range.offset, dense, length: range.length });
-            dense = dense.checked_add(range.length).ok_or_else(|| invalid("recovered sparse dense length overflow"))?;
+            islands.push(Island {
+                logical: range.offset,
+                dense,
+                length: range.length,
+            });
+            dense = dense
+                .checked_add(range.length)
+                .ok_or_else(|| invalid("recovered sparse dense length overflow"))?;
         }
-        Ok(Self { file, path, logical_length:length, layout:layout.clone(), islands, dense_length:dense, sparse_mode })
+        Ok(Self {
+            file,
+            path,
+            logical_length: length,
+            layout: layout.clone(),
+            islands,
+            dense_length: dense,
+            sparse_mode,
+        })
     }
     pub(super) fn retained_memory_bytes(&self) -> io::Result<u64> {
         (self.path.capacity() as u64)
@@ -556,23 +595,37 @@ pub(super) fn require_recovered_island(
     path: &str,
     run: &stream_layout::Run,
 ) -> io::Result<()> {
-    let start = run.vcn.checked_mul(4096)
+    let start = run
+        .vcn
+        .checked_mul(4096)
         .ok_or_else(|| invalid("recovered sparse VCN overflow"))?;
-    let end = run.clusters.checked_mul(4096).and_then(|n| start.checked_add(n))
+    let end = run
+        .clusters
+        .checked_mul(4096)
+        .and_then(|n| start.checked_add(n))
         .ok_or_else(|| invalid("recovered sparse interval overflow"))?;
     let mut cursor = start;
     for island in &layout.allocated {
-        let stop = island.offset.checked_add(island.length)
+        let stop = island
+            .offset
+            .checked_add(island.length)
             .ok_or_else(|| invalid("recovered island overflow"))?;
-        if stop <= cursor { continue; }
-        if island.offset > cursor { break; }
+        if stop <= cursor {
+            continue;
+        }
+        if island.offset > cursor {
+            break;
+        }
         cursor = end.min(stop);
-        if cursor == end { break; }
+        if cursor == end {
+            break;
+        }
     }
     if cursor != end {
         return Err(io::Error::other(format!(
             "recovered sparse placeholder allocates a declared hole: path={path:?}, vcn={}, clusters={}",
-            run.vcn, run.clusters)));
+            run.vcn, run.clusters
+        )));
     }
     Ok(())
 }

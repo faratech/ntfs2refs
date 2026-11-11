@@ -491,19 +491,30 @@ pub(super) struct ConfiguredDumpObservation {
 /// https://learn.microsoft.com/windows-hardware/drivers/storage/crash-dump-filter-drivers
 /// https://devblogs.microsoft.com/oldnewthing/20160913-00/?p=94305
 fn require_known_dump_filters(value: &DumpRegistryValue) -> io::Result<()> {
-    require(value.registry_type == REG_MULTI_SZ
-        && value.data.len() >= 4
-        && value.data.len() <= MAX_VALUE_BYTES
-        && value.data.len().is_multiple_of(2),
-        "DumpFilters must be bounded UTF-16 REG_MULTI_SZ")?;
-    let units: Vec<u16> = value.data.chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect();
-    require(units.ends_with(&[0, 0]), "DumpFilters lacks its double terminator")?;
-    if units.iter().all(|unit| *unit == 0) { return Ok(()); }
+    require(
+        value.registry_type == REG_MULTI_SZ
+            && value.data.len() >= 4
+            && value.data.len() <= MAX_VALUE_BYTES
+            && value.data.len().is_multiple_of(2),
+        "DumpFilters must be bounded UTF-16 REG_MULTI_SZ",
+    )?;
+    let units: Vec<u16> = value
+        .data
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect();
+    require(
+        units.ends_with(&[0, 0]),
+        "DumpFilters lacks its double terminator",
+    )?;
+    if units.iter().all(|unit| *unit == 0) {
+        return Ok(());
+    }
     let name = &units[..units.len() - 2];
-    require(!name.is_empty() && !name.contains(&0)
-        && text(name)?.eq_ignore_ascii_case("dumpfve.sys"),
-        "Unknown/custom dump filters require an explicit supported policy")
+    require(
+        !name.is_empty() && !name.contains(&0) && text(name)?.eq_ignore_ascii_case("dumpfve.sys"),
+        "Unknown/custom dump filters require an explicit supported policy",
+    )
 }
 
 pub(super) fn observe_configured_dump_locations(
@@ -514,7 +525,8 @@ pub(super) fn observe_configured_dump_locations(
     binding.validate()?;
     budget.validate()?;
     require(
-        budget.ram_bytes >= WORKING_RAM_BYTES && events.len() + MAX_LOCATIONS < crate::MAX_BATCH_EVENTS,
+        budget.ram_bytes >= WORKING_RAM_BYTES
+            && events.len() + MAX_LOCATIONS < crate::MAX_BATCH_EVENTS,
         "Configured dump collector lacks bounded metadata/event workspace",
     )?;
     let crash = registry_snapshot(CRASH_KEY, false)?;

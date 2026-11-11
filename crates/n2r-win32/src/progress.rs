@@ -44,7 +44,13 @@ impl Phase {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Unit { Objects, Aliases, Streams, Bytes, Operations }
+pub enum Unit {
+    Objects,
+    Aliases,
+    Streams,
+    Bytes,
+    Operations,
+}
 
 /// Counters are scoped to the current phase/pass. Zero does not establish
 /// that an uninstrumented layer did no I/O. Process I/O is intentionally absent.
@@ -69,14 +75,33 @@ pub struct Update {
 }
 impl Update {
     pub const fn new(phase: Phase, unit: Unit, completed: u64, total: Option<u64>) -> Self {
-        Self { phase, pass: 0, unit, completed, total, counters: Counters {
-            logical_source_bytes_read: None, payload_bytes_written: None, objects_decoded: None,
-            metadata_pages_loaded: None, metadata_cache_hits: None, authenticated_bytes_hashed: None,
-        } }
+        Self {
+            phase,
+            pass: 0,
+            unit,
+            completed,
+            total,
+            counters: Counters {
+                logical_source_bytes_read: None,
+                payload_bytes_written: None,
+                objects_decoded: None,
+                metadata_pages_loaded: None,
+                metadata_cache_hits: None,
+                authenticated_bytes_hashed: None,
+            },
+        }
     }
-    pub const fn with_pass(mut self, pass: u32) -> Self { self.pass = pass; self }
-    pub const fn with_counters(mut self, counters: Counters) -> Self { self.counters = counters; self }
-    pub fn valid(self) -> bool { self.total.is_none_or(|total| self.completed <= total) }
+    pub const fn with_pass(mut self, pass: u32) -> Self {
+        self.pass = pass;
+        self
+    }
+    pub const fn with_counters(mut self, counters: Counters) -> Self {
+        self.counters = counters;
+        self
+    }
+    pub fn valid(self) -> bool {
+        self.total.is_none_or(|total| self.completed <= total)
+    }
 }
 
 /// Diagnostic sinks cannot fail conversion. Their own error/omission counts
@@ -88,9 +113,15 @@ pub trait Sink: Send + Sync {
 #[derive(Clone, Default)]
 pub struct Reporter(Option<Arc<dyn Sink>>);
 impl Reporter {
-    pub fn new(sink: Arc<dyn Sink>) -> Self { Self(Some(sink)) }
-    pub fn report(&self, update: Update) {
-        if let Some(sink) = &self.0 { sink.report(update); }
+    pub fn new(sink: Arc<dyn Sink>) -> Self {
+        Self(Some(sink))
     }
-    pub fn is_enabled(&self) -> bool { self.0.is_some() }
+    pub fn report(&self, update: Update) {
+        if let Some(sink) = &self.0 {
+            sink.report(update);
+        }
+    }
+    pub fn is_enabled(&self) -> bool {
+        self.0.is_some()
+    }
 }

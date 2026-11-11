@@ -80,7 +80,10 @@ impl From<&IdentityWire> for JournalFileIdentity {
 struct Locator {
     schema_version: u32,
     kind: String,
-    #[serde(default, skip_serializing_if = "super::source_scope::ResourceRecoverySourceScope::is_dedicated")]
+    #[serde(
+        default,
+        skip_serializing_if = "super::source_scope::ResourceRecoverySourceScope::is_dedicated"
+    )]
     source_scope: super::source_scope::ResourceRecoverySourceScope,
     source: GeneralDiskBinding,
     journal_binding: GeneralJournalStorageBinding,
@@ -97,8 +100,10 @@ impl Locator {
     fn validate(&self) -> Result<()> {
         self.source.validate()?;
         self.journal_binding.validate()?;
-        self.source_scope.require_locator_version(self.schema_version, &self.kind)?;
-        self.source_scope.require_journal_route(&self.source, &self.journal_binding)?;
+        self.source_scope
+            .require_locator_version(self.schema_version, &self.kind)?;
+        self.source_scope
+            .require_journal_route(&self.source, &self.journal_binding)?;
         let id = JournalFileIdentity::from(&self.journal_identity);
         let path = &self.journal_path;
         ensure!(
@@ -107,7 +112,6 @@ impl Locator {
                 && !path
                     .components()
                     .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
-
                 && self.ticket.image_length == self.source.identity.partition_bytes
                 && self.ticket.range_count > 0
                 && self.ticket.selected_bytes <= self.ticket.image_length
@@ -226,43 +230,65 @@ impl DurableRecoveryLocator {
         events: &mut Vec<NativeEvent>,
     ) -> Result<Self> {
         use super::source_scope::{PartitionPublicationScope, ResourceRecoverySourceScope};
-        ensure!(group.group() == ArtifactGroup::RecoveryCopy,
-            "partition locator requires actual recovery arena");
-        let actual_group = scratch.artifact_group().context("partition locator arena absent")?;
-        ensure!(actual_group.group() == group.group()
-            && actual_group.arena().same_arena(group.arena()),
-            "partition locator scratch/group owner differs");
-        let source_scope = ResourceRecoverySourceScope::from_actual_partition(owner, stable, admission, events)?;
-        let binding = source_scope.partition_binding().context("partition source binding missing")?.clone();
-        ensure!(matches!(observation.lifecycle()?,
-            crate::selected_journal::SelectedLifecycle::PreparedClear
-                | crate::selected_journal::SelectedLifecycle::ApplyIntent
-                | crate::selected_journal::SelectedLifecycle::RollbackIntent),
-            "closed HND/ABT cannot create a new partition replay locator");
+        ensure!(
+            group.group() == ArtifactGroup::RecoveryCopy,
+            "partition locator requires actual recovery arena"
+        );
+        let actual_group = scratch
+            .artifact_group()
+            .context("partition locator arena absent")?;
+        ensure!(
+            actual_group.group() == group.group() && actual_group.arena().same_arena(group.arena()),
+            "partition locator scratch/group owner differs"
+        );
+        let source_scope =
+            ResourceRecoverySourceScope::from_actual_partition(owner, stable, admission, events)?;
+        let binding = source_scope
+            .partition_binding()
+            .context("partition source binding missing")?
+            .clone();
+        ensure!(
+            matches!(
+                observation.lifecycle()?,
+                crate::selected_journal::SelectedLifecycle::PreparedClear
+                    | crate::selected_journal::SelectedLifecycle::ApplyIntent
+                    | crate::selected_journal::SelectedLifecycle::RollbackIntent
+            ),
+            "closed HND/ABT cannot create a new partition replay locator"
+        );
         let facts = observation.facts();
         source_scope.require_journal_route(&binding.storage, facts.binding)?;
-        ensure!(facts.marker_native_qualified.is_none()
-            && facts.marker_use == MarkerStorageUse::QualifiedProduction
-            && observation.diagnostic_ticket().marker_profile.is_none(),
-            "partition locator requires actual markerless production journal");
+        ensure!(
+            facts.marker_native_qualified.is_none()
+                && facts.marker_use == MarkerStorageUse::QualifiedProduction
+                && observation.diagnostic_ticket().marker_profile.is_none(),
+            "partition locator requires actual markerless production journal"
+        );
         let locator = Locator {
-            schema_version: source_scope.locator_protocol().0, kind: source_scope.locator_protocol().1.into(),
-            source_scope: source_scope.clone(), source:binding.storage.clone(),
-            journal_binding:facts.binding.clone(),
-            journal_identity:IdentityWire::from(facts.identity),
-            journal_path:facts.path.to_path_buf(),
-            journal_profile_version:facts.profile.version(),
-            journal_profile_max_bytes:facts.profile.max_journal_bytes(),
-            marker_native_qualified_observation:None, marker_lab_observation:false,
-            ticket:observation.diagnostic_ticket().clone(),
-            serialized_locator_grants_authority:false,
+            schema_version: source_scope.locator_protocol().0,
+            kind: source_scope.locator_protocol().1.into(),
+            source_scope: source_scope.clone(),
+            source: binding.storage.clone(),
+            journal_binding: facts.binding.clone(),
+            journal_identity: IdentityWire::from(facts.identity),
+            journal_path: facts.path.to_path_buf(),
+            journal_profile_version: facts.profile.version(),
+            journal_profile_max_bytes: facts.profile.max_journal_bytes(),
+            marker_native_qualified_observation: None,
+            marker_lab_observation: false,
+            ticket: observation.diagnostic_ticket().clone(),
+            serialized_locator_grants_authority: false,
         };
-        source_scope.preparation_guard()?.require_actual(admission, owner, stable, events)?;
+        source_scope
+            .preparation_guard()?
+            .require_actual(admission, owner, stable, events)?;
         // write_locator validates the held output directory's actual native
         // GUID route against this same observed J volume before CreateNew.
         let mut result = Self::write_locator(&locator, group, scratch, path)?;
         result.revalidate()?;
-        source_scope.preparation_guard()?.require_actual(admission, owner, stable, events)?;
+        source_scope
+            .preparation_guard()?
+            .require_actual(admission, owner, stable, events)?;
         Ok(result)
     }
 
@@ -702,8 +728,9 @@ impl DurableRecoveryLocator {
 }
 
 impl DurableRecoveryLocator {
-    pub(crate) fn duplicate_readonly_origin_file(&mut self)->Result<File>{
-        self.revalidate()?;n2r_win32::file_storage::require_readonly_access(&self.file)?;
+    pub(crate) fn duplicate_readonly_origin_file(&mut self) -> Result<File> {
+        self.revalidate()?;
+        n2r_win32::file_storage::require_readonly_access(&self.file)?;
         Ok(self.file.try_clone()?)
     }
 }

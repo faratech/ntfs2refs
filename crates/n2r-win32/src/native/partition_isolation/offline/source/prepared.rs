@@ -72,12 +72,17 @@ impl OfflinePreparedJournalQualification {
         )
     }
     // Terminal binding only: no stale original source-byte check after AP.
-    pub(super) fn require_terminal_binding(&self,source:&OfflinePreparedSource,
-        pins:&PagedRecoveryPins<'_>)->io::Result<()> {
+    pub(super) fn require_terminal_binding(
+        &self,
+        source: &OfflinePreparedSource,
+        pins: &PagedRecoveryPins<'_>,
+    ) -> io::Result<()> {
         self.require_owner(&source.owner_token())?;
         self.pins.require(pins)?;
-        require(self.boot==source.core.env.facts.boot&&self.binding==*source.binding(),
-            "prepared terminal lost original actual owner/boot/J binding")
+        require(
+            self.boot == source.core.env.facts.boot && self.binding == *source.binding(),
+            "prepared terminal lost original actual owner/boot/J binding",
+        )
     }
     pub fn revalidate(
         &self,
@@ -211,13 +216,28 @@ impl OfflinePreparedSource {
         // Full raw GPT is checked through the same held buffered environment
         // object. This management FileObject is unbuffered so the already-gated
         // aligned writer can duplicate it without closing the exclusion owner.
-        require_physical_handle(&management, &env.facts.source_physical,
-            enrolled_attributes, None, events)?;
-        let file = OpenOptions::new().read(true).share_mode(3)
+        require_physical_handle(
+            &management,
+            &env.facts.source_physical,
+            enrolled_attributes,
+            None,
+            events,
+        )?;
+        let file = OpenOptions::new()
+            .read(true)
+            .share_mode(3)
             .custom_flags(0xa000_0000)
-            .open(format!("\\\\.\\PhysicalDrive{}", env.source.storage.disk_number))?;
-        require_physical_handle(&file, &env.facts.source_physical,
-            enrolled_attributes, None, events)?;
+            .open(format!(
+                "\\\\.\\PhysicalDrive{}",
+                env.source.storage.disk_number
+            ))?;
+        require_physical_handle(
+            &file,
+            &env.facts.source_physical,
+            enrolled_attributes,
+            None,
+            events,
+        )?;
         if enrolled_attributes == 0 {
             env.retain_current_boot_native_witness(&management, &locked, events)?;
         }
@@ -226,14 +246,33 @@ impl OfflinePreparedSource {
         }
         env.require_current_at_attributes(3, events)?;
         checkpoint(&sink, "offline-PREPARED-actual-whole-disk3", events)?;
-        env.require_current_at_attributes(3, events).map_err(|error|
-            invalid(&format!("after whole-disk3 durable checkpoint; native_error={:?}: {error}",error.raw_os_error())))?;
-        checkpoint(&sink, "offline-PREPARED-current-boot-exclusion-lease-retained", events)?;
-        env.require_current_at_attributes(3, events).map_err(|error|
-            invalid(&format!("after retained-lease durable checkpoint; native_error={:?}: {error}",error.raw_os_error())))?;
+        env.require_current_at_attributes(3, events)
+            .map_err(|error| {
+                invalid(&format!(
+                    "after whole-disk3 durable checkpoint; native_error={:?}: {error}",
+                    error.raw_os_error()
+                ))
+            })?;
+        checkpoint(
+            &sink,
+            "offline-PREPARED-current-boot-exclusion-lease-retained",
+            events,
+        )?;
+        env.require_current_at_attributes(3, events)
+            .map_err(|error| {
+                invalid(&format!(
+                    "after retained-lease durable checkpoint; native_error={:?}: {error}",
+                    error.raw_os_error()
+                ))
+            })?;
         let buffer = AlignedBuffer::new()?;
-        env.require_current_at_attributes(3, events).map_err(|error|
-            invalid(&format!("after aligned data-buffer allocation; native_error={:?}: {error}",error.raw_os_error())))?;
+        env.require_current_at_attributes(3, events)
+            .map_err(|error| {
+                invalid(&format!(
+                    "after aligned data-buffer allocation; native_error={:?}: {error}",
+                    error.raw_os_error()
+                ))
+            })?;
         let mut source = Self {
             core: Core {
                 env,
@@ -278,13 +317,22 @@ impl OfflinePreparedSource {
     pub fn owner_token(&self) -> OfflineSourceOwnerToken {
         self.core.token.clone()
     }
-    pub(crate) fn boot_metadata_witness(&mut self, events: &mut Vec<NativeEvent>)
-        -> io::Result<OfflineBootMetadataWitness> {
+    pub(crate) fn boot_metadata_witness(
+        &mut self,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<OfflineBootMetadataWitness> {
         let state = self.state(events)?;
-        require(matches!(state.actual.disk_attributes, 1 | 3),
-            "boot metadata witness requires actual excluded source")?;
-        Ok(OfflineBootMetadataWitness { owner:self.owner_token(),source:self.binding().clone(),
-            boot:self.core.env.facts.boot.clone(),budget:self.core.env.budget,basis:state.actual })
+        require(
+            matches!(state.actual.disk_attributes, 1 | 3),
+            "boot metadata witness requires actual excluded source",
+        )?;
+        Ok(OfflineBootMetadataWitness {
+            owner: self.owner_token(),
+            source: self.binding().clone(),
+            boot: self.core.env.facts.boot.clone(),
+            budget: self.core.env.budget,
+            basis: state.actual,
+        })
     }
     pub fn preparation_pin(&self) -> &OfflineSourceIntentPin {
         &self
@@ -300,7 +348,10 @@ impl OfflinePreparedSource {
     pub fn state(&mut self, events: &mut Vec<NativeEvent>) -> io::Result<OfflineSourceState> {
         let mut state = self.core.state(events)?;
         require(
-            (state.actual.disk_attributes == 3 || (state.actual.disk_attributes == 1 && self.core.gate_ever_issued && self.core.writer_ever_issued))
+            (state.actual.disk_attributes == 3
+                || (state.actual.disk_attributes == 1
+                    && self.core.gate_ever_issued
+                    && self.core.writer_ever_issued))
                 && state.actual.gpt.target_attributes == SOURCE_READONLY
                 && metadata_pin(&state.actual.gpt) == self.source_readonly_gpt_sha256,
             "prepared current exclusion/native enrollment changed",
@@ -422,7 +473,8 @@ impl OfflinePreparedSource {
             prepared_readonly_gpt_sha256: self.source_readonly_gpt_sha256,
             actual_excluded_disk_attributes: 3,
             source_was_already_offline_on_enrollment: self.source_was_already_offline_on_enrollment,
-            actual_current_boot_volume_locks_acquired: self.actual_current_boot_volume_locks_acquired,
+            actual_current_boot_volume_locks_acquired: self
+                .actual_current_boot_volume_locks_acquired,
             journal_identity: pins.journal_identity.clone(),
             journal_path: pins.journal_path.to_string_lossy().into_owned(),
             journal_immutable_sha256: pins.immutable_sha256,

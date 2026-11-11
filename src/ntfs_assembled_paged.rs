@@ -103,12 +103,15 @@ impl PagedMftResolver {
             .and_then(|n| n.checked_add(4096))
             .context("MFT mapping RAM overflow")?;
         let ram = scratch.lease_ram(mapping)?;
-        let record_bytes=u64::from(geometry.file_record_size);
-        let window_bytes=(u64::from(scratch.budget().page_bytes)/record_bytes).max(1)
-            .checked_mul(record_bytes).context("MFT read window overflow")?;
-        let window_ram=scratch.lease_ram(window_bytes)?;
-        let mut window=Vec::new();window.try_reserve_exact(usize::try_from(window_bytes)?)?;
-        window.resize(usize::try_from(window_bytes)?,0);
+        let record_bytes = u64::from(geometry.file_record_size);
+        let window_bytes = (u64::from(scratch.budget().page_bytes) / record_bytes)
+            .max(1)
+            .checked_mul(record_bytes)
+            .context("MFT read window overflow")?;
+        let window_ram = scratch.lease_ram(window_bytes)?;
+        let mut window = Vec::new();
+        window.try_reserve_exact(usize::try_from(window_bytes)?)?;
+        window.resize(usize::try_from(window_bytes)?, 0);
         Ok(Self {
             data: data.clone(),
             geometry: geometry.clone(),
@@ -124,26 +127,51 @@ impl PagedMftResolver {
                 scratch,
             )?,
             _mapping_ram: ram,
-            record_window: window, window_start: 0, window_valid: 0,
+            record_window: window,
+            window_start: 0,
+            window_valid: 0,
             _window_ram: window_ram,
         })
     }
     /// Read ahead only inside the known logical $MFT stream. Neighboring user
     /// payload is never prefetched. The window is paid by the source ledger.
-    pub(in crate::ntfs_inspect) fn read_physical_record<R:Read+Seek>(
-        &mut self, reader:&mut R, number:u64, output:&mut [u8],
-    )->Result<()> {
-        ensure!(number<self.record_count&&output.len()==self.geometry.file_record_size as usize,
-            "MFT record read escapes its complete mapping");
-        let at=number.checked_mul(u64::from(self.geometry.file_record_size)).context("MFT window address overflow")?;
-        let end=at.checked_add(output.len() as u64).context("MFT record end overflow")?;
-        if self.window_valid==0||at<self.window_start||end>self.window_start+self.window_valid as u64 {
-            self.window_start=at/(self.record_window.len() as u64)*(self.record_window.len() as u64);
-            self.window_valid=usize::try_from((self.data.report.logical_size-self.window_start).min(self.record_window.len() as u64))?;
-            read_attribute_range(reader,&self.data,self.window_start,&mut self.record_window[..self.window_valid],&self.geometry)?;
+    pub(in crate::ntfs_inspect) fn read_physical_record<R: Read + Seek>(
+        &mut self,
+        reader: &mut R,
+        number: u64,
+        output: &mut [u8],
+    ) -> Result<()> {
+        ensure!(
+            number < self.record_count && output.len() == self.geometry.file_record_size as usize,
+            "MFT record read escapes its complete mapping"
+        );
+        let at = number
+            .checked_mul(u64::from(self.geometry.file_record_size))
+            .context("MFT window address overflow")?;
+        let end = at
+            .checked_add(output.len() as u64)
+            .context("MFT record end overflow")?;
+        if self.window_valid == 0
+            || at < self.window_start
+            || end > self.window_start + self.window_valid as u64
+        {
+            self.window_start =
+                at / (self.record_window.len() as u64) * (self.record_window.len() as u64);
+            self.window_valid = usize::try_from(
+                (self.data.report.logical_size - self.window_start)
+                    .min(self.record_window.len() as u64),
+            )?;
+            read_attribute_range(
+                reader,
+                &self.data,
+                self.window_start,
+                &mut self.record_window[..self.window_valid],
+                &self.geometry,
+            )?;
         }
-        let start=usize::try_from(at-self.window_start)?;
-        output.copy_from_slice(&self.record_window[start..start+output.len()]);Ok(())
+        let start = usize::try_from(at - self.window_start)?;
+        output.copy_from_slice(&self.record_window[start..start + output.len()]);
+        Ok(())
     }
     pub(in crate::ntfs_inspect) fn allocated(&self, number: u64) -> Result<bool> {
         if number >= self.record_count || number / 8 >= self.bitmap.byte_len() {
@@ -184,7 +212,10 @@ impl PagedMftResolver {
                 && record.base != 0
                 && (record.base >> 48) != 0,
             "physical MFT extension FILE {number} differs: flags={:#x}, links={}, sequence={}, base={:#x}",
-            record.flags, record.links, record.sequence, record.base
+            record.flags,
+            record.links,
+            record.sequence,
+            record.base
         );
         self.physical
             .push(key(number), &ExtensionOwnership::of(number, raw, record))
@@ -202,11 +233,26 @@ impl PagedMftResolver {
         // MFT0 has already been independently bootstrapped. Unsupported list
         // semantics remain a refusal rather than an incompletely emitted file.
         ensure!(
-            number > 0 && record.base == 0 && matches!(record.flags,1|3|9)
-                && record.links>0 && record.attributes.iter().all(|a|a.report.flags==0&&a.report.compression_unit==0
-                    || a.report.type_code==0x80&&a.report.flags==1&&matches!(a.report.compression_unit,0|4)),
-            "unsupported resource-bound attribute-list FILE {number}, flags={:#x}, attributes={:?}",record.flags,
-            record.attributes.iter().map(|a|(a.report.type_code,a.report.flags,a.report.compression_unit)).collect::<Vec<_>>()
+            number > 0
+                && record.base == 0
+                && matches!(record.flags, 1 | 3 | 9)
+                && record.links > 0
+                && record.attributes.iter().all(|a| a.report.flags == 0
+                    && a.report.compression_unit == 0
+                    || a.report.type_code == 0x80
+                        && a.report.flags == 1
+                        && matches!(a.report.compression_unit, 0 | 4)),
+            "unsupported resource-bound attribute-list FILE {number}, flags={:#x}, attributes={:?}",
+            record.flags,
+            record
+                .attributes
+                .iter()
+                .map(|a| (
+                    a.report.type_code,
+                    a.report.flags,
+                    a.report.compression_unit
+                ))
+                .collect::<Vec<_>>()
         );
         ensure!(
             self.allocated(number)?,
@@ -221,10 +267,13 @@ impl PagedMftResolver {
         // Pay for the actual list before it is read/decoded; original
         // AssemblyLimits still determine which NTFS forms are admitted.
         let list_bytes = list.report.logical_size;
-        let list_work = list_bytes.checked_mul(32)
+        let list_work = list_bytes
+            .checked_mul(32)
             .and_then(|n| n.checked_add(1024 * 1024))
             .with_context(|| format!("FILE {number} attribute-list workspace overflow"))?;
-        let list_ram = self.scratch.lease_ram(list_work)
+        let list_ram = self
+            .scratch
+            .lease_ram(list_work)
             .with_context(|| format!("FILE {number} attribute list requires {list_work} bytes"))?;
         let value = read_small_attribute(reader, list, &self.geometry, limits.list_bytes as u64)?;
         let entries = lists::parse_stream_entries_with_limit(&value, limits.list_bytes)?;
@@ -237,13 +286,16 @@ impl PagedMftResolver {
             references.len() <= limits.extension_records,
             "assembly exceeds admitted record RAM"
         );
-        let record_work = u64::try_from(references.len())?.checked_add(1)
+        let record_work = u64::try_from(references.len())?
+            .checked_add(1)
             .and_then(|n| n.checked_mul(u64::from(self.geometry.file_record_size)))
             .and_then(|n| n.checked_mul(32))
             .and_then(|n| n.checked_add(list_bytes.checked_mul(64)?))
             .and_then(|n| n.checked_add(1024 * 1024))
             .with_context(|| format!("FILE {number} extension assembly workspace overflow"))?;
-        let record_ram = self.scratch.lease_ram(record_work)
+        let record_ram = self
+            .scratch
+            .lease_ram(record_work)
             .with_context(|| format!("FILE {number} extensions require {record_work} bytes"))?;
         let mut extensions = Vec::new();
         let mut residents = BTreeMap::new();
@@ -266,10 +318,11 @@ impl PagedMftResolver {
                 "list references an unallocated/out-of-range extension"
             );
             let mut bytes = vec![0; self.geometry.file_record_size as usize];
-            self.read_physical_record(reader,extension,&mut bytes)?;
+            self.read_physical_record(reader, extension, &mut bytes)?;
             let parsed = parse_record(bytes.clone(), &self.geometry)?;
             ensure!(
-                (parsed.flags == 1 || !ordinary_base && matches!(parsed.flags,3|9)) && parsed.sequence == sequence,
+                (parsed.flags == 1 || !ordinary_base && matches!(parsed.flags, 3 | 9))
+                    && parsed.sequence == sequence,
                 "referenced extension sequence or allocation header differs"
             );
             run_count = parsed
@@ -299,17 +352,28 @@ impl PagedMftResolver {
         // Extension headers can retain 0xffff in their noncanonical link-count
         // field. Their base reference, sequence, allocation and exact list
         // membership establish ownership; only the base supplies file links.
-        let ordinary = ordinary_base && extensions.iter().all(|r|r.hard_link_count==0
-            && r.attributes.iter().all(|a|a.flags==0&&a.compression_unit==0
-                &&matches!(a.type_code,0x10|0x30|0x50|0x80)));
-        let assemble = if ordinary { lists::assemble_streams_resource } else { lists::assemble_attributes_resource };
+        let ordinary = ordinary_base
+            && extensions.iter().all(|r| {
+                r.hard_link_count == 0
+                    && r.attributes.iter().all(|a| {
+                        a.flags == 0
+                            && a.compression_unit == 0
+                            && matches!(a.type_code, 0x10 | 0x30 | 0x50 | 0x80)
+                    })
+            });
+        let assemble = if ordinary {
+            lists::assemble_streams_resource
+        } else {
+            lists::assemble_attributes_resource
+        };
         let (canonical, assembly) = assemble(
             evidence(number, raw, record),
             extensions,
             &value,
             &self.geometry,
             limits,
-        ).with_context(|| format!("assembling complete attributes of NTFS FILE {number}"))?;
+        )
+        .with_context(|| format!("assembling complete attributes of NTFS FILE {number}"))?;
         let origins = assembly
             .canonical_origins
             .as_ref()
@@ -385,13 +449,17 @@ impl PagedMftResolver {
             "orphaned or multiply consumed MFT extension"
         );
         for ordinal in 0..physical.len() {
-            let raw_bytes = physical.record_bytes(ordinal)?
+            let raw_bytes = physical
+                .record_bytes(ordinal)?
                 .checked_add(consumed.record_bytes(ordinal)?)
                 .and_then(|n| n.checked_mul(32))
                 .and_then(|n| n.checked_add(1024 * 1024))
-                .with_context(|| format!("physical extension ordinal {ordinal} workspace overflow"))?;
-            let _row_ram = self.scratch.lease_ram(raw_bytes)
-                .with_context(|| format!("physical extension ordinal {ordinal} requires {raw_bytes} bytes"))?;
+                .with_context(|| {
+                    format!("physical extension ordinal {ordinal} workspace overflow")
+                })?;
+            let _row_ram = self.scratch.lease_ram(raw_bytes).with_context(|| {
+                format!("physical extension ordinal {ordinal} requires {raw_bytes} bytes")
+            })?;
             let actual: ExtensionOwnership = physical.get(ordinal)?;
             let used: ExtensionOwnership = consumed.get(ordinal)?;
             ensure!(
@@ -400,13 +468,20 @@ impl PagedMftResolver {
             );
             let base = actual.base_file_reference & 0x0000_ffff_ffff_ffff;
             let sequence = (actual.base_file_reference >> 48) as u16;
-            let file_work = files.record_wire_bytes(base)?.unwrap_or(0)
+            let file_work = files
+                .record_wire_bytes(base)?
+                .unwrap_or(0)
                 .checked_add(files.record_wire_bytes(actual.record_number)?.unwrap_or(0))
                 .and_then(|n| n.checked_mul(32))
                 .and_then(|n| n.checked_add(65536))
-                .with_context(|| format!("physical extension ordinal {ordinal} file workspace overflow"))?;
-            let _file_ram = self.scratch.lease_ram(file_work)
-                .with_context(|| format!("physical extension ordinal {ordinal} file lookup requires {file_work} bytes"))?;
+                .with_context(|| {
+                    format!("physical extension ordinal {ordinal} file workspace overflow")
+                })?;
+            let _file_ram = self.scratch.lease_ram(file_work).with_context(|| {
+                format!(
+                    "physical extension ordinal {ordinal} file lookup requires {file_work} bytes"
+                )
+            })?;
             ensure!(
                 bitmap_allocated(actual.record_number)?
                     && files.allocated_record(actual.record_number)?
@@ -418,22 +493,36 @@ impl PagedMftResolver {
         }
         for ordinal in 0..assemblies.len() {
             let assembly_bytes = assemblies.record_bytes(ordinal)?;
-            let decode_bytes = assembly_bytes.checked_mul(32).and_then(|n| n.checked_add(65536))
+            let decode_bytes = assembly_bytes
+                .checked_mul(32)
+                .and_then(|n| n.checked_add(65536))
                 .with_context(|| format!("assembly ordinal {ordinal} decode workspace overflow"))?;
-            let _decode_ram = self.scratch.lease_ram(decode_bytes)
-                .with_context(|| format!("assembly ordinal {ordinal} decode requires {decode_bytes} bytes"))?;
+            let _decode_ram = self.scratch.lease_ram(decode_bytes).with_context(|| {
+                format!("assembly ordinal {ordinal} decode requires {decode_bytes} bytes")
+            })?;
             let assembly: Assembly = assemblies.get(ordinal)?;
-            let records = u64::try_from(assembly.extensions.len())?.checked_add(1)
+            let records = u64::try_from(assembly.extensions.len())?
+                .checked_add(1)
                 .context("assembly extension count overflow")?;
-            let file_bytes = files.record_wire_bytes(assembly.base.record_number)?.unwrap_or(0);
-            let replay_bytes = assembly_bytes.checked_mul(64)
+            let file_bytes = files
+                .record_wire_bytes(assembly.base.record_number)?
+                .unwrap_or(0);
+            let replay_bytes = assembly_bytes
+                .checked_mul(64)
                 .and_then(|n| n.checked_add(file_bytes.checked_mul(32)?))
-                .and_then(|n| n.checked_add(records.checked_mul(u64::from(self.geometry.file_record_size))?.checked_mul(16)?))
+                .and_then(|n| {
+                    n.checked_add(
+                        records
+                            .checked_mul(u64::from(self.geometry.file_record_size))?
+                            .checked_mul(16)?,
+                    )
+                })
                 .and_then(|n| n.checked_add((assembly.list_value_hex.len() as u64).checked_mul(8)?))
                 .and_then(|n| n.checked_add(1024 * 1024))
                 .with_context(|| format!("assembly ordinal {ordinal} replay workspace overflow"))?;
-            let _replay_ram = self.scratch.lease_ram(replay_bytes)
-                .with_context(|| format!("assembly ordinal {ordinal} replay requires {replay_bytes} bytes"))?;
+            let _replay_ram = self.scratch.lease_ram(replay_bytes).with_context(|| {
+                format!("assembly ordinal {ordinal} replay requires {replay_bytes} bytes")
+            })?;
             let file = files
                 .find_record(
                     assembly.base.record_number,
@@ -468,11 +557,15 @@ impl PagedMftResolver {
                 )?
             } else {
                 ensure!(
-                    matches!(assembly.schema_version, 5 | 6 | 8 | 9) && assembly.mft_bitmap_hex.is_none(),
+                    matches!(assembly.schema_version, 5 | 6 | 8 | 9)
+                        && assembly.mft_bitmap_hex.is_none(),
                     "unknown resource ordinary assembly schema"
                 );
-                let assemble = if matches!(assembly.schema_version,8|9) { lists::assemble_attributes_resource }
-                    else { lists::assemble_streams_resource };
+                let assemble = if matches!(assembly.schema_version, 8 | 9) {
+                    lists::assemble_attributes_resource
+                } else {
+                    lists::assemble_streams_resource
+                };
                 assemble(
                     assembly.base.clone(),
                     assembly.extensions.clone(),
@@ -508,11 +601,14 @@ impl PagedMftResolver {
             "allocated MFT records lack complete canonical/extension coverage"
         );
         for ordinal in 0..files.file_count() {
-            let bytes = files.ordinal_wire_bytes(ordinal)?.checked_mul(32)
+            let bytes = files
+                .ordinal_wire_bytes(ordinal)?
+                .checked_mul(32)
                 .and_then(|n| n.checked_add(65536))
                 .with_context(|| format!("canonical FILE ordinal {ordinal} workspace overflow"))?;
-            let _ram = self.scratch.lease_ram(bytes)
-                .with_context(|| format!("canonical FILE ordinal {ordinal} requires {bytes} bytes"))?;
+            let _ram = self.scratch.lease_ram(bytes).with_context(|| {
+                format!("canonical FILE ordinal {ordinal} requires {bytes} bytes")
+            })?;
             let file = files.file(ordinal)?;
             ensure!(
                 file.base_file_reference == 0

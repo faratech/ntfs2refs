@@ -1091,8 +1091,7 @@ impl ArtifactArena {
                 );
                 let mut found = false;
                 for handle in handles {
-                    if n2r_win32::file_storage::file_id_info(handle)? == origin.root_id
-                    {
+                    if n2r_win32::file_storage::file_id_info(handle)? == origin.root_id {
                         found = true;
                         break;
                     }
@@ -2098,7 +2097,9 @@ impl ArtifactPathPermit {
             verified.snapshot.allocation_bytes
                 <= add(
                     add(verified.snapshot.file_bytes, self.allocation_slack)?,
-                    n2r_win32::file_storage::append_preallocation_allowance(verified.snapshot.file_bytes),
+                    n2r_win32::file_storage::append_preallocation_allowance(
+                        verified.snapshot.file_bytes
+                    ),
                 )?,
             "artifact physical allocation exceeds reserved slack: path={:?}, EOF={}, allocation={}, grant_max_EOF={}, reserved_slack={}",
             verified.snapshot.final_path,

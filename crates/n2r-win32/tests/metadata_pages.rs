@@ -19,8 +19,11 @@ fn key(ordinal: u64) -> Vec<u8> {
     format!("key-{ordinal:08}").into_bytes()
 }
 fn payload(ordinal: u64) -> Vec<u8> {
-    format!("{{\"ordinal\":{ordinal},\"pad\":\"{}\"}}", "x".repeat((ordinal % 23) as usize))
-        .into_bytes()
+    format!(
+        "{{\"ordinal\":{ordinal},\"pad\":\"{}\"}}",
+        "x".repeat((ordinal % 23) as usize)
+    )
+    .into_bytes()
 }
 fn write(path: &std::path::Path) -> String {
     let mut writer = Writer::new(path, PURPOSE, budget()).unwrap();
@@ -48,10 +51,16 @@ fn resident_pages_answer_scattered_lookups_without_further_page_loads() {
     let opened = paged.page_cache_statistics();
     for ordinal in scattered() {
         let record = paged.get(ordinal).unwrap();
-        assert_eq!((record.key, record.payload), (key(ordinal), payload(ordinal)));
+        assert_eq!(
+            (record.key, record.payload),
+            (key(ordinal), payload(ordinal))
+        );
     }
     let thrash = paged.page_cache_statistics().page_loads - opened.page_loads;
-    assert!(thrash > RECORDS / 2, "one-page cache should reload on scattered lookups");
+    assert!(
+        thrash > RECORDS / 2,
+        "one-page cache should reload on scattered lookups"
+    );
 
     let mut resident = Reader::open(&path, &sha, PURPOSE, budget()).unwrap();
     assert!(resident.resident_page_bytes().unwrap() >= resident.byte_len() / 2);
@@ -65,7 +74,10 @@ fn resident_pages_answer_scattered_lookups_without_further_page_loads() {
     );
     for ordinal in scattered() {
         let record = resident.get(ordinal).unwrap();
-        assert_eq!((record.key, record.payload), (key(ordinal), payload(ordinal)));
+        assert_eq!(
+            (record.key, record.payload),
+            (key(ordinal), payload(ordinal))
+        );
     }
     let after = resident.page_cache_statistics();
     assert_eq!(after.page_loads, installed.page_loads);
@@ -104,7 +116,10 @@ fn a_derived_alias_symlink_carries_a_print_name() {
     let bytes = &point.buffer;
     let word = |at: usize| u16::from_le_bytes([bytes[at], bytes[at + 1]]) as usize;
     let size = target.len() * 2;
-    assert_eq!(u32::from_le_bytes(bytes[..4].try_into().unwrap()), 0xa000_000c);
+    assert_eq!(
+        u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        0xa000_000c
+    );
     assert_eq!(word(4), 12 + 2 * size);
     assert_eq!((word(8), word(10)), (0, size));
     assert_eq!((word(12), word(14)), (size, size));

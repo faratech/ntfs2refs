@@ -2,8 +2,8 @@
 //! raw handle is exposed outside the native shadow module. Failed operations
 //! leave the private file for diagnosis; they never authorize target writes.
 use super::{ctl, invalid, wide};
-mod resource;
 pub(super) mod recovery;
+mod resource;
 use crate::{bitmap_paging, bitmap_window, bitmap_window_native, bitmap_window_transport};
 pub(super) use resource::ResourceTrackedHoles;
 use serde::Serialize;
@@ -932,19 +932,31 @@ impl PrivatePlaceholder {
     /// still checks EVERY tracked piece, then its full canonical digest binds
     /// the closing observation. No path reopen or payload read is exposed.
     pub(in crate::shadow_native) fn readonly_supply_mapping_fingerprint(
-        &self,readonly:&File,
-    )->io::Result<Option<[u8;32]>>{
-        if self.poisoned {return Err(invalid("poisoned private supply mapping"));}
-        if super::info(readonly,18,24)?!=super::info(&self.file,18,24)? {
-            return Err(invalid("readonly supply query differs from actual private file"));
+        &self,
+        readonly: &File,
+    ) -> io::Result<Option<[u8; 32]>> {
+        if self.poisoned {
+            return Err(invalid("poisoned private supply mapping"));
         }
-        if self.placed.is_empty(){return Ok(None);}
-        let resource=self.resource.as_ref().ok_or_else(||invalid("readonly supply mapping requires actual resource owner"))?;
-        let _memory=resource.tracking_workspace(self.bytes)?;
-        let capture=resource.capture(readonly)?;
-        let mapping=PreparedMapping::from_runs(capture.runs)?;
-        for &(v,l,n) in &self.placed {
-            if !mapping.matches(v,l,n)? {return Err(invalid("private supply complete mapping changed"));}
+        if super::info(readonly, 18, 24)? != super::info(&self.file, 18, 24)? {
+            return Err(invalid(
+                "readonly supply query differs from actual private file",
+            ));
+        }
+        if self.placed.is_empty() {
+            return Ok(None);
+        }
+        let resource = self
+            .resource
+            .as_ref()
+            .ok_or_else(|| invalid("readonly supply mapping requires actual resource owner"))?;
+        let _memory = resource.tracking_workspace(self.bytes)?;
+        let capture = resource.capture(readonly)?;
+        let mapping = PreparedMapping::from_runs(capture.runs)?;
+        for &(v, l, n) in &self.placed {
+            if !mapping.matches(v, l, n)? {
+                return Err(invalid("private supply complete mapping changed"));
+            }
         }
         use sha2::Digest;
         Ok(Some(sha2::Sha256::digest(&capture.canonical).into()))

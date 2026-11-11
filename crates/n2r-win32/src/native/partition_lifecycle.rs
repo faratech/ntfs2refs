@@ -1,19 +1,16 @@
 //! Target-only lifecycle implementation plus the unchanged bounded read lane.
 use super::partition_isolation::{PartitionObservationBudget, PartitionSourceBinding};
-use super::{
-    AlignedBuffer, MAX_IO, NativeEvent, PartitionOwnerToken, PartitionScopedOwner,
-};
-use std::{
-    io::{self, Read, Seek, SeekFrom},
-};
+use super::{AlignedBuffer, MAX_IO, NativeEvent, PartitionOwnerToken, PartitionScopedOwner};
+use std::io::{self, Read, Seek, SeekFrom};
 pub(super) mod held_read;
 pub use super::partition_owner::PartitionDataProfile;
 mod staged;
 pub use staged::{
-    PartitionIntentReceipt, PartitionNtfsAdmission, PartitionPreparationGuard, PartitionLiveCancellationReceipt,
-    PartitionPreparationObserver, PartitionPreparationPin, PartitionPreparationStage,
-    PartitionPreparationToken, PartitionReadonlyPhase, PartitionReadonlyProtection,
-    PartitionReadonlyReader, freeze_mounted_ntfs_partition, freeze_mounted_ntfs_readonly_physical, require_complete_fresh_ntfs_admission,
+    PartitionIntentReceipt, PartitionLiveCancellationReceipt, PartitionNtfsAdmission,
+    PartitionPreparationGuard, PartitionPreparationObserver, PartitionPreparationPin,
+    PartitionPreparationStage, PartitionPreparationToken, PartitionReadonlyPhase,
+    PartitionReadonlyProtection, PartitionReadonlyReader, freeze_mounted_ntfs_partition,
+    freeze_mounted_ntfs_readonly_physical, require_complete_fresh_ntfs_admission,
 };
 
 /// Independent logical cursor on a readonly duplicate of the actual locking
@@ -71,7 +68,9 @@ impl PartitionReadLane {
             self.file.require_owner(&self.binding, &self.token)?;
             if self.file.is_physical() {
                 self.file.require_physical_native(events)?;
-                if owner.data_profile()!=PartitionDataProfile::BasicReadonlyPhysicalV3{return Err(io::Error::other("physical lane/owner profile differs"));}
+                if owner.data_profile() != PartitionDataProfile::BasicReadonlyPhysicalV3 {
+                    return Err(io::Error::other("physical lane/owner profile differs"));
+                }
                 return Ok(());
             }
             let number = self.file.device(events)?;
@@ -138,7 +137,9 @@ impl Read for PartitionReadLane {
                 (out.len().min(MAX_IO - lead) as u64).min(self.byte_len() - self.position) as usize;
             let transfer = (lead + n).div_ceil(4096) * 4096;
             let at = self.position - lead as u64;
-            let got = self.file.read_at(at, &mut self.buffer.bytes_mut()[..transfer])?;
+            let got = self
+                .file
+                .read_at(at, &mut self.buffer.bytes_mut()[..transfer])?;
             if got < lead + n {
                 return Err(io::Error::new(
                     io::ErrorKind::UnexpectedEof,

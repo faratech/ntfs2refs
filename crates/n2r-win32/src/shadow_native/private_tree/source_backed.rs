@@ -125,8 +125,14 @@ impl SourceBackedRoutes {
         memory: Option<&dyn report_memory::ReportMemoryAccountant>,
         emit: impl FnMut(PayloadRoute) -> io::Result<()>,
     ) -> io::Result<u64> {
-        Self::validate_protected_layout_domain_accounted(observation, input, same_security, memory, None)?
-            .visit(emit)
+        Self::validate_protected_layout_domain_accounted(
+            observation,
+            input,
+            same_security,
+            memory,
+            None,
+        )?
+        .visit(emit)
     }
 
     fn validate_protected_layout_domain_accounted<'observation, 'input, D: InputDomain>(

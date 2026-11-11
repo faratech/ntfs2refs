@@ -4,8 +4,8 @@ use super::{
     input_domain::{InputDomain, ObjectInput},
     *,
 };
-use crate::tree_resources::SourceResourceAdmission;
 use crate::progress::{Phase, Unit, Update};
+use crate::tree_resources::SourceResourceAdmission;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub struct WindowsAliasInputRef<'a> {
@@ -250,17 +250,23 @@ impl VerifiedWindowsAliases {
             || protected.binding() != &pair.source
             || aliases.source_inspection_sha256() != admission.source_inspection_sha256
         {
-            return Err(invalid("recovered aliases require the actual converted Windows lease"));
+            return Err(invalid(
+                "recovered aliases require the actual converted Windows lease",
+            ));
         }
         crate::file_storage::require_readonly_access(protected.volume())?;
-        pair.source.validate_volume_extent(&ctl(protected.volume(), 0x00560000, &[], 1024)?)?;
+        pair.source
+            .validate_volume_extent(&ctl(protected.volume(), 0x00560000, &[], 1024)?)?;
         input.require_resource_metadata(admission)?;
         aliases.require_resource_metadata(admission)?;
         aliases.revalidate()?;
         let plan_digest = aliases.semantic_sha256()?;
         let input_digest = super::private_tree::metadata::input_digest_domain(input)?;
         let root = format!("{}\\", pair.source.volume_path()?);
-        let workspace = admission.budget.max_row_bytes.checked_mul(8)
+        let workspace = admission
+            .budget
+            .max_row_bytes
+            .checked_mul(8)
             .and_then(|n| n.checked_add(4 << 20))
             .ok_or_else(|| invalid("recovered alias workspace overflow"))?;
         let _working = payer.reserve(workspace)?;
@@ -271,26 +277,35 @@ impl VerifiedWindowsAliases {
             let owner = aliases.alias(index)?;
             let row = owner.input();
             validate_row(input, &row, &root)?;
-            bytes = bytes.checked_add(row_memory(&row)?)
+            bytes = bytes
+                .checked_add(row_memory(&row)?)
                 .ok_or_else(|| invalid("recovered alias retained RAM overflow"))?;
             row_digest(&mut preflight, &row);
         }
-        let mut memory = payer.reserve(bytes.checked_add(payer.lease_heap_bytes())
-            .ok_or_else(|| invalid("recovered alias owner RAM overflow"))?)?;
+        let mut memory = payer.reserve(
+            bytes
+                .checked_add(payer.lease_heap_bytes())
+                .ok_or_else(|| invalid("recovered alias owner RAM overflow"))?,
+        )?;
         let mut entries = BTreeMap::new();
         let mut identities = BTreeSet::new();
         let mut actual = Sha256::new();
         let mut charged = 4096u64;
         let mut privileges = Privileges::enable_for(&["SeBackupPrivilege", "SeSecurityPrivilege"])?;
-        let root_handle = File::options().access_mode(super::PROTECTED_READ_ACCESS).share_mode(3)
+        let root_handle = File::options()
+            .access_mode(super::PROTECTED_READ_ACCESS)
+            .share_mode(3)
             .custom_flags(0x02200000)
             .open(&root)?;
-        let root_id: [u8; 24] = super::info(&root_handle, 18, 24)?.try_into()
+        let root_id: [u8; 24] = super::info(&root_handle, 18, 24)?
+            .try_into()
             .map_err(|_| invalid("recovered alias root native ID width differs"))?;
         let mut events = Vec::new();
         let before = native::observe_general_disk_state_readonly(pair.source.clone(), &mut events)?;
         if before.disk_attributes & 2 == 0 || root_id[..8] == [0; 8] {
-            return Err(invalid("recovered aliases lack physical READ_ONLY ReFS identity"));
+            return Err(invalid(
+                "recovered aliases lack physical READ_ONLY ReFS identity",
+            ));
         }
         const DIFFERS: &str = "recovered alias native metadata or point differs";
         let mut next = 0;
@@ -307,7 +322,8 @@ impl VerifiedWindowsAliases {
                 let owner = aliases.alias(index)?;
                 let row = owner.input();
                 let directory = validate_row(input, &row, &root)?;
-                charged = charged.checked_add(row_memory(&row)?)
+                charged = charged
+                    .checked_add(row_memory(&row)?)
                     .ok_or_else(|| invalid("recovered alias rows changed after prepayment"))?;
                 if charged > bytes || row.canonical_object_index == row.parent_object_index {
                     return Err(invalid("recovered alias row or identity domain changed"));
@@ -330,7 +346,11 @@ impl VerifiedWindowsAliases {
                 .iter()
                 .map(|row| {
                     crate::reparse_layout::Point::relative_component_alias(
-                        &row.canonical_components.last().unwrap().encode_utf16().collect::<Vec<_>>(),
+                        &row.canonical_components
+                            .last()
+                            .unwrap()
+                            .encode_utf16()
+                            .collect::<Vec<_>>(),
                     )
                 })
                 .collect::<io::Result<Vec<_>>>()?;
@@ -341,21 +361,29 @@ impl VerifiedWindowsAliases {
                     components: &row.components,
                     canonical_components: &row.canonical_components,
                     directory: row.directory,
-                    attributes: (canonical.attributes & 0x2027) | 0x400
+                    attributes: (canonical.attributes & 0x2027)
+                        | 0x400
                         | if row.directory { 16 } else { 0 },
                     point,
                     canonical,
                 })
                 .collect();
-            let natives = probe_aliases(&root, &probes, admission.budget.max_row_bytes, payer, DIFFERS)?;
+            let natives = probe_aliases(
+                &root,
+                &probes,
+                admission.budget.max_row_bytes,
+                payer,
+                DIFFERS,
+            )?;
             for ((row, probe), native) in rows.iter().zip(&probes).zip(natives) {
                 let observed = native.observed;
                 if observed.alias_file_id_info[..8] != root_id[..8]
                     || !identities.insert(observed.alias_file_id_info)
                 {
-                    return Err(alias_error(&row.components, invalid(
-                        "recovered aliases repeat or escape the actual ReFS volume",
-                    )));
+                    return Err(alias_error(
+                        &row.components,
+                        invalid("recovered aliases repeat or escape the actual ReFS volume"),
+                    ));
                 }
                 let matches = (|| -> io::Result<bool> {
                     Ok(observed.point == *probe.point
@@ -372,23 +400,30 @@ impl VerifiedWindowsAliases {
                     canonical_components: row.canonical_components.clone(),
                     canonical_object_index: row.canonical_object_index,
                     parent_object_index: row.parent_object_index,
-                    directory: probe.directory, attributes: probe.attributes,
+                    directory: probe.directory,
+                    attributes: probe.attributes,
                     file_id_info: observed.alias_file_id_info,
                     canonical_file_id_info: observed.canonical_file_id_info,
                     parent_file_id_info: observed.parent_file_id_info,
                     point: probe.point.clone(),
                 };
                 if entries.insert(row.components.clone(), entry).is_some() {
-                    return Err(alias_error(&row.components, invalid("duplicate recovered alias path")));
+                    return Err(alias_error(
+                        &row.components,
+                        invalid("duplicate recovered alias path"),
+                    ));
                 }
             }
             next = end;
         }
-        if aliases.len() != count || preflight.finalize() != actual.finalize()
+        if aliases.len() != count
+            || preflight.finalize() != actual.finalize()
             || aliases.semantic_sha256()? != plan_digest
             || super::private_tree::metadata::input_digest_domain(input)? != input_digest
         {
-            return Err(invalid("recovered alias or canonical expectation domain changed"));
+            return Err(invalid(
+                "recovered alias or canonical expectation domain changed",
+            ));
         }
         aliases.revalidate()?;
         let after = native::observe_general_disk_state_readonly(pair.source.clone(), &mut events)?;
@@ -400,28 +435,37 @@ impl VerifiedWindowsAliases {
         drop(identities);
         let entries: Vec<_> = entries.into_values().collect();
         let path_bytes = |path: &Vec<String>| -> io::Result<u64> {
-            path.iter().try_fold((path.capacity() as u64)
-                .checked_mul(mem::size_of::<String>() as u64)
-                .ok_or_else(|| invalid("recovered alias path RAM overflow"))?, |sum, part| {
-                sum.checked_add(part.capacity() as u64)
-                    .ok_or_else(|| invalid("recovered alias path RAM overflow"))
-            })
+            path.iter().try_fold(
+                (path.capacity() as u64)
+                    .checked_mul(mem::size_of::<String>() as u64)
+                    .ok_or_else(|| invalid("recovered alias path RAM overflow"))?,
+                |sum, part| {
+                    sum.checked_add(part.capacity() as u64)
+                        .ok_or_else(|| invalid("recovered alias path RAM overflow"))
+                },
+            )
         };
         let mut retained = (entries.capacity() as u64)
             .checked_mul(mem::size_of::<VerifiedAlias>() as u64)
             .and_then(|n| n.checked_add(4096))
             .ok_or_else(|| invalid("recovered alias ledger RAM overflow"))?;
         for entry in &entries {
-            retained = retained.checked_add(path_bytes(&entry.components)?)
+            retained = retained
+                .checked_add(path_bytes(&entry.components)?)
                 .and_then(|n| n.checked_add(path_bytes(&entry.canonical_components).ok()?))
                 .and_then(|n| n.checked_add(entry.point.buffer.capacity() as u64))
                 .ok_or_else(|| invalid("recovered alias ledger RAM overflow"))?;
         }
         memory.shrink_to(retained)?;
         Ok(Self {
-            entries, pair: pair.clone(), source_pin: admission.source_inspection_sha256,
-            input_digest, plan_digest, maximum_row_bytes: admission.budget.max_row_bytes,
-            retained_memory_bytes: retained, _memory: memory,
+            entries,
+            pair: pair.clone(),
+            source_pin: admission.source_inspection_sha256,
+            input_digest,
+            plan_digest,
+            maximum_row_bytes: admission.budget.max_row_bytes,
+            retained_memory_bytes: retained,
+            _memory: memory,
         })
     }
 
@@ -434,13 +478,20 @@ impl VerifiedWindowsAliases {
     pub fn plan_digest(&self) -> [u8; 32] {
         self.plan_digest
     }
-    pub fn require_canonical_input(&self,input:&impl InputDomain)->io::Result<()> { self.require_input(input) }
+    pub fn require_canonical_input(&self, input: &impl InputDomain) -> io::Result<()> {
+        self.require_input(input)
+    }
     /// Account the retained opaque ledger in a new finalization arena. Its
     /// original lease stays alive until all live references have dropped.
-    pub fn reserve_external_retained_memory(&self,payer:&dyn report_memory::ReportMemoryAccountant)
-        ->io::Result<Box<dyn report_memory::ReportMemoryLease>> {
-        payer.reserve(self.retained_memory_bytes.checked_add(payer.lease_heap_bytes())
-            .ok_or_else(||invalid("external alias ownership RAM overflow"))?)
+    pub fn reserve_external_retained_memory(
+        &self,
+        payer: &dyn report_memory::ReportMemoryAccountant,
+    ) -> io::Result<Box<dyn report_memory::ReportMemoryLease>> {
+        payer.reserve(
+            self.retained_memory_bytes
+                .checked_add(payer.lease_heap_bytes())
+                .ok_or_else(|| invalid("external alias ownership RAM overflow"))?,
+        )
     }
     pub fn require_scope(
         &self,
@@ -549,13 +600,18 @@ impl VerifiedWindowsAliases {
                 if native.observed.parent_file_id_info != entry.parent_file_id_info
                     || native.observed.canonical_file_id_info != entry.canonical_file_id_info
                 {
-                    return Err(alias_error(&entry.components, invalid(
-                        "readonly alias parent or canonical identity differs from its constructor owner",
-                    )));
+                    return Err(alias_error(
+                        &entry.components,
+                        invalid(
+                            "readonly alias parent or canonical identity differs from its constructor owner",
+                        ),
+                    ));
                 }
                 let matches = (|| -> io::Result<bool> {
-                    Ok(super::query_bytes(&native.snapshot, 18, 24)? == entry.file_id_info
-                        && super::security_matches(&probe.expected(), &native.snapshot, same)?)
+                    Ok(
+                        super::query_bytes(&native.snapshot, 18, 24)? == entry.file_id_info
+                            && super::security_matches(&probe.expected(), &native.snapshot, same)?,
+                    )
                 })()
                 .map_err(|error| alias_error(&entry.components, error))?;
                 if !matches {
@@ -724,7 +780,9 @@ pub(super) fn validate_row(
             if !parent.directory()
                 || parent.is_reparse()
                 || !parent.primary_path_matches(&row.components[..row.components.len() - 1])?
-                || !parent.primary_path_matches(&row.canonical_components[..row.canonical_components.len() - 1])?
+                || !parent.primary_path_matches(
+                    &row.canonical_components[..row.canonical_components.len() - 1],
+                )?
                 || !canonical.contains_path(row.canonical_components)?
             {
                 return Err(invalid(
@@ -771,25 +829,39 @@ impl StagedWindowsAliases {
         admission: SourceResourceAdmission,
         payer: &dyn report_memory::ReportMemoryAccountant,
     ) -> io::Result<Self> {
-        Self::create_inner(input,aliases,pair,handles,admission,payer,None)
+        Self::create_inner(input, aliases, pair, handles, admission, payer, None)
     }
     /// Existing aliases are actual held no-follow files from the complete
     /// native recovery namespace audit, never deserialized identities.
     pub(super) fn reconcile(
-        input:&impl InputDomain,aliases:&impl WindowsAliasInputDomain,
-        pair:&GeneralSourceShadowBinding,handles:&BTreeMap<usize,File>,
-        admission:SourceResourceAdmission,payer:&dyn report_memory::ReportMemoryAccountant,
-        existing:BTreeMap<Vec<String>,File>,
-    )->io::Result<Self>{
-        Self::create_inner(input,aliases,pair,handles,admission,payer,Some(existing))
+        input: &impl InputDomain,
+        aliases: &impl WindowsAliasInputDomain,
+        pair: &GeneralSourceShadowBinding,
+        handles: &BTreeMap<usize, File>,
+        admission: SourceResourceAdmission,
+        payer: &dyn report_memory::ReportMemoryAccountant,
+        existing: BTreeMap<Vec<String>, File>,
+    ) -> io::Result<Self> {
+        Self::create_inner(
+            input,
+            aliases,
+            pair,
+            handles,
+            admission,
+            payer,
+            Some(existing),
+        )
     }
     fn create_inner(
-        input:&impl InputDomain,aliases:&impl WindowsAliasInputDomain,
-        pair:&GeneralSourceShadowBinding,handles:&BTreeMap<usize,File>,
-        admission:SourceResourceAdmission,payer:&dyn report_memory::ReportMemoryAccountant,
-        mut existing:Option<BTreeMap<Vec<String>,File>>,
-    )->io::Result<Self>{
-        let recovering=existing.is_some();
+        input: &impl InputDomain,
+        aliases: &impl WindowsAliasInputDomain,
+        pair: &GeneralSourceShadowBinding,
+        handles: &BTreeMap<usize, File>,
+        admission: SourceResourceAdmission,
+        payer: &dyn report_memory::ReportMemoryAccountant,
+        mut existing: Option<BTreeMap<Vec<String>, File>>,
+    ) -> io::Result<Self> {
+        let recovering = existing.is_some();
         if pair.source.layout_profile
             != crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows
             || aliases.source_inspection_sha256() != admission.source_inspection_sha256
@@ -814,7 +886,12 @@ impl StagedWindowsAliases {
         let working = payer.reserve(workspace)?;
         let mut bytes = 4096u64;
         let mut preflight = Sha256::new();
-        input.progress(Update::new(Phase::AliasValidation, Unit::Aliases, 0, Some(aliases.len() as u64)));
+        input.progress(Update::new(
+            Phase::AliasValidation,
+            Unit::Aliases,
+            0,
+            Some(aliases.len() as u64),
+        ));
         for index in 0..aliases.len() {
             let row = aliases.alias(index)?;
             let view = row.input();
@@ -824,8 +901,12 @@ impl StagedWindowsAliases {
                 .checked_add(row_memory(&view)?)
                 .ok_or_else(|| invalid("alias total RAM overflow"))?;
             row_digest(&mut preflight, &view);
-            input.progress(Update::new(Phase::AliasValidation, Unit::Aliases,
-                index as u64 + 1, Some(aliases.len() as u64)));
+            input.progress(Update::new(
+                Phase::AliasValidation,
+                Unit::Aliases,
+                index as u64 + 1,
+                Some(aliases.len() as u64),
+            ));
         }
         let memory = payer.reserve(
             bytes
@@ -836,98 +917,121 @@ impl StagedWindowsAliases {
         let mut actual = Sha256::new();
         let mut charged = 4096u64;
         let private = super::private_tree::private_descriptor()?;
-        input.progress(Update::new(Phase::AliasCreation, Unit::Aliases, 0, Some(aliases.len() as u64)));
+        input.progress(Update::new(
+            Phase::AliasCreation,
+            Unit::Aliases,
+            0,
+            Some(aliases.len() as u64),
+        ));
         for index in 0..aliases.len() {
             let owner = aliases.alias(index)?;
             let row = owner.input();
             (|| -> io::Result<()> {
-            let directory = validate_row(input, &row, &root)?;
-            charged = charged
-                .checked_add(row_memory(&row)?)
-                .ok_or_else(|| invalid("alias creation RAM overflow"))?;
-            if charged > bytes {
-                return Err(invalid("alias rows changed after prepaid validation"));
-            }
-            row_digest(&mut actual, &row);
-            if !handles.contains_key(&row.parent_object_index)
-                || !handles.contains_key(&row.canonical_object_index)
-            {
-                return Err(invalid(
-                    "derived alias lacks constructor-owned parent/target",
-                ));
-            }
-            let point = crate::reparse_layout::Point::relative_component_alias(
-                &row.canonical_components
-                    .last()
-                    .unwrap()
-                    .encode_utf16()
-                    .collect::<Vec<_>>(),
-            )?;
-            let initial = Input {
-                components: row.components,
-                additional_names: &[],
-                directory,
-                times: [1; 4],
-                attributes: if directory { 16 } else { 128 },
-                security: &private,
-                expected_api_security: None,
-                extended_attributes: None,
-                reparse: None,
-                payload: &[],
-                expected_length: Some(0),
-                expected_sha256: None,
-                source_offset: None,
-                source_runs: Vec::new(),
-                named_streams: Vec::new(),
-                sparse: None,
-            };
-            let path = format!("{root}{}", row.components.join("\\"));
-            let file=if let Some(file)=existing.as_mut().and_then(|held|held.remove(row.components)) {
-                if !crate::file_storage::final_path_guid(&file)?.eq_ignore_ascii_case(&path)
-                    ||crate::reparse_native::capture(&file)?.as_ref().is_some_and(|actual|actual!=&point) {
-                    return Err(invalid("held recovery alias path or reparse point differs"));
+                let directory = validate_row(input, &row, &root)?;
+                charged = charged
+                    .checked_add(row_memory(&row)?)
+                    .ok_or_else(|| invalid("alias creation RAM overflow"))?;
+                if charged > bytes {
+                    return Err(invalid("alias rows changed after prepaid validation"));
                 }
-                file
-            }else{
-                input.before_mutation(0)?;
-                super::create(&path, &initial, 0, None)?;
-                super::open(&path, directory, true)?
-            };
-            let id: [u8; 24] = super::info(&file, 18, 24)?
-                .try_into()
-                .map_err(|_| invalid("alias native ID width differs"))?;
-            let entry = VerifiedAlias {
-                components: row.components.to_vec(),
-                canonical_components: row.canonical_components.to_vec(),
-                canonical_object_index: row.canonical_object_index,
-                parent_object_index: row.parent_object_index,
-                directory,
-                attributes: 0,
-                file_id_info: id,
-                canonical_file_id_info: super::info(&handles[&row.canonical_object_index], 18, 24)?
+                row_digest(&mut actual, &row);
+                if !handles.contains_key(&row.parent_object_index)
+                    || !handles.contains_key(&row.canonical_object_index)
+                {
+                    return Err(invalid(
+                        "derived alias lacks constructor-owned parent/target",
+                    ));
+                }
+                let point = crate::reparse_layout::Point::relative_component_alias(
+                    &row.canonical_components
+                        .last()
+                        .unwrap()
+                        .encode_utf16()
+                        .collect::<Vec<_>>(),
+                )?;
+                let initial = Input {
+                    components: row.components,
+                    additional_names: &[],
+                    directory,
+                    times: [1; 4],
+                    attributes: if directory { 16 } else { 128 },
+                    security: &private,
+                    expected_api_security: None,
+                    extended_attributes: None,
+                    reparse: None,
+                    payload: &[],
+                    expected_length: Some(0),
+                    expected_sha256: None,
+                    source_offset: None,
+                    source_runs: Vec::new(),
+                    named_streams: Vec::new(),
+                    sparse: None,
+                };
+                let path = format!("{root}{}", row.components.join("\\"));
+                let file = if let Some(file) = existing
+                    .as_mut()
+                    .and_then(|held| held.remove(row.components))
+                {
+                    if !crate::file_storage::final_path_guid(&file)?.eq_ignore_ascii_case(&path)
+                        || crate::reparse_native::capture(&file)?
+                            .as_ref()
+                            .is_some_and(|actual| actual != &point)
+                    {
+                        return Err(invalid("held recovery alias path or reparse point differs"));
+                    }
+                    file
+                } else {
+                    input.before_mutation(0)?;
+                    super::create(&path, &initial, 0, None)?;
+                    super::open(&path, directory, true)?
+                };
+                let id: [u8; 24] = super::info(&file, 18, 24)?
+                    .try_into()
+                    .map_err(|_| invalid("alias native ID width differs"))?;
+                let entry = VerifiedAlias {
+                    components: row.components.to_vec(),
+                    canonical_components: row.canonical_components.to_vec(),
+                    canonical_object_index: row.canonical_object_index,
+                    parent_object_index: row.parent_object_index,
+                    directory,
+                    attributes: 0,
+                    file_id_info: id,
+                    canonical_file_id_info: super::info(
+                        &handles[&row.canonical_object_index],
+                        18,
+                        24,
+                    )?
                     .try_into()
                     .map_err(|_| invalid("canonical native ID width differs"))?,
-                parent_file_id_info: super::info(&handles[&row.parent_object_index], 18, 24)?
-                    .try_into()
-                    .map_err(|_| invalid("parent native ID width differs"))?,
-                point,
-            };
-            if rows
-                .insert(row.components.to_vec(), StagedAlias { entry, file })
-                .is_some()
-            {
-                return Err(invalid("duplicate derived alias path"));
-            }
-            Ok(())
+                    parent_file_id_info: super::info(&handles[&row.parent_object_index], 18, 24)?
+                        .try_into()
+                        .map_err(|_| invalid("parent native ID width differs"))?,
+                    point,
+                };
+                if rows
+                    .insert(row.components.to_vec(), StagedAlias { entry, file })
+                    .is_some()
+                {
+                    return Err(invalid("duplicate derived alias path"));
+                }
+                Ok(())
             })()
             .map_err(|error| at_alias("alias creation", row.components, error))?;
-            input.progress(Update::new(Phase::AliasCreation, Unit::Aliases,
-                index as u64 + 1, Some(aliases.len() as u64)));
+            input.progress(Update::new(
+                Phase::AliasCreation,
+                Unit::Aliases,
+                index as u64 + 1,
+                Some(aliases.len() as u64),
+            ));
         }
         if preflight.finalize() != actual.finalize() {
             return Err(invalid("derived alias rows changed during construction"));
         }
-        if existing.as_ref().is_some_and(|held|!held.is_empty()){return Err(invalid("recovery alias handles exceed the admitted alias plan"));}
+        if existing.as_ref().is_some_and(|held| !held.is_empty()) {
+            return Err(invalid(
+                "recovery alias handles exceed the admitted alias plan",
+            ));
+        }
         aliases.revalidate()?;
         if aliases.semantic_sha256()? != plan_digest {
             return Err(invalid("derived alias plan changed during construction"));
@@ -956,7 +1060,8 @@ impl StagedWindowsAliases {
         handles: &BTreeMap<usize, File>,
         same: &impl Fn(&[u8], &[u8]) -> io::Result<bool>,
     ) -> io::Result<()> {
-        self.restore_metadata_inner(input, handles, same, false).map(|_| ())
+        self.restore_metadata_inner(input, handles, same, false)
+            .map(|_| ())
     }
     pub(super) fn restore_metadata_with_security_placeholders(
         &mut self,
@@ -965,8 +1070,12 @@ impl StagedWindowsAliases {
         same: &impl Fn(&[u8], &[u8]) -> io::Result<bool>,
     ) -> io::Result<usize> {
         input.require_mutation_binding(&self.pair.shadow)?;
-        if self.pair.source.layout_profile != crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows {
-            return Err(invalid("provisional alias security requires the explicit Windows constructor"));
+        if self.pair.source.layout_profile
+            != crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+        {
+            return Err(invalid(
+                "provisional alias security requires the explicit Windows constructor",
+            ));
         }
         self.restore_metadata_inner(input, handles, same, true)
     }
@@ -981,7 +1090,12 @@ impl StagedWindowsAliases {
         let root = format!("{}\\", self.pair.shadow.volume_path()?);
         let mut provisional_aliases = 0usize;
         let total = self.rows.len() as u64;
-        input.progress(Update::new(Phase::MetadataRestoration, Unit::Aliases, 0, Some(total)));
+        input.progress(Update::new(
+            Phase::MetadataRestoration,
+            Unit::Aliases,
+            0,
+            Some(total),
+        ));
         let recovering = self.recovering;
         let maximum_row_bytes = self.maximum_row_bytes;
         for (ordinal, staged) in self.rows.values_mut().enumerate() {
@@ -1091,25 +1205,38 @@ impl StagedWindowsAliases {
             Ok(())
             })()
             .or_else(|error| input.defer_failure(at_alias("alias metadata restoration", &staged.entry.components, error)))?;
-            input.progress(Update::new(Phase::MetadataRestoration, Unit::Aliases,
-                ordinal as u64 + 1, Some(total)));
+            input.progress(Update::new(
+                Phase::MetadataRestoration,
+                Unit::Aliases,
+                ordinal as u64 + 1,
+                Some(total),
+            ));
         }
         Ok(provisional_aliases)
     }
     pub(super) fn finish(mut self) -> io::Result<VerifiedWindowsAliases> {
-        let entries:Vec<_>=self.rows.into_values().map(|row|row.entry).collect();
-        let path_bytes=|path:&Vec<String>|->io::Result<u64>{
-            path.iter().try_fold((path.capacity() as u64).checked_mul(mem::size_of::<String>() as u64)
-                .ok_or_else(||invalid("retained alias path RAM overflow"))?,|sum,part|
-                sum.checked_add(part.capacity() as u64).ok_or_else(||invalid("retained alias path RAM overflow")))
+        let entries: Vec<_> = self.rows.into_values().map(|row| row.entry).collect();
+        let path_bytes = |path: &Vec<String>| -> io::Result<u64> {
+            path.iter().try_fold(
+                (path.capacity() as u64)
+                    .checked_mul(mem::size_of::<String>() as u64)
+                    .ok_or_else(|| invalid("retained alias path RAM overflow"))?,
+                |sum, part| {
+                    sum.checked_add(part.capacity() as u64)
+                        .ok_or_else(|| invalid("retained alias path RAM overflow"))
+                },
+            )
         };
-        let mut retained=(entries.capacity() as u64).checked_mul(mem::size_of::<VerifiedAlias>() as u64)
-            .and_then(|n|n.checked_add(4096)).ok_or_else(||invalid("retained alias ledger RAM overflow"))?;
-        for row in &entries{
-            retained=retained.checked_add(path_bytes(&row.components)?)
-                .and_then(|n|n.checked_add(path_bytes(&row.canonical_components).ok()?))
-                .and_then(|n|n.checked_add(row.point.buffer.capacity() as u64))
-                .ok_or_else(||invalid("retained alias ledger RAM overflow"))?;
+        let mut retained = (entries.capacity() as u64)
+            .checked_mul(mem::size_of::<VerifiedAlias>() as u64)
+            .and_then(|n| n.checked_add(4096))
+            .ok_or_else(|| invalid("retained alias ledger RAM overflow"))?;
+        for row in &entries {
+            retained = retained
+                .checked_add(path_bytes(&row.components)?)
+                .and_then(|n| n.checked_add(path_bytes(&row.canonical_components).ok()?))
+                .and_then(|n| n.checked_add(row.point.buffer.capacity() as u64))
+                .ok_or_else(|| invalid("retained alias ledger RAM overflow"))?;
         }
         self._memory.shrink_to(retained)?;
         Ok(VerifiedWindowsAliases {
@@ -1119,7 +1246,7 @@ impl StagedWindowsAliases {
             input_digest: self.input_digest,
             plan_digest: self.plan_digest,
             maximum_row_bytes: self.maximum_row_bytes,
-            retained_memory_bytes:retained,
+            retained_memory_bytes: retained,
             _memory: self._memory,
         })
     }

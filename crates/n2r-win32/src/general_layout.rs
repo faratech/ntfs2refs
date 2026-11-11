@@ -23,7 +23,9 @@ pub enum GeneralDiskLayoutProfile {
     OfflineWindows,
 }
 impl GeneralDiskLayoutProfile {
-    fn is_dedicated_data(&self) -> bool { matches!(self, Self::DedicatedData) }
+    fn is_dedicated_data(&self) -> bool {
+        matches!(self, Self::DedicatedData)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,7 +34,10 @@ pub struct GeneralDiskBinding {
     pub disk_number: u32,
     pub volume_guid: String,
     pub identity: PartitionIdentity,
-    #[serde(default, skip_serializing_if = "GeneralDiskLayoutProfile::is_dedicated_data")]
+    #[serde(
+        default,
+        skip_serializing_if = "GeneralDiskLayoutProfile::is_dedicated_data"
+    )]
     pub layout_profile: GeneralDiskLayoutProfile,
 }
 
@@ -56,8 +61,10 @@ impl GeneralSourceShadowBinding {
     ) -> io::Result<()> {
         self.source.validate()?;
         self.shadow.validate()?;
-        require(self.shadow.layout_profile == GeneralDiskLayoutProfile::DedicatedData,
-            "a freshly owned shadow cannot use an installed-Windows source layout")?;
+        require(
+            self.shadow.layout_profile == GeneralDiskLayoutProfile::DedicatedData,
+            "a freshly owned shadow cannot use an installed-Windows source layout",
+        )?;
         let s = &self.source.identity;
         let t = &self.shadow.identity;
         require(
@@ -119,7 +126,8 @@ impl GeneralDiskBinding {
                 && p.partition_offset.is_multiple_of(4096)
                 && p.partition_bytes >= 4096
                 && matches!(p.logical_sector_bytes, 512 | 4096)
-                && p.partition_bytes.is_multiple_of(u64::from(p.logical_sector_bytes))
+                && p.partition_bytes
+                    .is_multiple_of(u64::from(p.logical_sector_bytes))
                 && p.partition_offset
                     .checked_add(p.partition_bytes)
                     .is_some_and(|end| end <= p.disk_bytes)
@@ -246,7 +254,10 @@ impl GeneralDiskBinding {
             seen.push((number, offset, end));
             if windows {
                 let id: [u8; 16] = bytes[at + 48..at + 64].try_into().unwrap();
-                require(!seen_guids.contains(&id), "Windows GPT partition GUID is duplicated")?;
+                require(
+                    !seen_guids.contains(&id),
+                    "Windows GPT partition GUID is duplicated",
+                )?;
                 seen_guids.push(id);
             }
             if number == self.identity.partition_number {
@@ -267,13 +278,18 @@ impl GeneralDiskBinding {
                     kind == msr || windows && (kind == efi || kind == recovery),
                     "other data, EFI or system partitions exclude whole-disk isolation",
                 )?;
-                if kind == msr { msr_count += 1; }
-                else if kind == efi { efi_count += 1; }
-                else { recovery_count += 1; }
+                if kind == msr {
+                    msr_count += 1;
+                } else if kind == efi {
+                    efi_count += 1;
+                } else {
+                    recovery_count += 1;
+                }
             }
         }
         require(
-            target == 1 && msr_count <= 1
+            target == 1
+                && msr_count <= 1
                 && (!windows || msr_count == 1 && efi_count == 1 && recovery_count == 1),
             "dedicated data-disk partition set differs",
         )

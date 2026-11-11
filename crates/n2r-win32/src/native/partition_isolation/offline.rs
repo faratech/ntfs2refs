@@ -1,16 +1,17 @@
 //! Positive RAM-Windows owning environment. Readonly facts/owners only; this
 //! token never substitutes a physical C: extent, FS lock, VSS catalog or writer.
-pub use source::{OfflinePreparedTerminalGuard,OfflineTerminalReadonlyVolume,OfflinePreparedTerminalReceipt};
+pub use source::{
+    OfflinePreparedTerminalGuard, OfflinePreparedTerminalReceipt, OfflineTerminalReadonlyVolume,
+};
 mod source;
 pub(crate) use source::OfflineBootMetadataWitness;
 mod journal_bootstrap;
 use super::*;
 use crate::journal_file::GeneralJournalStorageBinding;
 pub use source::{
-    OfflinePreparedClosedQualification,
-    OfflinePreparedReplayQualification,
-    OfflinePreparedSource, OfflinePreparedJournalQualification, OfflinePreparedBootGuardRequirements,
     OfflineFreshWitness, OfflineFrozenSource, OfflinePagedNtfsObservation,
+    OfflinePreparedBootGuardRequirements, OfflinePreparedClosedQualification,
+    OfflinePreparedJournalQualification, OfflinePreparedReplayQualification, OfflinePreparedSource,
     OfflineReadonlyNtfsPhase, OfflineRecoverySource, OfflineSourceIntentPin,
     OfflineSourceOwnerToken, OfflineSourceState,
 };
@@ -185,7 +186,9 @@ fn boot_identity() -> io::Result<OfflineBootIdentity> {
         boot_time > 0 && creation >= boot_time && creation <= precise_after_creation,
         &format!(
             "native boot/process timestamps inconsistent: boot={boot_time}, native_sampled_current={}, process_creation={creation}, precise_after_creation={precise_after_creation}, boot_bias={}, sleep_bias={}",
-            layout::u64_at(&time, 8)?, layout::u64_at(&time, 32)?, layout::u64_at(&time, 40)?
+            layout::u64_at(&time, 8)?,
+            layout::u64_at(&time, 32)?,
+            layout::u64_at(&time, 40)?
         ),
     )?;
     Ok(OfflineBootIdentity {
@@ -420,21 +423,28 @@ fn source_facts_with_native_witness(
     )?;
     binding.storage.validate_alignment(&alignment)?;
     let disk_attributes = attributes(file, events)?;
-    require(opening_attributes == disk_attributes,
-        "physical protection changed during current device/length/alignment queries")?;
+    require(
+        opening_attributes == disk_attributes,
+        "physical protection changed during current device/length/alignment queries",
+    )?;
     let native = match held_native_layout {
         Some(held) => {
-            require(held.len() as u64 <= u64::from(budget.native_layout_bytes),
-                "held native witness exceeds its prepaid layout allowance")?;
+            require(
+                held.len() as u64 <= u64::from(budget.native_layout_bytes),
+                "held native witness exceeds its prepaid layout allowance",
+            )?;
             held.to_vec()
         }
         None => native_layout(file, budget, events)?,
     };
     let after_native_layout = attributes(file, events)?;
-    require(disk_attributes == after_native_layout, &format!(
-        "offline physical disk{} protection changed during native LAYOUT: before={}, after={}",
-        binding.storage.disk_number, disk_attributes, after_native_layout,
-    ))?;
+    require(
+        disk_attributes == after_native_layout,
+        &format!(
+            "offline physical disk{} protection changed during native LAYOUT: before={}, after={}",
+            binding.storage.disk_number, disk_attributes, after_native_layout,
+        ),
+    )?;
     require(
         native.len() >= 48 && (native.len() - 48).is_multiple_of(144),
         "offline source native layout is incomplete",
@@ -458,15 +468,21 @@ fn source_facts_with_native_witness(
     // An opening attribute sample cannot establish the protection of a later
     // raw GPT read. Keep the actual closing sample in the same full proof.
     let after_raw_gpt = attributes(file, events)?;
-    require(disk_attributes == after_raw_gpt, &format!(
-        "offline physical disk{} protection changed during raw GPT reads: before={}, after={}",
-        binding.storage.disk_number, disk_attributes, after_raw_gpt,
-    ))?;
+    require(
+        disk_attributes == after_raw_gpt,
+        &format!(
+            "offline physical disk{} protection changed during raw GPT reads: before={}, after={}",
+            binding.storage.disk_number, disk_attributes, after_raw_gpt,
+        ),
+    )?;
     if held_native_layout.is_some() {
         events.push(NativeEvent {
-            operation:"offline-current-raw-GPT-held-native-correspondence".into(),
-            control_code:0,input:Vec::new(),succeeded:true,native_error:None,
-            output:serde_json::to_vec(&serde_json::json!({
+            operation: "offline-current-raw-GPT-held-native-correspondence".into(),
+            control_code: 0,
+            input: Vec::new(),
+            succeeded: true,
+            native_error: None,
+            output: serde_json::to_vec(&serde_json::json!({
                 "current_full_raw_GPT_CRC_and_every_entry_revalidated":true,
                 "current_DEVICE_length_alignment_and_attribute_bookends":true,
                 "native_layout_requeried":false,
@@ -474,7 +490,8 @@ fn source_facts_with_native_witness(
                 "native_layout_bytes":gpt.native_layout.len(),
                 "native_layout_sha256":hex::encode(Sha256::digest(&gpt.native_layout)),
                 "actual_disk_attributes":after_raw_gpt,"facts_grant_authority":false,
-            })).map_err(io::Error::other)?,
+            }))
+            .map_err(io::Error::other)?,
         });
     }
     Ok(OfflineSourcePhysicalFacts {
@@ -488,7 +505,9 @@ fn source_facts_with_native_witness(
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum OfflineRamStorageDevice {
-    StorageDeviceNumber { bytes: Vec<u8> },
+    StorageDeviceNumber {
+        bytes: Vec<u8>,
+    },
     KernelRamdiskWithoutStorageDeviceNumber {
         native_error: i32,
         ram_device_object_name: String,
@@ -503,7 +522,10 @@ fn ram_storage_device(
 ) -> io::Result<OfflineRamStorageDevice> {
     match control(ram, operation, DEVICE, &[], 12, events) {
         Ok(bytes) => {
-            require(bytes.len() == 12, "RAM storage device number length differs")?;
+            require(
+                bytes.len() == 12,
+                "RAM storage device number length differs",
+            )?;
             Ok(OfflineRamStorageDevice::StorageDeviceNumber { bytes })
         }
         Err(error) if error.raw_os_error() == Some(1) => {
@@ -511,17 +533,18 @@ fn ram_storage_device(
             // IOCTL. It still has a kernel-owned Ramdisk{GUID} identity; prove
             // that identity on this SAME live handle rather than inventing a
             // physical storage device number. The failed IOCTL stays in events.
-            let actual = crate::native::offline_environment::kernel_ram_backing::require_held(
-                windows, ram,
-            )?;
+            let actual =
+                crate::native::offline_environment::kernel_ram_backing::require_held(windows, ram)?;
             require(
                 actual == *expected && actual.positive_native_kernel_ramdisk,
                 "unsupported RAM device-number query lacks same held kernel RAMdisk identity",
             )?;
-            Ok(OfflineRamStorageDevice::KernelRamdiskWithoutStorageDeviceNumber {
-                native_error: 1,
-                ram_device_object_name: actual.ram_device_object_name,
-            })
+            Ok(
+                OfflineRamStorageDevice::KernelRamdiskWithoutStorageDeviceNumber {
+                    native_error: 1,
+                    ram_device_object_name: actual.ram_device_object_name,
+                },
+            )
         }
         Err(error) => Err(error),
     }
@@ -567,12 +590,19 @@ struct ProtectedNativeLayoutWitness {
     native_layout: Vec<u8>,
 }
 impl ProtectedNativeLayoutWitness {
-    fn bytes<'a>(&'a self, source: &PartitionSourceBinding, boot: &OfflineBootIdentity,
-        physical: &File) -> io::Result<&'a [u8]> {
+    fn bytes<'a>(
+        &'a self,
+        source: &PartitionSourceBinding,
+        boot: &OfflineBootIdentity,
+        physical: &File,
+    ) -> io::Result<&'a [u8]> {
         use std::os::windows::io::AsRawHandle;
-        require(self.source == *source && self.boot == *boot
-            && self.physical_file_object == physical.as_raw_handle() as usize,
-            "held native witness lost actual physical FileObject/source/boot ownership")?;
+        require(
+            self.source == *source
+                && self.boot == *boot
+                && self.physical_file_object == physical.as_raw_handle() as usize,
+            "held native witness lost actual physical FileObject/source/boot ownership",
+        )?;
         Ok(&self.native_layout)
     }
 }
@@ -678,18 +708,26 @@ impl OfflineOwningEnvironment {
     pub fn require_current(&mut self, events: &mut Vec<NativeEvent>) -> io::Result<()> {
         self.require_current_at_attributes(self.facts.source_physical.disk_attributes, events)
     }
-    fn retain_current_boot_native_witness(&mut self, management: &File,
-        locked_volumes: &[File], events: &mut Vec<NativeEvent>) -> io::Result<()> {
+    fn retain_current_boot_native_witness(
+        &mut self,
+        management: &File,
+        locked_volumes: &[File],
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
         use std::os::windows::io::AsRawHandle;
-        require(self.protected_native_witness.is_none()
-            && self.facts.source_physical.disk_attributes == 0 && !locked_volumes.is_empty(),
-            "native witness requires actual initial disk0 state and current mounted-volume locks")?;
+        require(
+            self.protected_native_witness.is_none()
+                && self.facts.source_physical.disk_attributes == 0
+                && !locked_volumes.is_empty(),
+            "native witness requires actual initial disk0 state and current mounted-volume locks",
+        )?;
         self.require_current(events)?;
         source::require_physical_handle(management, &self.facts.source_physical, 0, None, events)?;
         self.protected_native_witness = Some(ProtectedNativeLayoutWitness {
-            source:self.source.clone(),boot:self.facts.boot.clone(),
-            physical_file_object:self.physical.as_raw_handle() as usize,
-            native_layout:self.facts.source_physical.gpt.native_layout.clone(),
+            source: self.source.clone(),
+            boot: self.facts.boot.clone(),
+            physical_file_object: self.physical.as_raw_handle() as usize,
+            native_layout: self.facts.source_physical.gpt.native_layout.clone(),
         });
         events.push(NativeEvent {
             operation:"offline-before-exclusion-complete-native-witness-held".into(),
@@ -706,14 +744,27 @@ impl OfflineOwningEnvironment {
     }
     fn protected_native_layout(&self, expected_attributes: u64) -> io::Result<Option<&[u8]>> {
         if matches!(expected_attributes, 1 | 3) {
-            self.protected_native_witness.as_ref()
-                .map(|w| w.bytes(&self.source, &self.facts.boot, &self.physical)).transpose()
-        } else { Ok(None) }
+            self.protected_native_witness
+                .as_ref()
+                .map(|w| w.bytes(&self.source, &self.facts.boot, &self.physical))
+                .transpose()
+        } else {
+            Ok(None)
+        }
     }
-    fn observe_held_source_file(&self, file: &mut File, expected_attributes: u64,
-        events: &mut Vec<NativeEvent>) -> io::Result<OfflineSourcePhysicalFacts> {
-        source_facts_with_native_witness(file, &self.source, self.budget,
-            self.protected_native_layout(expected_attributes)?, events)
+    fn observe_held_source_file(
+        &self,
+        file: &mut File,
+        expected_attributes: u64,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<OfflineSourcePhysicalFacts> {
+        source_facts_with_native_witness(
+            file,
+            &self.source,
+            self.budget,
+            self.protected_native_layout(expected_attributes)?,
+            events,
+        )
     }
     // SDK-owner-only bookend after its ACTUAL durable disk transition. Original
     // enrollment facts are never rewritten or reconstructed from a pin/DTO.
@@ -781,24 +832,35 @@ impl OfflineOwningEnvironment {
             "held RAM volume native identity changed",
         )?;
         let held_native = if matches!(expected_attributes, 1 | 3) {
-            self.protected_native_witness.as_ref()
-                .map(|w| w.bytes(&self.source, &self.facts.boot, &self.physical)).transpose()?
-        } else { None };
-        let actual = source_facts_with_native_witness(&mut self.physical,
-            &self.source, self.budget, held_native, events)?;
+            self.protected_native_witness
+                .as_ref()
+                .map(|w| w.bytes(&self.source, &self.facts.boot, &self.physical))
+                .transpose()?
+        } else {
+            None
+        };
+        let actual = source_facts_with_native_witness(
+            &mut self.physical,
+            &self.source,
+            self.budget,
+            held_native,
+            events,
+        )?;
         let original = &self.facts.source_physical;
         let unchanged = actual.device == original.device
-                && actual.length == original.length
-                && actual.alignment == original.alignment
-                && actual.gpt == original.gpt
-                && actual.disk_attributes == expected_attributes;
+            && actual.length == original.length
+            && actual.alignment == original.alignment
+            && actual.gpt == original.gpt
+            && actual.disk_attributes == expected_attributes;
         if !unchanged {
             let expected_native = &original.gpt.native_layout;
             let actual_native = &actual.gpt.native_layout;
             let first_native_difference = (0..expected_native.len().max(actual_native.len()))
                 .find(|at| expected_native.get(*at) != actual_native.get(*at))
-                .map(|at| serde_json::json!({"offset":at,
-                    "expected":expected_native.get(at),"actual":actual_native.get(at)}));
+                .map(|at| {
+                    serde_json::json!({"offset":at,
+                    "expected":expected_native.get(at),"actual":actual_native.get(at)})
+                });
             let detail = serde_json::json!({
                 "actual_disk_attributes":actual.disk_attributes,
                 "expected_disk_attributes":expected_attributes,
@@ -817,16 +879,22 @@ impl OfflineOwningEnvironment {
                 "facts_grant_authority":false,
             });
             events.push(NativeEvent {
-                operation:"offline-source-current-identity-protection-mismatch".into(),
-                control_code:0,input:Vec::new(),succeeded:false,native_error:None,
-                output:serde_json::to_vec(&detail).map_err(io::Error::other)?,
+                operation: "offline-source-current-identity-protection-mismatch".into(),
+                control_code: 0,
+                input: Vec::new(),
+                succeeded: false,
+                native_error: None,
+                output: serde_json::to_vec(&detail).map_err(io::Error::other)?,
             });
             return Err(invalid(&format!(
                 "offline source identity/protection changed: actual_attrs={}, expected_attrs={}; device_eq={}, length_eq={}, alignment_eq={}, full_GPT_eq={}, native_eq={}, first_native_diff={}",
-                actual.disk_attributes, expected_attributes,
-                actual.device==original.device, actual.length==original.length,
-                actual.alignment==original.alignment, actual.gpt==original.gpt,
-                actual_native==expected_native,
+                actual.disk_attributes,
+                expected_attributes,
+                actual.device == original.device,
+                actual.length == original.length,
+                actual.alignment == original.alignment,
+                actual.gpt == original.gpt,
+                actual_native == expected_native,
                 detail["first_native_difference"],
             )));
         }
@@ -898,6 +966,7 @@ impl OfflineOwningEnvironment {
 }
 
 pub use source::{
-    OfflinePreparedAvailableSource, OfflinePreparedTerminalSource, OfflineClosedJournalObservation, OfflineJournalReadView, OfflinePagedWriter,
-    OfflineSourceApplyGate, OfflineTerminalKind,
+    OfflineClosedJournalObservation, OfflineJournalReadView, OfflinePagedWriter,
+    OfflinePreparedAvailableSource, OfflinePreparedTerminalSource, OfflineSourceApplyGate,
+    OfflineTerminalKind,
 };

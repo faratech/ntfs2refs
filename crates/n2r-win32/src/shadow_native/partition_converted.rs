@@ -14,15 +14,21 @@ impl PartitionReadonlyFidelity {
     pub fn report(&self) -> &GeneralConvertedReport {
         &self.report
     }
-    pub fn filesystem(&self) -> &'static str { "ReFS" }
-    pub fn observed_label(&self) -> &crate::volume_label::VolumeLabel { &self.observed_label }
+    pub fn filesystem(&self) -> &'static str {
+        "ReFS"
+    }
+    pub fn observed_label(&self) -> &crate::volume_label::VolumeLabel {
+        &self.observed_label
+    }
     pub(crate) fn require_owner(
         &self,
         owner: &native::PartitionOwnerToken,
         binding: &GeneralDiskBinding,
     ) -> io::Result<()> {
         if !self.owner.same_owner(owner) || &self.binding != binding {
-            return Err(invalid("partition fidelity belongs to another actual restoration owner"));
+            return Err(invalid(
+                "partition fidelity belongs to another actual restoration owner",
+            ));
         }
         Ok(())
     }
@@ -35,10 +41,20 @@ fn actual_label(file: &File) -> io::Result<crate::volume_label::VolumeLabel> {
     // SAFETY: the actual held protected volume and fixed initialized buffers
     // stay live for this read-only native query.
     check(unsafe {
-        GetVolumeInformationByHandleW(file.as_raw_handle(), units.as_mut_ptr(), units.len() as u32,
-            &mut serial, &mut component, &mut flags, filesystem.as_mut_ptr(), filesystem.len() as u32)
+        GetVolumeInformationByHandleW(
+            file.as_raw_handle(),
+            units.as_mut_ptr(),
+            units.len() as u32,
+            &mut serial,
+            &mut component,
+            &mut flags,
+            filesystem.as_mut_ptr(),
+            filesystem.len() as u32,
+        )
     })?;
-    let end = units.iter().position(|unit| *unit == 0)
+    let end = units
+        .iter()
+        .position(|unit| *unit == 0)
         .ok_or_else(|| invalid("partition volume label is unterminated"))?;
     crate::volume_label::VolumeLabel::from_utf16(units[..end].to_vec())
 }
@@ -56,12 +72,16 @@ pub(crate) fn observe_partition_converted_readonly_with_memory(
     if protected.scope() != native::ReadonlyRefsScope::SelectedPartition
         || protected.binding() != &pair.source
     {
-        return Err(invalid("actual selected-partition read-only observation required"));
+        return Err(invalid(
+            "actual selected-partition read-only observation required",
+        ));
     }
-    let owner = protected.partition_owner_token()
+    let owner = protected
+        .partition_owner_token()
         .ok_or_else(|| invalid("partition read-only observation lost actual owner token"))?
         .clone();
-    let admission = resource_profile.resource_admission()?
+    let admission = resource_profile
+        .resource_admission()?
         .ok_or_else(|| invalid("partition converted metadata requires resource-bound input"))?;
     input.require_resource_metadata(admission)?;
     let binding = pair.source.clone();
@@ -77,7 +97,12 @@ pub(crate) fn observe_partition_converted_readonly_with_memory(
     )?;
     let report = if verify_known_contents {
         known_content_memory::verify_known_contents_in_accounted_report_with_lease(
-            report, input, admission, memory, &same_security, Some(protected),
+            report,
+            input,
+            admission,
+            memory,
+            &same_security,
+            Some(protected),
         )?
     } else {
         report
@@ -96,9 +121,18 @@ pub(crate) fn observe_partition_converted_readonly_with_memory(
         || closing.alignment != after.alignment
         || closing.layout != after.layout
         || actual_label(protected.volume())? != observed_label
-        || !protected.partition_owner_token().is_some_and(|token| token.same_owner(&owner))
+        || !protected
+            .partition_owner_token()
+            .is_some_and(|token| token.same_owner(&owner))
     {
-        return Err(invalid("actual partition changed after native converted fidelity"));
+        return Err(invalid(
+            "actual partition changed after native converted fidelity",
+        ));
     }
-    Ok(PartitionReadonlyFidelity { owner, binding, observed_label, report })
+    Ok(PartitionReadonlyFidelity {
+        owner,
+        binding,
+        observed_label,
+        report,
+    })
 }

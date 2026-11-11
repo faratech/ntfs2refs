@@ -4,17 +4,17 @@ use clap::Args;
 use std::path::PathBuf;
 
 #[cfg(windows)]
+#[path = "drive_boot.rs"]
+mod boot;
+#[cfg(windows)]
+#[path = "drive_partition.rs"]
+mod partition;
+#[cfg(windows)]
 #[path = "drive_resource.rs"]
 mod resource;
 #[cfg(windows)]
 #[path = "drive_staging.rs"]
 mod staging;
-#[cfg(windows)]
-#[path = "drive_partition.rs"]
-mod partition;
-#[cfg(windows)]
-#[path = "drive_boot.rs"]
-mod boot;
 
 #[derive(Args, Debug)]
 pub struct DriveArgs {
@@ -49,7 +49,7 @@ pub struct DriveArgs {
     pub recovery_sha256: Option<String>,
     /// Continue prepublication preparation on a different independent local
     /// volume. Saved source evidence and the existing shadow are reused.
-    #[arg(long, requires="recover", conflicts_with="rollback")]
+    #[arg(long, requires = "recover", conflicts_with = "rollback")]
     pub resume_workspace: Option<PathBuf>,
     /// Restore NTFS, or cancel unfinished preparation, before handoff only.
     #[arg(long, requires = "recover")]
@@ -111,7 +111,11 @@ pub struct DriveArgs {
     pub acknowledge_controlled_post_flush_pause: bool,
 }
 fn parse_controlled_pause_nonce(value: &str) -> std::result::Result<String, String> {
-    if value.len() == 64 && value.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+    if value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
         Ok(value.to_owned())
     } else {
         Err("controlled pause requires an independently chosen64-character lowercase hexadecimal nonce".into())
@@ -436,19 +440,37 @@ mod windows {
             if has_preparation
                 && super::resource::preparation_intent_matches(&directory, &checksum)?
             {
-                return super::resource::recover_preparation_in_workspace(&directory, &checksum, args.rollback,args.resume_workspace.as_deref());
+                return super::resource::recover_preparation_in_workspace(
+                    &directory,
+                    &checksum,
+                    args.rollback,
+                    args.resume_workspace.as_deref(),
+                );
             }
             if directory.join("recovery-envelope.json").exists() {
-                ensure!(args.resume_workspace.is_none(),"published conversion recovery uses its original workspace");
+                ensure!(
+                    args.resume_workspace.is_none(),
+                    "published conversion recovery uses its original workspace"
+                );
                 return super::resource::recover(&directory, &checksum, args.rollback);
             }
             if has_preparation {
                 // Preserve a bad/missing pin as a hard refusal in its selected
                 // protocol. Do not fall back to a legacy recovery writer.
-                return super::resource::recover_preparation_in_workspace(&directory, &checksum, args.rollback,args.resume_workspace.as_deref());
+                return super::resource::recover_preparation_in_workspace(
+                    &directory,
+                    &checksum,
+                    args.rollback,
+                    args.resume_workspace.as_deref(),
+                );
             }
-            ensure!(args.resume_workspace.is_none(),"workspace continuation requires a pinned prepublication checkpoint");
-            if let Some(result) = super::partition::try_recover(&directory, &checksum, args.rollback)? {
+            ensure!(
+                args.resume_workspace.is_none(),
+                "workspace continuation requires a pinned prepublication checkpoint"
+            );
+            if let Some(result) =
+                super::partition::try_recover(&directory, &checksum, args.rollback)?
+            {
                 return Ok(result);
             }
             return crate::drive_recovery::run(&directory, &checksum, args.rollback);
@@ -488,19 +510,35 @@ mod windows {
         );
         // Inventory is routing only. The partition path independently probes
         // actual source/GPT/current-Windows roles before any write admission.
-        if !args.windows_boot_volume && inventory.disks.iter().any(|disk| disk.disk_number == selected.disk_number
-            && disk.contains_running_windows == Some(true)) {
-            let before = discovery::discover(&selected.volume_guid_path,
-                Role::Journal { allow_additional_partitions: true })?;
+        if !args.windows_boot_volume
+            && inventory.disks.iter().any(|disk| {
+                disk.disk_number == selected.disk_number
+                    && disk.contains_running_windows == Some(true)
+            })
+        {
+            let before = discovery::discover(
+                &selected.volume_guid_path,
+                Role::Journal {
+                    allow_additional_partitions: true,
+                },
+            )?;
             return super::partition::convert(&args, selected, before);
         }
-        ensure!(args.controlled_post_flush_pause_nonce.is_none()
-            && !args.acknowledge_controlled_post_flush_pause,
-            "controlled post-flush qualification flags apply only to a data partition sharing the current Windows disk; dedicated conversion does not accept them");
-        let source_role = if args.windows_boot_volume {Role::OfflineWindowsSource}else{Role::Source};
+        ensure!(
+            args.controlled_post_flush_pause_nonce.is_none()
+                && !args.acknowledge_controlled_post_flush_pause,
+            "controlled post-flush qualification flags apply only to a data partition sharing the current Windows disk; dedicated conversion does not accept them"
+        );
+        let source_role = if args.windows_boot_volume {
+            Role::OfflineWindowsSource
+        } else {
+            Role::Source
+        };
         if args.windows_boot_volume {
-            ensure!(args.target_format.as_deref().unwrap_or("dev-drive")=="dev-drive",
-                "the demonstrated Windows boot profile uses the native Dev Drive target format");
+            ensure!(
+                args.target_format.as_deref().unwrap_or("dev-drive") == "dev-drive",
+                "the demonstrated Windows boot profile uses the native Dev Drive target format"
+            );
         }
         let before = discovery::discover(&selected.volume_guid_path, source_role)
             .map_err(|error| if error.raw_os_error() == Some(5) {
@@ -510,7 +548,9 @@ mod windows {
             before.filesystem == "NTFS",
             "selected partition must currently be NTFS"
         );
-        if args.windows_boot_volume {super::boot::validate(&before.binding)?;}
+        if args.windows_boot_volume {
+            super::boot::validate(&before.binding)?;
+        }
         let resources = if !args.whole_image_verification {
             crate::ntfs_admission::ResourceProfile::ResourceBoundedV4(None)
         } else {
@@ -577,10 +617,14 @@ mod windows {
                 "Reduced scratch: rollback restores allocated NTFS data and metadata; unused-space contents may change. Volumes with VSS snapshots or hosted diff areas are refused."
             );
         }
-        if args.windows_boot_volume { super::boot::describe_geometry(&before.binding); }
+        if args.windows_boot_volume {
+            super::boot::describe_geometry(&before.binding);
+        }
         if args.diagnose {
             crate::resource_preparation::set_diagnose();
-            println!("Diagnose mode: every per-object failure is reported and nothing is written to the source.");
+            println!(
+                "Diagnose mode: every per-object failure is reported and nothing is written to the source."
+            );
         }
         if args.recheck_everything {
             crate::resource_preparation::set_recheck_everything();
@@ -619,8 +663,10 @@ mod windows {
         thin_shadow: bool,
         thin_backing_bytes: Option<u64>,
     ) -> Result<u8> {
-        let system = n2r_win32::current_windows_directory()?.to_str()
-            .context("Unicode native Windows directory required")?.to_owned();
+        let system = n2r_win32::current_windows_directory()?
+            .to_str()
+            .context("Unicode native Windows directory required")?
+            .to_owned();
         let os_root = format!(
             "{}\\",
             system
@@ -711,15 +757,24 @@ mod windows {
             &run.join("drive-selection.json"),
             &serde_json::json!({"selected":selected,"source":before,"confirmation":"interactive affirmative","journal_budget_bytes":journal_bytes,"requested_target_format":target_format,"explicit_trust_or_filter_configuration_requested":false,"source_write_authority":false}),
         )?;
-        let native_creation_admission = if thin_shadow { None } else {
-            let admitted = n2r_win32::managed_shadow::admit_fresh_native_backing(&run.join("shadow.vhdx"))?;
-            save_new(&run.join("native-shadow-creation-admission.json"), &admitted.observe()?)?;
+        let native_creation_admission = if thin_shadow {
+            None
+        } else {
+            let admitted =
+                n2r_win32::managed_shadow::admit_fresh_native_backing(&run.join("shadow.vhdx"))?;
+            save_new(
+                &run.join("native-shadow-creation-admission.json"),
+                &admitted.observe()?,
+            )?;
             Some(admitted)
         };
         let before = if before.binding.layout_profile
-            == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows {
+            == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+        {
             super::boot::normalize_geometry(before, &run)?
-        } else { before };
+        } else {
+            before
+        };
         println!(
             "Preparing temporary ReFS metadata storage. Recovery files: {}",
             run.display()
@@ -762,8 +817,10 @@ mod windows {
                 owner.format(before.binding.identity.partition_bytes, target_format)?,
             )
         } else {
-            native_creation_admission.as_ref()
-                .context("native shadow creation capacity owner absent")?.check()?;
+            native_creation_admission
+                .as_ref()
+                .context("native shadow creation capacity owner absent")?
+                .check()?;
             super::staging::StageOwner::Vhdx(n2r_win32::managed_shadow::create_with_profile(
                 &run.join("shadow.vhdx"),
                 before.binding.identity.partition_bytes,
@@ -772,7 +829,9 @@ mod windows {
                 target_format,
             )?)
         };
-        if let Some(admitted) = &native_creation_admission { admitted.check()?; }
+        if let Some(admitted) = &native_creation_admission {
+            admitted.check()?;
+        }
         let provider_commitment = staged.initial_host_backing_commitment()?;
         // Record the provider identity as well as the disk identity: a guest
         // reboot can remove the attachment while leaving the recovery backing

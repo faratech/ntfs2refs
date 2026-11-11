@@ -197,7 +197,10 @@ pub fn reconcile(
             usize::from(file.hard_link_count) == file.names.len()
                 && (!file.is_directory || links == 1),
             "NTFS FILE {} header/name count differs: header={}, names={}, canonical={}",
-            file.record_number, file.hard_link_count, file.names.len(), links
+            file.record_number,
+            file.hard_link_count,
+            file.names.len(),
+            links
         );
         for name in &file.names {
             ensure!(
@@ -459,9 +462,13 @@ fn reconcile_domains_with_link_counter_hint(
         let links = file.names.iter().filter(|name| name.namespace != 2).count();
         ensure!(
             (header_is_hint || usize::from(file.hard_link_count) == file.names.len())
-                && (!header_is_hint || links != 0) && (!file.is_directory || links == 1),
+                && (!header_is_hint || links != 0)
+                && (!file.is_directory || links == 1),
             "NTFS FILE {} header/name count differs: header={}, names={}, canonical={}",
-            file.record_number,file.hard_link_count,file.names.len(),links
+            file.record_number,
+            file.hard_link_count,
+            file.names.len(),
+            links
         );
         if file.is_directory {
             file_directories += 1;

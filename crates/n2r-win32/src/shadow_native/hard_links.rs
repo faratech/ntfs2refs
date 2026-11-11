@@ -275,10 +275,13 @@ pub(super) fn create_owned_resource_domain(
     create_owned_domain_inner(input, handles, Some((maximum_names, root, payer)), false)
 }
 pub(super) fn reconcile_owned_resource_domain(
-    input:&impl InputDomain,handles:&BTreeMap<usize,File>,maximum_names:usize,
-    root:&str,payer:&dyn report_memory::ReportMemoryAccountant,
-)->io::Result<Vec<serde_json::Value>>{
-    create_owned_domain_inner(input,handles,Some((maximum_names,root,payer)),true)
+    input: &impl InputDomain,
+    handles: &BTreeMap<usize, File>,
+    maximum_names: usize,
+    root: &str,
+    payer: &dyn report_memory::ReportMemoryAccountant,
+) -> io::Result<Vec<serde_json::Value>> {
+    create_owned_domain_inner(input, handles, Some((maximum_names, root, payer)), true)
 }
 /// The directory entry a path names: its file identity and attributes, or
 /// None when there is no such entry. A name is unique in its directory, so
@@ -287,11 +290,19 @@ pub(super) fn reconcile_owned_resource_domain(
 fn entry_by_name(path: &str) -> io::Result<Option<(Vec<u8>, u32)>> {
     use std::os::windows::fs::OpenOptionsExt;
     // FILE_READ_ATTRIBUTES; backup semantics; the entry itself, never its target.
-    match File::options().access_mode(0x80).share_mode(7).custom_flags(0x0220_0000).open(path) {
+    match File::options()
+        .access_mode(0x80)
+        .share_mode(7)
+        .custom_flags(0x0220_0000)
+        .open(path)
+    {
         Ok(file) => {
             let identity = info(&file, 18, 24)?;
             let basic = info(&file, 0, 40)?;
-            Ok(Some((identity[8..24].to_vec(), layout::u32_at(&basic, 32)?)))
+            Ok(Some((
+                identity[8..24].to_vec(),
+                layout::u32_at(&basic, 32)?,
+            )))
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
@@ -302,7 +313,7 @@ fn create_owned_domain_inner(
     input: &impl InputDomain,
     handles: &BTreeMap<usize, File>,
     resources: Option<(usize, &str, &dyn report_memory::ReportMemoryAccountant)>,
-    recovering:bool,
+    recovering: bool,
 ) -> io::Result<Vec<serde_json::Value>> {
     if !input.any(|i| !i.additional_names.is_empty())? {
         return Ok(Vec::new());
@@ -335,9 +346,11 @@ fn create_owned_domain_inner(
     if resources.is_some() {
         input.for_each(|_, item| {
             for path in paths(item).filter(|path| !path.is_empty()) {
-                let (_, count) = directories.get_mut(&path[..path.len() - 1])
+                let (_, count) = directories
+                    .get_mut(&path[..path.len() - 1])
                     .ok_or_else(|| invalid("resource hard-link child has no owned parent"))?;
-                *count = count.checked_add(1)
+                *count = count
+                    .checked_add(1)
                     .ok_or_else(|| invalid("resource hard-link child count overflow"))?;
             }
             Ok(())
@@ -354,11 +367,15 @@ fn create_owned_domain_inner(
         let file = handles
             .get(&index)
             .ok_or_else(|| invalid("owned canonical link handle missing"))?;
-        if recovering&&crate::reparse_native::capture(file)?.is_some(){validate_bound_type(file,item)?;}
-        else{validate_open_type(file, false)?;}
+        if recovering && crate::reparse_native::capture(file)?.is_some() {
+            validate_bound_type(file, item)?;
+        } else {
+            validate_open_type(file, false)?;
+        }
         let identity = info(file, 18, 24)?;
-        let mut current_links=layout::u32_at(&info(file,1,24)?,16)?;
-        if (!recovering&&current_links!=1)||current_links==0||current_links>count(item)? {
+        let mut current_links = layout::u32_at(&info(file, 1, 24)?, 16)?;
+        if (!recovering && current_links != 1) || current_links == 0 || current_links > count(item)?
+        {
             return Err(invalid("fresh canonical file already has additional links"));
         }
         for (number, path) in item.additional_names.iter().enumerate() {
@@ -379,24 +396,35 @@ fn create_owned_domain_inner(
             // Listing the whole parent before and after every link was
             // quadratic: thousands of links into a directory of thousands.
             let by_name = resources.map(|(_, root, _)| format!("{root}{}", path.join("\\")));
-            let (enumeration_budget, _enumeration_memory) = if let Some((maximum_names, _, payer)) = resources {
-                if parent_children > maximum_names {
-                    return Err(invalid("resource hard-link parent exceeds admitted namespace"));
-                }
-                let evidence = parent_children.checked_add(2).and_then(|n| n.checked_mul(4096))
-                    .and_then(|n| n.checked_add(namespace_layout::CAPACITY * 4))
-                    .ok_or_else(|| invalid("resource hard-link enumeration overflow"))?;
-                let memory = if by_name.is_some() { None } else {
-                    Some(payer.reserve((evidence as u64).checked_mul(2)
-                        .ok_or_else(|| invalid("resource hard-link enumeration RAM overflow"))?)?)
+            let (enumeration_budget, _enumeration_memory) =
+                if let Some((maximum_names, _, payer)) = resources {
+                    if parent_children > maximum_names {
+                        return Err(invalid(
+                            "resource hard-link parent exceeds admitted namespace",
+                        ));
+                    }
+                    let evidence = parent_children
+                        .checked_add(2)
+                        .and_then(|n| n.checked_mul(4096))
+                        .and_then(|n| n.checked_add(namespace_layout::CAPACITY * 4))
+                        .ok_or_else(|| invalid("resource hard-link enumeration overflow"))?;
+                    let memory = if by_name.is_some() {
+                        None
+                    } else {
+                        Some(payer.reserve((evidence as u64).checked_mul(2).ok_or_else(
+                            || invalid("resource hard-link enumeration RAM overflow"),
+                        )?)?)
+                    };
+                    (Some(evidence), memory)
+                } else {
+                    (None, None)
                 };
-                (Some(evidence), memory)
-            } else { (None, None) };
-            let native_name:Vec<u16>=name.encode_utf16().collect();
+            let native_name: Vec<u16> = name.encode_utf16().collect();
             let named = |parent: &File| -> io::Result<Vec<(Vec<u8>, u32)>> {
                 match &by_name {
                     Some(path) => Ok(entry_by_name(path)?.into_iter().collect()),
-                    None => Ok(enumerate_with_resource_budget(parent, enumeration_budget)?.into_iter()
+                    None => Ok(enumerate_with_resource_budget(parent, enumeration_budget)?
+                        .into_iter()
                         .filter(|entry| entry.name_utf16 == native_name)
                         .map(|entry| (entry.file_id.to_vec(), entry.attributes))
                         .collect()),
@@ -408,18 +436,29 @@ fn create_owned_domain_inner(
                     "hard-link destination exists or is on a different volume",
                 ));
             }
-            if !existing.is_empty(){
-                if !recovering||existing.len()!=1||existing[0].0!=identity[8..24]
-                    ||(existing[0].1&16!=0)||info(file,18,24)?!=identity
-                    ||info(parent,18,24)?!=parent_id {
-                    return Err(invalid("existing hard-link destination differs from the held canonical identity"));
+            if !existing.is_empty() {
+                if !recovering
+                    || existing.len() != 1
+                    || existing[0].0 != identity[8..24]
+                    || (existing[0].1 & 16 != 0)
+                    || info(file, 18, 24)? != identity
+                    || info(parent, 18, 24)? != parent_id
+                {
+                    return Err(invalid(
+                        "existing hard-link destination differs from the held canonical identity",
+                    ));
                 }
                 continue;
             }
             input.before_mutation(0)?;
             create_link(file, parent, name)?;
-            let expected =if recovering {current_links.checked_add(1).ok_or_else(||invalid("recovered link count overflow"))?}
-                else{u32::try_from(number + 2).map_err(|_| invalid("hard-link count overflow"))?};
+            let expected = if recovering {
+                current_links
+                    .checked_add(1)
+                    .ok_or_else(|| invalid("recovered link count overflow"))?
+            } else {
+                u32::try_from(number + 2).map_err(|_| invalid("hard-link count overflow"))?
+            };
             if info(file, 18, 24)? != identity
                 || info(parent, 18, 24)? != parent_id
                 || layout::u32_at(&info(file, 1, 24)?, 16)? != expected
@@ -439,10 +478,14 @@ fn create_owned_domain_inner(
                 serde_json::json!({"components":path,"canonical_components":item.components,
                 "file_id":&identity[8..24],"link_count":expected,"replace_if_exists":false}),
             );
-            current_links=expected;
+            current_links = expected;
         }
-        if layout::u32_at(&info(file,1,24)?,16)?!=count(item)?||info(file,18,24)?!=identity{
-            return Err(invalid("complete recovered hard-link count or identity differs"));
+        if layout::u32_at(&info(file, 1, 24)?, 16)? != count(item)?
+            || info(file, 18, 24)? != identity
+        {
+            return Err(invalid(
+                "complete recovered hard-link count or identity differs",
+            ));
         }
     }
     Ok(created)

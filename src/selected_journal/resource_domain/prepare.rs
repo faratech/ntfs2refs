@@ -8,16 +8,20 @@ use crate::selected_journal::{
     put_u64, verify_zero_selected,
 };
 use crate::{
-    general_shadow::paged_capture::CaptureRevalidation,
     general_reconstruct::selected_native_journal::{
         BoundNativeCreationFacts, BoundNativeCreationJournal, NativeSelectedJournal,
     },
+    general_shadow::paged_capture::CaptureRevalidation,
     lab_reconstruct::{DurableIo, ReadSeek},
 };
 
 mod qualification;
 pub(super) use qualification::FrozenPreparedWitness;
-pub(crate) use qualification::partition_apply::{WindowsPreparedBundleCore,WindowsPreparedArtifact,PartitionResourcePreparedConversion,PartitionFreshApply,PartitionExecutionOutcome,PartitionApplyOutcome,PartitionApplyFailure,PartitionRetainedVerification,PartitionPostFlushReceipt};
+pub(crate) use qualification::partition_apply::{
+    PartitionApplyFailure, PartitionApplyOutcome, PartitionExecutionOutcome, PartitionFreshApply,
+    PartitionPostFlushReceipt, PartitionResourcePreparedConversion, PartitionRetainedVerification,
+    WindowsPreparedArtifact, WindowsPreparedBundleCore,
+};
 pub(crate) use qualification::{
     FirstFlushedWrite, ResourceAppliedConversion, ResourceFreshApply, ResourcePreparedConversion,
 };
@@ -68,16 +72,19 @@ impl PartitionProtectedPreparedJournal<'_, '_, '_, '_, '_> {
     /// Advisory same-held-file metadata and already computed format facts.
     /// Errors remain unknown telemetry; this does not revalidate/hash payloads
     /// or participate in source admission, reservation or writer decisions.
-    pub(crate) fn pre_apply_accounting(&self)->serde_json::Value{
-        let capture=self.candidate.protected_proof().captured();
-        let literal=capture.literal().pin();let index=capture.index().pin();
-        let literal_allocation=capture.literal().observe_allocation_bytes();
-        let index_allocation=capture.index().observe_allocation_bytes();
-        let arena=self.context.arena();let usage=arena.usage();
-        let native_journal=arena.observe_native_journal_metadata();
-        let journal_sample=native_journal.as_ref().ok().and_then(|v|v.as_ref());
-        let reads=capture.summary().get("read_counts");let f=self.domain.facts();
-        let mut report=serde_json::json!({"kind":"pre-ap-resource-accounting-v1","source_scope":"selected_partition",
+    pub(crate) fn pre_apply_accounting(&self) -> serde_json::Value {
+        let capture = self.candidate.protected_proof().captured();
+        let literal = capture.literal().pin();
+        let index = capture.index().pin();
+        let literal_allocation = capture.literal().observe_allocation_bytes();
+        let index_allocation = capture.index().observe_allocation_bytes();
+        let arena = self.context.arena();
+        let usage = arena.usage();
+        let native_journal = arena.observe_native_journal_metadata();
+        let journal_sample = native_journal.as_ref().ok().and_then(|v| v.as_ref());
+        let reads = capture.summary().get("read_counts");
+        let f = self.domain.facts();
+        let mut report = serde_json::json!({"kind":"pre-ap-resource-accounting-v1","source_scope":"selected_partition",
             "phase":"native-journal-prepared-before-publication","metadata_queries_only":true,
             "admitted_arena_ram_bytes":arena.budget().ram_bytes,
             "capture_literal_file_bytes":literal.snapshot.file_bytes,
@@ -97,7 +104,7 @@ impl PartitionProtectedPreparedJournal<'_, '_, '_, '_, '_> {
             "selected_bytes":f.selected_bytes,"old_zero_bytes":f.old_zero_bytes,"source_free_bytes":f.source_free_bytes,
             "new_zero_bytes":f.new_zero_bytes,"copy_bytes":f.copy_bytes,"literal_bytes":f.literal_bytes,
             "classification_basis":"journal encoding classes, not file relocation or source-device I/O counters"});
-        let counters=serde_json::json!({
+        let counters = serde_json::json!({
             "retained_file_payload_bytes":Option::<u64>::None,"relocated_file_payload_bytes":Option::<u64>::None,
             "source_payload_bytes_read_total":Option::<u64>::None,"source_payload_bytes_written_total":Option::<u64>::None,
             "capture_source_logical_bytes":reads.and_then(|v|v.get("source_logical_bytes")).and_then(serde_json::Value::as_u64),
@@ -112,24 +119,34 @@ impl PartitionProtectedPreparedJournal<'_, '_, '_, '_, '_> {
             "arena_registry_ram_bytes":usage.as_ref().ok().map(|u|u.registry_ram_bytes),
             "arena_observation_error":usage.as_ref().err().map(ToString::to_string),
             "peak_RAM_or_allocation_measured":false,"source_or_replay_authority_granted":false});
-        if let (Some(report),serde_json::Value::Object(counters))=(report.as_object_mut(),counters){
+        if let (Some(report), serde_json::Value::Object(counters)) =
+            (report.as_object_mut(), counters)
+        {
             report.extend(counters);
         }
         report
     }
-    pub(crate) fn revalidate(&mut self, events:&mut Vec<n2r_win32::NativeEvent>) -> Result<()> {
+    pub(crate) fn revalidate(&mut self, events: &mut Vec<n2r_win32::NativeEvent>) -> Result<()> {
         let proof = self.candidate.protected_proof();
         let result = proof.captured().with_revalidation(|witness| {
             self.domain.revalidate()?;
             self.candidate.require_domain(self.domain)?;
             self.candidate.revalidate_partition_with_capture_witness(
-                self.context, self.shadow, events, witness)?;
+                self.context,
+                self.shadow,
+                events,
+                witness,
+            )?;
             self.facts.revalidate_source(self.context, events)?;
-            self.journal.revalidate_resource_preparation(&self.facts.native, &self.ticket)?;
-            self.write_index.require_same_sealed_journal(self.journal, &self.ticket)?;
-            ensure!(selected_journal::classify(self.journal, &self.ticket)?
-                == selected_journal::SelectedLifecycle::PreparedClear,
-                "partition prepared journal is no longer actual clear state");
+            self.journal
+                .revalidate_resource_preparation(&self.facts.native, &self.ticket)?;
+            self.write_index
+                .require_same_sealed_journal(self.journal, &self.ticket)?;
+            ensure!(
+                selected_journal::classify(self.journal, &self.ticket)?
+                    == selected_journal::SelectedLifecycle::PreparedClear,
+                "partition prepared journal is no longer actual clear state"
+            );
             self.domain.revalidate()?;
             Ok(())
         });
@@ -139,14 +156,16 @@ impl PartitionProtectedPreparedJournal<'_, '_, '_, '_, '_> {
             (Err(error), _) | (_, Err(error)) => Err(error),
         }
     }
-    pub(crate) fn prepared_index(&self) -> &super::reopen::PreparedJournalIndex { &self.write_index }
+    pub(crate) fn prepared_index(&self) -> &super::reopen::PreparedJournalIndex {
+        &self.write_index
+    }
     /// Non-escaping metadata bridge for the versioned partition publisher.
     /// The actual sealed creation J/facts/ticket/context remain borrowed and
     /// every source/capture/index/lifecycle close runs even on callback error.
     /// It is not an apply issuer and exposes no writable source handle.
     pub(crate) fn with_actual_publication_owners<T>(
         &mut self,
-        events:&mut Vec<n2r_win32::NativeEvent>,
+        events: &mut Vec<n2r_win32::NativeEvent>,
         action:impl FnOnce(
             &mut NativeSelectedJournal,
             &crate::general_reconstruct::selected_native_journal::BoundPartitionCreationFacts<'_>,
@@ -155,24 +174,41 @@ impl PartitionProtectedPreparedJournal<'_, '_, '_, '_, '_> {
             &mut crate::general_source_admission::resource::partition::PartitionResourceSourceContext,
             &mut Vec<n2r_win32::NativeEvent>,
         )->Result<T>,
-    )->Result<T> {
+    ) -> Result<T> {
         self.revalidate(events)?;
-        let result=action(self.journal,&self.facts,&self.ticket,&self.write_index,self.context,events);
-        let closing=self.revalidate(events);
-        match (result,closing) {
-            (Ok(value),Ok(()))=>Ok(value),
-            (Err(error),_)|(_,Err(error))=>Err(error),
+        let result = action(
+            self.journal,
+            &self.facts,
+            &self.ticket,
+            &self.write_index,
+            self.context,
+            events,
+        );
+        let closing = self.revalidate(events);
+        match (result, closing) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Err(error), _) | (_, Err(error)) => Err(error),
         }
     }
     /// Read-only routing facts for the later explicitly scoped metadata
     /// publisher. This clone cannot recreate any held owner or writer.
-    pub(crate) fn locator_facts(&mut self, events:&mut Vec<n2r_win32::NativeEvent>) -> Result<PreparedLocatorFacts> {
+    pub(crate) fn locator_facts(
+        &mut self,
+        events: &mut Vec<n2r_win32::NativeEvent>,
+    ) -> Result<PreparedLocatorFacts> {
         self.revalidate(events)?;
-        let f=&self.facts.native;
-        Ok(PreparedLocatorFacts {source:f.source.clone(), shadow:f.shadow.clone(),
-            journal_binding:f.binding.clone(), journal_identity:f.identity.clone(),
-            journal_path:f.path.to_path_buf(), profile:f.profile, marker_use:f.marker_use,
-            marker_native_qualified:None, ticket:self.ticket.clone()})
+        let f = &self.facts.native;
+        Ok(PreparedLocatorFacts {
+            source: f.source.clone(),
+            shadow: f.shadow.clone(),
+            journal_binding: f.binding.clone(),
+            journal_identity: f.identity.clone(),
+            journal_path: f.path.to_path_buf(),
+            profile: f.profile,
+            marker_use: f.marker_use,
+            marker_native_qualified: None,
+            ticket: self.ticket.clone(),
+        })
     }
 }
 
@@ -180,82 +216,129 @@ impl PartitionProtectedPreparedJournal<'_, '_, '_, '_, '_> {
 /// OLD bytes come from the actual partition owner and NEW/COPY/zero bytes from
 /// the actual protected candidate. No GeneralFrozen source is fabricated.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn prepare_native_partition_from_protected_capture<'journal,'domain,'capture,'proof,'scope>(
-    domain:&'domain ResourceJournalDomain<'capture>,
+pub(crate) fn prepare_native_partition_from_protected_capture<
+    'journal,
+    'domain,
+    'capture,
+    'proof,
+    'scope,
+>(
+    domain: &'domain ResourceJournalDomain<'capture>,
     context:&'scope mut crate::general_source_admission::resource::partition::PartitionResourceSourceContext,
-    shadow:&'scope mut n2r_win32::GeneralFrozenPartition,
-    candidate:&'scope mut super::captured_candidate::ProtectedCapturedCandidate<'proof>,
+    shadow: &'scope mut n2r_win32::GeneralFrozenPartition,
+    candidate: &'scope mut super::captured_candidate::ProtectedCapturedCandidate<'proof>,
     creation:&'journal mut crate::general_reconstruct::selected_native_journal::BoundPartitionCreationJournal,
-    index_group:&ArtifactGroupPermit,
-    index_scratch:&SourceScratch,
-    index_path:&std::path::Path,
-    maximum_index_bytes:u64,
-    events:&mut Vec<n2r_win32::NativeEvent>,
-) -> Result<PartitionProtectedPreparedJournal<'journal,'domain,'capture,'proof,'scope>> {
+    index_group: &ArtifactGroupPermit,
+    index_scratch: &SourceScratch,
+    index_path: &std::path::Path,
+    maximum_index_bytes: u64,
+    events: &mut Vec<n2r_win32::NativeEvent>,
+) -> Result<PartitionProtectedPreparedJournal<'journal, 'domain, 'capture, 'proof, 'scope>> {
     domain.revalidate()?;
     candidate.require_domain(domain)?;
     candidate.revalidate_partition(context, shadow, events)?;
-    let shadow_before=shadow.state(events)?;
-    let f=domain.facts;
-    ensure!(shadow_before.disk_attributes==3 && f.marker_profile.is_none()
-        && context.binding().storage.identity.partition_bytes==f.image_length
-        && n2r_win32::GeneralFrozenPartition::byte_len(shadow)==f.image_length
-        && candidate.byte_len()?==f.image_length,
-        "partition source/shadow/candidate length or marker profile differs");
-    let memory=domain.scratch.lease_ram(12*BUFFER as u64)?;
-    let (journal,facts)=creation.split_for_partition_preparation(context,events)?;
-    let capture_group=domain.scratch.artifact_group().context("partition capture arena absent")?;
-    let quota=f.journal_length.checked_add(capture_group.arena().allocation_slack_bytes())
+    let shadow_before = shadow.state(events)?;
+    let f = domain.facts;
+    ensure!(
+        shadow_before.disk_attributes == 3
+            && f.marker_profile.is_none()
+            && context.binding().storage.identity.partition_bytes == f.image_length
+            && n2r_win32::GeneralFrozenPartition::byte_len(shadow) == f.image_length
+            && candidate.byte_len()? == f.image_length,
+        "partition source/shadow/candidate length or marker profile differs"
+    );
+    let memory = domain.scratch.lease_ram(12 * BUFFER as u64)?;
+    let (journal, facts) = creation.split_for_partition_preparation(context, events)?;
+    let capture_group = domain
+        .scratch
+        .artifact_group()
+        .context("partition capture arena absent")?;
+    let quota = f
+        .journal_length
+        .checked_add(capture_group.arena().allocation_slack_bytes())
         .context("partition journal quota overflow")?;
-    ensure!(facts.native.source==&context.binding().storage
-        && facts.native.shadow==shadow.binding()
-        && facts.native.marker_profile.is_none()
-        && facts.native.expected_journal_length==f.journal_length
-        && f.journal_length<=facts.native.profile.max_journal_bytes()
-        && facts.native.journal_quota.group()==ArtifactGroup::NativeJournal
-        && facts.native.journal_quota.arena().same_arena(capture_group.arena())
-        && facts.native.journal_quota.maximum_bytes()?==quota
-        && index_group.group()==ArtifactGroup::RecoveryCopy
-        && index_group.arena().same_arena(capture_group.arena()),
-        "partition actual J/profile/quota/index ownership differs");
-    let volume=format!("{}\\",facts.native.binding.disk.volume_path()?);
-    ensure!(n2r_win32::discovery::observe_volume_space(&volume)?.available_bytes_to_caller
-        >=f.journal_length,"actual partition J volume lacks calculated space");
-    let prepared=context.with_publication_handoff(events,|source,admission,stable,events| {
-        ensure!(facts.source_owner.same_owner(stable),"partition OLD reader is another actual owner");
-        admission.revalidate_publication_handoff(source,facts.guard_pin,events)?;
+    ensure!(
+        facts.native.source == &context.binding().storage
+            && facts.native.shadow == shadow.binding()
+            && facts.native.marker_profile.is_none()
+            && facts.native.expected_journal_length == f.journal_length
+            && f.journal_length <= facts.native.profile.max_journal_bytes()
+            && facts.native.journal_quota.group() == ArtifactGroup::NativeJournal
+            && facts
+                .native
+                .journal_quota
+                .arena()
+                .same_arena(capture_group.arena())
+            && facts.native.journal_quota.maximum_bytes()? == quota
+            && index_group.group() == ArtifactGroup::RecoveryCopy
+            && index_group.arena().same_arena(capture_group.arena()),
+        "partition actual J/profile/quota/index ownership differs"
+    );
+    let volume = format!("{}\\", facts.native.binding.disk.volume_path()?);
+    ensure!(
+        n2r_win32::discovery::observe_volume_space(&volume)?.available_bytes_to_caller
+            >= f.journal_length,
+        "actual partition J volume lacks calculated space"
+    );
+    let prepared = context.with_publication_handoff(events, |source, admission, stable, events| {
+        ensure!(
+            facts.source_owner.same_owner(stable),
+            "partition OLD reader is another actual owner"
+        );
+        admission.revalidate_publication_handoff(source, facts.guard_pin, events)?;
         // Unchanged core performs complete source/capture descriptors, payload,
         // COPY, canonical-zero/source-free framing and independent readback.
-        let result=prepare_inner(domain,source,candidate,journal,true,None);
-        let closing=admission.revalidate_publication_handoff(source,facts.guard_pin,events);
-        match (result,closing) {
-            (Ok(value),Ok(()))=>Ok(value),
-            (Err(error),_)=>Err(error),
-            (_,Err(error))=>Err(error.into()),
+        let result = prepare_inner(domain, source, candidate, journal, true, None);
+        let closing = admission.revalidate_publication_handoff(source, facts.guard_pin, events);
+        match (result, closing) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Err(error), _) => Err(error),
+            (_, Err(error)) => Err(error.into()),
         }
     });
-    let closing=candidate.revalidate_partition(context,shadow,events);
-    let (ticket,_whole)=match (prepared,closing) {
-        (Ok(value),Ok(()))=>value,
-        (Err(error),_)|(_,Err(error))=>return Err(error),
+    let closing = candidate.revalidate_partition(context, shadow, events);
+    let (ticket, _whole) = match (prepared, closing) {
+        (Ok(value), Ok(())) => value,
+        (Err(error), _) | (_, Err(error)) => return Err(error),
     };
-    ensure!(ticket.marker_profile.is_none() && ticket.journal_length==f.journal_length,
-        "partition actual ticket profile/length differs");
-    let allocation=journal.fix_length_and_observe_allocation(&facts.native,&ticket)?;
-    facts.native.journal_quota.arena().attach_native_journal(
-        facts.native.journal_quota,allocation)?;
-    facts.revalidate_source(context,events)?;
-    ensure!(journal.byte_len()?==f.journal_length && shadow.state(events)?==shadow_before,
-        "partition source/J/frozen shadow changed around complete preparation");
+    ensure!(
+        ticket.marker_profile.is_none() && ticket.journal_length == f.journal_length,
+        "partition actual ticket profile/length differs"
+    );
+    let allocation = journal.fix_length_and_observe_allocation(&facts.native, &ticket)?;
+    facts
+        .native
+        .journal_quota
+        .arena()
+        .attach_native_journal(facts.native.journal_quota, allocation)?;
+    facts.revalidate_source(context, events)?;
+    ensure!(
+        journal.byte_len()? == f.journal_length && shadow.state(events)? == shadow_before,
+        "partition source/J/frozen shadow changed around complete preparation"
+    );
     domain.revalidate()?;
     // The real scanner builds its actual closed paged index and seals this
     // same J body. A ticket, path or digest cannot stand in for that owner.
-    let write_index=super::reopen::JournalObservation::open(
-        journal,&ticket,index_group,index_scratch,index_path,maximum_index_bytes)?
-        .into_prepared_index()?;
+    let write_index = super::reopen::JournalObservation::open(
+        journal,
+        &ticket,
+        index_group,
+        index_scratch,
+        index_path,
+        maximum_index_bytes,
+    )?
+    .into_prepared_index()?;
     drop(memory);
-    let mut result=PartitionProtectedPreparedJournal {journal,facts,domain,context,shadow,
-        candidate,ticket,write_index};
+    let mut result = PartitionProtectedPreparedJournal {
+        journal,
+        facts,
+        domain,
+        context,
+        shadow,
+        candidate,
+        ticket,
+        write_index,
+    };
     result.revalidate(events)?;
     Ok(result)
 }
@@ -605,7 +688,9 @@ pub(crate) fn prepare_native_diagnostic<'journal, 'domain, 'capture, S: ReadSeek
     creation: &'journal mut BoundNativeCreationJournal,
     events: &mut Vec<n2r_win32::NativeEvent>,
 ) -> Result<NativeDiagnosticPreparedJournal<'journal, 'domain, 'capture>> {
-    prepare_native_inner(domain, source, shadow, candidate, creation, events, false, None)
+    prepare_native_inner(
+        domain, source, shadow, candidate, creation, events, false, None,
+    )
 }
 
 /// The only optimized construction entry takes the actual private protected
@@ -631,7 +716,14 @@ pub(crate) fn prepare_native_from_protected_capture<'journal, 'domain, 'capture,
         let result = match opening {
             Ok(()) => match context.source_and_inspection() {
                 Ok((source, _)) => prepare_native_inner(
-                    domain, source, shadow, candidate, creation, events, true, Some(witness),
+                    domain,
+                    source,
+                    shadow,
+                    candidate,
+                    creation,
+                    events,
+                    true,
+                    Some(witness),
                 ),
                 Err(error) => Err(error),
             },
@@ -639,7 +731,8 @@ pub(crate) fn prepare_native_from_protected_capture<'journal, 'domain, 'capture,
         };
         // Attempt source/target closing even if opening or preparation failed.
         let closing = candidate.revalidate_with_capture_witness(context, shadow, events, witness);
-        let prepared = close_preparation(result, closing, "protected journal source/target closing")?;
+        let prepared =
+            close_preparation(result, closing, "protected journal source/target closing")?;
         Ok(ProtectedPreparedJournal {
             inner: prepared,
             context,
@@ -728,7 +821,14 @@ fn prepare_native_inner<'journal, 'domain, 'capture, S: ReadSeek>(
     );
     // The journal takes the source's changed ranges in ascending order.
     let (ticket, _whole) = source.with_read_ahead(|source| {
-        prepare_inner(domain, source, candidate, journal, same_captured_source, capture_witness)
+        prepare_inner(
+            domain,
+            source,
+            candidate,
+            journal,
+            same_captured_source,
+            capture_witness,
+        )
     })?;
     if ticket.marker_profile.is_some() {
         journal.seal_redundant(&ticket)?;
@@ -1006,7 +1106,7 @@ fn read_stored<J: ReadSeek>(
 
 /// Resolve an OLD byte position only from the held planned rows; source-free
 /// rows have digest tables and cannot satisfy COPY references.
-fn read_prior_old<J: Read+Seek>(
+fn read_prior_old<J: Read + Seek>(
     domain: &ResourceJournalDomain<'_>,
     file: &mut J,
     mut source: u64,
@@ -1260,10 +1360,13 @@ fn validate_readback<J: ReadSeek>(
     Ok((finish(immutable)?, finish(whole)?))
 }
 
-impl PartitionProtectedPreparedJournal<'_,'_,'_,'_,'_> {
-    pub(crate) fn recovery_maps_required(&self,expected:&crate::shadow_tree::PagedExpectedTree)->Result<bool>{
+impl PartitionProtectedPreparedJournal<'_, '_, '_, '_, '_> {
+    pub(crate) fn recovery_maps_required(
+        &self,
+        expected: &crate::shadow_tree::PagedExpectedTree,
+    ) -> Result<bool> {
         expected.require_resource_owner(self.context.resource_admission())?;
         expected.require_shared_memory(self.context.arena())?;
-        qualification::expected_requires_maps(expected,self.context.verification_policy())
+        qualification::expected_requires_maps(expected, self.context.verification_policy())
     }
 }

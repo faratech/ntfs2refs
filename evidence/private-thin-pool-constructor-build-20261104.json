@@ -1,0 +1,46 @@
+{
+  "new_public_CLI_backend": false,
+  "sdk_check": {
+    "actual_exit_code": 0,
+    "exclusive_build_lock_held": true,
+    "initial_wrapper_refusal_preserved": true,
+    "shared_target": "target/shared-experiments",
+    "command": "cargo --config .lab/development/direct-rustc-check-config.toml check -p n2r-win32 --lib --target x86_64-pc-windows-msvc --locked --offline",
+    "rust_version": "1.98.1",
+    "log_sha256": "9181344cb92233c292a00eee55b7819f1a0d526e55116f9ba735edb37b525372",
+    "owned_file_formatting_after_check_only": true,
+    "host_wide_configuration_changed": false,
+    "reported_seconds": 16.67,
+    "log": ".lab/development/thin-pool-constructor-check-20261104.log"
+  },
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/managed_shadow.rs",
+      "sha256": "57530dde511da996c1009303403c1903b31ec6fdafcafb2ee2147bdc54693a41",
+      "bytes": 28929
+    },
+    {
+      "path": "crates/n2r-win32/src/managed_shadow/thin_pool.rs",
+      "sha256": "0dc2b8f541e399a567be3244fec09bfe415bcff85561bb79bba7c5d6bace9a53",
+      "bytes": 34169
+    }
+  ],
+  "source_parent_commit": "e4f52e44e2feae0327c54e7b55bacfef95a1807f",
+  "notes": [
+    "Opaque live constructor owner; JSON observations cannot construct it",
+    "No existing pool/member/device accepted; two constructor-created5GiB VHDX members only",
+    "Both languages use checked integer ceiling to the native divisor",
+    "Sampled child RAM admission is explicitly not an OS Job quota",
+    "Unknown/failure/Drop preserve pool and member backing; no fallback or automatic teardown"
+  ],
+  "kind": "private-thin-pool-constructor-implementation-build",
+  "native_addressability_evidence": "evidence/private-thin-pool-addressability-20261104.json",
+  "persistent_recovery_or_retirement_qualified": false,
+  "embedded_storage_script_parse_errors": 0,
+  "constructor_native_execution_qualified": false,
+  "utc": "2026-11-04T08:11:23.9486518Z",
+  "unit_tests_added_or_run": false,
+  "ReFS_formatting_or_conversion_qualified": false,
+  "schema_version": 1,
+  "independent_code_review_concrete_blockers": 0
+}

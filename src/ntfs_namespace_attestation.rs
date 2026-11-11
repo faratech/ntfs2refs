@@ -100,11 +100,133 @@ pub fn check_projected_directory(
     check_directory_view(raw, f, n, &optional)
 }
 
+/// The same native membership check using the held paged I30 domain. Only one
+/// directory's names are retained, charged before insertion against its
+/// admitted row budget. Complete raw MFT/I30 reconciliation precedes this call.
+#[cfg(windows)]
+pub fn check_projected_directory_domain(
+    files: &impl crate::ntfs_inspect::RootFileDomain,
+    directories: &impl crate::ntfs_inspect::RootDirectoryDomain,
+    file: &FileInventory,
+    native: &NamespaceFile,
+    admission: n2r_win32::tree_resources::SourceResourceAdmission,
+) -> Result<ProjectedDirectory> {
+    admission.validate()?;
+    let mut low = 0u64;
+    let mut high = directories.directory_count();
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if directories.directory(middle)?.record_number < file.record_number {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    ensure!(
+        low < directories.directory_count(),
+        "raw directory index is absent"
+    );
+    let header = directories.directory(low)?;
+    ensure!(
+        header.record_number == file.record_number
+            && header.sequence_number == file.sequence_number,
+        "raw directory index identity differs"
+    );
+    let owner = reference(file);
+    let mut expected = BTreeMap::new();
+    let mut index_bytes = 0u64;
+    for ordinal in 0..header.entries {
+        let link = directories.entry(low, ordinal)?;
+        ensure!(link.parent == owner, "raw I30 parent differs");
+        if link.namespace == 2 || (link.child == owner && link.name == [46]) {
+            continue;
+        }
+        let child = files
+            .find_record(
+                link.child & 0x0000_ffff_ffff_ffff,
+                Some((link.child >> 48) as u16),
+            )?
+            .context("raw I30 child is absent or stale")?;
+        index_bytes = index_bytes
+            .checked_add(256)
+            .and_then(|n| n.checked_add((link.name.capacity() as u64).checked_mul(2)?))
+            .context("directory membership index memory overflow")?;
+        ensure!(
+            index_bytes <= admission.budget.max_row_bytes,
+            "directory membership index exceeds admitted RAM"
+        );
+        ensure!(
+            expected
+                .insert(link.name, (link.child, child.is_directory))
+                .is_none(),
+            "duplicate raw directory name"
+        );
+    }
+    let mut optional = BTreeMap::new();
+    if file.record_number == 5 {
+        for number in (0..=4).chain(6..=11) {
+            let child = files
+                .find_record(number, None)?
+                .context("reserved root identity is absent")?;
+            let role = crate::ntfs_admission::paged::internal_role(files, &child)?
+                .context("reserved root object lacks exact internal identity")?;
+            ensure!(
+                child.names.len() == 1
+                    && child.names[0].parent_record_number == file.record_number
+                    && child.names[0].parent_sequence_number == file.sequence_number
+                    && optional.insert(reference(&child), role).is_none(),
+                "reserved root object name, ancestry or identity differs"
+            );
+        }
+        ensure!(
+            optional.len() == 11,
+            "reserved root object set is incomplete"
+        );
+    }
+    check_directory_entries(
+        files.header().geometry.serial_number,
+        file,
+        native,
+        &optional,
+        &expected,
+        Some(usize::try_from(admission.budget.max_row_bytes)?),
+    )
+}
+
 fn check_directory_view(
     raw: &NtfsInspection,
     f: &FileInventory,
     n: &NamespaceFile,
     optional: &BTreeMap<u64, String>,
+) -> Result<ProjectedDirectory> {
+    let owner = reference(f);
+    let mut expected = BTreeMap::new();
+    for child in &raw.files {
+        for name in child.names.iter().filter(|n| n.namespace != 2) {
+            let parent = name.parent_record_number | (u64::from(name.parent_sequence_number) << 48);
+            if parent == owner && !(reference(child) == owner && name.name_utf16 == [46]) {
+                ensure!(
+                    expected
+                        .insert(
+                            name.name_utf16.clone(),
+                            (reference(child), child.is_directory)
+                        )
+                        .is_none(),
+                    "duplicate raw directory name"
+                );
+            }
+        }
+    }
+    check_directory_entries(raw.geometry.serial_number, f, n, optional, &expected, None)
+}
+
+fn check_directory_entries(
+    serial: u64,
+    f: &FileInventory,
+    n: &NamespaceFile,
+    optional: &BTreeMap<u64, String>,
+    expected: &BTreeMap<Vec<u16>, (u64, bool)>,
+    resource_row_bytes: Option<usize>,
 ) -> Result<ProjectedDirectory> {
     ensure!(
         f.is_directory && n.identity.reference() == reference(f),
@@ -115,8 +237,8 @@ fn check_directory_view(
         "native directory open refused: {:?}",
         n.open_error
     );
-    identity(n.identity_before.as_ref(), f, raw.geometry.serial_number)?;
-    identity(n.identity_after.as_ref(), f, raw.geometry.serial_number)?;
+    identity(n.identity_before.as_ref(), f, serial)?;
+    identity(n.identity_after.as_ref(), f, serial)?;
     ensure!(
         n.identity_before == n.identity_after,
         "directory binding changed"
@@ -142,23 +264,6 @@ fn check_directory_view(
         .collect();
     ensure!(parents.len() == 1, "directory parent is ambiguous");
     let parent = *parents.first().unwrap();
-    let mut expected = BTreeMap::new();
-    for child in &raw.files {
-        for name in child.names.iter().filter(|n| n.namespace != 2) {
-            let p = name.parent_record_number | (u64::from(name.parent_sequence_number) << 48);
-            if p == owner && !(reference(child) == owner && name.name_utf16 == [46]) {
-                ensure!(
-                    expected
-                        .insert(
-                            name.name_utf16.clone(),
-                            (reference(child), child.is_directory)
-                        )
-                        .is_none(),
-                    "duplicate raw directory name"
-                );
-            }
-        }
-    }
     let mut snapshots = vec![];
     for pass in [&n.before, &n.after] {
         let pass = pass.as_ref().context("missing native directory pass")?;
@@ -167,7 +272,11 @@ fn check_directory_view(
             "native directory enumeration refused: {:?}",
             pass.refusal
         );
-        let entries = namespace_layout::decode_pass(&pass.calls)?;
+        let entries = if let Some(maximum) = resource_row_bytes {
+            namespace_layout::decode_pass_with_resource_budget(&pass.calls, maximum)?
+        } else {
+            namespace_layout::decode_pass(&pass.calls)?
+        };
         let mut names = BTreeMap::new();
         let mut special = BTreeSet::new();
         for e in entries {
@@ -226,10 +335,10 @@ fn check_directory_view(
 }
 pub fn reconcile(raw: &NtfsInspection, native: &Report) -> Result<Reconciliation> {
     ensure!(
-        matches!(native.schema_version, 5..=6),
+        matches!(native.schema_version, 5..=14),
         "native namespace evidence profile absent"
     );
-    crate::ntfs_stream_attestation::validate_bitmap_schema(native)?;
+    crate::ntfs_stream_attestation::validate_paging_schema(native)?;
     ensure!(
         raw.namespace_reconciliation
             .as_ref()

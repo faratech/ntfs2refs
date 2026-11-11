@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "kind": "effective-source-overlay-and-historical-build-limitation",
+  "public_executable_sha256": "121d7dbb9977618af7790f4fcd78e69fee3c4274e9e2980c1a3d0709dd322f0b",
+  "base_commit": "909911062106dbde6cf35fbcdccf4a45b2998671",
+  "effective_source": "tracked commit plus exact src/main.rs.snapshot overlay",
+  "main_overlay_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "current_user_edit_matches_overlay": true,
+  "current_user_edit_modified": false,
+  "source_bundle_directory": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\build-provenance-9099110-20261030",
+  "tracked_source_archive_sha256": "2809448d642c82893652bb11e2eeff3fba82a84c6eeaf3c551dcf6352de44a5c",
+  "source_file_manifest_sha256": "22204e6a12223c393caa064cdc2272700ed7eafafdca60ec9104909352436d31",
+  "cargo_lock_sha256": "d0b38b485a79e8b38e4793ca9bfd8f3560eb15dc1c19347d70c7ddd39d2aba96",
+  "rustc": "1.98.1",
+  "rustc_commit": "48a229ceaefd4985c50990b14116b6d856af0985",
+  "llvm": "22.1.8",
+  "target": "x86_64-pc-windows-msvc",
+  "crt_static": true,
+  "release_overflow_checks": true,
+  "pe": {
+    "repro_debug_entry_present": false,
+    "timestamp_utc": "2026-10-30T10:33:15.0000000+00:00",
+    "coff_timestamp": 1793356395,
+    "codeview_age": 1,
+    "debug_types": [
+      2,
+      12,
+      13
+    ],
+    "codeview_guid": "50d664d9-5744-4329-89dd-70d5065f023b"
+  },
+  "matching_pdb_sha256": "260025267dd4c4bf05a7b17ee53a3c57104c37d4e02939af962d27d6a2c6aa40",
+  "currently_observed_linker": {
+    "sha256": "a8c42e25c91ca2453e1110540ac08f0fc12d7539454a11b9af8baeecb469837d",
+    "file_version": "14.51.36260.0",
+    "path": "C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\link.exe"
+  },
+  "historical_linker_environment_fully_sealed": false,
+  "fresh_rebuild_performed": false,
+  "bit_reproducibility_proven": false,
+  "limitation": "Ordinary historical link used wall-clock PE/debug timestamps and a non-REPRO CodeView identity; complete historical linker environment was not sealed. Exact source inputs are preserved, but a byte-identical fresh relink is not claimed.",
+  "native_qualification_transferred_to_rebuild": false
+}

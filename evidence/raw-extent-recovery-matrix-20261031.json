@@ -1,0 +1,296 @@
+{
+  "schema_version": 1,
+  "kind": "raw-extent-firstwrite-recovery-matrix",
+  "recorded_utc": "2026-10-31T18:48:14.7712560Z",
+  "runtime_source_commit": "7ced37b9310a2ff90d01f2bfe078b3e2072e896f",
+  "public_binary_sha256": "97990e9ecd5ead33511e18ef7ca8d79f2ed302546344f89efec058dc24b40af7",
+  "controlled_binary_sha256": "b4a1c13326d15bea77213bc2ea5e08f11e01474a5743410221f29519c40e030a",
+  "digest_helper_sha256": "803d075d1d046607d431e5c60ca47905c6d02d139c08bcb878a7290a69d57759",
+  "build_sha256": "27efd0632c9478d226923e36ca5b762609f38d152cbb0c843400c3432c7be8ff",
+  "main_source_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "source_checkpoint": "371ae756-faf2-40ac-bf86-5e8e1d744e30",
+  "qualified_normal_checkpoint": "44c48db9-c9ad-452f-8811-ce32a170c979",
+  "bundle_path": "C:\\ntfs2refs\\extent-interrupt-07247cfa6ad84bdc963a6067e0071864\\conversion\\allocation-recovery-bundle.json",
+  "bundle_sha256": "63054c5acd048eff4c3aa00951c1b2fd1a1354157007e5cd1dc26fe1767584dd",
+  "payload_facts": {
+    "ticket_sha256": "f5ee8efabe0db84167a46d41f668d9a678f7b3cbd0d8508d7febddefde9b579a",
+    "expected_tree_sha256": "b623f6b057f11fae8480db987b553ae331447bc06f039a7d28f3e8a263d13e18",
+    "initial_retained_content_digests_available": false,
+    "manifest_pin": {
+      "path": "C:\\ntfs2refs\\extent-interrupt-07247cfa6ad84bdc963a6067e0071864\\conversion\\recovery-payload-manifest.json",
+      "sha256": "376aa38c5f7f80b1564c345d46ad3355a632a22349528d2ddae20f4c0f85517c"
+    },
+    "extent_only_logical_bytes": 4194304,
+    "extent_only_streams": 2,
+    "plan_sha256": "6ab7134ac856dbd89c46654cce9602f6b49ec2390bfbff1871cb3d04bf5f8ce8",
+    "grants_write_authority": false,
+    "bindings": 53,
+    "product_expectation_keeps_missing_digests": true
+  },
+  "interruption": {
+    "native_exit": 86,
+    "native_creation_ms": 1793470826071,
+    "guest_normal_shutdown_restart_used": true,
+    "actual_controlled_exit_observed": true,
+    "run_id": "07247cfa6ad84bdc963a6067e0071864",
+    "requested_flushed_write_count": 1,
+    "handoff_closed_claimed": false,
+    "source_offline_writable": true,
+    "native_exit_observed": true,
+    "shadow_offline_readonly": true,
+    "checkpoint": "9ce156c3-f080-4720-ab6d-a8abf3c90cfb",
+    "journal_marker_independently_read": false,
+    "raw_journal_opened_by_observer": false,
+    "native_pid": 5484
+  },
+  "resume": {
+    "parent": "9ce156c3-f080-4720-ab6d-a8abf3c90cfb",
+    "recovery_executed_once": true,
+    "original_unread_content_digest_reconstructed": false,
+    "independent_all_hashes_match": true,
+    "independent_named_stream_hashes": 9,
+    "separate_read_only_completion_from_actual_helper_stdout": true,
+    "independent_default_stream_hashes": 30,
+    "handoff_replay_closed": true,
+    "known_native_payload_bytes_read": 64869591,
+    "checkpoint": "9bb675b9-fde4-4f39-8df5-124902598188",
+    "all_complete_maps_identical": true,
+    "extent_only_streams": 2,
+    "native_exit": 0,
+    "independent_full_stream_hashes": 39,
+    "post_handoff_raw_replay": false,
+    "native_creation_ms": 1793471396607,
+    "action": "resume",
+    "original_ps5_array_parser_failure_preserved": true,
+    "known_native_stream_hashes": 37,
+    "label_and_mount_verified": true,
+    "full_content_hashes_compared": false,
+    "run_id": "57285c7ef2b447a4bb53e31ddbd53e1a",
+    "actual_verification_scope": "pinned_extent_identity_v1",
+    "native_pid": 3816,
+    "native_recovery_run_id": "recovery-ebc1f6adea9d2eefe1395220b5c345d8",
+    "outcome": "refs_completed",
+    "observed_lifecycle": "apply_intent",
+    "completion_receipt_pin": {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-resume-57285c7e\\independent-stdout-completion-v1.json",
+      "bytes": 14325,
+      "sha256": "ca4a84c3557d4f0e91a19b2bf07edde0e886e889deb5f135609de40d9421216d"
+    }
+  },
+  "rollback": {
+    "mounted_filesystem": "NTFS",
+    "native_pid": 3456,
+    "old_selected_sha256": "99b254d67ca11c0f60337c0cbc8982d1a276e64ed9bdc06f2cdc5cbae5aa4532",
+    "range_count": 245,
+    "observed_lifecycle": "apply_intent",
+    "native_exit": 0,
+    "cluster_bytes": 4096,
+    "timestamp_restoration_authority": "closed journal old-selected-byte verification; no independent post-rollback timestamp claim",
+    "independent_full_stream_hashes": 39,
+    "ordinary_ntfs_compressed_read_subset_used": true,
+    "action": "rollback",
+    "backup_intent_security_and_reparse_subset_used": true,
+    "label": "n2r-links-source",
+    "restored_exact_original_interrupted_parent": "9ce156c3-f080-4720-ab6d-a8abf3c90cfb",
+    "abort_replay_closed": true,
+    "post_abort_raw_replay": false,
+    "native_recovery_run_id": "recovery-b9bc4e859776440960566d40fc34126e",
+    "old_selected_checksum_matches_original_ticket": true,
+    "run_id": "8638479857cf4bffbda5aef62745c0d4",
+    "recovery_executed_once": true,
+    "selected_bytes": 82132992,
+    "outcome": "ntfs_restored",
+    "post_rollback_native_timestamp_comparison_claimed": false,
+    "native_creation_ms": 1793472184395,
+    "checkpoint": "b8091885-73f6-41f8-a24d-dfed3ce8b599",
+    "product_expectation_written": false
+  },
+  "archives": [
+    {
+      "root": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-firstwrite-07247cfa",
+      "files": 71,
+      "bytes": 77454834.0,
+      "all_copy_and_rehash_sha256_verified": true,
+      "metadata_only": true,
+      "per_file_maximum_bytes": 67108864,
+      "index_pin": {
+        "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-firstwrite-07247cfa\\archive.json",
+        "bytes": 20324,
+        "sha256": "0cdd21fcef6e2234e05fa4e60f43c23f825a9532205434564107d223169874e5"
+      }
+    },
+    {
+      "root": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-resume-57285c7e",
+      "files": 32,
+      "bytes": 5370275.0,
+      "all_copy_and_rehash_sha256_verified": true,
+      "metadata_only": true,
+      "per_file_maximum_bytes": 67108864,
+      "index_pin": {
+        "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-resume-57285c7e\\archive.json",
+        "bytes": 9317,
+        "sha256": "0e2c9a3e76a9f221c150aea8bfe49a27590d418e7f553479336f6fa405346e60"
+      }
+    },
+    {
+      "root": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-rollback-86384798",
+      "files": 35,
+      "bytes": 2196473.0,
+      "all_copy_and_rehash_sha256_verified": true,
+      "metadata_only": true,
+      "per_file_maximum_bytes": 67108864,
+      "index_pin": {
+        "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-rollback-86384798\\archive.json",
+        "bytes": 10323,
+        "sha256": "e3024fb0e9a68ce3590c23a48c3bce1b5266530ecde47ccda21c31e8daaaf2cd"
+      }
+    }
+  ],
+  "current_vm": {
+    "normal_shutdown": true,
+    "checkpoint_count": 50,
+    "capacity": {
+      "ActualBytes": 264392061107,
+      "FreeBytes": 80827138048,
+      "MaximumActualBytes": 329374052988,
+      "MinimumFreeBytes": 17179869184
+    },
+    "parent": "b8091885-73f6-41f8-a24d-dfed3ce8b599",
+    "state": "Off",
+    "memory_assigned": 0
+  },
+  "normal_success_and_interrupted_and_resumed_checkpoints_preserved": true,
+  "cleanup": {
+    "obsolete_refusal_764_removed_after_files": 74,
+    "obsolete_e606_266_archived_bytes": 85176843,
+    "direct_virtual_disk_file_deletions": false,
+    "obsolete_refusal_764_archived_bytes": 74894901,
+    "obsolete_fallback_058_archived_bytes": 84376938,
+    "only_hyperv_checkpoint_apis_used": true,
+    "obsolete_fallback_058_removed_after_files": 103,
+    "all_host_archives_and_independent_baseline_files_retained": true,
+    "obsolete_e606_266_removed_after_files": 140
+  },
+  "limitations": [
+    "One controlled interruption after the first flushed target write; other interruption points, hard power-off and physical power loss are untested.",
+    "Resume and rollback use separate branches from the same saved interrupted VM; completed HND/ABT states were never replayed.",
+    "Missing initial digests remain missing: recovery verifies their pinned physical mappings without inventing historical content hashes.",
+    "Known-digest streams receive complete native reads on Resume; all39 streams are independently checked by the lab in both directions.",
+    "The rollback lab comparison uses frozen-source timestamp provenance plus the closed old-selected-byte proof; no independent post-rollback timestamp comparison.",
+    "Broader compatibility, boot-volume, arbitrary mutation and unbounded-scale objectives remain unfinished; D2 remains unapproved."
+  ],
+  "physical_disk_io_measured": false,
+  "general_conversion_qualified": false,
+  "unit_tests_added_or_run": false,
+  "pins": [
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-firstwrite-07247cfa\\closed\\conversion\\allocation-recovery-bundle.json",
+      "bytes": 2027,
+      "sha256": "63054c5acd048eff4c3aa00951c1b2fd1a1354157007e5cd1dc26fe1767584dd"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-firstwrite-07247cfa\\closed\\conversion\\recovery-payload-manifest.json",
+      "bytes": 291801,
+      "sha256": "376aa38c5f7f80b1564c345d46ad3355a632a22349528d2ddae20f4c0f85517c"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-firstwrite-07247cfa\\closed\\conversion\\expectation.json",
+      "bytes": 442910,
+      "sha256": "b623f6b057f11fae8480db987b553ae331447bc06f039a7d28f3e8a263d13e18"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-firstwrite-07247cfa\\closed\\conversion\\selected-ticket.json",
+      "bytes": 1053,
+      "sha256": "318a4b4e5fb9a9d0e5a888a2f9b63a2f76cad3054e531145c029ae6c48992e43"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-firstwrite-07247cfa\\closed\\converter-terminal.json",
+      "bytes": 1501,
+      "sha256": "7c213093c0b66c2ed71ea3db290a6712ca003b9750d41c316f6cab5986a1efc2"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-resume-57285c7e\\closed\\core\\resume\\result.json",
+      "bytes": 1134,
+      "sha256": "f01c13a95de0f52e7450f0bfb8d2b814b523b139181fc9470553ce5da1a8739e"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-resume-57285c7e\\closed\\core\\resume\\completion.json",
+      "bytes": 3224323,
+      "sha256": "f9d773f6ffd2df58c6bfb2a82d3e6501f7fa2d6109d9a764532a5b01f4e4f475"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-resume-57285c7e\\closed\\core\\resume\\recovery-extent-verification.json",
+      "bytes": 637,
+      "sha256": "9fe7abd2addba57c09d7312b736cab1b013f27f602b80e9dc4dc53351b4a926a"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-resume-57285c7e\\closed\\core\\resume\\handoff.json",
+      "bytes": 442,
+      "sha256": "3ea59e605b8c2f0fa52a67b41fc4448b44706c687020f8b63992e4d36af32ce3"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-rollback-86384798\\closed\\core\\rollback\\result.json",
+      "bytes": 283,
+      "sha256": "726ed22627c54569de74c34df972d32f052fd45bcde9b40b80d6d0593cac19f0"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-rollback-86384798\\closed\\core\\rollback\\completion.json",
+      "bytes": 51981,
+      "sha256": "469c7593d11846a5e41123ab5f11772f9b19ec394e03096e8f1a75d8b28d2e2e"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-rollback-86384798\\closed\\core\\rollback\\rollback.json",
+      "bytes": 449,
+      "sha256": "ebddaae9a9f880b67920375790d0615f3fa21076cc71fca45f58241cfbe48b51"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-rollback-86384798\\closed\\wrapper\\independent-content-verification.json",
+      "bytes": 19090,
+      "sha256": "d6b5995291ebd97fe217bab6b52983660ce3ebf07648d083264b39d2bf6e05dd"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-rollback-86384798\\closed\\wrapper\\lab-baseline-binding.json",
+      "bytes": 96667,
+      "sha256": "20bddae1d323b03ebf545dda9017cb98fa9096ae06e3d0451512d3b66323ee9b"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-firstwrite-07247cfa\\checkpoint.json",
+      "bytes": 874,
+      "sha256": "b857bcc00d5217f840635ee9ec5e1389d487bd3fb31448fe4d930bc3d9e4c968"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-resume-57285c7e\\checkpoint.json",
+      "bytes": 905,
+      "sha256": "23ba5424313ba205928ed3f725b4d70968f6b6e7e5ffd5b222be5bba8766615d"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-rollback-86384798\\checkpoint.json",
+      "bytes": 832,
+      "sha256": "5837495c20471d712c9a708c4bca460d894b72bb81fdd9cc7c6f64127bd26564"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-firstwrite-obsolete-refusal-cleanup-20261031.json",
+      "bytes": 1146,
+      "sha256": "42e4c65a14d30b36926bae434ede4930b5c3e5145076dcda34ef685ae7979f7e"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-resume-obsolete-fallback-cleanup-20261031.json",
+      "bytes": 777,
+      "sha256": "27dc9141b669d87c38144518d2b714b989d616dfad6e21490be3622b72a8b52e"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-rollback-obsolete-e606-cleanup-20261031.json",
+      "bytes": 766,
+      "sha256": "97d27dbeacb1d131cd1ae2d814edb6e714f1dd10e670e0a82ed37f55a46914e4"
+    }
+  ],
+  "harness_provenance": {
+    "interruption_controller_commit": "102d9543da5a32a675abe11f1bf7737a3ea38bee",
+    "resume_controller_commit": "aca7fd310fe517a0aa8782eb73c2eb2d9fb11428",
+    "resume_original_parser_failure_preserved": true,
+    "explicit_json_array_enumeration_fix_commit": "bde480bef417f96c52e1ee0874299459d8b78f19",
+    "rollback_controller_commit": "bde480bef417f96c52e1ee0874299459d8b78f19",
+    "converter_runtime_unchanged": "7ced37b9310a2ff90d01f2bfe078b3e2072e896f",
+    "resume_completion_was_read_only_and_did_not_rerun_recovery": true
+  }
+}

@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "kind": "native-allocation-bounded-interruption-resume-rollback",
+  "source_commit": "7ef0ee23aaf00b53582893da19472ccbef1b09a4",
+  "recovery_engine_commit": "b49eae6",
+  "launchers": {
+    "interruption": "lab/Start-AllocationInterruption.ps1 (7ef0ee2)",
+    "recovery": "lab/Start-AllocationRecovery.ps1 (310919c)"
+  },
+  "working_tree_note": "Built with the existing user-owned src/main.rs capabilities hunk present and unstaged.",
+  "toolset_manifest_sha256": "97711f2d2b31ba3013e8f12bd6c99cd15938b211f06625756b78e38538d56446",
+  "binaries": {
+    "ntfs2refs.exe": "dee81dcd0474369000bb6509903adb17233b8adf1b37363968eb8eb833c9f9b7",
+    "lab-convert-native-composite.exe": "a79695284211e1ab625088705e790ddffefed4ffcbece5a5140519e637b0d5ad"
+  },
+  "interruption": {
+    "run_id": "02891128fa2e4ee4b8e85890ce2fb335",
+    "vm_parent_checkpoint": "5f30f4a1-9db0-4df5-a0e5-2c7be5d87eec",
+    "fault": "lab-convert-native-composite --selected-devices --allocation-bounded --interrupt-after-writes 1",
+    "actual_native_exit": 86,
+    "actual_task_result": 86,
+    "stopped_in_phase": "applying the selected ranges, after one flushed write",
+    "bundle_published_before_activation": true,
+    "bundle_sha256": "aa233f689acb108665e8749d9d463c85aeb85b8e790179a040a9a2f364f9b80e",
+    "printed_recovery_checksum_matches_bundle": true,
+    "bundle_pins_checked_by_wrapper": ["request", "plan", "ticket", "expectation", "verification", "journal N2RSEL01"],
+    "source_after": "offline, writable (activated)",
+    "shadow_after": "offline, read-only",
+    "guest_shut_down_and_rebooted_before_recovery": true,
+    "managed_shadow_attached_after_reboot": false,
+    "temporary_checkpoint": "c9a7abe8-9ba4-41b2-ae53-3a775a1150db (removed through Hyper-V after both branches)",
+    "archive": ".lab/hyperv/streaming-v2-20261027/alloc-interrupt-20261029-02891128fa2e4ee4b8e85890ce2fb335/closed-interruption"
+  },
+  "resume": {
+    "run_id": "e4d21571566d4d6ea2d4a8f9bead6562",
+    "command": "ntfs2refs.exe --recover <conversion> --recovery-sha256 aa233f68… (stdin yes)",
+    "actual_native_exit": 0,
+    "observed_lifecycle": "apply_intent",
+    "selected_action": "resume",
+    "outcome": "refs_completed",
+    "native_objects": 15,
+    "complete_logical_hashes": 10,
+    "final_volume": "ReFS 4096-byte clusters, label n2r-stream-source, F:",
+    "result_sha256": "f020006fd2d95943d727cfecf65f9f764e312045cd67f724c4c4236b93b7a9c1",
+    "completion_sha256": "5eab84c80e51cb27f3a964091fc04e186c9a61a1e337be98d72ea7add757fc02",
+    "archive": ".lab/hyperv/streaming-v2-20261027/alloc-recovery-20261029-resume-e4d21571566d4d6ea2d4a8f9bead6562/closed-recovery"
+  },
+  "rollback": {
+    "run_id": "fbf85b2de52b4747a8fa02bc88a66841",
+    "started_from": "the same interrupted checkpoint c9a7abe8, restored and verified in the guest (activated source, no prior resume records)",
+    "command": "ntfs2refs.exe --recover <conversion> --recovery-sha256 aa233f68… --rollback (stdin yes)",
+    "actual_native_exit": 0,
+    "observed_lifecycle": "apply_intent",
+    "selected_action": "rollback",
+    "outcome": "ntfs_restored",
+    "final_volume": "NTFS 65536-byte clusters, label n2r-stream-source, F:",
+    "post_mount_user_files_matching_sha256_and_length": "7 of 7 (including large-zero.bin and Unicode names café.txt, Grüße.bin, emoji-🦊.bin)",
+    "post_mount_user_directories_present": "4 of 4",
+    "system_volume_information_objects_not_compared": 4,
+    "result_sha256": "726ed22627c54569de74c34df972d32f052fd45bcde9b40b80d6d0593cac19f0",
+    "completion_sha256": "b41093106b902b5a860dd6f50e2567c0ff73942dbe98c49fbd0334d9a7f8f1e9",
+    "archive": ".lab/hyperv/streaming-v2-20261027/alloc-recovery-20261029-rollback-fbf85b2de52b4747a8fa02bc88a66841/closed-recovery"
+  },
+  "not_covered": [
+    "Interruption points other than after the first flushed write (for example during the deferred granule-0 write, after HND, or before the intent marker)",
+    "Physical power loss",
+    "Mutation and reboot of the converted ReFS volume on this build",
+    "Volumes, Windows builds and features other than the 52 GiB fixture"
+  ],
+  "scope": "One controlled interruption of the allocation-bounded backend on the 52 GiB fixture, then a guest restart, then both public recovery directions from the identical interrupted state. Both completed with native exit 0 and their expected mounted results."
+}

@@ -1,4 +1,6 @@
-//! Strict initial-profile backup checks against actual source reads.
+//! Strict geometry-bound backup checks against actual source reads.
+#[cfg(windows)]
+use crate::ntfs_inspect::RootFileDomain;
 use crate::ntfs_inspect::{self as ntfs, AttributeInventory, NtfsInspection};
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
@@ -15,6 +17,18 @@ pub struct VerifiedBackups {
     backup_boot_sha256: String,
     mirrored_records: u32,
     mirrored_record_sha256: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    extended_mirror: Option<ExtendedMirrorEvidence>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ExtendedMirrorEvidence {
+    profile: &'static str,
+    declared_record_slots: u32,
+    equal_extra_slots: Vec<u32>,
+    inactive_format_padding_slots: Vec<u32>,
+    primary_region_sha256: String,
+    mirror_region_sha256: String,
 }
 fn fingerprint(raw: &NtfsInspection) -> Result<String> {
     Ok(hex::encode(Sha256::digest(serde_json::to_vec(raw)?)))
@@ -22,6 +36,13 @@ fn fingerprint(raw: &NtfsInspection) -> Result<String> {
 impl VerifiedBackups {
     pub fn binds(&self, raw: &NtfsInspection) -> bool {
         fingerprint(raw).is_ok_and(|hash| hash == self.inspection_fingerprint)
+    }
+
+    #[cfg(windows)]
+    pub fn binds_domain(&self, source: &ntfs::PagedInspection) -> bool {
+        source
+            .canonical_sha256()
+            .is_ok_and(|hash| hash == self.inspection_fingerprint)
     }
 }
 fn data(raw: &NtfsInspection, record: u64) -> Result<&AttributeInventory> {
@@ -50,10 +71,52 @@ pub fn verify<R: Read + Seek>(
     length: u64,
     raw: &NtfsInspection,
 ) -> Result<VerifiedBackups> {
-    let g = &raw.geometry;
+    ntfs::revalidate_mft_mapping(reader, raw)?;
+    verify_parts(
+        reader,
+        length,
+        &raw.geometry,
+        data(raw, 0)?,
+        data(raw, 1)?,
+        || fingerprint(raw),
+    )
+}
+
+#[cfg(windows)]
+pub fn verify_domain<R: Read + Seek>(
+    reader: &mut R,
+    length: u64,
+    source: &ntfs::PagedInspection,
+) -> Result<VerifiedBackups> {
+    source.revalidate()?;
+    let mapping = ntfs::CheckedMftDomain::open(reader, source)?;
+    let mft = mapping.data(reader, source, 0, &[])?;
+    let mirror = mapping.data(reader, source, 1, &[])?;
+    let result = verify_parts(
+        reader,
+        length,
+        &source.header().geometry,
+        &mft,
+        &mirror,
+        || source.canonical_sha256(),
+    )?;
+    source.revalidate()?;
+    Ok(result)
+}
+
+fn verify_parts<R: Read + Seek>(
+    reader: &mut R,
+    length: u64,
+    g: &ntfs::NtfsGeometry,
+    mft: &AttributeInventory,
+    mirror: &AttributeInventory,
+    fingerprint: impl FnOnce() -> Result<String>,
+) -> Result<VerifiedBackups> {
     ensure!(
-        g.bytes_per_sector == 512 && g.cluster_size == 4096 && g.file_record_size == 1024,
-        "backup checks require the initial 512/4K/1K profile"
+        g.bytes_per_sector == 512
+            && crate::ntfs_index::supports_cluster_size(g.cluster_size)
+            && g.file_record_size == 1024,
+        "backup checks require supported clusters, 512-byte sectors and 1 KiB MFT records"
     );
     ensure!(
         length == g.volume_size
@@ -75,8 +138,6 @@ pub fn verify<R: Read + Seek>(
     reader.seek(SeekFrom::Start(length - 512))?;
     reader.read_exact(&mut backup)?;
     ensure!(boot == backup, "primary and backup boot sectors differ");
-    let mft = data(raw, 0)?;
-    let mirror = data(raw, 1)?;
     for (attribute, lcn) in [(mft, g.mft_lcn), (mirror, g.mftmirr_lcn)] {
         ensure!(
             attribute
@@ -87,35 +148,63 @@ pub fn verify<R: Read + Seek>(
             "backup bootstrap location differs from DATA map"
         );
     }
+    // Keep the complete geometry-sized stream checked and hashed, but do not
+    // equate its allocation/logical length with synchronized live record count.
+    // The bootstrap contract is four records; a larger stream may retain
+    // inactive format templates after those records became live in the MFT.
+    let mirror_bytes = u64::from(g.cluster_size).max(4 * u64::from(g.file_record_size));
     ensure!(
-        mirror.logical_size == 4096 && mirror.initialized_size == 4096,
-        "MFT mirror length exceeds the four-record initial profile"
+        mirror.logical_size == mirror_bytes && mirror.initialized_size == mirror_bytes,
+        "MFT mirror length differs from the source cluster/record geometry"
     );
-    let mut primary = vec![0; 4096];
-    let mut mirrored = vec![0; 4096];
-    ntfs::read_nonresident_inventory_range(reader, mft, 0, &mut primary, g)?;
-    ntfs::read_nonresident_inventory_range(reader, mirror, 0, &mut mirrored, g)?;
+    let declared_slots = u32::try_from(mirror_bytes / u64::from(g.file_record_size))?;
+    let mut primary = [0; 1024];
+    let mut mirrored = [0; 1024];
     let mut hashes = vec![];
-    for (i, (p, m)) in primary
-        .as_chunks::<1024>()
-        .0
-        .iter()
-        .zip(mirrored.as_chunks::<1024>().0)
-        .enumerate()
-    {
-        ntfs::validate_file_record(p, g).with_context(|| format!("primary MFT record {i}"))?;
-        ntfs::validate_file_record(m, g).with_context(|| format!("mirror MFT record {i}"))?;
-        // Conservative: no normalization of differing LSNs, USA encodings,
-        // attributes or unused bytes. Other valid layouts may be refused.
-        ensure!(p == m, "primary and mirror MFT record {i} differ");
-        hashes.push(hex::encode(Sha256::digest(p)));
+    let mut equal_extra_slots = Vec::new();
+    let mut padding_slots = Vec::new();
+    let mut primary_hash = Sha256::new();
+    let mut mirror_hash = Sha256::new();
+    for i in 0..declared_slots {
+        let offset = u64::from(i) * u64::from(g.file_record_size);
+        ntfs::read_nonresident_inventory_range(reader, mft, offset, &mut primary, g)?;
+        ntfs::read_nonresident_inventory_range(reader, mirror, offset, &mut mirrored, g)?;
+        ntfs::validate_file_record(&primary, g)
+            .with_context(|| format!("primary MFT record {i}"))?;
+        ntfs::validate_file_record(&mirrored, g)
+            .with_context(|| format!("mirror MFT record {i}"))?;
+        primary_hash.update(primary);
+        mirror_hash.update(mirrored);
+        if i < 4 {
+            ensure!(
+                primary == mirrored,
+                "primary and mirror MFT record {i} differ"
+            );
+            hashes.push(hex::encode(Sha256::digest(primary)));
+        } else if primary == mirrored {
+            equal_extra_slots.push(i);
+        } else {
+            ensure!(
+                ntfs::inactive_mirror_template(&mirrored, g, i)?,
+                "primary and mirror MFT record {i} differ outside the recognized inactive format padding"
+            );
+            padding_slots.push(i);
+        }
     }
     Ok(VerifiedBackups {
-        inspection_fingerprint: fingerprint(raw)?,
+        inspection_fingerprint: fingerprint()?,
         partition_length: length,
         primary_boot_sha256: hex::encode(Sha256::digest(&boot)),
         backup_boot_sha256: hex::encode(Sha256::digest(&backup)),
         mirrored_records: 4,
         mirrored_record_sha256: hashes,
+        extended_mirror: (declared_slots > 4).then(|| ExtendedMirrorEvidence {
+            profile: "ntfs-inactive-mirror-padding-v1",
+            declared_record_slots: declared_slots,
+            equal_extra_slots,
+            inactive_format_padding_slots: padding_slots,
+            primary_region_sha256: hex::encode(primary_hash.finalize()),
+            mirror_region_sha256: hex::encode(mirror_hash.finalize()),
+        }),
     })
 }

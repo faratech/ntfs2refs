@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "kind": "Windows-native-shadow-prepare-only-and-cold-bundle-build",
+  "focused_check": {
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+    "shared_target_reused": true,
+    "exit_code": 0,
+    "native_run": false,
+    "capacity": {
+      "actual_bytes": 241184134813,
+      "free_bytes": 166110511104,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 2147483648,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "kind": "public-partition-dispatch-focused-check",
+    "wall_seconds": 30.8786465,
+    "unit_tests_run": false
+  },
+  "check_sha256": "ba970beb4ebcfaae2488f407cc46230f2732f4be046d09b5d357f1e976f65860",
+  "native_execution": false,
+  "prepared_bundle_published_before_AP": true,
+  "original_native_shadow_and_J_preparation_reused": true,
+  "cold_source_fingerprint_metadata_pins_included": true,
+  "cold_reader_verifies_all_original_metadata_and_extent_fingerprint": true,
+  "cold_prepared_source_exposes_no_writer": true,
+  "source_native_writer_or_bootguard_qualified": false,
+  "recovery_image_SAN_policy": 3,
+  "recovery_image_builder_native_run": false,
+  "files": [
+    {
+      "path": "src/resource_partition_alpha.rs",
+      "bytes": 39428,
+      "sha256": "61bcb008adaedb0f027093e381fca3a6bfe2f9f7194d8a011ebbe78842bee13b"
+    },
+    {
+      "path": "src/resource_partition_preparation.rs",
+      "bytes": 23079,
+      "sha256": "aeee7de77d418cb3a445680653772924f74cd1e3949d922147db509ae6df9904"
+    },
+    {
+      "path": "src/resource_partition_prepare_only.rs",
+      "bytes": 7875,
+      "sha256": "cb6675c983f1965b7060f88352514167f5c4f2c9f0448c1c51948699d8e52b60"
+    },
+    {
+      "path": "src/resource_prepared_bundle.rs",
+      "bytes": 15005,
+      "sha256": "1ab7f2ce534ee734c4ad3b68e5e7fea01283eaf7ca0ee6462366a0b7ed06cb26"
+    },
+    {
+      "path": "src/source_fingerprint/resource.rs",
+      "bytes": 43491,
+      "sha256": "bb6078e7e6f8a32bc01f795ab2bdf82b9b2ecb0c3209a07405d915fb058fb985"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/prepare/qualification/partition_apply.rs",
+      "bytes": 34501,
+      "sha256": "d26e20e8e467abdc1329a62c968548190849c5df35f5208114f125a21382d58d"
+    },
+    {
+      "path": "src/bin/lab-prepare-partition-offline.rs",
+      "bytes": 3348,
+      "sha256": "9aa4bfd75ca651191ea2da34da89480c61ede6b5c73a969fe8de9f8cf5915f98"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline/source/prepared.rs",
+      "bytes": 17948,
+      "sha256": "85bf39def38369e3e78a0f957ef0dea01ff450f511a1e69a491d9572e26e7298"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/recovery_image.rs",
+      "bytes": 38414,
+      "sha256": "4d5f0e2326b0f8c76b23b7226c1a1ea9f4b718b832a3248b2012cc732dbd58f6"
+    }
+  ]
+}

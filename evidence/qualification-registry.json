@@ -85,6 +85,66 @@
         "No reference mutation, reboot or power-loss qualification",
         "No NTFS conversion or arbitrary-volume import qualification"
       ]
+    },
+    {
+      "id": "ordinary-ntfs31-64k-refs314-4k-beta-v1",
+      "description": "One 240 GiB nonboot same-partition conversion, NTFS 64 KiB to ReFS 4 KiB, explicit larger-tree v1/v2-journal. Listed limits are implementation ceilings, not tested maxima.",
+      "source_filesystem": "NTFS 3.1",
+      "target_filesystem": "ReFS 3.14",
+      "logical_sector_bytes": 512,
+      "cluster_bytes": 4096,
+      "source_cluster_bytes": 65536,
+      "mft_record_bytes": 1024,
+      "source_policy_windows_build": 26300,
+      "observed_partition_bytes": 257698037760,
+      "limits": {
+        "maximum_files": 1024,
+        "maximum_directories": 256,
+        "maximum_logical_bytes": 4294967296,
+        "ascii_names_only": true,
+        "maximum_component_bytes": 100,
+        "maximum_path_components": 16,
+        "unnamed_streams_per_file": 1,
+        "requires_absent_sacl": true
+      },
+      "exclusions": [
+        "Boot/system volumes and unsupported NTFS features remain excluded.",
+        "Only nine files/five directories in this corpus; no maximum-size/count qualification.",
+        "Zero retained payload bytes in this placement; no low-copy or payload-independent scratch proof.",
+        "No interruption/recovery or storage power-loss test of this beta profile.",
+        "Later executables and streaming-payload v2 do not inherit this result."
+      ]
+    },
+    {
+      "id": "ordinary-ntfs31-64k-refs314-4k-streaming-v2",
+      "description": "One 52 GiB nonboot NTFS/64 KiB to ReFS/4 KiB conversion with Unicode and a 4 GiB+1 ordinary zero file. Limits are implementation ceilings, not tested maxima.",
+      "source_filesystem": "NTFS 3.1",
+      "target_filesystem": "ReFS 3.14",
+      "logical_sector_bytes": 512,
+      "cluster_bytes": 4096,
+      "source_cluster_bytes": 65536,
+      "mft_record_bytes": 1024,
+      "source_policy_windows_build": 26300,
+      "observed_partition_bytes": 55834574848,
+      "limits": {
+        "maximum_files": 1024,
+        "maximum_directories": 256,
+        "maximum_logical_bytes": 2251799813685248,
+        "ascii_names_only": false,
+        "maximum_component_bytes": 765,
+        "maximum_path_components": 16,
+        "unnamed_streams_per_file": 1,
+        "requires_absent_sacl": true
+      },
+      "exclusions": [
+        "Boot/system volumes and unsupported NTFS semantics remain excluded.",
+        "Names are bounded to 255 UTF-16 units; the UTF-8 byte ceiling is conservative.",
+        "Eight admitted files/five directories; only this 52 GiB source and zero-filled large payload were observed.",
+        "No retained payload, payload-independent scratch, nonzero over-4-GiB payload or broad capacity qualification.",
+        "Only the validated source-absent post-mount indexer cache and its internal directory runtime timestamps normalize; all admitted user data and metadata stay strict.",
+        "No streaming interruption/recovery or storage power-loss test.",
+        "New CNG converter builds do not inherit this old producer result."
+      ]
     }
   ],
   "evidence": [
@@ -1227,6 +1287,1993 @@
         "retained_payload_bytes": 134217728,
         "target_bytes_written": 0
       }
+    },
+    {
+      "id": "alpha-native-shadow-normal-mutation-reboot",
+      "profile_id": "ordinary-ntfs31-refs314-v2",
+      "stages": [
+        "native_observed",
+        "reboot_verified"
+      ],
+      "outcome": "passed",
+      "scope": "Frozen alpha public convert run 4ad0147fdde044fbb9d5073e5bfdbe8d completed on its original 52 GiB partition. Protected source/target admission, exact pre-handoff image, automatic original-label restoration and fifteen-object native verification passed. A 128 MiB payload stayed at partition-relative offset 8913149952 after synthetic 8 GiB temporary zero-write allocation history, with no NTFS extent move. Strict checks passed before/after bounded create/grow/truncate/rename/delete and 128-entry mutation, then after clean reboot using the exact mutation report root-basic policy. Checkpoint efa6117b-902f-4495-ba10-c3ac4f23553c preserves the branch OFF. This is one aged-layout profile, not arbitrary placement, zero physical payload I/O, current-HEAD inheritance, recovery or power-loss qualification. A later read-only observation on the restored preserved branch verified the canonical completed journal marker and full immutable-body hash, and retained the actual8192-byte prefix plus its4096-byte marker. This is additional journal evidence only: it does not requalify conversion, attest current target/source raw images, native journal file identity, loaded driver image or replay/write authority.",
+      "repository_commit": "96720eff89c7e808983c8d5c9800d475fe62515c",
+      "executable": {
+        "name": "ntfs2refs.exe",
+        "sha256": "714ddd2bc78d1165061524a390e538c15d8022b2b56ca5170040edfe1286b841",
+        "retained_path": ".lab/alpha/native-shadow-alpha-20261026/bin/ntfs2refs.exe"
+      },
+      "environment": {
+        "windows_build_revision": "26300.9457",
+        "refs_driver": {
+          "name": "refs.sys",
+          "file_version": "10.0.26100.8875 (WinBuild.160101.0800)",
+          "sha256": "3aa5d90958fc582c5f6567d2b970a3a37b3d4d80a4b58b5a8676943b7860d3c4"
+        }
+      },
+      "corpus": {
+        "description": "Independent alpha VM 0d9bfa66-c66c-4ead-86b7-e72cb5f7e040; seven user files plus admitted internal objects, fifteen objects total. Synthetic aged allocation retained one 128 MiB range. The original expectation plus exact mutation report d03699ac1571ea3bf37cecb1f0892568f7829690c847e5786b8b9fc62d360489 scopes later root basic metadata; raw hashes describe pre-handoff images only.",
+        "source_image_sha256": "8962e6ce594f181047d5183738b4ed3c2428769b3469a1efb8f834ab90428b05",
+        "expected_image_sha256": "44801bbe4b8bb5b587e3e97ee72f942015c8925a2370ebc38a20252cb2113dff",
+        "expected_semantic_manifest_sha256": "d6e25290b7d1ecb4ed908a27906b0ae0c61b41a015b057a59063a609cb801538"
+      },
+      "artifacts": [
+        {
+          "role": "Frozen package provenance",
+          "path": ".lab/alpha/native-shadow-alpha-20261026/alpha.json",
+          "location_unknown_reason": null,
+          "sha256": "2ae422c81fa6883192d1770a81d7a0d82fb5e61c1e47675cabaf3a6b8d5f8818"
+        },
+        {
+          "role": "Retained frozen public conversion executable",
+          "path": ".lab/alpha/native-shadow-alpha-20261026/bin/ntfs2refs.exe",
+          "location_unknown_reason": null,
+          "sha256": "714ddd2bc78d1165061524a390e538c15d8022b2b56ca5170040edfe1286b841"
+        },
+        {
+          "role": "Retained strict native verifier executable",
+          "path": ".lab/alpha/native-shadow-alpha-20261026/bin/lab-verify-general-converted.exe",
+          "location_unknown_reason": null,
+          "sha256": "b81990282876a4bd2a8de1ab13f748588d623a3f5e36123ad225c9112a54564a"
+        },
+        {
+          "role": "Retained bounded mutation executable",
+          "path": ".lab/alpha/native-shadow-alpha-20261026/bin/lab-general-refs-mutation.exe",
+          "location_unknown_reason": null,
+          "sha256": "f35175710403be6140bb668709a14ce3408b6513c18d3419a233c7232affe18c"
+        },
+        {
+          "role": "Recorded original normal conversion dispatch",
+          "path": ".lab/hyperv/shadow-alpha-20261026/normal-dispatch.json",
+          "location_unknown_reason": null,
+          "sha256": "7734874d77c997ae58e1d483d3903595061389d836e2cf984cfd40d1deb1bf4e"
+        },
+        {
+          "role": "Seven user-file logical fixture and synthetic allocation history",
+          "path": ".lab/hyperv/shadow-alpha-20261026/guest-fixture.json",
+          "location_unknown_reason": null,
+          "sha256": "e7c8660c6afeba7c722e9afff756cd9ccfbbac4e2f4fafb5eb4c99d54e27b8b1"
+        },
+        {
+          "role": "Same-fixture guest build, driver hash and firmware observation",
+          "path": ".lab/hyperv/shadow-alpha-20261026/guest-readiness.json",
+          "location_unknown_reason": null,
+          "sha256": "374b4339964dfc4af68be9fb245eef2b32ad011204cdfe6f06210938b7fbc357"
+        },
+        {
+          "role": "Completed normal input/result guest pins",
+          "path": ".lab/hyperv/shadow-alpha-20261026/normal-evidence/ef9e1456af154eb0b85645a2a094848c/completed-input-pins.json",
+          "location_unknown_reason": null,
+          "sha256": "dee8d3b12a1db32c0223d0954bcd9c1e97f76619fef9a61e76a631e00470640d"
+        },
+        {
+          "role": "Normal guest-to-host JSON export pins",
+          "path": ".lab/hyperv/shadow-alpha-20261026/normal-evidence/ef9e1456af154eb0b85645a2a094848c/conversion/_export-pins.json",
+          "location_unknown_reason": null,
+          "sha256": "145256643f468cc33d3c92c8f153ecfa9112115ceb42d730d1e67fa23e1cb87c"
+        },
+        {
+          "role": "Derived public recovery request",
+          "path": ".lab/hyperv/shadow-alpha-20261026/normal-evidence/ef9e1456af154eb0b85645a2a094848c/conversion/request.json",
+          "location_unknown_reason": null,
+          "sha256": "30826a0470721867693713d1bbb022da1a1396ddfb42a9f9e1be66c1ab9a7cb4"
+        },
+        {
+          "role": "Complete original fifteen-object semantic expectation",
+          "path": ".lab/hyperv/shadow-alpha-20261026/normal-evidence/ef9e1456af154eb0b85645a2a094848c/conversion/expectation.json",
+          "location_unknown_reason": null,
+          "sha256": "d6e25290b7d1ecb4ed908a27906b0ae0c61b41a015b057a59063a609cb801538"
+        },
+        {
+          "role": "Original frozen NTFS source identity",
+          "path": ".lab/hyperv/shadow-alpha-20261026/normal-evidence/ef9e1456af154eb0b85645a2a094848c/conversion/qualification/source-frozen.json",
+          "location_unknown_reason": null,
+          "sha256": "ac4e43b4a138382f6b11bb3a7cde234582459b65867cffb02d091edc2eefa717"
+        },
+        {
+          "role": "Protected exact target semantics and measured stream dispositions",
+          "path": ".lab/hyperv/shadow-alpha-20261026/normal-evidence/ef9e1456af154eb0b85645a2a094848c/conversion/qualification/target-preservation.json",
+          "location_unknown_reason": null,
+          "sha256": "2d873635af91d15c887d6b0ae4cfc9d602edd7398c634bde8bb1b7d792aaaa1b"
+        },
+        {
+          "role": "Device-bound source certificate",
+          "path": ".lab/hyperv/shadow-alpha-20261026/normal-evidence/ef9e1456af154eb0b85645a2a094848c/conversion/qualification/certificate.json",
+          "location_unknown_reason": null,
+          "sha256": "db40bee5e79ec016cb7b10e9e518cc28c08139424c518400cc1de97ebf851a09"
+        },
+        {
+          "role": "Original native NTFS label capture",
+          "path": ".lab/hyperv/shadow-alpha-20261026/normal-evidence/ef9e1456af154eb0b85645a2a094848c/conversion/qualification/source-label.json",
+          "location_unknown_reason": null,
+          "sha256": "b1205adcd32408759cd8226bf77e5d3dffb84c428cd08629d372afa0f572e672"
+        },
+        {
+          "role": "Frozen NTFS label reconciliation",
+          "path": ".lab/hyperv/shadow-alpha-20261026/normal-evidence/ef9e1456af154eb0b85645a2a094848c/conversion/qualification/source-label-frozen.json",
+          "location_unknown_reason": null,
+          "sha256": "9a0053b434c9c5674ef60d1d4ea9b6ddec834a6c5a08c6ca099e3261d5eb4bbb"
+        },
+        {
+          "role": "Journal preparation, immutable-body ticket and scoped capacity counts",
+          "path": ".lab/hyperv/shadow-alpha-20261026/normal-evidence/ef9e1456af154eb0b85645a2a094848c/conversion/prepare.json",
+          "location_unknown_reason": null,
+          "sha256": "53e41e329139b03c5043f617c73c80366ea290054bbc8b5b2c8cc21328666d0d"
+        },
+        {
+          "role": "External recovery ticket JSON; not the full journal bytes",
+          "path": ".lab/hyperv/shadow-alpha-20261026/normal-evidence/ef9e1456af154eb0b85645a2a094848c/conversion/ticket.json",
+          "location_unknown_reason": null,
+          "sha256": "4d9275d6e7fb58a3419ab1ae4d99841dea0d5e1191848849b6ff49ec734f1730"
+        },
+        {
+          "role": "Exact prehandoff image and raw target writes",
+          "path": ".lab/hyperv/shadow-alpha-20261026/normal-evidence/ef9e1456af154eb0b85645a2a094848c/conversion/apply.json",
+          "location_unknown_reason": null,
+          "sha256": "e858dd1bfbced39c60726692d9d4875a1aabb4cbb88f6ee95c078dad8b7ac80b"
+        },
+        {
+          "role": "Handoff, native semantics and automatic original-label restoration",
+          "path": ".lab/hyperv/shadow-alpha-20261026/normal-evidence/ef9e1456af154eb0b85645a2a094848c/conversion/finalization.json",
+          "location_unknown_reason": null,
+          "sha256": "b8048e591a6b23ae40b85f7e28ba3732e253ac9e3b1638507fa72426431a335b"
+        },
+        {
+          "role": "Completed public conversion result",
+          "path": ".lab/hyperv/shadow-alpha-20261026/normal-evidence/ef9e1456af154eb0b85645a2a094848c/conversion/result.json",
+          "location_unknown_reason": null,
+          "sha256": "9c4a23b2465d4184240beaeca282c9c3aa3e5fa6b5dbd7ff4a4f08a7d939db59"
+        },
+        {
+          "role": "Observed terminal normal conversion process",
+          "path": ".lab/hyperv/shadow-alpha-20261026/postcheck/ef9e1456af154eb0b85645a2a094848c/normal-conversion-terminal.json",
+          "location_unknown_reason": null,
+          "sha256": "35834c3b112d0033ab187c228f2f6f72a311ee9ea6d134413ae6fe29d10261b0"
+        },
+        {
+          "role": "Host receipt embedding strict pre-mutation report and its guest pin",
+          "path": ".lab/hyperv/shadow-alpha-20261026/postcheck/ef9e1456af154eb0b85645a2a094848c/before-mutation-verified.json",
+          "location_unknown_reason": null,
+          "sha256": "6e869b16048151049d2f6a628fc307826aa0670228f1ff5c6e481ec720948779"
+        },
+        {
+          "role": "Host receipt embedding exact bounded mutation report and its guest pin",
+          "path": ".lab/hyperv/shadow-alpha-20261026/postcheck/ef9e1456af154eb0b85645a2a094848c/mutation-pins.json",
+          "location_unknown_reason": null,
+          "sha256": "887d0ad999807f96768ae211ab0b66417c0cd6f50afd24e8b4246ae913de37f7"
+        },
+        {
+          "role": "Host receipt embedding strict post-mutation report and its guest pin",
+          "path": ".lab/hyperv/shadow-alpha-20261026/postcheck/ef9e1456af154eb0b85645a2a094848c/after-mutation-verified.json",
+          "location_unknown_reason": null,
+          "sha256": "773b90ea8da7d44ccb09462275579c0fd8b117fb742741b837788cfeeb326f9b"
+        },
+        {
+          "role": "Host receipt embedding strict clean-reboot report and its guest pin",
+          "path": ".lab/hyperv/shadow-alpha-20261026/postcheck/ef9e1456af154eb0b85645a2a094848c/after-reboot-verified.json",
+          "location_unknown_reason": null,
+          "sha256": "296ec839d8522f02d0be96cdbbad09f9f8c32ca0c18bf1aef712008af6f22f7a"
+        },
+        {
+          "role": "Pre-reboot boot ticks",
+          "path": ".lab/hyperv/shadow-alpha-20261026/postcheck/ef9e1456af154eb0b85645a2a094848c/guest-before.json",
+          "location_unknown_reason": null,
+          "sha256": "3edb9961a4b73fe90fffdadf3ba4d05ebe698ec6817d51b8898076b10d5f370b"
+        },
+        {
+          "role": "Strictly greater post-reboot boot ticks",
+          "path": ".lab/hyperv/shadow-alpha-20261026/postcheck/ef9e1456af154eb0b85645a2a094848c/reboot-observed.json",
+          "location_unknown_reason": null,
+          "sha256": "df334f59804d080cbe466bcf6776f396c21e5c677fcec1c3c90321a4249b7027"
+        },
+        {
+          "role": "Actual successful preserved OFF normal checkpoint",
+          "path": ".lab/hyperv/shadow-alpha-20261026/postcheck/ef9e1456af154eb0b85645a2a094848c/preserved-checkpoint.json",
+          "location_unknown_reason": null,
+          "sha256": "99e8e5a18ad0ee6329ac8443e6a634888a46d133eca1c199a685b888b38fa7a1"
+        },
+        {
+          "role": "Normal controller completion, mutation and clean-reboot outcome",
+          "path": ".lab/hyperv/shadow-alpha-20261026/postcheck/ef9e1456af154eb0b85645a2a094848c/result.json",
+          "location_unknown_reason": null,
+          "sha256": "a5f466c86b982e69697429a2253a009c695eb4ea3034348757fec8c3406ffd2d"
+        },
+        {
+          "role": "Driver file metadata associated with the case enrollment by exact binary SHA256 equality",
+          "path": ".lab/hyperv/shadow-alpha-20261026/driver-file-observation-20261026T235032433Z.json",
+          "location_unknown_reason": null,
+          "sha256": "53baaee8f9e99c4592017f4ed5d2616c3173abe29196a6c82beecf90d6055914"
+        },
+        {
+          "role": "Later read-only journal marker/body observation intent; no image or replay authority",
+          "path": ".lab/hyperv/shadow-alpha-20261026/marker-pins/Normal-4ad0147fdde044fbb9d5073e5bfdbe8d-73efe6c7a51046b9b4e4131e56d078bf/intent.json",
+          "location_unknown_reason": null,
+          "sha256": "683b15985fe8d44685cddd3cb319fb4c9f1ab9ae169112f8a3a3c17ac87cbd57"
+        },
+        {
+          "role": "Actual later read-only completed marker and full immutable-body observation receipt",
+          "path": ".lab/hyperv/shadow-alpha-20261026/marker-pins/Normal-4ad0147fdde044fbb9d5073e5bfdbe8d-73efe6c7a51046b9b4e4131e56d078bf/result.json",
+          "location_unknown_reason": null,
+          "sha256": "bae7533d6e864bba7a8ac7f3f5101eba69776b8fa2786fcb0ecc67e8c2c5ce46"
+        },
+        {
+          "role": "Actual observed8192-byte mutable prefix, including completed marker and progress sector",
+          "path": ".lab/hyperv/shadow-alpha-20261026/marker-pins/Normal-4ad0147fdde044fbb9d5073e5bfdbe8d-73efe6c7a51046b9b4e4131e56d078bf/journal-prefix.bin",
+          "location_unknown_reason": null,
+          "sha256": "f013b5e6f94df15d76ac8d665ab3afb66c6d7a0eddddcd662991ce53c3f67fc2"
+        },
+        {
+          "role": "Standalone first4096 bytes derived from saved observed prefix and full-file hash verified",
+          "path": ".lab/hyperv/shadow-alpha-20261026/marker-pins/Normal-4ad0147fdde044fbb9d5073e5bfdbe8d-73efe6c7a51046b9b4e4131e56d078bf/journal-marker.bin",
+          "location_unknown_reason": null,
+          "sha256": "b1565e8c8b5aefecde9419ea03b7c14d647b733ca5c24625b9cef5b2929f65a9"
+        }
+      ],
+      "source_documents": [
+        "docs/native-shadow-alpha.md",
+        "docs/native-shadow-alpha-results.md",
+        "docs/protected-target-semantics.md"
+      ],
+      "unknown_fields": {
+        "actual_shadow_backing_bytes": "Peak actual allocated shadow/journal/host backing was not measured; sparse lengths and capacity snapshots are not a high-water measurement.",
+        "full_process_io": "No complete phase-by-phase process/disk I/O accounting or validated event-trace coverage was captured. Scoped journal writes and shadow payload initialization are not aggregate physical I/O.",
+        "retained_payload_io_coverage": "Original payload position/hash and journal exclusion were checked; absence of every physical payload write is not established.",
+        "target_metadata_bootstrap_bytes": "The 231481344-byte raw target count includes metadata and relocated/materialized contents; independently classified metadata/bootstrap bytes were not measured.",
+        "full_journal_sha256": "The later read-only observer verified the complete immutable journal body against its ticket and saved the8192-byte prefix separately. Neither a whole-journal hash including mutable sectors nor the whole journal bytes were captured; separate component digests are not a whole-journal SHA256.",
+        "environment_scope": "Windows build 26300.9457 comes from this alpha fixture readiness; postcheck guards require the same build/driver, but their saved receipt records boot ticks rather than repeating all version fields.",
+        "loaded_kernel_driver_image": "The driver metadata record identifies the disk file with the same hash required by case preflights; loaded kernel image bytes were not independently attested.",
+        "journal_observation_scope": "Actual prefix/marker files and observer receipt are pinned. The body receipt reports 462986640 immutable bytes and SHA256 f2a680c0c6602ce0d8e76041e99f6f7ace0d2b7732b7daf39c0fca59e4015031. Body bytes were not exported for an independent host rehash. Native journal file ID, externally enrolled storage unique ID, current source/target raw image and loaded kernel driver image were not attested. The observer performed no journal flush or writes and grants no recovery authority."
+      },
+      "fault_model": "none",
+      "clean_reboot_observed": true,
+      "metrics": {
+        "logical_bytes": 143171672,
+        "retained_payload_bytes": 134217728,
+        "relocated_payload_bytes": 8953856,
+        "materialized_payload_bytes": 88,
+        "target_bytes_written": 231481344,
+        "journal_bytes": 462994832,
+        "source_bytes_hashed": null,
+        "metadata_write_count": null,
+        "objects_verified": 15,
+        "actual_shadow_backing_bytes": null
+      }
+    },
+    {
+      "id": "alpha-public-cancel-source-freeze-reboot",
+      "profile_id": "ordinary-ntfs31-refs314-v2",
+      "stages": [
+        "native_observed",
+        "process_fault_qualified",
+        "reboot_verified"
+      ],
+      "outcome": "passed",
+      "scope": "Frozen alpha controlled producer fd23326c56424b7b94cc4a92658ccb19 exited87 after durable source freeze, before inspection/shadow construction/journal preparation/activation. Public operation-state classified frozen_before_activation. Public cancel exited0, proved the full unchanged52GiB NTFS image under its exclusive source lease before writable mounting, restored original F: availability/mount/label and reported zero source-payload writes/journal mutations. Seven user-file lengths/hashes and original NTFS identity/availability matched before and after clean reboot. Checkpoint1cd601b8-c87d-42a8-a105-b1771fdf2b38 preserves the branch OFF. Full post-mount image/security/timestamp equality, interrupted apply/rollback and power-loss safety are not claimed.",
+      "repository_commit": "96720eff89c7e808983c8d5c9800d475fe62515c",
+      "executable": {
+        "name": "ntfs2refs.exe",
+        "sha256": "714ddd2bc78d1165061524a390e538c15d8022b2b56ca5170040edfe1286b841",
+        "retained_path": ".lab/alpha/native-shadow-alpha-20261026/bin/ntfs2refs.exe"
+      },
+      "environment": {
+        "windows_build_revision": "26300.9457",
+        "refs_driver": {
+          "name": "refs.sys",
+          "file_version": "10.0.26100.8875 (WinBuild.160101.0800)",
+          "sha256": "3aa5d90958fc582c5f6567d2b970a3a37b3d4d80a4b58b5a8676943b7860d3c4"
+        }
+      },
+      "corpus": {
+        "description": "Same independent alpha fixture restored to baseline7e5582a7-6b15-4531-b77f-9f19cb9e5d47. This preactivation case verifies the complete frozen source before restoring NTFS; later native checks cover seven user files and availability only, not the fifteen-object ReFS expectation or all source metadata.",
+        "source_image_sha256": "58b48267e752c7f93cb25cda61f9153c20e1f5ac92d080bea31e129829874b15",
+        "expected_image_sha256": null,
+        "expected_semantic_manifest_sha256": null
+      },
+      "artifacts": [
+        {
+          "role": "Frozen package provenance",
+          "path": ".lab/alpha/native-shadow-alpha-20261026/alpha.json",
+          "location_unknown_reason": null,
+          "sha256": "2ae422c81fa6883192d1770a81d7a0d82fb5e61c1e47675cabaf3a6b8d5f8818"
+        },
+        {
+          "role": "Retained frozen public status/cancel executable",
+          "path": ".lab/alpha/native-shadow-alpha-20261026/bin/ntfs2refs.exe",
+          "location_unknown_reason": null,
+          "sha256": "714ddd2bc78d1165061524a390e538c15d8022b2b56ca5170040edfe1286b841"
+        },
+        {
+          "role": "Retained controlled source-freeze exit87 producer",
+          "path": ".lab/alpha/native-shadow-alpha-20261026/bin/lab-convert-admitted-tree.exe",
+          "location_unknown_reason": null,
+          "sha256": "129ec4cfe6d70812291a343594be1e843f92cc59e3e7bca51c7b8bbb536ed822"
+        },
+        {
+          "role": "Expected seven-file logical hash/length fixture; not full security metadata",
+          "path": ".lab/hyperv/shadow-alpha-20261026/guest-fixture.json",
+          "location_unknown_reason": null,
+          "sha256": "e7c8660c6afeba7c722e9afff756cd9ccfbbac4e2f4fafb5eb4c99d54e27b8b1"
+        },
+        {
+          "role": "Same-fixture guest readiness with build and driver hash",
+          "path": ".lab/hyperv/shadow-alpha-20261026/guest-readiness.json",
+          "location_unknown_reason": null,
+          "sha256": "374b4339964dfc4af68be9fb245eef2b32ad011204cdfe6f06210938b7fbc357"
+        },
+        {
+          "role": "Recorded controlled producer dispatch and engine pin",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/fd23326c56424b7b94cc4a92658ccb19/dispatch.json",
+          "location_unknown_reason": null,
+          "sha256": "4a14495d38ed72c2ae3e74fbe00474c4f93b5238e919cff7ee8d09eaa1703024"
+        },
+        {
+          "role": "Exact guest/build/driver guard predicate before this producer",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/fd23326c56424b7b94cc4a92658ccb19/guest-preflight.json",
+          "location_unknown_reason": null,
+          "sha256": "bef2abdc3920a87edb7c6f2e67b44943ca58dabe7f508db892c6c51094204f0a"
+        },
+        {
+          "role": "Recorded frozen public cancellation binary and pinned public artifacts",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/fd23326c56424b7b94cc4a92658ccb19/cancel-controller-intent.json",
+          "location_unknown_reason": null,
+          "sha256": "45b8d22597bc86e2299141ee405ebe510e5c96c7a5a2fdaf8018f417095558bb"
+        },
+        {
+          "role": "Public classifier recognized frozen-before-activation and conditional cancel",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/fd23326c56424b7b94cc4a92658ccb19/operation-state-result.json",
+          "location_unknown_reason": null,
+          "sha256": "e072083b23310390e588ce87a4d66e08c6f5882b9c53f7deb716255722d94c82"
+        },
+        {
+          "role": "Observed terminal exit0 public cancel",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/fd23326c56424b7b94cc4a92658ccb19/cancel-terminal.json",
+          "location_unknown_reason": null,
+          "sha256": "1423a381eb8470e7689b684fc1eb95169cf1b93f5283678c36493420f9233199"
+        },
+        {
+          "role": "Original NTFS availability/label and seven logical-file checks",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/fd23326c56424b7b94cc4a92658ccb19/cancel-availability-verified.json",
+          "location_unknown_reason": null,
+          "sha256": "5cdd5c1bc0dbc0b3856ce9f6e5ff5ab93d97ecf454487bb0195610babacb6e02"
+        },
+        {
+          "role": "Pre-reboot NTFS availability, seven expected hashes and boot ticks",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/fd23326c56424b7b94cc4a92658ccb19/recovery-before-reboot.json",
+          "location_unknown_reason": null,
+          "sha256": "9b3f96e66a481c21af6cafe8ab4b84bb5e162b3d0b328bb86f5a92fcb6d627b3"
+        },
+        {
+          "role": "Post-reboot NTFS availability, seven expected hashes and advanced boot ticks",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/fd23326c56424b7b94cc4a92658ccb19/recovery-after-reboot.json",
+          "location_unknown_reason": null,
+          "sha256": "1c95ec486b2de95f22a0e82ae3dad61c189439ffd2516b2ef65a9268af5f6cad"
+        },
+        {
+          "role": "Actual successful preserved OFF cancellation checkpoint",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/fd23326c56424b7b94cc4a92658ccb19/recovery-preserved-checkpoint.json",
+          "location_unknown_reason": null,
+          "sha256": "0f21e97d250595bf0f043490ec0ca9575e564dca1672ccc604b9496d9933ecd9"
+        },
+        {
+          "role": "Cancellation guest-to-host export pins",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/fd23326c56424b7b94cc4a92658ccb19/cancel-evidence/_pins.json",
+          "location_unknown_reason": null,
+          "sha256": "84965fb7959675d6f78ba6931ae5f25b9630b228fdb9d01ad4c09a1b6a14ae3b"
+        },
+        {
+          "role": "Exported cancellation evidence: cancel-availability-intent.json",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/fd23326c56424b7b94cc4a92658ccb19/cancel-evidence/cancel-availability-intent.json",
+          "location_unknown_reason": null,
+          "sha256": "74b0785e890aaed0ff4b12d618f6a7b3475b41cf95bcab148c47da2e60120cab"
+        },
+        {
+          "role": "Exported cancellation evidence: cancel-intent.json",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/fd23326c56424b7b94cc4a92658ccb19/cancel-evidence/cancel-intent.json",
+          "location_unknown_reason": null,
+          "sha256": "b6294a0cdf4422dab92cf412eb1ea17af688159143cabc562e1aba74f83d3632"
+        },
+        {
+          "role": "Exported cancellation evidence: cancel-mount-paths.json",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/fd23326c56424b7b94cc4a92658ccb19/cancel-evidence/cancel-mount-paths.json",
+          "location_unknown_reason": null,
+          "sha256": "4984e4247f36ec6d080020624dc6ca1f0b52a9a100c84a3c2312956a9aa98389"
+        },
+        {
+          "role": "Exported cancellation evidence: cancel-result.json",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/fd23326c56424b7b94cc4a92658ccb19/cancel-evidence/cancel-result.json",
+          "location_unknown_reason": null,
+          "sha256": "2fa0561e3695b82587891189fb311d105973e62a8d6ffd1259524337cd247d45"
+        },
+        {
+          "role": "Exported cancellation evidence: cancel-source-restored.json",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/fd23326c56424b7b94cc4a92658ccb19/cancel-evidence/cancel-source-restored.json",
+          "location_unknown_reason": null,
+          "sha256": "94f84827d18e65c799ef706fcd60befe4d84e43ec02cb86d3c3026b84aed303d"
+        },
+        {
+          "role": "Exported cancellation evidence: cancel-source-unchanged.json",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/fd23326c56424b7b94cc4a92658ccb19/cancel-evidence/cancel-source-unchanged.json",
+          "location_unknown_reason": null,
+          "sha256": "514fc3ca12a1d4fe5afd64a80e07377cbe5c5868bea462a235f3b185204eea4c"
+        },
+        {
+          "role": "Exported cancellation evidence: producer-conversion-intent.json",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/fd23326c56424b7b94cc4a92658ccb19/cancel-evidence/producer-conversion-intent.json",
+          "location_unknown_reason": null,
+          "sha256": "cd66a364056e64c2b9fb05dd7d8f8927241ae72283f1948059253468e97de5df"
+        },
+        {
+          "role": "Exported cancellation evidence: producer-qualification-source-frozen.json",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/fd23326c56424b7b94cc4a92658ccb19/cancel-evidence/producer-qualification-source-frozen.json",
+          "location_unknown_reason": null,
+          "sha256": "c238a7db0261d6af6100855a4e07022f3d807fbcc9a9a5e922653040209c57f4"
+        },
+        {
+          "role": "Exported cancellation evidence: producer-qualification-source-mount-paths.json",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/fd23326c56424b7b94cc4a92658ccb19/cancel-evidence/producer-qualification-source-mount-paths.json",
+          "location_unknown_reason": null,
+          "sha256": "0cc47c3e6380e85577ebbf92075de5aa4665053584133292061d52ab9412d805"
+        },
+        {
+          "role": "Driver file metadata associated with the case enrollment by exact binary SHA256 equality",
+          "path": ".lab/hyperv/shadow-alpha-20261026/driver-file-observation-20261026T235032433Z.json",
+          "location_unknown_reason": null,
+          "sha256": "53baaee8f9e99c4592017f4ed5d2616c3173abe29196a6c82beecf90d6055914"
+        }
+      ],
+      "source_documents": [
+        "docs/native-shadow-alpha.md",
+        "docs/native-shadow-alpha-results.md",
+        "docs/public-cancel-and-operation-state.md"
+      ],
+      "unknown_fields": {
+        "expected_semantic_manifest_sha256": "This source-freeze cancellation case did not inspect/reconstruct a complete semantic tree. Its separately pinned seven-user-file length/hash fixture is not a complete security/timestamp manifest.",
+        "expected_image_sha256": "No ReFS postimage was constructed. Public cancel checked the complete original NTFS image before writable mounting; no post-mount whole-image hash is claimed.",
+        "actual_shadow_backing_bytes": "Peak actual allocated backing and aggregate scratch were not measured. No shadow construction or journal preparation was part of this cancellation case.",
+        "full_process_io": "One complete source-hash proof is scoped below; total process/disk I/O and phase high-water allocation were not measured.",
+        "full_journal_sha256": "No conversion journal was prepared for this case; no full-journal or marker SHA256 is inferred from its absence or JSON claims.",
+        "postmount_metadata_scope": "Before/after clean-reboot checks cover original NTFS availability, partition/mount/label and seven user-file lengths/hashes. They do not reverify full security/timestamps or post-mount whole-image equality.",
+        "environment_scope": "Same-fixture readiness records 26300.9457 and the driver hash; this case guest-preflight records its exact guest/build/driver guard predicate. It does not contain an independent driver file-version field.",
+        "loaded_kernel_driver_image": "The driver metadata record identifies the disk file with the same hash required by case preflights; loaded kernel image bytes were not independently attested.",
+        "source_hash_metric_scope": "source_bytes_hashed describes the complete partition verified by cancellation before mounting; it is not total freezing, cancellation, reboot or storage I/O."
+      },
+      "fault_model": "process_exit_after_source_freeze",
+      "clean_reboot_observed": true,
+      "metrics": {
+        "logical_bytes": 143151104,
+        "retained_payload_bytes": null,
+        "relocated_payload_bytes": null,
+        "materialized_payload_bytes": null,
+        "target_bytes_written": 0,
+        "journal_bytes": null,
+        "source_bytes_hashed": 55834574848,
+        "metadata_write_count": null,
+        "objects_verified": 7,
+        "actual_shadow_backing_bytes": null
+      }
+    },
+    {
+      "id": "alpha-public-resume-first-flushed-write-reboot",
+      "profile_id": "ordinary-ntfs31-refs314-v2",
+      "stages": [
+        "native_observed",
+        "process_fault_qualified",
+        "reboot_verified"
+      ],
+      "outcome": "passed",
+      "scope": "Frozen alpha case c2939b18b2fb4ee8836f859dcf1d13b8: the controlled producer exited86 after the first flushed target write, leaving source offline/writable, shadow offline/read-only and the complete handoff region zero. Public resume exited0, processed132 journal plan ranges and wrote231374848 bytes, proving the exact excluded ReFS postimage while its128MiB retained range stayed unchanged and raw replay remained open. The132 ranges are processed plan ranges, not a guaranteed count of remaining ranges. Public finalize exited0 and recorded handoff before native ReFS use, restored the original label/mount and verified15 objects. Strict checks passed before/after the bounded mutation and after clean reboot with the exact mutation report root-basic policy. OFF checkpoint072a065e-7f91-457f-ad27-709271b07014 is separately recorded as preserved. This is one process-exit case, not arbitrary power loss, interrupted rollback, zero physical payload I/O or current-HEAD inheritance. A later read-only observation on the restored preserved branch verified the canonical completed journal marker and full immutable-body hash, and retained the actual8192-byte prefix plus its4096-byte marker. This is additional journal evidence only: it does not requalify conversion, attest current target/source raw images, native journal file identity, loaded driver image or replay/write authority.",
+      "repository_commit": "96720eff89c7e808983c8d5c9800d475fe62515c",
+      "executable": {
+        "name": "ntfs2refs.exe",
+        "sha256": "714ddd2bc78d1165061524a390e538c15d8022b2b56ca5170040edfe1286b841",
+        "retained_path": ".lab/alpha/native-shadow-alpha-20261026/bin/ntfs2refs.exe"
+      },
+      "environment": {
+        "windows_build_revision": "26300.9457",
+        "refs_driver": {
+          "name": "refs.sys",
+          "file_version": "10.0.26100.8875 (WinBuild.160101.0800)",
+          "sha256": "3aa5d90958fc582c5f6567d2b970a3a37b3d4d80a4b58b5a8676943b7860d3c4"
+        }
+      },
+      "corpus": {
+        "description": "Independent alpha VM0d9bfa66-c66c-4ead-86b7-e72cb5f7e040 restored from baseline7e5582a7-6b15-4531-b77f-9f19cb9e5d47. Same synthetic aged-layout fixture, this case has its own frozen source/request/ticket/expectation/postimage pins. Original expectation plus mutation report8ad16a6bc59e1a8c47ad301ca1f0fe11fdfdbfb16cf85a5797fd70e0ea78b830 scopes later root metadata. Raw image hashes apply before writable mounting; no post-mount raw equality is claimed.",
+        "source_image_sha256": "073500e7eafcb308f8dcb52d446db50192bc8fd02654c2f7836a0d4f230f0aec",
+        "expected_image_sha256": "426d3dcadf01c9ae6ac879fb080e0587d2362c5e40eba473024f74088ffa25dd",
+        "expected_semantic_manifest_sha256": "5eb30e43c400cac1308a88eb25eaac89865f8bd5967add696d900a230d97c793"
+      },
+      "artifacts": [
+        {
+          "role": "Frozen alpha package and source checkpoint",
+          "path": ".lab/alpha/native-shadow-alpha-20261026/alpha.json",
+          "location_unknown_reason": null,
+          "sha256": "2ae422c81fa6883192d1770a81d7a0d82fb5e61c1e47675cabaf3a6b8d5f8818"
+        },
+        {
+          "role": "Retained frozen public resume/finalize executable",
+          "path": ".lab/alpha/native-shadow-alpha-20261026/bin/ntfs2refs.exe",
+          "location_unknown_reason": null,
+          "sha256": "714ddd2bc78d1165061524a390e538c15d8022b2b56ca5170040edfe1286b841"
+        },
+        {
+          "role": "Controlled first-flushed-write producer executable",
+          "path": ".lab/alpha/native-shadow-alpha-20261026/bin/lab-convert-admitted-tree.exe",
+          "location_unknown_reason": null,
+          "sha256": "129ec4cfe6d70812291a343594be1e843f92cc59e3e7bca51c7b8bbb536ed822"
+        },
+        {
+          "role": "Strict native tree verifier executable",
+          "path": ".lab/alpha/native-shadow-alpha-20261026/bin/lab-verify-general-converted.exe",
+          "location_unknown_reason": null,
+          "sha256": "b81990282876a4bd2a8de1ab13f748588d623a3f5e36123ad225c9112a54564a"
+        },
+        {
+          "role": "Bounded mutation executable",
+          "path": ".lab/alpha/native-shadow-alpha-20261026/bin/lab-general-refs-mutation.exe",
+          "location_unknown_reason": null,
+          "sha256": "f35175710403be6140bb668709a14ce3408b6513c18d3419a233c7232affe18c"
+        },
+        {
+          "role": "One recorded controlled producer dispatch",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/c2939b18b2fb4ee8836f859dcf1d13b8/dispatch.json",
+          "location_unknown_reason": null,
+          "sha256": "b3f501dc203f6508ba481bb5cf63f620b379925d5dfc39c010b5e98500c99799"
+        },
+        {
+          "role": "Recorded public recovery/postcheck controller",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/c2939b18b2fb4ee8836f859dcf1d13b8/resume-controller-intent.json",
+          "location_unknown_reason": null,
+          "sha256": "5bad87339846f3332e9586e63929559bc858ee817bc10f20dd7bb6c7bf450f38"
+        },
+        {
+          "role": "Known stopped producer exit86, no matching processes",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/c2939b18b2fb4ee8836f859dcf1d13b8/resume-postcheck-b5d5cc65c3ee437b96dfed9460fa72de/producer-terminal.json",
+          "location_unknown_reason": null,
+          "sha256": "e6a116ce4a605740a43865e3b13504edd53697b1be86758e90199d0798c43446"
+        },
+        {
+          "role": "Excluded source/shadow and complete zero handoff-region observation",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/c2939b18b2fb4ee8836f859dcf1d13b8/resume-postcheck-b5d5cc65c3ee437b96dfed9460fa72de/before-resume-exclusion.json",
+          "location_unknown_reason": null,
+          "sha256": "601504f9543608a185c247dc04b7c7b6315529c7652797f89a5b32ab3800fd7a"
+        },
+        {
+          "role": "Exact raw request/ticket/expectation/interruption receipt pins",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/c2939b18b2fb4ee8836f859dcf1d13b8/resume-postcheck-b5d5cc65c3ee437b96dfed9460fa72de/recovery-input-pins.json",
+          "location_unknown_reason": null,
+          "sha256": "75c746f2e15751ffe88af37b5bc465c96f1448a944a4eff6287dfa3b967fe935"
+        },
+        {
+          "role": "Complete producer JSON export pins",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/c2939b18b2fb4ee8836f859dcf1d13b8/resume-evidence-b5d5cc65c3ee437b96dfed9460fa72de/producer/_export-pins.json",
+          "location_unknown_reason": null,
+          "sha256": "9013a9f9a72b37fc7171c5c7602d5427e3c5e4cc0f16d451eeb976208994a321"
+        },
+        {
+          "role": "Complete resumed/finalized/postcheck JSON export pins",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/c2939b18b2fb4ee8836f859dcf1d13b8/resume-postcheck-b5d5cc65c3ee437b96dfed9460fa72de/post-reboot/_export-pins.json",
+          "location_unknown_reason": null,
+          "sha256": "a098194b1fc3daab2b07a9b27702d8939dd4342ffa246b85a3fec7c8530aa2e8"
+        },
+        {
+          "role": "Driver file metadata associated with the case enrollment by exact binary SHA256 equality",
+          "path": ".lab/hyperv/shadow-alpha-20261026/driver-file-observation-20261026T235032433Z.json",
+          "location_unknown_reason": null,
+          "sha256": "53baaee8f9e99c4592017f4ed5d2616c3173abe29196a6c82beecf90d6055914"
+        },
+        {
+          "role": "Exact derived public recovery request",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/c2939b18b2fb4ee8836f859dcf1d13b8/resume-evidence-b5d5cc65c3ee437b96dfed9460fa72de/producer/request.json",
+          "location_unknown_reason": null,
+          "sha256": "6657ba2480ff5258c46b74812c520c1cbca85807a07f82ca1c75309ad7e79e95"
+        },
+        {
+          "role": "Recovery ticket JSON, not full journal bytes",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/c2939b18b2fb4ee8836f859dcf1d13b8/resume-evidence-b5d5cc65c3ee437b96dfed9460fa72de/producer/ticket.json",
+          "location_unknown_reason": null,
+          "sha256": "98be15852cbda5f2f8007b6b9454a46a94f84da4a98fa666abbb775e64e312ce"
+        },
+        {
+          "role": "Fifteen-object original semantic expectation",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/c2939b18b2fb4ee8836f859dcf1d13b8/resume-evidence-b5d5cc65c3ee437b96dfed9460fa72de/producer/expectation.json",
+          "location_unknown_reason": null,
+          "sha256": "5eb30e43c400cac1308a88eb25eaac89865f8bd5967add696d900a230d97c793"
+        },
+        {
+          "role": "Controlled exit86 after one flushed target write; no handoff authorized",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/c2939b18b2fb4ee8836f859dcf1d13b8/resume-evidence-b5d5cc65c3ee437b96dfed9460fa72de/producer/interruption-intent.json",
+          "location_unknown_reason": null,
+          "sha256": "314610916c07f2afb5cd9ac01458facecc04c9f4e0ad3f6aa1f633d130b9e87f"
+        },
+        {
+          "role": "Pinned journal-file location/identity observation",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/c2939b18b2fb4ee8836f859dcf1d13b8/resume-evidence-b5d5cc65c3ee437b96dfed9460fa72de/producer/journal-location.json",
+          "location_unknown_reason": null,
+          "sha256": "cfcf9cc3736775934bab50e5c57d1569ac38c129e57c30bf5433b990bee19c27"
+        },
+        {
+          "role": "Original132-range journal plan and exact journal capacity",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/c2939b18b2fb4ee8836f859dcf1d13b8/resume-evidence-b5d5cc65c3ee437b96dfed9460fa72de/producer/prepare.json",
+          "location_unknown_reason": null,
+          "sha256": "457402bf182ba51a790054d6d3bc21882a11db7f7ca45a1b6691e1cfd6a8cbfd"
+        },
+        {
+          "role": "Actual original frozen NTFS source identity",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/c2939b18b2fb4ee8836f859dcf1d13b8/resume-evidence-b5d5cc65c3ee437b96dfed9460fa72de/producer/qualification/source-frozen.json",
+          "location_unknown_reason": null,
+          "sha256": "b39cd334cadf93dcaff20fff59391458addecd0b1e1d2f0cfde05d40a7916924"
+        },
+        {
+          "role": "Protected target semantics and measured stream dispositions",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/c2939b18b2fb4ee8836f859dcf1d13b8/resume-evidence-b5d5cc65c3ee437b96dfed9460fa72de/producer/qualification/target-preservation.json",
+          "location_unknown_reason": null,
+          "sha256": "5907e082eeff53bf9329fb67933d104876225fbbbf04783f20368bd505ec1fd0"
+        },
+        {
+          "role": "Live source/target certificate issued before interruption",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/c2939b18b2fb4ee8836f859dcf1d13b8/resume-evidence-b5d5cc65c3ee437b96dfed9460fa72de/producer/qualification/certificate.json",
+          "location_unknown_reason": null,
+          "sha256": "07504cebd892002b4eac0c362276438f997a6909fba648dcd7e046ac297926a0"
+        },
+        {
+          "role": "Public resume exit0 result; target remains excluded, replay still open",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/c2939b18b2fb4ee8836f859dcf1d13b8/resume-postcheck-b5d5cc65c3ee437b96dfed9460fa72de/post-reboot/resume/result.json",
+          "location_unknown_reason": null,
+          "sha256": "e23659bff751ebef9685b045e735b0f7fc7e7ced00a849dda574f600e65a454a"
+        },
+        {
+          "role": "Exact postimage and132 processed plan ranges during resume",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/c2939b18b2fb4ee8836f859dcf1d13b8/resume-postcheck-b5d5cc65c3ee437b96dfed9460fa72de/post-reboot/resume/execution.json",
+          "location_unknown_reason": null,
+          "sha256": "98764edc0cf22657a910b96be4666943b2481e51f573cc008c30966e3627116a"
+        },
+        {
+          "role": "Public finalize exit0 and closed rollback",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/c2939b18b2fb4ee8836f859dcf1d13b8/resume-postcheck-b5d5cc65c3ee437b96dfed9460fa72de/post-reboot/finalize/result.json",
+          "location_unknown_reason": null,
+          "sha256": "4251ad39812f8815274456e3d53609b93fff2c1add7c74281859741aea54c057"
+        },
+        {
+          "role": "Handoff before native use, fifteen objects and original-label completion",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/c2939b18b2fb4ee8836f859dcf1d13b8/resume-postcheck-b5d5cc65c3ee437b96dfed9460fa72de/post-reboot/finalize/completion.json",
+          "location_unknown_reason": null,
+          "sha256": "9a08a1d3f54a108d90ecc4d760641bab42015c984e55f426742e6a023ba6070c"
+        },
+        {
+          "role": "Strict fifteen-object native check before mutation",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/c2939b18b2fb4ee8836f859dcf1d13b8/resume-postcheck-b5d5cc65c3ee437b96dfed9460fa72de/post-reboot/before-mutation.json",
+          "location_unknown_reason": null,
+          "sha256": "d1ec9211d685d76a476c3bf846cc901aafa29ae458c49ab7d90c7527306cb407"
+        },
+        {
+          "role": "Exact bounded native mutation and root-basic policy",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/c2939b18b2fb4ee8836f859dcf1d13b8/resume-postcheck-b5d5cc65c3ee437b96dfed9460fa72de/post-reboot/mutation.json",
+          "location_unknown_reason": null,
+          "sha256": "8ad16a6bc59e1a8c47ad301ca1f0fe11fdfdbfb16cf85a5797fd70e0ea78b830"
+        },
+        {
+          "role": "Strict fifteen-object native check after mutation",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/c2939b18b2fb4ee8836f859dcf1d13b8/resume-postcheck-b5d5cc65c3ee437b96dfed9460fa72de/post-reboot/after-mutation.json",
+          "location_unknown_reason": null,
+          "sha256": "274e01ca187107117622576d0dd70a2f5bccc4a749b75a9d12c21c3498cb54b0"
+        },
+        {
+          "role": "Strict fifteen-object native verification after clean reboot",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/c2939b18b2fb4ee8836f859dcf1d13b8/resume-postcheck-b5d5cc65c3ee437b96dfed9460fa72de/post-reboot/after-reboot.json",
+          "location_unknown_reason": null,
+          "sha256": "3e7aaf6f83b7cf629d488a9fd9d373c18134add7a7f26a12530982a182052878"
+        },
+        {
+          "role": "Observed terminal exit0 public resume",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/c2939b18b2fb4ee8836f859dcf1d13b8/resume-postcheck-b5d5cc65c3ee437b96dfed9460fa72de/resume-terminal.json",
+          "location_unknown_reason": null,
+          "sha256": "c08507fd18f57df46d6339b0e03b576c36dc808a222d67a0963fb2c88ef25d5b"
+        },
+        {
+          "role": "Observed terminal exit0 public finalize",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/c2939b18b2fb4ee8836f859dcf1d13b8/resume-postcheck-b5d5cc65c3ee437b96dfed9460fa72de/finalize-terminal.json",
+          "location_unknown_reason": null,
+          "sha256": "3326399da1ed80739255e9c7bb091a283d79f53f6cbc10f45687873fc0e3f667"
+        },
+        {
+          "role": "Excluded exact-image resume receipt and zero marker-region observation",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/c2939b18b2fb4ee8836f859dcf1d13b8/resume-postcheck-b5d5cc65c3ee437b96dfed9460fa72de/resume-verified.json",
+          "location_unknown_reason": null,
+          "sha256": "f28abd0135dbb19141d9e638939a25d6e93f25c3ac0297c0c4a78e72e2f16ad1"
+        },
+        {
+          "role": "Native completion receipt",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/c2939b18b2fb4ee8836f859dcf1d13b8/resume-postcheck-b5d5cc65c3ee437b96dfed9460fa72de/finalize-verified.json",
+          "location_unknown_reason": null,
+          "sha256": "11f465f68a50f56b702ba8f9560c1e9c455f234f356d51d37d14b2316c4ab5b3"
+        },
+        {
+          "role": "Exact mutation report guest pin and embedded report",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/c2939b18b2fb4ee8836f859dcf1d13b8/resume-postcheck-b5d5cc65c3ee437b96dfed9460fa72de/mutation-pins.json",
+          "location_unknown_reason": null,
+          "sha256": "fcb3c129c6b972b0e118ba9e2a382b6a1df439cc18195027bfa596b535566176"
+        },
+        {
+          "role": "Fresh pre-reboot boot ticks and mutation pin",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/c2939b18b2fb4ee8836f859dcf1d13b8/resume-postcheck-b5d5cc65c3ee437b96dfed9460fa72de/reboot-intent.json",
+          "location_unknown_reason": null,
+          "sha256": "a2d1d860b96b4ef48bf73422a8f642aef087c611d2e6f5ddb68ccf6b83133b4e"
+        },
+        {
+          "role": "Greater post-reboot UTC boot ticks",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/c2939b18b2fb4ee8836f859dcf1d13b8/resume-postcheck-b5d5cc65c3ee437b96dfed9460fa72de/reboot-observed.json",
+          "location_unknown_reason": null,
+          "sha256": "fbe398576082eeb2343dd55cfba16e00470653833be9e3da3d0414cf7a4afb6c"
+        },
+        {
+          "role": "Observed terminal exit0 strict reboot verification",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/c2939b18b2fb4ee8836f859dcf1d13b8/resume-postcheck-b5d5cc65c3ee437b96dfed9460fa72de/strict-reboot-terminal.json",
+          "location_unknown_reason": null,
+          "sha256": "745df389077d3d17dad72a076d066d7a27b859365235dbcab39075dac9a44c3e"
+        },
+        {
+          "role": "Completed resume/mutation/reboot controller result",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/c2939b18b2fb4ee8836f859dcf1d13b8/resume-postcheck-b5d5cc65c3ee437b96dfed9460fa72de/result.json",
+          "location_unknown_reason": null,
+          "sha256": "86054968a02150340b35c9152259cbe05078818f9586e1dd8fc9919e914141c2"
+        },
+        {
+          "role": "Actual successful preserved OFF resume checkpoint; earlier pending preservation flag superseded",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/c2939b18b2fb4ee8836f859dcf1d13b8/resume-preserved-checkpoint.json",
+          "location_unknown_reason": null,
+          "sha256": "907ba0ff4988b8b4ad079b5d2b3de8be1bdd46aaca8558659e20d380250cc71c"
+        },
+        {
+          "role": "Later read-only journal marker/body observation intent; no image or replay authority",
+          "path": ".lab/hyperv/shadow-alpha-20261026/marker-pins/Resume-c2939b18b2fb4ee8836f859dcf1d13b8-185c8fe200d44c45b14ae56d8faa76e7/intent.json",
+          "location_unknown_reason": null,
+          "sha256": "26120c70b84049eca3e40e94fc99ca7f1d19d5927f90f053ce727a9244907261"
+        },
+        {
+          "role": "Actual later read-only completed marker and full immutable-body observation receipt",
+          "path": ".lab/hyperv/shadow-alpha-20261026/marker-pins/Resume-c2939b18b2fb4ee8836f859dcf1d13b8-185c8fe200d44c45b14ae56d8faa76e7/result.json",
+          "location_unknown_reason": null,
+          "sha256": "8f5e15b7b6173cd242c631b501665bfe7a9d6892924992ec400e994a01604a87"
+        },
+        {
+          "role": "Actual observed8192-byte mutable prefix, including completed marker and progress sector",
+          "path": ".lab/hyperv/shadow-alpha-20261026/marker-pins/Resume-c2939b18b2fb4ee8836f859dcf1d13b8-185c8fe200d44c45b14ae56d8faa76e7/journal-prefix.bin",
+          "location_unknown_reason": null,
+          "sha256": "693b37ccfd2c48f184e39d8fc73940bdc5f9311567c84d36dc3cb941793fd3ea"
+        },
+        {
+          "role": "Standalone first4096 bytes derived from saved observed prefix and full-file hash verified",
+          "path": ".lab/hyperv/shadow-alpha-20261026/marker-pins/Resume-c2939b18b2fb4ee8836f859dcf1d13b8-185c8fe200d44c45b14ae56d8faa76e7/journal-marker.bin",
+          "location_unknown_reason": null,
+          "sha256": "fb14e0cfb445dd20a845e732e82ea58b326bfefeb6b9c4653a06c19c314233b4"
+        }
+      ],
+      "source_documents": [
+        "docs/native-shadow-alpha.md",
+        "docs/native-shadow-alpha-results.md",
+        "docs/lab-reconstruction-journal.md",
+        "docs/cli-workflow.md"
+      ],
+      "unknown_fields": {
+        "actual_shadow_backing_bytes": "Peak actual allocated source/shadow/journal/host backing was not measured; capacity snapshots and sparse logical lengths are not a high-water measurement.",
+        "full_process_io": "No complete phase process/disk I/O accounting or validated trace coverage exists. These are scoped resume target writes, not aggregate producer/resume/finalize/mutation I/O.",
+        "resume_write_count_scope": "132 ranges and231374848 bytes were processed by public resume against the132-range journal plan. Idempotent/repeated plan writes are possible; these are not asserted to be only remaining ranges or total writes across the interrupted producer and recovery.",
+        "target_metadata_bootstrap_bytes": "The resume write count includes metadata and relocated/materialized payload; independent metadata/bootstrap write classification is unavailable.",
+        "full_journal_sha256": "The later read-only observer verified the complete immutable journal body against its ticket and saved the8192-byte prefix separately. Neither a whole-journal hash including mutable sectors nor the whole journal bytes were captured; separate component digests are not a whole-journal SHA256.",
+        "retained_payload_io_coverage": "Exact raw postimage/retained-range and strict native checks passed; absence of every physical payload write was not measured.",
+        "loaded_kernel_driver_image": "The53baaee8... DriverVersionObservation identifies the on-disk refs.sys file by exact SHA256 equality with case-enrollment checks. Loaded kernel image bytes were not independently attested.",
+        "environment_scope": "Windows26300.9457 and driver hash are tied to the same alpha fixture and enforced by case guards. The later DriverVersionObservation supplies hash-correlated on-disk file-version metadata, not loaded-image attestation.",
+        "checkpoint_receipt_scope": "The controller result initially said checkpoint_preservation_pending=true. The later successful OFF checkpoint receipt pins that result and independently records completed preservation; it is not inferred from the earlier pending field.",
+        "journal_observation_scope": "Actual prefix/marker files and observer receipt are pinned. The body receipt reports 462772048 immutable bytes and SHA256 c3843b689bf170cedbe922f20dcc15dbd00fd0d299f5d08ef289b018ad9a4aaf. Body bytes were not exported for an independent host rehash. Native journal file ID, externally enrolled storage unique ID, current source/target raw image and loaded kernel driver image were not attested. The observer performed no journal flush or writes and grants no recovery authority.",
+        "marker_observer_memory_scope": "The coordinator reports this later read-only Resume marker observation boot used temporary4GiB RAM because of host-memory shortage. All four original qualification cases ran with8GiB. This journal observation does not qualify conversion/recovery at4GiB. Current RAM restoration and later observer-state preservation are separate coordinator actions, not asserted by this marker receipt."
+      },
+      "fault_model": "process_exit_after_first_flushed_target_write",
+      "clean_reboot_observed": true,
+      "metrics": {
+        "logical_bytes": 143171672,
+        "retained_payload_bytes": 134217728,
+        "relocated_payload_bytes": 8953856,
+        "materialized_payload_bytes": 88,
+        "target_bytes_written": 231374848,
+        "journal_bytes": 462780240,
+        "source_bytes_hashed": null,
+        "metadata_write_count": null,
+        "objects_verified": 15,
+        "actual_shadow_backing_bytes": null
+      }
+    },
+    {
+      "id": "alpha-public-shadowless-rollback-first-write-reboot",
+      "profile_id": "ordinary-ntfs31-refs314-v2",
+      "stages": [
+        "native_observed",
+        "process_fault_qualified",
+        "reboot_verified"
+      ],
+      "outcome": "passed",
+      "scope": "Frozen alpha case d769b379604c46fd937d5f4fba3a236a: after a controlled first-flushed-target-write process exit86, the controller verified the terminal producer, pinned request/ticket/journal and zero handoff region. It removed only the owned alpha VM SCSI0 slot4 shadow attachment, retained its backing, and proved the actual shadow GPT disk/partition absent. Public rollback --without-shadow task71c583b065014743946fa97976d44889 exited0, processed139 plan ranges and wrote231391232 bytes, proving the complete original52GiB NTFS preimage before writable mounting. Completion closed replay and checked all4096 bytes of the version4 ABT marker, including padding/checksum. Original NTFS partition/F: mount/label and seven user-file lengths/hashes matched afterward and after a clean reboot. The actual OFF preserved checkpoint is fc55b0d7-5899-4c1f-9404-4bf4a14b054c. Full post-mount raw equality, complete security/timestamp audit, interrupted marker completion and storage power-loss safety are not claimed. A later read-only observation on the restored preserved branch verified the canonical completed journal marker and full immutable-body hash, and retained the actual8192-byte prefix plus its4096-byte marker. This is additional journal evidence only: it does not requalify conversion, attest current target/source raw images, native journal file identity, loaded driver image or replay/write authority.",
+      "repository_commit": "96720eff89c7e808983c8d5c9800d475fe62515c",
+      "executable": {
+        "name": "ntfs2refs.exe",
+        "sha256": "714ddd2bc78d1165061524a390e538c15d8022b2b56ca5170040edfe1286b841",
+        "retained_path": ".lab/alpha/native-shadow-alpha-20261026/bin/ntfs2refs.exe"
+      },
+      "environment": {
+        "windows_build_revision": "26300.9457",
+        "refs_driver": {
+          "name": "refs.sys",
+          "file_version": "10.0.26100.8875 (WinBuild.160101.0800)",
+          "sha256": "3aa5d90958fc582c5f6567d2b970a3a37b3d4d80a4b58b5a8676943b7860d3c4"
+        }
+      },
+      "corpus": {
+        "description": "Separate alpha baseline branch7e5582a7-6b15-4531-b77f-9f19cb9e5d47 in VM0d9bfa66-c66c-4ead-86b7-e72cb5f7e040. Controlled conversion stopped after its first flushed target write; shadow attachment was then removed while its backing was preserved. The exact source image proof is pre-writable-mount. Subsequent and post-reboot checks cover seven user files plus original NTFS identity/availability, not complete post-mount metadata or a new ReFS image.",
+        "source_image_sha256": "bacb25054b3046b368e3ef2399e02b25988ed4c900544a0e05f616ee2f993e29",
+        "expected_image_sha256": null,
+        "expected_semantic_manifest_sha256": null
+      },
+      "artifacts": [
+        {
+          "role": "Frozen engine/package provenance",
+          "path": ".lab/alpha/native-shadow-alpha-20261026/alpha.json",
+          "location_unknown_reason": null,
+          "sha256": "2ae422c81fa6883192d1770a81d7a0d82fb5e61c1e47675cabaf3a6b8d5f8818"
+        },
+        {
+          "role": "Retained frozen public shadowless rollback executable",
+          "path": ".lab/alpha/native-shadow-alpha-20261026/bin/ntfs2refs.exe",
+          "location_unknown_reason": null,
+          "sha256": "714ddd2bc78d1165061524a390e538c15d8022b2b56ca5170040edfe1286b841"
+        },
+        {
+          "role": "Retained controlled first-flushed-write producer",
+          "path": ".lab/alpha/native-shadow-alpha-20261026/bin/lab-convert-admitted-tree.exe",
+          "location_unknown_reason": null,
+          "sha256": "129ec4cfe6d70812291a343594be1e843f92cc59e3e7bca51c7b8bbb536ed822"
+        },
+        {
+          "role": "Exact expected seven user-file paths, lengths and logical hashes",
+          "path": ".lab/hyperv/shadow-alpha-20261026/guest-fixture.json",
+          "location_unknown_reason": null,
+          "sha256": "e7c8660c6afeba7c722e9afff756cd9ccfbbac4e2f4fafb5eb4c99d54e27b8b1"
+        },
+        {
+          "role": "Original one-time controlled producer dispatch",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/d769b379604c46fd937d5f4fba3a236a/dispatch.json",
+          "location_unknown_reason": null,
+          "sha256": "ba990d0a79e71da6298e180e0837d7e7cf3c1687e91da6b5f5f76417e5757f36"
+        },
+        {
+          "role": "Terminal exit86 producer, exact recovery input pins and pre-detach ownership",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/d769b379604c46fd937d5f4fba3a236a/rollback-controller-intent.json",
+          "location_unknown_reason": null,
+          "sha256": "20da17ee85d6caa820b7556eb174d5df18f99918218ceb2c8ef381e268b0048f"
+        },
+        {
+          "role": "Preserved earlier volume-GUID-root path-preflight diagnostic",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/d769b379604c46fd937d5f4fba3a236a/rollback-preflight-path-diagnostic-20261027T003129241Z.json",
+          "location_unknown_reason": null,
+          "sha256": "ebcf6710223bf36460745e50710a5147eb1275b23b55820f5021d796f18f2828"
+        },
+        {
+          "role": "Corrected read-only ancestry preflight, no journal open or disk mutation",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/d769b379604c46fd937d5f4fba3a236a/rollback-corrected-path-preflight.json",
+          "location_unknown_reason": null,
+          "sha256": "17ec044a0b35521369439f04b03aa16de9ddff17b425050820a37aab0c535fe7"
+        },
+        {
+          "role": "Reviewed corrected controller dispatch; producer/restore not repeated",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/d769b379604c46fd937d5f4fba3a236a/rollback-corrected-controller-dispatch-intent.json",
+          "location_unknown_reason": null,
+          "sha256": "3e758f06c98af2c3de5060bdee4fbc2634bbc65c1529fe09b87d4d4575beee30"
+        },
+        {
+          "role": "Hash-pinned corrected controller source at harness3d6c55ec145f80bb216b1e828c7a4be7b805330d",
+          "path": "lab/Complete-NativeShadowAlphaRollback.ps1",
+          "location_unknown_reason": null,
+          "sha256": "ca8e0213850f2010178bb6d3f1a3d6653b05ba7e82d87c674d236d0eeb8d4bf4"
+        },
+        {
+          "role": "One owned SCSI0 slot4 detach intent with backing ancestry",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/d769b379604c46fd937d5f4fba3a236a/rollback-detach-intent.json",
+          "location_unknown_reason": null,
+          "sha256": "a083490a6cfa946bddf8dc34d35ad51c105a12bea9d9cfba19ff53eeed094c88"
+        },
+        {
+          "role": "Shadow attachment removed, backing retained, other routes unchanged",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/d769b379604c46fd937d5f4fba3a236a/rollback-detach-returned.json",
+          "location_unknown_reason": null,
+          "sha256": "be42fead99d49d886e7a9d68468c58510e21a35fd0badb28c3be61747165878a"
+        },
+        {
+          "role": "Actual absent shadow GPT disk/partition before public rollback",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/d769b379604c46fd937d5f4fba3a236a/rollback-shadow-absence.json",
+          "location_unknown_reason": null,
+          "sha256": "23040b499761c97d097bc6188690f5d0da5d1c2e2e36c75fae41bd292a9616de"
+        },
+        {
+          "role": "One direct frozen SYSTEM public rollback task",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/d769b379604c46fd937d5f4fba3a236a/rollback-task-intent.json",
+          "location_unknown_reason": null,
+          "sha256": "900fd258b911d95e605d25ee31d87747c81c4ab2b666db1d0a210b5b265e1b8c"
+        },
+        {
+          "role": "Recorded task-start return without completion inference",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/d769b379604c46fd937d5f4fba3a236a/rollback-start-returned.json",
+          "location_unknown_reason": null,
+          "sha256": "a245d83fa7cebc85fbf4cf6cda892a050733f7075e21140e4896bd090b15fe6d"
+        },
+        {
+          "role": "Known terminal0 public rollback, no matching workers",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/d769b379604c46fd937d5f4fba3a236a/rollback-terminal.json",
+          "location_unknown_reason": null,
+          "sha256": "bf6b5bb742830f64fdb923b0b919fb1b45831f4a82881174a9b6ecc5eab3586d"
+        },
+        {
+          "role": "Actual all4096 ABT bytes checked; original NTFS mount/label and seven files verified",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/d769b379604c46fd937d5f4fba3a236a/rollback-availability-verified.json",
+          "location_unknown_reason": null,
+          "sha256": "cf3e5789d998547a7d2fca03864d5937d763068468b4c4468dd011762a329eb4"
+        },
+        {
+          "role": "Completed shadowless rollback controller result and backing preservation",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/d769b379604c46fd937d5f4fba3a236a/rollback-controller-result.json",
+          "location_unknown_reason": null,
+          "sha256": "58a2135d461ec07eaa348a5407af338b79fa6ed900b0970d2e9d353f360eaa7a"
+        },
+        {
+          "role": "Original NTFS/seven-file verification and fresh pre-reboot ticks",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/d769b379604c46fd937d5f4fba3a236a/recovery-before-reboot.json",
+          "location_unknown_reason": null,
+          "sha256": "9ef1b2205f6191d4a28a51600744a0e1f1b1ab013642d8a3ee9d93595173c4ae"
+        },
+        {
+          "role": "One clean reboot intent",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/d769b379604c46fd937d5f4fba3a236a/recovery-reboot-intent.json",
+          "location_unknown_reason": null,
+          "sha256": "2242a07db8adac2b9b4d4da74018115d5e384753da1367d2644dfbd034e7e5b7"
+        },
+        {
+          "role": "Original NTFS/seven-file verification after advancing boot ticks",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/d769b379604c46fd937d5f4fba3a236a/recovery-after-reboot.json",
+          "location_unknown_reason": null,
+          "sha256": "e22577e6192eb71b180d52c97fbe66348605475989ca68081935db8ffc464904"
+        },
+        {
+          "role": "Clean shutdown intent without force",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/d769b379604c46fd937d5f4fba3a236a/recovery-shutdown-intent.json",
+          "location_unknown_reason": null,
+          "sha256": "aa183f02fc1a6bf3c8e4878a1101ed5fed93c9645faa2c2575eeefa7a244b2f7"
+        },
+        {
+          "role": "Preserved OFF rollback checkpoint intent",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/d769b379604c46fd937d5f4fba3a236a/recovery-checkpoint-intent.json",
+          "location_unknown_reason": null,
+          "sha256": "52e5e309912d42e3bb81fdfd6bdcc087136d7a78dad104377724aef41cc5ca89"
+        },
+        {
+          "role": "Actual successful preserved OFF rollback checkpoint after clean reboot",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/d769b379604c46fd937d5f4fba3a236a/recovery-preserved-checkpoint.json",
+          "location_unknown_reason": null,
+          "sha256": "84a14abc7ef685d7cc948e02672ffc59f3094838b64a708e2834b38e90a726dc"
+        },
+        {
+          "role": "Driver file metadata associated with the case enrollment by exact binary SHA256 equality",
+          "path": ".lab/hyperv/shadow-alpha-20261026/driver-file-observation-20261026T235032433Z.json",
+          "location_unknown_reason": null,
+          "sha256": "53baaee8f9e99c4592017f4ed5d2616c3173abe29196a6c82beecf90d6055914"
+        },
+        {
+          "role": "Original interrupted producer export: request.json",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/d769b379604c46fd937d5f4fba3a236a/rollback-producer-request.json",
+          "location_unknown_reason": null,
+          "sha256": "07fbed2d84cee0ffe0cff1c399f8778bd77cd494ab106d1a2186505ab14f9900"
+        },
+        {
+          "role": "Original interrupted producer export: ticket.json",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/d769b379604c46fd937d5f4fba3a236a/rollback-producer-ticket.json",
+          "location_unknown_reason": null,
+          "sha256": "0966adacd5a4f71b51f2934124d443d6a896858f7b87f4bbdc5b36d45fed2f30"
+        },
+        {
+          "role": "Original interrupted producer export: prepare.json",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/d769b379604c46fd937d5f4fba3a236a/rollback-producer-prepare.json",
+          "location_unknown_reason": null,
+          "sha256": "dc1fa2b6eb426cbae8ee3f3909c1252c12ae2ffef736faa910ed204ec21c0c2e"
+        },
+        {
+          "role": "Original interrupted producer export: journal-location.json",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/d769b379604c46fd937d5f4fba3a236a/rollback-producer-journal-location.json",
+          "location_unknown_reason": null,
+          "sha256": "241b43847b4662666e5958338fb91f47f339fa15c5d8dfd6aa240e6f20a2932a"
+        },
+        {
+          "role": "Original interrupted producer export: interruption-intent.json",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/d769b379604c46fd937d5f4fba3a236a/rollback-producer-interruption-intent.json",
+          "location_unknown_reason": null,
+          "sha256": "eae4919134e15c3f8d96b8eca2fdacc6c5e27fa17e95ce70b8f724a7af58065c"
+        },
+        {
+          "role": "Public shadowless rollback export: request.json",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/d769b379604c46fd937d5f4fba3a236a/rollback-evidence-71c583b065014743946fa97976d44889/request.json",
+          "location_unknown_reason": null,
+          "sha256": "07fbed2d84cee0ffe0cff1c399f8778bd77cd494ab106d1a2186505ab14f9900"
+        },
+        {
+          "role": "Public shadowless rollback export: ticket.json",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/d769b379604c46fd937d5f4fba3a236a/rollback-evidence-71c583b065014743946fa97976d44889/ticket.json",
+          "location_unknown_reason": null,
+          "sha256": "0966adacd5a4f71b51f2934124d443d6a896858f7b87f4bbdc5b36d45fed2f30"
+        },
+        {
+          "role": "Public shadowless rollback export: intent.json",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/d769b379604c46fd937d5f4fba3a236a/rollback-evidence-71c583b065014743946fa97976d44889/intent.json",
+          "location_unknown_reason": null,
+          "sha256": "b53a288ed259770099d647cccc87ea065e8449393ce7304b603eab6a1950e7e7"
+        },
+        {
+          "role": "Public shadowless rollback export: journal-identity.json",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/d769b379604c46fd937d5f4fba3a236a/rollback-evidence-71c583b065014743946fa97976d44889/journal-identity.json",
+          "location_unknown_reason": null,
+          "sha256": "dbef38113cf7ca995cc619d4be7319a0b13a3752ce2c6731562ffd82d168f174"
+        },
+        {
+          "role": "Public shadowless rollback export: preflight-events.json",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/d769b379604c46fd937d5f4fba3a236a/rollback-evidence-71c583b065014743946fa97976d44889/preflight-events.json",
+          "location_unknown_reason": null,
+          "sha256": "889de90d5710784bcc5f80fe5bb0d1e370d0374ba2efadfb24167e1fd46f98be"
+        },
+        {
+          "role": "Public shadowless rollback export: execution.json",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/d769b379604c46fd937d5f4fba3a236a/rollback-evidence-71c583b065014743946fa97976d44889/execution.json",
+          "location_unknown_reason": null,
+          "sha256": "7f55f57ed0f5978785603530384399dd3d87f7bc118b274539d3bb09bc2192b7"
+        },
+        {
+          "role": "Public shadowless rollback export: execution-events.json",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/d769b379604c46fd937d5f4fba3a236a/rollback-evidence-71c583b065014743946fa97976d44889/execution-events.json",
+          "location_unknown_reason": null,
+          "sha256": "7c71cc4bf80cba1538c274cb40745bb1bfb20d33a334d873974c27585ca66242"
+        },
+        {
+          "role": "Public shadowless rollback export: completion.json",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/d769b379604c46fd937d5f4fba3a236a/rollback-evidence-71c583b065014743946fa97976d44889/completion.json",
+          "location_unknown_reason": null,
+          "sha256": "37d69548090d3bbdb9313f2019b1d0736930a5d538b38845b68115a31059f1ff"
+        },
+        {
+          "role": "Public shadowless rollback export: result.json",
+          "path": ".lab/hyperv/shadow-alpha-20261026/fault-cases/d769b379604c46fd937d5f4fba3a236a/rollback-evidence-71c583b065014743946fa97976d44889/result.json",
+          "location_unknown_reason": null,
+          "sha256": "f71cce07d32c910677c4c43b79a828f02817a6574d7d2983f60e2c2269d627c5"
+        },
+        {
+          "role": "Later read-only journal marker/body observation intent; no image or replay authority",
+          "path": ".lab/hyperv/shadow-alpha-20261026/marker-pins/RollbackWithoutShadow-d769b379604c46fd937d5f4fba3a236a-d3f6965abf8149c193376e50615552ed/intent.json",
+          "location_unknown_reason": null,
+          "sha256": "c1b70d1a18e88d41591eb700b53da7fb6c08bab67e84d406be6a3ab31f313630"
+        },
+        {
+          "role": "Actual later read-only completed marker and full immutable-body observation receipt",
+          "path": ".lab/hyperv/shadow-alpha-20261026/marker-pins/RollbackWithoutShadow-d769b379604c46fd937d5f4fba3a236a-d3f6965abf8149c193376e50615552ed/result.json",
+          "location_unknown_reason": null,
+          "sha256": "e2b6b91fa0607543cb00cd6171eca51e2db12c21f797127b60dfd2aa6346a860"
+        },
+        {
+          "role": "Actual observed8192-byte mutable prefix, including completed marker and progress sector",
+          "path": ".lab/hyperv/shadow-alpha-20261026/marker-pins/RollbackWithoutShadow-d769b379604c46fd937d5f4fba3a236a-d3f6965abf8149c193376e50615552ed/journal-prefix.bin",
+          "location_unknown_reason": null,
+          "sha256": "2a165f0e7f994b221a93744ec87e7a162ed923bc25ecde8b7fd606b0f1d89711"
+        },
+        {
+          "role": "Standalone first4096 bytes derived from saved observed prefix and full-file hash verified",
+          "path": ".lab/hyperv/shadow-alpha-20261026/marker-pins/RollbackWithoutShadow-d769b379604c46fd937d5f4fba3a236a-d3f6965abf8149c193376e50615552ed/journal-marker.bin",
+          "location_unknown_reason": null,
+          "sha256": "0d7fc4e09d38f7ba5f6fa524b521eb7ad665cb4141e57c099fae522083bb8a85"
+        },
+        {
+          "role": "Preserved earlier read-only marker collector intent",
+          "path": ".lab/hyperv/shadow-alpha-20261026/marker-pins/RollbackWithoutShadow-d769b379604c46fd937d5f4fba3a236a-c4ffa08b44ff4c8e879af8c94c384d15/intent.json",
+          "location_unknown_reason": null,
+          "sha256": "08b12d2a8e5be7ec8cbe68018b40742365a161d7e122c84d912dfd0685153ea6"
+        },
+        {
+          "role": "Preserved unsupported PowerShell ulong type failure, zero journal/disk mutations",
+          "path": ".lab/hyperv/shadow-alpha-20261026/marker-pins/RollbackWithoutShadow-d769b379604c46fd937d5f4fba3a236a-c4ffa08b44ff4c8e879af8c94c384d15/failed-preserved.json",
+          "location_unknown_reason": null,
+          "sha256": "b6e11fafd623a4d17f97337941dd349b53fa972caaba699c760d7453127f6f96"
+        },
+        {
+          "role": "Corrected read-only collector source using System.UInt64; conversion engine unchanged",
+          "path": "lab/Collect-NativeShadowAlphaMarker.ps1",
+          "location_unknown_reason": null,
+          "sha256": "ad5c302f509735668744e6734e22e5202d956612b274d73057c6b224650f2aa1"
+        }
+      ],
+      "source_documents": [
+        "docs/native-shadow-alpha.md",
+        "docs/native-shadow-alpha-results.md",
+        "docs/lab-reconstruction-journal.md",
+        "docs/cli-workflow.md"
+      ],
+      "unknown_fields": {
+        "expected_image_sha256": "This case restores the original NTFS preimage rather than constructing a new ReFS postimage. Its full source hash was verified before writable NTFS mounting; no post-mount whole-image hash is asserted.",
+        "expected_semantic_manifest_sha256": "The complete pre-mount raw NTFS preimage is proven, while post-mount/reboot conformance covers seven expected file paths/lengths/hashes and availability only. No complete postboot security/timestamp semantic manifest was checked.",
+        "actual_shadow_backing_bytes": "Backing files were preserved, but peak actual source/shadow/journal/host allocation was not measured. File logical sizes and capacity snapshots are not peak backing measurements.",
+        "full_process_io": "The231391232-byte value is scoped to public rollback target writes. It excludes producer writes and other recovery/metadata/native I/O; aggregate phase read/write coverage was not measured.",
+        "rollback_write_count_scope": "139 processed ranges match the139-range journal plan. These are not asserted to be a guaranteed remaining-range count or unique total writes across the interrupted producer and rollback.",
+        "target_metadata_bootstrap_bytes": "The rollback write count mixes restored metadata and payload. An independent metadata/bootstrap-only classification is unavailable.",
+        "full_journal_sha256": "The later read-only observer verified the complete immutable journal body against its ticket and saved the8192-byte prefix separately. Neither a whole-journal hash including mutable sectors nor the whole journal bytes were captured; separate component digests are not a whole-journal SHA256.",
+        "postmount_metadata_scope": "Seven file lengths/hashes, original partition/mount/label and NTFS availability were checked before/after clean reboot. Full post-mount image equality and full security/timestamp verification are not claimed.",
+        "loaded_kernel_driver_image": "The53baaee8... DriverVersionObservation supplies hash-correlated on-disk refs.sys version metadata; loaded kernel image bytes were not independently attested.",
+        "environment_scope": "Same-fixture build26300.9457 and driver hash are enforced by alpha case guards; later on-disk version metadata is associated by exact driver-file hash, not by assumed loaded-image identity.",
+        "harness_chronology": "Earlier volume-GUID-root ancestry preflight failed before recovery dispatch. Original diagnostics are preserved. Corrected source harness3d6c55ec145f80bb216b1e828c7a4be7b805330d (SHAca8e0213...) passed a read-only path preflight, then ran the controller. The controlled producer and baseline restore were not repeated; the frozen Rust engine stayed unchanged.",
+        "journal_observation_scope": "Actual prefix/marker files and observer receipt are pinned. The body receipt reports 462805936 immutable bytes and SHA256 cb1840dd475862c065e6ebeb75e5e6fa6ff59ef94c448364c68f65f8b7dbe2ce. Body bytes were not exported for an independent host rehash. Native journal file ID, externally enrolled storage unique ID, current source/target raw image and loaded kernel driver image were not attested. The observer performed no journal flush or writes and grants no recovery authority.",
+        "marker_collector_chronology": "The earlier read-only collector failed when Windows PowerShell5.1 could not resolve [ulong]. Its intent/failure receipts are retained; they report zero journal writes and disk-attribute changes. The collector source was corrected to System.UInt64 and the later capture passed. No conversion, public recovery or qualification case was repeated by this evidence-only collection."
+      },
+      "fault_model": "process_exit_after_first_flushed_target_write",
+      "clean_reboot_observed": true,
+      "metrics": {
+        "logical_bytes": 143151104,
+        "retained_payload_bytes": null,
+        "relocated_payload_bytes": null,
+        "materialized_payload_bytes": null,
+        "target_bytes_written": 231391232,
+        "journal_bytes": 462814128,
+        "source_bytes_hashed": 55834574848,
+        "metadata_write_count": null,
+        "objects_verified": 7,
+        "actual_shadow_backing_bytes": null
+      }
+    },
+    {
+      "id": "large-beta-240g-64k-native-mutation-reboot",
+      "profile_id": "ordinary-ntfs31-64k-refs314-4k-beta-v1",
+      "stages": [
+        "implemented",
+        "native_observed",
+        "reboot_verified"
+      ],
+      "outcome": "passed",
+      "scope": "Public convert inside the owned VM changed the original 240 GiB partition from NTFS/64 KiB to ReFS/4 KiB. Fourteen admitted objects passed strict native verification, bounded new-file mutation and clean reboot. Original source extents were not prearranged; this case relocated/materialized all payloads. A user host reboot occurred after the successful result, not during conversion.",
+      "repository_commit": "4befb3b92aa764a5dfe1eaf935380d75c9962909",
+      "executable": {
+        "name": "ntfs2refs.exe",
+        "sha256": "38b5b8d142e612000ee00385efc3b4414293b13abad23f71e576f1c5e412b5f2",
+        "retained_path": ".lab/hyperv/shadow-large-beta-20261027/candidate3/terminal-evidence/stage/ntfs2refs.exe"
+      },
+      "environment": {
+        "windows_build_revision": "26300.9457",
+        "refs_driver": null
+      },
+      "corpus": {
+        "description": "Six deterministic user files plus three recognized Windows ancillary files, five directories including root; 134500457 logical bytes; ordinary create history without source extent moves. Separate 240 GiB ReFS shadow and independent journal storage.",
+        "source_image_sha256": "2eecb270e3dc011324da77dcdfb2eb40d3ca86ff7fb27e50d8009b9e644b67cf",
+        "expected_image_sha256": "f47ce622da431f3841dadec720da617519d0c5bd7027d0fbdd189e02aa3f5e8b",
+        "expected_semantic_manifest_sha256": "08c1fb268e3115619ed7d5a68805a4a8d97dd07ffb5963f3f2ee393db89903ab"
+      },
+      "artifacts": [
+        {
+          "role": "terminal-evidence/run/result.json",
+          "path": ".lab/hyperv/shadow-large-beta-20261027/candidate3/terminal-evidence/run/result.json",
+          "location_unknown_reason": null,
+          "sha256": "3d3f157afaf61b0ced96fcbdaef66a04254595d90a0c8fa3b37ce4fdd58f64f5"
+        },
+        {
+          "role": "terminal-evidence/run/apply.json",
+          "path": ".lab/hyperv/shadow-large-beta-20261027/candidate3/terminal-evidence/run/apply.json",
+          "location_unknown_reason": null,
+          "sha256": "4274d55241e731c7a65a1ac8c520ea6119398bc72444d72309b4c3724c35acbb"
+        },
+        {
+          "role": "terminal-evidence/run/finalization.json",
+          "path": ".lab/hyperv/shadow-large-beta-20261027/candidate3/terminal-evidence/run/finalization.json",
+          "location_unknown_reason": null,
+          "sha256": "8e763327d05ace3209c509db0f664e0bc3ef88ed28bf93e2e0116e9d5bc79daf"
+        },
+        {
+          "role": "rust-postcheck/BeforeMutation.json",
+          "path": ".lab/hyperv/shadow-large-beta-20261027/candidate3/rust-postcheck/BeforeMutation.json",
+          "location_unknown_reason": null,
+          "sha256": "9852574b41bf08306f6bc5a7bf08c1434706232a077aa4215df5122445619cd8"
+        },
+        {
+          "role": "rust-postcheck/AfterPreservationBoot-attempt-2.json",
+          "path": ".lab/hyperv/shadow-large-beta-20261027/candidate3/rust-postcheck/AfterPreservationBoot-attempt-2.json",
+          "location_unknown_reason": null,
+          "sha256": "f36339c7cda0dd4dc5e57255385e688ae55d5aadfe4f19f4e571b74467bbaf2d"
+        },
+        {
+          "role": "rust-postcheck/Mutate.json",
+          "path": ".lab/hyperv/shadow-large-beta-20261027/candidate3/rust-postcheck/Mutate.json",
+          "location_unknown_reason": null,
+          "sha256": "de8b00268be8766c7385973356ff173e1ad071d9a09be939b3a4e3c7f1c20ea4"
+        },
+        {
+          "role": "rust-postcheck/AfterMutation.json",
+          "path": ".lab/hyperv/shadow-large-beta-20261027/candidate3/rust-postcheck/AfterMutation.json",
+          "location_unknown_reason": null,
+          "sha256": "f6c63597b3bf844c1776314388431f5a4e8708a91b567d1d5f5c4c5ae8c25cf0"
+        },
+        {
+          "role": "rust-postcheck/AfterReboot.json",
+          "path": ".lab/hyperv/shadow-large-beta-20261027/candidate3/rust-postcheck/AfterReboot.json",
+          "location_unknown_reason": null,
+          "sha256": "9cb43289f7a65f2a254bd1df385ac300bfdf7328f3c973a76a358ecebe6fbfc9"
+        },
+        {
+          "role": "converted-checkpoint.json",
+          "path": ".lab/hyperv/shadow-large-beta-20261027/candidate3/converted-checkpoint.json",
+          "location_unknown_reason": null,
+          "sha256": "e68ebca78c606044f66685eaffc2092c566d01bcdaaf8c0e24840f1afda810dd"
+        },
+        {
+          "role": "passed-checkpoint.json",
+          "path": ".lab/hyperv/shadow-large-beta-20261027/candidate3/passed-checkpoint.json",
+          "location_unknown_reason": null,
+          "sha256": "4db4ab23e8464c1fa8878422e31f9d735ef88b7511d06e3082735036c702338c"
+        },
+        {
+          "role": "runtime-readiness",
+          "path": ".lab/hyperv/shadow-large-beta-20261027/guest-readiness.json",
+          "location_unknown_reason": null,
+          "sha256": "f29d27e5a1d89cb542d99bea76ba3c2c51665d5aa480e5a356e1e364c29a30e9"
+        },
+        {
+          "role": "producer-source-state",
+          "path": ".lab/hyperv/shadow-large-beta-20261027/candidate3/intent.json",
+          "location_unknown_reason": null,
+          "sha256": "e55a3cc0e009f3b96a163e3519a5927df16dc5edd207339549b4ef35897da2e5"
+        },
+        {
+          "role": "postcheck-tools",
+          "path": ".lab/hyperv/shadow-large-beta-20261027/candidate3/rust-postcheck-tools/manifest.json",
+          "location_unknown_reason": null,
+          "sha256": "af0dfb615c7eff8947c6dda9ed6291f15a91d29a6e1afc5b5fe7cfef4fc40b17"
+        }
+      ],
+      "source_documents": [
+        "docs/native-shadow-large-beta.md",
+        "docs/cli-workflow.md"
+      ],
+      "unknown_fields": {
+        "refs_driver": "Readiness records refs.sys SHA-256 3aa5d90958fc582c5f6567d2b970a3a37b3d4d80a4b58b5a8676943b7860d3c4; exact file version was not retained, so no complete Driver identity is invented.",
+        "dirty_source_state": "Producer used the recorded capabilities-only src/main.rs patch SHA-256 d99591b5f26b887b513260cf01b8e89d114cb173fa86d40869a1053518d313e9. Actual executable is pinned; clean-commit inheritance is not claimed.",
+        "postcheck_executables": "Strict verifier and mutation helper are separately pinned in postcheck-tools/manifest.json from commit 2d6fb355206e0499b1231aa3083b0009ee753fec.",
+        "actual_shadow_backing_bytes": "Not independently measured; reported shadow payload initialization is 134500457 bytes. Full workflow physical I/O was not measured.",
+        "unit_tests": "No unit tests were added or run for this milestone."
+      },
+      "fault_model": "none",
+      "clean_reboot_observed": true,
+      "metrics": {
+        "logical_bytes": 134500457,
+        "retained_payload_bytes": 0,
+        "relocated_payload_bytes": 134500352,
+        "materialized_payload_bytes": 105,
+        "target_bytes_written": 337903616,
+        "journal_bytes": 675831546,
+        "objects_verified": 14,
+        "actual_shadow_backing_bytes": null
+      }
+    },
+    {
+      "id": "streaming-v2-unicode-4g-native-mutation-reboot",
+      "profile_id": "ordinary-ntfs31-64k-refs314-4k-streaming-v2",
+      "stages": [
+        "implemented",
+        "native_observed",
+        "reboot_verified"
+      ],
+      "outcome": "passed",
+      "scope": "Public convert inside the owned VM changed the same 52 GiB partition to ReFS with Chinese, Latin and supplementary-plane names and a 4294967297-byte zero file. All thirteen admitted source objects passed native readback, the new-file mutation workload, clean boot and post-mutation reboot under the explicit converted-V2 indexer-cache normalization. No source extent moves or allocation aging were used. All payload relocated/materialized; five checkpoints remain preserved.",
+      "repository_commit": "98d02a4f698d44d7ba89c5a45c24b49422eae363",
+      "executable": {
+        "name": "ntfs2refs.exe",
+        "sha256": "a28a4a5b74839754181f4cc9a44d97aab383b665f2249746418457c8bcde6f39",
+        "retained_path": ".lab/hyperv/streaming-v2-20261027/candidate3/terminal-evidence/stage/ntfs2refs.exe"
+      },
+      "environment": {
+        "windows_build_revision": "26300.9457",
+        "refs_driver": {
+          "name": "refs.sys",
+          "file_version": "10.0.26100.8875 (WinBuild.160101.0800)",
+          "sha256": "3aa5d90958fc582c5f6567d2b970a3a37b3d4d80a4b58b5a8676943b7860d3c4"
+        }
+      },
+      "corpus": {
+        "description": "Six ordinary user files plus two admitted Windows ancillary files, five directories including root; 4295249950 source logical bytes. The largest zero-filled file is 4 GiB+1. Windows adds one validated source-absent indexer cache after handoff; it is separately accounted, not an original source object.",
+        "source_image_sha256": "2faa04e9e3cf5884c36b6e9f75fc37c5918a4102c914ed2ed435ff78a8e64930",
+        "expected_image_sha256": "25d8ddfb5bd506178f8c11573260728311f1e4c386d5907fc84dc7a63cea7e1b",
+        "expected_semantic_manifest_sha256": "0992ec867426127b25e81b672a352d3cebe9f881e7263738e12a94a0c100dc50"
+      },
+      "artifacts": [
+        {
+          "role": "native-conversion-result",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/terminal-evidence/run/result.json",
+          "location_unknown_reason": null,
+          "sha256": "583aacb6d214d67919caa7dfc269ad5e8856482de75a05caaa7a832cb03a1710"
+        },
+        {
+          "role": "exact-raw-apply",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/terminal-evidence/run/apply.json",
+          "location_unknown_reason": null,
+          "sha256": "3d68516afc95b7df999c0391235477d601cbcea4bdf54e6f6151ad44a5633d76"
+        },
+        {
+          "role": "durable-journal-preparation",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/terminal-evidence/run/prepare.json",
+          "location_unknown_reason": null,
+          "sha256": "f3413e9c85dd8043c6cf77e7b32a3d9ff356b04afba18038345ee7b2ff4f95e1"
+        },
+        {
+          "role": "irreversible-handoff-native-result",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/terminal-evidence/run/finalization.json",
+          "location_unknown_reason": null,
+          "sha256": "fae6cc02d48443e787ac7d4e03bab5db63551217aa1340bde4c093274ff912b9"
+        },
+        {
+          "role": "original-semantic-manifest",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/terminal-evidence/run/expectation.json",
+          "location_unknown_reason": null,
+          "sha256": "0992ec867426127b25e81b672a352d3cebe9f881e7263738e12a94a0c100dc50"
+        },
+        {
+          "role": "live-source-certificate",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/terminal-evidence/run/qualification/certificate.json",
+          "location_unknown_reason": null,
+          "sha256": "39eb4cb115268fa5d335cb7e8eb66c20a4735ed8dd136bbc66a3907114cc95ab"
+        },
+        {
+          "role": "verified-terminal-archive",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/terminal-evidence-manifest.json",
+          "location_unknown_reason": null,
+          "sha256": "89816313944e20bc328dff54362063798d4ee975f33ac1eb1e340951b3821af9"
+        },
+        {
+          "role": "initial-refused-observer",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/rust-postcheck/guest-BeforeMutation.json",
+          "location_unknown_reason": null,
+          "sha256": "20247cb990e461acc068430d0e626f2846009a3d385e9fc84805d728c8156bc7"
+        },
+        {
+          "role": "regenerated-cache-diagnostic",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/rust-postcheck/guest-DiagnoseAfterBeforeMutation.json",
+          "location_unknown_reason": null,
+          "sha256": "8a2c0eca673dbb08ec2709e64b6afc8cc8d8ad3c0ac3202f62eb049129a82cc4"
+        },
+        {
+          "role": "normalized-native-before-mutation",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/rust-postcheck/BeforeMutation-attempt-2.json",
+          "location_unknown_reason": null,
+          "sha256": "8a18fb30b1145e3ec3b43215be15089b1bc04a36edb241d91a9b5078dbfcd5ca"
+        },
+        {
+          "role": "converted-checkpoint-boot-verification",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/rust-postcheck/AfterPreservationBoot.json",
+          "location_unknown_reason": null,
+          "sha256": "aa51f878d8f80a3dc5fc5dc21477775af04bfe62f98eaf8a03439f4ce22bb3cd"
+        },
+        {
+          "role": "native-mutation-workload",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/rust-postcheck/Mutate.json",
+          "location_unknown_reason": null,
+          "sha256": "514c8485f44010085b6a2b85fdb9324c979a4e3c8e684eeb3a27b3989457311f"
+        },
+        {
+          "role": "native-after-mutation",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/rust-postcheck/AfterMutation.json",
+          "location_unknown_reason": null,
+          "sha256": "404380b66d9e4f496d2edaceef5977a3a37a97482cc9ca899c3cbe8e2da9bfd6"
+        },
+        {
+          "role": "native-after-mutation-reboot",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/rust-postcheck/AfterReboot.json",
+          "location_unknown_reason": null,
+          "sha256": "66a683388912854d920ad1c0441352a3588d9052d9b92e571a1315a4209cd7ec"
+        },
+        {
+          "role": "preserved-converted-state",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/converted-checkpoint.json",
+          "location_unknown_reason": null,
+          "sha256": "f35b117d0875762c99731508a579546b6f621a7c6ac23b1944f1cd061e56303e"
+        },
+        {
+          "role": "preserved-mutation-reboot-state",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/passed-checkpoint.json",
+          "location_unknown_reason": null,
+          "sha256": "bfe93abd3e7862a3c16571f36881a3c379f6a4f1ddca91b7b5b4066ce5a3ee54"
+        },
+        {
+          "role": "driver-identity-and-retained-postchecks",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/postcheck-terminal-manifest.json",
+          "location_unknown_reason": null,
+          "sha256": "57ecc4fec070f83fbe21cfc4e7b6bfb8feb0d41a452961e7e94bc731fe68c9f9"
+        },
+        {
+          "role": "separately-pinned-postcheck-tools",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/rust-postcheck-tools-v2/manifest.json",
+          "location_unknown_reason": null,
+          "sha256": "133535f4641e326b19db98881a5f9173ce65efa80ad1d755f2f57d2e5b9d0478"
+        },
+        {
+          "role": "producer-source-and-binary-pins",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/intent.json",
+          "location_unknown_reason": null,
+          "sha256": "38b7916f2cb40bf58d252309bb921d6fa785dc71d1d6e01751a4861813ec6664"
+        }
+      ],
+      "source_documents": [
+        "docs/streaming-v2-native.md",
+        "docs/native-sha256-performance.md"
+      ],
+      "unknown_fields": {
+        "dirty_source_state": "Producer included the capabilities-only src/main.rs patch d99591b5f26b887b513260cf01b8e89d114cb173fa86d40869a1053518d313e9; executable is pinned, not clean-HEAD inherited.",
+        "postcheck_lineage": "The initial observer refused a regenerated indexer cache. The version-2 observer and mutator are pinned from 4f187a502bcb2a27dbf9b47e19b7b4897eb59525; their source is distinct from the 98d02a4 converter.",
+        "actual_shadow_backing_bytes": "Not independently measured; payload initialization was 4295249950 bytes. Full-workflow physical I/O remains unmeasured.",
+        "CNG_converter_qualification": "Newer CNG source/journal hashing code was built and separately benchmarked on the host, but did not produce this native conversion.",
+        "unit_tests": "No unit tests were added or run."
+      },
+      "fault_model": "none",
+      "clean_reboot_observed": true,
+      "metrics": {
+        "logical_bytes": 4295249950,
+        "retained_payload_bytes": 0,
+        "relocated_payload_bytes": 4295249920,
+        "materialized_payload_bytes": 30,
+        "target_bytes_written": 339808256,
+        "journal_bytes": 679676029,
+        "objects_verified": 13,
+        "actual_shadow_backing_bytes": null
+      }
+    },
+    {
+      "id": "streaming-v2-first-write-resume-rollback",
+      "profile_id": "ordinary-ntfs31-64k-refs314-4k-streaming-v2",
+      "stages": [
+        "implemented",
+        "native_observed",
+        "process_fault_qualified"
+      ],
+      "outcome": "passed",
+      "scope": "One controlled process exit 86 after a complete flushed target write. Persistent source/shadow exclusion survived guest reboot. The owning-guest journal recovery resumed to the exact expected ReFS image and finalized through Microsoft ReFS. A separate complete-VM snapshot fork from the same pre-handoff partial state rolled back inside the guest to the exact frozen NTFS image, mounted NTFS and matched all six original user-file hashes. Both outcomes and the partial state are preserved OFF. Snapshot restoration supplied only the partial test input; it did not restore NTFS.",
+      "repository_commit": "caf9853d3f2b3aab05f5db954ec9a8cfefe45b21",
+      "executable": {
+        "name": "lab-convert-admitted-tree.exe",
+        "sha256": "a5e557d422fa73faba8e6a2683182a3b60536be61714f9e38684c891366a44e8",
+        "retained_path": ".lab/hyperv/streaming-v2-20261027/candidate4/terminal-evidence/stage/lab-convert-admitted-tree.exe"
+      },
+      "environment": {
+        "windows_build_revision": "26300.9457",
+        "refs_driver": null
+      },
+      "corpus": {
+        "description": "The same six-user-file Unicode/4 GiB+1 zero-file fixture, thirteen admitted source objects, new independently frozen source/target images for this run. One deterministic flushed-write interruption and separately preserved resume/rollback branches.",
+        "source_image_sha256": "097e11106a058e6a8acc0238bad00347761173161c95f11ea86fab081b6517c0",
+        "expected_image_sha256": "6fa71cb5281c1af88334260bd453eb8887996596f83f9f08498efe7493a08383",
+        "expected_semantic_manifest_sha256": "bdfd26773a07cd54e365eebaff2170d65b9b6ecd6e038d446b5eea23bd2342e7"
+      },
+      "artifacts": [
+        {
+          "role": "controlled-producer-pins",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate4/intent.json",
+          "location_unknown_reason": null,
+          "sha256": "a5d559636661f42591f7d0afae228766ef11dc86521635efaa1b08102e60d926"
+        },
+        {
+          "role": "one-write-controlled-dispatch",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate4/dispatch.json",
+          "location_unknown_reason": null,
+          "sha256": "c57de171cd0a659d50577958a62cac5a714eca0e8bcbcbbff86192aeea5a64a0"
+        },
+        {
+          "role": "controlled-pre-handoff-boundary",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate4/terminal-evidence/run/interruption-intent.json",
+          "location_unknown_reason": null,
+          "sha256": "732168f926dba7c18345012bc708cef83e6af48219d972987495bdea22ad2652"
+        },
+        {
+          "role": "durable-activated-ticket",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate4/terminal-evidence/run/ticket.json",
+          "location_unknown_reason": null,
+          "sha256": "947f6398ebd729ce11ab8f0eee6a0a881a833ddbba7e817222bf6a8e1575fd4b"
+        },
+        {
+          "role": "hash-verified-producer-archive",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate4/terminal-evidence-manifest.json",
+          "location_unknown_reason": null,
+          "sha256": "08a9c88f2dd948c027e259b0390ae76fb9be0f470269eef9050a0084fbc1a3ed"
+        },
+        {
+          "role": "preserved-partial-state",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate4/interrupted-checkpoint.json",
+          "location_unknown_reason": null,
+          "sha256": "6ab960a1a41d873a7ee2dde57cacfb046659f05ab4283619daaf82e18cf915e2"
+        },
+        {
+          "role": "persistent-exclusion-before-resume",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate4/exclusion-after-reboot.json",
+          "location_unknown_reason": null,
+          "sha256": "4596628ebb8bd759bfc469b724215d90a17413bd2ecc63f0ac370d04b38923bc"
+        },
+        {
+          "role": "pinned-resume-dispatch",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate4/recovery-resume/Resume-dispatch.json",
+          "location_unknown_reason": null,
+          "sha256": "052e72b7bf8d1d03a9095ac453126636e6c023c7717ae27da3f804956a67d9d6"
+        },
+        {
+          "role": "completed-excluded-resume",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate4/recovery-resume/Resume-terminal/result.json",
+          "location_unknown_reason": null,
+          "sha256": "e23659bff751ebef9685b045e735b0f7fc7e7ced00a849dda574f600e65a454a"
+        },
+        {
+          "role": "exact-resumed-postimage",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate4/recovery-resume/Resume-terminal/execution.json",
+          "location_unknown_reason": null,
+          "sha256": "10920a229d8df7f8d4ee4a5920e3ebf982a92402b99c647b406951e8377b5427"
+        },
+        {
+          "role": "completed-native-refs-handoff",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate4/recovery-resume/Finalize-terminal/result.json",
+          "location_unknown_reason": null,
+          "sha256": "4251ad39812f8815274456e3d53609b93fff2c1add7c74281859741aea54c057"
+        },
+        {
+          "role": "native-refs-verification",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate4/recovery-resume/Finalize-terminal/completion.json",
+          "location_unknown_reason": null,
+          "sha256": "331c8bbb55fa3d207c42a28a02972010efcf7a5fe510bdb66c219d78f1bb9027"
+        },
+        {
+          "role": "preserved-native-resume",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate4/resume-passed-checkpoint.json",
+          "location_unknown_reason": null,
+          "sha256": "e9df322aea65e55a0bd6584e65e83ad456334372a097605017a5b9d75112fc08"
+        },
+        {
+          "role": "separate-partial-snapshot-rollback-fork",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate4/rollback-fork-intent.json",
+          "location_unknown_reason": null,
+          "sha256": "3e21aabeda39ff9c33d79e70af56556062cfc4ca71ad2e32e010d5ca43994cd5"
+        },
+        {
+          "role": "persistent-exclusion-before-rollback",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate4/exclusion-after-reboot-rollback.json",
+          "location_unknown_reason": null,
+          "sha256": "c08b494096334dc5ca5d7c4cf235c99e8dd17a984ee418053e119b633007442e"
+        },
+        {
+          "role": "pinned-rollback-dispatch",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate4/recovery-rollback/Rollback-dispatch.json",
+          "location_unknown_reason": null,
+          "sha256": "d69f8cdc288db1c797e8d6e41383eb8eece65773992878dbf015f2952fb47189"
+        },
+        {
+          "role": "completed-ntfs-rollback",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate4/recovery-rollback/Rollback-terminal/result.json",
+          "location_unknown_reason": null,
+          "sha256": "61e3eeb4cec3376d084dc12041de2a01b8ef0e9cf0064debd5c61d49ae4102a4"
+        },
+        {
+          "role": "exact-restored-preimage",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate4/recovery-rollback/Rollback-terminal/execution.json",
+          "location_unknown_reason": null,
+          "sha256": "ba3ea5998b60458b4322a642089a0919943dea6c57555c783c9efd5384971c7c"
+        },
+        {
+          "role": "closed-rollback-and-native-ntfs-mount",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate4/recovery-rollback/Rollback-terminal/completion.json",
+          "location_unknown_reason": null,
+          "sha256": "dd60fc52e3d5e12a240df0e075cd2e9e3b88c96730dacb1477ca3f0abcf2d203"
+        },
+        {
+          "role": "ntfs-user-payload-readback",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate4/recovery-rollback/Rollback-terminal-manifest.json",
+          "location_unknown_reason": null,
+          "sha256": "66e9cda10ea5cefb53556766c3b3eb9bfc84cdca209b5b4dbda93e784b598ac4"
+        },
+        {
+          "role": "preserved-ntfs-rollback",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate4/rollback-passed-checkpoint.json",
+          "location_unknown_reason": null,
+          "sha256": "3b723a2f874fbf25ff610b4153ef3a8234dd8bce259fbb29aab4322d5481f955"
+        }
+      ],
+      "source_documents": [
+        "docs/streaming-v2-recovery.md",
+        "docs/streaming-v2-native.md",
+        "docs/native-sha256-performance.md"
+      ],
+      "unknown_fields": {
+        "dirty_source_state": "Producer used the unchanged capabilities-only src/main.rs patch d99591b5f26b887b513260cf01b8e89d114cb173fa86d40869a1053518d313e9; binary is pinned separately.",
+        "refs_driver": "Same isolated 26300.9457 fixture with previously pinned refs.sys 3aa5d90958fc582c5f6567d2b970a3a37b3d4d80a4b58b5a8676943b7860d3c4. Exact driver file version was not recaptured in these recovery receipts.",
+        "fault_scope": "Only one process exit after the first complete flushed write. No torn-write, device-power-loss or exhaustive interruption sweep.",
+        "post_recovery_reboot": "Clean reboot proved persistent exclusion before each recovery. No clean reboot of the recovered mounted ReFS/NTFS outcomes was tested in this recovery case.",
+        "aggregate_target_write_bytes": "Not aggregated across producer and two snapshot-forked recovery paths. Individual execution reports retain their write counts.",
+        "actual_shadow_backing_bytes": "Actual physical allocation and whole-workflow physical I/O not measured.",
+        "planning_bitmap_cache": "The later planning bitmap reuse optimization was not in this producer and inherits no native result.",
+        "unit_tests": "No unit tests were added or run."
+      },
+      "fault_model": "process_exit_after_first_flushed_target_write",
+      "clean_reboot_observed": true,
+      "metrics": {
+        "logical_bytes": 4295249950,
+        "retained_payload_bytes": 0,
+        "relocated_payload_bytes": 4295249920,
+        "materialized_payload_bytes": 30,
+        "target_bytes_written": null,
+        "journal_bytes": 679651453,
+        "objects_verified": 13,
+        "actual_shadow_backing_bytes": null
+      }
+    },
+    {
+      "id": "streaming-v2-retained-8g-native-mutation-reboot",
+      "profile_id": "ordinary-ntfs31-64k-refs314-4k-streaming-v2",
+      "stages": [
+        "implemented",
+        "native_observed",
+        "reboot_verified"
+      ],
+      "outcome": "passed",
+      "scope": "Existing 52 GiB NTFS/64 KiB partition converted in place to ReFS/4 KiB with an 8 GiB+1 zero file, Unicode names and no source extent prearrangement. Fourteen admitted objects passed native semantics, the 50/80/10 MiB and 128-entry mutation workload, preserved boot and post-mutation clean reboot. Native same-file/VCN maps and full stream hashes confirm 2721431552 original physical bytes before mutation, afterward and after reboot. This producer still initialized a full payload shadow; no retained-case fault or low-scratch qualification follows.",
+      "repository_commit": "3d4fb8217f88bc4001ebcc71436d8ff0bd24aed6",
+      "executable": {
+        "name": "lab-convert-admitted-tree.exe",
+        "sha256": "cc02ca4075e0d5bb5d95da964a8033d648d299704a80d77aceeccd3eebf7476b",
+        "retained_path": ".lab/hyperv/streaming-v2-20261027/candidate12/terminal-evidence/stage/lab-convert-admitted-tree.exe"
+      },
+      "environment": {
+        "windows_build_revision": "26300.9457",
+        "refs_driver": {
+          "name": "refs.sys",
+          "file_version": "10.0.26100.8875 (WinBuild.160101.0800)",
+          "sha256": "3aa5d90958fc582c5f6567d2b970a3a37b3d4d80a4b58b5a8676943b7860d3c4"
+        }
+      },
+      "corpus": {
+        "description": "Six user files and three Windows ancillary files, five directories including root; 8590217322 admitted logical bytes. Largest zero file 8589934593 bytes. No source extent moves or aging; exact source-present indexer-cache synchronization occurred on the shadow.",
+        "source_image_sha256": "a228acd3cc509e21dc3261b1a76306c226bbf002d9cc9f6e84808fba9b82e170",
+        "expected_image_sha256": "0fdc49384616a9ef20dd7d1742eec3d17769effb5bb1dccc71a2c5e7366897fb",
+        "expected_semantic_manifest_sha256": "36e1f5d1c34f15884d12a1919616fd5d7bfde45a7319f301527e9b00d56548cf"
+      },
+      "artifacts": [
+        {
+          "role": "terminal-result",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate12/terminal-evidence/run/result.json",
+          "location_unknown_reason": null,
+          "sha256": "9ff5a71859d098e72e8e4e865fefc9f86fec5563866422bd260194b0b205a732"
+        },
+        {
+          "role": "apply-receipt",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate12/observed-apply.json",
+          "location_unknown_reason": null,
+          "sha256": "2256634a1844e737527811c2b13462556db1eff247380a53458a8807e4f093b9"
+        },
+        {
+          "role": "journal-preparation",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate12/observed-prepare.json",
+          "location_unknown_reason": null,
+          "sha256": "77b7eec31852e35d245713afffd68fc63328140668501e1effd18ecbb9e5c5cd"
+        },
+        {
+          "role": "protected-target-preservation",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate12/terminal-evidence/run/qualification/target-preservation.json",
+          "location_unknown_reason": null,
+          "sha256": "3b8e48f6422a41a503c44df75d281d212a97960ee52b7841b8d39a547038bfc9"
+        },
+        {
+          "role": "canonical-source-tree",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate12/terminal-evidence/run/expectation.json",
+          "location_unknown_reason": null,
+          "sha256": "36e1f5d1c34f15884d12a1919616fd5d7bfde45a7319f301527e9b00d56548cf"
+        },
+        {
+          "role": "native-before-mutation",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate12/rust-postcheck/BeforeMutation.json",
+          "location_unknown_reason": null,
+          "sha256": "c8d84642a6a5f2e798d536cd51df35650f6edd9e2045fa4faa167a9a08617ddb"
+        },
+        {
+          "role": "preserved-converted-boot",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate12/rust-postcheck/AfterPreservationBoot.json",
+          "location_unknown_reason": null,
+          "sha256": "6673ebd10be4c19a9763f609c39d56d3332547d77a5ebfc95bc8222038781c4b"
+        },
+        {
+          "role": "native-mutation",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate12/rust-postcheck/Mutate.json",
+          "location_unknown_reason": null,
+          "sha256": "03b1356db6e9065ae12d6ffc4113822a76cca7175af73029cfda38b446e8d90c"
+        },
+        {
+          "role": "native-after-mutation-and-physical-retention",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate12/rust-postcheck/AfterMutation.json",
+          "location_unknown_reason": null,
+          "sha256": "9b6dd98db96092dbdfa159678be0611db8e6f2c285e569735e0c84a15ead6356"
+        },
+        {
+          "role": "native-after-reboot-and-physical-retention",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate12/rust-postcheck/AfterReboot.json",
+          "location_unknown_reason": null,
+          "sha256": "0c0170875744e2338dab6791df6b26d2d94d2e808d66694340ac0c2c83ed7fff"
+        },
+        {
+          "role": "independent-reboot-payload-readback",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate12/reboot-result.json",
+          "location_unknown_reason": null,
+          "sha256": "89f101e66d485bc8287b81b45853af6dec2929f1b4ff131f3fb24c4b30768cbc"
+        },
+        {
+          "role": "postcheck-archive-and-driver-identity",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate12/postcheck-terminal-manifest.json",
+          "location_unknown_reason": null,
+          "sha256": "28b5628a0da13222621cf5d4c13bb6dd8cb6bd74f8a872c309c233ed9bb92d72"
+        },
+        {
+          "role": "pinned-postcheck-tools",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate12/rust-postcheck-tools-v2/manifest.json",
+          "location_unknown_reason": null,
+          "sha256": "20cd5dceb270428c6e215899dbce6beb0a45184b7d136b8ef570ba21c9779782"
+        },
+        {
+          "role": "preserved-converted-state",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate12/converted-checkpoint.json",
+          "location_unknown_reason": null,
+          "sha256": "bb3ad9f12b0e0dcddc5b9472ccee997b50737548b13abfb01a35d60fcf531d20"
+        },
+        {
+          "role": "preserved-passed-state",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate12/passed-checkpoint.json",
+          "location_unknown_reason": null,
+          "sha256": "572b7c13dfc9875a2f7671eb46c1ee4acbe29633bdadb94b2d622d237a4b8740"
+        }
+      ],
+      "source_documents": [
+        "docs/streaming-v2-retained-conversion.md",
+        "docs/streaming-v2-native.md"
+      ],
+      "unknown_fields": {
+        "dirty_source_state": "Producer included the unchanged capabilities-only src/main.rs patch d99591b5f26b887b513260cf01b8e89d114cb173fa86d40869a1053518d313e9. Binary is pinned; no current-HEAD inheritance.",
+        "postcheck_lineage": "Separate verifier 8f3675076a34bd977245744af702c82d7bf2b6c662e757246b153fcaf6840f9a and mutator 0c9fa6caaff35c2d56cc2e6f83db0d4a5ed0622fc2d98446e74f0c591e2485dd. Optional physical flag reuses native logical hashes and maps, not a new range hash.",
+        "actual_shadow_backing_bytes": "Full-workflow scratch remains unmeasured; initial shadow payload was initialized. Separate allocation-only 134 MiB child evidence does not qualify this converter.",
+        "fault_recovery": "No retained 8 GiB interruption/resume/rollback or physical-power-loss result. Existing smaller recovery evidence is separate.",
+        "unit_tests": "No unit tests were added or run."
+      },
+      "fault_model": "none",
+      "clean_reboot_observed": true,
+      "metrics": {
+        "logical_bytes": 8590217322,
+        "retained_payload_bytes": 2721431552,
+        "relocated_payload_bytes": 5868785664,
+        "materialized_payload_bytes": 106,
+        "target_bytes_written": 609918976,
+        "journal_bytes": 1219922842,
+        "source_bytes_hashed": null,
+        "metadata_write_count": 470,
+        "objects_verified": 14,
+        "actual_shadow_backing_bytes": null
+      }
+    },
+    {
+      "id": "streaming-v2-retained-8g-first-write-resume-rollback",
+      "profile_id": "ordinary-ntfs31-64k-refs314-4k-streaming-v2",
+      "stages": [
+        "implemented",
+        "native_observed",
+        "process_fault_qualified"
+      ],
+      "outcome": "passed",
+      "scope": "After exactly one flushed target write and process exit86, persistent exclusion survived clean reboot. Guest-local resume proved the complete fresh ReFS image, then real handoff and an independent native verifier passed all14 objects, logical hashes and2721431552 original physical bytes. A separate fork of the saved partial state restored the exact frozen NTFS image, closed replay and passed all six native user-file hashes. All23 checkpoints preserved; no physical-power-loss or low-scratch qualification.",
+      "repository_commit": "15f95f33f0039ac757a91499d20b973bc4f991cd",
+      "executable": {
+        "name": "lab-convert-admitted-tree.exe",
+        "sha256": "b83911c4e4d6c3e662e0f5907b928b8e6fc61335a3745db4d67a8891af1849e5",
+        "retained_path": ".lab/hyperv/streaming-v2-20261027/candidate13/terminal-evidence/stage/lab-convert-admitted-tree.exe"
+      },
+      "environment": {
+        "windows_build_revision": "26300.9457",
+        "refs_driver": {
+          "name": "refs.sys",
+          "file_version": "10.0.26100.8875 (WinBuild.160101.0800)",
+          "sha256": "3aa5d90958fc582c5f6567d2b970a3a37b3d4d80a4b58b5a8676943b7860d3c4"
+        }
+      },
+      "corpus": {
+        "description": "Same52-GiB NTFS/64-KiB source and ReFS/4-KiB target;14 admitted objects,8590217322 logical bytes, Unicode names and an8-GiB+1 zero file. No source extent prearrangement; full existing shadow reused with strict metadata/cache sync.",
+        "source_image_sha256": "d8fd89c7779af5304fc4e5d00fbc15ab61155830b6613842c962baae6d9661c1",
+        "expected_image_sha256": "1e938b2038047af353a01953569fbf62edd4d53015a3c7460b32cec5f2a69710",
+        "expected_semantic_manifest_sha256": "7ea83b428d71012870b58a14d02c25d4330f004618be68d990f3140b2ce74cf9"
+      },
+      "artifacts": [
+        {
+          "role": "controlled-producer-and-budgets",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/intent.json",
+          "location_unknown_reason": null,
+          "sha256": "c31fb1c09317f17e48668e8f075b35bde151803aba96a3eea7cec5334bcf26f2"
+        },
+        {
+          "role": "initial-terminal-archive",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/terminal-evidence-manifest.json",
+          "location_unknown_reason": null,
+          "sha256": "da207bc560c0636509f09079ba77c1774f8b3d4172ab89924cf5ef9ba59ae1c3"
+        },
+        {
+          "role": "fresh-protected-target",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/observed-target-preservation.json",
+          "location_unknown_reason": null,
+          "sha256": "3a2c267298391230d52d3bef68727c8edec8aa5ef12c5864f531c8a574a53bf4"
+        },
+        {
+          "role": "reconstruction-request",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/terminal-evidence/run/request.json",
+          "location_unknown_reason": null,
+          "sha256": "97cbe83234d7d36b5689fea9afee74963dd21bf9462f43f8ce034cbb02a558cd"
+        },
+        {
+          "role": "trusted-ticket",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/terminal-evidence/run/ticket.json",
+          "location_unknown_reason": null,
+          "sha256": "44d005bb561a5fef20285fc20081f655c3208be21307d3d98ff57f1d7f2bdb2e"
+        },
+        {
+          "role": "journal-preparation",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/terminal-evidence/run/prepare.json",
+          "location_unknown_reason": null,
+          "sha256": "9218faa28fcd4a55e0d567ecb06e1b1319c0d72c1e7bd66b4d96704ece14f87a"
+        },
+        {
+          "role": "partial-checkpoint",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/interrupted-checkpoint.json",
+          "location_unknown_reason": null,
+          "sha256": "eb515468a65502e832e2e6a2733326ebd402ffce1dc55d90189aa5583707b5bd"
+        },
+        {
+          "role": "resume-reboot-exclusion",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/exclusion-after-reboot.json",
+          "location_unknown_reason": null,
+          "sha256": "24815babb8188574fbf9d152df1444636295bb3048879b6a5ba7cf9f8c66a446"
+        },
+        {
+          "role": "resume-result",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/recovery-resume/Resume-result.json",
+          "location_unknown_reason": null,
+          "sha256": "e23659bff751ebef9685b045e735b0f7fc7e7ced00a849dda574f600e65a454a"
+        },
+        {
+          "role": "resume-execution",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/recovery-resume/Resume-execution.json",
+          "location_unknown_reason": null,
+          "sha256": "2b2fb05b47240c96a6529e0a67b2b2cebdac8094c16e39639af262fc02b3960a"
+        },
+        {
+          "role": "real-finalization-result",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/recovered-refs-terminal-evidence/Finalize/result.json",
+          "location_unknown_reason": null,
+          "sha256": "4251ad39812f8815274456e3d53609b93fff2c1add7c74281859741aea54c057"
+        },
+        {
+          "role": "real-finalization-completion",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/recovered-refs-terminal-evidence/Finalize/completion.json",
+          "location_unknown_reason": null,
+          "sha256": "58190b95b08d4d860fda3c020b57e32d7b9bf159a1473e35edd827ac45fb1f87"
+        },
+        {
+          "role": "independent-recovered-tree",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/recovery-resume/native-postcheck/guest-result.json",
+          "location_unknown_reason": null,
+          "sha256": "65b35722b3faaaa4fd8ff34e906489876eac542c9e6c6ea9dd5aae8db22c3929"
+        },
+        {
+          "role": "recovered-evidence-archive",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/recovered-refs-terminal-manifest.json",
+          "location_unknown_reason": null,
+          "sha256": "cc7804a893fab6f21863c053bc423efb4beb6dc0c03539cfcf2c31bed1f24221"
+        },
+        {
+          "role": "preserved-recovered-refs",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/recovered-refs-checkpoint.json",
+          "location_unknown_reason": null,
+          "sha256": "ea078dd5c2ddf4ef134e6693f285eb24fd93a35d13ca5215cf6010fc927d00dd"
+        },
+        {
+          "role": "rollback-fork-restore",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/rollback-partial-restore-intent.json",
+          "location_unknown_reason": null,
+          "sha256": "2801cbfe4423a840b4e57278cece2d96d1834d4796d801cea1e97d27fb9507fe"
+        },
+        {
+          "role": "rollback-reboot-exclusion",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/exclusion-after-reboot-rollback.json",
+          "location_unknown_reason": null,
+          "sha256": "9e33d68dde3d15779bd5602a2725dae2777dad997e6382ef7d3ee16a97bd5e42"
+        },
+        {
+          "role": "rollback-execution",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/rollback-terminal-evidence/execution.json",
+          "location_unknown_reason": null,
+          "sha256": "959f6cc9e014f0adb89768be9662da2e93ab31df0806683f4ea1c285ff3eea60"
+        },
+        {
+          "role": "rollback-completion",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/rollback-terminal-evidence/completion.json",
+          "location_unknown_reason": null,
+          "sha256": "925cec019060c071d939c5e60b66f972733a94011dbdc63ba765ac39839e6b3f"
+        },
+        {
+          "role": "rollback-result",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/rollback-terminal-evidence/result.json",
+          "location_unknown_reason": null,
+          "sha256": "61e3eeb4cec3376d084dc12041de2a01b8ef0e9cf0064debd5c61d49ae4102a4"
+        },
+        {
+          "role": "independent-native-ntfs-readback",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/recovery-rollback/native-payload-readback.json",
+          "location_unknown_reason": null,
+          "sha256": "ed49b99015f846cb16fe448b1d4016d93dbcf19447a5213ac4333bcb49c3d59f"
+        },
+        {
+          "role": "rollback-evidence-archive",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/recovery-rollback/terminal-manifest.json",
+          "location_unknown_reason": null,
+          "sha256": "8233de3e53684df501efa8a7c6278e7e83eae071dae0c9ff5554af62adb97695"
+        },
+        {
+          "role": "preserved-native-ntfs-rollback",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/recovery-rollback/passed-checkpoint.json",
+          "location_unknown_reason": null,
+          "sha256": "5131bf7c0d08f2b57ca6d8c554e0cf00cb097dea1db1c2fb20e8a1ee014df3a6"
+        }
+      ],
+      "source_documents": [
+        "docs/streaming-v2-retained-recovery.md",
+        "docs/streaming-v2-retained-conversion.md"
+      ],
+      "unknown_fields": {
+        "dirty_source_state": "Unchanged capabilities-only main.rs patch d99591b5f26b887b513260cf01b8e89d114cb173fa86d40869a1053518d313e9; exact executable pinned, no current-HEAD inheritance.",
+        "recovery_helper": "Original pinned ntfs2refs-recover.exe5bd69d5bcda7015e37cca39dc3fad2df3c417458b4dc62a17d58fff01c6981b5.",
+        "independent_native_verifier": "Separate8f3675076a34bd977245744af702c82d7bf2b6c662e757246b153fcaf6840f9a verified after recovery; it did not produce the source image.",
+        "journal_and_writes": "468 patches/609972224 changed bytes, journal1220029018. Resume and rollback each wrote609972224 target bytes; not a combined write-count metric.",
+        "reboot_scope": "Clean reboot of partial excluded branches, not a post-resumed-ReFS mutation/reboot or physical-power-loss case.",
+        "storage": "Existing full payload shadow retained; total physical workflow storage/IO unmeasured. No allocation-only conversion claim.",
+        "connection_failure": "First rollback connection failed before task registration; read-only probe proved no task/worker before one dispatch. No credential reset/security change.",
+        "unit_tests": "No unit tests added/run."
+      },
+      "fault_model": "process_exit_after_first_flushed_target_write",
+      "clean_reboot_observed": true,
+      "metrics": {
+        "logical_bytes": 8590217322,
+        "retained_payload_bytes": 2721431552,
+        "relocated_payload_bytes": 5868785664,
+        "materialized_payload_bytes": 106,
+        "target_bytes_written": null,
+        "journal_bytes": 1220029018,
+        "source_bytes_hashed": null,
+        "metadata_write_count": null,
+        "objects_verified": 14,
+        "actual_shadow_backing_bytes": null
+      }
     }
   ],
   "claims": [
@@ -1234,14 +3281,15 @@
       "id": "public-existing-tree-conversion",
       "profile_id": "ordinary-ntfs31-refs314-v2",
       "feature": "Existing ordinary tree conversion",
-      "statement": "Historical twelve-object public conversion passed strict native/reboot checks with zero retained payload; the later fourteen-object retained conversion is separately pinned.",
+      "statement": "The historical twelve-object and separately pinned frozen-alpha fifteen-object public conversions passed strict native and clean-reboot checks. The alpha retained 128 MiB after synthetic allocation history.",
       "evidence_ids": [
         "bounded-lifecycle-implementation",
-        "public-twelve-object-native"
+        "public-twelve-object-native",
+        "alpha-native-shadow-normal-mutation-reboot"
       ],
       "exclusions": [
-        "Run retained zero payload bytes.",
-        "Historical binary predates label/protected-target integration."
+        "The historical twelve-object run retained zero payload and predates later label/protected-target integration.",
+        "Each result belongs to its exact executable and bounded corpus; arbitrary existing volumes remain unqualified."
       ],
       "remaining_gates": [
         "Broader supported profile and fault matrix"
@@ -1274,16 +3322,17 @@
       "id": "protected-frozen-target-observation",
       "profile_id": "ordinary-ntfs31-refs314-v2",
       "feature": "Protected frozen target semantics",
-      "statement": "Protected target semantics passed both the standalone helper and full fourteen-object public conversion, with equal complete frozen target hashes around protected observation.",
+      "statement": "Protected target semantics passed the standalone helper, fourteen-object public conversion and frozen 96720eff fifteen-object public conversion, with complete frozen hashes bracketing authoritative observation.",
       "evidence_ids": [
         "bounded-lifecycle-implementation",
         "protected-target-twelve-object-native",
         "integrated-admission-before-first-write",
-        "public-fourteen-object-aged-retention"
+        "public-fourteen-object-aged-retention",
+        "alpha-native-shadow-normal-mutation-reboot"
       ],
       "exclusions": [
         "No complete raw allocation graph or selective-write-set proof.",
-        "Broad build/geometry qualification remains separate from the exact fourteen-object mutation/reboot result."
+        "Additional source/build/geometry qualification does not follow from these separately pinned mutation/reboot results."
       ],
       "remaining_gates": [
         "Complete target-required write-set and ownership proof",
@@ -1294,15 +3343,16 @@
       "id": "integrated-bounded-admission",
       "profile_id": "ordinary-ntfs31-refs314-v2",
       "feature": "Integrated bounded source and target admission",
-      "statement": "Live source admission and protected exact-frozen target semantics passed before activation in the completed fourteen-object public conversion, including narrowly supported volume Object ID and tracking.log forms.",
+      "statement": "Live source admission and protected frozen target semantics passed before activation in the fourteen-object and frozen-alpha fifteen-object public conversions, including the narrowly supported internal volume Object ID and tracking.log forms.",
       "evidence_ids": [
         "bounded-lifecycle-implementation",
         "integrated-admission-before-first-write",
-        "public-fourteen-object-aged-retention"
+        "public-fourteen-object-aged-retention",
+        "alpha-native-shadow-normal-mutation-reboot"
       ],
       "exclusions": [
         "Ordinary user Object IDs and unsupported attributes remain refused.",
-        "One bounded synthetic allocation-history case and exact binary, not later commits or arbitrary volumes."
+        "Separately pinned bounded synthetic allocation-history cases, without current-HEAD inheritance or arbitrary-volume qualification."
       ],
       "remaining_gates": [
         "Broader internal-metadata/source profile qualification",
@@ -1330,35 +3380,37 @@
       "id": "automatic-source-label-path",
       "profile_id": "ordinary-ntfs31-refs314-v2",
       "feature": "Automatic source-label workflow",
-      "statement": "Fresh public conversion automatically restored n2r-retained-source from original producer artifacts. Direct strict native verification matched all fourteen objects after mutation and clean reboot with the restored label and shadow absent.",
+      "statement": "Public conversion restored each observed original label: n2r-retained-source for the fourteen-object case and n2r-alpha-source for frozen alpha. Strict native checks passed after mutation and clean reboot; shadow absence belongs to the historical fourteen-object result.",
       "evidence_ids": [
         "bounded-lifecycle-implementation",
         "public-fourteen-object-aged-retention",
         "fourteen-object-native-postcheck-and-retained-mapping",
         "fourteen-object-postmutation-strict-verification",
-        "fourteen-object-postmutation-clean-reboot"
+        "fourteen-object-postmutation-clean-reboot",
+        "alpha-native-shadow-normal-mutation-reboot"
       ],
       "exclusions": [
-        "No legacy request backfill was needed.",
-        "Automatic-path repetition/idempotence and additional label variants remain distinct; historical separate completion still supplies only its own repetition result."
+        "Original producer artifacts were used without legacy request backfill.",
+        "Automatic-path repetition/idempotence and variants beyond the exact observed labels remain distinct from historical separate-completion evidence."
       ],
       "remaining_gates": [
         "Automatic-path repetition/idempotence",
-        "Additional exact label variants"
+        "Variants beyond the exact observed labels"
       ]
     },
     {
       "id": "public-preactivation-cancel",
       "profile_id": "ordinary-ntfs31-refs314-v2",
       "feature": "Public preactivation cancellation",
-      "statement": "After controlled post-freeze process exit, public cancel proved unchanged source bytes exclusively and restored original NTFS availability.",
+      "statement": "Public cancellation after controlled source-freeze process exit proved the complete unchanged source before writable mounting and restored NTFS availability. Frozen alpha also matched seven file lengths/hashes and original identity/mount/label after clean reboot.",
       "evidence_ids": [
         "bounded-lifecycle-implementation",
-        "public-cancel-after-freeze-exit87"
+        "public-cancel-after-freeze-exit87",
+        "alpha-public-cancel-source-freeze-reboot"
       ],
       "exclusions": [
-        "Hash equality immediately before returning to writable NTFS, not after writable mount.",
-        "One process fault, not a storage power cut."
+        "Complete raw-image equality applies before writable mounting; postboot alpha checks cover seven payloads and availability, without a full security/timestamp audit.",
+        "These source-freeze process exits do not qualify storage power loss."
       ],
       "remaining_gates": [
         "Broader concurrent-worker/journal/mount-restoration native cases",
@@ -1386,35 +3438,37 @@
       "id": "interrupted-native-resume",
       "profile_id": "ordinary-ntfs31-refs314-v2",
       "feature": "Interrupted native apply and resume",
-      "statement": "Controlled first-flushed-write process exit recovered through lab resume/finalization and passed native/reboot verification.",
+      "statement": "The frozen alpha public resume/finalize commands recovered after the first-flushed-write exit 86, proved the exact offline postimage, retained 128 MiB, recorded handoff, verified fifteen objects, and passed bounded mutation and clean reboot. Historical lab-wrapper evidence remains separately pinned.",
       "evidence_ids": [
         "bounded-lifecycle-implementation",
-        "process-first-write-resume-reboot"
+        "process-first-write-resume-reboot",
+        "alpha-public-resume-first-flushed-write-reboot"
       ],
       "exclusions": [
-        "Earlier eight-object wrapper, not public recovery CLI qualification.",
-        "No arbitrary write/flush or storage-power-loss coverage."
+        "Only the exact frozen714ddd2b executable has this public recovery result; the earlier wrapper does not qualify other binaries.",
+        "One controlled first-write boundary, without arbitrary write/flush or storage-power-loss coverage."
       ],
       "remaining_gates": [
-        "Public forward resume invocation (public shadowless rollback is separately qualified)",
-        "Broader fault matrix"
+        "Interrupted recovery and native marker completion",
+        "Broader write/flush, foreign-byte and journal-failure matrix"
       ]
     },
     {
       "id": "public-shadowless-rollback",
       "profile_id": "ordinary-ntfs31-refs314-v2",
       "feature": "Explicit shadowless rollback",
-      "statement": "Public rollback --without-shadow restored the exact admitted NTFS preimage after a controlled first-flushed-write interruption with the enrolled shadow detached. Original NTFS availability and four known user-file hashes matched after mount and after a clean reboot.",
+      "statement": "Public rollback --without-shadow restored the exact NTFS preimage after separate first-flushed-write interruptions with the enrolled shadow detached. The historical fixture checked four known files after reboot; frozen alpha checked seven lengths/hashes and original identity/mount/label, then preserved its OFF checkpoint.",
       "evidence_ids": [
         "bounded-lifecycle-implementation",
         "public-shadowless-rollback-first-write",
-        "public-shadowless-rollback-postboot-fixture"
+        "public-shadowless-rollback-postboot-fixture",
+        "alpha-public-shadowless-rollback-first-write-reboot"
       ],
       "exclusions": [
-        "One controlled process fault, not a storage power cut or full fault matrix.",
-        "Whole-image equality ends before writable NTFS mounting; four known user-file hashes were checked afterward.",
+        "Controlled process faults do not qualify a storage power cut or full fault matrix.",
+        "Raw-image equality ends before writable NTFS mounting; later payload/availability checks do not prove full restored-tree security/timestamps.",
         "Forward resume/finalize retain their shadow dependency.",
-        "Postboot checking is limited to four known files and original availability; complete twelve-object security/timestamp semantics and interrupted marker completion remain unqualified."
+        "Interrupted recovery or marker completion remains unqualified."
       ],
       "remaining_gates": [
         "Native process-restart marker completion",
@@ -1426,18 +3480,19 @@
       "id": "natural-payload-retention",
       "profile_id": "ordinary-ntfs31-refs314-v2",
       "feature": "Retention of independently allocated payloads",
-      "statement": "A normally written 128 MiB file kept original LCN2173673 and its logical hash through public conversion, a bounded native mutation workload and clean reboot, after synthetic 8 GiB allocation history with no source extent moves.",
+      "statement": "Separately pinned runs retained normally written 128 MiB extents at their recorded original positions through bounded mutation and clean reboot after synthetic 8 GiB allocation history, with no NTFS source extent moves.",
       "evidence_ids": [
         "bounded-lifecycle-implementation",
         "public-fourteen-object-aged-retention",
         "fourteen-object-native-postcheck-and-retained-mapping",
-        "fourteen-object-postmutation-clean-reboot"
+        "fourteen-object-postmutation-clean-reboot",
+        "alpha-native-shadow-normal-mutation-reboot"
       ],
       "exclusions": [
-        "One deliberately aged allocation-history case, not arbitrary or low-LCN placement.",
+        "Synthetic aged-allocation cases do not qualify arbitrary or low-LCN placement.",
         "Shadow initialization remains payload-proportional.",
-        "Mapping/hash and journal evidence do not measure every payload I/O.",
-        "Mutation writes were restricted to new test paths; no arbitrary source-file update workload is claimed."
+        "Mapping/hash and journal evidence do not measure every physical payload I/O.",
+        "Mutation writes were restricted to new test paths; arbitrary source-file updates remain unqualified."
       ],
       "remaining_gates": [
         "Additional placements and fragmentation",
@@ -1493,6 +3548,104 @@
       "remaining_gates": [
         "Explain the rejected overlay-inclusive candidate separately",
         "Reference mutation/reboot qualification if later required"
+      ]
+    },
+    {
+      "id": "existing-tree-240g-64k-conversion",
+      "profile_id": "ordinary-ntfs31-64k-refs314-4k-beta-v1",
+      "feature": "Existing-tree conversion on 240 GiB NTFS with 64 KiB clusters",
+      "statement": "The original partition mounted as ReFS through Microsoft refs.sys with the source label restored. Strict native verification passed before/after mutation and after clean reboot. Both pristine-converted and mutation/reboot-passed OFF checkpoints are preserved.",
+      "evidence_ids": [
+        "large-beta-240g-64k-native-mutation-reboot"
+      ],
+      "exclusions": [
+        "All payloads relocated/materialized in this case; no retention claim.",
+        "Process interruption and storage power loss were not exercised.",
+        "One exact build/geometry/producer; later source commits and new profiles remain separate."
+      ],
+      "remaining_gates": [
+        "Efficient payload-independent scratch and reduced full-volume I/O",
+        "Native interruption/recovery on this expanded geometry",
+        "Additional supported features, placements, counts and geometries"
+      ]
+    },
+    {
+      "id": "unicode-over4g-streaming-conversion",
+      "profile_id": "ordinary-ntfs31-64k-refs314-4k-streaming-v2",
+      "feature": "Unicode and over-4-GiB ordinary-stream same-partition conversion",
+      "statement": "Microsoft ReFS accepted all admitted streams on the original partition. Native readback passed after mutation and reboot, with only the validated generated indexer cache/internal-directory runtime timestamps normalized. Converted and post-mutation/reboot OFF checkpoints are preserved.",
+      "evidence_ids": [
+        "streaming-v2-unicode-4g-native-mutation-reboot"
+      ],
+      "exclusions": [
+        "Zero retained payload in this placement; large file contents are zeros.",
+        "No native streaming recovery or power-loss qualification.",
+        "Exact old converter and separately pinned newer observer; current HEAD inherits no result."
+      ],
+      "remaining_gates": [
+        "Efficient payload-independent scratch and reduced whole-partition I/O",
+        "Native streaming interruption/resume/rollback qualification",
+        "Nonzero large streams and broader supported features, geometries and capacities"
+      ]
+    },
+    {
+      "id": "streaming-v2-process-interruption-recovery",
+      "profile_id": "ordinary-ntfs31-64k-refs314-4k-streaming-v2",
+      "feature": "Owning-machine streaming resume and NTFS rollback after process interruption",
+      "statement": "After one flushed source write and process exit, exclusion survived reboot. Journal resume produced the exact expected ReFS image and native handoff passed. A separate fork of the same saved partial state restored the exact frozen NTFS image and original user-file hashes through guest-local rollback. All eight streaming checkpoints remain.",
+      "evidence_ids": [
+        "streaming-v2-first-write-resume-rollback"
+      ],
+      "exclusions": [
+        "One deterministic process-exit point, not storage power loss or exhaustive fault injection.",
+        "No retained original payload in this layout; large file contents are zeros.",
+        "No post-recovery mounted-outcome reboot qualification; only pre-recovery exclusion reboot was tested.",
+        "No inheritance by later binaries or the new bitmap planning cache."
+      ],
+      "remaining_gates": [
+        "Efficient payload-independent scratch and extent retention on naturally populated sources",
+        "Nonzero large payloads and broader supported features/geometries/capacities",
+        "Additional interruption points and storage power-loss qualification"
+      ]
+    },
+    {
+      "id": "streaming-v2-existing-tree-retained-8g",
+      "profile_id": "ordinary-ntfs31-64k-refs314-4k-streaming-v2",
+      "feature": "Eight-GiB ordinary-tree conversion with native retained-position checks",
+      "statement": "The recorded producer converted the same partition, retained 2721431552 original physical bytes, and passed native mutation/reboot semantics and original-position checks. All twenty checkpoints remain preserved and the passed branch is OFF.",
+      "evidence_ids": [
+        "streaming-v2-retained-8g-native-mutation-reboot"
+      ],
+      "exclusions": [
+        "Producer/build/geometry and ordinary-file scope only",
+        "No payload-independent scratch or physical-power-loss qualification",
+        "Zero-filled over-4-GiB data does not qualify arbitrary nonzero large streams"
+      ],
+      "remaining_gates": [
+        "Additional retained-case interruption boundaries and storage-failure recovery",
+        "Integrate private allocation-only staging with payload supply and metadata restoration",
+        "Complete required-byte selection and recoverable compact conversion",
+        "Broader geometry/build/feature coverage"
+      ]
+    },
+    {
+      "id": "streaming-v2-retained-8g-process-recovery",
+      "profile_id": "ordinary-ntfs31-64k-refs314-4k-streaming-v2",
+      "feature": "Retained8-GiB process interruption, ReFS resume and native NTFS rollback",
+      "statement": "The recorded one-flushed-write process interruption recovered guest-locally in both directions on separate forks. Resume matched the exact ReFS image and passed native tree/hash/original-position checks; rollback matched the exact original NTFS image and native user-file hashes. Both outcomes and all23 checkpoints are preserved.",
+      "evidence_ids": [
+        "streaming-v2-retained-8g-first-write-resume-rollback"
+      ],
+      "exclusions": [
+        "Exact one-write process-exit boundary only; no physical power loss",
+        "No low-scratch conversion or arbitrary build/geometry/feature certification",
+        "No nonzero over4-GiB corpus or exhaustive interruption sweep"
+      ],
+      "remaining_gates": [
+        "Integrate allocation-only staging with payload supply and source metadata restoration",
+        "Complete recoverable required-byte selection and compact conversion",
+        "Additional interruption boundaries, storage failures and power-loss qualification",
+        "Broader nonzero data, geometry, capacity and feature coverage"
       ]
     }
   ]

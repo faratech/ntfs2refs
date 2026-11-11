@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "kind": "actual-ntfs-sparse-data-attribute-header-observation",
+  "probe_source_sha256": "80859ad2e35137474ab6355ff752367d55bbbe2c6283ab035f9faf1df4b05e0b",
+  "probe_exe_sha256": "330899f80e8266190aa32c6731cd67c0e8690b877ded53e26fafcab575d56efe",
+  "stdout_sha256": "f7bbf71dbe85ba3a7992cdc58f10a9391cdadf21555abe7298b634b52894e6e8",
+  "host_case": ".lab/hyperv/preparation-resume-cb50fe6-bac19458322f46d797598f3766566e45",
+  "native_exit": 0,
+  "interface": "FSCTL_GET_NTFS_FILE_RECORD",
+  "source_disk": 0,
+  "source_partition_guid": "c6c3318f-a7c8-47b9-be6d-6dde5e00862f",
+  "streams": [
+    {"path": "ProgramData/Microsoft/Network/Downloader/qmgr.db", "file_reference": 562949953424892, "flags": 32768, "compression_unit": 4, "logical": 786432, "initialized": 786432, "allocated": 786432},
+    {"path": "Users/defaultuser0/AppData/Local/Packages/Microsoft.Windows.CloudExperienceHost_cw5n1h2txyewy/AppData/CacheStorage/CacheStorage.edb", "file_reference": 281474976857554, "flags": 32768, "compression_unit": 4, "logical": 1572864, "initialized": 1572864, "allocated": 1572864},
+    {"path": "Windows/System32/config/systemprofile/AppData/Local/DataSharing/Storage/DSTokenDB2.dat", "file_reference": 562949953568841, "flags": 32768, "compression_unit": 4, "logical": 1048576, "initialized": 1048576, "allocated": 1048576}
+  ],
+  "payload_read_calls": 0,
+  "write_calls": 0,
+  "source_admission_issued": false,
+  "conversion_qualified": false,
+  "original_windows_boot_proven": false,
+  "note": "The planner already accepts sparse flag 0x8000 with compression-unit 0 or 4. The reader's stricter unit-zero reference rule disagreed. The corrected shared rule retains compression/encryption/residency/VDL/hole exclusions. First probe refused already-fixed NTFS FSCTL records; v2 verifies raw-USA or already-restored sector-tail words."
+}

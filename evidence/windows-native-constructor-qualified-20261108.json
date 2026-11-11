@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "kind": "native-cached-model-constructor-qualified",
+  "release_commit": "8bab8af4165489f879114635d5abb55ec615fb54",
+  "public_exe_sha256": "2eb09f0d54b08f601aef7abfb0fd33a350973ae281058e855cde00d8412f51ce",
+  "public_exe_bytes": 22054400,
+  "release_manifest_sha256": "9a401ed7808ab667e3ee3d3474b2e541ec47e913365c06b7cc7deb8b7784e116",
+  "diagnostic_source_sha256": "8df3b7a430190ecd2637624cb0ed8c3fd5b6ffab3a11e8af223af236870ff8b8",
+  "diagnostic_exe_sha256": "c7edcd6822971de640096ceac8ab9c661ca19ceda9e12c69b4a0f981b0924f06",
+  "actual_native": {
+    "files": 107610,
+    "source_native_capture_invoked": false,
+    "objects": 143552,
+    "final_static_base_completed": true,
+    "source_admission_issued": false,
+    "input_domain_revalidated": true,
+    "pid": 4320,
+    "host_case": ".lab/hyperv/private-constructor-6c4271e8fabb4a338d63b998d96c78a4/qualified-v2",
+    "dummy_source": 5,
+    "exit_code": 0,
+    "directories": 35942,
+    "source0_opens": 0,
+    "result_sha256": "61723a634aa7d28f586b03674f83fa2965cab0830edc87d0d137b0a8a4cc7f13",
+    "dummy_shadow": 6,
+    "native_owner_returned": true,
+    "placement_or_payload_supply_attempted": false,
+    "measured_paid_RAM_peak": 5111648048,
+    "terminal_sha256": "3646ff1ebec102c3c8e8df7d06fd29ae3bbee9858620e0fe2591917151bd266e"
+  },
+  "source_model": {
+    "expected_sha256": "bd789c18dc745b7203b1161d5216e1c14ff4612f1551c1d8d3fbdacfc5f57ee2",
+    "expected_bytes": 250039721,
+    "origin": "Previously verified original Windows0 metadata; expectations only, no dummy source-admission claim",
+    "source_assessment_sha256": "9a212f26c613b7ea0ab64b01ccbce0fc5c5f6f5103e7037eae96783b92150f70"
+  },
+  "metadata_custody": {
+    "zip_bytes": 450536424,
+    "metadata_files": 55207,
+    "host_copy_rehashed": true,
+    "zip_sha256": "e5b35fa4d3830744449aadd1c30f34b40ff224b1f2ed38dde1f2acce0478b2e6",
+    "root": ".lab/hyperv/closed-Windows-custody-1c61353b77384a7691e378beacb035d0",
+    "bytes": 4757070448
+  },
+  "active_full_attempt": {
+    "minimum_required_forecast": 7123177144,
+    "birth_ms": 1794130903214,
+    "control_boot_ms": 1794130769698,
+    "native_launches": 1,
+    "run_id": "710c70d1cb2b481b97da9621326f435d",
+    "preparation_sha256": "f3e878850b316281358cd45dd532c8fd3fce787f660ad800ae44e84069b36cfa",
+    "workflow": "C:\\ntfs2refs\\boot-conversion-8bab8af-710c70d1cb2b481b97da9621326f435d\\scratch\\5f73614cc2e0e27aa9487bb5065aac02",
+    "VM_RAM": 12884901888,
+    "post_copy_main_RAM_forecast": 7329355435,
+    "worker_pid": 5576,
+    "pid": 5732
+  },
+  "original_Windows_converted": false,
+  "original_Windows_booted_refs": false,
+  "unit_tests_run": false
+}

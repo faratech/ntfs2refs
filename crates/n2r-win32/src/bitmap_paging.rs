@@ -14,6 +14,45 @@ pub const MAX_RETURNED_BYTES: usize = 2 * MAX_DATA_BYTES + 16 * MAX_PAGES;
 pub const MORE_DATA: i32 = 234;
 pub const ENCODING: &str = "assembled-zero-lcn-bitmap-v1";
 
+/// Explicit, bounded resource profiles for complete bitmap assembly. The
+/// expanded profile covers a 1 TiB partition at 4 KiB per cluster. It is a
+/// collection primitive only and does not change live conversion admission.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AssemblyProfile {
+    #[default]
+    Legacy,
+    #[serde(rename = "one_tib")]
+    OneTiB,
+}
+impl AssemblyProfile {
+    fn max_data_bytes(self) -> usize {
+        match self {
+            Self::Legacy => MAX_DATA_BYTES,
+            Self::OneTiB => 32 * 1024 * 1024,
+        }
+    }
+    /// Maximum size of the normalized bitmap, including its 16-byte header.
+    pub fn max_complete_bytes(self) -> usize {
+        16 + self.max_data_bytes()
+    }
+    fn max_pages(self) -> usize {
+        match self {
+            Self::Legacy => MAX_PAGES,
+            Self::OneTiB => 64,
+        }
+    }
+    fn max_returned_bytes(self) -> usize {
+        match self {
+            Self::Legacy => MAX_RETURNED_BYTES,
+            Self::OneTiB => 2 * self.max_data_bytes() + 16 * self.max_pages(),
+        }
+    }
+    fn is_legacy(&self) -> bool {
+        *self == Self::Legacy
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PageProof {
     pub input: Vec<u8>,
@@ -28,6 +67,21 @@ pub struct Proof {
     pub cluster_count: u64,
     pub canonical_bitmap_sha256: String,
     pub pages: Vec<PageProof>,
+    /// Omitted for legacy proofs so their existing serialization is unchanged.
+    #[serde(default, skip_serializing_if = "AssemblyProfile::is_legacy")]
+    pub assembly_profile: AssemblyProfile,
+    /// Present only for compact streaming evidence. `pages` then contains
+    /// the first response receipt, not a complete raw-page replay transcript.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub streaming: Option<StreamingProof>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StreamingProof {
+    pub bitmap_data_sha256: String,
+    pub page_transcript_sha256: String,
+    pub complete_page_count: u64,
+    pub returned_bytes: u64,
 }
 #[derive(Debug)]
 pub struct Capture {
@@ -57,6 +111,7 @@ pub fn page_input(template: &[u8], starting_lcn: u64) -> io::Result<Vec<u8>> {
 
 #[derive(Default)]
 pub struct Assembler {
+    profile: AssemblyProfile,
     bitmap: Vec<u8>,
     cluster_count: Option<u64>,
     covered_clusters: u64,
@@ -66,14 +121,22 @@ pub struct Assembler {
     poisoned: bool,
 }
 impl Assembler {
+    /// The default constructor retains all legacy bounds. An expanded
+    /// collection must be selected explicitly by its caller.
+    pub fn for_profile(profile: AssemblyProfile) -> Self {
+        Self {
+            profile,
+            ..Self::default()
+        }
+    }
     pub fn next_lcn(&self) -> u64 {
         self.covered_clusters
     }
     pub fn response_capacity(&self) -> usize {
-        if self.complete || self.poisoned || self.pages.len() >= MAX_PAGES {
+        if self.complete || self.poisoned || self.pages.len() >= self.profile.max_pages() {
             return 0;
         }
-        let remaining = MAX_RETURNED_BYTES - self.returned_bytes;
+        let remaining = self.profile.max_returned_bytes() - self.returned_bytes;
         if remaining < 17 {
             0
         } else {
@@ -94,14 +157,14 @@ impl Assembler {
     }
     fn push_page(&mut self, query: &IoctlQuery, template: &[u8]) -> io::Result<bool> {
         if self.complete
-            || self.pages.len() >= MAX_PAGES
+            || self.pages.len() >= self.profile.max_pages()
             || query.code != GET_BITMAP
             || query.input != page_input(template, self.next_lcn())?
             || !(17..=PAGE_BYTES).contains(&query.bytes.len())
             || self
                 .returned_bytes
                 .checked_add(query.bytes.len())
-                .is_none_or(|n| n > MAX_RETURNED_BYTES)
+                .is_none_or(|n| n > self.profile.max_returned_bytes())
         {
             return Err(bad(
                 "bitmap page sequence, response or query budget differs",
@@ -123,7 +186,9 @@ impl Assembler {
         let end = start
             .checked_add(remaining as u64)
             .ok_or_else(|| bad("bitmap domain overflow"))?;
-        if end > MAX_DATA_BYTES as u64 * 8 || self.cluster_count.is_some_and(|n| n != end) {
+        if end > self.profile.max_data_bytes() as u64 * 8
+            || self.cluster_count.is_some_and(|n| n != end)
+        {
             return Err(bad("bitmap declared domain changed or exceeds bound"));
         }
         let covered_end = start
@@ -176,6 +241,8 @@ impl Assembler {
             cluster_count: self.cluster_count.unwrap(),
             canonical_bitmap_sha256: hex::encode(Sha256::digest(&self.bitmap)),
             pages: self.pages,
+            assembly_profile: self.profile,
+            streaming: None,
         };
         Ok(Capture {
             bitmap: self.bitmap,
@@ -191,7 +258,18 @@ pub fn assemble_queries(
     continuation: &[IoctlQuery],
     template: &[u8],
 ) -> io::Result<Capture> {
-    let mut assembler = Assembler::default();
+    assemble_queries_for_profile(AssemblyProfile::Legacy, first, continuation, template)
+}
+
+/// Replay the same raw native pages under an explicitly selected resource
+/// profile; the legacy entry point above never adopts a larger budget.
+pub fn assemble_queries_for_profile(
+    profile: AssemblyProfile,
+    first: &IoctlQuery,
+    continuation: &[IoctlQuery],
+    template: &[u8],
+) -> io::Result<Capture> {
+    let mut assembler = Assembler::for_profile(profile);
     for query in std::iter::once(first).chain(continuation) {
         assembler.push(query, template)?;
     }

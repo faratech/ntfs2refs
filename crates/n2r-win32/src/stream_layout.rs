@@ -4,6 +4,9 @@ pub const MAX_STREAMS: usize = 64;
 pub const MAX_STREAM_BUFFER: usize = 65_536;
 pub const MAX_EXTENTS: usize = 1024;
 pub const RETRIEVAL_CAPACITY: usize = 16 + 16 * MAX_EXTENTS;
+/// Aggregate mapping bound, separate from one native response's extent limit.
+pub const MAX_COMPLETE_EXTENTS: usize = 65_536;
+pub const COMPLETE_RETRIEVAL_CAPACITY: usize = 16 + 16 * MAX_COMPLETE_EXTENTS;
 /// Per-call bitmap payload; complete assembled maps have a separate bound.
 pub const MAX_BITMAP_BYTES: usize = 2 * 1024 * 1024;
 pub const GET_RETRIEVAL: u32 = 0x00090073;
@@ -38,14 +41,21 @@ pub struct Entry {
 /// Returns the meaningful byte end; native GetFileInformationByHandleEx has
 /// no returned-length field, so initialized unused buffer bytes are excluded.
 pub fn parse_streams(b: &[u8]) -> io::Result<(Vec<Entry>, usize)> {
-    if b.len() < 24 || b.len() > MAX_STREAM_BUFFER {
+    parse_streams_with_limits(b, MAX_STREAM_BUFFER, MAX_STREAMS)
+}
+pub fn parse_streams_with_limits(
+    b: &[u8],
+    maximum_bytes: usize,
+    maximum_streams: usize,
+) -> io::Result<(Vec<Entry>, usize)> {
+    if b.len() < 24 || b.len() > maximum_bytes || maximum_streams == 0 {
         return Err(invalid("stream buffer bounds"));
     }
     let mut at = 0;
     let mut names = BTreeSet::new();
     let mut items = vec![];
     loop {
-        if items.len() == MAX_STREAMS {
+        if items.len() == maximum_streams {
             return Err(invalid("stream count exceeds bound"));
         }
         let next = u32le(b, at)? as usize;
@@ -103,13 +113,36 @@ pub struct Run {
     pub lcn: Option<u64>,
     pub clusters: u64,
 }
+/// Legacy complete, zero-VCN single response; its 1,024-extent bound is retained.
 pub fn parse_retrieval(b: &[u8]) -> io::Result<Vec<Run>> {
-    if b.len() < 32 || b.len() > RETRIEVAL_CAPACITY {
+    parse_zero_vcn_retrieval(b, MAX_EXTENTS, RETRIEVAL_CAPACITY)
+}
+/// Decode the explicitly assembled complete-map representation, never an
+/// unchecked individual native continuation response.
+pub fn parse_complete_retrieval(b: &[u8]) -> io::Result<Vec<Run>> {
+    parse_zero_vcn_retrieval(b, MAX_COMPLETE_EXTENTS, COMPLETE_RETRIEVAL_CAPACITY)
+}
+pub fn parse_complete_retrieval_with_budget(
+    b: &[u8],
+    maximum_bytes: usize,
+) -> io::Result<Vec<Run>> {
+    parse_zero_vcn_retrieval(
+        b,
+        (maximum_bytes.saturating_sub(16) / 16).min(u32::MAX as usize),
+        maximum_bytes,
+    )
+}
+fn parse_zero_vcn_retrieval(b: &[u8], max_extents: usize, capacity: usize) -> io::Result<Vec<Run>> {
+    if b.len() < 32 || b.len() > capacity {
         return Err(invalid("retrieval buffer bounds"));
     }
     let n = u32le(b, 0)? as usize;
     let mut vcn = i64le(b, 8)?;
-    if n == 0 || n > MAX_EXTENTS || b.len() != 16 + n * 16 || vcn != 0 {
+    if n == 0
+        || n > max_extents
+        || n.checked_mul(16).and_then(|n| n.checked_add(16)) != Some(b.len())
+        || vcn != 0
+    {
         return Err(invalid(
             "incomplete retrieval response or nonzero starting VCN",
         ));

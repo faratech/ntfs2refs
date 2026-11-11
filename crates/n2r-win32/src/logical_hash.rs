@@ -1,14 +1,19 @@
 //! Bounded logical reads. No digest is returned for partial or unbounded data.
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::io::{self, Read, Seek, SeekFrom};
 pub const DEFAULT_LIMIT: u64 = 1024 * 1024 * 1024;
-const CHUNK: usize = 64 * 1024;
+// 4 MiB logical requests: the same bytes and digest as smaller requests, with
+// far fewer calls on large streams (the lab disk read 4 MiB requests about 1.5x
+// faster than 1 MiB). Call budgets are derived from this size.
+pub(crate) const CHUNK: usize = 4 * 1024 * 1024;
 const MAX_CALLS: u64 = 1024 * 1024;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
     Complete,
+    /// No content or EOF probe was read. Identity, EOF metadata and the full
+    /// physical map are separate evidence; this outcome contains no digest.
+    NotReadExtentIdentityV1,
     BudgetExceeded,
     ReadRefused,
     UnexpectedEof,
@@ -46,6 +51,9 @@ pub struct Audit {
 }
 pub struct Budget {
     audit: Audit,
+    maximum_stream_bytes: u64,
+    maximum_read_calls: u64,
+    maximum_stream_read_calls: u64,
 }
 impl Budget {
     pub fn new(limit_bytes: u64) -> Self {
@@ -57,12 +65,42 @@ impl Budget {
                 read_calls: 0,
                 eof_probes: 0,
             },
+            maximum_stream_bytes: u64::MAX,
+            maximum_read_calls: u64::MAX,
+            maximum_stream_read_calls: MAX_CALLS,
         }
+    }
+    /// Explicit collection envelope. The byte reservation includes each EOF
+    /// probe, and calls are cumulative across every stream and both passes.
+    pub fn with_limits(
+        limit_bytes: u64,
+        maximum_stream_bytes: u64,
+        maximum_read_calls: u64,
+    ) -> io::Result<Self> {
+        if limit_bytes == 0 || maximum_stream_bytes > limit_bytes || maximum_read_calls == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid logical-read limits",
+            ));
+        }
+        let mut budget = Self::new(limit_bytes);
+        budget.maximum_stream_bytes = maximum_stream_bytes;
+        budget.maximum_read_calls = maximum_read_calls;
+        budget.maximum_stream_read_calls = maximum_stream_bytes
+            .div_ceil(CHUNK as u64)
+            .saturating_mul(2)
+            .saturating_add(9)
+            .max(MAX_CALLS)
+            .min(maximum_read_calls);
+        Ok(budget)
     }
     pub fn audit(&self) -> Audit {
         self.audit.clone()
     }
     fn reserve(&mut self, expected: u64) -> bool {
+        if expected > self.maximum_stream_bytes {
+            return false;
+        }
         let Some(n) = expected
             .checked_add(1)
             .and_then(|n| self.audit.reserved_bytes.checked_add(n))
@@ -76,7 +114,11 @@ impl Budget {
         true
     }
 }
+/// Read exactly `expected` bytes then confirm EOF; `Outcome::sha256` carries
+/// the stream's [`crate::content_digest`] (historical field name).
 pub fn read<R: Read + Seek>(reader: &mut R, expected: u64, budget: &mut Budget) -> Outcome {
+    let _timed = crate::perf::scope(crate::perf::Point::ContentRead);
+    crate::perf::add_bytes(crate::perf::Point::ContentRead, expected);
     let mut out = Outcome {
         status: Status::BudgetExceeded,
         bytes_read: 0,
@@ -93,12 +135,14 @@ pub fn read<R: Read + Seek>(reader: &mut R, expected: u64, budget: &mut Budget) 
         Ok(_) => return Outcome::refused(io::Error::other("stream did not seek to zero")),
         Err(e) => return Outcome::refused(e),
     }
-    let mut digest = Sha256::new();
+    let mut digest = crate::content_digest::Hasher::new();
     let mut buffer = vec![0; CHUNK];
     let mut calls = 0;
     let mut interrupted = 0;
     loop {
-        if calls == MAX_CALLS {
+        if calls == budget.maximum_stream_read_calls
+            || budget.audit.read_calls == budget.maximum_read_calls
+        {
             out.status = Status::CallBudgetExceeded;
             return out;
         }
@@ -144,7 +188,7 @@ pub fn read<R: Read + Seek>(reader: &mut R, expected: u64, budget: &mut Budget) 
             }
             out.status = Status::Complete;
             out.eof_confirmed = true;
-            out.sha256 = Some(hex::encode(digest.finalize()));
+            out.sha256 = Some(digest.finish());
             return out;
         }
         if n == 0 {

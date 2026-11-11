@@ -36,6 +36,14 @@ fn main() -> anyhow::Result<()> {
         before: GeneralDiskState,
         after: GeneralDiskState,
     }
+    #[derive(Deserialize)]
+    struct ObservedFrozen {
+        schema_version: u32,
+        kind: String,
+        binding: GeneralDiskBinding,
+        source_sha256: String,
+        state: GeneralDiskState,
+    }
     fn pinned(path: &PathBuf, sha256: &str, max: u64) -> anyhow::Result<Vec<u8>> {
         let metadata = fs::symlink_metadata(path)?;
         ensure!(
@@ -72,17 +80,37 @@ fn main() -> anyhow::Result<()> {
     );
     let binding: GeneralDiskBinding =
         serde_json::from_slice(&pinned(&args.binding, &args.binding_sha256, 16384)?)?;
-    let frozen: Frozen = serde_json::from_slice(&pinned(
+    let frozen_bytes = pinned(
         &args.frozen_report,
         &args.frozen_report_sha256,
         64 * 1024 * 1024,
-    )?)?;
+    )?;
+    let value: serde_json::Value = serde_json::from_slice(&frozen_bytes)?;
+    let frozen: Frozen = if value["kind"] == "observed-frozen-source-identity" {
+        let observed: ObservedFrozen = serde_json::from_value(value)?;
+        ensure!(
+            observed.binding == binding,
+            "observed source freeze belongs to a different physical binding"
+        );
+        Frozen {
+            schema_version: observed.schema_version,
+            kind: observed.kind,
+            binding_sha256: args.binding_sha256.clone(),
+            source_sha256: observed.source_sha256,
+            before: observed.state.clone(),
+            after: observed.state,
+        }
+    } else {
+        serde_json::from_value(value)?
+    };
     binding.validate()?;
     ensure!(
         frozen.schema_version == 1
             && matches!(
                 frozen.kind.as_str(),
-                "general-frozen-ntfs-source" | "general-frozen-ntfs-read-only-basis"
+                "general-frozen-ntfs-source"
+                    | "general-frozen-ntfs-read-only-basis"
+                    | "observed-frozen-source-identity"
             )
             && frozen.binding_sha256 == args.binding_sha256
             && frozen.before == frozen.after
@@ -96,6 +124,10 @@ fn main() -> anyhow::Result<()> {
     );
     let mut events = Vec::new();
     let source = GeneralFrozenPartition::reopen(binding, &mut events)?;
+    ensure!(
+        source.state(&mut events)? == frozen.after,
+        "current excluded source differs from the pinned freeze snapshot"
+    );
     save(
         &intent,
         &serde_json::json!({"schema_version":1,"kind":"general-original-source-abort-intent",

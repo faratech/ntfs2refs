@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "kind": "native-closing-buffer-read-reuse",
+  "runtime_source_commit": "72b4db0110cf15e0c726843d333d5b34228a3f64",
+  "run_id": "8437cd4afc2d4308b2e69acb07bbdbb1",
+  "native_pid": 2064,
+  "native_creation_ms": 1793573316336,
+  "native_exit": 0,
+  "native_wall_seconds": 70.5999624,
+  "success": true,
+  "independent_complete_stream_hashes": 811,
+  "closing_reuse": {
+    "scope": "actual-closing-buffer-consumption-v1",
+    "actual_capture_shadow_reads": 0,
+    "source_or_replay_authority": false,
+    "zero_bytes_checked_each_pass": 6048186368,
+    "closing_bytes": 6176772096,
+    "bytes_reused": 6176772096,
+    "opening_bytes": 6176772096
+  },
+  "native_verified_logical_process_io": {
+    "kernel_time_100ns": 162812500,
+    "other_operation_count": 779621,
+    "other_transfer_bytes": 155952750,
+    "read_operation_count": 76846,
+    "read_transfer_bytes": 21473893401,
+    "static_scope": "process_io_transfer_counters_not_physical_disk_io",
+    "user_time_100ns": 326562500,
+    "write_operation_count": 14550,
+    "write_transfer_bytes": 880350983
+  },
+  "selected_bytes": 545222656,
+  "journal_bytes": 131850592,
+  "source_free_bytes": 402669568,
+  "comparison": {
+    "prior_read_bytes": 27643861313,
+    "current_native_seconds": 70.5999624,
+    "read_reduction_percent": 22.319486565715284,
+    "wall_speedup_established": false,
+    "current_read_bytes": 21473893401,
+    "read_difference": 6169967912,
+    "controlled_physical_io_benchmark": false,
+    "prior_native_seconds": 62.2871679
+  },
+  "native_source_case_gate_revision_qualified": false,
+  "native_current_runtime_recovery_qualified": false,
+  "saved_checkpoint": "f8f7db07-89bf-4c6a-bfe6-81763c4ed6d1",
+  "new_unit_tests_added_or_run": false,
+  "artifacts": [
+    {
+      "sha256": "0cb825d279d0e828021524f2a4c52a20f9aeaebb85bbf8335906fe2024abb05d",
+      "bytes": 41512,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\prepared-source-performance-normal-8437cd4afc2d4308b2e69acb07bbdbb1\\archive.json"
+    },
+    {
+      "sha256": "56a734249fedc5de414f345baaf78a67a8c9d14731d12add6cbb73d3078f4c17",
+      "bytes": 225,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\prepared-source-performance-normal-8437cd4afc2d4308b2e69acb07bbdbb1\\checkpoint.json"
+    },
+    {
+      "sha256": "d8fc566af86611e313ed0187539142866d5d750c1020980ad937037aa13410f2",
+      "bytes": 232,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\prepared-source-performance-normal-8437cd4afc2d4308b2e69acb07bbdbb1\\final-idle.json"
+    },
+    {
+      "sha256": "58ce105d014af52a88a3b87975dfba9f339d4977fd2295e9e3f690dae6a838de",
+      "bytes": 1148,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\prepared-source-performance-normal-8437cd4afc2d4308b2e69acb07bbdbb1\\closed-native\\converter-terminal.json"
+    },
+    {
+      "sha256": "896fb26198d134e46cab57e10b79cf8a40944f8b383b286cc28aa6871e0e0ebb",
+      "bytes": 6252501,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\prepared-source-performance-normal-8437cd4afc2d4308b2e69acb07bbdbb1\\closed-native\\wrapper-result.json"
+    },
+    {
+      "sha256": "a927401e3b7fd1f4b8f9f629ebac5b3dfff4e6b010a1cb7faf88344364a40d88",
+      "bytes": 295,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\prepared-source-performance-normal-8437cd4afc2d4308b2e69acb07bbdbb1\\closed-native\\closing-read-reuse-verification.json"
+    },
+    {
+      "sha256": "0b282e82756a513235a545796b266325fc4df08688b6927f7d99e288ecda79ff",
+      "bytes": 1872,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\prepared-source-performance-normal-8437cd4afc2d4308b2e69acb07bbdbb1\\closed-native\\conversion\\result.json"
+    },
+    {
+      "sha256": "f11898d0f5fde490a8bcafe50f873a5520f94b755c348524fc2e00933c1c6664",
+      "bytes": 526,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\prepared-source-performance-normal-8437cd4afc2d4308b2e69acb07bbdbb1\\closed-native\\conversion\\process-io-native-verified.json"
+    },
+    {
+      "sha256": "1400dec4f5e0ed4331737534db04d4747b951d49f45532975a6833d26d78d2a0",
+      "bytes": 35544745,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\prepared-source-performance-normal-8437cd4afc2d4308b2e69acb07bbdbb1\\closed-native\\conversion\\qualification\\target-preservation.json"
+    }
+  ]
+}

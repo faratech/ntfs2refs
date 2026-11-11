@@ -1,0 +1,125 @@
+{
+  "schema_version": 1,
+  "kind": "native-Windows11-ReFS-boot-control",
+  "status": "actual-clean-install-boot-observed",
+  "converted_Windows_boot_volume_qualified": false,
+  "NTFS_to_ReFS_conversion_performed": false,
+  "runtime_data_alpha_unchanged": true,
+  "boot_work_branch": "codex/boot-volume",
+  "preparation_helper_commit": "762788c",
+  "observer_commit": "d2f3f3c",
+  "vm_id": "8f7fc646-8c9f-41d0-b65a-ecfadccfc36a",
+  "virtualization_role": "laboratory only; stock deployment and observation execute inside owning Windows guest",
+  "same_stock_image": "Windows11_Client_x64_en-us_26300_9457.iso, Professional index6",
+  "target_format": "native Format-Volume -DevDrive, ReFS3.14, 4KiB clusters",
+  "source_NTFS_OS_preserved": true,
+  "WinRE_partition_filesystem": "NTFS",
+  "host_firmware_first_boot_device_changes": 1,
+  "observer_boot_order_change_counter_scope": "observer invocation only; it does not count the host firmware selection",
+  "snapshot_creations_or_restores": 0,
+  "foreign_boot_components_or_feature_flag_workarounds": false,
+  "native_boot_observation": {
+    "schema_version": 1,
+    "kind": "actual-native-Windows-boot-filesystem-control-v1",
+    "run_id": "ccd71430523e4ea78b6fa4693e185e1e",
+    "actual_boot_verified": true,
+    "converted_boot_volume_qualified": false,
+    "source_volume_converted": false,
+    "preparation_sha256": "1c7e89607b0f6a8bfe27a20b52280269b57ac26019e577c092e3b617aa687537",
+    "previous_boot_ms": 1793994377332,
+    "actual_boot_ms": 1793995332223,
+    "computer_name": "N2R-WIN11",
+    "windows_directory": "C:\\Windows",
+    "system_drive": "C:",
+    "build": "26300.9457",
+    "filesystem": "ReFS",
+    "cluster_bytes": 4096,
+    "boot_disk_number": 1,
+    "boot_disk_unique_id": "60022480D091C4251B5FFD619706C2B5",
+    "boot_disk_guid": "91dd2cc0-4ec1-4f92-a924-870e4f16c0fb",
+    "boot_partition_number": 3,
+    "boot_partition_guid": "6e68607e-fd08-493e-9982-ae160c5e86d9",
+    "boot_partition_offset": 331350016,
+    "boot_partition_bytes": 66238545920,
+    "secure_boot": true,
+    "components": [
+      {
+        "signature": "Valid",
+        "sha256": "1c1a978448b8e0fc2284c13d6e55fde8bf9827dca432cdc8a9be66c2e729adda",
+        "bytes": 3358408,
+        "relative": "System32\\winload.efi",
+        "version": "10.0.26100.9444 (WinBuild.160101.0800)"
+      },
+      {
+        "signature": "Valid",
+        "sha256": "3aa5d90958fc582c5f6567d2b970a3a37b3d4d80a4b58b5a8676943b7860d3c4",
+        "bytes": 3528176,
+        "relative": "System32\\drivers\\refs.sys",
+        "version": "10.0.26100.8875 (WinBuild.160101.0800)"
+      }
+    ],
+    "native_volume_info": [
+      "Volume Name : N2R_BOOTOS",
+      "Volume Serial Number : 0xc86540cd",
+      "Max Component Length : 255",
+      "File System Name : ReFS",
+      "Is ReadWrite",
+      "Is Thinly-Provisioned",
+      "Supports Case-sensitive filenames",
+      "Preserves Case of filenames",
+      "Supports Unicode in filenames",
+      "Preserves & Enforces ACL's",
+      "Supports Sparse files",
+      "Supports Reparse Points",
+      "Returns Handle Close Result Information",
+      "Supports POSIX-style Unlink and Rename",
+      "Supports Stream Snapshots",
+      "Supports Case-Sensitive Directories",
+      "Supports Encrypted File System",
+      "Supports Named Streams",
+      "Supports Transactions",
+      "Supports Hard Links",
+      "Supports Extended Attributes",
+      "Supports Open By FileID",
+      "Supports USN Journal",
+      "Supports Integrity Streams",
+      "Supports Block Cloning",
+      "Supports Sparse VDL",
+      "Supports File Ghosting"
+    ],
+    "pagefiles": [
+      {
+        "Name": "C:\\pagefile.sys",
+        "AllocatedBaseSize": 1920,
+        "CurrentUsage": 0,
+        "PeakUsage": 0
+      }
+    ],
+    "boot_order_changes": 0,
+    "snapshot_calls": 0,
+    "conversion_or_recovery_calls": 0,
+    "created_utc": "2026-11-06T20:04:46.0258452Z"
+  },
+  "raw_boot_receipt": {
+    "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\boot-volume-control-20261106-7dc667dbcd0142b8bcfb4e991758006b\\ACTUAL-native-ReFS-Windows-boot.json",
+    "bytes": 4048,
+    "sha256": "c472aff03a01c70e6af38e36520165f364153646ef26229024bff25d17c61adb"
+  },
+  "closed_preparation_archive": {
+    "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\boot-volume-control-20261106-7dc667dbcd0142b8bcfb4e991758006b\\PREBOOT-CLOSED-preparation-archive\\manifest.json",
+    "sha256": "1808627e849556f2a37722b8c29dd65fe08b99e506dcc2777daba4ccee4350a4",
+    "files": 17,
+    "bytes": 51538,
+    "raw_result_sha256": "1c7e89607b0f6a8bfe27a20b52280269b57ac26019e577c092e3b617aa687537",
+    "all_raw_files_rehashed": true
+  },
+  "remaining_required_work": [
+    "Add an independently admitted offline Windows source profile to the Rust converter without bypassing current-Windows or persistent-exclusion guards.",
+    "Preserve the actual NTFS installation namespace/security/features and convert its same partition using the existing native-shadow writer and journal.",
+    "Boot the converted installation and verify its OS volume is ReFS; clean installation control alone does not complete this goal."
+  ],
+  "primary_references": [
+    "https://learn.microsoft.com/en-us/windows-server/storage/refs/refs-boot-windows-server-unattend",
+    "https://github.com/Lourdle/UUPAssistant/blob/a750c1955d7e37b70c609bbecad471ad929682d1/src/UUPAssistant/DiskPart.cpp"
+  ]
+}

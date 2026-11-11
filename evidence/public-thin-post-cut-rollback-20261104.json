@@ -1,0 +1,188 @@
+{
+  "schema_version": 1,
+  "kind": "public-thin-controlled-VM-power-cut-and-public-rollback",
+  "status": "observed-pass-with-profile-limits",
+  "date": "2026-11-04",
+  "source_commit": "aef1ab3b3a6ea08f7093d83cc60462f8b799b79a",
+  "public_binary": {
+    "build_manifest_sha256": "f60eca76b95fcb48a0708f44cf256f284d336b0e224a0b8e47a60d40b2dea291",
+    "path": ".lab/development/release-candidates/capture-index-aef1ab3/bin/ntfs2refs.exe",
+    "bytes": 17198080,
+    "sha256": "daa56b970b944efcc8cdb2987a2307231075961f5afb70c39e34f1add2b3026a"
+  },
+  "fixture": {
+    "vm_id": "2401593c-4b30-472e-9b6d-c9534cbaa599",
+    "source_partition_guid": "f06075a8-67a2-46b9-8fac-4af4da809617",
+    "vCPU": 4,
+    "source_partition": 2,
+    "source_disk": 1,
+    "NICs": 0,
+    "source_disk_guid": "1b191872-c372-41ee-a416-e18863996f54",
+    "source_partition_bytes": 55834574848,
+    "fixed_RAM_bytes": 4294967296,
+    "original_NTFS_cluster_bytes": 65536,
+    "experimental_public_thin_backing_bytes": 11811160064
+  },
+  "origin": {
+    "evidence_manifest": {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\public-thin-aef-recovery-f9c1b2f236d442318afcec1df0cd24a8\\origin-evidence-manifest.json",
+      "workspace_relative_path": ".lab/hyperv/streaming-v2-20261027/public-thin-aef-recovery-f9c1b2f236d442318afcec1df0cd24a8/origin-evidence-manifest.json"
+    },
+    "native_pid": 5536,
+    "evidence_manifest_sha256": "010300916c4950c74fdf16b392ed6f76afff42bde18cd63ce230d2721719d432",
+    "run_id": "f9c1b2f236d442318afcec1df0cd24a8",
+    "original_native_exit_observed": false,
+    "watcher_sha256": "2d58957f47800579f43aab3718d79df265c04932973b8b1f793334931fe45bde",
+    "controller_script_sha256": "02b8b5a4b7f7a9c10609df0cd79223ab2d0708e0a3314eaf37c5922c5572b1da",
+    "native_birth_ms": 1793804848092,
+    "producer_script_sha256": "6c456585c141771b0e35f4b5a361db0c709ef78875a1d9fc8368bf9162368c7b",
+    "boot_ms": 1793804805471
+  },
+  "controlled_interruption": {
+    "fresh_confirmation_utc": "2026-11-04T15:17:18.8471748Z",
+    "post_cut_fresh_Off_RAM0_verified": true,
+    "fresh_pause_remaining_ms": 104916,
+    "single_HyperV_TurnOff_observed": true,
+    "cut_utc": "2026-11-04T15:17:20.1643833Z",
+    "controlled_owned_native_thread_pause": true,
+    "natural_interruption_qualified": false,
+    "native_live_at_exact_power_instant_proven": false,
+    "physical_power_loss_qualified": false,
+    "threads_suspended": 1,
+    "OLD_primary_and_distinct_NEW4096_observed": true,
+    "first_flushed_write_qualified": false
+  },
+  "interrupted_checkpoint": {
+    "fresh_separate_process_Off_RAM0_verified": true,
+    "id": "39ba49c9-01d1-48fa-941f-08d34ff346c1",
+    "creation_utc": "2026-11-04T15:18:09.601301Z",
+    "parent": "3343f2a4-cf81-4fa9-a504-030425a8011e",
+    "RAM_saved": false,
+    "all13_original_checkpoints_retained": true
+  },
+  "postboot_authentication": {
+    "observe_run": "710546e2b3b24e0c91541a34f00570aa",
+    "observer_adapter_path": ".lab/development/launch-public-thin-c-origin-recovery-aef-v5-time-guid.ps1",
+    "source_persistently_offline_writable_before_any_setters": true,
+    "observer_scope": "Host UTC kind and actual C-volume GUID locator alias handling corrected; both held locator aliases require same FileID/serial/final path/length/link/state. Native product gates remain authority.",
+    "boot_ms": 1793805526137,
+    "canonical_AP_and_zero_completion_verified": true,
+    "pool_reattachment_requested": false,
+    "full_immutable_journal_authenticated": true,
+    "observe_native_launches": 0,
+    "observer_adapter_sha256": "f2471ae3eff6af38632c19a0908295f4f98a835ab3e78bdd6f1e9b7527887ae3",
+    "archive": {
+      "host_archive": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\resource-restart-710546e2b3b24e0c91541a34f00570aa\\closed",
+      "files": 14,
+      "bytes": 62609.0,
+      "manifest_sha256": "78f2ddcffc04a09cd59d944bc8b2707bb1383d067396febd9144b402c82477e6"
+    },
+    "source_OLD_primary_and_distinct_NEW4096_verified": true,
+    "source_availability_repair_issued": false
+  },
+  "public_rollback": {
+    "old_restoration_bytes": 175001600,
+    "free_space_restored_byte_for_byte": false,
+    "stderr_bytes": 0,
+    "public_rollback_flag": true,
+    "mount_paths_preserved": true,
+    "initial_lifecycle": "apply_intent",
+    "journal_aborted": true,
+    "ntfs_mounted": true,
+    "recovery_envelope_sha256": "ac849240114b1ba688ad9de8edbb9c9d5298fc28fafc8cc07d92ade59e26b5ab",
+    "replay_closed": true,
+    "native_exit": 0,
+    "selected_bytes": 3278802944,
+    "fresh_apply_requested": false,
+    "run_id": "b7b582216b814f21a71d7d905982a765",
+    "native_pid": 572,
+    "recovery_directory": "C:\\ProgramData\\ntfs2refs\\runs\\fab216c1961efb6b3881f26e3be7ff00\\conversion",
+    "native_birth_ms": 1793806111266,
+    "range_count": 7015,
+    "product_records": "C:\\ntfs2refs-recovery-33da9660811096f3ea04a8013e6d70cb",
+    "stdout_bytes": 376,
+    "wall_seconds": 77.0033413,
+    "terminal_utc": "2026-11-04T15:29:48.3217848Z",
+    "restore_required_selected_bytes_verified": true,
+    "actual_owned_terminal_observed": true
+  },
+  "journal_terminal": {
+    "bytes": 186487480,
+    "immutable_payload_rehashed_after_terminal": false,
+    "old_raw_replay_after_ABT_requested": false,
+    "file_id": "c9550200000003000000000000000000",
+    "prefix_bytes_read": 16384,
+    "exact_canonical_completion_and_intent_verified": true,
+    "intent_magic": "N2RSRB01",
+    "volume_serial": 12259941802954451809,
+    "completion_magic": "N2RSAB01",
+    "source_or_journal_bytes_written_by_observer": false,
+    "final_GUID_path": "\\\\?\\Volume{c6c3318f-a7c8-47b9-be6d-6dde5e00862f}\\ProgramData\\ntfs2refs\\runs\\fab216c1961efb6b3881f26e3be7ff00\\conversion\\selected.journal"
+  },
+  "independent_oracle": {
+    "actual_digest_process_terminals_verified": 13,
+    "source_filesystem": "NTFS",
+    "all_original_ACL_SACL_times_reverified": false,
+    "mode": "CaptureNtfs",
+    "complete_namespace_no_extras_claimed": false,
+    "logical_stream_bytes": 9885801949,
+    "original_streams_verified": 811,
+    "original_extra_UTF16_paths_compared": 1024,
+    "all_digest_exits": 0,
+    "run_id": "00800221c8e04e0988e82aec571d03fe",
+    "digest_algorithm": "xxh3-128",
+    "opening_and_closing_namespace_checked": true,
+    "original_extra_manifest_sha256": "8f14bdc273f05813732fa80250df74302525d8837061da46c61a0039e741678b",
+    "digest_wall_seconds": 10.090151599999999,
+    "original_baseline_objects_verified": 1534,
+    "extra_directories_verified": 1024
+  },
+  "archives": {
+    "source_and_host_all_lengths_and_SHA256_verified": true,
+    "oracle": {
+      "host_archive": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\resource-content-00800221c8e04e0988e82aec571d03fe\\closed",
+      "files": 60,
+      "bytes": 8126818.0,
+      "manifest_sha256": "d7c38c8645a61bdfde41519cf2e12e16d342fdf6f77d48253d01b890cd8fd049"
+    },
+    "product": {
+      "host_archive": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\resource-restart-b7b582216b814f21a71d7d905982a765\\closed-product",
+      "files": 3,
+      "bytes": 657971.0,
+      "manifest_sha256": "5a6a8633300afc5d780c47f9813ccf2c67b507c9adeed07a1ab16f48856dfc4f"
+    },
+    "raw_journal_or_payload_copied": false,
+    "native": {
+      "host_archive": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\resource-restart-b7b582216b814f21a71d7d905982a765\\closed",
+      "files": 19,
+      "bytes": 64874.0,
+      "manifest_sha256": "59096b7f7149911607fcdcf6a65b039021d546926742885f2206897fce10e3dd"
+    }
+  },
+  "saved_rollback_checkpoint": {
+    "source_state": "operational restored NTFS",
+    "fresh_separate_process_Off_RAM0_verified": true,
+    "id": "ea75dff5-36f4-42af-8e13-cc9b2e8cba6c",
+    "retained_for_independent_review": true,
+    "creation_utc": "2026-11-04T15:36:28.606449Z",
+    "parent": "39ba49c9-01d1-48fa-941f-08d34ff346c1",
+    "RAM_saved": false
+  },
+  "capacity_policy": {
+    "producer_forecast_bytes": 23622320128,
+    "recovery_forecast_bytes": 4294967296,
+    "maximum_additional_epoch_bytes": 50000000000,
+    "minimum_host_free_bytes": 17179869184,
+    "all_lab_shared_target_and_staging_charged": true,
+    "initial_actual_bytes": 279374052988,
+    "AP_and_result_checkpoint_forecast_bytes": 1073741824,
+    "maximum_actual_bytes": 329374052988,
+    "epoch_reset": false
+  },
+  "limits": [
+    "Only this exact binary, enrolled source and controlled VM fault are qualified.",
+    "Resume is a separate case restored from the same saved AP checkpoint.",
+    "No physical power-loss, first-flushed-write, broader hardware/geometry, full-unused-space restoration or stable-release claim."
+  ],
+  "stable_release": false
+}

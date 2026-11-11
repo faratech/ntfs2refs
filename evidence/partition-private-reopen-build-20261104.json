@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "kind": "isolated-already-private-partition-reopen-probe-build",
+  "status": "compiled-not-executed",
+  "dependency_source_commit": "9651516379024dde8308e831eadd2e8e3d622aff",
+  "source_pins_sha256": "aceb7d8c0bc202acc00bd1ac11a8d4d8cbf5f45a4cb9dcc7b02aa2c19c8902ac",
+  "input_pins_sha256": "46460a3338e4afb79ebc72a00ff026bbca72dce49a54363248a47eac1cbd200d",
+  "source_sha256": "cae525a6ebd7309b4e74124b1f0923200b712f7b3dd296fa800e7aa864936761",
+  "reopen_source_sha256": "3e75e83b3e748052c4cb9df76933503923dcd9f01058b11e5a8a4f9034f29959",
+  "raw_source_sha256": "2076602b494247effc5cdf52e21de24f858cfe5893a375703467954e9515900f",
+  "critical_source_sha256": "c99857b13bf0c6b67dccff478ba7f8d9e00276133325dd6675947832924c8989",
+  "lock_sha256": "0b56038991f092fb8e6b8d4b6562b869761b381135615e05b3924f4ba8cc03a1",
+  "build_receipt_sha256": "9266aac770b1f5249b9806111c5cfcf604c1fa19df1794235bd79222579c2f1c",
+  "binary_bytes": 585728,
+  "binary_sha256": "26bebdf9c4247e102f4ef5cca7d36badd8ea76dce7d2699cf611b3c22c189ef8",
+  "retained_binary": ".lab/development/partition-private-reopen-probe/bin/partition-private-reopen-probe.exe",
+  "build_exit": 0,
+  "build_wall_seconds": 36.7441847,
+  "shared_target_reused": true,
+  "registry_packages": 25,
+  "registry_versions_checksums_match_root": true,
+  "source_inputs_unchanged_after_build": true,
+  "admitted_storage_forecast_bytes": 2147483648,
+  "capacity_before": {
+    "actual_bytes": 317196670062,
+    "free_bytes": 89352458240,
+    "maximum_actual_bytes": 329374052988,
+    "minimum_free_bytes": 17179869184,
+    "additional_bytes": 2147483648,
+    "all_lab_shared_cache_and_staging_charged": true,
+    "epoch_reset": false
+  },
+  "unit_tests_run": false,
+  "prototype_executed": false,
+  "public_alpha_changed": false,
+  "scope": [
+    "Fixed already-private existing766 partition4 only; original intent remains data, not authority.",
+    "RW GLOBALROOT partition route and one same8192-byte write/flush/readback maximum.",
+    "Physical device reads are readonly; no setter/offline/restore/fallback/retry."
+  ],
+  "limitations": [
+    "Compilation proves no native reopen/sharing/write/recovery capability.",
+    "Independent source binding, current private state and explicit operator execution admission still required.",
+    "No public exclusion, source-writer or conversion certificate issued."
+  ]
+}

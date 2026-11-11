@@ -1,0 +1,1731 @@
+//! Native markerless fresh-apply and recovery gates over actual held owners.
+//!
+//! Fresh apply requires the original frozen source and verified OLD selected
+//! bytes; recovery requires an already excluded target and durable AP/RB. Both
+//! bind the actual exclusively held native journal and paged write index. The
+//! caller must still authenticate complete journal semantics and check every
+//! target span against its old/new bytes before writing.
+use super::{
+    ERROR_SHARING_VIOLATION, GeneralExclusiveRecoveryTarget, GeneralFrozenPartition,
+    GeneralJournaledPartition, HeldPagedWritePolicy, MAX_IO, NativeEvent, OFFLINE, READ_ONLY,
+    ResourcePolicyAuthority, close_file, device_file, general_disk_state, set_attributes,
+};
+use crate::journal_file::{GeneralJournalStorageBinding, JournalFileIdentity, JournalProfile};
+mod partition_scope;
+pub(in crate::native) use partition_scope::authenticate_basic_ro_closed;
+pub(in crate::native) use partition_scope::authenticate_scoped_partition_reader;
+pub(super) use partition_scope::{
+    OwnedPartitionJournalPins, PartitionJournalPhase, authenticate_partition_mixed,
+    authenticate_scoped_partition_paged_source, publish_partition_apply_marker,
+    publish_partition_rollback_marker,
+};
+pub use partition_scope::{
+    PartitionClosedJournalObservation, PartitionHandoffWitness, PartitionTerminalKind,
+    authenticate_partition_closed_journal,
+};
+use sha2::{Digest, Sha256};
+use std::{
+    fs::{File, OpenOptions},
+    io::{self, Read, Seek, SeekFrom, Write},
+    os::windows::{fs::OpenOptionsExt, io::AsRawHandle},
+    path::Path,
+};
+
+const GRANULE: u64 = 4096;
+const BODY: u64 = 2 * GRANULE;
+const HEADER: usize = 80;
+const FOOTER: usize = 80;
+
+fn protected_refs_label(file: &File) -> io::Result<crate::volume_label::VolumeLabel> {
+    use windows_sys::Win32::Storage::FileSystem::GetVolumeInformationByHandleW;
+    let mut label = [0u16; 33];
+    let mut filesystem = [0u16; 32];
+    let mut serial = 0u32;
+    let mut component = 0u32;
+    let mut flags = 0u32;
+    // SAFETY: the protected borrowed volume handle and fixed initialized
+    // output buffers remain valid for this synchronous metadata-only query.
+    if unsafe {
+        GetVolumeInformationByHandleW(
+            file.as_raw_handle(),
+            label.as_mut_ptr(),
+            label.len() as u32,
+            &mut serial,
+            &mut component,
+            &mut flags,
+            filesystem.as_mut_ptr(),
+            filesystem.len() as u32,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let label_end = label
+        .iter()
+        .position(|&v| v == 0)
+        .ok_or_else(|| invalid("unterminated protected volume label"))?;
+    let fs_end = filesystem
+        .iter()
+        .position(|&v| v == 0)
+        .ok_or_else(|| invalid("unterminated protected filesystem name"))?;
+    if String::from_utf16(&filesystem[..fs_end]).map_err(io::Error::other)? != "ReFS" {
+        return Err(invalid("protected converted source is not ReFS"));
+    }
+    crate::volume_label::VolumeLabel::from_utf16(label[..label_end].to_vec())
+}
+
+fn invalid(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
+fn u32_at(data: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes(data[offset..offset + 4].try_into().expect("fixed field"))
+}
+fn u64_at(data: &[u8], offset: usize) -> u64 {
+    u64::from_le_bytes(data[offset..offset + 8].try_into().expect("fixed field"))
+}
+fn read_at(file: &mut File, at: u64, output: &mut [u8]) -> io::Result<()> {
+    file.seek(SeekFrom::Start(at))?;
+    file.read_exact(output)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PagedRecoveryDirection {
+    Resume,
+    Rollback,
+}
+
+/// Actual converted-source metadata and known-content observations collected
+/// under one native physically READ_ONLY volume lease. This opaque owner is
+/// not itself a write, handoff or writable-mount authorization.
+#[derive(Debug)]
+pub struct GeneralLiveConvertedObservation {
+    report: crate::shadow_native::GeneralConvertedReport,
+    before: super::GeneralDiskState,
+    observed_readonly: super::GeneralDiskState,
+    after: super::GeneralDiskState,
+}
+impl GeneralLiveConvertedObservation {
+    pub fn report(&self) -> &crate::shadow_native::GeneralConvertedReport {
+        &self.report
+    }
+    pub fn before(&self) -> &super::GeneralDiskState {
+        &self.before
+    }
+    pub fn observed_readonly(&self) -> &super::GeneralDiskState {
+        &self.observed_readonly
+    }
+    pub fn after(&self) -> &super::GeneralDiskState {
+        &self.after
+    }
+}
+
+/// Independently retained ticket and storage facts, never authority by
+/// themselves. Every field is checked against actual held native objects.
+pub struct PagedRecoveryPins<'a> {
+    pub journal_binding: &'a GeneralJournalStorageBinding,
+    pub journal_identity: &'a JournalFileIdentity,
+    pub journal_path: &'a Path,
+    pub journal_profile: JournalProfile,
+    pub immutable_sha256: [u8; 32],
+    pub old_selected_sha256: [u8; 32],
+    pub old_restored_selected_sha256: Option<[u8; 32]>,
+    pub new_selected_sha256: [u8; 32],
+}
+
+fn marker(magic: &[u8; 8], immutable: &[u8; 32], selected: &[u8; 32]) -> [u8; GRANULE as usize] {
+    let mut value = [0; GRANULE as usize];
+    value[..8].copy_from_slice(magic);
+    value[8..40].copy_from_slice(immutable);
+    value[40..72].copy_from_slice(selected);
+    let sha: [u8; 32] = Sha256::digest(&value[..GRANULE as usize - 32]).into();
+    value[GRANULE as usize - 32..].copy_from_slice(&sha);
+    value
+}
+
+fn check_lifecycle(
+    file: &mut File,
+    pins: &PagedRecoveryPins<'_>,
+    direction: PagedRecoveryDirection,
+) -> io::Result<()> {
+    let mut completion = [0; GRANULE as usize];
+    let mut intent = [0; GRANULE as usize];
+    read_at(file, 0, &mut completion)?;
+    read_at(file, GRANULE, &mut intent)?;
+    if completion.iter().any(|&b| b != 0) {
+        return Err(invalid(
+            "paged recovery is closed or its completion marker is damaged",
+        ));
+    }
+    let apply = marker(
+        b"N2RSAP01",
+        &pins.immutable_sha256,
+        &pins.new_selected_sha256,
+    );
+    let rollback = marker(
+        b"N2RSRB01",
+        &pins.immutable_sha256,
+        &pins.old_selected_sha256,
+    );
+    if intent != apply && !(direction == PagedRecoveryDirection::Rollback && intent == rollback) {
+        return Err(invalid(
+            "paged recovery direction does not match durable AP/RB intent",
+        ));
+    }
+    Ok(())
+}
+
+fn check_clear_lifecycle(file: &mut File) -> io::Result<()> {
+    let mut markers = [0; (2 * GRANULE) as usize];
+    read_at(file, 0, &mut markers)?;
+    if markers.iter().any(|&b| b != 0) {
+        return Err(invalid(
+            "fresh paged apply requires both actual marker blocks to be clear",
+        ));
+    }
+    Ok(())
+}
+
+fn check_handoff_lifecycle(file: &mut File, pins: &PagedRecoveryPins<'_>) -> io::Result<()> {
+    let mut completion = [0; GRANULE as usize];
+    let mut intent = [0; GRANULE as usize];
+    read_at(file, 0, &mut completion)?;
+    read_at(file, GRANULE, &mut intent)?;
+    if completion
+        != marker(
+            b"N2RSHN01",
+            &pins.immutable_sha256,
+            &pins.new_selected_sha256,
+        )
+        || intent
+            != marker(
+                b"N2RSAP01",
+                &pins.immutable_sha256,
+                &pins.new_selected_sha256,
+            )
+    {
+        return Err(invalid("actual markerless AP and durable HND are required"));
+    }
+    Ok(())
+}
+
+fn check_aborted_lifecycle(file: &mut File, pins: &PagedRecoveryPins<'_>) -> io::Result<bool> {
+    let mut completion = [0; GRANULE as usize];
+    let mut intent = [0; GRANULE as usize];
+    read_at(file, 0, &mut completion)?;
+    read_at(file, GRANULE, &mut intent)?;
+    let abandoned = intent.iter().all(|&b| b == 0);
+    if completion
+        != marker(
+            b"N2RSAB01",
+            &pins.immutable_sha256,
+            &pins.old_selected_sha256,
+        )
+        || (!abandoned
+            && intent
+                != marker(
+                    b"N2RSRB01",
+                    &pins.immutable_sha256,
+                    &pins.old_selected_sha256,
+                ))
+    {
+        return Err(invalid(
+            "actual markerless rollback or clear abandonment and durable ABT are required",
+        ));
+    }
+    Ok(abandoned)
+}
+
+fn verify_journal_owner(
+    file: &File,
+    pins: &PagedRecoveryPins<'_>,
+    expected_length: u64,
+) -> io::Result<crate::journal_file::JournalFileSnapshot> {
+    let snapshot = crate::journal_file::observe_general_journal_file_with_profile(
+        file,
+        pins.journal_binding,
+        pins.journal_profile,
+    )?;
+    if &snapshot.identity != pins.journal_identity
+        || snapshot.file_bytes != expected_length
+        || !snapshot
+            .final_path
+            .eq_ignore_ascii_case(&pins.journal_path.to_string_lossy())
+    {
+        return Err(invalid(
+            "actual held native journal identity, route or length differs",
+        ));
+    }
+    let probe = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .share_mode(3)
+        .open(pins.journal_path);
+    match probe {
+        Ok(_) => return Err(invalid("held recovery journal permits a second writer")),
+        Err(error) if error.raw_os_error() == Some(ERROR_SHARING_VIOLATION as i32) => (),
+        Err(error) => return Err(error),
+    }
+    Ok(snapshot)
+}
+
+fn verify_selected_digest<R: Read + Seek>(
+    source: &mut R,
+    policy: &HeldPagedWritePolicy,
+    expected: [u8; 32],
+) -> io::Result<()> {
+    let previous = source.stream_position()?;
+    let result = (|| {
+        let facts = policy.facts()?;
+        let mut hash = crate::sha256_native::Sha256::new()?;
+        let mut buffer = vec![0; MAX_IO];
+        for ordinal in 0..u64::from(facts.range_count) {
+            let row = policy.row(ordinal)?;
+            hash.update(&row.offset.to_le_bytes())?;
+            hash.update(&row.length.to_le_bytes())?;
+            source.seek(SeekFrom::Start(row.offset))?;
+            let mut remaining = row.length;
+            while remaining != 0 {
+                let count = remaining.min(buffer.len() as u64) as usize;
+                source.read_exact(&mut buffer[..count])?;
+                hash.update(&buffer[..count])?;
+                remaining -= count as u64;
+            }
+        }
+        if hash.finish()? != expected {
+            return Err(invalid("actual excluded source selected bytes differ"));
+        }
+        Ok(())
+    })();
+    source.seek(SeekFrom::Start(previous))?;
+    result
+}
+
+fn verify_restored_digest<R: Read + Seek>(
+    source: &mut R,
+    policy: &HeldPagedWritePolicy,
+    pins: &PagedRecoveryPins<'_>,
+) -> io::Result<()> {
+    let Some(expected) = pins.old_restored_selected_sha256 else {
+        return verify_selected_digest(source, policy, pins.old_selected_sha256);
+    };
+    let previous = source.stream_position()?;
+    let result = (|| {
+        let facts = policy.facts()?;
+        let mut hash = crate::sha256_native::Sha256::new()?;
+        let mut buffer = vec![0; MAX_IO];
+        for ordinal in 0..u64::from(facts.range_count) {
+            let row = policy.row(ordinal)?;
+            if row.flags & 3 == 2 {
+                continue;
+            }
+            hash.update(&row.offset.to_le_bytes())?;
+            hash.update(&row.length.to_le_bytes())?;
+            source.seek(SeekFrom::Start(row.offset))?;
+            let mut remaining = row.length;
+            while remaining != 0 {
+                let count = remaining.min(buffer.len() as u64) as usize;
+                source.read_exact(&mut buffer[..count])?;
+                hash.update(&buffer[..count])?;
+                remaining -= count as u64;
+            }
+        }
+        if hash.finish()? != expected {
+            return Err(invalid("restored source allocated-range digest differs"));
+        }
+        Ok(())
+    })();
+    source.seek(SeekFrom::Start(previous))?;
+    result
+}
+
+/// The original frozen source object remains at the same address throughout
+/// this borrowed, range-limited native writer. Its disk stays offline on drop;
+/// dropping it never mounts or repairs the source.
+pub struct BorrowedPagedWriter<'a> {
+    source: &'a mut GeneralFrozenPartition,
+    policy: HeldPagedWritePolicy,
+    poisoned: bool,
+    requested: u64,
+    written: u64,
+}
+impl BorrowedPagedWriter<'_> {
+    pub fn byte_len(&self) -> u64 {
+        self.source.byte_len()
+    }
+    pub fn native_bytes_written(&self) -> u64 {
+        self.written
+    }
+    /// Recheck the same actual disk identity and persistent OFFLINE state.
+    pub fn state(&self, events: &mut Vec<NativeEvent>) -> io::Result<super::GeneralDiskState> {
+        self.source.state(events)
+    }
+    /// Read-ahead for the passes that read the changed ranges in order; see
+    /// `GeneralFrozenPartition::with_read_ahead`. Every write through this
+    /// writer is copied into the window, and dropping the writer turns it off.
+    pub fn set_read_ahead(&mut self, enabled: bool) {
+        self.source.set_read_ahead(enabled);
+    }
+    pub fn sync_all(&mut self) -> io::Result<()> {
+        if self.poisoned {
+            return Err(invalid("cannot sync a poisoned fresh paged writer"));
+        }
+        if let Err(error) = self.source.file.sync_all() {
+            self.poisoned = true;
+            return Err(error);
+        }
+        Ok(())
+    }
+}
+impl Drop for BorrowedPagedWriter<'_> {
+    fn drop(&mut self) {
+        self.source.set_read_ahead(false);
+    }
+}
+impl Read for BorrowedPagedWriter<'_> {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        self.source.read(output)
+    }
+}
+impl Seek for BorrowedPagedWriter<'_> {
+    fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
+        self.source.seek(from)
+    }
+}
+impl Write for BorrowedPagedWriter<'_> {
+    fn write(&mut self, input: &[u8]) -> io::Result<usize> {
+        if input.is_empty() {
+            return Ok(0);
+        }
+        let attempted = self
+            .requested
+            .checked_add(input.len() as u64)
+            .ok_or_else(|| invalid("fresh paged write accounting overflow"))?;
+        if self.poisoned || input.len() > MAX_IO {
+            return Err(invalid(
+                "fresh paged writer is poisoned or request exceeds native I/O limit",
+            ));
+        }
+        let (permitted, maximum) = match self
+            .policy
+            .permits(self.source.position, input.len() as u64)
+            .and_then(|allowed| {
+                self.policy
+                    .facts()
+                    .map(|facts| (allowed, facts.selected_bytes))
+            }) {
+            Ok(value) => value,
+            Err(error) => {
+                self.poisoned = true;
+                return Err(error);
+            }
+        };
+        if !permitted || attempted > maximum {
+            return Err(invalid(
+                "fresh paged write is outside the authenticated selected range",
+            ));
+        }
+        let offset = self
+            .source
+            .binding
+            .identity
+            .partition_offset
+            .checked_add(self.source.position)
+            .ok_or_else(|| invalid("fresh paged disk offset overflow"))?;
+        self.source.file.seek(SeekFrom::Start(offset))?;
+        self.source.buffer.bytes_mut()[..input.len()].copy_from_slice(input);
+        self.requested = attempted;
+        match self
+            .source
+            .file
+            .write(&self.source.buffer.bytes_mut()[..input.len()])
+        {
+            Ok(count) if count == input.len() => {
+                self.written += count as u64;
+                let at = self.source.position;
+                self.source.ahead.written(at, input);
+                self.source.position += count as u64;
+                Ok(count)
+            }
+            Ok(_) => {
+                self.poisoned = true;
+                self.source.ahead.clear();
+                Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "short fresh paged write; reopen through recovery",
+                ))
+            }
+            Err(error) => {
+                self.poisoned = true;
+                self.source.ahead.clear();
+                Err(error)
+            }
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.sync_all()
+    }
+}
+
+fn verify_index_against_journal(
+    file: &mut File,
+    policy: &HeldPagedWritePolicy,
+    pins: &PagedRecoveryPins<'_>,
+) -> io::Result<()> {
+    let facts = policy.facts()?;
+    let (magic, end, record_size) = match facts.format_version {
+        1 => (b"N2RSEL01", b"N2RSEND1", 80usize),
+        2 => (b"N2RZERO1", b"N2RZEND1", 88usize),
+        3 => (b"N2RCPY01", b"N2RCEND1", 96usize),
+        4 => (b"N2ROLD01", b"N2ROEND1", 104usize),
+        5 => (b"N2RFRE01", b"N2RFEND1", 104usize),
+        _ => {
+            return Err(invalid(
+                "paged native recovery currently requires markerless format 1 through 5",
+            ));
+        }
+    };
+    if facts.journal_length < BODY + HEADER as u64 + FOOTER as u64
+        || facts.journal_immutable_sha256 != pins.immutable_sha256
+        || (facts.format_version >= 5) != pins.old_restored_selected_sha256.is_some()
+    {
+        return Err(invalid("paged policy and actual recovery ticket differ"));
+    }
+    policy.revalidate()?;
+    let mut header = [0; HEADER];
+    read_at(file, BODY, &mut header)?;
+    if &header[..8] != magic
+        || u32_at(&header, 8) != facts.format_version
+        || u32_at(&header, 12) != facts.range_count
+        || u64_at(&header, 16) != facts.image_length
+        || u64_at(&header, 24) != facts.selected_bytes
+        || u64_at(&header, 32) != facts.journal_length
+        || if let Some(restored) = pins.old_restored_selected_sha256 {
+            header[40..72] != restored || u64_at(&header, 72) != facts.source_free_bytes
+        } else {
+            header[40..].iter().any(|&b| b != 0)
+        }
+    {
+        return Err(invalid(
+            "held recovery journal header differs from the paged policy",
+        ));
+    }
+    for ordinal in 0..u64::from(facts.range_count) {
+        let row = policy.row(ordinal)?;
+        let mut descriptor = [0; 104];
+        read_at(file, row.descriptor_offset, &mut descriptor[..record_size])?;
+        let new_kind = if facts.format_version >= 2 {
+            u64_at(&descriptor, 16)
+        } else {
+            0
+        };
+        let copy_source = if facts.format_version >= 3 {
+            u64_at(&descriptor, 24)
+        } else {
+            0
+        };
+        let old_kind = if facts.format_version >= 4 {
+            u64_at(&descriptor, 32)
+        } else {
+            0
+        };
+        if u64_at(&descriptor, 0) != row.offset
+            || u64_at(&descriptor, 8) != row.length
+            || new_kind > 2
+            || old_kind > 2
+            || row.flags != (old_kind | (new_kind << 2))
+            || (new_kind != 2 && copy_source != 0)
+            || (new_kind == 2
+                && (!copy_source.is_multiple_of(GRANULE)
+                    || !copy_source
+                        .checked_add(row.length)
+                        .is_some_and(|end| end <= row.offset)))
+        {
+            return Err(invalid(
+                "held recovery journal descriptor differs from paged write policy",
+            ));
+        }
+    }
+    let mut footer = [0; FOOTER];
+    read_at(file, facts.journal_length - FOOTER as u64, &mut footer)?;
+    if &footer[..8] != end
+        || footer[8..40] != pins.old_selected_sha256
+        || footer[40..72] != pins.new_selected_sha256
+        || u64_at(&footer, 72) != facts.journal_length
+    {
+        return Err(invalid(
+            "held recovery journal footer differs from its ticket",
+        ));
+    }
+    policy.revalidate()
+}
+
+type VerifiedNewBytes = ([u8; 32], [u8; 32]);
+static NEW_BYTES_VERIFIED: std::sync::Mutex<Vec<VerifiedNewBytes>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Records that every range the journal changes was read back from the source
+/// in this process and matched the journal's NEW digest. After the handoff
+/// marker nothing writes to the source until it is brought online, so the
+/// read-back need not be repeated at each later step of the same process.
+pub fn note_selected_new_bytes_verified(
+    immutable_sha256: &[u8; 32],
+    new_selected_sha256: &[u8; 32],
+) {
+    let mut verified = NEW_BYTES_VERIFIED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !verified.contains(&(*immutable_sha256, *new_selected_sha256)) {
+        verified.push((*immutable_sha256, *new_selected_sha256));
+    }
+}
+
+fn selected_new_bytes_already_verified(pins: &PagedRecoveryPins<'_>) -> bool {
+    selected_new_bytes_verified(&pins.immutable_sha256, &pins.new_selected_sha256)
+}
+
+/// Whether [`note_selected_new_bytes_verified`] was called for this journal in
+/// this process and the route checks once. Never true in a recovery process,
+/// which has read nothing back itself.
+pub fn selected_new_bytes_verified(
+    immutable_sha256: &[u8; 32],
+    new_selected_sha256: &[u8; 32],
+) -> bool {
+    crate::verify_policy::checks_once()
+        && NEW_BYTES_VERIFIED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains(&(*immutable_sha256, *new_selected_sha256))
+}
+
+/// Authenticate HND and the complete selected NEW bytes using held owners.
+/// The caller brackets this with actual source device-state observations.
+fn verify_paged_handoff<R: Read + Seek>(
+    source: &mut R,
+    source_length: u64,
+    source_binding: &crate::general_layout::GeneralDiskBinding,
+    policy: &HeldPagedWritePolicy,
+    journal: &mut File,
+    pins: &PagedRecoveryPins<'_>,
+) -> io::Result<()> {
+    pins.journal_binding.validate()?;
+    if source_binding.disk_number == pins.journal_binding.disk.disk_number
+        || crate::layout::guid_bytes(&source_binding.identity.disk_guid)?
+            == crate::layout::guid_bytes(&pins.journal_binding.disk.identity.disk_guid)?
+    {
+        return Err(invalid(
+            "handoff journal must be on a different physical disk",
+        ));
+    }
+    let facts = policy.facts()?;
+    if pins.journal_profile.version() != 3
+        || !(1..=5).contains(&facts.format_version)
+        || facts.image_length != source_length
+        || facts.journal_length < BODY + HEADER as u64 + FOOTER as u64
+        || facts.journal_length > pins.journal_profile.max_journal_bytes()
+        || facts.journal_immutable_sha256 != pins.immutable_sha256
+    {
+        return Err(invalid(
+            "handoff policy, source geometry or journal capacity differs",
+        ));
+    }
+    let before = verify_journal_owner(journal, pins, facts.journal_length)?;
+    let modified = journal.metadata()?.modified()?;
+    check_handoff_lifecycle(journal, pins)?;
+    if crate::sha256_native::journal_body(
+        journal,
+        BODY,
+        facts.journal_length - BODY,
+        &pins.immutable_sha256,
+    )? != pins.immutable_sha256
+    {
+        return Err(invalid("handoff journal immutable body differs"));
+    }
+    verify_index_against_journal(journal, policy, pins)?;
+    if !selected_new_bytes_already_verified(pins) {
+        verify_selected_digest(source, policy, pins.new_selected_sha256)?;
+        note_selected_new_bytes_verified(&pins.immutable_sha256, &pins.new_selected_sha256);
+    }
+    check_handoff_lifecycle(journal, pins)?;
+    if crate::sha256_native::journal_body(
+        journal,
+        BODY,
+        facts.journal_length - BODY,
+        &pins.immutable_sha256,
+    )? != pins.immutable_sha256
+    {
+        return Err(invalid(
+            "handoff journal changed during selected-byte verification",
+        ));
+    }
+    verify_index_against_journal(journal, policy, pins)?;
+    check_handoff_lifecycle(journal, pins)?;
+    let after = verify_journal_owner(journal, pins, facts.journal_length)?;
+    if before.identity != after.identity
+        || before.file_bytes != after.file_bytes
+        || !before.final_path.eq_ignore_ascii_case(&after.final_path)
+        || journal.metadata()?.modified()? != modified
+    {
+        return Err(invalid("handoff held journal identity changed"));
+    }
+    Ok(())
+}
+
+/// Reauthenticate the held rollback journal and every restore-required byte.
+/// The caller separately checks source-free granules against their admitted
+/// old/new forms while holding the same offline source and journal owners.
+fn verify_paged_abort<R: Read + Seek>(
+    source: &mut R,
+    source_length: u64,
+    binding: &crate::general_layout::GeneralDiskBinding,
+    policy: &HeldPagedWritePolicy,
+    journal: &mut File,
+    pins: &PagedRecoveryPins<'_>,
+) -> io::Result<()> {
+    pins.journal_binding.validate()?;
+    let facts = policy.facts()?;
+    if binding.disk_number == pins.journal_binding.disk.disk_number
+        || crate::layout::guid_bytes(&binding.identity.disk_guid)?
+            == crate::layout::guid_bytes(&pins.journal_binding.disk.identity.disk_guid)?
+        || pins.journal_profile.version() != 3
+        || !(1..=5).contains(&facts.format_version)
+        || facts.image_length != source_length
+        || facts.journal_length < BODY + HEADER as u64 + FOOTER as u64
+        || facts.journal_length > pins.journal_profile.max_journal_bytes()
+        || facts.journal_immutable_sha256 != pins.immutable_sha256
+    {
+        return Err(invalid(
+            "rollback device, policy or journal profile differs",
+        ));
+    }
+    let before = verify_journal_owner(journal, pins, facts.journal_length)?;
+    let modified = journal.metadata()?.modified()?;
+    let abandoned = check_aborted_lifecycle(journal, pins)?;
+    if crate::sha256_native::journal_body(
+        journal,
+        BODY,
+        facts.journal_length - BODY,
+        &pins.immutable_sha256,
+    )? != pins.immutable_sha256
+    {
+        return Err(invalid("rollback journal immutable body differs"));
+    }
+    verify_index_against_journal(journal, policy, pins)?;
+    if abandoned {
+        verify_selected_digest(source, policy, pins.old_selected_sha256)?;
+    } else {
+        verify_restored_digest(source, policy, pins)?;
+    }
+    // The restored boot identity must itself still be NTFS. It is also covered
+    // by the authenticated restored-range digest when selected for writing.
+    let old_position = source.stream_position()?;
+    let mut boot = [0u8; 512];
+    source.seek(SeekFrom::Start(0))?;
+    source.read_exact(&mut boot)?;
+    source.seek(SeekFrom::Start(old_position))?;
+    if &boot[3..11] != b"NTFS    " || boot[510..512] != [0x55, 0xaa] {
+        return Err(invalid(
+            "restored source does not contain an NTFS boot sector",
+        ));
+    }
+    if check_aborted_lifecycle(journal, pins)? != abandoned {
+        return Err(invalid(
+            "rollback intent changed during source verification",
+        ));
+    }
+    if crate::sha256_native::journal_body(
+        journal,
+        BODY,
+        facts.journal_length - BODY,
+        &pins.immutable_sha256,
+    )? != pins.immutable_sha256
+    {
+        return Err(invalid(
+            "rollback journal changed during source verification",
+        ));
+    }
+    verify_index_against_journal(journal, policy, pins)?;
+    if check_aborted_lifecycle(journal, pins)? != abandoned {
+        return Err(invalid(
+            "rollback intent changed during journal verification",
+        ));
+    }
+    let after = verify_journal_owner(journal, pins, facts.journal_length)?;
+    if before.identity != after.identity
+        || before.file_bytes != after.file_bytes
+        || !before.final_path.eq_ignore_ascii_case(&after.final_path)
+        || journal.metadata()?.modified()? != modified
+    {
+        return Err(invalid("rollback held journal identity changed"));
+    }
+    Ok(())
+}
+
+impl GeneralFrozenPartition {
+    /// Consume the same excluded source only after durable rollback and exact
+    /// restored allocated-range authentication. The journal remains held by
+    /// the caller; no reconstructed or serialized authority is accepted.
+    pub fn bring_online_after_paged_abort(
+        mut self,
+        policy: &HeldPagedWritePolicy,
+        journal: &mut File,
+        pins: &PagedRecoveryPins<'_>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
+        let before = self.state(events)?;
+        if before.disk_attributes != OFFLINE && before.disk_attributes != OFFLINE | READ_ONLY {
+            return Err(invalid("rollback mount requires an excluded source"));
+        }
+        let binding = self.binding.clone();
+        let length = self.byte_len();
+        verify_paged_abort(&mut self, length, &binding, policy, journal, pins)?;
+        if self.state(events)? != before {
+            return Err(invalid("rollback source changed during verification"));
+        }
+        if before.disk_attributes == OFFLINE | READ_ONLY {
+            let path = format!("\\\\.\\PhysicalDrive{}", self.binding.disk_number);
+            let gate = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .share_mode(1)
+                .custom_flags(0xa000_0000)
+                .open(&path)?;
+            if general_disk_state(&gate, &self.binding, events)? != before {
+                return Err(invalid("rollback mount gate differs from frozen source"));
+            }
+            match device_file(&path, true, true) {
+                Ok(file) => {
+                    close_file(file, "close-unexpected-rollback-writer-probe", events)?;
+                    return Err(invalid("rollback mount gate allowed a second raw writer"));
+                }
+                Err(error) if error.raw_os_error() == Some(ERROR_SHARING_VIOLATION as i32) => (),
+                Err(error) => return Err(error),
+            }
+            self.file = gate;
+        }
+        self.freeze_observation = None;
+        GeneralJournaledPartition {
+            inner: self,
+            policy: None,
+            paged_policy: None,
+            write_poisoned: false,
+            native_bytes_written: 0,
+            native_write_bytes_requested: 0,
+        }
+        .bring_online(events)
+    }
+
+    /// Collect complete converted metadata/maps and all known stream digests
+    /// under one physical READ_ONLY volume lease. The source is restored to
+    /// OFFLINE|READ_ONLY before returning the opaque actual observation.
+    pub fn observe_converted_protected_with_memory(
+        &mut self,
+        pair: crate::general_layout::GeneralSourceShadowBinding,
+        input: &impl crate::shadow_native::input_domain::InputDomain,
+        expected_label: Option<&crate::volume_label::VolumeLabel>,
+        same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+        resource_profile: crate::attestation::ResourceProfile,
+        memory: &dyn crate::shadow_native::report_memory::ReportMemoryAccountant,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralLiveConvertedObservation> {
+        pair.validate_with_resource_profile(Some(resource_profile))?;
+        if pair.source != self.binding {
+            return Err(invalid(
+                "protected converted observer source binding differs",
+            ));
+        }
+        let admission = resource_profile
+            .resource_admission()?
+            .ok_or_else(|| invalid("protected converted observer requires V4 admission"))?;
+        let (report, before, observed_readonly, after) = self
+            .with_readonly_refs_binding_observation(events, |protected| {
+                let actual_label = protected_refs_label(protected.volume())?;
+                let enrollment_label = crate::volume_label::VolumeLabel::from_text("n2r-retained-shadow")?;
+                let effective_label = match expected_label {
+                    Some(desired) if *desired == actual_label => Some(desired),
+                    _ if actual_label == enrollment_label => None,
+                    _ => return Err(invalid("protected converted label is neither enrollment nor the original source label")),
+                };
+                let report = crate::shadow_native::observe_general_converted_metadata_domain_readonly_with_memory(
+                    pair.clone(), input, effective_label, &same_security, resource_profile, memory, protected,
+                )?;
+                crate::shadow_native::verify_known_contents_in_accounted_report_with_lease(
+                    report, input, admission, memory, &same_security, Some(protected),
+                )
+            })?;
+        if before != after
+            || before.disk_attributes != OFFLINE | READ_ONLY
+            || observed_readonly.disk_attributes != READ_ONLY
+            || report.pair != pair
+        {
+            return Err(invalid(
+                "protected converted observer changed source identity or exclusion",
+            ));
+        }
+        Ok(GeneralLiveConvertedObservation {
+            report,
+            before,
+            observed_readonly,
+            after,
+        })
+    }
+
+    /// Native Windows alias-aware finalization on the converted original
+    /// partition. Canonical rows and known-content checks remain unchanged;
+    /// the separate alias witness is issued only by the actual readonly lease.
+    pub fn observe_converted_protected_with_memory_windows_aliases(
+        &mut self,
+        pair: crate::general_layout::GeneralSourceShadowBinding,
+        input: &impl crate::shadow_native::input_domain::InputDomain,
+        expected_label: Option<&crate::volume_label::VolumeLabel>,
+        same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+        resource_profile: crate::attestation::ResourceProfile,
+        memory: &dyn crate::shadow_native::report_memory::ReportMemoryAccountant,
+        aliases: &crate::shadow_native::windows_aliases::VerifiedWindowsAliases,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<(
+        GeneralLiveConvertedObservation,
+        crate::shadow_native::windows_aliases::ObservedWindowsAliases,
+    )> {
+        pair.validate_with_resource_profile(Some(resource_profile))?;
+        if pair.source != self.binding
+            || pair.source.layout_profile
+                != crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+        {
+            return Err(invalid(
+                "converted Windows alias observer source binding differs",
+            ));
+        }
+        let admission = resource_profile
+            .resource_admission()?
+            .ok_or_else(|| invalid("converted alias observer requires actual V4 admission"))?;
+        aliases.require_scope(
+            &pair,
+            admission.source_inspection_sha256,
+            aliases.plan_digest(),
+        )?;
+        let ((report,observed_aliases),before,observed_readonly,after)=self.with_readonly_refs_binding_observation(events,|protected|{
+            let actual_label=protected_refs_label(protected.volume())?;
+            let enrollment_label=crate::volume_label::VolumeLabel::from_text("n2r-retained-shadow")?;
+            let effective_label=match expected_label{
+                Some(desired)if *desired==actual_label=>Some(desired),
+                _ if actual_label==enrollment_label=>None,
+                _=>return Err(invalid("converted label is neither enrollment nor original source label")),
+            };
+            let (report,observed_aliases)=crate::shadow_native::observe_general_converted_metadata_domain_readonly_with_windows_aliases(
+                pair.clone(),input,effective_label,&same_security,resource_profile,memory,protected,aliases)?;
+            let report=crate::shadow_native::verify_known_contents_in_accounted_report_with_lease_windows_aliases(
+                report,input,admission,memory,&same_security,Some(protected),aliases)?;
+            observed_aliases.require_converted_scope(&pair,admission.source_inspection_sha256,aliases.plan_digest())?;
+            observed_aliases.require_input(input)?;
+            Ok((report,observed_aliases))
+        })?;
+        if before != after
+            || before.disk_attributes != OFFLINE | READ_ONLY
+            || observed_readonly.disk_attributes != READ_ONLY
+            || report.pair != pair
+        {
+            return Err(invalid(
+                "converted alias observation changed source identity/exclusion",
+            ));
+        }
+        Ok((
+            GeneralLiveConvertedObservation {
+                report,
+                before,
+                observed_readonly,
+                after,
+            },
+            observed_aliases,
+        ))
+    }
+
+    /// Restart finalization from authenticated alias expectations, never a
+    /// deserialized constructor witness. Actual alias identities, metadata,
+    /// points and security are checked within this owner's physical READ_ONLY
+    /// ReFS lease before the complete canonical-plus-alias namespace/content
+    /// validators can issue the returned opaque native observations.
+    pub fn observe_converted_protected_with_memory_windows_alias_expectations(
+        &mut self,
+        pair: crate::general_layout::GeneralSourceShadowBinding,
+        input: &impl crate::shadow_native::input_domain::InputDomain,
+        expected_label: Option<&crate::volume_label::VolumeLabel>,
+        same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+        resource_profile: crate::attestation::ResourceProfile,
+        memory: &dyn crate::shadow_native::report_memory::ReportMemoryAccountant,
+        expectations: &impl crate::shadow_native::windows_aliases::WindowsAliasInputDomain,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<(
+        GeneralLiveConvertedObservation,
+        crate::shadow_native::windows_aliases::ObservedWindowsAliases,
+    )> {
+        pair.validate_with_resource_profile(Some(resource_profile))?;
+        if pair.source != self.binding
+            || pair.source.layout_profile
+                != crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+        {
+            return Err(invalid(
+                "recovered Windows alias observer source binding differs",
+            ));
+        }
+        let admission = resource_profile
+            .resource_admission()?
+            .ok_or_else(|| invalid("recovered alias observer requires actual V4 admission"))?;
+        input.require_resource_metadata(admission)?;
+        expectations.require_resource_metadata(admission)?;
+        if expectations.source_inspection_sha256() != admission.source_inspection_sha256 {
+            return Err(invalid(
+                "recovered alias expectations have another source inspection",
+            ));
+        }
+        expectations.revalidate()?;
+        let plan_digest = expectations.semantic_sha256()?;
+        let ((report, observed_aliases), before, observed_readonly, after) = self
+            .with_readonly_refs_binding_observation(events, |protected| {
+                let actual_label = protected_refs_label(protected.volume())?;
+                let enrollment_label =
+                    crate::volume_label::VolumeLabel::from_text("n2r-retained-shadow")?;
+                let effective_label = match expected_label {
+                    Some(desired) if *desired == actual_label => Some(desired),
+                    _ if actual_label == enrollment_label => None,
+                    _ => {
+                        return Err(invalid(
+                            "converted label is neither enrollment nor original source label",
+                        ));
+                    }
+                };
+                crate::perf::step("check recovered alias links");
+                let aliases = crate::shadow_native::windows_aliases::VerifiedWindowsAliases::
+                    from_recovered_expectations_readonly(
+                        &pair, input, expectations, admission, protected, memory, &same_security,
+                    )?;
+                aliases.require_scope(&pair, admission.source_inspection_sha256, plan_digest)?;
+                crate::perf::step("walk converted metadata");
+                let (report, observed_aliases) = crate::shadow_native::
+                    observe_general_converted_metadata_domain_readonly_with_windows_aliases(
+                        pair.clone(), input, effective_label, &same_security,
+                        resource_profile, memory, protected, &aliases,
+                    )?;
+                crate::perf::step("check converted file contents");
+                let report = crate::shadow_native::
+                    verify_known_contents_in_accounted_report_with_lease_windows_aliases(
+                        report, input, admission, memory, &same_security, Some(protected), &aliases,
+                    )?;
+                crate::perf::step("close converted observation");
+                observed_aliases.require_converted_scope(
+                    &pair,
+                    admission.source_inspection_sha256,
+                    plan_digest,
+                )?;
+                observed_aliases.require_input(input)?;
+                if observed_aliases.len() != expectations.len() {
+                    return Err(invalid("recovered Windows alias coverage differs"));
+                }
+                expectations.revalidate()?;
+                if expectations.semantic_sha256()? != plan_digest {
+                    return Err(invalid(
+                        "recovered alias expectation plan changed during observation",
+                    ));
+                }
+                Ok((report, observed_aliases))
+            })?;
+        if before != after
+            || before.disk_attributes != OFFLINE | READ_ONLY
+            || observed_readonly.disk_attributes != READ_ONLY
+            || report.pair != pair
+        {
+            return Err(invalid(
+                "recovered alias observation changed source identity/exclusion",
+            ));
+        }
+        expectations.revalidate()?;
+        Ok((
+            GeneralLiveConvertedObservation {
+                report,
+                before,
+                observed_readonly,
+                after,
+            },
+            observed_aliases,
+        ))
+    }
+
+    /// Bring an actually frozen HND source online only after the exact held
+    /// markerless journal, paged index and selected NEW bytes validate. This
+    /// closes rollback but does not claim native ReFS/map verification.
+    pub fn bring_online_after_paged_handoff(
+        mut self,
+        policy: &HeldPagedWritePolicy,
+        journal: &mut File,
+        pins: &PagedRecoveryPins<'_>,
+        observation: &GeneralLiveConvertedObservation,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
+        let before = self.state(events)?;
+        if before.disk_attributes != OFFLINE | READ_ONLY {
+            return Err(invalid(
+                "frozen handoff mount requires offline read-only source",
+            ));
+        }
+        let mut readonly = before.clone();
+        readonly.disk_attributes = READ_ONLY;
+        let report = observation.report();
+        let content = report
+            .content_observation
+            .as_ref()
+            .ok_or_else(|| invalid("protected converted-content observation absent"))?;
+        if observation.before() != &before
+            || observation.after() != &before
+            || observation.observed_readonly() != &readonly
+            || report.pair.source != self.binding
+            || report.native.binding.identity != self.binding.identity
+            || !content.metadata_and_namespace_verified
+            || !content.complete_stream_mappings_observed
+            || !content.data_storage_validity_checked
+            || content.known_content.is_none()
+        {
+            return Err(invalid(
+                "actual protected converted observation differs from HND source",
+            ));
+        }
+        let binding = self.binding.clone();
+        let length = self.byte_len();
+        verify_paged_handoff(&mut self, length, &binding, policy, journal, pins)?;
+        if self.state(events)? != before {
+            return Err(invalid("frozen handoff source changed during validation"));
+        }
+        let path = format!("\\\\.\\PhysicalDrive{}", self.binding.disk_number);
+        let gate = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(1)
+            .custom_flags(0xa000_0000)
+            .open(&path)?;
+        if general_disk_state(&gate, &self.binding, events)? != before {
+            return Err(invalid("handoff mount gate does not match frozen source"));
+        }
+        let probe = device_file(&path, true, true);
+        match probe {
+            Ok(file) => {
+                close_file(file, "close-unexpected-handoff-writer-probe", events)?;
+                return Err(invalid("handoff mount gate allowed a second raw writer"));
+            }
+            Err(error) if error.raw_os_error() == Some(ERROR_SHARING_VIOLATION as i32) => (),
+            Err(error) => return Err(error),
+        }
+        self.file = gate;
+        self.freeze_observation = None;
+        GeneralJournaledPartition {
+            inner: self,
+            policy: None,
+            paged_policy: None,
+            write_poisoned: false,
+            native_bytes_written: 0,
+            native_write_bytes_requested: 0,
+        }
+        .bring_online(events)
+    }
+
+    /// Re-establish OFFLINE|READ_ONLY on the original in-place source owner
+    /// after authenticating the held HND journal and selected NEW target bytes.
+    /// This never mounts the filesystem and never recreates the old NTFS proof.
+    pub fn seal_paged_handoff_for_observation(
+        &mut self,
+        policy: &HeldPagedWritePolicy,
+        journal: &mut File,
+        pins: &PagedRecoveryPins<'_>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
+        let before = self.state(events)?;
+        if before.disk_attributes != OFFLINE {
+            return Err(invalid(
+                "handoff reseal requires the same offline source owner",
+            ));
+        }
+        let binding = self.binding.clone();
+        let length = self.byte_len();
+        verify_paged_handoff(self, length, &binding, policy, journal, pins)?;
+        if self.state(events)? != before {
+            return Err(invalid(
+                "handoff source changed during selected NEW verification",
+            ));
+        }
+        let mut expected = before;
+        expected.disk_attributes = OFFLINE | READ_ONLY;
+        set_attributes(&self.file, OFFLINE | READ_ONLY, events)?;
+        if general_disk_state(&self.file, &self.binding, events)? != expected {
+            return Err(invalid(
+                "handoff read-only reseal identity or attributes differ",
+            ));
+        }
+        // Open a separate readonly/shareable handle while the exclusive gate
+        // is still held, then drop the gate. The same source object remains in
+        // place and the protected ReFS observer can later open its control
+        // route without accidentally keeping a write-capable alias alive.
+        let path = format!("\\\\.\\PhysicalDrive{}", self.binding.disk_number);
+        let readonly = device_file(&path, false, true)?;
+        if general_disk_state(&readonly, &self.binding, events)? != expected {
+            return Err(invalid("handoff readonly source handle route differs"));
+        }
+        self.file = readonly;
+        self.frozen_state = expected;
+        self.freeze_observation = None;
+        Ok(())
+    }
+
+    /// Recover the protected crash window in which AP reached the journal but
+    /// the fresh source never left OFFLINE|READ_ONLY. Require the complete OLD
+    /// selected source digest before making the same actual disk writable; a
+    /// partially changed target must use ordinary OFFLINE recovery instead.
+    pub fn into_paged_recovery_target_from_frozen(
+        mut self,
+        policy: &HeldPagedWritePolicy,
+        journal: &mut File,
+        pins: &PagedRecoveryPins<'_>,
+        direction: PagedRecoveryDirection,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralExclusiveRecoveryTarget> {
+        pins.journal_binding.validate()?;
+        if self.binding.disk_number == pins.journal_binding.disk.disk_number
+            || crate::layout::guid_bytes(&self.binding.identity.disk_guid)?
+                == crate::layout::guid_bytes(&pins.journal_binding.disk.identity.disk_guid)?
+        {
+            return Err(invalid(
+                "protected recovery journal must be on a different physical disk",
+            ));
+        }
+        let facts = policy.facts()?;
+        if pins.journal_profile.version() != 3
+            || !(1..=5).contains(&facts.format_version)
+            || facts.image_length != self.byte_len()
+            || facts.journal_length < BODY + HEADER as u64 + FOOTER as u64
+            || facts.journal_length > pins.journal_profile.max_journal_bytes()
+            || facts.journal_immutable_sha256 != pins.immutable_sha256
+        {
+            return Err(invalid(
+                "protected recovery geometry or journal capacity differs",
+            ));
+        }
+        let before = self.state(events)?;
+        if before.disk_attributes != OFFLINE | READ_ONLY {
+            return Err(invalid(
+                "protected recovery requires the actual offline read-only source",
+            ));
+        }
+        let journal_before = verify_journal_owner(journal, pins, facts.journal_length)?;
+        let modified = journal.metadata()?.modified()?;
+        check_lifecycle(journal, pins, direction)?;
+        if crate::sha256_native::journal_body(
+            journal,
+            BODY,
+            facts.journal_length - BODY,
+            &pins.immutable_sha256,
+        )? != pins.immutable_sha256
+        {
+            return Err(invalid("protected recovery journal immutable body differs"));
+        }
+        verify_index_against_journal(journal, policy, pins)?;
+        verify_selected_digest(&mut self, policy, pins.old_selected_sha256)?;
+        if self.state(events)? != before {
+            return Err(invalid(
+                "protected recovery source changed during OLD verification",
+            ));
+        }
+        check_lifecycle(journal, pins, direction)?;
+        if crate::sha256_native::journal_body(
+            journal,
+            BODY,
+            facts.journal_length - BODY,
+            &pins.immutable_sha256,
+        )? != pins.immutable_sha256
+        {
+            return Err(invalid(
+                "protected recovery journal changed during OLD verification",
+            ));
+        }
+        verify_index_against_journal(journal, policy, pins)?;
+        check_lifecycle(journal, pins, direction)?;
+        let journal_after = verify_journal_owner(journal, pins, facts.journal_length)?;
+        if journal_before.identity != journal_after.identity
+            || journal_before.file_bytes != journal_after.file_bytes
+            || !journal_before
+                .final_path
+                .eq_ignore_ascii_case(&journal_after.final_path)
+            || journal.metadata()?.modified()? != modified
+        {
+            return Err(invalid("protected recovery journal identity changed"));
+        }
+        // The original frozen NTFS observation cannot remain a future source
+        // certificate once a durable apply intent exists.
+        self.freeze_observation = None;
+        let writer = self.activate_for_journal_exclusive(events)?;
+        if writer.state(events)?.disk_attributes != OFFLINE {
+            return Err(invalid(
+                "protected recovery activation lost offline exclusion",
+            ));
+        }
+        Ok(GeneralExclusiveRecoveryTarget { inner: writer })
+    }
+
+    /// Start a one-shot markerless fresh apply from the actual held frozen
+    /// source. The caller must retain the independently qualified source,
+    /// protected target, arena and journal owners for the complete borrow.
+    /// The journal's AP is flushed and read back before the disk becomes
+    /// writable; interruption between those steps leaves OFFLINE|READ_ONLY+AP.
+    pub fn begin_paged_fresh_apply<'a>(
+        &'a mut self,
+        policy: HeldPagedWritePolicy,
+        journal: &mut File,
+        pins: &PagedRecoveryPins<'_>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<BorrowedPagedWriter<'a>> {
+        pins.journal_binding.validate()?;
+        if self.binding.disk_number == pins.journal_binding.disk.disk_number
+            || crate::layout::guid_bytes(&self.binding.identity.disk_guid)?
+                == crate::layout::guid_bytes(&pins.journal_binding.disk.identity.disk_guid)?
+        {
+            return Err(invalid(
+                "fresh paged journal must be on a different physical disk",
+            ));
+        }
+        let facts = policy.facts()?;
+        if pins.journal_profile.version() != 3
+            || !(1..=5).contains(&facts.format_version)
+            || facts.image_length != self.byte_len()
+            || facts.journal_length < BODY + HEADER as u64 + FOOTER as u64
+            || facts.journal_length > pins.journal_profile.max_journal_bytes()
+            || facts.journal_immutable_sha256 != pins.immutable_sha256
+        {
+            return Err(invalid(
+                "fresh paged policy geometry or journal capacity differs",
+            ));
+        }
+        let before = self.state(events)?;
+        if before.disk_attributes != OFFLINE | READ_ONLY {
+            return Err(invalid(
+                "fresh paged apply requires the actual offline read-only source",
+            ));
+        }
+        let journal_before = verify_journal_owner(journal, pins, facts.journal_length)?;
+        let modified = journal.metadata()?.modified()?;
+        check_clear_lifecycle(journal)?;
+        // The journal's body and the source's OLD bytes are on different
+        // disks and are both gigabytes: hash the one on a second thread while
+        // this one reads and hashes the other.
+        let (body, old_bytes) = {
+            let expected = pins.immutable_sha256;
+            let length = facts.journal_length - BODY;
+            let journal = &mut *journal;
+            std::thread::scope(|scope| {
+                let body = scope.spawn(move || {
+                    crate::sha256_native::journal_body(journal, BODY, length, &expected)
+                });
+                let old_bytes = self.with_read_ahead(|source| {
+                    verify_selected_digest(source, &policy, pins.old_selected_sha256)
+                });
+                (body.join(), old_bytes)
+            })
+        };
+        let body = body.map_err(|_| io::Error::other("journal hashing thread panicked"))??;
+        if body != pins.immutable_sha256 {
+            return Err(invalid("fresh held journal immutable body differs"));
+        }
+        verify_index_against_journal(journal, &policy, pins)?;
+        old_bytes?;
+        if self.state(events)? != before {
+            return Err(invalid(
+                "fresh source exclusion or identity changed during OLD verification",
+            ));
+        }
+        check_clear_lifecycle(journal)?;
+        // Ordinary sharing excludes new file writers, not privileged raw
+        // aliases. Preserve a complete closing body hash before publishing AP.
+        if crate::sha256_native::journal_body(
+            journal,
+            BODY,
+            facts.journal_length - BODY,
+            &pins.immutable_sha256,
+        )? != pins.immutable_sha256
+        {
+            return Err(invalid(
+                "fresh held journal changed during OLD verification",
+            ));
+        }
+        verify_index_against_journal(journal, &policy, pins)?;
+        check_clear_lifecycle(journal)?;
+        let journal_after = verify_journal_owner(journal, pins, facts.journal_length)?;
+        if journal_before.identity != journal_after.identity
+            || journal_before.file_bytes != journal_after.file_bytes
+            || !journal_before
+                .final_path
+                .eq_ignore_ascii_case(&journal_after.final_path)
+            || journal.metadata()?.modified()? != modified
+        {
+            return Err(invalid(
+                "fresh journal identity changed during verification",
+            ));
+        }
+        let path = format!("\\\\.\\PhysicalDrive{}", self.binding.disk_number);
+        let gate = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(1)
+            .custom_flags(0xa000_0000)
+            .open(&path)?;
+        if general_disk_state(&gate, &self.binding, events)? != before {
+            return Err(invalid(
+                "fresh exclusive source gate differs from the frozen source",
+            ));
+        }
+        let probe = device_file(&path, true, true);
+        match probe {
+            Ok(file) => {
+                close_file(file, "close-unexpected-fresh-paged-writer-probe", events)?;
+                return Err(invalid("fresh source gate allowed a second raw writer"));
+            }
+            Err(error) if error.raw_os_error() == Some(ERROR_SHARING_VIOLATION as i32) => (),
+            Err(error) => return Err(error),
+        }
+        // Once an AP write is attempted, the journal may contain a durable or
+        // torn intent even if the call fails. Never reuse the old NTFS freeze
+        // observation for a fresh admission; reopen the recovery lifecycle.
+        self.freeze_observation = None;
+        // The exact old selected digest and clear marker were checked while
+        // the source was frozen. AP is durable before any writable transition.
+        let apply = marker(
+            b"N2RSAP01",
+            &pins.immutable_sha256,
+            &pins.new_selected_sha256,
+        );
+        journal.seek(SeekFrom::Start(GRANULE))?;
+        journal.write_all(&apply)?;
+        journal.sync_all()?;
+        let mut readback = [0; GRANULE as usize];
+        read_at(journal, GRANULE, &mut readback)?;
+        if readback != apply {
+            return Err(invalid("fresh paged AP marker readback differs"));
+        }
+        check_lifecycle(journal, pins, PagedRecoveryDirection::Resume)?;
+        events.push(NativeEvent {
+            operation: "fresh-paged-apply-intent-durable".into(),
+            control_code: 0,
+            input: vec![],
+            succeeded: true,
+            native_error: None,
+            output: b"AP flushed and read back before source writable transition".to_vec(),
+        });
+        if general_disk_state(&gate, &self.binding, events)? != before {
+            return Err(invalid(
+                "source changed after durable AP; reopen protected recovery",
+            ));
+        }
+        let mut expected = before.clone();
+        expected.disk_attributes = OFFLINE;
+        let transition = set_attributes(&gate, OFFLINE, events).and_then(|()| {
+            if general_disk_state(&gate, &self.binding, events)? != expected {
+                return Err(invalid("fresh paged activation lost offline exclusion"));
+            }
+            Ok(())
+        });
+        if let Err(error) = transition {
+            let restored = set_attributes(&gate, OFFLINE | READ_ONLY, events).and_then(|()| {
+                if general_disk_state(&gate, &self.binding, events)? != before {
+                    return Err(invalid("fresh paged activation protection restore differs"));
+                }
+                Ok(())
+            });
+            return match restored {
+                Ok(()) => Err(io::Error::new(
+                    error.kind(),
+                    format!(
+                        "fresh activation failed after durable AP; source is offline/read-only: {error}"
+                    ),
+                )),
+                Err(restore) => Err(io::Error::new(
+                    error.kind(),
+                    format!(
+                        "fresh activation failed after durable AP: {error}; restoring read-only protection also failed: {restore}"
+                    ),
+                )),
+            };
+        }
+        self.file = gate;
+        self.frozen_state = expected;
+        Ok(BorrowedPagedWriter {
+            source: self,
+            policy,
+            poisoned: false,
+            requested: 0,
+            written: 0,
+        })
+    }
+}
+
+impl GeneralExclusiveRecoveryTarget {
+    pub fn bring_online_after_paged_abort(
+        self,
+        policy: &HeldPagedWritePolicy,
+        journal: &mut File,
+        pins: &PagedRecoveryPins<'_>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
+        if self.inner.write_poisoned
+            || self.inner.policy.is_some()
+            || self.inner.paged_policy.is_some()
+        {
+            return Err(invalid(
+                "rollback mount requires an unarmed recovery target",
+            ));
+        }
+        self.inner
+            .inner
+            .bring_online_after_paged_abort(policy, journal, pins, events)
+    }
+
+    /// Return the same actual HND source to OFFLINE|READ_ONLY for a protected
+    /// ReFS observation. This does not mount the volume or authorize ordinary
+    /// writable service.
+    pub fn seal_paged_handoff_for_observation(
+        self,
+        policy: &HeldPagedWritePolicy,
+        journal: &mut File,
+        pins: &PagedRecoveryPins<'_>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralFrozenPartition> {
+        if self.inner.write_poisoned
+            || self.inner.policy.is_some()
+            || self.inner.paged_policy.is_some()
+        {
+            return Err(invalid(
+                "handoff reseal requires an unarmed, unpoisoned recovery target",
+            ));
+        }
+        let mut source = self.inner.inner;
+        source.seal_paged_handoff_for_observation(policy, journal, pins, events)?;
+        Ok(source)
+    }
+
+    /// Consume the actual excluded target and arm only the exact authenticated
+    /// markerless journal ranges. This does not accept PreparedClear/HND/ABT,
+    /// does not mount the target, and never opens or formats a different disk.
+    pub fn arm_paged_recovery(
+        mut self,
+        policy: HeldPagedWritePolicy,
+        journal: &mut File,
+        pins: &PagedRecoveryPins<'_>,
+        direction: PagedRecoveryDirection,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralJournaledPartition> {
+        pins.journal_binding.validate()?;
+        let target = self.binding();
+        if target.disk_number == pins.journal_binding.disk.disk_number
+            || crate::layout::guid_bytes(&target.identity.disk_guid)?
+                == crate::layout::guid_bytes(&pins.journal_binding.disk.identity.disk_guid)?
+        {
+            return Err(invalid(
+                "recovery journal must be on a different physical disk",
+            ));
+        }
+        let facts = policy.facts()?;
+        if pins.journal_profile.version() != 3
+            || !(1..=5).contains(&facts.format_version)
+            || facts.image_length != self.byte_len()
+            || facts.journal_length < BODY + HEADER as u64 + FOOTER as u64
+            || facts.journal_length > pins.journal_profile.max_journal_bytes()
+            || facts.journal_immutable_sha256 != pins.immutable_sha256
+        {
+            return Err(invalid(
+                "paged recovery geometry or pinned journal capacity differs",
+            ));
+        }
+        let state = self.state(events)?;
+        if state.disk_attributes != OFFLINE {
+            return Err(invalid("paged recovery target lost offline exclusion"));
+        }
+        let before = crate::journal_file::observe_general_journal_file_with_profile(
+            journal,
+            pins.journal_binding,
+            pins.journal_profile,
+        )?;
+        if &before.identity != pins.journal_identity
+            || before.file_bytes != facts.journal_length
+            || !before
+                .final_path
+                .eq_ignore_ascii_case(&pins.journal_path.to_string_lossy())
+        {
+            return Err(invalid(
+                "actual held native journal identity, route or length differs",
+            ));
+        }
+        // Probe the exact same observed file route. Access-denied is not a
+        // sharing proof; only a sharing violation proves this ordinary writer
+        // route was refused while the original journal handle remains held.
+        let probe = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(3)
+            .open(pins.journal_path);
+        match probe {
+            Ok(_) => return Err(invalid("held recovery journal permits a second writer")),
+            Err(error) if error.raw_os_error() == Some(ERROR_SHARING_VIOLATION as i32) => (),
+            Err(error) => return Err(error),
+        }
+        check_lifecycle(journal, pins, direction)?;
+        if crate::sha256_native::journal_body(
+            journal,
+            BODY,
+            facts.journal_length - BODY,
+            &pins.immutable_sha256,
+        )? != pins.immutable_sha256
+        {
+            return Err(invalid(
+                "actual held recovery journal immutable body differs",
+            ));
+        }
+        verify_index_against_journal(journal, &policy, pins)?;
+        check_lifecycle(journal, pins, direction)?;
+        let after = crate::journal_file::observe_general_journal_file_with_profile(
+            journal,
+            pins.journal_binding,
+            pins.journal_profile,
+        )?;
+        if after.identity != before.identity
+            || after.file_bytes != before.file_bytes
+            || !after.final_path.eq_ignore_ascii_case(&before.final_path)
+            || self.state(events)? != state
+        {
+            return Err(invalid(
+                "held recovery journal or excluded target changed during authorization",
+            ));
+        }
+        self.inner.arm_resource_paged_writes(
+            policy,
+            pins.journal_profile,
+            pins.journal_profile.max_journal_bytes(),
+            ResourcePolicyAuthority {
+                _authenticated_markerless_recovery: (),
+            },
+            events,
+        )?;
+        if self.state(events)? != state {
+            return Err(invalid("excluded recovery target changed while arming"));
+        }
+        Ok(self.inner)
+    }
+}
+
+impl GeneralJournaledPartition {
+    /// Drop the armed paged write policy and return to the same held,
+    /// read-only-at-the-type-boundary excluded recovery target. This does not
+    /// mount the volume or by itself establish that replay has closed.
+    pub fn into_unarmed_paged_recovery(
+        mut self,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralExclusiveRecoveryTarget> {
+        if self.write_poisoned || self.policy.is_some() || self.paged_policy.is_none() {
+            return Err(invalid(
+                "paged recovery writer is absent, conflicted or poisoned",
+            ));
+        }
+        self.sync_all()?;
+        if self.state(events)?.disk_attributes != OFFLINE {
+            return Err(invalid("paged recovery source lost offline exclusion"));
+        }
+        self.paged_policy = None;
+        Ok(GeneralExclusiveRecoveryTarget { inner: self })
+    }
+}
+
+/// New private-partition gate only; legacy whole-disk paths above are unchanged.
+/// This does not issue source admission, publish AP or clear exclusion. It uses
+/// the existing actual journal/index/lifecycle and OLD/NEW selected-byte checks.
+pub(super) fn authenticate_partition_paged_source(
+    source: &mut super::partition_owner::PartitionScopedOwner,
+    policy: &HeldPagedWritePolicy,
+    journal: &mut File,
+    pins: &PagedRecoveryPins<'_>,
+    require_new: bool,
+) -> io::Result<()> {
+    pins.journal_binding.validate()?;
+    let binding = &source.binding().storage;
+    // Initial foundation retains independent-disk J policy. C:-sibling journal
+    // extent disjointness is a separate unimplemented source-scope change.
+    if binding.disk_number == pins.journal_binding.disk.disk_number
+        || crate::layout::guid_bytes(&binding.identity.disk_guid)?
+            == crate::layout::guid_bytes(&pins.journal_binding.disk.identity.disk_guid)?
+    {
+        return Err(invalid(
+            "partition foundation journal must remain on an independent disk",
+        ));
+    }
+    let facts = policy.facts()?;
+    if pins.journal_profile.version() != 3
+        || !(1..=5).contains(&facts.format_version)
+        || facts.image_length != source.byte_len()
+        || facts.journal_length < BODY + HEADER as u64 + FOOTER as u64
+        || facts.journal_length > pins.journal_profile.max_journal_bytes()
+        || facts.journal_immutable_sha256 != pins.immutable_sha256
+    {
+        return Err(invalid(
+            "partition paged policy/journal/geometry binding differs",
+        ));
+    }
+    let before = verify_journal_owner(journal, pins, facts.journal_length)?;
+    let modified = journal.metadata()?.modified()?;
+    let probe = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .share_mode(3)
+        .open(pins.journal_path);
+    match probe {
+        Ok(_) => {
+            return Err(invalid(
+                "partition journal permits a second ordinary writer",
+            ));
+        }
+        Err(error) if error.raw_os_error() == Some(ERROR_SHARING_VIOLATION as i32) => (),
+        Err(error) => return Err(error),
+    }
+    check_lifecycle(journal, pins, PagedRecoveryDirection::Resume)?;
+    if crate::sha256_native::journal_body(
+        journal,
+        BODY,
+        facts.journal_length - BODY,
+        &pins.immutable_sha256,
+    )? != pins.immutable_sha256
+    {
+        return Err(invalid("partition held journal immutable body differs"));
+    }
+    verify_index_against_journal(journal, policy, pins)?;
+    verify_selected_digest(
+        source,
+        policy,
+        if require_new {
+            pins.new_selected_sha256
+        } else {
+            pins.old_selected_sha256
+        },
+    )?;
+    check_lifecycle(journal, pins, PagedRecoveryDirection::Resume)?;
+    if crate::sha256_native::journal_body(
+        journal,
+        BODY,
+        facts.journal_length - BODY,
+        &pins.immutable_sha256,
+    )? != pins.immutable_sha256
+    {
+        return Err(invalid(
+            "partition journal changed around selected-byte gate",
+        ));
+    }
+    let after = verify_journal_owner(journal, pins, facts.journal_length)?;
+    if after.identity != before.identity
+        || after.file_bytes != before.file_bytes
+        || !after.final_path.eq_ignore_ascii_case(&before.final_path)
+        || journal.metadata()?.modified()? != modified
+    {
+        return Err(invalid(
+            "partition actual journal owner changed during gate",
+        ));
+    }
+    Ok(())
+}

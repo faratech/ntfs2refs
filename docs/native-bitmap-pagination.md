@@ -1,5 +1,9 @@
 # Complete native bitmap pagination
 
+A separate [streaming collector](native-bitmap-streaming.md) now provides
+bounded-memory native read-only observations. It does not replace the existing
+conversion evidence or expand this assembly profile.
+
 The native source collector, shadow retention/verifier and locked ReFS allocation
 capture now share `n2r_win32::bitmap_paging`. Each control call requests at most
 2 MiB of bitmap payload plus its 16-byte header. The complete map is bounded to
@@ -23,11 +27,13 @@ budgets. A failed page poisons the assembler. The final partial byte is preserve
 for NTFS's existing initialized-bitmap hash comparison. Legacy and metadata-inclusive
 views are collected independently and never substituted for one another.
 
-Native attestation report schema 6 retains each original query and response;
+Native attestation report schemas 6 and later retain each original bitmap query and response;
 replay reconstructs the complete map from those bytes and requires exact before/
 after transcript equality. Schemas 2–5 retain their existing rules and reject
 nonempty continuation transcripts. File/stream evidence keeps its original budget, while bitmap
 pages have their own bounded budget. Saved native reports are capped at 64 MiB.
+Schema 7 additionally carries [retrieval-pointer continuations](native-retrieval-pagination.md);
+it does not weaken any bitmap completeness rule.
 
 The flat map is explicitly identified as `assembled-zero-lcn-bitmap-v1`. Its
 digest covers the zero-LCN header and assembled bitmap bytes. Page proofs retain
@@ -49,3 +55,14 @@ NTFS tail hashes, old-report compatibility and raw-page serialization. Locked
 capture checks preserve independent views and page provenance. No new large
 image, guest volume, conversion or native paging qualification is implied by
 these checks; the isolated guest's RAW disks have not been initialized.
+
+The low-level assembler also has an explicit `OneTiB` resource profile for
+future larger-volume work. It permits up to 32 MiB of bitmap payload (1 TiB at
+4 KiB per cluster), 64 response pages and a separate 64 MiB-plus-headers returned
+byte budget. A caller must opt in; default collection and existing replay retain
+the 4 MiB/eight-page limits. The proof records the expanded profile explicitly,
+while legacy proof serialization remains unchanged. The current native
+collector, report budgets and conversion admission still use the legacy
+profile, so this alone does not enable conversion of larger volumes. The same
+opt-in profile is available to the allocation-range and candidate-occupancy
+decoders; their existing entry points continue to enforce legacy limits.

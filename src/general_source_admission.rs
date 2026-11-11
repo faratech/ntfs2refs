@@ -1,5 +1,8 @@
 //! Live source admission for a dedicated NTFS data disk. Inspection alone
 //! cannot issue a certificate; a bound frozen native target is also required.
+pub mod frozen;
+#[cfg(windows)]
+pub mod resource;
 use crate::{
     lab_reconstruct, ntfs_admission, ntfs_attestation, ntfs_backup, ntfs_inspect, ntfs_log,
     ntfs_source_view,
@@ -17,6 +20,8 @@ pub struct LiveAssessment {
     pub assessment: ntfs_admission::Assessment,
     pub source_sha256: String,
     pub canonical_inspection_sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_fingerprint_kind: Option<&'static str>,
     pub txf_evidence_sha256: Option<String>,
     pub txf_observation: Option<serde_json::Value>,
     pub short_name_creation_disabled: Option<bool>,
@@ -36,10 +41,12 @@ pub struct LiveAssessment {
 #[derive(Debug)]
 struct AdmissionContext {
     source_binding: n2r_win32::general_layout::GeneralDiskBinding,
+    resources: ntfs_admission::ResourceProfile,
     source_sha256: String,
     inspection_sha256: String,
     source_gates_satisfied: bool,
     source_views_sha256: String,
+    source_fingerprint_kind: Option<&'static str>,
 }
 
 /// Issued only after live source admission and same-tree native target
@@ -52,25 +59,231 @@ pub struct SourceCertificate {
     comparison: crate::retained_compare::RetainedCompareRequest,
     expected_tree_sha256: String,
     assessment_sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_resource_profile: Option<ntfs_admission::ResourceProfile>,
 }
 impl SourceCertificate {
     pub fn binds_request(&self, request: &crate::general_reconstruct::Request) -> bool {
         self.pair == request.pair
+            && self.source_resource_profile == request.source_resource_profile
             && self.expected_tree_sha256 == request.expected_tree_sha256
             && self.source_sha256 == request.comparison.source_sha256
             && matches!((serde_json::to_vec(&self.comparison), serde_json::to_vec(&request.comparison)),
                 (Ok(a),Ok(b)) if a == b)
     }
 }
+/// Issued only by the live assessor for an allocation-bounded target proof.
+/// It binds the protected selection and its old/new selected digests rather
+/// than whole-image hashes, and grants nothing to the complete-image journal.
+#[derive(Debug, Serialize)]
+pub struct AllocationCertificate {
+    source_sha256: String,
+    inspection_sha256: String,
+    pair: n2r_win32::general_layout::GeneralSourceShadowBinding,
+    expected_tree_sha256: String,
+    selection_sha256: String,
+    source_selected_sha256: String,
+    candidate_selected_sha256: String,
+    changed_bytes: u64,
+    assessment_sha256: String,
+    free_space_contents_proven_equal: bool,
+    /// `source_sha256` is the framed digest of the NTFS-allocated ranges, not a
+    /// whole-source hash (the user's extended allocation guarantee).
+    source_digest: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_fingerprint_kind: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_resource_profile: Option<ntfs_admission::ResourceProfile>,
+}
+impl AllocationCertificate {
+    pub fn binds(
+        &self,
+        target: &crate::general_composite_target::FrozenAllocationTargetPreservation,
+    ) -> bool {
+        self.pair == *target.pair()
+            && self.source_fingerprint_kind == target.source_fingerprint_kind()
+            && self.expected_tree_sha256 == target.expected_tree_sha256()
+            && self.source_sha256 == target.source_sha256()
+            && self.selection_sha256 == target.selection_sha256()
+            && self.source_selected_sha256 == target.capture().source_selected_sha256
+            && self.candidate_selected_sha256 == target.capture().candidate_selected_sha256
+            && self.changed_bytes == target.capture().layout.changed_bytes()
+    }
+    pub fn expected_tree_sha256(&self) -> &str {
+        &self.expected_tree_sha256
+    }
+}
+
 impl LiveAssessment {
+    /// Allocation-bounded counterpart of `qualify_composite_target`: the same
+    /// original live context and source gates, with a proof that compared only
+    /// the protected native allocation. Persisted JSON cannot issue this.
+    pub fn qualify_allocation_target(
+        &mut self,
+        raw: &ntfs_inspect::NtfsInspection,
+        target: &crate::general_composite_target::FrozenAllocationTargetPreservation,
+    ) -> Result<AllocationCertificate> {
+        ensure!(
+            self.context.source_gates_satisfied
+                && target.source_fingerprint_kind() == self.context.source_fingerprint_kind
+                && target.pair().source == self.context.source_binding
+                && target.resource_profile() == self.context.resources
+                && target.native_resource_profile() == self.context.resources.native_profile()
+                && target.data_ties_verified()
+                && target.source_sha256() == self.context.source_sha256
+                && target.inspection_sha256() == self.context.inspection_sha256
+                && target.source_views_sha256() == self.context.source_views_sha256
+                && target.binds(raw, &self.source_sha256)
+                && self.source_sha256 == self.context.source_sha256
+                && self.canonical_inspection_sha256 == self.context.inspection_sha256
+                && self.canonical_inspection_sha256 == self.assessment.source_inspection_sha256
+                && self.assessment.source_view.as_ref().is_some_and(|view| view
+                    .binds_live_source(&self.canonical_inspection_sha256, &self.source_sha256)
+                    && serde_json::to_vec(view).is_ok_and(|bytes| hex::encode(Sha256::digest(
+                        bytes
+                    )) == self
+                        .context
+                        .source_views_sha256)),
+            "allocation-bounded target differs from the admitted original live source context"
+        );
+        for gate in &mut self.assessment.gates {
+            if gate.code == "security_timestamp_preservation" {
+                gate.satisfied = true;
+                gate.detail="protected native metadata/namespace/security/maps plus actual initialized residual reads and a source-backed comparison of the protected native allocation bind all logical payload to the same frozen source; free-space contents are not compared".into();
+            } else if gate.code == "target_resource_profile_support" {
+                ensure!(
+                    self.context.resources.native_profile().is_some(),
+                    "unexpected expanded allocation-bounded target gate"
+                );
+                gate.satisfied = true;
+                gate.detail="opaque post-freeze native layout and allocation-bounded target use the same explicit resource profile".into();
+            }
+        }
+        let refused: Vec<_> = self
+            .assessment
+            .gates
+            .iter()
+            .filter(|g| !g.satisfied)
+            .map(|g| g.code.as_str())
+            .collect();
+        ensure!(
+            refused.is_empty(),
+            "allocation-bounded source admission remains refused: {refused:?}"
+        );
+        self.source_admitted = true;
+        self.assessment.source_admitted = true;
+        self.assessment.certificate_issued = true;
+        Ok(AllocationCertificate {
+            source_sha256: self.source_sha256.clone(),
+            inspection_sha256: self.canonical_inspection_sha256.clone(),
+            pair: target.pair().clone(),
+            expected_tree_sha256: target.expected_tree_sha256().into(),
+            selection_sha256: target.selection_sha256().into(),
+            source_selected_sha256: target.capture().source_selected_sha256.clone(),
+            candidate_selected_sha256: target.capture().candidate_selected_sha256.clone(),
+            changed_bytes: target.capture().layout.changed_bytes(),
+            assessment_sha256: hex::encode(Sha256::digest(serde_json::to_vec(&self)?)),
+            free_space_contents_proven_equal: false,
+            source_digest: self
+                .context
+                .source_fingerprint_kind
+                .unwrap_or(crate::source_fingerprint::FULL_KIND),
+            source_fingerprint_kind: self.context.source_fingerprint_kind,
+            source_resource_profile: match self.context.resources {
+                ntfs_admission::ResourceProfile::AlphaV1 => None,
+                resource => Some(resource),
+            },
+        })
+    }
+
+    /// Qualify the complete native metadata image with verified source-backed
+    /// payload substitution. The ORIGINAL live source context is still needed;
+    /// persisted JSON and reopened frozen-source diagnostics cannot issue this.
+    pub fn qualify_composite_target(
+        &mut self,
+        raw: &ntfs_inspect::NtfsInspection,
+        target: &crate::general_composite_target::FrozenCompositeTargetPreservation,
+    ) -> Result<SourceCertificate> {
+        ensure!(
+            self.context.source_fingerprint_kind.is_none(),
+            "extent-scoped source fingerprint cannot certify a whole-image journal"
+        );
+        ensure!(
+            self.context.source_gates_satisfied
+                && target.pair().source == self.context.source_binding
+                && target.resource_profile() == self.context.resources
+                && target.native_resource_profile() == self.context.resources.native_profile()
+                && target.data_ties_verified()
+                && target.source_sha256() == self.context.source_sha256
+                && target.inspection_sha256() == self.context.inspection_sha256
+                && target.source_views_sha256() == self.context.source_views_sha256
+                && target.binds(raw, &self.source_sha256)
+                && self.source_sha256 == self.context.source_sha256
+                && self.canonical_inspection_sha256 == self.context.inspection_sha256
+                && self.canonical_inspection_sha256 == self.assessment.source_inspection_sha256
+                && self.assessment.source_view.as_ref().is_some_and(|view| view
+                    .binds_live_source(&self.canonical_inspection_sha256, &self.source_sha256)
+                    && serde_json::to_vec(view).is_ok_and(|bytes| hex::encode(Sha256::digest(
+                        bytes
+                    )) == self
+                        .context
+                        .source_views_sha256)),
+            "composite target differs from the admitted original live source context"
+        );
+        for gate in &mut self.assessment.gates {
+            if gate.code == "security_timestamp_preservation" {
+                gate.satisfied = true;
+                gate.detail="protected native metadata/namespace/security/maps plus actual initialized residual reads and complete source-backed image comparison bind all logical payload to the same frozen source".into();
+            } else if gate.code == "target_resource_profile_support" {
+                ensure!(
+                    self.context.resources.native_profile().is_some(),
+                    "unexpected expanded composite target gate"
+                );
+                gate.satisfied = true;
+                gate.detail="opaque post-freeze native layout and complete composite target use the same explicit resource profile".into();
+            }
+        }
+        let refused: Vec<_> = self
+            .assessment
+            .gates
+            .iter()
+            .filter(|g| !g.satisfied)
+            .map(|g| g.code.as_str())
+            .collect();
+        ensure!(
+            refused.is_empty(),
+            "composite source admission remains refused: {refused:?}"
+        );
+        self.source_admitted = true;
+        self.assessment.source_admitted = true;
+        self.assessment.certificate_issued = true;
+        Ok(SourceCertificate {
+            source_sha256: self.source_sha256.clone(),
+            inspection_sha256: self.canonical_inspection_sha256.clone(),
+            pair: target.pair().clone(),
+            comparison: target.comparison().clone(),
+            expected_tree_sha256: target.expected_tree_sha256().into(),
+            assessment_sha256: hex::encode(Sha256::digest(serde_json::to_vec(&self)?)),
+            source_resource_profile: match self.context.resources {
+                ntfs_admission::ResourceProfile::AlphaV1 => None,
+                resource => Some(resource),
+            },
+        })
+    }
+
     pub fn qualify_target(
         &mut self,
         raw: &ntfs_inspect::NtfsInspection,
         target: &crate::general_target_preservation::FrozenTargetPreservation,
     ) -> Result<SourceCertificate> {
         ensure!(
+            self.context.source_fingerprint_kind.is_none(),
+            "extent-scoped source fingerprint cannot certify a whole-image journal"
+        );
+        ensure!(
             self.context.source_gates_satisfied
                 && target.pair().source == self.context.source_binding
+                && target.native_resource_profile() == self.context.resources.native_profile()
                 && self.source_sha256 == self.context.source_sha256
                 && self.canonical_inspection_sha256 == self.context.inspection_sha256
                 && target.binds(raw, &self.source_sha256)
@@ -89,6 +302,13 @@ impl LiveAssessment {
             if gate.code == "security_timestamp_preservation" {
                 gate.satisfied = true;
                 gate.detail = "actual native ReFS tree verified stored times, descriptors, attributes, namespace and contents; the same target was locked/dismounted and its complete image hash bound".into();
+            } else if gate.code == "target_resource_profile_support" {
+                ensure!(
+                    self.context.resources.native_profile().is_some(),
+                    "unexpected expanded target gate on an alpha source"
+                );
+                gate.satisfied = true;
+                gate.detail = "the opaque protected ReFS target observation verified the same expanded resource profile and the exact frozen-source semantic tree".into();
             }
         }
         let refusals: Vec<_> = self
@@ -112,6 +332,10 @@ impl LiveAssessment {
             comparison: target.comparison().clone(),
             expected_tree_sha256: target.expected_tree_sha256().into(),
             assessment_sha256: hex::encode(Sha256::digest(serde_json::to_vec(&self)?)),
+            source_resource_profile: match self.context.resources {
+                ntfs_admission::ResourceProfile::AlphaV1 => None,
+                resource => Some(resource),
+            },
         })
     }
 }
@@ -126,10 +350,81 @@ pub fn assess(
     observed: &GeneralLiveNtfsObservation,
     events: &mut Vec<NativeEvent>,
 ) -> Result<LiveAssessment> {
+    assess_with_source_digest(
+        source,
+        raw,
+        canonical_inspection_sha256,
+        expected_source_sha256,
+        backups,
+        log_restart,
+        observed,
+        events,
+        |source, resources| {
+            Ok(hex::encode(
+                lab_reconstruct::hash_range_with_resource_profile(
+                    source,
+                    0,
+                    source.byte_len(),
+                    resources,
+                )?,
+            ))
+        },
+    )
+}
+
+/// `assess` with the caller's frozen-source digest, which must reproduce the
+/// digest taken before the native observation. The allocation-bounded mode
+/// passes its NTFS-allocated-range digest; the default is the whole image.
+#[allow(clippy::too_many_arguments)]
+pub fn assess_with_source_digest(
+    source: &mut GeneralFrozenPartition,
+    raw: &ntfs_inspect::NtfsInspection,
+    canonical_inspection_sha256: &str,
+    expected_source_sha256: &str,
+    backups: &ntfs_backup::VerifiedBackups,
+    log_restart: Option<&ntfs_log::VerifiedRestart>,
+    observed: &GeneralLiveNtfsObservation,
+    events: &mut Vec<NativeEvent>,
+    digest: impl FnOnce(&mut GeneralFrozenPartition, ntfs_admission::ResourceProfile) -> Result<String>,
+) -> Result<LiveAssessment> {
+    let resources = match (
+        observed.report().request.schema_version,
+        observed.report().request.resource_profile,
+    ) {
+        (2 | 5, None) => ntfs_admission::ResourceProfile::AlphaV1,
+        (3 | 5, Some(n2r_win32::attestation::ResourceProfile::ExperimentalLargeTreeV1)) => {
+            ntfs_admission::ResourceProfile::ExperimentalLargeTreeV1
+        }
+        (
+            3 | 4 | 5 | 6,
+            Some(n2r_win32::attestation::ResourceProfile::ExperimentalStreamingTreeV2),
+        ) => ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2,
+        (
+            3 | 4 | 5 | 6,
+            Some(n2r_win32::attestation::ResourceProfile::ExperimentalObjectEnvelopeV3(admission)),
+        ) => ntfs_admission::ResourceProfile::ExperimentalObjectEnvelopeV3(admission),
+        _ => anyhow::bail!("unsupported or mismatched native source resource profile"),
+    };
+    // The collector's schema-4 request explicitly selects the extent policy,
+    // even when the particular source has no eligible streams to omit.
+    let source_fingerprint_kind = observed
+        .report()
+        .request
+        .uses_extent_identity()
+        .then_some(crate::source_fingerprint::EXTENT_KIND);
+    ensure!(
+        matches!(
+            (
+                observed.report().schema_version,
+                observed.report().request.schema_version
+            ),
+            (13, 5) | (14, 6)
+        ),
+        "fresh source admission requires explicit directory case evidence; legacy reports remain Unknown"
+    );
     ensure!(
         canonical_inspection_sha256 == hex::encode(Sha256::digest(serde_json::to_vec(raw)?))
             && backups.binds(raw)
-            && observed.report().request.schema_version == 2
             && observed.report().request.disk_number == source.binding().disk_number
             && observed.report().request.partition_offset
                 == source.binding().identity.partition_offset
@@ -142,7 +437,7 @@ pub fn assess(
         before.disk_attributes == 3,
         "general source is not offline read-only"
     );
-    let source_sha256 = hex::encode(lab_reconstruct::hash_range(source, 0, source.byte_len())?);
+    let source_sha256 = digest(source, resources)?;
     let after = source.state(events)?;
     ensure!(
         before == after && source_sha256 == expected_source_sha256,
@@ -152,17 +447,22 @@ pub fn assess(
         ntfs_attestation::compare(raw, canonical_inspection_sha256, observed.report())?;
     let mut view = ntfs_source_view::diagnose(raw, canonical_inspection_sha256, observed.report())?;
     view.bind_frozen_source(&source_sha256);
-    let mut assessment = ntfs_admission::assess_ordinary_source_view(
+    let mut assessment = ntfs_admission::assess_ordinary_source_view_with_resources(
         raw,
         &comparison,
         observed.report().schema_version,
         Some(backups),
         Some(view),
+        resources,
     );
     for gate in &mut assessment.gates {
         if gate.code == "frozen_device_basis" {
             gate.satisfied = true;
-            gate.detail = "actual dedicated disk remained offline/read-only and matched the complete pinned source hash after native collection".into();
+            gate.detail = if source_fingerprint_kind.is_some() {
+                "actual dedicated disk remained offline/read-only and matched the explicitly scoped metadata-and-extents fingerprint after native collection; omitted payload is not reported as rehashed"
+            } else {
+                "actual dedicated disk remained offline/read-only and matched the complete pinned source hash after native collection"
+            }.into();
         }
     }
     if let Some(proof) = log_restart {
@@ -215,24 +515,60 @@ pub fn assess(
         satisfied:transaction_freeze.as_ref().is_some_and(|proof|proof.binds(raw)),
         detail:"idle/inactive native default RM, actual lock/dismount exclusion, clean restart copies and empty deferred namespaces must agree".into(),
     });
-    let internal_replacements = match (&internal_indexes, &transaction_freeze) {
+    let bound_internal_replacements = match (&internal_indexes, &transaction_freeze) {
         (Some(indexes), Some(transactions)) => {
             ntfs_admission::bind_internal_replacement(&mut assessment, raw, indexes, transactions)
         }
         _ => None,
     };
+    // Case applicability follows the independent replacement proof. A role or
+    // candidate label cannot waive an actual directory query failure.
+    ntfs_admission::bind_directory_case_admission(
+        &mut assessment,
+        raw,
+        &comparison,
+        bound_internal_replacements.as_ref(),
+    );
+    ensure!(
+        assessment
+            .gates
+            .iter()
+            .any(|gate| gate.code == "native_directory_case_sensitivity" && gate.satisfied),
+        "fresh source directory-case admission refused: scope={:?}; internal_indexes_error={internal_indexes_error:?}; transaction_freeze_error={transaction_freeze_error:?}; internal_replacement_state={:?}",
+        assessment.directory_case_admission,
+        assessment
+            .gates
+            .iter()
+            .find(|gate| gate.code == "internal_replacement_state")
+    );
+    if resources.native_profile().is_some() {
+        ntfs_admission::bind_large_native_profile(
+            &mut assessment,
+            raw,
+            observed,
+            &source_sha256,
+            bound_internal_replacements.as_ref(),
+        )?;
+    }
+    let internal_replacements = bound_internal_replacements
+        .map(ntfs_admission::BoundInternalReplacements::into_replacements);
     let context = AdmissionContext {
         source_views_sha256: hex::encode(Sha256::digest(serde_json::to_vec(
             &assessment.source_view,
         )?)),
         source_binding: source.binding().clone(),
+        resources,
         source_sha256: source_sha256.clone(),
         inspection_sha256: canonical_inspection_sha256.into(),
         source_gates_satisfied: assessment
             .gates
             .iter()
-            .filter(|g| g.code != "security_timestamp_preservation")
+            .filter(|g| {
+                g.code != "security_timestamp_preservation"
+                    && g.code != "target_resource_profile_support"
+            })
             .all(|g| g.satisfied),
+        source_fingerprint_kind,
     };
     Ok(LiveAssessment {
         context,
@@ -240,6 +576,7 @@ pub fn assess(
         assessment,
         source_sha256,
         canonical_inspection_sha256: canonical_inspection_sha256.into(),
+        source_fingerprint_kind,
         txf_evidence_sha256,
         txf_observation: txf.map(serde_json::to_value).transpose()?,
         short_name_creation_disabled,

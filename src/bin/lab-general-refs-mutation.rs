@@ -30,6 +30,10 @@ fn main() -> anyhow::Result<()> {
         run_id: String,
         #[arg(long)]
         output: PathBuf,
+        /// Separate, exactly enrolled 240 GiB disposable beta. The legacy
+        /// workload keeps its 52 GiB guest restriction without this flag.
+        #[arg(long)]
+        experimental_large_beta: bool,
     }
     fn save(path: &PathBuf, value: &impl Serialize) -> Result<()> {
         let bytes = serde_json::to_vec_pretty(value)?;
@@ -82,10 +86,20 @@ fn main() -> anyhow::Result<()> {
     );
     let request: general_reconstruct::Request = serde_json::from_slice(&bytes)?;
     request.validate()?;
+    let enrolled_geometry = if args.experimental_large_beta {
+        request.source_resource_profile
+            == Some(ntfs2refs::ntfs_admission::ResourceProfile::ExperimentalLargeTreeV1)
+            && request.pair.source.identity.partition_bytes == 240 * 1024 * 1024 * 1024
+            && request.pair.source.identity.partition_offset == 16 * 1024 * 1024
+            && request.pair.source.identity.partition_guid == "489aced4-be82-4d61-a7a2-cdac24e3ebc3"
+            && request.pair.source.identity.disk_guid == "3340e474-3f7b-4a57-be8d-9055d784b7ab"
+    } else {
+        request.pair.source.identity.partition_bytes == 52 * 1024 * 1024 * 1024
+    };
     ensure!(
         std::env::var("COMPUTERNAME").ok().as_deref() == Some("N2R-WIN11")
             && request.pair.source.disk_number == 1
-            && request.pair.source.identity.partition_bytes == 52 * 1024 * 1024 * 1024,
+            && enrolled_geometry,
         "mutation workload is restricted to the disposable owning guest"
     );
     let mut events = Vec::new();
@@ -181,6 +195,7 @@ fn main() -> anyhow::Result<()> {
     save(
         &args.output,
         &serde_json::json!({"schema_version":1,"kind":"general-refs-mutation-workload",
+            "request_sha256":args.request_sha256,"source_resource_profile":request.source_resource_profile,
             "run_id":args.run_id,"initial_bytes":INITIAL,"grown_bytes":GROWN,
             "truncated_bytes":TRUNCATED,"directory_entries_created":128,
             "mutation_directory_removed":true,"only_new_test_paths_written":true,

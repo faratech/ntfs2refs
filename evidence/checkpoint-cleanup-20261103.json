@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "kind": "obsolete-lab-checkpoint-cleanup",
+  "utc": "2026-11-03T02:38:20.6684992Z",
+  "user_authorized": true,
+  "vm_id": "2401593c-4b30-472e-9b6d-c9534cbaa599",
+  "vm_state": "Off",
+  "active_parent": "a0627dbd-aa3b-4896-bbeb-495f5e372057",
+  "removed_count": 28,
+  "removed_ids": [
+    "265b5c2c-9215-4216-bb92-896db06fbd51",
+    "afb9afa4-859e-471d-8600-2ba4abb9d2dd",
+    "2c7ff0ea-8fe8-4fe9-bce9-0a3fbb4883a1",
+    "efa60a3e-e1ca-4840-9328-2c542e44ee6b",
+    "0a3a2a49-44cd-45a0-8817-41767231d7b2",
+    "450eb572-db48-470d-9921-ccd9976e74e6",
+    "2d62e6da-38b0-4c88-972d-750b1fc8eb31",
+    "44c0074b-b5c4-4614-b957-a96842436cbf",
+    "fccec765-f271-4dd5-88c6-6e6e5bd29181",
+    "200aaa68-6a12-482d-910e-60e5b1f20b63",
+    "43d445cb-0d6e-4647-aa43-2664ee78b424",
+    "eba55c48-5dc2-42c5-9ecb-84d696b85a78",
+    "9a01516b-1279-4266-9923-fe17d2610090",
+    "19f5d614-e7a0-42d7-9d32-c8e1c55c1065",
+    "1d7299ff-c616-4bcb-8b29-c1a1ba4a8a33",
+    "d939f576-4868-43d0-bde8-2a6f742dd489",
+    "83354c86-1103-4b0d-a99a-e23a8a78fdc8",
+    "291c825f-3368-4039-ace3-2d9fbf10cc11",
+    "bfd2dfbe-b497-455d-95dd-9d7347145691",
+    "8d4192fe-003b-441f-8591-f0b271028841",
+    "5d2517e5-59f9-4c26-b9e0-e6775d175f68",
+    "6679708a-2171-4566-b660-312efaab9f73",
+    "7721d92e-c80c-4843-983a-d9d3c89bb964",
+    "cb802669-903c-48cc-99e5-57976b149e7d",
+    "dea902f6-7d3f-49ba-86d2-27ce6dbe9516",
+    "371ae756-faf2-40ac-bf86-5e8e1d744e30",
+    "9c42e1fd-435b-401c-b261-53ab433ca2f6",
+    "6fe2d6b6-a2fb-447e-802b-7b3ff0d9f16e"
+  ],
+  "remaining": [
+    {
+      "id": "f4bf5238-14c0-4b15-bda6-7859abd4d1c9",
+      "name": "sparse-placement-refusal-66400017-2287d82",
+      "parent": null
+    },
+    {
+      "id": "83290a28-1e83-4eb2-a4d3-b0e9f5a8d63b",
+      "name": "ntfs-object-envelope-source-32cbcf9d",
+      "parent": null
+    },
+    {
+      "id": "a0627dbd-aa3b-4896-bbeb-495f5e372057",
+      "name": "ntfs-paged-1534-source-20261102",
+      "parent": "83290a28-1e83-4eb2-a4d3-b0e9f5a8d63b"
+    },
+    {
+      "id": "5ce766b0-c6e9-4007-b16d-363944240c51",
+      "name": "r7feb-public1534-paged-verified-20261102",
+      "parent": "a0627dbd-aa3b-4896-bbeb-495f5e372057"
+    },
+    {
+      "id": "58bd9ceb-60bc-4b34-81e1-7af197523a80",
+      "name": "r7feb-paged1534-original-firstwrite86-20261102",
+      "parent": "a0627dbd-aa3b-4896-bbeb-495f5e372057"
+    }
+  ],
+  "archive_file_checks": 2337,
+  "archive_bytes_rehashed": 3062865391,
+  "all_host_archives_preserved": true,
+  "manual_virtual_disk_deletion": false,
+  "wsl_stopped": false,
+  "capacity_epoch_changed": false,
+  "before": {
+    "ActualBytes": 300728104359,
+    "FreeBytes": 38301175808,
+    "MaximumActualBytes": 329374052988,
+    "MinimumFreeBytes": 17179869184
+  },
+  "after": {
+    "ActualBytes": 188145504524,
+    "FreeBytes": 150802001920,
+    "MaximumActualBytes": 329374052988,
+    "MinimumFreeBytes": 17179869184
+  },
+  "host_free_bytes_increase": 112500826112,
+  "lab_logical_bytes_removed": 112582599835,
+  "receipts": [
+    {
+      "sha256": "f6d9ff9ab1786b3e4658e0f573d78ba15af9c6c4c42f64b76f8e4b850a95f984",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\retire-obsolete-closed-results-20261103\\complete.json"
+    },
+    {
+      "sha256": "422836e15f34f10ac7c5e106b4524d61b35877f203e96844ea4fa38c80b158df",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\retire-obsolete-original-states-20261103-v3\\complete.json"
+    }
+  ],
+  "qualification_changed": false
+}

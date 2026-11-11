@@ -1,0 +1,288 @@
+{
+  "schema_version": 1,
+  "kind": "public-resource-v4-minimize-scratch-native-conversion",
+  "source_commit": "a0b29e04dd2e83086823349724e7e2a8ccf905f5",
+  "binary_sha256": "1cc91461deae2d97df5390da1a5cb9d8a25c9f864574a39f492889305370dfe9",
+  "build_manifest_sha256": "331098d19f6f8d800abc3988522fd9d2feaccb37b38fcdf926d125e59cac4403",
+  "run_id": "f856e0a021bb44e2930f66846a5459e4",
+  "engine_run_id": "bd38a1599dae8ce8b1f23195eddde9f6",
+  "argv": [
+    "--drive",
+    "F",
+    "--partition",
+    "2",
+    "--minimize-scratch"
+  ],
+  "confirmation": "one affirmative stdin line",
+  "native": {
+    "exit_code": 0,
+    "pid": 5324,
+    "actual_exit_observed": true,
+    "creation_ms": 1793737914035,
+    "utc": "2026-11-03T20:49:10.2315660Z",
+    "stdout_bytes": 2242,
+    "stderr_bytes": 0,
+    "wall_seconds": 1036.1624365999999
+  },
+  "source": {
+    "partition_bytes": 55834574848,
+    "ntfs_cluster_bytes": 65536,
+    "refs_cluster_bytes": 4096,
+    "user_objects": 2558,
+    "files": 811,
+    "directories": 1747,
+    "verification_policy": "extent_identity_v1",
+    "independently_populated_source": true,
+    "conversion_executed_inside_owning_vm": true
+  },
+  "completion": {
+    "extent_only_streams": 654,
+    "journal_handoff_closed": true,
+    "kind": "resource-native-finalization-v1",
+    "known_payload_bytes_read": 119009,
+    "known_streams_hashed": 157,
+    "label_restored": true,
+    "matching_map_bindings": 2558,
+    "mount_paths_preserved": true,
+    "publication_sha256": "92211da15e0025b9d721daf33e6c886c64a261de34a3b40debb62743eb4b9204",
+    "source": {
+      "disk_number": 1,
+      "identity": {
+        "disk_bytes": 68719476736,
+        "disk_guid": "1b191872-c372-41ee-a416-e18863996f54",
+        "logical_sector_bytes": 512,
+        "partition_bytes": 55834574848,
+        "partition_guid": "f06075a8-67a2-46b9-8fac-4af4da809617",
+        "partition_number": 2,
+        "partition_offset": 16777216,
+        "physical_sector_bytes": 4096
+      },
+      "volume_guid": "f06075a8-67a2-46b9-8fac-4af4da809617"
+    },
+    "success": true
+  },
+  "ntfs_preparation": {
+    "driver_owned": true,
+    "complete_plan_moves": 343,
+    "submitted_moves": 343,
+    "verified_moves": 343,
+    "verified_move_bytes": 5643501568,
+    "opened_files": 222,
+    "skipped_moves": 0,
+    "stop": null,
+    "native_receipts": 569,
+    "receipt_rows": 1707,
+    "closed_readback": true,
+    "plan_phase_end_elapsed_ms": 19666,
+    "execution_phase_end_elapsed_ms": 36330,
+    "raw_source_writes_by_prepass": 0,
+    "source_admission_granted_by_prepass": false,
+    "kernel_relocation_bytes_are_not_measured_physical_io": true
+  },
+  "admission": {
+    "vm_memory_bytes": 4294967296,
+    "vm_processors": 4,
+    "arena_ram_budget_bytes": 1890108843,
+    "arena_scratch_budget_bytes": 29182386176,
+    "working_volume_free_reserve_bytes": 9889191936,
+    "budgets_are_not_peak_usage": true,
+    "repeated_limit_increases": false
+  },
+  "journal": {
+    "logical_bytes": 184184288,
+    "allocation_size_bytes": 184184832,
+    "capture_literal_bytes": 85946368,
+    "capture_index_bytes": 494336,
+    "prior_unprepared_public_journal_logical_bytes": 5821929848,
+    "comparison_scope": "observed file sizes from separate native profiles/epochs; not total scratch or a controlled timing experiment"
+  },
+  "near_end_process_accounting": {
+    "scope": "advisory process logical transfer counters at event-observer close; not physical disk traffic or exact final totals",
+    "read_transfer_bytes": 189617274776,
+    "write_transfer_bytes": 3030345500,
+    "user_time_100ns": 8415468750,
+    "kernel_time_100ns": 1299843750,
+    "physical_io_bytes": null,
+    "actual_peak_ram_bytes": null,
+    "actual_peak_scratch_bytes": null
+  },
+  "retained_storage_snapshots": {
+    "pre_normal_cold_boot": {
+      "observed_utc": "2026-11-03T22:37:17.6206305Z",
+      "receipt_sha256": "1b48f9cf317026ffe2ce155b33c906e41df0fb70aa311654d41a361ca8e81a0b",
+      "regular_files": 4198,
+      "allocation_size_bytes": 1245219744,
+      "api_reported_compressed_file_size_bytes": 1243641325,
+      "groups": [
+        {
+          "kind": "metadata",
+          "files": 2145,
+          "eof_bytes": 104447731,
+          "allocation_bytes": 105321072,
+          "filesystem_storage_bytes": 104447731
+        },
+        {
+          "kind": "shadow",
+          "files": 1,
+          "eof_bytes": 843055104,
+          "allocation_bytes": 843055104,
+          "filesystem_storage_bytes": 843055104
+        },
+        {
+          "kind": "journal",
+          "files": 1,
+          "eof_bytes": 184184288,
+          "allocation_bytes": 184184832,
+          "filesystem_storage_bytes": 184184288
+        },
+        {
+          "kind": "capture",
+          "files": 2,
+          "eof_bytes": 86440704,
+          "allocation_bytes": 86441984,
+          "filesystem_storage_bytes": 86440704
+        },
+        {
+          "kind": "prealignment",
+          "files": 2049,
+          "eof_bytes": 25513498,
+          "allocation_bytes": 26216752,
+          "filesystem_storage_bytes": 25513498
+        }
+      ],
+      "scope": "final retained regular-file snapshot, excluding directory/MFT global overhead; not peak scratch or physical I/O",
+      "payload_bytes_read": 0
+    },
+    "post_normal_cold_boot": {
+      "observed_utc": "2026-11-03T22:53:21.6967364Z",
+      "receipt_sha256": "55b53a43b3d911940aaca43c20f7ffa30f0bd9545e0c035ecc39d1487b94669b",
+      "regular_files": 4198,
+      "allocation_size_bytes": 1220053920,
+      "api_reported_compressed_file_size_bytes": 1218475501,
+      "groups": [
+        {
+          "kind": "metadata",
+          "files": 2145,
+          "eof_bytes": 104447731,
+          "allocation_bytes": 105321072,
+          "filesystem_storage_bytes": 104447731
+        },
+        {
+          "kind": "shadow",
+          "files": 1,
+          "eof_bytes": 817889280,
+          "allocation_bytes": 817889280,
+          "filesystem_storage_bytes": 817889280
+        },
+        {
+          "kind": "journal",
+          "files": 1,
+          "eof_bytes": 184184288,
+          "allocation_bytes": 184184832,
+          "filesystem_storage_bytes": 184184288
+        },
+        {
+          "kind": "capture",
+          "files": 2,
+          "eof_bytes": 86440704,
+          "allocation_bytes": 86441984,
+          "filesystem_storage_bytes": 86440704
+        },
+        {
+          "kind": "prealignment",
+          "files": 2049,
+          "eof_bytes": 25513498,
+          "allocation_bytes": 26216752,
+          "filesystem_storage_bytes": 25513498
+        }
+      ],
+      "scope": "final retained regular-file snapshot, excluding directory/MFT global overhead; not peak scratch or physical I/O",
+      "payload_bytes_read": 0
+    },
+    "shadow_file_shrink_after_clean_close_bytes": 25165824,
+    "shadow_shrink_is_not_payload_corruption": true
+  },
+  "independent_before_reboot": {
+    "observer_run_id": "52558d95a228437c856d2b1d6e9b7f13",
+    "result_sha256": "8190116f38be66d1154b06e649af114f933485d28b7edd9e1a479cbf4a2ae19d",
+    "original_streams_verified": 811,
+    "logical_stream_bytes": 9885801949,
+    "original_objects_checked": 1534,
+    "extra_directories_compared": 1024,
+    "extra_manifest_sha256": "8f14bdc273f05813732fa80250df74302525d8837061da46c61a0039e741678b",
+    "digest_algorithm": "xxh3-128",
+    "native_batches": 13,
+    "native_exit0_and_owned_handle_terminals_verified": 13,
+    "digest_wall_seconds": 11.5263846
+  },
+  "mutation_and_cold_boot": {
+    "normal_shutdown_restart_without_restore": true,
+    "previous_boot_unix_ms": 1793737890806,
+    "actual_new_boot_unix_ms": 1793746065079,
+    "created_small_files": 512,
+    "deleted_new_files": 64,
+    "replacement_files": 64,
+    "grow_bytes": 16777216,
+    "truncated_bytes": 1048699,
+    "live_mutation_files": 513,
+    "mutation_manifest_sha256": "3a9a89c6f0d82ab2da973952b475030bd1f060074e9c4f85b305408f4a559490",
+    "matched_after_reboot": 513,
+    "mutation_verify_sha256": "782b8a95f9eb28f4be36cd03641112e4ea63d71f09b9770b07c9c2aa535faf67",
+    "original_payload_files_written": false,
+    "physical_allocation_reuse_proven": false
+  },
+  "independent_after_reboot": {
+    "result_sha256": "8d2a8b2413ffbfecedbf265c58c623481106ca8c6a73586ae6cdc20ee5ce95fe",
+    "original_streams_verified": 811,
+    "logical_stream_bytes": 9885801949,
+    "original_objects_checked": 1534,
+    "extra_directories_compared": 1024,
+    "extra_manifest_sha256": "8f14bdc273f05813732fa80250df74302525d8837061da46c61a0039e741678b",
+    "extra_namespace_compared_to_independent_ntfs_manifest": true,
+    "native_exit0_and_owned_handle_terminals_verified": 13,
+    "digest_wall_seconds": 10.2167588,
+    "all_original_acl_sacl_times_independently_checked": false,
+    "complete_original_namespace_no_extra_objects_claimed": false
+  },
+  "early_preparation_guard": {
+    "intent_sha256": "2be340c66d2138e38a46df2f640207f09827e0bc38215c25f7f94e5ecc322244",
+    "normal_creation_freeze_delegation_and_handoff_exercised": true,
+    "valid_identical_delegated_state_copies_verified": 2,
+    "delegated_publication_sha256": "92211da15e0025b9d721daf33e6c886c64a261de34a3b40debb62743eb4b9204",
+    "restart_cancellation_or_mixed_copy_fault_qualified": false
+  },
+  "closed_ledger": {
+    "records": 40,
+    "used_bytes": 486006,
+    "reserved_file_bytes": 655350,
+    "used_prefix_sha256": "d353b2d80071cfa9f8c08ae915320bbce701aab5149ba21f230f3a0648e3c5cf",
+    "full_file_sha256": "7379977bf2b161c90da483b8c39450f6fab40a06fc043c7b674b5a2cd6621b8f",
+    "chain_sha256": "489f176ef003bd4f380153c6d7f93bf4f20f409043207d29687760eb24528c10",
+    "all_payload_digests_and_chain_commits_verified": true,
+    "closed_record_verified": true
+  },
+  "closed_evidence": {
+    "path": ".lab/hyperv/streaming-v2-20261027/resource-fixture-f856e0a021bb44e2930f66846a5459e4/closed-min/metadata.zip",
+    "zip_bytes": 25036814,
+    "zip_sha256": "5bc838b89e6b01700acfb4cc8c76e21d9a0aebb2ce9043bbd6e5b552bb814f1f",
+    "manifest_sha256": "05b301c2537f05211e35474a74080ed4b1209d470e16dc98abb2dae9605b89f0",
+    "source_files_verified": 4336,
+    "uncompressed_source_bytes": 167319552,
+    "all_entry_lengths_and_sha256_verified": true,
+    "excluded_large_shadow_journal_capture_files_remain_in_guest": true
+  },
+  "qualification": {
+    "fresh_public_minimize_conversion": true,
+    "mutation_and_clean_cold_boot": true,
+    "independent_complete_known_811_stream_hashes": true,
+    "independent_additional_1024_directory_names": true,
+    "new_guard_active_restart_resume_and_rollback": false,
+    "physical_power_loss": false,
+    "arbitrary_hardware_or_scale": false,
+    "controlled_maximum_performance_claimed": false,
+    "peak_resource_usage_measured": false,
+    "stable_release": false,
+    "unit_tests_run": false
+  },
+  "handoff_rule": "Operational ReFS/HND is authoritative. Never replay or compare its mutable selected bytes to the old raw journal postimage."
+}

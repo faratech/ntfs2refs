@@ -1,0 +1,34 @@
+{
+  "kind": "public-conservative-capture-budget-fix-v1",
+  "native_case": ".lab/hyperv/streaming-v2-20261027/PUBLIC-aa8acbf-actual-once-1530d6e37e2a4b3f86192c3b2ceb7a1f",
+  "native_binary_source": "aa8acbf376b6fcaca7f02e2b65a43255f88a6ba9",
+  "owned_native": {"pid": 4312, "birth_ms": 1793922649258, "exit_code": 1, "wall_seconds": 71.177512},
+  "actual_error": "encoded capture capacity bounds differ",
+  "workflow_admission_sha256": "bec5c3c69d6e2bfbb491951fe20bb995b9e89c44f3844cb3883aee3ea9e4fd8a",
+  "owned_terminal_sha256": "19d6b99c6fa463841edcbc61b5754c1dfe76b9a9a303eb737a667063331a5d8c",
+  "small_archive_manifest_sha256": "cfd6573cade96af0101626906d99b12b7567df376c7e1ae97ecc0359bc101f7a",
+  "failure_stage": "Windows preparation, before recovery image construction or restart",
+  "actual_request": {
+    "selected_capacity_policy": "conservative_v1",
+    "partition_bytes": 55834574848,
+    "arena_scratch_bytes": 2245193728
+  },
+  "derived_capture_budget": {
+    "literal_backing_bytes": 748396544,
+    "journal_bytes": 1496793088,
+    "combined_bytes": 1870991360,
+    "journal_metadata_reserve_bytes": 16777216,
+    "previous_max_changed_bytes": 55834574848,
+    "corrected_conservative_max_changed_bytes": 1480015872
+  },
+  "implementation": {
+    "rule": "Conservative changed-byte ceiling is aligned min(partition bytes, admitted journal bytes minus metadata reserve). Other policies retain aligned partition ceiling.",
+    "precedent": "src/general_conversion.rs::maximum_selected_changed_bytes",
+    "capture_budget_validated_before_staging_and_source_protection": true,
+    "storage_policy_and_actual_capacity_checks_unchanged": true,
+    "does_not_require_partition_sized_journal": true
+  },
+  "focused_compile": {"exit_code": 0, "wall_seconds": 22.5954065, "unit_tests_run": false, "shared_target_reused": true, "receipt_sha256": "cb8b8d6f1d772c3dae97e005d1f7bc14339073ea7832ca1b80601bbbb8ca7779"},
+  "not_yet_proven": ["Corrected public command completes preparation", "Corrected cold startup completes initialization", "Shared-disk conversion and interrupted recovery qualification"],
+  "preservation": "No retry, cancellation, source normalization, or boot change followed the failed public process. Preserve actual source/J/artifacts; ordinary lab shutdown/offline checkpoint authorized separately."
+}

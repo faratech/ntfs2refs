@@ -7,7 +7,7 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     io::{Read, Seek, SeekFrom},
 };
 
@@ -15,6 +15,141 @@ const PAGE: usize = 16384;
 const CLUSTER: u64 = 4096;
 const CPC: u64 = 16384;
 const KEY_TAG: u64 = 0x0000_0001_0000_0000;
+
+#[path = "refs_containers_compact.rs"]
+mod compact;
+pub use compact::inspect_container_tables_compact;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CompactAddress {
+    container_id: u64,
+    physical_start_lcn: u64,
+}
+
+/// Compact traversal receipts are serializable; live address lookup data is
+/// intentionally not. A diagnostic JSON document cannot recreate this index.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompactTreeIndex {
+    pub encoding: String,
+    pub mapping_rows: u64,
+    pub pages_read: u32,
+    pub bytes_read: u64,
+    pub mapping_sha256: String,
+    pub page_transcript_sha256: String,
+    #[serde(skip)]
+    addresses: Vec<CompactAddress>,
+    #[serde(skip)]
+    binding: Option<CompactBinding>,
+}
+
+#[derive(Debug, Clone)]
+struct CompactBinding {
+    checkpoint_lcn: u64,
+    root_index: usize,
+    table_id: u64,
+    root_slots: [u64; 4],
+    root_sha256: String,
+    volume_clusters: u64,
+}
+
+impl CompactTreeIndex {
+    pub(crate) fn same_addresses(&self, other: &Self) -> bool {
+        self.addresses == other.addresses
+    }
+}
+
+pub enum ContainerAddressView<'a> {
+    Detailed(&'a [ContainerMapping]),
+    Compact(&'a CompactTreeIndex),
+}
+
+impl ContainerAddressView<'_> {
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Detailed(rows) => rows.len(),
+            Self::Compact(index) => index.addresses.len(),
+        }
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    pub fn lookup(&self, id: u64) -> Option<(u64, usize)> {
+        match self {
+            Self::Detailed(rows) => rows
+                .binary_search_by_key(&id, |row| row.container_id)
+                .ok()
+                .map(|index| (rows[index].physical_start_lcn, index)),
+            Self::Compact(rows) => rows
+                .addresses
+                .binary_search_by_key(&id, |row| row.container_id)
+                .ok()
+                .map(|index| (rows.addresses[index].physical_start_lcn, index)),
+        }
+    }
+}
+
+/// A container value has exactly 160 bytes in this format profile. Keep the
+/// actual bytes in memory and encode hex only at the diagnostic boundary.
+/// Malformed imported diagnostic strings remain representable so validation
+/// can refuse them explicitly; they never become a usable container value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerValue(ContainerValueStorage);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ContainerValueStorage {
+    Bytes([u8; 160]),
+    InvalidDiagnostic(String),
+}
+
+impl ContainerValue {
+    pub fn from_bytes(bytes: [u8; 160]) -> Self {
+        Self(ContainerValueStorage::Bytes(bytes))
+    }
+
+    pub fn bytes(&self) -> Result<&[u8; 160]> {
+        match &self.0 {
+            ContainerValueStorage::Bytes(bytes) => Ok(bytes),
+            ContainerValueStorage::InvalidDiagnostic(_) => {
+                anyhow::bail!("container raw value is not exactly 160 decoded bytes")
+            }
+        }
+    }
+}
+
+impl From<String> for ContainerValue {
+    fn from(value: String) -> Self {
+        let mut bytes = [0; 160];
+        if value.len() == 320 && hex::decode_to_slice(&value, &mut bytes).is_ok() {
+            Self::from_bytes(bytes)
+        } else {
+            Self(ContainerValueStorage::InvalidDiagnostic(value))
+        }
+    }
+}
+
+impl Serialize for ContainerValue {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        match &self.0 {
+            ContainerValueStorage::Bytes(bytes) => {
+                let mut encoded = [0; 320];
+                hex::encode_to_slice(bytes, &mut encoded).expect("fixed container hex buffer");
+                serializer.serialize_str(std::str::from_utf8(&encoded).expect("hex is ASCII"))
+            }
+            ContainerValueStorage::InvalidDiagnostic(value) => serializer.serialize_str(value),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ContainerValue {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        Ok(String::deserialize(deserializer)?.into())
+    }
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct ContainerLimits {
@@ -75,7 +210,60 @@ pub struct ContainerTreeObservation {
     /// Sorted by container ID only after a successful walk; partial data remain
     /// explicitly rejected. All flags/counts are raw, with no allocation policy.
     pub mappings: Vec<ContainerMapping>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact: Option<CompactTreeIndex>,
     pub rejection: Option<String>,
+}
+
+impl ContainerTreeObservation {
+    pub fn address_view(&self, volume_clusters: u64) -> Result<ContainerAddressView<'_>> {
+        if let Some(index) = &self.compact {
+            let binding = index
+                .binding
+                .as_ref()
+                .context("compact index must be rebuilt from the actual image")?;
+            let hash = |value: &str| {
+                value.len() == 64
+                    && value
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            };
+            ensure!(
+                self.walk_finished
+                    && self.root_count_matches == Some(true)
+                    && self.rejection.is_none()
+                    && self.mappings.is_empty()
+                    && index.encoding == "refs-container-compact-index-v1"
+                    && index.mapping_rows == index.addresses.len() as u64
+                    && index.mapping_rows <= 33_554_432
+                    && index.pages_read > 0
+                    && index.pages_read <= 1_048_576
+                    && index.bytes_read == u64::from(index.pages_read) * PAGE as u64
+                    && hash(&index.mapping_sha256)
+                    && hash(&index.page_transcript_sha256)
+                    && self.expected_root_rows == Some(index.mapping_rows)
+                    && binding.checkpoint_lcn == self.checkpoint_lcn
+                    && binding.root_index == self.root_index
+                    && binding.table_id == self.table_id
+                    && binding.root_slots == self.root_lcn_slots
+                    && binding.volume_clusters == volume_clusters
+                    && self
+                        .pages
+                        .first()
+                        .is_some_and(|page| page.sha256 == binding.root_sha256),
+                "compact container lookup data absent or incomplete; rebuild from actual image"
+            );
+            Ok(ContainerAddressView::Compact(index))
+        } else {
+            ensure!(
+                self.mappings
+                    .windows(2)
+                    .all(|p| p[0].container_id < p[1].container_id),
+                "duplicate or unsorted container mapping"
+            );
+            Ok(ContainerAddressView::Detailed(&self.mappings))
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,7 +291,7 @@ pub struct ContainerMapping {
     pub raw_free_clusters_64: u64,
     pub raw_free_clusters_32: u32,
     pub free_clusters_64_is_sentinel: bool,
-    pub value_bytes_hex: String,
+    pub value_bytes_hex: ContainerValue,
     pub row_sha256: String,
     pub source_page_index: usize,
     pub source_row_index: usize,
@@ -270,7 +458,12 @@ fn leaf_mapping(
         raw_free_clusters_64: u64le(&value, 0x20),
         raw_free_clusters_32: u32le(&value, 0x28),
         free_clusters_64_is_sentinel: u64le(&value, 0x20) == u64::MAX,
-        value_bytes_hex: hex::encode(&value),
+        value_bytes_hex: ContainerValue::from_bytes(
+            value
+                .as_slice()
+                .try_into()
+                .context("container value size differs")?,
+        ),
         row_sha256: row.row_sha256.clone(),
         source_page_index: page,
         source_row_index: row.index,
@@ -351,6 +544,7 @@ pub fn inspect_container_tables<R: Read + Seek>(
             walk_finished: false,
             pages: Vec::new(),
             mappings: Vec::new(),
+            compact: None,
             rejection: None,
         };
         let mut stack = vec![PendingPage {
@@ -362,8 +556,8 @@ pub fn inspect_container_tables<R: Read + Seek>(
             expected_level: None,
         }];
         let mut visited = BTreeSet::new();
-        let mut mappings = BTreeMap::new();
-        let mut extents = BTreeMap::<u64, u64>::new();
+        let mut mappings: Vec<ContainerMapping> = Vec::new();
+        let mut extents = Vec::new();
         while let Some(pending) = stack.pop() {
             let preflight = (|| -> Result<()> {
                 ensure!(
@@ -482,18 +676,12 @@ pub fn inspect_container_tables<R: Read + Seek>(
                         let mapping =
                             leaf_mapping(row, page_index, geometry.volume_bytes / CLUSTER)?;
                         ensure!(
-                            !mappings.contains_key(&mapping.container_id),
-                            "duplicate container key"
+                            mappings.last().is_none_or(|previous| previous.container_id < mapping.container_id),
+                            "duplicate or unsorted container key"
                         );
                         let start = mapping.physical_start_lcn;
-                        if let Some((before, _)) = extents.range(..=start).next_back() {
-                            ensure!(*before + CPC <= start, "container physical extents overlap");
-                        }
-                        if let Some((after, _)) = extents.range(start..).next() {
-                            ensure!(start + CPC <= *after, "container physical extents overlap");
-                        }
-                        extents.insert(start, mapping.container_id);
-                        mappings.insert(mapping.container_id, mapping);
+                        extents.push(start);
+                        mappings.push(mapping);
                     }
                 }
                 Ok(())
@@ -503,7 +691,13 @@ pub fn inspect_container_tables<R: Read + Seek>(
                 break;
             }
         }
-        tree.mappings = mappings.into_values().collect();
+        if tree.rejection.is_none() {
+            extents.sort_unstable();
+            if extents.windows(2).any(|pair| pair[0] + CPC > pair[1]) {
+                tree.rejection = Some("container physical extents overlap".into());
+            }
+        }
+        tree.mappings = mappings;
         tree.walk_finished = tree.rejection.is_none();
         if tree.walk_finished {
             tree.root_count_matches = tree

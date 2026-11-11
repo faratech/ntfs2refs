@@ -1,0 +1,114 @@
+{
+  "native_preparation_failure": {
+    "journal_eof": 0,
+    "archive_sha256": "4c3e730b1c3cf1967f20dad3456fdad540d4b2c6b571a66b10b8453284e1f4a9",
+    "wall_seconds": 153.1358177,
+    "source_commit": "c17b0a55190096234d44c459298e0e808963eb14",
+    "cause": "Legacy CurrentWindows C-only held cancellation journal rejected actual enrolled independent J",
+    "source_apply_intent_attempted": false,
+    "native_pid": 5260,
+    "source_data_writer_issued": false,
+    "exit_code": 1,
+    "birth": 1793902834124
+  },
+  "native_execution": false,
+  "files": [
+    {
+      "sha256": "efb815071fb5b35325992b15f15a95440881b4d748c8b374cc67e17816c49c06",
+      "bytes": 23877,
+      "path": "crates/n2r-win32/src/native/offline_environment.rs"
+    },
+    {
+      "sha256": "99d4be10c52740a854591a9681d2c80912ef8ae045a0facd2156ff2226ef0363",
+      "bytes": 25922,
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline.rs"
+    },
+    {
+      "sha256": "f5525db6bed11b0c8312656df4b384086eab08f8d641de8f84eebd5c487b26de",
+      "bytes": 33672,
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline/source.rs"
+    },
+    {
+      "sha256": "a6910c2d5cc14af976ec6791dcbf2a04f13a5d32a26c8c94e583dfe992fcac09",
+      "bytes": 36195,
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline/source/paged.rs"
+    },
+    {
+      "sha256": "26cd5d41674333a84ac27fdfdde141ee9d5b8291cd42299413c4f9da0475ccb5",
+      "bytes": 18633,
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline/source/prepared.rs"
+    },
+    {
+      "sha256": "bf2921f09ea1e6c5142f4d004cdaf73374aec9553a68c07ea59c9df78a46d5f9",
+      "bytes": 16523,
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline/source/prepared_apply.rs"
+    },
+    {
+      "sha256": "1eec1b31533a1d2f8e2350b2afd562942171bc403270cb45147706fc49696cdd",
+      "bytes": 59184,
+      "path": "src/general_reconstruct/selected_native_journal.rs"
+    },
+    {
+      "sha256": "aa4b5a4b5591278acc4d922dfcdffe2aceadd280aa9632f90ab16cf083705aa9",
+      "bytes": 14662,
+      "path": "src/general_source_admission/resource_partition_cancel_journal.rs"
+    },
+    {
+      "sha256": "cda2c5ea3337a8e0b7a8e4c01c8de6a9dcd1ff88d50e4848ac30380ab2583ff5",
+      "bytes": 3379,
+      "path": "src/lib.rs"
+    },
+    {
+      "sha256": "7d5ed4cb820f51313428ee3ae9248a3e5d2a67d61b7ec4e06d1977bb5af5e1b5",
+      "bytes": 19112,
+      "path": "src/resource_prepared_bundle.rs"
+    },
+    {
+      "sha256": "8ef4b234644fdd639435201c0bdcc922ad7331bb27a28a5a64a58fe465af6567",
+      "bytes": 12166,
+      "path": "src/resource_prepared_offline_apply.rs"
+    },
+    {
+      "sha256": "c063a9076120909999c3918d44d178d7d7eac779d89991eb4c44214f9f05ff9c",
+      "bytes": 31527,
+      "path": "src/selected_journal/resource_domain/reopen.rs"
+    },
+    {
+      "sha256": "f43c950dda6f5c91878a120fa0caf5da1257473282cea22d280d4712cebf4561",
+      "bytes": 49717,
+      "path": "src/selected_journal/resource_domain/reopen/replay.rs"
+    },
+    {
+      "sha256": "195b780ef060830fe9024912930f7e14e5c1fc7ef7fcff63b4266ff6e7601622",
+      "bytes": 8198,
+      "path": "src/selected_journal/resource_domain/reopen/replay/prepared_offline.rs"
+    }
+  ],
+  "kind": "guarded-Windows-prepared-offline-apply-integration-build-v1",
+  "focused_check": {
+    "wall_seconds": 32.8002681,
+    "exit_code": 0,
+    "native_run": false,
+    "capacity": {
+      "actual_bytes": 242562977853,
+      "free_bytes": 164734746624,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 2147483648,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "kind": "public-partition-dispatch-focused-check",
+    "shared_target_reused": true,
+    "unit_tests_run": false,
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+  },
+  "limits": [
+    "Cold fresh apply ownership implemented, not natively qualified",
+    "Restart MIXED/AP/RB resume and rollback are still under integration",
+    "Boot restoration and native conversion/mutation/reboot remain unproven",
+    "Main file remains unchanged"
+  ],
+  "new_or_existing_unit_tests_run": false,
+  "base_commit": "aef6a5e76bc77513ef887c4a678e74fc08c718e8"
+}

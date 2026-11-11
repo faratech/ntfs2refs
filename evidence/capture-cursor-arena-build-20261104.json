@@ -1,0 +1,134 @@
+{
+  "schema_version": 1,
+  "kind": "capture-allocation-cursor-and-checked-arena-credit-candidate-build",
+  "source_commit": "cec225215f6487ddc9eaeb6564f358f5e20b9823",
+  "source_tree": "0d1e5f56ae93e1e8f10558ed7db65b7929317ee9",
+  "build_manifest": {
+    "path": ".lab/development/release-candidates/resource-capture-cursor-cec2252/manifest.json",
+    "bytes": 100360,
+    "sha256": "9ac0bad3eeb288b87290ae6f32deda44f68b88b77a16b5f37d842d1cc50a8d36",
+    "source_archive": {
+      "path": ".lab/development/release-candidates/resource-capture-cursor-cec2252/source.zip",
+      "bytes": 1832441,
+      "sha256": "f95eb952e37fb02663c0c1b0fa48f1ba845f67674b1589b73dec44324674949b"
+    },
+    "source_files": 376,
+    "source_before_after_verified": true,
+    "source_path_file_ids_verified": true,
+    "working_tree_inputs_used": false
+  },
+  "binaries": [
+    {
+      "name": "ntfs2refs",
+      "bytes": 16964096,
+      "sha256": "3600c145ed48ca8e997aed8b2ce6e7a92f02178bf274aa0a5d2f3b217fa16f0a"
+    },
+    {
+      "name": "lab-resource-diagnostic",
+      "bytes": 8109568,
+      "sha256": "1ddbc0944ba1a1812684c85629d9ba521a92ffd5105aeabf47efa657bb5a9125"
+    }
+  ],
+  "focused_check": {
+    "session_id": 53344,
+    "actual_exit_code_reported_by_root": 0,
+    "cargo_success_line_read": true,
+    "cargo_reported_seconds": 21.11,
+    "log_path": ".lab/development/capture-cursor-arena-check-20261104.log",
+    "log_bytes": 24612,
+    "log_sha256": "23a0bb66382db2bf59b84ca6fa38e9744e2839065f4fe3ea151064c6cdc159db"
+  },
+  "release_build": {
+    "session_id": 83492,
+    "actual_exit_code_reported_by_root": 0,
+    "cargo_success_line_read": true,
+    "cargo_reported_duration": "2m 44s",
+    "target": "x86_64-pc-windows-msvc",
+    "experimental_shared_target": true,
+    "experimental_shared_source": true,
+    "cache_reuse_recorded": true,
+    "shared_target_positive_growth_bytes": 72068406,
+    "clean_build_claimed": false,
+    "reproducible_build_verified": false,
+    "log_path": ".lab/development/release-candidates/resource-capture-cursor-cec2252/cargo-build.stderr.log",
+    "log_bytes": 24073,
+    "log_sha256": "64e9c16bfc450499f2290da4571484102e3835a533f81e6ed1badb1281cbaeac"
+  },
+  "changes": {
+    "allocation_cursor": {
+      "implementation": "src/ntfs_inspect/allocation_domain.rs",
+      "callers": [
+        "src/ntfs_inspect/paged_inspection.rs",
+        "src/general_shadow/source_backed.rs",
+        "src/general_shadow/paged_candidate.rs",
+        "src/general_shadow/paged_capture.rs"
+      ],
+      "scope": "Forward target-granule queries borrow the actual held reconciled ownership store. Only the current checked scalar interval is retained; sparse selection gaps use binary seek instead of walking unrelated intervals.",
+      "constant_time_same_span_reuse": true,
+      "binary_seek_on_selection_gaps": true,
+      "monotone_nonoverlapping_queries_required": true,
+      "source_geometry_store_pin_order_range_and_domain_validation_retained": true,
+      "single_granule_allocation_result_reused_for_free_classification_and_accounting": true,
+      "bootstrap_and_tail_protection_retained": true,
+      "random_COPY_membership_and_source_allocation_queries_unchanged": true,
+      "capacity_query_scope_or_count_reduced": false,
+      "native_source_and_metadata_bookends_retained": true,
+      "source_payload_or_journal_format_changed": false,
+      "persistent_or_serialized_cursor_authority_added": false
+    },
+    "arena_verified_allocation_aggregate": {
+      "implementation": "src/artifact_arena.rs",
+      "scope": "Replace check_free's repeated verified-entry snapshot allocation sum with a private checked aggregate under the existing State mutex; it credits precisely the immutable verified snapshots already used by the previous fold.",
+      "verification_credit_and_entry_installation_atomic_under_same_mutex": true,
+      "retirement_accounting_precomputed_before_delete": true,
+      "retirement_delete_stat_entry_removal_and_counter_commit_under_same_mutex": true,
+      "deleted_but_still_credited_capacity_observation_gap_removed": true,
+      "native_delete_errors_poison_already_held_state_without_recursive_lock": true,
+      "hash_open_and_RAM_reservation_remain_outside_retirement_mutex": true,
+      "independent_full_registry_reconciliation_at": [
+        "usage",
+        "group seal",
+        "prepared-state validation and closure"
+      ],
+      "overflow_underflow_or_full_fold_mismatch_poison_and_refuse": true,
+      "full_registry_membership_identity_and_file_hash_proofs_retained": true,
+      "native_journal_owner_observe_calls_unchanged": true,
+      "GetDiskFreeSpaceEx_and_available_resource_query_scope_and_counts_unchanged": true,
+      "group_maximum_fold_unchanged": true,
+      "scalar_credit_supplied_by_JSON_or_caller": false
+    }
+  },
+  "performance_scope": {
+    "reference_evidence": "evidence/public-resource-map-locator-20261104.json",
+    "reference_814_capture_selected_bytes": 2819706880,
+    "reference_814_changed_4KiB_granules": 688405,
+    "target": "Per-granule repeated ownership binary searches and per-extension full artifact-registry folding; no comparison granules, zero writes, COPY checks or native capacity queries are omitted.",
+    "code_derived_work_reduction_only": true,
+    "new_candidate_runtime_benchmark_completed": false,
+    "wall_clock_speedup_or_physical_IO_reduction_proven": false,
+    "reference_phase_windows_are_not_isolated_function_timings": true
+  },
+  "native_dispatch_preparation": {
+    "scope": "Root-reported point-in-time dispatch preparation when this build record was requested; obtain the latest actual task/PID/birth/terminal before acting.",
+    "launcher_session": 67141,
+    "dispatch_in_progress_at_reported_observation": true,
+    "native_PID_or_completion_inferred_from_launcher": false,
+    "forecast_additional_bytes": 21474836480,
+    "forecast_basis_prior_measured_complete_run_growth_bytes": 11153050031,
+    "all_lab_shared_target_and_staging_bytes_at_admission": 295668432172,
+    "host_free_bytes_at_admission": 110890270720,
+    "maximum_actual_bytes": 329374052988,
+    "minimum_host_free_bytes": 17179869184,
+    "original_total_additional_allowance_bytes": 50000000000,
+    "epoch_reset": false,
+    "cap_increased": false
+  },
+  "frozen_814_package_unchanged": true,
+  "saved_a225_operational_HND_and_evidence_preserved": true,
+  "qualification_inherited_from_814_or_a225": false,
+  "new_candidate_native_qualification_pending": true,
+  "unit_tests_added_or_run": false,
+  "stable_release": false,
+  "broader_project_goal_complete": false,
+  "created_utc": "2026-11-04T06:41:14.837Z"
+}

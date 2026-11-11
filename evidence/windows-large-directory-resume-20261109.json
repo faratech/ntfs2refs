@@ -1,0 +1,36 @@
+{
+  "kind": "native-large-directory-evidence-resume-fix",
+  "failed_commit": "d8bce5c9a15ce2d31a23a778cbfc8ec50647a41b",
+  "closed_pid": 3912,
+  "birth_ms": 1794201270801,
+  "exit_code": 1,
+  "wall_seconds": 3164.294509,
+  "peak_working_set_bytes": 1224359936,
+  "failure": "directory evidence bounds differ during complete recovered namespace audit",
+  "latest_checkpoint_sha256": "6d52ec4fee8ab847a7d35042298de108e63dbacc4fdb4cb80cec101519fb66de",
+  "source_restored_ntfs": true,
+  "source_actors_after_close": 0,
+  "actual_source_WinSxS_children": 19071,
+  "legacy_complete_directory_entry_limit": 4096,
+  "read_only_shadow_probe": {
+    "original_source_opens": 0,
+    "binary_sha256": "82b200b4d640011086d524fcd9704476877a9449f647abb827f23c08d5177453",
+    "elapsed_seconds": 0.0292414,
+    "children": 19071,
+    "shadow_writes": 0,
+    "stdout_sha256": "1e5826a38d5fee3912fff40d810037f70cd271fe1b6cc0990adc2a0885eb20ea",
+    "identity_unchanged": true,
+    "source": "exact extracted enumerate_with_resource_budget from currentSDK; existing unchanged namespace decoder",
+    "exit_code": 0,
+    "evidence_budget_bytes": 78385152
+  },
+  "fix": "Expected-child-count evidence budget and real constructor payer for recovery audit, resource metadata namespace checks, and resource hard-link parent checks; legacy behavior unchanged",
+  "focused_compile": {
+    "shared_target_reused": true,
+    "exit_code": 0,
+    "seconds": 44.6967283,
+    "unit_tests_run": false
+  },
+  "full_conversion_proven": false,
+  "original_only_refs_boot_proven": false
+}

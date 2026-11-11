@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "kind": "resource-preparation-journal-preallocation-experimental-build",
+  "source_commit": "acbcc1b00ec5cdb1448b29eaa8e2257fb7015594",
+  "manifest_sha256": "8543fb8698ec90462d7e297d5e286c6c8da5f65fd28a22ea8e53456d64fabc64",
+  "binaries": [
+    {
+      "name": "ntfs2refs",
+      "path": "bin/ntfs2refs.exe",
+      "bytes": 16624640,
+      "sha256": "c1a980748b236f233b5c02e9e8a9366802603965709c3c9c54e98b5c9585dd6a"
+    },
+    {
+      "name": "lab-resource-diagnostic",
+      "path": "bin/lab-resource-diagnostic.exe",
+      "bytes": 7867392,
+      "sha256": "8a190267414f91f9dbbd0c4538b2b0901b27cba24ce1cc4a43b8820bc3c52484"
+    },
+    {
+      "name": "lab-observe-resource-recovery",
+      "path": "bin/lab-observe-resource-recovery.exe",
+      "bytes": 1779712,
+      "sha256": "bed315939690df1768b3869957bdc4488f1f0962c35df637038c544466c3d137"
+    }
+  ],
+  "source_archive": {
+    "bytes": 1786444,
+    "sha256": "f88031eba6c87375da99c787fd360461272ceee4631fc7e8e097fba1301af855",
+    "path": "source.zip"
+  },
+  "shared_target_reused": true,
+  "shared_source_reused": true,
+  "offline_locked_dependencies": true,
+  "changes": [
+    "Bound actual buffered NTFS journal allocation using already-reserved quota",
+    "Connect complete paged NTFS prealignment to public minimize-scratch",
+    "Reject malformed source page pins before allocations"
+  ],
+  "source_contains_metadata_only_preparation_followup": false,
+  "native_diagnostic_dispatched": {
+    "pid": 5252,
+    "birth_unix_ms": 1793730736468,
+    "run_id": "d9c893d3e6a343f4b5ef8544c6eebeca",
+    "completion_observed": false
+  },
+  "qualification": {
+    "compile": true,
+    "resume_or_rollback": false,
+    "reproducible_build": false,
+    "unit_tests_run": false,
+    "interruption_reached": false,
+    "stable_release": false
+  }
+}

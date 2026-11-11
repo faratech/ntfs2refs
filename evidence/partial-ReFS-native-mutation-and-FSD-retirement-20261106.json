@@ -1,0 +1,93 @@
+{
+  "historical_native_bytes_written": 203694080,
+  "native_FSD_fix_qualified": false,
+  "product_terminal_complete": false,
+  "checkpoints_remaining": 0,
+  "original8_after_mutation_reboot": {
+    "bytes": 67178865,
+    "pid": 2724,
+    "all_content_native_owner_group_DACL_GPT_MBR_Ccontrol_exact": true,
+    "native_readonly": false,
+    "exit": 0,
+    "label_restored": true,
+    "directory_count": 4,
+    "file_count": 8,
+    "receipt_sha256": "ada7233dcad295267249a4c47de433b826b40ddd83ed2ff4128293a17d321aed",
+    "wall_seconds": 3.6798199,
+    "D_mount_observed": true
+  },
+  "final_build_all_five_qualified": false,
+  "actual_AP_rollback_qualified": false,
+  "failed_product_finalizer": "397b7a2f4a600a110396a31d042e433fded335a1",
+  "same_PE_failure": {
+    "actual_ReFS_readonly_FSD_after_GPTBasic0": true,
+    "native_fsutil_frame_sha256": "b7af890c59963edb9dca16ef4c10f1e18c2338904e6062f393a6ef8e04abc46e",
+    "frame_sha256": "28997d89b7478a02fee5525ca7a3961bd1d0c9341234e62911dd2f158dc4a7cd"
+  },
+  "actual_AP_resume_qualified": false,
+  "kind": "partial397-native-ReFS-postboot-content-mutation-and-FSD-retirement-fix",
+  "closed_HND_records": 1,
+  "schema_version": 1,
+  "original_apply_source": "c04ed6cab181077c9a7c504acc0843de492fa1d1",
+  "native_mutation": {
+    "verify_pid": 2612,
+    "small_created_files": 512,
+    "verify_exit": 0,
+    "create_receipt_sha256": "1662990fa8b4778b5ec61df0b5fffc99ee030295fa4e4856d7b7f8019135ec9b",
+    "manifest_sha256": "1411138c08e12bbd6b9e6e6901bb647a8491c0bab3754ceab6693e7af274b2c6",
+    "verify_wall_seconds": 4.5606992,
+    "creation_exit": 0,
+    "ordinary_reboot_new_boot": 1793978104402,
+    "replacement_files": 64,
+    "creation_wall_seconds": 11.6179075,
+    "creation_pid": 3460,
+    "all513_match_after_reboot": true,
+    "creation_birth_ms": 1793978002524,
+    "original_tree_written": false,
+    "growth_bytes": 16777216,
+    "final_files": 513,
+    "verify_receipt_sha256": "30390d74c01d2cbb0961e02ca5ab4261031dfa0a5e330176bb7a96befe848a72"
+  },
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "focused_check": {
+    "unit_tests_run": false,
+    "session_id": 41838,
+    "exit_code": 0,
+    "receipt_sha256": "c257393a9cd2844d52f7839c754072098694dbea8658fddf2b6e5bbca1b7e022",
+    "wall_seconds": 31.9892709
+  },
+  "future_product_fix": [
+    "Explicitly retire the positively bound readonly selected FSD under actual volume LOCK/DISMOUNT before GPTBasic0.",
+    "Same selected native FileObject retained through typed GPT setter and full readback; old proofs/owners dropped before fresh writable FSD.",
+    "Fresh FS name/native flags/IS_WRITABLE required; all closedJ/source/native144/extent/fullGPT checks retained."
+  ],
+  "postboot": {
+    "health": "Healthy",
+    "cluster": 4096,
+    "all_8_payload_metadata_ACL_GPT_C_control_exact": true,
+    "readonly_flag": false,
+    "first_boot": 1793976478544,
+    "native_flags": 1606825679,
+    "manual_native_label_set_calls": 1,
+    "manual_label_receipt_sha256": "c4097feb5c167e9d5cbd15fb406bc6610f3c2a9cabdab686d9bf075dd9ae0f80",
+    "filesystem": "ReFS",
+    "post_label_8_receipt_sha256": "8aa5b79d9e8c855cc5bdef59d6ff9e49ffbd9ccf03b91bf24007cf373958c07d"
+  },
+  "independent_J_original8_archive": {
+    "manifest_sha256": "da7af48dad10114561ee30489cdc771da3faebbcad4322672afcf14e0305f55b",
+    "bytes": 67178865,
+    "all8_source_copy_hashes_verified_inside_VM": true
+  },
+  "normal_boot_restoration": {
+    "record_bytes": 3447,
+    "three_native_steps_preserved": true,
+    "record_sha256": "e5fda060f5f744e22342a1a2b3fbad9c06a8ba395fe81e9da43bd662f0f616dd",
+    "all_original_bootmgr_fields_and_unrelated_objects_verified": true
+  },
+  "host_control_archive": {
+    "all_guest_SHA_bookends_and_host_copies_equal": true,
+    "bytes": 2969144,
+    "manifest_sha256": "e2000b0c80171d19267d9febded6ee5eacb0dac9c463cc951f55fccaeb0adeee",
+    "files": 34
+  }
+}

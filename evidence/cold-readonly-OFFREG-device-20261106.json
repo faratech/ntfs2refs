@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "kind": "native-readonly-offline-registry-device-proof",
+  "failed_source": "53d0688540bf33b43241439aedd0f61e1fbf9389",
+  "actual_case": ".lab/hyperv/streaming-v2-20261027/PUBLIC-53d0688-actual-once-7ddc43cde02f4fa8aa816d6713eb2d7e",
+  "active_hive_actual_failure": {
+    "product_frame_sha256": "d791671b4ec25fe5aacfa2ce3d8513825ccd1b1d98ffb894497c204bf0fc2edb",
+    "slot0_different_bytes": 0,
+    "slot1_all_changes_within_first4096": false,
+    "header_exception_or_byte_guard_relaxation": false,
+    "input_files_unchanged": true,
+    "AP_or_source_data_writes_claimed": false,
+    "slot1_different_bytes": 39,
+    "SDK_mirror_frame_sha256": "21c0d329ce43457286a92e088e89d045dec3a46b722bbd0150b92786ea34e83c"
+  },
+  "OFFREG_actual_probe": {
+    "frame_sha256": "5b7d611b78444ff30e1f27f3873a3e7ef2a756a967944031766261b48e4c7039",
+    "encoded_device_bytes": 88,
+    "source_authority": false,
+    "private_DLL_sha256": "29f982799ff90b7004abcc607fea12e249da5870f298d6912969235509cb942b",
+    "original_media_restored": true,
+    "private_DLL_bytes": 114688,
+    "DLL_bookends_unchanged": true,
+    "private_host_DLL_NOT_in_Git_or_public_package": true,
+    "save_set_exports_resolved": 0,
+    "encoded_device_equal": true,
+    "both_queries_succeeded": true,
+    "both_complete_SHA_identity_and_all_bytes_unchanged": true,
+    "media_restoration_receipt_sha256": "fdb6cc62893af0d5bc2b3344ee20c61ddcce7c5b050b78f81c32b64cc47e017c",
+    "probe_sha256": "de02f185ebf8749087d91d0a57ff12455f8e5978f72944851c021200b574a7ef",
+    "active_registry_calls": 0
+  },
+  "source_state_limit": {
+    "one_C_Windows_DLL_DIR_was_issued": true,
+    "next_native_requires_fresh_fixture": true,
+    "no_reuse_of_exclusion_authority": true,
+    "no_C_file_copy_or_setter_or_writer": true,
+    "result": "path unavailable",
+    "disk_attributes_unverified_after_DIR": true
+  },
+  "implementation": [
+    "Capture actual owning FULL-Windows System32 offreg.dll under readonly parent/file/native-ID/SHA bookends; allow stock hardlinks, require AMD64 PE DLL.",
+    "Create single-link owned J copy; charge actual bytes and bounded backup under unchanged image caps; seal ninth artifact offline-registry-library and origin marker.",
+    "Inject only fixed Windows\\System32\\offreg.dll in owned WIM; completed reopening verifies all nine artifacts/marker/resources; no request schema change.",
+    "Cold DLL must match sealed role/marker SHA and actual current positive kernel-RAM file/native identity; hold readonly file through explicit module lifetime.",
+    "Resolve only OROpenHive/ORGetValue/ORCloseHive; no active hive/save/set/repair APIs.",
+    "Authenticated J inputs retain complete native identity/ALLbytes/SHA bookends; exact encoded equality before all selection and restoration checks.",
+    "No Microsoft DLL ships in Git/public package; each machine captures its own installed component."
+  ],
+  "documentation": [
+    "https://learn.microsoft.com/en-us/windows/win32/devnotes/oropenhive",
+    "https://learn.microsoft.com/en-us/windows/win32/devnotes/about-the-offline-registry-library"
+  ],
+  "focused_check": {
+    "session_id": 20100,
+    "unit_tests_run": false,
+    "wall_seconds": 32.3178085,
+    "receipt_sha256": "f813a2b0bcc574efc5cd4a83c9ae89ac8997ce86a4be56203317b5826e9ce51f",
+    "exit_code": 0,
+    "native_run": false
+  },
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "product_native_qualified": false,
+  "normal_conversion_qualified": false,
+  "AP_restart_resume_qualified": false,
+  "AP_restart_rollback_qualified": false
+}

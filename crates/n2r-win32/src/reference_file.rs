@@ -22,6 +22,23 @@ fn snapshot(
     standard: [u8; 24],
     tag: [u8; 8],
 ) -> io::Result<ReferenceFileSnapshot> {
+    snapshot_with_bounds(
+        path,
+        id,
+        standard,
+        tag,
+        MAX_REFERENCE_FILE_BYTES,
+        MAX_REFERENCE_FILE_BYTES + 65535,
+    )
+}
+fn snapshot_with_bounds(
+    path: String,
+    id: [u8; 24],
+    standard: [u8; 24],
+    tag: [u8; 8],
+    maximum: u64,
+    maximum_allocation: u64,
+) -> io::Result<ReferenceFileSnapshot> {
     let invalid = || {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -58,8 +75,9 @@ fn snapshot(
     const FORBIDDEN: u32 = 0x10 | 0x40 | 0x200 | 0x400 | 0x800 | 0x1000 | 0x4000;
     if volume_serial_number == 0
         || file_id_128 == [0; 16]
-        || file_bytes > MAX_REFERENCE_FILE_BYTES
-        || allocation_bytes > MAX_REFERENCE_FILE_BYTES + 65535
+        || maximum > i64::MAX as u64
+        || file_bytes > maximum
+        || allocation_bytes > maximum_allocation.min(i64::MAX as u64)
         || number_of_links == 0
         || standard[20] != 0
         || standard[21] != 0
@@ -84,6 +102,21 @@ fn snapshot(
 /// The caller must choose read-only access and write/delete exclusion. This
 /// function cannot discover or certify the handle's access or sharing flags.
 pub fn observe_reference_file_handle(file: &std::fs::File) -> io::Result<ReferenceFileSnapshot> {
+    observe_handle(file, MAX_REFERENCE_FILE_BYTES, false)
+}
+#[cfg(windows)]
+pub fn observe_reference_file_handle_with_limit(
+    file: &std::fs::File,
+    maximum: u64,
+) -> io::Result<ReferenceFileSnapshot> {
+    observe_handle(file, maximum, true)
+}
+#[cfg(windows)]
+fn observe_handle(
+    file: &std::fs::File,
+    maximum: u64,
+    resource: bool,
+) -> io::Result<ReferenceFileSnapshot> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_INFO_BY_HANDLE_CLASS, FILE_TYPE_DISK, FileAttributeTagInfo, FileIdInfo,
@@ -125,9 +158,9 @@ pub fn observe_reference_file_handle(file: &std::fs::File) -> io::Result<Referen
             "reference is not a disk file",
         ));
     }
-    let mut path = [0_u16; 4096];
+    let mut path = vec![0_u16; 4096];
     // SAFETY: path is initialized and exactly the advertised length; no pointer escapes.
-    let count = unsafe {
+    let mut count = unsafe {
         GetFinalPathNameByHandleW(
             file.as_raw_handle(),
             path.as_mut_ptr(),
@@ -135,6 +168,23 @@ pub fn observe_reference_file_handle(file: &std::fs::File) -> io::Result<Referen
             VOLUME_NAME_GUID,
         )
     } as usize;
+    if resource && count >= path.len() {
+        if count > 32768 {
+            return Err(io::Error::other(
+                "resource reference final path exceeds native bound",
+            ));
+        }
+        path.resize(count, 0);
+        // SAFETY: live same handle and initialized buffer of the required size.
+        count = unsafe {
+            GetFinalPathNameByHandleW(
+                file.as_raw_handle(),
+                path.as_mut_ptr(),
+                path.len() as u32,
+                VOLUME_NAME_GUID,
+            )
+        } as usize;
+    }
     if count == 0 {
         return Err(io::Error::last_os_error());
     }
@@ -146,12 +196,14 @@ pub fn observe_reference_file_handle(file: &std::fs::File) -> io::Result<Referen
     }
     let path = String::from_utf16(&path[..count])
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid reference final path"))?;
-    snapshot(
-        path,
-        info(file, FileIdInfo)?,
-        info(file, FileStandardInfo)?,
-        info(file, FileAttributeTagInfo)?,
-    )
+    let id = info(file, FileIdInfo)?;
+    let standard = info(file, FileStandardInfo)?;
+    let tag = info(file, FileAttributeTagInfo)?;
+    if resource {
+        snapshot_with_bounds(path, id, standard, tag, maximum, i64::MAX as u64)
+    } else {
+        snapshot(path, id, standard, tag)
+    }
 }
 
 #[cfg(test)]

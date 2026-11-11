@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "kind": "native-resource-fixture-shadow-label-refusal",
+  "source_commit": "6418de63f938f2df7debba9d8640bd3511f83df2",
+  "binary_sha256": "f25302c1e48106bacc281673184a27fddcdc060ce197ef95a25d226b886cbeb5",
+  "run_id": "7a65c3d6b52e4553864112c6d36a497d",
+  "ready_checkpoint": "d8db8fd9-284a-4e78-86b5-85d8a2607663",
+  "worker_archive_sha256": "dfba32911b47108204bc7cd16eba0b1cb9a8cfd65f89965393f9ce3b56432370",
+  "output_archive_sha256": "291a037c0cc50ff7edc38e2e21b7162f460252688822502ab21b15f40ca6a399",
+  "native_process": {
+    "exit_code": 1,
+    "pid": 5268,
+    "actual_exit_observed": true,
+    "creation_ms": 1793692497295,
+    "utc": "2026-11-03T07:56:01.5509967Z",
+    "stdout_bytes": 28089,
+    "stderr_bytes": 83,
+    "wall_seconds": 64.21788719999999
+  },
+  "job_at_start": {
+    "baseline_private_bytes": 1241088,
+    "current_private_bytes": 1384448,
+    "job_limit_bytes": 2147483648,
+    "process_is_member": true,
+    "process_limit_bytes": 2147483648
+  },
+  "source_and_projection": {
+    "current_run_source_sha256": "9419757909fc87b4310642d481ea6eaaf8ede63d2b705e71305290908980d8b1",
+    "directories": 1747,
+    "files": 811,
+    "fixture_bitmap_sha256": "a306fbb23fa7a9150e52b0d64dfa8ebdd7562b7a948bbb8e86431e9d487836f6",
+    "fixture_ownership_sha256": "f4a3befab5ea46c4aa82b01956a08487a71840e6fd0dec8c3e7507c957b11716",
+    "fixture_pin_scope": "allocation-and-ownership-not-full-payload",
+    "general_resource_qualified": false,
+    "job": {
+      "baseline_private_bytes": 1241088,
+      "current_private_bytes": 308727808,
+      "job_limit_bytes": 2147483648,
+      "process_is_member": true,
+      "process_limit_bytes": 2147483648
+    },
+    "kind": "fixture-source-pre-shadow",
+    "raw_identities": 2585,
+    "source_writes_authorized": false,
+    "streams": 811
+  },
+  "stderr": "Error: fresh construction requires the prepared writable ReFS shadow label/profile",
+  "actual_shadow_label": "n2r-resource-shadow",
+  "required_shadow_label": "n2r-retained-shadow",
+  "source_offline_and_readonly_at_completion": true,
+  "shadow_online_and_writable_at_completion": true,
+  "shadow_population_started": false,
+  "source_payload_writes": 0,
+  "conversion_qualified": false,
+  "execution_authorized": false
+}

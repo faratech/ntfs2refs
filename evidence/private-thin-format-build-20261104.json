@@ -1,0 +1,52 @@
+{
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/managed_shadow.rs",
+      "sha256": "79bf08a1f7eb60f89ca2c46e34f30883348d754406bf6fae6ffb062d4f3755ab",
+      "bytes": 31735
+    },
+    {
+      "path": "crates/n2r-win32/src/managed_shadow/thin_pool.rs",
+      "sha256": "e1bcd38300232c497c9cf0d2417f3c0ab41d4464255ada7d1cbd8cee1668fe0d",
+      "bytes": 41038
+    },
+    {
+      "path": "crates/n2r-win32/src/managed_shadow/thin_pool/formatted.rs",
+      "sha256": "82727aa8abb6f04c2bf9260b5d54a663a666ee25d766f71155cc2db0571b1567",
+      "bytes": 6308
+    },
+    {
+      "path": "src/bin/lab-private-thin-format.rs",
+      "sha256": "3f3a23c1a8090b397f12cb290a5364c94556701210366acad3b70ccbd4f3f287",
+      "bytes": 8671
+    }
+  ],
+  "recovery_dependency_added": false,
+  "public_conversion_backend_changed": false,
+  "embedded_storage_script_parse_errors": 0,
+  "planned_native_partition_bytes": 79164837199872,
+  "utc": "2026-11-04T09:17:32.7315487Z",
+  "native_formatting_qualified": false,
+  "planned_format": "dev-drive",
+  "schema_version": 1,
+  "kind": "consuming-private-thin-native-formatter-build",
+  "notes": [
+    "Formatting consumes only a live newly constructed ThinPool; no disk number or JSON can mint it",
+    "Original WRITE-capable device/member/provider/backing owners stay held",
+    "Common private GPT/format/profile checks are shared with VHDX",
+    "Physical pool and backing-volume headroom are sampled separately from identity",
+    "Partial failures preserve assets with no fallback or retry"
+  ],
+  "unit_tests_added_or_run": false,
+  "focused_check": {
+    "command": "cargo --config .lab/development/direct-rustc-check-config.toml check --bin lab-private-thin-format --target x86_64-pc-windows-msvc --locked --offline",
+    "log_sha256": "1bd3a9e70841edcf274ebb6fa073a74d1dca05e3c5c4a923b7c868b46d527b3f",
+    "shared_target": "target/shared-experiments",
+    "exclusive_lock_held": true,
+    "reported_seconds": 28.23,
+    "actual_exit_code": 0
+  },
+  "source_parent_commit": "904b2ce337597eee72a293ed1b98c839a7f6114d",
+  "planned_provider_request_bytes": 79164904308736,
+  "planned_target_cluster_bytes": 4096
+}

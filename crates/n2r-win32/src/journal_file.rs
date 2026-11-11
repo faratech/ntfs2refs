@@ -20,6 +20,87 @@ pub const MAX_JOURNAL_BYTES: u64 = 768 * 1024 * 1024;
 /// Complete journal admission reserves metadata before the two payload copies.
 pub const JOURNAL_OVERHEAD_RESERVE: u64 = 16 * 1024 * 1024;
 pub const MAX_CHANGED_BYTES: u64 = (MAX_JOURNAL_BYTES - JOURNAL_OVERHEAD_RESERVE) / 2 / 4096 * 4096;
+pub const MAX_EXPERIMENTAL_JOURNAL_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+
+/// Selected explicitly by request/ticket schema, never inferred from a file's
+/// size or current free space. CapacityV3 is bound into the trusted request and
+/// ticket; legacy and experimental bounds stay distinct throughout recovery.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JournalProfile {
+    LegacyV1,
+    ExperimentalLargeV2,
+    CapacityPinnedV3 { max_journal_bytes: u64 },
+}
+impl JournalProfile {
+    pub const fn version(self) -> u32 {
+        match self {
+            Self::LegacyV1 => 1,
+            Self::ExperimentalLargeV2 => 2,
+            Self::CapacityPinnedV3 { .. } => 3,
+        }
+    }
+    pub const fn max_journal_bytes(self) -> u64 {
+        match self {
+            Self::LegacyV1 => MAX_JOURNAL_BYTES,
+            Self::ExperimentalLargeV2 => MAX_EXPERIMENTAL_JOURNAL_BYTES,
+            Self::CapacityPinnedV3 { max_journal_bytes } => max_journal_bytes,
+        }
+    }
+    pub const fn max_changed_bytes(self) -> u64 {
+        self.max_journal_bytes()
+            .saturating_sub(JOURNAL_OVERHEAD_RESERVE)
+            / 2
+            / 4096
+            * 4096
+    }
+    /// Encoded selection retains every old byte but can synthesize new bytes.
+    /// The exact old + literal-new + metadata size must still be checked.
+    pub const fn max_encoded_changed_bytes(self) -> u64 {
+        self.max_journal_bytes()
+            .saturating_sub(JOURNAL_OVERHEAD_RESERVE)
+            / 4096
+            * 4096
+    }
+    pub fn from_schema(version: u32) -> io::Result<Self> {
+        match version {
+            1 => Ok(Self::LegacyV1),
+            2 => Ok(Self::ExperimentalLargeV2),
+            3 => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "journal profile 3 requires pinned capacity",
+            )),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unsupported journal profile",
+            )),
+        }
+    }
+    /// Recover the explicit profile without inferring it from a device or file.
+    /// Historical profiles must not acquire a capacity field during replay.
+    pub fn from_schema_and_capacity(version: u32, capacity: Option<u64>) -> io::Result<Self> {
+        match (version, capacity) {
+            (1 | 2, None) => Self::from_schema(version),
+            (1 | 2, Some(_)) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "historical journal profile cannot carry pinned capacity",
+            )),
+            (3, Some(max_journal_bytes))
+                if (JOURNAL_OVERHEAD_RESERVE + 2 * 4096..=i64::MAX as u64 - 4095)
+                    .contains(&max_journal_bytes) =>
+            {
+                Ok(Self::CapacityPinnedV3 { max_journal_bytes })
+            }
+            (3, _) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "journal profile 3 requires bounded explicit pinned capacity",
+            )),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unsupported journal profile",
+            )),
+        }
+    }
+}
 const MAX_PATH_UNITS: usize = 4096;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,9 +126,12 @@ pub struct GeneralJournalStorageBinding {
 
 impl GeneralJournalStorageBinding {
     pub fn validate(&self) -> io::Result<()> {
-        self.disk.validate()?;
+        self.disk.validate_working_storage()?;
         require(
-            self.disk.identity.partition_bytes >= 1024 * 1024 * 1024
+            // Preparation reserves its bounded metadata plus both copies of
+            // at least one 4 KiB changed granule. Available filesystem space
+            // is checked separately and may be smaller than partition size.
+            self.disk.identity.partition_bytes >= JOURNAL_OVERHEAD_RESERVE + 2 * 4096
                 && !self.externally_enrolled_disk_unique_id.is_empty()
                 && self.externally_enrolled_disk_unique_id.len() <= 128
                 && self
@@ -210,7 +294,17 @@ fn final_volume_path(path: &str, expected: &[u8; 16]) -> io::Result<String> {
     Ok(format!("\\\\?\\Volume{{{guid}}}"))
 }
 
-fn validate_file_fields(e: &JournalFileEvidence) -> io::Result<(u64, u64, u32)> {
+fn validate_file_fields_for_profile(
+    e: &JournalFileEvidence,
+    profile: JournalProfile,
+) -> io::Result<(u64, u64, u32)> {
+    // Reject invalid hand-constructed CapacityPinnedV3 values before the
+    // allocation-rounding addition below or any native evidence is accepted.
+    let capacity = match profile {
+        JournalProfile::CapacityPinnedV3 { max_journal_bytes } => Some(max_journal_bytes),
+        _ => None,
+    };
+    JournalProfile::from_schema_and_capacity(profile.version(), capacity)?;
     let standard = &e.file_standard_info;
     let allocation = u64_at(standard, 0)?;
     let length = u64_at(standard, 8)?;
@@ -218,8 +312,8 @@ fn validate_file_fields(e: &JournalFileEvidence) -> io::Result<(u64, u64, u32)> 
     // Directory, device, sparse, reparse, compressed and encrypted are excluded.
     const FORBIDDEN: u32 = 0x10 | 0x40 | 0x200 | 0x400 | 0x800 | 0x4000;
     require(
-        allocation <= MAX_JOURNAL_BYTES + 4095
-            && length <= MAX_JOURNAL_BYTES
+        allocation <= profile.max_journal_bytes() + 4095
+            && length <= profile.max_journal_bytes()
             && u32_at(standard, 16)? == 1
             && standard[20] == 0
             && standard[21] == 0
@@ -232,6 +326,10 @@ fn validate_file_fields(e: &JournalFileEvidence) -> io::Result<(u64, u64, u32)> 
         "journal file identity is empty",
     )?;
     Ok((length, allocation, attributes))
+}
+
+fn validate_file_fields(e: &JournalFileEvidence) -> io::Result<(u64, u64, u32)> {
+    validate_file_fields_for_profile(e, JournalProfile::LegacyV1)
 }
 
 fn validate_layout(raw: &[u8], expected: &JournalStorageBinding) -> io::Result<()> {
@@ -376,16 +474,18 @@ fn validate_evidence(
     })
 }
 
-fn validate_general_evidence(
+fn validate_general_evidence_for_profile(
     expected: &GeneralJournalStorageBinding,
     final_path: &str,
     evidence: JournalFileEvidence,
+    profile: JournalProfile,
 ) -> io::Result<JournalFileSnapshot> {
     expected.validate()?;
     let binding = &expected.disk;
     let volume_guid = guid_bytes(&binding.volume_guid)?;
     final_volume_path(final_path, &volume_guid)?;
-    let (file_bytes, allocation_bytes, file_attributes) = validate_file_fields(&evidence)?;
+    let (file_bytes, allocation_bytes, file_attributes) =
+        validate_file_fields_for_profile(&evidence, profile)?;
     crate::layout::validate_device(&evidence.disk_device_number, binding.disk_number)?;
     binding.validate_alignment(&evidence.disk_alignment)?;
     require(
@@ -397,7 +497,7 @@ fn validate_general_evidence(
     if expected.allow_additional_partitions {
         validate_external_journal_layout(&evidence.disk_layout, binding)?;
     } else {
-        binding.validate_layout(&evidence.disk_layout)?;
+        binding.validate_working_storage_layout(&evidence.disk_layout)?;
     }
     let p = &binding.identity;
     Ok(JournalFileSnapshot {
@@ -430,6 +530,15 @@ fn validate_general_evidence(
         conversion_qualified: false,
         evidence,
     })
+}
+
+#[cfg(test)]
+fn validate_general_evidence(
+    expected: &GeneralJournalStorageBinding,
+    final_path: &str,
+    evidence: JournalFileEvidence,
+) -> io::Result<JournalFileSnapshot> {
+    validate_general_evidence_for_profile(expected, final_path, evidence, JournalProfile::LegacyV1)
 }
 
 fn validate_external_journal_layout(raw: &[u8], binding: &GeneralDiskBinding) -> io::Result<()> {
@@ -518,10 +627,28 @@ fn finish_observation(
 }
 
 #[cfg(windows)]
+mod marker_lab_fault;
+#[cfg(windows)]
+mod marker_lab_pause;
+#[cfg(windows)]
+mod marker_native;
+#[cfg(windows)]
 mod native;
 #[cfg(windows)]
+pub use marker_lab_fault::{
+    LabMarkerFault, LabMarkerFaultCopy, LabMarkerFaultKind, LabMarkerFaultRequest,
+};
+#[cfg(windows)]
+pub use marker_lab_pause::{LabMarkerCopy, LabMarkerCopyPause, LabMarkerPauseRequest};
+#[cfg(windows)]
+pub use marker_native::{
+    MARKER_STORAGE_NATIVE_QUALIFIED, MarkerJournalFile, MarkerStorageObservation, MarkerStorageUse,
+    UnbufferedJournalFile,
+};
+#[cfg(windows)]
 pub use native::{
-    observe_general_journal_file, observe_journal_file, observe_ordinary_file_handle,
+    observe_general_journal_file, observe_general_journal_file_on_held_volume,
+    observe_general_journal_file_with_profile, observe_journal_file, observe_ordinary_file_handle,
 };
 
 #[cfg(test)]

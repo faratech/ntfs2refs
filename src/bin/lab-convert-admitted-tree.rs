@@ -16,6 +16,10 @@ struct Args {
     /// target construction, journal preparation or reconstruction activation.
     #[arg(long, conflicts_with = "interrupt_after_writes")]
     interrupt_after_source_freeze: bool,
+    /// Synchronize only the source's known tiny cache and metadata before
+    /// strict verification; never initialize the large shadow payload again.
+    #[arg(long, conflicts_with = "interrupt_after_source_freeze")]
+    refresh_existing_system_cache: bool,
 }
 
 #[cfg(windows)]
@@ -46,7 +50,17 @@ fn main() -> anyhow::Result<()> {
             && request.journal.disk.disk_number == 2,
         "enrolled disposable disk roles differ"
     );
-    if args.interrupt_after_source_freeze {
+    if args.refresh_existing_system_cache {
+        if let Some(writes) = args.interrupt_after_writes {
+            ntfs2refs::general_conversion::convert_interrupted_with_existing_cache_sync(
+                &request,
+                &args.output,
+                writes,
+            )
+        } else {
+            ntfs2refs::general_conversion::convert_with_existing_cache_sync(&request, &args.output)
+        }
+    } else if args.interrupt_after_source_freeze {
         ntfs2refs::general_conversion::convert_interrupted_after_source_freeze(
             &request,
             &args.output,

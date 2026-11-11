@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "kind": "preserve-native-status-and-cold-fingerprint-routing-fix",
+  "focused_check": {
+    "kind": "public-partition-dispatch-focused-check",
+    "shared_target_reused": true,
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+    "capacity": {
+      "actual_bytes": 241391004492,
+      "free_bytes": 165916999680,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 2147483648,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "unit_tests_run": false,
+    "exit_code": 0,
+    "wall_seconds": 33.4815606,
+    "native_run": false
+  },
+  "native_failure_process": 3396,
+  "native_failure_birth_ms": 1793901060587,
+  "native_failure_exit_code": 1,
+  "native_failure_wall_seconds": 8.791853,
+  "failed_prepare_archive_sha256": "3c8321319985fcb8dd7c50af4bcc0e27c9e612a96afe6fcdbe34df99095a3b65",
+  "cause": "native error19 was string-wrapped, erasing raw_os_error used by expected WRITE_PROTECT match",
+  "native_error_code_preserved": true,
+  "operation_and_result_native_events_retained": true,
+  "fingerprint_six_pages_have_actual_GUID_routes_and_native_artifact_pins": true,
+  "source_and_artifact_closing_checks_run_on_hash_failure": true,
+  "new_native_run": false,
+  "unit_tests_run": false,
+  "shared_end_to_end_or_recovery_qualified": false
+}

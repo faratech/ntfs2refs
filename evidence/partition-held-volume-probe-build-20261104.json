@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "kind": "isolated-held-volume-marker-probe-build",
+  "status": "compiled-not-executed",
+  "source_sha256": "5e9dda160d30f733575e415819d5023880c10c1a3e148783c561d3940a52874b",
+  "manifest_sha256": "9915f9bb447a140cdaecdb7f984aab072cadfc2b043585129f757de8449c32f8",
+  "input_pins_sha256": "8f1d82b276983f7b0278117f8f1f76cf92ceb2f193c01e6e79cf310ef4e7de37",
+  "lock_sha256": "f835e4fc17cdc77321e9e7eb606283b9ada078c7f4e8c9d571ef226fcb245067",
+  "registry_packages": 25,
+  "registry_versions_checksums_match_existing_product_lock": true,
+  "build_exit": 0,
+  "build_wall_seconds": 43.1799343,
+  "shared_target_reused": true,
+  "exclusive_shared_lock_held": true,
+  "jobs": 4,
+  "binary_bytes": 491520,
+  "binary_sha256": "0f2eee9155531d7267afc41d30316a36177a65b10bf6cc9c972e6a9e94f958de",
+  "retained_binary": ".lab/development/partition-held-volume-probe/bin/partition-held-volume-probe.exe",
+  "build_receipt_sha256": "3ad7ac0b7ec1b8556052ee9231b6b59b55ff10fca1dd97b690c5fb09ffc3084a",
+  "admitted_storage_forecast_bytes": 2147483648,
+  "post_build_actual_bytes": 323262257680,
+  "actual_build_growth_bytes": 120491948,
+  "post_build_free_bytes": 83279577088,
+  "maximum_actual_bytes": 329374052988,
+  "minimum_free_bytes": 17179869184,
+  "epoch_reset": false,
+  "scope": [
+    "Exact existing disposable T-partition enrollment only",
+    "One identical-original-marker 8192-byte write through retained locked/dismounted volume handle with extended DASD",
+    "No partition-type/disk-attribute/mount/replay/conversion operation"
+  ],
+  "probe_executed": false,
+  "source_device_opened": false,
+  "hardware_writer_qualified": false,
+  "unit_tests_run": false,
+  "product_source_or_binary_changed": false,
+  "limitations": [
+    "Compilation proves no volume-write or persistent-exclusion capability",
+    "Actual execution waits for completed release qualification and explicit VM ownership handoff"
+  ]
+}

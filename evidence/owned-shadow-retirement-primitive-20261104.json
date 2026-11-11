@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "kind": "native-constructor-owned-empty-shadow-retirement-primitive",
+  "run_id": "e6671cc0a06b4dd2b34c270102dcdc25",
+  "source_commit": "b7d97fb650d563a1f34b3df55889a1d9ed67eeb2",
+  "source_tree": "2f0fd305b75117e0cfca8ce7c98225a128def601",
+  "build": {
+    "manifest_path": ".lab/development/release-candidates/owned-shadow-retirement-b7d97fb/manifest.json",
+    "manifest_sha256": "f39f1cd4b9d9f8f6d96e76e273fcf1939e68bc28b9ba4caa1a2e84be2ba71e92",
+    "source_archive_sha256": "47ec1a649acf2ed655df1379ecd04a85523955e8c7b462848b39d000ac278eff",
+    "probe_binary": "lab-owned-shadow-retirement.exe",
+    "probe_binary_bytes": 1180160,
+    "probe_binary_sha256": "5cd2b5ad90c2ea08edcccc92fb4f5a02bb68becb53584fad521eb8661a31ce9a",
+    "public_converter_executed_by_this_probe": false
+  },
+  "owning_machine": {
+    "vm_id": "2401593c-4b30-472e-9b6d-c9534cbaa599",
+    "baseline_checkpoint": "3343f2a4-cf81-4fa9-a504-030425a8011e",
+    "boot_ms": 1793776669679,
+    "execution_inside_owning_Windows_guest": true
+  },
+  "actual_process": {
+    "task": "N2R-ShadowRetirement-e6671cc0a06b4dd2b34c270102dcdc25",
+    "pid": 3068,
+    "creation_ms": 1793778325606,
+    "actual_exit_observed": true,
+    "owned_handle_through_terminal": true,
+    "actual_exit_code": 0,
+    "wall_seconds": 0.726818,
+    "original_process_absent_at_metadata_closure": true,
+    "result_sha256": "9e28f5713fcb58ecbb661844099801e49446fce3699b432cd0d4d3cc9c4b03cf"
+  },
+  "new_empty_shadow": {
+    "virtual_disk_id": "000e44c1-1395-45d4-974f-8fa6083ea22b",
+    "disk_number": 11,
+    "disk_guid": "daa01a0d-7247-43a4-9e07-7058a7836325",
+    "partition_guid": "b38669fe-e083-4d28-8b21-5fd94d08c443",
+    "virtual_disk_bytes": 53754200064,
+    "partition_offset": 33554432,
+    "partition_bytes": 53687091200,
+    "logical_sector_bytes": 512,
+    "physical_sector_bytes": 4096,
+    "native_format": "Dev Drive ReFS3.14 with4KiB clusters",
+    "empty_image_created_by_same_constructor_owner": true,
+    "CreateVirtualDisk_version": 2,
+    "CreateVirtualDisk_access_mask": 0,
+    "permanent_lifetime_attachment": true,
+    "backing_file_id_info": "61eb0f241d1024aa14c90100000002000000000000000000",
+    "observed_backing_storage_before_isolation_bytes": 104857600,
+    "backing_file_allocation_before_delete_bytes": 96468992
+  },
+  "retirement": {
+    "only_derived_empty_shadow_isolated": true,
+    "raw_isolation_owner_dropped_before_retirement": true,
+    "shadow_disk_attributes_before_detach": 3,
+    "original_created_provider_handle_used": true,
+    "provider_loaded_before_detach": true,
+    "provider_loaded_after_detach": false,
+    "detached_observed": true,
+    "same_volume_file_id_path_and_single_link_revalidated_before_disposition": true,
+    "backing_retirement_requested": true,
+    "backing_path_absent_observed": true,
+    "success": true,
+    "native_error": null,
+    "payload_io_issued_by_retirement": false,
+    "source_device_access_issued": false,
+    "recovery_files_retired": false,
+    "automatic_retry_or_fallback": false
+  },
+  "external_recovery_sentinel": {
+    "bytes": 4096,
+    "file_id_info": "61eb0f241d1024aa13c90100000002000000000000000000",
+    "sha256": "aaaa207d6808ca92352370186dacc647316024dc731c53ab391732ab5b0a2bba",
+    "outside_virtual_disk_image": true,
+    "same_identity_bytes_and_path_presence_verified_after_retirement": true,
+    "independently_rechecked_during_metadata_closure": true
+  },
+  "closed_metadata": {
+    "root": ".lab/development/owned-shadow-retirement-e6671cc0a06b4dd2b34c270102dcdc25/closed",
+    "manifest_sha256": "f585e9028eff6171ade62e80f8f679ca5c30413ecddf86a862c7dbc3668a02a8",
+    "files": 13,
+    "bytes": 97323,
+    "source_and_host_lengths_and_SHA256_verified": true,
+    "all_host_entries_rehashed_during_documentation": true,
+    "executables_images_or_journals_copied": false,
+    "closure_helper_sha256": "8e858e68ccf66959bdbaa856dfd224fc96c8cdafa75dd4a3c735501efb159584"
+  },
+  "limits": {
+    "scope": "one constructor-owned empty image on this Windows guest",
+    "real_V4_finalizer_executed": false,
+    "V4_integration_qualified": false,
+    "NTFS_to_ReFS_conversion_performed": false,
+    "source_or_existing_alpha_access_requested": false,
+    "physical_freed_bytes_or_RAM_savings_measured": false,
+    "general_detachment_or_crash_recovery_qualified": false,
+    "frozen814_candidate_changed_by_this_probe": false,
+    "stable_release_qualified": false
+  }
+}

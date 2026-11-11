@@ -226,7 +226,9 @@ fn binding(
         "actual data identities or persistent exclusion differ"
     );
     Ok(JournalBinding {
+        journal_capacity_bytes: None,
         experiment_id: request.experiment_id.clone(),
+        source_resource_profile: None,
         target_identity_sha256: partition_hash(&target.binding.identity)?,
         shadow_identity_sha256: partition_hash(&shadow.binding.identity)?,
         journal_identity_sha256: identity_hash(b"ntfs2refs/lab/journal-file-identity/v1", journal)?,
@@ -384,6 +386,7 @@ fn run_with_interruption(
                             .map(|r| (r.offset, r.length))
                             .collect(),
                         maximum_bytes: descriptor.changed_bytes,
+                        journal_profile: n2r_win32::journal_file::JournalProfile::LegacyV1,
                     };
                     t.arm_writes(policy, &mut report.events)?;
                 }

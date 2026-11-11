@@ -1,0 +1,156 @@
+{
+  "helper_source_commit": "893d518cfe53137d0fd0b0e9050d8bc8f4ba2d0e",
+  "proofs": [
+    {
+      "bytes": 1614,
+      "sha256": "3b4fe6cfc294f5293a4decedc1485fc055b10010a2893842bfe2b669f9c805da",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-recovery-tools-893d518\\manifest.json"
+    },
+    {
+      "bytes": 11040,
+      "sha256": "3ff0626ca8e1b26c4b0609c08b95128a4e8cfdc692ec03fad4ce5f1f76cd124a",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-interrupt-c6ced70781de4f378f6f795d5d4be6cf\\closed\\archive.json"
+    },
+    {
+      "bytes": 832,
+      "sha256": "2cc8f3dd7857134a49236ab1faecf357d40c8533e70c7b3111b2e9ec59f92868",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-interrupt-c6ced70781de4f378f6f795d5d4be6cf\\closed\\wrapper-result.json"
+    },
+    {
+      "bytes": 1126,
+      "sha256": "af0e1171ab7826007c702bc77976787019cc5145b3aee563d9a2c6a9f1d5b811",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-interrupt-c6ced70781de4f378f6f795d5d4be6cf\\closed\\converter-terminal.json"
+    },
+    {
+      "bytes": 394,
+      "sha256": "6eb329bf2787996609e35a721cb066d4ff27c62bd8c70b255bf776a2525d870b",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-interrupt-c6ced70781de4f378f6f795d5d4be6cf\\restart-exclusion.json"
+    },
+    {
+      "bytes": 170,
+      "sha256": "3836ecc3eb4a52b5b1f7405dce42bbe93f159cd9209a675fe254289dfb10f0f2",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-interrupt-c6ced70781de4f378f6f795d5d4be6cf\\checkpoint.json"
+    },
+    {
+      "bytes": 5297,
+      "sha256": "8598a8a859adc8eaf40a5694388a147c6cb8189ed617f5e33cd2aea2d073cffb",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-recovery-resume-b22ef74e50b84151ac29dfbb0f410d1c\\closed\\archive.json"
+    },
+    {
+      "bytes": 1782,
+      "sha256": "aa0ef2639df4f3087b98d7d9aa0e94c59eafaead9fc648344a61a944bc02bf97",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-recovery-resume-b22ef74e50b84151ac29dfbb0f410d1c\\closed\\wrapper\\wrapper-result.json"
+    },
+    {
+      "bytes": 3997,
+      "sha256": "d0a3e8091a4864b4a1860f9139e15f6f97c837cfbd08d8f39c0bcd857ea9ee59",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-recovery-resume-b22ef74e50b84151ac29dfbb0f410d1c\\closed\\wrapper\\sparse-after.json"
+    },
+    {
+      "bytes": 768968,
+      "sha256": "4ca29b22313284f89ef7bb46c64b3b492b0323a27b5ac1cadfd08bf22c97b0f8",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-recovery-resume-b22ef74e50b84151ac29dfbb0f410d1c\\closed\\core\\resume\\completion.json"
+    },
+    {
+      "bytes": 445,
+      "sha256": "5c93fad6bc63cb9d55c80ca5fa51a488a7e3698b1b52916d64b57f34a12fd968",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-recovery-resume-b22ef74e50b84151ac29dfbb0f410d1c\\closed\\core\\resume\\handoff.json"
+    },
+    {
+      "bytes": 162,
+      "sha256": "e3fee9a105df467e1ce1143c6821f8a33a238d0e920e56a99157fc0e702a4530",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-recovery-resume-b22ef74e50b84151ac29dfbb0f410d1c\\checkpoint.json"
+    },
+    {
+      "bytes": 5135,
+      "sha256": "66bebb32ceade396f62c40d832c3fc58a0eaa4a5502c4bdac304541094a2e48b",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-recovery-rollback-76cd0c1e11a644ffb89ae1233f6d38ee\\closed\\archive.json"
+    },
+    {
+      "bytes": 1798,
+      "sha256": "76100375881b13f8d34a5bca0a3f28db1e0630f5e4daa20511540fbea20aaff6",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-recovery-rollback-76cd0c1e11a644ffb89ae1233f6d38ee\\closed\\wrapper\\wrapper-result.json"
+    },
+    {
+      "bytes": 3674,
+      "sha256": "cadad757f335f96529e8d85d27d66a41bb9338b0ad609ecbf34e612b8f888768",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-recovery-rollback-76cd0c1e11a644ffb89ae1233f6d38ee\\closed\\wrapper\\sparse-after.json"
+    },
+    {
+      "bytes": 42462,
+      "sha256": "46edfe03781524641f601ddb0831a11f889eb9195ca85ca834d7c06e5c03718a",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-recovery-rollback-76cd0c1e11a644ffb89ae1233f6d38ee\\closed\\core\\rollback\\completion.json"
+    },
+    {
+      "bytes": 448,
+      "sha256": "8ee4143b35d639604abe971db7133ed699e768fe302386d423c6491c9dbd237f",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-recovery-rollback-76cd0c1e11a644ffb89ae1233f6d38ee\\closed\\core\\rollback\\rollback.json"
+    },
+    {
+      "bytes": 164,
+      "sha256": "01c82b0d286f3f91478231eb3596408275777817906560d100688e37bc5b033b",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-recovery-rollback-76cd0c1e11a644ffb89ae1233f6d38ee\\checkpoint.json"
+    }
+  ],
+  "public_executable_sha256": "61d4cd998a19e8ae825e67fd515c3f4316f6dccc2936fdec97e6d7c3f28fb01b",
+  "interruption": {
+    "checkpoint": "a6497e33-2544-44b7-aae2-784f72904da2",
+    "after_flushed_writes": 1,
+    "marker": "N2RSAP01",
+    "completion_clear": true,
+    "run_id": "c6ced70781de4f378f6f795d5d4be6cf",
+    "restarted_offline": true,
+    "exit": 86,
+    "boot_utc": "2026-10-30T13:44:04.109045Z"
+  },
+  "not_claimed": [
+    "physical power-loss durability",
+    "every interruption point",
+    "rollback after writable ReFS handoff",
+    "sparse mutation stress",
+    "arbitrary sizes or full NTFS compatibility"
+  ],
+  "schema_version": 1,
+  "original_recovery_directory": "C:\\ntfs2refs\\sparse-interrupt-c6ced70781de4f378f6f795d5d4be6cf\\conversion",
+  "original_bundle_sha256": "d16bede65e4f0e450bf48fb81b5d2fb219fb290f462107e9f03b6da8ac76e996",
+  "digests": {
+    "artifact_pins": "sha256",
+    "old_fixture_logical_content": "sha256",
+    "sparse_logical_content": "xxh3-128"
+  },
+  "converter_source_commit": "5aeaf40de7c9eebcb152741c4ec7099f4cd1ff20",
+  "rollback": {
+    "sparse_paths": 4,
+    "sparse_extents_flags_ids_eof_match": true,
+    "sparse_digests_match": true,
+    "old_ads_views": 15,
+    "native_exit": 0,
+    "exact_sparse_hardlink_set": [
+      "\\nested\\sparse-link.bin",
+      "\\sparse-islands.bin"
+    ],
+    "original_bundle_sha256": "d16bede65e4f0e450bf48fb81b5d2fb219fb290f462107e9f03b6da8ac76e996",
+    "outcome": "ntfs_restored",
+    "checkpoint": "1ad67365-8a17-46d7-aac1-f2a38748d7ba",
+    "old_names": 9,
+    "old_file_ids_match": true,
+    "run_id": "76cd0c1e11a644ffb89ae1233f6d38ee"
+  },
+  "main_source_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "resume": {
+    "sparse_paths": 4,
+    "objects": 12,
+    "old_names": 9,
+    "default_stream_hashes": 8,
+    "old_ads_views": 15,
+    "native_exit": 0,
+    "original_bundle_sha256": "d16bede65e4f0e450bf48fb81b5d2fb219fb290f462107e9f03b6da8ac76e996",
+    "outcome": "refs_completed",
+    "checkpoint": "37414e94-26c0-4033-b9ca-93892b51e76b",
+    "named_stream_hashes": 6,
+    "sparse_layouts": 3,
+    "run_id": "b22ef74e50b84151ac29dfbb0f410d1c"
+  },
+  "controlled_executable_sha256": "684c6cd73c5098ca04ec23be3bf071a1bc75c500646c590f254e9adcfb899483",
+  "kind": "bounded-native-sparse-recovery"
+}

@@ -97,6 +97,14 @@ fn main() -> anyhow::Result<()> {
     let raw = ntfs_inspect::inspect(&mut source, source_length)?;
     let (tree, source_views) =
         ntfs2refs::general_shadow::observed_tree(&mut source, &raw, &mut events)?;
+    ensure!(
+        args.verify_only
+            || tree
+                .objects
+                .iter()
+                .all(|object| object.data_streams().all(|stream| stream.sparse.is_none())),
+        "legacy general shadow construction cannot supply sparse streams; use the private carrier path"
+    );
     save(
         &args.output.with_extension("source-views.json"),
         &source_views,
@@ -106,11 +114,16 @@ fn main() -> anyhow::Result<()> {
         .iter()
         .map(|object| shadow_native::Input {
             components: &object.path,
+            additional_names: &object.additional_names,
+            sparse: object.sparse.as_ref(),
+            named_streams: ntfs2refs::general_shadow::native_named_streams(object),
             directory: object.directory,
             times: object.stored_times,
             attributes: object.attributes,
             security: &object.security,
             expected_api_security: object.api_security.as_deref(),
+            extended_attributes: object.extended_attributes.as_ref(),
+            reparse: object.reparse.as_ref(),
             payload: &[],
             expected_length: if object.directory {
                 None

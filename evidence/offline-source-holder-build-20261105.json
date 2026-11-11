@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "kind": "actual-offline-source-holder-build",
+  "focused_check": {
+    "unit_tests_run": false,
+    "native_run": false,
+    "kind": "public-partition-dispatch-focused-check",
+    "capacity": {
+      "actual_bytes": 242028944895,
+      "free_bytes": 165268803584,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 2147483648,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+    "shared_target_reused": true,
+    "wall_seconds": 27.358634,
+    "exit_code": 0
+  },
+  "draft_origin_sha256": "096f1bd52670360bda64221fd1b2844daed4c6df7eaad465811a239649c75c7a",
+  "whole_disk_freeze_requires_independent_journal_disk": true,
+  "actual_all_published_source_volume_locks_required": true,
+  "intent_flush_readback_before_disk_setter": true,
+  "source_owner_is_read_seek_only": true,
+  "source_writer_issued": false,
+  "cross_environment_restart_exclusion_qualified": false,
+  "RAM_WinPE_registry_is_not_cold_exclusion_evidence": true,
+  "native_run": false,
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/native/offline_environment.rs",
+      "bytes": 21962,
+      "sha256": "bd62fc79bc3a414f64fef9e1d1f7b025b41e048993318138d9a5160672dac3ec"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline.rs",
+      "bytes": 23286,
+      "sha256": "330c8216dc590232966325d02144d5979a3674bce0121befc6d757c4cf5bcb4a"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline/source.rs",
+      "bytes": 29795,
+      "sha256": "95a54d6f56dfb4fdb0a32f68bd0b1671f8da6e66e14727c779c9a7ebe38922da"
+    }
+  ]
+}

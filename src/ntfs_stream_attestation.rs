@@ -3,7 +3,7 @@ use crate::ntfs_inspect::{AllocationReconciliationStatus, Extent, FileInventory,
 use anyhow::{Context, Result, ensure};
 use n2r_win32::{
     attestation::{IoctlQuery, Report, StreamCapture},
-    bitmap_paging, stream_layout as layout,
+    bitmap_paging, retrieval_paging, stream_layout as layout,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -70,13 +70,24 @@ pub fn base(q: &IoctlQuery) -> Result<u64> {
     ensure!(n <= i64::MAX as u64, "negative native retrieval base");
     Ok(n)
 }
-pub(crate) fn validate_bitmap_schema(native: &Report) -> Result<()> {
+pub(crate) fn validate_paging_schema(native: &Report) -> Result<()> {
+    native.validate_resources()?;
     ensure!(
         native.schema_version >= 6
             || native.allocation.as_ref().is_none_or(|a| {
                 a.bitmap_before_continuation.is_empty() && a.bitmap_after_continuation.is_empty()
             }),
         "paged bitmap transcripts require native schema 6"
+    );
+    ensure!(
+        native.schema_version >= 7
+            || native
+                .files
+                .iter()
+                .flat_map(|file| file.streams_before.iter().chain(file.streams_after.iter()))
+                .flat_map(|capture| capture.streams.iter())
+                .all(|stream| stream.retrieval_continuation.is_empty()),
+        "paged retrieval transcripts require native schema 7"
     );
     Ok(())
 }
@@ -125,13 +136,45 @@ pub fn check_bitmap_pages(
     );
     Ok(())
 }
+
+fn check_streamed_bitmap(
+    raw: &NtfsInspection,
+    first: &IoctlQuery,
+    summary: &n2r_win32::bitmap_streaming::Summary,
+) -> Result<()> {
+    summary.validate_source_first(first)?;
+    let source = raw
+        .allocation_reconciliation
+        .as_ref()
+        .context("missing raw allocation reconciliation")?;
+    ensure!(
+        source.status == AllocationReconciliationStatus::ConsistentRawModel
+            && source.domain_clusters == raw.geometry.total_clusters
+            && summary.cluster_count == raw.geometry.total_clusters
+            && summary.bitmap_data_sha256 == source.bitmap_sha256
+            && raw.allocated_clusters == Some(summary.allocated_clusters)
+            && raw.free_clusters == Some(summary.free_clusters),
+        "streamed native bitmap differs from the complete initialized frozen NTFS bitmap"
+    );
+    Ok(())
+}
 fn normalized(items: &[Extent], volume: u64, cluster: u64) -> Result<Vec<Extent>> {
+    normalized_with_limit(
+        items,
+        volume,
+        cluster,
+        retrieval_paging::MAX_COMPLETE_EXTENTS,
+    )
+}
+fn normalized_with_limit(
+    items: &[Extent],
+    volume: u64,
+    cluster: u64,
+    maximum: usize,
+) -> Result<Vec<Extent>> {
     let mut out: Vec<Extent> = vec![];
     let mut next = 0;
-    ensure!(
-        items.len() <= layout::MAX_EXTENTS,
-        "extent count exceeds profile"
-    );
+    ensure!(items.len() <= maximum, "extent count exceeds profile");
     for e in items {
         ensure!(
             e.logical_offset == next
@@ -187,6 +230,64 @@ pub fn check_file(
     base_sectors: u64,
     geometry: &crate::ntfs_inspect::NtfsGeometry,
 ) -> Result<()> {
+    check_file_inner(file, native, base_sectors, geometry, None)
+}
+
+/// Reconcile one complete authenticated source/native row under its resource
+/// admission. These scalar facts never supply a source lease or write authority.
+pub fn check_file_with_resources(
+    file: &FileInventory,
+    native: &StreamCapture,
+    base_sectors: u64,
+    geometry: &crate::ntfs_inspect::NtfsGeometry,
+    admission: n2r_win32::tree_resources::SourceResourceAdmission,
+) -> Result<()> {
+    admission.validate()?;
+    let maximum_streams = usize::try_from(
+        admission.budget.max_row_bytes / std::mem::size_of::<layout::Entry>() as u64,
+    )?;
+    ensure!(
+        file.record_number < admission.mft_records
+            && file.streams.len() <= maximum_streams
+            && native.streams.len() <= maximum_streams,
+        "stream row escapes its complete source resource domain"
+    );
+    validate_row_bytes(file, admission.budget.max_row_bytes)?;
+    validate_row_bytes(native, admission.budget.max_row_bytes)?;
+    check_file_inner(file, native, base_sectors, geometry, Some(admission))
+}
+
+fn validate_row_bytes(value: &impl Serialize, maximum: u64) -> Result<()> {
+    struct Counter {
+        used: u64,
+        maximum: u64,
+    }
+    impl std::io::Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.used = self
+                .used
+                .checked_add(bytes.len() as u64)
+                .filter(|n| *n <= self.maximum)
+                .ok_or_else(|| {
+                    std::io::Error::other("stream metadata row exceeds admitted working bytes")
+                })?;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    serde_json::to_writer(&mut Counter { used: 0, maximum }, value)?;
+    Ok(())
+}
+
+fn check_file_inner(
+    file: &FileInventory,
+    native: &StreamCapture,
+    base_sectors: u64,
+    geometry: &crate::ntfs_inspect::NtfsGeometry,
+    resources: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
+) -> Result<()> {
     ensure!(
         file.base_file_reference == 0
             && !file
@@ -210,7 +311,19 @@ pub fn check_file(
         );
         return Ok(());
     }
-    let (entries, end) = layout::parse_streams(&native.enumeration.bytes)?;
+    let (entries, end) = if let Some(admission) = resources {
+        let maximum = usize::try_from(admission.budget.max_row_bytes)?;
+        layout::parse_streams_with_limits(
+            &native.enumeration.bytes,
+            maximum,
+            usize::try_from(
+                admission.budget.max_row_bytes / std::mem::size_of::<layout::Entry>() as u64,
+            )?
+            .max(1),
+        )?
+    } else {
+        layout::parse_streams(&native.enumeration.bytes)?
+    };
     ensure!(
         end == native.enumeration.bytes.len()
             && entries.len() == file.streams.len()
@@ -219,17 +332,18 @@ pub fn check_file(
     );
     let parsed: BTreeMap<_, _> = entries.iter().map(|e| (&e.name, e)).collect();
     let source: BTreeSet<_> = file.streams.iter().map(|s| &s.name_utf16).collect();
-    let observed: BTreeSet<_> = native.streams.iter().map(|s| &s.name_utf16).collect();
+    let observed: BTreeMap<_, _> = native.streams.iter().map(|s| (&s.name_utf16, s)).collect();
     ensure!(
         source.len() == file.streams.len()
             && observed.len() == native.streams.len()
-            && source == observed
+            && source == observed.keys().copied().collect()
             && source == parsed.keys().copied().collect(),
         "missing, duplicate or unexpected stream name"
     );
     let cluster = u64::from(geometry.cluster_size);
     ensure!(
-        cluster == 4096 && geometry.bytes_per_sector == 512,
+        crate::ntfs_index::supports_cluster_size(geometry.cluster_size)
+            && geometry.bytes_per_sector == 512,
         "unsupported native stream geometry"
     );
     let base_bytes = base_sectors
@@ -237,11 +351,9 @@ pub fn check_file(
         .context("retrieval base overflow")?;
     for s in &file.streams {
         let e = parsed.get(&s.name_utf16).unwrap();
-        let q = native
-            .streams
-            .iter()
-            .find(|q| q.name_utf16 == s.name_utf16)
-            .unwrap();
+        let q = observed
+            .get(&s.name_utf16)
+            .context("native stream disappeared from complete name index")?;
         ensure!(
             q.logical_size == e.logical_size
                 && q.allocated_size == e.allocated_size
@@ -277,18 +389,96 @@ pub fn check_file(
             r.code == layout::GET_RETRIEVAL && r.input == [0; 8],
             "unexpected retrieval input"
         );
+        let compressed = if s.flags == 1 {
+            let mut attributes = file
+                .attributes
+                .iter()
+                .filter(|a| a.type_code == 0x80 && a.name_utf16 == s.name_utf16);
+            let attribute = attributes
+                .next()
+                .context("compressed DATA inventory absent")?;
+            ensure!(
+                attributes.next().is_none(),
+                "duplicate compressed DATA inventory"
+            );
+            crate::ntfs_compression::supported(attribute, geometry)?;
+            ensure!(
+                attribute.flags == s.flags
+                    && attribute.resident == s.resident
+                    && attribute.logical_size == s.logical_size
+                    && attribute.initialized_size == s.initialized_size
+                    && attribute.allocated_size == s.allocated_size
+                    && attribute.extents == s.extents,
+                "compressed stream differs from its validated DATA attribute"
+            );
+            Some(attribute)
+        } else {
+            None
+        };
         ensure!(
-            s.flags & !0x8000 == 0,
-            "encoded/compressed/encrypted stream is outside adoption profile"
+            s.flags & !0x8000 == 0 || compressed.is_some(),
+            "unsupported encoded or encrypted stream"
         );
         if s.resident {
             ensure!(
-                s.extents.is_empty() && r.native_error == Some(38) && r.bytes.is_empty(),
+                s.extents.is_empty()
+                    && r.native_error == Some(38)
+                    && r.bytes.is_empty()
+                    && q.retrieval_continuation.is_empty(),
                 "resident stream has unexpected physical retrieval evidence"
             );
             continue;
         }
-        let runs = layout::parse_retrieval(bytes(r, layout::GET_RETRIEVAL, &[0; 8])?)?;
+        if s.flags == 0
+            && s.logical_size == 0
+            && s.initialized_size == 0
+            && s.allocated_size == 0
+            && s.extents.is_empty()
+        {
+            let mut attributes = file
+                .attributes
+                .iter()
+                .filter(|a| a.type_code == 0x80 && a.name_utf16 == s.name_utf16);
+            let attribute = attributes
+                .next()
+                .context("empty nonresident DATA inventory absent")?;
+            ensure!(
+                attributes.next().is_none()
+                    && !attribute.resident
+                    && attribute.flags == 0
+                    && attribute.logical_size == 0
+                    && attribute.initialized_size == 0
+                    && attribute.allocated_size == 0
+                    && attribute.lowest_vcn == 0
+                    && attribute.compression_unit == 0
+                    && attribute.total_allocated_size.is_none()
+                    && attribute.extents.is_empty(),
+                "empty nonresident stream differs from its DATA attribute"
+            );
+            // An observed empty nonresident DATA has no physical run to
+            // assemble. Identity and zero-VCN query checks above still apply;
+            // logical EOF/content verification remains a separate obligation.
+            ensure!(
+                q.allocated_size == 0
+                    && r.native_error == Some(38)
+                    && r.bytes.is_empty()
+                    && q.retrieval_continuation.is_empty(),
+                "empty nonresident stream has unexpected physical retrieval evidence"
+            );
+            continue;
+        }
+        let runs = if let Some(admission) = resources {
+            retrieval_paging::assemble_queries_with_limits(
+                r,
+                &q.retrieval_continuation,
+                retrieval_paging::Limits::for_resource_bytes(usize::try_from(
+                    admission.budget.max_row_bytes,
+                )?)?,
+            )?
+            .runs
+        } else {
+            retrieval_paging::assemble_queries(r, &q.retrieval_continuation)?.runs
+        };
         let mut extents = vec![];
         for run in runs {
             extents.push(Extent {
@@ -310,9 +500,18 @@ pub fn check_file(
                     .transpose()?,
             });
         }
-        ensure!(
+        let mappings_match = if let Some(admission) = resources {
+            let maximum = usize::try_from(
+                admission.budget.max_row_bytes / std::mem::size_of::<Extent>() as u64,
+            )?;
+            normalized_with_limit(&extents, geometry.volume_size, cluster, maximum)?
+                == normalized_with_limit(&s.extents, geometry.volume_size, cluster, maximum)?
+        } else {
             normalized(&extents, geometry.volume_size, cluster)?
-                == normalized(&s.extents, geometry.volume_size, cluster)?,
+                == normalized(&s.extents, geometry.volume_size, cluster)?
+        };
+        ensure!(
+            mappings_match,
             "native VCN/LCN mapping differs from NTFS runs"
         );
         let physical = s
@@ -327,20 +526,48 @@ pub fn check_file(
             q.allocated_size == physical,
             "native physical allocation differs from mapped NTFS data"
         );
+        if let Some(attribute) = compressed {
+            ensure!(
+                attribute.total_allocated_size == Some(physical),
+                "native compressed allocation differs from raw TotalAllocated"
+            );
+        }
     }
     Ok(())
 }
 pub fn reconcile(raw: &NtfsInspection, native: &Report) -> Result<Reconciliation> {
+    if !raw.attribute_assemblies.is_empty() {
+        crate::ntfs_inspect::validate_record_coverage(raw)?;
+    }
     ensure!(
-        matches!(native.schema_version, 3..=6),
+        matches!(native.schema_version, 3..=14),
         "native stream profile missing"
     );
-    validate_bitmap_schema(native)?;
+    validate_paging_schema(native)?;
     let volume = native
         .allocation
         .as_ref()
         .context("missing native volume allocation observations")?;
     let bitmap = Check::from((|| {
+        if matches!(native.schema_version, 9 | 10 | 11 | 12 | 14)
+            || (native.schema_version == 13 && native.request.resource_profile.is_some())
+        {
+            let before = volume
+                .streamed_before
+                .as_ref()
+                .context("missing streamed bitmap before observation")?;
+            let after = volume
+                .streamed_after
+                .as_ref()
+                .context("missing streamed bitmap after observation")?;
+            check_streamed_bitmap(raw, &volume.bitmap_before, before)?;
+            check_streamed_bitmap(raw, &volume.bitmap_after, after)?;
+            ensure!(
+                before == after && volume.bitmap_before == volume.bitmap_after,
+                "streamed native bitmap changed across source observation"
+            );
+            return Ok(());
+        }
         check_bitmap_pages(
             raw,
             &volume.bitmap_before,
@@ -425,4 +652,34 @@ pub fn reconcile(raw: &NtfsInspection, native: &Report) -> Result<Reconciliation
         matched_streams,
         conversion_qualified: false,
     })
+}
+
+/// Complete streamed bitmap comparison for the paged source domain. The actual
+/// collector's first-page transcript, full bitmap digest and exact allocation
+/// counts are checked; a deserialized success flag is never native evidence.
+pub fn check_streamed_bitmap_with_resources(
+    geometry: &crate::ntfs_inspect::NtfsGeometry,
+    source: &crate::ntfs_allocation::BitmapSummary,
+    first: &IoctlQuery,
+    summary: &n2r_win32::bitmap_streaming::Summary,
+    admission: n2r_win32::tree_resources::SourceResourceAdmission,
+) -> Result<()> {
+    admission.validate()?;
+    summary.validate_source_first_with_limits(
+        first,
+        n2r_win32::bitmap_streaming::resource_source_limits(
+            geometry.total_clusters,
+            admission.budget.max_row_bytes,
+        )?,
+    )?;
+    ensure!(
+        geometry.total_clusters > 0
+            && source.bitmap_bytes == geometry.total_clusters.div_ceil(8)
+            && summary.cluster_count == geometry.total_clusters
+            && summary.bitmap_data_sha256 == source.sha256
+            && summary.allocated_clusters == source.allocated_clusters
+            && summary.free_clusters == source.free_clusters,
+        "streamed native bitmap differs from the complete initialized frozen resource source bitmap"
+    );
+    Ok(())
 }

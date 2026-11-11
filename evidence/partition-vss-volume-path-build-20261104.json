@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "kind": "partition-VSS-canonical-volume-path-fix",
+  "status": "focused-check-passed-native-pending",
+  "path": "crates/n2r-win32/src/attestation_partition.rs",
+  "sha256": "cc20834bc9484123867fbccd2e44c28be9c5ccff59fec20b0b0d3d312d3d10a9",
+  "change": "Construct the canonical GUID volume root with trailing backslash for both VSS observations; do not pass the raw GUID or relax the VSS parser.",
+  "check_exit": 0,
+  "check_seconds": 29.295493,
+  "unit_tests_run": false,
+  "native_fix_run": false,
+  "prior_native_source_commit": "88937b76af5bfd62061c26bdb5addbe206798d67",
+  "prior_native_pid": 2948,
+  "prior_native_birth_ms": 1793840555672,
+  "prior_native_exit": 1,
+  "prior_native_wall_seconds": 239.3743653,
+  "primary_failure": "VSS volume identity is not an exact GUID volume path",
+  "secondary_live_cancellation_failure": "partition-preparation-lock error21",
+  "cancellation_failure_fixed": false,
+  "public_frozen_alpha_changed": false,
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+}

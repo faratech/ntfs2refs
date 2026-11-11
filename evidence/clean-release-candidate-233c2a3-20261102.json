@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "kind": "clean-committed-source-build",
+  "utc": "2026-11-02T06:37:05.4863387Z",
+  "source_commit": "233c2a3b3a4f62ab5b97cffbbc477122239ff596",
+  "source_tree": "3b233317e676c4a022f66afdfbfc204f5b3d93f0",
+  "source_file_count": 283,
+  "manifest_path": "D:\\code\\ntfs2refs\\.lab\\development\\release-candidates\\r233c2a3\\manifest.json",
+  "manifest_sha256": "659b9534941eb950e63e912c1a0d46f56d5f7c35aac7417bc6897c8fbbaf700e",
+  "builder_sha256": "ad37f7786861636248920eb70ace6510901a92d4f4f6ef1b6e21558e4e91610f",
+  "cargo_lock_sha256": "d0b38b485a79e8b38e4793ca9bfd8f3560eb15dc1c19347d70c7ddd39d2aba96",
+  "toolchain_channel": "1.98.1",
+  "target": "x86_64-pc-windows-msvc",
+  "working_tree_inputs_used": false,
+  "locked_dependencies": true,
+  "offline_build": true,
+  "compiler_wrappers_disabled": true,
+  "observed_working_bytes": 517927162,
+  "binaries": [
+    {
+      "name": "ntfs2refs",
+      "path": "bin/ntfs2refs.exe",
+      "bytes": 10820608,
+      "sha256": "a744c72bb8be8e4694da7712b7717a406062cf0d63bf41ef0e70bba626e76971"
+    },
+    {
+      "name": "lab-selected-marker-native",
+      "path": "bin/lab-selected-marker-native.exe",
+      "bytes": 7108096,
+      "sha256": "9ad1dfaaa7b0a11c3d559e0627cf7087f463a224d8f1efbf8d98c1ae774be77b"
+    },
+    {
+      "name": "lab-convert-native-composite",
+      "path": "bin/lab-convert-native-composite.exe",
+      "bytes": 7599616,
+      "sha256": "d0559a8f9c4ea08d4049c584d2558820999f651b5a4552968e84b82c47772ebf"
+    },
+    {
+      "name": "lab-recover-native-composite",
+      "path": "bin/lab-recover-native-composite.exe",
+      "bytes": 3207168,
+      "sha256": "4fcd34933cbf7b4f134c1a701cb37e94ba5457cdbd82cc20d74d23b1b38619f4"
+    },
+    {
+      "name": "lab-content-digest",
+      "path": "bin/lab-content-digest.exe",
+      "bytes": 322048,
+      "sha256": "1fafb43e94683f22b90f3e62ffe2f764ccc8540759c36c795b092d93cfa1562d"
+    },
+    {
+      "name": "lab-managed-shadow",
+      "path": "bin/lab-managed-shadow.exe",
+      "bytes": 1069056,
+      "sha256": "63b2d23733347e500a2e310e5c59a543d44db6679aad340c9badec8fb936dec9"
+    }
+  ],
+  "public_cli_help_exit": 0,
+  "qualification_inherited": false,
+  "native_conversion_or_recovery_run_on_this_candidate": false,
+  "native_marker_qualified": false,
+  "stable_release": false,
+  "unit_tests_added_or_run": false,
+  "note": "Includes approved main, plan-aware marker gate, typed owned geometry policy and final backup-boot protection. Recorded first-copy VM cases belong to separately pinned runtime7cd."
+}

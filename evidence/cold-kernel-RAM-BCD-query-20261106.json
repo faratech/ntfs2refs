@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "kind": "cold-owned-BCD-query-in-positive-kernel-RAM",
+  "observed_utc": "2026-11-06T08:05:20.2439816Z",
+  "actual_case": ".lab/hyperv/streaming-v2-20261027/PUBLIC-72c811a-actual-once-9a2a3f61679440ba96036bcab93bd50e",
+  "failed_source": "72c811a4f45b7cbbef45aeadec42eedfbb084cff",
+  "build_manifest_sha256": "8b7ed9b7a23a5733dbd512398f2d80f794d3192ed2673e3688e675d637dfc9da",
+  "layout_sha256": "f4d615febc09f8d777a1aa72ed3f24fa84aaaf4fbde60436a1fb1a42912dcbce",
+  "build_completion": {
+    "terminal_exit_code_not_claimed": true,
+    "manifest_and_four_binaries_verified": true,
+    "original_wrapper_and_cargo_absent": true,
+    "rebuild_performed": false,
+    "final_wrapper_success_JSON_present": true,
+    "terminal_tool_handle_unavailable_after_context_rollover": true
+  },
+  "actual_cold_failure": {
+    "error": "owned BCD bytes changed after private-hive close",
+    "AP_or_source_data_writes_claimed": false,
+    "held_reference_snapshot_equality_passed": true,
+    "complete_SHA_equality_failed": true,
+    "frame_sha256": "5d60cf9feedbd2069051a7a6600b3c8d460a5e6d546337a370e6e5a4e3eecb26",
+    "closed_native_events_bytes": 244627,
+    "clean_OLD_qualification_complete": true,
+    "copy": "encoded-device-original-0000.bcd"
+  },
+  "settled_byte_comparison": {
+    "source_authority": false,
+    "both_complete_SHA_equal": true,
+    "different_bytes": 0,
+    "settled_owned_copy_bytes": 36864,
+    "authenticated_backup_bytes": 36864,
+    "full_SHA_not_transcribed_from_frame": true,
+    "both_native_ids_and_all_bytes_unchanged": true,
+    "registry_loads": 0,
+    "frame_sha256": "2977a3efe78b65c75907fef38e7c09f7720f59df04712bf7fb6975a855d02870"
+  },
+  "same_input_RAM_AppHive": {
+    "encoded_device_bytes": 88,
+    "encoded_device_equal": true,
+    "frame_sha256": "dfb2072a6f2d18c5dae2ae76d3db25c6f99809de4e9da35c1b00b6460359f623",
+    "both_native_ids_and_all_bytes_unchanged": true,
+    "KEY_READ_REG_PROCESS_APPKEY_only": true,
+    "query_source_or_J_opens": 0
+  },
+  "diagnostic": {
+    "media_swaps": 2,
+    "product_reruns": 0,
+    "byte_diff_probe_sha256": "18e93e99d7adb5be54b6aa091c93884bab322f628ade4665a489dbe860e67fdb",
+    "original_media_restored": true,
+    "media_restoration_receipt_sha256": "66c4386ff897113608fe445604715db1d426eeffec3d90b7eb1a320cfcd7aa6a",
+    "unchanged_RAM_AppHive_probe_sha256": "b08ef5c06efff4abddf54d1547d11a96974ba9fe13abe7490c8fa90122dddd62",
+    "firmware_setting_calls": 0,
+    "power_calls": 0
+  },
+  "implementation_contract": [
+    "Pristine authenticated J metadata retained and fully hashed; no changed-byte exception.",
+    "Query only fresh owned ordinary RAM copies positively bound through existing kernel_ram_backing current DOS/held NT Ramdisk proof.",
+    "Read-only AppHive uses the measured ordinary RAM path, with native identity and complete-byte bookends.",
+    "Peak and cumulative RAM stay bounded; fresh RAM query workspace is released after handles close.",
+    "Warm strict fields, current raw EFI/FAT hashes, encoded equality, source/J/boot/native gates unchanged."
+  ],
+  "product_native_qualified": false,
+  "normal_conversion_qualified": false,
+  "AP_restart_resume_qualified": false,
+  "AP_restart_rollback_qualified": false,
+  "unit_tests_run": false,
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "focused_check": {
+    "unit_tests_run": false,
+    "session_id": 11064,
+    "wall_seconds": 31.9374239,
+    "native_run": false,
+    "exit_code": 0,
+    "receipt_sha256": "4993d63e58850e6ca5e8c4dbbd9ecbcdae653ec4ba5ada9dd34970f0d1eadc41"
+  },
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/native/recovery_boot/bcd_device.rs",
+      "sha256": "6c69015161c89cfb77e1779225c83a6e05c9e3e23a5dc5b7103656dac012fa43"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/recovery_boot/cold.rs",
+      "sha256": "584f82934722d65da4e9dcc9c6fd31ae6d44b6e32ebb0fe6dd94e0d43a005106"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/recovery_boot/metadata.rs",
+      "sha256": "6b76518b745d171ed2c0d26076610013d20a9031d36ebe939696c7948452d096"
+    }
+  ]
+}

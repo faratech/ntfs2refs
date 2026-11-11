@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "kind": "bundle-cli-controlled-interruption",
+  "run_id": "9340223f9d124a9f88e563ba669f0787",
+  "observed_utc": "2026-10-29T04:33:48.8814837+00:00",
+  "host_case": ".lab/hyperv/streaming-v2-20261027/bundle-cli-20261029-9340223f9d124a9f88e563ba669f0787",
+  "toolset_sha256": "f83b31828fb37f0e4a8d30238dabd76452a60134969db1d733b9bfb4493fb31c",
+  "native_converter_sha256": "56b92ac2ccc67692b16bfffebff5401c58979946ca8f0414abcee1c6725a9ee7",
+  "staged_public_cli_sha256": "2cac76e012b4cf9b9d9ea5a90a3a77933856061afb4395a2c7e4b9ab4dc33ef0",
+  "native_process": {
+    "pid": 5828,
+    "creation_ms": 1793245511151,
+    "retained_handle_observed": true,
+    "actual_exit": 86,
+    "flushed_writes_before_interrupt": 1
+  },
+  "pins": {
+    "initial_request": "7c94c1ca3149601cf6446ea37e2183565f7c5c3fbd47ed3c5ac6cdd333d306e4",
+    "request": "67282b215ce139e3cd1469b18e7b72db6b5ab3f382cd1b0cb25bbf06e4f45335",
+    "ticket": "83cbcbed651cbcd5947fbf0e2a7a7e08222b3a05fe8dd871bc1868b0f8c2b622",
+    "capture": "b9fdc7e8880963054740f278e8a71729ca494bc414b29b60a04d0cc170d400ac",
+    "expectation": "e1d5fa0cafb0a584514d527838a626c5f8e50ae6f1e2d089cde94cf0f1f76c47",
+    "bundle": "3f3636d1ad2d64ac28920f722462d6d94639bd7d26e0ba0cecd9be7c618ee204",
+    "managed_receipt": "6b0f52f0d8647683cb69d1ccd2540936b05b9274548cb1a1d23a4205ac0deebf"
+  },
+  "images": {
+    "source": "13c7808742ac3d7994ebfac438f9fc609e6d9f75f5017f1d19dd517b1999f480",
+    "target": "b920ced8c88c491405cc4c77ca309c7d272ef6f20582445295d94355d9c60115",
+    "packed_declared_only": "b9bc1712cb97a3ed3418cf4b6b88cffc10b551e2acad0bfa3f731776295f0f87"
+  },
+  "partial": {
+    "checkpoint_id": "d121235d-f9fb-4e0e-843e-1ea4c3883221",
+    "parent_id": "0872b74c-5b3d-43cf-9ccf-fc64fda0cd93",
+    "checkpoint_count": 3,
+    "receipt_sha256": "c1ef10089c5eb477784208c5c1ef5a4ff5ef09fcb025404262394c40fa64f9b5",
+    "archive_index_sha256": "8d3061ca35faaf7621909a62b6bd8ee8d0796d5d15740a229ad2a593808d87d5",
+    "publication_sha256": "46f476a29ca3670484547e0bfeb34aed933cd59dc5b22ffc7a695bb73187686b",
+    "archive_documents": 36,
+    "archive_bytes": 421050,
+    "source_offline": true,
+    "source_readonly": false,
+    "shadow_offline": true,
+    "shadow_readonly": true
+  },
+  "qualification": {
+    "controlled_exit86": true,
+    "native_bundle_printed_checksum": "3f3636d1ad2d64ac28920f722462d6d94639bd7d26e0ba0cecd9be7c618ee204",
+    "conversion_success": false,
+    "recovery_success_claimed": false,
+    "handoff_claimed": false,
+    "power_loss_qualified": false,
+    "production_qualified": false
+  },
+  "scope": "Closed host metadata records one flushed-write process interruption, native bundle publication and partial checkpoint preservation only. No source, journal, packed payload, image or VM was opened for this evidence record."
+}

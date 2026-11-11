@@ -1,0 +1,54 @@
+{
+  "base_commit": "8368e76c0469d19764e3d068a67e7b3772e40cf7",
+  "new_or_existing_unit_tests_run": false,
+  "files": [
+    {
+      "sha256": "fc39c443ea1447ed7046b86b70ff447b97ce16c255e1c289dadd0ab656c33c93",
+      "path": "src/bin/lab-apply-prepared-offline.rs"
+    },
+    {
+      "sha256": "73f5d9a30db96736264089049b7e1e1fe79d46063a6503173301d778354fdb8c",
+      "path": "src/resource_prepared_runner.rs"
+    }
+  ],
+  "actual_boot": {
+    "shutdown_owned_exit": 0,
+    "current_source_AP_or_data_write_not_independently_observed": true,
+    "native_boot_options_frame": "AFTER-ONE-restart-13.png",
+    "controller_source_data_write_capability": false,
+    "case": "BOOT-installed-af00-ONE-restart-318261239cfd4024ada7bd86c084a2b3",
+    "native_intent_sha256": "cb32551bbcb9ac030ca798e80bf98c8498f403e25a8c6dd266685ce7d0b26412",
+    "shutdown_birth": 1793918870917,
+    "native_bootstrap_sha256": "cd4eedce4e2cc9607b3fd2d68f51db5e38d0a3e4c4e6af5a51e076233700f8e7",
+    "no_positive_environment_checkpoint_observed": true,
+    "RAM_log": "n2r-bootstrap-1876.jsonl",
+    "converter_error": "Incorrect function (os error 1)",
+    "RAM_log_frame": "AFTER-ONE-restart-10.png",
+    "RAM_log_bytes": 0,
+    "shutdown_pid": 520,
+    "observed_RAM_Windows": "X:\\Windows\\System32",
+    "restart_requests": 1
+  },
+  "goal_complete": false,
+  "focused_check": {
+    "unit_tests_run": false,
+    "kind": "public-partition-dispatch-focused-check",
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+    "capacity": {
+      "actual_bytes": 245401356146,
+      "free_bytes": 161911861248,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 2147483648,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "wall_seconds": 25.2425808,
+    "shared_target_reused": true,
+    "native_run": false,
+    "exit_code": 0
+  },
+  "diagnostic_change": "Only operation-level CLI error contexts and RAM constructor-failure event preservation; source and boot admission checks unchanged",
+  "native_fix_or_conversion_qualified": false,
+  "kind": "first-protected-cold-boot-and-initialization-diagnostics-v1"
+}

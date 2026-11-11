@@ -16,7 +16,7 @@ use std::{
     sync::Arc,
 };
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_NO_MORE_FILES, GetLastError, INVALID_HANDLE_VALUE,
+    CloseHandle, ERROR_NO_MORE_FILES, ERROR_SHARING_VIOLATION, GetLastError, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     FindFirstVolumeW, FindNextVolumeW, FindVolumeClose, GetVolumeInformationByHandleW,
@@ -24,6 +24,53 @@ use windows_sys::Win32::Storage::FileSystem::{
     SetVolumeMountPointW,
 };
 use windows_sys::Win32::System::{IO::DeviceIoControl, SystemInformation::GetWindowsDirectoryW};
+
+mod isolation_restore;
+mod paged_recovery;
+mod paged_write_policy;
+mod source_cache;
+pub use source_cache::{
+    NativeSourceObservationOrigin, SourceCacheContinuity, SourceCacheFingerprintDomain,
+    SourceCacheFingerprintMismatch, SourceCacheRefreshDomain, SourceCacheRefreshRow,
+};
+pub mod offline_environment;
+pub mod partition_isolation;
+pub mod recovery_boot;
+pub mod recovery_image;
+pub use paged_recovery::{
+    BorrowedPagedWriter, GeneralLiveConvertedObservation, PagedRecoveryDirection,
+    PagedRecoveryPins, note_selected_new_bytes_verified, selected_new_bytes_verified,
+};
+pub use paged_recovery::{
+    PartitionClosedJournalObservation, PartitionHandoffWitness, PartitionTerminalKind,
+    authenticate_partition_closed_journal,
+};
+pub use paged_write_policy::{
+    HeldPagedWritePolicy, PagedPolicyIndexBuilder, PagedPolicyIndexFacts, PagedPolicyIndexRow,
+};
+
+mod frozen_shadow_source_query;
+mod frozen_source_read_scope;
+mod offline_windows;
+mod partition_dump_locations;
+mod partition_runtime_roles;
+mod partition_storage_roles;
+pub(crate) use frozen_shadow_source_query::NativeFrozenShadowSourceQueryWitness;
+pub use frozen_source_read_scope::GeneralFrozenSourceReadScope;
+mod windows_storage_class;
+pub use windows_storage_class::BootStorageHintNormalization;
+mod partition_owner;
+mod partition_source_metadata;
+mod partition_target_observation;
+pub use partition_source_metadata::{PartitionSourceMetadataState, PartitionSourceMetadataWitness};
+pub mod partition_lifecycle;
+pub mod partition_restoration;
+mod partition_restoration_observation;
+pub use partition_owner::PartitionMixedReplayGate;
+pub use partition_owner::{PartitionJournalReadView, PartitionSourceAdmissionGate};
+pub use partition_owner::{
+    PartitionOwnerState, PartitionOwnerToken, PartitionPagedWriter, PartitionScopedOwner,
+};
 
 const DEVICE: u32 = 0x002d1080;
 const LENGTH: u32 = 0x0007405c;
@@ -38,7 +85,9 @@ const UNLOCK: u32 = 0x0009001c;
 const DISMOUNT: u32 = 0x00090020;
 const OFFLINE: u64 = 1;
 const READ_ONLY: u64 = 2;
-const MAX_IO: usize = 1024 * 1024;
+// Largest single device request and the size of each handle's aligned buffer.
+// Larger sequential requests cut per-call overhead on fast storage.
+const MAX_IO: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct NativeEvent {
@@ -112,6 +161,87 @@ pub struct GeneralLiveNtfsObservation {
     report: crate::attestation::Report,
     txf: Option<crate::txf_native::GeneralObservation>,
     txf_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vss_observation: Option<crate::vss_observation::Observation>,
+    before: GeneralDiskState,
+    after: GeneralDiskState,
+}
+/// Same live physical protection lease as GeneralLiveNtfsObservation, with
+/// complete metadata rows retained in an authenticated ordinary file.
+#[derive(Debug)]
+pub struct GeneralLivePagedNtfsObservation {
+    domain: crate::observation_pages::PagedNativeObservation,
+    windows_txf_markers: Option<Arc<crate::windows_txf::VerifiedWindowsTxfMarkers>>,
+    windows_object_ids: Option<Arc<crate::windows_object_ids::VerifiedWindowsObjectIds>>,
+    txf: Option<crate::txf_native::GeneralObservation>,
+    txf_error: Option<String>,
+    vss_observation: Option<crate::vss_observation::Observation>,
+    before: GeneralDiskState,
+    after: GeneralDiskState,
+    origin: NativeSourceObservationOrigin,
+    cache_continuity: Option<SourceCacheContinuity>,
+}
+impl GeneralLivePagedNtfsObservation {
+    pub fn origin(&self) -> &NativeSourceObservationOrigin {
+        &self.origin
+    }
+    pub fn require_cache_owner(
+        &self,
+        source: &GeneralFrozenPartition,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
+        if let Some(proof) = &self.cache_continuity {
+            proof.require_source(
+                source,
+                proof.inspection_sha256(),
+                proof.origin_sha256(),
+                events,
+            )?;
+        }
+        Ok(())
+    }
+    pub fn windows_object_ids(
+        &self,
+    ) -> Option<&crate::windows_object_ids::VerifiedWindowsObjectIds> {
+        self.windows_object_ids.as_deref()
+    }
+    pub fn windows_object_ids_owned(
+        &self,
+    ) -> Option<Arc<crate::windows_object_ids::VerifiedWindowsObjectIds>> {
+        self.windows_object_ids.as_ref().map(Arc::clone)
+    }
+    pub fn windows_txf_markers(&self) -> Option<&crate::windows_txf::VerifiedWindowsTxfMarkers> {
+        self.windows_txf_markers.as_deref()
+    }
+    pub fn windows_txf_markers_owned(
+        &self,
+    ) -> Option<Arc<crate::windows_txf::VerifiedWindowsTxfMarkers>> {
+        self.windows_txf_markers.as_ref().map(Arc::clone)
+    }
+    pub fn domain(&self) -> &crate::observation_pages::PagedNativeObservation {
+        &self.domain
+    }
+    pub fn txf(&self) -> Option<&crate::txf_native::GeneralObservation> {
+        self.txf.as_ref()
+    }
+    pub fn txf_error(&self) -> Option<&str> {
+        self.txf_error.as_deref()
+    }
+    pub fn vss_observation(&self) -> Option<&crate::vss_observation::Observation> {
+        self.vss_observation.as_ref()
+    }
+    pub fn before(&self) -> &GeneralDiskState {
+        &self.before
+    }
+    pub fn after(&self) -> &GeneralDiskState {
+        &self.after
+    }
+}
+struct CollectedGeneralNtfs<T> {
+    domain: T,
+    txf: Option<crate::txf_native::GeneralObservation>,
+    txf_error: Option<String>,
+    vss_observation: Option<crate::vss_observation::Observation>,
     before: GeneralDiskState,
     after: GeneralDiskState,
 }
@@ -137,6 +267,31 @@ impl GeneralLiveRefsObservation {
     }
 }
 
+/// Post-freeze native metadata/layout witness issued only by the physical
+/// READ_ONLY lease. Logical payload, raw before/after equality and allocation
+/// graph completeness require separate proofs; this grants no write authority.
+#[derive(Debug, Serialize)]
+pub struct GeneralLiveRefsLayoutObservation {
+    report: crate::shadow_native::GeneralLayoutReport,
+    before: GeneralDiskState,
+    observed_readonly: GeneralDiskState,
+    after: GeneralDiskState,
+}
+impl GeneralLiveRefsLayoutObservation {
+    pub fn report(&self) -> &crate::shadow_native::GeneralLayoutReport {
+        &self.report
+    }
+    pub fn before(&self) -> &GeneralDiskState {
+        &self.before
+    }
+    pub fn observed_readonly(&self) -> &GeneralDiskState {
+        &self.observed_readonly
+    }
+    pub fn after(&self) -> &GeneralDiskState {
+        &self.after
+    }
+}
+
 /// A borrowed actual volume handle created only inside the exclusion lease.
 /// Neither a caller-provided flag nor a serialized report can create this
 /// route. No constructor or disk-state setters are exposed outside native.rs.
@@ -146,6 +301,9 @@ pub(crate) struct GeneralReadonlyRefsVolume<'a> {
     volume: &'a File,
     expected_state: &'a GeneralDiskState,
 }
+mod readonly_refs_access;
+pub use crate::shadow_native::PartitionReadonlyFidelity as PartitionTerminalNativeObservation;
+pub(crate) use readonly_refs_access::{ProtectedReadonlyRefsAccess, ReadonlyRefsScope};
 impl GeneralReadonlyRefsVolume<'_> {
     pub(crate) fn binding(&self) -> &GeneralDiskBinding {
         self.binding
@@ -199,6 +357,9 @@ impl GeneralLiveNtfsObservation {
     pub fn txf_error(&self) -> Option<&str> {
         self.txf_error.as_deref()
     }
+    pub fn vss_observation(&self) -> Option<&crate::vss_observation::Observation> {
+        self.vss_observation.as_ref()
+    }
 }
 impl LiveNtfsObservation {
     pub fn report(&self) -> &crate::attestation::Report {
@@ -241,10 +402,142 @@ pub struct WritePolicy {
     pub allowed: Vec<(u64, u64)>,
     pub retained: Vec<(u64, u64)>,
     pub maximum_bytes: u64,
+    pub journal_profile: crate::journal_file::JournalProfile,
+}
+
+enum SelectedWriteCapacity {
+    Encoded {
+        journal_bytes: u64,
+    },
+    OldZero {
+        journal_bytes: u64,
+        old_zero_bytes: u64,
+    },
+    OldZeroActualBytesV3 {
+        journal_bytes: u64,
+        old_zero_bytes: u64,
+        pinned_max_journal_bytes: u64,
+    },
+    SourceFreeActualBytesV3 {
+        journal_bytes: u64,
+        old_zero_bytes: u64,
+        source_free_bytes: u64,
+        pinned_max_journal_bytes: u64,
+    },
 }
 
 impl WritePolicy {
     pub fn validate(&self, length: u64) -> io::Result<()> {
+        self.validate_with_byte_limit(length, self.journal_profile.max_changed_bytes())
+    }
+
+    /// Encoded selected journals retain every old byte but may synthesize the
+    /// new bytes. The exact, independently checked journal length replaces the
+    /// legacy assumption that every changed byte needs two payload copies.
+    fn validate_encoded(&self, length: u64, journal_bytes: u64) -> io::Result<()> {
+        if journal_bytes == 0 || journal_bytes > self.journal_profile.max_journal_bytes() {
+            return Err(invalid(
+                "encoded journal exceeds its native storage profile",
+            ));
+        }
+        self.validate_with_byte_limit(length, journal_bytes)
+    }
+
+    /// Canonical old zeros preserve logical rollback bytes without storing a
+    /// payload copy. The caller authenticates the pinned old-zero subset;
+    /// these counts alone grant no journal or source authority.
+    fn validate_old_zero_encoded(
+        &self,
+        length: u64,
+        journal_bytes: u64,
+        old_zero_bytes: u64,
+    ) -> io::Result<()> {
+        if journal_bytes == 0
+            || journal_bytes > self.journal_profile.max_journal_bytes()
+            || old_zero_bytes == 0
+            || old_zero_bytes > self.maximum_bytes
+            || !old_zero_bytes.is_multiple_of(GRANULE)
+        {
+            return Err(invalid(
+                "old-zero journal capacity or logical byte count differs",
+            ));
+        }
+        let reconstructed_capacity = journal_bytes
+            .checked_add(old_zero_bytes)
+            .ok_or_else(|| invalid("old-zero journal capacity overflow"))?;
+        self.validate_with_byte_limit(
+            length,
+            reconstructed_capacity.min(self.journal_profile.max_encoded_changed_bytes()),
+        )
+    }
+
+    /// Separate capacity admission for an explicitly pinned actual-byte
+    /// policy. The caller must authenticate the complete format-four plan and
+    /// journal; these scalar counts are not source or replay authority.
+    fn validate_old_zero_actual_bytes_v3(
+        &self,
+        length: u64,
+        journal_bytes: u64,
+        old_zero_bytes: u64,
+        pinned_max_journal_bytes: u64,
+    ) -> io::Result<()> {
+        let expected = crate::journal_file::JournalProfile::from_schema_and_capacity(
+            3,
+            Some(pinned_max_journal_bytes),
+        )?;
+        if self.journal_profile != expected
+            || journal_bytes == 0
+            || journal_bytes > pinned_max_journal_bytes
+            || old_zero_bytes == 0
+            || old_zero_bytes > self.maximum_bytes
+            || !old_zero_bytes.is_multiple_of(GRANULE)
+        {
+            return Err(invalid(
+                "actual-byte selected capacity differs from pinned V3 policy",
+            ));
+        }
+        let reconstructed = journal_bytes
+            .checked_add(old_zero_bytes)
+            .ok_or_else(|| invalid("actual-byte selected capacity overflow"))?;
+        self.validate_with_byte_limit(length, reconstructed.min(length))
+    }
+
+    /// Capacity only: frozen allocation/VSS admission and the authenticated
+    /// format-five plan remain the caller's separate obligations.
+    fn validate_source_free_actual_bytes_v3(
+        &self,
+        length: u64,
+        journal_bytes: u64,
+        old_zero_bytes: u64,
+        source_free_bytes: u64,
+        pinned_max_journal_bytes: u64,
+    ) -> io::Result<()> {
+        let expected = crate::journal_file::JournalProfile::from_schema_and_capacity(
+            3,
+            Some(pinned_max_journal_bytes),
+        )?;
+        let omitted = old_zero_bytes
+            .checked_add(source_free_bytes)
+            .ok_or_else(|| invalid("source-free omitted byte count overflow"))?;
+        if self.journal_profile != expected
+            || journal_bytes == 0
+            || journal_bytes > pinned_max_journal_bytes
+            || source_free_bytes == 0
+            || !source_free_bytes.is_multiple_of(GRANULE)
+            || !old_zero_bytes.is_multiple_of(GRANULE)
+            || omitted > self.maximum_bytes
+        {
+            return Err(invalid(
+                "source-free selected capacity differs from pinned V3 policy",
+            ));
+        }
+        let reconstructed = journal_bytes
+            .checked_add(omitted)
+            .ok_or_else(|| invalid("source-free selected capacity overflow"))?;
+        self.validate_with_byte_limit(length, reconstructed.min(length))
+    }
+
+    fn validate_with_byte_limit(&self, length: u64, byte_limit: u64) -> io::Result<()> {
         layout::validate_ranges(&self.allowed, length)?;
         // Relocation-only tree plans have no retained ranges. The native
         // fixture adapter still enforces its original one-range profile.
@@ -262,8 +555,7 @@ impl WritePolicy {
                 }
             }
         }
-        if bytes > self.maximum_bytes || self.maximum_bytes > crate::journal_file::MAX_CHANGED_BYTES
-        {
+        if bytes > self.maximum_bytes || self.maximum_bytes > byte_limit {
             return Err(invalid(
                 "native write policy exceeds the explicit journal-capacity profile",
             ));
@@ -283,6 +575,19 @@ impl WritePolicy {
     }
 }
 
+#[derive(Clone, Copy)]
+enum ControlInputBudget {
+    Ordinary64,
+    GptPartitionInformation120,
+}
+impl ControlInputBudget {
+    fn input_limit(self) -> usize {
+        match self {
+            Self::Ordinary64 => 64,
+            Self::GptPartitionInformation120 => 120,
+        }
+    }
+}
 fn control(
     file: &File,
     name: &str,
@@ -291,8 +596,76 @@ fn control(
     capacity: usize,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<Vec<u8>> {
-    if input.len() > 64 || capacity > 65536 || events.len() >= 128 {
-        return Err(invalid("native control budget exceeded"));
+    control_admitted(
+        file,
+        name,
+        code,
+        input,
+        capacity,
+        events,
+        ControlInputBudget::Ordinary64,
+    )
+}
+/// Fixed SDK single-GPT-partition setter only. The caller must already hold
+/// the actual source/intent/GPT lifecycle; this helper grants none of those.
+/// Ordinary control keeps its64-byte input ceiling and cannot select this case.
+fn control_set_gpt_partition(
+    file: &File,
+    name: &str,
+    input: &[u8; 120],
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<Vec<u8>> {
+    const _: () = assert!(
+        std::mem::size_of::<windows_sys::Win32::System::Ioctl::SET_PARTITION_INFORMATION_EX>()
+            == 120
+            && std::mem::offset_of!(
+                windows_sys::Win32::System::Ioctl::SET_PARTITION_INFORMATION_EX,
+                Anonymous
+            ) == 8
+            && std::mem::size_of::<windows_sys::Win32::System::Ioctl::PARTITION_INFORMATION_GPT>()
+                == 112
+    );
+    if input[..4] != 1u32.to_le_bytes() || input[4..8] != [0; 4] {
+        return Err(invalid(
+            "typed partition setter requires exact GPT SDK header/padding",
+        ));
+    }
+    control_admitted(
+        file,
+        name,
+        windows_sys::Win32::System::Ioctl::IOCTL_DISK_SET_PARTITION_INFO_EX,
+        input,
+        0,
+        events,
+        ControlInputBudget::GptPartitionInformation120,
+    )
+}
+fn control_admitted(
+    file: &File,
+    name: &str,
+    code: u32,
+    input: &[u8],
+    capacity: usize,
+    events: &mut Vec<NativeEvent>,
+    budget: ControlInputBudget,
+) -> io::Result<Vec<u8>> {
+    if matches!(budget, ControlInputBudget::GptPartitionInformation120)
+        && (code != windows_sys::Win32::System::Ioctl::IOCTL_DISK_SET_PARTITION_INFO_EX
+            || input.len() != 120
+            || capacity != 0)
+    {
+        return Err(invalid(
+            "typed GPT setter control shape differs from fixed SDK contract",
+        ));
+    }
+    let limit = budget.input_limit();
+    if input.len() > limit || capacity > 65536 || events.len() >= crate::MAX_BATCH_EVENTS {
+        return Err(invalid(&format!(
+            "native control budget exceeded: operation={name}, code=0x{code:08x}, input_bytes={}, output_capacity={capacity}, events={}, limits(input_bytes<={limit}, output_capacity<=65536, events<{})",
+            input.len(),
+            events.len(),
+            crate::MAX_BATCH_EVENTS
+        )));
     }
     let mut output = vec![0; capacity];
     let mut returned = 0_u32;
@@ -338,7 +711,10 @@ fn control(
         output: output.clone(),
     });
     if let Some(error) = error {
-        return Err(io::Error::new(error.kind(), format!("{name}: {error}")));
+        // Native callers classify expected WRITE_PROTECT, NOT_READY and other
+        // statuses by raw_os_error(). The event above retains the operation
+        // name and complete result; wrapping in a string erases that contract.
+        return Err(error);
     }
     Ok(output)
 }
@@ -388,10 +764,59 @@ pub(crate) fn set_attributes(
     if attributes(file, events)? != value {
         return Err(invalid("disk attribute transition did not take effect"));
     }
+    // Persist=1 lands in the SYSTEM hive (the disk's Partmgr "Attributes"
+    // value, observed equal to these bits), which Windows writes lazily: a hard
+    // power-off after an activation reverted OFFLINE to OFFLINE|READ_ONLY. Do
+    // not report the transition until the hive is on disk.
+    flush_persisted_attributes(events)
+}
+
+/// RegFlushKey on HKLM\SYSTEM: returns once the hive holding the persisted
+/// disk attributes is written to disk. Opens the key for query only, writes no
+/// registry value and changes no attribute; failure refuses without retry.
+pub(crate) fn flush_persisted_attributes(events: &mut Vec<NativeEvent>) -> io::Result<()> {
+    use windows_sys::Win32::System::Registry::{
+        HKEY, HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, RegCloseKey, RegFlushKey, RegOpenKeyExW,
+    };
+    if events.len() >= crate::MAX_BATCH_EVENTS {
+        return Err(invalid("native control budget exceeded"));
+    }
+    let name: Vec<u16> = "SYSTEM\0".encode_utf16().collect();
+    let mut key: HKEY = ptr::null_mut();
+    // SAFETY: predefined root key, NUL-terminated name and a live output slot.
+    let opened = unsafe {
+        RegOpenKeyExW(
+            HKEY_LOCAL_MACHINE,
+            name.as_ptr(),
+            0,
+            KEY_QUERY_VALUE,
+            &mut key,
+        )
+    };
+    let status = if opened == 0 {
+        // SAFETY: `key` was opened above and is closed exactly once here.
+        let flushed = unsafe { RegFlushKey(key) };
+        // SAFETY: as above; the close result does not change the flush outcome.
+        unsafe { RegCloseKey(key) };
+        flushed
+    } else {
+        opened
+    };
+    events.push(NativeEvent {
+        operation: "flush-persisted-disk-attributes".into(),
+        control_code: 0,
+        input: b"HKLM\\SYSTEM".to_vec(),
+        succeeded: status == 0,
+        native_error: (status != 0).then_some(status as i32),
+        output: Vec::new(),
+    });
+    if status != 0 {
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
     Ok(())
 }
 
-pub(crate) fn current_windows_disk(events: &mut Vec<NativeEvent>) -> io::Result<u32> {
+pub fn current_windows_directory() -> io::Result<std::path::PathBuf> {
     let mut name = vec![0_u16; 512];
     // SAFETY: the output buffer contains 512 writable UTF-16 elements.
     let count = unsafe { GetWindowsDirectoryW(name.as_mut_ptr(), name.len() as u32) } as usize;
@@ -400,6 +825,18 @@ pub(crate) fn current_windows_disk(events: &mut Vec<NativeEvent>) -> io::Result<
             "current Windows volume cannot be safely identified",
         ));
     }
+    Ok(std::path::PathBuf::from(
+        String::from_utf16(&name[..count])
+            .map_err(|_| invalid("current Windows directory UTF-16 differs"))?,
+    ))
+}
+
+pub(crate) fn current_windows_disk(events: &mut Vec<NativeEvent>) -> io::Result<u32> {
+    use std::os::windows::ffi::OsStrExt;
+    let name: Vec<u16> = current_windows_directory()?
+        .as_os_str()
+        .encode_wide()
+        .collect();
     let letter =
         char::from_u32(u32::from(name[0])).ok_or_else(|| invalid("invalid system drive"))?;
     if !letter.is_ascii_alphabetic() {
@@ -456,6 +893,31 @@ pub(crate) fn general_disk_state(
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<GeneralDiskState> {
     binding.validate()?;
+    if binding.layout_profile == crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows {
+        // Whether the running Windows keeps a page file, dump file or boot
+        // role on this disk. The disk is offline, so none can be added; the
+        // answer (four WMI queries) is refreshed every two seconds rather
+        // than on every state query.
+        static PACED: crate::verify_policy::Paced = crate::verify_policy::Paced::new();
+        if PACED.due(2000) {
+            let _timed = crate::perf::scope(crate::perf::Point::DetachedRoles);
+            offline_windows::require_detached_roles(disk, binding, events)?;
+            PACED.passed();
+        }
+    }
+    general_disk_state_held_geometry(disk, binding, events)
+}
+
+// Deliberately private to native and its children. Only the opaque SHADOW
+// query witness and exclusive frozen-source byte scope use held geometry
+// between full role fences. Source admission/write/activation callers keep
+// the complete offline-Windows role checks above.
+fn general_disk_state_held_geometry(
+    disk: &File,
+    binding: &GeneralDiskBinding,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<GeneralDiskState> {
+    binding.validate()?;
     let device = control(&disk, "general-storage-device", DEVICE, &[], 12, events)?;
     layout::validate_device(&device, binding.disk_number)?;
     let disk_length = control(&disk, "general-disk-length", LENGTH, &[], 8, events)?;
@@ -493,6 +955,7 @@ pub fn observe_general_disk_state_readonly(
     binding: GeneralDiskBinding,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<GeneralDiskState> {
+    let _timed = crate::perf::scope(crate::perf::Point::DiskState);
     binding.validate()?;
     if current_windows_disk(events)? == binding.disk_number {
         return Err(invalid("current Windows disk is excluded"));
@@ -643,6 +1106,64 @@ pub fn capture_mount_paths_general(
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<MountPathObservation> {
     probe_general(binding.clone(), events)?;
+    capture_mount_paths_for_bound_volume(binding)
+}
+
+/// Read-only path enumeration for an actual journal volume. Unlike the
+/// source-only probe, this role can be the Windows disk when the typed journal
+/// binding explicitly permits additional GPT partitions. This creates no
+/// source, replay or write capability.
+pub fn capture_mount_paths_for_journal(
+    journal: &crate::journal_file::GeneralJournalStorageBinding,
+) -> io::Result<MountPathObservation> {
+    journal.validate()?;
+    let root = format!("{}\\", journal.disk.volume_path()?);
+    let role = crate::discovery::Role::Journal {
+        allow_additional_partitions: journal.allow_additional_partitions,
+    };
+    // Each native discovery independently checks the exact volume extent,
+    // device/disk geometry, complete GPT non-overlap/identity, attributes,
+    // Windows disk, requested role and two identical native snapshots.
+    let before = crate::discovery::discover(&root, role)?;
+    if before.binding != journal.disk
+        || !before.read_only
+        || !before.observed_twice_unchanged
+        || before.source_write_requests != 0
+    {
+        return Err(invalid(
+            "journal mount-route binding differs before enumeration",
+        ));
+    }
+    let paths = capture_mount_paths_for_bound_volume(journal.disk.clone())?;
+    let after = crate::discovery::discover(&root, role)?;
+    if after.binding != journal.disk
+        || !after.read_only
+        || !after.observed_twice_unchanged
+        || after.source_write_requests != 0
+        || before.evidence != after.evidence
+        || before.windows_disk_number != after.windows_disk_number
+        || before.disk_is_windows_disk != after.disk_is_windows_disk
+        || before.filesystem != after.filesystem
+        || before.filesystem_flags != after.filesystem_flags
+        || before.volume_serial_low32 != after.volume_serial_low32
+        || before.bytes_per_sector != after.bytes_per_sector
+        || before.sectors_per_cluster != after.sectors_per_cluster
+        || !before
+            .volume_guid_path
+            .eq_ignore_ascii_case(&after.volume_guid_path)
+        || paths.binding != after.binding
+        || !paths.all_paths_resolve_to_bound_volume
+    {
+        return Err(invalid(
+            "journal mount-route identity changed during enumeration",
+        ));
+    }
+    Ok(paths)
+}
+
+fn capture_mount_paths_for_bound_volume(
+    binding: GeneralDiskBinding,
+) -> io::Result<MountPathObservation> {
     let root = format!("{}\\", binding.volume_path()?);
     let mut root_wide: Vec<u16> = root.encode_utf16().collect();
     root_wide.push(0);
@@ -892,6 +1413,7 @@ pub fn rediscover_general_volume_wait(
     binding: GeneralDiskBinding,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<GeneralDiskBinding> {
+    let _timed = crate::perf::scope(crate::perf::Point::VolumeWait);
     for attempt in 0..60 {
         match rediscover_general_volume(binding.clone(), events) {
             Ok(found) => return Ok(found),
@@ -1021,24 +1543,158 @@ impl Seek for GeneralLockedPartition {
 
 /// Persistently excluded general data partition. This handle has no Write
 /// implementation and cannot make the disk mountable.
+/// Read-ahead for a frozen partition, used only inside a scope the caller
+/// declares (`with_read_ahead`, or a fresh-apply writer's `set_read_ahead`).
+///
+/// The passes that verify, write and read back the changed ranges read tens
+/// of thousands of small ranges in ascending order, a device read each. With
+/// read-ahead on, a read that continues shortly after the previous one
+/// fetches a megabyte, and the ranges that follow are served from it. The
+/// window is dropped when the scope ends, and a write through the same
+/// object is copied into it, so it never holds bytes the device no longer has.
+#[derive(Default)]
+struct ReadAhead {
+    enabled: bool,
+    window: Option<AlignedBuffer>,
+    start: u64,
+    length: usize,
+    // Where the furthest forward read so far ended.
+    last_end: u64,
+}
+impl ReadAhead {
+    /// A read that starts at most this far past the previous one reads ahead.
+    const BYTES: usize = 1024 * 1024;
+    fn clear(&mut self) {
+        self.length = 0;
+        self.last_end = 0;
+    }
+    /// Keeps the window equal to the device after `bytes` were written at
+    /// partition offset `offset` through the object that owns this window.
+    fn written(&mut self, offset: u64, bytes: &[u8]) {
+        if self.length == 0 {
+            return;
+        }
+        let Some(window) = self.window.as_mut() else {
+            return;
+        };
+        let (start, end) = (self.start, self.start + self.length as u64);
+        let (from, to) = (offset.max(start), (offset + bytes.len() as u64).min(end));
+        if from < to {
+            window.bytes_mut()[(from - start) as usize..(to - start) as usize]
+                .copy_from_slice(&bytes[(from - offset) as usize..(to - offset) as usize]);
+        }
+    }
+}
+
 pub struct GeneralFrozenPartition {
     file: File,
     binding: GeneralDiskBinding,
     frozen_state: GeneralDiskState,
     position: u64,
     buffer: AlignedBuffer,
+    ahead: ReadAhead,
     native_bytes_read: u64,
+    resource_budget: Option<crate::tree_resources::ResourceBudget>,
     freeze_observation: Option<GeneralFreezeObservation>,
     allocation_capture: Option<Arc<()>>,
 }
 
+/// Read-only view of an activated, persistently offline journal target. Unlike
+/// GeneralFrozenPartition, this does not assert READ_ONLY or immutable bytes:
+/// the owning journal writer may change its admitted patch ranges. Callers
+/// must bracket operations with state() and independently prove any complement
+/// they reuse is unchanged. No Write, mount or disk-attribute setter is exposed.
+pub struct GeneralJournalReadView {
+    file: File,
+    binding: GeneralDiskBinding,
+    expected_state: GeneralDiskState,
+    position: u64,
+    buffer: AlignedBuffer,
+    native_bytes_read: u64,
+}
+
+impl GeneralJournalReadView {
+    pub fn byte_len(&self) -> u64 {
+        self.binding.identity.partition_bytes
+    }
+
+    pub fn binding(&self) -> &GeneralDiskBinding {
+        &self.binding
+    }
+
+    pub fn native_bytes_read(&self) -> u64 {
+        self.native_bytes_read
+    }
+
+    pub fn state(&self, events: &mut Vec<NativeEvent>) -> io::Result<GeneralDiskState> {
+        let actual = general_disk_state(&self.file, &self.binding, events)?;
+        if actual != self.expected_state || actual.disk_attributes != OFFLINE {
+            return Err(invalid(
+                "journal read view lost offline state or device identity",
+            ));
+        }
+        Ok(actual)
+    }
+}
+
+impl Read for GeneralJournalReadView {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        if output.is_empty() || self.position == self.byte_len() {
+            return Ok(0);
+        }
+        let aligned = self.position / GRANULE * GRANULE;
+        let prefix = (self.position - aligned) as usize;
+        let wanted = output
+            .len()
+            .min(MAX_IO - prefix)
+            .min((self.byte_len() - self.position).min(MAX_IO as u64) as usize);
+        let count = (prefix + wanted).div_ceil(GRANULE as usize) * GRANULE as usize;
+        if aligned + count as u64 > self.byte_len() {
+            return Err(invalid("aligned journal view read escapes partition"));
+        }
+        self.file.seek(SeekFrom::Start(
+            self.binding.identity.partition_offset + aligned,
+        ))?;
+        let read = self.file.read(&mut self.buffer.bytes_mut()[..count])?;
+        self.native_bytes_read = self
+            .native_bytes_read
+            .checked_add(read as u64)
+            .ok_or_else(|| invalid("journal read view byte accounting overflow"))?;
+        if read != count {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "short journal view aligned read",
+            ));
+        }
+        output[..wanted].copy_from_slice(&self.buffer.bytes_mut()[prefix..prefix + wanted]);
+        self.position += wanted as u64;
+        Ok(wanted)
+    }
+}
+
+impl Seek for GeneralJournalReadView {
+    fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
+        let position = match from {
+            SeekFrom::Start(value) => i128::from(value),
+            SeekFrom::Current(value) => i128::from(self.position) + i128::from(value),
+            SeekFrom::End(value) => i128::from(self.byte_len()) + i128::from(value),
+        };
+        if position < 0 || position > i128::from(self.byte_len()) {
+            return Err(invalid("seek escapes journal read view"));
+        }
+        self.position = position as u64;
+        Ok(self.position)
+    }
+}
+
 /// The point at which a complete pair of native allocation maps was queried.
-/// Neither point certifies the allocation graph of the final frozen image.
+/// None certifies the allocation graph of the final frozen image.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum GeneralAllocationPhase {
     PostLockFlush,
     PostDismount,
+    ProtectedReadOnlyMount,
 }
 
 /// Every declared cluster from complete native responses, represented as
@@ -1088,10 +1744,18 @@ pub struct GeneralAllocationFreezeWitness {
     post_dismount_error: Option<String>,
     post_lock_equals_frozen_graph: bool,
     raw_write_authority: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resource_budget: Option<crate::tree_resources::ResourceBudget>,
     #[serde(skip)]
     token: Arc<()>,
 }
 impl GeneralAllocationFreezeWitness {
+    pub fn resource_budget(&self) -> Option<crate::tree_resources::ResourceBudget> {
+        self.resource_budget
+    }
+    pub fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
     pub fn binding(&self) -> &GeneralDiskBinding {
         &self.binding
     }
@@ -1106,6 +1770,47 @@ impl GeneralAllocationFreezeWitness {
     }
     pub fn frozen_state(&self) -> &GeneralDiskState {
         &self.frozen_state
+    }
+}
+
+/// Bitmap observations through a physically read-only mounted ReFS volume,
+/// followed by restoration of the same frozen handle's exclusion. This does
+/// not prove equality to the raw on-disk graph or authorize writes. Issuing
+/// this witness invalidates any earlier allocation witness on this handle.
+#[derive(Debug, Serialize)]
+pub struct GeneralReadonlyAllocationWitness {
+    schema_version: u32,
+    binding: GeneralDiskBinding,
+    frozen_state: GeneralDiskState,
+    observed_readonly: GeneralDiskState,
+    volume_extents: Vec<u8>,
+    filesystem: &'static str,
+    snapshot: GeneralAllocationSnapshot,
+    raw_graph_verified: bool,
+    raw_write_authority: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resource_budget: Option<crate::tree_resources::ResourceBudget>,
+    #[serde(skip)]
+    token: Arc<()>,
+}
+impl GeneralReadonlyAllocationWitness {
+    pub fn resource_budget(&self) -> Option<crate::tree_resources::ResourceBudget> {
+        self.resource_budget
+    }
+    pub fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+    pub fn binding(&self) -> &GeneralDiskBinding {
+        &self.binding
+    }
+    pub fn frozen_state(&self) -> &GeneralDiskState {
+        &self.frozen_state
+    }
+    pub fn observed_readonly(&self) -> &GeneralDiskState {
+        &self.observed_readonly
+    }
+    pub fn snapshot(&self) -> &GeneralAllocationSnapshot {
+        &self.snapshot
     }
 }
 
@@ -1139,7 +1844,7 @@ fn allocation_bitmap(
     let mut assembler = crate::bitmap_paging::Assembler::default();
     let mut page = 0;
     while assembler.response_capacity() != 0 {
-        if events.len() >= 128 {
+        if events.len() >= crate::MAX_BATCH_EVENTS {
             return Err(invalid("allocation query audit budget exceeded"));
         }
         let page_input = crate::bitmap_paging::page_input(input, assembler.next_lcn())?;
@@ -1182,6 +1887,84 @@ fn capture_allocation(
     })
 }
 
+fn capture_allocation_with_resource_profile(
+    volume: &File,
+    phase: GeneralAllocationPhase,
+    partition_bytes: u64,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<GeneralAllocationSnapshot> {
+    if resource_profile.is_none() {
+        return capture_allocation(volume, phase, partition_bytes, events);
+    }
+    let resource_admission = resource_profile
+        .map(crate::attestation::ResourceProfile::resource_admission)
+        .transpose()?
+        .flatten();
+    let limits =
+        crate::attestation::source_bitmap_limits(resource_profile, partition_bytes / 4096)?;
+    let mut observe = |name: &str, input: &[u8]| {
+        let result = if resource_admission.is_some() {
+            crate::bitmap_observation::Observation::capture_with_limits(
+                volume,
+                input,
+                partition_bytes,
+                limits,
+            )
+        } else {
+            crate::bitmap_observation::Observation::capture(volume, input, partition_bytes, true)
+        };
+        // This is a complete-scan event, not a claim that the first native
+        // control call succeeded without ERROR_MORE_DATA.
+        let output = match &result {
+            Ok(observation) => {
+                serde_json::to_vec(&observation.proof()).map_err(io::Error::other)?
+            }
+            Err(error) => error.to_string().bytes().take(1024).collect(),
+        };
+        events.push(NativeEvent {
+            operation: format!("{name}-streamed-complete"),
+            control_code: 0,
+            input: input.to_vec(),
+            succeeded: result.is_ok(),
+            native_error: result.as_ref().err().and_then(io::Error::raw_os_error),
+            output,
+        });
+        result
+    };
+    let prefix = match phase {
+        GeneralAllocationPhase::PostLockFlush => "general-post-lock",
+        GeneralAllocationPhase::PostDismount => "general-post-dismount",
+        GeneralAllocationPhase::ProtectedReadOnlyMount => "general-protected-readonly",
+    };
+    let legacy = observe(&format!("{prefix}-legacy-bitmap"), &[0; 8]);
+    let mut metadata_input = [0; 16];
+    metadata_input[8] = 1;
+    let metadata = observe(
+        &format!("{prefix}-metadata-inclusive-bitmap"),
+        &metadata_input,
+    );
+    let legacy = legacy?;
+    let metadata = metadata?;
+    let legacy_proof = legacy.proof();
+    let metadata_proof = metadata.proof();
+    Ok(GeneralAllocationSnapshot {
+        phase,
+        legacy: legacy.allocation_map(partition_bytes)?,
+        metadata_inclusive: metadata.allocation_map(partition_bytes)?,
+        legacy_response_bytes: usize::try_from(
+            legacy_proof.streaming.as_ref().unwrap().returned_bytes,
+        )
+        .map_err(|_| invalid("streamed legacy byte accounting exceeds addressability"))?,
+        metadata_response_bytes: usize::try_from(
+            metadata_proof.streaming.as_ref().unwrap().returned_bytes,
+        )
+        .map_err(|_| invalid("streamed metadata byte accounting exceeds addressability"))?,
+        legacy_page_proof: Some(legacy_proof),
+        metadata_page_proof: Some(metadata_proof),
+    })
+}
+
 fn capture_allocation_queries(
     phase: GeneralAllocationPhase,
     partition_bytes: u64,
@@ -1195,6 +1978,10 @@ fn capture_allocation_queries(
         GeneralAllocationPhase::PostDismount => (
             "general-post-dismount-legacy-bitmap",
             "general-post-dismount-metadata-inclusive-bitmap",
+        ),
+        GeneralAllocationPhase::ProtectedReadOnlyMount => (
+            "general-protected-readonly-legacy-bitmap",
+            "general-protected-readonly-metadata-inclusive-bitmap",
         ),
     };
     // Query the views independently. A legacy-view failure must not hide
@@ -1214,13 +2001,24 @@ fn capture_allocation_queries(
     Ok(snapshot)
 }
 
-fn allocation_refs_handle(volume: &File) -> io::Result<()> {
+fn allocation_refs_filesystem(
+    binding: &GeneralDiskBinding,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<()> {
+    // Query a filesystem file handle rather than the raw DASD handle used for
+    // LOCK and bitmap controls. Close it before requesting exclusive access.
+    // https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-getvolumeinformationbyhandlew
+    let root = OpenOptions::new()
+        .read(true)
+        .share_mode(3)
+        .custom_flags(0x0200_0000)
+        .open(format!("{}\\", binding.volume_path()?))?;
     let mut filesystem = [0u16; 32];
     // SAFETY: the handle is retained throughout this synchronous query and
     // filesystem is an initialized output buffer with the stated capacity.
     let success = unsafe {
         GetVolumeInformationByHandleW(
-            volume.as_raw_handle(),
+            root.as_raw_handle(),
             ptr::null_mut(),
             0,
             ptr::null_mut(),
@@ -1230,8 +2028,18 @@ fn allocation_refs_handle(volume: &File) -> io::Result<()> {
             filesystem.len() as u32,
         )
     } != 0;
-    if !success {
-        return Err(io::Error::last_os_error());
+    let error = (!success).then(io::Error::last_os_error);
+    events.push(NativeEvent {
+        operation: "allocation-mounted-root-filesystem".into(),
+        control_code: 0,
+        input: vec![],
+        succeeded: success,
+        native_error: error.as_ref().and_then(io::Error::raw_os_error),
+        output: filesystem.iter().flat_map(|v| v.to_le_bytes()).collect(),
+    });
+    close_file(root, "close-allocation-root-before-lock", events)?;
+    if let Some(error) = error {
+        return Err(error);
     }
     if filesystem[..5] != [b'R' as u16, b'e' as u16, b'F' as u16, b'S' as u16, 0] {
         return Err(invalid("allocation freeze requires a mounted ReFS handle"));
@@ -1258,12 +2066,171 @@ impl GeneralFreezeObservation {
 pub struct GeneralJournaledPartition {
     inner: GeneralFrozenPartition,
     policy: Option<WritePolicy>,
+    paged_policy: Option<HeldPagedWritePolicy>,
     write_poisoned: bool,
     pub native_bytes_written: u64,
     pub native_write_bytes_requested: u64,
 }
 
+/// Read-only-at-the-type-boundary recovery owner. The actual physical handle
+/// is already open read/write with FILE_SHARE_READ only, so a later qualified
+/// transition can consume the same handle without an exclusion gap. This
+/// owner exposes no write, policy-arm, mount or conversion capability.
+pub struct GeneralExclusiveRecoveryTarget {
+    inner: GeneralJournaledPartition,
+}
+
+impl GeneralExclusiveRecoveryTarget {
+    pub fn reopen(binding: GeneralDiskBinding, events: &mut Vec<NativeEvent>) -> io::Result<Self> {
+        binding.validate()?;
+        if current_windows_disk(events)? == binding.disk_number {
+            return Err(invalid("current Windows disk is excluded"));
+        }
+        let path = format!("\\\\.\\PhysicalDrive{}", binding.disk_number);
+        // Refuse an online or mismatched disk before taking a deny-writer
+        // handle. This read-only preflight stays open through the new gate.
+        let preflight = device_file(&path, false, true)?;
+        let before = general_disk_state(&preflight, &binding, events)?;
+        if before.disk_attributes != OFFLINE {
+            return Err(invalid(
+                "exclusive recovery target is not persistently offline",
+            ));
+        }
+        let opened = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(1)
+            .custom_flags(0xa000_0000)
+            .open(&path);
+        events.push(NativeEvent {
+            operation: "open-exclusive-recovery-primary-route".into(),
+            control_code: 0,
+            input: 1u32.to_le_bytes().to_vec(),
+            succeeded: opened.is_ok(),
+            native_error: opened.as_ref().err().and_then(io::Error::raw_os_error),
+            output: b"read-only type boundary; primary route deny-new-writers".to_vec(),
+        });
+        let file = opened?;
+        let frozen_state = general_disk_state(&file, &binding, events)?;
+        if frozen_state != before || frozen_state.disk_attributes != OFFLINE {
+            return Err(invalid(
+                "exclusive recovery target identity or exclusion changed while opening",
+            ));
+        }
+        let probe = device_file(&path, true, true);
+        let denied = probe.as_ref().err().and_then(io::Error::raw_os_error)
+            == Some(ERROR_SHARING_VIOLATION as i32);
+        events.push(NativeEvent {
+            operation: "probe-exclusive-recovery-second-writer".into(),
+            control_code: 0,
+            input: 3u32.to_le_bytes().to_vec(),
+            succeeded: probe.is_ok(),
+            native_error: probe.as_ref().err().and_then(io::Error::raw_os_error),
+            output: b"open-only; no payload read or write requested".to_vec(),
+        });
+        match probe {
+            Ok(other) => {
+                close_file(other, "close-unexpected-recovery-writer-probe", events)?;
+                return Err(invalid("exclusive recovery route allowed a second writer"));
+            }
+            Err(error) if !denied => return Err(error),
+            Err(_) => (),
+        }
+        if general_disk_state(&file, &binding, events)? != frozen_state {
+            return Err(invalid(
+                "exclusive recovery target identity or exclusion changed",
+            ));
+        }
+        close_file(
+            preflight,
+            "close-exclusive-recovery-readonly-preflight",
+            events,
+        )?;
+        Ok(Self {
+            inner: GeneralJournaledPartition {
+                inner: GeneralFrozenPartition {
+                    resource_budget: None,
+                    freeze_observation: None,
+                    allocation_capture: None,
+                    file,
+                    binding,
+                    frozen_state,
+                    position: 0,
+                    buffer: AlignedBuffer::new()?,
+                    ahead: ReadAhead::default(),
+                    native_bytes_read: 0,
+                },
+                policy: None,
+                paged_policy: None,
+                write_poisoned: false,
+                native_bytes_written: 0,
+                native_write_bytes_requested: 0,
+            },
+        })
+    }
+    pub fn binding(&self) -> &GeneralDiskBinding {
+        self.inner.binding()
+    }
+    pub fn state(&self, events: &mut Vec<NativeEvent>) -> io::Result<GeneralDiskState> {
+        self.inner.state(events)
+    }
+    pub fn byte_len(&self) -> u64 {
+        self.inner.byte_len()
+    }
+}
+impl Read for GeneralExclusiveRecoveryTarget {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        self.inner.read(output)
+    }
+}
+impl Seek for GeneralExclusiveRecoveryTarget {
+    fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
+        self.inner.seek(from)
+    }
+}
+
+/// Private, one-shot native gateway proof. It is constructed only after the
+/// same held source, journal, marker state and paged index have been checked.
+struct ResourcePolicyAuthority {
+    _authenticated_markerless_recovery: (),
+}
+
 impl GeneralFrozenPartition {
+    /// Bytes owned by each native frozen/read lane's aligned I/O buffer.
+    /// Callers using a shared resource ledger can reserve before opening it.
+    pub const fn read_buffer_memory_bytes() -> u64 {
+        MAX_IO as u64
+    }
+
+    /// The Windows-source profile also pays the bounded native role workspace.
+    pub fn read_buffer_memory_bytes_for(binding: &GeneralDiskBinding) -> u64 {
+        Self::read_buffer_memory_bytes()
+            + if binding.layout_profile
+                == crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+            {
+                8 * 1024 * 1024
+            } else {
+                0
+            }
+    }
+
+    /// Pre-count source freeze with an explicit observed resource contract.
+    /// Counts and raw pins do not exist yet; this creates no admission facts.
+    /// All original NTFS/TxF, lock/dismount and physical route checks execute
+    /// through the same implementation as the historical observed freeze.
+    pub fn isolate_observed_ntfs_with_resource_budget(
+        binding: GeneralDiskBinding,
+        budget: crate::tree_resources::ResourceBudget,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<Self> {
+        budget.validate()?;
+        let mut frozen = Self::isolate_observed_ntfs(binding, events)?;
+        frozen.resource_budget = Some(budget);
+        Ok(frozen)
+    }
+    pub fn resource_budget(&self) -> Option<crate::tree_resources::ResourceBudget> {
+        self.resource_budget
+    }
     pub fn isolate_observed_ntfs(
         binding: GeneralDiskBinding,
         events: &mut Vec<NativeEvent>,
@@ -1302,11 +2269,39 @@ impl GeneralFrozenPartition {
         binding: GeneralDiskBinding,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<(Self, GeneralAllocationFreezeWitness)> {
+        Self::isolate_with_allocation_with_resource_profile(binding, None, events)
+    }
+
+    /// Explicit compact streaming observations; the default entry retains its
+    /// assembled maps, bounds and witness schema. Neither grants raw writes.
+    pub fn isolate_with_allocation_with_resource_profile(
+        binding: GeneralDiskBinding,
+        resource_profile: Option<crate::attestation::ResourceProfile>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<(Self, GeneralAllocationFreezeWitness)> {
         binding.validate()?;
-        if 16 + (binding.identity.partition_bytes / 4096).div_ceil(8)
-            > crate::bitmap_paging::MAX_COMPLETE_BYTES as u64
+        if binding.layout_profile != crate::general_layout::GeneralDiskLayoutProfile::DedicatedData
+        {
+            return Err(invalid(
+                "allocation-capture isolation requires a dedicated shadow/data layout",
+            ));
+        }
+        let resource_admission = resource_profile
+            .map(crate::attestation::ResourceProfile::resource_admission)
+            .transpose()?
+            .flatten();
+        if resource_profile.is_none()
+            && 16 + (binding.identity.partition_bytes / 4096).div_ceil(8)
+                > crate::bitmap_paging::MAX_COMPLETE_BYTES as u64
         {
             return Err(invalid("allocation capture exceeds complete bitmap budget"));
+        }
+        if resource_profile.is_some() {
+            let clusters = binding.identity.partition_bytes / 4096;
+            crate::bitmap_streaming::Collector::new(
+                clusters,
+                crate::attestation::source_bitmap_limits(resource_profile, clusters)?,
+            )?;
         }
         let before = probe_general(binding.clone(), events)?;
         let management = device_file(
@@ -1333,7 +2328,7 @@ impl GeneralFrozenPartition {
             events,
         )?;
         binding.validate_volume_extent(&volume_extents)?;
-        allocation_refs_handle(&volume)?;
+        allocation_refs_filesystem(&binding, events)?;
         let buffer = AlignedBuffer::new()?;
         control(&volume, "allocation-lock-volume", LOCK, &[], 0, events)?;
         // LOCK flushes cached filesystem data; require an additional explicit
@@ -1348,10 +2343,11 @@ impl GeneralFrozenPartition {
             output: vec![],
         });
         flushed?;
-        let post_lock = capture_allocation(
+        let post_lock = capture_allocation_with_resource_profile(
             &volume,
             GeneralAllocationPhase::PostLockFlush,
             binding.identity.partition_bytes,
+            resource_profile,
             events,
         )?;
         let post_lock_state = general_disk_state(&management, &binding, events)?;
@@ -1378,10 +2374,11 @@ impl GeneralFrozenPartition {
             0,
             events,
         )?;
-        let (post_dismount, post_dismount_error) = match capture_allocation(
+        let (post_dismount, post_dismount_error) = match capture_allocation_with_resource_profile(
             &volume,
             GeneralAllocationPhase::PostDismount,
             binding.identity.partition_bytes,
+            resource_profile,
             events,
         ) {
             Ok(snapshot) => (Some(snapshot), None),
@@ -1411,7 +2408,13 @@ impl GeneralFrozenPartition {
         }
         let token = Arc::new(());
         let witness = GeneralAllocationFreezeWitness {
-            schema_version: 1,
+            schema_version: if resource_admission.is_some() {
+                3
+            } else if resource_profile.is_some() {
+                2
+            } else {
+                1
+            },
             binding: binding.clone(),
             pre_lock_state: pre_lock,
             post_lock_state,
@@ -1423,11 +2426,21 @@ impl GeneralFrozenPartition {
             post_dismount_error,
             post_lock_equals_frozen_graph: false,
             raw_write_authority: false,
+            resource_budget: resource_admission.map(|a| a.budget),
             token: Arc::clone(&token),
         };
-        let encoded = serde_json::to_vec_pretty(&witness).map_err(io::Error::other)?;
-        if encoded.len() > MAX_ALLOCATION_WITNESS_BYTES {
-            return Err(invalid("allocation witness exceeds bounded output profile"));
+        if let Some(admission) = resource_admission {
+            admission.validate_constructor_metadata(&witness)?;
+        } else {
+            let encoded = serde_json::to_vec_pretty(&witness).map_err(io::Error::other)?;
+            let witness_limit = if resource_profile.is_some() {
+                64 * 1024 * 1024
+            } else {
+                MAX_ALLOCATION_WITNESS_BYTES
+            };
+            if encoded.len() > witness_limit {
+                return Err(invalid("allocation witness exceeds bounded output profile"));
+            }
         }
         Ok((
             Self {
@@ -1436,7 +2449,9 @@ impl GeneralFrozenPartition {
                 frozen_state,
                 position: 0,
                 buffer,
+                ahead: ReadAhead::default(),
                 native_bytes_read: 0,
+                resource_budget: resource_admission.map(|a| a.budget),
                 freeze_observation: None,
                 allocation_capture: Some(token),
             },
@@ -1451,6 +2466,9 @@ impl GeneralFrozenPartition {
             && self.binding == witness.binding
             && self.frozen_state == witness.frozen_state
             && self.frozen_state.disk_attributes == OFFLINE | READ_ONLY
+            && witness
+                .resource_budget
+                .is_none_or(|budget| self.resource_budget == Some(budget))
     }
 
     /// Recheck this exact live frozen handle and the in-process capture token.
@@ -1489,21 +2507,83 @@ impl GeneralFrozenPartition {
         {
             return Err(invalid("general disk changed before lock"));
         }
-        let volume = device_file(&binding.volume_path()?, true, false)?;
-        let extents = control(
-            &volume,
-            "general-lock-volume-extents",
-            VOLUME_EXTENTS,
-            &[],
-            1024,
-            events,
-        )?;
-        binding.validate_volume_extent(&extents)?;
+        let mut sibling_locks = if binding.layout_profile
+            == crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+        {
+            offline_windows::lock_all_volumes(&binding, &pre_lock.gpt_layout, events)?
+        } else {
+            Vec::new()
+        };
+        let volume = if sibling_locks.is_empty() {
+            Some(device_file(&binding.volume_path()?, true, false)?)
+        } else {
+            None
+        };
+        if let Some(volume) = &volume {
+            let extents = control(
+                volume,
+                "general-lock-volume-extents",
+                VOLUME_EXTENTS,
+                &[],
+                1024,
+                events,
+            )?;
+            binding.validate_volume_extent(&extents)?;
+            // The lock is refused while anything has a handle open on the volume.
+            // Right after hundreds of thousands of files were created and closed
+            // on it, something else (an on-access scanner, the indexer) can still
+            // be holding one for a moment; the full Windows volume failed here
+            // with a bare "Access is denied". Nothing has been written to any
+            // source yet, so wait for the handle to go, for up to a minute.
+            let mut attempts = 0;
+            loop {
+                match control(volume, "general-lock-volume", LOCK, &[], 0, events) {
+                    Ok(_) => break,
+                    Err(error)
+                        if attempts < 120 && matches!(error.raw_os_error(), Some(5) | Some(32)) =>
+                    {
+                        attempts += 1;
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                    }
+                    Err(error) => {
+                        return Err(io::Error::new(
+                            error.kind(),
+                            format!(
+                                "locking volume {} of disk {} to freeze it, after {attempts} retries (something still has a handle open on it): {error}",
+                                binding.volume_guid, binding.disk_number
+                            ),
+                        ));
+                    }
+                }
+            }
+            control(volume, "general-dismount-volume", DISMOUNT, &[], 0, events).map_err(
+                |error| {
+                    io::Error::new(
+                        error.kind(),
+                        format!(
+                            "dismounting volume {} of disk {} to freeze it: {error}",
+                            binding.volume_guid, binding.disk_number
+                        ),
+                    )
+                },
+            )?;
+        }
         let buffer = AlignedBuffer::new()?;
-        control(&volume, "general-lock-volume", LOCK, &[], 0, events)?;
-        control(&volume, "general-dismount-volume", DISMOUNT, &[], 0, events)?;
-        set_attributes(&management, OFFLINE | READ_ONLY, events)?;
-        close_file(volume, "close-general-volume-lock", events)?;
+        set_attributes(&management, OFFLINE | READ_ONLY, events).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "setting disk {} offline and read-only to freeze it: {error}",
+                    binding.disk_number
+                ),
+            )
+        })?;
+        if let Some(volume) = volume {
+            close_file(volume, "close-general-volume-lock", events)?;
+        }
+        for volume in sibling_locks.drain(..) {
+            close_file(volume, "close-offline-windows-volume-lock", events)?;
+        }
         let frozen = general_disk_state(&management, &binding, events)?;
         if frozen.disk_attributes != OFFLINE | READ_ONLY
             || frozen.device != pre_lock.device
@@ -1528,7 +2608,9 @@ impl GeneralFrozenPartition {
             frozen_state: frozen,
             position: 0,
             buffer,
+            ahead: ReadAhead::default(),
             native_bytes_read: 0,
+            resource_budget: None,
             freeze_observation: None,
             allocation_capture: None,
         })
@@ -1556,7 +2638,9 @@ impl GeneralFrozenPartition {
             frozen_state,
             position: 0,
             buffer: AlignedBuffer::new()?,
+            ahead: ReadAhead::default(),
             native_bytes_read: 0,
+            resource_budget: None,
             freeze_observation: None,
             allocation_capture: None,
         })
@@ -1678,17 +2762,26 @@ impl GeneralFrozenPartition {
         if before.disk_attributes != OFFLINE | READ_ONLY {
             return Err(invalid("original source is not offline and read-only"));
         }
-        self.seek(SeekFrom::Start(0))?;
-        let mut hash = Sha256::new();
-        let mut buffer = vec![0u8; MAX_IO];
-        let mut left = self.byte_len();
-        while left != 0 {
-            let count = left.min(MAX_IO as u64) as usize;
-            self.read_exact(&mut buffer[..count])?;
-            hash.update(&buffer[..count]);
-            left -= count as u64;
+        // The disk has been offline, read-only and opened only for reading
+        // since it was frozen. Under the check-once policy the caller re-reads
+        // the source fingerprint instead of hashing the whole partition twice
+        // (six minutes for 62 GB) before giving the unchanged volume back.
+        if !crate::verify_policy::checks_once() {
+            self.seek(SeekFrom::Start(0))?;
+            let mut hash = Sha256::new();
+            let mut buffer = vec![0u8; MAX_IO];
+            let mut left = self.byte_len();
+            while left != 0 {
+                let count = left.min(MAX_IO as u64) as usize;
+                self.read_exact(&mut buffer[..count])?;
+                hash.update(&buffer[..count]);
+                left -= count as u64;
+            }
+            if hex::encode(hash.finalize()) != expected_sha256 {
+                return Err(invalid("original source bytes or exclusion changed"));
+            }
         }
-        if hex::encode(hash.finalize()) != expected_sha256 || self.state(events)? != before {
+        if self.state(events)? != before {
             return Err(invalid("original source bytes or exclusion changed"));
         }
         let binding = self.binding.clone();
@@ -1733,8 +2826,328 @@ impl GeneralFrozenPartition {
         request: &crate::attestation::Request,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<GeneralLiveNtfsObservation> {
+        self.observe_ntfs_files_with_passes(request, events, false, false)
+    }
+
+    /// Keep the original two content passes and additionally observe VSS inside
+    /// the existing physically READ_ONLY view. The caller must separately bind
+    /// a fresh pre-freeze hosted-storage catalog; this adds no extra mount.
+    pub fn observe_ntfs_files_with_vss(
+        &mut self,
+        request: &crate::attestation::Request,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralLiveNtfsObservation> {
+        self.observe_ntfs_files_with_passes(request, events, false, true)
+    }
+
+    /// As `observe_ntfs_files`, reading each stream's content once. Only for a
+    /// caller that brackets the whole observation over this frozen source.
+    pub fn observe_ntfs_files_single_content_pass(
+        &mut self,
+        request: &crate::attestation::Request,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralLiveNtfsObservation> {
+        self.observe_ntfs_files_with_passes(request, events, true, false)
+    }
+
+    /// Observe VSS inside the existing physically READ_ONLY native view.
+    /// Offline volume GUIDs cannot be queried reliably by VSS. This adds no
+    /// extra publication/mount and restores persistent exclusion before return.
+    pub fn observe_ntfs_files_single_content_pass_with_vss(
+        &mut self,
+        request: &crate::attestation::Request,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralLiveNtfsObservation> {
+        self.observe_ntfs_files_with_passes(request, events, true, true)
+    }
+
+    fn observe_ntfs_files_with_passes(
+        &mut self,
+        request: &crate::attestation::Request,
+        events: &mut Vec<NativeEvent>,
+        single_content_pass: bool,
+        require_vss: bool,
+    ) -> io::Result<GeneralLiveNtfsObservation> {
+        let collected =
+            self.observe_ntfs_files_with_collector(request, events, require_vss, |request| {
+                if single_content_pass {
+                    crate::attestation_native::collect_file_metadata_single_content_pass(request)
+                } else {
+                    crate::attestation_native::collect_file_metadata(request)
+                }
+            })?;
+        Ok(GeneralLiveNtfsObservation {
+            report: collected.domain,
+            txf: collected.txf,
+            txf_error: collected.txf_error,
+            vss_observation: collected.vss_observation,
+            before: collected.before,
+            after: collected.after,
+        })
+    }
+
+    /// Complete paged source observation through the same physical READ_ONLY
+    /// lease. No report rows are rehydrated into a whole collection. The file
+    /// must be on ordinary metadata storage outside both conversion devices.
+    pub fn observe_ntfs_files_paged(
+        &mut self,
+        request: &crate::attestation::Request,
+        path: &std::path::Path,
+        budget: crate::observation_pages::NativeObservationBudget,
+        single_content_pass: bool,
+        require_vss: bool,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralLivePagedNtfsObservation> {
+        budget.validate()?;
+        if let Some(admission) = request
+            .resource_profile
+            .map(crate::attestation::ResourceProfile::resource_admission)
+            .transpose()?
+            .flatten()
+        {
+            if self.resource_budget != Some(admission.budget) {
+                return Err(invalid(
+                    "native source resource budget differs from original pre-count frozen owner",
+                ));
+            }
+        }
+        let collected =
+            self.observe_ntfs_files_with_collector(request, events, require_vss, |request| {
+                crate::attestation_native::collect_file_metadata_paged(
+                    request,
+                    path,
+                    budget,
+                    single_content_pass,
+                )
+            })?;
+        Ok(GeneralLivePagedNtfsObservation {
+            domain: collected.domain,
+            windows_txf_markers: None,
+            windows_object_ids: None,
+            txf: collected.txf,
+            txf_error: collected.txf_error,
+            vss_observation: collected.vss_observation,
+            before: collected.before,
+            after: collected.after,
+            origin: NativeSourceObservationOrigin::FreshCollection,
+            cache_continuity: None,
+        })
+    }
+
+    /// Page-backed selectors are read from the same retained complete raw
+    /// metadata owner, one record at a time. The actual selectors are retained
+    /// beside their native rows in the authenticated observation file.
+    pub fn observe_ntfs_files_paged_domain(
+        &mut self,
+        selectors: &impl crate::attestation::NativeRequestDomain,
+        path: &std::path::Path,
+        budget: crate::observation_pages::NativeObservationBudget,
+        single_content_pass: bool,
+        require_vss: bool,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralLivePagedNtfsObservation> {
+        crate::attestation::validate_native_request_domain(selectors)?;
+        let request = selectors.header();
+        if !request.has_paged_selectors() {
+            return Err(invalid("paged selector entry requires request7/8"));
+        }
+        let admission = request
+            .resource_profile
+            .unwrap()
+            .resource_admission()?
+            .ok_or_else(|| invalid("paged selector resource admission absent"))?;
+        if self.resource_budget != Some(admission.budget) {
+            return Err(invalid(
+                "native paged source resource budget differs from original frozen owner",
+            ));
+        }
+        let collected =
+            self.observe_ntfs_files_with_collector(request, events, require_vss, |request| {
+                let _ = request;
+                crate::attestation_native::collect_file_metadata_paged_domain(
+                    selectors,
+                    path,
+                    budget,
+                    single_content_pass,
+                )
+            })?;
+        selectors.revalidate()?;
+        Ok(GeneralLivePagedNtfsObservation {
+            domain: collected.domain,
+            windows_txf_markers: None,
+            windows_object_ids: None,
+            txf: collected.txf,
+            txf_error: collected.txf_error,
+            vss_observation: collected.vss_observation,
+            before: collected.before,
+            after: collected.after,
+            origin: NativeSourceObservationOrigin::FreshCollection,
+            cache_continuity: None,
+        })
+    }
+
+    /// Protected paged NTFS collection with the caller's actual shared RAM
+    /// accountant retained by the resulting native observation domain.
+    pub fn observe_ntfs_files_paged_domain_with_memory(
+        &mut self,
+        selectors: &impl crate::attestation::NativeRequestDomain,
+        path: &std::path::Path,
+        budget: crate::observation_pages::NativeObservationBudget,
+        single_content_pass: bool,
+        require_vss: bool,
+        memory: Arc<dyn crate::shadow_native::report_memory::ReportMemoryAccountant>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralLivePagedNtfsObservation> {
+        crate::attestation::validate_native_request_domain(selectors)?;
+        let request = selectors.header();
+        if !request.has_paged_selectors() {
+            return Err(invalid("paged selector entry requires request7/8"));
+        }
+        let admission = request
+            .resource_profile
+            .unwrap()
+            .resource_admission()?
+            .ok_or_else(|| invalid("paged selector resource admission absent"))?;
+        if self.resource_budget != Some(admission.budget) {
+            return Err(invalid(
+                "native paged source resource budget differs from original frozen owner",
+            ));
+        }
+        let marker_binding = self.binding.clone();
+        let mut windows_txf_markers = None;
+        let mut windows_object_ids = None;
+        let collected =
+            self.observe_ntfs_files_with_collector(request, events, require_vss, |request| {
+                let _ = request;
+                let pending = if marker_binding.layout_profile
+                    == crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+                {
+                    Some(crate::windows_txf::PendingWindowsTxfMarkers::begin(
+                        &marker_binding,
+                        selectors,
+                        &memory,
+                    )?)
+                } else {
+                    None
+                };
+                let object_pending = if marker_binding.layout_profile
+                    == crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+                {
+                    match crate::windows_object_ids::PendingWindowsObjectIds::begin(
+                        &marker_binding,
+                        selectors,
+                        &memory,
+                    ) {
+                        Ok(pending) => Some(pending),
+                        Err(error) => {
+                            return Err(match pending {
+                                Some(pending) => pending.refuse(error),
+                                None => error,
+                            });
+                        }
+                    }
+                } else {
+                    None
+                };
+                let collected =
+                    crate::attestation_native::collect_file_metadata_paged_domain_with_memory(
+                        selectors,
+                        path,
+                        budget,
+                        single_content_pass,
+                        Arc::clone(&memory),
+                    );
+                let domain = match collected {
+                    Ok(domain) => domain,
+                    Err(error) => {
+                        let error = match object_pending {
+                            Some(pending) => pending.refuse(error),
+                            None => error,
+                        };
+                        return Err(match pending {
+                            Some(pending) => pending.refuse(error),
+                            None => error,
+                        });
+                    }
+                };
+                if let Some(pending) = pending {
+                    let witness = match pending.finish(selectors) {
+                        Ok(witness) => witness,
+                        Err(error) => {
+                            return Err(match object_pending {
+                                Some(pending) => pending.refuse(error),
+                                None => error,
+                            });
+                        }
+                    };
+                    windows_txf_markers = Some(Arc::new(witness));
+                }
+                if let Some(pending) = object_pending {
+                    windows_object_ids = Some(Arc::new(pending.finish(selectors)?));
+                }
+                Ok(domain)
+            });
+        let collected = match collected {
+            Ok(collected) => collected,
+            Err(error) => {
+                let error = match windows_object_ids {
+                    Some(witness) => witness.refuse(error),
+                    None => error,
+                };
+                return Err(match windows_txf_markers {
+                    Some(witness) => witness.refuse(error),
+                    None => error,
+                });
+            }
+        };
+        selectors.revalidate().map_err(|error| {
+            let error = match &windows_object_ids {
+                Some(witness) => Arc::clone(witness).refuse(error),
+                None => error,
+            };
+            match &windows_txf_markers {
+                Some(witness) => Arc::clone(witness).refuse(error),
+                None => error,
+            }
+        })?;
+        if windows_txf_markers.is_some()
+            && !collected.txf.as_ref().is_some_and(|txf| {
+                txf.observation.default_rm_state() == crate::txf_native::DefaultRmState::Inactive
+            })
+        {
+            let error = invalid(&format!(
+                "Windows TxF markers require the existing protected inactive default RM witness: {:?}; {:?}",
+                collected.txf, collected.txf_error
+            ));
+            let error = match windows_object_ids {
+                Some(witness) => witness.refuse(error),
+                None => error,
+            };
+            return Err(windows_txf_markers.unwrap().refuse(error));
+        }
+        Ok(GeneralLivePagedNtfsObservation {
+            domain: collected.domain,
+            windows_txf_markers,
+            windows_object_ids,
+            txf: collected.txf,
+            txf_error: collected.txf_error,
+            vss_observation: collected.vss_observation,
+            before: collected.before,
+            after: collected.after,
+            origin: NativeSourceObservationOrigin::FreshCollection,
+            cache_continuity: None,
+        })
+    }
+
+    fn observe_ntfs_files_with_collector<T: crate::attestation::NativeObservationDomain>(
+        &mut self,
+        request: &crate::attestation::Request,
+        events: &mut Vec<NativeEvent>,
+        require_vss: bool,
+        collector: impl FnOnce(&crate::attestation::Request) -> io::Result<T>,
+    ) -> io::Result<CollectedGeneralNtfs<T>> {
         request.validate()?;
-        if request.schema_version != 2
+        if !matches!(request.schema_version, 2 | 3 | 4 | 5 | 6 | 7 | 8)
             || request.disk_number != self.binding.disk_number
             || request.volume != format!("{}\\", self.binding.volume_path()?)
             || request.partition_offset != self.binding.identity.partition_offset
@@ -1792,11 +3205,29 @@ impl GeneralFrozenPartition {
                 "general read-only volume was not published within 15 seconds",
             ));
         }
-        let collected = crate::attestation_native::collect_file_metadata(request);
+        let collected = collector(request);
         let (txf, txf_error) = match crate::txf_native::observe_general(self.binding.clone()) {
             Ok(observation) => (Some(observation), None),
             Err(error) => (None, Some(error.to_string())),
         };
+        let vss_observation = (|| -> io::Result<_> {
+            if !require_vss {
+                return Ok(None);
+            }
+            if attributes(lease.file, lease.events)? != READ_ONLY {
+                return Err(invalid(
+                    "source lost physical write protection before VSS observation",
+                ));
+            }
+            let observation = crate::vss_observation::observe_snapshot_presence(&request.volume)?;
+            observation.require_observed_snapshot_absence()?;
+            if attributes(lease.file, lease.events)? != READ_ONLY {
+                return Err(invalid(
+                    "source lost physical write protection during VSS observation",
+                ));
+            }
+            Ok(Some(observation))
+        })();
         let restored = lease.finish();
         drop(lease);
         restored?;
@@ -1806,13 +3237,209 @@ impl GeneralFrozenPartition {
                 "general source exclusion changed during native observation",
             ));
         }
-        Ok(GeneralLiveNtfsObservation {
-            report: collected?,
+        let domain = collected?;
+        let report = domain.header();
+        let vss_observation = vss_observation?;
+        if report.request != *request
+            || report.conversion_qualified
+            || report.schema_version
+                != match request.schema_version {
+                    8 => 16,
+                    7 => 15,
+                    6 => 14,
+                    5 => 13,
+                    4 => 12,
+                    3 => 11,
+                    _ => 7,
+                }
+        {
+            return Err(invalid("general native source report profile differs"));
+        }
+        if request.schema_version >= 3 {
+            crate::attestation::validate_domain_resources(&domain)?;
+        }
+        Ok(CollectedGeneralNtfs {
+            domain,
             txf,
             txf_error,
+            vss_observation,
             before,
             after,
         })
+    }
+
+    /// Query both complete allocation views through a physically READ_ONLY
+    /// mounted ReFS handle, then restore OFFLINE|READ_ONLY exclusion. This is
+    /// not a post-lock query and does not establish raw-graph equivalence.
+    pub fn observe_refs_allocation_readonly(
+        &mut self,
+        resource_profile: Option<crate::attestation::ResourceProfile>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralReadonlyAllocationWitness> {
+        self.binding.validate()?;
+        let resource_admission = resource_profile
+            .map(crate::attestation::ResourceProfile::resource_admission)
+            .transpose()?
+            .flatten();
+        if let Some(admission) = resource_admission {
+            if self.resource_budget != Some(admission.budget) {
+                return Err(invalid(
+                    "protected allocation resource budget differs from original frozen owner",
+                ));
+            }
+        }
+        let length = self.binding.identity.partition_bytes;
+        let maximum = resource_profile
+            .map_or(crate::general_layout::MAX_LIVE_PARTITION_BYTES, |profile| {
+                profile.maximum_partition_bytes()
+            });
+        if length > maximum {
+            return Err(invalid("protected allocation exceeds resource profile"));
+        }
+        if resource_profile.is_none()
+            && 16 + (length / 4096).div_ceil(8) > crate::bitmap_paging::MAX_COMPLETE_BYTES as u64
+        {
+            return Err(invalid(
+                "protected allocation exceeds complete bitmap budget",
+            ));
+        }
+        if resource_profile.is_some() {
+            let clusters = length / 4096;
+            crate::bitmap_streaming::Collector::new(
+                clusters,
+                crate::attestation::source_bitmap_limits(resource_profile, clusters)?,
+            )?;
+        }
+        // The lease owns `events` during the callback. Keep its bitmap and
+        // identity events separate and publish them even when capture fails.
+        let mut callback_events = Vec::new();
+        let captured = self.with_readonly_refs_binding_observation(events, |protected| {
+            let state = general_disk_state(
+                protected.management,
+                protected.binding,
+                &mut callback_events,
+            )?;
+            if state != *protected.expected_state || state.disk_attributes != READ_ONLY {
+                return Err(invalid(
+                    "protected allocation disk is not physically read-only",
+                ));
+            }
+            let extents = control(
+                protected.volume,
+                "protected-allocation-volume-extents-before",
+                VOLUME_EXTENTS,
+                &[],
+                1024,
+                &mut callback_events,
+            )?;
+            protected.binding.validate_volume_extent(&extents)?;
+            allocation_refs_filesystem(protected.binding, &mut callback_events)?;
+            let snapshot = capture_allocation_with_resource_profile(
+                protected.volume,
+                GeneralAllocationPhase::ProtectedReadOnlyMount,
+                length,
+                resource_profile,
+                &mut callback_events,
+            )?;
+            let after_extents = control(
+                protected.volume,
+                "protected-allocation-volume-extents-after",
+                VOLUME_EXTENTS,
+                &[],
+                1024,
+                &mut callback_events,
+            )?;
+            protected.binding.validate_volume_extent(&after_extents)?;
+            allocation_refs_filesystem(protected.binding, &mut callback_events)?;
+            let after = general_disk_state(
+                protected.management,
+                protected.binding,
+                &mut callback_events,
+            )?;
+            if after != state || after_extents != extents {
+                return Err(invalid(
+                    "protected allocation identity changed during capture",
+                ));
+            }
+            Ok((snapshot, extents))
+        });
+        events.extend(callback_events);
+        let ((snapshot, volume_extents), before, observed_readonly, after) = captured?;
+        if before != after || after != self.state(events)? {
+            return Err(invalid("protected allocation exclusion changed"));
+        }
+        let token = Arc::new(());
+        let witness = GeneralReadonlyAllocationWitness {
+            schema_version: if resource_admission.is_some() {
+                3
+            } else if resource_profile.is_some() {
+                2
+            } else {
+                1
+            },
+            binding: self.binding.clone(),
+            frozen_state: after,
+            observed_readonly,
+            volume_extents,
+            filesystem: "ReFS",
+            snapshot,
+            raw_graph_verified: false,
+            raw_write_authority: false,
+            resource_budget: resource_admission.map(|a| a.budget),
+            token: Arc::clone(&token),
+        };
+        if let Some(admission) = resource_admission {
+            admission.validate_constructor_metadata(&witness)?;
+        } else {
+            let encoded = serde_json::to_vec_pretty(&witness).map_err(io::Error::other)?;
+            let witness_limit = if resource_profile.is_some() {
+                64 * 1024 * 1024
+            } else {
+                MAX_ALLOCATION_WITNESS_BYTES
+            };
+            if encoded.len() > witness_limit {
+                return Err(invalid(
+                    "protected allocation witness exceeds output profile",
+                ));
+            }
+        }
+        // A new in-process capture replaces any earlier token for this handle.
+        self.allocation_capture = Some(token);
+        Ok(witness)
+    }
+
+    /// Revalidate only the originating live handle and exclusion, not the
+    /// equivalence of its mounted bitmap to the frozen raw allocation graph.
+    pub fn validate_readonly_allocation_witness(
+        &self,
+        witness: &GeneralReadonlyAllocationWitness,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
+        let mut expected_readonly = self.frozen_state.clone();
+        expected_readonly.disk_attributes = READ_ONLY;
+        if !self
+            .allocation_capture
+            .as_ref()
+            .is_some_and(|token| Arc::ptr_eq(token, &witness.token))
+            || self.binding != witness.binding
+            || self.frozen_state != witness.frozen_state
+            || self.frozen_state.disk_attributes != OFFLINE | READ_ONLY
+            || witness.observed_readonly != expected_readonly
+            || witness.snapshot.phase != GeneralAllocationPhase::ProtectedReadOnlyMount
+            || witness
+                .resource_budget
+                .is_some_and(|budget| self.resource_budget != Some(budget))
+        {
+            return Err(invalid(
+                "protected allocation witness belongs to another frozen handle",
+            ));
+        }
+        if self.state(events)? != witness.frozen_state {
+            return Err(invalid(
+                "protected allocation witness frozen device state changed",
+            ));
+        }
+        Ok(())
     }
 
     /// Verify all admitted ReFS semantics through an actual retained
@@ -1826,12 +3453,371 @@ impl GeneralFrozenPartition {
         same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<GeneralLiveRefsObservation> {
-        pair.validate()?;
+        self.observe_refs_files_with_resource_profile(pair, input, same_security, None, events)
+    }
+
+    /// Strictly observe the same protected ReFS volume with an explicitly
+    /// selected resource profile. It grants no source or write authority.
+    pub fn observe_refs_files_with_resource_profile(
+        &mut self,
+        pair: crate::general_layout::GeneralSourceShadowBinding,
+        input: &[crate::shadow_native::Input<'_>],
+        same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+        resource_profile: Option<crate::attestation::ResourceProfile>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralLiveRefsObservation> {
+        let (report, before, observed_readonly, after) =
+            self.with_readonly_refs_observation(&pair, resource_profile, events, |protected| {
+                crate::shadow_native::verify_general_ordinary_readonly_with_resource_profile(
+                    pair.clone(),
+                    input,
+                    &same_security,
+                    protected,
+                    resource_profile,
+                )
+            })?;
+        Ok(GeneralLiveRefsObservation {
+            report,
+            before,
+            observed_readonly,
+            after,
+        })
+    }
+
+    /// Observe metadata, exact namespace, file IDs, complete retrieval maps,
+    /// storage-validity and disabled integrity under the same native protection
+    /// as the complete verifier. Placeholder file contents are never read.
+    /// Caller must bracket this observation with independent raw-image hashes.
+    pub fn observe_refs_layout_with_resource_profile(
+        &mut self,
+        pair: crate::general_layout::GeneralSourceShadowBinding,
+        input: &[crate::shadow_native::Input<'_>],
+        same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+        resource_profile: Option<crate::attestation::ResourceProfile>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralLiveRefsLayoutObservation> {
+        let (report, before, observed_readonly, after) =
+            self.with_readonly_refs_observation(&pair, resource_profile, events, |protected| {
+                crate::shadow_native::observe_general_layout_readonly_with_resource_profile(
+                    pair.clone(),
+                    input,
+                    &same_security,
+                    protected,
+                    resource_profile,
+                )
+            })?;
+        Ok(GeneralLiveRefsLayoutObservation {
+            report,
+            before,
+            observed_readonly,
+            after,
+        })
+    }
+
+    /// Composite-only layout observation additionally hashes initialized
+    /// suffixes against source-derived expectations. Full-cluster placeholder
+    /// prefixes remain unread. The zero-payload layout API is unchanged.
+    pub fn observe_refs_layout_residuals_with_resource_profile(
+        &mut self,
+        pair: crate::general_layout::GeneralSourceShadowBinding,
+        input: &[crate::shadow_native::Input<'_>],
+        residuals: &[crate::shadow_native::LayoutResidualExpectation],
+        same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+        resource_profile: Option<crate::attestation::ResourceProfile>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralLiveRefsLayoutObservation> {
+        let (report, before, observed_readonly, after) = self.with_readonly_refs_observation(
+            &pair,
+            resource_profile,
+            events,
+            |protected| {
+                crate::shadow_native::observe_general_layout_residuals_readonly_with_resource_profile(
+                    pair.clone(), input, residuals, &same_security, protected, resource_profile,
+                )
+            },
+        )?;
+        Ok(GeneralLiveRefsLayoutObservation {
+            report,
+            before,
+            observed_readonly,
+            after,
+        })
+    }
+
+    pub fn observe_refs_files_domain(
+        &mut self,
+        pair: crate::general_layout::GeneralSourceShadowBinding,
+        input: &impl crate::shadow_native::input_domain::InputDomain,
+        same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+        resource_profile: Option<crate::attestation::ResourceProfile>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralLiveRefsObservation> {
+        if let Some(admission) = resource_profile
+            .map(crate::attestation::ResourceProfile::count_admission)
+            .transpose()?
+            .flatten()
+            .filter(|value| value.requires_paged_metadata())
+        {
+            input.require_paged_metadata(
+                admission.expected_page_budget()?,
+                u64::from(admission.maximum_expected_tree_bytes),
+            )?;
+        }
+
+        let (report, before, observed_readonly, after) =
+            self.with_readonly_refs_observation(&pair, resource_profile, events, |protected| {
+                crate::shadow_native::verify_general_ordinary_readonly_domain(
+                    pair.clone(),
+                    input,
+                    &same_security,
+                    protected,
+                    resource_profile,
+                )
+            })?;
+        Ok(GeneralLiveRefsObservation {
+            report,
+            before,
+            observed_readonly,
+            after,
+        })
+    }
+
+    pub fn observe_refs_layout_domain(
+        &mut self,
+        pair: crate::general_layout::GeneralSourceShadowBinding,
+        input: &impl crate::shadow_native::input_domain::InputDomain,
+        same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+        resource_profile: Option<crate::attestation::ResourceProfile>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralLiveRefsLayoutObservation> {
+        if let Some(admission) = resource_profile
+            .map(crate::attestation::ResourceProfile::count_admission)
+            .transpose()?
+            .flatten()
+            .filter(|value| value.requires_paged_metadata())
+        {
+            input.require_paged_metadata(
+                admission.expected_page_budget()?,
+                u64::from(admission.maximum_expected_tree_bytes),
+            )?;
+        }
+
+        let (report, before, observed_readonly, after) =
+            self.with_readonly_refs_observation(&pair, resource_profile, events, |protected| {
+                crate::shadow_native::observe_general_layout_readonly_domain(
+                    pair.clone(),
+                    input,
+                    &same_security,
+                    protected,
+                    resource_profile,
+                )
+            })?;
+        Ok(GeneralLiveRefsLayoutObservation {
+            report,
+            before,
+            observed_readonly,
+            after,
+        })
+    }
+
+    pub fn observe_refs_layout_residuals_domain(
+        &mut self,
+        pair: crate::general_layout::GeneralSourceShadowBinding,
+        input: &impl crate::shadow_native::input_domain::InputDomain,
+        residuals: &[crate::shadow_native::LayoutResidualExpectation],
+        same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+        resource_profile: Option<crate::attestation::ResourceProfile>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralLiveRefsLayoutObservation> {
+        if let Some(admission) = resource_profile
+            .map(crate::attestation::ResourceProfile::count_admission)
+            .transpose()?
+            .flatten()
+            .filter(|value| value.requires_paged_metadata())
+        {
+            input.require_paged_metadata(
+                admission.expected_page_budget()?,
+                u64::from(admission.maximum_expected_tree_bytes),
+            )?;
+        }
+
+        let (report, before, observed_readonly, after) =
+            self.with_readonly_refs_observation(&pair, resource_profile, events, |protected| {
+                crate::shadow_native::observe_general_layout_residuals_readonly_domain(
+                    pair.clone(),
+                    input,
+                    residuals,
+                    &same_security,
+                    protected,
+                    resource_profile,
+                )
+            })?;
+        Ok(GeneralLiveRefsLayoutObservation {
+            report,
+            before,
+            observed_readonly,
+            after,
+        })
+    }
+
+    pub fn observe_refs_layout_residuals_paged_domain(
+        &mut self,
+        pair: crate::general_layout::GeneralSourceShadowBinding,
+        input: &impl crate::shadow_native::input_domain::InputDomain,
+        provider: &impl crate::layout_residual_pages::LayoutResidualProvider,
+        result_path: &std::path::Path,
+        result_budget: crate::metadata_pages::PageBudget,
+        same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+        resource_profile: Option<crate::attestation::ResourceProfile>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralLiveRefsLayoutObservation> {
+        let admission = resource_profile
+            .ok_or_else(|| invalid("paged residual observation needs resource profile"))?
+            .resource_admission()?
+            .ok_or_else(|| invalid("paged residual observation requires V4"))?;
+        input.require_resource_metadata(admission)?;
+        provider.revalidate()?;
+        let (report, before, observed_readonly, after) =
+            self.with_readonly_refs_observation(&pair, resource_profile, events, |protected| {
+                crate::shadow_native::observe_general_layout_residuals_paged_readonly_domain(
+                    pair.clone(),
+                    input,
+                    provider,
+                    result_path,
+                    result_budget,
+                    &same_security,
+                    protected,
+                    resource_profile,
+                )
+            })?;
+        provider.revalidate()?;
+        Ok(GeneralLiveRefsLayoutObservation {
+            report,
+            before,
+            observed_readonly,
+            after,
+        })
+    }
+
+    /// Paged protected observation with the caller's live shared RAM
+    /// accountant. The original non-accounted entry remains unchanged.
+    pub fn observe_refs_layout_residuals_paged_domain_with_memory(
+        &mut self,
+        pair: crate::general_layout::GeneralSourceShadowBinding,
+        input: &impl crate::shadow_native::input_domain::InputDomain,
+        provider: &impl crate::layout_residual_pages::LayoutResidualProvider,
+        result_path: &std::path::Path,
+        result_budget: crate::metadata_pages::PageBudget,
+        same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+        resource_profile: Option<crate::attestation::ResourceProfile>,
+        memory: &dyn crate::shadow_native::report_memory::ReportMemoryAccountant,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralLiveRefsLayoutObservation> {
+        let admission = resource_profile
+            .ok_or_else(|| invalid("paged residual observation needs resource profile"))?
+            .resource_admission()?
+            .ok_or_else(|| invalid("paged residual observation requires V4"))?;
+        input.require_resource_metadata(admission)?;
+        provider.revalidate()?;
+        let (report, before, observed_readonly, after) =
+            self.with_readonly_refs_observation(&pair, resource_profile, events, |protected| {
+                crate::shadow_native::observe_general_layout_residuals_paged_readonly_domain_with_memory(
+                    pair.clone(), input, provider, result_path, result_budget, &same_security,
+                    protected, resource_profile, memory,
+                )
+            })?;
+        provider.revalidate()?;
+        Ok(GeneralLiveRefsLayoutObservation {
+            report,
+            before,
+            observed_readonly,
+            after,
+        })
+    }
+
+    /// Boot-only alias-aware observation under the same actual physical
+    /// READ_ONLY mount lease as canonical target metadata and residuals.
+    pub fn observe_refs_layout_residuals_paged_domain_with_memory_windows_aliases(
+        &mut self,
+        pair: crate::general_layout::GeneralSourceShadowBinding,
+        input: &impl crate::shadow_native::input_domain::InputDomain,
+        provider: &impl crate::layout_residual_pages::LayoutResidualProvider,
+        result_path: &std::path::Path,
+        result_budget: crate::metadata_pages::PageBudget,
+        same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+        resource_profile: Option<crate::attestation::ResourceProfile>,
+        memory: &dyn crate::shadow_native::report_memory::ReportMemoryAccountant,
+        aliases: &crate::shadow_native::windows_aliases::VerifiedWindowsAliases,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<(
+        GeneralLiveRefsLayoutObservation,
+        crate::shadow_native::windows_aliases::ObservedWindowsAliases,
+    )> {
+        if pair.source.layout_profile
+            != crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+        {
+            return Err(invalid(
+                "derived path aliases require the explicit Windows source profile",
+            ));
+        }
+        let admission = resource_profile
+            .ok_or_else(|| invalid("Windows alias observation needs a resource profile"))?
+            .resource_admission()?
+            .ok_or_else(|| invalid("Windows alias observation requires V4"))?;
+        input.require_resource_metadata(admission)?;
+        aliases.require_scope(
+            &pair,
+            admission.source_inspection_sha256,
+            aliases.plan_digest(),
+        )?;
+        provider.revalidate()?;
+        let ((report,observed_aliases),before,observed_readonly,after)=
+            self.with_readonly_refs_observation(&pair,resource_profile,events,|protected| {
+                crate::shadow_native::observe_general_layout_residuals_paged_readonly_domain_with_memory_windows_aliases(
+                    pair.clone(),input,provider,result_path,result_budget,&same_security,
+                    protected,resource_profile,memory,aliases,
+                )
+            })?;
+        provider.revalidate()?;
+        observed_aliases.require_scope(
+            &pair,
+            admission.source_inspection_sha256,
+            aliases.plan_digest(),
+        )?;
+        Ok((
+            GeneralLiveRefsLayoutObservation {
+                report,
+                before,
+                observed_readonly,
+                after,
+            },
+            observed_aliases,
+        ))
+    }
+
+    fn with_readonly_refs_observation<T>(
+        &mut self,
+        pair: &crate::general_layout::GeneralSourceShadowBinding,
+        resource_profile: Option<crate::attestation::ResourceProfile>,
+        events: &mut Vec<NativeEvent>,
+        observe: impl FnOnce(&GeneralReadonlyRefsVolume<'_>) -> io::Result<T>,
+    ) -> io::Result<(T, GeneralDiskState, GeneralDiskState, GeneralDiskState)> {
+        pair.validate_with_resource_profile(resource_profile)?;
         if pair.shadow != self.binding {
             return Err(invalid(
                 "protected ReFS observation is not the frozen shadow",
             ));
         }
+        self.with_readonly_refs_binding_observation(events, observe)
+    }
+
+    /// Physical READ_ONLY lease shared by pair-bound observers and this
+    /// binding-only allocation probe. The caller validates its own profile.
+    fn with_readonly_refs_binding_observation<T>(
+        &mut self,
+        events: &mut Vec<NativeEvent>,
+        observe: impl FnOnce(&GeneralReadonlyRefsVolume<'_>) -> io::Result<T>,
+    ) -> io::Result<(T, GeneralDiskState, GeneralDiskState, GeneralDiskState)> {
         let before = self.state(events)?;
         if before.disk_attributes != OFFLINE | READ_ONLY {
             return Err(invalid(
@@ -1891,12 +3877,7 @@ impl GeneralFrozenPartition {
                 volume: &volume,
                 expected_state: &expected_readonly,
             };
-            let observed = crate::shadow_native::verify_general_ordinary_readonly(
-                pair,
-                input,
-                &same_security,
-                &protected,
-            );
+            let observed = observe(&protected);
             // All native file handles close before the persistent offline
             // transition; the retained read-only volume route closes once.
             close_file(
@@ -1915,12 +3896,7 @@ impl GeneralFrozenPartition {
                 "protected ReFS exclusion changed during observation",
             ));
         }
-        Ok(GeneralLiveRefsObservation {
-            report: collected?,
-            before,
-            observed_readonly: expected_readonly,
-            after,
-        })
+        Ok((collected?, before, expected_readonly, after))
     }
 
     /// Transition only an unchanged OFFLINE|READ_ONLY source to OFFLINE. The
@@ -1962,6 +3938,152 @@ impl GeneralFrozenPartition {
         Ok(GeneralJournaledPartition {
             inner: self,
             policy: None,
+            paged_policy: None,
+            write_poisoned: false,
+            native_bytes_written: 0,
+            native_write_bytes_requested: 0,
+        })
+    }
+
+    /// Activate while retaining a real deny-new-writers gate on the primary
+    /// PhysicalDrive route. Read-only aliases remain permitted. This does not
+    /// claim global exclusion of administrative/volume aliases; the caller
+    /// must retain offline filesystem exclusion and own every mutable alias.
+    /// No serialized flag creates this capability: the held writable File is
+    /// opened without FILE_SHARE_WRITE and retained through journal handoff.
+    pub fn activate_for_journal_exclusive(
+        mut self,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralJournaledPartition> {
+        let before = self.state(events)?;
+        if before.disk_attributes != OFFLINE | READ_ONLY {
+            return Err(invalid(
+                "exclusive journal activation requires frozen read-only disk",
+            ));
+        }
+        let path = format!("\\\\.\\PhysicalDrive{}", self.binding.disk_number);
+        let opened = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(1) // FILE_SHARE_READ; existing/new write aliases must refuse.
+            .custom_flags(0xa000_0000) // NO_BUFFERING | WRITE_THROUGH, as the writer uses.
+            .open(&path);
+        events.push(NativeEvent {
+            operation: "open-exclusive-primary-raw-route-gate".into(),
+            control_code: 0,
+            input: 1u32.to_le_bytes().to_vec(),
+            succeeded: opened.is_ok(),
+            native_error: opened.as_ref().err().and_then(io::Error::raw_os_error),
+            output: b"primary-raw-route-deny-new-writers".to_vec(),
+        });
+        // Opening failure leaves the original OFFLINE|READ_ONLY source intact.
+        let gate = opened?;
+        let mut expected = before.clone();
+        expected.disk_attributes = OFFLINE;
+        let mut transition_attempted = false;
+        let activated = (|| -> io::Result<()> {
+            if general_disk_state(&gate, &self.binding, events)? != before {
+                return Err(invalid("exclusive gate route differs from frozen source"));
+            }
+            // Prove the sharing restriction on the exact route while the
+            // disk is still READ_ONLY. Opening this probe issues no payload IO.
+            let probe = device_file(&path, true, true);
+            let denied = probe.as_ref().err().and_then(io::Error::raw_os_error)
+                == Some(ERROR_SHARING_VIOLATION as i32);
+            events.push(NativeEvent {
+                operation: "probe-second-primary-raw-route-writer".into(),
+                control_code: 0,
+                input: 3u32.to_le_bytes().to_vec(),
+                succeeded: probe.is_ok(),
+                native_error: probe.as_ref().err().and_then(io::Error::raw_os_error),
+                output: b"open-only; no payload read or write requested".to_vec(),
+            });
+            match probe {
+                Ok(file) => {
+                    close_file(file, "close-unexpected-secondary-raw-writer-probe", events)?;
+                    return Err(invalid(
+                        "exclusive raw gate allowed a second writable handle",
+                    ));
+                }
+                Err(error) if !denied => return Err(error),
+                Err(_) => (),
+            }
+            events.push(NativeEvent {
+                operation: "primary-raw-route-deny-new-writers".into(),
+                control_code: 0,
+                input: vec![],
+                succeeded: true,
+                native_error: None,
+                output: serde_json::to_vec(&serde_json::json!({
+                    "scope":"primary-raw-route-deny-new-writers",
+                    "gate_share_mode":1,"second_writer_native_error":ERROR_SHARING_VIOLATION,
+                    "filesystem_excluded":true,"source_payload_write_requests":0,
+                    "global_alias_exclusion_claimed":false
+                }))
+                .map_err(io::Error::other)?,
+            });
+            // No separate management writer can coexist with the gate. The
+            // same held, positively bound handle performs the transition.
+            transition_attempted = true;
+            set_attributes(&gate, OFFLINE, events)?;
+            if general_disk_state(&gate, &self.binding, events)? != expected {
+                return Err(invalid(
+                    "exclusive journal activation lost exclusion or identity",
+                ));
+            }
+            Ok(())
+        })();
+        if let Err(error) = activated {
+            if !transition_attempted {
+                // In particular, never change attributes through a handle
+                // whose initial route/identity validation just failed.
+                events.push(NativeEvent {
+                    operation: "exclusive-activation-refused-before-attribute-change".into(),
+                    control_code: 0,
+                    input: vec![],
+                    succeeded: true,
+                    native_error: None,
+                    output: b"original frozen source not changed by this activation".to_vec(),
+                });
+                return Err(error);
+            }
+            // No source payload writes have occurred. Re-establish persistent
+            // protection through the gate before either owning handle closes.
+            let restored = set_attributes(&gate, OFFLINE | READ_ONLY, events).and_then(|()| {
+                if general_disk_state(&gate, &self.binding, events)? != before {
+                    return Err(invalid("exclusive activation protection restore differs"));
+                }
+                Ok(())
+            });
+            events.push(NativeEvent {
+                operation: "exclusive-activation-restore-offline-readonly".into(),
+                control_code: 0,
+                input: (OFFLINE | READ_ONLY).to_le_bytes().to_vec(),
+                succeeded: restored.is_ok(),
+                native_error: restored.as_ref().err().and_then(io::Error::raw_os_error),
+                output: restored
+                    .as_ref()
+                    .err()
+                    .map(ToString::to_string)
+                    .unwrap_or_default()
+                    .into_bytes(),
+            });
+            return match restored {
+                Ok(()) => Err(error),
+                Err(restore) => Err(io::Error::new(
+                    error.kind(),
+                    format!(
+                        "exclusive activation failed: {error}; read-only protection restore failed: {restore}"
+                    ),
+                )),
+            };
+        }
+        self.file = gate;
+        self.frozen_state = expected;
+        Ok(GeneralJournaledPartition {
+            inner: self,
+            policy: None,
+            paged_policy: None,
             write_poisoned: false,
             native_bytes_written: 0,
             native_write_bytes_requested: 0,
@@ -1970,6 +4092,90 @@ impl GeneralFrozenPartition {
 }
 
 impl GeneralJournaledPartition {
+    /// Dormant V4 policy branch. A held index alone is never authorization.
+    /// Legacy Vec arming remains unchanged and does not use this method.
+    #[allow(dead_code)]
+    fn arm_resource_paged_writes(
+        &mut self,
+        policy: HeldPagedWritePolicy,
+        profile: crate::journal_file::JournalProfile,
+        pinned_max_journal_bytes: u64,
+        _authority: ResourcePolicyAuthority,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
+        if self.policy.is_some()
+            || self.paged_policy.is_some()
+            || self.write_poisoned
+            || self.native_write_bytes_requested != 0
+        {
+            return Err(invalid("general journal write policy is already consumed"));
+        }
+        policy.revalidate()?;
+        let facts = policy.facts()?;
+        let expected = crate::journal_file::JournalProfile::from_schema_and_capacity(
+            3,
+            Some(pinned_max_journal_bytes),
+        )?;
+        let omitted = facts
+            .old_zero_bytes
+            .checked_add(facts.source_free_bytes)
+            .ok_or_else(|| invalid("paged policy omitted bytes overflow"))?;
+        let reconstructed = facts
+            .journal_length
+            .checked_add(omitted)
+            .ok_or_else(|| invalid("paged policy capacity overflow"))?;
+        if profile != expected
+            || facts.image_length != self.byte_len()
+            || facts.journal_length == 0
+            || facts.journal_length > pinned_max_journal_bytes
+            || omitted > facts.selected_bytes
+            || facts.selected_bytes > reconstructed.min(facts.image_length)
+            || (facts.format_version == 6 && !crate::journal_file::MARKER_STORAGE_NATIVE_QUALIFIED)
+        {
+            return Err(invalid(
+                "paged policy capacity or native marker qualification differs",
+            ));
+        }
+        if self.state(events)?.disk_attributes != OFFLINE {
+            return Err(invalid("general target is not excluded from mounting"));
+        }
+        self.paged_policy = Some(policy);
+        Ok(())
+    }
+
+    /// Open a separate read-only native handle/cursor for a compact target's
+    /// source-backed complement. This derives only from this live writer and
+    /// does not reopen an activated disk as an allegedly frozen partition.
+    pub fn read_only_view(
+        &self,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralJournalReadView> {
+        let expected_state = self.state(events)?;
+        if expected_state.disk_attributes != OFFLINE {
+            return Err(invalid(
+                "journal read view requires an activated offline target",
+            ));
+        }
+        let file = device_file(
+            &format!("\\\\.\\PhysicalDrive{}", self.binding().disk_number),
+            false,
+            true,
+        )?;
+        if general_disk_state(&file, self.binding(), events)? != expected_state
+            || self.state(events)? != expected_state
+        {
+            return Err(invalid("journal read view route changed while opening"));
+        }
+        Ok(GeneralJournalReadView {
+            file,
+            binding: self.binding().clone(),
+            expected_state,
+            position: 0,
+            buffer: AlignedBuffer::new()?,
+            native_bytes_read: 0,
+        })
+    }
+
     /// Reopen an already activated target after an interruption. A missing
     /// OFFLINE attribute is a hard refusal; no attribute repair is attempted.
     pub fn reopen(binding: GeneralDiskBinding, events: &mut Vec<NativeEvent>) -> io::Result<Self> {
@@ -1990,6 +4196,7 @@ impl GeneralJournaledPartition {
         }
         Ok(Self {
             inner: GeneralFrozenPartition {
+                resource_budget: None,
                 freeze_observation: None,
                 allocation_capture: None,
                 file,
@@ -1997,9 +4204,11 @@ impl GeneralJournaledPartition {
                 frozen_state,
                 position: 0,
                 buffer: AlignedBuffer::new()?,
+                ahead: ReadAhead::default(),
                 native_bytes_read: 0,
             },
             policy: None,
+            paged_policy: None,
             write_poisoned: false,
             native_bytes_written: 0,
             native_write_bytes_requested: 0,
@@ -2023,10 +4232,142 @@ impl GeneralJournaledPartition {
         policy: WritePolicy,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<()> {
-        if self.policy.is_some() || self.write_poisoned || self.native_write_bytes_requested != 0 {
+        self.arm_writes_inner(policy, None, events)
+    }
+
+    /// Caller must first authenticate the exact encoded journal and its full
+    /// selected write set. This grants no source or journal authority itself.
+    pub fn arm_encoded_selected_writes(
+        &mut self,
+        policy: WritePolicy,
+        journal_bytes: u64,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
+        self.arm_writes_inner(
+            policy,
+            Some(SelectedWriteCapacity::Encoded { journal_bytes }),
+            events,
+        )
+    }
+
+    /// Canonical old-zero encoding may have a journal shorter than its selected
+    /// write set. Complete journal/plan authentication is still the caller's
+    /// obligation; the selected-byte profile ceiling remains unchanged.
+    pub fn arm_old_zero_selected_writes(
+        &mut self,
+        policy: WritePolicy,
+        journal_bytes: u64,
+        old_zero_bytes: u64,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
+        if old_zero_bytes == 0 {
+            return Err(invalid(
+                "old-zero write policy requires a nonempty pinned subset",
+            ));
+        }
+        self.arm_writes_inner(
+            policy,
+            Some(SelectedWriteCapacity::OldZero {
+                journal_bytes,
+                old_zero_bytes,
+            }),
+            events,
+        )
+    }
+
+    /// Explicit new-policy entry; legacy profile helpers retain their limits.
+    /// Pinned request intent, exact format-four facts and actual journal
+    /// authentication must be checked by the caller before arming.
+    pub fn arm_old_zero_actual_bytes_v3_writes(
+        &mut self,
+        policy: WritePolicy,
+        journal_bytes: u64,
+        old_zero_bytes: u64,
+        pinned_max_journal_bytes: u64,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
+        self.arm_writes_inner(
+            policy,
+            Some(SelectedWriteCapacity::OldZeroActualBytesV3 {
+                journal_bytes,
+                old_zero_bytes,
+                pinned_max_journal_bytes,
+            }),
+            events,
+        )
+    }
+
+    /// Caller has authenticated a format-five journal, its explicit recovery
+    /// scope, frozen allocation witness and VSS admission. Counts alone grant
+    /// neither source admission nor replay authority.
+    pub fn arm_source_free_actual_bytes_v3_writes(
+        &mut self,
+        policy: WritePolicy,
+        journal_bytes: u64,
+        old_zero_bytes: u64,
+        source_free_bytes: u64,
+        pinned_max_journal_bytes: u64,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
+        self.arm_writes_inner(
+            policy,
+            Some(SelectedWriteCapacity::SourceFreeActualBytesV3 {
+                journal_bytes,
+                old_zero_bytes,
+                source_free_bytes,
+                pinned_max_journal_bytes,
+            }),
+            events,
+        )
+    }
+
+    fn arm_writes_inner(
+        &mut self,
+        policy: WritePolicy,
+        encoded_journal_bytes: Option<SelectedWriteCapacity>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
+        if self.policy.is_some()
+            || self.paged_policy.is_some()
+            || self.write_poisoned
+            || self.native_write_bytes_requested != 0
+        {
             return Err(invalid("general journal write policy is already consumed"));
         }
-        policy.validate(self.byte_len())?;
+        match encoded_journal_bytes {
+            Some(SelectedWriteCapacity::Encoded { journal_bytes }) => {
+                policy.validate_encoded(self.byte_len(), journal_bytes)?
+            }
+            Some(SelectedWriteCapacity::OldZero {
+                journal_bytes,
+                old_zero_bytes,
+            }) => {
+                policy.validate_old_zero_encoded(self.byte_len(), journal_bytes, old_zero_bytes)?
+            }
+            Some(SelectedWriteCapacity::OldZeroActualBytesV3 {
+                journal_bytes,
+                old_zero_bytes,
+                pinned_max_journal_bytes,
+            }) => policy.validate_old_zero_actual_bytes_v3(
+                self.byte_len(),
+                journal_bytes,
+                old_zero_bytes,
+                pinned_max_journal_bytes,
+            )?,
+            Some(SelectedWriteCapacity::SourceFreeActualBytesV3 {
+                journal_bytes,
+                old_zero_bytes,
+                source_free_bytes,
+                pinned_max_journal_bytes,
+            }) => policy.validate_source_free_actual_bytes_v3(
+                self.byte_len(),
+                journal_bytes,
+                old_zero_bytes,
+                source_free_bytes,
+                pinned_max_journal_bytes,
+            )?,
+            None => policy.validate(self.byte_len())?,
+        }
         if self.state(events)?.disk_attributes != OFFLINE {
             return Err(invalid("general target is not excluded from mounting"));
         }
@@ -2049,6 +4390,7 @@ impl GeneralJournaledPartition {
             return Err(invalid("cannot expose a failed general target"));
         }
         self.policy = None;
+        self.paged_policy = None;
         self.sync_all()?;
         self.state(events)?;
         set_attributes(&self.inner.file, 0, events)?;
@@ -2081,21 +4423,54 @@ impl Write for GeneralJournaledPartition {
         if input.is_empty() {
             return Ok(0);
         }
-        let policy = self.policy.as_ref().ok_or_else(|| {
-            io::Error::new(
+        let _timed = crate::perf::scope(crate::perf::Point::DeviceWrite);
+        crate::perf::add_bytes(crate::perf::Point::DeviceWrite, input.len() as u64);
+        if self.policy.is_none() && self.paged_policy.is_none() {
+            return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "general raw writes are not armed",
-            )
-        })?;
+            ));
+        }
+        if self.policy.is_some() && self.paged_policy.is_some() {
+            self.write_poisoned = true;
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "general raw write policies conflict",
+            ));
+        }
         let attempted = self
             .native_write_bytes_requested
             .checked_add(input.len() as u64)
             .ok_or_else(|| invalid("general write accounting overflow"))?;
-        if self.write_poisoned
-            || input.len() > MAX_IO
-            || !policy.permits(self.inner.position, input.len() as u64)
-            || attempted > policy.maximum_bytes
-        {
+        if self.write_poisoned || input.len() > MAX_IO {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "general native write violates bounded journal policy",
+            ));
+        }
+        let (permitted, maximum_bytes) = if let Some(policy) = self.policy.as_ref() {
+            (
+                policy.permits(self.inner.position, input.len() as u64),
+                policy.maximum_bytes,
+            )
+        } else if let Some(policy) = self.paged_policy.as_ref() {
+            match policy
+                .permits(self.inner.position, input.len() as u64)
+                .and_then(|allowed| policy.facts().map(|facts| (allowed, facts.selected_bytes)))
+            {
+                Ok(result) => result,
+                Err(error) => {
+                    self.write_poisoned = true;
+                    return Err(error);
+                }
+            }
+        } else {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "general raw writes are not armed",
+            ));
+        };
+        if !permitted || attempted > maximum_bytes {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "general native write violates bounded journal policy",
@@ -2226,11 +4601,53 @@ impl Seek for GeneralPartitionReader {
     }
 }
 
+impl GeneralFrozenPartition {
+    /// Runs `body` with read-ahead on; see [`ReadAhead`]. For a pass that
+    /// reads ranges in ascending order and during which nothing but this
+    /// object writes to the partition.
+    pub fn with_read_ahead<T>(&mut self, body: impl FnOnce(&mut Self) -> T) -> T {
+        let previous = self.ahead.enabled;
+        self.set_read_ahead(true);
+        let result = body(self);
+        self.set_read_ahead(previous);
+        result
+    }
+    /// Turning it on starts a fresh pass and turning it off drops the
+    /// window; setting it to what it already is changes nothing.
+    pub(crate) fn set_read_ahead(&mut self, enabled: bool) {
+        if self.ahead.enabled != enabled {
+            self.ahead.enabled = enabled;
+            self.ahead.clear();
+        }
+    }
+}
+
 impl Read for GeneralFrozenPartition {
     fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        use std::os::windows::fs::FileExt;
         if output.is_empty() || self.position == self.byte_len() {
             return Ok(0);
         }
+        if self.ahead.enabled && self.ahead.length != 0 {
+            let (start, end) = (
+                self.ahead.start,
+                self.ahead.start + self.ahead.length as u64,
+            );
+            if (start..end).contains(&self.position) {
+                let at = (self.position - start) as usize;
+                let wanted = output.len().min(self.ahead.length - at);
+                let window = self
+                    .ahead
+                    .window
+                    .as_mut()
+                    .ok_or_else(|| invalid("read-ahead window absent"))?;
+                output[..wanted].copy_from_slice(&window.bytes_mut()[at..at + wanted]);
+                self.position += wanted as u64;
+                self.ahead.last_end = self.ahead.last_end.max(self.position);
+                return Ok(wanted);
+            }
+        }
+        let _timed = crate::perf::scope(crate::perf::Point::DeviceRead);
         let aligned = self.position / GRANULE * GRANULE;
         let prefix = (self.position - aligned) as usize;
         let wanted = output
@@ -2241,10 +4658,50 @@ impl Read for GeneralFrozenPartition {
         if aligned + count as u64 > self.byte_len() {
             return Err(invalid("aligned frozen read escapes partition"));
         }
-        self.file.seek(SeekFrom::Start(
+        // Read ahead when this read continues, going forward, shortly after
+        // the furthest one so far; a read elsewhere is made as it is asked.
+        let continues = self.ahead.enabled
+            && self.position >= self.ahead.last_end
+            && self.position - self.ahead.last_end <= ReadAhead::BYTES as u64;
+        if self.ahead.enabled && self.position >= self.ahead.last_end {
+            self.ahead.last_end = self.position + wanted as u64;
+        }
+        if continues && count < ReadAhead::BYTES {
+            let count = (ReadAhead::BYTES as u64).min(self.byte_len() - aligned) as usize;
+            if self.ahead.window.is_none() {
+                self.ahead.window = Some(AlignedBuffer::new()?);
+            }
+            let window = self
+                .ahead
+                .window
+                .as_mut()
+                .ok_or_else(|| invalid("read-ahead window absent"))?;
+            self.ahead.length = 0;
+            crate::perf::add_bytes(crate::perf::Point::DeviceRead, count as u64);
+            let read = self.file.seek_read(
+                &mut window.bytes_mut()[..count],
+                self.binding.identity.partition_offset + aligned,
+            )?;
+            self.native_bytes_read += read as u64;
+            if read != count {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "short frozen aligned read",
+                ));
+            }
+            self.ahead.start = aligned;
+            self.ahead.length = count;
+            let wanted = wanted.min(count - prefix);
+            output[..wanted].copy_from_slice(&window.bytes_mut()[prefix..prefix + wanted]);
+            self.position += wanted as u64;
+            return Ok(wanted);
+        }
+        crate::perf::add_bytes(crate::perf::Point::DeviceRead, output.len() as u64);
+        // One positional read: no separate call to move the file pointer.
+        let read = self.file.seek_read(
+            &mut self.buffer.bytes_mut()[..count],
             self.binding.identity.partition_offset + aligned,
-        ))?;
-        let read = self.file.read(&mut self.buffer.bytes_mut()[..count])?;
+        )?;
         self.native_bytes_read += read as u64;
         if read != count {
             return Err(io::Error::new(
@@ -2267,6 +4724,99 @@ impl Seek for GeneralFrozenPartition {
         };
         if position < 0 || position > i128::from(self.byte_len()) {
             return Err(invalid("seek escapes frozen partition"));
+        }
+        self.position = position as u64;
+        Ok(self.position)
+    }
+}
+
+/// An additional read-only handle on a frozen partition, so several reads can
+/// be outstanding at once. Opening proves its route equals the frozen state; it
+/// exposes aligned reads only and never changes attributes or mounts.
+pub struct GeneralFrozenLane {
+    file: File,
+    binding: GeneralDiskBinding,
+    position: u64,
+    buffer: AlignedBuffer,
+}
+
+// SAFETY: the lane uniquely owns its aligned allocation and device handle;
+// moving it to another thread moves that exclusive ownership.
+unsafe impl Send for GeneralFrozenLane {}
+
+impl GeneralFrozenPartition {
+    /// The storage transfer profile Windows reports for this frozen disk.
+    pub fn io_profile(&self) -> crate::io_profile::IoProfile {
+        crate::io_profile::for_disk(&self.file)
+    }
+
+    /// Open `count` read lanes, each a fresh handle whose route must equal the
+    /// frozen state.
+    pub fn read_lanes(
+        &self,
+        count: usize,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<Vec<GeneralFrozenLane>> {
+        let path = format!("\\\\.\\PhysicalDrive{}", self.binding.disk_number);
+        (0..count)
+            .map(|_| {
+                let file = device_file(&path, false, true)?;
+                if general_disk_state(&file, &self.binding, events)? != self.frozen_state {
+                    return Err(invalid("frozen read lane route differs"));
+                }
+                Ok(GeneralFrozenLane {
+                    file,
+                    binding: self.binding.clone(),
+                    position: 0,
+                    buffer: AlignedBuffer::new()?,
+                })
+            })
+            .collect()
+    }
+}
+
+impl Read for GeneralFrozenLane {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        let length = self.binding.identity.partition_bytes;
+        if output.is_empty() || self.position == length {
+            return Ok(0);
+        }
+        let aligned = self.position / GRANULE * GRANULE;
+        let prefix = (self.position - aligned) as usize;
+        let wanted = output
+            .len()
+            .min(MAX_IO - prefix)
+            .min((length - self.position) as usize);
+        let count = (prefix + wanted).div_ceil(GRANULE as usize) * GRANULE as usize;
+        if aligned + count as u64 > length {
+            return Err(invalid("aligned frozen lane read escapes partition"));
+        }
+        self.file.seek(SeekFrom::Start(
+            self.binding.identity.partition_offset + aligned,
+        ))?;
+        let read = self.file.read(&mut self.buffer.bytes_mut()[..count])?;
+        if read != count {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "short frozen lane read",
+            ));
+        }
+        output[..wanted].copy_from_slice(&self.buffer.bytes_mut()[prefix..prefix + wanted]);
+        self.position += wanted as u64;
+        Ok(wanted)
+    }
+}
+
+impl Seek for GeneralFrozenLane {
+    fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
+        let length = self.binding.identity.partition_bytes;
+        let position = match from {
+            SeekFrom::Start(value) => i128::from(value),
+            SeekFrom::Current(value) => i128::from(self.position) + i128::from(value),
+            SeekFrom::End(value) => i128::from(length) + i128::from(value),
+        };
+        if position < 0 || position > i128::from(length) {
+            return Err(invalid("seek escapes frozen lane"));
         }
         self.position = position as u64;
         Ok(self.position)
@@ -2891,6 +5441,7 @@ mod tests {
             ..
         } = ordinary_stream();
         let binding = GeneralDiskBinding {
+            layout_profile: Default::default(),
             disk_number: binding.disk_number,
             volume_guid: binding.volume_guid,
             identity: binding.identity,
@@ -2929,6 +5480,7 @@ mod tests {
             post_dismount_error: Some("post-dismount allocation capture: access denied".into()),
             post_lock_equals_frozen_graph: false,
             raw_write_authority: false,
+            resource_budget: None,
             token: Arc::clone(&token),
         };
         let mut frozen = GeneralFrozenPartition {
@@ -2937,7 +5489,9 @@ mod tests {
             frozen_state,
             position: 0,
             buffer,
+            ahead: ReadAhead::default(),
             native_bytes_read: 0,
+            resource_budget: None,
             freeze_observation: None,
             allocation_capture: Some(token),
         };
@@ -2996,6 +5550,131 @@ mod tests {
         repeated.extend("F:\\".encode_utf16());
         repeated.extend([0, 0]);
         assert!(decode_mount_paths(&repeated, repeated.len()).is_err());
+    }
+
+    fn frozen_over_file(bytes: &[u8], offset: u64) -> GeneralFrozenPartition {
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(&vec![0xee; offset as usize]).unwrap();
+        file.write_all(bytes).unwrap();
+        GeneralFrozenPartition {
+            file,
+            binding: GeneralDiskBinding {
+                layout_profile: Default::default(),
+                disk_number: 1,
+                volume_guid: String::new(),
+                identity: PartitionIdentity {
+                    disk_guid: String::new(),
+                    partition_guid: String::new(),
+                    partition_number: 2,
+                    disk_bytes: offset + bytes.len() as u64,
+                    partition_offset: offset,
+                    partition_bytes: bytes.len() as u64,
+                    logical_sector_bytes: 512,
+                    physical_sector_bytes: 4096,
+                },
+            },
+            frozen_state: GeneralDiskState {
+                device: vec![],
+                disk_length: vec![],
+                alignment: vec![],
+                gpt_layout: vec![],
+                disk_attributes: OFFLINE | READ_ONLY,
+            },
+            position: 0,
+            buffer: AlignedBuffer::new().unwrap(),
+            ahead: ReadAhead::default(),
+            native_bytes_read: 0,
+            resource_budget: None,
+            freeze_observation: None,
+            allocation_capture: None,
+        }
+    }
+
+    #[test]
+    fn read_ahead_serves_ascending_ranges_and_never_returns_stale_bytes() {
+        use std::os::windows::fs::FileExt;
+        let mut bytes: Vec<u8> = (0..3 * 1024 * 1024u32)
+            .map(|n| (n.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .collect();
+        let mut frozen = frozen_over_file(&bytes, 4096);
+        fn read_at(frozen: &mut GeneralFrozenPartition, at: u64, length: usize) -> Vec<u8> {
+            let mut out = vec![0u8; length];
+            frozen.seek(SeekFrom::Start(at)).unwrap();
+            frozen.read_exact(&mut out).unwrap();
+            out
+        }
+        // Aligned and unaligned, with small and large gaps, one past a megabyte.
+        let ranges = [
+            (0u64, 4096usize),
+            (8192, 12288),
+            (40_960, 4096),
+            (300_001, 70_000),
+            (1_048_476, 8192),
+            (2_500_000, 300_000),
+        ];
+        for (at, length) in ranges {
+            assert_eq!(
+                read_at(&mut frozen, at, length),
+                bytes[at as usize..at as usize + length]
+            );
+        }
+        assert_eq!(frozen.ahead.length, 0, "no window outside a declared scope");
+        let without = frozen.native_bytes_read;
+
+        frozen.native_bytes_read = 0;
+        frozen.with_read_ahead(|frozen| {
+            assert_eq!(read_at(frozen, 0, 4096), bytes[..4096]);
+            let after_first = frozen.native_bytes_read;
+            assert_eq!(
+                frozen.ahead.length,
+                ReadAhead::BYTES,
+                "the first forward read fetches a window"
+            );
+            for (at, length) in &ranges[1..4] {
+                assert_eq!(
+                    read_at(frozen, *at, *length),
+                    bytes[*at as usize..*at as usize + *length]
+                );
+            }
+            assert_eq!(
+                frozen.native_bytes_read, after_first,
+                "ranges inside the window cost no device read"
+            );
+            for (at, length) in &ranges[4..] {
+                assert_eq!(
+                    read_at(frozen, *at, *length),
+                    bytes[*at as usize..*at as usize + *length]
+                );
+            }
+            // A read behind the window comes from the device and is right.
+            assert_eq!(read_at(frozen, 4096, 4096), bytes[4096..8192]);
+
+            // A write through the owner (as the fresh-apply writer makes) is
+            // seen by a later read whether or not the window holds that range.
+            let (start, length) = (frozen.ahead.start, frozen.ahead.length as u64);
+            for at in [start + 8192, 16_384] {
+                let new = vec![0xa5u8; 4096];
+                frozen.file.seek_write(&new, 4096 + at).unwrap();
+                frozen.ahead.written(at, &new);
+                bytes[at as usize..at as usize + 4096].copy_from_slice(&new);
+                assert_eq!(read_at(frozen, at, 4096), new);
+            }
+            assert!(start + length <= bytes.len() as u64);
+        });
+        assert_eq!(
+            frozen.ahead.length, 0,
+            "the window is dropped with the scope"
+        );
+        assert!(
+            frozen.native_bytes_read >= without,
+            "read-ahead reads at least what was asked for"
+        );
+        for (at, length) in ranges {
+            assert_eq!(
+                read_at(&mut frozen, at, length),
+                bytes[at as usize..at as usize + length]
+            );
+        }
     }
 
     fn ordinary_stream() -> OfflinePartition {
@@ -3057,6 +5736,7 @@ mod tests {
             ..
         } = ordinary_stream();
         let binding = GeneralDiskBinding {
+            layout_profile: Default::default(),
             disk_number: binding.disk_number,
             volume_guid: binding.volume_guid,
             identity: binding.identity,
@@ -3103,11 +5783,14 @@ mod tests {
             ..
         } = ordinary_stream();
         let binding = GeneralDiskBinding {
+            layout_profile: Default::default(),
             disk_number: binding.disk_number,
             volume_guid: binding.volume_guid,
             identity: binding.identity,
         };
         let mut reader = GeneralFrozenPartition {
+            ahead: ReadAhead::default(),
+            resource_budget: None,
             freeze_observation: None,
             allocation_capture: None,
             file,
@@ -3144,10 +5827,13 @@ mod tests {
         } = ordinary_stream();
         let mut target = GeneralJournaledPartition {
             inner: GeneralFrozenPartition {
+                ahead: ReadAhead::default(),
+                resource_budget: None,
                 freeze_observation: None,
                 allocation_capture: None,
                 file,
                 binding: GeneralDiskBinding {
+                    layout_profile: Default::default(),
                     disk_number: binding.disk_number,
                     volume_guid: binding.volume_guid,
                     identity: binding.identity,
@@ -3164,6 +5850,7 @@ mod tests {
                 native_bytes_read: 0,
             },
             policy: None,
+            paged_policy: None,
             write_poisoned: false,
             native_bytes_written: 0,
             native_write_bytes_requested: 0,
@@ -3174,6 +5861,7 @@ mod tests {
             allowed: vec![(0, 4096)],
             retained: vec![(4096, 4096)],
             maximum_bytes: 4096,
+            journal_profile: crate::journal_file::JournalProfile::LegacyV1,
         });
         target.write_all(&block).unwrap();
         assert_eq!(target.native_bytes_written, 4096);
@@ -3196,12 +5884,14 @@ mod tests {
             allowed: vec![(0, 4096), (8192, 4096)],
             retained: vec![(4096, 4096)],
             maximum_bytes: 8192,
+            journal_profile: crate::journal_file::JournalProfile::LegacyV1,
         };
         policy.validate(stream.byte_len()).unwrap();
         let bad = WritePolicy {
             allowed: vec![(0, 8192)],
             retained: vec![(4096, 4096)],
             maximum_bytes: 8192,
+            journal_profile: crate::journal_file::JournalProfile::LegacyV1,
         };
         assert!(bad.validate(stream.byte_len()).is_err());
         stream.policy = Some(policy);
@@ -3237,19 +5927,42 @@ mod tests {
             allowed: vec![(0, cap)],
             retained: vec![],
             maximum_bytes: cap,
+            journal_profile: crate::journal_file::JournalProfile::LegacyV1,
         };
         valid.validate(cap + 4096).unwrap();
         let excessive = WritePolicy {
             allowed: vec![(0, cap + 4096)],
             retained: vec![],
             maximum_bytes: cap + 4096,
+            journal_profile: crate::journal_file::JournalProfile::LegacyV1,
         };
         assert!(excessive.validate(cap + 4096).is_err());
         let underfunded = WritePolicy {
             allowed: vec![(0, cap)],
             retained: vec![],
             maximum_bytes: cap - 4096,
+            journal_profile: crate::journal_file::JournalProfile::LegacyV1,
         };
         assert!(underfunded.validate(cap + 4096).is_err());
+    }
+    #[test]
+    fn large_write_policy_requires_v2_and_keeps_overlap_and_budget_guards() {
+        use crate::journal_file::JournalProfile;
+        let large = crate::journal_file::MAX_CHANGED_BYTES + 4096;
+        let mut policy = WritePolicy {
+            allowed: vec![(4096, large)],
+            retained: vec![(0, 4096)],
+            maximum_bytes: large,
+            journal_profile: JournalProfile::LegacyV1,
+        };
+        assert!(policy.validate(large + 8192).is_err());
+        policy.journal_profile = JournalProfile::ExperimentalLargeV2;
+        policy.validate(large + 8192).unwrap();
+        let mut overlap = policy.clone();
+        overlap.retained = vec![(4096, 4096)];
+        assert!(overlap.validate(large + 8192).is_err());
+        let mut underfunded = policy;
+        underfunded.maximum_bytes -= 4096;
+        assert!(underfunded.validate(large + 8192).is_err());
     }
 }

@@ -26,7 +26,14 @@ fn word(b: &[u8], at: usize) -> u32 {
 /// Returns decoded entries and the end of the last actual record. The native
 /// API supplies no byte count; initialized output padding is not evidence.
 pub fn parse(bytes: &[u8]) -> io::Result<(Vec<Entry>, usize)> {
-    if bytes.len() > CAPACITY {
+    parse_with_limits(bytes, CAPACITY, MAX_ENTRIES)
+}
+pub fn parse_with_limits(
+    bytes: &[u8],
+    maximum_bytes: usize,
+    maximum_entries: usize,
+) -> io::Result<(Vec<Entry>, usize)> {
+    if bytes.len() > maximum_bytes || maximum_entries == 0 {
         return Err(invalid("directory batch exceeds bound"));
     }
     let mut entries = vec![];
@@ -35,7 +42,7 @@ pub fn parse(bytes: &[u8]) -> io::Result<(Vec<Entry>, usize)> {
         let row = bytes
             .get(at..)
             .ok_or_else(|| invalid("directory offset outside batch"))?;
-        if row.len() < 88 || entries.len() == MAX_ENTRIES {
+        if row.len() < 88 || entries.len() == maximum_entries {
             return Err(invalid("short or excessive directory records"));
         }
         let name_len = word(row, 60) as usize;
@@ -73,8 +80,39 @@ pub fn parse(bytes: &[u8]) -> io::Result<(Vec<Entry>, usize)> {
 
 /// Reconstruct a pass from the actual responses, never a `complete` JSON flag.
 pub fn decode_pass(queries: &[crate::attestation::Query]) -> io::Result<Vec<Entry>> {
-    if queries.is_empty() || queries.len() > MAX_CALLS {
+    decode_pass_with_limits(queries, MAX_CALLS, MAX_ENTRIES, None)
+}
+pub fn decode_pass_with_resource_budget(
+    queries: &[crate::attestation::Query],
+    row_bytes: usize,
+) -> io::Result<Vec<Entry>> {
+    let maximum_entries = row_bytes / (2 * std::mem::size_of::<Entry>());
+    let maximum_calls = row_bytes / std::mem::size_of::<crate::attestation::Query>();
+    decode_pass_with_limits(queries, maximum_calls, maximum_entries, Some(row_bytes))
+}
+fn decode_pass_with_limits(
+    queries: &[crate::attestation::Query],
+    maximum_calls: usize,
+    maximum_entries: usize,
+    evidence: Option<usize>,
+) -> io::Result<Vec<Entry>> {
+    if queries.is_empty() || queries.len() > maximum_calls {
         return Err(invalid("missing or excessive directory calls"));
+    }
+    if let Some(maximum) = evidence {
+        let bytes = queries.iter().try_fold(
+            queries
+                .len()
+                .checked_mul(std::mem::size_of::<crate::attestation::Query>())
+                .ok_or_else(|| invalid("directory resource accounting overflow"))?,
+            |n, q| {
+                n.checked_add(q.bytes.len())
+                    .ok_or_else(|| invalid("directory resource accounting overflow"))
+            },
+        )?;
+        if bytes > maximum {
+            return Err(invalid("complete directory row exceeds resource budget"));
+        }
     }
     // ReFS can report NO_SUCH_FILE for the initial unfiltered query on an
     // empty directory. Require a separate continuation EOF, never treat an
@@ -103,9 +141,19 @@ pub fn decode_pass(queries: &[crate::attestation::Query]) -> io::Result<Vec<Entr
             Some(END) if q.bytes.is_empty() => eof = true,
             Some(_) => return Err(invalid("native directory enumeration refused")),
             None => {
-                let (batch, used) = parse(&q.bytes)?;
-                if used != q.bytes.len() || entries.len() + batch.len() > MAX_ENTRIES {
-                    return Err(invalid("directory evidence bounds differ"));
+                let (batch, used) = parse_with_limits(&q.bytes, CAPACITY, maximum_entries)?;
+                if used != q.bytes.len()
+                    || entries
+                        .len()
+                        .checked_add(batch.len())
+                        .is_none_or(|n| n > maximum_entries)
+                {
+                    return Err(invalid(&format!(
+                        "directory evidence bounds differ: call {i} decoded {used} of {} bytes; {} + {} entries against a limit of {maximum_entries}",
+                        q.bytes.len(),
+                        entries.len(),
+                        batch.len()
+                    )));
                 }
                 entries.extend(batch);
             }

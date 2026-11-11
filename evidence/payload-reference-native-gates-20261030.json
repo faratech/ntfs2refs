@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "kind": "exact-build-mixed-fixture-gate-assessment",
+  "run_id": "2586aba6ade144559d7e24d86c4792ea",
+  "source_commit": "156241e47be91473058b4eb3768e8d53501c9b7b",
+  "executable_sha256": "fe69c5a1b2dc728e6ee63e19599a56590c984232b37fd62461913a717ba64dba",
+  "assessment_only": true,
+  "new_native_tests_started": false,
+  "reboot_mutation": {
+    "current_helper": "lab/Invoke-AllocationMutationReboot.ps1",
+    "current_state": "not_run_on_this_build",
+    "requirements": [
+      "Batch the 808 file paths; one argument list is 47,310 UTF-16 units before executable overhead.",
+      "Pin the read-only digest helper explicitly.",
+      "Check worker quiescence and completed HND before ordinary filesystem mutation.",
+      "Preserve the current converted branch before any restore."
+    ]
+  },
+  "independent_recovery": {
+    "completed_run_rollback_prohibited": true,
+    "early_interruption_supported": true,
+    "first_copy_write_ordinal": 6135,
+    "current_state": "not_run_on_this_build",
+    "required_source_checkpoint": "6fe2d6b6-a2fb-447e-802b-7b3ff0d9f16e",
+    "requirements": [
+      "Use a fresh interrupted conversion, not the completed HND journal.",
+      "Supply exact three-checkpoint set and mixed source parent.",
+      "Use successful mixed request journal and placement budgets instead of 1 GiB/1024 settings.",
+      "Derive native expected counts 933 objects/811 hashes from the pinned expectation.",
+      "Allow the completion JSON up to the existing 64 MiB core bound."
+    ],
+    "copy_phase_interruption_supported_by_exact_build": false,
+    "sealed_build_fault_limit": 4096,
+    "deterministic_copy_phase_hook_requires_new_build": true
+  },
+  "known_successful_budget": {
+    "maximum_journal_bytes": 17179869184,
+    "maximum_exception_bytes": 16777216,
+    "maximum_placement_submissions": 32768
+  },
+  "natural_extent_evidence": {
+    "full_post_mount_mapping_comparison_performed": false,
+    "post_mount": "run/conversion/finalization.json",
+    "target": "run/conversion/qualification/target-preservation.json",
+    "source": "run/conversion/qualification/source-basis.json"
+  },
+  "utc": "2026-10-30T10:06:59.4780230Z"
+}

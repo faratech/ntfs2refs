@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "kind": "obsolete-recovery-snapshot-cleanup",
+  "utc": "2026-11-02T00:25:37.8778583Z",
+  "removed_snapshot_ids": [
+    "8087814c-b2ed-4060-b321-fccaa8869873",
+    "d40b4b41-be9c-4243-8f91-7f953085e3a3",
+    "d9e580fa-e673-4b30-8fc3-7011cbb918ca",
+    "67eda3e4-431c-4c2d-a932-e00d58a10383"
+  ],
+  "removed_snapshot_count": 4,
+  "snapshots_remaining": 11,
+  "verified_archive_files": 224,
+  "all_host_archives_preserved": true,
+  "active_interrupted_checkpoint": "6679708a-2171-4566-b660-312efaab9f73",
+  "vm_state": "Off",
+  "vm_memory_assigned_bytes": 0,
+  "lab_logical_bytes_before": 223147645794,
+  "lab_logical_bytes_after": 201040951068,
+  "lab_logical_bytes_removed": 22106694726,
+  "host_free_bytes_before": 121074593792,
+  "host_free_bytes_after": 143170375680,
+  "host_free_bytes_increase": 22095781888,
+  "capacity_epoch_changed": false,
+  "wsl_stopped": false,
+  "main_target_cache_removed": false,
+  "blocked_obsolete_cargo_cache_removal": true,
+  "receipt_path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\retire-four-archived-recovery-results-5c634e2b9b4c4b2db13973f8a8f5d117",
+  "completion_sha256": "653a008d2cd3b14cbd0410b858f652af5a868fc3edc76498321e7a1eafb31bda",
+  "active_checkpoint_receipt_path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\prepared-source-performance-interrupt-d0d30cb0454e4441920df86accf869a7\\checkpoint.json",
+  "active_checkpoint_receipt_sha256": "f5b631ee591c1c6befd3afd75ddf4bc50d93cfec60d0bc9e8abd89ca7595738c",
+  "qualification": "Cleanup only; original format4/format5 interrupted states, source fixtures and latest public conversion checkpoint remain. No converter or recovery replay."
+}

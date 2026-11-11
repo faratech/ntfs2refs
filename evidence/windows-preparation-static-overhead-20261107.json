@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "kind": "read-only-static-preparation-overhead-findings",
+  "production_candidate_commit": "4dae6b13a9c4918da2e5a30f4642839a766c9a46",
+  "active_run": "c3f5b1da525a4821bc1221c39425eca1",
+  "runtime_stack_was_not_sampled": true,
+  "source_assessment_is_not_phase_completion": "The assessment is saved before SourceScratch sealing and final evidence revalidation. Source preparation then rechecks the evidence and fingerprint before projection.",
+  "native_domain_validation": {
+    "path": "crates/n2r-win32/src/attestation.rs",
+    "function": "validate_domain_resources",
+    "static_full_row_passes": 12,
+    "components": "Six main loops, three measured_domain_resources loops and three identity-comparison loops.",
+    "reported_rows": 143580,
+    "approximate_paired_decodes_per_validation": 1722960,
+    "note": "row_view decodes file and namespace rows. This is a static work estimate, not measured physical disk traffic or proof of the current instruction pointer."
+  },
+  "later_projection_candidates": [
+    "build_object and ordinary_user_issues_windows both request user_paths; user_paths also recomputes canonical parent paths.",
+    "After optional whole-inventory cache release, sequential inventory reads and parent lookups share two decoded chunks. Hot parent rows remain cached.",
+    "Parent-cache LRU eviction scans cached rows. Actual miss rates and impact are not measured.",
+    "Small two-way projection batches preserve resource bounds but add spill, merge and validation I/O."
+  ],
+  "optimization_rule": "Consolidate redundant work only while preserving all existing checks and owner/pin boundaries; qualify changes on the next candidate. Do not alter or restart the active run for these findings.",
+  "unconditional_global_quadratic_loop_proven": false,
+  "code_changed": false,
+  "unit_tests_run": false,
+  "VM_probes_added_by_audit": false
+}

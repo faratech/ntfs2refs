@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "kind": "bounded-native-source-metadata-cache-fix",
+  "observed_run": "d4098b0c4ce64927a65796754d72b762",
+  "observed_main_ram_bytes": 3612868950,
+  "namespace_entry_logical_bytes": 58802306,
+  "previous_namespace_cache_ceiling_bytes": 56451077,
+  "new_namespace_cache_ceiling_bytes": 112902154,
+  "namespace_cache_funding": "Actual complete bytes and cache owner remain charged to the existing aggregate SourceScratch RAM lease; reservation failure retains the authenticated paged fallback.",
+  "projection_change": "Release the optional whole-file inventory cache before constructing the expected projection. Retain authenticated readers, immutable pins, compact indexes and parent-directory caches.",
+  "focused_check_exit_code": 0,
+  "focused_check_wall_seconds": 29.0649696,
+  "shared_target_reused": true,
+  "unit_tests_run": false,
+  "native_performance_result": false,
+  "original_Windows_converted": false,
+  "original_Windows_booted_refs": false,
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+}

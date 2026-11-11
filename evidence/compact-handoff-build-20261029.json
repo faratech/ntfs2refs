@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "kind": "release-build-observation",
+  "source_commit": "286d914",
+  "working_tree_note": "The existing user-owned src/main.rs capabilities hunk was present during build and remains unstaged.",
+  "command": "cargo build --release --bin ntfs2refs --bin ntfs2refs-compact --bin lab-convert-native-composite",
+  "exit_code": 0,
+  "elapsed_seconds": 49.45,
+  "unit_tests_run": false,
+  "native_qualification": false,
+  "prior_native_results_inherited": false,
+  "changes": [
+    "Best-effort conversion/recovery phase messages on stderr",
+    "Compact-only fresh target scan computes actual and packed-overlay image hashes with two 1 MiB buffers"
+  ],
+  "artifacts": [
+    {
+      "name": "ntfs2refs.exe",
+      "bytes": 7028736,
+      "sha256": "4f6ed834410e9480b377f6dc79010d13acb78ab9e2272c7e60ff844c100479f7"
+    },
+    {
+      "name": "ntfs2refs-compact.exe",
+      "bytes": 4740096,
+      "sha256": "3c8869a280a815417d530b50622cda36703ec9d34fecea8a8c18da1f918f4f9a"
+    },
+    {
+      "name": "lab-convert-native-composite.exe",
+      "bytes": 4400640,
+      "sha256": "5bfa303cf5a83d5a0d7f91bdfee640be8988cc05d0742b448380bd90487f85af"
+    }
+  ],
+  "warning": "binrw 0.11.3 emits a future Rust incompatibility warning.",
+  "grants_source_or_recovery_authority": false
+}

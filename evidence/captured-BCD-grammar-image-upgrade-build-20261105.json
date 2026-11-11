@@ -1,0 +1,76 @@
+{
+  "next_requirement": "Build updated cold helper and fresh image before any source AP; old800d cold helper has the old terminal enum parser",
+  "kind": "captured-BCD-grammar-pristine-query-and-owned-image-upgrade-build-v1",
+  "new_native_code_qualified": false,
+  "new_or_existing_unit_tests_run": false,
+  "actual_capture_comparison": {
+    "bytes": 7193,
+    "objects": 23,
+    "same_identity_and_eof": true,
+    "comparison_receipt_sha256": "71a890fb5acc53c647b1b1fd823d3c6d11461b472d070e8f0e608348afac221a",
+    "raw_query_copy_before": "58cad193df589e96f966122c2c89ff250dbc69a8e1b6567bc8274d6682936d77",
+    "pristine_original_bytes_preserved_in_host_archive": true,
+    "raw_query_copy_after": "26d83275c43d8b0b4e7efe999a16bfb55e1cc23a995a89861f3e7059253ea9c4",
+    "system_explicitEFI_and_rawcopy_outputs_byte_identical": true,
+    "MS_enum_can_rewrite_disposable_REGF": true
+  },
+  "actual_rearm": {
+    "native_query_output_sha256": "9a173670313de087ae1afddb22600b1e9d2a881b6e90de3eedbe50d9d49fb8c5",
+    "source_apply_or_reboot": 0,
+    "pid": 616,
+    "attribute_only_FAT_raw_capture_passed": true,
+    "completed_image_reopened": true,
+    "birth": 1793910144459,
+    "wall_seconds": 4.5148158,
+    "parser_failure": "unsupported/localized BCD key",
+    "exit_code": 1
+  },
+  "implementation": [
+    "Parse explicit captured English object headings and matching separators before first identifier",
+    "Retain custom:8hex elements, all values, continuation order and enum-all object headings; malformed/duplicate/localized input still refuses",
+    "Physical pristine A is held/read-only and never queried; separate disposable query B logs actual before/after mutation",
+    "Complete system versus B native semantic comparison and source FAT/raw/legacy52 bookends remain mandatory",
+    "Exactly named internal payload replacements only inside a fresh copied mounted WIM, with durable verified old-payload backups; old image unchanged"
+  ],
+  "files": [
+    {
+      "bytes": 40310,
+      "sha256": "92bc9dcb3d4eb3ef80adf22f3f0efcc34227e71da008777cb6a4d9accee0d671",
+      "path": "crates/n2r-win32/src/native/recovery_boot/metadata.rs"
+    },
+    {
+      "bytes": 28824,
+      "sha256": "fb3df0f734655f2b3227b1cefa635b4e60bb55010a6d2158cf6e064bd53203cb",
+      "path": "crates/n2r-win32/src/native/recovery_boot/native.rs"
+    },
+    {
+      "bytes": 41165,
+      "sha256": "b29c2c72a81646e97d409cab5cee322db2e22e3ddb322b6462bcc0f12b9582d4",
+      "path": "crates/n2r-win32/src/native/recovery_image.rs"
+    },
+    {
+      "bytes": 6091,
+      "sha256": "1b3853b07e5e1efaa3d2dae03db316e48efb1440498ed7101c2cc918d7a58e81",
+      "path": "crates/n2r-win32/src/native/recovery_image/payload_replace.rs"
+    }
+  ],
+  "focused_check": {
+    "shared_target_reused": true,
+    "native_run": false,
+    "exit_code": 0,
+    "unit_tests_run": false,
+    "capacity": {
+      "actual_bytes": 244435667674,
+      "free_bytes": 162894016512,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 2147483648,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "kind": "public-partition-dispatch-focused-check",
+    "wall_seconds": 32.1437018,
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+  },
+  "base_commit": "3b4533da4146f541cf814be0104d6d2be00488d0"
+}

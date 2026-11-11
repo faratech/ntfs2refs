@@ -32,6 +32,171 @@ pub fn require_disposable_guest(request: &Request) -> Result<()> {
     Ok(())
 }
 
+/// Fresh native construction and real source admission in one owning process.
+/// These checks enroll scratch devices, never replace the source certificate.
+pub fn convert_fresh_compact(
+    request: &crate::general_conversion::Request,
+    budget: crate::general_qualification::CompactConstructionBudget,
+    output: &std::path::Path,
+    interrupt_after_writes: Option<u32>,
+) -> Result<()> {
+    request.validate()?;
+    budget.validate(request.pair.source.identity.partition_bytes)?;
+    ensure!(
+        std::env::var("COMPUTERNAME").ok().as_deref() == Some("N2R-WIN11")
+            && request.source_resource_profile
+                == Some(crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2)
+            && !request.verify_existing_shadow
+            && request.pair.source.disk_number == 1
+            && request.pair.shadow.disk_number == 3
+            && request.journal.disk.disk_number == 2
+            && request.pair.source.identity.disk_bytes == DISK_BYTES
+            && request.pair.shadow.identity.disk_bytes == DISK_BYTES
+            && request.pair.source.identity.partition_bytes == PARTITION_BYTES
+            && request.pair.shadow.identity.partition_bytes == PARTITION_BYTES
+            && request.journal.disk.identity.disk_bytes == JOURNAL_DISK_BYTES,
+        "fresh compact exercise requires enrolled disposable guest devices/profile"
+    );
+    for (actual, expected) in [
+        (
+            &request.pair.source.identity.disk_guid,
+            "1b191872-c372-41ee-a416-e18863996f54",
+        ),
+        (
+            &request.pair.shadow.identity.disk_guid,
+            "c0f2cd39-ad3d-484e-9990-0e6eba74485f",
+        ),
+        (
+            &request.journal.disk.identity.disk_guid,
+            "09fcc613-b8c2-4a1a-8833-226f9399be7f",
+        ),
+    ] {
+        ensure!(
+            actual
+                .trim_matches(['{', '}'])
+                .eq_ignore_ascii_case(expected),
+            "fresh compact exercise device identity differs"
+        );
+    }
+    crate::general_conversion::convert_composite_fresh_experimental(
+        request,
+        output,
+        budget,
+        interrupt_after_writes,
+    )
+}
+
+/// Controlled selected-device experiment only. Actual enrollment is rechecked
+/// by selected_device_preflight; the shared flow must obtain its genuine fresh
+/// SourceCertificate before activation. No public conversion fault flag exists.
+pub fn convert_fresh_compact_selected(
+    request: &crate::general_conversion::Request,
+    budget: crate::general_qualification::CompactConstructionBudget,
+    output: &std::path::Path,
+    interrupt_after_writes: Option<u32>,
+) -> Result<()> {
+    request.validate()?;
+    budget.validate(request.pair.source.identity.partition_bytes)?;
+    ensure!(
+        request.source_resource_profile
+            == Some(crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2)
+            && !request.verify_existing_shadow,
+        "selected compact lab exercise requires the explicit streaming profile and a fresh shadow"
+    );
+    crate::general_conversion::convert_compact_selected_for_lab(
+        request,
+        budget,
+        output,
+        interrupt_after_writes,
+    )
+}
+
+/// Controlled selected-device experiment of the allocation-bounded backend,
+/// under the same preflight and genuine fresh SourceCertificate requirement.
+pub fn convert_fresh_allocation_selected(
+    request: &crate::general_conversion::Request,
+    budget: crate::general_qualification::CompactConstructionBudget,
+    output: &std::path::Path,
+    interrupt_after_writes: Option<u32>,
+) -> Result<()> {
+    crate::general_conversion::convert_allocation_selected_for_lab(
+        request,
+        budget,
+        output,
+        interrupt_after_writes,
+    )
+}
+
+/// Exercise the private fresh writer on a newly admitted V3 source. No saved
+/// Some descriptor or prior source certificate enters this lab route.
+pub fn convert_fresh_allocation_exclusive_v3_first_write(
+    request: &crate::general_conversion::Request,
+    budget: crate::general_qualification::CompactConstructionBudget,
+    output: &std::path::Path,
+) -> Result<()> {
+    crate::general_conversion::convert_allocation_exclusive_v3_first_write_for_lab(
+        request, budget, output,
+    )
+}
+
+/// Unqualified native format-six experiment. This route still obtains the
+/// original live certificate and all ordinary allocation conversion checks.
+pub fn convert_fresh_allocation_redundant_markers(
+    request: &crate::general_conversion::Request,
+    budget: crate::general_qualification::CompactConstructionBudget,
+    output: &std::path::Path,
+    first_write_fault: bool,
+    pause: Option<n2r_win32::journal_file::LabMarkerPauseRequest>,
+) -> Result<()> {
+    ensure!(
+        std::env::var("COMPUTERNAME").ok().as_deref() == Some("N2R-WIN11"),
+        "native marker experiment requires the enrolled disposable owning guest"
+    );
+    crate::general_conversion::convert_allocation_redundant_for_lab(
+        request,
+        budget,
+        output,
+        first_write_fault,
+        pause,
+    )
+}
+
+/// Reopens an existing journal with the actual typed native backend; saved
+/// observations never become storage capability or fresh Apply authority.
+pub fn recover_allocation_redundant_markers(
+    bundle: &std::path::Path,
+    bundle_sha256: &str,
+    rollback: bool,
+    output: &std::path::Path,
+    pause: Option<n2r_win32::journal_file::LabMarkerPauseRequest>,
+    fault: Option<n2r_win32::journal_file::LabMarkerFaultRequest>,
+) -> Result<crate::general_recovery::AllocationRecoveryOutcome> {
+    ensure!(
+        std::env::var("COMPUTERNAME").ok().as_deref() == Some("N2R-WIN11"),
+        "native marker recovery requires the enrolled disposable owning guest"
+    );
+    crate::general_recovery::recover_allocation_redundant_for_lab(
+        bundle,
+        bundle_sha256,
+        rollback,
+        output,
+        pause,
+        fault,
+    )
+}
+
+/// Stop after the first actual native target write into the first qualified
+/// old-payload-copy destination. The selected plan determines the destination.
+pub fn convert_fresh_allocation_selected_after_first_copy(
+    request: &crate::general_conversion::Request,
+    budget: crate::general_qualification::CompactConstructionBudget,
+    output: &std::path::Path,
+) -> Result<()> {
+    crate::general_conversion::convert_allocation_first_copy_interrupted_for_lab(
+        request, budget, output,
+    )
+}
+
 #[derive(Debug, Serialize)]
 pub struct ApplyReport {
     pub kind: &'static str,

@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "kind": "Windows-native-artifact-allocation-within-unchanged-total",
+  "prior_refusal": "actual native report2568469846B exceeds native share after guest working space decreased",
+  "ordinary_admission_schema": 1,
+  "windows_admission_schema": 2,
+  "windows_native_wire": "3 * floor(scratch_bytes / 16)",
+  "windows_native_decoded_rows": "native_wire / 2, encoded inside the same native file",
+  "legacy_expectation_group": "forbidden before reservation in Windows allocation",
+  "source_expected_map_auxiliary_each": "floor(scratch_bytes / 8)",
+  "recovery_copy": "5 * floor(scratch_bytes / 16)",
+  "total_bound": "4*floor(S/8) + 3*floor(S/16) + 5*floor(S/16) <= S",
+  "capture_and_native_journal": "existing live aggregate, allocation, overhead and free-space checks retained",
+  "default_schema1_changed": false,
+  "total_scratch_increased": false,
+  "global_cap_bytes": 329374052988,
+  "strict_boot_cap_bytes": 279866334601,
+  "host_free_reserve_bytes": 17179869184,
+  "native_forecast_bytes": 17179869184,
+  "example": {
+    "scratch_bytes": 17000000000,
+    "source_expected_map_auxiliary_each": 2125000000,
+    "native_wire_bytes": 3187500000,
+    "native_decoded_row_bytes": 1593750000,
+    "recovery_copy_bytes": 5312500000,
+    "sum_bytes": 17000000000,
+    "prior_measured_source_metadata_bytes": 1625747056,
+    "prior_measured_native_wire_bytes": 2568469846
+  },
+  "new_native_runtime_qualification": false,
+  "unit_tests_run": false,
+  "focused_check": {
+    "kind": "actual-Windows-Legacy-funded-native-allocation-check",
+    "exit_code": 0,
+    "wall_seconds": 43.8721625,
+    "capacity": {
+      "actual_bytes": 210510042454,
+      "free_bytes": 39432916992,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 2147483648,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "absolute_boot_cap": 279866334601,
+    "full_build_forecast": 2147483648,
+    "future_native_forecast": 17179869184,
+    "unit_tests_run": false,
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+  }
+}

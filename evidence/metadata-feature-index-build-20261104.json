@@ -1,0 +1,27 @@
+{
+  "initial_full_input_validation_retained": true,
+  "source_parent_commit": "358d395292c2194d0ca6bf5f43c1a4c7a6293134",
+  "bitmap_move_scope_changed": false,
+  "native_or_journal_checks_removed": false,
+  "check": {
+    "shared_target": "target/shared-experiments",
+    "unit_tests_added_or_run": false,
+    "reported_seconds": 14.76,
+    "log_sha256": "f26b74a3a99e55f98109da4f569cf899fd188f70bf0ac11167aa6e44cde78490",
+    "exclusive_build_lock_held": true,
+    "actual_exit_code": 0
+  },
+  "old_feature_pass_object_decodes": "2 * object_count",
+  "utc": "2026-11-04T10:17:16.0585052Z",
+  "index_tuple_size_equality_compile_assert_passed": true,
+  "schema_version": 1,
+  "new_feature_pass_object_decodes": "EA_present_count + reparse_present_count",
+  "mechanism": "Store directory/EA/reparse bits in the existing prepaid index byte; skip absent-feature object reloads before EA/reparse passes",
+  "kind": "immutable-metadata-feature-index-build",
+  "final_all_object_metadata_stream_and_retrieval_verification_retained": true,
+  "physical_reads_or_speed_improvement_measured": false,
+  "new_native_conversion_qualification": false,
+  "parent_first_security_and_EA_reparse_basic_order_retained": true,
+  "immutable_authenticated_input_contract_required": true,
+  "code_sha256": "0c367a2b2157415ed02d467ae8fdb3c94ce9e1eef464b3a58fe255d1331175aa"
+}

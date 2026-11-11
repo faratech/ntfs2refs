@@ -15,28 +15,45 @@ use windows_sys::Win32::{
 };
 
 fn info(file: &File, class: i32, capacity: usize) -> Query {
-    let mut storage = vec![0u64; capacity.div_ceil(8)];
-    // SAFETY: owned, initialized and 8-byte-aligned output; synchronous query
-    // against a borrowed live handle. Failed buffers are never parsed.
-    let ok = unsafe {
-        GetFileInformationByHandleEx(
-            file.as_raw_handle(),
-            class,
-            storage.as_mut_ptr().cast(),
-            capacity as u32,
-        )
-    };
-    let error = (ok == 0).then(|| io::Error::last_os_error().raw_os_error().unwrap_or(31));
-    let mut q = Query {
-        class,
-        bytes: vec![],
-        native_error: error,
-    };
-    if error.is_none() {
-        // SAFETY: initialized storage covers the requested capacity.
-        q.bytes = unsafe { std::slice::from_raw_parts(storage.as_ptr().cast(), capacity) }.to_vec();
+    match info_measured(file, class, capacity, |response| Ok(response.len())) {
+        Ok(query) => query,
+        Err(_) => unreachable!("a whole response has a length"),
     }
-    q
+}
+/// One query answered into this thread's query buffer. `measure` says how
+/// many of the bytes are the answer, and those are copied out; when it
+/// refuses the answer, its refusal is returned and nothing is copied.
+fn info_measured(
+    file: &File,
+    class: i32,
+    capacity: usize,
+    measure: impl FnOnce(&[u8]) -> io::Result<usize>,
+) -> io::Result<Query> {
+    crate::query_scratch::with(capacity, |response| {
+        // SAFETY: initialized and 8-byte-aligned output of the stated
+        // capacity; synchronous query against a borrowed live handle. Failed
+        // buffers are never parsed.
+        let ok = unsafe {
+            GetFileInformationByHandleEx(
+                file.as_raw_handle(),
+                class,
+                response.as_mut_ptr().cast(),
+                capacity as u32,
+            )
+        };
+        let error = (ok == 0).then(|| io::Error::last_os_error().raw_os_error().unwrap_or(31));
+        let bytes = if error.is_none() {
+            let used = measure(response)?.min(capacity);
+            response[..used].to_vec()
+        } else {
+            vec![]
+        };
+        Ok(Query {
+            class,
+            bytes,
+            native_error: error,
+        })
+    })
 }
 fn open(volume: &File, id: &FileIdentity) -> io::Result<File> {
     let d = FILE_ID_DESCRIPTOR {
@@ -56,16 +73,27 @@ fn open(volume: &File, id: &FileIdentity) -> io::Result<File> {
     Ok(unsafe { File::from_raw_handle(h) })
 }
 fn pass(file: &File, budget: &mut usize) -> DirectoryCapture {
+    pass_with_budget(file, budget, false)
+}
+fn pass_with_budget(file: &File, budget: &mut usize, paged: bool) -> DirectoryCapture {
     let mut out = DirectoryCapture {
         calls: vec![],
         refusal: None,
     };
-    for i in 0..layout::MAX_CALLS {
-        if *budget < layout::CAPACITY {
+    let mut i = 0usize;
+    loop {
+        if !paged && i == layout::MAX_CALLS {
+            out.refusal = Some("directory call budget exhausted".into());
+            return out;
+        }
+        if !paged && *budget < layout::CAPACITY {
             out.refusal = Some("directory evidence budget exhausted".into());
             return out;
         }
-        let mut q = info(
+        // The page is parsed where Windows wrote it and only its entries
+        // are copied out, not the 64 KiB they were written into.
+        let entries = *budget / std::mem::size_of::<layout::Entry>();
+        let q = match info_measured(
             file,
             if i == 0 {
                 layout::RESTART
@@ -73,32 +101,70 @@ fn pass(file: &File, budget: &mut usize) -> DirectoryCapture {
                 layout::CONTINUE
             },
             layout::CAPACITY,
-        );
+            |page| {
+                let parsed = if paged {
+                    layout::parse_with_limits(page, layout::CAPACITY, entries.max(1))
+                } else {
+                    layout::parse(page)
+                };
+                parsed.map(|(_, used)| used)
+            },
+        ) {
+            Ok(q) => q,
+            Err(e) => {
+                out.refusal = Some(e.to_string());
+                return out;
+            }
+        };
         let end = q.native_error.is_some();
         let confirm_empty = i == 0 && q.native_error == Some(layout::FIRST_EMPTY);
-        if !end {
-            match layout::parse(&q.bytes) {
-                Ok((_, used)) => q.bytes.truncate(used),
-                Err(e) => {
-                    out.refusal = Some(e.to_string());
-                    return out;
-                }
-            }
-        }
-        q.bytes.shrink_to_fit();
-        *budget -= q.bytes.len();
+        let Some(remaining) = budget.checked_sub(q.bytes.len()) else {
+            out.refusal = Some("directory evidence budget exhausted".into());
+            return out;
+        };
+        *budget = remaining;
         out.calls.push(q);
         if end && !confirm_empty {
             return out;
         }
+        let Some(next) = i.checked_add(1) else {
+            out.refusal = Some("directory call count overflow".into());
+            return out;
+        };
+        i = next;
     }
-    out.refusal = Some("directory call budget exhausted".into());
-    out
 }
 pub(crate) fn collect(volume: &File, request: &Request) -> NamespaceData {
     let mut files = vec![];
-    let mut budget = layout::MAX_EVIDENCE;
-    for id in &request.files {
+    // This in-memory sink cannot fail. Keep the historical Report interface.
+    collect_rows(volume, request, false, |row| {
+        files.push(row);
+        Ok(())
+    })
+    .expect("infallible namespace sink");
+    NamespaceData { files }
+}
+pub(crate) fn collect_rows(
+    volume: &File,
+    request: &Request,
+    paged: bool,
+    mut sink: impl FnMut(NamespaceFile) -> io::Result<()>,
+) -> io::Result<()> {
+    collect_rows_domain(volume, request, request, paged, None, sink)
+}
+pub(crate) fn collect_rows_domain(
+    volume: &File,
+    request: &Request,
+    selectors: &impl crate::attestation::NativeRequestDomain,
+    paged: bool,
+    row_limit: Option<usize>,
+    mut sink: impl FnMut(NamespaceFile) -> io::Result<()>,
+) -> io::Result<()> {
+    let mut budget = request.limits().namespace_evidence_bytes;
+    for index in 0..selectors.len() {
+        let id = selectors.identity(index)?;
+        let mut row_budget = budget.min(row_limit.unwrap_or(budget));
+        let row_start = row_budget;
         let mut out = NamespaceFile {
             identity: id.clone(),
             open_error: None,
@@ -108,20 +174,29 @@ pub(crate) fn collect(volume: &File, request: &Request) -> NamespaceData {
             before: None,
             after: None,
         };
-        match open(volume, id) {
+        match open(volume, &id) {
             Err(e) => out.open_error = Some(e.raw_os_error().unwrap_or(31)),
             Ok(file) => {
                 out.identity_before = Some(info(&file, 18, 24));
                 let standard = info(&file, 1, 24);
                 if standard.native_error.is_none() && standard.bytes[21] == 1 {
-                    out.before = Some(pass(&file, &mut budget));
-                    out.after = Some(pass(&file, &mut budget));
+                    out.before = Some(if paged {
+                        pass_with_budget(&file, &mut row_budget, true)
+                    } else {
+                        pass(&file, &mut row_budget)
+                    });
+                    out.after = Some(if paged {
+                        pass_with_budget(&file, &mut row_budget, true)
+                    } else {
+                        pass(&file, &mut row_budget)
+                    });
                 }
                 out.standard = Some(standard);
                 out.identity_after = Some(info(&file, 18, 24));
             }
         }
-        files.push(out);
+        budget -= row_start - row_budget;
+        sink(out)?;
     }
-    NamespaceData { files }
+    Ok(())
 }

@@ -95,17 +95,20 @@ fn main() -> anyhow::Result<()> {
     let expected_sha256 = hex::encode(Sha256::digest(&expected_bytes));
     let request = general_reconstruct::Request {
         schema_version: 1,
+        source_resource_profile: None,
         experiment_id: old.experiment_id,
         expected_tree_sha256: expected_sha256.clone(),
         expected_mount_paths: None,
         expected_source_label: None,
         pair: GeneralSourceShadowBinding {
             source: GeneralDiskBinding {
+                layout_profile: Default::default(),
                 disk_number: old.source.disk_number,
                 volume_guid: old.source.volume_guid,
                 identity: old.source.identity,
             },
             shadow: GeneralDiskBinding {
+                layout_profile: Default::default(),
                 disk_number: old.shadow.disk_number,
                 volume_guid: old.shadow.volume_guid,
                 identity: old.shadow.identity,
@@ -114,6 +117,7 @@ fn main() -> anyhow::Result<()> {
         comparison,
         journal: GeneralJournalStorageBinding {
             disk: GeneralDiskBinding {
+                layout_profile: Default::default(),
                 disk_number: old.journal.disk_number,
                 volume_guid: old.journal.volume_guid,
                 identity: old.journal.identity,

@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "kind": "prepared-source-native-protection-boundary-diagnostics",
+  "actual_failed_candidate": "8abc8651e3e93da9da55ea458e63c065031ce646",
+  "actual_failed_case": ".lab/hyperv/streaming-v2-20261027/PUBLIC-8abc865-actual-once-f60afca3c13642ecbc2c730803de5a34",
+  "actual_failure_time_log_view": {
+    "native_layout_bytes": 912,
+    "native_layout_reference_id_before": 1,
+    "earlier_opening_disk_attribute_sample": 3,
+    "sha256": "475df8a6dfa4c6df692f764bdad83226f6015da9a55d07a01115ab770b705fb5",
+    "first_Core_state_disk_attribute_sample": 0,
+    "no_AP_or_source_data_write_proven": true,
+    "native_layout_reference_id_after": 1,
+    "log_bytes": 160851,
+    "owner_closes_between_samples": 0,
+    "path": "COLD-8abc865-sole-closed-log-tail-005.png",
+    "retention_alone_did_not_solve_failure": true
+  },
+  "static_missing_bookend": "source_facts sampled attributes before native LAYOUT and raw GPT reads, with no closing attribute query",
+  "changes": [
+    "Require actual unchanged attributes after native LAYOUT and after raw GPT reads.",
+    "Retain all existing complete identity/protection predicates and report bounded component equality plus first native byte difference on mismatch.",
+    "Check actual attributes3 after each durable callback, readonly data FileObject open and aligned allocation."
+  ],
+  "state_setters_added": 0,
+  "actual0_accepted": false,
+  "cached_attribute_repin": false,
+  "focused_check": {
+    "exit_code": 0,
+    "receipt": ".lab\\development\\prepared-exclusion-boundary-bookends-check.json",
+    "wall_seconds": 37.2806393,
+    "native_run": false,
+    "sha256": "80b3640b478c438e75ad5b0e9b6c1969a3b9d03e3f55e6468d12a752789aee42",
+    "session_id": 57861,
+    "unit_tests_run": false
+  },
+  "components": [
+    {
+      "sha256": "82d64851734a1d983ab79c9eed9a57887392f60f0ebb1e14c04a1f46962d8f73",
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline.rs"
+    },
+    {
+      "sha256": "e997aae1553de8a9951555bde1cc9cfde2ca3e2e0a3808330577bd8ae9e06292",
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline/source.rs"
+    },
+    {
+      "sha256": "74bb6c2905455562a7f3174ffd589e8ff711b05126c27716905282c6af499c78",
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline/source/prepared.rs"
+    }
+  ],
+  "native_boundary_qualified": false,
+  "resume_qualified": false,
+  "rollback_qualified": false,
+  "stable_release": false,
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "observed_utc": "2026-11-06T03:48:22.9460807Z"
+}

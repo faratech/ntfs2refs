@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "kind": "source-volume-query-handle-duplicate",
+  "status": "focused-check-passed-native-pending",
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/native/partition_owner.rs",
+      "bytes": 44603,
+      "sha256": "abd1c04d41701ab5edb98fba08dddb06907ef7f06c220179d10560a6a896ca35"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_source_metadata.rs",
+      "bytes": 8071,
+      "sha256": "11078f12e27e3daec9f32ca8625aaee6db49fce9962f968ff00c7c4924b0d747"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_source_metadata/volume_query.rs",
+      "bytes": 6812,
+      "sha256": "c6786bcc9482a3f0b2bace11180f716a7cb6c233fe4fa0e512345b7c5fb5eec5"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_lifecycle.rs",
+      "bytes": 6879,
+      "sha256": "12712c469670125169c839145559eb6464d8ef91219a95f6e622676fa96c555e"
+    }
+  ],
+  "reviewed_patch_sha256": "09e54aa2b55bf3eccfff3b6dbd50d70ddb199ffa0057c68f795245cde526b16d",
+  "check_exit": 0,
+  "check_seconds": 28.5463049,
+  "unit_tests_run": false,
+  "native_run": false,
+  "problem": "Construction sent a raw source volume through the ordinary-file metadata/EOF/FileID duplication helper; actual native case failed OS21 before witness opening.",
+  "fix": "Private typed query-only DuplicateHandle of the actual source FileObject, exact FILE_READ_ATTRIBUTES|SYNCHRONIZE and object-manager NtQueryObject access verification, native Device12/Partition144 before/after and actual owner token binding.",
+  "ordinary_file_helper_changed": false,
+  "raw_read_seek_write_or_path_handle_exposed": false,
+  "grants_writer_authority": false,
+  "read_lane_change": "Error context only at existing readonly GLOBALROOT open; no fallback."
+}

@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "kind": "new-owned-carrier-GUID-resource-sampling-refusal",
+  "source_commit": "358d395292c2194d0ca6bf5f43c1a4c7a6293134",
+  "build_manifest_sha256": "0515af085943ec9773ebd92f6341f004f21a66409a57f1a48246f01aa265f018",
+  "binary_sha256": "c1372bc024f80fec4f004ca66ffe73d8cb040a14df7937539604d6412b0601ff",
+  "run_id": "03a6debde00a46259e3bd5b0669d1e68",
+  "guest_boot_ms": 1793784849960,
+  "actual_process": {
+    "pid": 3596,
+    "creation_ms": 1793786972212,
+    "actual_exit_code": 1,
+    "actual_exit_observed": true,
+    "owned_handle_through_terminal": true,
+    "wall_seconds": 0.5944115,
+    "terminal_UTC": "2026-11-04T10:09:32.8246270Z",
+    "SYSTEM_worker_pid": 5956,
+    "SYSTEM_worker_creation_ms": 1793786970732,
+    "original_processes_absent_and_project_workers_idle_at_closure": true
+  },
+  "result": {
+    "phase": "create-new-bounded-private-provider",
+    "native_error": 3,
+    "new_owned_carrier_NTFS_format_succeeded": true,
+    "carrier_members_directory_created_and_empty": true,
+    "new_member_VHDX_or_pool_creation_reached": false,
+    "thin_constructor_or_formatted_owner_issued": false,
+    "target_ReFS_format_reached": false,
+    "all_assets_preserved_without_retry_or_cleanup": true
+  },
+  "actual_carrier": {
+    "native_disk_number": 11,
+    "unique_id": "600224808A178AE81EEB4E47BB5859A5",
+    "disk_guid": "288bac9c-3241-4772-8eb2-ec287b0cfba2",
+    "virtual_bytes": 12717129728,
+    "partition_bytes": 12650020864,
+    "partition_offset_bytes": 33554432,
+    "partition_and_volume_guid": "208460b2-0e81-44bf-8519-af5f1c4c0c11",
+    "filesystem": "NTFS",
+    "cluster_bytes": 4096,
+    "volume_bytes": 12650016768,
+    "free_bytes": 12606513152,
+    "backing_file_length_bytes": 71303168,
+    "backing_payload_read_during_closure": false
+  },
+  "separate_readonly_native_diagnostic_reported_by_root": {
+    "GetFinalPathNameByHandle_DOS_flags_0": "failed with native error 3",
+    "GetFinalPathNameByHandle_GUID_flags_1": "succeeded",
+    "GetDiskFreeSpaceEx_on_GUID_root_and_members_directory": "succeeded",
+    "volume_lookup_by_GUID_file_path": "succeeded",
+    "free_bytes": 12606513152,
+    "total_bytes": 12650016768,
+    "diagnostic_scope": "carrier GUID route and available-space lookup only; no mutation or ownership reconstruction",
+    "global_resource_sampler_changed_or_qualified_by_this_record": false
+  },
+  "closed_metadata": {
+    "root": ".lab/development/bounded-thin-format-03a6debde00a46259e3bd5b0669d1e68/closed-carrier-failure",
+    "manifest_sha256": "7ca267a3e3b96e4f95b061037676b741447794bab3794d9f031d08f2b4dc5c0f",
+    "source_files": 13,
+    "source_bytes": 39381,
+    "source_and_host_lengths_and_SHA256_matched": true,
+    "executed_closure_helper_sha256": "7564f6fe90599a54bdb76d6573b862ed8d81b423c12ae52f7989f4a0684c7ab8",
+    "helper_phase_predicate_matched_actual_bounded_constructor_phase": true,
+    "old37faa_failed_pool_members_and_GPT_virtual_disk10_preserved": true,
+    "source_F_filesystem_observed": "NTFS",
+    "source_payload_rehashed": false,
+    "images_executables_journals_and_payloads_excluded": true,
+    "no_native_mutation_during_closure": true
+  },
+  "scope": {
+    "carrier_NTFS_format_and_specific_path_API_observations_only": true,
+    "large_ReFS_format_qualified_by_this_case": false,
+    "conversion_recovery_or_reattachment_qualified": false,
+    "public_backend_or_frozen_alpha_scope_changed": false,
+    "later_corrected_case_result_inferred": false,
+    "VM_Off_claimed": false
+  }
+}

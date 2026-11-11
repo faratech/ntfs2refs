@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "kind": "native-format6-AP1-hard-power-interruption",
+  "utc": "2026-11-02T03:26:16.5697151Z",
+  "power_cut_issued": true,
+  "cut_at_actual_durable_copy": "AP1",
+  "original_native_pid": 6000,
+  "original_native_creation_ms": 1793589066968,
+  "original_native_exit_observed": false,
+  "original_native_exit": null,
+  "live_owner_and_running_task_verified_twice": true,
+  "closed_synced_signal_sha256": "bc576d2c4a80ec6de17771d5f898647e50aab5c44f40aeed33d893fb74bad30d",
+  "signal_bytes": 32768,
+  "marker_slot": 0,
+  "journal_format": "N2RFRE02",
+  "producer_source_commit": "7cd68709e3cd2e4cb1d5227d01fd6137c93ea13f",
+  "producer_sha256": "e21888922313aaf591ed8d54c930ae2bd9639eca41f28dfcb6a0dd959e8dfaab",
+  "original_checkpoint": "8d4192fe-003b-441f-8591-f0b271028841",
+  "original_checkpoint_parent": "cb802669-903c-48cc-99e5-57976b149e7d",
+  "poweroff_issued_utc": "2026-11-02T03:14:16.4961279Z",
+  "off_observed_utc": "2026-11-02T03:15:01.8276466Z",
+  "original_bundle_sha256": "96cf67483cfd3db91bb9b51035b06f71a8382f562910966d059008730c7d5066",
+  "original_ticket_sha256": "a6a19787299bdfb279e184be788da47030e59d4d6e15046e4486b5fafc20808f",
+  "post_boot_source_offline": true,
+  "post_boot_source_readonly": false,
+  "post_boot_no_native_worker": true,
+  "post_boot_signal_and_bundle_pins_matched": true,
+  "power_recovery_complete": false,
+  "native_marker_qualified": false,
+  "physical_hardware_power_loss_qualified": false,
+  "recovery_preflight_refusal": "Get-DiskImage AccessDenied under direct admin credential; no native recovery launched; same checks moving to SYSTEM context",
+  "no_acl_attribute_or_attachment_change": true,
+  "artifacts": [
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-power-ap1-1495314df50e4df2bb76f74a0910da1b\\checkpoint.json",
+      "sha256": "8d63cbc34214475e8ceb51989b760137c8ab4bc3d2d7f6ff037a6ad7e7debc69",
+      "bytes": 3437
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-power-ap1-1495314df50e4df2bb76f74a0910da1b\\before-power-observation.json",
+      "sha256": "94c6b3783417a6438985401f7b7e3f394eb97b13a24005f6a769db6147087939",
+      "bytes": 8111
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-power-ap1-1495314df50e4df2bb76f74a0910da1b\\last-live-check.json",
+      "sha256": "00aab814a038a2a918eea4f2217d05cdf4f2b075b53ff8f1dde4e32c81ceb5b9",
+      "bytes": 293
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-power-ap1-1495314df50e4df2bb76f74a0910da1b\\poweroff-issued.json",
+      "sha256": "54416b78fc104811ff5921afe6e652118dabd97a3df86f221a109000a15f24d1",
+      "bytes": 482
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-power-ap1-1495314df50e4df2bb76f74a0910da1b\\poweroff-observed.json",
+      "sha256": "bc72b8cda6ce9d47769a13c37c3da63cbf8dcc6825da3fe4d03b08626541e1fb",
+      "bytes": 226
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-power-ap1-1495314df50e4df2bb76f74a0910da1b\\marker-pause.json",
+      "sha256": "bc576d2c4a80ec6de17771d5f898647e50aab5c44f40aeed33d893fb74bad30d",
+      "bytes": 32768
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-power-ap1-1495314df50e4df2bb76f74a0910da1b\\native-process.json",
+      "sha256": "510bcf664c90c28da91ab62a8817765c922a044f31f5224bc0acc47a04476ca8",
+      "bytes": 1887
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-power-ap1-1495314df50e4df2bb76f74a0910da1b\\allocation-recovery-bundle.json",
+      "sha256": "96cf67483cfd3db91bb9b51035b06f71a8382f562910966d059008730c7d5066",
+      "bytes": 3150
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-power-ap1-1495314df50e4df2bb76f74a0910da1b\\selected-ticket.json",
+      "sha256": "a6a19787299bdfb279e184be788da47030e59d4d6e15046e4486b5fafc20808f",
+      "bytes": 1428
+    }
+  ],
+  "unit_tests_added_or_run": false
+}

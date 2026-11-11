@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "kind": "native-allocation-bounded-recovery-matrix-current-build",
+  "build": {
+    "source_commit": "f8fa3c9102cd841e567faebeaf808a58e88f7078",
+    "toolset": ".lab/hyperv/streaming-v2-20261027/head-drive-tools-20261029-lanes",
+    "notes": "parallel lanes, XXH3-128 content digests, XXH3 chunk compare digests"
+  },
+  "interruption": {
+    "run_id": "40613ebf81634cc38e9931e09976aaff",
+    "interrupt_after_writes": 1,
+    "native_exit": 86,
+    "restart": "clean guest shutdown (Stop-VM -Force) and boot",
+    "disk1_after_restart": "offline=True readonly=False",
+    "temporary_checkpoint": "4adef796-20d2-48e8-a0d7-e2f77d646768",
+    "temporary_checkpoint_removed": true
+  },
+  "resume": {
+    "recover_run": "81862ea824c24c2c9b13e1b8a4571508",
+    "success": true,
+    "observed_lifecycle": "apply_intent",
+    "action": "resume",
+    "outcome": "refs_completed",
+    "native_exit": 0,
+    "native_objects": 15,
+    "native_hashes": 10,
+    "mounted": "ReFS",
+    "label": "n2r-stream-source",
+    "result_sha256": "f020006fd2d95943d727cfecf65f9f764e312045cd67f724c4c4236b93b7a9c1",
+    "separate_user_file_digest_check": "not run (digest tool absent after checkpoint restore); native verification covered 15 objects / 10 content digests"
+  },
+  "rollback": {
+    "recover_run": "b2c5abf29bc141ebad7648487a773d65",
+    "success": true,
+    "observed_lifecycle": "apply_intent",
+    "action": "rollback",
+    "outcome": "ntfs_restored",
+    "native_exit": 0,
+    "mounted": "NTFS",
+    "label": "n2r-stream-source",
+    "result_sha256": "726ed22627c54569de74c34df972d32f052fd45bcde9b40b80d6d0593cac19f0",
+    "user_files": 7,
+    "user_files_matching_xxh3": 7,
+    "cluster_bytes": 65536
+  },
+  "hard_poweroff_finding": {
+    "interrupt_run": "142e87c2c1294263a8274dc2a32b40cd",
+    "restart": "Stop-VM -TurnOff (no guest shutdown) then boot",
+    "disk1_after_restart": "offline=True readonly=True (activation had cleared READ_ONLY)",
+    "recovery_launcher": "refused its precondition before running the engine",
+    "recovery_engine_behaviour": "not tested",
+    "interpretation": "the activation attribute change did not survive power loss at that point; recovery never clears protection, so this state needs its own handling",
+    "archive": ".lab/hyperv/streaming-v2-20261027/alloc-interrupt-20261029-142e87c2c1294263a8274dc2a32b40cd/crash-restart-finding.json"
+  },
+  "qualification": {
+    "normal_public_conversion_passed": true,
+    "mutation_restart_tested_on_this_build": true,
+    "interruption_resume_rollback_tested_on_this_build": true,
+    "hard_poweroff_recovery_open": true,
+    "release_qualified": false
+  }
+}

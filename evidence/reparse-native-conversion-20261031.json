@@ -1,0 +1,442 @@
+{
+  "native_exit": 0,
+  "preserved_refusals": [
+    {
+      "created_objects": 0,
+      "run": "d947e5ab5a9e4d0ea9ae168b496b672c",
+      "reason": "lab private SD packing; native guard rejected before creating any object"
+    },
+    {
+      "run": "31a5fecebd6941fab0b25bfde9c8ab4b",
+      "reason": "ReFS EOF-zero allocation includes inline metadata capacity; guard fixed with positive empty retrieval proof",
+      "source_cutover_reached": false
+    }
+  ],
+  "public_binary_sha256": "c347053ff08aa2182d296680f2bdda0dcdca538abb4df999bc04526cdde0f96d",
+  "timing_scope": "single combined VM fixture; not a controlled speed comparison or HDD estimate",
+  "source_checkpoint": "e4186f31-ee81-4d10-b8fa-17a0f9920a10",
+  "native_objects": 36,
+  "free_space_contents_compared": false,
+  "native_source_schema": 11,
+  "general_conversion_qualified": false,
+  "proofs": [
+    {
+      "bytes": 585,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\reparse-tools-439a55c\\manifest.json",
+      "sha256": "7e90f5ed37749b6ea0b541f2b739cc5318d1fe95d067245e7a4f83cf25f50286"
+    },
+    {
+      "bytes": 185279,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\reparse-fixture-5dc696e66b6d441496c31aab7b06cecc\\closed\\fixture.json",
+      "sha256": "563efe3343ae98c6841f69c239c38dc103e8da34f621eab3e07b339a148c76cd"
+    },
+    {
+      "bytes": 154,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\reparse-fixture-5dc696e66b6d441496c31aab7b06cecc\\checkpoint.json",
+      "sha256": "bdbb6255d6e69748c8ff0b80104ef4f0a613e693e8c5372dce2257ff7358bc65"
+    },
+    {
+      "bytes": 46082,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\reparse-success-2ef04a07\\archive.json",
+      "sha256": "20495037631d60bca291d354f18a1c95a463fb58ff21ff0c98e49b5535184cf0"
+    },
+    {
+      "bytes": 156,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\reparse-success-2ef04a07\\checkpoint.json",
+      "sha256": "3e0397946e629ca7239ad6c1b3a8dbaa655f7c612291a8162b9c4e73ed579d3b"
+    },
+    {
+      "bytes": 49511,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\reparse-success-2ef04a07\\closed\\wrapper\\wrapper-result.json",
+      "sha256": "ac8abf8f4ad27f8ccedda4c9ac92b5addc983152499c9cf10f7875d576381bfc"
+    },
+    {
+      "bytes": 1041,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\reparse-success-2ef04a07\\closed\\core\\conversion\\result.json",
+      "sha256": "985a86db1c1f79e3d99bdfa4fdfb3eafe704d926a0ce0cf2e51a08ad8f54da84"
+    },
+    {
+      "bytes": 1821,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\reparse-success-2ef04a07\\closed\\core\\conversion\\request.json",
+      "sha256": "978f962c1414ca552ebe5b285c8a908e474823fa9e88bbae2bdbe9f63f328691"
+    },
+    {
+      "bytes": 408479,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\reparse-success-2ef04a07\\closed\\core\\conversion\\expectation.json",
+      "sha256": "413b4ffeca4cfc084fd2d813aa41ac9c14a2cf44577baef065e4741591eb56a5"
+    },
+    {
+      "bytes": 450,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\reparse-success-2ef04a07\\closed\\core\\conversion\\handoff.json",
+      "sha256": "b4f95f8f50fe199972468d103afd485baa8ae47bae92b29067e06a87bf8ff226"
+    },
+    {
+      "bytes": 3026622,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\reparse-success-2ef04a07\\closed\\core\\conversion\\finalization.json",
+      "sha256": "a984c1df4fc1bd34d66708284a44d2657792059d4a74ed0b15b7886b04d37c10"
+    },
+    {
+      "bytes": 1146816,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\reparse-success-2ef04a07\\closed\\core\\conversion\\qualification\\source-basis.json",
+      "sha256": "1f854a804406e8d57d8ccf884ecbf982653de1e86ae89258f6ced6acbde558a2"
+    },
+    {
+      "bytes": 6201358,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\reparse-success-2ef04a07\\closed\\core\\conversion\\qualification\\native-source.json",
+      "sha256": "6d7041786903963a99f08db59028a57e1e759274981f5a73ef324f0d589f528c"
+    },
+    {
+      "bytes": 164716,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\reparse-success-2ef04a07\\closed\\core\\conversion\\qualification\\source-assessment.json",
+      "sha256": "24b435d8022587a8ac44b5d718c50ab809050359b37b0916739178005f81e526"
+    },
+    {
+      "bytes": 99047,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\reparse-success-2ef04a07\\closed\\core\\conversion\\qualification\\construction-metadata.json",
+      "sha256": "c0ce371312a6ff11fd1b46681e204c3d432bb15b45017675f87ec95d45d915da"
+    },
+    {
+      "bytes": 4420867,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\reparse-success-2ef04a07\\closed\\core\\conversion\\qualification\\target-preservation.json",
+      "sha256": "5c4a90e1c130b048ec72d7dc985e84f9c328c06906acd2095cffa1e8b5c428a4"
+    },
+    {
+      "bytes": 253,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\reparse-verifier-439a55c\\manifest.json",
+      "sha256": "55d7136eebbff54921095ba7c3f53e24dbd0a8a015b5adc35a56320e048059eb"
+    },
+    {
+      "bytes": 1227,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\reparse-coldboot-7270a96c7ce94b338013bd2a19cdea78\\dispatch.json",
+      "sha256": "2883634d7920a663ad566bbb263a6e5f2c9d78148b2d1a3955e6033335bb987c"
+    },
+    {
+      "bytes": 3932,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\reparse-coldboot-7270a96c7ce94b338013bd2a19cdea78\\archive.json",
+      "sha256": "8a0b6341858cd110cf3ef1f8d15ed3fa0140b79bb6b64273050572c438b30225"
+    },
+    {
+      "bytes": 145,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\reparse-coldboot-7270a96c7ce94b338013bd2a19cdea78\\closed\\boot.json",
+      "sha256": "e1f35a1038ca814bfd1d5f48e10300470e67c0284d5584d4fa006584f8b9240c"
+    },
+    {
+      "bytes": 2930016,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\reparse-coldboot-7270a96c7ce94b338013bd2a19cdea78\\closed\\verification.json",
+      "sha256": "624d414eb80ea7cb050d7545e2f80723a83c0c8c74421ce976295d6dd8927d70"
+    },
+    {
+      "bytes": 772,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\reparse-coldboot-7270a96c7ce94b338013bd2a19cdea78\\comparison.json",
+      "sha256": "d1198f340cfd212fc6b65c470ce3a3acba505ff02e1292044284bd85495feca4"
+    },
+    {
+      "bytes": 227,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\reparse-coldboot-7270a96c7ce94b338013bd2a19cdea78\\reparse-comparison.json",
+      "sha256": "07d1a669f3bf8513432eced7eb55998f8339c56c3f89ba523cdbc13298a3c5ea"
+    },
+    {
+      "bytes": 155,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\reparse-coldboot-7270a96c7ce94b338013bd2a19cdea78\\checkpoint.json",
+      "sha256": "63f2987ebf2e9ae9270e959c8acac5e7c43dc853fe8f6195499d6d18f57b5f9f"
+    },
+    {
+      "bytes": 27937,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\reparse-empty-refusal-31a5fece\\archive.json",
+      "sha256": "7844ea6b4862660e5b86e1e66fd968c09720542c9d7eb22b987c8c552c9c7462"
+    },
+    {
+      "bytes": 161,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\reparse-empty-refusal-31a5fece\\checkpoint.json",
+      "sha256": "ed090d8d824c3493d97601bf682fdf9c0f113d6feb9452728e5078109e9ca042"
+    },
+    {
+      "bytes": 3148,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\reparse-fixture-d947e5ab5a9e4d0ea9ae168b496b672c\\archive.json",
+      "sha256": "2fe210d4d44ec4ba3ee8bdad59473c2188c5997dc61656263e92ebea51c63533"
+    },
+    {
+      "bytes": 1415,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\reparse-obsolete-checkpoint-cleanup-20261031.json",
+      "sha256": "e17e09ada39d26139874bebbf43013bcaa6feebd1ed873a5549f59fb1b7b86c0"
+    }
+  ],
+  "normal_payload_sha256_hashes": 2,
+  "coldboot_checkpoint": "95e64fda-d3b1-4a3b-9bf5-c2ec161d2b18",
+  "unit_tests_added_or_run": false,
+  "recorded_utc": "2026-10-31T11:03:49.2076082Z",
+  "checkpoint_cleanup": {
+    "obsolete_failure_ids_removed": [
+      "b3f9ffae-1aa7-40c2-b59d-a6953416bbff",
+      "865bf7b0-5735-42db-8a29-2bafed0ca0cf",
+      "e92ade3b-7227-4897-873c-889fa0f317ef"
+    ],
+    "archives_retained": true,
+    "current_count": 50,
+    "user_authorized": true
+  },
+  "not_qualified": [
+    "unknown/cloud/provider tags",
+    "file-link nonempty DATA/ADS/sparse combinations",
+    "reparse ATTRIBUTE_LIST spill",
+    "root points",
+    "changed external volume aliases",
+    "new-build controlled interruption/resume/rollback",
+    "reparse mutation stress",
+    "physical power loss",
+    "arbitrary geometry/size or full NTFS compatibility"
+  ],
+  "reparse_fixture_identities": 10,
+  "retained_fragmented_payload_extents": 1024,
+  "retained_original_payload_bytes": 4194304,
+  "main_source_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "sparse_layouts": 3,
+  "converted_checkpoint": "9bfbe6f7-18ff-4577-8531-9101c6266f52",
+  "security_identities": 8,
+  "production_release_ready": false,
+  "native_elapsed_seconds": 90.8838887,
+  "dangling_or_cycle_traversals": 0,
+  "schema_version": 1,
+  "journal_bytes": 83164544,
+  "complete_ntfs_reparse_index_entries": 6,
+  "selected_bytes": 78761984,
+  "complete_default_stream_hashes": 24,
+  "coldboot": {
+    "native_exit": 0,
+    "native_expected_tree_verified": true,
+    "observer_binary_sha256": "2a41198b775d4c0e22d761d664dde6399b4811871c40f612a79b58d7ba3fc05a",
+    "journal_replayed": false,
+    "run_id": "7270a96c7ce94b338013bd2a19cdea78",
+    "all_six_point_buffers_match_normal_conversion": true,
+    "all_prior_ids_data_mappings_hashes_and_eas_match": true,
+    "source_payload_writes": 0
+  },
+  "source_admitted": true,
+  "ea_entries": 7,
+  "source_commit": "439a55c38dd1881abc5fea91afbd291fff6b6d09",
+  "selected_ranges": 205,
+  "packed_backing_bytes": 4374528,
+  "core_run_id": "3c735fbe7236518291d8048f5d4e066f",
+  "reparse_points": 6,
+  "kind": "bounded-native-reparse-conversion-and-coldboot",
+  "rollback_closed": true,
+  "run_id": "2ef04a0730934b15b77ddd0a0e2cc4a9",
+  "known_functional_routes": 4,
+  "complete_named_stream_hashes": 8,
+  "reparse_preservation": {
+    "core_binding": {
+      "point_buffers_verified": 6,
+      "native_source_sha256": "6d7041786903963a99f08db59028a57e1e759274981f5a73ef324f0d589f528c",
+      "source_native_schema": 11,
+      "complete_reparse_index_entries": 6,
+      "metadata_fixed_by_wrapper": false,
+      "source_basis_sha256": "1f854a804406e8d57d8ccf884ecbf982653de1e86ae89258f6ced6acbde558a2",
+      "internal_index_proof_sha256": "24b435d8022587a8ac44b5d718c50ab809050359b37b0916739178005f81e526",
+      "rows": [
+        {
+          "raw_source_point_matches": true,
+          "target_native_before_after_matches": true,
+          "expected_tree_point_matches": true,
+          "source_sequence_number": 1,
+          "path": "H:\\ReparseFixture-5dc696e66b6d441496c31aab7b06cecc",
+          "source_native_before_after_matches": true,
+          "tag": 0,
+          "source_record_number": 67
+        },
+        {
+          "raw_source_point_matches": true,
+          "target_native_before_after_matches": true,
+          "expected_tree_point_matches": true,
+          "source_sequence_number": 1,
+          "path": "H:\\ReparseFixture-5dc696e66b6d441496c31aab7b06cecc\\real.bin",
+          "source_native_before_after_matches": true,
+          "tag": 0,
+          "source_record_number": 68
+        },
+        {
+          "raw_source_point_matches": true,
+          "target_native_before_after_matches": true,
+          "expected_tree_point_matches": true,
+          "source_sequence_number": 1,
+          "path": "H:\\ReparseFixture-5dc696e66b6d441496c31aab7b06cecc\\real-directory",
+          "source_native_before_after_matches": true,
+          "tag": 0,
+          "source_record_number": 69
+        },
+        {
+          "raw_source_point_matches": true,
+          "target_native_before_after_matches": true,
+          "expected_tree_point_matches": true,
+          "source_sequence_number": 1,
+          "path": "H:\\ReparseFixture-5dc696e66b6d441496c31aab7b06cecc\\real-directory\\payload.bin",
+          "source_native_before_after_matches": true,
+          "tag": 0,
+          "source_record_number": 70
+        },
+        {
+          "raw_source_point_matches": true,
+          "target_native_before_after_matches": true,
+          "expected_tree_point_matches": true,
+          "source_sequence_number": 1,
+          "path": "H:\\ReparseFixture-5dc696e66b6d441496c31aab7b06cecc\\relative-file",
+          "source_native_before_after_matches": true,
+          "tag": 2684354572,
+          "source_record_number": 71
+        },
+        {
+          "raw_source_point_matches": true,
+          "target_native_before_after_matches": true,
+          "expected_tree_point_matches": true,
+          "source_sequence_number": 1,
+          "path": "H:\\ReparseFixture-5dc696e66b6d441496c31aab7b06cecc\\absolute-file",
+          "source_native_before_after_matches": true,
+          "tag": 2684354572,
+          "source_record_number": 72
+        },
+        {
+          "raw_source_point_matches": true,
+          "target_native_before_after_matches": true,
+          "expected_tree_point_matches": true,
+          "source_sequence_number": 1,
+          "path": "H:\\ReparseFixture-5dc696e66b6d441496c31aab7b06cecc\\relative-directory",
+          "source_native_before_after_matches": true,
+          "tag": 2684354572,
+          "source_record_number": 73
+        },
+        {
+          "raw_source_point_matches": true,
+          "target_native_before_after_matches": true,
+          "expected_tree_point_matches": true,
+          "source_sequence_number": 1,
+          "path": "H:\\ReparseFixture-5dc696e66b6d441496c31aab7b06cecc\\junction",
+          "source_native_before_after_matches": true,
+          "tag": 2684354563,
+          "source_record_number": 74
+        },
+        {
+          "raw_source_point_matches": true,
+          "target_native_before_after_matches": true,
+          "expected_tree_point_matches": true,
+          "source_sequence_number": 1,
+          "path": "H:\\ReparseFixture-5dc696e66b6d441496c31aab7b06cecc\\dangling-file",
+          "source_native_before_after_matches": true,
+          "tag": 2684354572,
+          "source_record_number": 75
+        },
+        {
+          "raw_source_point_matches": true,
+          "target_native_before_after_matches": true,
+          "expected_tree_point_matches": true,
+          "source_sequence_number": 1,
+          "path": "H:\\ReparseFixture-5dc696e66b6d441496c31aab7b06cecc\\directory-cycle",
+          "source_native_before_after_matches": true,
+          "tag": 2684354572,
+          "source_record_number": 76
+        }
+      ],
+      "objects": 10,
+      "wrapper_parses_or_repairs_security": false
+    },
+    "live": {
+      "tool_sha256": "9dd2a4216c00aa22a1ca9d25071f045ec84a586f02151ef0552cf6604dd51915",
+      "native_exit": 0,
+      "point_buffers_verified": 6,
+      "raw_volume_writes": 0,
+      "functional_existing_routes": 4,
+      "report_sha256": "8f34cbc186fc461924dc791cfc4c0fbaafc11aea49493f4c367abc66c8cb487a",
+      "rows": [
+        {
+          "tag": 0,
+          "file_id_info": "20bf9356d59356cc00000000000000000307000000000000",
+          "case": "root",
+          "path": "H:\\ReparseFixture-5dc696e66b6d441496c31aab7b06cecc",
+          "point_bytes_match": true,
+          "no_follow_metadata": true
+        },
+        {
+          "tag": 0,
+          "file_id_info": "20bf9356d59356cc04000000000000000307000000000000",
+          "case": "real-file",
+          "path": "H:\\ReparseFixture-5dc696e66b6d441496c31aab7b06cecc\\real.bin",
+          "point_bytes_match": true,
+          "no_follow_metadata": true
+        },
+        {
+          "tag": 0,
+          "file_id_info": "20bf9356d59356cc00000000000000000a07000000000000",
+          "case": "real-directory",
+          "path": "H:\\ReparseFixture-5dc696e66b6d441496c31aab7b06cecc\\real-directory",
+          "point_bytes_match": true,
+          "no_follow_metadata": true
+        },
+        {
+          "tag": 0,
+          "file_id_info": "20bf9356d59356cc02000000000000000a07000000000000",
+          "case": "directory-payload",
+          "path": "H:\\ReparseFixture-5dc696e66b6d441496c31aab7b06cecc\\real-directory\\payload.bin",
+          "point_bytes_match": true,
+          "no_follow_metadata": true
+        },
+        {
+          "tag": 2684354572,
+          "file_id_info": "20bf9356d59356cc05000000000000000307000000000000",
+          "case": "relative-file",
+          "path": "H:\\ReparseFixture-5dc696e66b6d441496c31aab7b06cecc\\relative-file",
+          "point_bytes_match": true,
+          "no_follow_metadata": true
+        },
+        {
+          "tag": 2684354572,
+          "file_id_info": "20bf9356d59356cc02000000000000000307000000000000",
+          "case": "absolute-file",
+          "path": "H:\\ReparseFixture-5dc696e66b6d441496c31aab7b06cecc\\absolute-file",
+          "point_bytes_match": true,
+          "no_follow_metadata": true
+        },
+        {
+          "tag": 2684354572,
+          "file_id_info": "20bf9356d59356cc00000000000000000b07000000000000",
+          "case": "relative-directory",
+          "path": "H:\\ReparseFixture-5dc696e66b6d441496c31aab7b06cecc\\relative-directory",
+          "point_bytes_match": true,
+          "no_follow_metadata": true
+        },
+        {
+          "tag": 2684354563,
+          "file_id_info": "20bf9356d59356cc00000000000000000907000000000000",
+          "case": "junction",
+          "path": "H:\\ReparseFixture-5dc696e66b6d441496c31aab7b06cecc\\junction",
+          "point_bytes_match": true,
+          "no_follow_metadata": true
+        },
+        {
+          "tag": 2684354572,
+          "file_id_info": "20bf9356d59356cc03000000000000000307000000000000",
+          "case": "dangling-file",
+          "path": "H:\\ReparseFixture-5dc696e66b6d441496c31aab7b06cecc\\dangling-file",
+          "point_bytes_match": true,
+          "no_follow_metadata": true
+        },
+        {
+          "tag": 2684354572,
+          "file_id_info": "20bf9356d59356cc00000000000000000807000000000000",
+          "case": "directory-cycle",
+          "path": "H:\\ReparseFixture-5dc696e66b6d441496c31aab7b06cecc\\directory-cycle",
+          "point_bytes_match": true,
+          "no_follow_metadata": true
+        }
+      ],
+      "no_follow_inventory": true,
+      "objects": 10,
+      "reparse_setters": 0,
+      "filesystem": "ReFS",
+      "report_path": "C:\\ntfs2refs\\attribute-list-convert-2ef04a0730934b15b77ddd0a0e2cc4a9\\reparse-refs-native.json",
+      "source_payload_writes": 0,
+      "dangling_or_cycle_traversals": 0,
+      "normal_payload_sha256_hashes": 2
+    },
+    "fixture_sha256": "563efe3343ae98c6841f69c239c38dc103e8da34f621eab3e07b339a148c76cd",
+    "tool_sha256": "9dd2a4216c00aa22a1ca9d25071f045ec84a586f02151ef0552cf6604dd51915",
+    "no_follow_inventory": true
+  }
+}

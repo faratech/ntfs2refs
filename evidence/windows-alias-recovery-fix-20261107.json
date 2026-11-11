@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "kind": "Windows-alias-restart-finalization-implementation",
+  "previous_blocker": "Restart recovery passed no live constructor alias owner to a Windows finalizer that required one.",
+  "publication": "Before AP, preserve the complete actual source-derived alias records and constructor plan digest inside the independently checksummed recovery publication. Retain and authenticate both ordinary alias files on the journal volume.",
+  "restart": "Rebuild non-authority expectations from authenticated alias records and expected pages. The native protected read-only observer verifies actual aliases, canonical objects, parents, security, points, identities, complete namespace and required contents before issuing opaque observations.",
+  "old_data_publications": "Optional alias fields remain absent; existing data recovery behavior is preserved.",
+  "old_Windows_publications_without_alias_expectations": "Refused before journal/target replay. Previous Windows runs ended in cancelled preparation and did not reach AP.",
+  "focused_check_exit_code": 0,
+  "focused_check_wall_seconds": 33.4838917,
+  "shared_target_reused": true,
+  "unit_tests_run": false,
+  "native_run": false,
+  "Windows_restart_recovery_qualified": false,
+  "original_Windows_converted": false,
+  "original_Windows_booted_refs": false,
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+}

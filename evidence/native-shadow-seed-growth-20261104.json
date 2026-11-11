@@ -1,0 +1,193 @@
+{
+  "schema_version": 1,
+  "kind": "native-empty-shadow-direct-seed-and-growth-observations",
+  "scope": "Three explicitly owned empty-volume lab cohorts; no NTFS conversion, product formatter change, complete ownership proof or performance improvement is qualified.",
+  "environment": {
+    "windows_version": "10.0.26300",
+    "logical_sector_bytes": 512,
+    "physical_sector_bytes": 4096,
+    "ReFS_version": "3.14",
+    "ReFS_cluster_bytes": 4096,
+    "format": "Dev Drive",
+    "dynamic_VHDX_virtual_bytes": 257765146624
+  },
+  "cd12_diagnostic": {
+    "source_commit": "cd12d2cf3fc9dacc8492e7e3626bf530b5c6dd15",
+    "build_manifest_sha256": "06969af7092f34ec8f10744b95901bbd682552c3a4b7da304b08310b5ab2be87",
+    "binary_sha256": "7bfac9cc9edafcac9dfca3fe0a0b7ccb4bbed12a76ca940dc04582ec6274a538",
+    "bytes": 1255424,
+    "shipped": false,
+    "product_formatter_selected": false
+  },
+  "direct_240_GiB": {
+    "run_id": "3589a47df3a04baa9c2405ca45610083",
+    "native": {
+      "pid": 5316,
+      "creation_ms": 1793768001128,
+      "actual_exit_observed": true,
+      "owned_handle_through_terminal": true,
+      "exit_code": 0,
+      "wall_seconds": 1.0402751
+    },
+    "partition_bytes": 257698037760,
+    "filesystem_bytes": 257698037760,
+    "declared_bitmap_clusters": 62914560,
+    "legacy_allocated_bytes": 2349711360,
+    "metadata_inclusive_allocated_bytes": 26373816320,
+    "observed_bitmap_union_bytes": 26373816320,
+    "observed_union_ranges": 3,
+    "backing_filesystem_storage_bytes": 104857600,
+    "backing_storage_is_not_virtual_bitmap_allocation": true,
+    "closed_metadata": {
+      "root": ".lab/hyperv/streaming-v2-20261027/shadow-format-growth-3589a47df3a04baa9c2405ca45610083/closed-metadata",
+      "manifest_sha256": "106937e8657b32868a2a52b3e9f26a1a5eeb6bd19b85d2271959af440e0f58b8",
+      "files": 17,
+      "bytes": 97858,
+      "source_and_host_copy_length_SHA256_verified": true
+    },
+    "result_sha256": "1fdfa9a931ee369aaa392838db918cacf90e1673a2ec0275757971ba0da26b59",
+    "snapshot_sha256": "0182312c6e46a0b6e540e8923fde5ad004c5ae388c2c17137bad00e6069b0645"
+  },
+  "first_50_GiB_seed_attempt": {
+    "run_id": "78ee80cf5a704273b0ecfe75f7bd57d3",
+    "native": {
+      "pid": 4132,
+      "creation_ms": 1793768116528,
+      "actual_exit_observed": true,
+      "owned_handle_through_terminal": true,
+      "exit_code": 1,
+      "wall_seconds": 0.7662221
+    },
+    "seed_snapshot_partition_bytes": 53687091200,
+    "legacy_allocated_bytes": 1275969536,
+    "metadata_inclusive_allocated_bytes": 5905612800,
+    "observed_bitmap_union_bytes": 5905612800,
+    "backing_filesystem_storage_bytes": 104857600,
+    "error": "oversized staging IOCTL output",
+    "failure_scope": "The diagnostic's zero-output allowance rejected the returned GROW response after the native call. Failure does not establish that partition state stayed unchanged.",
+    "root_reported_separate_postfailure_geometry": {
+      "partition_bytes": 257698037760,
+      "filesystem_bytes": 53687091200,
+      "scope": "Root reported a separate same-GUID read-only observation; do not treat the earlier seed snapshot as current geometry."
+    },
+    "closed_metadata": {
+      "root": ".lab/hyperv/streaming-v2-20261027/shadow-format-growth-78ee80cf5a704273b0ecfe75f7bd57d3/closed-metadata",
+      "manifest_sha256": "0ccddcae13db836f100ad6dda5212fc26f254ed48e28f1005899be9862313a61",
+      "files": 18,
+      "bytes": 73482,
+      "source_and_host_copy_length_SHA256_verified": true
+    },
+    "result_sha256": "dd07cdc6196c0631a389237142148d25d82cc8bbb0a0428ce5150ae5c554d55e",
+    "seed_snapshot_sha256": "5321afd6e1787ff42b9a772ea174f5353725c83e007924f324268d4890796f98"
+  },
+  "corrected_3080_seed_grow": {
+    "source_commit": "3080e9dceb13b4c0a8ac032170f704882a764e4e",
+    "build_manifest_sha256": "a7f629ddee5f57285179556dc4b17997011172b482ca4586761d9724e9f159a2",
+    "binary_sha256": "9d6c91ad9f31a13b92d53aed72602ad0eddce5e5aefba19d8a0b2411a95d8688",
+    "binary_bytes": 1261568,
+    "shipped": false,
+    "fix_scope": "Only the unshipped diagnostic admits bounded native GROW/EXTEND control responses. Existing product formatter and strict geometry requirement are unchanged.",
+    "run_id": "69287e75d81b413e84c9f4923a80930d",
+    "native": {
+      "pid": 5348,
+      "creation_ms": 1793768703991,
+      "actual_exit_observed": true,
+      "owned_handle_through_terminal": true,
+      "exit_code": 1,
+      "wall_seconds": 0.8780946,
+      "terminal_sha256": "63dd6c1e04bdf8b1bc01ce9d4497988d7b0a1ddc581585e579f552eb32a18e30"
+    },
+    "GROW_control_succeeded": true,
+    "GROW_returned_bytes": 8,
+    "EXTEND_control_succeeded": true,
+    "EXTEND_returned_bytes": 0,
+    "returned_response_alone_used_as_growth_proof": false,
+    "final_diagnostic_error": "owned lab volume is not exact ReFS3.14/4KiB final geometry",
+    "actual_binding": {
+      "disk": 12,
+      "disk_guid": "7a649dc9-9792-49f2-88ba-aacee65d6d54",
+      "partition_number": 2,
+      "partition_guid": "62dfb9e0-cef9-46d2-ba59-b123ec6093b0",
+      "volume_guid": "62dfb9e0-cef9-46d2-ba59-b123ec6093b0",
+      "partition_offset": 33554432,
+      "partition_bytes": 257698037760
+    },
+    "partition_sectors_512_bytes": 503316480,
+    "filesystem_sectors_512_bytes": 503185408,
+    "filesystem_clusters": 62898176,
+    "filesystem_bytes": 257630928896,
+    "partition_minus_filesystem_bytes": 67108864,
+    "geometry_receipt": {
+      "path": ".lab/hyperv/streaming-v2-20261027/shadow-format-growth-69287e75d81b413e84c9f4923a80930d/post-failure-native-geometry.json",
+      "bytes": 798,
+      "sha256": "af1fd8847e02f0959fcb5897f628e528183ed46e90b38b13f82d692d0489082a",
+      "source_and_host_copy_verified_by_root": true
+    },
+    "readonly_bitmap_observation": {
+      "native_helper_exit_zero_reported_by_root": true,
+      "path": ".lab/hyperv/streaming-v2-20261027/shadow-format-growth-69287e75d81b413e84c9f4923a80930d/post-growth-bitmaps.json",
+      "bytes": 22811,
+      "sha256": "4ba462f04e8f0d82702946e9015966a566f6dfc842093a228e5ac1fa34e2f014",
+      "source_and_host_copy_verified_by_root": true,
+      "legacy_allocated_bytes": 2416836608,
+      "metadata_inclusive_allocated_bytes": 25971179520,
+      "known_observed_union_allocated_bytes": 25971179520,
+      "legacy_declared_clusters": 62898176,
+      "metadata_inclusive_declared_clusters": 62898176,
+      "physical_partition_clusters": 62914560,
+      "legacy_pages": 8,
+      "metadata_inclusive_pages": 8,
+      "legacy_bitmap_data_sha256": "1ddd96da4fbf4dd0ba94730292cc822efa308f99c20b0a13893c2792e971fb13",
+      "metadata_inclusive_bitmap_data_sha256": "817f455b0075da983fa2e49202f7417346eda3f79d6068b4ae72b92997b0d8fd",
+      "complete_declared_view_coverage": true,
+      "unobserved_physical_tail_clusters": 16384,
+      "unobserved_regions_are_unknown_not_free": true,
+      "same_bound_volume_and_native_geometry_checked_before_after": true,
+      "native_mutation_issued": false,
+      "source_or_raw_disk_opened": false,
+      "file_payload_bytes_read": 0,
+      "regrow_or_extend_reissued": false,
+      "product_geometry_relaxed": false
+    },
+    "closed_metadata": {
+      "root": ".lab/hyperv/streaming-v2-20261027/shadow-format-growth-69287e75d81b413e84c9f4923a80930d/closed-metadata",
+      "manifest_sha256": "3d139cec5509d6a57a62675120e95215a554650b94813dad549b8926a024c130",
+      "files": 21,
+      "bytes": 119151,
+      "source_and_host_copy_length_SHA256_verified_by_root": true,
+      "archive_helper_session": 97349,
+      "archive_helper_exit_code": 0
+    }
+  },
+  "findings": {
+    "constant_small_seed_metadata_reservation_supported": false,
+    "grown_metadata_stayed_near_50_GiB_seed_reservation": false,
+    "grown_bitmap_union_is_still_about_26_GB": true,
+    "controlled_like_for_like_comparison": false,
+    "comparison_scope": "Direct formatting covers a 240 GiB filesystem; the grown filesystem is 239.9375 GiB inside a 240 GiB partition. The modest observed difference is not an established space reduction.",
+    "thin_backing_allocation_and_logical_ReFS_bitmap_reservation_are_distinct": true,
+    "speed_improvement_proven": false,
+    "complete_allocation_ownership_verified": false,
+    "complete_consumed_set_verified": false,
+    "remount_qualification_completed": false,
+    "product_formatter_changed": false,
+    "grown_volume_adopted_by_converter": false,
+    "no_further_geometry_relaxation_or_regrow_authorized_by_this_record": true,
+    "frozen_814_package_unchanged": true,
+    "new_public_candidate_conversion_qualified_by_these_cases": false
+  },
+  "artifact_retention": {
+    "only_small_metadata_archived": true,
+    "VHDX_images_not_archived": true,
+    "full_image_or_filesystem_payloads_copied": false,
+    "normal_shutdown_in_progress_when_record_requested": true,
+    "restore_not_performed_by_this_record": true,
+    "subsequent_controlled_restore_completed": true,
+    "subsequent_public_fixture_run": "97468663c2a24eb69d4dd1efef66b58a",
+    "restore_effect": "After normal shutdown and metadata closures, the separate public fixture launcher restored 3343 once. Disposable empty test images and their directly restorable guest states were discarded. Build/source archives, metadata evidence and saved 814 recovery origins remain; no direct restoration of the disposable formatting cases is claimed."
+  },
+  "unit_tests_added_or_run": false,
+  "stable_release": false,
+  "broader_project_goal_complete": false,
+  "created_utc": "2026-11-04T05:26:02.242Z"
+}

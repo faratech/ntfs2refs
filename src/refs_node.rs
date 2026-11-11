@@ -134,6 +134,27 @@ pub fn inspect_root_node(bytes: &[u8]) -> Result<RootNodeObservation> {
         33 | 34 => 0xe010,
         _ => anyhow::bail!("root table is outside the bounded observed types"),
     };
+    decode_root_node(bytes, Some(expected_schema))
+}
+
+/// Structural decoder for authenticated virtual system roots. The caller
+/// authenticates the exact table/volume/page reference before calling. Schema
+/// IDs are observed only; this does not establish their comparison semantics.
+pub fn inspect_system_root_node(bytes: &[u8], table: u64) -> Result<RootNodeObservation> {
+    ensure!(
+        bytes.len() == PAGE_BYTES
+            && &bytes[..4] == b"MSB+"
+            && u32le(bytes, 4) == 2
+            && u64le(bytes, 0x40) == 0
+            && u64le(bytes, 0x48) == table
+            && matches!(table, 1 | 2 | 3 | 4 | 5 | 6 | 14 | 15 | 32 | 33),
+        "unsupported authenticated system root"
+    );
+    decode_root_node(bytes, None)
+}
+
+fn decode_root_node(bytes: &[u8], expected_schema: Option<u32>) -> Result<RootNodeObservation> {
+    let table_id_low = u64le(bytes, 0x48);
     let descriptor_size = u16le(bytes, ROOT_OFFSET + 4);
     ensure!(
         usize::from(descriptor_size) == ROOT_DESCRIPTOR_BYTES,
@@ -141,7 +162,7 @@ pub fn inspect_root_node(bytes: &[u8]) -> Result<RootNodeObservation> {
     );
     let schema_id = u32le(bytes, ROOT_OFFSET + 0xc);
     ensure!(
-        schema_id == expected_schema,
+        expected_schema.is_none_or(|expected| schema_id == expected),
         "table/schema identity mismatch"
     );
     let node_offset = ROOT_OFFSET
@@ -179,6 +200,21 @@ pub fn inspect_root_node(bytes: &[u8]) -> Result<RootNodeObservation> {
     })
 }
 
+/// Structural root referenced by an authenticated Object Table row. Object
+/// identity and schema semantics still need independent higher-level checks.
+pub fn inspect_object_root_node(bytes: &[u8], object_id: u64) -> Result<RootNodeObservation> {
+    ensure!(
+        bytes.len() == PAGE_BYTES
+            && object_id >= 7
+            && &bytes[..4] == b"MSB+"
+            && u32le(bytes, 4) == 2
+            && u64le(bytes, 0x40) == 0
+            && u64le(bytes, 0x48) == object_id,
+        "object root header or identity differs"
+    );
+    decode_root_node(bytes, None)
+}
+
 /// Initial native container-child profile: an eight-byte prefix at 0x50, then
 /// the node header at 0x58. The caller must independently validate CRC, page
 /// self-locations, volume signature and the expected table ID before traversal.
@@ -195,6 +231,24 @@ pub fn inspect_child_node(bytes: &[u8]) -> Result<NodeBodyObservation> {
         u64le(bytes, 0x40) == 0 && matches!(u64le(bytes, 0x48), 11 | 12 | 33 | 34),
         "unsupported metadata child table"
     );
+    decode_child_node(bytes)
+}
+
+/// Structural system-child counterpart to `inspect_system_root_node`.
+pub fn inspect_system_child_node(bytes: &[u8], table: u64) -> Result<NodeBodyObservation> {
+    ensure!(
+        bytes.len() == PAGE_BYTES
+            && &bytes[..4] == b"MSB+"
+            && u32le(bytes, 4) == 2
+            && u64le(bytes, 0x40) == 0
+            && u64le(bytes, 0x48) == table
+            && matches!(table, 1 | 2 | 3 | 4 | 5 | 6 | 14 | 15 | 32 | 33),
+        "unsupported authenticated system child"
+    );
+    decode_child_node(bytes)
+}
+
+fn decode_child_node(bytes: &[u8]) -> Result<NodeBodyObservation> {
     ensure!(
         u32le(bytes, ROOT_OFFSET) == 8,
         "unsupported non-root node prefix"
@@ -202,11 +256,47 @@ pub fn inspect_child_node(bytes: &[u8]) -> Result<NodeBodyObservation> {
     inspect_node_body(bytes, ROOT_OFFSET + 8)
 }
 
+pub fn inspect_object_child_node(bytes: &[u8], object_id: u64) -> Result<NodeBodyObservation> {
+    ensure!(
+        bytes.len() == PAGE_BYTES
+            && object_id >= 7
+            && &bytes[..4] == b"MSB+"
+            && u32le(bytes, 4) == 2
+            && u64le(bytes, 0x40) == 0
+            && u64le(bytes, 0x48) == object_id,
+        "object child header or identity differs"
+    );
+    decode_child_node(bytes)
+}
+
 pub fn inspect_container_child_node(bytes: &[u8]) -> Result<NodeBodyObservation> {
     inspect_child_node(bytes)
 }
 
 fn inspect_node_body(bytes: &[u8], node_offset: usize) -> Result<NodeBodyObservation> {
+    inspect_node_body_with_prefix(bytes, node_offset, ROOT_OFFSET)
+}
+
+/// A bounded inline node inside an authenticated record's value. Offsets in
+/// the returned rows are relative to that value. The caller identifies the
+/// record and owns page authentication; this parses no disk addresses.
+pub fn inspect_embedded_node(bytes: &[u8], node_offset: usize) -> Result<NodeBodyObservation> {
+    ensure!(
+        bytes.len() <= PAGE_BYTES,
+        "embedded node exceeds one metadata page"
+    );
+    inspect_node_body_with_prefix(bytes, node_offset, 0)
+}
+
+fn inspect_node_body_with_prefix(
+    bytes: &[u8],
+    node_offset: usize,
+    prefix_start: usize,
+) -> Result<NodeBodyObservation> {
+    ensure!(
+        node_offset >= prefix_start,
+        "node overlaps its prefix origin"
+    );
     let node_header_range = range(node_offset, NODE_HEADER_BYTES, bytes.len())?;
     let header = &bytes[node_header_range.clone()];
     let level = header[0xc];
@@ -295,7 +385,7 @@ fn inspect_node_body(bytes: &[u8], node_offset: usize) -> Result<NodeBodyObserva
     }
     Ok(NodeBodyObservation {
         node_offset,
-        node_prefix_bytes_hex: hex::encode(&bytes[ROOT_OFFSET..node_offset]),
+        node_prefix_bytes_hex: hex::encode(&bytes[prefix_start..node_offset]),
         node_header_bytes_hex: hex::encode(header),
         node_level: level,
         node_flags: flags,

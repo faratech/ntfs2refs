@@ -1,0 +1,23 @@
+{
+  "project_VM_count": 5,
+  "restore_start_stop_reset_create_checkpoint_calls": 0,
+  "manual_AVHDX_deletes": 0,
+  "host_D_free_delta": 1349636096,
+  "kind": "final-old-project-checkpoint-managed-cleanup",
+  "host_D_free_after": 181473550336,
+  "current_VM_state": "Running",
+  "schema_version": 1,
+  "all_eight_attachments_at_expected_merge_parents": true,
+  "remaining_registered_project_checkpoints": 0,
+  "actual_removed_this_operation": 1,
+  "host_D_free_before": 180123914240,
+  "receipt": ".lab/hyperv/streaming-v2-20261027/REMOVE-ALL-REMAINING-OLD-CHECKPOINTS-20261106-852697c363c649828f5af5231eb87288/ACTUAL-managed-merge-settled.json",
+  "receipt_sha256": "749f40652e82a7834fd2e955d74df345bd2a753478ccf2f22d16881372b24059",
+  "active_HyperV_jobs": 0,
+  "current_VM_status": "Operating normally",
+  "current_HND203694080_Source_J_and_evidence_preserved": true,
+  "actual_managed_merge_settled": true,
+  "all_eight_deleted_checkpoint_leaf_files_gone": true,
+  "preexisting_OS_clone_backing_chain_retained_for_current_data": 9,
+  "checkpoint_removed": "07ca22f3-bb1c-444b-8f31-ff16b1fcb521"
+}

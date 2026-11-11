@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "kind": "clean-committed-source-build",
+  "source_commit": "05c1abd8e9b274cf7bd26ecaa93cb690dbd98e68",
+  "source_tree": "3eb01e7dfe48945e62ae2b3e1cec05befd719aa9",
+  "source_file_count": 285,
+  "manifest_path": "D:\\code\\ntfs2refs\\.lab\\development\\release-candidates\\r05c1abd\\manifest.json",
+  "manifest_sha256": "8c26a1d1e6242c5d8d95f6c898c4191eca2096dc3ad58143294c99f3c007adda",
+  "observed_working_bytes": 519318799,
+  "locked_dependencies": true,
+  "offline_build": true,
+  "working_tree_inputs_used": false,
+  "binaries": [
+    {
+      "name": "ntfs2refs",
+      "path": "bin/ntfs2refs.exe",
+      "bytes": 10882048,
+      "sha256": "c7eaf93348d550816e6bc8384efb5534f8afc7d10c4a1397d9ef6313821ace85"
+    },
+    {
+      "name": "lab-selected-marker-native",
+      "path": "bin/lab-selected-marker-native.exe",
+      "bytes": 7156736,
+      "sha256": "51b02b15985c526b247e5fa82c9c90e32f27e1055c117bd5363f72a72259fd9b"
+    },
+    {
+      "name": "lab-convert-native-composite",
+      "path": "bin/lab-convert-native-composite.exe",
+      "bytes": 7592448,
+      "sha256": "3620ffaad012a11e7659a5374dd505fba5447c288418e83a3795eea927415c98"
+    },
+    {
+      "name": "lab-recover-native-composite",
+      "path": "bin/lab-recover-native-composite.exe",
+      "bytes": 3206656,
+      "sha256": "4e5a11a6922b3e90695ae02f87db34c5fd1166a3a13ae48c444a93bc2289e59b"
+    },
+    {
+      "name": "lab-content-digest",
+      "path": "bin/lab-content-digest.exe",
+      "bytes": 321536,
+      "sha256": "2d771cbc1241e2a48f7d1df5c129414e34b906db2e229955c8fd8eaa5869266a"
+    },
+    {
+      "name": "lab-managed-shadow",
+      "path": "bin/lab-managed-shadow.exe",
+      "bytes": 1107456,
+      "sha256": "497476b8d37ad51131a3168c4b6ac6487962684039301aabf5c6d91b9da63705"
+    }
+  ],
+  "unit_tests_run": false,
+  "native_tools_invoked": false,
+  "qualification_inherited": false,
+  "native_marker_qualified": false,
+  "stable_release": false,
+  "toolset_manifest": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-tools-05c1abd\\manifest.json",
+  "toolset_manifest_sha256": "ee288bbfaa52550ca1074271a60cf8351ec94b469951823080d102ca5cb51ccc",
+  "note": "Explicit target profiles and native policy observation, with corrected successful-query output interpretation. Native profile qualification remains separate."
+}

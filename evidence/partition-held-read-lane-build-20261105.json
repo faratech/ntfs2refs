@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "kind": "readonly-source-lane-from-original-locked-fileobject",
+  "status": "focused-check-passed-native-pending",
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/native/partition_owner.rs",
+      "bytes": 45825,
+      "sha256": "4af3e9614f8084c8485073cea40f83d348fa586d1fc867cc929d39906ad5e1fc"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_lifecycle.rs",
+      "bytes": 6021,
+      "sha256": "ef6ff1caf4bd32310f0032fc5fd48236d3bd240c8f2462070c9608dea5d0a539"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_lifecycle/held_read.rs",
+      "bytes": 6473,
+      "sha256": "939b3d0031d19a7c3edded80d1dfacbe788fe35cb73992fb088f3c0aec37336a"
+    }
+  ],
+  "reviewed_patch_sha256": "83e8a5737cf627b0b5ad361b9d9dcdcca1d1b4a2d1a710ac8547c2a7739182f2",
+  "check_exit": 0,
+  "check_seconds": 29.1964616,
+  "unit_tests_run": false,
+  "native_run": false,
+  "change": "Duplicate the actual retained locking FileObject with reduced read rights instead of opening a new GLOBALROOT path.",
+  "reduced_access_mask": "0x00100081",
+  "kernel_access_proof": "NtQueryObject ObjectBasicInformation public56-byte ABI, exact granted mask; native Device12/Partition144/token bookends.",
+  "cursor_synchronization": "Existing source token Arc identity owns mutex shared by owner seek+read, writer seek+write, writer flush/readback and readonly-lane seek+read. Logical lane positions remain independent.",
+  "source_writer_policy_or_admission_checks_changed": false,
+  "readonly_lane_exposes_write_or_raw_handle": false,
+  "path_reopen_fallback": false,
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+}

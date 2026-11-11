@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "kind": "managed-shadow-post-reboot-ntfs-rollback-observation",
+  "observation_only": true,
+  "grants_source_or_recovery_authority": false,
+  "original_run_id": "94eebb1101354d2ca42c2f8f0608f6a0",
+  "recovery_run_id": "95d490e280ac4b608bd118d63580a367",
+  "recovery_sha256": "565fb0a70d03b3587417f326036e38ffe7f12c6d78fe48afe6fb99ea82f9d3f0",
+  "actual_native_exit": 0,
+  "actual_wrapper_task_result": 0,
+  "original_interruption_exit": 86,
+  "controlled_flushed_write_limit": 1,
+  "restored_actual_pre_handoff_partial": true,
+  "managed_readonly_reattachment_succeeded": true,
+  "source_certificate_recreated": false,
+  "fresh_apply_authorized": false,
+  "source_exact_premount_sha256": "1bf93b0a7ea784fa04e9910a8e19fc3a94b36ee693b8404499fe45381a49c40e",
+  "patches_written": 161,
+  "target_bytes_written": 70578176,
+  "barrier": "ABT",
+  "replay_closed": true,
+  "filesystem": "NTFS",
+  "source_cluster_bytes": 65536,
+  "source_label_mount_preserved": true,
+  "logical_user_files_verified": 7,
+  "logical_user_bytes_verified": 8594391095,
+  "native_attributes_creation_write_owner_group_dacl_matching_files": 7,
+  "access_time_matching_files": 7,
+  "access_time_differing_files": 0,
+  "native_mft_change_time_queried": false,
+  "all_four_native_timestamps_verified": false,
+  "stored_metadata_premount_basis": "Closed typed execution and ABT reports prove exact original NTFS image before writable mount, including stored metadata. This observation does not independently reread that image or query MFT change time.",
+  "excluded_svi_files": 3,
+  "user_readback_sha256": "f00a3e6fd71e784c745f838c46897c74c877c2b122f6dc62707f3cd5357580aa",
+  "user_readback_receipt_sha256": "01b74c0757c91800e718a845d900e6d20e92fd7a6f390f4c7ed36c6a8734ddaf",
+  "recovered_checkpoint_id": "0872b74c-5b3d-43cf-9ccf-fc64fda0cd93",
+  "checkpoint_count_at_preservation": 5,
+  "preservation_receipt_sha256": "7ce3e0f7791c4dc3dd30b13dd7174006765d556783041bfc2d0dbf773229e7ce",
+  "arbitrary_volume_support_proven": false,
+  "storage_power_loss_qualified": false,
+  "postmount_raw_equality_claimed": false,
+  "closed_metadata_pins": [
+    {
+      "name": "wrapper-result.json",
+      "bytes": 617,
+      "sha256": "a260231ad7c2eb4dd5a95c70d99e1d964b6b9f63d9f3e8601188aafae8853af4",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-rollback-95d490e280ac4b608bd118d63580a367\\wrapper-result.json"
+    },
+    {
+      "name": "wrapper-worker.json",
+      "bytes": 194,
+      "sha256": "e54259ec5610acefa264f76b993f550606eac1bb9b33924c21f81e6b67542b36",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-rollback-95d490e280ac4b608bd118d63580a367\\wrapper-worker.json"
+    },
+    {
+      "name": "rollback-dispatch-intent.json",
+      "bytes": 2462,
+      "sha256": "3cbc090cb7caac606374b31259e4d970c788ec03d02f4d48259e6b90511a6bb9",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-rollback-95d490e280ac4b608bd118d63580a367\\rollback-dispatch-intent.json"
+    },
+    {
+      "name": "rollback-process.json",
+      "bytes": 2557,
+      "sha256": "61306eed156875fcc8f33b2c42c367d9b347d6c78cc26880b619ac7803571bc0",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-rollback-95d490e280ac4b608bd118d63580a367\\rollback-process.json"
+    },
+    {
+      "name": "rollback-terminal.json",
+      "bytes": 888,
+      "sha256": "31a06b1706ea9afa765ae59d101700abb48392637d7f82c6bded950db59348b5",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-rollback-95d490e280ac4b608bd118d63580a367\\rollback-terminal.json"
+    },
+    {
+      "name": "rollback-request.json",
+      "bytes": 2532,
+      "sha256": "3de2a056f3d135d021fb556c8b28c1892137a263c47397e47e59a0de6c18a15a",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-rollback-95d490e280ac4b608bd118d63580a367\\rollback\\request.json"
+    },
+    {
+      "name": "rollback-ticket.json",
+      "bytes": 615,
+      "sha256": "f0809b7f928c8b94815a38a2665348ef35d546e680f7e7f91464de5f16c9c8f6",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-rollback-95d490e280ac4b608bd118d63580a367\\rollback\\ticket.json"
+    },
+    {
+      "name": "rollback-expectation.json",
+      "bytes": 29197,
+      "sha256": "c44bc653562dd9d69aaf234ec2348ac62fe2f372270817c5297fe06b5e8f321b",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-rollback-95d490e280ac4b608bd118d63580a367\\rollback\\expectation.json"
+    },
+    {
+      "name": "rollback-intent.json",
+      "bytes": 1071,
+      "sha256": "9f8831070ca1fddcb3e9bf25ad41081e58427afc27b599002a7be9e75155b8bd",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-rollback-95d490e280ac4b608bd118d63580a367\\rollback\\intent.json"
+    },
+    {
+      "name": "rollback-input-identities.json",
+      "bytes": 2561,
+      "sha256": "f24c2974b7537cf2e413b76d6b2cfb21ae5f60d277425c884e06188f5a75ca10",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-rollback-95d490e280ac4b608bd118d63580a367\\rollback\\input-identities.json"
+    },
+    {
+      "name": "rollback-journal-identity.json",
+      "bytes": 9116,
+      "sha256": "e464dc6c1ffc8b4d09fb3d15468b1402d59dccddf8fbff7c71647ccf139de9d1",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-rollback-95d490e280ac4b608bd118d63580a367\\rollback\\journal-identity.json"
+    },
+    {
+      "name": "rollback-result.json",
+      "bytes": 414,
+      "sha256": "df824482e795f8ab0fe50f622ef67c9e0f94f9a19870142c7f79b287f848a64b",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-rollback-95d490e280ac4b608bd118d63580a367\\rollback\\result.json"
+    },
+    {
+      "name": "rollback-execution.json",
+      "bytes": 15804,
+      "sha256": "6ea17cea8dbe41ed337f20b164177790a92868d3877da2b8fe1918e3d81ed85f",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-rollback-95d490e280ac4b608bd118d63580a367\\rollback\\execution.json"
+    },
+    {
+      "name": "rollback-completion.json",
+      "bytes": 113426,
+      "sha256": "dd5828d4b0237d85d85c5a986fb9d7adc9d15f72bbc658c478523221c480f718",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-rollback-95d490e280ac4b608bd118d63580a367\\rollback\\completion.json"
+    }
+  ],
+  "scope": "Typed execution and ABT proved the exact frozen original before writable NTFS mount; native filesystem/label/mount observed. No post-mount raw-image equality claim."
+}

@@ -27,7 +27,16 @@ data or allocation. Attribute lists/extensions produce
 `incomplete_attribute_inventory`, since their logical objects need assembly.
 Allocation ownership, security and metadata-role policies remain separate.
 
-The profile requires 512-byte sectors, 4 KiB clusters and 4 KiB index records.
+The reader requires 512-byte sectors and 4 KiB index records. Its geometry-aware
+entry accepts power-of-two clusters from 512 bytes through 2 MiB; the compatibility
+entry retains 4 KiB clusters. When a cluster exceeds the index-record size,
+index child addresses and INDX header addresses use 512-byte units, while bitmap
+bits still select index-record slots. The root's units-per-record field must
+match that geometry. Otherwise the addresses use cluster units. This distinction
+is corroborated by the [Linux NTFS3 index implementation](https://github.com/torvalds/linux/blob/master/fs/ntfs3/index.c).
+Only format facts were used; no upstream implementation code was incorporated.
+This reader change does not expand conversion admission, which retains its
+4 KiB source-cluster requirement pending complete construction/recovery support.
 Inputs are bounded to 16 MiB cumulatively, including `$UpCase`, 16,384
 entries/objects, 131,072 UTF-16 name units, 4096 directories and 64 tree levels.
 Unsupported geometry, malformed input or exceeded bounds produce rejected

@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "kind": "pre-AP-held-capture-index-allocation-reporting",
+  "status": "focused-check-passed-native-execution-pending",
+  "files": [
+    {
+      "path": "src/general_shadow/capture_index.rs",
+      "bytes": 30315,
+      "sha256": "8da5eeef5583347a06004bd5802c365e9b41c3202dc9c301c84e8f1d1c431457"
+    },
+    {
+      "path": "src/resource_preparation.rs",
+      "bytes": 37631,
+      "sha256": "0cabeabd4f21fa6bb844b2335177471fcb9c310295eb47048090a44ee24ed23b"
+    },
+    {
+      "path": "src/resource_preparation/file_observer.rs",
+      "bytes": 21695,
+      "sha256": "c8ea1e225975ca439ce8d4432223494254f5483083e745abed69345e2055b863"
+    }
+  ],
+  "check_exit": 0,
+  "check_wall_seconds": 21.3591422,
+  "check_receipt_sha256": "7281d97683957fcbb6601ec36be1c865ae3a9122581f94606686920a4dd19b9c",
+  "shared_target_reused": true,
+  "unit_tests_run": false,
+  "native_qualified": false,
+  "frozen_alpha_rebuilt": false,
+  "protected_main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "behavior": [
+    "Query allocation through original readonly capture-index handle after metadata/identity match.",
+    "No seek, index scan, hash pass, pathname reopen or source write authority.",
+    "Report allocation or advisory error before AP; encoded lengths remain distinct.",
+    "No new journal accessor, writer/admission/recovery/default-policy change."
+  ],
+  "initial_check": {
+    "exit": 101,
+    "reason": "serde_json macro expansion exceeded existing recursion limit",
+    "fix": "append two diagnostic fields after bounded JSON construction; protected main untouched",
+    "receipt_sha256": "03d4f4847decc0c2f2d3ae5208f0c50b7d4d227e060b9af423ad443b8583f213"
+  },
+  "limitations": [
+    "Compile check does not qualify native output or a new release build.",
+    "Metadata samples are not peaks or physical device consumption."
+  ]
+}

@@ -1,0 +1,412 @@
+{
+  "schema_version": 1,
+  "kind": "native-prepared-exclusive-owner-normal-qualification",
+  "qualification_scope": "one grown F V3 normal conversion; no candidate-specific fault or recovery qualification",
+  "runtime": {
+    "source_commit": "11e89630d9b4aa8852bd393f9ee536246ea1da5a",
+    "toolset_manifest": {
+      "path": ".lab/hyperv/streaming-v2-20261027/head-drive-tools-11e8963-prepared/manifest.json",
+      "bytes": 1164,
+      "sha256": "54680c81be6576aec8d6db8844a0a90c6ffc7807d4f556d8f31e945f0b58a826"
+    },
+    "tools": [
+      {
+        "name": "ntfs2refs.exe",
+        "bytes": 9896960,
+        "sha256": "2ff60056c52058eb32f40579cb7cfc2df4ee37d4c5bf34fe4b39f032e78d125f"
+      },
+      {
+        "name": "lab-content-digest.exe",
+        "bytes": 323072,
+        "sha256": "eb56af0116b90e9e4bb0462e8cd5145d3181a4e341974a02d7b54e2586cdfbae"
+      },
+      {
+        "name": "lab-query-refs-extents.exe",
+        "bytes": 1081344,
+        "sha256": "6722a00cbc4947902eb167086bd62d94d823cc544119f632657d7f188fcc653f"
+      }
+    ],
+    "main_source_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+  },
+  "run": {
+    "wrapper_run_id": "79b22a2ffac94f42bec9a38291405beb",
+    "core_run_id": "b4135fc99aebb412a63a3d3554f215f3",
+    "native_pid": 3944,
+    "native_creation_ms": 1793492056135,
+    "native_exit": 0,
+    "native_exit_observed": true,
+    "native_terminal_utc": "2026-11-01T00:18:56.8852894Z",
+    "native_wall_seconds": 280.7502894,
+    "closed_marker": "HND",
+    "observer_pid": 4824,
+    "observer_creation_ms": 1793492046862,
+    "observer_exit": 0,
+    "observer_terminal_utc": "2026-11-01T00:21:42.5767130Z",
+    "observer_after_native_terminal_seconds": 165.6914236,
+    "final_idle_utc": "2026-11-01T00:22:56.9836724Z",
+    "final_idle_tasks": 0,
+    "final_idle_workers": 0
+  },
+  "source_and_observation": {
+    "grown_clean_source_checkpoint": "83290a28-1e83-4eb2-a4d3-b0e9f5a8d63b",
+    "fresh_full_baseline_manifest_sha256": "f5de156f9d2140b0f77bae80ba336b80fe543d22428ecbbf6b0eb3251dd290b7",
+    "growth_receipt_sha256": "835b1196b038b2aac01bc1bd4efdf5e9837531d5e1d69dd7b9486272f37ba37c",
+    "objects": 1084,
+    "files": 811,
+    "directories": 273,
+    "independent_full_default_stream_hashes": 811,
+    "independent_full_named_stream_hashes": 0,
+    "engine_observed_content_hashes": 0,
+    "engine_target_payload_hash_bytes_read": 0,
+    "engine_metadata_default_streams": 811,
+    "engine_metadata_named_streams": 0,
+    "current_access_time_reconciliations": 3,
+    "source_profile": "experimental_object_envelope_v3 admitted Some",
+    "raw_digest_free_streams": 654,
+    "raw_partial_extent_streams": 650,
+    "materialized_tail_bytes_verified": 1371388,
+    "source_policy": "extent_identity_v1",
+    "target_policy": "extent_identity_v1",
+    "label_and_mount_verified": true,
+    "product_expectation_written_by_lab": false,
+    "full_and_fast_raw_pins_equated": false,
+    "root_modified_or_mft_change_times_masked": false
+  },
+  "prepared_owner": {
+    "actual_result_prepared_journal_owner_reused": true,
+    "exclusive_preparation_readback_used": true,
+    "exclusive_apply_handoff_used": true,
+    "post_flush_independent_journal_authentication_retained": true,
+    "same_mutable_journal_borrow_and_immutable_plan_ticket_held_through_activation_handoff": true,
+    "clear_markers_and_complete_exact_old_target_check_before_intent_retained": true,
+    "complete_exact_new_readback_callback_and_durable_hnd_retained": true,
+    "saved_ticket_or_json_flag_grants_owner_or_execution_authority": false,
+    "primary_route_gate_implies_global_administrative_or_volume_alias_exclusion": false,
+    "continuous_no_mutable_alias_contract_required": true
+  },
+  "selected_plan": {
+    "selected_bytes": 11393044480,
+    "selected_ranges": 3537,
+    "literal_bytes": 42131456,
+    "journal_bytes": 11435523840,
+    "new_copy_bytes": 5659303936,
+    "new_zero_bytes": 5691609088,
+    "whole_image_hash_claimed": false
+  },
+  "logical_process_accounting": {
+    "scope": "process transfer counters, not physical disk I/O",
+    "native_verified": {
+      "read_bytes": 111031478753,
+      "write_bytes": 23029158576,
+      "user_cpu_seconds": 270.4375,
+      "kernel_cpu_seconds": 26.546875
+    },
+    "journal_prepared_to_applied": {
+      "read_bytes": 28487536640,
+      "write_bytes": 11393100340,
+      "user_cpu_seconds": 47.71875,
+      "kernel_cpu_seconds": 1.578125,
+      "read_equation": "2 * selected + copy + literal + 12288 marker bytes"
+    },
+    "duplicate_load_avoided_for_actual_plan": {
+      "equation": "(journal_bytes - 8192) + new_copy_bytes + literal_bytes",
+      "logical_read_bytes": 17136951040
+    },
+    "historical_f2_native_read_bytes": 128175699937,
+    "fewer_reads_than_historical_f2_bytes": 17144221184,
+    "controlled_causal_or_wall_time_comparison_claimed": false,
+    "physical_io_or_hdd_forecast_claimed": false,
+    "phase_receipts": {
+      "start": {
+        "artifact": {
+          "path": ".lab/hyperv/streaming-v2-20261027/prepared-owner-success-79b22a2f/closed/core/conversion/process-io-start.json",
+          "guest_path": "C:\\ProgramData\\ntfs2refs\\runs\\b4135fc99aebb412a63a3d3554f215f3\\conversion\\process-io-start.json",
+          "bytes": 487,
+          "sha256": "1804c9c8525df2d1290a0766c39ff03ec2338bc2a546cdb95f53b2b5acd6abdb",
+          "guest_last_write_utc": "2026-11-01T00:14:16.7736442Z"
+        },
+        "counters": {
+          "kernel_time_100ns": 156250,
+          "other_operation_count": 1567,
+          "other_transfer_bytes": 211590,
+          "read_operation_count": 3,
+          "read_transfer_bytes": 8197,
+          "static_scope": "process_io_transfer_counters_not_physical_disk_io",
+          "user_time_100ns": 312500,
+          "write_operation_count": 22,
+          "write_transfer_bytes": 80819
+        }
+      },
+      "qualified": {
+        "artifact": {
+          "path": ".lab/hyperv/streaming-v2-20261027/prepared-owner-success-79b22a2f/closed/core/conversion/process-io-qualified.json",
+          "guest_path": "C:\\ProgramData\\ntfs2refs\\runs\\b4135fc99aebb412a63a3d3554f215f3\\conversion\\process-io-qualified.json",
+          "bytes": 519,
+          "sha256": "90656f1def71ff27517ba2696c37c8db5ab7416187d628abccfbc5444e9e003a",
+          "guest_last_write_utc": "2026-11-01T00:15:16.0648818Z"
+        },
+        "counters": {
+          "kernel_time_100ns": 132812500,
+          "other_operation_count": 697049,
+          "other_transfer_bytes": 137243672,
+          "read_operation_count": 63471,
+          "read_transfer_bytes": 42526800609,
+          "static_scope": "process_io_transfer_counters_not_physical_disk_io",
+          "user_time_100ns": 216875000,
+          "write_operation_count": 1884,
+          "write_transfer_bytes": 165489471
+        }
+      },
+      "journal-prepared": {
+        "artifact": {
+          "path": ".lab/hyperv/streaming-v2-20261027/prepared-owner-success-79b22a2f/closed/core/conversion/process-io-journal-prepared.json",
+          "guest_path": "C:\\ProgramData\\ntfs2refs\\runs\\b4135fc99aebb412a63a3d3554f215f3\\conversion\\process-io-journal-prepared.json",
+          "bytes": 531,
+          "sha256": "87a4203f0ee1a5cd04f33f8a36a6d0410d1b789948acdd47fd69ee3ce2adea89",
+          "guest_last_write_utc": "2026-11-01T00:17:35.3505219Z"
+        },
+        "counters": {
+          "kernel_time_100ns": 247968750,
+          "other_operation_count": 713351,
+          "other_transfer_bytes": 141261792,
+          "read_operation_count": 119996,
+          "read_transfer_bytes": 82501806561,
+          "static_scope": "process_io_transfer_counters_not_physical_disk_io",
+          "user_time_100ns": 2219843750,
+          "write_operation_count": 24029,
+          "write_transfer_bytes": 11608956562
+        }
+      },
+      "applied": {
+        "artifact": {
+          "path": ".lab/hyperv/streaming-v2-20261027/prepared-owner-success-79b22a2f/closed/core/conversion/process-io-applied.json",
+          "guest_path": "C:\\ProgramData\\ntfs2refs\\runs\\b4135fc99aebb412a63a3d3554f215f3\\conversion\\process-io-applied.json",
+          "bytes": 523,
+          "sha256": "d078e836edb5dae4d7c320a963dacb558bbe712f7971ba20e147632b658fb1a5",
+          "guest_last_write_utc": "2026-11-01T00:18:55.4732816Z"
+        },
+        "counters": {
+          "kernel_time_100ns": 263750000,
+          "other_operation_count": 713647,
+          "other_transfer_bytes": 141674132,
+          "read_operation_count": 156476,
+          "read_transfer_bytes": 110989343201,
+          "static_scope": "process_io_transfer_counters_not_physical_disk_io",
+          "user_time_100ns": 2697031250,
+          "write_operation_count": 38039,
+          "write_transfer_bytes": 23002056902
+        }
+      },
+      "handoff": {
+        "artifact": {
+          "path": ".lab/hyperv/streaming-v2-20261027/prepared-owner-success-79b22a2f/closed/core/conversion/process-io-handoff.json",
+          "guest_path": "C:\\ProgramData\\ntfs2refs\\runs\\b4135fc99aebb412a63a3d3554f215f3\\conversion\\process-io-handoff.json",
+          "bytes": 523,
+          "sha256": "f39d619032aaf25c611f4e7904858d77009b3524ef407f9390a532dcf21ed1a3",
+          "guest_last_write_utc": "2026-11-01T00:18:55.4889554Z"
+        },
+        "counters": {
+          "kernel_time_100ns": 263750000,
+          "other_operation_count": 713672,
+          "other_transfer_bytes": 141674148,
+          "read_operation_count": 156477,
+          "read_transfer_bytes": 110989347297,
+          "static_scope": "process_io_transfer_counters_not_physical_disk_io",
+          "user_time_100ns": 2697031250,
+          "write_operation_count": 38045,
+          "write_transfer_bytes": 23002062038
+        }
+      },
+      "native-verified": {
+        "artifact": {
+          "path": ".lab/hyperv/streaming-v2-20261027/prepared-owner-success-79b22a2f/closed/core/conversion/process-io-native-verified.json",
+          "guest_path": "C:\\ProgramData\\ntfs2refs\\runs\\b4135fc99aebb412a63a3d3554f215f3\\conversion\\process-io-native-verified.json",
+          "bytes": 531,
+          "sha256": "f36291024c8d071b6cdfc9dfcfb66755e2c6eec4f08739aaece81200d03d66ec",
+          "guest_last_write_utc": "2026-11-01T00:18:56.3286740Z"
+        },
+        "counters": {
+          "kernel_time_100ns": 265468750,
+          "other_operation_count": 759346,
+          "other_transfer_bytes": 148235548,
+          "read_operation_count": 156488,
+          "read_transfer_bytes": 111031478753,
+          "static_scope": "process_io_transfer_counters_not_physical_disk_io",
+          "user_time_100ns": 2704375000,
+          "write_operation_count": 38049,
+          "write_transfer_bytes": 23029158576
+        }
+      }
+    }
+  },
+  "extent_verification": {
+    "all_complete_maps_identical": true,
+    "expected_tree_sha256": "5d6ab178a340f8c61c4a9c1c6f0eea02de2793ed839a0abdab39f28de5c873ef",
+    "extent_only_partial_streams": 650,
+    "handoff_replay_closed": true,
+    "materialized_extent_tail_bytes_verified": 1371388,
+    "resident_and_residual_bytes_bound_by_selected_image": true,
+    "retained_bytes_proven_by_same_physical_mapping": true,
+    "saved_receipt_grants_execution_authority": false,
+    "schema_version": 1,
+    "scope": "fresh-conversion-extent-identity-v1",
+    "selected_bytes_checksummed": 11393044480,
+    "selected_sha256": "0d09a30233e0c3f656df233b4d110afa797776ef3c407b16accd2d145a25b7b7",
+    "stream_and_directory_bindings": 1084,
+    "target_admitted_payload_bytes_read": 0,
+    "target_full_file_hashes": false
+  },
+  "key_artifacts": [
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/prepared-owner-success-79b22a2f/closed/wrapper/native-process.json",
+      "guest_path": "C:\\ntfs2refs\\alloc-drive-79b22a2ffac94f42bec9a38291405beb\\native-process.json",
+      "bytes": 629,
+      "sha256": "57c632cd3951bf867d0da91145628c4c8577bab6b7f522e35cc268f1f09fd07e",
+      "guest_last_write_utc": "2026-11-01T00:14:16.1459225Z"
+    },
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/prepared-owner-success-79b22a2f/closed/wrapper/native-terminal.json",
+      "guest_path": "C:\\ntfs2refs\\alloc-drive-79b22a2ffac94f42bec9a38291405beb\\native-terminal.json",
+      "bytes": 2250,
+      "sha256": "c4f2139f36e1d672da799a004a1b58693cf0504a96b8785952023a3be51a5454",
+      "guest_last_write_utc": "2026-11-01T00:18:56.8878808Z"
+    },
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/prepared-owner-success-79b22a2f/closed/wrapper/wrapper-result.json",
+      "guest_path": "C:\\ntfs2refs\\alloc-drive-79b22a2ffac94f42bec9a38291405beb\\wrapper-result.json",
+      "bytes": 6301466,
+      "sha256": "a01d7fbb7e9ff28c51ab1fce51d12a4d214299fadeaa1d7ab8065e3b5ac89328",
+      "guest_last_write_utc": "2026-11-01T00:21:42.6876695Z"
+    },
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/prepared-owner-success-79b22a2f/closed/wrapper/independent-target-hashes.json",
+      "guest_path": "C:\\ntfs2refs\\alloc-drive-79b22a2ffac94f42bec9a38291405beb\\independent-target-hashes.json",
+      "bytes": 1441926,
+      "sha256": "83c0beb5b7732506b8f48082212bd503387fd4b4642b7ac7c603ca32f6623ff7",
+      "guest_last_write_utc": "2026-11-01T00:21:40.8671699Z"
+    },
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/prepared-owner-success-79b22a2f/closed/wrapper/lab-baseline-binding.json",
+      "guest_path": "C:\\ntfs2refs\\alloc-drive-79b22a2ffac94f42bec9a38291405beb\\lab-baseline-binding.json",
+      "bytes": 708370,
+      "sha256": "0cfe29a2d8d01f0595d2bba1f1db19c2bb71135703ca930e534f9f30e4fc27a2",
+      "guest_last_write_utc": "2026-11-01T00:21:24.6205373Z"
+    },
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/prepared-owner-success-79b22a2f/closed/core/conversion/result.json",
+      "guest_path": "C:\\ProgramData\\ntfs2refs\\runs\\b4135fc99aebb412a63a3d3554f215f3\\conversion\\result.json",
+      "bytes": 1515,
+      "sha256": "46e671dc8712421fa4d9c64dc9a9e1d7d1f68d788758a9d8faa01fd46eeb2ed3",
+      "guest_last_write_utc": "2026-11-01T00:18:56.3286740Z"
+    },
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/prepared-owner-success-79b22a2f/closed/core/conversion/extent-verification.json",
+      "guest_path": "C:\\ProgramData\\ntfs2refs\\runs\\b4135fc99aebb412a63a3d3554f215f3\\conversion\\extent-verification.json",
+      "bytes": 761,
+      "sha256": "3aa923a50b423119c5b522cb0ad0ecbea98fd226b7d927549d2ad9e171eb977d",
+      "guest_last_write_utc": "2026-11-01T00:18:56.1069469Z"
+    },
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/prepared-owner-success-79b22a2f/closed/core/conversion/finalization.json",
+      "guest_path": "C:\\ProgramData\\ntfs2refs\\runs\\b4135fc99aebb412a63a3d3554f215f3\\conversion\\finalization.json",
+      "bytes": 27082966,
+      "sha256": "caa7fc6a0ca33d0276b8ba20165583e633bf68888d9560eb0ec6bcfc4a964de1",
+      "guest_last_write_utc": "2026-11-01T00:18:56.2189144Z"
+    },
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/prepared-owner-success-79b22a2f/closed/core/conversion/request.json",
+      "guest_path": "C:\\ProgramData\\ntfs2refs\\runs\\b4135fc99aebb412a63a3d3554f215f3\\conversion\\request.json",
+      "bytes": 2935,
+      "sha256": "b457aadeaa0b8ed4659e0e6bf640459b68f26915a00cff8c7f66d671fb1d2da4",
+      "guest_last_write_utc": "2026-11-01T00:17:35.3505219Z"
+    },
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/prepared-owner-success-79b22a2f/closed/core/conversion/selected-plan.json",
+      "guest_path": "C:\\ProgramData\\ntfs2refs\\runs\\b4135fc99aebb412a63a3d3554f215f3\\conversion\\selected-plan.json",
+      "bytes": 443066,
+      "sha256": "b73933d5035f4cd9ad027cd6f07b908d9937a53c38b999829df86a4b497ee4e7",
+      "guest_last_write_utc": "2026-11-01T00:15:16.1594923Z"
+    },
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/prepared-owner-success-79b22a2f/closed/core/conversion/selected-ticket.json",
+      "guest_path": "C:\\ProgramData\\ntfs2refs\\runs\\b4135fc99aebb412a63a3d3554f215f3\\conversion\\selected-ticket.json",
+      "bytes": 1063,
+      "sha256": "e006a3125f8dec6bc70918990c6e7f9891e3bcd5e00d142c518832a44b23418a",
+      "guest_last_write_utc": "2026-11-01T00:17:35.2713525Z"
+    },
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/prepared-owner-success-79b22a2f/closed/core/conversion/allocation-recovery-bundle.json",
+      "guest_path": "C:\\ProgramData\\ntfs2refs\\runs\\b4135fc99aebb412a63a3d3554f215f3\\conversion\\allocation-recovery-bundle.json",
+      "bytes": 2039,
+      "sha256": "f2b0383cf8f90ac3d7a6f6d1713746773617bbbea6545379c4c8461d60897da1",
+      "guest_last_write_utc": "2026-11-01T00:17:35.3505219Z"
+    }
+  ],
+  "archive": {
+    "closed_files": 77,
+    "closed_bytes": 217490514,
+    "index": {
+      "path": ".lab/hyperv/streaming-v2-20261027/prepared-owner-success-79b22a2f/archive.json",
+      "bytes": 28620,
+      "sha256": "015a1493e9a10ef31085024cd7d870fb5a5c89eac3e90ab10ddb9a1e786caced"
+    },
+    "verified_copy_receipt": {
+      "path": ".lab/hyperv/streaming-v2-20261027/prepared-owner-success-79b22a2f/archive-receipt.json",
+      "bytes": 32978,
+      "sha256": "37ddc9ca7465c99b11eb827a500dced18713ed06faf863b43f7b4dffcb600d42"
+    },
+    "validation_note": "Reused monitor-verified closed source/copy SHA inventories; no repeated large archive scan."
+  },
+  "final_state": {
+    "checkpoint_receipt": {
+      "path": ".lab/hyperv/streaming-v2-20261027/prepared-owner-success-79b22a2f/checkpoint.json",
+      "bytes": 1130,
+      "sha256": "b81b36250d74c662d96048c3af9c60865ac7efdd1de26e874310761d3ec7b2e7"
+    },
+    "observation": {
+      "schema_version": 1,
+      "kind": "prepared-owner-normal-final-checkpoint",
+      "utc": "2026-11-01T00:24:16.8730763Z",
+      "vm_id": "2401593c-4b30-472e-9b6d-c9534cbaa599",
+      "state": "Off",
+      "memory_assigned_bytes": 0,
+      "snapshot_count": 50,
+      "checkpoint_id": "ed6fe063-3a06-489a-8028-2a16929ce171",
+      "checkpoint_name": "refs-prepared-owner-79b22a2f",
+      "checkpoint_parent_id": "83290a28-1e83-4eb2-a4d3-b0e9f5a8d63b",
+      "current_parent_id": "ed6fe063-3a06-489a-8028-2a16929ce171",
+      "all_tasks_and_workers_terminal_before_stop": true,
+      "native_exit_zero_hnd": true,
+      "independent_all_811_hashes": true,
+      "preserved_checkpoints": [
+        "307b65ff-555d-430d-ac93-7b5946834083",
+        "1aedc3d5-0d29-4eef-b8a6-d5d0d6171b20",
+        "5f07551f-b339-4beb-97cd-0209967ee348",
+        "83290a28-1e83-4eb2-a4d3-b0e9f5a8d63b"
+      ],
+      "removed_only_obsolete_normal_checkpoint": "1c75c73f-3465-4ebe-9b99-aa9897c17a1a",
+      "all_host_evidence_preserved": true,
+      "capacity": {
+        "ActualBytes": 279038846111,
+        "FreeBytes": 66131628032,
+        "MaximumActualBytes": 329374052988,
+        "MinimumFreeBytes": 17179869184
+      }
+    },
+    "only_obsolete_checkpoint_removed_this_run": "1c75c73f-3465-4ebe-9b99-aa9897c17a1a",
+    "cleanup_scope": "Hyper-V API removal after 91 unique closed/dependency files verified under held reads and exact leaf/graph checks; all host evidence retained",
+    "reviewed_cleanup_plan_sha256": "4e48857b9842387d85882c279a113d0eec4a31d3d1f47b4df167bfc48cc5aad4"
+  },
+  "limits": {
+    "candidate_fault_qualified": false,
+    "candidate_recovery_qualified": false,
+    "arbitrary_mutation_qualified": false,
+    "physical_power_loss_qualified": false,
+    "above_1024_files_qualified": false,
+    "unbounded_scale_qualified": false,
+    "prior_07b_recovery_matrix_transferred_to_candidate": false,
+    "cache_hit_counts_measured": false,
+    "unit_tests_added_or_run": false,
+    "broad_goal_complete": false
+  }
+}

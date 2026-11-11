@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "kind": "optimized-public-drive-alpha-native",
+  "run_id": "2c0a76e195f540218d60e98266f4e14d",
+  "engine_run_id": "de972145d8a058cf31b627932365a66d",
+  "host_case": ".lab/hyperv/streaming-v2-20261027/optimized-drive-alpha-20261029-2c0a76e195f540218d60e98266f4e14d",
+  "source_commit": "2ff5f017c03977c5e6ba9d31ba64dc634bfa2fe7",
+  "public_cli": {
+    "sha256": "fb5548cc80a1de57e5a1c3c853a0ccfc43338515d00e15867305fa5f59c6079c",
+    "argv": [
+      "--drive",
+      "F",
+      "--partition",
+      "2"
+    ],
+    "stdin": "yes CRLF",
+    "pid": 892,
+    "creation_ms": 1793251802144,
+    "retained_handle_observed": true,
+    "actual_native_exit": 0,
+    "actual_wrapper_task_exit": 0,
+    "automatic_shadow_and_journal": true
+  },
+  "pins": {
+    "toolset": "230c08850b41bcab1defa0b81aa35406ea0760e25a4042657602d191e0065d6b",
+    "dispatch": "628f14f6755e1263fade86c49fd5c70696593260ce1d7d7b6246a3305ef0794f",
+    "closed_receipt": "8287357c7cbe3567951be974df4d870a048db00243391a545e3ad23d3c682335",
+    "request": "868c643917629a7fe5df1408d89b954c4f7f6c4f5d26f6dbd274e20686194596",
+    "expectation": "157a3078ee982dcbbb22cdfd28d168f08758cdeea331181ce44d3b9620bafc8e",
+    "result": "6946f425935a2c65dda329f9849216291a0e5eb8dd7ad078081c1ba99981de65",
+    "finalization": "1e7a52d046f796d936084b5a01fea7552a7d1643d08d58e1ef786d06d5431363"
+  },
+  "outcome": {
+    "source_admitted_by_core": true,
+    "source_certificate_recreated_by_wrapper": false,
+    "premount_target_sha256": "2b63f03280fa7ce9b817334f81ef97cf6f11c3e445c8ee012886b4ad9ca89c26",
+    "patches_written": 152,
+    "target_bytes_written": 70631424,
+    "barrier": "HND",
+    "native_objects": 15,
+    "complete_logical_hashes": 10,
+    "label_and_mount_preserved": true
+  },
+  "observations": {
+    "native_creation_utc": "2026-10-29T05:30:02.1440000+00:00",
+    "terminal_observed_utc": "2026-10-29T06:25:53.8175796+00:00",
+    "elapsed_to_terminal_observation_seconds": 3351.674,
+    "observed_peak_working_set_kib": 69836,
+    "observed_peak_working_set_mib": 68.2,
+    "resource_monitor": "monitor-20261029T062456162Z.json",
+    "resource_monitor_sha256": "9807d0df63337cbd050fd518faac8acdcb31fe95f99f647206c5dca3664e6b1c",
+    "apply_monitor": "monitor-20261029T062626632Z.json",
+    "apply_monitor_sha256": "1cda13ef933b64e3045efe6fc7544bef1d69d451305a6a268588bad274ada2ae",
+    "scope": "Elapsed time includes terminal observation overhead. Working-set peak is from a saved monitor, not a complete resource audit."
+  },
+  "qualification": {
+    "normal_public_conversion_passed": true,
+    "mutation_passed_in_this_record": false,
+    "reboot_passed_in_this_record": false,
+    "recovery_on_this_build_passed": false,
+    "all_volumes_qualified": false,
+    "general_release_qualified": false,
+    "production_qualified": false
+  },
+  "scope": "One bounded52GiB NTFS64KiB-to-ReFS4KiB native-shadow alpha run. Exact sealed build only; no optimizer generality, arbitrary-volume, boot, package/release, mutation, reboot or recovery qualification is inherited."
+}

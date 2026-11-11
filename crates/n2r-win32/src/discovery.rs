@@ -11,7 +11,9 @@ use std::io;
 #[serde(tag = "role", rename_all = "snake_case")]
 pub enum Role {
     Source,
+    OfflineWindowsSource,
     Shadow,
+    ShadowReadOnly,
     Journal { allow_additional_partitions: bool },
 }
 
@@ -45,6 +47,18 @@ pub struct VolumeDiscovery {
     pub observed_twice_unchanged: bool,
     pub read_only: bool,
     pub source_write_requests: u64,
+}
+
+/// A point-in-time filesystem capacity observation. This is advisory: other
+/// writers, quotas, metadata allocation and target construction can change it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct VolumeSpaceObservation {
+    pub available_bytes_to_caller: u64,
+    pub total_bytes_available_to_caller: u64,
+    pub total_free_bytes: u64,
+    pub informational_only: bool,
+    pub reserves_space: bool,
+    pub execution_authorized: bool,
 }
 
 fn invalid(message: &str) -> io::Error {
@@ -113,7 +127,7 @@ pub fn single_extent(bytes: &[u8]) -> io::Result<(u32, u64, u64)> {
     let offset = u64_at(bytes, 16)?;
     let length = u64_at(bytes, 24)?;
     require(
-        number <= 4095 && offset > 0 && length > 0 && offset.checked_add(length).is_some(),
+        offset > 0 && length > 0 && offset.checked_add(length).is_some(),
         "invalid volume extent",
     )?;
     Ok((number, offset, length))
@@ -159,7 +173,7 @@ pub fn binding_from_evidence(
     )?;
     let count = u32_at(raw, 4)? as usize;
     require(
-        (1..=128).contains(&count) && raw.len() == 48 + 144 * count,
+        count != 0 && count.checked_mul(144).and_then(|n| n.checked_add(48)) == Some(raw.len()),
         "incomplete or excessive GPT entry array",
     )?;
     let first = u64_at(raw, 24)?;
@@ -227,6 +241,11 @@ pub fn binding_from_evidence(
         invalid("single volume extent does not identify a GPT basic-data partition")
     })?;
     let binding = GeneralDiskBinding {
+        layout_profile: if role == Role::OfflineWindowsSource {
+            crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+        } else {
+            Default::default()
+        },
         disk_number: number,
         volume_guid: guid.to_ascii_lowercase(),
         identity: PartitionIdentity {
@@ -240,17 +259,20 @@ pub fn binding_from_evidence(
             physical_sector_bytes: u32_at(&e.alignment, 20)?,
         },
     };
-    binding.validate()?;
+    match role {
+        Role::Journal { .. } => binding.validate_working_storage()?,
+        _ => binding.validate()?,
+    }
     binding.validate_alignment(&e.alignment)?;
     binding.validate_volume_extent(&e.volume_extents)?;
     require(
         e.disk_attributes.len() == 16
             && u32_at(&e.disk_attributes, 0)? == 16
-            && u64_at(&e.disk_attributes, 8)? == 0,
-        "conversion-request discovery requires an online writable disk",
+            && u64_at(&e.disk_attributes, 8)? == if role == Role::ShadowReadOnly { 2 } else { 0 },
+        "conversion-request discovery disk attributes differ from the explicit role",
     )?;
     match role {
-        Role::Source | Role::Shadow => {
+        Role::Source | Role::OfflineWindowsSource | Role::Shadow | Role::ShadowReadOnly => {
             require(
                 number != windows_disk,
                 "Windows OS disk is excluded from source/shadow roles",
@@ -265,7 +287,7 @@ pub fn binding_from_evidence(
                 "OS journal storage requires explicit additional-partitions permission",
             )?;
             if !allow_additional_partitions {
-                binding.validate_layout(raw)?;
+                binding.validate_working_storage_layout(raw)?;
             }
         }
     }
@@ -276,4 +298,4 @@ pub fn binding_from_evidence(
 #[path = "discovery_native.rs"]
 mod native;
 #[cfg(windows)]
-pub use native::discover;
+pub use native::{discover, observe_volume_space};

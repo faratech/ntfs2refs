@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "kind": "live-private-unactivated-source-preparation-cancellation",
+  "status": "focused-check-passed-native-pending",
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/native/partition_lifecycle.rs",
+      "bytes": 6879,
+      "sha256": "12712c469670125169c839145559eb6464d8ef91219a95f6e622676fa96c555e"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_lifecycle/staged.rs",
+      "bytes": 58156,
+      "sha256": "8b39d4dade5f29a70290a90d6d6de08f3301516019c522c3a51fc1bba03d3deb"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_lifecycle/staged/live_cancel.rs",
+      "bytes": 9098,
+      "sha256": "f71ab5a9361eb9c729485842997681bb5e890a3abc67bd41037a5d69dbba2a17"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_owner.rs",
+      "bytes": 44603,
+      "sha256": "abd1c04d41701ab5edb98fba08dddb06907ef7f06c220179d10560a6a896ca35"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_restoration.rs",
+      "bytes": 78059,
+      "sha256": "667736d79b9467d8f377ace9288e046e198fc72fb7cedd5054593385e4bdb469"
+    },
+    {
+      "path": "src/general_reconstruct/selected_native_journal.rs",
+      "bytes": 52652,
+      "sha256": "9b9224d9e7f496492506762199e3254cd2a01fe8cda5b0a9dd5a952279537567"
+    },
+    {
+      "path": "src/general_source_admission/resource_partition.rs",
+      "bytes": 52657,
+      "sha256": "2c6c50d43a8cec65f6eedc843512396cf86f99c6f944bfe1baf0f3b7662835f3"
+    },
+    {
+      "path": "src/general_source_admission/resource_partition_cancel.rs",
+      "bytes": 7011,
+      "sha256": "7503556061f5151898f726f17fb0c052d196f998fa6dddb9c0e5acd5bcda8701"
+    },
+    {
+      "path": "src/general_source_admission/resource_partition_cancel_journal.rs",
+      "bytes": 12050,
+      "sha256": "888a8e54e5a15631c551a4ee83bf554e4b30529889f4c26a692f34148d602c73"
+    },
+    {
+      "path": "src/resource_partition_alpha.rs",
+      "bytes": 32066,
+      "sha256": "af3a6e7f63d2729dc40ae353adaa4807a3a279266f31bd43c07605da93e49f73"
+    },
+    {
+      "path": "src/resource_partition_preparation.rs",
+      "bytes": 16889,
+      "sha256": "06646b2c7644b5a9e6960d4ddd5dad2b20f0e84b84f15b466064a5587a8bfded"
+    }
+  ],
+  "reviewed_draft_patch_sha256": "30b7f2184035ec50ebc7de4bf3dca2faab102fa4a1ff63c2297134f2da31a9d1",
+  "check_exit": 0,
+  "check_seconds": 28.5463049,
+  "unit_tests_run": false,
+  "native_run": false,
+  "authority": "Consumes actual original source owner+admission+preparation token. Monotonic source-gate-ever-issued check prevents AP/MIXED cancellation. Original scoped fingerprint is checked before and after readonly NTFS publication, before writable restoration.",
+  "journal": "Live NotStarted state or retained SAME-created readonly J owner proving positive EOF0 or canonical zero 8KiB lifecycle. Attempting without owned proof refuses; missing paths cannot grant authority.",
+  "root_error_handling": "Preparation errors carry actual context; target/query owners close before consuming cancellation. Source factory handles its post-private pre-context failures using actual collected basis.",
+  "root_review_correction": "Unused publication observer partition-change hook fails closed instead of synthesizing a successful NativeEvent.",
+  "phase_timing": "Existing ledger batches now carry optional wall-clock observation milliseconds; no extra source query, scan or writer authority.",
+  "process_death_pre_AP_cancellation_supported": false,
+  "gate_checks_or_caps_weakened": false,
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+}

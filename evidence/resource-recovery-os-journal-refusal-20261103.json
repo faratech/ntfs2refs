@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "kind": "public-resource-recovery-journal-route-refusal",
+  "source_commit": "a9f343686d61039029e260cecbf0d99034c69a36",
+  "binary_sha256": "900a5d39fb44a77e6d84a49fe467c8b6784fc5eaa7613f3be6048d09a6b8a818",
+  "build_manifest_sha256": "557125cac9e6d8cefe4f501e78e8a77c62d8b647b24b11c85ce33cf1afe55cd4",
+  "original_publication_sha256": "7758e8a4c67d76da06a8fe3111ff359c735061f797ac0db93c4fd25ed04ff830",
+  "argv": ["--recover", "C:\\ProgramData\\ntfs2refs\\runs\\4e5dcb5afdd78cd5758623dbae43c9d3\\conversion", "--recovery-sha256", "7758e8a4c67d76da06a8fe3111ff359c735061f797ac0db93c4fd25ed04ff830"],
+  "native": {
+    "pid": 4020,
+    "creation_unix_ms": 1793722638392,
+    "exit_code": 1,
+    "actual_exit_observed": true,
+    "wall_seconds": 1.2040996,
+    "error": "current Windows disk is excluded",
+    "scheduled_task_terminal": true
+  },
+  "failure_scope": "The public recovery output-route query called source-only mount discovery for the legitimate C: journal and refused before opening the recovery journal.",
+  "source_after": {
+    "filesystem": "ReFS",
+    "offline": false,
+    "read_only": false,
+    "raw_replay_performed": false
+  },
+  "closed_evidence": {
+    "path": ".lab/hyperv/streaming-v2-20261027/resource-fixture-d9d466db4780468a9a493e6a8292ea6d/closed-online-recovery-a9-refusal/archive-manifest.json",
+    "sha256": "a3dd6589295b88e96bef5a5bca9e060df2c8225ee61fedddbe31f33f5b57fa4e",
+    "files": 6,
+    "bytes": 5352,
+    "source_and_copy_hashes_checked": true
+  },
+  "qualification": {
+    "online_terminal_recovery": false,
+    "interrupted_resume_or_rollback": false,
+    "stable_release": false,
+    "unit_tests_run": false
+  }
+}

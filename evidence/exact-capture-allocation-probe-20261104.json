@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "kind": "exact-size-native-capture-artifact-allocation-no-reproduction",
+  "source_commit": "b0b576a44a72f8f433143ec3240cf8342159edd0",
+  "build_manifest_sha256": "1f64dad9e73e6c9912c1524052f20fef22045ded2e941ceb2724428bd232b744",
+  "binary_sha256": "1129340e2decb460acc3cbb90e425eab534dbea3e900c903cbdcf1eaabfc4bcf",
+  "run_id": "9f6f3c888f85406aafd06fbde4c6f567",
+  "actual_process": {
+    "pid": 3604,
+    "creation_ms": 1793795117389,
+    "actual_exit_code": 1,
+    "actual_exit_observed": true,
+    "owned_handle_through_terminal": true,
+    "wall_seconds": 7.4564207,
+    "terminal_UTC": "2026-11-04T12:25:24.8580491Z"
+  },
+  "overall_result": {
+    "success": false,
+    "baseline_reproduced": false,
+    "interpretation": "The required baseline guard refusal did not reproduce; this is not an overall passing reproduction test.",
+    "original_8be_failing_artifact_identified": false,
+    "index_attribution_proven": false,
+    "new_production_index_patch_made": false,
+    "original_slack_guard_relaxed": false
+  },
+  "literal_cases": {
+    "actual_original_literal_EOF_bytes": 86695936,
+    "write_pattern": "4096-byte appends",
+    "reserved_slack_bytes": 65535,
+    "unmodified_sampled_allocation_bytes": 86704128,
+    "unmodified_original_arena_guard_refused": false,
+    "unmodified_artifact_and_group_sealed": true,
+    "normalized_allocation_before_bytes": 86704128,
+    "normalized_allocation_after_bytes": 86695936,
+    "normalized_artifact_and_group_sealed": true,
+    "same_file_identity_EOF_and_planned_full_arena_hash_preserved": true,
+    "planned_and_full_arena_sha256": "97d38a1478c949a2a62e2bd2d403db9330b5b18470677c8be1ae29de60f3db62"
+  },
+  "exact_index_cases": {
+    "wire_format": "N2RCAP02",
+    "header_bytes": 128,
+    "rows": 7054,
+    "row_bytes": 80,
+    "footer_bytes": 128,
+    "actual_original_index_EOF_bytes": 564576,
+    "fixture_flags": "NEW_ZERO only; no source or replay authority",
+    "prior_reads_in_write_pattern": true,
+    "reserved_slack_bytes": 65535,
+    "unmodified_sampled_allocation_bytes": 589824,
+    "unmodified_original_arena_guard_refused": false,
+    "unmodified_artifact_and_group_sealed": true,
+    "normalized_allocation_before_bytes": 589824,
+    "normalized_allocation_after_bytes": 565248,
+    "normalized_artifact_and_group_sealed": true,
+    "same_file_identity_EOF_and_planned_full_arena_hash_preserved": true,
+    "planned_and_full_arena_sha256": "5622ec628fde333ee9212dd3c69d1ffd50b874b3a52b9559d0dea403b627ae45",
+    "footer_after_initial_literal_seal_identifies_original_failure": false
+  },
+  "paged_route_case": {
+    "production_writer_path": "SortedRecordWriter/SourceRangeWriter/metadata_pages::Writer::finish",
+    "records": 2400,
+    "normalization_used": false,
+    "closed_store_and_group_sealed": true,
+    "data_file_EOF_bytes": 1111075,
+    "data_file_post_close_allocation_bytes": 1114112,
+    "directory_file_EOF_bytes": 102922,
+    "directory_file_post_close_allocation_bytes": 106496,
+    "same_as_original_route_contents_or_exact_lengths": false
+  },
+  "closed_evidence": {
+    "zip": ".lab/development/exact-allocation-9f6f3c888f85406aafd06fbde4c6f567/closed-evidence.zip",
+    "zip_bytes": 217622395,
+    "zip_sha256": "e2163a0630c949eac2f89f64eda15a30c6c8f511522a3958d0aa982b6eecb9b0",
+    "manifest": ".lab/development/exact-allocation-9f6f3c888f85406aafd06fbde4c6f567/closed-evidence-manifest.json",
+    "manifest_sha256": "1a53a45698840da00082abcd9dd3daf47f7e2ecaec346c750f0462243ccd63a3",
+    "entries": 4199,
+    "uncompressed_source_bytes": 216627913,
+    "Root_independently_verified_every_host_ZIP_entry_length_and_SHA256": true,
+    "includes_failed_8be_engine_and_both_probe_stages_and_results": true,
+    "excludes_thin_provider_graph_probe_payload_fixtures_and_executables": true,
+    "raw_exact_probe_result_entry": "exact_probe/result.json",
+    "raw_owned_process_entry": "exact_probe_stage/native-process.json",
+    "raw_actual_terminal_entry": "exact_probe_stage/native-terminal.json",
+    "earlier_b969_non_reproduction_preserved": true
+  },
+  "next_decision": {
+    "no_further_artifact_attribution_inferred_from_this_probe": true,
+    "fresh_public_b566_run_with_actual_failure_file_context_selected_by_root": true,
+    "new_public_conversion_completed_or_qualified": false,
+    "old_8be_run_reused_or_retried_as_fresh_authority": false,
+    "frozen_alpha_origins_preserved": true
+  },
+  "scope": {
+    "samples_are_not_peak_allocation_or_hard_quota": true,
+    "source_disk_argument_supplied": false,
+    "source_payload_IO_issued": false,
+    "automatic_cleanup_attempted": false,
+    "conversion_or_recovery_qualified": false,
+    "index_or_literal_original_failure_cause_proved": false
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "kind": "actual-partition-terminal-attribute-label-mount-restoration",
+  "status": "public-check-passed-native-qualification-pending",
+  "files": [
+    {
+      "sha256": "ee5ae23e6cd6ff063de48e915cf6d3e2ef25a0db61ba6f0ed2676d8e4425a4d8",
+      "path": "crates/n2r-win32/src/native/partition_restoration.rs",
+      "bytes": 54729
+    }
+  ],
+  "reviewed_patch_sha256": "5ec43cfe13969ed87ab7a99297ae0e88ee1a8945d2ec09367c9f1713176c430c",
+  "original_base_sha256": "464dae1b8c654ef27ffe2bee84a3877f9b65eaff0bcc4051f3e22d72d6c27917",
+  "check_exit": 0,
+  "check_wall_seconds": 32.6135023,
+  "check_receipt_sha256": "c6e2a092d69d685de32f1f7e95717e0b46056bacef8c224385b0a062a73b99e6",
+  "shared_target_reused": true,
+  "unit_tests_run": false,
+  "native_qualified": false,
+  "frozen_alpha_rebuilt": false,
+  "writer_cli_enabled": false,
+  "behavior": [
+    "HND finish consumes actual token-bound protected ReFS native fidelity and rechecks current label/protection.",
+    "ABT finish authenticates closed restored OLD, actual NTFS identity/serial/label/primary and read-only protection.",
+    "Both preflight actual original mounts before restoring original attributes through one target-only native setter.",
+    "Original label is set only when needed on the revalidated actual target GUID; native readback and nonstealing mount restoration close the operation.",
+    "Pre-AP process-death cancellation explicitly refuses without complete authenticated source evidence."
+  ],
+  "remaining": [
+    "Fresh-live admission/intent/J handoff without conflicting path reopens.",
+    "Genuine ROOT restarted origin/MIXED replay integration.",
+    "Native full shared-Windows-disk qualification and public routing."
+  ]
+}

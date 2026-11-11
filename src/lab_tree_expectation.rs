@@ -39,6 +39,17 @@ pub fn capture(request: &Request, events: &mut Vec<NativeEvent>) -> Result<Expec
     } else {
         shadow_tree::derive(&raw)?
     };
+    // This historical fixture schema records one name without a file-identity
+    // group. Refuse aliases rather than dropping them from its saved contract.
+    // General conversion uses ExpectedTree, which carries additional_names.
+    ensure!(
+        tree.objects
+            .iter()
+            .all(|object| object.additional_names.is_empty()
+                && object.named_streams.is_empty()
+                && object.sparse.is_none()),
+        "legacy lab expectation cannot represent hard-link aliases, named streams or sparse layout"
+    );
     let inspection = crate::planner::Inspection {
         schema_version: 1,
         source: crate::block_io::SourceIdentity {
@@ -71,7 +82,7 @@ pub fn capture(request: &Request, events: &mut Vec<NativeEvent>) -> Result<Expec
             source.seek(SeekFrom::Start(offset))?;
             source.read_exact(&mut payload)?;
             ensure!(
-                o.sha256.as_deref() == Some(&hex::encode(Sha256::digest(&payload))),
+                o.sha256.as_deref() == Some(&n2r_win32::content_digest::of(&payload)),
                 "source payload differs"
             );
         }
@@ -211,11 +222,16 @@ impl Expectation {
             .enumerate()
             .map(|(i, o)| shadow_native::Input {
                 components: &o.path,
+                additional_names: &[],
+                sparse: None,
+                named_streams: vec![],
                 directory: o.directory,
                 times: o.times,
                 attributes: o.attributes,
                 security: &security[i],
                 expected_api_security: None,
+                extended_attributes: None,
+                reparse: None,
                 payload: &payload[i],
                 expected_length: if hash_only && !o.directory {
                     o.logical_length

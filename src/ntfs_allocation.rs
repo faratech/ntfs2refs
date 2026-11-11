@@ -1,6 +1,8 @@
 //! Pure consistency assessment of supplied NTFS attribute intervals and a bitmap.
 //! No source parsing, source authentication, certificate, or write authority.
 //! Cluster units are relative to an independently established bitmap domain.
+use sha2::{Digest, Sha256};
+use std::io::{self, Read, Seek, SeekFrom};
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct AttributeKey {
@@ -78,6 +80,9 @@ pub enum Refusal {
         lcn: u64,
     },
     AllocationFailed,
+    BitmapRead {
+        byte_offset: u64,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -109,21 +114,273 @@ impl Assessment {
     }
 }
 
+/// Return the first bit whose allocation state differs from the expected state
+/// in a half-open cluster range. Whole words are checked together, while edge
+/// masks ensure that adjacent owners and out-of-domain padding are never read
+/// as part of the range.
+fn first_unexpected_bit(bitmap: &[u8], start: u64, end: u64, allocated: bool) -> Option<u64> {
+    let mut cursor = start;
+    if !cursor.is_multiple_of(8) && cursor < end {
+        let bit = (cursor % 8) as u32;
+        let count = (8 - u64::from(bit)).min(end - cursor) as u32;
+        let mask = (((1u16 << count) - 1) << bit) as u8;
+        let byte = bitmap[(cursor / 8) as usize];
+        let unexpected = (if allocated { !byte } else { byte }) & mask;
+        if unexpected != 0 {
+            return Some(cursor / 8 * 8 + u64::from(unexpected.trailing_zeros()));
+        }
+        cursor += u64::from(count);
+    }
+    while end - cursor >= 64 {
+        let at = (cursor / 8) as usize;
+        let word = u64::from_le_bytes(bitmap[at..at + 8].try_into().unwrap());
+        let unexpected = if allocated { !word } else { word };
+        if unexpected != 0 {
+            return Some(cursor + u64::from(unexpected.trailing_zeros()));
+        }
+        cursor += 64;
+    }
+    while end - cursor >= 8 {
+        let byte = bitmap[(cursor / 8) as usize];
+        let unexpected = if allocated { !byte } else { byte };
+        if unexpected != 0 {
+            return Some(cursor + u64::from(unexpected.trailing_zeros()));
+        }
+        cursor += 8;
+    }
+    if cursor < end {
+        let count = (end - cursor) as u32;
+        let mask = ((1u16 << count) - 1) as u8;
+        let byte = bitmap[(cursor / 8) as usize];
+        let unexpected = (if allocated { !byte } else { byte }) & mask;
+        if unexpected != 0 {
+            return Some(cursor + u64::from(unexpected.trailing_zeros()));
+        }
+    }
+    None
+}
+
 pub fn assess(
     domain_clusters: u64,
     bitmap: &[u8],
     intervals: &[PhysicalInterval],
     limits: Limits,
 ) -> Assessment {
-    match reconcile(domain_clusters, bitmap, intervals, limits) {
+    match reconcile(domain_clusters, &mut SliceBitmap(bitmap), intervals, limits) {
         Ok(summary) => Assessment::Consistent(summary),
         Err(reason) => Assessment::Rejected(reason),
     }
 }
 
-fn reconcile(
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct BitmapSummary {
+    pub sha256: String,
+    pub bitmap_bytes: u64,
+    pub allocated_clusters: u64,
+    pub free_clusters: u64,
+}
+
+/// Hash and count a logical allocation bitmap with the same bounded window.
+pub fn summarize_stream<R: Read + Seek>(
+    domain_clusters: u64,
+    bitmap: &mut R,
+) -> io::Result<BitmapSummary> {
+    StreamingBitmap::new(bitmap, domain_clusters)?.finish()
+}
+
+trait BitmapAccess {
+    fn byte_len(&self) -> usize;
+    fn mismatch(&mut self, start: u64, end: u64, allocated: bool) -> Result<Option<u64>, Refusal>;
+    fn padding_bits(&mut self, domain: u64) -> Result<u32, Refusal>;
+}
+
+struct SliceBitmap<'a>(&'a [u8]);
+impl BitmapAccess for SliceBitmap<'_> {
+    fn byte_len(&self) -> usize {
+        self.0.len()
+    }
+    fn mismatch(&mut self, start: u64, end: u64, allocated: bool) -> Result<Option<u64>, Refusal> {
+        Ok(first_unexpected_bit(self.0, start, end, allocated))
+    }
+    fn padding_bits(&mut self, domain: u64) -> Result<u32, Refusal> {
+        let bits = (domain % 8) as u32;
+        Ok(if bits == 0 {
+            0
+        } else {
+            (self.0[self.0.len() - 1] & !((1u8 << bits) - 1)).count_ones()
+        })
+    }
+}
+
+/// Reconcile a seekable logical bitmap using a fixed 64 KiB window. Every byte
+/// is hashed and counted, even when the ownership model is rejected. A read,
+/// length or EOF failure returns no summary and cannot become consistency.
+pub fn assess_stream<R: Read + Seek>(
+    domain_clusters: u64,
+    bitmap: &mut R,
+    intervals: &[PhysicalInterval],
+    limits: Limits,
+) -> io::Result<(Assessment, BitmapSummary)> {
+    let mut source = StreamingBitmap::new(bitmap, domain_clusters)?;
+    let assessment = match reconcile(domain_clusters, &mut source, intervals, limits) {
+        Ok(summary) => Assessment::Consistent(summary),
+        Err(reason) => Assessment::Rejected(reason),
+    };
+    let summary = source.finish()?;
+    Ok((assessment, summary))
+}
+
+struct StreamingBitmap<'a, R> {
+    reader: &'a mut R,
     domain: u64,
-    bitmap: &[u8],
+    needed: usize,
+    loaded: usize,
+    window_start: usize,
+    window_len: usize,
+    window: [u8; 64 * 1024],
+    hash: Sha256,
+    allocated: u64,
+    padding: u32,
+    failure: Option<io::Error>,
+}
+
+impl<'a, R: Read + Seek> StreamingBitmap<'a, R> {
+    fn new(reader: &'a mut R, domain: u64) -> io::Result<Self> {
+        if domain == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "empty bitmap domain",
+            ));
+        }
+        let needed = usize::try_from(domain.div_ceil(8)).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "bitmap exceeds stream addressability",
+            )
+        })?;
+        if reader.seek(SeekFrom::End(0))? != needed as u64 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "bitmap stream length differs",
+            ));
+        }
+        reader.seek(SeekFrom::Start(0))?;
+        Ok(Self {
+            reader,
+            domain,
+            needed,
+            loaded: 0,
+            window_start: 0,
+            window_len: 0,
+            window: [0; 64 * 1024],
+            hash: Sha256::new(),
+            allocated: 0,
+            padding: 0,
+            failure: None,
+        })
+    }
+    fn load(&mut self) -> io::Result<()> {
+        if self.loaded == self.needed {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "bitmap window escapes EOF",
+            ));
+        }
+        let count = (self.needed - self.loaded).min(self.window.len());
+        self.reader.read_exact(&mut self.window[..count])?;
+        self.hash.update(&self.window[..count]);
+        let mut allocated = self.window[..count]
+            .iter()
+            .map(|b| u64::from(b.count_ones()))
+            .sum::<u64>();
+        self.window_start = self.loaded;
+        self.window_len = count;
+        self.loaded += count;
+        let bits = (self.domain % 8) as u32;
+        if self.loaded == self.needed && bits != 0 {
+            self.padding = (self.window[count - 1] & !((1u8 << bits) - 1)).count_ones();
+            allocated -= u64::from(self.padding);
+        }
+        self.allocated = self.allocated.checked_add(allocated).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "bitmap allocated-cluster count overflow",
+            )
+        })?;
+        Ok(())
+    }
+    fn ensure_byte(&mut self, at: usize) -> Result<(), Refusal> {
+        while at < self.window_start || at >= self.window_start + self.window_len {
+            if at < self.loaded || self.loaded == self.needed {
+                return Err(Refusal::BitmapRead {
+                    byte_offset: at as u64,
+                });
+            }
+            if let Err(error) = self.load() {
+                self.failure = Some(error);
+                return Err(Refusal::BitmapRead {
+                    byte_offset: self.loaded as u64,
+                });
+            }
+        }
+        Ok(())
+    }
+    fn finish(mut self) -> io::Result<BitmapSummary> {
+        if let Some(error) = self.failure.take() {
+            return Err(error);
+        }
+        while self.loaded < self.needed {
+            self.load()?;
+        }
+        let mut extra = [0; 1];
+        if self.reader.read(&mut extra)? != 0
+            || self.reader.seek(SeekFrom::End(0))? != self.needed as u64
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "bitmap stream length or EOF changed",
+            ));
+        }
+        Ok(BitmapSummary {
+            sha256: hex::encode(self.hash.finalize()),
+            bitmap_bytes: self.needed as u64,
+            allocated_clusters: self.allocated,
+            free_clusters: self.domain - self.allocated,
+        })
+    }
+}
+
+impl<R: Read + Seek> BitmapAccess for StreamingBitmap<'_, R> {
+    fn byte_len(&self) -> usize {
+        self.needed
+    }
+    fn mismatch(&mut self, start: u64, end: u64, allocated: bool) -> Result<Option<u64>, Refusal> {
+        let mut cursor = start;
+        while cursor < end {
+            self.ensure_byte((cursor / 8) as usize)?;
+            let base = self.window_start as u64 * 8;
+            let stop = end.min(((self.window_start + self.window_len) as u64).saturating_mul(8));
+            if let Some(bit) = first_unexpected_bit(
+                &self.window[..self.window_len],
+                cursor - base,
+                stop - base,
+                allocated,
+            ) {
+                return Ok(Some(base + bit));
+            }
+            cursor = stop;
+        }
+        Ok(None)
+    }
+    fn padding_bits(&mut self, _domain: u64) -> Result<u32, Refusal> {
+        self.ensure_byte(self.needed - 1)?;
+        Ok(self.padding)
+    }
+}
+
+fn reconcile<B: BitmapAccess>(
+    domain: u64,
+    bitmap: &mut B,
     intervals: &[PhysicalInterval],
     limits: Limits,
 ) -> Result<Consistency, Refusal> {
@@ -135,13 +392,13 @@ fn reconcile(
     }
     let needed = usize::try_from(domain.div_ceil(8))
         .map_err(|_| Refusal::BudgetExceeded("bitmap addressability"))?;
-    if needed > limits.max_bitmap_bytes || bitmap.len() > limits.max_bitmap_bytes {
+    if needed > limits.max_bitmap_bytes || bitmap.byte_len() > limits.max_bitmap_bytes {
         return Err(Refusal::BudgetExceeded("bitmap bytes"));
     }
-    if bitmap.len() != needed {
+    if bitmap.byte_len() != needed {
         return Err(Refusal::BitmapLength {
             expected: needed,
-            actual: bitmap.len(),
+            actual: bitmap.byte_len(),
         });
     }
     if intervals.len() > limits.max_intervals {
@@ -236,34 +493,24 @@ fn reconcile(
             });
         }
     }
-    let mut next = 0usize;
+    let mut cursor = 0u64;
     let mut allocated = 0u64;
-    for lcn in 0..domain {
-        while next < order.len() {
-            let interval = &intervals[order[next]];
-            if interval.lcn_start + interval.clusters > lcn {
-                break;
-            }
-            next += 1;
+    for &input in &order {
+        let interval = &intervals[input];
+        if let Some(lcn) = bitmap.mismatch(cursor, interval.lcn_start, false)? {
+            return Err(Refusal::AllocatedUnowned { lcn });
         }
-        let claim = order
-            .get(next)
-            .copied()
-            .filter(|&i| intervals[i].lcn_start <= lcn);
-        let bit = bitmap[(lcn / 8) as usize] & (1 << (lcn % 8)) != 0;
-        match (bit, claim) {
-            (true, None) => return Err(Refusal::AllocatedUnowned { lcn }),
-            (false, Some(input)) => return Err(Refusal::ClaimedFree { input, lcn }),
-            (true, Some(_)) => allocated += 1,
-            (false, None) => {}
+        let end = interval.lcn_start + interval.clusters;
+        if let Some(lcn) = bitmap.mismatch(interval.lcn_start, end, true)? {
+            return Err(Refusal::ClaimedFree { input, lcn });
         }
+        allocated += interval.clusters;
+        cursor = end;
     }
-    let valid_last_bits = (domain % 8) as u32;
-    let padding_bits_set = if valid_last_bits == 0 {
-        0
-    } else {
-        (bitmap[needed - 1] & !((1u8 << valid_last_bits) - 1)).count_ones()
-    };
+    if let Some(lcn) = bitmap.mismatch(cursor, domain, false)? {
+        return Err(Refusal::AllocatedUnowned { lcn });
+    }
+    let padding_bits_set = bitmap.padding_bits(domain)?;
     Ok(Consistency {
         domain_clusters: domain,
         allocated_clusters: allocated,

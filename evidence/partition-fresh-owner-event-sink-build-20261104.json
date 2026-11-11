@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "kind": "fresh-partition-owner-durable-event-sink-transfer",
+  "status": "focused-check-passed-native-pending",
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/native/partition_owner.rs",
+      "bytes": 42893,
+      "sha256": "4e7ff4ed043d0e6afcebb5d2af2a329bcf9850ecadb5077c9c43776d988d100a"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_lifecycle/staged.rs",
+      "bytes": 58227,
+      "sha256": "33745d6599d5cca3562937f87882daaaaff99d50352c7c884c6ef6732e0a742f"
+    }
+  ],
+  "reviewed_patch_sha256": "eebe9e00b6465fecad95431cab62d77c641a27ad86b17d49672ca8946b5fceb4",
+  "check_exit": 0,
+  "check_seconds": 28.0627397,
+  "unit_tests_run": false,
+  "native_run": false,
+  "problem": "Fresh private owner adoption previously omitted the actual guard event sink. Nested guard/adopt/revalidate calls could accumulate past the unchanged 128-event bound before the next outer checkpoint.",
+  "fix": "Transfer the actual guard observer clone into the SDK-private owner constructor and store it before the first owner revalidation. Existing durable pre/post wrapper drains all native records.",
+  "event_limit_increased": false,
+  "checks_removed": false,
+  "writer_authority_changed": false,
+  "f777_binaries_executed": false,
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+}

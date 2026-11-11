@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "kind": "durable-partition-native-event-streaming",
+  "status": "lab-and-public-check-passed-native-qualification-pending",
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/native/partition_lifecycle.rs",
+      "bytes": 6636,
+      "sha256": "2db74476b805294fc33b0760b7aa0acc8d6169ff1b2e7a574e3816e65593ad02"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_lifecycle/staged.rs",
+      "bytes": 48709,
+      "sha256": "a84c850d63afeb428283261648834ef681077ea0a71aa6c237cd1c0305528077"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_owner.rs",
+      "bytes": 40983,
+      "sha256": "b9b295420bb2942321db591b90d808897f98e6295c65f6c9306e73b5348cf8e9"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_source_metadata.rs",
+      "bytes": 8291,
+      "sha256": "3068fa75b8133372f0f94e3bca5b8c512aac1d99520665a8bb95becbc44ae2e5"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_target_observation.rs",
+      "bytes": 4406,
+      "sha256": "9cba0d2646e89c511cf45f13a51eb317dd15c5d8c22814463a66330bb16ea274"
+    },
+    {
+      "path": "crates/n2r-win32/src/shadow_native/private_tree.rs",
+      "bytes": 76796,
+      "sha256": "75aba5abac181f92026bd42c3e1ec2819c27b359796856f6c2388168bf7af71b"
+    },
+    {
+      "path": "crates/n2r-win32/src/shadow_native/private_tree/enrollment.rs",
+      "bytes": 10729,
+      "sha256": "8d078ad21a60866ec638d5dcb30254eb26c7c7dd1096f1747ea7669f60909ec1"
+    }
+  ],
+  "reviewed_patches": [
+    "15fb3db38a140349c0cd52f843771d05cddfbd5ab78632a1fa9d2946a9010af6",
+    "fe0ce05fc20f75aba0e2f6bf1739ab0e0ec671e92357b3b455c5b59e7b3db766"
+  ],
+  "check_exit": 0,
+  "check_wall_seconds": 32.5559411,
+  "check_receipt_sha256": "0e38ea672d97ccd6eacfcb98d4f207ca7821257c53621c40703b4c8280d8f97c",
+  "shared_target_reused": true,
+  "unit_tests_run": false,
+  "native_run": false,
+  "frozen_alpha_rebuilt": false,
+  "event_limit_changed": false,
+  "source_checks_removed": false,
+  "event_batches_dropped": false,
+  "behavior": [
+    "Actual preparation guard retains its supplied observer in private Rc/RefCell; sink clones grant no source/writer authority.",
+    "Admission publication handoff and actual readonly witness stream successful and error bookends durably, requiring drained events.",
+    "Partition target wrapper drains before lower target readonly SET and after lease restoration, preserving all source/target checks.",
+    "Partition enrollment/private tree close actual source/shadow batches through that same actual witness sink; dedicated paths retain their original checks."
+  ],
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "remaining": [
+    "Build new exact committed executable.",
+    "First full owning-machine shared-disk conversion and recovery qualification."
+  ]
+}

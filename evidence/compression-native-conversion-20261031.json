@@ -1,0 +1,328 @@
+{
+  "schema_version": 1,
+  "kind": "ntfs-compression-native-conversion",
+  "recorded_utc": "2026-10-31T11:55:33.0305488Z",
+  "source_commit": "a126b18604676eca358755e43949591b503642fd",
+  "public_binary_sha256": "358d99f158e103625266c4c744f0230c8d4a1016fa129fa6bd106ae4e3c181e6",
+  "main_source_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "run_id": "a1cc190f06074be280e7dd00d75ec0cd",
+  "core_run_id": "69169b558f5a59fd16b47cad033d8ab5",
+  "native_exit": 0,
+  "source_checkpoint": "371ae756-faf2-40ac-bf86-5e8e1d744e30",
+  "converted_checkpoint": "30b37828-3017-40c0-9198-01317699f32b",
+  "source_fixture_id": "8c4644bb03b847c8ac45ca0fd2d78fad",
+  "source_fixture_sha256": "37207be87d8a1941478b39d9c301a781c31b41edc52f59262d92fa76408863f5",
+  "fixture_tool_sha256": "9c9e64b0aa2cd7cf18d177a7e7d81d8573538e577b68ca626246f485cc49711d",
+  "native_objects": 44,
+  "native_default_stream_hashes": 30,
+  "native_named_stream_hashes": 9,
+  "sparse_layouts_verified": 3,
+  "ea_entries_verified": 7,
+  "security_fixture_identities_verified": 8,
+  "reparse_point_buffers_verified": 6,
+  "functional_existing_reparse_routes_verified": 4,
+  "compression": {
+    "fixture_identities": 8,
+    "logical_streams": 7,
+    "independent_sha256_hashes": 7,
+    "independent_xxh3_hashes": 7,
+    "encoded_nonresident_streams": 4,
+    "encoded_logical_bytes_rewritten": 2687224,
+    "encoded_source_physical_bytes": 1126400,
+    "resident_policy_streams": 2,
+    "resident_policy_bytes_materialized": 64,
+    "normalization_identities": 7,
+    "compressed_physical_payload_adopted": false,
+    "compression_padding_exposed_as_sparse_holes": false,
+    "metadata_repaired_by_wrapper": false,
+    "source_nonresident_unit_forms": [
+      {
+        "record_number": 80,
+        "stream": "",
+        "raw_units": 11,
+        "lznt1_units": 11,
+        "all_hole_units": 11
+      },
+      {
+        "record_number": 81,
+        "stream": "",
+        "raw_units": 4,
+        "lznt1_units": 1,
+        "all_hole_units": 0
+      },
+      {
+        "record_number": 84,
+        "stream": "",
+        "raw_units": 0,
+        "lznt1_units": 2,
+        "all_hole_units": 0
+      },
+      {
+        "record_number": 85,
+        "stream": "Encoded",
+        "raw_units": 0,
+        "lznt1_units": 5,
+        "all_hole_units": 0
+      }
+    ]
+  },
+  "retention": {
+    "original_uncompressed_ranges": 1024,
+    "original_uncompressed_bytes": 4194304,
+    "changed_physical_coordinates": 0,
+    "source_payload_writes": 0,
+    "scope": "Original fragmented fixture payload mappings, separate from compression materialization"
+  },
+  "storage": {
+    "partition_bytes": 55834574848,
+    "journal_bytes": 89071680,
+    "packed_backing_bytes": 6701056,
+    "journal_plus_backing_bytes": 95772736,
+    "selected_bytes": 82337792,
+    "selected_ranges": 255,
+    "new_copy_bytes": 3497984,
+    "new_zero_bytes": 72138752,
+    "scope": "Recorded artifacts of this bounded fixture, not a universal capacity bound"
+  },
+  "normal_wall_seconds": 94.6856097,
+  "timing_scope": "native-process receipt UTC to native-terminal receipt UTC; single combined VM run, not controlled speedup or physical HDD estimate",
+  "source_admitted": true,
+  "rollback_closed": true,
+  "free_space_contents_compared": false,
+  "general_conversion_qualified": false,
+  "normal_archive": {
+    "files": 117,
+    "bytes": 79522667
+  },
+  "cold_boot": {
+    "status": "native verifier and independent compression observer passed",
+    "qualified": true,
+    "run_id": "ccafd9f0b30c4f759113145343920568",
+    "checkpoint": "8e9562df-3c32-428f-a981-a0a48bec5d08",
+    "verifier_sha256": "9c848165bc4093a35d61e40662775f3f75d1771cc8568e55bbb7aa01efbcc334",
+    "verification_sha256": "428c14a1b2cd322efbe2f6ae6f059d7cc9bfb69346e99589325ba6e5b832ba30",
+    "native_exit": 0,
+    "independent_compression_observer_exit": 0,
+    "objects": 44,
+    "default_hashes": 30,
+    "named_hashes": 9,
+    "unchanged_canonical_file_ids": 44,
+    "unchanged_retrieval_maps": 44,
+    "unchanged_alias_ids": 10,
+    "ea_objects": 4,
+    "ea_entries": 7,
+    "independent_compression_sha256_hashes": 7,
+    "independent_compression_xxh3_hashes": 7,
+    "target_ntfs_compression_normalized": true,
+    "new_retained_source_comparison_claim": false,
+    "inherited_normal_retention_bytes": 4194304,
+    "source_payload_writes": 0,
+    "archive_files": 17,
+    "archive_bytes": 3744688
+  },
+  "preserved_refusal": {
+    "run_id": "d7a673a87b8542acb1927a8cccfdd95b",
+    "core_run_id": "33bc5f7e07487d596f09abc0f00b6752",
+    "checkpoint": "8c1e5d14-ca1a-46cc-b0b3-2dbba7c6aa0e",
+    "source_cutover_reached": false,
+    "reason": "Resident DATA and directory I30 compression policy were initially treated as encoded nonresident storage",
+    "archive_files": 63,
+    "archive_bytes": 10235728,
+    "historical_checkpoint_removed": true,
+    "archived_evidence_retained": true
+  },
+  "not_qualified": [
+    "arbitrary compression encodings or WOF/provider compression",
+    "EFS",
+    "compressed ATTRIBUTE_LIST spill",
+    "other source cluster geometries",
+    "unrestricted volume size and resource scale",
+    "boot volumes",
+    "exact-build interruption/resume/rollback and mutation",
+    "physical power loss"
+  ],
+  "unit_tests_added_or_run": false,
+  "proofs": [
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\compression-tools-a126b18\\build.json",
+      "bytes": 557,
+      "sha256": "a35187a5ea54887c5fd227c6d7947f48e763e9cc2023fab7f710e886a5ff256d"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\compression-tools-eec8ca5\\build.json",
+      "bytes": 762,
+      "sha256": "fdbb6ba00d1e6d68934ceb1cd6288130d53981e8a919f52cdcdf27c3629f55d5"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\compression-fixture-8c4644bb03b847c8ac45ca0fd2d78fad\\closed\\fixture.json",
+      "bytes": 307442,
+      "sha256": "37207be87d8a1941478b39d9c301a781c31b41edc52f59262d92fa76408863f5"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\compression-fixture-8c4644bb03b847c8ac45ca0fd2d78fad\\archive.json",
+      "bytes": 1167,
+      "sha256": "a0009c580d35583c431e7a832c4faf2ec9cefd8cd935f7873939a1ab54d147df"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\compression-success-a1cc190f\\archive.json",
+      "bytes": 35335,
+      "sha256": "6f0af1aadccad8fb31d3b010950ba39a729708033962e48650e14ffe9d57120c"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\compression-success-a1cc190f\\checkpoint.json",
+      "bytes": 146,
+      "sha256": "c6bca5210802bdc2e4142f16fe1f6db9a425bf17b8b9f917da3f0c243c6cc913"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\compression-success-a1cc190f\\closed\\wrapper\\wrapper-result.json",
+      "bytes": 65685,
+      "sha256": "72f029c6205e5ef3c4588f92e0be0e29dadb9ee7c6cc81c9411aafc5afdb93b2"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\compression-success-a1cc190f\\closed\\wrapper\\compression-after.json",
+      "bytes": 10671,
+      "sha256": "6319e842b0a0b16db243564806ed0c0c2bba8043344d1b5df76e727191c464d0"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\compression-success-a1cc190f\\closed\\wrapper\\compression-ntfs-native.json",
+      "bytes": 302148,
+      "sha256": "127eb62fae9f4b73c88d977a7e9aaaa52dc12c1214ce8624ecd3eb757c8d820f"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\compression-success-a1cc190f\\closed\\wrapper\\compression-refs-native.json",
+      "bytes": 295874,
+      "sha256": "a9b3c11a17efeae334903b1ed84063d27a81e54b74d06bb7cc2f254c39e86780"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\compression-success-a1cc190f\\closed\\core\\conversion\\request.json",
+      "bytes": 1821,
+      "sha256": "17dc17573d9b8510a7eb124292ac2b2badb17c10e1375c4e7ce048c29d8e4883"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\compression-success-a1cc190f\\closed\\core\\conversion\\expectation.json",
+      "bytes": 442872,
+      "sha256": "12ad879af8c6b7fc84d5cb9c4cc32d23eb4493ade1b50fe89b163027d3dcc579"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\compression-success-a1cc190f\\closed\\core\\conversion\\result.json",
+      "bytes": 1041,
+      "sha256": "fc0b0d625d13f0fdd5841de4a1010943e900965f2cb4437c84cfe87485645282"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\compression-success-a1cc190f\\closed\\core\\conversion\\finalization.json",
+      "bytes": 3228885,
+      "sha256": "541592690352dc6f1b47e23bb889b5b845a5026e1b11329cdd2c89ce1b3aa03e"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\compression-success-a1cc190f\\closed\\core\\conversion\\handoff.json",
+      "bytes": 446,
+      "sha256": "2e872c8479121d25a84572b60e3f8b78f7bcb9b44cf6b7333a475939ae097dcd"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\compression-success-a1cc190f\\closed\\core\\conversion\\allocation-recovery-bundle.json",
+      "bytes": 1794,
+      "sha256": "c84e13d1214381f48b24dd6754a2abfda59358aeec4d302d69695210c1909099"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\compression-success-a1cc190f\\closed\\core\\conversion\\qualification\\source-basis.json",
+      "bytes": 1196927,
+      "sha256": "fad025e6a3d38270bc87930d0049831c9fdac06a765e318705a9c2d73fcb7ef7"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\compression-success-a1cc190f\\closed\\core\\conversion\\qualification\\native-source.json",
+      "bytes": 6472646,
+      "sha256": "49ddc02940088ca7ec08bb376ccea4a70294ca009e1a42c311c3d58f30e74f3f"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\compression-success-a1cc190f\\closed\\core\\conversion\\qualification\\construction-placement.json",
+      "bytes": 58465159,
+      "sha256": "ef6b35d41ea14128c951b3aac49d4307a05125d8616c09b8766b32123cfd944a"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\compression-admission-refusal-d7a673a8\\archive.json",
+      "bytes": 18673,
+      "sha256": "19682dc2d5790bbeb793858e818a6a06439d41ae9eaa6d1d62cd506f6dbd053d"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\compression-admission-refusal-d7a673a8\\checkpoint.json",
+      "bytes": 146,
+      "sha256": "ac06a26860d39a1234c0e20702ad0e99251e70488625b5c8a4a012bd82ee168b"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\compression-obsolete-checkpoint-cleanup-20261031.json",
+      "bytes": 1343,
+      "sha256": "d4c2cdb5942936689ab7a99e8c49ae79f8822b7615d0597666b3bc271f700f7a"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\attribute-list-convert-a1cc190f06074be280e7dd00d75ec0cd\\dispatch.json",
+      "bytes": 4488,
+      "sha256": "be5afd4effd25790f6990e8771f96ba4cf9e190738814b13ed99db5ec3fc1880"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\compression-success-a1cc190f\\closed\\wrapper\\native-process.json",
+      "bytes": 516,
+      "sha256": "46525ad198751f9563076438ba9a00316d84ff372c42e5a8a37864c5600f455e"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\compression-success-a1cc190f\\closed\\wrapper\\native-terminal.json",
+      "bytes": 2301,
+      "sha256": "190e89ebcdce6f3834d9a1f25d4115f07b82dbd133d8b1cb24c2754be8f0cd8f"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\compression-coldboot-ccafd9f0b30c4f759113145343920568\\dispatch.json",
+      "bytes": 1552,
+      "sha256": "4183fcda37beeca8181398f8c409d7faeea86ced4885d87c8d0919b4b33fd90a"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\compression-coldboot-ccafd9f0b30c4f759113145343920568\\archive.json",
+      "bytes": 2536,
+      "sha256": "3aa34ce5b3d84ba4cf05cf8ade31aba40b8f5b6a8b4bb6f25d7835523fc2de07"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\compression-coldboot-ccafd9f0b30c4f759113145343920568\\comparison.json",
+      "bytes": 776,
+      "sha256": "202ef4bd7f0ca22753e49058a3e8a529bb32bad39d1421e1f3266e42bfd9d78c"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\compression-coldboot-ccafd9f0b30c4f759113145343920568\\checkpoint.json",
+      "bytes": 145,
+      "sha256": "6e7b8cf10c50d0a7aba5d39662fce871f0fb764ec4aacf8e0243a8c8d0febcca"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\compression-coldboot-ccafd9f0b30c4f759113145343920568\\closed\\boot.json",
+      "bytes": 145,
+      "sha256": "1385736514381520c44a96ab4f50e5023c567f0ca4daef8ecc17398ab10f24f7"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\compression-coldboot-ccafd9f0b30c4f759113145343920568\\closed\\verification.json",
+      "bytes": 3132273,
+      "sha256": "428c14a1b2cd322efbe2f6ae6f059d7cc9bfb69346e99589325ba6e5b832ba30"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\compression-coldboot-ccafd9f0b30c4f759113145343920568\\closed\\native-terminal.json",
+      "bytes": 101,
+      "sha256": "69e70b15ae4e5df2f73d4fd4fcd39ac8f31a3cf78c054758f9b87e14c330e723"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\compression-coldboot-ccafd9f0b30c4f759113145343920568\\closed\\compression-terminal.json",
+      "bytes": 101,
+      "sha256": "f216b01aa017c05e9919e7b41c64cd3c538d831b64bda02cf47e9462feea0cbb"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\compression-coldboot-ccafd9f0b30c4f759113145343920568\\closed\\compression-verification.json",
+      "bytes": 295874,
+      "sha256": "714936a1e0d7f841c5605f78b28687527d38a09ae30b37ecb8f3194f765a1198"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\compression-coldboot-ccafd9f0b30c4f759113145343920568\\closed\\wrapper-result.json",
+      "bytes": 234,
+      "sha256": "c65d2862620192d0f8b85ed950f6759b3a21dcdd2ac5bf553ecefb6e26191bc6"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\compression-admission-refusal-d7a673a8\\obsolete-checkpoint-cleanup.json",
+      "bytes": 397,
+      "sha256": "3a961e8394de9dcffa3218b131aa5267b6bb7673cb3200df89b8443346af6b0a"
+    }
+  ],
+  "native_source_schema": 11
+}

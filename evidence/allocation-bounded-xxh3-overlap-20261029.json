@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "kind": "native-allocation-bounded-conversion-xxh3-overlap",
+  "run_id": "fc94b1ef529c4a3890ee98cb4439b902",
+  "engine_run_id": "221c1a41475cdb26ad52a61c1ae912ac",
+  "source_commit": "7605ee7303af1f1950e01d805ae0a5b4a65d514e",
+  "code_commits": [
+    "e6e22f6 parallel bracket/source hashing",
+    "e535477 CNG with read/hash overlap for NTFS inspection streams, native logical reads and converted-file verification (was sha2 software)",
+    "7605ee7 XXH3-128 change-detection digests for the shadow bracket chunks and source allocated-range pieces"
+  ],
+  "working_tree_note": "Built with the existing user-owned src/main.rs capabilities hunk present and unstaged.",
+  "toolset_manifest_sha256": "f2cdc4530bcb4f6cb9e8c7eadd5e1ed9c4e2213743e7d2e8ae6159b0725812e6",
+  "public_cli": {
+    "sha256": "26fe2a322be8391ec2978742f0226b6d22ad96fc6c4d02013b33bc157d1b0a60",
+    "argv": ["--drive", "F", "--partition", "2"],
+    "actual_native_exit": 0
+  },
+  "outcome": {
+    "wrapper_success": true,
+    "native_objects": 15,
+    "complete_logical_hashes": 10,
+    "label_and_mount_verified": true,
+    "selected_ranges": 164,
+    "selected_bytes": 70692864,
+    "journal_bytes": 141407200,
+    "result_sha256": "201f764284fca569343e46b120efc33cf90e6daa9e646eed1f6eb49b59c83693",
+    "finalization_sha256": "13b53c175718780fe7e5c7ae243a4515c38b200beb868c4bae33c14a5b9c75e4"
+  },
+  "digests": {
+    "certificate_source_digest": "ntfs_allocated_ranges_xxh3_128_4mib_pieces",
+    "source_digest_bytes": 8688107520,
+    "source_digest_ranges": 3,
+    "shadow_bracket": {"opening_chunks": 14087, "opening_bytes": 14771290112, "closing_chunks": 14087, "closing_bytes_reread": 14771290112, "free_space_rechecked": false},
+    "file_content_hashes": "SHA-256 (unchanged algorithm; now CNG with read/hash overlap)",
+    "compared_bytes": 12047286272,
+    "in_place_payload_bytes_not_compared": 2721181696
+  },
+  "timing": {
+    "measure": "native process creation to the wrapper's native-terminal record",
+    "seconds": 134.7,
+    "previous_seconds": {"parallel_hash_e6e22f6": 258.7, "speedups_1_5_bd9ef21": 356.7, "head_whole_image": 2813.3, "frozen_alpha": 3351.7},
+    "phase_markers_seconds": {"building_refs_metadata": 40, "verifying_target": 46, "preparing_recovery_journal": 106, "applying_conversion": 108, "verifying_files": 112}
+  },
+  "io": {"last_sample_read_bytes": 106300000000, "note": "last 30 s monitor sample before exit, rounded to 0.1 GB"},
+  "archive": ".lab/hyperv/streaming-v2-20261027/alloc-drive-20261029-fc94b1ef529c4a3890ee98cb4439b902/closed-conversion",
+  "qualification": {
+    "normal_public_conversion_passed": true,
+    "interruption_resume_rollback_tested_on_this_build": false,
+    "mutation_restart_tested_on_this_build": false,
+    "release_qualified": false
+  },
+  "scope": "One default-mode conversion of the 52 GiB fixture. Correct result in 134.7 s (2m15s)."
+}

@@ -1,0 +1,215 @@
+{
+  "schema_version": 1,
+  "kind": "814-frozen-candidate-observational-qualification",
+  "source_commit": "814f380aa38be4d94e2a71ad221c779e5ab4dc7b",
+  "source_tree": "268200368a49bbf6e4feeb78fa43df141551ac31",
+  "build_manifest_sha256": "ea6d55adaa40b1bf2bfd04cb7842bdef63b9cbffb0f038697d23ae9330af8f64",
+  "source_archive_sha256": "94b94b177293f069d98521ef99e4a9e788a6b9e1977d6ca835f4c718cbc0fcc9",
+  "observational_only": true,
+  "grants_runtime_authority": false,
+  "stable_release": false,
+  "power_loss_qualified": false,
+  "native_matrix_complete": true,
+  "native_matrix_complete_scope": "ONLY FiniteAlphaObservedProfile814; not general release, hardware/feature/size compatibility or completion of the broader project objective",
+  "observed_profile": {
+    "id": "FiniteAlphaObservedProfile814",
+    "description": "Native-shadow experimental alpha on the exact recorded nonboot data-volume fixture",
+    "windows_edition": "Windows 11 Professional",
+    "windows_build": "26300",
+    "windows_version": "10.0.26300",
+    "source_filesystem": "NTFS 3.1",
+    "target_filesystem": "ReFS 3.14",
+    "target_format": "Dev Drive",
+    "logical_sector_bytes": 512,
+    "physical_sector_bytes": 4096,
+    "source_cluster_bytes": 65536,
+    "target_cluster_bytes": 4096,
+    "source_partition_bytes": 55834574848,
+    "source_files": 811,
+    "source_directories": 1747,
+    "source_user_objects": 2558,
+    "independently_hashed_logical_stream_bytes": 9885801949,
+    "independent_digest": "XXH3-128",
+    "VM_RAM_bytes": 4294967296,
+    "VM_CPU_count": 4,
+    "conversion_and_recovery_execute_inside_owning_machine": true,
+    "HyperV_is_test_infrastructure_only": true,
+    "observed_normal_argv": [
+      "--drive",
+      "F",
+      "--partition",
+      "2",
+      "--minimize-scratch"
+    ]
+  },
+  "binaries": [
+    {
+      "name": "ntfs2refs",
+      "bytes": 16946176,
+      "sha256": "0f5be1c72b05ff030aad85b21be2c37f32ecccbf214af1ee4d6f7afd4807fafb",
+      "shipped": true,
+      "operations": [
+        {
+          "key": "normal_conversion",
+          "status": "passed",
+          "evidence_path": "evidence/public-resource-cng-20261103.json",
+          "evidence_sha256": "0f9c06587cb779f3bfb688326bf74e5e4600963f5f161db185f5565f50872270",
+          "scope": "Actual public normal conversion, HND, 2558 bindings; independent original 811 streams/1534 baseline objects/1024 additional directory paths.",
+          "observational_only": true,
+          "grants_runtime_authority": false
+        },
+        {
+          "key": "mutation_cold_boot",
+          "status": "passed",
+          "evidence_path": "evidence/public-resource-cng-20261103.json",
+          "evidence_sha256": "0f9c06587cb779f3bfb688326bf74e5e4600963f5f161db185f5565f50872270",
+          "scope": "513 new mutation files, normal reboot without restore, original streams and extra directories checked again; no physical allocation-reuse claim.",
+          "observational_only": true,
+          "grants_runtime_authority": false
+        },
+        {
+          "key": "resume",
+          "status": "passed",
+          "evidence_path": "evidence/resource-814-restart-resume-20261103.json",
+          "evidence_sha256": "3a8fa936d185c3fdc7af6070a95449cbec5ac1bfa28746fc3d7a2a94cf83a81d",
+          "scope": "Public resume after normal restart from the exact independently saved 814 diagnostic AP origin; original content independently checked.",
+          "observational_only": true,
+          "grants_runtime_authority": false
+        },
+        {
+          "key": "rollback",
+          "status": "passed",
+          "evidence_path": "evidence/resource-814-restart-rollback-20261103.json",
+          "evidence_sha256": "c60453dd9ab601ebac144ee2e714b5ad07edc6108841b67be42f11ec19b657a3",
+          "scope": "Separate public rollback after restart from the same original AP origin; restore-required selected bytes, original logical contents and paths checked; unused free bytes not restored.",
+          "observational_only": true,
+          "grants_runtime_authority": false
+        },
+        {
+          "key": "hnd_reconciliation",
+          "status": "passed",
+          "evidence_path": "evidence/public-resource-cng-20261103.json",
+          "evidence_sha256": "0f9c06587cb779f3bfb688326bf74e5e4600963f5f161db185f5565f50872270",
+          "scope": "Already-online operational HND label/mount reconciliation; no raw replay or stale selected-data comparison; mutation files preserved.",
+          "observational_only": true,
+          "grants_runtime_authority": false
+        },
+        {
+          "key": "journal_open_failure",
+          "status": "passed",
+          "evidence_path": "evidence/public-resource-cng-20261103.json",
+          "evidence_sha256": "0f9c06587cb779f3bfb688326bf74e5e4600963f5f161db185f5565f50872270",
+          "scope": "Expected ERROR32/nonzero exit while an actual read-only FileShare.None journal handle remained held through the actual native terminal.",
+          "observational_only": true,
+          "grants_runtime_authority": false
+        },
+        {
+          "key": "guard_copy_fault",
+          "status": "passed",
+          "evidence_path": "evidence/resource-814-early-guard-20261103.json",
+          "evidence_sha256": "8d1d4db81e711682680168eb8902f36c7935cf3c890f8efc2978682a4abc2b90",
+          "scope": "One second-slot checksum byte corrupted; expected pre-prompt checksum refusal; original 131072 control bytes restored in place with original file identity. No measured native source-write counter.",
+          "observational_only": true,
+          "grants_runtime_authority": false
+        },
+        {
+          "key": "early_preparation_cancel",
+          "status": "passed",
+          "evidence_path": "evidence/resource-814-early-guard-20261103.json",
+          "evidence_sha256": "8d1d4db81e711682680168eb8902f36c7935cf3c890f8efc2978682a4abc2b90",
+          "scope": "Separate post-restart cancellation of authenticated Frozen preparation with no J/AP publication; native structured zero-payload-write result and independent NTFS content/path verification.",
+          "observational_only": true,
+          "grants_runtime_authority": false
+        }
+      ]
+    },
+    {
+      "name": "lab-resource-diagnostic",
+      "bytes": 8109056,
+      "sha256": "790de5dba9eaf3b17b58fb871e9733f73ee2531de7534c08037bd4e5071b092a",
+      "shipped": false,
+      "operations": [
+        {
+          "key": "first_flushed_write_interruption",
+          "status": "passed",
+          "evidence_path": "evidence/resource-814-first-flushed-write-20261103.json",
+          "evidence_sha256": "84cc28c5df4a8e6013e91ec3e87f92540009bc36adcbeda502baa128740e46ff",
+          "scope": "Intentional diagnostic nonzero exit after one real 4096-byte metadata write, flush/readback, durable AP and separately authenticated remaining OLD primary; not copied user-payload interruption or physical power loss.",
+          "observational_only": true,
+          "grants_runtime_authority": false
+        },
+        {
+          "key": "reserve_refusal",
+          "status": "passed",
+          "evidence_path": "evidence/resource-814-early-guard-20261103.json",
+          "evidence_sha256": "8d1d4db81e711682680168eb8902f36c7935cf3c890f8efc2978682a4abc2b90",
+          "scope": "Preparation-only actual reserve-admission refusal before journal/AP; source remained excluded. No actual ENOSPC/write/flush failure claimed.",
+          "observational_only": true,
+          "grants_runtime_authority": false
+        }
+      ]
+    },
+    {
+      "name": "lab-observe-resource-recovery",
+      "bytes": 1991168,
+      "sha256": "e8a5bd07ad59bf54cd6a22c152b7ac8055ebfb7e37f594af010dda8f13823276",
+      "shipped": false,
+      "operations": [],
+      "execution_or_native_qualification_claimed": false,
+      "scope": "Original three-tool build provenance only. This binary was not run for this finite profile; independent checks used separately pinned historical content-observation tools."
+    }
+  ],
+  "evidence_receipts": [
+    {
+      "path": "evidence/public-resource-cng-20261103.json",
+      "bytes": 6974,
+      "sha256": "0f9c06587cb779f3bfb688326bf74e5e4600963f5f161db185f5565f50872270"
+    },
+    {
+      "path": "evidence/resource-814-first-flushed-write-20261103.json",
+      "bytes": 3467,
+      "sha256": "84cc28c5df4a8e6013e91ec3e87f92540009bc36adcbeda502baa128740e46ff"
+    },
+    {
+      "path": "evidence/resource-814-restart-rollback-20261103.json",
+      "bytes": 3377,
+      "sha256": "c60453dd9ab601ebac144ee2e714b5ad07edc6108841b67be42f11ec19b657a3"
+    },
+    {
+      "path": "evidence/resource-814-restart-resume-20261103.json",
+      "bytes": 3597,
+      "sha256": "3a8fa936d185c3fdc7af6070a95449cbec5ac1bfa28746fc3d7a2a94cf83a81d"
+    },
+    {
+      "path": "evidence/resource-814-early-guard-20261103.json",
+      "bytes": 4404,
+      "sha256": "8d1d4db81e711682680168eb8902f36c7935cf3c890f8efc2978682a4abc2b90"
+    }
+  ],
+  "evidence_resolution": "Evidence paths identify original repository receipts. The package file manifest maps source_path and SHA-256 to included receipt filenames; all pointers remain observational.",
+  "limitations": [
+    "Only the named 52 GiB partition with about 9.9 GB logical fixture data was observed; this is not full-volume, arbitrary-size or maximum-NTFS-compatibility qualification.",
+    "512-byte logical/4096-byte physical sectors, NTFS 64 KiB and ReFS 4 KiB, the exact Windows build and basic nonboot dedicated-disk routing are the observed geometry/profile. Other configurations require their own qualification.",
+    "Source data partitions sharing the running Windows physical disk remain unsupported by the current conversion writer; the separate read-only partition experiment does not grant writer authority.",
+    "The managed-shadow backend uses VHDX and retains its approximately 64 TB native format ceiling and staging overhead. There is no alternate scratch provider; 1000 TB conversion is unsupported.",
+    "Boot/system volumes, broader feature/build/storage compatibility and arbitrary hardware/scale are not qualified by this matrix.",
+    "Only a controlled first-flushed metadata-write interruption followed by normal restart was exercised. Copied user-payload interruption, physical power loss, active write/flush/readback errors, actual ENOSPC and missing/conflicting valid guard-copy combinations are not qualified.",
+    "Independent checks cover the reported original stream contents, baseline path/type/length objects and additional directory paths; they are not a complete original ACL/SACL/timestamp audit or a no-extra-objects proof.",
+    "Native-shadow scratch use remains dependent on actual layout, relocation/materialization and recovery storage. Retained allocation snapshots are not peak scratch/RAM or physical-I/O measurements.",
+    "Recorded timings are uncontrolled observations on this fixture, not guaranteed conversion times or a benchmark across hardware and volume sizes.",
+    "HND and ABT close old raw replay. Qualification receipts and this sidecar grant no source admission, current-device identity, recovery authority or permission to replay an old journal.",
+    "The embedded qualification registry and frozen executable bytes were not rebuilt; this external sidecar records only the listed finite alpha observations."
+  ],
+  "broader_project_goal_complete": false,
+  "arbitrary_hardware_or_scale_qualified": false,
+  "maximum_NTFS_compatibility_claimed": false,
+  "1000TB_supported": false,
+  "embedded_registry_modified": false,
+  "reproducible_build_verified": false,
+  "experimental_shared_target": true,
+  "shared_cache_reuse_allowed": true,
+  "unit_tests_added_or_run": false,
+  "packaged_or_published_by_this_sidecar": false,
+  "created_utc": "2026-11-04T03:53:11.191Z"
+}
+

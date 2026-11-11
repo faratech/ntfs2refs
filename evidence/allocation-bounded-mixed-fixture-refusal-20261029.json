@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "kind": "native-allocation-bounded-mixed-fixture-refusal",
+  "fixture": {
+    "generator": "lab/New-MixedFixture.ps1 (seed 20261029)",
+    "manifest": ".lab/hyperv/streaming-v2-20261027/mixed-fixture-20261029-1bf58e7c292d4f9e868c1d14c6bc2618/fixture.json",
+    "files": 808,
+    "directories": 120,
+    "deleted_from_wave1": 136,
+    "total_bytes": 9885781381.0,
+    "fragmented_files_among_first_200_over_1MiB": 58,
+    "filesystem": "NTFS",
+    "cluster": 65536,
+    "generation_seconds": 129
+  },
+  "conversion": {
+    "run_id": "fefa0a02af8a424aaeb68fa6bc9d7f12",
+    "engine_run_id": "cd9ed6abb8b746de9afd86c7f75b5e25",
+    "source_commit": "730efe1e8ea835861cc4fa26bf902770f0672cb6",
+    "phase": "native shadow construction (inside \"building the ReFS shadow\")",
+    "error": "global tracked ownership range budget exceeded",
+    "location": "crates/n2r-win32/src/shadow_native/private_tree/placement.rs:350 (owned.len() > 1024)",
+    "writes_to_source": 0,
+    "archive": ".lab/hyperv/streaming-v2-20261027/alloc-drive-20261029-fefa0a02af8a424aaeb68fa6bc9d7f12/closed-conversion"
+  },
+  "interpretation": "fixed 1024-range budgets in shadow placement/evacuation refuse moderately fragmented many-file volumes; a capacity limit, not a performance measurement",
+  "next": "map and lift the placement budgets (workflow wf_ac088a60-727)"
+}

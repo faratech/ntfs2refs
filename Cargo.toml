@@ -19,6 +19,7 @@ ntfs = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
 n2r-win32 = { path = "crates/n2r-win32" }
 
 [dev-dependencies]
@@ -26,6 +27,9 @@ tempfile = "3"
 
 [profile.release]
 overflow-checks = true
+# Function names and line numbers in the separate .pdb, for --sample-stacks.
+# The executable itself is unchanged.
+debug = "line-tables-only"
 
 # Keep native-lab development builds from exhausting the image reserve.
 [profile.dev]

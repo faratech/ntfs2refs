@@ -21,6 +21,7 @@ fn binding() -> GeneralDiskBinding {
             logical_sector_bytes: 512,
             physical_sector_bytes: 4096,
         },
+        layout_profile: Default::default(),
     }
 }
 fn put32(b: &mut [u8], at: usize, value: u32) {

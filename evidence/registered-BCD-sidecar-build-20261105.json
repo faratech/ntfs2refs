@@ -1,0 +1,79 @@
+{
+  "focused_check": {
+    "kind": "public-partition-dispatch-focused-check",
+    "wall_seconds": 33.3477749,
+    "capacity": {
+      "actual_bytes": 244711389618,
+      "free_bytes": 162618134528,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 2147483648,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+    "shared_target_reused": true,
+    "exit_code": 0,
+    "native_run": false,
+    "unit_tests_run": false
+  },
+  "new_or_existing_unit_tests_run": false,
+  "actual_a893_image_run": {
+    "no_source_AP_or_reboot": true,
+    "completed_WIM_sha256": "1322935b6ff08a7ecfe11161f8b2e8bdeced41b88ec61ba51a19693e81eba2e9",
+    "completed_WIM_bytes": 624268921,
+    "all_five_payload_backups_present": true,
+    "all_five_image_command_exits": [
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "birth": 1793914626060,
+    "failure": "Control-directory accounting rejected native BCD query hive log sidecars",
+    "wall_seconds": 46.1905468,
+    "pid": 3420,
+    "completed_record_sha256": "6f500268f4f35ba4befade8bc6161648a053c28dedcabbb9f9e0ae353980dd73",
+    "exit_code": 1
+  },
+  "files": [
+    {
+      "bytes": 35512,
+      "sha256": "7145e37fb314e062cf834cbba099b0738b5592dc237792dd16bbff91a1f40d1b",
+      "path": "crates/n2r-win32/src/native/recovery_boot/native.rs"
+    },
+    {
+      "bytes": 40204,
+      "sha256": "e6587e28c86878ef7a6bffcb06c3cf6bcb4a630859a2adcf26eef612ba7fdbf7",
+      "path": "crates/n2r-win32/src/native/recovery_boot/metadata.rs"
+    }
+  ],
+  "actual_sidecars": {
+    "meaning": "Hidden|System|Archive",
+    "logical_lengths": [
+      65536,
+      0,
+      0
+    ],
+    "absence_not_proven": true,
+    "final_59_metadata_archive_sha256": "baed18d065c02714232536d143db173431efba75937e649de545bc9b478ecc11",
+    "earlier_missing_inference_corrected": "PowerShell remoting/provider visibility/copy failures for hidden or empty files; native byte collector preserved all three",
+    "suffixes": [
+      ".LOG",
+      ".LOG1",
+      ".LOG2"
+    ],
+    "attributes": 38
+  },
+  "native_new_fix_qualified": false,
+  "base_commit": "a8933fe45befe094411991b9a56e59ed5f4ab89c",
+  "implementation": [
+    "Factory-only process registry binds actual SDK-created query/cold scratch BCD paths and native base file IDs",
+    "Only exact three observed sidecar suffixes permitted; ordinary hidden/system files allowed, reparse and unknown names refused",
+    "Shared bounded census charges actual EOF/allocation against existing control and two-store budgets",
+    "Actually observed registered-sidecar-only changes can trigger at most three bookends; no assumed disappearance",
+    "Durable readback-checked census records are themselves budgeted; no source authority or cap increase"
+  ],
+  "kind": "registered-native-BCD-query-sidecars-build-v1"
+}

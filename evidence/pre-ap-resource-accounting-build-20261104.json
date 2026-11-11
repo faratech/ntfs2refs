@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "kind": "post-alpha-measured-pre-AP-resource-reporting",
+  "status": "focused-check-passed-native-execution-pending",
+  "source_patch_sha256": "bcbdf58ef14b82b7ab134cb97ca8896aa65126c8c574e2aa81f10253b4dc7485",
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/managed_shadow.rs",
+      "bytes": 33448,
+      "sha256": "be8114ceb72dec5e17a661bcc982ae51c2e1368888494b6600d73da39da5773f"
+    },
+    {
+      "path": "crates/n2r-win32/src/managed_shadow/retirement.rs",
+      "bytes": 13221,
+      "sha256": "bacfc80517769f23f307ce48957afad1529afcf4c39cafb00def7db4ad4e7126"
+    },
+    {
+      "path": "crates/n2r-win32/src/managed_shadow/thin_pool/bounded_carrier.rs",
+      "bytes": 14605,
+      "sha256": "62f823d145f95f6b932af3f43cdc282da89c551202ac9f27bae3d8261ab1752e"
+    },
+    {
+      "path": "crates/n2r-win32/src/managed_shadow/thin_pool/formatted.rs",
+      "bytes": 8963,
+      "sha256": "7acec16b389e9c6a31f2ce1aba066d8e2103ad157cc230f391cb0d13ccaeea20"
+    },
+    {
+      "path": "src/drive_cli.rs",
+      "bytes": 37364,
+      "sha256": "50be57b20f306a57b1df1ed02551a7d598b3a26de048f3972bd509f7558fbbc3"
+    },
+    {
+      "path": "src/drive_resource.rs",
+      "bytes": 28723,
+      "sha256": "c8155948f826c7b114ecab17c9e222ad3f92016604c04f2849727776404d9ff1"
+    },
+    {
+      "path": "src/drive_staging.rs",
+      "bytes": 4391,
+      "sha256": "6f1f1b88e1fc252c7723257f53bbf8550baa200c54613d14755dc7246c962d5c"
+    },
+    {
+      "path": "src/resource_preparation.rs",
+      "bytes": 37185,
+      "sha256": "95f785bfba558ed586988c91cfc8bb060f19d16370d2ad88c187949b5a1ae0b9"
+    },
+    {
+      "path": "src/resource_preparation/file_observer.rs",
+      "bytes": 21609,
+      "sha256": "44767dd6ce1d10eb92b3c776bc18ba919102f181b15c22d3ac718f9bb0c391a2"
+    }
+  ],
+  "compiler": "Rust1.98.1-x86_64-pc-windows-msvc",
+  "check": "cargo check --offline --locked --release --jobs4 --target x86_64-pc-windows-msvc --bin ntfs2refs",
+  "check_exit": 0,
+  "check_wall_seconds": 38.7226731,
+  "shared_target_reused": true,
+  "check_receipt_sha256": "c25c762aa83ff5d64509f7b09775e3fd2f0ab8bfc143cacf85d819050497193c",
+  "unit_tests_run": false,
+  "native_qualified": false,
+  "frozen_alpha_rebuilt": false,
+  "frozen_alpha_zip_sha256": "00016d67e5580416f08a73c585c934b811fdd113d0325b24e17da9d42fda5514",
+  "observations": [
+    "Original held read-attributes outer backing handle supplies current file metadata; no pathname reconstruction or authority.",
+    "Thin outer carrier counted once; nested members not added again.",
+    "Pre-AP ledger and human output distinguish observed allocation, encoded lengths, reserved ceilings and admittedRAM.",
+    "Capture literal allocation is the closed pin snapshot; index allocation/all-stage payload traffic remain explicitly unknown.",
+    "No extra payload hash/read or volume scan; one arena metadata reconciliation.",
+    "Writer, admission, recovery, default policies and protected src/main.rs are unchanged."
+  ],
+  "limitations": [
+    "Compilation is not native conversion qualification of this development code.",
+    "Metadata samples are not peaks, process working set or physical device consumption."
+  ]
+}

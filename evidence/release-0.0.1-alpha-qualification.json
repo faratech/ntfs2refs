@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "kind": "frozen-release-qualification-index",
+  "release_tag": "0.0.1-alpha",
+  "source_commit": "3aaaf11bb4e5a4891942feeabc974d4188916e98",
+  "release_url": "https://github.com/faratech/ntfs2refs/releases/tag/0.0.1-alpha",
+  "exe_sha256": "e057c9e69554977167f47665c2a56425d0b77ab6f3a317f9174ed348af214492",
+  "manifest_exe_sha256": "61b509b7b71aa9fc9d99cb15464ac1a3c0ceef2af8e89992037b78562b3bce92",
+  "windows_zip_sha256": "4966456f4c0bac93095cd6112a0eb5f06262842b3965ae6c7e86845cf17d713e",
+  "source_zip_sha256": "25bca3be312f3235334c5803cc6453236cddaa31cc8f537f02b33112409d72ca",
+  "qualification_zip_sha256": "6d7819d61cb0bfaa5b0cffbc73c137d876f31cc83bde811c3bc0eca29b9ab720",
+  "qualification_url": "https://github.com/faratech/ntfs2refs/releases/download/0.0.1-alpha/ntfs2refs-0.0.1-alpha-qualification.zip",
+  "provenance": "original local session command outputs and original test log recovered during closeout",
+  "full_run": {
+    "name": "full-16",
+    "converter_exit": 0,
+    "wall_seconds": 1680.1796823,
+    "comparison_exit": 0,
+    "before_listing_rows": 191101,
+    "after_listing_rows": 303710,
+    "unexpected_differences": 0,
+    "short_names_as_links": 112609,
+    "filesystem": "ReFS",
+    "refs_version": "3.14",
+    "cluster_bytes": 4096,
+    "disk": 0,
+    "partition": 3,
+    "attached_disk_count": 1,
+    "secure_boot": true,
+    "boot_signatures": "Valid/Valid",
+    "desktop_reached": true
+  },
+  "original_tests": {
+    "ignored": 52,
+    "failed": 0,
+    "passed": 713
+  },
+  "limitations": [
+    "Original complete listing files, verdict JSON, raw trust-patch records and desktop screenshot were not recovered.",
+    "Recovery rec-04 finished after apply and mounted ReFS but lacked independent before/after comparison.",
+    "This index records recovered observations; it does not establish physical-hardware, arbitrary-volume or universal power-loss qualification."
+  ]
+}

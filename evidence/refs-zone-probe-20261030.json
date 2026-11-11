@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "kind": "refs-reserved-zone-probe-results",
+  "decision": "user 2026-10-30: probe, then skip unreferenced zone zeros only if proven",
+  "probe_1_prefilled": {
+    "utc": "20261030T053948Z",
+    "archive": ".lab/hyperv/streaming-v2-20261027/refs-zone-probe-20261030T053948Z/result.json",
+    "disk": "200 GB dynamic VHDX hot-added to the lab VM (SCSI 0:7), removed and deleted afterwards",
+    "steps": "raw-fill first 30 GB with random bytes (254 s); GPT; Dev Drive ReFS format (2.7 s); metadata-inclusive bitmap; count 4 KiB zero granules in the zone; 20 GB stress (665 big files, 5,000 small, 30% deleted); guest reboot; verify",
+    "zone_bytes": 22011707392,
+    "zone_granules": 5373952,
+    "zone_granules_zero_after_format": 5373330,
+    "zone_granules_nonzero_after_format": 622,
+    "legacy_allocated_clusters": 508144,
+    "metadata_allocated_clusters": 5373960,
+    "after_reboot": {
+      "files_verified": 3952,
+      "files_failed": 0,
+      "health": "Healthy",
+      "refs_warning_or_error_events": 0,
+      "repair_volume_scan": "not supported on this volume"
+    },
+    "finding": "the format left 99.99% of the zone zero although it had held random data, in 2.7 s: a TRIM/unmap the dynamic VHDX honours, not 22 GB of zero writes. So on a thin device format does clear the zone and this run cannot show whether ReFS tolerates old data there; the direct test (randomize every zero granule after format) follows."
+  },
+  "probe_2_control_no_fill": {
+    "utc": "20261030T055813Z",
+    "archive": ".lab/hyperv/streaming-v2-20261027/refs-zone-probe-20261030T055813Z/result.json",
+    "zone_bytes": 22011707392,
+    "note": "no pre-fill; stress (665 big files, 5,000 small, 30% deleted) and guest reboot verified 3,952/3,952 files, Healthy; its zero count was skipped by a negative length bug and is superseded by probe 3"
+  },
+  "probe_3_randomized_zone": {
+    "utc": "20261030T075225Z",
+    "archive": ".lab/hyperv/streaming-v2-20261027/refs-zone-probe-randomized-20261030T075225Z/result.json",
+    "script": "scratchpad refs-zone-probe-randomized.ps1",
+    "steps": "fresh 200 GB dynamic VHDX; GPT; Dev Drive ReFS format (2.7 s); metadata-inclusive bitmap leading run = zone; count zero granules; disk offline; overwrite every all-zero 4 KiB granule of the zone with random bytes through the raw disk, keeping every nonzero granule (160 s); disk online; recount; Get-Volume",
+    "zone_bytes": 22011707392,
+    "zone_granules": 5373952,
+    "zone_zero_before": 5373314,
+    "zone_nonzero_before": 638,
+    "randomized_granules": 5373300,
+    "kept_nonzero_granules": 652,
+    "zone_zero_after": 0,
+    "after_online": {
+      "filesystem": "(none: RAW)",
+      "volume_bytes": 0,
+      "operational_status": "Unknown",
+      "drive_letter_device_readable": true,
+      "powershell_drive_P": "absent (stress phase: \"Cannot find drive. A drive with the name P does not exist.\")"
+    },
+    "finding": "ReFS no longer mounts once the zero granules of its reserved metadata-inclusive zone hold other data: the format relies on those zeros. Skipping unreferenced zone zeros during conversion is therefore unsafe unless the exact set of zero granules ReFS reads is authenticated; per the user decision (probe, then skip only if proven) the converter keeps writing every shadow-zero granule."
+  },
+  "conclusion": "zone_zero_skip disproved for the naive rule (all unreferenced zero granules); keep writing them. A narrower skip would need an authenticated complete ReFS footprint naming which zero granules ReFS does not read; not pursued."
+}

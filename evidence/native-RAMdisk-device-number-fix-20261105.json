@@ -1,0 +1,49 @@
+{
+  "kind": "native-RAMdisk-storage-device-query-fix-v1",
+  "status": "compiled-not-yet-deployed",
+  "observed_native_case": ".lab/hyperv/streaming-v2-20261027/PE-N2RDIAG-finite-facts-53cc898c68b340eda6311c05436d45a3",
+  "actual_console_evidence": {
+    "file": "10-actual-facts-page-01.png",
+    "bytes": 49882,
+    "sha256": "182f157c96687992916ebc22f67d224800066cdd2d492b694436b4888299d3bb"
+  },
+  "observer": {
+    "sha256": "6f7947fe6306f32e9091844155ef3a1e1384677dc016fd724e285731be3c97ab",
+    "execution": "copied from read-only nonboot diagnostic DVD to X:/n2rdiag/n2rprobe.exe",
+    "invocations": 1,
+    "ram_bytes": 67108864,
+    "maximum_output_bytes": 65536,
+    "maximum_component_bytes": 0,
+    "source_binding_owner_and_vss_arguments": false
+  },
+  "actual_RAM_volume_results": {
+    "storage_device_number": {"succeeded": false, "native_error": 1},
+    "disk_length": {"succeeded": true, "output_bytes": 8},
+    "volume_extents": {"succeeded": true},
+    "partition_information": {"succeeded": false, "native_error": 1},
+    "ntfs_volume_data": {"succeeded": true},
+    "kernel_RAMdisk_object_identity": "positive"
+  },
+  "implementation": {
+    "unsupported_case": "Only DEVICE error 1 accepts an explicitly represented native RAMdisk identity after revalidating the same held kernel RAMdisk object and complete backing facts.",
+    "successful_DEVICE_shape_bytes": 12,
+    "failed_DEVICE_event_preserved": true,
+    "RAM_handle": "read-only with read access required by LENGTH",
+    "length_and_same_identity_rechecks_preserved": true,
+    "physical_source_GPT_boot_image_and_role_checks_preserved": true,
+    "source_write_authority_from_exported_facts": false
+  },
+  "focused_build": {
+    "exit_code": 0,
+    "wall_seconds": 41.1688252,
+    "receipt_sha256": "829f1f03c8a82f6af2722bcb73b3e61f6b8b1376fb1023fd51f4242fd31d72cc",
+    "unit_tests_run": false,
+    "shared_build_directory_reused": true,
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+  },
+  "does_not_prove": [
+    "Corrected helper has completed native initialization",
+    "Current source or journal state has been independently reobserved",
+    "Shared-disk conversion or restart recovery has completed"
+  ]
+}

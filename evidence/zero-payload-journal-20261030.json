@@ -1,0 +1,34 @@
+{
+  "selected_bytes": 16384,
+  "short_write_resume_and_handoff": true,
+  "base_commit": "dd2588d806a0823959d60e5abb9256d0b0902789",
+  "encoded_journal_bytes": 29096,
+  "net_journal_bytes_saved": 12264,
+  "legacy_journal_bytes": 41360,
+  "zero_new_bytes": 12288,
+  "false_zero_claim_refused": true,
+  "binary_sha256": "79744563c982dbeb984321b50246a6f24e839f51ac3d1bf58e3be6fcd7d85722",
+  "all_old_bytes_preserved": true,
+  "zero_report_sha256": "5842328241be2d73d6d14c814ad6968b14b640af9cd31313c778f6493cc94af2",
+  "legacy_report_sha256": "354955def95580736aeb1871d86ec10b86e2cdfc228c60d40616028246a52f8b",
+  "artifact_directory": "D:\\code\\ntfs2refs\\.lab\\performance\\zero-journal-20261030-847da62828124bf48421f8fd0da95c7e",
+  "native_volume_qualified": false,
+  "unit_tests_run": false,
+  "closed_replay_refused": true,
+  "success": true,
+  "legacy_byte_comparison": [
+    {
+      "sha256": "851ccb1942d42c360127234ad968b8968c315ad43041b5c5b6ac0928a9ced51d",
+      "leaf": "resume.journal",
+      "matches_preserved_legacy": true
+    },
+    {
+      "sha256": "6fc56acec55ce7f787b269de30e5fc6d43049238e386f42448f5b088bb7dc0d7",
+      "leaf": "rollback.journal",
+      "matches_preserved_legacy": true
+    }
+  ],
+  "short_write_rollback_and_abort": true,
+  "kind": "zero-payload-selected-journal-integration",
+  "schema_version": 1
+}

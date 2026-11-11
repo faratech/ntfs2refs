@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "kind": "exact-alpha-recovery-controller-precut-failure",
+  "source_commit": "7feb4c06d21e9de73bb88961197f5b745463e490",
+  "binary_sha256": "c7b5809f4456f55e71f19b47d4e4cb9b7ee6cad86c4ff0fac36c1db5a5b909d1",
+  "run_id": "5231c90f27b842f690d43d2d82d88d3d",
+  "source_checkpoint": "58bd9ceb-60bc-4b34-81e1-7af197523a80",
+  "controller_run": "736deb6d534c423eb15d445f5a891be1",
+  "controller_failure": {
+    "utc": "2026-11-03T11:50:49.06712Z",
+    "turnoff_was_issued": false,
+    "automatic_retry": false,
+    "success": false,
+    "error": "System.Management.Automation.RemoteException: Invalid query "
+  },
+  "power_cut_issued": false,
+  "controller_argument_binding_failure": true,
+  "native_exit": 0,
+  "native_exit_observed": true,
+  "native_pid": 3668,
+  "wrapper_success": true,
+  "wrapper_outcome": "refs_completed",
+  "wrapper_lifecycle": "apply_intent",
+  "wrapper_summary": {
+    "known_content_hashes": 157,
+    "full_content_hashes_compared": false,
+    "extent_only_streams": 654,
+    "objects": 1534,
+    "mounted": "ReFS",
+    "all_complete_maps_identical": true
+  },
+  "independent_streams": 811,
+  "independent_hash_algorithm": "xxh3-128",
+  "independent_content_success": true,
+  "summary_archive_sha256": "78db3543eda8216dc7c64746e044bba4cbd824d6d9151c0fa2cd73032b897635",
+  "power_loss_qualified": false,
+  "general_release_qualified": false
+}

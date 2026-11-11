@@ -6,19 +6,20 @@
 //! https://xbpt.gitlab.io/forefst/structures/chkp/
 use crate::{
     refs_bootstrap::{AnchorProbe, RootReference, crc64_nvme},
-    refs_containers::{ContainerMapping, ContainerTablesProbe, ContainerTreeObservation},
+    refs_containers::{ContainerAddressView, ContainerTablesProbe, ContainerTreeObservation},
     refs_inspect::RefsGeometry,
 };
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     io::{Read, Seek, SeekFrom},
 };
 const PAGE: usize = 16384;
 const CLUSTER: u64 = 4096;
 const CPC: u64 = 16384;
+pub mod walk;
 const ROOTS: [(usize, u64); 10] = [
     (0, 2),
     (1, 0x21),
@@ -133,10 +134,11 @@ fn validate_map(
         tree.walk_finished && tree.rejection.is_none() && tree.root_count_matches == Some(true),
         "container walk or root count is not qualified for translation"
     );
+    let view = tree.address_view(volume_clusters)?;
     ensure!(
-        !tree.mappings.is_empty()
-            && tree.mappings.len() <= 4096
-            && tree.expected_root_rows == Some(tree.mappings.len() as u64),
+        !view.is_empty()
+            && (tree.compact.is_some() || view.len() <= 4096)
+            && tree.expected_root_rows == Some(view.len() as u64),
         "container row count differs or exceeds bound"
     );
     ensure!(
@@ -165,8 +167,14 @@ fn validate_map(
         tree.pages[0].stored_crc64 == crc && tree.pages[0].computed_crc64 == crc,
         "container root CRC differs from checkpoint reference"
     );
+    if tree.compact.is_some() {
+        return Ok(());
+    }
     let mut previous_id = None;
-    let mut physical = BTreeSet::new();
+    let mut physical = Vec::new();
+    physical
+        .try_reserve_exact(tree.mappings.len())
+        .context("container extent-check storage unavailable")?;
     for mapping in &tree.mappings {
         ensure!(
             mapping.container_id >= 2 && previous_id.is_none_or(|id| id < mapping.container_id),
@@ -185,15 +193,12 @@ fn validate_map(
             "container physical range exceeds volume"
         );
         ensure!(
-            mapping.value_bytes_hex.len() == 320
-                && hex::decode(&mapping.value_bytes_hex)?.len() == 160,
+            mapping.value_bytes_hex.bytes().is_ok(),
             "container raw value length differs"
         );
-        ensure!(
-            physical.insert(mapping.physical_start_lcn),
-            "duplicate container physical start"
-        );
+        physical.push(mapping.physical_start_lcn);
     }
+    physical.sort_unstable();
     let mut previous_end = None;
     for start in physical {
         ensure!(
@@ -204,7 +209,7 @@ fn validate_map(
     }
     Ok(())
 }
-type CommonMap<'a> = BTreeMap<u64, (&'a ContainerMapping, [usize; 2])>;
+type CommonMap<'a> = ContainerAddressView<'a>;
 fn common_map<'a>(
     checkpoint: &AnchorProbe,
     containers: &'a ContainerTablesProbe,
@@ -267,13 +272,29 @@ fn common_map<'a>(
     );
     validate_map(first, checkpoint, volume_clusters)?;
     validate_map(second, checkpoint, volume_clusters)?;
+    if let (Some(a), Some(b)) = (&first.compact, &second.compact) {
+        ensure!(
+            a.mapping_rows == b.mapping_rows
+                && a.same_addresses(b)
+                && a.mapping_sha256 == b.mapping_sha256,
+            "compact container failover mappings or values differ"
+        );
+        binding.container_table_ids = Some([first.table_id, second.table_id]);
+        binding.mapping_rows = Some(first.address_view(volume_clusters)?.len());
+        binding.common_mapping_sha256 = Some(a.mapping_sha256.clone());
+        binding.both_complete_count_matching_maps_agree = true;
+        return first.address_view(volume_clusters);
+    }
+    ensure!(
+        first.compact.is_none() && second.compact.is_none(),
+        "mixed container evidence encodings"
+    );
     ensure!(
         first.mappings.len() == second.mappings.len(),
         "container failover row counts differ"
     );
-    let mut result = BTreeMap::new();
     let mut hash = Sha256::new();
-    for (i, (a, b)) in first.mappings.iter().zip(&second.mappings).enumerate() {
+    for (a, b) in first.mappings.iter().zip(&second.mappings) {
         ensure!(
             a.container_id == b.container_id
                 && a.physical_start_lcn == b.physical_start_lcn
@@ -284,14 +305,13 @@ fn common_map<'a>(
         hash.update(a.container_id.to_le_bytes());
         hash.update(a.physical_start_lcn.to_le_bytes());
         hash.update(a.clusters_per_container.to_le_bytes());
-        hash.update(hex::decode(&a.value_bytes_hex)?);
-        result.insert(a.container_id, (a, [i, i]));
+        hash.update(a.value_bytes_hex.bytes()?);
     }
     binding.container_table_ids = Some([first.table_id, second.table_id]);
-    binding.mapping_rows = Some(result.len());
+    binding.mapping_rows = Some(first.mappings.len());
     binding.common_mapping_sha256 = Some(hex::encode(hash.finalize()));
     binding.both_complete_count_matching_maps_agree = true;
-    Ok(result)
+    first.address_view(volume_clusters)
 }
 fn translate(
     reference: &RootReference,
@@ -311,11 +331,10 @@ fn translate(
         );
         let id = virtual_lcn >> 15;
         let offset = virtual_lcn & 0x3fff;
-        let (mapping, rows) = map
-            .get(&id)
+        let (start, index) = map
+            .lookup(id)
             .context("virtual root names an absent container")?;
-        let lcn = mapping
-            .physical_start_lcn
+        let lcn = start
             .checked_add(offset)
             .context("translated address overflow")?;
         ensure!(lcn < volume_clusters, "translated root lies outside volume");
@@ -333,7 +352,7 @@ fn translate(
             container_id: id,
             offset_in_container: offset,
             physical_lcn: lcn,
-            source_mapping_row_indices: *rows,
+            source_mapping_row_indices: [index, index],
         });
     }
     Ok((physical, translations))

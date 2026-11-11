@@ -1,0 +1,132 @@
+{
+  "schema_version": 1,
+  "kind": "actual-partition-certification-ap-replay-and-terminal-readonly-integration",
+  "status": "combined-public-check-passed-native-qualification-pending",
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/lib.rs",
+      "bytes": 4032,
+      "sha256": "27448475d6f27ed5518355d7b6908cef14c048d7c436e4cf59f6b45a9be2b505"
+    },
+    {
+      "path": "crates/n2r-win32/src/native.rs",
+      "bytes": 200967,
+      "sha256": "a76088f1ad1ba89d13dcf99e2f7afd5dc6c37d661ff2bc1312547b65b261b538"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/paged_recovery.rs",
+      "bytes": 56957,
+      "sha256": "35b2963c279b8e21c49b084abb87ccf6aef77e8a34ceb9eb5857f1d1ee10c099"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/paged_recovery/partition_scope.rs",
+      "bytes": 24563,
+      "sha256": "6c4f93263a835031388d07908bb99815258a12e23298764da1fd220499a2801b"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_dump_locations.rs",
+      "bytes": 23162,
+      "sha256": "07338d2186ed8954957201859b2beeb9603766ee90225f017f5d9b27d8fa52d9"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_owner.rs",
+      "bytes": 40612,
+      "sha256": "9b4667847ad6f3d4a6b680382c9be4e7e8646bc904eec75115212222aa182674"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_restoration.rs",
+      "bytes": 41473,
+      "sha256": "464dae1b8c654ef27ffe2bee84a3877f9b65eaff0bcc4051f3e22d72d6c27917"
+    },
+    {
+      "path": "src/general_reconstruct/fast_verification/v4_maps.rs",
+      "bytes": 28216,
+      "sha256": "30801a59040286a9f3d38addacc72d167a0c9169629e3ddc15be37964dcbd00d"
+    },
+    {
+      "path": "src/general_reconstruct/selected_native_journal.rs",
+      "bytes": 49480,
+      "sha256": "f785a509bf26123f43417338f410ccebe5cc218e0fd18fcce276a391af890b84"
+    },
+    {
+      "path": "src/general_source_admission/resource_partition.rs",
+      "bytes": 51007,
+      "sha256": "0c9a9e5638867e5056d02085b58355e39dc3295213ccb53a1471b95293c83cff"
+    },
+    {
+      "path": "src/resource_partition_preparation.rs",
+      "bytes": 10066,
+      "sha256": "a138c5bf24e124a89a24a2ebf3b00fc2109f07e63de1aadff662bd057044e67e"
+    },
+    {
+      "path": "src/resource_partition_target.rs",
+      "bytes": 12391,
+      "sha256": "907d50cc79fc4ddf8444376c55bf77a6ee22f68ee3bddf29e7fdc3105b92787c"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/prepare.rs",
+      "bytes": 45434,
+      "sha256": "6c0ce61a5e4f3efaaff9efe64d227da64b07a67bbc9eb562bcfc2f248b776173"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/prepare/qualification.rs",
+      "bytes": 48421,
+      "sha256": "68b7b3824009c86433f6a5381ed3b81365f91dbcf26f2aab1a3e7749517ad783"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/prepare/qualification/apply.rs",
+      "bytes": 21950,
+      "sha256": "2657e488e7eb5343c65a93080e6276f5e406b882fc9931e8c63d32f56a7731ef"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/prepare/qualification/partition_apply.rs",
+      "bytes": 23573,
+      "sha256": "cd85fd10935756124be1a4a8d13d5c506f74bea0946d569510f0ff6aa47777c2"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/reopen.rs",
+      "bytes": 31484,
+      "sha256": "db45885c76bb7d91ff85d017c55a0ae28e7107773c837597200c7498b7e8bb2d"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/source_scope.rs",
+      "bytes": 12408,
+      "sha256": "1709afa493d34aee08bb391e01d68aec9600b003c450a79b0569012795ac8015"
+    }
+  ],
+  "reviewed_draft_patches": [
+    "0a8483128aaa0043685dc518cc1cac15fe13d4a61fa96b51c01221c648bf27c8",
+    "bd8797ae9e4a06b0e380e254cfe764b71cda281977120890d136b400de0f0b46",
+    "7b0bb527cf133af097271b8686d4d07293b80f9a76c93dba42bd29f731b7469c"
+  ],
+  "restoration_snapshot_original_sha256": "be29ec6c62a9acaab0933ce5bdc53a751b8fed69240a91fa168e63dfcf447884",
+  "check_exit": 0,
+  "check_wall_seconds": 22.5527078,
+  "check_receipt_sha256": "26316ec5d646a4744162088a41b04472066d1bee06d1234d9e5c43dcb7a16237",
+  "shared_target_reused": true,
+  "unit_tests_run": false,
+  "native_qualified": false,
+  "frozen_alpha_rebuilt": false,
+  "writer_cli_enabled": false,
+  "review_fixes": [
+    "Restoration Vec-to-array conversion errors use explicit bounded-length diagnostics; native page file uses actual Path.",
+    "Retained V4 comparison calls the existing comparator module explicitly.",
+    "SDK terminal slice was pinned from the author-frozen 41406-byte actual code snapshot; only three compiler sites were corrected."
+  ],
+  "behavior": [
+    "Actual source/target/arena certificate precedes real sealed-J publication, exact native AP flush/readback and bounded source writer.",
+    "Reopened SDK writer separately requires complete CURRENT OLD/NEW/COPY/zero/source-free authentication, direction/lifecycle binding and durable RB before rollback.",
+    "ROOT fresh execution retains actual maps/ticket/admission/expected artifact through HND and distinguishes actual interruption from terminal success.",
+    "Owning preparation connects actual source, expected tree, target capture, native J, publication, certificate and AP/HND.",
+    "Terminal BasicRO guard authenticates actual current private owner, closed J/index, publication/locator, original intent and retained native metadata file.",
+    "Actual target-only BasicRO and source-handle close precede native volume resolution and honest readonly partition capability.",
+    "Known built-in dumpfve.sys configuration is accepted in a bounded exact MULTI_SZ policy; unknown/custom filters refuse and hidden loaded-driver diagnostic stays false.",
+    "Dedicated workflows and immutable public alpha are preserved."
+  ],
+  "remaining": [
+    "Writable terminal finalization: original attributes, label and mount paths.",
+    "Fresh-live HND/admission ownership transfer and genuine ROOT process-death restart/MIXED replay orchestration.",
+    "Pre-AP process-death cancellation with complete persisted fingerprint.",
+    "Native full shared-Windows-disk case and public CLI routing; no source writes were performed for this development code."
+  ]
+}

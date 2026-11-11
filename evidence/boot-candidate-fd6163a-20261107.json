@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "kind": "actual-committed-Windows-boot-candidate-build",
+  "source_commit": "fd6163a78310a6ed0fe192b9971d6876e9cdbc7a",
+  "source_tree": "1fc1c11cf1ed876c4f8457b0d0f27b1ad99e0264",
+  "exit_code": 0,
+  "wall_seconds": 288.0295436,
+  "toolchain": "1.98.1",
+  "target": "x86_64-pc-windows-msvc",
+  "static_crt": true,
+  "jobs": 4,
+  "locked_dependencies": true,
+  "offline_build": true,
+  "shared_target_reused": true,
+  "source_before_after_verified": true,
+  "unit_tests_run": false,
+  "native_conversion_run": false,
+  "qualification_inherited": false,
+  "stable_release": false,
+  "binary": {
+    "path": ".lab/development/release-candidates/boot-public-fd6163a/bin/ntfs2refs.exe",
+    "bytes": 21571072,
+    "sha256": "6ae120b9d841938c934007a80772629c16cd4db9e33c94353bf66aae1532573c",
+    "shared_cache_copy_matches": true
+  },
+  "manifest": {
+    "path": ".lab/development/release-candidates/boot-public-fd6163a/manifest.json",
+    "sha256": "e31d39ab863313e5ff6d5441eee181fbf18492c86c781622b83fc2a084dff940"
+  },
+  "source_archive": {
+    "path": ".lab/development/release-candidates/boot-public-fd6163a/source.zip",
+    "bytes": 2426954,
+    "sha256": "c2ab4489436537d9a53bf53a7dd7911ac4d2085b10a3b1010d410bc1fffb8b2e"
+  },
+  "build_result": {
+    "path": ".lab/development/boot-public-fd6163a-release-result.json",
+    "sha256": "023f5213238c4f5e552cf7dd83ecc675a797c8ded2233331002a1827d9d9b5d2"
+  },
+  "capacity": {
+    "before_bytes": 210542851561,
+    "after_bytes": 210284381747,
+    "release_forecast_bytes": 1073741824,
+    "absolute_boot_cap_bytes": 279866334601,
+    "global_lab_cap_bytes": 329374052988,
+    "host_free_after_bytes": 38638735360,
+    "minimum_host_free_bytes": 17179869184,
+    "epoch_reset": false,
+    "fresh_native_admission_required": true,
+    "future_native_forecast_bytes": 17179869184
+  },
+  "previous_binary_and_symbols": {
+    "runtime_commit": "3c7ef0a6ba43ae94e92488ad9ea06e86837113b1",
+    "preserved_directory": ".lab/development/preserved-public-3c7ef0a-before-fd6163a",
+    "actual_preserved_bytes_including_receipt": 32743653,
+    "preservation_forecast_bytes": 67108864,
+    "receipt_sha256": "4ff06a1f9b981561bc600da8c1fe2e20de158dc2b8cc14c76a098fa67fcb7c3a"
+  },
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "original_windows_converted": false,
+  "original_windows_booted_refs": false,
+  "target_trust_label_preservation_proven": false,
+  "trust_label_omission_implemented": false,
+  "user_trust_label_policy_decision_pending": true,
+  "report_originals_and_verified_archives_preserved": true
+}

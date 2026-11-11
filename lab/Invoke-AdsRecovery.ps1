@@ -1,0 +1,141 @@
+# One public resume or rollback of the original hard-link AP state. Root must
+# restore that interrupted checkpoint separately for each direction. No power,
+# checkpoint, protection-clearing, bundle synthesis or automatic retry occurs.
+[CmdletBinding()]param(
+ [Parameter(Mandatory)][guid]$ExpectedParent,
+ [Parameter(Mandatory)][guid[]]$ExpectedCheckpointIds,
+ [Parameter(Mandatory)][string]$AdsManifestPath,
+ [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{64}\z')][string]$AdsManifestSha256,
+ [Parameter(Mandatory)][string]$HardlinkFixtureManifestPath,
+ [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{64}\z')][string]$HardlinkFixtureManifestSha256,
+ [Parameter(Mandatory)][string]$ToolsetManifest,
+ [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{64}\z')][string]$ToolsetManifestSha256,
+ [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{40}\z')][string]$SourceCommit,
+ [Parameter(Mandatory)][ValidatePattern('\AC:\\ntfs2refs\\ads-interrupt-[0-9a-f]{32}\\conversion\z')][string]$RecoveryDirectory,
+ [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{64}\z')][string]$RecoverySha256,
+ [switch]$Rollback
+)
+Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
+$workspace='D:\code\ntfs2refs';$base=Join-Path $workspace '.lab\hyperv\streaming-v2-20261027';$vmId=[guid]'2401593c-4b30-472e-9b6d-c9534cbaa599'
+$operation=if($Rollback){'rollback'}else{'resume'};$run=[guid]::NewGuid().ToString('N');$root=Join-Path $base ('ads-recovery-'+$operation+'-'+$run);$stage='C:\ntfs2refs\ads-recovery-'+$run;$task='N2R-AdsRecovery-'+$run;$created=$false;$session=$null
+function Need([bool]$Ok,[string]$Message){if(-not$Ok){throw $Message}}
+function Ordinary([string]$Path,[long]$Maximum){$m=Get-Item -LiteralPath ([IO.Path]::GetFullPath($Path)) -Force;Need ($m-is[IO.FileInfo]-and$m.Length-gt0-and$m.Length-le$Maximum) 'Bounded ordinary file required.';$a=$m;while($null-ne$a){Need (-not($a.Attributes-band[IO.FileAttributes]::ReparsePoint)) 'Reparse host ancestry refused.';if($a-is[IO.DirectoryInfo]){$a=$a.Parent}else{$a=$a.Directory}};return $m}
+function Save([string]$Name,$Value){$b=[Text.UTF8Encoding]::new($false).GetBytes(($Value|ConvertTo-Json -Depth 14));Need ($b.Length-le1MB) 'Host receipt too large.';$f=[IO.File]::Open((Join-Path $root $Name),'CreateNew','Write','Read');try{$f.Write($b,0,$b.Length);$f.Flush($true)}finally{$f.Dispose()}}
+$ids=@($ExpectedCheckpointIds|ForEach-Object {$_.ToString('D')});Need ($ids.Count-gt0-and@($ids|Sort-Object -Unique).Count-eq$ids.Count-and$ExpectedParent.ToString('D')-in$ids) 'Explicit interrupted checkpoint set required.'
+function HostGuard{$vm=Get-VM -Id $vmId;$actual=@(Get-VMSnapshot -VM $vm|ForEach-Object {$_.Id.ToString('D')});Need ($vm.State.ToString()-ceq'Running'-and$vm.ParentSnapshotId-eq$ExpectedParent-and$vm.MemoryStartup-eq4GB-and$vm.MemoryAssigned-eq4GB-and-not$vm.DynamicMemoryEnabled-and(Get-VMProcessor -VM $vm).Count-eq4-and@(Get-VMNetworkAdapter -VM $vm).Count-eq0-and$actual.Count-eq$ids.Count-and@($ids|Where-Object {$_-notin$actual}).Count-eq0) 'Reviewed interrupted parent/checkpoints/4 GiB/4 CPU/no NIC required.'}
+try{
+ $mf=Ordinary $ToolsetManifest 1MB;$ff=Ordinary $HardlinkFixtureManifestPath 1MB;$af=Ordinary $AdsManifestPath 1MB;Need ((Get-FileHash -LiteralPath $mf.FullName).Hash.ToLowerInvariant()-ceq$ToolsetManifestSha256-and(Get-FileHash -LiteralPath $ff.FullName).Hash.ToLowerInvariant()-ceq$HardlinkFixtureManifestSha256-and(Get-FileHash -LiteralPath $af.FullName).Hash.ToLowerInvariant()-ceq$AdsManifestSha256) 'Manifest pin differs.'
+ $manifest=[IO.File]::ReadAllText($mf.FullName)|ConvertFrom-Json;$fixture=[IO.File]::ReadAllText($ff.FullName)|ConvertFrom-Json;$ads=[IO.File]::ReadAllText($af.FullName)|ConvertFrom-Json
+ Need ($manifest.kind-ceq'ads-recovery-toolset'-and$manifest.converter_code_commit-ceq$SourceCommit-and$manifest.tracked_runtime_diff_empty-eq$true-and$manifest.public_executable_rebuilt-eq$false) 'Exact hard-link toolset required.'
+ Need ($fixture.success-eq$true-and$fixture.disk_number-eq6-and$fixture.partition_bytes-eq52GB-and$fixture.partition_offset-eq32MB-and$fixture.user_file_identities-eq3-and$fixture.user_file_names-eq9) 'Pinned H: fixture required.'
+ Need ($ads.success-eq$true-and$ads.kind-ceq'independent-ads-hardlink-ntfs-fixture'-and$ads.hardlink_fixture_sha256-ceq$HardlinkFixtureManifestSha256-and$ads.named_stream_count-eq5-and$ads.named_stream_alias_views-eq15-and$ads.default_streams_unchanged-eq$true) 'Pinned ADS fixture differs.'
+ $tools=@($manifest.tools|Where-Object name -CEQ 'ntfs2refs.exe');Need ($tools.Count-eq1) 'One pinned public executable required.';$tool=$tools[0];$exe=Ordinary $tool.path 64MB;Need ($exe.DirectoryName-ceq$mf.DirectoryName-and$exe.Name-ceq'ntfs2refs.exe'-and$exe.Length-eq$tool.bytes-and(Get-FileHash -LiteralPath $exe.FullName).Hash.ToLowerInvariant()-ceq$tool.sha256) 'Public executable differs.'
+ Import-Module (Join-Path $PSScriptRoot 'Lab.psm1') -Force;$configuration=Get-LabConfiguration -WorkspaceRoot $workspace;$capacity=Get-LabCapacity -Configuration $configuration;Need ($capacity.MaximumActualBytes-eq329374052988-and$capacity.MinimumFreeBytes-eq17179869184) 'Fixed capacity epoch differs.';Assert-LabCapacity -Capacity $capacity -AdditionalBytes 2GB;HostGuard
+ New-Item -ItemType Directory -Path $root|Out-Null;$created=$true
+ $c=@{run_id=$run;stage=$stage;task=$task;operation=$operation;directory=$RecoveryDirectory;bundle_sha256=$RecoverySha256;fixture_sha256=$HardlinkFixtureManifestSha256;ads_fixture_sha256=$AdsManifestSha256;ads_sha256=$AdsManifestSha256;binary_sha256=$tool.sha256;binary_bytes=$tool.bytes;source_commit=$SourceCommit;main_source_sha256=$manifest.main_source_sha256;partition_number=$fixture.partition_number}
+ Save 'intent.json' @{schema_version=1;kind='public-ads-recovery-intent';configuration=$c;parent_id=$ExpectedParent.ToString('D');checkpoint_ids=$ids;toolset_manifest_sha256=$ToolsetManifestSha256;fixture_manifest=$ff.FullName;capacity=$capacity;forecast_bytes=2GB;automatic_retry=$false;utc=[DateTime]::UtcNow.ToString('o')}
+ $body=@'
+Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
+$c=[Text.UTF8Encoding]::new($false).GetString([Convert]::FromBase64String('__CONFIG__'))|ConvertFrom-Json;$phase='preflight';$nativeExit=$null;$process=$null
+function Need([bool]$Ok,[string]$Message){if(-not$Ok){throw $Message}}
+function Save([string]$Name,$Value){$b=[Text.UTF8Encoding]::new($false).GetBytes(($Value|ConvertTo-Json -Depth 14));Need ($b.Length-le1MB) 'Wrapper receipt too large.';$f=[IO.File]::Open((Join-Path $c.stage $Name),'CreateNew','Write','Read');try{$f.Write($b,0,$b.Length);$f.Flush($true)}finally{$f.Dispose()}}
+function Json([string]$Path,[long]$Limit=64MB){$m=Get-Item -LiteralPath $Path -Force;Need ($Path.StartsWith('C:\',[StringComparison]::OrdinalIgnoreCase)-and$m-is[IO.FileInfo]-and$m.Length-gt0-and$m.Length-le$Limit) 'Bounded ordinary C JSON required.';$a=$m;while($null-ne$a){Need (-not($a.Attributes-band[IO.FileAttributes]::ReparsePoint)) 'Reparse C ancestry.';if($a-is[IO.DirectoryInfo]){$a=$a.Parent}else{$a=$a.Directory}};[IO.File]::ReadAllText($Path)|ConvertFrom-Json}
+function Idle{Need (@(Get-CimInstance Win32_Process|Where-Object {$_.Name-match'\A(?:ntfs2refs(?:-.+)?|lab-.+)\.exe\z'}).Count-eq0-and@(Get-ScheduledTask|Where-Object {$_.TaskName-like'N2R-*'-and$_.TaskName-cne$c.task-and$_.State.ToString()-notin@('Ready','Disabled')}).Count-eq0) 'Project worker active.'}
+function Log([string]$Path){$m=Get-Item -LiteralPath $Path -Force;Need ($m-is[IO.FileInfo]-and$m.Length-le8MB) 'Native log too large.';return @{bytes=$m.Length;sha256=(Get-FileHash -LiteralPath $Path).Hash.ToLowerInvariant();text=[IO.File]::ReadAllText($Path)}}
+function SameArray($A,$B){$a1=@($A);$b1=@($B);if($a1.Count-ne$b1.Count){return $false};for($i=0;$i-lt$a1.Count;$i++){if($a1[$i]-cne$b1[$i]){return $false}};return $true}
+function ObserveAP([string]$Path,$Ticket){$m=Get-Item -LiteralPath $Path -Force;Need ($m-is[IO.FileInfo]-and-not($m.Attributes-band[IO.FileAttributes]::ReparsePoint)-and$m.Length-eq$Ticket.journal_length) 'Native published journal length differs.';$f=[IO.File]::Open($Path,'Open','Read','Read');$actual=[byte[]]::new(8192);try{$at=0;while($at-lt8192){$n=$f.Read($actual,$at,8192-$at);Need ($n-gt0) 'Short journal marker read.';$at+=$n}}finally{$f.Dispose()};$expected=[byte[]]::new(8192);[Array]::Copy([Text.Encoding]::ASCII.GetBytes('N2RSAP01'),0,$expected,4096,8);[Array]::Copy([byte[]]$Ticket.immutable_sha256,0,$expected,4104,32);[Array]::Copy([byte[]]$Ticket.new_selected_sha256,0,$expected,4136,32);$sha=[Security.Cryptography.SHA256]::Create();try{$hash=$sha.ComputeHash($expected,4096,4064)}finally{$sha.Dispose()};[Array]::Copy($hash,0,$expected,8160,32);for($i=0;$i-lt8192;$i++){Need ($actual[$i]-eq$expected[$i]) 'Expected original AP, not a completed or foreign journal.'};return @{marker='N2RSAP01';completion_clear=$true;marker_bytes_read=8192;journal_payload_read=$false;recovery_authority=$false}}
+function Fsutil([string[]]$Arguments){$old=[Console]::OutputEncoding;try{[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);$lines=@(& "$env:SystemRoot\System32\fsutil.exe" @Arguments 2>&1|ForEach-Object {[string]$_});$exit=$LASTEXITCODE;Need ($exit-eq0-and($lines-join"`n").Length-le65536) 'Bounded fsutil failed.';return ,$lines}finally{[Console]::OutputEncoding=$old}}
+function VerifyGroups($Fixture,[string]$Filesystem){
+ $d=Get-Disk -Number 6;$p=Get-Partition -DriveLetter H;$v=Get-Volume -DriveLetter H
+ Need ($d.UniqueId-ceq$Fixture.disk_unique_id_after-and[guid]$d.Guid-eq[guid]$Fixture.disk_guid-and-not$d.IsOffline-and-not$d.IsReadOnly-and-not$d.IsBoot-and-not$d.IsSystem-and$p.DiskNumber-eq6-and$p.PartitionNumber-eq$c.partition_number-and[guid]$p.Guid-eq[guid]$Fixture.partition_guid-and$p.Offset-eq32MB-and$p.Size-eq52GB-and$v.FileSystem-ceq$Filesystem-and$v.AllocationUnitSize-eq4096-and$v.FileSystemLabel-ceq'n2r-links-source') 'Recovered H: route or filesystem differs.'
+ $groups=[Collections.Generic.List[object]]::new();$seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase);$paths=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+ foreach($group in $Fixture.groups){$names=[Collections.Generic.List[object]]::new();$fileId=$null;$expected=@($group.names|ForEach-Object {$_.path.Substring(2)}|Sort-Object);Need ($expected.Count-eq3) 'Three fixture names required.'
+  foreach($name in $group.names){Need ($name.path.StartsWith('H:\',[StringComparison]::Ordinal)-and$name.path-cnotmatch'\.\.|["\r\n\x00]'-and$paths.Add($name.path)) 'Unsafe or duplicate H: fixture path.';$m=Get-Item -LiteralPath $name.path -Force;Need ($m-is[IO.FileInfo]-and-not($m.Attributes-band[IO.FileAttributes]::ReparsePoint)-and$m.Length-eq$group.logical_length-and(Get-FileHash -LiteralPath $name.path -Algorithm SHA256).Hash.ToLowerInvariant()-ceq$group.sha256) 'Recovered file contents differ.'
+   $query=Fsutil @('file','queryfileid',$name.path);$ids=[regex]::Matches(($query-join"`n"),'0x[0-9a-fA-F]+');Need ($ids.Count-eq1) 'One native file ID required.';$id=$ids[0].Value.ToLowerInvariant();if($null-eq$fileId){$fileId=$id}else{Need ($fileId-ceq$id) 'Recovered aliases do not share identity.'};if($Filesystem-ceq'NTFS'){Need ($id-ceq$group.file_id) 'Rollback did not preserve original NTFS identity.'}
+   $queryLinks=Fsutil @('hardlink','list',$name.path);$links=@($queryLinks|ForEach-Object {$line=$_.Trim();if($line.Length){if($line.StartsWith('H:\',[StringComparison]::OrdinalIgnoreCase)){$line=$line.Substring(2)};$line}}|Sort-Object);Need ($links.Count-eq3-and@(Compare-Object $expected $links -CaseSensitive).Count-eq0) 'Recovered hard-link set differs.';$names.Add(@{path=$name.path;sha256=$group.sha256;length=$m.Length;file_id=$id;hardlink_list=$links;queryfileid_output=$query;hardlink_list_output=$queryLinks})
+  };Need ($seen.Add($fileId)) 'Different source files collapsed into one identity.';$groups.Add(@{name=$group.name;file_id=$fileId;names=$names.ToArray()})
+ };Need ($seen.Count-eq3-and$paths.Count-eq9) 'Recovered identity/name count differs.';return @{filesystem=$Filesystem;identities=$seen.Count;names=$paths.Count;groups=$groups.ToArray()}
+}
+
+function VerifyAds($Fixture,$Ads){
+ $reports=[Collections.Generic.List[object]]::new();$views=0;$total=0L
+ foreach($stream in $Ads.streams){
+  $name=[string]$stream.name
+  Need ($name.Length-gt0-and$name.Length-le255-and$name-cnotmatch'[:\\/\x00-\x1f]'-and$stream.length-ge0-and$stream.length-le8MB-and$stream.sha256-cmatch'\A[0-9a-f]{64}\z'-and(SameArray @($name.ToCharArray()|ForEach-Object {[int][char]$_}) $stream.name_utf16)) 'Invalid fixture stream identity.'
+  $group=@($Fixture.groups|Where-Object name -CEQ $stream.group);Need ($group.Count-eq1) 'ADS group absent.';$group=$group[0]
+  $expectedPaths=@($group.names|ForEach-Object {$_.path}|Sort-Object);$suppliedPaths=@($stream.aliases|ForEach-Object {$_.path}|Sort-Object)
+  Need ($suppliedPaths.Count-eq3-and(SameArray $expectedPaths $suppliedPaths)) 'ADS aliases differ from the hard-link fixture.'
+  $aliases=[Collections.Generic.List[object]]::new()
+  foreach($alias in $stream.aliases){
+   $bytes=Get-Content -LiteralPath $alias.path -Stream $name -Encoding Byte -ReadCount 0 -ErrorAction Stop
+   if($null-eq$bytes){$bytes=[byte[]]::new(0)}else{$bytes=[byte[]]$bytes}
+   Need ($bytes.Length-eq$stream.length) 'ADS length changed.'
+   $sha=[Security.Cryptography.SHA256]::Create();try{$digest=([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-','').ToLowerInvariant()}finally{$sha.Dispose()}
+   Need ($digest-ceq$stream.sha256) 'ADS payload differs through a hard-link name.'
+   $aliases.Add(@{path=$alias.path;name=$name;name_utf16=$stream.name_utf16;length=$bytes.Length;sha256=$digest});$views++
+  }
+  $reports.Add(@{group=$stream.group;name=$name;name_utf16=$stream.name_utf16;length=$stream.length;sha256=$stream.sha256;aliases=$aliases.ToArray()});$total+=$stream.length
+ }
+ $enumerations=[Collections.Generic.List[object]]::new()
+ foreach($group in $Fixture.groups){
+  $named=@($Ads.streams|Where-Object group -CEQ $group.name);$expectedNames=@(':$DATA')+@($named|ForEach-Object {$_.name})
+  foreach($alias in $group.names){
+   $streams=@(Get-Item -LiteralPath $alias.path -Stream * -ErrorAction Stop);$actualNames=@($streams|ForEach-Object {[string]$_.Stream})
+   Need ($actualNames.Count-eq$expectedNames.Count-and@(Compare-Object $expectedNames $actualNames -CaseSensitive).Count-eq0) 'Native ADS enumeration is not the exact expected set.'
+   $entries=@();foreach($entry in $streams){$length=if($entry.Stream-ceq':$DATA'){$group.logical_length}else{($named|Where-Object name -CEQ $entry.Stream).length};Need ($entry.Length-eq$length) 'Native stream enumeration length differs.';$entries+=@{name=[string]$entry.Stream;length=$entry.Length}}
+   $enumerations.Add(@{path=$alias.path;streams=$entries})
+  }
+ }
+ Need ($reports.Count-eq5-and$views-eq15-and$total-eq$Ads.named_logical_bytes) 'ADS fixture totals differ.'
+ return @{named_stream_count=$reports.Count;alias_stream_views=$views;named_logical_bytes=$total;streams=$reports.ToArray();enumerations=$enumerations.ToArray();digest_algorithm='sha256'}
+}
+try{
+ Idle;$fixturePath=Join-Path $c.stage 'fixture.json';Need ((Get-FileHash -LiteralPath $fixturePath).Hash.ToLowerInvariant()-ceq$c.fixture_sha256) 'Staged fixture pin differs.';$fixture=Json $fixturePath 1MB
+ $adsPath=Join-Path $c.stage 'ads-fixture.json';Need ((Get-FileHash -LiteralPath $adsPath).Hash.ToLowerInvariant()-ceq$c.ads_sha256) 'Staged ADS fixture pin differs.';$ads=Json $adsPath 1MB
+ $bundlePath=Join-Path $c.directory 'allocation-recovery-bundle.json';Need ((Get-FileHash -LiteralPath $bundlePath).Hash.ToLowerInvariant()-ceq$c.bundle_sha256) 'Original recovery bundle pin differs.';$bundle=Json $bundlePath 65536
+ Need ($bundle.kind-ceq'allocation-bounded-recovery-bundle'-and$bundle.serialized_bundle_grants_recovery_authority-eq$false) 'Original native bundle required.'
+ foreach($key in @('request','plan','ticket','expectation','verification')){Need ((Get-FileHash -LiteralPath $bundle.$key.path).Hash.ToLowerInvariant()-ceq$bundle.$key.sha256) 'Original native recovery input pin differs.'}
+ $request=Json $bundle.request.path 131072;$ticket=Json $bundle.ticket.path 65536;$expected=Json $bundle.expectation.path
+ Need ($request.pair.source.disk_number-eq6-and[guid]$request.pair.source.identity.disk_guid-eq[guid]$fixture.disk_guid-and[guid]$request.pair.source.identity.partition_guid-eq[guid]$fixture.partition_guid-and$request.pair.source.identity.partition_bytes-eq52GB-and$request.pair.source.identity.partition_offset-eq32MB) 'Bundle is not for the H: fixture.'
+ $source=Get-Disk -Number 6;Need ([guid]$source.Guid-eq[guid]$fixture.disk_guid-and$source.UniqueId-ceq$fixture.disk_unique_id_after-and$source.IsOffline-and-not$source.IsReadOnly) 'Original activated AP source is required; protection is never changed here.'
+ Save 'preflight-markers.json' (ObserveAP $bundle.journal $ticket)
+ $binary=Join-Path $c.stage 'ntfs2refs.exe';Need ((Get-Item -LiteralPath $binary).Length-eq$c.binary_bytes-and(Get-FileHash -LiteralPath $binary).Hash.ToLowerInvariant()-ceq$c.binary_sha256) 'Exact public binary required.'
+ Save 'wrapper-worker.json' @{pid=$PID;creation_ms=([DateTimeOffset](Get-Process -Id $PID).StartTime).ToUnixTimeMilliseconds();utc=[DateTime]::UtcNow.ToString('o')}
+ $args=@('--recover',$c.directory,'--recovery-sha256',$c.bundle_sha256);if($c.operation-ceq'rollback'){$args+='--rollback'};$nativeArgs=($args|ForEach-Object {'"'+$_+'"'})-join' '
+ $stdin=Join-Path $c.stage 'stdin-yes.txt';[IO.File]::WriteAllBytes($stdin,[Text.Encoding]::ASCII.GetBytes("yes`r`n"));$stdout=Join-Path $c.stage 'stdout.log';$stderr=Join-Path $c.stage 'stderr.log';$phase='public-recovery'
+ $process=Start-Process -FilePath $binary -ArgumentList $nativeArgs -WorkingDirectory $c.stage -RedirectStandardInput $stdin -RedirectStandardOutput $stdout -RedirectStandardError $stderr -WindowStyle Hidden -PassThru;$null=$process.Handle
+ Save 'native-process.json' @{pid=$process.Id;creation_ms=([DateTimeOffset]$process.StartTime).ToUnixTimeMilliseconds();binary_sha256=$c.binary_sha256;argv=$args;expected_exit=0;utc=[DateTime]::UtcNow.ToString('o')};$process.WaitForExit();$process.Refresh();$nativeExit=$process.ExitCode;$out=Log $stdout;$err=Log $stderr
+ Save 'native-terminal.json' @{native_exit=$nativeExit;native_exit_observed=($null-ne$nativeExit);stdout=$out;stderr=$err;utc=[DateTime]::UtcNow.ToString('o')};Need ($null-ne$nativeExit-and$nativeExit-eq0) ('Public recovery exited '+$nativeExit)
+ $phase='closed-recovery-observation';Idle;$prefix=if($c.operation-ceq'rollback'){'NTFS rollback completed'}else{'ReFS recovery completed'};$done=[regex]::Matches($out.text,'(?m)^'+$prefix+'[.] Recovery records: (C:\\ProgramData\\ntfs2refs\\runs\\recovery-[0-9a-f]{32})[ \t]*\r?$');Need ($done.Count-eq1) 'One native recovery completion path required.';$records=Join-Path $done[0].Groups[1].Value $c.operation
+ $result=Json (Join-Path $records 'result.json');$completion=Json (Join-Path $records 'completion.json');Need ($result.kind-ceq'allocation-bounded-recovery'-and$result.success-eq$true-and$result.observed_lifecycle-ceq'apply_intent'-and$result.action-ceq$c.operation-and$result.source_admitted-eq$false-and$result.fresh_apply_authorized-eq$false) 'Original AP recovery action differs.'
+ $hashes=$null;$objects=$null;$namedHashes=$null
+ if($c.operation-ceq'resume'){
+  Need ($result.outcome-ceq'refs_completed'-and$completion.success-eq$true-and$completion.rollback_closed-eq$true-and$null-eq$completion.error-and$completion.mount_paths_preserved-eq$true-and(SameArray $completion.mount_paths_after.paths @('H:\'))) 'ReFS completion differs.'
+  $handoff=Json (Join-Path $records 'handoff.json') 65536;Need ($handoff.replay_closed-eq$true-and$handoff.selected_bytes-eq$ticket.selected_bytes-and(SameArray $handoff.selected_sha256 $ticket.new_selected_sha256)) 'Recovery HND differs.'
+  $native=@($completion.native.native.objects);$objects=$native.Count;Need ($objects-eq@($expected.objects).Count) 'Canonical native object count differs.';$hashes=0;$namedHashes=0
+  foreach($o in $expected.objects){
+   $matches=@($native|Where-Object {($_.components-join'\')-ceq($o.path-join'\')});Need ($matches.Count-eq1) 'Canonical recovered object missing/duplicated.';$observed=$matches[0];if(-not$o.directory){Need ($observed.logical_sha256-ceq$o.sha256) 'Canonical logical digest differs.';$hashes++}
+   $sourceStreams=@();$prop=$o.PSObject.Properties['named_streams'];if($null-ne$prop){$sourceStreams=@($prop.Value)};$actualStreams=@();$prop=$observed.PSObject.Properties['named_streams'];if($null-ne$prop){$actualStreams=@($prop.Value)}
+   Need ($sourceStreams.Count-eq$actualStreams.Count) 'Named stream count differs.'
+   foreach($s in $sourceStreams){$same=@($actualStreams|Where-Object {SameArray $_.name_utf16 $s.name_utf16});Need ($same.Count-eq1-and$same[0].logical_sha256-ceq$s.sha256-and$same[0].expected_sha256-ceq$s.sha256) 'Recovered named stream digest differs.';$namedHashes++}
+  }
+  Need ($objects-eq8-and$hashes-eq4-and$namedHashes-eq5) 'Expected eight canonical objects, four default hashes and five named hashes.'
+  $after=VerifyGroups $fixture 'ReFS'
+ }else{
+  Need ($result.outcome-ceq'ntfs_restored'-and$completion.mounted_filesystem-ceq'NTFS'-and$null-eq$completion.error) 'NTFS completion differs.';$rolled=Json (Join-Path $records 'rollback.json') 65536;Need ($rolled.replay_closed-eq$true-and$rolled.selected_bytes-eq$ticket.selected_bytes-and(SameArray $rolled.selected_sha256 $ticket.old_selected_sha256)) 'Rollback ABT differs.';$after=VerifyGroups $fixture 'NTFS'
+ }
+ Save 'fixture-after.json' $after
+ Save 'ads-after.json' (VerifyAds $fixture $ads)
+ Save 'wrapper-result.json' @{schema_version=1;kind='public-ads-recovery-observation';success=$true;operation=$c.operation;source_commit=$c.source_commit;binary_sha256=$c.binary_sha256;main_source_sha256=$c.main_source_sha256;original_bundle_sha256=$c.bundle_sha256;fixture_sha256=$c.fixture_sha256;ads_fixture_sha256=$c.ads_sha256;native_exit=$nativeExit;recovery_records=$records;observed_lifecycle=$result.observed_lifecycle;action=$result.action;outcome=$result.outcome;native_objects=$objects;complete_logical_hashes=$hashes;native_named_stream_hashes=$namedHashes;independent_ads_views_verified=15;identities_verified=3;names_verified=9;result_sha256=(Get-FileHash -LiteralPath (Join-Path $records 'result.json')).Hash.ToLowerInvariant();completion_sha256=(Get-FileHash -LiteralPath (Join-Path $records 'completion.json')).Hash.ToLowerInvariant();automatic_retry=$false;general_conversion_qualified=$false;utc=[DateTime]::UtcNow.ToString('o')}
+}catch{Save 'wrapper-failed.json' @{success=$false;phase=$phase;native_exit=$nativeExit;error=$_.Exception.ToString();automatic_retry_or_protection_change=$false;utc=[DateTime]::UtcNow.ToString('o')};throw}finally{if($null-ne$process){$process.Dispose()}}
+'@
+ $body=$body.Replace('__CONFIG__',[Convert]::ToBase64String([Text.UTF8Encoding]::new($false).GetBytes(($c|ConvertTo-Json -Depth 8 -Compress))));$wrapper=Join-Path $root 'guest-wrapper.ps1';[IO.File]::WriteAllText($wrapper,$body,[Text.UTF8Encoding]::new($false));$wrapperPin=(Get-FileHash -LiteralPath $wrapper).Hash.ToLowerInvariant()
+ $session=New-PSSession -VMId $vmId -Credential (Import-Clixml (Join-Path $workspace '.lab\hyperv\win11\secrets\guest-credential.xml'))
+ Invoke-Command -Session $session -ArgumentList $stage,$task -ScriptBlock {param($Stage,$Task);$ErrorActionPreference='Stop';if((Test-Path -LiteralPath $Stage)-or@(Get-ScheduledTask|Where-Object TaskName -CEQ $Task).Count-or@(Get-CimInstance Win32_Process|Where-Object {$_.Name-match'\A(?:ntfs2refs(?:-.+)?|lab-.+)\.exe\z'}).Count){throw 'Fresh idle stage required.'};New-Item -ItemType Directory -Path $Stage|Out-Null}
+ Copy-Item -LiteralPath $exe.FullName -ToSession $session -Destination (Join-Path $stage 'ntfs2refs.exe');Copy-Item -LiteralPath $ff.FullName -ToSession $session -Destination (Join-Path $stage 'fixture.json');Copy-Item -LiteralPath $af.FullName -ToSession $session -Destination (Join-Path $stage 'ads-fixture.json');Copy-Item -LiteralPath $wrapper -ToSession $session -Destination (Join-Path $stage 'wrapper.ps1');HostGuard
+ Save 'dispatch.json' @{kind='public-ads-recovery-dispatch';run_id=$run;operation=$operation;parent_id=$ExpectedParent.ToString('D');checkpoint_ids=$ids;guest_stage=$stage;task_name=$task;binary_sha256=$tool.sha256;source_commit=$SourceCommit;wrapper_sha256=$wrapperPin;original_bundle_sha256=$RecoverySha256;utc=[DateTime]::UtcNow.ToString('o')}
+ Invoke-Command -Session $session -ArgumentList $stage,$task,$wrapperPin -ScriptBlock {param($Stage,$Task,$Pin);$ErrorActionPreference='Stop';$path=Join-Path $Stage 'wrapper.ps1';if((Get-FileHash -LiteralPath $path).Hash.ToLowerInvariant()-cne$Pin){throw 'Wrapper pin differs.'};Register-ScheduledTask -TaskName $Task -Action (New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "'+$path+'"')) -Principal (New-ScheduledTaskPrincipal -UserId SYSTEM -LogonType ServiceAccount -RunLevel Highest) -Settings (New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero))|Out-Null}
+ HostGuard;Assert-LabCapacity -Capacity (Get-LabCapacity -Configuration $configuration) -AdditionalBytes 2GB
+ Invoke-Command -Session $session -ArgumentList $task -ScriptBlock {param($Task);$ErrorActionPreference='Stop';$t=Get-ScheduledTask -TaskName $Task;$i=Get-ScheduledTaskInfo -TaskName $Task;if($t.State.ToString()-cne'Ready'-or$i.LastRunTime.Year-ge2000-or@(Get-ScheduledTask|Where-Object {$_.TaskName-like'N2R-*'-and$_.State.ToString()-notin@('Ready','Disabled')}).Count){throw 'Untouched idle task required.'};Start-ScheduledTask -TaskName $Task}
+ Save 'start.json' @{start_issued_once=$true;expected_native_exit=0;completion_inferred=$false;utc=[DateTime]::UtcNow.ToString('o')};[IO.File]::ReadAllText((Join-Path $root 'dispatch.json'))
+}catch{if($created-and-not(Test-Path -LiteralPath (Join-Path $root 'dispatch-failed.json'))){Save 'dispatch-failed.json' @{success=$false;error=$_.Exception.ToString();automatic_retry=$false}};throw}finally{if($null-ne$session){Remove-PSSession $session}}

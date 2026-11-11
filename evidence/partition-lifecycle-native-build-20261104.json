@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "kind": "actual-target-only-ntfs-lifecycle-and-native-readonly-collector",
+  "status": "sdk-check-passed-native-qualification-pending",
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/attestation_native.rs",
+      "bytes": 36965,
+      "sha256": "3de075a6c54983a4e2d76211e2ced0f92fdffcae517a38789e55181f3044ec2c"
+    },
+    {
+      "path": "crates/n2r-win32/src/attestation_partition.rs",
+      "bytes": 11147,
+      "sha256": "b422c340dd320f238ff11927ff425d427111229d80e0a01540fe20b8fa985bb0"
+    },
+    {
+      "path": "crates/n2r-win32/src/lib.rs",
+      "bytes": 3609,
+      "sha256": "0de165119c811e77d8dde8bd77c6a400cc33487130d54b10234656fca41dc9e7"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_lifecycle.rs",
+      "bytes": 6575,
+      "sha256": "7bfbb50bb35580166f40d0820831ec82c16b0db6591fb3959d27dcfc5dc83041"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_lifecycle/staged.rs",
+      "bytes": 45368,
+      "sha256": "e64113c39a0961136cc11317f17b1c0ef267cc756628bda411a332b1a01045d2"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_owner.rs",
+      "bytes": 20513,
+      "sha256": "43089479f5bf33728d725ad26dab4a9501b238cd5c9a71dbd6d41510e42841b3"
+    },
+    {
+      "path": "crates/n2r-win32/src/txf_native.rs",
+      "bytes": 28542,
+      "sha256": "53ef537a433467e08dcdac60e905532d9f64afe623484284c5cc2ba0037e7812"
+    }
+  ],
+  "check_exit": 0,
+  "check_wall_seconds": 10.9249462,
+  "check_receipt_sha256": "deaeb0cdd98f6ce0face64e279f91fd692a052f417b686583c4d4e92d8b508f8",
+  "shared_target_reused": true,
+  "unit_tests_run": false,
+  "native_qualified": false,
+  "frozen_alpha_rebuilt": false,
+  "lifecycle_reviewed_patch_sha256": "cf654f0012db83805db972af930f3a1d390d2097b61241bad562b815b307f846",
+  "native_reviewed_patch_sha256": "39d3334a6fc02e93ad7e056464876ebac2ee6e93ad16a1af6825a08a648576d7",
+  "native_patch_missing_terminal_newline_repaired": true,
+  "copied_lifecycle_sources_pinned_before_application": true,
+  "prelock_txf_gpt_style_corrected_to_one": true,
+  "behavior": [
+    "Actual original volume ownership; Basic lock/dismount/flush, target-only BasicREADONLY, borrowed native collection, relock/private and same-file adoption.",
+    "External held intent denies a compatible second writer; exact new-record readback precedes every target-only GPT setter.",
+    "Full source-ID/type/attrs/name/GPT/sibling/critical checks; no physical payload writer/whole-layout setter/automatic Drop restoration.",
+    "Shared paged native collector uses actual physical writable facts and separate targetRO/error19 proof; old dedicated protection is preserved.",
+    "Native namespace/security/SACL/EA/reparse/retrieval/bitmap/TxF/VSS evidence retains actual phase association.",
+    "Publication handoff revalidates actual owner/intent without comparing mixed current payload to old hashes."
+  ],
+  "remaining": [
+    "Native validation of readonly/unlock/relock phase on actual Windows.",
+    "Authenticated process-death preparation reopen/cancellation and target-only HND/ABT restoration.",
+    "Public capture/apply/recovery routing and same-disk working storage policy; CLI is not enabled."
+  ]
+}

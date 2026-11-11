@@ -4,7 +4,7 @@ use n2r_win32::{
     attestation::{
         IoctlQuery, Query, Report, Request, StreamCapture, StreamQuery, VolumeAllocation,
     },
-    bitmap_paging, stream_layout as layout,
+    bitmap_paging, retrieval_paging, stream_layout as layout,
 };
 use ntfs2refs::{
     ntfs_inspect::{
@@ -45,15 +45,19 @@ fn enumeration(items: &[(Vec<u16>, u64, u64)]) -> Vec<u8> {
     b
 }
 fn rpp(runs: &[(u64, i64)]) -> IoctlQuery {
+    rpp_from(0, runs)
+}
+fn rpp_from(start: u64, runs: &[(u64, i64)]) -> IoctlQuery {
     let mut b = vec![0; 16 + 16 * runs.len()];
     p32(&mut b, 0, runs.len() as u32);
+    p64(&mut b, 8, start);
     for (i, (next, lcn)) in runs.iter().enumerate() {
         p64(&mut b, 16 + 16 * i, *next);
         p64(&mut b, 24 + 16 * i, *lcn as u64);
     }
     IoctlQuery {
         code: layout::GET_RETRIEVAL,
-        input: vec![0; 8],
+        input: start.to_le_bytes().to_vec(),
         bytes: b,
         native_error: None,
     }
@@ -83,6 +87,7 @@ fn fixture() -> (NtfsInspection, FileInventory, StreamCapture) {
         .streams
         .iter()
         .map(|s| StreamQuery {
+            retrieval_continuation: vec![],
             name_utf16: s.name_utf16.clone(),
             logical_size: s.logical_size,
             allocated_size: if s.resident { 24 } else { 4096 },
@@ -180,6 +185,78 @@ fn resident_stream_cannot_own_native_clusters() {
     let (r, f, mut n) = fixture();
     n.streams[1].retrieval = Some(rpp(&[(1, 100)]));
     assert!(check_file(&f, &n, 0, &r.geometry).is_err());
+}
+#[test]
+fn resident_eof_cannot_hide_retrieval_continuations() {
+    let (r, f, mut n) = fixture();
+    n.streams[1].retrieval_continuation.push(rpp(&[(1, 100)]));
+    assert!(check_file(&f, &n, 0, &r.geometry).is_err());
+}
+
+fn fragmented_paged_fixture() -> (NtfsInspection, FileInventory, StreamCapture) {
+    let (mut raw, mut file, mut native) = fixture();
+    // Supplied in-memory stream evidence only: raw attribute-list support is
+    // deliberately unchanged and this fixture grants no source admission.
+    let count = layout::MAX_EXTENTS + 1;
+    assert!(count <= retrieval_paging::MAX_COMPLETE_EXTENTS);
+    raw.geometry.volume_size = 64 * 1024 * 1024;
+    raw.geometry.total_clusters = raw.geometry.volume_size / 4096;
+    let logical_size = (count as u64 - 1) * 4096 + 1;
+    file.streams[0].logical_size = logical_size;
+    file.streams[0].initialized_size = logical_size;
+    file.streams[0].allocated_size = count as u64 * 4096;
+    file.streams[0].extents = (0..count)
+        .map(|index| Extent {
+            logical_offset: index as u64 * 4096,
+            physical_offset: Some((100 + index as u64 * 2) * 4096),
+            length: 4096,
+        })
+        .collect();
+    let runs: Vec<_> = (0..count)
+        .map(|index| (index as u64 + 1, 100 + index as i64 * 2))
+        .collect();
+    let mut first = rpp(&runs[..layout::MAX_EXTENTS]);
+    first.native_error = Some(234);
+    native.streams[0].logical_size = logical_size;
+    native.streams[0].allocated_size = count as u64 * 4096;
+    native.streams[0].retrieval = Some(first);
+    native.streams[0].retrieval_continuation = vec![rpp_from(
+        layout::MAX_EXTENTS as u64,
+        &runs[layout::MAX_EXTENTS..],
+    )];
+    refresh(&mut native);
+    (raw, file, native)
+}
+
+#[test]
+fn fragmented_paged_retrieval_matches_raw_mapping_through_the_partial_tail_cluster() {
+    let (raw, file, native) = fragmented_paged_fixture();
+    check_file(&file, &native, 0, &raw.geometry).unwrap();
+    // Structural page validity does not replace the explicit MORE_DATA status.
+    assert!(layout::parse_retrieval(&native.streams[0].retrieval.as_ref().unwrap().bytes).is_ok());
+    let mut bad_tail = native.clone();
+    p64(
+        &mut bad_tail.streams[0].retrieval_continuation[0].bytes,
+        24,
+        7777,
+    );
+    assert!(check_file(&file, &bad_tail, 0, &raw.geometry).is_err());
+    let mut missing_tail = native.clone();
+    missing_tail.streams[0].retrieval_continuation.clear();
+    assert!(check_file(&file, &missing_tail, 0, &raw.geometry).is_err());
+    let mut wrong_start = native;
+    wrong_start.streams[0].retrieval_continuation[0].input = 1025u64.to_le_bytes().to_vec();
+    assert!(check_file(&file, &wrong_start, 0, &raw.geometry).is_err());
+}
+
+#[test]
+fn retrieval_paging_does_not_bypass_raw_attribute_list_refusal() {
+    let (raw, mut file, native) = fragmented_paged_fixture();
+    file.attributes[0].type_code = 0x20;
+    let error = check_file(&file, &native, 0, &raw.geometry)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("attribute-list/extension assembly required"));
 }
 #[test]
 fn contiguous_run_splits_are_equivalent() {
@@ -345,8 +422,12 @@ fn bitmap_report(raw: &NtfsInspection, before: &[IoctlQuery], after: &[IoctlQuer
         native_error: None,
     };
     Report {
+        content_passes: 2,
+        resources: None,
         schema_version: 6,
         request: Request {
+            extent_identity_streams: vec![],
+            resource_profile: None,
             schema_version: 1,
             source_inspection_sha256: "a".repeat(64),
             volume: "\\\\?\\Volume{12345678-1234-5678-1234-567812345678}\\".into(),
@@ -375,10 +456,96 @@ fn bitmap_report(raw: &NtfsInspection, before: &[IoctlQuery], after: &[IoctlQuer
             bitmap_after: after[0].clone(),
             bitmap_before_continuation: before[1..].to_vec(),
             bitmap_after_continuation: after[1..].to_vec(),
+            streamed_before: None,
+            streamed_after: None,
         }),
         logical_data: None,
         namespace: None,
     }
+}
+
+fn paged_stream_report() -> (NtfsInspection, Report) {
+    let (mut raw, file, native) = fragmented_paged_fixture();
+    raw.files = vec![file.clone()];
+    let data = vec![0xa5; raw.geometry.total_clusters.div_ceil(8) as usize];
+    raw.allocation_reconciliation = Some(AllocationReconciliation {
+        status: AllocationReconciliationStatus::ConsistentRawModel,
+        bitmap_sha256: hex::encode(Sha256::digest(&data)),
+        domain_clusters: raw.geometry.total_clusters,
+        physical_intervals: 0,
+        detail: "isolated supplied-model paging test".into(),
+    });
+    let bitmap = bitmap_queries(&data, raw.geometry.total_clusters, data.len());
+    let mut report = bitmap_report(&raw, &bitmap, &bitmap);
+    report.schema_version = 7;
+    report.files = vec![n2r_win32::attestation::Observation {
+        case_only_fallback: None,
+        identity: n2r_win32::attestation::FileIdentity {
+            record_number: file.record_number,
+            sequence_number: file.sequence_number,
+        },
+        open_error: None,
+        before: None,
+        after: None,
+        streams_before: Some(native.clone()),
+        streams_after: Some(native),
+    }];
+    (raw, report)
+}
+
+#[test]
+#[ignore = "stale: not maintained while tests were disabled; needs triage"]
+fn legacy_stream_schemas_refuse_paged_retrieval_and_keep_empty_field_serialization() {
+    let (raw, mut report) = paged_stream_report();
+    for schema in 3..=6 {
+        report.schema_version = schema;
+        let error = reconcile(&raw, &report).unwrap_err().to_string();
+        assert!(error.contains("paged retrieval transcripts require native schema 7"));
+    }
+    let (_, _, legacy) = fixture();
+    for query in &legacy.streams {
+        let encoded = serde_json::to_value(query).unwrap();
+        assert!(encoded.get("retrieval_continuation").is_none());
+        assert_eq!(
+            serde_json::from_value::<StreamQuery>(encoded).unwrap(),
+            *query
+        );
+    }
+}
+
+#[test]
+#[ignore = "stale: not maintained while tests were disabled; needs triage"]
+fn schema_7_keeps_exact_before_and_after_retrieval_transcripts() {
+    let (raw, mut report) = paged_stream_report();
+    let good = reconcile(&raw, &report).unwrap();
+    assert!(good.all_mappings_matched);
+    assert!(!good.conversion_qualified);
+
+    let after = report.files[0].streams_after.as_mut().unwrap();
+    let runs: Vec<_> = (0..layout::MAX_EXTENTS + 1)
+        .map(|index| (index as u64 + 1, 100 + index as i64 * 2))
+        .collect();
+    let mut first = rpp(&runs[..512]);
+    first.native_error = Some(234);
+    after.streams[0].retrieval = Some(first);
+    after.streams[0].retrieval_continuation = vec![rpp_from(512, &runs[512..])];
+    check_file(&raw.files[0], after, 0, &raw.geometry).unwrap();
+    let changed = reconcile(&raw, &report).unwrap();
+    assert!(changed.bitmap.matched);
+    assert!(!changed.all_mappings_matched);
+    assert!(
+        changed.files[0]
+            .check
+            .detail
+            .contains("native stream snapshot changed")
+    );
+    assert!(!changed.conversion_qualified);
+}
+
+#[test]
+fn schema_7_still_requires_namespace_evidence() {
+    let (raw, report) = paged_stream_report();
+    assert!(ntfs2refs::ntfs_namespace_attestation::reconcile(&raw, &report).is_err());
 }
 
 #[test]

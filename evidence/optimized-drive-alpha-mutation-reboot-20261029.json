@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "kind": "optimized-drive-alpha-mutation-reboot",
+  "original_run_id": "2c0a76e195f540218d60e98266f4e14d",
+  "host_case": ".lab/hyperv/streaming-v2-20261027/optimized-drive-alpha-20261029-2c0a76e195f540218d60e98266f4e14d",
+  "candidate_sha256": "fb5548cc80a1de57e5a1c3c853a0ccfc43338515d00e15867305fa5f59c6079c",
+  "source_commit": "2ff5f017c03977c5e6ba9d31ba64dc634bfa2fe7",
+  "native_verifier_executable_sha256": "571e07b3ef79d397ebc77042bea5177e077df4ee4936648c8897cb9a727420c5",
+  "pins": {
+    "normal_receipt": "8287357c7cbe3567951be974df4d870a048db00243391a545e3ad23d3c682335",
+    "mutation_receipt": "3c196cfccb8f4fc5c25518d94f6fd97587866646cc01dc68ac3cbfc6f80243d1",
+    "postboot_receipt": "c55f61175a92f10aef6f24e36f5d68fcf98c2981c85219f4f726b16c1ff15356",
+    "preserved_receipt": "004d70b74d7af8a8dfbbbca3e33cd97386965c0137c93c8f5758b5f084fc41f2",
+    "cleanup_receipt": "d44305eea44e44d9b4693f388c23d654fa1043331414a3728d782d15b4633275",
+    "request": "868c643917629a7fe5df1408d89b954c4f7f6c4f5d26f6dbd274e20686194596",
+    "expectation": "157a3078ee982dcbbb22cdfd28d168f08758cdeea331181ce44d3b9620bafc8e",
+    "mutation_report": "45c968b90da79cb386e45b998e3b1d5d47425a1b32290493de1d198983de4fb0",
+    "native_before": "fd81b938db7482c49a5de989cb7f7840e01118603d6c8f3ecf8726223cf350e7",
+    "native_after": "7706e458e919d10631219226b511f7fcfd02eff9ed151c5056f587fb52345c20",
+    "native_after_boot": "6bc3a4ec62803ae2fccdc5378e2e8ce3f78a03887a924070fbe4098b173f9fcb"
+  },
+  "mutation": {
+    "run_id": "875faa1d295849ae8e4fb11a65761b9d",
+    "native_exits": [
+      0,
+      0,
+      0
+    ],
+    "initial_bytes": 52428800,
+    "grown_bytes": 83886080,
+    "truncated_bytes": 10485760,
+    "directory_entries_created": 128,
+    "test_directory_removed": true,
+    "strict_before_objects": 15,
+    "strict_before_hashes": 10,
+    "strict_after_objects": 15,
+    "strict_after_hashes": 10,
+    "completed_utc": "2026-10-29T06:31:24.1002136+00:00"
+  },
+  "reboot": {
+    "run_id": "bef2125926714a76a7f10c0cba2049ce",
+    "same_working_branch_without_restore": true,
+    "boot_utc": "2026-10-29T06:35:29.8463680+00:00",
+    "native_exit": 0,
+    "wrapper_task_exit": 0,
+    "strict_objects": 15,
+    "complete_logical_hashes": 10,
+    "supported_metadata_verified": true,
+    "mutation_root_policy_bound_to_exact_report": true
+  },
+  "preservation": {
+    "checkpoint_id": "632b630a-c77b-43b2-9b9a-eafbbd87106d",
+    "parent_id": "5125d335-09b4-4838-bc64-28b079e3f2b9",
+    "historical_checkpoint_count": 3,
+    "state": "Off",
+    "memory_assigned": 0,
+    "observed_utc": "2026-10-29T06:45:10.0532686+00:00"
+  },
+  "later_cleanup": {
+    "receipt": "preserved-optimized-alpha/cleanup-receipt.json",
+    "historical_checkpoint_count": 2,
+    "retained": [
+      "5125d335-09b4-4838-bc64-28b079e3f2b9",
+      "632b630a-c77b-43b2-9b9a-eafbbd87106d"
+    ],
+    "removed": "25a829b6-bea2-40cb-9114-e8d28e775d81",
+    "manual_avhdx_deletion": false,
+    "state": "Off",
+    "memory_assigned": 0,
+    "observed_utc": "2026-10-29T06:45:31.6983902+00:00"
+  },
+  "qualification": {
+    "mutation_and_reboot_on_preserved_conversion_passed": true,
+    "same_candidate_interruption_qualified": false,
+    "same_candidate_recovery_qualified": false,
+    "all_volumes_qualified": false,
+    "production_qualified": false
+  },
+  "scope": "One pinned 52GiB dataset and fb5548 conversion outcome, followed by ordinary ReFS mutation and strict native verification after clean stop/start without restore. The 6bc3a4 pin identifies the postboot verification report, not an executable. Earlier 2cac interruption/recovery evidence is separate and is not inherited by this candidate."
+}

@@ -1,0 +1,213 @@
+{
+  "schema_version": 1,
+  "kind": "finite-private-GPT-type-process-close-lifecycle-observation",
+  "status": "native-observation-complete-not-exclusion-qualified",
+  "date": "2026-11-04",
+  "attempt": "9f0f38dffbbc4f0a942b01cade0f4cb4",
+  "private_probe": {
+    "before_observer_sha256": "a859e77bd0d94833d25490d611a0abedd959216bf40ecc6e3aca799fb13af609",
+    "worker_sha256": "a19b681ff35af2c0e0cd801fe915b6ef11d386cfc362e4d5d8b927d6228d302a",
+    "binary_bytes": 571392,
+    "runner_sha256": "4573bf247de6199909a3cf79e897d7f55f1ba6f7ee0f5dca8c8fedd02eed16dc",
+    "binary_sha256": "01fdbc2da5616adf4280b9c9d63cfacb6f7677dc44b2a7e445fee5edec4d4533",
+    "source_sha256": "ce6cfd39eb703ddde3123d12b6f6e511a71a3737eb43e916bf1d7340b27a8419",
+    "build_receipt_sha256": "56d74cf4f998b8d7d77117eff605f663ec6a74ff7d8c3d49008d0f8b297c09b6",
+    "after_observer_sha256": "c1ec694356faa65652aad4a0b2d0f4fccaa3c3951b6afbd4b3bda33b49b14555",
+    "private_type_module_sha256": "7a12b133697ffa91dc1d9c90a4003b926a6d9876da756bd49c043b33cd9c99a8",
+    "input_pins_sha256": "4377cfdd59437acabd2a81ac8b93f05b96095c1d69253f453fbe5f3a4bd8c997"
+  },
+  "public_alpha": {
+    "private_probe_not_public_conversion": true,
+    "source_commit": "aef1ab3b3a6ea08f7093d83cc60462f8b799b79a",
+    "unchanged": true,
+    "whole_disk_source_guards_unchanged": true
+  },
+  "runtime": {
+    "original766_restored_once": true,
+    "vm_id": "2401593c-4b30-472e-9b6d-c9534cbaa599",
+    "retry_or_fallback": false,
+    "actual_boot_ms": 1793819256485,
+    "wall_seconds": 0.9410439,
+    "native_exit": 0,
+    "stdout_bytes": 0,
+    "actual_owned_exit_observed": true,
+    "actual_native_birth_ms": 1793819318534,
+    "owned_through_terminal": true,
+    "terminal_utc": "2026-11-04T19:08:39.4911567Z",
+    "native_launches": 1,
+    "stderr_bytes": 1582,
+    "actual_native_pid": 5736
+  },
+  "source": {
+    "original_ID_attributes_36WCHAR_name_preserved": true,
+    "raw_GPT_slot": 4,
+    "disk_guid": "1f804918-e98f-4a71-9022-fc00c3cb7c26",
+    "marker_absolute_offset": 65714388992,
+    "original_type": "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7",
+    "disk_number": 0,
+    "marker_sha256": "153758bfed87777818c67e021f91ee89f8d96c365177d08f51f7e6371b7bf5aa",
+    "target_offset": 64422412288,
+    "actual_target_partition": 4,
+    "target_length": 2147483648,
+    "target_partition_guid": "20e3748f-b912-47c3-86aa-2285ab2b5583",
+    "marker_bytes": 8192,
+    "observed_private_type": "b627aadb-a893-48b6-aa0b-71e5f30ee370",
+    "only_target_type_and_required_GPT_CRC_changes_verified": true
+  },
+  "original_intent": {
+    "durable_before_setter": true,
+    "guest_path": "C:\\ntfs2refs\\partition-isolation-probe-803bb22b85044f74916d9cc6fda878c8\\proposed-private-type-9f0f38dffbbc4f0a942b01cade0f4cb4\\26-durable-intent-BEFORE-private-type-setter.json",
+    "complete_original_raw_MBR_GPT_device_layout_and_native_partition_information_saved": true,
+    "sha256": "a65b10e10e8362bde31a2b662c2b89317737762d9521b2b1634a4741427de89d"
+  },
+  "actual_source_write_outcome": {
+    "type_setter_calls": 1,
+    "type_setter_succeeded": true,
+    "type_setter_native_error": null,
+    "type_setter_returned_bytes": 0,
+    "write_calls": 1,
+    "write_api_succeeded": true,
+    "write_native_error": null,
+    "write_returned_bytes": 8192,
+    "flush_called": true,
+    "flush_succeeded": true,
+    "flush_native_error": null,
+    "readback_matches_original": true
+  },
+  "primitive_scope": {
+    "automatic_restoration_attempted": false,
+    "type_left_private": true,
+    "original_data_write_bytes": 8192,
+    "same_retained_locked_dismounted_extended_DASD_volume_owner": true,
+    "original_data_write_calls": 1,
+    "volume_offline_calls": 0,
+    "physical_RW_payload_handle_opened": false,
+    "whole_layout_setter_calls": 0,
+    "target_type_setter_calls": 1
+  },
+  "independent_after": {
+    "all_read_handles_closed": true,
+    "raw_gpt_MBR_device_native_layout_type_CRC_only": true,
+    "C_identity_bounds_health_control_paging_unchanged": true,
+    "after_receipt_sha256": "dab4ac3b30e48c1c3b004b9bd989c0211cf9df067cfcbd8caf6104672f259d81",
+    "fresh_process_exit": 0,
+    "before_receipt_sha256": "439811a9e47ba33e5e2e611191c44f4a582adb45976b4f29af7785cac89a9b1b",
+    "original_intent_sha256": "a65b10e10e8362bde31a2b662c2b89317737762d9521b2b1634a4741427de89d",
+    "raw_original8192B_marker_matches": true
+  },
+  "native_process_close_namespace_observation": {
+    "automatic_restoration_attempted": false,
+    "confirmed_target_normal_access_refutes_no_mount": false,
+    "guid": {
+      "exact_original_marker_read": false,
+      "filesystem_root": "\\\\?\\Volume{20e3748f-b912-47c3-86aa-2285ab2b5583}\\",
+      "full_semantic_validation_succeeded": false,
+      "open_error": "The system cannot find the path specified. (os error 3)",
+      "open_native_error": 3,
+      "open_succeeded": false,
+      "path": "\\\\?\\Volume{20e3748f-b912-47c3-86aa-2285ab2b5583}\\n2r-new-partition-marker.bin",
+      "read_api_succeeded": false,
+      "read_attempted": false,
+      "read_returned_bytes": null,
+      "target_identity_matches": null
+    },
+    "later_semantic_failure_does_not_hide_open_or_read": true,
+    "letter": {
+      "exact_original_marker_read": false,
+      "filesystem_root": "T:\\",
+      "full_semantic_validation_succeeded": false,
+      "open_error": "The system cannot find the path specified. (os error 3)",
+      "open_native_error": 3,
+      "open_succeeded": false,
+      "path": "T:\\n2r-new-partition-marker.bin",
+      "read_api_succeeded": false,
+      "read_attempted": false,
+      "read_returned_bytes": null,
+      "target_identity_matches": null
+    },
+    "missing_namespace_alone_proves_exclusion": false,
+    "ordinary_access_would_refute_no_mount_subject_to_recorded_route_identity": false,
+    "ordinary_file_open_or_read_observed": false,
+    "persistent_exclusion_qualified": false
+  },
+  "independent_process_close_namespace_observation": [
+    {
+      "Path": "\\\\?\\Volume{20e3748f-b912-47c3-86aa-2285ab2b5583}\\n2r-new-partition-marker.bin",
+      "Sha256": null,
+      "MetadataError": null,
+      "OpenSucceeded": false,
+      "ReadAttempted": false,
+      "ReadApiSucceeded": false,
+      "ExactOriginalMarkerRead": false,
+      "OpenError": 3,
+      "ReadError": 0,
+      "ReadReturnedBytes": 0,
+      "Metadata": null
+    },
+    {
+      "Path": "T:\\n2r-new-partition-marker.bin",
+      "Sha256": null,
+      "MetadataError": null,
+      "OpenSucceeded": false,
+      "ReadAttempted": false,
+      "ReadApiSucceeded": false,
+      "ExactOriginalMarkerRead": false,
+      "OpenError": 3,
+      "ReadError": 0,
+      "ReadReturnedBytes": 0,
+      "Metadata": null
+    }
+  ],
+  "qualification": {
+    "process_death_crash_recovery_qualified": false,
+    "process_close_observation_only": true,
+    "coldboot_performed": false,
+    "changed_data_writer_qualified": false,
+    "persistent_exclusion_qualified": false,
+    "partition_conversion_qualified": false,
+    "same_owner_type_setter_and_same_bytes_write_observed": true,
+    "physical_power_qualified": false,
+    "ordinary_GUID_and_T_open_failure_proves_exclusion": false
+  },
+  "archive": {
+    "files": 69,
+    "bytes": 356723.0,
+    "source_host_all_lengths_and_SHA256_verified": true,
+    "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\private-type-marker-9f0f38dffbbc4f0a942b01cade0f4cb4\\closed",
+    "manifest_sha256": "2146723334f97cd9323c80c398ab1bc09c39fb53e2cc5499db14a10b361bb49b"
+  },
+  "final_state": {
+    "RAM": 0,
+    "new_checkpoint_calls": 0,
+    "state": "Off",
+    "restoration_after_setter_performed": false,
+    "current_parent": "766c9abc-8582-4de6-b497-8acbc81274da",
+    "fresh_separate_process_verified": true,
+    "type_last_observed": "b627aadb-a893-48b6-aa0b-71e5f30ee370",
+    "all16_preserved": true,
+    "capacity": {
+      "actual_bytes": 317095811079,
+      "free_bytes": 89454485504,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 0,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    }
+  },
+  "capacity_policy": {
+    "initial_epoch_actual_bytes": 279374052988,
+    "sample_not_peak_or_hard_quota": true,
+    "forecast_bytes": 6442450944,
+    "maximum_additional_epoch_bytes": 50000000000,
+    "epoch_reset": false,
+    "minimum_host_free_bytes": 17179869184,
+    "maximum_actual_bytes": 329374052988
+  },
+  "limits": [
+    "An exact process-close lifecycle observation, not persistent partition exclusion.",
+    "No cold boot, process death, crash recovery, changed-data writer, conversion or physical-power safety qualification.",
+    "Target is left in its observed private type; any restoration requires a separate reviewed authorization."
+  ],
+  "stable_release": false
+}

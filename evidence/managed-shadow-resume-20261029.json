@@ -1,0 +1,221 @@
+{
+  "schema_version": 1,
+  "kind": "managed-shadow-post-reboot-resume-observation",
+  "observation_only": true,
+  "grants_source_or_recovery_authority": false,
+  "original_run_id": "94eebb1101354d2ca42c2f8f0608f6a0",
+  "recovery_run_id": "bc1f392dd42f4ab0af052e8235728cc8",
+  "converter_original_sha256": "48094c2b2f3fce10a5b64c5154c1a93837f1415709d611df105bb1a7b3b6735e",
+  "recovery_sha256": "565fb0a70d03b3587417f326036e38ffe7f12c6d78fe48afe6fb99ea82f9d3f0",
+  "actual_resume_exit": 0,
+  "actual_finalize_exit": 0,
+  "actual_wrapper_task_result": 0,
+  "original_interruption_exit": 86,
+  "controlled_flushed_write_limit": 1,
+  "booted_original_partial_state": true,
+  "managed_shadow_was_detached_after_boot": true,
+  "native_readonly_reattachment_succeeded": true,
+  "native_write_protection_queried_before_adding_missing_software_restrictions": true,
+  "source_certificate_recreated": false,
+  "fresh_apply_authorized": false,
+  "source_binding": {
+    "disk_number": 1,
+    "volume_guid": "f06075a8-67a2-46b9-8fac-4af4da809617",
+    "identity": {
+      "disk_guid": "1b191872-c372-41ee-a416-e18863996f54",
+      "partition_guid": "f06075a8-67a2-46b9-8fac-4af4da809617",
+      "partition_number": 2,
+      "disk_bytes": 68719476736,
+      "partition_offset": 16777216,
+      "partition_bytes": 55834574848,
+      "logical_sector_bytes": 512,
+      "physical_sector_bytes": 4096
+    }
+  },
+  "shadow_binding": {
+    "disk_number": 6,
+    "volume_guid": "57aa3a34-1910-4adc-ad5c-3a32a7017c03",
+    "identity": {
+      "disk_guid": "f65b9b29-c38c-49c9-9ef0-ae8869c2df5d",
+      "partition_guid": "57aa3a34-1910-4adc-ad5c-3a32a7017c03",
+      "partition_number": 2,
+      "disk_bytes": 55901683712,
+      "partition_offset": 33554432,
+      "partition_bytes": 55834574848,
+      "logical_sector_bytes": 512,
+      "physical_sector_bytes": 4096
+    }
+  },
+  "source_premigration_sha256": "1bf93b0a7ea784fa04e9910a8e19fc3a94b36ee693b8404499fe45381a49c40e",
+  "target_exact_premount_sha256": "1e6193b8f359d6df330c4073d7cc0fd10efa565549bd96906fe3b5e2ab012a6d",
+  "patches_written": 161,
+  "target_bytes_written": 70578176,
+  "barrier": "HND",
+  "rollback_closed": true,
+  "native_objects": 15,
+  "complete_native_stream_hashes": 10,
+  "source_label_mount_preserved": true,
+  "partial_checkpoint_id": "48cf6276-fa77-4f35-b56e-8bdd6017b192",
+  "recovered_checkpoint_id": "fe04b15b-14c4-48e0-ad8f-2a4752d86f8f",
+  "checkpoint_count_at_preservation": 4,
+  "checkpoint_cleanup_was_user_authorized": true,
+  "cleanup_receipt_sha256": "cc9cefc473c048d9a6547913b3d5917453e2983218da4e8b69c1f186a4fa93cf",
+  "preservation_receipt_sha256": "1fb99f3c759b3c1346004198633e994b76f4d96e5fcdf2260cd9046f03574afe",
+  "post_recovery_coldboot_qualified": false,
+  "arbitrary_volume_support_proven": false,
+  "payload_independent_scratch_proven": false,
+  "storage_power_loss_qualified": false,
+  "closed_metadata_pins": [
+    {
+      "name": "wrapper-result.json",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-resume-bc1f392dd42f4ab0af052e8235728cc8\\wrapper-result.json",
+      "bytes": 512,
+      "sha256": "62091a70689fd62e68b1e6227756cb1a8ceaf20736014e10c3bfc2e0429c798c"
+    },
+    {
+      "name": "wrapper-worker.json",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-resume-bc1f392dd42f4ab0af052e8235728cc8\\wrapper-worker.json",
+      "bytes": 193,
+      "sha256": "2c921fdf52d08846011c1cc29e5c29d6f558e7cebc9ee9fa7449ba5548bb5355"
+    },
+    {
+      "name": "resume-verified.json",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-resume-bc1f392dd42f4ab0af052e8235728cc8\\resume-verified.json",
+      "bytes": 424,
+      "sha256": "c8fe8086208f5b4464bd37a50e02829d70853d840f79aa91ad150c381f675c50"
+    },
+    {
+      "name": "resume-dispatch-intent.json",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-resume-bc1f392dd42f4ab0af052e8235728cc8\\resume-dispatch-intent.json",
+      "bytes": 2454,
+      "sha256": "c4b3ff5e76a30373eb5086db1e43d42c7fa59e51f4f271ca7a629176476344c5"
+    },
+    {
+      "name": "resume-process.json",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-resume-bc1f392dd42f4ab0af052e8235728cc8\\resume-process.json",
+      "bytes": 2550,
+      "sha256": "9be1445d9898703cc7eaa0c153d4ba4c5b8cad7fe4d00246548ef2f8aa20e38b"
+    },
+    {
+      "name": "resume-terminal.json",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-resume-bc1f392dd42f4ab0af052e8235728cc8\\resume-terminal.json",
+      "bytes": 880,
+      "sha256": "1d33e445fdf30080845fbb50fc49ed72bc8eb2c65726a07e4f9fdc1cc389f2ea"
+    },
+    {
+      "name": "resume-request.json",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-resume-bc1f392dd42f4ab0af052e8235728cc8\\resume\\request.json",
+      "bytes": 2532,
+      "sha256": "3de2a056f3d135d021fb556c8b28c1892137a263c47397e47e59a0de6c18a15a"
+    },
+    {
+      "name": "resume-ticket.json",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-resume-bc1f392dd42f4ab0af052e8235728cc8\\resume\\ticket.json",
+      "bytes": 615,
+      "sha256": "f0809b7f928c8b94815a38a2665348ef35d546e680f7e7f91464de5f16c9c8f6"
+    },
+    {
+      "name": "resume-expectation.json",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-resume-bc1f392dd42f4ab0af052e8235728cc8\\resume\\expectation.json",
+      "bytes": 29197,
+      "sha256": "c44bc653562dd9d69aaf234ec2348ac62fe2f372270817c5297fe06b5e8f321b"
+    },
+    {
+      "name": "resume-intent.json",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-resume-bc1f392dd42f4ab0af052e8235728cc8\\resume\\intent.json",
+      "bytes": 1069,
+      "sha256": "e541b49078e49af3bf0a8e2f7a5d6dd86781a282d75f0ed8154557a952e8852b"
+    },
+    {
+      "name": "resume-input-identities.json",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-resume-bc1f392dd42f4ab0af052e8235728cc8\\resume\\input-identities.json",
+      "bytes": 2561,
+      "sha256": "f24c2974b7537cf2e413b76d6b2cfb21ae5f60d277425c884e06188f5a75ca10"
+    },
+    {
+      "name": "resume-journal-identity.json",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-resume-bc1f392dd42f4ab0af052e8235728cc8\\resume\\journal-identity.json",
+      "bytes": 9116,
+      "sha256": "e464dc6c1ffc8b4d09fb3d15468b1402d59dccddf8fbff7c71647ccf139de9d1"
+    },
+    {
+      "name": "resume-result.json",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-resume-bc1f392dd42f4ab0af052e8235728cc8\\resume\\result.json",
+      "bytes": 412,
+      "sha256": "cbd1fe799db1d2fe789c68feb871f4d7ed86201736234d0c79e1247afc153b6c"
+    },
+    {
+      "name": "resume-execution.json",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-resume-bc1f392dd42f4ab0af052e8235728cc8\\resume\\execution.json",
+      "bytes": 15798,
+      "sha256": "f84076593b65b401190fd2252e6cec55a3ead902f2a64b10068e8948a04f61ce"
+    },
+    {
+      "name": "finalize-dispatch-intent.json",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-resume-bc1f392dd42f4ab0af052e8235728cc8\\finalize-dispatch-intent.json",
+      "bytes": 2197,
+      "sha256": "d6ee742a218dde6edcd26a965f43efa1aefc8bda51f2199cf3cf028a3cccc9c2"
+    },
+    {
+      "name": "finalize-process.json",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-resume-bc1f392dd42f4ab0af052e8235728cc8\\finalize-process.json",
+      "bytes": 2293,
+      "sha256": "dfcc96d14a530c200293e1c490d0ed4296e5416159176c13c5bf0f49d03caf32"
+    },
+    {
+      "name": "finalize-terminal.json",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-resume-bc1f392dd42f4ab0af052e8235728cc8\\finalize-terminal.json",
+      "bytes": 884,
+      "sha256": "21d3666224cb561dda9bddc11f957e6b6f8221a8b6c713b2a72c00b78dfc51d2"
+    },
+    {
+      "name": "finalize-request.json",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-resume-bc1f392dd42f4ab0af052e8235728cc8\\finalize\\request.json",
+      "bytes": 2532,
+      "sha256": "3de2a056f3d135d021fb556c8b28c1892137a263c47397e47e59a0de6c18a15a"
+    },
+    {
+      "name": "finalize-ticket.json",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-resume-bc1f392dd42f4ab0af052e8235728cc8\\finalize\\ticket.json",
+      "bytes": 615,
+      "sha256": "f0809b7f928c8b94815a38a2665348ef35d546e680f7e7f91464de5f16c9c8f6"
+    },
+    {
+      "name": "finalize-expectation.json",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-resume-bc1f392dd42f4ab0af052e8235728cc8\\finalize\\expectation.json",
+      "bytes": 29197,
+      "sha256": "c44bc653562dd9d69aaf234ec2348ac62fe2f372270817c5297fe06b5e8f321b"
+    },
+    {
+      "name": "finalize-intent.json",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-resume-bc1f392dd42f4ab0af052e8235728cc8\\finalize\\intent.json",
+      "bytes": 1071,
+      "sha256": "994245333b96007a7da38dfeb142ec001bff3c0fabb96ce08cb3709d7128ccd4"
+    },
+    {
+      "name": "finalize-input-identities.json",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-resume-bc1f392dd42f4ab0af052e8235728cc8\\finalize\\input-identities.json",
+      "bytes": 2561,
+      "sha256": "f24c2974b7537cf2e413b76d6b2cfb21ae5f60d277425c884e06188f5a75ca10"
+    },
+    {
+      "name": "finalize-journal-identity.json",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-resume-bc1f392dd42f4ab0af052e8235728cc8\\finalize\\journal-identity.json",
+      "bytes": 9116,
+      "sha256": "e464dc6c1ffc8b4d09fb3d15468b1402d59dccddf8fbff7c71647ccf139de9d1"
+    },
+    {
+      "name": "finalize-result.json",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-resume-bc1f392dd42f4ab0af052e8235728cc8\\finalize\\result.json",
+      "bytes": 414,
+      "sha256": "f6968bba85a0af8be0156d4f2cfe9e093093e02057fec5b6e0a2a5bfc3370e45"
+    },
+    {
+      "name": "finalize-completion.json",
+      "source": "C:\\ntfs2refs\\managed-compact-recovery-resume-bc1f392dd42f4ab0af052e8235728cc8\\finalize\\completion.json",
+      "bytes": 587337,
+      "sha256": "417001cbf319efb523b39a8da02962d8963a32418582245f7327d31bf408b3a6"
+    }
+  ],
+  "scope": "Typed resume proved the exact excluded ReFS image; finalization persisted HND then verified the complete native tree and label/mount. No post-mount raw-image equality claim."
+}

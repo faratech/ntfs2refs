@@ -1,0 +1,45 @@
+{
+  "kind": "bounded-lossless-native-event-ledger-fix-v1",
+  "failed_case": ".lab/hyperv/streaming-v2-20261027/PUBLIC-6cff-actual-once-8f86c2f0f90f4e5b8aa61c81ed81d879",
+  "owned_native": {"pid": 5152, "birth_ms": 1793923825726, "exit_code": 1, "wall_seconds": 265.8412849},
+  "actual_error": "partition alpha evidence budget exhausted",
+  "maximum_evidence_bytes": 13864960,
+  "closed_native_log": {"bytes": 13864083, "sha256": "410f0a170cb24a67348e7890d89a4030f78cb0b9ed0c2250c1a75b0ed25f0d4c"},
+  "host_only_analysis": {
+    "record_count": 2801,
+    "event_count": 22493,
+    "nonempty_buffer_occurrences": 23419,
+    "unique_nonempty_buffers": 38,
+    "unique_buffer_bytes": 10522,
+    "repeated_raw_bytes": 3486388,
+    "raw_byte_array_JSON_bytes": 9757812,
+    "distribution_receipt_sha256": "993782ce8870b7f6f662dd33210ef7da3feed7007c7b409c4466e331c0016da5",
+    "duplicate_receipt_sha256": "4c318ffb98f5438a031bdaa48e5e835cbbe9e069295af77a8f3487baede2bc2a"
+  },
+  "fix": {
+    "batch_kind": "actual-native-event-batch-v2",
+    "encoding": "lossless-native-events-v1",
+    "inline_maximum_bytes": 64,
+    "cache_entries": 128,
+    "maximum_encoder_state_bytes": 8192,
+    "payloads_retained_in_cache": false,
+    "literal": "Long buffers carry a monotonic ID, length, SHA256 and original byte array.",
+    "reference": "Repeated long buffers reference an earlier literal by ID, length and SHA256; cache eviction causes another literal.",
+    "all_event_order_operations_codes_statuses_and_raw_bytes_preserved": true,
+    "cache_state_committed_only_after_full_record_flush_sync_and_EOF_validation": true,
+    "RAM_to_J_log_transfer_preserves_encoded_stream_and_cache": true,
+    "evidence_cap_and_all_source_recovery_authority_checks_unchanged": true,
+    "intent_receipts_and_authenticated_recovery_artifacts_unchanged": true,
+    "log_contents_are_not_recovery_or_write_authority": true
+  },
+  "focused_compile": {"exit_code": 0, "wall_seconds": 23.690937, "receipt_sha256": "6919c8b8191bd42797151084cbcc9301636cff7c5b2a4c9cebbdd3db5c84c273", "unit_tests_run": false},
+  "failed_branch_preservation": {
+    "checkpoint_id": "2d548d26-cce9-49b0-90d9-48498afc56c8",
+    "parent": "07ca22f3-bb1c-444b-8f31-ff16b1fcb521",
+    "receipt_sha256": "2cbb9808916e14868f3811ec25074bd006667cb3d8d1799304d2db88d78f03bd",
+    "actual_off_and_RAM_zero": true,
+    "original_six_preserved": true,
+    "lab_preservation_is_not_product_recovery": true
+  },
+  "pending": "Exact four-binary build, successful normal public conversion, native interrupted resume/rollback, mutation/reboot and package."
+}

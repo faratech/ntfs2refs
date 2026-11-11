@@ -1,0 +1,249 @@
+{
+  "io_counts": {
+    "carrier_payload_bytes_written": 64,
+    "payload_bytes_read": 147456,
+    "target_payload_bytes_written": 0
+  },
+  "conversion_qualified": false,
+  "unit_tests_added_or_run": false,
+  "carrier_deleted_after_checks": true,
+  "success": true,
+  "limitations": [
+    "This is a primitive experiment, not a sparse NTFS conversion",
+    "Logical256MiB with two16KiB mapped ranges sharing16KiB of payload; allocation figures exclude filesystem metadata",
+    "Only selected hole samples were read; retrieval mappings constrained all allocated ranges",
+    "No target reboot, fault injection, arbitrary source placement or production qualification",
+    "Carrier remaining bytes were observed through its own native handle; only64payload bytes were explicitly written"
+  ],
+  "after_retire": {
+    "allocated_mapping_bytes": 32768,
+    "hole_mapping_verified": true,
+    "logical_bytes": 268435456,
+    "same_physical_clusters": true,
+    "shared_physical_bytes": 16384
+  },
+  "utc": "2026-10-30T12:52:01.8818450Z",
+  "schema_version": 1,
+  "source_commit": "7126f6f88d47edf3ae8b9a1f25cbacc8faa90fc0",
+  "kind": "native-sparse-carrier-proof",
+  "native_exit": 0,
+  "storage_validity_after": [
+    {
+      "bytes": "00000000020000000200000000000000000000040000000000100000000000000200000000000000001000040000000000300000000000000200000000000000",
+      "code": 590468,
+      "input": [
+        0,
+        0,
+        0,
+        4,
+        0,
+        0,
+        0,
+        0,
+        0,
+        64,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "native_error": null
+    },
+    {
+      "bytes": "00000000020000000200000000000000000000080000000000100000000000000200000000000000001000080000000000300000000000000200000000000000",
+      "code": 590468,
+      "input": [
+        0,
+        0,
+        0,
+        8,
+        0,
+        0,
+        0,
+        0,
+        0,
+        64,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "native_error": null
+    }
+  ],
+  "storage_validity_before": [
+    {
+      "bytes": "00000000020000000200000000000000000000040000000000100000000000000200000000000000001000040000000000300000000000000200000000000000",
+      "code": 590468,
+      "input": [
+        0,
+        0,
+        0,
+        4,
+        0,
+        0,
+        0,
+        0,
+        0,
+        64,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "native_error": null
+    },
+    {
+      "bytes": "00000000020000000200000000000000000000080000000000100000000000000200000000000000001000080000000000300000000000000200000000000000",
+      "code": 590468,
+      "input": [
+        0,
+        0,
+        0,
+        8,
+        0,
+        0,
+        0,
+        0,
+        0,
+        64,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "native_error": null
+    }
+  ],
+  "implementation_conclusion": "Native non-sparse carrier to sparse-target block cloning preserved physical mappings, readable data and storage validity after deleting the owned carrier",
+  "source_write_requests": 0,
+  "target_data_before": {
+    "cloned_data": [
+      {
+        "bytes": 16384,
+        "offset": 67108864,
+        "sha256": "4038e26bf511220f28e9812b31f76d10c8393f0dbc0abdfe96a504b4bd08fa32"
+      },
+      {
+        "bytes": 16384,
+        "offset": 134217728,
+        "sha256": "4038e26bf511220f28e9812b31f76d10c8393f0dbc0abdfe96a504b4bd08fa32"
+      }
+    ],
+    "zero_hole_sample_bytes": 4096,
+    "zero_hole_sample_offsets": [
+      0,
+      4096,
+      67104768,
+      67125248,
+      100663296,
+      134213632,
+      134234112,
+      268431360
+    ]
+  },
+  "target_data_after": {
+    "cloned_data": [
+      {
+        "bytes": 16384,
+        "offset": 67108864,
+        "sha256": "4038e26bf511220f28e9812b31f76d10c8393f0dbc0abdfe96a504b4bd08fa32"
+      },
+      {
+        "bytes": 16384,
+        "offset": 134217728,
+        "sha256": "4038e26bf511220f28e9812b31f76d10c8393f0dbc0abdfe96a504b4bd08fa32"
+      }
+    ],
+    "zero_hole_sample_bytes": 4096,
+    "zero_hole_sample_offsets": [
+      0,
+      4096,
+      67104768,
+      67125248,
+      100663296,
+      134213632,
+      134234112,
+      268431360
+    ]
+  },
+  "proofs": [
+    {
+      "sha256": "9791acafe3d2864d296973c38c24762e108ede7e7ab7699f4118e0d356b787c7",
+      "bytes": 27617,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-carrier-86ad597e4e5c4d2ca11127d9440a57fc\\closed\\report.json"
+    },
+    {
+      "sha256": "e494beb359ec4c40363a454040a214a81c9a6dcdecad52a5601ad84e310c73fb",
+      "bytes": 1919,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-carrier-86ad597e4e5c4d2ca11127d9440a57fc\\closed\\wrapper-result.json"
+    },
+    {
+      "sha256": "b49e711ac5b5d05eb347b2e413117275509ac674b361eb2841e4a5e5cb174ca1",
+      "bytes": 952,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-carrier-86ad597e4e5c4d2ca11127d9440a57fc\\closed\\request.json"
+    },
+    {
+      "sha256": "60b99ee9751056cd83f1a1a9dc6c677a8293b840bdb749ff5dd238c419f6aef0",
+      "bytes": 5534,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-carrier-86ad597e4e5c4d2ca11127d9440a57fc\\closed\\archive.json"
+    },
+    {
+      "sha256": "cc85b86ea2b9aee59dc7e301349622186b1424ef720d34b681c1e6d369fe491e",
+      "bytes": 198,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-carrier-86ad597e4e5c4d2ca11127d9440a57fc\\checkpoint.json"
+    }
+  ],
+  "checkpoint": "7f926b79-465f-4945-a00b-bdaae2607cd4",
+  "probe_sha256": "62743aa86384e7fa595bbfec8d2dddf77e8588fe20669f700dc32838cb671ecd",
+  "run_id": "86ad597e4e5c4d2ca11127d9440a57fc",
+  "sparse_conversion_supported": false,
+  "before_retire": {
+    "allocated_mapping_bytes": 32768,
+    "hole_mapping_verified": true,
+    "logical_bytes": 268435456,
+    "same_physical_clusters": true,
+    "shared_physical_bytes": 16384
+  },
+  "raw_device_writes": 0
+}

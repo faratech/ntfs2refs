@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "kind": "preparation-intent-close-time-allocation-compatibility",
+  "status": "focused-check-passed-native-pending",
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/native/partition_lifecycle/staged.rs",
+      "bytes": 58600,
+      "sha256": "aaf1136b414472d434be23953feeba44b5814848ed6967e08dcfdb2feb6f08cc"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_restoration.rs",
+      "bytes": 81478,
+      "sha256": "def77c377cbff420e6e5c000f191c3021872f22d01dedef0a068964a780704f1"
+    }
+  ],
+  "focused_check": {
+    "unit_tests_run": false,
+    "kind": "public-partition-dispatch-focused-check",
+    "wall_seconds": 30.2710806,
+    "exit_code": 0,
+    "capacity": {
+      "actual_bytes": 323182892085,
+      "free_bytes": 84198215680,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 2147483648,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "native_run": false,
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+    "shared_target_reused": true
+  },
+  "prior_native": {
+    "source_commit": "c76b3acf15462b9e38296e1790ba1dd36b72bb2f",
+    "pid": 3956,
+    "birth_ms": 1793857595353,
+    "exit_code": 1,
+    "wall_seconds": 1.8621862,
+    "error": "actual held preparation intent identity differs",
+    "source_gate_or_replay_issued": false,
+    "metadata_archive_sha256": "e39f22cff9d669b9d652ab7bce35011570a40da129a634ed8dcd84ceb97755ed",
+    "actual_intent_difference_receipt_sha256": "921110007051359f1921ed193b8f47f9d544b5a4f7f70e64aed79e8f19b7930f",
+    "pinned_allocation": 131072,
+    "actual_allocation": 86016,
+    "actual_and_pinned_eof": 83580,
+    "other_identity_fields_match": true,
+    "full_prefix_sha256": "7a93cdfeedd5b34a0a35f1b89af12855a1e95d10a6f3d5ddbc15217b821a0ff0",
+    "full_prefix_match": true
+  },
+  "compatibility": "ONLY reopened ordinary uncompressed/nonsparse intent may contract allocation between EOF and original pinned allocation. All other snapshot fields exact; full original content SHA, same-held before/after equality, record hashes/sequence, publication/locator/J/source gates unchanged. Live adoption remains exact.",
+  "producer": "Normalize allocation through same exclusive RW owner before prefix SHA/pin, using existing bound/slack helper; verify exact normalization snapshot. Future intent appends remain supported.",
+  "historical_publication_sha256": "96c6c9466900416929a32871ba06f1ea1b89e7d15a85ec9188db49e067dba78d",
+  "historical_artifacts_rewritten": false,
+  "native_qualification_pending": true,
+  "unit_tests_run": false
+}

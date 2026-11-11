@@ -1,0 +1,35 @@
+{
+  "checkpoints_remaining": 0,
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "normal_boot_restored": false,
+  "original_DVD_restored_receipt_sha256": "b3751eb94947df6bbdb9041cb1163fc79c9379b2279fb2deee607cdc80cb9dc3",
+  "schema_version": 1,
+  "failure_before_first_native_setter": "actual current FAT/BCD epoch changed before original selection setter",
+  "kind": "closed-EFI-pristine-A-disposable-native-query-B",
+  "historical_native_bytes_written": 203694080,
+  "closed_HND_records": 1,
+  "all_five_goals_complete": false,
+  "actual_live_EFI_source": "2806dd1c2fabcf2d79e4098a06929c1056b9e7b0",
+  "actual_apply_source": "c04ed6cab181077c9a7c504acc0843de492fa1d1",
+  "implementation": [
+    "Existing actual-live Source0 closed-owner full GPT/native/EFI proofs wrap the entire query on success and error.",
+    "Full actual EFI BCD native file/complete FAT map/raw hash captured as current epoch.",
+    "Pristine A is raw-copied to bound J, held readonly, native-identified and exact whole-SHA bookended.",
+    "Disposable registered query B starts as an authenticated exact A copy; ONLY B is passed to native enum_all.",
+    "Query B may mutate its own hive bytes; same object/EOF remains bounded and its actual postquery hash is recorded without becoming source/pristine authority.",
+    "Source full raw hash/FAT and immutable A remain EXACT across query; all native object/field comparison remains complete.",
+    "Native setters target only the positively bound actual EFI store after closed Source0; flush/freshcapture precede per-step A/B readback.",
+    "No live enum, raw hive/header exception, import, private-entry deletion, Source payload writer, Restore, fresh source or new WIM."
+  ],
+  "focused_check": {
+    "exit_code": 0,
+    "unit_tests_run": false,
+    "receipt_sha256": "2d91c8f771711f16dea563621f04f974ea93b842faa2689def9bffdb11550ae8",
+    "session_id": 70334,
+    "wall_seconds": 32.0186027
+  },
+  "live_VBR_dirty_flag_fix_passed": true,
+  "failure_frame_sha256": "123776bee951bbff8deb3fd6e60aa7f07079809a0b36b8d274178056ed23a60c",
+  "actual_2806_repair_runs": 1,
+  "native_fix_qualified": false
+}

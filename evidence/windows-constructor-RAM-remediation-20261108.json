@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "kind": "constructor-RAM-refusal-and-guarded-retry",
+  "failed_run": "6f11b163886c42aa97746722d1dbca9c",
+  "failed_owned_process": {
+    "exit_code": 1,
+    "birth_ms": 1794115415136,
+    "pid": 1552,
+    "peak_working_set": 685416448,
+    "wall_seconds": 5618.5952368
+  },
+  "failure": {
+    "source_NTFS_restored": true,
+    "operating_system_OOM_observed": false,
+    "deficit": 23327016,
+    "limit": 4593262934,
+    "before_publication": true,
+    "leased": 1482320102,
+    "registry": 104271624,
+    "poisoned": false,
+    "requested": 3029998224
+  },
+  "native_source_after": {
+    "source_partition_guid": "c6c3318f-a7c8-47b9-be6d-6dde5e00862f",
+    "bytes": 66236448768,
+    "offset": 331350016,
+    "active_converters": 0,
+    "healthy_NTFS": true
+  },
+  "closed_metadata_custody": {
+    "excluded_empty_shadow_bytes": 104857600,
+    "host_copy_rehashed": true,
+    "metadata_bytes": 4757070396,
+    "zip_bytes": 450477170,
+    "zip_sha256": "26d90eb6dcb3a480b250e39ff257946060de332ccfb45d8d10760eefb2160003",
+    "metadata_files": 55207,
+    "root": ".lab/hyperv/closed-Windows-custody-d08932a2f0fc47f19cda4785f8804b80",
+    "all_file_SHA256_manifest": true
+  },
+  "rehearsal": {
+    "source_admission_or_write_authority_issued": false,
+    "source0_opens": 0,
+    "reports": ".lab/hyperv/arena-RAM-rehearsal-bdcd377424a74ccdab2d52c41f979fd7",
+    "metadata_only": true,
+    "larger_floor": 3221225472,
+    "original_exit": 1,
+    "larger_peak": 6854741688,
+    "original_ledger_limit": 4593262934,
+    "original_floor": 1586591726,
+    "original_exact_reservation_refusal_reproduced": true,
+    "all143552_input_checks_passed": true,
+    "larger_exit": 0,
+    "larger_ledger_limit": 7516192768
+  },
+  "retry": {
+    "product_binary_changed": false,
+    "cached_metadata_used_for_RAM_rehearsal": true,
+    "VM_startup_RAM": 12884901888,
+    "preparation_sha256": "713ca184e7417ad0f93804cbaf35597216671b3c9b4fd0430261831cab9fa8c0",
+    "workflow": "C:\\ntfs2refs\\boot-conversion-6f2381b-159ee200fe704a9a9ac8250c31e145fc\\scratch\\f5e7ffb3f6715d2d986d6d531f9dbb7e",
+    "birth_ms": 1794122712475,
+    "run_id": "159ee200fe704a9a9ac8250c31e145fc",
+    "worker_pid": 6028,
+    "native_launches": 1,
+    "candidate_sha256": "5cfbbc1f96bc872cb42e15f1e8dced074741e801632ac7d2a032a2677845421c",
+    "preparation_resumed": false,
+    "control_boot_ms": 1794122466623,
+    "post_copy_main_RAM_forecast": 7371601579,
+    "minimum_forecast_required": 7123177144,
+    "fresh_source_admission_required": true,
+    "pid": 2748
+  },
+  "original_Windows_converted": false,
+  "original_Windows_booted_refs": false,
+  "unit_tests_run": false,
+  "storage_cap_raised": false
+}

@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "kind": "refs-metadata-inclusive-prefix-scaling",
+  "utc": "2026-10-30",
+  "method": "FSCTL_GET_VOLUME_BITMAP (EX, flag 1 metadata-inclusive) leading allocated run on a fresh Dev Drive ReFS format (4 KiB clusters) in the lab guest; 52 GiB point from the converter's protected allocation map (evidence/native-required-ownership-protected-readonly-20261029.json)",
+  "points": [
+    {
+      "partition_bytes": 55834574848,
+      "zone_bytes": 6174015488,
+      "fraction": 0.1106,
+      "source": "52 GiB lab fixture shadow"
+    },
+    {
+      "partition_bytes": 214730539008,
+      "zone_bytes": 22011707392,
+      "fraction": 0.1025,
+      "source": "200 GB probe VHDX, run refs-zone-probe-20261030 (failed later in its zero count; this value was computed before the failure)"
+    }
+  ],
+  "conclusion": "the reserved zone scales with the volume (about 10-11%); every conversion must relocate the NTFS data occupying that prefix, and without the zone-zero skip must also journal and write that many zeros",
+  "zone_zero_skip_status": "user decision: probe first; probe pending"
+}

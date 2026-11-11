@@ -1,0 +1,39 @@
+{
+  "observed_utc": "2026-10-29T07:35:20.4562114Z",
+  "source_file_sha256": "f287b42871456fbff6aa37505489563005d0ce075ba64e3726240b9722bf8d17",
+  "executable_sha256": "33f850be182df04340558fddebc41c071d36e864f933815c2f57616e200cf9e3",
+  "scope": "Host in-memory benchmark during active VM workload; does not measure storage or qualify conversion.",
+  "result": {
+    "all_four_match": true,
+    "available_cpus": 16,
+    "bytes_per_stream": 536870912,
+    "conversion_qualified": false,
+    "digest_order": [
+      "source_raw",
+      "source_framed",
+      "candidate_raw",
+      "candidate_framed"
+    ],
+    "digests": [
+      "3dfc7875d83ee01473dec0dd85365086a05c015cf521dc43d39eaf4908d06ad9",
+      "734515961ab482506f305ef706d8cc2e4a9e062d52dcb665fc0458a15abc4cd8",
+      "162daae7cc03e43721bcd67bb0b82322613b036d6fcab23725d53b4dc0612386",
+      "d1c975a6565752e518ea2649fa4a9c9b0c730fb99d515e1b75d84a1b2a05f2b6"
+    ],
+    "files_or_devices_opened": false,
+    "input_buffer_bytes": 2097152,
+    "kind": "paired-hash-memory-benchmark",
+    "order": "sequential then pipeline; repeated hot 1MiB buffers; not a storage benchmark",
+    "pipeline": {
+      "elapsed_seconds": 2.7418537,
+      "pair_input_mib_per_second": 373.46996303996815,
+      "sha256_input_mib_per_second": 746.9399372102085
+    },
+    "pipeline_worker_policy": "two framed workers when at least 2 CPUs; serial fallback otherwise",
+    "sequential": {
+      "elapsed_seconds": 4.6323562,
+      "pair_input_mib_per_second": 221.05381274436536,
+      "sha256_input_mib_per_second": 442.10763207664775
+    }
+  }
+}

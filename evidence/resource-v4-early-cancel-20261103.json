@@ -1,0 +1,188 @@
+{
+  "schema_version": 1,
+  "kind": "public-resource-v4-low-reserve-refusal-and-post-restart-early-cancellation",
+  "source_commit": "a0b29e04dd2e83086823349724e7e2a8ccf905f5",
+  "binary_sha256": "1cc91461deae2d97df5390da1a5cb9d8a25c9f864574a39f492889305370dfe9",
+  "build_manifest_sha256": "331098d19f6f8d800abc3988522fd9d2feaccb37b38fcdf926d125e59cac4403",
+  "run_id": "489777a11e84413fb50ebe9fc06063b0",
+  "preparation_intent_sha256": "df9866259919e96c06582cea63cc3f8b179f5f2027ee2f0dfd0d4cb713a4b2b1",
+  "reserve_refusal": {
+    "native": {
+      "exit_code": 1,
+      "pid": 5360,
+      "actual_exit_observed": true,
+      "creation_ms": 1793747474820,
+      "utc": "2026-11-03T23:15:22.1073085Z",
+      "stdout_bytes": 62683,
+      "stderr_bytes": 23552,
+      "wall_seconds": 247.26163129999998
+    },
+    "prepare_only": true,
+    "apply_requested": false,
+    "only_request_minimum_free_bytes_changed": 33285996544,
+    "phase": "protected-target-capture",
+    "error": "capture does not have its remaining journal and reserve capacity",
+    "source_attributes_after": 3,
+    "journal_created": false,
+    "apply_intent_created": false,
+    "actual_enospc": false,
+    "write_flush_or_readback_fault": false,
+    "expected_nonzero_exit": true,
+    "automatic_source_restoration_requested": false
+  },
+  "restart": {
+    "saved_frozen_checkpoint": "fe668886-647a-4928-9c14-9fd9e323aefb",
+    "checkpoint_parent": "3343f2a4-cf81-4fa9-a504-030425a8011e",
+    "actual_new_boot_unix_ms": 1793747939459,
+    "normal_shutdown_restart": true,
+    "physical_power_loss": false
+  },
+  "public_cancellation": {
+    "native": {
+      "handle_owned_through_terminal": true,
+      "exit_code": 0,
+      "creation_ms": 1793748006977,
+      "pid": 2256,
+      "utc": "2026-11-03T23:20:07.1489079Z",
+      "wall_seconds": 0.1461095,
+      "actual_exit_observed": true
+    },
+    "actual_windows_identity": "N2R-WIN11\\LabAdmin",
+    "system_account": false,
+    "fresh_apply_requested": false,
+    "product_result_sha256": "2c5906f37a33c6874da40adc12ffb2670013e587a002427c3507aab4c13b07cb",
+    "product_result": {
+      "complete_partition_hash": false,
+      "journal_replayed": false,
+      "kind": "resource-preparation-cancellation-v1",
+      "label_preserved": true,
+      "mount_paths": {
+        "after": {
+          "all_paths_resolve_to_bound_volume": true,
+          "binding": {
+            "disk_number": 1,
+            "identity": {
+              "disk_bytes": 68719476736,
+              "disk_guid": "1b191872-c372-41ee-a416-e18863996f54",
+              "logical_sector_bytes": 512,
+              "partition_bytes": 55834574848,
+              "partition_guid": "f06075a8-67a2-46b9-8fac-4af4da809617",
+              "partition_number": 2,
+              "partition_offset": 16777216,
+              "physical_sector_bytes": 4096
+            },
+            "volume_guid": "f06075a8-67a2-46b9-8fac-4af4da809617"
+          },
+          "paths": [
+            "F:\\"
+          ]
+        },
+        "binding": {
+          "disk_number": 1,
+          "identity": {
+            "disk_bytes": 68719476736,
+            "disk_guid": "1b191872-c372-41ee-a416-e18863996f54",
+            "logical_sector_bytes": 512,
+            "partition_bytes": 55834574848,
+            "partition_guid": "f06075a8-67a2-46b9-8fac-4af4da809617",
+            "partition_number": 2,
+            "partition_offset": 16777216,
+            "physical_sector_bytes": 4096
+          },
+          "volume_guid": "f06075a8-67a2-46b9-8fac-4af4da809617"
+        },
+        "changed": [],
+        "requested": [
+          "F:\\"
+        ]
+      },
+      "original_ntfs_online": true,
+      "preservation_basis": "durable pre-AP guard, exact native layout and locked NTFS boot; no raw source writer issued",
+      "source": {
+        "disk_number": 1,
+        "identity": {
+          "disk_bytes": 68719476736,
+          "disk_guid": "1b191872-c372-41ee-a416-e18863996f54",
+          "logical_sector_bytes": 512,
+          "partition_bytes": 55834574848,
+          "partition_guid": "f06075a8-67a2-46b9-8fac-4af4da809617",
+          "partition_number": 2,
+          "partition_offset": 16777216,
+          "physical_sector_bytes": 4096
+        },
+        "volume_guid": "f06075a8-67a2-46b9-8fac-4af4da809617"
+      },
+      "source_payload_writes": 0
+    },
+    "actual_filesystem": "NTFS",
+    "actual_cluster_bytes": 65536,
+    "actual_label": "n2r-stream-source",
+    "source_attributes_after": 0,
+    "full_partition_hash_performed": false,
+    "source_payload_writes": 0,
+    "journal_replayed": false
+  },
+  "durable_guard": {
+    "before_phase": "Frozen",
+    "before_state_sha256": "e111194d62e843bf8995cdf634f95ee30be56b09ea5ced49161cac2b98e875fb",
+    "after_phase": "Cancelled",
+    "after_state_sha256": "fed3a8262d9e9d998d389ffaf6177145c9fb40cbcb8fed000094a8ffc3fc109c",
+    "state_bytes": 131072,
+    "valid_identical_copies_before": 2,
+    "valid_identical_copies_after": 2,
+    "nonce_and_locked_boot_unchanged": true,
+    "intent_bytes": 1971,
+    "intent_sha256_unchanged": true,
+    "post_state_path": ".lab/hyperv/streaming-v2-20261027/resource-fixture-489777a11e84413fb50ebe9fc06063b0/post-cancel-state/"
+  },
+  "independent_original_content": {
+    "observer_run_id": "20c89c11e3ee4e92b29d23b651989506",
+    "system_task_terminal_result": 0,
+    "original_streams_verified": 811,
+    "logical_stream_bytes": 9885801949,
+    "digest_algorithm": "xxh3-128",
+    "original_path_type_length_objects_checked": 1534,
+    "additional_directory_paths_checked": 1024,
+    "opening_closing_extra_namespace_matched": true,
+    "native_digest_batches": 13,
+    "native_exit0_and_owned_handle_terminals_verified": 13,
+    "digest_wall_seconds": 9.726922199999999,
+    "new_native_ntfs_manifest_sha256": "1013b8807eccf653bf26a58b0fab055be21245b0e14d3a3275cae831961595c9",
+    "paths_equal_prior_independent_ntfs_manifest": true,
+    "prior_manifest_sha256": "8f14bdc273f05813732fa80250df74302525d8837061da46c61a0039e741678b",
+    "comparison_scope": "Exact paths object matched; whole JSON differs because the new native capture has a different boot epoch",
+    "all_original_acl_sacl_times_independently_checked": false,
+    "complete_original_namespace_no_extra_objects_claimed": false
+  },
+  "closed_evidence": [
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/resource-fixture-489777a11e84413fb50ebe9fc06063b0/closed-reserve-refusal/archive-manifest.json",
+      "sha256": "cbdff236ccaedf73d0c312b2601dc0f2b9e9840acd76c989014321a3ba426a6f",
+      "files": 16,
+      "bytes": 5015551,
+      "all_entry_lengths_and_sha256_verified": true
+    },
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/resource-fixture-489777a11e84413fb50ebe9fc06063b0/closed-early-cancel/archive-manifest.json",
+      "sha256": "f36e8940bf2cee9cc4a45c6de5625f5f857c23427fa46f5ebe4e920855191951",
+      "files": 66,
+      "bytes": 928764,
+      "all_entry_lengths_and_sha256_verified": true
+    }
+  ],
+  "qualification": {
+    "native_reserve_admission_refusal_before_ap": true,
+    "actual_restart_cancellation_of_frozen_preparation": true,
+    "ordinary_labadmin_public_cli": true,
+    "restored_ntfs_content_and_paths": true,
+    "actual_disk_exhaustion": false,
+    "active_ap_resume_or_rollback": false,
+    "mixed_torn_corrupt_or_missing_guard_copy": false,
+    "physical_power_loss": false,
+    "arbitrary_hardware_or_scale": false,
+    "stable_release": false,
+    "unit_tests_run": false
+  },
+  "source_code_changed_for_case": false,
+  "preserved_operational_min_hnd_checkpoint": "7d816cf1-f924-44d0-ba27-c5e44eafa4a1"
+}

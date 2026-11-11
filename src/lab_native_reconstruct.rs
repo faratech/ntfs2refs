@@ -277,7 +277,9 @@ fn observed_binding(
         "observed partitions differ from enrollment"
     );
     Ok(JournalBinding {
+        journal_capacity_bytes: None,
         experiment_id: request.experiment_id.clone(),
+        source_resource_profile: None,
         target_identity_sha256,
         shadow_identity_sha256,
         journal_identity_sha256: identity_hash(b"ntfs2refs/lab/journal-file-identity/v1", journal)?,
@@ -355,6 +357,7 @@ fn write_policy(
             .map(|p| (p.offset, p.length))
             .collect(),
         maximum_bytes: bytes,
+        journal_profile: n2r_win32::journal_file::JournalProfile::LegacyV1,
     };
     policy.validate(PARTITION_BYTES)?;
     Ok(Some(policy))

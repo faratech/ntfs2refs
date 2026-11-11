@@ -1,0 +1,60 @@
+{
+  "source_before_after_verified": true,
+  "goal_complete": false,
+  "kind": "af00-exact-build-lossless-image-custody-and-next-native-v1",
+  "next_reviewed_worker_sha256": "fa796124cac660723e853f98cb5821b0be789f03f8740ab4697380c858edcc7e",
+  "build_manifest_sha256": "0127fb940097830e7f704b71c13790530e7df1af8e9e57f4b6756eee72e50b05",
+  "completed_link_intermediates_reclaimed": 137354080,
+  "next_reviewed_host_sha256": "65f7de6a0eb43583d3cffc02a6a7e2f8708fec35e32d501c740d97b3405be097",
+  "next_scope": "ONE new image and persistent boot install only; no reboot/SourceAP",
+  "candidate_hashes_unchanged_after_reclaim": true,
+  "unit_tests_run": false,
+  "actual_guest_retirement": {
+    "guest_free_after": 5587968000,
+    "host_old_619_held_unchanged": true,
+    "pid": 1188,
+    "birth": 1793916560289,
+    "same_held_disposition_calls": 1,
+    "host_reclaim_assumed": false,
+    "wall_seconds": 25.0142079,
+    "receipt_sha256": "5302c2d53d12c4c8244751f51d2a8d4e1fff65a7a348ec455363a481777fbd07",
+    "guest_free_before": 4968448000,
+    "new_624_held_full_sha256": "1322935b6ff08a7ecfe11161f8b2e8bdeced41b88ec61ba51a19693e81eba2e9",
+    "guest_old_619_absent": true,
+    "exit_code": 0
+  },
+  "binaries": [
+    {
+      "name": "ntfs2refs",
+      "path": "bin/ntfs2refs.exe",
+      "bytes": 20671488,
+      "sha256": "a0d32b70ff0f9ea9a23d77c96533a9fc881113a004cf0333bc2bc3c8a7f40bd0"
+    },
+    {
+      "name": "lab-arm-prepared-boot",
+      "path": "bin/lab-arm-prepared-boot.exe",
+      "bytes": 2597888,
+      "sha256": "6d7680bbf2c57cfbcd5602ae32452a3dff46fdf7a1655c395495f431e1915ab9"
+    },
+    {
+      "name": "lab-apply-prepared-offline",
+      "path": "bin/lab-apply-prepared-offline.exe",
+      "bytes": 4265984,
+      "sha256": "05a38738e5e5f5559dc6b41bf7eef9a9405a623b939b2a58f2b94eabeadde166"
+    }
+  ],
+  "source_commit": "af00ed6fec3b946ca0f20955c46101877d94fac3",
+  "actual_custody": {
+    "original_combined_baseline": 244710734381,
+    "receipt_sha256": "e61d428b6b463e5624b1d4f31046133164836d6c5759c5adab7223a14a74b705",
+    "all_old_bytes_preserved": true,
+    "exit_code": 0,
+    "remaining_sample": 1486482157,
+    "wall_seconds": 76.0466256,
+    "old_image_sha256": "7ec5a53988452441a5446ecfc8c344d0b9557fa56c598cf44c9a2419b3b9943f",
+    "old_image_bytes": 619516755,
+    "after_copy_actual": 245371735872,
+    "host_pid": 16336,
+    "combined_effective_absolute": 246858218029
+  }
+}

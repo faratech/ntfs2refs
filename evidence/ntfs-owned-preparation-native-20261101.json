@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "kind": "native-ntfs-owned-preparation",
+  "source_commit": "82e805bc98712487f6d09e455b0a40cf2d02c00f",
+  "native_tool_sha256": "61876c099af099c7e20c4838ecde65740c9b57901ee08a50543182fc0465e20e",
+  "source_ntfs_cluster_bytes": 65536,
+  "target_refs_cluster_bytes": 4096,
+  "target_refs_version": "3.14",
+  "moved_bytes": 5643501568,
+  "verified_moves": 385,
+  "distinct_moved_identities": 222,
+  "native_process": {
+    "observed_wall_seconds": 18.5202009,
+    "terminal_utc": "2026-11-01T21:23:10.2342009Z",
+    "creation_ms": 1793568171714,
+    "pid": 5932,
+    "native_exit": 0
+  },
+  "all_move_identity_eof_and_complete_mapping_checks_passed": true,
+  "required_and_available_headroom": {
+    "observed_free_outside_target": 45421756416,
+    "required": 5643501568
+  },
+  "native_original_source_unchanged_logical_hashes": 811,
+  "fresh_frozen_baseline": {
+    "objects": 1084,
+    "native_passes": 1,
+    "directories": 273,
+    "manifest_sha256": "7d10997d0ec43a54725c66956a0992d40437b20720a78217852cc338e82a74e7",
+    "files": 811,
+    "certificate_issued": false,
+    "source_checkpoint": "cb802669-903c-48cc-99e5-57976b149e7d",
+    "raw_passes": 1,
+    "streams_matched": 811,
+    "source_admitted": false
+  },
+  "observer_failures_preserved": [
+    "Original wrapper assumed UTF16 path components",
+    "First read-only completion decoded UTF8 as ANSI under PS5",
+    "Second completion wrapped the PS5 JSON array"
+  ],
+  "source_moves_repeated": false,
+  "raw_conversion_started_during_preparation": false,
+  "source_remained_ntfs": true,
+  "native_fsctl_move_file_only": true,
+  "physical_io_measured": false,
+  "later_receipt_reservation_fix_scope": "Focused compilation only; not used by recorded82e native run",
+  "journal_savings_and_full_conversion_pending": true,
+  "new_unit_tests_added_or_run": false,
+  "artifacts": [
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ntfs-owned-preparation-6ec16ed4b4774c13a76b1e282103c66e\\archive.json",
+      "sha256": "d0ed0b8672d2ecbbbe945d363ad212c6ee9fcc1094614fb75333676d1bb4957f",
+      "bytes": 33267
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ntfs-owned-preparation-6ec16ed4b4774c13a76b1e282103c66e\\checkpoint.json",
+      "sha256": "cd1a7114f0625496765622294979cea511a367fc782974370d3b92d4949eabba",
+      "bytes": 315
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ntfs-owned-preparation-6ec16ed4b4774c13a76b1e282103c66e\\closed-native\\preparation\\result.json",
+      "sha256": "18956e4db08acce0d3bdc236372bb8836e1243a05f94e1cdc401c0985039e419",
+      "bytes": 482
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ntfs-owned-preparation-6ec16ed4b4774c13a76b1e282103c66e\\closed-native\\preparation\\moves.jsonl",
+      "sha256": "2582d23ba50a6afd57a49fd095f340645e190d1905a122c075eb9d31e51cac9a",
+      "bytes": 4194893
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ntfs-owned-preparation-6ec16ed4b4774c13a76b1e282103c66e\\closed-native\\contents-completion-v3.json",
+      "sha256": "898bb02b30fa4c028ae47b4e411a777d52d22303b2d05376ab1ce1e41debc61e",
+      "bytes": 1185
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ntfs-owned-preparation-6ec16ed4b4774c13a76b1e282103c66e\\closed-native\\independent-contents-v3.json",
+      "sha256": "dce0bd271e9f0e32cf8a2bb2d979255d06ace57c952c684f2c45e9166cdc7c57",
+      "bytes": 224605
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ntfs-owned-preparation-6ec16ed4b4774c13a76b1e282103c66e\\full-baseline-8796571ebd24458f8bedf17b5784e5a7\\archive.json",
+      "sha256": "a7cda1af33b0b5b3b4f4115033bf5b5d59a3bf2b1586b73869e7c472ba2f449a",
+      "bytes": 12139
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ntfs-owned-preparation-6ec16ed4b4774c13a76b1e282103c66e\\full-baseline-8796571ebd24458f8bedf17b5784e5a7\\closed-native\\full-baseline\\baseline-manifest.json",
+      "sha256": "7d10997d0ec43a54725c66956a0992d40437b20720a78217852cc338e82a74e7",
+      "bytes": 12786
+    }
+  ]
+}

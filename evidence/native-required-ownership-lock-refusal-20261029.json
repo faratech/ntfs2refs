@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "kind": "native-ownership-post-lock-bitmap-refusal",
+  "run_id": "8e1d5f8cc6d045c48112a4eef0c874d4",
+  "source_commit": "307e9ccea329785f58db882319bcdaa73a8820fa",
+  "executable_sha256": "f258433d562d3bcd432133908a10bce06a25632901ae215ab6c3938c5b890e49",
+  "actual_native_exit": 1,
+  "actual_task_result": 1,
+  "recorded_workers_absent": true,
+  "phase": "allocation-freeze",
+  "volume_lock_succeeded": true,
+  "explicit_flush_succeeded": true,
+  "legacy_bitmap_query_native_error": 21,
+  "metadata_bitmap_query_native_error": 21,
+  "raw_required_ownership_collection_entered": false,
+  "conversion_success": false,
+  "reconstruction_authorized": false,
+  "archive": ".lab/hyperv/streaming-v2-20261027/ownership-native-20261029-8e1d5f8cc6d045c48112a4eef0c874d4/closed-failure/receipt.json",
+  "archive_sha256": "1119e653062a3e8c26c4b571a67b09b39aaf00e0d9ea2183d3a3561f3268ab77",
+  "next_implementation": "Distinct allocation observation under a protected physically read-only mounted lease after freeze; no fallback to a pre-lock or partial bitmap."
+}

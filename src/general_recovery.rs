@@ -6,7 +6,7 @@ use crate::{
 use anyhow::{Context, Result, ensure};
 use n2r_win32::{
     GeneralFrozenPartition, GeneralJournaledPartition, NativeEvent,
-    journal_file::observe_general_journal_file,
+    journal_file::observe_general_journal_file_with_profile,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -15,6 +15,14 @@ use std::{
     io::{Read, Write},
     os::windows::fs::{MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
+};
+
+mod allocation;
+pub(crate) use allocation::recover_allocation_redundant_for_lab;
+pub use allocation::{AllocationRecoveryOutcome, preview_allocation, recover_allocation};
+mod compact;
+pub use compact::{
+    ExperimentalCompactInputs, ExperimentalCompactOperation, recover_compact_experimental,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -124,6 +132,11 @@ pub fn recover(operation: Operation, inputs: &Inputs, output: &Path) -> Result<(
     request.validate()?;
     let ticket_bytes = pinned(&inputs.ticket, &inputs.ticket_sha256, 65536)?;
     let ticket: JournalTicket = serde_json::from_slice(&ticket_bytes)?;
+    ensure!(
+        ticket.schema_version == request.schema_version
+            && ticket.binding.source_resource_profile == request.source_resource_profile,
+        "recovery ticket and request journal profiles differ"
+    );
     let expectation = match (&inputs.expectation, &inputs.expectation_sha256) {
         (Some(path), Some(pin)) => {
             ensure!(
@@ -132,7 +145,9 @@ pub fn recover(operation: Operation, inputs: &Inputs, output: &Path) -> Result<(
             );
             let bytes = pinned(path, pin, 16 * 1024 * 1024)?;
             let value: crate::shadow_tree::ExpectedTree = serde_json::from_slice(&bytes)?;
-            value.validate()?;
+            value.validate_with_resource_profile(
+                request.source_resource_profile.unwrap_or_default(),
+            )?;
             Some(bytes)
         }
         (None, None) => None,
@@ -185,7 +200,11 @@ fn run(
             .share_mode(0)
             .custom_flags(0x0020_0000)
             .open(&inputs.journal)?;
-        let identity = observe_general_journal_file(&journal, &request.journal)?;
+        let identity = observe_general_journal_file_with_profile(
+            &journal,
+            &request.journal,
+            request.journal_profile()?,
+        )?;
         artifacts::save(output, "journal-identity.json", &identity)?;
         phase = "reopen-excluded-disks";
         let mut events = Vec::<NativeEvent>::new();

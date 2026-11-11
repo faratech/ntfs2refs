@@ -14,8 +14,8 @@ use n2r_win32::{
     NativeEvent, WritePolicy, capture_mount_paths_general,
     general_layout::GeneralSourceShadowBinding,
     journal_file::{
-        GeneralJournalStorageBinding, JournalFileIdentity, MAX_JOURNAL_BYTES,
-        observe_general_journal_file,
+        GeneralJournalStorageBinding, JournalFileIdentity, JournalFileSnapshot, JournalProfile,
+        observe_general_journal_file_with_profile,
     },
     layout::guid_bytes,
     mounted_filesystem_general, rediscover_general_volume_wait, shadow_native,
@@ -28,9 +28,42 @@ use std::{
     io::{self, Read, Seek, SeekFrom, Write},
 };
 
+pub(crate) mod compact;
+pub(crate) mod compact_finalize;
+pub(crate) mod fast_verification;
+pub(crate) mod selected_artifacts;
+pub(crate) mod selected_native_journal;
+
+/// Read-only inspection of complete pinned recovery metadata. This opens no
+/// journal or source device and supplies no source or replay authority.
+#[allow(clippy::too_many_arguments)]
+pub fn inspect_pinned_recovery_pages(
+    path: &std::path::Path,
+    sha256: &str,
+    source: &n2r_win32::general_layout::GeneralDiskBinding,
+    expected: &shadow_tree::PagedExpectedTree,
+    plan: &crate::selected_journal::SelectedPlan,
+    ticket: &crate::selected_journal::SelectedTicket,
+    resources: crate::ntfs_admission::ResourceProfile,
+) -> Result<serde_json::Value> {
+    fast_verification::inspect_pinned_recovery_pages(
+        path, sha256, source, expected, plan, ticket, resources,
+    )
+}
+
+fn observe_journal(file: &File, request: &Request) -> Result<JournalFileSnapshot> {
+    Ok(observe_general_journal_file_with_profile(
+        file,
+        &request.journal,
+        request.journal_profile()?,
+    )?)
+}
+
 fn binding(request: &Request, journal: &JournalFileIdentity) -> Result<JournalBinding> {
     Ok(JournalBinding {
         experiment_id: request.experiment_id.clone(),
+        source_resource_profile: request.source_resource_profile,
+        journal_capacity_bytes: (request.schema_version == 3).then_some(request.max_journal_bytes),
         target_identity_sha256: partition_hash(&request.pair.source.identity)?,
         shadow_identity_sha256: partition_hash(&request.pair.shadow.identity)?,
         journal_identity_sha256: identity_hash(
@@ -40,6 +73,26 @@ fn binding(request: &Request, journal: &JournalFileIdentity) -> Result<JournalBi
     })
 }
 
+pub(crate) fn compact_binding(
+    request: &Request,
+    journal: &JournalFileIdentity,
+    artifact_identity: &str,
+) -> Result<JournalBinding> {
+    ensure!(
+        artifact_identity.len() == 64
+            && artifact_identity
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        "compact artifact identity digest invalid"
+    );
+    let mut bound = binding(request, journal)?;
+    bound.shadow_identity_sha256 = identity_hash(
+        b"ntfs2refs/compact-shadow-backing/v1",
+        &serde_json::json!({"native_shadow_identity":bound.shadow_identity_sha256,"artifact_identity":artifact_identity}),
+    )?;
+    Ok(bound)
+}
+
 fn validated_ticket(
     request: &Request,
     journal: &mut File,
@@ -47,16 +100,43 @@ fn validated_ticket(
     identity: &JournalFileIdentity,
     file_bytes: u64,
 ) -> Result<JournalDescriptor> {
+    validated_ticket_for_phase(request, journal, ticket, identity, file_bytes, false)
+}
+
+/// Completed markers must bind the same profile and complete immutable plan
+/// before any durability barrier can expose the target for a native mount.
+fn validated_completed_ticket(
+    request: &Request,
+    journal: &mut File,
+    ticket: &JournalTicket,
+    identity: &JournalFileIdentity,
+    file_bytes: u64,
+) -> Result<JournalDescriptor> {
+    validated_ticket_for_phase(request, journal, ticket, identity, file_bytes, true)
+}
+
+fn validated_ticket_for_phase(
+    request: &Request,
+    journal: &mut File,
+    ticket: &JournalTicket,
+    identity: &JournalFileIdentity,
+    file_bytes: u64,
+    completed: bool,
+) -> Result<JournalDescriptor> {
     let observed = binding(request, identity)?;
     ensure!(
-        ticket.schema_version == 1
+        ticket.schema_version == request.schema_version
             && ticket.binding == observed
             && ticket.journal_length == file_bytes
             && ticket.journal_length <= request.max_journal_bytes
             && ticket.immutable_length.checked_add(8192) == Some(ticket.journal_length),
         "general ticket, journal length or storage identity differs"
     );
-    let descriptor = lab_reconstruct::inspect_journal(journal, ticket, &observed)?;
+    let descriptor = if completed {
+        lab_reconstruct::inspect_completed_journal(journal, ticket, &observed)?
+    } else {
+        lab_reconstruct::inspect_journal(journal, ticket, &observed)?
+    };
     ensure!(
         serde_json::to_vec(&descriptor.request)? == serde_json::to_vec(&request.comparison)?,
         "general journal plan differs from request"
@@ -77,7 +157,7 @@ fn durable_marker_for_mount<'a>(
         observed_binding,
         proof,
         |file| {
-            let observed = observe_general_journal_file(file, &request.journal)?;
+            let observed = observe_journal(file, request)?;
             ensure!(
                 observed.file_bytes == ticket.journal_length,
                 "completed journal length changed around durability barrier"
@@ -91,6 +171,8 @@ fn durable_marker_for_mount<'a>(
 #[serde(deny_unknown_fields)]
 pub struct Request {
     pub schema_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_resource_profile: Option<crate::ntfs_admission::ResourceProfile>,
     pub experiment_id: String,
     pub expected_tree_sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -104,10 +186,20 @@ pub struct Request {
 }
 
 impl Request {
+    pub fn journal_profile(&self) -> Result<JournalProfile> {
+        Ok(JournalProfile::from_schema_and_capacity(
+            self.schema_version,
+            (self.schema_version == 3).then_some(self.max_journal_bytes),
+        )?)
+    }
     pub fn validate(&self) -> Result<()> {
+        let profile = self.journal_profile()?;
+        lab_reconstruct::validate_source_profile_binding(
+            self.schema_version,
+            self.source_resource_profile,
+        )?;
         ensure!(
-            self.schema_version == 1
-                && self.experiment_id.len() == 32
+            self.experiment_id.len() == 32
                 && self
                     .experiment_id
                     .bytes()
@@ -122,7 +214,11 @@ impl Request {
                     .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
             "missing pinned general target expectation"
         );
-        self.pair.validate()?;
+        self.pair.validate_with_resource_profile(
+            self.source_resource_profile
+                .unwrap_or_default()
+                .native_profile(),
+        )?;
         crate::general_shadow::validate_mount_paths(&self.expected_mount_paths)?;
         if let Some(label) = &self.expected_source_label {
             label.validate()?;
@@ -133,8 +229,8 @@ impl Request {
             self.comparison.schema_version == 2
                 && self.comparison.sector_size == 4096
                 && self.comparison.expected_length == self.pair.source.identity.partition_bytes
-                && self.comparison.max_change_bytes <= lab_reconstruct::MAX_CHANGE_BYTES
-                && (1..=MAX_JOURNAL_BYTES).contains(&self.max_journal_bytes),
+                && self.comparison.max_change_bytes <= profile.max_changed_bytes()
+                && (1..=profile.max_journal_bytes()).contains(&self.max_journal_bytes),
             "general comparison or journal budget differs"
         );
         for data in [&self.pair.source, &self.pair.shadow] {
@@ -186,6 +282,69 @@ pub fn prepare(
     prepare_with_progress(request, source, shadow, journal, &mut |_| {})
 }
 
+/// Measure a frozen pair without creating a journal or authorizing execution.
+/// The existing request remains unchanged; only this diagnostic comparison's
+/// byte ceiling expands to the image length so an undersized budget can be
+/// reported accurately. All image and retained-range pins are still checked.
+pub fn measure_journal_requirements(
+    request: &Request,
+    source: &mut GeneralFrozenPartition,
+    shadow: &mut GeneralFrozenPartition,
+    progress: &mut dyn FnMut(crate::preparation_progress::Progress),
+) -> Result<serde_json::Value> {
+    request.validate()?;
+    ensure!(
+        source.binding() == &request.pair.source && shadow.binding() == &request.pair.shadow,
+        "actual frozen sizing bindings differ"
+    );
+    let mut events = Vec::new();
+    let before_source = source.state(&mut events)?;
+    let before_shadow = shadow.state(&mut events)?;
+    ensure!(
+        before_source.disk_attributes == 3 && before_shadow.disk_attributes == 3,
+        "sizing requires persistent offline/read-only exclusion"
+    );
+    let mut comparison_request = request.comparison.clone();
+    comparison_request.max_change_bytes = comparison_request.expected_length;
+    let mut reporter =
+        crate::preparation_progress::Reporter::new(comparison_request.expected_length, progress);
+    let compared = retained_compare::compare_streams_observed_with_resource_profile(
+        source,
+        shadow,
+        &comparison_request,
+        &mut reporter,
+        request.source_resource_profile.unwrap_or_default(),
+    )?;
+    ensure!(
+        compared.source_shadow_unchanged_after_comparison
+            && compared.retained_differing_bytes == 0
+            && source.state(&mut events)? == before_source
+            && shadow.state(&mut events)? == before_shadow,
+        "frozen sizing inputs or retained bytes changed"
+    );
+    let conservative_journal_bytes = compared
+        .patch_bytes
+        .checked_mul(2)
+        .and_then(|v| v.checked_add(n2r_win32::journal_file::JOURNAL_OVERHEAD_RESERVE))
+        .ok_or_else(|| anyhow::anyhow!("journal sizing overflow"))?;
+    let profile = request.journal_profile()?;
+    Ok(serde_json::json!({
+        "schema_version":1,"kind":"frozen-general-journal-sizing",
+        "source_sha256":compared.request.source_sha256,
+        "shadow_sha256":compared.request.shadow_sha256,
+        "retained_bytes":compared.retained_bytes,
+        "changed_bytes":compared.patch_bytes,"patch_count":compared.patches.len(),
+        "conservative_journal_bytes":conservative_journal_bytes,
+        "requested_journal_bytes":request.max_journal_bytes,
+        "fits_requested_budget":conservative_journal_bytes<=request.max_journal_bytes,
+        "fits_profile_ceiling":conservative_journal_bytes<=profile.max_journal_bytes(),
+        "inputs_unchanged":true,"source_payload_writes":0,
+        "journal_created":false,"execution_authorized":false,
+        "full_scan_input_bytes_read":compared.full_scan_input_bytes_read,
+        "source_before":before_source,"shadow_before":before_shadow,"events":events
+    }))
+}
+
 pub fn prepare_with_progress(
     request: &Request,
     source: &mut GeneralFrozenPartition,
@@ -201,46 +360,24 @@ pub fn prepare_with_progress(
     let mut events = Vec::new();
     let source_before = source.state(&mut events)?;
     let shadow_before = shadow.state(&mut events)?;
-    let journal_before = observe_general_journal_file(journal, &request.journal)?;
+    let journal_before = observe_journal(journal, request)?;
     ensure!(
         journal_before.file_bytes == 0,
         "journal is not a fresh empty file"
     );
-    let ntfs = ntfs_inspect::inspect(source, source.byte_len())?;
-    let refs = refs_inspect::inspect(shadow, shadow.byte_len())?;
-    ensure!(
-        ntfs.geometry.cluster_size == 4096
-            && refs.geometry.major_version == 3
-            && refs.geometry.minor_version == 14
-            && refs.geometry.bytes_per_cluster == 4096
-            && refs.geometry.volume_bytes == shadow.byte_len(),
-        "initial NTFS/ReFS format geometry differs"
-    );
-    let retained_allocation = if request.comparison.retained_ranges.is_empty() {
-        None
-    } else {
-        let shadow_length = shadow.byte_len();
-        let observed =
-            refs_retained_allocation::inspect(shadow, shadow_length, &request.comparison)?;
-        ensure!(
-            observed.retained_allocator_coverage_verified,
-            "retained data lacks unambiguous ReFS allocator coverage"
-        );
-        Some(observed)
-    };
-    let observed_binding = binding(request, &journal_before.identity)?;
-    let summary = lab_reconstruct::prepare_journal_with_progress(
+    let (ntfs, refs, retained_allocation, observed_binding, summary) = prepare_image_content(
+        request,
         source,
         shadow,
         journal,
-        &request.comparison,
-        &observed_binding,
-        request.max_journal_bytes,
+        &journal_before,
+        None,
         progress,
+        lab_reconstruct::prepare_journal_with_profile_and_progress,
     )?;
     let source_after = source.state(&mut events)?;
     let shadow_after = shadow.state(&mut events)?;
-    let journal_after = observe_general_journal_file(journal, &request.journal)?;
+    let journal_after = observe_journal(journal, request)?;
     ensure!(
         source_before == source_after
             && shadow_before == shadow_after
@@ -272,6 +409,217 @@ pub fn prepare_with_progress(
     })
 }
 
+type PreparedImageContent = (
+    ntfs_inspect::NtfsInspection,
+    refs_inspect::RefsInspection,
+    Option<refs_retained_allocation::Coverage>,
+    JournalBinding,
+    JournalSummary,
+);
+
+/// Prepare from a separately authenticated compact view while retaining the
+/// native frozen shadow as a provenance/device guard. No source writes or
+/// activation are exposed; ordinary full-shadow preparation is unchanged.
+pub fn prepare_compact_with_progress<S: lab_reconstruct::ReadSeek>(
+    request: &Request,
+    source: &mut GeneralFrozenPartition,
+    native_shadow: &GeneralFrozenPartition,
+    image: &mut S,
+    journal: &mut File,
+    artifact_identity_sha256: &str,
+    progress: &mut dyn FnMut(crate::preparation_progress::Progress),
+) -> Result<Preparation> {
+    prepare_compact_using(
+        request,
+        source,
+        native_shadow,
+        image,
+        journal,
+        artifact_identity_sha256,
+        progress,
+        lab_reconstruct::prepare_journal_with_profile_and_progress,
+    )
+}
+
+/// Typed source-backed preparation only; generic/lab callers retain the
+/// existing two-reader comparison and its original serialization.
+pub(crate) fn prepare_compact_paired_with_progress(
+    request: &Request,
+    source: &mut GeneralFrozenPartition,
+    native_shadow: &GeneralFrozenPartition,
+    image: &mut crate::refs_hybrid::delta::DifferenceImage<'_, GeneralFrozenPartition, File>,
+    journal: &mut File,
+    artifact_identity_sha256: &str,
+    progress: &mut dyn FnMut(crate::preparation_progress::Progress),
+) -> Result<Preparation> {
+    prepare_compact_using(
+        request,
+        source,
+        native_shadow,
+        image,
+        journal,
+        artifact_identity_sha256,
+        progress,
+        lab_reconstruct::prepare_compact_journal_with_progress,
+    )
+}
+
+type PrepareJournal<S> = fn(
+    &mut GeneralFrozenPartition,
+    &mut S,
+    &mut File,
+    &RetainedCompareRequest,
+    &JournalBinding,
+    u64,
+    JournalProfile,
+    &mut dyn FnMut(crate::preparation_progress::Progress),
+) -> Result<JournalSummary>;
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_compact_using<S: lab_reconstruct::ReadSeek>(
+    request: &Request,
+    source: &mut GeneralFrozenPartition,
+    native_shadow: &GeneralFrozenPartition,
+    image: &mut S,
+    journal: &mut File,
+    artifact_identity_sha256: &str,
+    progress: &mut dyn FnMut(crate::preparation_progress::Progress),
+    prepare_journal: PrepareJournal<S>,
+) -> Result<Preparation> {
+    request.validate()?;
+    ensure!(
+        source.binding() == &request.pair.source
+            && native_shadow.binding() == &request.pair.shadow
+            && image.byte_len()? == native_shadow.byte_len(),
+        "compact preparation bindings/length differ"
+    );
+    let mut events = Vec::new();
+    let source_before = source.state(&mut events)?;
+    let shadow_before = native_shadow.state(&mut events)?;
+    ensure!(
+        source_before.disk_attributes == 3 && shadow_before.disk_attributes == 3,
+        "compact preparation requires both data disks excluded read-only"
+    );
+    let journal_before = observe_journal(journal, request)?;
+    ensure!(
+        journal_before.file_bytes == 0,
+        "compact preparation needs fresh journal"
+    );
+    let compact_bound =
+        compact_binding(request, &journal_before.identity, artifact_identity_sha256)?;
+    let (ntfs, refs, retained_allocation, observed_binding, summary) = prepare_image_content(
+        request,
+        source,
+        image,
+        journal,
+        &journal_before,
+        Some(&compact_bound),
+        progress,
+        prepare_journal,
+    )?;
+    let source_after = source.state(&mut events)?;
+    let shadow_after = native_shadow.state(&mut events)?;
+    let after = observe_journal(journal, request)?;
+    ensure!(
+        source_before == source_after
+            && shadow_before == shadow_after
+            && journal_before.identity == after.identity
+            && after.file_bytes == summary.ticket.journal_length,
+        "compact preparation device/journal state changed"
+    );
+    Ok(Preparation {
+        schema_version: 1,
+        kind: "general-compact-candidate-journal-preparation",
+        request: request.clone(),
+        observed_binding,
+        source_before,
+        source_after,
+        shadow_before,
+        shadow_after,
+        source_ntfs_dirty: ntfs.dirty,
+        source_ntfs_volume_flags: ntfs.volume_flags,
+        shadow_refs_version: format!(
+            "{}.{}",
+            refs.geometry.major_version, refs.geometry.minor_version
+        ),
+        retained_allocation,
+        journal: summary,
+        events,
+        source_admitted: false,
+        target_profile_qualified: false,
+        execution_authorized: false,
+    })
+}
+
+/// Shared content checks for raw-shadow and compact target views. This does
+/// not grant activation; callers retain and bracket actual device leases.
+fn prepare_image_content<S: lab_reconstruct::ReadSeek>(
+    request: &Request,
+    source: &mut GeneralFrozenPartition,
+    shadow: &mut S,
+    journal: &mut File,
+    journal_before: &JournalFileSnapshot,
+    explicit_binding: Option<&JournalBinding>,
+    progress: &mut dyn FnMut(crate::preparation_progress::Progress),
+    prepare_journal: PrepareJournal<S>,
+) -> Result<PreparedImageContent> {
+    let shadow_length = shadow.byte_len()?;
+    let ntfs = ntfs_inspect::inspect_with_limits(
+        source,
+        source.byte_len(),
+        ntfs_inspect::limits_for_resource_profile(
+            request.source_resource_profile.unwrap_or_default(),
+        ),
+    )?;
+    let refs = refs_inspect::inspect_with_resource_profile(
+        shadow,
+        shadow_length,
+        request.source_resource_profile.unwrap_or_default(),
+    )?;
+    ensure!(
+        request
+            .source_resource_profile
+            .unwrap_or_default()
+            .supports_source_geometry(&ntfs.geometry)
+            && refs.geometry.major_version == 3
+            && refs.geometry.minor_version == 14
+            && refs.geometry.bytes_per_cluster == 4096
+            && refs.geometry.volume_bytes == shadow_length,
+        "initial NTFS/ReFS format geometry differs"
+    );
+    let retained_allocation = if request.comparison.retained_ranges.is_empty() {
+        None
+    } else {
+        let shadow_length = shadow_length;
+        let observed = refs_retained_allocation::inspect_with_resource_profile(
+            shadow,
+            shadow_length,
+            &request.comparison,
+            request.source_resource_profile.unwrap_or_default(),
+        )?;
+        ensure!(
+            observed.retained_allocator_coverage_verified,
+            "retained data lacks unambiguous ReFS allocator coverage"
+        );
+        Some(observed)
+    };
+    let observed_binding = match explicit_binding {
+        Some(bound) => bound.clone(),
+        None => binding(request, &journal_before.identity)?,
+    };
+    let summary = prepare_journal(
+        source,
+        shadow,
+        journal,
+        &request.comparison,
+        &observed_binding,
+        request.max_journal_bytes,
+        request.journal_profile()?,
+        progress,
+    )?;
+    Ok((ntfs, refs, retained_allocation, observed_binding, summary))
+}
+
 /// Only a separately pinned, fully inspected journal can remove READ_ONLY
 /// from the still-offline source. No payload range is armed at this point.
 #[allow(
@@ -293,7 +641,7 @@ pub(crate) fn activate(
     );
     source.state(events)?;
     let shadow_before = shadow.state(events)?;
-    let before = observe_general_journal_file(journal, &request.journal)?;
+    let before = observe_journal(journal, request)?;
     validated_ticket(
         request,
         journal,
@@ -306,7 +654,7 @@ pub(crate) fn activate(
         target.state(events)?.disk_attributes == 1 && shadow.state(events)? == shadow_before,
         "general activation lost disk exclusion"
     );
-    let after = observe_general_journal_file(journal, &request.journal)?;
+    let after = observe_journal(journal, request)?;
     ensure!(
         after.identity == before.identity && after.file_bytes == before.file_bytes,
         "general journal changed during activation"
@@ -390,7 +738,7 @@ pub fn rollback_without_shadow(
         before.disk_attributes == 1,
         "rollback target is not offline"
     );
-    let observed = observe_general_journal_file(journal, &request.journal)?;
+    let observed = observe_journal(journal, request)?;
     let descriptor = validated_ticket(
         request,
         journal,
@@ -413,6 +761,7 @@ pub fn rollback_without_shadow(
                     .map(|r| (r.offset, r.length))
                     .collect(),
                 maximum_bytes: descriptor.changed_bytes,
+                journal_profile: request.journal_profile()?,
             },
             events,
         )?;
@@ -420,7 +769,7 @@ pub fn rollback_without_shadow(
     let bound = binding(request, &observed.identity)?;
     let result = lab_reconstruct::rollback_without_shadow(target, journal, ticket, &bound)?;
     let after = target.state(events)?;
-    let journal_after = observe_general_journal_file(journal, &request.journal)?;
+    let journal_after = observe_journal(journal, request)?;
     ensure!(
         before == after
             && observed.identity == journal_after.identity
@@ -480,9 +829,15 @@ pub(crate) fn execute_interrupted_apply(
     )
 }
 
-struct InterruptingGeneralTarget<'a> {
+pub(crate) struct InterruptingGeneralTarget<'a> {
     inner: &'a mut GeneralJournaledPartition,
     remaining: u32,
+}
+impl<'a> InterruptingGeneralTarget<'a> {
+    /// Lab-only: flush and exit(86) after `remaining` accepted writes.
+    pub(crate) fn new(inner: &'a mut GeneralJournaledPartition, remaining: u32) -> Self {
+        Self { inner, remaining }
+    }
 }
 impl Read for InterruptingGeneralTarget<'_> {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
@@ -524,6 +879,87 @@ impl lab_reconstruct::DurableIo for InterruptingGeneralTarget<'_> {
     }
 }
 
+/// Lab-only semantic fault. Only writes accepted by this native target handle
+/// are observed; journal writes never pass through this wrapper.
+pub(crate) struct FirstCopyInterruptingGeneralTarget<'a> {
+    inner: &'a mut GeneralJournaledPartition,
+    copy_offset: u64,
+    copy_length: u64,
+    copy_end: u64,
+}
+impl<'a> FirstCopyInterruptingGeneralTarget<'a> {
+    pub(crate) fn new(
+        inner: &'a mut GeneralJournaledPartition,
+        copy_offset: u64,
+        copy_length: u64,
+    ) -> io::Result<Self> {
+        let copy_end = copy_offset.checked_add(copy_length).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "copy interruption range overflow",
+            )
+        })?;
+        if copy_length == 0
+            || !copy_offset.is_multiple_of(4096)
+            || !copy_length.is_multiple_of(4096)
+            || copy_end > inner.byte_len()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "copy interruption requires an aligned range inside the actual target",
+            ));
+        }
+        Ok(Self {
+            inner,
+            copy_offset,
+            copy_length,
+            copy_end,
+        })
+    }
+}
+impl Read for FirstCopyInterruptingGeneralTarget<'_> {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        self.inner.read(bytes)
+    }
+}
+impl Seek for FirstCopyInterruptingGeneralTarget<'_> {
+    fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
+        self.inner.seek(from)
+    }
+}
+impl Write for FirstCopyInterruptingGeneralTarget<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let offset = self.inner.stream_position()?;
+        let written = self.inner.write(bytes)?;
+        let end = offset
+            .checked_add(written as u64)
+            .ok_or_else(|| io::Error::other("accepted target write offset overflow"))?;
+        if written > 0 && offset < self.copy_end && self.copy_offset < end {
+            self.inner.sync_all()?;
+            eprintln!(
+                "Controlled first-copy target interruption: write_offset={offset} write_bytes={written} copy_offset={} copy_length={}; target flushed; source stays offline; recover using the pinned ticket.",
+                self.copy_offset, self.copy_length
+            );
+            io::stderr().flush()?;
+            std::process::exit(86);
+        }
+        Ok(written)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.sync_all()
+    }
+}
+impl lab_reconstruct::ReadSeek for FirstCopyInterruptingGeneralTarget<'_> {
+    fn byte_len(&mut self) -> io::Result<u64> {
+        Ok(GeneralJournaledPartition::byte_len(self.inner))
+    }
+}
+impl lab_reconstruct::DurableIo for FirstCopyInterruptingGeneralTarget<'_> {
+    fn sync_all(&mut self) -> io::Result<()> {
+        self.inner.sync_all()
+    }
+}
+
 fn execute_with_interruption(
     operation: RecoveryOperation,
     request: &Request,
@@ -551,7 +987,7 @@ fn execute_with_interruption(
         target_before.disk_attributes == 1 && shadow_before.disk_attributes == 3,
         "general execution requires an excluded target and shadow"
     );
-    let before = observe_general_journal_file(journal, &request.journal)?;
+    let before = observe_journal(journal, request)?;
     let descriptor = validated_ticket(
         request,
         journal,
@@ -574,6 +1010,7 @@ fn execute_with_interruption(
                     .map(|r| (r.offset, r.length))
                     .collect(),
                 maximum_bytes: descriptor.changed_bytes,
+                journal_profile: request.journal_profile()?,
             },
             events,
         )?;
@@ -605,7 +1042,7 @@ fn execute_with_interruption(
     };
     let target_after = target.state(events)?;
     let shadow_after = shadow.state(events)?;
-    let after = observe_general_journal_file(journal, &request.journal)?;
+    let after = observe_journal(journal, request)?;
     ensure!(
         target_before == target_after
             && shadow_before == shadow_after
@@ -648,14 +1085,63 @@ pub struct Finalization {
     pub general_conversion_qualified: bool,
 }
 
+/// The request facts that post-handoff native verification reads. A selected
+/// range conversion supplies them without a whole-image comparison request.
+pub(crate) struct NativeVerificationScope<'a> {
+    pub pair: &'a GeneralSourceShadowBinding,
+    pub source_resource_profile: Option<crate::ntfs_admission::ResourceProfile>,
+    pub expected_mount_paths: Option<&'a [String]>,
+    pub expected_source_label: Option<&'a n2r_win32::volume_label::VolumeLabel>,
+}
+
+impl Request {
+    pub(crate) fn verification_scope(&self) -> NativeVerificationScope<'_> {
+        NativeVerificationScope {
+            pair: &self.pair,
+            source_resource_profile: self.source_resource_profile,
+            expected_mount_paths: self.expected_mount_paths.as_deref(),
+            expected_source_label: self.expected_source_label.as_ref(),
+        }
+    }
+}
+
+/// Verify the mounted tree, then mount paths and the restored label, exactly as
+/// the compact handoff does after its target is brought online.
+pub(crate) fn verify_native_scoped<D: shadow_tree::ExpectedObjectDomain>(
+    scope: &NativeVerificationScope<'_>,
+    expected: &D,
+    report: &mut Finalization,
+    restored_label: bool,
+) {
+    match verify_converted_tree_scoped(scope, expected, &mut report.events, restored_label) {
+        Ok(native) => {
+            record_mount_paths_scoped(scope, &native, report);
+            report.native = Some(native);
+            if report.error.is_none() {
+                restore_source_label_scoped(scope, report);
+            }
+            report.success = report.error.is_none();
+        }
+        Err(error) => report.error = Some(error.to_string()),
+    }
+}
+
 fn record_mount_paths(
     request: &Request,
     native: &shadow_native::GeneralConvertedReport,
     report: &mut Finalization,
 ) {
+    record_mount_paths_scoped(&request.verification_scope(), native, report)
+}
+
+fn record_mount_paths_scoped(
+    scope: &NativeVerificationScope<'_>,
+    native: &shadow_native::GeneralConvertedReport,
+    report: &mut Finalization,
+) {
     match capture_mount_paths_general(native.pair.source.clone(), &mut report.events) {
         Ok(observed) => {
-            report.mount_paths_preserved = request.expected_mount_paths.as_ref().map(|expected| {
+            report.mount_paths_preserved = scope.expected_mount_paths.map(|expected| {
                 let before: BTreeSet<_> = expected.iter().map(|path| path.to_lowercase()).collect();
                 let after: BTreeSet<_> = observed
                     .paths
@@ -672,7 +1158,7 @@ fn record_mount_paths(
         }
         Err(error) => {
             report.mount_paths_error = Some(error.to_string());
-            if request.expected_mount_paths.is_some() {
+            if scope.expected_mount_paths.is_some() {
                 report.error = Some("converted ReFS mount paths could not be verified".into());
             }
         }
@@ -712,7 +1198,7 @@ pub fn complete_rollback(
             && shadow.state(&mut events)?.disk_attributes == 3,
         "NTFS rollback completion requires excluded target and shadow"
     );
-    let observed_journal = observe_general_journal_file(journal, &request.journal)?;
+    let observed_journal = observe_journal(journal, request)?;
     validated_ticket(
         request,
         journal,
@@ -721,7 +1207,13 @@ pub fn complete_rollback(
         observed_journal.file_bytes,
     )?;
     let length = target.byte_len();
-    let raw = ntfs_inspect::inspect(&mut target, length)?;
+    let raw = ntfs_inspect::inspect_with_limits(
+        &mut target,
+        length,
+        ntfs_inspect::limits_for_resource_profile(
+            request.source_resource_profile.unwrap_or_default(),
+        ),
+    )?;
     ntfs_backup::verify(&mut target, length, &raw)?;
     ntfs_log::verify(&mut target, &raw)?;
     let observed_binding = binding(request, &observed_journal.identity)?;
@@ -787,7 +1279,7 @@ pub fn complete_rollback_without_shadow(
         target.state(&mut events)?.disk_attributes == 1,
         "rollback target is not offline"
     );
-    let observed = observe_general_journal_file(journal, &request.journal)?;
+    let observed = observe_journal(journal, request)?;
     validated_ticket(
         request,
         journal,
@@ -796,7 +1288,13 @@ pub fn complete_rollback_without_shadow(
         observed.file_bytes,
     )?;
     let length = target.byte_len();
-    let raw = ntfs_inspect::inspect(&mut target, length)?;
+    let raw = ntfs_inspect::inspect_with_limits(
+        &mut target,
+        length,
+        ntfs_inspect::limits_for_resource_profile(
+            request.source_resource_profile.unwrap_or_default(),
+        ),
+    )?;
     ntfs_backup::verify(&mut target, length, &raw)?;
     ntfs_log::verify(&mut target, &raw)?;
     let bound = binding(request, &observed.identity)?;
@@ -863,7 +1361,14 @@ pub fn resume_completed_rollback(
             && shadow.state(&mut events)?.disk_attributes == 3,
         "completed NTFS rollback requires excluded target and shadow"
     );
-    let observed_journal = observe_general_journal_file(journal, &request.journal)?;
+    let observed_journal = observe_journal(journal, request)?;
+    validated_completed_ticket(
+        request,
+        journal,
+        ticket,
+        &observed_journal.identity,
+        observed_journal.file_bytes,
+    )?;
     let observed_binding = binding(request, &observed_journal.identity)?;
     let proof = lab_reconstruct::verify_completed_marker(
         &mut target,
@@ -877,7 +1382,13 @@ pub fn resume_completed_rollback(
         &request.comparison.shadow_sha256,
     )?;
     let length = target.byte_len();
-    let raw = ntfs_inspect::inspect(&mut target, length)?;
+    let raw = ntfs_inspect::inspect_with_limits(
+        &mut target,
+        length,
+        ntfs_inspect::limits_for_resource_profile(
+            request.source_resource_profile.unwrap_or_default(),
+        ),
+    )?;
     ntfs_backup::verify(&mut target, length, &raw)?;
     ntfs_log::verify(&mut target, &raw)?;
     let durable = durable_marker_for_mount(request, journal, ticket, &observed_binding, &proof)?;
@@ -931,7 +1442,14 @@ pub fn resume_completed_rollback_without_shadow(
         target.state(&mut events)?.disk_attributes == 1,
         "completed rollback target is not offline"
     );
-    let observed = observe_general_journal_file(journal, &request.journal)?;
+    let observed = observe_journal(journal, request)?;
+    validated_completed_ticket(
+        request,
+        journal,
+        ticket,
+        &observed.identity,
+        observed.file_bytes,
+    )?;
     let bound = binding(request, &observed.identity)?;
     let proof = lab_reconstruct::verify_completed_rollback_marker_without_shadow(
         &mut target,
@@ -942,7 +1460,13 @@ pub fn resume_completed_rollback_without_shadow(
         &request.comparison.source_sha256,
     )?;
     let length = target.byte_len();
-    let raw = ntfs_inspect::inspect(&mut target, length)?;
+    let raw = ntfs_inspect::inspect_with_limits(
+        &mut target,
+        length,
+        ntfs_inspect::limits_for_resource_profile(
+            request.source_resource_profile.unwrap_or_default(),
+        ),
+    )?;
     ntfs_backup::verify(&mut target, length, &raw)?;
     ntfs_log::verify(&mut target, &raw)?;
     let durable = durable_marker_for_mount(request, journal, ticket, &bound, &proof)?;
@@ -984,59 +1508,47 @@ fn verify_converted_tree(
     events: &mut Vec<NativeEvent>,
     restored_label: bool,
 ) -> std::io::Result<shadow_native::GeneralConvertedReport> {
-    let mut pair = request.pair.clone();
+    verify_converted_tree_scoped(
+        &request.verification_scope(),
+        expectation,
+        events,
+        restored_label,
+    )
+}
+
+fn verify_converted_tree_scoped<D: shadow_tree::ExpectedObjectDomain>(
+    scope: &NativeVerificationScope<'_>,
+    expectation: &D,
+    events: &mut Vec<NativeEvent>,
+    restored_label: bool,
+) -> std::io::Result<shadow_native::GeneralConvertedReport> {
+    expectation
+        .revalidate_domain()
+        .map_err(std::io::Error::other)?;
+    let mut pair = scope.pair.clone();
     pair.source = rediscover_general_volume_wait(pair.source, events)?;
-    let input: Vec<_> = expectation
-        .objects
-        .iter()
-        .map(|object| shadow_native::Input {
-            components: &object.path,
-            directory: object.directory,
-            times: object.stored_times,
-            attributes: object.attributes,
-            security: &object.security,
-            expected_api_security: object.api_security.as_deref(),
-            payload: &[],
-            expected_length: if object.directory {
-                None
-            } else {
-                Some(object.length)
-            },
-            expected_sha256: if object.directory {
-                None
-            } else {
-                object.sha256.as_deref()
-            },
-            source_offset: object.source_offset,
-            source_runs: object
-                .source_extents
-                .iter()
-                .map(|run| shadow_native::SourceRun {
-                    logical_offset: run.logical_offset,
-                    physical_offset: run.physical_offset,
-                    length: run.length,
-                })
-                .collect(),
-        })
-        .collect();
+    let inputs = crate::general_shadow::ExpectedInputs(expectation);
     let same_security = |a: &[u8], b: &[u8]| {
         ntfs_attestation::same_security(a, b)
             .map_err(|error| std::io::Error::other(error.to_string()))
     };
-    if restored_label && let Some(label) = &request.expected_source_label {
-        shadow_native::verify_general_converted_ordinary_with_label(
-            pair,
-            &input,
-            label,
-            same_security,
-        )
-    } else {
-        shadow_native::verify_general_converted_ordinary(pair, &input, same_security)
-    }
+    shadow_native::verify_general_converted_ordinary_domain(
+        pair,
+        &inputs,
+        scope.expected_source_label.filter(|_| restored_label),
+        same_security,
+        scope
+            .source_resource_profile
+            .unwrap_or_default()
+            .native_profile(),
+    )
+}
+fn restore_source_label(request: &Request, report: &mut Finalization) {
+    restore_source_label_scoped(&request.verification_scope(), report)
 }
 
-fn restore_source_label(request: &Request, report: &mut Finalization) {
-    let Some(desired) = &request.expected_source_label else {
+fn restore_source_label_scoped(scope: &NativeVerificationScope<'_>, report: &mut Finalization) {
+    let Some(desired) = scope.expected_source_label else {
         return;
     };
     let Some(native) = &report.native else {
@@ -1052,7 +1564,7 @@ fn restore_source_label(request: &Request, report: &mut Finalization) {
         }
     };
     match n2r_win32::volume_label::restore_verified_label(
-        &request.pair.source,
+        &scope.pair.source,
         desired,
         native.pair.source.clone(),
         &enrollment,
@@ -1091,7 +1603,8 @@ pub(crate) fn finalize(
         "general target expectation pin differs"
     );
     let expectation: shadow_tree::ExpectedTree = serde_json::from_slice(expected_tree_bytes)?;
-    expectation.validate()?;
+    expectation
+        .validate_with_resource_profile(request.source_resource_profile.unwrap_or_default())?;
     ensure!(
         target.binding() == &request.pair.source && shadow.binding() == &request.pair.shadow,
         "general handoff data bindings differ"
@@ -1102,7 +1615,7 @@ pub(crate) fn finalize(
             && shadow.state(&mut events)?.disk_attributes == 3,
         "general handoff requires excluded target and shadow"
     );
-    let observed_journal = observe_general_journal_file(journal, &request.journal)?;
+    let observed_journal = observe_journal(journal, request)?;
     validated_ticket(
         request,
         journal,
@@ -1172,7 +1685,8 @@ pub fn finalize_after_marker(
         "completed ReFS target expectation pin differs"
     );
     let expectation: shadow_tree::ExpectedTree = serde_json::from_slice(expected_tree_bytes)?;
-    expectation.validate()?;
+    expectation
+        .validate_with_resource_profile(request.source_resource_profile.unwrap_or_default())?;
     ensure!(
         target.binding() == &request.pair.source && shadow.binding() == &request.pair.shadow,
         "completed ReFS handoff data bindings differ"
@@ -1183,7 +1697,14 @@ pub fn finalize_after_marker(
             && shadow.state(&mut events)?.disk_attributes == 3,
         "completed ReFS handoff requires excluded target and shadow"
     );
-    let observed_journal = observe_general_journal_file(journal, &request.journal)?;
+    let observed_journal = observe_journal(journal, request)?;
+    validated_completed_ticket(
+        request,
+        journal,
+        ticket,
+        &observed_journal.identity,
+        observed_journal.file_bytes,
+    )?;
     let observed_binding = binding(request, &observed_journal.identity)?;
     let proof = lab_reconstruct::verify_completed_refs_marker_from_journal(
         &mut target,
@@ -1251,6 +1772,7 @@ mod tests {
         volume_guid: &str,
     ) -> GeneralDiskBinding {
         GeneralDiskBinding {
+            layout_profile: Default::default(),
             disk_number: number,
             volume_guid: volume_guid.into(),
             identity: PartitionIdentity {
@@ -1269,6 +1791,7 @@ mod tests {
     fn request() -> Request {
         Request {
             schema_version: 1,
+            source_resource_profile: None,
             experiment_id: "a".repeat(32),
             expected_tree_sha256: "c".repeat(64),
             expected_mount_paths: None,
@@ -1301,6 +1824,7 @@ mod tests {
                 externally_enrolled_disk_unique_id: "JOURNAL-TEST".into(),
                 allow_additional_partitions: false,
                 disk: GeneralDiskBinding {
+                    layout_profile: Default::default(),
                     disk_number: 2,
                     volume_guid: "77777777-7777-7777-7777-777777777777".into(),
                     identity: PartitionIdentity {
@@ -1340,6 +1864,192 @@ mod tests {
         valid.validate().unwrap();
         valid.comparison.max_change_bytes += 4096;
         assert!(valid.validate().is_err());
+    }
+    #[test]
+    fn request_profile_and_write_budget_are_explicit() {
+        let mut value = request();
+        value.max_journal_bytes = 2u64 << 30;
+        value.comparison.max_change_bytes = 512u64 << 20;
+        assert!(value.validate().is_err());
+        value.schema_version = 2;
+        value.validate().unwrap();
+        value.schema_version = 3;
+        assert!(value.validate().is_err());
+    }
+    #[test]
+    fn completed_ticket_rejects_cross_profile_and_different_immutable_plan() {
+        use std::io::{Seek, SeekFrom, Write};
+        for version in [1, 2] {
+            let mut req = request();
+            req.schema_version = version;
+            let old = vec![0x31; 16384];
+            let mut new = old.clone();
+            new[8192..12288].fill(0x72);
+            req.comparison.expected_length = old.len() as u64;
+            req.comparison.max_change_bytes = old.len() as u64;
+            req.comparison.source_sha256 = hex::encode(Sha256::digest(&old));
+            req.comparison.shadow_sha256 = hex::encode(Sha256::digest(&new));
+            let identity = JournalFileIdentity {
+                volume_serial_number: 1,
+                file_id_128: [2; 16],
+                volume_guid: guid_bytes(&req.journal.disk.volume_guid).unwrap(),
+                disk_guid: guid_bytes(&req.journal.disk.identity.disk_guid).unwrap(),
+                partition_guid: guid_bytes(&req.journal.disk.identity.partition_guid).unwrap(),
+                partition_number: req.journal.disk.identity.partition_number,
+                disk_bytes: req.journal.disk.identity.disk_bytes,
+                partition_offset: req.journal.disk.identity.partition_offset,
+                partition_bytes: req.journal.disk.identity.partition_bytes,
+                logical_sector_bytes: req.journal.disk.identity.logical_sector_bytes,
+                physical_sector_bytes: req.journal.disk.identity.physical_sector_bytes,
+            };
+            let bound = binding(&req, &identity).unwrap();
+            let mut source = tempfile::tempfile().unwrap();
+            let mut shadow = tempfile::tempfile().unwrap();
+            let mut journal = tempfile::tempfile().unwrap();
+            source.write_all(&old).unwrap();
+            shadow.write_all(&new).unwrap();
+            source.seek(SeekFrom::Start(0)).unwrap();
+            shadow.seek(SeekFrom::Start(0)).unwrap();
+            let summary = lab_reconstruct::prepare_journal_with_profile(
+                &mut source,
+                &mut shadow,
+                &mut journal,
+                &req.comparison,
+                &bound,
+                req.max_journal_bytes,
+                JournalProfile::from_schema(version).unwrap(),
+            )
+            .unwrap();
+            let length = summary.ticket.journal_length;
+            validated_completed_ticket(&req, &mut journal, &summary.ticket, &identity, length)
+                .unwrap();
+            let mut crossed = req.clone();
+            crossed.schema_version = if version == 1 { 2 } else { 1 };
+            assert!(
+                validated_completed_ticket(
+                    &crossed,
+                    &mut journal,
+                    &summary.ticket,
+                    &identity,
+                    length
+                )
+                .is_err()
+            );
+            crossed = req.clone();
+            crossed.comparison.max_ranges -= 1;
+            assert!(
+                validated_completed_ticket(
+                    &crossed,
+                    &mut journal,
+                    &summary.ticket,
+                    &identity,
+                    length
+                )
+                .is_err()
+            );
+
+            // Exercise both ABT proof forms after the actual marker exists.
+            let mut target = tempfile::tempfile().unwrap();
+            target.write_all(&old).unwrap();
+            lab_reconstruct::mark_rollback_complete_without_shadow(
+                &mut target,
+                &mut journal,
+                &summary.ticket,
+                &bound,
+            )
+            .unwrap();
+            validated_completed_ticket(&req, &mut journal, &summary.ticket, &identity, length)
+                .unwrap();
+            lab_reconstruct::verify_completed_marker(
+                &mut target,
+                &mut shadow,
+                &mut journal,
+                &summary.ticket,
+                &bound,
+                lab_reconstruct::CompletionKind::NtfsRollback,
+                old.len() as u64,
+                &req.comparison.source_sha256,
+                &req.comparison.shadow_sha256,
+            )
+            .unwrap();
+            lab_reconstruct::verify_completed_rollback_marker_without_shadow(
+                &mut target,
+                &mut journal,
+                &summary.ticket,
+                &bound,
+                old.len() as u64,
+                &req.comparison.source_sha256,
+            )
+            .unwrap();
+            let mut crossed = req.clone();
+            crossed.schema_version = if version == 1 { 2 } else { 1 };
+            assert!(
+                validated_completed_ticket(
+                    &crossed,
+                    &mut journal,
+                    &summary.ticket,
+                    &identity,
+                    length
+                )
+                .is_err()
+            );
+
+            // The HND path must satisfy the same comparison and profile gate.
+            let mut handoff_journal = tempfile::tempfile().unwrap();
+            let handoff = lab_reconstruct::prepare_journal_with_profile(
+                &mut source,
+                &mut shadow,
+                &mut handoff_journal,
+                &req.comparison,
+                &bound,
+                req.max_journal_bytes,
+                JournalProfile::from_schema(version).unwrap(),
+            )
+            .unwrap();
+            lab_reconstruct::apply(
+                &mut target,
+                &mut shadow,
+                &mut handoff_journal,
+                &handoff.ticket,
+                &bound,
+            )
+            .unwrap();
+            lab_reconstruct::mark_handoff(
+                &mut target,
+                &mut shadow,
+                &mut handoff_journal,
+                &handoff.ticket,
+                &bound,
+            )
+            .unwrap();
+            validated_completed_ticket(
+                &req,
+                &mut handoff_journal,
+                &handoff.ticket,
+                &identity,
+                handoff.ticket.journal_length,
+            )
+            .unwrap();
+            lab_reconstruct::verify_completed_refs_marker_from_journal(
+                &mut target,
+                &mut shadow,
+                &mut handoff_journal,
+                &handoff.ticket,
+                &bound,
+                old.len() as u64,
+            )
+            .unwrap();
+            assert!(
+                validated_completed_ticket(
+                    &crossed,
+                    &mut handoff_journal,
+                    &handoff.ticket,
+                    &identity,
+                    handoff.ticket.journal_length
+                )
+                .is_err()
+            );
+        }
     }
     #[test]
     fn source_labels_preserve_legacy_request_bytes_and_validate_new_metadata() {

@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "kind": "authorized-obsolete-v4-hnd-checkpoint-retirement",
+  "retired_in_order": ["ba81a1f8-eee9-40d6-957f-31acbb09b98e", "411c47b6-652d-432a-81f9-8bd10ff18e1b"],
+  "retained_current_hnd": "b1de36d8-2520-4d67-8165-fd1358e9c7d5",
+  "retained_original_ap": "a51e134b-9c2f-4de6-9794-37e8d664b79a",
+  "retained_ready_source": "3343f2a4-cf81-4fa9-a504-030425a8011e",
+  "retained_alpha_ap": "58bd9ceb-60bc-4b34-81e1-7af197523a80",
+  "guarded_f4bf_and_required_ancestors_retained": true,
+  "archive_audit": {"files": 172, "bytes": 8788638, "all_lengths_and_sha256_verified": true, "frozen_alpha_package_pins_verified": 6},
+  "hyper_v_api_only": true,
+  "inactive_graph_and_leaf_order_checked": true,
+  "manual_avhdx_deletion": false,
+  "historical_evidence_and_package_preserved": true,
+  "old_guest_images_and_large_journals_retired": true,
+  "all_lab_and_shared_build_capacity_after": {
+    "actual_bytes": 272447465589,
+    "host_free_bytes": 134104756224,
+    "next_forecast_bytes": 42949672960,
+    "maximum_actual_bytes": 329374052988,
+    "minimum_host_free_bytes": 17179869184,
+    "known_internal_alias_charge_bytes": 262144,
+    "admitted": true,
+    "epoch_reset": false
+  },
+  "receipts": ".lab/development/retire-old-v4-hnd-20261103/",
+  "raw_replay_rule": "Both retired branches were closed HND. Their journals are never reusable for raw replay."
+}

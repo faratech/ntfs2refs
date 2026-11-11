@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "kind": "release-build-observation",
+  "source_commit": "2ff5f017c03977c5e6ba9d31ba64dc634bfa2fe7",
+  "working_tree_note": "Existing user-owned src/main.rs capabilities hunk present during build and remains unstaged.",
+  "command": "cargo build --release --bin ntfs2refs --bin ntfs2refs-compact --bin lab-convert-native-composite",
+  "exit_code": 0,
+  "elapsed_seconds": 44.61,
+  "unit_tests_run": false,
+  "native_qualification_at_seal": false,
+  "prior_native_results_inherited": false,
+  "sealed_manifest_sha256": "230c08850b41bcab1defa0b81aa35406ea0760e25a4042657602d191e0065d6b",
+  "artifacts": [
+    {
+      "name": "ntfs2refs.exe",
+      "bytes": 7077376,
+      "sha256": "fb5548cc80a1de57e5a1c3c853a0ccfc43338515d00e15867305fa5f59c6079c"
+    },
+    {
+      "name": "ntfs2refs-compact.exe",
+      "bytes": 4769792,
+      "sha256": "6eb9676883a9a1dcac2380c755fd0eff56a118dcce659d682b72765d965842cb"
+    },
+    {
+      "name": "lab-convert-native-composite.exe",
+      "bytes": 4421632,
+      "sha256": "e2a832e0986ce785d4700ec4501e28a4a3f0b3f3e2fb8a1df2fdc25fd52e6976"
+    }
+  ],
+  "changes": [
+    "Shared fresh read scans for compact handoff and final source/candidate preparation",
+    "Offline public recovery selection from verified journal lifecycle under exclusive handle",
+    "Existing CNG SHA256 backend for verified Windows streaming-v2 full image checks and workers"
+  ],
+  "warning": "binrw 0.11.3 emits a future Rust incompatibility warning",
+  "grants_source_or_recovery_authority": false
+}

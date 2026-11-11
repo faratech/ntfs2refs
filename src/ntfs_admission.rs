@@ -6,14 +6,357 @@ use crate::{
     ntfs_inspect::{self as ntfs, AttributeInventory, FileInventory, MetadataRole},
     ntfs_namespace, ntfs_security,
 };
-use serde::Serialize;
-use std::collections::{BTreeMap, BTreeSet};
+#[cfg(windows)]
+use anyhow::{Result, ensure};
+use serde::{Deserialize, Serialize};
+#[cfg(windows)]
+pub(crate) mod paged;
+use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 
 pub const PROFILE: &str = "existing-data-tree-v1";
 pub const ORDINARY_PROFILE: &str = "ordinary-data-tree-v2";
+/// Source sparse metadata can be modeled before the native sparse graph is
+/// connected; that does not make a sparse source eligible for conversion.
+
+/// Conservative Win32 DATA-stream names, preserved as their exact UTF-16.
+/// Device basenames are not relevant after the file's stream separator, but
+/// path separators, stream separators, wildcards and normalization tails are.
+pub fn valid_named_stream_name(name: &[u16]) -> bool {
+    if name.is_empty() || name.len() > 255 {
+        return false;
+    }
+    let Ok(text) = String::from_utf16(name) else {
+        return false;
+    };
+    !text.ends_with([' ', '.'])
+        && text
+            .chars()
+            .all(|c| !c.is_control() && !"<>:\"/\\|?*".contains(c))
+}
+
+/// Encoded bytes are never retained as ReFS payload. This recognizes only a
+/// fully mapped NTFS stream whose logical reader can decode the source form.
+pub(crate) fn compressed_stream_supported(
+    raw: &ntfs::NtfsInspection,
+    file: &FileInventory,
+    stream: &ntfs::StreamInventory,
+) -> bool {
+    compressed_stream_supported_with_geometry(&raw.geometry, file, stream)
+}
+
+pub(crate) fn compressed_stream_supported_with_geometry(
+    geometry: &ntfs::NtfsGeometry,
+    file: &FileInventory,
+    stream: &ntfs::StreamInventory,
+) -> bool {
+    if stream.flags != 1 {
+        return false;
+    }
+    let mut attributes = file.attributes.iter().filter(|attribute| {
+        attribute.type_code == 0x80 && attribute.name_utf16 == stream.name_utf16
+    });
+    let Some(attribute) = attributes.next() else {
+        return false;
+    };
+    attributes.next().is_none()
+        && attribute.resident == stream.resident
+        && attribute.flags == stream.flags
+        && attribute.logical_size == stream.logical_size
+        && attribute.initialized_size == stream.initialized_size
+        && attribute.allocated_size == stream.allocated_size
+        && attribute.extents == stream.extents
+        && crate::ntfs_compression::supported(attribute, geometry).is_ok()
+}
 pub const MAX_FILES: usize = 128;
 pub const MAX_DIRECTORIES: usize = 32;
 pub const MAX_LOGICAL_BYTES: u64 = 256 * 1024 * 1024;
+/// Canonical default-plus-named DATA stream identities across the whole tree.
+pub const MAX_DATA_STREAMS: usize = 16_384;
+
+/// Explicit source/tree budgets, independent of journal format or capacity.
+/// Selecting a larger profile supplies no native evidence or certificate.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceProfile {
+    #[default]
+    AlphaV1,
+    ExperimentalLargeTreeV1,
+    ExperimentalStreamingTreeV2,
+    ExperimentalObjectEnvelopeV3(Option<n2r_win32::tree_resources::CountAdmission>),
+    ResourceBoundedV4(Option<n2r_win32::tree_resources::SourceResourceAdmission>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResourceLimits {
+    pub maximum_files: usize,
+    /// Includes the root directory.
+    pub maximum_directories: usize,
+    pub maximum_logical_bytes: u64,
+    pub maximum_stream_bytes: u64,
+}
+
+impl ResourceProfile {
+    /// Source allocation units are independent of the fixed 4 KiB ReFS target.
+    /// The expanded geometry remains explicitly experimental and still uses
+    /// the same bounded tree, native-observation and journal requirements.
+    pub fn supports_source_geometry(self, geometry: &ntfs::NtfsGeometry) -> bool {
+        geometry.bytes_per_sector == 512
+            && geometry.file_record_size == 1024
+            && geometry.index_record_size == 4096
+            && match self {
+                Self::AlphaV1 => geometry.cluster_size == 4096,
+                Self::ExperimentalLargeTreeV1
+                | Self::ExperimentalStreamingTreeV2
+                | Self::ExperimentalObjectEnvelopeV3(_)
+                | Self::ResourceBoundedV4(_) => {
+                    geometry.cluster_size >= 4096
+                        && crate::ntfs_index::supports_cluster_size(geometry.cluster_size)
+                }
+            }
+    }
+
+    pub const fn native_profile(self) -> Option<n2r_win32::attestation::ResourceProfile> {
+        match self {
+            Self::AlphaV1 => None,
+            Self::ExperimentalLargeTreeV1 => {
+                Some(n2r_win32::attestation::ResourceProfile::ExperimentalLargeTreeV1)
+            }
+            Self::ExperimentalStreamingTreeV2 => {
+                Some(n2r_win32::attestation::ResourceProfile::ExperimentalStreamingTreeV2)
+            }
+            Self::ExperimentalObjectEnvelopeV3(admission) => Some(
+                n2r_win32::attestation::ResourceProfile::ExperimentalObjectEnvelopeV3(admission),
+            ),
+            Self::ResourceBoundedV4(admission) => Some(
+                n2r_win32::attestation::ResourceProfile::ResourceBoundedV4(admission),
+            ),
+        }
+    }
+
+    pub fn limits(self) -> ResourceLimits {
+        match self {
+            Self::AlphaV1 => ResourceLimits {
+                maximum_files: MAX_FILES,
+                maximum_directories: MAX_DIRECTORIES,
+                maximum_logical_bytes: MAX_LOGICAL_BYTES,
+                maximum_stream_bytes: MAX_LOGICAL_BYTES,
+            },
+            Self::ExperimentalLargeTreeV1 => ResourceLimits {
+                maximum_files: 1024,
+                maximum_directories: 256,
+                maximum_logical_bytes: 4 * 1024 * 1024 * 1024,
+                maximum_stream_bytes: 4 * 1024 * 1024 * 1024,
+            },
+            Self::ExperimentalStreamingTreeV2 => ResourceLimits {
+                maximum_files: 1024,
+                maximum_directories: 256,
+                maximum_logical_bytes: n2r_win32::general_layout::MAX_EXPERIMENTAL_PARTITION_BYTES,
+                maximum_stream_bytes: n2r_win32::general_layout::MAX_EXPERIMENTAL_PARTITION_BYTES,
+            },
+            Self::ExperimentalObjectEnvelopeV3(admission) => ResourceLimits {
+                maximum_files: match admission {
+                    Some(a) => a.files as usize,
+                    None => n2r_win32::tree_resources::RAW_IDENTITIES,
+                },
+                maximum_directories: match admission {
+                    Some(a) => a.directories as usize,
+                    None => n2r_win32::tree_resources::RAW_IDENTITIES,
+                },
+                maximum_logical_bytes: n2r_win32::general_layout::MAX_EXPERIMENTAL_PARTITION_BYTES,
+                maximum_stream_bytes: n2r_win32::general_layout::MAX_EXPERIMENTAL_PARTITION_BYTES,
+            },
+            Self::ResourceBoundedV4(admission) => {
+                let Some(admission) = admission.filter(|value| value.validate().is_ok()) else {
+                    return ResourceLimits {
+                        maximum_files: 0,
+                        maximum_directories: 0,
+                        maximum_logical_bytes: 0,
+                        maximum_stream_bytes: 0,
+                    };
+                };
+                ResourceLimits {
+                    maximum_files: usize::try_from(admission.files).unwrap_or(0),
+                    maximum_directories: usize::try_from(admission.directories).unwrap_or(0),
+                    maximum_logical_bytes: i64::MAX as u64,
+                    maximum_stream_bytes: i64::MAX as u64,
+                }
+            }
+        }
+    }
+
+    pub const fn ordinary_admission_profile(self) -> &'static str {
+        match self {
+            Self::AlphaV1 => ORDINARY_PROFILE,
+            Self::ExperimentalLargeTreeV1 => "ordinary-data-tree-large-v1",
+            Self::ExperimentalStreamingTreeV2 => "ordinary-data-tree-streaming-v2",
+            Self::ExperimentalObjectEnvelopeV3(_) => "ordinary-data-tree-object-envelope-v3",
+            Self::ResourceBoundedV4(_) => "ordinary-data-tree-resource-bounded-v4",
+        }
+    }
+
+    pub const fn ordinary_shadow_profile(self) -> &'static str {
+        match self {
+            Self::AlphaV1 => "native-ordinary-tree-shadow-v2",
+            Self::ExperimentalLargeTreeV1 => "native-ordinary-tree-shadow-large-v1",
+            Self::ExperimentalStreamingTreeV2 => "native-ordinary-tree-shadow-streaming-v2",
+            Self::ExperimentalObjectEnvelopeV3(_) => {
+                "native-ordinary-tree-shadow-object-envelope-v3"
+            }
+            Self::ResourceBoundedV4(_) => "native-ordinary-tree-shadow-resource-bounded-v4",
+        }
+    }
+
+    pub const fn is_streaming(self) -> bool {
+        matches!(
+            self,
+            Self::ExperimentalStreamingTreeV2
+                | Self::ExperimentalObjectEnvelopeV3(_)
+                | Self::ResourceBoundedV4(_)
+        )
+    }
+    pub const fn is_envelope(self) -> bool {
+        matches!(self, Self::ExperimentalObjectEnvelopeV3(_))
+    }
+    pub fn maximum_objects(self) -> usize {
+        match self {
+            Self::ResourceBoundedV4(Some(admission)) if admission.validate().is_ok() => admission
+                .objects()
+                .ok()
+                .and_then(|value| usize::try_from(value).ok())
+                .unwrap_or(0),
+            Self::ResourceBoundedV4(_) => 0,
+            Self::ExperimentalObjectEnvelopeV3(Some(a)) if a.requires_paged_metadata() => {
+                (a.object_slots as usize).min(n2r_win32::tree_resources::RAW_IDENTITIES)
+            }
+            Self::ExperimentalObjectEnvelopeV3(None) => n2r_win32::tree_resources::RAW_IDENTITIES,
+            Self::ExperimentalObjectEnvelopeV3(Some(_)) => n2r_win32::tree_resources::OBJECT_SLOTS,
+            _ => self.limits().maximum_files + self.limits().maximum_directories,
+        }
+    }
+    pub fn count_admission(
+        self,
+    ) -> anyhow::Result<Option<n2r_win32::tree_resources::CountAdmission>> {
+        Ok(self
+            .native_profile()
+            .map(n2r_win32::attestation::ResourceProfile::count_admission)
+            .transpose()?
+            .flatten())
+    }
+    /// Resource facts are not write authority. Fresh source admission also
+    /// requires the actual complete raw/native page owners from the same lease.
+    pub fn resource_admission(
+        self,
+    ) -> Result<Option<n2r_win32::tree_resources::SourceResourceAdmission>> {
+        Ok(self
+            .native_profile()
+            .map(n2r_win32::attestation::ResourceProfile::resource_admission)
+            .transpose()?
+            .flatten())
+    }
+    /// Only complete reconciled frozen-source facts select the file/directory
+    /// allocation of the existing object envelope. The descriptor is not authority.
+    pub(crate) fn admit_inspection(
+        self,
+        raw: &ntfs::NtfsInspection,
+        pin: &str,
+    ) -> anyhow::Result<Self> {
+        self.admit_inspection_mode(raw, pin, false)
+    }
+
+    /// Only the owning pipeline that actually constructs from authenticated
+    /// pages may choose this version. It is not a deserializable authority flag.
+    pub(crate) fn admit_inspection_paged(
+        self,
+        raw: &ntfs::NtfsInspection,
+        pin: &str,
+    ) -> anyhow::Result<Self> {
+        self.admit_inspection_mode(raw, pin, true)
+    }
+
+    fn admit_inspection_mode(
+        self,
+        raw: &ntfs::NtfsInspection,
+        pin: &str,
+        paged: bool,
+    ) -> anyhow::Result<Self> {
+        if !self.is_envelope() {
+            return Ok(self);
+        }
+        ntfs::validate_record_coverage(raw)?;
+        anyhow::ensure!(
+            raw.files.len() <= n2r_win32::tree_resources::RAW_IDENTITIES
+                && has_unique_sorted_records(raw)
+                && matches!(
+                    raw.allocation_reconciliation.as_ref().map(|r| &r.status),
+                    Some(ntfs::AllocationReconciliationStatus::ConsistentRawModel)
+                )
+                && matches!(
+                    raw.namespace_reconciliation.as_ref().map(|r| &r.status),
+                    Some(ntfs_namespace::Status::ConsistentRawModel)
+                ),
+            "tree counts require complete reconciled source facts"
+        );
+        anyhow::ensure!(
+            raw.schema_version == 1
+                && matches!(
+                    raw.security_reconciliation.as_ref().map(|r| &r.status),
+                    Some(ntfs_security::Status::ConsistentRawModel)
+                ),
+            "tree counts require complete source security reconciliation"
+        );
+        let mut files = 0usize;
+        let mut dirs = 0usize;
+        let mut streams = 0usize;
+        for f in &raw.files {
+            if internal_role(raw, f).is_some() {
+                continue;
+            }
+            anyhow::ensure!(
+                user_paths(raw, f).is_some(),
+                "tree count source namespace is unresolved"
+            );
+            if f.is_directory {
+                dirs += 1;
+            } else {
+                files += 1;
+                streams = streams
+                    .checked_add(f.streams.len())
+                    .ok_or_else(|| anyhow::anyhow!("stream count overflow"))?;
+            }
+        }
+        let bytes: [u8; 32] = hex::decode(pin)?
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("source inspection pin length differs"))?;
+        let admitted = if let Self::ExperimentalObjectEnvelopeV3(Some(previous)) = self {
+            previous.validate_tree(files, dirs, streams)?;
+            anyhow::ensure!(
+                previous.source_inspection_sha256 == bytes
+                    && previous.raw_identities as usize == raw.files.len(),
+                "supplied count admission differs from current complete source"
+            );
+            previous
+        } else if paged {
+            n2r_win32::tree_resources::CountAdmission::new_paged(
+                bytes,
+                raw.files.len(),
+                files,
+                dirs,
+                streams,
+            )?
+        } else {
+            n2r_win32::tree_resources::CountAdmission::new(
+                bytes,
+                raw.files.len(),
+                files,
+                dirs,
+                streams,
+            )?
+        };
+        admitted.validate_inspection_bytes(raw)?;
+        Ok(Self::ExperimentalObjectEnvelopeV3(Some(admitted)))
+    }
+}
 
 /// Windows-generated root transaction metadata is an internal replacement
 /// obligation, not an ordinary user stream. Recognition alone never admits
@@ -56,13 +399,21 @@ fn accounted_internal_txf_blocker(
         && file
             .attributes
             .iter()
-            .filter(|attribute| attribute.type_code == 0x100)
+            .filter(|attribute| {
+                attribute.type_code == 0x100
+                    && attribute.name_utf16 == [36, 84, 88, 70, 95, 68, 65, 84, 65]
+            })
             .count()
             == 1
         && file
             .attributes
             .iter()
             .any(|attribute| recognized_root_txf(attribute))
+        && file
+            .attributes
+            .iter()
+            .filter(|attribute| attribute.type_code == 0x100)
+            .all(recognized_root_txf)
 }
 
 fn accounted_empty_badclus_blocker(
@@ -278,11 +629,172 @@ pub struct Gate {
     pub detail: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct InternalReplacement {
     pub record_number: u64,
+    pub sequence_number: u16,
     pub role: String,
     pub action: &'static str,
+}
+
+/// Created only after the independent internal-index, transaction-freeze and
+/// source-state obligations have bound. The diagnostic replacement rows alone
+/// cannot exclude an object from directory-case admission.
+pub(crate) struct BoundInternalReplacements {
+    inspection_sha256: String,
+    replacements: Vec<InternalReplacement>,
+}
+impl BoundInternalReplacements {
+    fn binds(&self, raw: &ntfs::NtfsInspection) -> bool {
+        serde_json::to_vec(raw)
+            .is_ok_and(|bytes| hex::encode(Sha256::digest(bytes)) == self.inspection_sha256)
+    }
+    pub(crate) fn into_replacements(self) -> Vec<InternalReplacement> {
+        self.replacements
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct DirectoryCaseIdentity {
+    pub record_number: u64,
+    pub sequence_number: u16,
+}
+
+/// Admission scope is separate from the complete raw case-query diagnostics.
+/// A transferred directory always requires actual stable zero flags. Only an
+/// independently bound replacement can remove an internal directory from this
+/// obligation; its Unknown/error observation remains in the comparison.
+#[derive(Debug, Serialize)]
+pub struct DirectoryCaseAdmission {
+    pub raw_directories: usize,
+    pub required_directories: Vec<DirectoryCaseIdentity>,
+    pub matched_required_directories: usize,
+    pub replaced_internal_directories: Vec<InternalReplacement>,
+    pub internal_replacement_proof_bound: bool,
+    pub all_required_directories_case_insensitive: bool,
+    pub issues: Vec<String>,
+}
+
+fn directory_case_admission(
+    raw: &ntfs::NtfsInspection,
+    comparison: &Comparison,
+    replacements: Option<&BoundInternalReplacements>,
+) -> Option<DirectoryCaseAdmission> {
+    let evidence = comparison.directory_case_sensitivity.as_ref()?;
+    let raw_ids: BTreeSet<_> = raw
+        .files
+        .iter()
+        .filter(|file| file.is_directory)
+        .map(|file| (file.record_number, file.sequence_number))
+        .collect();
+    let observed_ids: BTreeSet<_> = evidence
+        .directories
+        .iter()
+        .map(|row| (row.record_number, row.sequence_number))
+        .collect();
+    let replacements = replacements.filter(|proof| {
+        proof.binds(raw) && proof.inspection_sha256 == comparison.source_inspection_sha256
+    });
+    let mut scope = DirectoryCaseAdmission {
+        raw_directories: raw_ids.len(),
+        required_directories: Vec::new(),
+        matched_required_directories: 0,
+        replaced_internal_directories: Vec::new(),
+        internal_replacement_proof_bound: replacements.is_some(),
+        all_required_directories_case_insensitive: false,
+        issues: Vec::new(),
+    };
+    if !has_unique_sorted_records(raw)
+        || evidence.raw_directories != raw_ids.len()
+        || evidence.directories.len() != raw_ids.len()
+        || observed_ids.len() != evidence.directories.len()
+        || observed_ids != raw_ids
+    {
+        scope
+            .issues
+            .push("complete uniquely identified raw directory-case coverage is missing".into());
+    }
+    for file in raw.files.iter().filter(|file| file.is_directory) {
+        // This is the same exact internal-object recognition used by Tree
+        // derivation, now additionally backed by the opaque replacement proof.
+        let replacement = replacements.and_then(|proof| {
+            proof.replacements.iter().find(|replacement| {
+                replacement.record_number == file.record_number
+                    && replacement.sequence_number == file.sequence_number
+                    && internal_role(raw, file).as_deref() == Some(replacement.role.as_str())
+            })
+        });
+        if let Some(replacement) = replacement {
+            scope
+                .replaced_internal_directories
+                .push(replacement.clone());
+            continue;
+        }
+        scope.required_directories.push(DirectoryCaseIdentity {
+            record_number: file.record_number,
+            sequence_number: file.sequence_number,
+        });
+        let row = evidence.directories.iter().find(|row| {
+            row.record_number == file.record_number && row.sequence_number == file.sequence_number
+        });
+        if row.is_some_and(|row| {
+            row.matched
+                && row.before_flags == Some(0)
+                && row.after_flags == Some(0)
+                && row.issues.is_empty()
+        }) {
+            scope.matched_required_directories += 1;
+        } else {
+            scope.issues.push(format!(
+                "directory {}/{} requires successful same-identity before/after zero case flags: {:?}{}",
+                file.record_number,
+                file.sequence_number,
+                row,
+                if internal_role(raw, file).is_some() {
+                    "; independently validated exact internal replacement proof is not bound"
+                } else {
+                    ""
+                }
+            ));
+        }
+    }
+    scope.all_required_directories_case_insensitive = !scope.required_directories.is_empty()
+        && scope.issues.is_empty()
+        && scope.matched_required_directories == scope.required_directories.len();
+    Some(scope)
+}
+
+pub(crate) fn bind_directory_case_admission(
+    assessment: &mut Assessment,
+    raw: &ntfs::NtfsInspection,
+    comparison: &Comparison,
+    replacements: Option<&BoundInternalReplacements>,
+) {
+    let scope = directory_case_admission(raw, comparison, replacements);
+    for gate in &mut assessment.gates {
+        if gate.code == "native_directory_case_sensitivity" {
+            gate.satisfied = scope
+                .as_ref()
+                .is_some_and(|scope| scope.all_required_directories_case_insensitive);
+            gate.detail = format!(
+                "every transferred directory requires successful same-identity before/after FileCaseSensitiveInfo flags zero; exact proof-backed internal replacements alone are excluded; required={}, matched={}, replaced={}, replacement_proof_bound={}, issues={:?}; complete raw Unknown/error observations are retained",
+                scope
+                    .as_ref()
+                    .map_or(0, |scope| scope.required_directories.len()),
+                scope
+                    .as_ref()
+                    .map_or(0, |scope| scope.matched_required_directories),
+                scope
+                    .as_ref()
+                    .map_or(0, |scope| scope.replaced_internal_directories.len()),
+                scope
+                    .as_ref()
+                    .is_some_and(|scope| scope.internal_replacement_proof_bound),
+                scope.as_ref().map(|scope| &scope.issues),
+            );
+        }
+    }
+    assessment.directory_case_admission = scope;
 }
 
 /// Account only for a reread, cross-indexed filesystem-internal volume ID.
@@ -328,29 +840,50 @@ pub(crate) fn bind_internal_replacement(
     raw: &ntfs::NtfsInspection,
     indexes: &crate::ntfs_internal::VerifiedIndexes,
     transactions: &crate::ntfs_transactions::VerifiedTransactions,
-) -> Option<Vec<InternalReplacement>> {
+) -> Option<BoundInternalReplacements> {
+    let inspection_sha256 = hex::encode(Sha256::digest(serde_json::to_vec(raw).ok()?));
     let required = [
         "clean_volume",
         "raw_allocation",
         "raw_namespace",
+        "raw_mft_record_coverage",
         "raw_security",
         "objects",
+        "native_identity_coverage",
         "native_volume_allocation",
         "source_backups",
         "log_restart_pages",
         "remaining_inspection_refusals",
         "frozen_device_basis",
     ];
-    if !indexes.binds(raw)
-        || !indexes.replacement_supported
-        || !transactions.binds(raw)
-        || required.iter().any(|code| {
+    let missing_gates: Vec<_> = required
+        .iter()
+        .filter(|code| {
             !assessment
                 .gates
                 .iter()
-                .any(|g| g.code == *code && g.satisfied)
+                .any(|g| g.code == **code && g.satisfied)
         })
+        .copied()
+        .collect();
+    if assessment.source_inspection_sha256 != inspection_sha256
+        || !indexes.binds(raw)
+        || !indexes.replacement_supported
+        || !transactions.binds(raw)
+        || !missing_gates.is_empty()
     {
+        for gate in &mut assessment.gates {
+            if gate.code == "internal_replacement_state" {
+                gate.satisfied = false;
+                gate.detail = format!(
+                    "exact internal replacement proof is incomplete: inspection_pin_matches={}, indexes_bound={}, index_replacement_supported={}, transactions_bound={}, missing_source_gates={missing_gates:?}",
+                    assessment.source_inspection_sha256 == inspection_sha256,
+                    indexes.binds(raw),
+                    indexes.replacement_supported,
+                    transactions.binds(raw),
+                );
+            }
+        }
         return None;
     }
     let mut replacements = Vec::new();
@@ -380,6 +913,7 @@ pub(crate) fn bind_internal_replacement(
         };
         replacements.push(InternalReplacement {
             record_number: object.record_number,
+            sequence_number: object.sequence_number,
             role: object.role.clone(),
             action,
         });
@@ -390,7 +924,10 @@ pub(crate) fn bind_internal_replacement(
             gate.detail = "frozen allocation/namespace/security, backup/restart copies, verified internal object/reparse index state, disabled default quotas and the observed default-RM freeze agree; a sole NTFS volume identity is recorded for explicit replacement and user object IDs remain refused".into();
         }
     }
-    Some(replacements)
+    Some(BoundInternalReplacements {
+        inspection_sha256,
+        replacements,
+    })
 }
 #[derive(Debug, Serialize)]
 pub struct Assessment {
@@ -407,12 +944,46 @@ pub struct Assessment {
     pub execution_authorized: bool,
     pub backup_evidence: Option<crate::ntfs_backup::VerifiedBackups>,
     pub source_view: Option<crate::ntfs_source_view::Analysis>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub directory_case_admission: Option<DirectoryCaseAdmission>,
 }
 fn reference(f: &FileInventory) -> u64 {
     f.record_number | (u64::from(f.sequence_number) << 48)
 }
+/// The inspector emits this canonical order. Admission and tree derivation
+/// check it once, rather than rebuilding a record map for each file name.
+pub(crate) fn has_unique_sorted_records(raw: &ntfs::NtfsInspection) -> bool {
+    raw.files.iter().all(|file| file.record_number < 1 << 48)
+        && raw
+            .files
+            .windows(2)
+            .all(|pair| pair[0].record_number < pair[1].record_number)
+}
+
+fn file_by_reference(raw: &ntfs::NtfsInspection, id: u64) -> Option<&FileInventory> {
+    let number = id & 0x0000_ffff_ffff_ffff;
+    let index = raw
+        .files
+        .binary_search_by_key(&number, |file| file.record_number)
+        .ok()?;
+    let file = &raw.files[index];
+    // Full sequence identity remains mandatory. The adjacent checks also
+    // refuse duplicate records locally; the callers' one-time order check
+    // and physical-record coverage gate reject all other duplicate forms.
+    if reference(file) != id
+        || index
+            .checked_sub(1)
+            .is_some_and(|i| raw.files[i].record_number == number)
+        || raw
+            .files
+            .get(index + 1)
+            .is_some_and(|f| f.record_number == number)
+    {
+        return None;
+    }
+    Some(file)
+}
 pub(crate) fn path(raw: &ntfs::NtfsInspection, f: &FileInventory) -> Option<Vec<String>> {
-    let objects: BTreeMap<_, _> = raw.files.iter().map(|f| (reference(f), f)).collect();
     let mut cursor = f;
     let mut components = vec![];
     let mut seen = BTreeSet::new();
@@ -432,17 +1003,112 @@ pub(crate) fn path(raw: &ntfs::NtfsInspection, f: &FileInventory) -> Option<Vec<
             return None;
         }
         components.push(String::from_utf16(&name.name_utf16).ok()?);
-        cursor = objects
-            .get(&(name.parent_record_number | (u64::from(name.parent_sequence_number) << 48)))?;
+        cursor = file_by_reference(
+            raw,
+            name.parent_record_number | (u64::from(name.parent_sequence_number) << 48),
+        )?;
         if !cursor.is_directory {
             return None;
         }
     }
 }
+/// Every addressable name of one ordinary source identity. Directories keep a
+/// single parent; files may have multiple non-DOS links. The raw namespace must
+/// already reconcile each name with its directory index, and callers must
+/// have checked `has_unique_sorted_records` once. This resolves names, not
+/// native target support or conversion authority.
+pub(crate) fn user_paths(
+    raw: &ntfs::NtfsInspection,
+    f: &FileInventory,
+) -> Option<Vec<Vec<String>>> {
+    if !raw
+        .namespace_reconciliation
+        .as_ref()
+        .is_some_and(|n| n.status == ntfs_namespace::Status::ConsistentRawModel)
+        || f.names.is_empty()
+        || usize::from(f.hard_link_count) != f.names.len()
+        || f.names
+            .iter()
+            .any(|name| !matches!(name.namespace, 0 | 1 | 3))
+        || (f.is_directory && f.names.len() != 1)
+    {
+        return None;
+    }
+    fn directory_path(raw: &ntfs::NtfsInspection, mut current: u64) -> Option<Vec<String>> {
+        let mut components = Vec::new();
+        let mut seen = BTreeSet::new();
+        loop {
+            if !seen.insert(current) || components.len() > 16 {
+                return None;
+            }
+            let directory = file_by_reference(raw, current)?;
+            if !directory.is_directory
+                || directory.hard_link_count != 1
+                || directory.names.len() != 1
+            {
+                return None;
+            }
+            let name = &directory.names[0];
+            if !matches!(name.namespace, 0 | 1 | 3) {
+                return None;
+            }
+            let parent = name.parent_record_number | (u64::from(name.parent_sequence_number) << 48);
+            if directory.record_number == 5 {
+                if name.name_utf16 != [u16::from(b'.')] || parent != current {
+                    return None;
+                }
+                components.reverse();
+                return Some(components);
+            }
+            components.push(String::from_utf16(&name.name_utf16).ok()?);
+            current = parent;
+        }
+    }
+    if f.is_directory {
+        return Some(vec![directory_path(raw, reference(f))?]);
+    }
+    let mut paths = Vec::with_capacity(f.names.len());
+    for name in &f.names {
+        let parent = name.parent_record_number | (u64::from(name.parent_sequence_number) << 48);
+        let mut components = directory_path(raw, parent)?;
+        components.push(String::from_utf16(&name.name_utf16).ok()?);
+        if components.len() > 16 {
+            return None;
+        }
+        paths.push(components);
+    }
+    // Prefer the shallowest name, then exact component order. One-name trees
+    // keep the previous canonical path and serialization unchanged.
+    paths.sort_by(|left, right| (left.len(), left).cmp(&(right.len(), right)));
+    if paths.windows(2).any(|pair| pair[0] == pair[1]) {
+        return None;
+    }
+    Some(paths)
+}
 /// Exact role/name/ancestry recognition, never `is_metadata` as an exemption.
 /// Recognition only identifies the replacement obligation; it does not prove
 /// clean state, permit dropping allocations, or authorize replacement.
 pub fn internal_role(raw: &ntfs::NtfsInspection, f: &FileInventory) -> Option<String> {
+    internal_role_with_path(f, || path(raw, f))
+}
+
+/// Shared exact identity/attribute rules. Only path lookup differs between the
+/// historical inline inventory and the complete paged source domain.
+fn internal_role_with_path(
+    f: &FileInventory,
+    source_path: impl FnOnce() -> Option<Vec<String>>,
+) -> Option<String> {
+    if crate::ntfs_reparse::file_point(f).ok()?.is_some() {
+        return None;
+    }
+    // Recognized NTFS internals are replaced, not recreated as user objects.
+    // Their names/roles cannot authorize dropping otherwise valid EA metadata.
+    if !crate::ntfs_extended_attributes::file_set(f)
+        .ok()?
+        .is_empty()
+    {
+        return None;
+    }
     if f.base_file_reference != 0 || f.metadata_role_issue.is_some() {
         return None;
     }
@@ -468,7 +1134,7 @@ pub fn internal_role(raw: &ntfs::NtfsInspection, f: &FileInventory) -> Option<St
             }))
         .then(|| "reserved_mft_slot".into());
     }
-    let p = path(raw, f)?;
+    let p = source_path()?;
     let canonical = match f.record_number {
         0 => "$MFT",
         1 => "$MFTMirr",
@@ -522,6 +1188,97 @@ fn user_issues_profile(
     f: &FileInventory,
     ordinary: bool,
 ) -> Vec<String> {
+    let paths = if ordinary
+        || f.streams
+            .iter()
+            .any(|s| !s.name_utf16.is_empty() || s.flags == 0x8000)
+    {
+        user_paths(raw, f)
+    } else {
+        None
+    };
+    let names_supported = if ordinary {
+        paths.is_some()
+    } else {
+        path(raw, f).is_some() && f.hard_link_count == 1
+    };
+    let system_volume_information = paths.as_ref().is_some_and(|paths| {
+        paths.iter().any(|path| {
+            path.first()
+                .is_some_and(|name| name.eq_ignore_ascii_case("System Volume Information"))
+        })
+    });
+    let descriptor = raw.security_reconciliation.as_ref().and_then(|s| {
+        let binding = s.bindings.iter().find(|b| {
+            b.record_number == f.record_number && b.sequence_number == f.sequence_number
+        })?;
+        s.descriptors
+            .iter()
+            .find(|d| d.descriptor.sha256 == binding.descriptor_sha256)
+    });
+    user_issues_with_context(
+        f,
+        ordinary,
+        &raw.geometry,
+        names_supported,
+        system_volume_information,
+        descriptor,
+        None,
+        n2r_win32::stream_layout::MAX_STREAMS,
+        |stream| {
+            crate::ntfs_attestation::source_stream_evidence_valid(raw, f, stream).unwrap_or(false)
+        },
+    )
+}
+
+/// Shared per-object preservation policy. The caller supplies already selected
+/// path/security/source evidence; this function never invents an inventory or
+/// grants admission from those diagnostic facts.
+pub(crate) fn user_issues_with_context(
+    f: &FileInventory,
+    ordinary: bool,
+    geometry: &ntfs::NtfsGeometry,
+    names_supported: bool,
+    system_volume_information: bool,
+    descriptor: Option<&ntfs_security::DescriptorRecord>,
+    descriptor_maximum: Option<u64>,
+    maximum_streams: usize,
+    source_evidence_valid: impl FnMut(&ntfs::StreamInventory) -> bool,
+) -> Vec<String> {
+    user_issues_with_context_alias_scope(
+        f,
+        ordinary,
+        geometry,
+        names_supported,
+        system_volume_information,
+        descriptor,
+        descriptor_maximum,
+        maximum_streams,
+        false,
+        false,
+        false,
+        false,
+        source_evidence_valid,
+    )
+}
+
+/// The true alias scope is supplied only after a held WindowsAliasDomain has
+/// conserved this record's DOS paths. Ordinary data callers use the wrapper.
+pub(crate) fn user_issues_with_context_alias_scope(
+    f: &FileInventory,
+    ordinary: bool,
+    geometry: &ntfs::NtfsGeometry,
+    names_supported: bool,
+    system_volume_information: bool,
+    descriptor: Option<&ntfs_security::DescriptorRecord>,
+    descriptor_maximum: Option<u64>,
+    maximum_streams: usize,
+    windows_alias_paths_preserved: bool,
+    default_storage_hint_normalization: bool,
+    verified_windows_txf_metadata: bool,
+    verified_windows_object_id_disposition: bool,
+    mut source_evidence_valid: impl FnMut(&ntfs::StreamInventory) -> bool,
+) -> Vec<String> {
     let mut issues = vec![];
     if f.metadata_role_issue.is_some()
         || !matches!(
@@ -532,22 +1289,100 @@ fn user_issues_profile(
     {
         issues.push("source object role is unresolved or unsupported".into());
     }
-    if path(raw, f).is_none() || f.hard_link_count != 1 || f.names.iter().any(|n| n.namespace == 2)
+    let ea_supported = ordinary && crate::ntfs_extended_attributes::file_set(f).is_ok();
+    let reparse = if ordinary {
+        crate::ntfs_reparse::file_point(f).ok().flatten()
+    } else {
+        None
+    };
+    if let Some(point) = &reparse {
+        if (point.tag() == 0xa0000003 && !f.is_directory)
+            || (!f.is_directory && (f.streams.len() != 1 || f.streams[0].logical_size != 0))
+            || crate::ntfs_extended_attributes::file_set(f).is_ok_and(|ea| !ea.is_empty())
+        {
+            issues.push(
+                "reparse point payload/type/EA combination exceeds preservation profile".into(),
+            );
+        }
+    }
+    if !names_supported
+        || (!windows_alias_paths_preserved && f.names.iter().any(|n| n.namespace == 2))
     {
-        issues.push("names, depth, short-name aliases or hard links exceed the profile".into());
+        issues
+            .push("names, depth, short-name aliases or directory links exceed the profile".into());
     }
     if f.base_file_reference != 0
         || f.attributes.iter().any(|a| {
             let plain =
                 matches!(a.type_code, 0x10 | 0x30 | 0x50) && a.name_utf16.is_empty() && a.resident;
-            let data = !f.is_directory && a.type_code == 0x80 && a.name_utf16.is_empty();
+            let data = !f.is_directory
+                && a.type_code == 0x80
+                && (a.name_utf16.is_empty()
+                    || (ordinary && valid_named_stream_name(&a.name_utf16)));
             let index = f.is_directory
                 && matches!(a.type_code, 0x90 | 0xa0 | 0xb0)
                 && ntfs_namespace::is_i30(&a.name_utf16);
             let root_txf = f.record_number == 5 && f.is_directory && recognized_root_txf(a);
-            !(plain || data || index || root_txf)
-                || a.flags != 0
-                || a.compression_unit != 0
+            let windows_txf = windows_alias_paths_preserved
+                && verified_windows_txf_metadata
+                && recognized_root_txf(a);
+            let windows_object_id = windows_alias_paths_preserved
+                && verified_windows_object_id_disposition
+                && a.type_code == 0x40
+                && a.name_utf16.is_empty()
+                && a.resident
+                && a.flags == 0
+                && a.logical_size == 16
+                && a.initialized_size == 16
+                && a.allocated_size == 16
+                && a.lowest_vcn == 0
+                && a.compression_unit == 0
+                && a.extents.is_empty();
+            #[cfg(windows)]
+            let default_storage_hint = windows_alias_paths_preserved
+                && default_storage_hint_normalization
+                && crate::ntfs_storage_class::recognized_default(a);
+            #[cfg(not(windows))]
+            let default_storage_hint = {
+                let _ = default_storage_hint_normalization;
+                false
+            };
+            let ea = ea_supported && matches!(a.type_code, 0xd0 | 0xe0) && a.name_utf16.is_empty();
+            let point = reparse.is_some() && a.type_code == 0xc0 && a.name_utf16.is_empty();
+            let sparse_data = ordinary
+                && data
+                && !a.resident
+                && a.flags == 0x8000
+                && matches!(a.compression_unit, 0 | 4);
+            let compressed_data = ordinary
+                && data
+                && a.flags == 1
+                && crate::ntfs_compression::supported(a, geometry).is_ok();
+            // Resident I30 compression is an inheritance policy marker; the
+            // index value still passes the complete raw namespace parser.
+            let compressed_directory_policy = ordinary
+                && index
+                && a.type_code == 0x90
+                && a.resident
+                && a.flags == 1
+                && a.compression_unit == 0
+                && a.extents.is_empty()
+                && f.standard_information
+                    .as_ref()
+                    .is_some_and(|si| si.file_attributes & 0x800 != 0);
+            !(plain
+                || data
+                || index
+                || root_txf
+                || windows_txf
+                || windows_object_id
+                || ea
+                || point
+                || default_storage_hint)
+                || ((a.flags != 0 || a.compression_unit != 0)
+                    && !sparse_data
+                    && !compressed_data
+                    && !compressed_directory_policy)
                 || a.lowest_vcn != 0
         })
     {
@@ -556,54 +1391,103 @@ fn user_issues_profile(
     if f.record_number == 5
         && f.attributes
             .iter()
-            .filter(|attribute| attribute.type_code == 0x100)
+            .filter(|attribute| {
+                attribute.type_code == 0x100
+                    && attribute.name_utf16 == [36, 84, 88, 70, 95, 68, 65, 84, 65]
+            })
             .count()
             > 1
     {
         issues.push("duplicate root transaction metadata".into());
     }
-    if f.standard_information
-        .as_ref()
-        .is_none_or(|si| si.file_attributes & !0x2027 != 0)
-    {
+    let has_sparse = f.streams.iter().any(|s| s.flags == 0x8000);
+    let has_verified_eas = ordinary && crate::ntfs_attestation::has_verified_nonempty_eas(f);
+    if crate::ntfs_file_attributes::project_user(f).map_or(true, |attributes| {
+        attributes.source_attributes
+            & !(0x2027
+                | if reparse.is_some() { 0x400 } else { 0 }
+                | if has_sparse && !f.is_directory {
+                    0x200
+                } else {
+                    0
+                }
+                | if has_verified_eas { 0x40000 } else { 0 }
+                | if ordinary { 0x800 } else { 0 })
+            != 0
+    }) {
         issues.push("unsupported attributes or missing standard information".into());
     }
-    let descriptor = raw.security_reconciliation.as_ref().and_then(|s| {
-        let binding = s.bindings.iter().find(|b| {
-            b.record_number == f.record_number && b.sequence_number == f.sequence_number
-        })?;
-        s.descriptors
-            .iter()
-            .find(|d| d.descriptor.sha256 == binding.descriptor_sha256)
-    });
-    if descriptor.is_none_or(|d| d.descriptor.sacl.state != ntfs_security::AclState::Absent) {
-        issues.push("initial preservation profile requires verified SACL absence".into());
+    match descriptor {
+        Some(record) if ordinary => {
+            let validated = hex::decode(&record.descriptor.relative_hex)
+                .ok()
+                .and_then(|bytes| {
+                    if let Some(maximum) = descriptor_maximum {
+                        n2r_win32::security_descriptor::validate_with_limit(&bytes, maximum).ok()
+                    } else {
+                        n2r_win32::security_descriptor::validate(&bytes).ok()
+                    }
+                });
+            if validated.is_none() {
+                issues.push("security descriptor exceeds native preservation layout".into());
+            }
+        }
+        Some(record) if record.descriptor.sacl.state == ntfs_security::AclState::Absent => (),
+        _ => issues.push("initial preservation profile requires verified SACL absence".into()),
+    }
+    if f.streams.iter().any(|stream| !stream.name_utf16.is_empty()) && system_volume_information {
+        issues.push("named streams on System Volume Information objects require a separate system-payload implementation".into());
+    }
+    if has_sparse {
+        if system_volume_information {
+            issues.push(
+                "sparse system-managed streams require a separate system-payload implementation"
+                    .into(),
+            );
+        }
     }
     if f.is_directory {
         if !f.streams.is_empty() {
             issues.push("directory data streams exceed the profile".into());
         }
-    } else if f.streams.len() != 1
-        || f.streams.iter().any(|s| {
-            !s.name_utf16.is_empty()
-                || s.flags != 0
-                || s.initialized_size > s.logical_size
-                || (!ordinary
-                    && (s.resident
-                        || s.logical_size == 0
-                        || !s.logical_size.is_multiple_of(65536)
-                        || s.logical_size != s.initialized_size
-                        || s.logical_size != s.allocated_size
-                        || s.extents.len() != 1
-                        || s.extents[0].logical_offset != 0
-                        || s.extents[0].physical_offset.is_none()
-                        || s.extents[0].length != s.logical_size))
-                || s.logical_hash_status != ntfs::LogicalHashStatus::Complete
-        })
-    {
-        issues.push(
-            "stream requires a later resident, sparse, fragmented, tail or encoded profile".into(),
-        );
+    } else {
+        let mut exact_names = BTreeSet::new();
+        let mut folded_names = BTreeSet::new();
+        let stream_names_valid = !f.streams.is_empty()
+            && f.streams.len() <= maximum_streams
+            && f.streams.iter().filter(|s| s.name_utf16.is_empty()).count() == 1
+            && f.streams.iter().all(|s| {
+                (s.name_utf16.is_empty() || (ordinary && valid_named_stream_name(&s.name_utf16)))
+                    && exact_names.insert(s.name_utf16.clone())
+                    && String::from_utf16(&s.name_utf16)
+                        .is_ok_and(|name| folded_names.insert(name.to_uppercase()))
+            });
+        if !stream_names_valid
+            || (!ordinary && f.streams.len() != 1)
+            || f.streams.iter().any(|s| {
+                (!ordinary && !s.name_utf16.is_empty())
+                    || (s.flags != 0
+                        && !(ordinary && !s.resident && s.flags == 0x8000)
+                        && !(ordinary && compressed_stream_supported_with_geometry(geometry, f, s)))
+                    || s.initialized_size > s.logical_size
+                    || (!ordinary
+                        && (s.resident
+                            || s.logical_size == 0
+                            || !s.logical_size.is_multiple_of(65536)
+                            || s.logical_size != s.initialized_size
+                            || s.logical_size != s.allocated_size
+                            || s.extents.len() != 1
+                            || s.extents[0].logical_offset != 0
+                            || s.extents[0].physical_offset.is_none()
+                            || s.extents[0].length != s.logical_size))
+                    || !source_evidence_valid(s)
+            })
+        {
+            issues.push(
+                "stream requires a later resident, sparse, fragmented, tail or encoded profile"
+                    .into(),
+            );
+        }
     }
     issues
 }
@@ -630,7 +1514,32 @@ pub fn assess_ordinary_with_backups(
     native_schema: u32,
     backups: Option<&crate::ntfs_backup::VerifiedBackups>,
 ) -> Assessment {
-    assess_source_view_profile(raw, comparison, native_schema, backups, None, true)
+    assess_ordinary_with_resource_profile(
+        raw,
+        comparison,
+        native_schema,
+        backups,
+        ResourceProfile::AlphaV1,
+    )
+}
+/// Resource opt-in changes only bounded diagnostics. It does not supply the
+/// matching complete native/target evidence needed for source admission.
+pub fn assess_ordinary_with_resource_profile(
+    raw: &ntfs::NtfsInspection,
+    comparison: &Comparison,
+    native_schema: u32,
+    backups: Option<&crate::ntfs_backup::VerifiedBackups>,
+    resources: ResourceProfile,
+) -> Assessment {
+    assess_source_view_profile(
+        raw,
+        comparison,
+        native_schema,
+        backups,
+        None,
+        true,
+        resources,
+    )
 }
 /// The opaque live observer is the only caller supplying a frozen-bound view.
 /// Replay diagnostics cannot remove strict native object refusals.
@@ -641,7 +1550,15 @@ pub(crate) fn assess_source_view(
     backups: Option<&crate::ntfs_backup::VerifiedBackups>,
     source_view: Option<crate::ntfs_source_view::Analysis>,
 ) -> Assessment {
-    assess_source_view_profile(raw, comparison, native_schema, backups, source_view, false)
+    assess_source_view_profile(
+        raw,
+        comparison,
+        native_schema,
+        backups,
+        source_view,
+        false,
+        ResourceProfile::AlphaV1,
+    )
 }
 pub(crate) fn assess_ordinary_source_view(
     raw: &ntfs::NtfsInspection,
@@ -650,7 +1567,32 @@ pub(crate) fn assess_ordinary_source_view(
     backups: Option<&crate::ntfs_backup::VerifiedBackups>,
     source_view: Option<crate::ntfs_source_view::Analysis>,
 ) -> Assessment {
-    assess_source_view_profile(raw, comparison, native_schema, backups, source_view, true)
+    assess_ordinary_source_view_with_resources(
+        raw,
+        comparison,
+        native_schema,
+        backups,
+        source_view,
+        ResourceProfile::AlphaV1,
+    )
+}
+pub(crate) fn assess_ordinary_source_view_with_resources(
+    raw: &ntfs::NtfsInspection,
+    comparison: &Comparison,
+    native_schema: u32,
+    backups: Option<&crate::ntfs_backup::VerifiedBackups>,
+    source_view: Option<crate::ntfs_source_view::Analysis>,
+    resources: ResourceProfile,
+) -> Assessment {
+    assess_source_view_profile(
+        raw,
+        comparison,
+        native_schema,
+        backups,
+        source_view,
+        true,
+        resources,
+    )
 }
 fn assess_source_view_profile(
     raw: &ntfs::NtfsInspection,
@@ -659,7 +1601,10 @@ fn assess_source_view_profile(
     backups: Option<&crate::ntfs_backup::VerifiedBackups>,
     source_view: Option<crate::ntfs_source_view::Analysis>,
     ordinary: bool,
+    resources: ResourceProfile,
 ) -> Assessment {
+    let limits = resources.limits();
+    let path_index_valid = has_unique_sorted_records(raw);
     let backups = backups.filter(|b| b.binds(raw));
     let view_is_live = source_view
         .as_ref()
@@ -668,6 +1613,7 @@ fn assess_source_view_profile(
     let mut files = 0;
     let mut directories = 0;
     let mut bytes = 0u64;
+    let mut data_streams = 0usize;
     for f in &raw.files {
         let internal = internal_role(raw, f);
         let (disposition, role, mut issues) = if let Some(role) = internal {
@@ -683,6 +1629,9 @@ fn assess_source_view_profile(
                 .iter()
                 .try_fold(bytes, |sum, s| sum.checked_add(s.logical_size))
                 .unwrap_or(u64::MAX);
+            data_streams = data_streams
+                .checked_add(f.streams.len())
+                .unwrap_or(usize::MAX);
             let issues = if ordinary {
                 ordinary_user_issues(raw, f)
             } else {
@@ -719,6 +1668,7 @@ fn assess_source_view_profile(
                     && d.files.iter().any(|o| {
                         o.record_number == f.record_number
                             && o.sequence_number == f.sequence_number
+                            && o.all_requested_stream_evidence_matched
                             && o.check.matched
                     })
             }) {
@@ -762,6 +1712,7 @@ fn assess_source_view_profile(
             issues,
         });
     }
+    let directory_case_admission = directory_case_admission(raw, comparison, None);
     let mut gates = vec![];
     let mut gate = |code: &str, satisfied: bool, detail: &str| {
         gates.push(Gate {
@@ -789,17 +1740,15 @@ fn assess_source_view_profile(
     );
     gate(
         "geometry",
-        raw.geometry.bytes_per_sector == 512
-            && raw.geometry.cluster_size == 4096
-            && raw.geometry.file_record_size == 1024,
-        "initial source geometry is 512-byte sectors, 4 KiB clusters and 1 KiB MFT records",
+        resources.supports_source_geometry(&raw.geometry),
+        "source geometry must match the selected resource profile; target allocation units remain 4 KiB",
     );
     gate(
         "clean_volume",
         raw.dirty == Some(false)
             && raw.volume_flags.is_some_and(|flags| flags & 1 == 0)
             && raw.volume_version.as_deref() == Some("3.1"),
-        "require NTFS 3.1, clear native dirty state and clear on-disk dirty bit",
+        "require NTFS 3.1 and a clear on-disk $Volume dirty bit; independent native dirty-state observations are bound by the separate live transaction_freeze gate",
     );
     gate(
         "volume_policy_flags",
@@ -812,6 +1761,11 @@ fn assess_source_view_profile(
             .as_ref()
             .is_some_and(|a| a.status == ntfs::AllocationReconciliationStatus::ConsistentRawModel),
         "every supplied attribute interval and allocation bitmap must reconcile",
+    );
+    gate(
+        "raw_mft_record_coverage",
+        path_index_valid && ntfs::validate_record_coverage(raw).is_ok(),
+        "canonical files must be uniquely ordered and every allocated physical record must be a canonical file or a uniquely bound extension",
     );
     gate(
         "raw_namespace",
@@ -829,7 +1783,8 @@ fn assess_source_view_profile(
     );
     gate(
         "native_profile",
-        matches!(native_schema, 5..=6)
+        (matches!(native_schema, 5..=7)
+            || (native_schema == 13 && resources.native_profile().is_none()))
             && comparison.native_namespace.is_some()
             && comparison.native_logical_data.is_some(),
         "older replay reports do not supply complete native namespace/logical-data evidence",
@@ -842,6 +1797,15 @@ fn assess_source_view_profile(
             .is_some_and(|s| s.bitmap.matched),
         "the full native bitmap must match; per-user stream checks also bind the physical retrieval base",
     );
+    if matches!(native_schema, 13 | 14) {
+        gate(
+            "native_directory_case_sensitivity",
+            directory_case_admission
+                .as_ref()
+                .is_some_and(|scope| scope.all_required_directories_case_insensitive),
+            "every raw directory requires actual stable zero case flags until exact independently validated internal replacements are bound; role recognition alone cannot narrow the case obligation",
+        );
+    }
     gate(
         "objects",
         !objects.is_empty() && objects.iter().all(|o| o.disposition != Disposition::Reject),
@@ -850,10 +1814,14 @@ fn assess_source_view_profile(
     gate(
         "resource_limits",
         files > 0
-            && files <= MAX_FILES
-            && directories <= MAX_DIRECTORIES
-            && bytes <= MAX_LOGICAL_BYTES,
-        "limit ordinary files/directories/logical bytes; no automatic budget widening",
+            && files <= limits.maximum_files
+            && directories <= limits.maximum_directories
+            && files
+                .checked_add(directories)
+                .is_some_and(|n| n <= resources.maximum_objects())
+            && data_streams <= MAX_DATA_STREAMS
+            && bytes <= limits.maximum_logical_bytes,
+        "limit ordinary files/directories, 16,384 total DATA streams and logical bytes; no automatic budget widening",
     );
     gate(
         "source_backups",
@@ -898,9 +1866,26 @@ fn assess_source_view_profile(
         false,
         "capture and revalidate the actual device after lock/flush and persistent exclusion; a JSON flag is insufficient",
     );
+    if resources != ResourceProfile::AlphaV1 {
+        gate(
+            "native_resource_profile_support",
+            false,
+            "matching complete live native attestation for this exact source profile is required; target preservation remains a separate gate",
+        );
+        gate(
+            "target_resource_profile_support",
+            false,
+            "the same resource profile requires actual protected native target preservation before a certificate can issue",
+        );
+    }
     Assessment {
         schema_version: 1,
-        profile: if ordinary { ORDINARY_PROFILE } else { PROFILE }.into(),
+        profile: if ordinary {
+            resources.ordinary_admission_profile()
+        } else {
+            PROFILE
+        }
+        .into(),
         source_inspection_sha256: comparison.source_inspection_sha256.clone(),
         objects,
         gates,
@@ -912,5 +1897,165 @@ fn assess_source_view_profile(
         execution_authorized: false,
         backup_evidence: backups.cloned(),
         source_view,
+        directory_case_admission,
     }
+}
+
+/// Bind the expanded source profile only to an opaque native observation of
+/// the excluded source. Recompute the comparison and projected source view
+/// from the actual report and raw inventory; serialized success flags cannot
+/// satisfy this gate. Target preservation remains independently required.
+#[cfg(windows)]
+pub(crate) fn bind_large_native_profile(
+    assessment: &mut Assessment,
+    raw: &ntfs::NtfsInspection,
+    observed: &n2r_win32::GeneralLiveNtfsObservation,
+    expected_source_sha256: &str,
+    replacements: Option<&BoundInternalReplacements>,
+) -> Result<()> {
+    use n2r_win32::attestation::ResourceProfile as NativeProfile;
+
+    let native = observed.report();
+    let resources = match native.request.resource_profile {
+        Some(NativeProfile::ExperimentalLargeTreeV1) => ResourceProfile::ExperimentalLargeTreeV1,
+        Some(NativeProfile::ExperimentalStreamingTreeV2) => {
+            ResourceProfile::ExperimentalStreamingTreeV2
+        }
+        Some(NativeProfile::ExperimentalObjectEnvelopeV3(admission)) => {
+            ResourceProfile::ExperimentalObjectEnvelopeV3(admission)
+        }
+        Some(NativeProfile::ResourceBoundedV4(_)) => {
+            anyhow::bail!(
+                "resource-bounded source admission requires the actual paged native lease"
+            )
+        }
+        None => anyhow::bail!("expanded source profile requires native resource evidence"),
+    };
+    let inspection = hex::encode(Sha256::digest(serde_json::to_vec(raw)?));
+    ensure!(
+        assessment.profile == resources.ordinary_admission_profile()
+            && assessment.source_inspection_sha256 == inspection
+            && matches!(
+                (native.schema_version, native.request.schema_version),
+                (11, 3) | (12, 4) | (13, 5) | (14, 6)
+            )
+            && native.request.resource_profile == resources.native_profile()
+            && native.request.source_inspection_sha256 == inspection
+            && expected_source_sha256.len() == 64
+            && expected_source_sha256
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            && assessment
+                .source_view
+                .as_ref()
+                .is_some_and(|view| view.binds_live_source(&inspection, expected_source_sha256))
+            && assessment
+                .gates
+                .iter()
+                .any(|gate| gate.code == "frozen_device_basis" && gate.satisfied),
+        "large native resource profile is not bound to the current frozen source"
+    );
+    native.validate_resources()?;
+    let comparison = crate::ntfs_attestation::compare(raw, &inspection, native)?;
+    let mut view = crate::ntfs_source_view::diagnose(raw, &inspection, native)?;
+    view.bind_frozen_source(expected_source_sha256);
+    ensure!(
+        serde_json::to_vec(&view)? == serde_json::to_vec(assessment.source_view.as_ref().unwrap())?,
+        "large native source-view evidence differs from the live observation"
+    );
+    let mut fresh = assess_source_view_profile(
+        raw,
+        &comparison,
+        native.schema_version,
+        assessment.backup_evidence.as_ref(),
+        Some(view),
+        true,
+        resources,
+    );
+    bind_directory_case_admission(&mut fresh, raw, &comparison, replacements);
+    ensure!(
+        serde_json::to_vec(&fresh.directory_case_admission)?
+            == serde_json::to_vec(&assessment.directory_case_admission)?,
+        "large native directory-case scope differs from the bound replacement proof and fresh raw observations"
+    );
+    let objects_match =
+        serde_json::to_vec(&fresh.objects)? == serde_json::to_vec(&assessment.objects)?;
+    let failed_gates: Vec<_> = [
+        "native_identity_coverage",
+        "native_volume_allocation",
+        "native_directory_case_sensitivity",
+        "objects",
+        "resource_limits",
+    ]
+    .iter()
+    .filter_map(
+        |code| match fresh.gates.iter().find(|gate| gate.code == *code) {
+            Some(gate) if gate.satisfied => None,
+            Some(gate) => Some((*code, gate.detail.as_str())),
+            None => Some((*code, "gate absent")),
+        },
+    )
+    .collect();
+    let rejected_objects: Vec<_> = fresh
+        .objects
+        .iter()
+        .filter(|object| object.disposition == Disposition::Reject || !object.issues.is_empty())
+        .collect();
+    let logical_audit = comparison
+        .native_logical_data
+        .as_ref()
+        .map(|data| &data.audit);
+    ensure!(
+        objects_match
+            && failed_gates.is_empty()
+            && comparison.native_namespace.is_some()
+            && logical_audit.is_some_and(|audit| audit.matched),
+        "large native resource evidence does not completely reconcile with source objects: objects_match={objects_match}; failed_gates={failed_gates:?}; namespace_present={}; logical_audit={logical_audit:?}; rejected_objects_total={}; first_rejected_objects={:?}",
+        comparison.native_namespace.is_some(),
+        rejected_objects.len(),
+        &rejected_objects[..rejected_objects.len().min(24)]
+    );
+    ensure!(
+        ["native_profile", "native_resource_profile_support"]
+            .iter()
+            .all(|code| assessment
+                .gates
+                .iter()
+                .filter(|gate| gate.code == *code && !gate.satisfied)
+                .count()
+                == 1)
+            && [
+                "security_timestamp_preservation",
+                "target_resource_profile_support"
+            ]
+            .iter()
+            .all(|code| assessment
+                .gates
+                .iter()
+                .filter(|gate| gate.code == *code && !gate.satisfied)
+                .count()
+                == 1),
+        "large native or independent target-preservation gates differ"
+    );
+    let mut native_gate = false;
+    let mut resource_gate = false;
+    for gate in &mut assessment.gates {
+        if gate.code == "native_profile" {
+            gate.satisfied = true;
+            gate.detail = format!(
+                "schema-{} live native namespace and logical-data observations were independently reconciled against the frozen source",
+                native.schema_version
+            );
+            native_gate = true;
+        } else if gate.code == "native_resource_profile_support" {
+            gate.satisfied = true;
+            gate.detail = "the exact schema-3 large-resource request, schema-8 native evidence, resource accounting and user-object coverage match the bound frozen source; target preservation is still required".into();
+            resource_gate = true;
+        }
+    }
+    ensure!(
+        native_gate && resource_gate,
+        "large native assessment gates are absent"
+    );
+    Ok(())
 }

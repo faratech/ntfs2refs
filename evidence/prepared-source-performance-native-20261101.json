@@ -1,0 +1,135 @@
+{
+  "schema_version": 1,
+  "kind": "prepared-source-native-shadow-performance",
+  "run_id": "6be2648addc24d1b95a11d807dae76d6",
+  "runtime_source_commit": "c2c1ef3f00c11038a4cf88805de08e10e7ceb4fd",
+  "ntfs_preparation_source_commit": "82e805bc98712487f6d09e455b0a40cf2d02c00f",
+  "source_profile": {
+    "refs_cluster_bytes": 4096,
+    "partition_bytes": 55834574848,
+    "semantic_objects": 1084,
+    "streams": 811,
+    "ntfs_cluster_bytes": 65536,
+    "logical_user_bytes": 9885781381
+  },
+  "source_preparation": {
+    "distinct_identities": 222,
+    "moved_bytes": 5643501568,
+    "fresh_frozen_raw_and_native_baseline_passed": true,
+    "verified_moves": 385,
+    "native_wall_seconds": 18.5202009,
+    "independent_hashes": 811
+  },
+  "producer": {
+    "pid": 2988,
+    "observed_wall_seconds": 62.2871679,
+    "exit_observed": true,
+    "terminal_utc": "2026-11-01T21:43:30.8951679Z",
+    "exit": 0,
+    "creation_ms": 1793569348608
+  },
+  "native_success": true,
+  "handoff_closed": true,
+  "independent_complete_logical_hashes": 811,
+  "actual_format": "N2RFRE01",
+  "journal_format_version": 5,
+  "selected_bytes": 544784384,
+  "journal_bytes": 131301000,
+  "new_copy_bytes": 15888384,
+  "old_zero_bytes": 55504896,
+  "source_free_bytes": 402669568,
+  "source_free_hash_table_bytes": 1572928,
+  "rollback_preserves_free_space_contents": false,
+  "native_verified_logical_process_io": {
+    "kernel_time_100ns": 143750000,
+    "other_operation_count": 779637,
+    "other_transfer_bytes": 155972622,
+    "read_operation_count": 78880,
+    "read_transfer_bytes": 27643861313,
+    "static_scope": "process_io_transfer_counters_not_physical_disk_io",
+    "user_time_100ns": 284531250,
+    "write_operation_count": 14513,
+    "write_transfer_bytes": 878482576
+  },
+  "comparison": {
+    "kernel_ntfs_move_io_not_in_native_converter_counters": true,
+    "prior_native_journal_bytes": 5773273160,
+    "prior_native_verified_write_bytes": 17368271656,
+    "lab_full_content_baseline_and_observer_cost_excluded_from_native_wall": true,
+    "journal_reduction_percent": 97.72570955225683,
+    "prior_native_wall_seconds": 280.3918824,
+    "native_read_reduction_percent": 70.60830994915514,
+    "physical_io_speedup_established": false,
+    "combined_observed_prep_and_conversion_seconds": 80.8073688,
+    "prior_native_verified_read_bytes": 94053323457,
+    "prior_native_selected_bytes": 11393306624,
+    "controlled_benchmark": false,
+    "native_write_reduction_percent": 94.9420265101823
+  },
+  "saved_checkpoint": {
+    "id": "051b650a-3358-40db-a7ed-8619e6e36760",
+    "utc": "2026-11-01T21:54:45.7508869Z",
+    "kind": "preserved-prepared-source-format5-success",
+    "format": "N2RFRE01",
+    "journal_bytes": 131301000,
+    "all811_hashes_matched": true,
+    "parent": "cb802669-903c-48cc-99e5-57976b149e7d"
+  },
+  "unprepared_prior_checkpoint_retired_after_archive_verification": "31d77adf-2682-4e4d-b1f8-95e35702c4c0",
+  "first_positive_format5_native_conversion_qualified": true,
+  "native_format5_interruption_resume_rollback_qualified": false,
+  "production_or_arbitrary_scale_qualified": false,
+  "new_unit_tests_added_or_run": false,
+  "artifacts": [
+    {
+      "sha256": "db691c5130b994c55fa80eaa1bac4b4c2b1adb1d42d5ed1d0b6a6519378a8f1a",
+      "bytes": 41109,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\prepared-source-performance-normal-6be2648addc24d1b95a11d807dae76d6\\archive.json"
+    },
+    {
+      "sha256": "d05c75543e7189c0c17fa7305728208bd24f03227d7491636565aefc7412cdb5",
+      "bytes": 295,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\prepared-source-performance-normal-6be2648addc24d1b95a11d807dae76d6\\checkpoint.json"
+    },
+    {
+      "sha256": "999a18c59e9561ea35cf7efb9450d033020352c2fbaf9ed9f6c991308a6a9231",
+      "bytes": 225,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\prepared-source-performance-normal-6be2648addc24d1b95a11d807dae76d6\\final-idle.json"
+    },
+    {
+      "sha256": "f52523808f958d6439438cf319be7657b4d219cc66feafe250c7d21022678a54",
+      "bytes": 1148,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\prepared-source-performance-normal-6be2648addc24d1b95a11d807dae76d6\\closed-native\\converter-terminal.json"
+    },
+    {
+      "sha256": "a55b2b6e138073076181d5e99861d12b0c2377bf7488965a13fb288aab360133",
+      "bytes": 6252511,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\prepared-source-performance-normal-6be2648addc24d1b95a11d807dae76d6\\closed-native\\wrapper-result.json"
+    },
+    {
+      "sha256": "a4f7f3234e47730e887697a71f683ab6d8269cc9c0a6273b496cd0d522a6533e",
+      "bytes": 1872,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\prepared-source-performance-normal-6be2648addc24d1b95a11d807dae76d6\\closed-native\\conversion\\result.json"
+    },
+    {
+      "sha256": "50835c920d1bf94b2c1051afb3bc417dfc6e620ed4e2f8bb35fc09f4ecdb2ea3",
+      "bytes": 1379,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\prepared-source-performance-normal-6be2648addc24d1b95a11d807dae76d6\\closed-native\\conversion\\selected-ticket.json"
+    },
+    {
+      "sha256": "9e680c8bde6ad70c5a4e81a2e607b119b220ded525f8c0b43b4ca41e3e4ac70e",
+      "bytes": 1284,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\prepared-source-performance-normal-6be2648addc24d1b95a11d807dae76d6\\closed-native\\conversion\\journal-location.json"
+    },
+    {
+      "sha256": "bf11fe0e63ecc41703031d0076870e5b91eb0754a66c7a002cab68a6822fbaed",
+      "bytes": 526,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\prepared-source-performance-normal-6be2648addc24d1b95a11d807dae76d6\\closed-native\\conversion\\process-io-native-verified.json"
+    },
+    {
+      "sha256": "23780dd9d8ea97e1eaba92b8af6fdbe0c990176e1f417c269f39fdbfcf4f8173",
+      "bytes": 35543988,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\prepared-source-performance-normal-6be2648addc24d1b95a11d807dae76d6\\closed-native\\conversion\\qualification\\target-preservation.json"
+    }
+  ]
+}

@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "kind": "head-public-drive-measurement",
+  "run_id": "3ece94aacf9d483780aeeadfe29f910e",
+  "engine_run_id": "a963368257eb81b8ed162004d73235f3",
+  "source_commit": "da13331f6ca189819671ccec7fd6dce01ef45275",
+  "working_tree_note": "Built with the existing user-owned src/main.rs capabilities hunk present and unstaged, as the frozen alpha was.",
+  "launcher": "lab/Start-HeadDriveMeasurement.ps1 (commit 609375c)",
+  "toolset_manifest_sha256": "e14e6ab7301d58cdd095e61512f11728d47dfe938d73b089c53dd145aa0623db",
+  "public_cli": {
+    "sha256": "fa4ab7531946e12bd147e21d21bf9bd15f0f3ff3482046c06d8c300c15e3e3d8",
+    "bytes": 7139328,
+    "argv": ["--drive", "F", "--partition", "2"],
+    "stdin": "yes CRLF",
+    "actual_native_exit": 0,
+    "actual_task_result": 0
+  },
+  "vm_parent_checkpoint": "5f30f4a1-9db0-4df5-a0e5-2c7be5d87eec",
+  "ntfs_receipt_sha256": "049aa2ee3f43b8ed10f34f2a0904204217a41fd992947a36becf4b1c9e656379",
+  "outcome": {
+    "wrapper_success": true,
+    "source_certificate_created_only_by_core": true,
+    "barrier": "HND",
+    "native_objects": 15,
+    "complete_logical_hashes": 10,
+    "label_and_mount_verified": true,
+    "final_volume": "ReFS 4096-byte clusters, label n2r-stream-source, F:",
+    "premount_target_sha256": "b22037138384d27874d8ea1fe349d1a725c5a55629e04e893037d94a6562c823",
+    "result_sha256": "76b079be9acf86ca185b0d0c3238555d8dd140ceae5eaf1e1394823d5232a1ab",
+    "finalization_sha256": "dcf21d14955c5821d08626c97c2dabc4e46861b74532c5a0de78f84c00396d14",
+    "records_hashes_verified_on_host": true
+  },
+  "timing": {
+    "measure": "native process creation to the wrapper's native-terminal record, identical for both builds",
+    "head_seconds": 2813.3,
+    "frozen_fb5548_seconds": 3351.7,
+    "difference_seconds": -538.4,
+    "difference_percent": -16.1,
+    "phase_markers_seconds": {
+      "columns": ["frozen_fb5548", "head"],
+      "building_refs_metadata": [508, 430],
+      "verifying_target": [514, 436],
+      "preparing_recovery_journal": [2200, 1484],
+      "applying_conversion": [2730, 2118],
+      "verifying_files": [3020, 2412]
+    },
+    "phase_durations_seconds": {
+      "columns": ["frozen_fb5548", "head"],
+      "inspect_and_build": [508, 430],
+      "verify_target": [1686, 1048],
+      "prepare_journal": [530, 634],
+      "apply": [290, 294],
+      "verify_files_to_exit": [332, 401]
+    }
+  },
+  "io": {
+    "method": "guest Win32_Process ReadTransferCount/WriteTransferCount of ntfs2refs.exe, sampled about every 2 minutes; same counter as the frozen run's monitor",
+    "head_last_sample_read_bytes": 816573617335,
+    "head_last_sample_seconds_before_exit": 104,
+    "head_max_sampled_read_rate_mb_per_second": 441,
+    "head_mean_read_rate_mb_per_second": 300,
+    "head_read_upper_bound_bytes_if_final_rate_not_above_max_sampled": 862300000000,
+    "frozen_last_sample_read_bytes": 996148308370,
+    "frozen_last_sample_seconds_before_exit": 58,
+    "final_totals_observed": false,
+    "head_last_sample_write_bytes": 285699804,
+    "frozen_last_sample_write_bytes": 285716985,
+    "head_peak_working_set_kib": 70512,
+    "per_phase_read_gb_interpolated": {
+      "inspect_and_build": 134.1,
+      "verify_target": 345.7,
+      "prepare_journal": 177.0,
+      "apply": 111.1,
+      "verify_files_at_least": 46.7
+    },
+    "per_phase_note": "Linear interpolation between samples about 122 s apart; approximate. verify_target corresponds to about six volume-sized reads in verify_and_capture (two bracket shadow hashes, capture of the source and a source-backed candidate that reads payload ranges from the source and only the other ranges from the shadow, a shadow rehash, the final source pair hash)."
+  },
+  "archive": ".lab/hyperv/streaming-v2-20261027/head-drive-measure-20261029-3ece94aacf9d483780aeeadfe29f910e/closed-conversion",
+  "qualification": {
+    "normal_public_conversion_passed": true,
+    "mutation_tested": false,
+    "reboot_tested": false,
+    "interruption_resume_rollback_tested": false,
+    "frozen_alpha_qualification_inherited": false,
+    "all_volumes_qualified": false,
+    "release_qualified": false
+  },
+  "scope": "One normal public conversion of the same 52 GiB NTFS 64 KiB fixture by the sealed HEAD build. It is still a whole-image converter: at least 816.6 GB was read for a 52 GiB volume. Timing is one run per build on a shared host, not a benchmark distribution."
+}

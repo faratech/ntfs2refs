@@ -1,0 +1,221 @@
+{
+  "protocol": [
+    "Public shared --offline-media path composes native Windows preparation, same sealed bundle, boot image and persistent selection",
+    "Early-SAN3 RAM bootstrap binds actual source/J/bundle before independent J online",
+    "Cold fresh apply/AP or RB replay and closed HND/ABT reconciliation preserve actual owners",
+    "Read-only native metadata and retained maps precede normal boot and original writable metadata restoration",
+    "Experimental optional postflush pause is before discovery write; source/J authority is never issued by input",
+    "Exact source current main file unchanged"
+  ],
+  "kind": "shared-public-offline-terminal-and-restart-integration-build-v1",
+  "qualified_preparation_receipt_sha256": "b6ec39adbd35739c029a40e1d2cdaaf7d0adb014ea4eb99a729416ee2fb8c55d",
+  "focused_check": {
+    "capacity": {
+      "actual_bytes": 242753723112,
+      "free_bytes": 100076843008,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 2147483648,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "wall_seconds": 32.4935153,
+    "shared_target_reused": true,
+    "native_run": false,
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+    "kind": "public-partition-dispatch-focused-check",
+    "unit_tests_run": false,
+    "exit_code": 0
+  },
+  "new_or_existing_unit_tests_run": false,
+  "limitations": [
+    "No native offline writer/boot/terminal/recovery execution has passed yet",
+    "Current source remains protected NTFS; native Windows preparation is not conversion proof",
+    "Public package must ship exact cold consumer renamed ntfs2refs-recovery.exe",
+    "New one-command path/restart resume/rollback/mutation/reboot require focused native qualification and exact package"
+  ],
+  "qualified_native_Windows_preparation": {
+    "readonly_harness_serial_order_and_failure_outcount_refusals_preserved": true,
+    "actual_owned_wall_seconds": 295.3237427,
+    "actual_J_resource_receipt_sha256": "16b133e6af5753f82f37ed48da9975a74a352df400b71e3a3e285b882b04c096",
+    "actual_native_exit": 0,
+    "serialized_bundle_write_authority": false,
+    "bundle_sha256": "d3220384aef0a06cf0f4712617d0e48ff4a7378eaf78744040c98228e540b73c",
+    "source_commit": "2d32e2ee8f3ba1bc19775553bc4163bbba2890f6",
+    "actual_native_pid": 2700,
+    "SourceAP_attempted": false,
+    "actual_native_birth_ms": 1793903893143,
+    "J_exact_UInt64_volume_serial_decimal": "9250070551590475566",
+    "J_native_FileID": "e5000000000002000000000000000000",
+    "J_zero8192_sha256": "9f1dcbc35c350d6027f98be0f5c8b43b42ca52b7604459c0c42be3aa88913d47",
+    "readonly_continuation_proof_sha256": "e036b74662e01541861af1a0c7fa8ea2c58be8ef634c3fee91f6b766b7f6a7bf",
+    "VM_left_Running_source_BASICRO": true,
+    "source8_payload_hash_rerun_or_Jbody_archive_scan": 0,
+    "source_payload_write_calls": 0,
+    "J_EOF": 137231056,
+    "actual_current_full_GPT_native_matches_sealed_pin": true,
+    "J_same_held_identity_bookend_unchanged": true,
+    "native_program_launches": 1,
+    "manifest_sha256": "9d7e6add21d3fd5f31b6c7e6a18af8079c670de64d213a620266512aefd0c241",
+    "full_semantic_READY_qualified": true,
+    "SDK_source_write_gate_issued": false,
+    "root_semantic_certificate_issued": true,
+    "kind": "qualified-native-Windows-PREPARE-ONLY-not-conversion",
+    "publication_sha256": "f473c76260e6c1b79336fb7e182364916e48403e0055376b56d29037d0cb03cc",
+    "source_actual_BASICRO_IS_WRITABLE_error": 19,
+    "success": true,
+    "power_install_apply_recovery_nextphase_calls": 0,
+    "binary_bytes": 9004032,
+    "binary_sha256": "707ae3ea41ec40a74fc7977411b7083a0b83bf2ef7edf33020305b28749a605f",
+    "old_NTFS_discovery512_sha256": "b54d028013e81db67abc92d3db48493fec9cd698103d25b23014a2a73ffb7fa7"
+  },
+  "all179_metadata_archive_sha256": "371eb5fccd5a303578f32242cf197aefb04f5ceed44b61c14fe3fb58b1310553",
+  "base_commit": "6cde28ebcdc87b3167e8c72520b9f4ea20801daf",
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/native/offline_environment.rs",
+      "sha256": "2a20bceb64c30994bf08c249a0f56c9d8e421466390a34e8074d66120b5303cf",
+      "bytes": 24177
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline.rs",
+      "sha256": "abd3cf5219594ce860067718c25a6843ef207638f6bb32d73c87a9b7c00bd2c8",
+      "bytes": 26134
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline/source.rs",
+      "sha256": "8078d5ec6ac1c1c46ce34c7909161d12d8ccd500956ed0835e496a007f69d882",
+      "bytes": 33961
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline/source/prepared_apply.rs",
+      "sha256": "531f81b28d1be212a93cea78ae2209744e8a8ce9b1a6e82458e54c14f5e549a4",
+      "bytes": 17922
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline/source/prepared_closed.rs",
+      "sha256": "f2289c2e4c1789756d6ed4015aba29e970d253655a63c8bd39a904f303aee666",
+      "bytes": 7004
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline/source/terminal.rs",
+      "sha256": "389706cfd7b5de95a6429c87c320b9bec8fdc568c19b2eb22d49ec992c4b8522",
+      "bytes": 19749
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_restoration.rs",
+      "sha256": "075e240eece6b2b32d17d99f8ae54a0b2364c892c5d520713c9b8856664ad572",
+      "bytes": 86238
+    },
+    {
+      "path": "crates/n2r-win32/src/native/recovery_boot/cold.rs",
+      "sha256": "f13e8a4bc9b9f0a0dbd82079f639fd63b3fbbf45d3200b65924ee9ed7c393ed2",
+      "bytes": 40927
+    },
+    {
+      "path": "crates/n2r-win32/src/native/recovery_image.rs",
+      "sha256": "ba0561379b521015b55de37dd1bdc9c1574fb05cf212e479fd4bd66b6b969f6a",
+      "bytes": 41694
+    },
+    {
+      "path": "crates/n2r-win32/src/shadow_native.rs",
+      "sha256": "15ecaf643cea20c8766c81a1cee4ee63a2f425778c450134dcd9256c66707876",
+      "bytes": 217791
+    },
+    {
+      "path": "crates/n2r-win32/src/shadow_native/offline_terminal.rs",
+      "sha256": "a4a5ff227054b4e11a98cf7d05fad41ab9808aa90b2ab69ca51fbc05fd54ac30",
+      "bytes": 2170
+    },
+    {
+      "path": "src/drive_cli.rs",
+      "sha256": "aa3c60d1a7ea8a0f10e0e95581e244d91b27ce27edcbffedd7fcf965c2938482",
+      "bytes": 39943
+    },
+    {
+      "path": "src/drive_partition.rs",
+      "sha256": "0f979d891ed3d3f765d443d392f8980690e6f00728ecb8d144a1746401e26070",
+      "bytes": 25397
+    },
+    {
+      "path": "src/drive_partition_offline.rs",
+      "sha256": "b5d7c1e79a67d9c91b61d3c46ab05280d4e4fba29e401de0d674c7090561b8b4",
+      "bytes": 10728
+    },
+    {
+      "path": "src/general_reconstruct/fast_verification/v4_maps/reopened.rs",
+      "sha256": "4a58e5eda67ebf58cdaea823a6507dc595368cb8eb5bd853c706254c1a14a9bb",
+      "bytes": 20202
+    },
+    {
+      "path": "src/general_reconstruct/fast_verification/v4_maps/reopened/offline_prepared.rs",
+      "sha256": "f04c283313246db34d79e3d6351b0e3470e8b61ee343fc6b40280dca0fd3e802",
+      "bytes": 11131
+    },
+    {
+      "path": "src/general_reconstruct/selected_native_journal.rs",
+      "sha256": "18a7419d601a16a0dd3f0a6cd14992d481455a78cd5ea7ca789b4fcbfd1f2fca",
+      "bytes": 68484
+    },
+    {
+      "path": "src/general_reconstruct/selected_native_journal/offline_terminal.rs",
+      "sha256": "ee753aaa5adae0d10283665ef1289ebe06688c85a973a83f7f3bf0eef9702665",
+      "bytes": 1032
+    },
+    {
+      "path": "src/lib.rs",
+      "sha256": "f7ec08c95eeda80e2a6993c8f48e3b51d7642e163319bc065102093b9599f765",
+      "bytes": 3439
+    },
+    {
+      "path": "src/resource_partition_alpha.rs",
+      "sha256": "71f7c1be1a7bb3e0a94e29a2e4d5d5a27725ab481f29eee486220e18592a006a",
+      "bytes": 39749
+    },
+    {
+      "path": "src/resource_prepared_boot.rs",
+      "sha256": "43bc39c93d9dd54a2802ad5fd892b448e42479831931025af60805f1aa001d6d",
+      "bytes": 18453
+    },
+    {
+      "path": "src/resource_prepared_offline_apply.rs",
+      "sha256": "61e03f6130c575bf09ae882a23b6ef5dbc57a23495e19db5537d8aa253241f11",
+      "bytes": 24968
+    },
+    {
+      "path": "src/resource_prepared_runner.rs",
+      "sha256": "091ccfadf52e5f8855c1bd98a4d308de38701d58cb057b4762e1572472ec810f",
+      "bytes": 15093
+    },
+    {
+      "path": "src/resource_prepared_pause.rs",
+      "sha256": "a3572a7f5f33c482140dfbfacbdf6906c92020b4828a3bfca83e986ec21c3e3a",
+      "bytes": 9286
+    },
+    {
+      "path": "src/resource_prepared_terminal.rs",
+      "sha256": "dd0d346897b225f7de86c5b700708bc6ed6e52a11f8aed7c3fa4fa9beeedb603",
+      "bytes": 6684
+    },
+    {
+      "path": "src/selected_journal/resource_domain/reopen.rs",
+      "sha256": "fee96cfe65f2a5da2177a4cab370e4b79453dabefe9170d649a7ba9ea8e6b4f9",
+      "bytes": 31579
+    },
+    {
+      "path": "src/selected_journal/resource_domain/reopen/replay.rs",
+      "sha256": "e014f75918ad3e467c5c0d77aa0a6b40a5e559dbe5b035d3c53d369d69d1a154",
+      "bytes": 49881
+    },
+    {
+      "path": "src/selected_journal/resource_domain/reopen/replay/prepared_offline.rs",
+      "sha256": "e296e2fb7e7f3d1ac4843a0f8d6eb9de145b78a0c045b63f1c7e0ed8938c6c8f",
+      "bytes": 10275
+    },
+    {
+      "path": "src/selected_journal/resource_domain/reopen/replay/prepared_closed.rs",
+      "sha256": "674e03971ae26ad3e656ca92336c05e6e41400f6ade1460b8895dc92249e11e6",
+      "bytes": 5506
+    }
+  ]
+}

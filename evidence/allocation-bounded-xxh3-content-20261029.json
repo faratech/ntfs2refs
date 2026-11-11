@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "kind": "native-allocation-bounded-conversion-xxh3-content-digest",
+  "run_id": "c76cdf92f4604d3bb4eafd777ca4e42e",
+  "engine_run_id": "026d1baa5c9de13204ab725ac4831871",
+  "source_commit": "e2ae8b56b66176ae87e412dc98743dac6f2c069e",
+  "change": "file-content digests are XXH3-128 (n2r_win32::content_digest; user decision); historical *sha256 field names kept",
+  "refused_attempts_before_this_run": [
+    {"run_id": "e0304aa61dc0485fb525e28ed599684b", "commit": "0889df5", "phase": "source admission", "error": "raw security model inconsistent", "cause": "resident $SECURITY_DESCRIPTOR attribute digest compared with the descriptor's SHA-256", "fixed_by": "eeb7306", "writes": 0},
+    {"run_id": "f3747d5feecd40c7b89da8f4843890c2", "commit": "eeb7306", "phase": "shadow construction", "error": "source indexer cache digest differs", "cause": "IndexerVolumeGuid cache compared with the SHA-256 range proof", "fixed_by": "e2ae8b5", "writes": 0}
+  ],
+  "working_tree_note": "Built with the existing user-owned src/main.rs capabilities hunk present and unstaged.",
+  "toolset_manifest_sha256": "3de286745b7a1aef5bc7d0d8bdd4a2d190c19eeded3c14b20b0ec8cba83565fb",
+  "public_cli": {"sha256": "b151402a23dfb93c0cc3a77fb959060de5289e1f4b50b62544d5deaccc8069cb", "argv": ["--drive", "F", "--partition", "2"], "actual_native_exit": 0},
+  "outcome": {
+    "wrapper_success": true, "native_objects": 15, "complete_logical_hashes": 10, "label_and_mount_verified": true,
+    "file_content_digest": "xxh3-128 (32 lowercase hex, canonical big-endian)",
+    "selected_ranges": 157, "selected_bytes": 70746112, "journal_bytes": 141513136,
+    "result_sha256": "2595618baadf6a1eba3dab7d869de475a971b9f8376b2d32ee949ea6472e5fb1",
+    "finalization_sha256": "5b0f6b52951a582afc27e680011e73686f964968ce2ce8dc757d5d46470b273e"
+  },
+  "hash_backend_measurement": {"tool": "lab-read-bench --hash-only (host i9-9900K, single thread, 1 GiB)", "xxh3_128_mb_per_second": 18549, "cng_sha256_mb_per_second": 524, "sha2_software_mb_per_second": 303, "xxh3_avx2_compiled": false},
+  "timing": {
+    "measure": "native process creation to the wrapper's native-terminal record",
+    "seconds": 66.7,
+    "previous_seconds": {"parallel_observation_e91ead3": 112.6, "digest_recheck_48d6a8e": 116.7, "xxh3_overlap_7605ee7": 134.7, "parallel_hash_e6e22f6": 258.7, "speedups_1_5_bd9ef21": 356.7, "head_whole_image": 2813.3, "frozen_alpha": 3351.7},
+    "artifact_write_timeline_seconds": {"source_frozen": 3.8, "native_source": 7.9, "source_assessment": 9.3, "construction_freeze": 15.1, "changed_clusters": 52.0, "target_preservation": 52.4, "activation": 55.9, "apply": 59.5, "handoff": 61.8, "finalization": 65.9}
+  },
+  "archive": ".lab/hyperv/streaming-v2-20261027/alloc-drive-20261029-c76cdf92f4604d3bb4eafd777ca4e42e/closed-conversion",
+  "qualification": {"normal_public_conversion_passed": true, "interruption_resume_rollback_tested_on_this_build": false, "mutation_restart_tested_on_this_build": false, "release_qualified": false},
+  "scope": "One default-mode conversion of the 52 GiB fixture. Correct result in 66.7 s."
+}

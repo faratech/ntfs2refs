@@ -381,7 +381,8 @@ pub fn observe(binding: DiskBinding) -> io::Result<Observation> {
     let extents =
         control(&volume, 0x00560000).map_err(|code| io::Error::from_raw_os_error(code as i32))?;
     crate::layout::validate_volume_extent(&extents, &binding)?;
-    observe_volume(binding, volume)
+    let volume_path = binding.volume_path()?;
+    observe_volume(binding, volume, &volume_path)
 }
 
 /// The same read-only TxF and persistent-policy queries on a separately bound
@@ -406,34 +407,59 @@ pub fn observe_general(binding: GeneralDiskBinding) -> io::Result<GeneralObserva
         volume_guid: binding.volume_guid.clone(),
         identity: binding.identity.clone(),
     };
-    let observation = observe_volume(proxy, volume)?;
+    // The diagnostic proxy preserves the binding's serialized fields, but
+    // its legacy volume_path() enforces the old fixed fixture geometry.
+    // Use the path from the independently validated general binding instead.
+    let volume_path = binding.volume_path()?;
+    let observation = observe_volume(proxy, volume, &volume_path)?;
     Ok(GeneralObservation {
         binding,
         observation,
     })
 }
 
-fn observe_volume(binding: DiskBinding, volume: File) -> io::Result<Observation> {
+fn observe_volume(
+    binding: DiskBinding,
+    volume: File,
+    volume_path: &str,
+) -> io::Result<Observation> {
+    observe_volume_scoped(binding, volume, volume_path, None, &mut Vec::new())
+}
+
+fn observe_volume_scoped(
+    binding: DiskBinding,
+    volume: File,
+    volume_path: &str,
+    mut partition: Option<&mut crate::native::partition_lifecycle::PartitionReadonlyPhase<'_>>,
+    events: &mut Vec<crate::native::NativeEvent>,
+) -> io::Result<Observation> {
     let windows_version = windows_version()?;
     let disk = File::options()
         .read(true)
         .share_mode(3)
         .open(format!("\\\\.\\PhysicalDrive{}", binding.disk_number))?;
     let disk_read_only = read_only_disk(&disk)?;
+    let partition_read_only = if let Some(phase) = partition.as_deref_mut() {
+        require_partition_volume(phase, &volume, events)?;
+        true
+    } else {
+        false
+    };
+    let readonly_root = disk_read_only || partition_read_only;
     // TxF resource-manager controls address the RM's root directory. The
     // direct volume handle remains separate for dirty/persistent-state FSCTLs.
     let root = File::options()
-        .access_mode(if disk_read_only { 0x81 } else { 0x181 })
+        .access_mode(if readonly_root { 0x81 } else { 0x181 })
         .share_mode(3)
         .custom_flags(0x0220_0000)
-        .open(format!("{}\\", binding.volume_path()?))?;
+        .open(format!("{volume_path}\\"))?;
     let suppress = FILETIME {
         dwLowDateTime: u32::MAX,
         dwHighDateTime: u32::MAX,
     };
     // SAFETY: borrowed directory handle and documented per-handle last-access
     // suppression sentinel; no stored timestamp value is supplied.
-    if !disk_read_only
+    if !readonly_root
         && unsafe { SetFileTime(root.as_raw_handle(), ptr::null(), &suppress, ptr::null()) } == 0
     {
         return Err(io::Error::last_os_error());
@@ -472,10 +498,15 @@ fn observe_volume(binding: DiskBinding, volume: File) -> io::Result<Observation>
             "disk protection changed during NTFS observation",
         ));
     }
+    if let Some(phase) = partition.as_deref_mut() {
+        require_partition_volume(phase, &volume, events)?;
+    }
     Ok(Observation {
         schema_version: 2,
         kind: "mounted-ntfs-txf-resource-manager-observation",
-        rm_handle_profile: if disk_read_only {
+        rm_handle_profile: if partition_read_only {
+            "volume-root-directory-selected-partition-read-only"
+        } else if disk_read_only {
             "volume-root-directory-physical-disk-read-only"
         } else {
             "volume-root-directory-access-time-suppressed"
@@ -625,4 +656,170 @@ mod tests {
             12
         );
     }
+}
+
+/// Actual volume-scoped TxF facts tied to the retained readonly lifecycle owner.
+/// Current Windows siblings remain available; no disk-wide exclusion is inferred.
+pub struct PartitionTxfObservation {
+    binding: crate::native::partition_isolation::PartitionSourceBinding,
+    preparation: crate::native::partition_lifecycle::PartitionPreparationToken,
+    observation: Observation,
+}
+impl PartitionTxfObservation {
+    pub fn observation(&self) -> &Observation {
+        &self.observation
+    }
+    pub(crate) fn require_phase(
+        &self,
+        phase: &mut crate::native::partition_lifecycle::PartitionReadonlyPhase<'_>,
+        events: &mut Vec<crate::native::NativeEvent>,
+    ) -> io::Result<()> {
+        if self.binding != *phase.binding()
+            || !self.preparation.same_owner(&phase.preparation_token())
+        {
+            return Err(io::Error::other(
+                "TxF observation lost actual readonly partition preparation",
+            ));
+        }
+        phase.revalidate(events)
+    }
+}
+fn require_partition_volume(
+    phase: &mut crate::native::partition_lifecycle::PartitionReadonlyPhase<'_>,
+    volume: &File,
+    events: &mut Vec<crate::native::NativeEvent>,
+) -> io::Result<()> {
+    phase.revalidate(events)?;
+    let extent =
+        control(volume, 0x0056_0000).map_err(|n| io::Error::from_raw_os_error(n as i32))?;
+    phase.binding().storage.validate_volume_extent(&extent)?;
+    let info = control(volume, 0x0007_0048).map_err(|n| io::Error::from_raw_os_error(n as i32))?;
+    let protection = phase.protection();
+    let error = match control(volume, 0x0007_0024) {
+        Ok(_) => {
+            return Err(io::Error::other(
+                "TxF selected readonly partition reports writable",
+            ));
+        }
+        Err(n) => n,
+    };
+    if error != 19
+        || protection.partition_write_protect_error != 19
+        || extent != protection.volume_extents
+        || info != protection.readonly_partition_info
+    {
+        return Err(io::Error::other(
+            "TxF native readonly partition identity/protection differs",
+        ));
+    }
+    Ok(())
+}
+/// Scope is provided exclusively by an actual borrowed Basic+READ_ONLY phase.
+/// No public binding/path/boolean can bypass observe_general's dedicated guard.
+pub(crate) fn observe_partition(
+    phase: &mut crate::native::partition_lifecycle::PartitionReadonlyPhase<'_>,
+    events: &mut Vec<crate::native::NativeEvent>,
+) -> io::Result<PartitionTxfObservation> {
+    phase.revalidate(events)?;
+    let binding = phase.binding().clone();
+    let preparation = phase.preparation_token();
+    let volume = phase.open_readonly_volume(events)?;
+    let proxy = DiskBinding {
+        disk_number: binding.storage.disk_number,
+        volume_guid: binding.storage.volume_guid.clone(),
+        identity: binding.storage.identity.clone(),
+    };
+    let path = binding.storage.volume_path()?;
+    let observation = observe_volume_scoped(proxy, volume, &path, Some(phase), events)?;
+    // The root/volume/disk files above are all closed before returning this fact.
+    let proof = PartitionTxfObservation {
+        binding,
+        preparation,
+        observation,
+    };
+    proof.require_phase(phase, events)?;
+    Ok(proof)
+}
+
+/// Pre-lock TxF facts from the actual original volume held by the SDK guard.
+/// Constructed internally after Basic0/full critical-role enrollment, never from
+/// a saved observation or by removing observe_general's Windows-disk guard.
+pub struct PartitionMountedTxfObservation {
+    binding: crate::native::partition_isolation::PartitionSourceBinding,
+    observation: Observation,
+}
+impl PartitionMountedTxfObservation {
+    pub fn binding(&self) -> &crate::native::partition_isolation::PartitionSourceBinding {
+        &self.binding
+    }
+    pub fn observation(&self) -> &Observation {
+        &self.observation
+    }
+}
+pub(crate) fn observe_partition_before_freeze(
+    binding: &crate::native::partition_isolation::PartitionSourceBinding,
+    original_volume: &File,
+) -> io::Result<PartitionMountedTxfObservation> {
+    binding.validate()?;
+    let extent = control(original_volume, 0x0056_0000)
+        .map_err(|n| io::Error::from_raw_os_error(n as i32))?;
+    binding.storage.validate_volume_extent(&extent)?;
+    let info = control(original_volume, 0x0007_0048)
+        .map_err(|n| io::Error::from_raw_os_error(n as i32))?;
+    if info.len() != 144
+        || crate::layout::u32_at(&info, 0)? != 1
+        || crate::layout::u64_at(&info, 8)? != binding.storage.identity.partition_offset
+        || crate::layout::u64_at(&info, 16)? != binding.storage.identity.partition_bytes
+        || info[32..48] != crate::layout::guid_bytes("ebd0a0a2-b9e5-4433-87c0-68b6b72699c7")?
+        || info[48..64] != crate::layout::guid_bytes(&binding.storage.identity.partition_guid)?
+        || crate::layout::u64_at(&info, 64)? != 0
+    {
+        return Err(io::Error::other(
+            "pre-freeze TxF volume is not the original Basic0 partition",
+        ));
+    }
+    let proxy = DiskBinding {
+        disk_number: binding.storage.disk_number,
+        volume_guid: binding.storage.volume_guid.clone(),
+        identity: binding.storage.identity.clone(),
+    };
+    let path = binding.storage.volume_path()?;
+    let observation = observe_volume(proxy, original_volume.try_clone()?, &path)?;
+    if observation.rm_handle_profile != "volume-root-directory-access-time-suppressed" {
+        return Err(io::Error::other(
+            "mounted partition TxF requires actual online/RW physical state",
+        ));
+    }
+    Ok(PartitionMountedTxfObservation {
+        binding: binding.clone(),
+        observation,
+    })
+}
+
+/// Actual opaque offline NTFS phase only; preserves the existing volume/RM
+/// engine and its physical0-vs2 root-access behavior. No caller bool bypass.
+pub(crate) fn observe_offline_bound_phase(
+    phase: &mut crate::offline_environment::OfflineReadonlyNtfsPhase<'_>,
+    events: &mut Vec<crate::native::NativeEvent>,
+) -> io::Result<Observation> {
+    phase.require_current(events)?;
+    if !matches!(phase.expected_attributes(), 0 | 2) {
+        return Err(io::Error::other(
+            "offline TxF phase is neither real original0 nor physicalreadonly2",
+        ));
+    }
+    let binding = phase.binding().clone();
+    let volume = phase.duplicate_volume()?;
+    let extent =
+        control(&volume, 0x0056_0000).map_err(|n| io::Error::from_raw_os_error(n as i32))?;
+    binding.validate_volume_extent(&extent)?;
+    let proxy = DiskBinding {
+        disk_number: binding.disk_number,
+        volume_guid: binding.volume_guid.clone(),
+        identity: binding.identity.clone(),
+    };
+    let path = binding.volume_path()?;
+    let observed = observe_volume(proxy, volume, &path)?;
+    phase.require_current(events)?;
+    Ok(observed)
 }

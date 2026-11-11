@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "kind": "exact-committed-partition-recovery-build",
+  "status": "build-passed-native-qualification-pending",
+  "source_commit": "b2e96ff189f8ee9b857384d7243ba23a3f6f8b10",
+  "source_tree": "ba000cbaaf1f06c3cd6559a24754aa4807b1d148",
+  "build_directory": ".lab/development/release-candidates/partition-recovery-b2e96ff",
+  "build_manifest_sha256": "3fb24f741bc32b2ee8588babb3128647d87dea91a71124f8438f2e45b1c5cde1",
+  "actual_build_exit_code": 0,
+  "cargo_reported_release_seconds": 156,
+  "binary": {
+    "name": "lab-partition-recovery.exe",
+    "bytes": 3852288,
+    "sha256": "9ba0f7eafa7219998c5891fa7f4ec838235032dc7f658c6581a6bd9ea501aa68"
+  },
+  "source_before_after_verified": true,
+  "held_source_files": 416,
+  "shared_target_reused": true,
+  "working_tree_inputs_used": false,
+  "unit_tests_run": false,
+  "fresh_joint_reservation": {
+    "actual_bytes": 320602547152,
+    "additional_forecast_bytes": 8589934592,
+    "concurrent_vm_forecast_bytes": 6442450944,
+    "build_forecast_bytes": 2147483648,
+    "maximum_actual_bytes": 329374052988,
+    "minimum_host_free_bytes": 17179869184,
+    "epoch_reset": false
+  },
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "qualification_inherited": false,
+  "native_execution_authorized": false,
+  "native_result_claimed": false,
+  "public_frozen_alpha_changed": false
+}

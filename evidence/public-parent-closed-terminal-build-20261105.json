@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "kind": "held-working-volume-root-and-private-closed-terminal-finalization",
+  "status": "focused-check-passed-native-pending",
+  "files": [
+    {
+      "path": "src/drive_partition.rs",
+      "bytes": 23017,
+      "sha256": "5429bfbc62af9af1d1b3daa36eecf7705c0b2b91bddf9db4550d247bc86708ef"
+    },
+    {
+      "path": "src/general_reconstruct/fast_verification/v4_maps/reopened.rs",
+      "bytes": 20078,
+      "sha256": "fcca1db72adfd5472e32dc0edf0d3f6e0ab6f703f6c1db690d38e4a8c64baece"
+    },
+    {
+      "path": "src/resource_partition_recovery.rs",
+      "bytes": 11906,
+      "sha256": "a66c9d652bb9736ab7a61b3a12d029e7da89320a3555de45278a0a46cda9977c"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/reopen/envelope.rs",
+      "bytes": 117846,
+      "sha256": "ae4a5675722471354ab69a4e2210a30aa795b13c3cae327b9ed5c46704772448"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/reopen/partition_closed.rs",
+      "bytes": 8258,
+      "sha256": "08a79f84aac3ff0b823137a407b113bcfb8ac0a888a2ac325ea16649f3790151"
+    }
+  ],
+  "closed_terminal_reviewed_patch_sha256": "6cf59e2b7c53d3ebf7f0b4f69f2826740a1fbb860d0d307d3910b8161a03518d",
+  "check_exit": 0,
+  "check_seconds": 20.3513475,
+  "unit_tests_run": false,
+  "native_run": false,
+  "working_parent_fix": "Open actual ordinary directory readonly, retain FileID, resolve same-held GUID path, discover ONLY its exact GUID volume root, compare current Windows binding and closing FileID. Default parent joins native components. Strict discovery validation unchanged.",
+  "closed_terminal": "Separate actual held-J/index lifecycle classification routes PRIVATE HND/ABT through real SDK closed capabilities and origin, with no replay witness fabrication, raw writer, marker or source gate. HND native known contents/full maps precede RW; ABT actual closed OLD/NTFS precedes restore.",
+  "remaining": "BasicRO interrupted-finalization reopen and operational Basic0 metadata reconciliation remain explicitly unsupported.",
+  "prior_public_case": {
+    "run_id": "6460162b56884e88aba62bcfaf7d92f7",
+    "pid": 3892,
+    "birth_ms": 1793850407256,
+    "exit_code": 1,
+    "wall_seconds": 0.0366187,
+    "error": "explicit bounded local volume root required",
+    "stdout_bytes": 0,
+    "new_public_run_created": false,
+    "archive_sha256": "c9f19e887bdf8bc85828db28d241c92396cb8aee66253fb4bf83d861fc834bc4",
+    "original_budget_absolute_bytes": 329102331170
+  },
+  "source_writer_guards_weakened": false,
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+}

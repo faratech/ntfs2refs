@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "kind": "public-resource-conversion-refusal",
+  "source_commit": "5a1eea1714ee06ae840a2dc4996286209589f7a3",
+  "binary_sha256": "02545df64aad02ffaf8856af88a4f54676df07534551934d1df9405ad64fdf59",
+  "run_id": "2c93cc25dfcc4ac8897aecb964e612f5",
+  "command": [
+    "ntfs2refs",
+    "--drive",
+    "F",
+    "--partition",
+    "2"
+  ],
+  "confirmation": "one yes CRLF",
+  "native_process": {
+    "exit_code": 1,
+    "pid": 5340,
+    "actual_exit_observed": true,
+    "creation_ms": 1793716500143,
+    "utc": "2026-11-03T14:46:08.1911658Z",
+    "stdout_bytes": 791,
+    "stderr_bytes": 346,
+    "wall_seconds": 668.0220055
+  },
+  "stderr": "Conversion stopped. Preserve all recovery files at C:\\ProgramData\\ntfs2refs\\runs\\365d74640e0c6394607a167eec5cb14a\nerror: conversion failed before publication; unchanged original NTFS restored on disk 1: aggregate artifact arena RAM exhausted or poisoned: leased=1388749759, registry=3371574, requested=453572288, limit=1814289152, poisoned=false\n",
+  "failure_phase": "capture before journal publication",
+  "original_ntfs_online_at_completion": true,
+  "automatic_unchanged_ntfs_restoration_exercised": true,
+  "apply_intent_attempted": false,
+  "source_payload_writes": 0,
+  "archive_sha256": "2e39d0ef5bbed1693fc4b7469a03909f9ba8282d5c22f8061c50a8e22eaa0c1b",
+  "conversion_qualified": false,
+  "actual_resource_plan": {
+    "observed": {
+      "total_physical_bytes": 4293808128,
+      "available_physical_bytes": 2729312256,
+      "scratch_available_bytes": 39557230592,
+      "scratch_total_bytes": 66238541824
+    },
+    "resources": {
+      "schema_version": 1,
+      "ram_bytes": 1814289152,
+      "scratch_bytes": 29204881408,
+      "page_bytes": 3543533,
+      "max_row_bytes": 28348268,
+      "retained_index_bytes": 453572288,
+      "handle_slots": 1771766
+    },
+    "reserve_bytes": 9889471488,
+    "evidence_allocation_bytes": 655360,
+    "evidence_maximum_bytes": 463529055,
+    "evidence_ram_bytes": 5252352,
+    "capture_bytes": 9734959104,
+    "maximum_journal_bytes": 19469918208,
+    "maximum_combined_bytes": 24337399808
+  }
+}

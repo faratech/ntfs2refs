@@ -1,0 +1,121 @@
+{
+  "schema_version": 1,
+  "kind": "owning-machine-partition-conversion-normal-and-restarted-recovery-entry",
+  "status": "lab-and-public-binaries-check-passed-native-conversion-pending",
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/attestation_partition.rs",
+      "bytes": 11401,
+      "sha256": "758f77243e1b69e0f541ac7d07fe834659ecc14ee4e02af1409ce00217241653"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/paged_recovery/partition_scope.rs",
+      "bytes": 25190,
+      "sha256": "84cb3aabee682688a45a9fbfd1494d01a9f2038a98916597ab1c1cf3ff42014d"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_isolation.rs",
+      "bytes": 34278,
+      "sha256": "8b09c6a8d51b6b1ea560adf6036a70c620107d25051c5c9cecf4212c5182da3b"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_lifecycle/staged.rs",
+      "bytes": 46966,
+      "sha256": "68511ebc5fd7d398d45042c66687f0a8a590e6cee1b1baddb14495406233c23f"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_restoration.rs",
+      "bytes": 77088,
+      "sha256": "56eb0ca8ce94543587d99126a5272a9f1fb2480e0a0675006cef125e23790a2a"
+    },
+    {
+      "path": "src/bin/lab-partition-alpha.rs",
+      "bytes": 2778,
+      "sha256": "f824931a53c226eb56b9d3dab4e9088f6d6b90415fa0871469027a242a77a69f"
+    },
+    {
+      "path": "src/general_reconstruct/selected_native_journal.rs",
+      "bytes": 51321,
+      "sha256": "593faf91a23903ecbb2a5ca933c9a7556645852902e1e321f5727f0f5ccb7cf5"
+    },
+    {
+      "path": "src/lib.rs",
+      "bytes": 3258,
+      "sha256": "834d38cdb8db4a3683ae792513babf6959de39585d7159df7b1cb92dd3353512"
+    },
+    {
+      "path": "src/resource_partition_alpha.rs",
+      "bytes": 21662,
+      "sha256": "b284e769f9a57b58ff1be4a442ceeadeeb4c9ad032cd98d116429ccb35991aa2"
+    },
+    {
+      "path": "src/resource_partition_finalization.rs",
+      "bytes": 10752,
+      "sha256": "2cca3449a2b5e4df121a1e40b239f39bedcd22429421f2046472342f3e56a2d6"
+    },
+    {
+      "path": "src/resource_partition_preparation.rs",
+      "bytes": 12535,
+      "sha256": "18718aeb683297f708f884e5dae6d5d4f0ea9b35188ade3ef9f0c47ad3aeb03d"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/durable_anchor.rs",
+      "bytes": 29026,
+      "sha256": "383927637d84b5e7689bdb13b4b0659fc579cce0e78a7b9992b753543d1804c3"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/prepare/qualification/partition_apply.rs",
+      "bytes": 23712,
+      "sha256": "9221dd54b4f6413e9f66ded61b895d1f12a87ad5b93b919cde16cdf154528912"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/reopen/envelope.rs",
+      "bytes": 104648,
+      "sha256": "d1682aae3219e42ccc27f057c5bc9f9bb9377ed51cd5c71973f94832c2bdcae5"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/reopen/replay.rs",
+      "bytes": 46886,
+      "sha256": "c38c2d43c3af2866f12f39ca19f33f04459cfc4d9b7c3f627890112bae2c9db5"
+    }
+  ],
+  "reviewed_patches": [
+    "0ec3f1d61b98ebc02c3f3f60523ddc76c88ac9e99cbe30eab0f32a6e226f1815",
+    "77fb15f309ee25d4c32ac70ffc3c2a65d12320b4953926337e1968b05c6af82b",
+    "0fd62f62044bde16302694978aa5baa09b1e051e101b54d40c12f1a6292565e8",
+    "ad0a4de15414dc8760c4e8af14013d241c33d67878975f0f7b7422a70b79abc7",
+    "3a8b86dfa2913875f6c8c022bca5060482793557239ee628c0041584eaf53590"
+  ],
+  "check_exit": 0,
+  "check_wall_seconds": 22.7642619,
+  "check_receipt_sha256": "a7042865a522c01040a92b54d481f8bff6e39f55a180442907c436cd70e43a99",
+  "checked_binaries": [
+    "ntfs2refs",
+    "lab-partition-alpha"
+  ],
+  "shared_target_reused": true,
+  "unit_tests_run": false,
+  "native_conversion_qualified": false,
+  "frozen_alpha_rebuilt": false,
+  "public_shared_disk_cli_enabled": false,
+  "review_fixes": [
+    "Reopened locator is mutable only in the actual restarted origin branch.",
+    "Fresh source RW volume and each raw readonly volume reader enable handle-specific extended DASD before partition-tail IO.",
+    "Single complete Basic metadata observer supports publication brackets without alias-presence equality.",
+    "Publication waits are metadata-only and bounded; native identity errors stop, event batches drain durably, setters are not retried.",
+    "Facade imports public terminal enum, records its actual variant as text, and honors the existing SDK placement-submission bound."
+  ],
+  "behavior": [
+    "lab-partition-alpha is an actual owning-machine executable for readonly routing, native source admission, Windows-generated shadow, V4 capture/native J/publication/AP/HND and verified operational restoration.",
+    "External intent, evidence and provider commitments are separately reserved before the artifact arena; stage allocation is sampled honestly and virtual size is not reported as actual allocation.",
+    "Pre-AP publication SHA and actual publication/locator handles survive into finalization; original intent/native pages and same-J witness are transferred rather than reopened by path.",
+    "Fresh finalization drops old NTFS capture/query handles, mounts only the selected target readonly, verifies complete native metadata/known contents/actual saved maps, then restores label/mounts/attributes.",
+    "Restarted Root replay consumes actual MIXED observation before direction-bound SDK resume/rollback, preserving complete OLD/NEW/COPY/zero/source-free validation and owning terminal witnesses."
+  ],
+  "remaining": [
+    "Build exact committed lab executable and execute the prepared shared-Windows-disk source.",
+    "Native normal/cut/resume/rollback and terminal-interruption qualification.",
+    "Public shared-disk conversion/recovery routing and complete pre-AP cancellation."
+  ],
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+}

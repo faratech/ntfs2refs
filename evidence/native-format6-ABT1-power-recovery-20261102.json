@@ -1,0 +1,268 @@
+{
+  "schema_version": 1,
+  "utc": "2026-11-02T06:15:51.553593Z",
+  "vm_id": "2401593c-4b30-472e-9b6d-c9534cbaa599",
+  "source_commit": "7cd68709e3cd2e4cb1d5227d01fd6137c93ea13f",
+  "native_sha256": "e21888922313aaf591ed8d54c930ae2bd9639eca41f28dfcb6a0dd959e8dfaab",
+  "interrupted_checkpoint": "83354c86-1103-4b0d-a99a-e23a8a78fdc8",
+  "checkpoint_parent_original_AP1": "8d4192fe-003b-441f-8591-f0b271028841",
+  "original_AP1_checkpoint_parent": "cb802669-903c-48cc-99e5-57976b149e7d",
+  "original_AP1_power_receipt_sha256": "8d63cbc34214475e8ceb51989b760137c8ab4bc3d2d7f6ff037a6ad7e7debc69",
+  "nested_power_receipt_sha256": "4ba227354d5f904e63cda9537d63d7491fd93445c2b5eb9c3620d9b0a2a25789",
+  "original_AP1_native_exit_observed": false,
+  "paused_native_pid": 3060,
+  "paused_native_creation_ms": 1793597984026,
+  "paused_native_exit_observed": false,
+  "paused_native_exit": null,
+  "kind": "native-format6-ABT1-actual-power-recovery",
+  "helper_sha256": "ebedbc0e7faaa24c9d6076875b11b203ea7f4f5cec8a251dc56eaa244d4ae871",
+  "native_pid": 2488,
+  "native_creation_ms": 1793598793045,
+  "native_exit": 0,
+  "native_exit_observed": true,
+  "native_wall_seconds": 6.7257683,
+  "process_handle_retained_through_terminal": true,
+  "peak_working_set_bytes": null,
+  "peak_paged_memory_bytes": null,
+  "peak_metrics_source": "retained-System.Diagnostics.Process; null when unavailable",
+  "action": "verify_aborted",
+  "observed_lifecycle": "aborted",
+  "outcome": "ntfs_restored",
+  "journal_format": "N2RFRE02",
+  "journal_format_version": 6,
+  "marker_profile": "redundant_source_free_v1",
+  "journal_bytes": 131175520,
+  "selected_bytes": 544673792,
+  "source_free_bytes": 402669568,
+  "closed_rollback_verification": {
+    "selected_sha256": [
+      74,
+      92,
+      245,
+      188,
+      234,
+      144,
+      112,
+      95,
+      120,
+      228,
+      84,
+      97,
+      145,
+      149,
+      79,
+      201,
+      115,
+      250,
+      231,
+      242,
+      223,
+      198,
+      67,
+      226,
+      32,
+      57,
+      253,
+      35,
+      127,
+      11,
+      105,
+      20
+    ],
+    "selected_bytes": 544673792,
+    "range_count": 3120,
+    "replay_closed": true,
+    "whole_image_verified": false,
+    "conversion_qualified": false,
+    "old_restoration_bytes": 142004224
+  },
+  "restore_required_selected_sha256": "4a5cf5bcea90705f78e4546191954fc973fae7f2dfc643e22039fd237f0b6914",
+  "restore_required_digest_matches_original_ticket": true,
+  "original_full_old_marker_identity_sha256": "2d3c467884f5d8023915af93e8b24d37b908a3e7b7a28f0fb335fed503d71c42",
+  "full_old_selected_target_hash_claimed": false,
+  "free_space_contents_restored": false,
+  "verification_of_already_closed_rollback": true,
+  "raw_target_replay_reopened": false,
+  "exclusive_recovery_journal_used": true,
+  "native_closed_ABT_path_observed": true,
+  "mounted_filesystem": "NTFS",
+  "NTFS_completion_scope": "restore-required selected digest and native NTFS mount, without semantic re-enumeration",
+  "helper_observation_passed": true,
+  "fresh_source_admission_recreated": false,
+  "unused_detached_shadow_guard": {
+    "actual_exclusive_backing_read_held_and_revalidated": true,
+    "revalidations": 3,
+    "fresh_post_acquisition_inventory_validated": true,
+    "same_call_pre_post_inventory_identical": true,
+    "guard_receipt_sha256": "501d6552dc1f067d1dde1058a1e330642e310fac908bed830a7d31e26497f0bc",
+    "provider_query_performed": false,
+    "provider_identity_or_virtual_geometry_claimed": false,
+    "backing_contents_read_or_log_replayed": false,
+    "source_or_shadow_attributes_changed_by_helper": false
+  },
+  "all_project_tasks_terminal_and_workers_absent_in_archive_brackets": true,
+  "normal_stop_and_saved_checkpoint_observed": true,
+  "result_checkpoint": "0a3a2a49-44cd-45a0-8817-41767231d7b2",
+  "result_checkpoint_parent": "83354c86-1103-4b0d-a99a-e23a8a78fdc8",
+  "result_checkpoint_state": "Off",
+  "result_checkpoint_memory_assigned_bytes": 0,
+  "snapshot_count_at_result_checkpoint": 26,
+  "closed_archive": {
+    "files": 42,
+    "bytes": 29663283,
+    "receipt_sha256": "78c363fd470e44f7e4a6cf8071f5581a40ff9f37c984ceea1aeb5391c781e0d1",
+    "inventory_sha256": "b6a78093e1532d09a76ea380745a20264d3365c720774f0758c0b8e0310761ba",
+    "all_copied_host_file_lengths_and_sha256_revalidated": true,
+    "source_completion_entries_checked": 44,
+    "complete_source_entry_set_rechecked_by_collector": true,
+    "bulk_payloads_opened_by_collector": false,
+    "bulk_payloads_copied": false,
+    "bulk_payloads_hashed": false
+  },
+  "all_four_first_copy_VM_recovery_states_observed": true,
+  "first_copy_state_set": [
+    "AP1",
+    "HND1",
+    "RB1",
+    "ABT1"
+  ],
+  "first_copy_scope": "post-write/flush/uncached-readback VM cuts; not native corrupted-peer/write-error injection or physical hardware power loss",
+  "raw_journal_opened_by_observer": false,
+  "native_marker_qualified": false,
+  "physical_hardware_power_loss_qualified": false,
+  "remaining_native_marker_power_matrix_complete": false,
+  "stable_release": false,
+  "independent_full_content_scan_run": false,
+  "semantic_reenumeration_performed": false,
+  "peak_ram_claimed": false,
+  "unit_tests_added_or_run": false,
+  "serialized_evidence_grants_source_or_recovery_authority": false,
+  "artifacts": [
+    {
+      "role": "root-nested-power-checkpoint",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-power-abt1-d8832cbb66c84f45a31bc5bbce93fb8b\\checkpoint.json",
+      "bytes": 3839,
+      "sha256": "4ba227354d5f904e63cda9537d63d7491fd93445c2b5eb9c3620d9b0a2a25789"
+    },
+    {
+      "role": "verified-result-checkpoint",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-power-rollback-recovery-04629390afde4392b5a7810f26b7ee89\\checkpoint.json",
+      "bytes": 785,
+      "sha256": "e4e8668d35a41f51d8ec4ca5bfc30d176149483f4080dfc6da47e5e5c018981e"
+    },
+    {
+      "role": "closed-archive-receipt",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-power-rollback-recovery-04629390afde4392b5a7810f26b7ee89\\closed-native\\receipt.json",
+      "bytes": 25265,
+      "sha256": "78c363fd470e44f7e4a6cf8071f5581a40ff9f37c984ceea1aeb5391c781e0d1"
+    },
+    {
+      "role": "closed-archive-inventory",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-power-rollback-recovery-04629390afde4392b5a7810f26b7ee89\\closed-native\\inventory.json",
+      "bytes": 21353,
+      "sha256": "b6a78093e1532d09a76ea380745a20264d3365c720774f0758c0b8e0310761ba"
+    },
+    {
+      "role": "recovery-configuration",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-power-rollback-recovery-04629390afde4392b5a7810f26b7ee89\\closed-native\\recovery\\configuration.json",
+      "bytes": 14558,
+      "sha256": "4b1d5f31e3d00e8e00e4891a155f43c7638218f2957b6e94b19c3d2ca6f1bc94"
+    },
+    {
+      "role": "owned-recovery-process",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-power-rollback-recovery-04629390afde4392b5a7810f26b7ee89\\closed-native\\recovery\\native-process.json",
+      "bytes": 1381,
+      "sha256": "900bbea0090511e8e9925d979d9726857560ae0d1392cc9b75a0c2af21b420b9"
+    },
+    {
+      "role": "actual-recovery-terminal",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-power-rollback-recovery-04629390afde4392b5a7810f26b7ee89\\closed-native\\recovery\\native-terminal.json",
+      "bytes": 831,
+      "sha256": "4d22755a0f66b84cfa062dac9903763edf844adc826f5063b87f24dd5232d5c7"
+    },
+    {
+      "role": "helper-result",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-power-rollback-recovery-04629390afde4392b5a7810f26b7ee89\\closed-native\\recovery\\wrapper-result.json",
+      "bytes": 894,
+      "sha256": "25979e42b021f69465043b4ba5b85c0dc0555959107388fe82d6abeb00241bd8"
+    },
+    {
+      "role": "dual-origin-observation",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-power-rollback-recovery-04629390afde4392b5a7810f26b7ee89\\closed-native\\recovery\\nested-rollback-power-origin-observation.json",
+      "bytes": 1613,
+      "sha256": "4117cf1001404881e7fbc07841856152fa81beee82a60c76a93b494fdc291468"
+    },
+    {
+      "role": "retained-original-AP1-power-checkpoint",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-power-rollback-recovery-04629390afde4392b5a7810f26b7ee89\\closed-native\\recovery\\original-power-checkpoint.json",
+      "bytes": 3437,
+      "sha256": "8d63cbc34214475e8ceb51989b760137c8ab4bc3d2d7f6ff037a6ad7e7debc69"
+    },
+    {
+      "role": "retained-nested-power-checkpoint",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-power-rollback-recovery-04629390afde4392b5a7810f26b7ee89\\closed-native\\recovery\\rollback-power-checkpoint.json",
+      "bytes": 3839,
+      "sha256": "4ba227354d5f904e63cda9537d63d7491fd93445c2b5eb9c3620d9b0a2a25789"
+    },
+    {
+      "role": "owned-absent-shadow-guard",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-power-rollback-recovery-04629390afde4392b5a7810f26b7ee89\\closed-native\\recovery\\recovery-shadow-exclusive-backing.json",
+      "bytes": 6722,
+      "sha256": "501d6552dc1f067d1dde1058a1e330642e310fac908bed830a7d31e26497f0bc"
+    },
+    {
+      "role": "terminal-absent-shadow-check",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-power-rollback-recovery-04629390afde4392b5a7810f26b7ee89\\closed-native\\recovery\\recovery-shadow-terminal.json",
+      "bytes": 8637,
+      "sha256": "efbd2fb9817250e201d5144d84744f615743a1c71c06f0f83af86eac99bd6eb0"
+    },
+    {
+      "role": "native-recovery-result",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-power-rollback-recovery-04629390afde4392b5a7810f26b7ee89\\closed-native\\recovery\\recovery\\result.json",
+      "bytes": 811,
+      "sha256": "338f7608fad93fba88570d9e5447d5a0269eededc3cf0161c9993bddbcde1ec7"
+    },
+    {
+      "role": "native-closed-rollback-verification",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-power-rollback-recovery-04629390afde4392b5a7810f26b7ee89\\closed-native\\recovery\\recovery\\verified-rollback.json",
+      "bytes": 488,
+      "sha256": "61242ff069b4a6e47d87a9078437b7f21b1418970f56f9af8be34c3bd061fa73"
+    },
+    {
+      "role": "native-NTFS-mount-completion",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-power-rollback-recovery-04629390afde4392b5a7810f26b7ee89\\closed-native\\recovery\\recovery\\completion.json",
+      "bytes": 41912,
+      "sha256": "06f77cc360fb0f52d22e604f7a9f657ee704f048f7ccc26cfdb2907cbe93991d"
+    },
+    {
+      "role": "original-ticket-copy",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-power-rollback-recovery-04629390afde4392b5a7810f26b7ee89\\closed-native\\recovery\\recovery\\selected-ticket.json",
+      "bytes": 1428,
+      "sha256": "a6a19787299bdfb279e184be788da47030e59d4d6e15046e4486b5fafc20808f"
+    },
+    {
+      "role": "previous-first-copy-VM-recovery-evidence",
+      "path": "D:\\code\\ntfs2refs\\evidence\\native-format6-AP1-power-resume-20261102.json",
+      "bytes": 4842,
+      "sha256": "ce49ee5c154368f6ef26a68b87776704ad70394163c433e15db75d59f8fb30d4"
+    },
+    {
+      "role": "previous-first-copy-VM-recovery-evidence",
+      "path": "D:\\code\\ntfs2refs\\evidence\\native-format6-AP1-power-rollback-20261102.json",
+      "bytes": 4785,
+      "sha256": "ddb6ea661a34007e2002709a3f4845344e16c44305054893a2a5c700c7a99276"
+    },
+    {
+      "role": "previous-first-copy-VM-recovery-evidence",
+      "path": "D:\\code\\ntfs2refs\\evidence\\native-format6-HND1-power-recovery-20261102.json",
+      "bytes": 4748,
+      "sha256": "16a230df9493d06ea209c0e3f0c7c2f3a1c9a8982e560ef2638039ecd67644b5"
+    },
+    {
+      "role": "previous-first-copy-VM-recovery-evidence",
+      "path": "D:\\code\\ntfs2refs\\evidence\\native-format6-RB1-power-recovery-20261102.json",
+      "bytes": 10775,
+      "sha256": "b4acbc4c09ba51dfc68e42e3d53780df77fda0b35648be80468f32d744b93e92"
+    }
+  ]
+}

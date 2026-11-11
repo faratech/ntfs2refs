@@ -11,7 +11,7 @@ use crate::{
 use anyhow::{Context, Result, ensure};
 use n2r_win32::{
     NativeEvent,
-    journal_file::observe_general_journal_file,
+    journal_file::observe_general_journal_file_with_profile,
     shadow_native,
     volume_label::{self, VolumeLabel},
 };
@@ -113,7 +113,7 @@ pub fn complete(inputs: &Inputs, output: &Path) -> Result<()> {
         16 * 1024 * 1024,
     )?;
     let expected: shadow_tree::ExpectedTree = serde_json::from_slice(&expected_bytes)?;
-    expected.validate()?;
+    expected.validate_with_resource_profile(request.source_resource_profile.unwrap_or_default())?;
     artifacts::create_output(output)?;
     save_bytes(output, "request.json", &request_bytes)?;
     save_bytes(output, "ticket.json", &ticket_bytes)?;
@@ -141,10 +141,20 @@ pub fn complete(inputs: &Inputs, output: &Path) -> Result<()> {
             .share_mode(0)
             .custom_flags(0x0020_0000)
             .open(&inputs.journal)?;
-        let observed = observe_general_journal_file(&journal, &request.journal)?;
+        let observed = observe_general_journal_file_with_profile(
+            &journal,
+            &request.journal,
+            request.journal_profile()?,
+        )?;
         artifacts::save(output, "journal-identity.json", &observed)?;
         let binding = JournalBinding {
             experiment_id: request.experiment_id.clone(),
+            source_resource_profile: request.source_resource_profile,
+            journal_capacity_bytes: if request.schema_version == 3 {
+                Some(request.max_journal_bytes)
+            } else {
+                None
+            },
             target_identity_sha256: partition_hash(&request.pair.source.identity)?,
             shadow_identity_sha256: partition_hash(&request.pair.shadow.identity)?,
             journal_identity_sha256: identity_hash(
@@ -153,7 +163,7 @@ pub fn complete(inputs: &Inputs, output: &Path) -> Result<()> {
             )?,
         };
         ensure!(
-            ticket.schema_version == 1
+            ticket.schema_version == request.schema_version
                 && ticket.binding == binding
                 && ticket.journal_length == observed.file_bytes
                 && ticket.immutable_length.checked_add(8192) == Some(ticket.journal_length),
@@ -178,7 +188,10 @@ pub fn complete(inputs: &Inputs, output: &Path) -> Result<()> {
         let mut pair = request.pair.clone();
         pair.source = source.clone();
         let tree = shadow_tree::Tree {
-            profile: "native-ordinary-tree-shadow-v2",
+            profile: request
+                .source_resource_profile
+                .unwrap_or_default()
+                .ordinary_shadow_profile(),
             objects: expected.objects,
             logical_bytes: expected.logical_bytes,
             internal_replacement_pending: expected.internal_replacement_pending,
@@ -188,12 +201,17 @@ pub fn complete(inputs: &Inputs, output: &Path) -> Result<()> {
             ntfs_attestation::same_security(a, b).map_err(std::io::Error::other)
         };
         phase = "strict-native-tree-before";
-        let native_before = shadow_native::verify_general_converted_ordinary_with_label(
-            pair.clone(),
-            &native_inputs,
-            &before.label,
-            &same,
-        )?;
+        let native_before =
+            shadow_native::verify_general_converted_ordinary_with_label_and_resource_profile(
+                pair.clone(),
+                &native_inputs,
+                &before.label,
+                &same,
+                request
+                    .source_resource_profile
+                    .unwrap_or_default()
+                    .native_profile(),
+            )?;
         artifacts::save(output, "native-before.json", &native_before)?;
         phase = "label-restoration";
         let restored = volume_label::restore_verified_label(
@@ -210,14 +228,23 @@ pub fn complete(inputs: &Inputs, output: &Path) -> Result<()> {
             restored.error
         );
         phase = "strict-native-tree-after";
-        let native_after = shadow_native::verify_general_converted_ordinary_with_label(
-            pair,
-            &native_inputs,
-            desired,
-            &same,
-        )?;
+        let native_after =
+            shadow_native::verify_general_converted_ordinary_with_label_and_resource_profile(
+                pair,
+                &native_inputs,
+                desired,
+                &same,
+                request
+                    .source_resource_profile
+                    .unwrap_or_default()
+                    .native_profile(),
+            )?;
         artifacts::save(output, "native-after.json", &native_after)?;
-        let journal_after = observe_general_journal_file(&journal, &request.journal)?;
+        let journal_after = observe_general_journal_file_with_profile(
+            &journal,
+            &request.journal,
+            request.journal_profile()?,
+        )?;
         ensure!(
             journal_after.identity == observed.identity
                 && journal_after.file_bytes == observed.file_bytes,

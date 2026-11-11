@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "kind": "exact-native-storage-role-partition-alpha-candidate",
+  "source_commit": "8f7db1e50003b649098f635199d923bbaf016fcd",
+  "source_tree": "8d0f75cfec71e9d7281b2f305472e4113472a3d6",
+  "manifest_sha256": "6e206e626dc6b4e5fede9960d8c045e678ff21ad88e84b75dc8575b72a533160",
+  "candidate_directory": ".lab/development/release-candidates/partition-alpha-8f7db1e",
+  "binary": {
+    "name": "lab-partition-alpha",
+    "path": "bin/lab-partition-alpha.exe",
+    "bytes": 8482816,
+    "sha256": "b2b703ed51d1a696da50746d90ab4b3fc7d698e47f89b79c9c855b3589e1f9b4"
+  },
+  "archive": {
+    "sha256": "ea17a243e925332f7db112296e6cdf5c838e2e4253c7438f00470e2780aa4d77",
+    "bytes": 2037182,
+    "path": "source.zip"
+  },
+  "source_before_after_verified": true,
+  "working_tree_inputs_used": false,
+  "shared_target": true,
+  "shared_source": true,
+  "unit_tests_run": false,
+  "native_qualification_inherited": false,
+  "stable_release": false,
+  "fix": "native MSFT_Partition boot/system facts replace impossible complete-VDS role proof; existing native checks remain",
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+}

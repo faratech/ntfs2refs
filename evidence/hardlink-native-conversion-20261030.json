@@ -1,0 +1,157 @@
+{
+  "public_argv": [
+    "--drive",
+    "H",
+    "--partition",
+    "2"
+  ],
+  "mount_path_preserved": "H:\\",
+  "expected_logical_bytes": 1069065,
+  "evidence": [
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\hardlink-compatibility-20261030-696083aa434743978f9842a93f1058d0\\closed-success\\inventory.json",
+      "bytes": 16119,
+      "sha256": "3c01780a202cc1bf3c91f346c319aff8ffee18917b211c61161d1026395832d3"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\hardlink-compatibility-20261030-696083aa434743978f9842a93f1058d0\\closed-success\\stage\\wrapper-result.json",
+      "bytes": 1826,
+      "sha256": "0a142239f3d97099bd01a9abdce439b476315595d7fb240df121f8b8300add1c"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\hardlink-compatibility-20261030-696083aa434743978f9842a93f1058d0\\closed-success\\stage\\fixture-before.json",
+      "bytes": 14545,
+      "sha256": "c011d4550cd2ed3bf87753eb9c1978d224925a66e7590abe6cd40280596244e1"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\hardlink-compatibility-20261030-696083aa434743978f9842a93f1058d0\\closed-success\\stage\\fixture-after.json",
+      "bytes": 14545,
+      "sha256": "d55a091723640d336d5008bc1a58d3e8e2bc6fbdaf4c18749caa3b1d08db8272"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\hardlink-compatibility-20261030-696083aa434743978f9842a93f1058d0\\closed-success\\core\\result.json",
+      "bytes": 1041,
+      "sha256": "6c0fcc2887d533c27fd43ea67ef5c81445db92a53cf158c365f7f1412ff6c151"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\hardlink-compatibility-20261030-696083aa434743978f9842a93f1058d0\\closed-success\\core\\finalization.json",
+      "bytes": 525264,
+      "sha256": "ef3a772a7762fb718fac430aacb1a1db33d6b85771db3f149b6408def37ffe35"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\hardlink-compatibility-20261030-696083aa434743978f9842a93f1058d0\\closed-success\\core\\expectation.json",
+      "bytes": 32705,
+      "sha256": "237a0e4c2d44ec48a0f94a10b93d505429e82200b652c0de1220b0063658a4fd"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\hardlink-compatibility-20261030-696083aa434743978f9842a93f1058d0\\closed-success\\core\\qualification\\construction-metadata.json",
+      "bytes": 94767,
+      "sha256": "910812d8c0f2edc7a3c7eeade1eb6a88284728829ddd0c2e8ce135549fbfb59a"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\hardlink-compatibility-20261030-696083aa434743978f9842a93f1058d0\\closed-success\\core\\qualification\\construction-exceptions.json",
+      "bytes": 1853,
+      "sha256": "a27a6d4fa32f3739a95eafaae9a5c9ffa71bfc750744ca6485afc5701cc219f3"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\hardlink-compatibility-20261030-696083aa434743978f9842a93f1058d0\\closed-first-refusal\\inventory.json",
+      "bytes": 8985,
+      "sha256": "132830687c2f2ffe4ab9bb2c6e299cf2440f1bd4e84b5caabbc785eaa4bc5604"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\hardlink-compatibility-20261030-696083aa434743978f9842a93f1058d0\\coldboot-mutation.json",
+      "bytes": 4800,
+      "sha256": "683ce5796d342231f1fa904755d9c19a4c2fea4cb41f5ff7863fccbc51deb213"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\hardlink-compatibility-20261030-696083aa434743978f9842a93f1058d0\\ntfs-fixture-checkpoint.json",
+      "bytes": 425,
+      "sha256": "5c356848d92b6cc0634eb8ae3b3ccad69d592cd7fdcd48f139051566a4cb176c"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\hardlink-compatibility-20261030-696083aa434743978f9842a93f1058d0\\first-refusal-checkpoint.json",
+      "bytes": 161,
+      "sha256": "e9490dcf70c94907027c50702a8abb29751982533d3b9cca78fa42a97e7c3b79"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\hardlink-compatibility-20261030-696083aa434743978f9842a93f1058d0\\converted-checkpoint.json",
+      "bytes": 299,
+      "sha256": "4f2dd8ba199bf6d6222c4a12ff0ca853d6d0e1d40764d21883a908a8b186d76f"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\hardlink-compatibility-20261030-696083aa434743978f9842a93f1058d0\\mutated-checkpoint.json",
+      "bytes": 351,
+      "sha256": "c45a06621e8794bfef9d090cef5231df30ec3f7b546d97780e9702d63a6c6690"
+    }
+  ],
+  "handoff_recorded": true,
+  "source_commit": "7b1c8dfdc7d0353fe9f08bf0192b922d4ed8cd54",
+  "coldboot_verified_files": 9,
+  "source_disk_number": 6,
+  "native_exit": 0,
+  "rollback_closed": true,
+  "initial_refusal": {
+    "reason": "fresh source lacks optional IndexerVolumeGuid",
+    "failed_branch_preserved": true,
+    "public_executable_sha256": "7e7bb4aae3c6508550c1c06fa3a185e3b6229fee79ce39c7716f107a85f7c175",
+    "run_id": "f9c8a0fd9b71473bb9300c4ab0fa6c7f",
+    "source_activation_reached": false,
+    "source_commit": "8cc4245b58fb13249fb183e2998e2635543fec19",
+    "phase": "allocation-bounded-qualification",
+    "fix": "preserve absence; validate source cache only when present"
+  },
+  "user_file_identities": 3,
+  "target_cluster_bytes": 4096,
+  "limitations": [
+    "Hard-link files that require unsupported attribute-list assembly remain refused",
+    "ADS, sparse or compressed/encrypted streams, reparse/EAs and SACL preservation remain outside this profile",
+    "This build has no interrupted resume/rollback qualification yet",
+    "No arbitrary volume size, hardware, boot or production qualification",
+    "This fixture relocates its payload; it does not establish retained-extent efficiency"
+  ],
+  "duration_source": {
+    "scope": "native public process; small fixture, not a large-disk benchmark",
+    "start_creation_ms": 1793362681246,
+    "end_utc": "2026-10-30T12:18:17.9042552Z"
+  },
+  "unit_tests_added_or_run": false,
+  "source_cluster_bytes": 4096,
+  "toolset": {
+    "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\hardlink-tools-7b1c8df\\manifest.json",
+    "bytes": 903,
+    "sha256": "9d70208e83e05b8ed69cc77eab2053ea627026e7fc89e18d79fd707fa0bf2e0c"
+  },
+  "expected_objects": 8,
+  "utc": "2026-10-30T12:20:48.4273628Z",
+  "run_id": "5823093b2d35439d9997d431b82ff2e0",
+  "partition_bytes": 55834574848,
+  "source_gpt": "f95141cb-fe7e-439a-a82b-c2b3f55965d2",
+  "user_names": 9,
+  "public_executable_sha256": "65776bd4127ca911ec2698cde1fe660c43d879eb895233b66f2838c5f6ec29fb",
+  "all_alias_ids_and_link_counts_match": true,
+  "core_run_id": "052c23a1947e1fad048bfbcc6edf0910",
+  "user_logical_bytes_unique": 1048585,
+  "additional_names": 6,
+  "mutation": {
+    "original_nine_file_hashes_restored": true,
+    "visible_through_all_three_names": true,
+    "write_via_unicode_alias": true,
+    "restore_via_different_alias": true
+  },
+  "label_preserved": true,
+  "kind": "hardlink-native-conversion-observation",
+  "run_seconds": 16.6582552,
+  "storage": {
+    "packed_bytes": 1966080,
+    "new_zero_bytes": 68513792,
+    "selected_bytes": 71548928,
+    "journal_bytes": 73536704,
+    "scope": "journal and packed backing only; excludes native shadow backing and checkpoints",
+    "retained_payload_bytes": 0,
+    "new_copy_bytes": 1069056
+  },
+  "schema_version": 1,
+  "source_main_overlay_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "complete_native_hashes": 4,
+  "same_partition": true
+}

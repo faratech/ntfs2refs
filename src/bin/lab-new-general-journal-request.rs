@@ -111,6 +111,7 @@ fn main() -> anyhow::Result<()> {
     );
     let request = general_reconstruct::Request {
         schema_version: 1,
+        source_resource_profile: None,
         experiment_id: args.experiment_id,
         expected_tree_sha256: freeze.expectation_sha256,
         expected_mount_paths: freeze.request.expected_mount_paths,

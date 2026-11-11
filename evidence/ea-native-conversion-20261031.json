@@ -1,0 +1,290 @@
+{
+  "native_source_schema": 10,
+  "unit_tests_added_or_run": false,
+  "new_copy_bytes": 3334144,
+  "retained_fragmented_payload_extents": 1024,
+  "source_checkpoint": "1fc4b960-c252-41ce-9ad2-ef7ef0b030d3",
+  "general_conversion_qualified": false,
+  "recorded_utc": "2026-10-31T09:36:13.9252298Z",
+  "main_source_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "selected_bytes": 77783040,
+  "native_objects": 17,
+  "coldboot_checkpoint": "becf6351-c611-48b9-b6f7-629e88716ac2",
+  "public_binary_sha256": "03c4f68d94a53c4d501b9d64a0fd899c3200985ce1b9a7f4d700adab31e7854b",
+  "proofs": [
+    {
+      "sha256": "ef1b649ab8b698e4ca0cec9e220c6212e3d40914895db1b0dc14d81bf975cfd0",
+      "bytes": 383,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ea-tools-2aef493\\manifest.json"
+    },
+    {
+      "sha256": "826aa04171efa8ae85ec4ca867bf743fdaaf16f5ae5cfbd2caa0dfe3a24af2c0",
+      "bytes": 794073,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ea-fixture-80607d5474434cc0850fa7303bd2d1e2\\closed\\fixture.json"
+    },
+    {
+      "sha256": "0a88afc9457c9c6a820d30963cad7375d1e8816e888b929cddbcb7f30e2f96b5",
+      "bytes": 149,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ea-fixture-80607d5474434cc0850fa7303bd2d1e2\\checkpoint.json"
+    },
+    {
+      "sha256": "108cde386cadf1ab036bf9376dc34c25d9b2709b8bb0a4d37e85c156bf2e1694",
+      "bytes": 32765,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ea-success-1a715809\\archive.json"
+    },
+    {
+      "sha256": "049b21876b874d0030bf270570d0e911c7c3dba3a5321115ad22cac10448efd9",
+      "bytes": 151,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ea-success-1a715809\\checkpoint.json"
+    },
+    {
+      "sha256": "89d6337074eeee990da505d1d376b5ce703952f79b2b23883be943c45caf7163",
+      "bytes": 7866,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ea-success-1a715809\\closed\\wrapper\\wrapper-result.json"
+    },
+    {
+      "sha256": "dae0fe6da627bb72797e9f582b09b48dc9d7f0c6ba1f901e941c4b3d206ba8e9",
+      "bytes": 5898,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ea-success-1a715809\\closed\\wrapper\\ea-after.json"
+    },
+    {
+      "sha256": "f90a5a6cdd382c929b47862e4d840ee296d22869fcf464b6d6dd99ca79124918",
+      "bytes": 5020,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ea-success-1a715809\\closed\\wrapper\\attribute-after.json"
+    },
+    {
+      "sha256": "c5f1601709bb9a006e0374b7c9049d05163baaa79d330efff6b6baced651fa4f",
+      "bytes": 1041,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ea-success-1a715809\\closed\\core\\conversion\\result.json"
+    },
+    {
+      "sha256": "662a25069af1127997373295765499712c16fba283b37589b47f0f6e46bfb2fe",
+      "bytes": 1821,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ea-success-1a715809\\closed\\core\\conversion\\request.json"
+    },
+    {
+      "sha256": "8f5d24e69bc2a09dd4c92c7f273b035d05fcb401529732e146a904f379327cde",
+      "bytes": 365809,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ea-success-1a715809\\closed\\core\\conversion\\expectation.json"
+    },
+    {
+      "sha256": "9299d2fd2bc53db201d7772ed4594eb240e1a71e41ea6215cf2e406c632bfc52",
+      "bytes": 1794,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ea-success-1a715809\\closed\\core\\conversion\\allocation-recovery-bundle.json"
+    },
+    {
+      "sha256": "941e8e804dbe4907df3d9a4678a1b56186b10cd7cbc1b6a6cb72b4639daa4d91",
+      "bytes": 445,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ea-success-1a715809\\closed\\core\\conversion\\handoff.json"
+    },
+    {
+      "sha256": "44816c144a5425e98abd24d7b21d931b5c6ddb9e5b065dca84a7fab12d2a2c0c",
+      "bytes": 2673825,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ea-success-1a715809\\closed\\core\\conversion\\finalization.json"
+    },
+    {
+      "sha256": "3404797a0ba1d412d20a28200b5b4dc8f271a940b996bb227bbc6852453b648e",
+      "bytes": 1034504,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ea-success-1a715809\\closed\\core\\conversion\\qualification\\source-basis.json"
+    },
+    {
+      "sha256": "abd6efcce80c6dae88c91ec44942d34043948bf2cbdb8644b780bbd1410c1e2d",
+      "bytes": 5650244,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ea-success-1a715809\\closed\\core\\conversion\\qualification\\native-source.json"
+    },
+    {
+      "sha256": "25395a061938dd502901135a55e4c84d7e87e258a47a8e08e32c061470dafb57",
+      "bytes": 3983892,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ea-success-1a715809\\closed\\core\\conversion\\qualification\\target-preservation.json"
+    },
+    {
+      "sha256": "5816abc2ad621c1f3b00d9f263038b3e1bdf13189231e2b68cb3e50c5a2bb451",
+      "bytes": 322,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ea-verifier-737f994\\manifest.json"
+    },
+    {
+      "sha256": "08d16866d04824be9953dd74a5dab4ef2aaa27f40b641f849326a326af510bff",
+      "bytes": 1217,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ea-coldboot-fb24a6f290674295ae697fcfad112e49\\dispatch.json"
+    },
+    {
+      "sha256": "90cfc29e2edd1db4c31bfc9367ed92c34583bb1377c6e10146fff453007be7cd",
+      "bytes": 3892,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ea-coldboot-fb24a6f290674295ae697fcfad112e49\\archive.json"
+    },
+    {
+      "sha256": "d1179671d933dc34aa302e6cb1070d658e6244bf6a386a4a8940b906ab4f3a24",
+      "bytes": 145,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ea-coldboot-fb24a6f290674295ae697fcfad112e49\\closed\\boot.json"
+    },
+    {
+      "sha256": "ef3149efff6fbdc1c36f62a8c10fda5453e3db71e50c54fdab458182e73e2cbb",
+      "bytes": 2577225,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ea-coldboot-fb24a6f290674295ae697fcfad112e49\\closed\\verification.json"
+    },
+    {
+      "sha256": "5365e3b0aac2c7b034ed282f4f5b22b8e3935b2ce5b833d2d08fbb09fcd51d1b",
+      "bytes": 767,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ea-coldboot-fb24a6f290674295ae697fcfad112e49\\comparison.json"
+    },
+    {
+      "sha256": "a56f894145b22f00c879798ebac575ae7d759f1cf68f4562c5038b748eeb4f75",
+      "bytes": 3877,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ea-coldboot-fb24a6f290674295ae697fcfad112e49\\compare.ps1"
+    },
+    {
+      "sha256": "e2cdf4aff2aa6fcbd8eb1ec3902c20bba3a6669f15f807d6b9a85ed6e884d07e",
+      "bytes": 150,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ea-coldboot-fb24a6f290674295ae697fcfad112e49\\checkpoint.json"
+    },
+    {
+      "sha256": "1208ac9ac8f65877d637611b90e5242a1e2443a83ccdbbff64a60577591c911c",
+      "bytes": 17404,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ea-attribute-refusal-fc890481\\archive.json"
+    },
+    {
+      "sha256": "f2bab26a7fe5f5f3e538854dc8ded2f6c0a93d080f14224ed94f4b53e2fbeaac",
+      "bytes": 165,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ea-attribute-refusal-fc890481\\checkpoint.json"
+    }
+  ],
+  "independent_old_ads_alias_sha256_views": 15,
+  "packed_backing_bytes": 3637248,
+  "run_id": "1a71580979a5445e98a599dd6219fedf",
+  "production_release_ready": false,
+  "sparse_layouts": 3,
+  "rollback_closed": true,
+  "native_elapsed_seconds": 88.7311902,
+  "converted_checkpoint": "2c964314-e2d7-4b06-8bc0-d32de4cec5db",
+  "independent_sparse_content_paths": 4,
+  "kind": "bounded-ntfs-ea-native-conversion-and-coldboot",
+  "timing_scope": "single VM observation with EA additions; no controlled speedup or physical-HDD throughput claim",
+  "complete_default_stream_hashes": 11,
+  "not_qualified": [
+    "new-build controlled interruption/resume/rollback",
+    "physical power loss",
+    "EA mutation stress",
+    "arbitrary geometry/volume sizes",
+    "full NTFS compatibility"
+  ],
+  "preserved_refusals": [
+    {
+      "source_conversion_started": false,
+      "run": "3aff640531fd4163bcd5c4719dabe191",
+      "reason": "known immediate no-EA status left IOSB untouched; corrected before successful fixture"
+    },
+    {
+      "source_activation_reached": false,
+      "run": "fc89048110ba42be882ee2f5b8f33db7",
+      "reason": "raw internal EA bit differs from Win32 projection; fixed with validated EA binding"
+    },
+    {
+      "source_payload_writes": 0,
+      "run": "721aa4db8b6540e1a0948acf507296e0",
+      "reason": "old read-only observer request format; rejected before native volume verification"
+    }
+  ],
+  "complete_named_stream_hashes": 8,
+  "free_space_contents_compared": false,
+  "native_exit": 0,
+  "core_run_id": "5dc4f41ad591a5aed999865f108b0934",
+  "new_zero_bytes": 70811648,
+  "journal_bytes": 81446208,
+  "retained_original_payload_bytes": 4194304,
+  "independent_attribute_alias_stream_sha256_views": 9,
+  "source_admitted": true,
+  "coldboot": {
+    "source_payload_writes": 0,
+    "observer_commit": "737f99453f25d78c91a088e7a95735a69d769079",
+    "run_id": "fb24a6f290674295ae697fcfad112e49",
+    "comparison": {
+      "verification_sha256": "ef3149efff6fbdc1c36f62a8c10fda5453e3db71e50c54fdab458182e73e2cbb",
+      "success": true,
+      "schema_version": 1,
+      "all_prior_logical_hashes_match": true,
+      "all_prior_file_ids_match": true,
+      "prior_retention_proof": "qualified normal conversion retained 4194304 bytes",
+      "new_retained_source_comparison_claim": false,
+      "kind": "ea-coldboot-prior-native-comparison",
+      "all_prior_ea_sets_match": true,
+      "utc": "2026-10-31T09:34:50.0005468Z",
+      "counts": {
+        "default_hashes": 11,
+        "objects": 17,
+        "ea_entries": 7,
+        "ea_objects": 4,
+        "named_hashes": 8,
+        "retrieval_maps_unchanged": 17,
+        "alias_ids": 10
+      },
+      "all_prior_default_and_named_retrieval_maps_match": true,
+      "source_payload_writes": 0
+    },
+    "observer_binary_sha256": "2bbd40b56c11d6a45a67226bf64b9e0329b7803c0b350f37572b00e94c784c75",
+    "native_tree_verified": true,
+    "journal_replayed": false,
+    "native_exit": 0
+  },
+  "schema_version": 1,
+  "source_commit": "2aef4931cc500615d2e3d9b7d89ffa3fe0e92461",
+  "unsupported": [
+    "high-byte EA names",
+    "zero-length EA values",
+    "EA ATTRIBUTE_LIST spill",
+    "root-directory EAs",
+    "nonempty filesystem-internal EAs"
+  ],
+  "ea_preservation": {
+    "canonical_objects": 4,
+    "need_ea_flag_verified": true,
+    "native_source_sha256": "abd6efcce80c6dae88c91ec44942d34043948bf2cbdb8644b780bbd1410c1e2d",
+    "metadata_fixed_by_wrapper": false,
+    "source_basis_sha256": "3404797a0ba1d412d20a28200b5b4dc8f271a940b996bb227bbc6852453b648e",
+    "nonresident_ea_streams": 1,
+    "ea_entries": 7,
+    "objects": [
+      {
+        "raw_source_matches": true,
+        "native_target_before_after_matches": true,
+        "expected_tree_matches": true,
+        "native_source_before_after_matches": true,
+        "source_sequence_number": 1,
+        "path": "H:\\EaFixture-80607d5474434cc0850fa7303bd2d1e2",
+        "entry_count": 2,
+        "source_record_number": 55
+      },
+      {
+        "raw_source_matches": true,
+        "native_target_before_after_matches": true,
+        "expected_tree_matches": true,
+        "native_source_before_after_matches": true,
+        "source_sequence_number": 1,
+        "path": "H:\\EaFixture-80607d5474434cc0850fa7303bd2d1e2\\nested",
+        "entry_count": 1,
+        "source_record_number": 56
+      },
+      {
+        "raw_source_matches": true,
+        "native_target_before_after_matches": true,
+        "expected_tree_matches": true,
+        "native_source_before_after_matches": true,
+        "source_sequence_number": 1,
+        "path": "H:\\EaFixture-80607d5474434cc0850fa7303bd2d1e2\\payload.bin",
+        "entry_count": 3,
+        "source_record_number": 57
+      },
+      {
+        "raw_source_matches": true,
+        "native_target_before_after_matches": true,
+        "expected_tree_matches": true,
+        "native_source_before_after_matches": true,
+        "source_sequence_number": 1,
+        "path": "H:\\EaFixture-80607d5474434cc0850fa7303bd2d1e2\\nested\\empty.bin",
+        "entry_count": 1,
+        "source_record_number": 58
+      }
+    ],
+    "source_native_schema": 10
+  },
+  "selected_ranges": 183
+}

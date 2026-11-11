@@ -1,0 +1,73 @@
+{
+  "kind": "owner-bound-WIM-placeholder-payload-update-build-v1",
+  "actual_five_file_tag_observation": {
+    "source_data_reads_or_sets": 0,
+    "all_five_final_paths_and_NT_names_inside_owned_fresh_mount": true,
+    "system_pid": 5652,
+    "attributes": 1568,
+    "tag": "0x80000008",
+    "exit_code": 0,
+    "receipt_sha256": "fe7877544464ead9f276d8399b42b74f5ce4e0c00ce7ee73356eb3cfeafc7c45"
+  },
+  "actual_image_attempt": {
+    "source_apply_or_data_writers": 0,
+    "original_input_unchanged": true,
+    "source_commit": "450f806c1d4646dba3a092e41b75c20925f983f6",
+    "unlocked_metadata_archive_sha256": "88e0862c549c30b122ba470265593f92d29edb5c16134481dab94ff7b6d450d2",
+    "birth": 1793911689349,
+    "pid": 4536,
+    "exit_code": 1,
+    "cause": "Legitimate sparse WIM placeholders were rejected as ordinary files",
+    "mounted_fresh_copy_preserved": true,
+    "wall_seconds": 16.2800579
+  },
+  "focused_check": {
+    "capacity": {
+      "actual_bytes": 244530344563,
+      "free_bytes": 162806976512,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 2147483648,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+    "native_run": false,
+    "unit_tests_run": false,
+    "wall_seconds": 32.430656,
+    "exit_code": 0,
+    "shared_target_reused": true,
+    "kind": "public-partition-dispatch-focused-check"
+  },
+  "files": [
+    {
+      "bytes": 41360,
+      "path": "crates/n2r-win32/src/native/recovery_image.rs",
+      "sha256": "b5a9c603d8d2e058f628a90403d538b78e3833925fb1fd701ed2380abf25388e"
+    },
+    {
+      "bytes": 13440,
+      "path": "crates/n2r-win32/src/native/recovery_image/payload_replace.rs",
+      "sha256": "73d5a8b08de84671a8abff288cf3d95fb33bbc8611e1ecb22c46624d8cdb6f9d"
+    }
+  ],
+  "base_commit": "450f806c1d4646dba3a092e41b75c20925f983f6",
+  "actual_official_mount_map": {
+    "receipt_sha256": "683d55e30c2f45f7b424a96f74aaabd655fe780680f8198753cb2340ddd9f379",
+    "image_index": 2,
+    "dism_pid": 2188,
+    "only_one_mount": true,
+    "exit_code": 0,
+    "readonly": false,
+    "fresh_copy_path_bound": true
+  },
+  "new_or_existing_unit_tests_run": false,
+  "native_fix_qualification": false,
+  "implementation": [
+    "Private mounted-copy capability created only after successful checked DISM mount of owned copied image",
+    "Only five fixed payload filenames; actual observed WIM tag only; unknown tags remain refused",
+    "Nofollow metadata/DELETE owner and separate provider read owner must match full native identity/EOF/exact NT name",
+    "Durable bounded backup before same-owner private WIM disposition; generic ordinary-file guards unchanged",
+    "Old input/image/records remain untouched"
+  ]
+}

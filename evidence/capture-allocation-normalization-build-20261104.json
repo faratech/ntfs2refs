@@ -1,0 +1,48 @@
+{
+  "hard_transient_NTFS_preallocation_quota_claimed": false,
+  "native_source_auto_restored_NTFS": true,
+  "schema_version": 1,
+  "identity_EOF_and_full_hash_checks_retained": true,
+  "utc": "2026-11-04T11:54:51.3065521Z",
+  "corrected_full_conversion_qualified": false,
+  "failed_native_case": "8be515c3788d416b94d4991efddd5141",
+  "kind": "same-writer-capture-allocation-normalization-build",
+  "unit_tests_added_or_run": false,
+  "source_parent_commit": "8b2c56686f3953831ca76b222875ccae4d6b3202",
+  "normalization_workspace_prepaid_bytes": 524288,
+  "files": [
+    {
+      "sha256": "344331f21421cc5ed0588d14163cc2af30aa7c92cd4b010a550249956e5755c3",
+      "path": "crates/n2r-win32/src/file_storage.rs",
+      "bytes": 17944
+    },
+    {
+      "sha256": "e89fc75467ceaa5c68b0e9014db7a8c63bbf4cd6c601e3878606cf1ff900e61f",
+      "path": "src/artifact_arena.rs",
+      "bytes": 64999
+    },
+    {
+      "sha256": "68843171f5e8a46d5c4f09b34c261c2c7cbe810a2ecd48cb329b4166352c955c",
+      "path": "src/general_shadow/paged_capture.rs",
+      "bytes": 32790
+    },
+    {
+      "sha256": "59133fa3a882428481b77baa6e0361d982ed0dd73ec5cfdc5ef056b20421b01d",
+      "path": "src/bin/lab-artifact-allocation.rs",
+      "bytes": 9549
+    }
+  ],
+  "existing_allocation_slack_unchanged": true,
+  "native_normalization_probe_qualified": false,
+  "failed_before_publication": true,
+  "normalization_shrinks_only_at_exact_EOF": true,
+  "failed_native_exit": 1,
+  "independent_original_811_streams_matched": true,
+  "check": {
+    "log_sha256": "e25cc4f1964638423207717f85deb3fabf2d58f4e482fc4e038922ebc835855b",
+    "reported_seconds": 22.03,
+    "actual_exit_code": 0,
+    "exclusive_lock_held": true,
+    "shared_target": "target/shared-experiments"
+  }
+}

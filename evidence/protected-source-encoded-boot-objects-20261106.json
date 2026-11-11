@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "kind": "complete-readonly-encoded-BCD-under-source-exclusion",
+  "actual_case": ".lab/hyperv/streaming-v2-20261027/PUBLIC-97adccb-actual-once-03a24e3fc0ce4e469bb08d99f04885b1",
+  "failed_source": "97adccb71a41b8a795b0419bc0afb7acffa4aa25",
+  "actual_cold_failure": {
+    "single_internal_API_boundary_not_isolated": true,
+    "OFFREG_device_reads_verified_before_failure": true,
+    "failure_time_get_attributes": 0,
+    "closed_native_events_bytes": 249599,
+    "command_listing_frame_sha256": "2def76b1c9a29e492b2739ddde6eacd07e38402bbf1fe05f55fafc10bb66aad0",
+    "attribute_log_frame_sha256": "0529d5191f1701caa1c7e154d0ed9d4418057b09822061d5f5e0b573052d4d86",
+    "error": "boot metadata source is not actually excluded",
+    "clean_OLD_qualification_complete": true,
+    "external_BCD_enum_files": [
+      {
+        "bytes": 2621,
+        "name": "bcd-command-0000.json"
+      },
+      {
+        "bytes": 3594,
+        "name": "bcd-command-0001.json"
+      },
+      {
+        "bytes": 1686,
+        "name": "bcd-command-0002.json"
+      }
+    ],
+    "AP_or_source_data_write_claimed": false,
+    "source_initial_actual_attributes": 3,
+    "frame_sha256": "0f2a2f42d7fce0a24e637a76d08cda82f296df3ffd5bc8b9abbd2435befc57c4",
+    "source_attributes_not_reasserted": true
+  },
+  "implementation": [
+    "No external BCD tool or disk-alias resolution while Source is excluded.",
+    "Read complete object type and all eight-hex encoded Elements using only documented read-only OFFREG APIs; strict key/value/count/RAM bounds and all input/library ID/ALLbyte/SHA bookends.",
+    "BootMgr compares all unrelated raw elements and object type to authenticated original backup; raw default/order/timeout/bootsequence validate exact intended selection.",
+    "Before any private mutation, validate original native GUID/list/integer raw representation against original native semantic selection.",
+    "Warm native loader/options readback and complete encoded maps captured before immutable guard hash; selection mutation order remains guard-hash then realLoadOptions then default/order/timeout.",
+    "Cold exact private maps match the warm-sealed maps, replacing only the validated UTF16 fixed-width LoadOptions self-hash with actual native kernel intent/bootstrap pins.",
+    "Parent-original intent comparison explicitly clears only the new optional private-map field plus the existing postcreation fields.",
+    "External native restoration reads/setters remain only after authenticated closed J and actual source attributes0.",
+    "No source protection reassertion, cached-source-state substitution, byte guard reduction, quota increase, new framework or unit tests."
+  ],
+  "documented_element_types": {
+    "loadoptions": "12000030",
+    "bootsequence": "24000002",
+    "timeout": "25000004",
+    "default": "23000003",
+    "displayorder": "24000001"
+  },
+  "documentation": [
+    "https://learn.microsoft.com/en-us/previous-versions/windows/desktop/bcd/bcdbootmgrelementtypes",
+    "https://learn.microsoft.com/en-us/previous-versions/windows/desktop/bcd/bcdlibraryelementtypes",
+    "https://learn.microsoft.com/en-us/windows/win32/devnotes/orenumkey"
+  ],
+  "focused_check": {
+    "receipt_sha256": "9d2f96c4aa440b0b9c8b3c8c76bf63dd666b7d08e6ab7cee611a8e5009053a52",
+    "wall_seconds": 41.3931476,
+    "exit_code": 0,
+    "unit_tests_run": false,
+    "native_run": false,
+    "session_id": 48389
+  },
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "product_native_qualified": false,
+  "normal_conversion_qualified": false,
+  "AP_restart_resume_qualified": false,
+  "AP_restart_rollback_qualified": false
+}

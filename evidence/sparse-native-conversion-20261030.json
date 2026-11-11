@@ -1,0 +1,188 @@
+{
+  "old_named_stream_views_verified": 15,
+  "sparse_carrier_padding_bytes_readback": 3973,
+  "inside_vm": true,
+  "complete_default_stream_hashes": 8,
+  "not_claimed": [
+    "sparse interruption/resume/rollback for this build",
+    "sparse mutation stress",
+    "physical power-loss durability",
+    "all NTFS features or arbitrary volume sizes",
+    "payload-independent resource use",
+    "full-image free-space identity"
+  ],
+  "coldboot_checkpoint": "acb5449f-7b5d-461d-ba93-a4ca6320ce99",
+  "run_id": "ba1480fcc9cd4ec5b0f4ecae26dd996d",
+  "named_stream_hashes": 6,
+  "target_cluster_bytes": 4096,
+  "converted_checkpoint": "496bcf38-53ac-49ab-9551-2d4e24651f32",
+  "target_filesystem": "ReFS",
+  "handoff_closed": true,
+  "independent_sparse_paths_hashed": 4,
+  "target_version": "3.14",
+  "sparse_streams": [
+    {
+      "path": "all-hole.bin",
+      "numeric_vdl_preservation_claimed": false,
+      "stream": "",
+      "storage_valid": true,
+      "allocated_bytes": 0,
+      "allocation_matches": true,
+      "source_initialized_length": 0
+    },
+    {
+      "path": "ordinary.bin",
+      "numeric_vdl_preservation_claimed": false,
+      "stream": "Sparse.Data",
+      "storage_valid": true,
+      "allocated_bytes": 131072,
+      "allocation_matches": true,
+      "source_initialized_length": 2101248
+    },
+    {
+      "path": "sparse-islands.bin",
+      "numeric_vdl_preservation_claimed": false,
+      "stream": "",
+      "storage_valid": true,
+      "allocated_bytes": 135168,
+      "allocation_matches": true,
+      "source_initialized_length": 8388731
+    }
+  ],
+  "main_source_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "source_commit": "5aeaf40de7c9eebcb152741c4ec7099f4cd1ff20",
+  "partition_bytes": 55834574848,
+  "coldboot": {
+    "passed": true,
+    "live_sparse_digests_attributes_extent_output_and_file_ids_unchanged": true,
+    "fresh_storage_validity_query_claimed": false,
+    "live_old_hardlink_ids_unchanged": true
+  },
+  "kind": "bounded-native-sparse-conversion",
+  "content_digest_algorithm": "xxh3-128",
+  "source_prearranged_extents": false,
+  "sparse_tail_verification": [
+    {
+      "object_index": 7,
+      "proof": {
+        "actual_bytes_equal": true,
+        "carrier_sha256": "cdffd83f84c1b0bcdebb8d987837996fc246e7e2e0a1f5a230472aa403b29da4",
+        "logical_offset": 8388608,
+        "new_lcn": 1508184,
+        "old_lcn": 1508175,
+        "padding_bytes_readback": 3973,
+        "padding_bytes_written": 3973,
+        "payload_bytes_read": 246,
+        "physical_lcn_changed": true,
+        "target_sha256": "cdffd83f84c1b0bcdebb8d987837996fc246e7e2e0a1f5a230472aa403b29da4",
+        "visible_bytes": 123
+      },
+      "stream_name_utf16": []
+    }
+  ],
+  "old_hardlink_names_verified": 9,
+  "schema_version": 1,
+  "native_exit": 0,
+  "duration_scope": "one small sparse+ADS+hardlink fixture; no large-volume projection",
+  "sparse_carrier_padding_bytes_written": 3973,
+  "core_run_id": "b8d43b36dd087284a2d9eaae4d208ece",
+  "public_executable_sha256": "61d4cd998a19e8ae825e67fd515c3f4316f6dccc2936fdec97e6d7c3f28fb01b",
+  "proofs": [
+    {
+      "bytes": 787,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-tools-5aeaf40\\manifest.json",
+      "sha256": "a860ab06586ad5df49243692110fdb74a4cb9c91f84400f87156c6ff8f0ea8a2"
+    },
+    {
+      "bytes": 26226,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-fixture-3f1812ef7f9948ccac8e38fc089e794d\\fixture.json",
+      "sha256": "8a49e0537eb8dd0675f60c8e31af3f35b9fa1b0cf969668ae2dd40238bab3ded"
+    },
+    {
+      "bytes": 12852,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-success-ba1480fc\\closed\\archive.json",
+      "sha256": "cb7924450e24af8c73166005c29c7325022d6159c64554fc4505ef3d9d5fc45d"
+    },
+    {
+      "bytes": 160,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-success-ba1480fc\\checkpoint.json",
+      "sha256": "75bb86828121a7775f85ce763cf5005af6529c5e69f9de5673454a95574f1280"
+    },
+    {
+      "bytes": 2299,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-success-ba1480fc\\closed\\observer\\wrapper-result.json",
+      "sha256": "e9651ddffb88e7a6aca513cef2daabcdb999edccefe8c91b5b029cb119bf1aa6"
+    },
+    {
+      "bytes": 1041,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-success-ba1480fc\\closed\\run\\conversion\\result.json",
+      "sha256": "40c73a27f9792716fc07c9c61360a59d3a9c92263aea1d24fe534f24959ebebd"
+    },
+    {
+      "bytes": 774557,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-success-ba1480fc\\closed\\run\\conversion\\finalization.json",
+      "sha256": "214371bc8b320fe83ec35ad9175c9da036bde605205708d7b5189f051b1d2504"
+    },
+    {
+      "bytes": 95888,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-success-ba1480fc\\closed\\run\\conversion\\qualification\\construction-metadata.json",
+      "sha256": "0fa80130a52c971dc6a3277139e66da3c43894dc2d8f8e01528e8d6bbd0ad973"
+    },
+    {
+      "bytes": 2124,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-success-ba1480fc\\closed\\wrapper\\native-terminal.json",
+      "sha256": "832e40715b1f4ce5f3f1859a3402923f067003518f5bd8b62659fc31fed14af0"
+    },
+    {
+      "bytes": 634,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-coldboot-65dff08d17a540ff9c339603d8073977\\intent.json",
+      "sha256": "b3443bc7335676d887942d02ec13808aaf6f4320471219d5071b85f8c16780d4"
+    },
+    {
+      "bytes": 847,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-coldboot-65dff08d17a540ff9c339603d8073977\\closed\\archive.json",
+      "sha256": "dfef989ac7e2ed79aaebe2969fb0ffeebbd573b344ab9b35b599b9fe4da6ec8f"
+    },
+    {
+      "bytes": 315,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-coldboot-65dff08d17a540ff9c339603d8073977\\closed\\coldboot-comparison.json",
+      "sha256": "4d80f122476dc451344aa49b8434832e934e686b80a98bf1334def8e9737d688"
+    },
+    {
+      "bytes": 2299,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-coldboot-65dff08d17a540ff9c339603d8073977\\closed\\wrapper-result.json",
+      "sha256": "289592e1e73841e13557c0f61dd2872ccb51c27076d215740865260e738a16b0"
+    },
+    {
+      "sha256": "3ad7ac6827369966db6969ee4ad38304e3fe4864e5e728cbaedcf417b4be6898",
+      "bytes": 206,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\sparse-coldboot-65dff08d17a540ff9c339603d8073977\\checkpoint.json"
+    }
+  ],
+  "original_wrapper": {
+    "exit_after_native_success": "count mismatch",
+    "conversion_rerun": false,
+    "corrected_readonly_observer": "6dea523b26334e159e738170552bbbf3",
+    "reason": "admitted WPSettings.dat and tracking.log",
+    "actual_objects": 12,
+    "expected_objects": 10
+  },
+  "artifact_pin_algorithm": "sha256",
+  "source_cluster_bytes": 4096,
+  "native_duration_seconds": 16.651,
+  "argv": [
+    "--drive",
+    "H",
+    "--partition",
+    "2"
+  ],
+  "native_objects": 12,
+  "storage": {
+    "selected_bytes": 76451840,
+    "journal_bytes": 78942208,
+    "packed_bytes": 2465792,
+    "selected_ranges": 169,
+    "new_copy_bytes": 3268608,
+    "new_zero_bytes": 70717440
+  }
+}

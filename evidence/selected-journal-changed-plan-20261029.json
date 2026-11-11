@@ -1,0 +1,170 @@
+{
+  "candidate_core_io": {
+    "bytes_read": 32768,
+    "bytes_written": 0,
+    "denied": 0,
+    "fault_syncs": 0,
+    "reads": 6,
+    "seeks": 6,
+    "short_writes": 0,
+    "syncs": 0,
+    "writes": 0
+  },
+  "changed_granule_planning": {
+    "coarse_bytes": 3211264,
+    "coarse_journal_bytes": 6431040,
+    "coarse_ranges": [
+      {
+        "length": 3145728,
+        "offset": 2097152
+      },
+      {
+        "length": 65536,
+        "offset": 7340032
+      }
+    ],
+    "independent_verification_bytes_read": 6463488,
+    "outside_sentinel_blocks_checked": 5,
+    "planned_bytes": 16384,
+    "planned_journal_bytes": 41360,
+    "planned_ranges": [
+      {
+        "length": 4096,
+        "offset": 2105344
+      },
+      {
+        "length": 8192,
+        "offset": 3141632
+      },
+      {
+        "length": 4096,
+        "offset": 7356416
+      }
+    ],
+    "planning_candidate_io": {
+      "bytes_read": 3211264,
+      "bytes_written": 0,
+      "denied": 0,
+      "fault_syncs": 0,
+      "reads": 4,
+      "seeks": 4,
+      "short_writes": 0,
+      "syncs": 0,
+      "writes": 0
+    },
+    "planning_source_io": {
+      "bytes_read": 3211264,
+      "bytes_written": 0,
+      "denied": 0,
+      "fault_syncs": 0,
+      "reads": 4,
+      "seeks": 4,
+      "short_writes": 0,
+      "syncs": 0,
+      "writes": 0
+    },
+    "selected_sha256": "807937e095d8223c3d7c8596ef6618622d6fc0971d7ba3a59eaeee28bc6f866e",
+    "whole_image_verified": false
+  },
+  "conversion_qualified": false,
+  "core_complement_io_permitted": false,
+  "independent_verification_bytes_read": 147456,
+  "kind": "ordinary-file-selected-journal-integration",
+  "outside_sentinel_blocks_checked": 10,
+  "plan": {
+    "image_length": 8388608,
+    "max_journal_bytes": 65536,
+    "max_selected_bytes": 16384,
+    "ranges": [
+      {
+        "length": 4096,
+        "offset": 0
+      },
+      {
+        "length": 8192,
+        "offset": 1048576
+      },
+      {
+        "length": 4096,
+        "offset": 8384512
+      }
+    ]
+  },
+  "resume": {
+    "fault_persisted_bytes": 4096,
+    "interrupted_apply_error": "short selected target write",
+    "journal_core_io": {
+      "bytes_read": 739184,
+      "bytes_written": 53888,
+      "denied": 0,
+      "fault_syncs": 0,
+      "reads": 121,
+      "seeks": 137,
+      "short_writes": 0,
+      "syncs": 4,
+      "writes": 18
+    },
+    "replay_closed": true,
+    "resume_after_close_rejected": true,
+    "role": "resume",
+    "rollback_after_close_rejected": true,
+    "selected_sha256": "2af9f64e01a05819982a35a1a792ee576ee178f2f31056257499fa803a64ac71",
+    "target_core_io": {
+      "bytes_read": 106496,
+      "bytes_written": 20480,
+      "denied": 0,
+      "fault_syncs": 1,
+      "reads": 19,
+      "seeks": 23,
+      "short_writes": 1,
+      "syncs": 8,
+      "writes": 4
+    }
+  },
+  "rollback": {
+    "fault_persisted_bytes": 4096,
+    "interrupted_apply_error": "short selected target write",
+    "journal_core_io": {
+      "bytes_read": 598720,
+      "bytes_written": 53888,
+      "denied": 0,
+      "fault_syncs": 0,
+      "reads": 100,
+      "seeks": 116,
+      "short_writes": 0,
+      "syncs": 4,
+      "writes": 18
+    },
+    "replay_closed": true,
+    "resume_after_close_rejected": true,
+    "role": "rollback",
+    "rollback_after_close_rejected": true,
+    "selected_sha256": "63a72ae579c690aef092fc0cf9343cc1172f5ba1f80985fa2dbe83e73080bb20",
+    "target_core_io": {
+      "bytes_read": 81920,
+      "bytes_written": 12288,
+      "denied": 0,
+      "fault_syncs": 1,
+      "reads": 14,
+      "seeks": 16,
+      "short_writes": 1,
+      "syncs": 5,
+      "writes": 2
+    }
+  },
+  "scope": "Owned ordinary8MiB files only. Selected bytes and sampled outside sentinels verified independently after all core wrappers closed. No metadata ownership or native conversion qualification.",
+  "setup_image_bytes_written": 33554432,
+  "source_core_io": {
+    "bytes_read": 32768,
+    "bytes_written": 0,
+    "denied": 0,
+    "fault_syncs": 0,
+    "reads": 6,
+    "seeks": 6,
+    "short_writes": 0,
+    "syncs": 0,
+    "writes": 0
+  },
+  "success": true,
+  "whole_image_verified": false
+}

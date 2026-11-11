@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "kind": "two-superseded-recovery-branches-retirement",
+  "completion_path": ".lab/hyperv/streaming-v2-20261027/checkpoint-cleanup-two-old-recoveries-90dedad073fa45779610a8735d7b9657/completed.json",
+  "completion_sha256": "f0619810b36eb324f03e1abb919cd3c22bf84671f738994a723b213cbb078c1e",
+  "review_path": ".lab/hyperv/streaming-v2-20261027/reviewed-two-old-runtime-recovery-slot-plan-20261101.json",
+  "review_sha256": "02307ecc9fcfe8959ca7c52867c9f70807d0d1bda0acd2fbc0ddccb85d813150",
+  "verified_unique_closed_files": 130,
+  "all_reads_held_through_removals": true,
+  "fresh_process_guard_before_each_removal": true,
+  "method": "Hyper-V Remove-VMSnapshot only",
+  "observation": {
+    "schema_version": 1,
+    "kind": "two-superseded-recovery-checkpoint-cleanup-complete",
+    "utc": "2026-11-01T02:44:15.3526829Z",
+    "vm_id": "2401593c-4b30-472e-9b6d-c9534cbaa599",
+    "state": "Off",
+    "memory_assigned_bytes": 0,
+    "current_parent_id": "d40b4b41-be9c-4243-8f91-7f953085e3a3",
+    "snapshot_count": 46,
+    "removed_only": [
+      "033e05bd-447b-450e-9acb-9413feaf00dc",
+      "35c9a8f8-b646-4d3b-98e9-191b2f12a4a6"
+    ],
+    "verified_unique_closed_files": 130,
+    "all_other_ids_and_parents_preserved": true,
+    "all_host_archives_and_baselines_preserved": true,
+    "plan_sha256": "02307ecc9fcfe8959ca7c52867c9f70807d0d1bda0acd2fbc0ddccb85d813150",
+    "purpose": "slots for new8GiB normal/interruption/Resume/Rollback",
+    "capacity": {
+      "ActualBytes": 274033264527,
+      "FreeBytes": 71243247616,
+      "MaximumActualBytes": 329374052988,
+      "MinimumFreeBytes": 17179869184
+    },
+    "epoch_reset": false
+  },
+  "new_conversion_or_recovery_qualification": false,
+  "unit_tests_run": false
+}

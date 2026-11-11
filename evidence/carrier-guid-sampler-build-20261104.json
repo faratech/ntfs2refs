@@ -1,0 +1,36 @@
+{
+  "preceding_native_exit": 1,
+  "native_preceding_case": "03a6debde00a46259e3bd5b0669d1e68",
+  "native_corrected_carrier_qualified": false,
+  "source_parent_commit": "358d395292c2194d0ca6bf5f43c1a4c7a6293134",
+  "check": {
+    "shared_target": "target/shared-experiments",
+    "unit_tests_added_or_run": false,
+    "reported_seconds": 14.76,
+    "log_sha256": "f26b74a3a99e55f98109da4f569cf899fd188f70bf0ac11167aa6e44cde78490",
+    "exclusive_build_lock_held": true,
+    "actual_exit_code": 0
+  },
+  "kind": "private-carrier-volume-guid-sampler-fix-build",
+  "schema_version": 1,
+  "preceding_carrier_NTFS_format_completed": true,
+  "readonly_native_diagnostic": {
+    "filesystem_available_bytes": 12606513152,
+    "GetFinalPathName_flags_GUID": {
+      "returned_length": 56,
+      "error": 0
+    },
+    "GetDiskFreeSpaceEx_GUID_folder_and_root_succeeded": true,
+    "GetVolume_FilePath_and_Path_both_succeeded": true,
+    "GetFinalPathName_flags_DOS": {
+      "returned_length": 0,
+      "error": 3
+    },
+    "filesystem_total_bytes": 12650016768
+  },
+  "preceding_native_error": 3,
+  "code_sha256": "681a62406ce0d2426ea7826d0f20611c960de8234f9ce977b2ad5a685f972677",
+  "utc": "2026-11-04T10:17:16.0393230Z",
+  "public_backend_or_source_checks_changed": false,
+  "fix": "Private carrier gets RAM from ordinary backing parent and carrier filesystem space from its verified volume GUID; generic ordinary-root sampler unchanged"
+}

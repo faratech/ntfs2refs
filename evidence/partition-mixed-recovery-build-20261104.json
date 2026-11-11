@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "kind": "partition-held-current-mixed-state-recovery-observation",
+  "status": "focused-public-check-passed-scope-issuer-pending",
+  "files": [
+    {
+      "path": "src/selected_journal/resource_domain/reopen/replay.rs",
+      "bytes": 34318,
+      "sha256": "4602265b21ba4d4bac711462dd02848b1a0d9ce9af6d8c6ce6c84bf372f94f91"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/reopen/envelope.rs",
+      "bytes": 65000,
+      "sha256": "e74f1d9ac7dd8dfd6e5f97bba16fdf66028e53a3767978b33e047fc732e7c1c8"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/reopen.rs",
+      "bytes": 29850,
+      "sha256": "85d855a223558ec2f1678b72b51e05e5d3567aa972eaff1fc86bfcae988f6d90"
+    }
+  ],
+  "reviewed_patch_sha256": "0b835019ad6633039916d19245418d511bb50e5c33f87a4e9c4fd8339441db23",
+  "check_exit": 0,
+  "check_wall_seconds": 21.5630155,
+  "check_receipt_sha256": "5dfc266845cb3447a54ca82c6186945f729d87f64397edf7b13f690cee796603",
+  "shared_target_reused": true,
+  "unit_tests_run": false,
+  "native_qualified": false,
+  "writer_or_cli_enabled": false,
+  "frozen_alpha_rebuilt": false,
+  "behavior": [
+    "Reuses unchanged complete check_target_reader(actual_owner,length,None,false) for per-span/granule OLD-or-NEW including COPY/zero/source-free.",
+    "Opaque nonclone/nonDeserialize one-shot observation binds actual source token/owner/publication/journal/ticket/index/lifecycle/current digest.",
+    "Consumption repeats full validation and issues no native writer.",
+    "Held publication/expected/map/locator/J identity and immutable body are bracketed; HND/ABT/clear refuse raw recovery."
+  ],
+  "remaining": [
+    "Versioned authenticated partition-publication/guard issuer.",
+    "Actual SDK mixed recovery activation and partition-only HND/ABT finalization.",
+    "C-sibling journal/artifact/output actual extent disjointness and native recovery qualification."
+  ]
+}

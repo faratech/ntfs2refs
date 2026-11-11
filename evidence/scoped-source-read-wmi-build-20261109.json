@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "kind": "scoped-source-read-wmi-performance-build",
+  "observed_bottleneck": "BorrowedPagedSource::validate -> GeneralFrozenPartition::state -> four MSFT_Partition WMI queries per stream close",
+  "source": "live PID5924/birth1794241636902 stack sample 2026-11-09T18:00:00Z",
+  "change": "Exclusive typed source-byte scope with complete role/state opening and error-safe closing, actual held geometry/GPT/attributes checks per stream",
+  "check": {
+    "absolute_boot_cap": 279866334601,
+    "kind": "preparation-resume-components-focused-check",
+    "capacity": {
+      "actual_bytes": 239913716668,
+      "free_bytes": 67413237760,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 2147483648,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "shared_target_reused": true,
+    "native_run": false,
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+    "unit_tests_run": false,
+    "exit_code": 0,
+    "wall_seconds": 38.8199545
+  },
+  "native_qualified": false,
+  "current_vm_candidate_unchanged": true,
+  "current_vm_source_commit": "78649e77a1e699ffe97ef7df68da85f05a5da003",
+  "unit_tests_run": false,
+  "goal_complete": false
+}

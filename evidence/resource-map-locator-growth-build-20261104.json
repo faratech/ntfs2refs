@@ -1,0 +1,144 @@
+{
+  "schema_version": 1,
+  "kind": "resource-map-locator-reuse-and-empty-shadow-growth-candidate-build",
+  "source_commit": "a2255ba5ccb28e4e9e8ee2fe3fc4699decd982dc",
+  "source_tree": "a46719013dff4579456675b2c087d92448f35a8b",
+  "build_manifest": {
+    "path": ".lab/development/release-candidates/resource-map-locator-growth-a2255ba/manifest.json",
+    "bytes": 100832,
+    "sha256": "abe2c25226fb77a0658dfbee6fdf853a6d9a42ef1c34c16fd5a3ae3273f2a609",
+    "source_archive": {
+      "path": ".lab/development/release-candidates/resource-map-locator-growth-a2255ba/source.zip",
+      "bytes": 1829714,
+      "sha256": "55081532deaa72160fa66911fba47eb132f3fbf90854b8c235b19bdee88e1131"
+    },
+    "source_files": 376,
+    "source_before_after_verified": true,
+    "source_path_file_ids_verified": true,
+    "working_tree_inputs_used": false
+  },
+  "binaries": [
+    {
+      "name": "ntfs2refs",
+      "bytes": 16916480,
+      "sha256": "4d2d515b1f2520c37989354823fd5de87f50425cdfb6a8ef4293f126678f4e08"
+    },
+    {
+      "name": "lab-resource-diagnostic",
+      "bytes": 8117248,
+      "sha256": "537ddc798eafe8d2c313d584a1f9e71153b7c713bd823e7cad4931f056d32946"
+    },
+    {
+      "name": "lab-shadow-format-growth",
+      "bytes": 1248256,
+      "sha256": "ca901c72c8933e37b1e05f02e812c5645fdb582928390a4decd7bbba28c6ab5b"
+    }
+  ],
+  "focused_check": {
+    "session_id": 10687,
+    "actual_exit_code_reported_by_root": 0,
+    "cargo_finished_success_line_read": true,
+    "cargo_reported_seconds": 27.46,
+    "log_path": ".lab/development/performance-grow-check-20261104.log",
+    "log_bytes": 24612,
+    "log_sha256": "dafce83caed7e63427cb84c1a04dcbc0cfc0b02d0290db757853805cefe6d3f0"
+  },
+  "release_build": {
+    "session_id": 2875,
+    "actual_exit_code_reported_by_root": 0,
+    "cargo_finished_success_line_read": true,
+    "cargo_reported_duration": "2m 37s",
+    "target": "x86_64-pc-windows-msvc",
+    "experimental_shared_target": true,
+    "experimental_shared_source": true,
+    "cache_reuse_recorded": true,
+    "shared_target_positive_growth_bytes": 0,
+    "clean_build_claimed": false,
+    "reproducible_build_verified": false,
+    "log_path": ".lab/development/release-candidates/resource-map-locator-growth-a2255ba/cargo-build.stderr.log",
+    "log_bytes": 24073,
+    "log_sha256": "1afae070d5e95c31fcf2db0773eb140ff4b4ba26a6853accf84e4e3a8809857c"
+  },
+  "changes": {
+    "combined_recovery_map_and_locator": {
+      "caller": "src/resource_preparation.rs",
+      "entrypoint": "ProtectedPreparedJournal::create_recovery_metadata",
+      "implementation": "src/selected_journal/resource_domain/prepare/qualification.rs",
+      "related_files": [
+        "src/selected_journal/resource_domain/prepare.rs",
+        "src/selected_journal/resource_domain/durable_anchor.rs"
+      ],
+      "scope": "One synchronous read-only map/seal/locator construction boundary over the exact original live source, protected target, capture, journal and arena owners. The opaque scoped witness cannot be created from saved flags or escape the callback.",
+      "checks": "Complete original candidate/source-lane/projection/tail/source-fingerprint/consumed-target/native/domain/journal checks remain at both outer bookends; closing after callback errors and full capture closing remain. Interior owner/native/metadata/domain/PreparedClear checks and map/locator artifact verification remain.",
+      "query_boundary_changed": true,
+      "literal_old_interior_full_scan_count_preserved": false,
+      "later_publication_index_delegation_arena_close_and_result_revalidation_unchanged": true,
+      "separate_apply_and_SDK_OLD_journal_gates_unchanged": true,
+      "standalone_checked_constructors_retained": true,
+      "source_or_shadow_writes_added": false,
+      "persisted_cache_or_boolean_authority_added": false
+    },
+    "extent_identity_cluster_eligibility": {
+      "files": [
+        "crates/n2r-win32/src/attestation.rs",
+        "src/ntfs_attestation.rs"
+      ],
+      "minimum_source_cluster_bytes": 4096,
+      "maximum_source_cluster_bytes": 2097152,
+      "power_of_two_required": true,
+      "scope": "Two eligibility gates now agree with the existing native request range. This is code eligibility only; new larger-cluster conversion and recovery are not natively qualified.",
+      "native_geometry_qualification_pending": true
+    },
+    "empty_shadow_growth_probe": {
+      "SDK_module": "crates/n2r-win32/src/managed_shadow/growth_probe.rs",
+      "binary": "src/bin/lab-shadow-format-growth.rs",
+      "modes": [
+        "direct",
+        "seed-grow"
+      ],
+      "seed_partition_bytes": 53687091200,
+      "final_partition_bytes": 257698037760,
+      "growth_increment_bytes": 204010946560,
+      "final_filesystem_sectors_512_bytes": 503316480,
+      "source_disk_argument_accepted": false,
+      "new_provider_and_fresh_paths_only": true,
+      "product_managed_shadow_create_body_changed": false,
+      "existing_managed_shadow_nonblank_lines_identical_except_lab_module_export": true,
+      "product_growth_backend_selected": false,
+      "native_format_growth_remount_and_consumed_set_qualification_pending": true,
+      "sampled_budgets_are_not_kernel_or_formatter_reservations": true
+    }
+  },
+  "code_derived_read_reduction": {
+    "reference_case": "69c38a6bf34043b39c4389b119c50087",
+    "reference_evidence": "evidence/public-resource-cng-20261103.json",
+    "reference_closed_ledger_prefix_sha256": "f212516745fae72a4a21d2485cedc52785412b1db25bcf3a74edf1c725f0385d",
+    "reference_consumed_ranges": 638,
+    "reference_consumed_bytes": 6176772096,
+    "map_locator_raw_consumed_scans_before": 4,
+    "map_locator_raw_consumed_scans_after": 2,
+    "expected_raw_consumed_bytes_avoided_for_reference_ranges": 12353544192,
+    "reference_map_locator_observer_logical_read_bytes": 26831466803,
+    "reference_map_locator_observer_elapsed_ms": 67501,
+    "new_candidate_runtime_measurement": false,
+    "native_performance_improvement_proven": false,
+    "physical_IO_or_general_size_speed_claimed": false,
+    "scope": "Expected reduction is derived from current call structure and the already authenticated 814 range set only; it is not a new runtime benchmark or a guarantee for other volumes."
+  },
+  "native_dispatch_preparation": {
+    "observation_scope": "Root-reported preparation state when this build record was requested; refresh actual dispatch/native PID/birth/terminal before any action.",
+    "host_root": ".lab/development/native-growth-a2255ba-f8f5f3857d284ebb8ed0c319ee189b3b",
+    "restored_checkpoint_once": "3343f2a4-cf81-4fa9-a504-030425a8011e",
+    "previous_branch": "closed partition experiment 766",
+    "fresh_state_verification_and_start_pending": true,
+    "native_growth_process_started_at_this_observation": false,
+    "conversion_started_at_this_observation": false
+  },
+  "frozen_814_package_unchanged": true,
+  "native_qualification_inherited": false,
+  "new_candidate_native_qualification_pending": true,
+  "unit_tests_added_or_run": false,
+  "stable_release": false,
+  "broader_project_goal_complete": false,
+  "created_utc": "2026-11-04T04:39:43.989Z"
+}

@@ -1,7 +1,7 @@
 # Raw NTFS allocation reconciliation
 
-The Rust inspector now retains the exact bitmap domain long enough to compare
-it with physical intervals from every decoded nonresident attribute. The new
+The Rust inspector streams the exact bitmap domain and compares
+it with physical intervals from every decoded nonresident attribute. The
 `allocation_reconciliation` report field records the bitmap SHA-256, cluster
 domain, interval count, status and diagnostic. Old serialized reports default
 this additive field to absent.
@@ -13,17 +13,27 @@ no exception. DATA attributes are supplied once from `attributes`; the duplicate
 `streams` view creates no additional claim. Resident contents are already owned
 through the MFT allocation, and sparse holes have no physical claim.
 
-The inspector refuses to assess a partial model if any record requires an
-attribute list/extension or repeats an attribute instance. It also rejects MFT
+The inspector refuses to assess a partial model if any record has an unassembled
+attribute list/extension or repeats an attribute instance. The later
+[ordinary DATA assembly profile](ntfs-attribute-list-assembly.md) supplies one
+canonical allocation claim per stream and a separate physical-record ledger;
+extension origins are never counted a second time as payload owners. It also rejects MFT
 bitmap allocations beyond MFT EOF. Bitmap bytes must be fully initialized,
 unencoded and nonsparse for the requested domain; synthesized zeroes must never
 hide allocated file records or volume clusters.
 
-Limits are 4,096 physical intervals, 16,384 cumulative attribute-name units,
-2 MiB of bitmap and 16,777,216 cluster checks. Exceeding a bound produces a
-rejected diagnostic. The temporary model and sorting storage are bounded
-separately from retained report memory. Bits beyond the final cluster are
-padding and never become domain allocation.
+The standalone ledger's defaults are 4,096 physical intervals, 16,384
+cumulative attribute-name units, 2 MiB of bitmap and 16,777,216 cluster
+checks. The inspector supplies the actual bitmap length and cluster domain
+instead of reapplying those last two defaults. It reads the initialized bitmap
+through its attribute runs using a fixed 64 KiB window, without allocating the
+whole bitmap or imposing the former 128 MiB bitmap ceiling. A first pass hashes
+and counts the bitmap; reconciliation hashes it again and requires identical
+length, hash and allocation counts. Read failures cannot become consistency.
+Reconciliation scans bitmap words across sorted
+ownership intervals and reports the first mismatched cluster. Interval, name
+and sorting limits still apply. Bits beyond the final cluster are padding and
+never become domain allocation.
 
 `consistent_raw_model` means the supplied decoded intervals reconcile with the
 bitmap. It does not establish a complete NTFS namespace, security descriptors,
@@ -39,3 +49,9 @@ and uninitialized MFT/volume bitmaps. At that milestone the workspace passed
 224 tests, with five explicitly ignored native/child-process tests. Its
 build uses a separate ignored target directory; the running guest experiment
 continues to use its original pinned release binaries.
+
+The later streaming implementation was compiled with `cargo check --locked
+--bins`; the historical test counts above do not qualify that change. No unit
+tests were added or run for it. The frozen alpha and its native evidence retain
+their original executable pins. Native bitmap collection, source feature limits
+and the live conversion partition ceiling remain separate constraints.

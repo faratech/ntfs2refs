@@ -1,0 +1,178 @@
+{
+  "new_or_existing_unit_tests_run": false,
+  "base_commit": "2d32e2ee8f3ba1bc19775553bc4163bbba2890f6",
+  "focused_check": {
+    "kind": "public-partition-dispatch-focused-check",
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+    "native_run": false,
+    "wall_seconds": 38.1881745,
+    "capacity": {
+      "actual_bytes": 242719144122,
+      "free_bytes": 164577730560,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 2147483648,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "unit_tests_run": false,
+    "exit_code": 0,
+    "shared_target_reused": true
+  },
+  "implemented": [
+    "Boot-bound RAM bootstrap with same enrolled source/J/bundle verification before image commit",
+    "Metadata-only independently observed J availability while source stays offline",
+    "Full-Windows owned recovery image and persistent boot installation facade",
+    "Cold PreparedClear apply or AP/RB direction-based replay startup, using original journal",
+    "Actual closed-source BootMgr restoration capability"
+  ],
+  "native_execution_of_new_boot_writer": false,
+  "kind": "boot-bound-prepared-startup-and-restart-replay-build-v1",
+  "actual_native_preparation": {
+    "wall_seconds": 295.3237427,
+    "birth": 1793903893143,
+    "source_commit": "2d32e2ee8f3ba1bc19775553bc4163bbba2890f6",
+    "no_offline_apply_or_recovery_run": true,
+    "exit_code": 0,
+    "pid": 2700,
+    "host_postsuccess_qualification": "incomplete: raw UInt64 serial field-order fixed; exact post-close source protection status being captured"
+  },
+  "remaining": [
+    "Closed HND/ABT restart reconciliation without raw replay",
+    "Native filesystem verification and selected readonly-to-original metadata restoration bridge",
+    "Public end-to-end orchestration and exact native conversion/restart/mutation/reboot qualification",
+    "Exact demonstrated package"
+  ],
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/journal_file.rs",
+      "bytes": 25057,
+      "sha256": "7462d991921f32ed20b1b17fe9ad451af857aa9cd83a707868bb6333e59b6fd9"
+    },
+    {
+      "path": "crates/n2r-win32/src/journal_file/native.rs",
+      "bytes": 9533,
+      "sha256": "fd382726e683b3123bac460f22cfba4140668d1dc2d4ea959cd5cae54f940d1c"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/offline_environment.rs",
+      "bytes": 23958,
+      "sha256": "63a15b8324835b5376a9ec3d643ab9126f07a7817e9b45f78dd76f81ba0783c1"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline.rs",
+      "bytes": 25985,
+      "sha256": "3484ff844da3715c9872d05b022e6e375848e22cb9568814e7a90d42a4524c15"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline/source.rs",
+      "bytes": 33754,
+      "sha256": "c896acc8ccf44ff5961c8fddfce31c5efe8e446a94cfd78db17d7923da41bd2a"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline/source/paged.rs",
+      "bytes": 38351,
+      "sha256": "809a974e5e841c9a5d0692eda7a73f746620a1cc1488d2fef7815f0b5a6b851b"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline/source/prepared.rs",
+      "bytes": 18666,
+      "sha256": "d4f64347d0d8bf811f60da5dcf0719a6afad8d274a1172701632eb39f267de87"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline/source/prepared_apply.rs",
+      "bytes": 17592,
+      "sha256": "921c632598475ac9dcb4754345a57f7c10a7ee710dc09d4bc5d6342fd572b46e"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline/source/prepared_replay.rs",
+      "bytes": 11299,
+      "sha256": "1e726a0611512d765d04520223aa5d9e213734808139474bb8b388ae6e39e87f"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline/journal_bootstrap.rs",
+      "bytes": 6573,
+      "sha256": "fa075d280bd8d45a1a71dc223d4c413c1bee78133dfe397667e975fe00254ef5"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/recovery_boot.rs",
+      "bytes": 20098,
+      "sha256": "2d4284831d38f26f3c6235aafddeb720a353f92451742ac50be4b17d60b38aaa"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/recovery_boot/cold.rs",
+      "bytes": 39852,
+      "sha256": "868ada9f1f3351868b2b797ecf285cb2df61f8da730a78373c0ee7cfa0a27162"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/recovery_boot/metadata.rs",
+      "bytes": 28591,
+      "sha256": "63af7ac93c57240ce5d47525576e778c90102a6e7ed94c1b8eeda71722ab1fe9"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/recovery_boot/native.rs",
+      "bytes": 24849,
+      "sha256": "10e6227b94282ce104864819ce6a4ac09314fd84fb96a612a92ef87c629d3b49"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/recovery_image.rs",
+      "bytes": 41013,
+      "sha256": "6595ec9cbafa611b9d7e47060797361d6a579c0ca9664a1294e35fa964d2e03c"
+    },
+    {
+      "path": "src/general_reconstruct/selected_native_journal.rs",
+      "bytes": 65231,
+      "sha256": "d1191c385b35ca3ae19c92dcca59525129c08dd797bb06b15a545d67f4642793"
+    },
+    {
+      "path": "src/resource_partition_alpha.rs",
+      "bytes": 39707,
+      "sha256": "51ec828440d15e84536dc3454e739e0a4d25bd406187de2e83129d319a2c496f"
+    },
+    {
+      "path": "src/resource_prepared_bundle.rs",
+      "bytes": 21307,
+      "sha256": "9300bb9c5ce3cc69aad25e8d62aa41d7782f933e4e255ff63822440d8391028a"
+    },
+    {
+      "path": "src/resource_prepared_offline_apply.rs",
+      "bytes": 19110,
+      "sha256": "7d038b79777770bc9fe1144d4dea1b4e6dd315d54f19aaed2155e45b49700d1f"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/reopen.rs",
+      "bytes": 31554,
+      "sha256": "755d290b92d663ced63b2742886ff4175a5949945fd9aee9a9b488d580c5c6c2"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/reopen/replay.rs",
+      "bytes": 49801,
+      "sha256": "9331b85a560f8a361c11a12c344e85eba063c6b7752a4c01e44a4f668e1338a6"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/reopen/replay/prepared_recovery.rs",
+      "bytes": 9415,
+      "sha256": "04128df9ca63fc14f48fe01d075421f56d13455ea804eee5324082d20c3d41ed"
+    },
+    {
+      "path": "src/bin/lab-apply-prepared-offline.rs",
+      "bytes": 3396,
+      "sha256": "2a946763d36a6da7eda5d8950a059531961b290898e42926a26b24ef36c4ea60"
+    },
+    {
+      "path": "src/bin/lab-arm-prepared-boot.rs",
+      "bytes": 3205,
+      "sha256": "a4ab232f84460756ed6d607b369b4d323fc49e56a0e8502e763baeceb739b879"
+    },
+    {
+      "path": "src/resource_prepared_boot.rs",
+      "bytes": 11153,
+      "sha256": "a3db0e567e7b847359d8035c6d48efa3229b41563f4bf3a420019abe36a2319b"
+    },
+    {
+      "path": "src/resource_prepared_runner.rs",
+      "bytes": 11794,
+      "sha256": "9d5d97bb751ed193d55a739d838e34500e2a36e7a5481cbb26361e021fa26e65"
+    }
+  ]
+}

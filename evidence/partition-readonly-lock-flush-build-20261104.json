@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "kind": "mounted-readonly-lock-flush-contract",
+  "status": "focused-check-passed-native-rerun-pending",
+  "path": "crates/n2r-win32/src/native/partition_lifecycle/staged.rs",
+  "sha256": "5d53ca1ab86c6586e1cf64a77d333a5eaa9a1ea696b35bea9670e10e7f7dff81",
+  "check_exit": 0,
+  "check_seconds": 32.2764946,
+  "unit_tests_run": false,
+  "native_fix_run": false,
+  "actual_prior": {
+    "source_commit": "cba27178f24a262e497c52cccc6a54d795d8e254",
+    "run_id": "aae1f81fedca4d0cbb3eb61d274a3a9c",
+    "pid": 5128,
+    "birth_ms": 1793843101542,
+    "exit_code": 1,
+    "wall_seconds": 209.5795539,
+    "fresh_RW_open_succeeded": true,
+    "actual_RO19_proved": true,
+    "actual_fresh_LOCK_succeeded": true,
+    "explicit_FlushFileBuffers_error": 19,
+    "normal_conversion_started": false,
+    "source_readonly_closure_sha256": "516a39eecaf3174c3c2731414b0181244189fe4c9f84773775f7110f487ecbd4",
+    "raw_gpt_delta_sha256": "6ee66b2eb6c43b2e20a18f385a14a56c28acbeef34398d5406a8962ce8e06f44"
+  },
+  "change": "Do not call FlushFileBuffers on the write-protected mounted BasicRO volume. Successful FSCTL_LOCK_VOLUME is the documented cache-flush boundary, followed by dismount/extendedDASD and all closing proofs. The locked RO lane creates no payload writer.",
+  "contract": "https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-fsctl_lock_volume",
+  "failed_flush_reclassified_as_success": false,
+  "initial_Basic0_flush_changed": false,
+  "writable_payload_or_journal_flush_removed": false,
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+}

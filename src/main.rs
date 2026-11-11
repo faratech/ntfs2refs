@@ -12,11 +12,15 @@ use std::{
 #[derive(Parser)]
 #[command(
     version,
-    about = "NTFS/ReFS inspection and experimental certificate-backed data-volume conversion."
+    about = "NTFS/ReFS inspection and experimental certificate-backed data-volume conversion.",
+    args_conflicts_with_subcommands = true,
+    arg_required_else_help = true
 )]
 struct Cli {
+    #[command(flatten)]
+    drive: ntfs2refs::drive_cli::DriveArgs,
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 #[derive(Clone, ValueEnum)]
 enum Target {
@@ -349,7 +353,14 @@ fn recover(args: RecoveryArgs, operation: &str) -> Result<()> {
     }
 }
 fn run() -> Result<u8> {
-    match Cli::parse().command {
+    let cli = Cli::parse();
+    if cli.drive.requested() {
+        return ntfs2refs::drive_cli::run(cli.drive);
+    }
+    match cli
+        .command
+        .context("use --list, --drive, or a subcommand")?
+    {
         Command::Inspect {
             image,
             output: destination,
@@ -414,8 +425,10 @@ fn run() -> Result<u8> {
         }
         Command::Capabilities => {
             let registry = ntfs2refs::capability_evidence::Registry::embedded()?;
+            let large =
+                ntfs2refs::ntfs_admission::ResourceProfile::ExperimentalLargeTreeV1.limits();
             output(
-                &serde_json::json!({"schema_version":1,"raw_image_inspection":true,"ntfs_inventory_complete":false,"refs_header_inspection":true,"retained_range_comparison":true,"conversion_planning":"image feasibility reports remain non-executable","native_refs_writer":false,"conversion_writes":cfg!(windows),"journal_recovery":cfg!(windows),"native_workflow":"experimental single-profile data volumes; live qualification and external journal required","qualified_boot_builds":[],
+                &serde_json::json!({"schema_version":1,"raw_image_inspection":true,"ntfs_inventory_complete":false,"refs_header_inspection":true,"retained_range_comparison":true,"conversion_planning":"image feasibility reports remain non-executable","native_refs_writer":false,"conversion_writes":cfg!(windows),"journal_recovery":cfg!(windows),"native_workflow":"experimental nonboot data volumes; live qualification and external journal required","experimental_large_tree":{"available":cfg!(windows),"maximum_files":large.maximum_files,"maximum_directories":large.maximum_directories,"maximum_logical_bytes":large.maximum_logical_bytes,"native_qualified":false},"qualified_boot_builds":[],
                     "qualification_registry_scope":registry.scope,
                     "recorded_qualification":registry.matrix()?,
                     "recorded_evidence_grants_runtime_authority":false}),

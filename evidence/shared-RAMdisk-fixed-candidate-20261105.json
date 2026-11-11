@@ -1,0 +1,44 @@
+{
+  "kind": "shared-RAMdisk-fixed-candidate-and-preserved-failure-v1",
+  "source_commit": "aa8acbf376b6fcaca7f02e2b65a43255f88a6ba9",
+  "build_manifest": ".lab/development/release-candidates/shared-RAMdevice-aa8acbf/manifest.json",
+  "build_manifest_sha256": "2bd3f26c98956cb48a4d6e7436195f537fa26942d1337d5b8545fde74bcddfb9",
+  "build_owned_terminal_exit": 0,
+  "unit_tests_run": false,
+  "native_qualification_inherited": false,
+  "public_layout": {
+    "directory": ".lab/development/public-layout-aa8acbf",
+    "receipt_sha256": "661c32c325138b00f811f9566e8fa562f2f307783327cdbf910fd780a231a60e",
+    "public_executable": {"bytes": 20680704, "sha256": "049d09296904a2cd9b337d288381f9546b5efa0ee22f1a977ece9c7b21551251"},
+    "ntfs2refs-recovery.exe": {"bytes": 4280832, "sha256": "b7a868695a06ec072d9e0c2c23b7ffdd76181a89038b36d56cb9c0117b2aac9e"},
+    "recovery_is_exact_built_lab-apply-prepared-offline_bytes": true,
+    "stable_release": false
+  },
+  "failed_branch_preservation": {
+    "receipt": ".lab/hyperv/streaming-v2-20261027/PRESERVE-cold-PE-RAMDEVICE1-Off-5ffd0af0f2b54b89a91e4277e0c23247/CLOSED-actual-Off-five-failed-prepared-branch-preserved.json",
+    "receipt_sha256": "48733c22028e9923727b98599acf851133e305ee7a544649c251c791c11a4b01",
+    "actual_off_and_RAM_zero": true,
+    "shutdown_requests": 1,
+    "checkpoint_calls": 1,
+    "checkpoint_id": "462332c8-1743-405b-b4c8-079ea936732b",
+    "parent": "07ca22f3-bb1c-444b-8f31-ff16b1fcb521",
+    "original_four_checkpoints_unchanged": true,
+    "provider_post_API_lookup_failure_preserved_not_retried": true,
+    "RAM_contents_not_claimed_preserved": true,
+    "product_restart_recovery_evidence": false
+  },
+  "storage_accounting": {
+    "observed_actual_bytes": 245473404262,
+    "observed_host_free_bytes": 161877774336,
+    "completed_image_diagnostic_subphase_absolute": 246858218029,
+    "original_global_baseline_bytes": 279374052988,
+    "user_maximum_additional_bytes": 50000000000,
+    "unchanged_global_maximum_bytes": 329374052988,
+    "unchanged_minimum_host_free_bytes": 17179869184,
+    "next_whole_conversion_case_additional_forecast_bytes": 4294967296,
+    "next_case_forecast_is_not_a_new_global_epoch_or_hard_quota": true,
+    "next_restore_start_conversion_not_yet_authorized": true
+  },
+  "remaining": "Run corrected public workflow, genuine interrupted resume and rollback, native mutation/reboot and package the demonstrated build.",
+  "git_push": "Two normal pushes rejected by remote fatal error in commit_refs; local commit retained."
+}

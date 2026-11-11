@@ -106,10 +106,12 @@ fn main() -> anyhow::Result<()> {
     };
     let canonical_pin = hex::encode(Sha256::digest(serde_json::to_vec(&ntfs)?));
     let (live_assessment, native_error) = if args.native {
-        let request = ntfs2refs::ntfs_attestation::request_for_general_inspection(
+        let request = ntfs2refs::ntfs_attestation::request_for_fresh_general_inspection(
             &ntfs,
             &canonical_pin,
             source.binding(),
+            None,
+            ntfs2refs::verification_policy::VerificationPolicy::FullContent,
         )?;
         match source.observe_ntfs_files(&request, &mut events) {
             Ok(observed) => match ntfs2refs::general_source_admission::assess(

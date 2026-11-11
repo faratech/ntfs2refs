@@ -16,6 +16,30 @@ fn large_reference_observer_does_not_widen_journal_admission() {
     assert!(validate_file_fields(&evidence).is_err());
 }
 
+#[test]
+fn large_journal_file_requires_explicit_experimental_profile() {
+    let mut evidence = fixture(&binding());
+    let legacy_limit = MAX_JOURNAL_BYTES;
+    put64(&mut evidence.file_standard_info, 0, legacy_limit + 4096);
+    put64(&mut evidence.file_standard_info, 8, legacy_limit + 4096);
+    assert!(validate_file_fields(&evidence).is_err());
+    assert!(validate_file_fields_for_profile(&evidence, JournalProfile::LegacyV1).is_err());
+    validate_file_fields_for_profile(&evidence, JournalProfile::ExperimentalLargeV2).unwrap();
+    put64(
+        &mut evidence.file_standard_info,
+        0,
+        MAX_EXPERIMENTAL_JOURNAL_BYTES + 4096,
+    );
+    put64(
+        &mut evidence.file_standard_info,
+        8,
+        MAX_EXPERIMENTAL_JOURNAL_BYTES + 4096,
+    );
+    assert!(
+        validate_file_fields_for_profile(&evidence, JournalProfile::ExperimentalLargeV2).is_err()
+    );
+}
+
 fn put32(b: &mut [u8], at: usize, n: u32) {
     b[at..at + 4].copy_from_slice(&n.to_le_bytes());
 }
@@ -115,6 +139,7 @@ fn general_journal_binding_accepts_distinct_dedicated_disk_geometry() {
         disk_number: fixed.disk_number,
         volume_guid: fixed.volume_guid.clone(),
         identity: fixed.identity.clone(),
+        layout_profile: Default::default(),
     };
     disk.identity.disk_bytes = 12 * 1024 * 1024 * 1024;
     put64(&mut evidence.disk_length, 0, disk.identity.disk_bytes);
@@ -136,6 +161,7 @@ fn external_journal_layout_allows_a_separate_system_disk_partition_set() {
         disk_number: fixed.disk_number,
         volume_guid: fixed.volume_guid.clone(),
         identity: fixed.identity.clone(),
+        layout_profile: Default::default(),
     };
     disk.identity.disk_bytes = 12 * 1024 * 1024 * 1024;
     put64(&mut evidence.disk_length, 0, disk.identity.disk_bytes);

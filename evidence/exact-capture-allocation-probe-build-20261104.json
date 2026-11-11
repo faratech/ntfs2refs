@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "native_pattern_reproduction_qualified": false,
+  "previous_b969_no_reproduction_preserved": true,
+  "utc": "2026-11-04T12:13:58.7507329Z",
+  "original_guard_required_for_success": true,
+  "focused_check_exit": 0,
+  "notes": [
+    "Index footer proves index.finish had been entered after initial literal sealing",
+    "No index/routes production normalization before native pattern evidence",
+    "Allocation slack/native source/recovery checks unchanged"
+  ],
+  "probe_cases": [
+    "literal EOF86695936 baseline/normalized",
+    "valid N2RCAP02 index128+7054x80+128 bytes baseline/normalized",
+    "real SortedRecordWriter/SourceRangeWriter finish"
+  ],
+  "source_parent_commit": "eb75bc76c4fbf57439433352037f590236756ce3",
+  "production_code_changed": false,
+  "probe_sha256": "be4d414909ba5e3aa0d9ff91aab83f92313b05e6c6200bbdb1942496144da378",
+  "focused_check_reported_seconds": 0.55,
+  "kind": "native-exact-capture-finalization-pattern-build",
+  "unit_tests_added_or_run": false
+}

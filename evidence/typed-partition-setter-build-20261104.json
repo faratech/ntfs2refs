@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "kind": "exact-typed-gpt-partition-setter-control-input",
+  "status": "lab-and-public-check-passed-native-qualification-pending",
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/native.rs",
+      "bytes": 203011,
+      "sha256": "e9dfdf310dc97809f3afb7eb3c3408a022c522949909bf6219ac63711885e96f"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_lifecycle/staged.rs",
+      "bytes": 49047,
+      "sha256": "8dc27d94adae92dc4e4fece1100396685ca251ab0f3f6914544e83721a40e35d"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_restoration.rs",
+      "bytes": 76340,
+      "sha256": "5578355dd2a65faeba77ae0bd5da40f2843c23aa9637b41011930ea182f9a30c"
+    }
+  ],
+  "reviewed_patch_sha256": "288f470ffb866258478ca6368c5bc93357adbdd84145419cf003ed22d73051ec",
+  "check_exit": 0,
+  "check_wall_seconds": 32.6221558,
+  "check_receipt_sha256": "60f24c2b301c345632b6e68f51e90a21b8ae119ebd29c57d2488eac1917aad4f",
+  "unit_tests_run": false,
+  "native_run": false,
+  "shared_target_reused": true,
+  "generic_input_limit_changed": false,
+  "behavior": [
+    "Fixed typed GPT setter accepts only SDK x64 120-byte SET_PARTITION_INFORMATION_EX with GPT header, verified padding and zero output on the exact documented IOCTL.",
+    "Generic control retains its 64-byte input ceiling; staged and terminal GPT setters use only the typed path, retaining all original owner/GPT/intent checks.",
+    "Budget rejection errors identify operation, code, input/output lengths and event count before any native call."
+  ],
+  "prior_actual_native": {
+    "error": "native control budget exceeded",
+    "pid": 5144,
+    "real_exit_code": 1,
+    "desired_readonly_only": true,
+    "wall_seconds": 171.5431043,
+    "birth_ms": 1793837836992,
+    "source_unchanged_receipt_sha256": "7deb14bfddffd9be27287de75d7bdf9e299842146c247ad60993a842e3577554",
+    "intent_sequence": 1,
+    "source_commit": "353ce917efa5cfbb08ff7cbd7fdf517d3e55d059",
+    "actual_source_basic0_unchanged": true,
+    "native_setter_call_issued": false,
+    "journal_exists": false
+  },
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "remaining": [
+    "Build exact fixed candidate and execute actual conversion.",
+    "Native full conversion and recovery qualification."
+  ]
+}

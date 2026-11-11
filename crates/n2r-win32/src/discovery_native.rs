@@ -6,14 +6,35 @@ use std::{
 };
 use windows_sys::Win32::{
     Storage::FileSystem::{
-        GetDiskFreeSpaceW, GetVolumeInformationW, GetVolumeNameForVolumeMountPointW,
-        GetVolumePathNameW,
+        GetDiskFreeSpaceExW, GetDiskFreeSpaceW, GetVolumeInformationW,
+        GetVolumeNameForVolumeMountPointW, GetVolumePathNameW,
     },
     System::IO::DeviceIoControl,
 };
 const MAX_REPLY: usize = 65536;
 fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(Some(0)).collect()
+}
+
+/// Query a local volume's current space without changing storage state. The
+/// caller must treat this as an observation, not a reservation or admission.
+pub fn observe_volume_space(root: &str) -> io::Result<VolumeSpaceObservation> {
+    validate_root(root)?;
+    let root_w = wide(root);
+    let (mut available, mut total, mut free) = (0u64, 0u64, 0u64);
+    // SAFETY: the bounded root is NUL terminated and all three output pointers
+    // refer to initialized u64 values for this synchronous read-only query.
+    if unsafe { GetDiskFreeSpaceExW(root_w.as_ptr(), &mut available, &mut total, &mut free) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(VolumeSpaceObservation {
+        available_bytes_to_caller: available,
+        total_bytes_available_to_caller: total,
+        total_free_bytes: free,
+        informational_only: true,
+        reserves_space: false,
+        execution_authorized: false,
+    })
 }
 fn text(buffer: &[u16]) -> io::Result<String> {
     let end = buffer
@@ -157,8 +178,8 @@ pub fn discover(root: &str, role: Role) -> io::Result<VolumeDiscovery> {
     require(
         bytes_per_sector == binding.identity.logical_sector_bytes
             && sectors_per_cluster > 0
-            && flags & 0x80000 == 0,
-        "native filesystem geometry differs or the volume is read-only",
+            && ((flags & 0x80000 != 0) == (role == Role::ShadowReadOnly)),
+        "native filesystem geometry or explicit read-only role differs",
     )?;
     let after = observe(&volume, &disk)?;
     require(
@@ -202,4 +223,23 @@ pub fn discover(root: &str, role: Role) -> io::Result<VolumeDiscovery> {
         read_only: true,
         source_write_requests: 0,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn volume_space_observation_is_read_only_and_reports_live_capacity() {
+        assert!(observe_volume_space("relative").is_err());
+        let root = format!("{}\\", std::env::var("SystemDrive").unwrap());
+        let observation = observe_volume_space(&root).unwrap();
+        assert!(observation.total_bytes_available_to_caller > 0);
+        assert!(
+            observation.available_bytes_to_caller <= observation.total_bytes_available_to_caller
+        );
+        assert!(observation.informational_only);
+        assert!(!observation.reserves_space);
+        assert!(!observation.execution_authorized);
+    }
 }

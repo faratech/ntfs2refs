@@ -1,0 +1,1232 @@
+use super::*;
+use std::os::windows::process::CommandExt;
+use std::{
+    process::{Command, Stdio},
+    sync::atomic::{AtomicU64, Ordering},
+    thread,
+    time::Instant,
+};
+use windows_sys::Win32::System::{
+    Registry::{
+        HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_WOW64_64KEY, REG_DWORD, REG_SZ, RegCloseKey,
+        RegFlushKey, RegOpenKeyExW, RegQueryValueExW,
+    },
+    SystemInformation::GetSystemDirectoryW,
+};
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn GetFirmwareEnvironmentVariableW(
+        name: *const u16,
+        vendor: *const u16,
+        buffer: *mut std::ffi::c_void,
+        bytes: u32,
+    ) -> u32;
+    fn GetProcessTimes(
+        process: *mut std::ffi::c_void,
+        creation: *mut u64,
+        exit: *mut u64,
+        kernel: *mut u64,
+        user: *mut u64,
+    ) -> i32;
+    fn MultiByteToWideChar(
+        page: u32,
+        flags: u32,
+        input: *const u8,
+        bytes: i32,
+        output: *mut u16,
+        units: i32,
+    ) -> i32;
+}
+#[link(name = "ntdll")]
+unsafe extern "system" {
+    fn NtQuerySystemInformation(
+        class: u32,
+        buffer: *mut std::ffi::c_void,
+        bytes: u32,
+        returned: *mut u32,
+    ) -> i32;
+}
+pub(super) fn kernel_boot_identifier() -> io::Result<[u8; 16]> {
+    let mut value = [0u64; 4];
+    let mut returned = 0;
+    let status =
+        unsafe { NtQuerySystemInformation(90, value.as_mut_ptr().cast(), 32, &mut returned) };
+    need(
+        status == 0 && returned == 32,
+        "native boot environment identifier unavailable",
+    )?;
+    let bytes = unsafe { std::slice::from_raw_parts(value.as_ptr().cast::<u8>(), 32) };
+    need(
+        layout::u32_at(bytes, 16)? == 2,
+        "UEFI boot environment required",
+    )?;
+    bytes[..16].try_into().map_err(io::Error::other)
+}
+struct Key(windows_sys::Win32::System::Registry::HKEY);
+impl Drop for Key {
+    fn drop(&mut self) {
+        unsafe {
+            RegCloseKey(self.0);
+        }
+    }
+}
+fn key(path: &str) -> io::Result<Key> {
+    let mut k = ptr::null_mut();
+    let status = unsafe {
+        RegOpenKeyExW(
+            HKEY_LOCAL_MACHINE,
+            wide(path).as_ptr(),
+            0,
+            KEY_QUERY_VALUE | KEY_WOW64_64KEY,
+            &mut k,
+        )
+    };
+    if status != 0 {
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
+    Ok(Key(k))
+}
+pub(super) fn reg_bytes(path: &str, name: &str, kind: u32, maximum: usize) -> io::Result<Vec<u8>> {
+    let k = key(path)?;
+    let mut value = vec![0; maximum];
+    let mut n = maximum as u32;
+    let mut actual = 0;
+    let status = unsafe {
+        RegQueryValueExW(
+            k.0,
+            wide(name).as_ptr(),
+            ptr::null(),
+            &mut actual,
+            value.as_mut_ptr(),
+            &mut n,
+        )
+    };
+    if status != 0 {
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
+    need(
+        actual == kind && n as usize <= maximum,
+        "native registry type/length differs",
+    )?;
+    value.truncate(n as usize);
+    Ok(value)
+}
+fn current_option_sha(prefix: &str) -> io::Result<[u8; 32]> {
+    let data = reg_bytes(
+        r"SYSTEM\CurrentControlSet\Control",
+        "SystemStartOptions",
+        REG_SZ,
+        32768,
+    )?;
+    need(
+        data.len().is_multiple_of(2),
+        "native boot options encoding differs",
+    )?;
+    let units: Vec<_> = data
+        .chunks_exact(2)
+        .map(|b| u16::from_le_bytes([b[0], b[1]]))
+        .collect();
+    let end = units
+        .iter()
+        .position(|u| *u == 0)
+        .ok_or_else(|| bad("native boot options unterminated"))?;
+    let value = String::from_utf16(&units[..end]).map_err(io::Error::other)?;
+    let pins: Vec<_> = value
+        .split_ascii_whitespace()
+        .filter_map(|part| part.strip_prefix(prefix))
+        .collect();
+    need(
+        pins.len() == 1 && pins[0].len() == 64,
+        "actual kernel boot options do not contain exactly one recovery intent pin",
+    )?;
+    hex::decode(pins[0])
+        .map_err(io::Error::other)?
+        .try_into()
+        .map_err(|_| bad("native boot intent SHA width invalid"))
+}
+pub(super) fn current_intent_sha() -> io::Result<[u8; 32]> {
+    current_option_sha("N2RRECOVERYINTENT=")
+}
+pub(super) fn current_bootstrap_sha() -> io::Result<[u8; 32]> {
+    current_option_sha("N2RRECOVERYBOOTSTRAP=")
+}
+pub(super) fn require_san3() -> io::Result<()> {
+    let current = reg_bytes(r"SYSTEM\Select", "Current", REG_DWORD, 4)?;
+    let default = reg_bytes(r"SYSTEM\Select", "Default", REG_DWORD, 4)?;
+    for value in [current, default] {
+        let id = layout::u32_at(&value, 0)?;
+        need(
+            (1..=999).contains(&id),
+            "actual selected ControlSet invalid",
+        )?;
+        need(
+            layout::u32_at(
+                &reg_bytes(
+                    &format!(r"SYSTEM\ControlSet{id:03}\Services\partmgr\Parameters"),
+                    "SanPolicy",
+                    REG_DWORD,
+                    4,
+                )?,
+                0,
+            )? == 3,
+            "actual PE selected SAN policy is not early OfflineAll3",
+        )?;
+    }
+    Ok(())
+}
+/// Error-only native event context. Return the ORIGINAL error object so
+/// raw_os_error survives exactly. No extra native operation or success event.
+pub(super) fn diagnose<T>(
+    result: io::Result<T>,
+    operation: &str,
+    phase: &str,
+    context: &str,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<T> {
+    if let Err(error) = &result {
+        // Preserve existing event limits and every prior record. On a full
+        // vector the original failure still wins; no diagnostics mask it.
+        if events.len() < crate::MAX_BATCH_EVENTS {
+            let route: String = context.chars().take(4096).collect();
+            let message: String = error.to_string().chars().take(4096).collect();
+            if let Ok(output) = serde_json::to_vec(&serde_json::json!({
+                "kind":"actual-native-boot-step-failed-v1","phase":phase,
+                "context":route,"message":message,"raw_os_error":error.raw_os_error(),
+                "original_error_returned_unchanged":true}))
+            {
+                if output.len() <= 65536 {
+                    events.push(NativeEvent {
+                        operation: operation.into(),
+                        control_code: 0,
+                        input: Vec::new(),
+                        succeeded: false,
+                        native_error: error.raw_os_error(),
+                        output,
+                    });
+                }
+            }
+        }
+    }
+    result
+}
+pub(super) fn flush_system_bcd_with_events(events: &mut Vec<NativeEvent>) -> io::Result<()> {
+    let k = diagnose(
+        key("BCD00000000"),
+        "boot-system-BCD-flush-failed",
+        "RegOpenKeyExW-KEY_QUERY_VALUE",
+        "HKLM\\BCD00000000",
+        events,
+    )?;
+    let status = unsafe { RegFlushKey(k.0) };
+    let result = if status != 0 {
+        Err(io::Error::from_raw_os_error(status as i32))
+    } else {
+        Ok(())
+    };
+    diagnose(
+        result,
+        "boot-system-BCD-flush-failed",
+        "RegFlushKey",
+        "HKLM\\BCD00000000",
+        events,
+    )
+}
+#[allow(dead_code)]
+pub(super) fn flush_system_bcd() -> io::Result<()> {
+    flush_system_bcd_with_events(&mut Vec::new())
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(super) struct FirmwareIdentity {
+    pub current: u16,
+    pub order: Vec<u16>,
+    pub option: Vec<u8>,
+    pub secure_boot: Vec<u8>,
+    pub read_privilege_audit: serde_json::Value,
+}
+impl FirmwareIdentity {
+    pub(super) fn require_same(&self, other: &Self) -> io::Result<()> {
+        need(
+            self.current == other.current
+                && self.order == other.order
+                && self.option == other.option
+                && self.secure_boot == other.secure_boot,
+            "actual firmware boot selection/security changed",
+        )
+    }
+}
+fn variable(name: &str, maximum: usize) -> io::Result<Vec<u8>> {
+    let mut bytes = vec![0; maximum];
+    let n = unsafe {
+        GetFirmwareEnvironmentVariableW(
+            wide(name).as_ptr(),
+            wide("{8be4df61-93ca-11d2-aa0d-00e098032b8c}").as_ptr(),
+            bytes.as_mut_ptr().cast(),
+            maximum as u32,
+        )
+    };
+    if n == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    need(n as usize <= maximum, "firmware variable oversized")?;
+    bytes.truncate(n as usize);
+    Ok(bytes)
+}
+pub(super) fn firmware(efi: &EfiIdentity) -> io::Result<FirmwareIdentity> {
+    let mut privileges =
+        crate::attestation_native::Privileges::enable_for(&["SeSystemEnvironmentPrivilege"])
+            .map_err(|e| {
+                if e.to_string().contains("privilege absent") {
+                    io::Error::from_raw_os_error(1314)
+                } else {
+                    e
+                }
+            })?;
+    let observed = (|| {
+        let current = variable("BootCurrent", 2)?;
+        need(current.len() == 2, "native BootCurrent width invalid")?;
+        let current = u16::from_le_bytes(current.as_slice().try_into().map_err(io::Error::other)?);
+        let bytes = variable("BootOrder", 4096)?;
+        need(
+            bytes.len().is_multiple_of(2) && !bytes.is_empty(),
+            "native BootOrder invalid",
+        )?;
+        let order: Vec<_> = bytes
+            .chunks_exact(2)
+            .map(|b| u16::from_le_bytes([b[0], b[1]]))
+            .collect();
+        need(
+            order.first() == Some(&current),
+            "current Windows firmware entry is not persistent first BootOrder",
+        )?;
+        match variable("BootNext", 2) {
+            Err(e) if e.raw_os_error() == Some(203) => (),
+            Err(e) => return Err(e),
+            Ok(_) => {
+                return Err(bad(
+                    "pending firmware BootNext forbids persistent recovery guard",
+                ));
+            }
+        }
+        let option = variable(&format!("Boot{current:04X}"), 65536)?;
+        verify_option(&option, efi)?;
+        let secure_boot = variable("SecureBoot", 1)?;
+        need(
+            secure_boot == [1],
+            "Secure Boot must remain enabled; no policy change is attempted",
+        )?;
+        Ok(FirmwareIdentity {
+            current,
+            order,
+            option,
+            secure_boot,
+            read_privilege_audit: serde_json::Value::Null,
+        })
+    })();
+    let restored = privileges.restore();
+    match (observed, restored) {
+        (Ok(mut v), Ok(())) => {
+            v.read_privilege_audit =
+                serde_json::to_value(privileges.audit()).map_err(io::Error::other)?;
+            Ok(v)
+        }
+        (Err(e), Ok(())) => Err(e),
+        (Ok(_), Err(e)) => Err(e),
+        (Err(e), Err(r)) => Err(io::Error::new(
+            e.kind(),
+            format!("{e}; firmware-read privilege restoration failed: {r}"),
+        )),
+    }
+}
+fn verify_option(option: &[u8], efi: &EfiIdentity) -> io::Result<()> {
+    need(
+        option.len() >= 10 && layout::u32_at(option, 0)? & 1 != 0,
+        "active UEFI load option required",
+    )?;
+    let path_bytes =
+        u16::from_le_bytes(option[4..6].try_into().map_err(io::Error::other)?) as usize;
+    let mut at = 6;
+    loop {
+        need(
+            at + 2 <= option.len(),
+            "UEFI option description unterminated",
+        )?;
+        let n = u16::from_le_bytes(option[at..at + 2].try_into().map_err(io::Error::other)?);
+        at += 2;
+        if n == 0 {
+            break;
+        }
+    }
+    let end = at
+        .checked_add(path_bytes)
+        .ok_or_else(|| bad("firmware path overflow"))?;
+    need(end <= option.len(), "firmware device path truncated")?;
+    let (mut hd, mut file, mut ended) = (false, false, false);
+    while at < end {
+        need(at + 4 <= end, "firmware node header truncated")?;
+        let n = u16::from_le_bytes(
+            option[at + 2..at + 4]
+                .try_into()
+                .map_err(io::Error::other)?,
+        ) as usize;
+        need(n >= 4 && at + n <= end, "firmware node length invalid")?;
+        let node = &option[at..at + n];
+        match (node[0], node[1]) {
+            (4, 1) => {
+                need(
+                    n == 42 && !hd && node[40] == 2 && node[41] == 2,
+                    "unique GPT EFI firmware partition node required",
+                )?;
+                need(
+                    node[24..40] == layout::guid_bytes(&efi.binding.identity.partition_guid)?
+                        && layout::u64_at(node, 8)?
+                            .checked_mul(u64::from(efi.binding.identity.logical_sector_bytes))
+                            == Some(efi.binding.identity.partition_offset)
+                        && layout::u64_at(node, 16)?
+                            .checked_mul(u64::from(efi.binding.identity.logical_sector_bytes))
+                            == Some(efi.binding.identity.partition_bytes),
+                    "actual firmware boot ESP differs",
+                )?;
+                hd = true;
+            }
+            (4, 4) => {
+                need(
+                    n >= 6 && (n - 4).is_multiple_of(2) && !file,
+                    "firmware file path node invalid",
+                )?;
+                let units: Vec<_> = node[4..]
+                    .chunks_exact(2)
+                    .map(|b| u16::from_le_bytes([b[0], b[1]]))
+                    .collect();
+                need(
+                    units.last() == Some(&0)
+                        && !units[..units.len() - 1].contains(&0)
+                        && String::from_utf16(&units[..units.len() - 1])
+                            .map_err(io::Error::other)?
+                            .eq_ignore_ascii_case(r"\EFI\Microsoft\Boot\bootmgfw.efi"),
+                    "firmware didnotload native source ESP Bootmgfw",
+                )?;
+                file = true;
+            }
+            (0x7f, 0xff) => {
+                need(n == 4 && at + n == end, "UEFI end node differs")?;
+                ended = true;
+            }
+            _ => (),
+        }
+        at += n;
+    }
+    need(
+        hd && file && ended,
+        "complete native Windows firmware device/file path absent",
+    )
+}
+#[derive(Clone)]
+struct RegisteredQueryStores {
+    store: u64,
+    control: u64,
+    sidecars: BTreeMap<PathBuf, String>,
+}
+static QUERY_STORES: std::sync::OnceLock<
+    std::sync::Mutex<BTreeMap<PathBuf, RegisteredQueryStores>>,
+> = std::sync::OnceLock::new();
+static SIDECAR_RECEIPT: AtomicU64 = AtomicU64::new(0);
+fn query_stores() -> &'static std::sync::Mutex<BTreeMap<PathBuf, RegisteredQueryStores>> {
+    QUERY_STORES.get_or_init(|| std::sync::Mutex::new(BTreeMap::new()))
+}
+pub(super) fn register_owned_query_store(
+    file: &File,
+    path: &Path,
+    store: u64,
+    control: u64,
+) -> io::Result<()> {
+    use std::os::windows::fs::MetadataExt;
+    let parent = path
+        .parent()
+        .ok_or_else(|| bad("owned query store parent absent"))?;
+    let metadata = file.metadata()?;
+    need(
+        path.is_absolute()
+            && path.extension().and_then(|x| x.to_str()) == Some("bcd")
+            && metadata.is_file()
+            && metadata.file_attributes() & 0x400 == 0
+            && metadata.len() > 0
+            && metadata.len() <= store,
+        "actual SDK-created ordinary bounded query store required",
+    )?;
+    let base_native_id = crate::file_storage::file_id_info(file)?;
+    let mut registry = query_stores()
+        .lock()
+        .map_err(|_| bad("query-store registration poisoned"))?;
+    let entry = registry
+        .entry(parent.to_path_buf())
+        .or_insert_with(|| RegisteredQueryStores {
+            store,
+            control,
+            sidecars: Default::default(),
+        });
+    need(
+        entry.store == store && entry.control == control,
+        "owned query directory budget changed",
+    )?;
+    for suffix in [".LOG", ".LOG1", ".LOG2"] {
+        let mut name = path.as_os_str().to_os_string();
+        name.push(suffix);
+        let sidecar = PathBuf::from(name);
+        if let Some(old) = entry.sidecars.get(&sidecar) {
+            need(
+                old == &base_native_id,
+                "owned query base native file identity changed",
+            )?;
+        } else {
+            entry.sidecars.insert(sidecar, base_native_id.clone());
+        }
+    }
+    let memory = entry
+        .sidecars
+        .iter()
+        .try_fold(0u64, |n, (p, id)| {
+            n.checked_add(p.as_os_str().as_encoded_bytes().len() as u64 + id.len() as u64 + 128)
+        })
+        .ok_or_else(|| bad("owned sidecar metadata overflow"))?;
+    need(
+        memory <= control / 2,
+        "owned sidecar registration exceeds existing metadata budget",
+    )
+}
+#[derive(Serialize)]
+pub(super) struct SidecarObservation {
+    path: PathBuf,
+    base_native_file_id: String,
+    eof: u64,
+    allocation: u64,
+    charged: u64,
+    attributes: u32,
+}
+#[derive(Serialize)]
+pub(super) struct ControlUsage {
+    pub control: u64,
+    pub stores: u64,
+    sidecars: Vec<SidecarObservation>,
+    vanished_known_sidecars: Vec<PathBuf>,
+    census_attempts: u32,
+}
+fn standard_bytes(file: &File) -> io::Result<[u8; 24]> {
+    use windows_sys::Win32::Storage::FileSystem::{FileStandardInfo, GetFileInformationByHandleEx};
+    #[repr(C, align(8))]
+    struct Aligned([u8; 24]);
+    let mut value = Aligned([0; 24]);
+    if unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileStandardInfo,
+            value.0.as_mut_ptr().cast(),
+            24,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(value.0)
+}
+/// Same exact sidecar policy for every control write and active-copy admission.
+pub(super) fn owned_control_usage(
+    parent: &Path,
+    maximum: u64,
+    pending: u64,
+) -> io::Result<ControlUsage> {
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    let registered = query_stores()
+        .lock()
+        .map_err(|_| bad("query-store registry poisoned"))?
+        .get(parent)
+        .cloned();
+    if let Some(r) = &registered {
+        need(
+            r.control == maximum,
+            "owned directory control budget differs",
+        )?;
+    }
+    let known = |p: &Path| {
+        registered
+            .as_ref()
+            .is_some_and(|r| r.sidecars.contains_key(p))
+    };
+    let mut vanished = Vec::new();
+    for attempt in 1..=3 {
+        let mut paths = std::fs::read_dir(parent)?
+            .map(|x| x.map(|e| e.path()))
+            .collect::<io::Result<Vec<_>>>()?;
+        paths.sort();
+        need(
+            paths.len() as u64 <= maximum / 64 + 1,
+            "owned control census exceeds bounded metadata count",
+        )?;
+        let mut usage = ControlUsage {
+            control: pending,
+            stores: 0,
+            sidecars: Vec::new(),
+            vanished_known_sidecars: Vec::new(),
+            census_attempts: attempt,
+        };
+        let mut retry = false;
+        for path in &paths {
+            let sidecar = known(path);
+            let extension = path.extension().and_then(|s| s.to_str());
+            need(
+                sidecar || matches!(extension, Some("json" | "bcd")),
+                "unexpected file kind in owned boot control directory",
+            )?;
+            let metadata = match std::fs::symlink_metadata(path) {
+                Ok(v) => v,
+                Err(e) if sidecar && matches!(e.raw_os_error(), Some(2 | 3)) => {
+                    vanished.push(path.clone());
+                    retry = true;
+                    break;
+                }
+                Err(e) => return Err(e),
+            };
+            need(
+                metadata.is_file() && metadata.file_attributes() & 0x400 == 0,
+                "unexpected entry in owned boot control directory",
+            )?;
+            let file = match OpenOptions::new()
+                .access_mode(0x80)
+                .share_mode(7)
+                .custom_flags(0x00200000)
+                .open(path)
+            {
+                Ok(v) => v,
+                Err(e) if sidecar && matches!(e.raw_os_error(), Some(2 | 3)) => {
+                    vanished.push(path.clone());
+                    retry = true;
+                    break;
+                }
+                Err(e) => return Err(e),
+            };
+            let actual = file.metadata()?;
+            need(
+                actual.is_file() && actual.file_attributes() & 0x400 == 0,
+                "owned census handle is redirected",
+            )?;
+            let first = standard_bytes(&file)?;
+            let second = standard_bytes(&file)?;
+            if sidecar && (first != second || first[20] != 0) {
+                retry = true;
+                break;
+            }
+            need(
+                first == second
+                    && first[20] == 0
+                    && first[21] == 0
+                    && u32::from_le_bytes(first[16..20].try_into().map_err(io::Error::other)?) == 1,
+                "owned metadata native identity changed or is not ordinary",
+            )?;
+            let allocated = i64::from_le_bytes(first[..8].try_into().map_err(io::Error::other)?);
+            let eof = i64::from_le_bytes(first[8..16].try_into().map_err(io::Error::other)?);
+            need(
+                allocated >= 0 && eof >= 0 && actual.len() == eof as u64,
+                "owned metadata native sizes differ",
+            )?;
+            let charge = (allocated as u64).max(eof as u64);
+            if sidecar {
+                usage.control = usage
+                    .control
+                    .checked_add(charge)
+                    .ok_or_else(|| bad("native sidecar control charge overflow"))?;
+                usage.stores = usage
+                    .stores
+                    .checked_add(charge)
+                    .ok_or_else(|| bad("native sidecar store charge overflow"))?;
+                usage.sidecars.push(SidecarObservation {
+                    path: path.clone(),
+                    base_native_file_id: registered
+                        .as_ref()
+                        .and_then(|r| r.sidecars.get(path))
+                        .cloned()
+                        .ok_or_else(|| bad("registered sidecar base identity absent"))?,
+                    eof: eof as u64,
+                    allocation: allocated as u64,
+                    charged: charge,
+                    attributes: actual.file_attributes(),
+                });
+            } else if extension == Some("json") {
+                usage.control = usage
+                    .control
+                    .checked_add(charge)
+                    .and_then(|n| n.checked_add(65535))
+                    .ok_or_else(|| bad("boot control charge overflow"))?;
+            } else {
+                usage.stores = usage
+                    .stores
+                    .checked_add(charge)
+                    .ok_or_else(|| bad("boot store charge overflow"))?;
+            }
+        }
+        if retry {
+            continue;
+        }
+        let mut closing = std::fs::read_dir(parent)?
+            .map(|x| x.map(|e| e.path()))
+            .collect::<io::Result<Vec<_>>>()?;
+        closing.sort();
+        if paths != closing {
+            let changed: Vec<_> = paths
+                .iter()
+                .filter(|p| !closing.contains(p))
+                .chain(closing.iter().filter(|p| !paths.contains(p)))
+                .cloned()
+                .collect();
+            need(
+                changed.iter().all(|p| known(p)),
+                "unregistered control file appeared/disappeared during census",
+            )?;
+            vanished.extend(
+                paths
+                    .iter()
+                    .filter(|p| known(p) && !closing.contains(p))
+                    .cloned(),
+            );
+            continue;
+        }
+        need(
+            usage.control <= maximum,
+            "aggregate boot control allocation exceeds admission",
+        )?;
+        if let Some(r) = &registered {
+            need(
+                usage.stores
+                    <= r.store
+                        .checked_mul(2)
+                        .ok_or_else(|| bad("store budget overflow"))?,
+                "BCD/query sidecar allocation exceeds existing two-store admission",
+            )?;
+        }
+        vanished.sort();
+        vanished.dedup();
+        usage.vanished_known_sidecars = vanished;
+        return Ok(usage);
+    }
+    Err(bad(
+        "registered native query-sidecar census did not stabilize within three bookends",
+    ))
+}
+fn write_control_exact(path: &Path, bytes: &[u8]) -> io::Result<[u8; 32]> {
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .share_mode(1)
+        .create_new(true)
+        .open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    let mut check = vec![0; bytes.len()];
+    file.seek(SeekFrom::Start(0))?;
+    file.read_exact(&mut check)?;
+    need(check == bytes, "boot control durable readback differs")?;
+    Ok(digest(&check))
+}
+pub(super) fn persist(path: &Path, value: &impl Serialize, maximum: u64) -> io::Result<[u8; 32]> {
+    let bytes = serde_json::to_vec(value).map_err(io::Error::other)?;
+    need(
+        bytes.len() as u64 <= maximum,
+        "boot control record exceeds admitted bound",
+    )?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| bad("boot control parent absent"))?;
+    let pending = (bytes.len() as u64)
+        .checked_add(65535)
+        .ok_or_else(|| bad("boot control charge overflow"))?;
+    let usage = owned_control_usage(parent, maximum, pending)?;
+    if !usage.sidecars.is_empty() || !usage.vanished_known_sidecars.is_empty() {
+        let wire = serde_json::to_vec(&usage).map_err(io::Error::other)?;
+        need(
+            usage
+                .control
+                .checked_add(wire.len() as u64)
+                .and_then(|n| n.checked_add(65535))
+                .is_some_and(|n| n <= maximum),
+            "sidecar census receipt exceeds existing control admission",
+        )?;
+        let ordinal = SIDECAR_RECEIPT
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| v.checked_add(1))
+            .map_err(|_| bad("sidecar receipt ordinal overflow"))?;
+        write_control_exact(
+            &parent.join(format!("owned-query-sidecars-{ordinal:04}.json")),
+            &wire,
+        )?;
+    }
+    write_control_exact(path, &bytes)
+}
+
+#[derive(Serialize)]
+struct ToolRecord<'a> {
+    kind: &'static str,
+    arguments: &'a [String],
+    process_id: u32,
+    creation_100ns: u64,
+    actual_exit: Option<i32>,
+    timed_out: bool,
+    stdout: &'a [u8],
+    stderr: &'a [u8],
+    overflow: bool,
+}
+struct OwnedChild(std::process::Child);
+impl std::ops::Deref for OwnedChild {
+    type Target = std::process::Child;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl std::ops::DerefMut for OwnedChild {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+impl Drop for OwnedChild {
+    fn drop(&mut self) {
+        if !matches!(self.0.try_wait(), Ok(Some(_))) {
+            let _ = self.0.kill();
+        }
+    }
+}
+static TOOL_RECORD_ORDINAL: AtomicU64 = AtomicU64::new(0);
+
+pub(super) struct Tool {
+    path: PathBuf,
+    _file: File,
+    budget: RecoveryBootBudget,
+    spent: AtomicU64,
+}
+impl Tool {
+    pub(super) fn system(budget: RecoveryBootBudget) -> io::Result<Self> {
+        let mut path = vec![0u16; 32768];
+        let n = unsafe { GetSystemDirectoryW(path.as_mut_ptr(), path.len() as u32) } as usize;
+        need(
+            n > 0 && n < path.len(),
+            "actual system directory unavailable",
+        )?;
+        let path = PathBuf::from(String::from_utf16(&path[..n]).map_err(io::Error::other)?)
+            .join("bcdedit.exe");
+        let file = OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .custom_flags(0x0020_0000)
+            .open(&path)?;
+        need(
+            file.metadata()?.is_file(),
+            "actual system BCD tool unavailable",
+        )?;
+        Ok(Self {
+            path,
+            _file: file,
+            budget,
+            spent: AtomicU64::new(0),
+        })
+    }
+    pub(super) fn run(
+        &self,
+        store: Option<&Path>,
+        args: &[String],
+        directory: &Path,
+    ) -> io::Result<Vec<u8>> {
+        self.run_inner(store, args, directory, None)
+    }
+    /// Sole fixed SDK export factory. No external path/argument adoption.
+    pub(super) fn export_owned_store(&self, directory: &Path) -> io::Result<Vec<u8>> {
+        let path = directory.join("original-system-store.bcd");
+        let target = path
+            .to_str()
+            .ok_or_else(|| bad("Unicode owned export path required"))?
+            .to_owned();
+        self.run_inner(None, &["/export".into(), target], directory, Some(&path))
+    }
+    fn run_inner(
+        &self,
+        store: Option<&Path>,
+        args: &[String],
+        directory: &Path,
+        expected_export: Option<&Path>,
+    ) -> io::Result<Vec<u8>> {
+        let mut all = Vec::new();
+        if let Some(store) = store {
+            all.extend([
+                "/store".into(),
+                store
+                    .to_str()
+                    .ok_or_else(|| bad("Unicode BCD store path required"))?
+                    .into(),
+            ]);
+        }
+        all.extend_from_slice(args);
+        // This is the ONE SDK export factory, not permission for arbitrary
+        // paths or suffixes. Capture its actual created FD before persisting
+        // the child receipt, since Microsoft's export can create LOG sidecars.
+        let export_output = if let Some(target) = expected_export {
+            need(
+                store.is_none()
+                    && args.len() == 2
+                    && args[0] == "/export"
+                    && target == directory.join("original-system-store.bcd")
+                    && Path::new(&args[1]) == target,
+                "invalid private SDK export dispatch",
+            )?;
+            match std::fs::symlink_metadata(target) {
+                Err(error) if matches!(error.raw_os_error(), Some(2 | 3)) => (),
+                Err(error) => return Err(error),
+                Ok(_) => return Err(bad("SDK original BCD export target must be fresh")),
+            }
+            Some(target.to_path_buf())
+        } else {
+            None
+        };
+        let mut child = OwnedChild(
+            Command::new(&self.path)
+                .creation_flags(0x0800_0000)
+                .args(&all)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()?,
+        );
+        let pid = child.id();
+        let (mut creation, mut exit, mut kernel, mut user) = (0, 0, 0, 0);
+        need(
+            unsafe {
+                GetProcessTimes(
+                    child.0.as_raw_handle(),
+                    &mut creation,
+                    &mut exit,
+                    &mut kernel,
+                    &mut user,
+                )
+            } != 0,
+            "actual BCD child birth unavailable",
+        )?;
+        fn drain(
+            mut input: impl Read + Send + 'static,
+        ) -> io::Result<thread::JoinHandle<io::Result<(Vec<u8>, bool)>>> {
+            thread::Builder::new()
+                .name("n2r-bcd-bounded-drain".into())
+                .stack_size(256 * 1024)
+                .spawn(move || {
+                    let mut saved = Vec::new();
+                    let mut buffer = [0u8; 8192];
+                    let mut overflow = false;
+                    loop {
+                        let n = input.read(&mut buffer)?;
+                        if n == 0 {
+                            break;
+                        }
+                        let keep = n.min(65536usize.saturating_sub(saved.len()));
+                        saved.extend_from_slice(&buffer[..keep]);
+                        overflow |= keep != n;
+                    }
+                    Ok((saved, overflow))
+                })
+        }
+        let stdout = drain(
+            child
+                .stdout
+                .take()
+                .ok_or_else(|| bad("BCD stdout missing"))?,
+        )?;
+        let stderr = drain(
+            child
+                .stderr
+                .take()
+                .ok_or_else(|| bad("BCD stderr missing"))?,
+        )?;
+        let until = Instant::now()
+            + Duration::from_millis(u64::from(self.budget.tool_timeout_milliseconds));
+        let mut timed_out = false;
+        let status = loop {
+            if let Some(s) = child.try_wait()? {
+                break s;
+            }
+            if Instant::now() >= until {
+                timed_out = true;
+                child.kill()?;
+                let reap = Instant::now() + Duration::from_secs(5);
+                break loop {
+                    if let Some(s) = child.try_wait()? {
+                        break s;
+                    }
+                    need(
+                        Instant::now() < reap,
+                        "owned BCD child did not terminate within bounded post-kill interval",
+                    )?;
+                    thread::sleep(Duration::from_millis(20));
+                };
+            }
+            thread::sleep(Duration::from_millis(20));
+        };
+        let (out, out_over) = stdout
+            .join()
+            .map_err(|_| bad("BCD stdout drain panicked"))??;
+        let (err, err_over) = stderr
+            .join()
+            .map_err(|_| bad("BCD stderr drain panicked"))??;
+        if let Some(path) = &export_output {
+            // Official child has actually closed. Registration is accounting
+            // only: caller still performs full held hash/identity validation.
+            match OpenOptions::new()
+                .access_mode(0x80)
+                .share_mode(7)
+                .custom_flags(0x00200000)
+                .open(path)
+            {
+                Ok(file) => register_owned_query_store(
+                    &file,
+                    path,
+                    self.budget.maximum_store_bytes,
+                    self.budget.maximum_control_bytes,
+                )?,
+                Err(error) if !status.success() && matches!(error.raw_os_error(), Some(2 | 3)) => {
+                    ()
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        let ordinal = TOOL_RECORD_ORDINAL
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                value.checked_add(1)
+            })
+            .map_err(|_| bad("native BCD command ordinal overflow"))?;
+        let record = ToolRecord {
+            kind: "actual-native-bcdedit-child-v1",
+            arguments: &all,
+            process_id: pid,
+            creation_100ns: creation,
+            actual_exit: status.code(),
+            timed_out,
+            stdout: &out,
+            stderr: &err,
+            overflow: out_over || err_over,
+        };
+        let record_bytes = serde_json::to_vec(&record).map_err(io::Error::other)?.len() as u64;
+        self.spent
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                v.checked_add(record_bytes)
+                    .filter(|n| *n <= self.budget.maximum_control_bytes / 2)
+            })
+            .map_err(|_| {
+                bad("aggregate native BCD command records exceed admitted control quota")
+            })?;
+        persist(
+            &directory.join(format!("bcd-command-{ordinal:04}.json")),
+            &record,
+            self.budget.maximum_control_bytes,
+        )?;
+        need(
+            status.success() && !timed_out && !out_over && !err_over,
+            "native BCD operation failed/overflowed; preserve intent/store; no retry",
+        )?;
+        Ok(out)
+    }
+    pub(super) fn set(&self, id: &str, key: &str, value: &str, directory: &Path) -> io::Result<()> {
+        self.run(
+            None,
+            &["/set".into(), id.into(), key.into(), value.into()],
+            directory,
+        )
+        .map(|_| ())
+    }
+    pub(super) fn enum_all(
+        &self,
+        store: &Path,
+        directory: &Path,
+    ) -> io::Result<BTreeMap<String, BTreeMap<String, Vec<String>>>> {
+        self.enum_all_at(Some(store), directory)
+    }
+    pub(super) fn enum_system_all(
+        &self,
+        directory: &Path,
+    ) -> io::Result<BTreeMap<String, BTreeMap<String, Vec<String>>>> {
+        self.enum_all_at(None, directory)
+    }
+    fn enum_all_at(
+        &self,
+        store: Option<&Path>,
+        directory: &Path,
+    ) -> io::Result<BTreeMap<String, BTreeMap<String, Vec<String>>>> {
+        let bytes = self.run(
+            store,
+            &["/enum".into(), "all".into(), "/v".into()],
+            directory,
+        )?;
+        let text = decode(&bytes)?.replace("\r\n", "\n");
+        let mut objects = BTreeMap::new();
+        for block in text.split("\n\n").filter(|s| !s.trim().is_empty()) {
+            let section = parse_section(block)?;
+            let mut fields = section.fields;
+            let id = canonical_guid(one(&fields, "identifier")?)?;
+            // Internal semantic metadata, not a BCD element. This key cannot
+            // collide with native element syntax and is never sent to /set.
+            fields.insert("__bcd_section_header".into(), vec![section.heading]);
+            need(
+                objects.insert(id, fields).is_none(),
+                "duplicate actual native BCD object",
+            )?;
+        }
+        need(
+            objects.contains_key(BOOTMGR),
+            "complete native BCD object domain omits BootMgr",
+        )?;
+        Ok(objects)
+    }
+    pub(super) fn enum_object(
+        &self,
+        store: Option<&Path>,
+        id: &str,
+        directory: &Path,
+    ) -> io::Result<BTreeMap<String, Vec<String>>> {
+        let bytes = self.run(store, &["/enum".into(), id.into(), "/v".into()], directory)?;
+        parse(&decode(&bytes)?)
+    }
+}
+fn decode(bytes: &[u8]) -> io::Result<String> {
+    if bytes.starts_with(&[0xff, 0xfe]) || bytes.iter().skip(1).step_by(2).take(16).all(|b| *b == 0)
+    {
+        let b = if bytes.starts_with(&[0xff, 0xfe]) {
+            &bytes[2..]
+        } else {
+            bytes
+        };
+        need(b.len().is_multiple_of(2), "BCD Unicode output truncated")?;
+        return String::from_utf16(
+            &b.chunks_exact(2)
+                .map(|v| u16::from_le_bytes([v[0], v[1]]))
+                .collect::<Vec<_>>(),
+        )
+        .map_err(io::Error::other);
+    }
+    let n = unsafe {
+        MultiByteToWideChar(1, 8, bytes.as_ptr(), bytes.len() as i32, ptr::null_mut(), 0)
+    };
+    need(n > 0, "native OEM BCD output encoding unknown")?;
+    let mut out = vec![0; n as usize];
+    need(
+        unsafe {
+            MultiByteToWideChar(
+                1,
+                8,
+                bytes.as_ptr(),
+                bytes.len() as i32,
+                out.as_mut_ptr(),
+                n,
+            )
+        } == n,
+        "native BCD output decode incomplete",
+    )?;
+    String::from_utf16(&out).map_err(io::Error::other)
+}
+struct ParsedBcdSection {
+    heading: String,
+    fields: BTreeMap<String, Vec<String>>,
+}
+fn supported_section_heading(heading: &str) -> bool {
+    matches!(
+        heading,
+        "Firmware Boot Manager"
+            | "Windows Boot Manager"
+            | "Windows Boot Loader"
+            | "Resume from Hibernate"
+            | "Windows Memory Tester"
+            | "EMS Settings"
+            | "Debugger Settings"
+            | "RAM Defects"
+            | "Global Settings"
+            | "Boot Loader Settings"
+            | "Hypervisor Settings"
+            | "Resume Loader Settings"
+            | "Device options"
+            | "Device Options"
+            | "Setup Ramdisk Options"
+    ) || heading
+        .strip_prefix("Firmware Application (")
+        .and_then(|s| s.strip_suffix(')'))
+        .is_some_and(|s| s.len() == 8 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+fn bcd_element_key(key: &str) -> bool {
+    !key.is_empty()
+        && (key.bytes().all(|b| b.is_ascii_alphanumeric())
+            || key
+                .strip_prefix("custom:")
+                .is_some_and(|s| s.len() == 8 && s.bytes().all(|b| b.is_ascii_hexdigit())))
+}
+fn parse_section(text: &str) -> io::Result<ParsedBcdSection> {
+    let mut lines = text
+        .lines()
+        .map(|s| s.trim_end_matches('\r'))
+        .filter(|s| !s.trim().is_empty());
+    let heading = lines
+        .next()
+        .ok_or_else(|| bad("native BCD section heading absent"))?;
+    need(
+        heading == heading.trim() && supported_section_heading(heading),
+        "unsupported/localized native BCD section heading",
+    )?;
+    let divider = lines
+        .next()
+        .ok_or_else(|| bad("native BCD section divider absent"))?;
+    need(
+        divider.len() == heading.len() && divider.bytes().all(|b| b == b'-'),
+        "native BCD heading/divider framing differs",
+    )?;
+    let mut fields = BTreeMap::<String, Vec<String>>::new();
+    let mut last: Option<String> = None;
+    for line in lines {
+        need(
+            line.len() >= 24 && line.is_char_boundary(24),
+            "native BCD element column framing differs",
+        )?;
+        let (column, value) = line.split_at(24);
+        let raw_key = column.trim();
+        let value = value.trim();
+        let key = if raw_key.is_empty() {
+            let prior = last
+                .clone()
+                .ok_or_else(|| bad("BCD continuation has no preceding element"))?;
+            need(
+                prior != "identifier",
+                "native BCD identifier may not have continuation values",
+            )?;
+            prior
+        } else {
+            let key = raw_key.to_ascii_lowercase();
+            need(
+                bcd_element_key(&key),
+                "unsupported/localized or malformed native BCD element key",
+            )?;
+            need(
+                !fields.contains_key(&key),
+                "duplicate native BCD element key",
+            )?;
+            if fields.is_empty() {
+                need(
+                    key == "identifier",
+                    "native BCD first element is not en-US identifier",
+                )?;
+            }
+            last = Some(key.clone());
+            key
+        };
+        // Preserve every element, including an explicit empty value. GUID
+        // references stay complete and continuation ordering is unchanged.
+        let value = if value.len() == 38 && value.starts_with('{') {
+            canonical_guid(value)?
+        } else {
+            value.to_owned()
+        };
+        fields.entry(key).or_default().push(value);
+    }
+    canonical_guid(one(&fields, "identifier")?)?;
+    Ok(ParsedBcdSection {
+        heading: heading.into(),
+        fields,
+    })
+}
+pub(super) fn parse(text: &str) -> io::Result<BTreeMap<String, Vec<String>>> {
+    parse_section(text).map(|section| section.fields)
+}

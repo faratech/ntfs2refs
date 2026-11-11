@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "kind": "native-resource-fixture-materialization-budget-refusal",
+  "source_commit": "c77c92e3873ca1948dcf71393fa5c37d4af7f0bc",
+  "binary_sha256": "b7b1e3a23ea733ffb7285d25a814ada1647e59a44a79ffa905bb7c88247937eb",
+  "run_id": "dfb97725233246338c0ee04f6e08349f",
+  "ready_checkpoint": "d8db8fd9-284a-4e78-86b5-85d8a2607663",
+  "temporary_failure_checkpoint": "bbeb8887-7da9-4d40-afcb-39e727565c8b",
+  "worker_archive_sha256": "fad19df8849e5ef56b9c5dbde8f7493f0931c04791e111c007de3fb3b2142a22",
+  "output_archive_sha256": "43547fcd761975854b1bd9671bd957e824dcc429cb68d0567dfb4348c81ae0a3",
+  "native_process": {
+    "exit_code": 1,
+    "pid": 5360,
+    "actual_exit_observed": true,
+    "creation_ms": 1793693601340,
+    "utc": "2026-11-03T08:14:59.4923739Z",
+    "stdout_bytes": 28208,
+    "stderr_bytes": 65,
+    "wall_seconds": 98.1364742
+  },
+  "job_at_start": {
+    "baseline_private_bytes": 1257472,
+    "current_private_bytes": 1400832,
+    "job_limit_bytes": 2147483648,
+    "process_is_member": true,
+    "process_limit_bytes": 2147483648
+  },
+  "source_and_projection": {
+    "arena_ram_after_projection_drop": 833478896,
+    "arena_ram_before_projection_drop": 1040701782,
+    "arena_registry_ram": 3085170,
+    "current_run_source_sha256": "f90fedacc92bf57ce335d735523e6efe23bf32abf20b9f8def00af137dd78369",
+    "directories": 1747,
+    "files": 811,
+    "fixture_bitmap_sha256": "a306fbb23fa7a9150e52b0d64dfa8ebdd7562b7a948bbb8e86431e9d487836f6",
+    "fixture_ownership_sha256": "f4a3befab5ea46c4aa82b01956a08487a71840e6fd0dec8c3e7507c957b11716",
+    "fixture_pin_scope": "allocation-and-ownership-not-full-payload",
+    "general_resource_qualified": false,
+    "job": {
+      "baseline_private_bytes": 1257472,
+      "current_private_bytes": 300597248,
+      "job_limit_bytes": 2147483648,
+      "process_is_member": true,
+      "process_limit_bytes": 2147483648
+    },
+    "kind": "fixture-source-pre-shadow",
+    "raw_identities": 2585,
+    "source_writes_authorized": false,
+    "streams": 811
+  },
+  "stderr": "Error: necessary materialization exceeds explicit payload budget",
+  "configured_materialization_budget_bytes": 2147483648,
+  "actual_required_materialization_bytes": "not reported",
+  "source_offline_and_readonly_at_completion": true,
+  "disposable_shadow_allocation_and_placement_started": true,
+  "source_payload_materialization_started": false,
+  "source_payload_writes": 0,
+  "conversion_qualified": false,
+  "execution_authorized": false
+}

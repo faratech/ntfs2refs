@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "kind": "persistent-recovery-boot-installer-and-cold-guard-build",
+  "focused_check_exit_code": 0,
+  "focused_check_wall_seconds": 35.2235476,
+  "unit_tests_run": false,
+  "native_boot_install_or_guard_run": false,
+  "root_fix": "Vec-to-array uses slice so malformed native firmware reply remains a typed conversion error",
+  "source_payload_writer_exposed": false,
+  "restore_without_closed_J_allowed": false,
+  "durable_restart_qualification_proven": false,
+  "draft_origin_sha256": "f31f319f185b5759cc03bb998a1e1b7d69fe949bd50fd00d8074ddc4dcf1ebdb",
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/native/recovery_boot.rs",
+      "bytes": 19274,
+      "sha256": "58d70a006ca45d11ce5ae13a325f528eec47aada44dcd9b03eda5464e4cf3733"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/recovery_boot/cold.rs",
+      "bytes": 22883,
+      "sha256": "ea09fe87301bbe6db06f3b028607a923023509165837b64eb16dced455edef6c"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/recovery_boot/metadata.rs",
+      "bytes": 24502,
+      "sha256": "1db269bbf5f15cd33c91b4c15737f41423c36c161aea2521d821be69b6cfd9e6"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/recovery_boot/fat.rs",
+      "bytes": 13066,
+      "sha256": "4b6af4f0a119a33bbfc6207fe277e31ab2d957916fe34ffa3057107d0f8a076c"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/recovery_boot/native.rs",
+      "bytes": 23937,
+      "sha256": "cacb712163309608c0acdff694221b56752830b42675c46fc1a347da4d7e3150"
+    }
+  ]
+}

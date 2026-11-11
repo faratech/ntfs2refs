@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "kind": "native-selective-plan-diagnostic",
+  "run_id": "9ac7538c83b24d5aa6ffbd0bb0d8b686",
+  "engine_run_id": "9c6feca77b5205ff27eed34cdb1fc558",
+  "source_commit": "83a1fd317d6277484f248e90e48b2604ca2b0a61",
+  "diagnostic_commit": "11e0513",
+  "working_tree_note": "Built with the existing user-owned src/main.rs capabilities hunk present and unstaged.",
+  "toolset_manifest_sha256": "8789372d10fad76dd4449a01599f277cfc47aa72f27ebf6647f845351ee88293",
+  "public_cli": {
+    "sha256": "c2bae79ba2c4f72a092d8baf00250186d386c4864684bc03a60ea84fc57e3e65",
+    "bytes": 7149568,
+    "argv": ["--drive", "F", "--partition", "2"],
+    "actual_native_exit": 0,
+    "actual_task_result": 0
+  },
+  "vm_parent_checkpoint": "5f30f4a1-9db0-4df5-a0e5-2c7be5d87eec",
+  "restore_verified_in_guest": "F: NTFS 64 KiB, prior run directory absent",
+  "conversion_outcome": {
+    "wrapper_success": true,
+    "barrier": "HND",
+    "native_objects": 15,
+    "complete_logical_hashes": 10,
+    "label_and_mount_verified": true,
+    "records_hashes_verified_on_host": true
+  },
+  "selective_plan_diagnostic": {
+    "target_preservation_sha256": "1c538229b6234fd79d2a11341c4fce8ec71cffe06f50e7ac1fb02d02953037b3",
+    "coarse_source": "protected frozen-shadow allocation: metadata-inclusive native bitmap plus known anchors and streams",
+    "coarse_ranges": 5,
+    "coarse_bytes": 14768467968,
+    "planned_ranges": 159,
+    "planned_bytes": 70615040,
+    "planned_journal_bytes": 141251152,
+    "complete_capture_ranges": 159,
+    "equals_complete_capture": true,
+    "original_bytes_read": 14768467968,
+    "candidate_source_logical_bytes_read": 8594411520,
+    "candidate_shadow_bytes_read": 6174056448,
+    "elapsed_seconds": 13.54,
+    "elapsed_is_warm_cache": true,
+    "warm_cache_note": "Ran immediately after the complete capture read the same bytes; about 2.2 GB/s versus about 300 MB/s observed elsewhere. Not a cold measurement.",
+    "selective_capture_executable": false,
+    "raw_write_authority": false
+  },
+  "allocation_delta_diagnostic": {
+    "changed_bytes": 70615040,
+    "changed_outside_observed_bitmap_and_known_ranges": 0
+  },
+  "timing": {
+    "measure": "native process creation to the wrapper's native-terminal record",
+    "seconds": 2391.4,
+    "phase_markers_seconds": {
+      "building_refs_metadata": 448,
+      "verifying_target": 454,
+      "preparing_recovery_journal": 1390,
+      "applying_conversion": 1830,
+      "verifying_files": 2092
+    },
+    "comparison_note": "The previous HEAD run without this diagnostic took 2813.3 s; this run includes extra diagnostic reads yet finished sooner, so run-to-run variance on the shared host exceeds the diagnostic's cost. No speedup is claimed from this run.",
+    "last_sample_read_bytes": 851027721543,
+    "last_sample_write_bytes": 285661613
+  },
+  "archive": ".lab/hyperv/streaming-v2-20261027/head-drive-measure-20261029-9ac7538c83b24d5aa6ffbd0bb0d8b686/closed-conversion",
+  "scope": "One native conversion of the 52 GiB fixture. On real frozen devices, the write set planned over only the frozen shadow's native allocation (14.77 GB per side) equals the complete whole-image capture's write set exactly. The complete capture remained authoritative; nothing here authorizes a selective write. One fixture, one run.",
+  "qualification": {
+    "selective_capture_executable": false,
+    "mutation_tested": false,
+    "reboot_tested": false,
+    "interruption_resume_rollback_tested": false,
+    "release_qualified": false
+  }
+}

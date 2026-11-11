@@ -1,0 +1,70 @@
+{
+  "kind": "actual-Windows-kernel-purge-EA-native-target-projection-evidence",
+  "observed_utc": "2026-11-07T04:28:40.3066788Z",
+  "primary_reference": "https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/kernel-extended-attributes",
+  "documented_behavior": "User-mode writes cannot author kernel EAs; queries return them. The Kernel.Purge prefix identifies caches invalidated by content or reparse changes.",
+  "source_evidence_sha256": "cfb6e0186ea0f2b98e90badd607f1a3eef8b5257af2c630268d51ad566b87312",
+  "oracle_receipt": {
+    "path": ".lab\\hyperv\\boot-conversion-0b48b55-c3bf3b92e5734edcb040e39273fe69dc\\actual-ReFS-kernel-purge-EA-oracle.json",
+    "sha256": "775d533dd0975f6d5a13f314fccb4143b490bed4daa41d0fce9dd41ed6bd3bb3"
+  },
+  "oracle_helper": {
+    "path": "lab/guest/Observe-ReFSKernelPurgeEa.ps1",
+    "sha256": "44ba14becbbc506e7ab343f421fd8747bb13f3f84f93294ab625bbae5784733b",
+    "execution_source_path": ".lab/development/Observe-ReFSKernelPurgeEa.ps1",
+    "execution_sha256": "44ba14becbbc506e7ab343f421fd8747bb13f3f84f93294ab625bbae5784733b"
+  },
+  "actual_filesystem": "ReFS",
+  "actual_control_disk": 1,
+  "actual_control_boot_ms": 1793995332223,
+  "source_restored_healthy_NTFS": true,
+  "created_file_count": 1,
+  "native_set_ea_calls": 1,
+  "set_ntstatus": "00000000",
+  "fresh_query_ntstatus": "00000000",
+  "ordinary_user_ea_roundtrip": true,
+  "kernel_purge_after_count": 0,
+  "requested_eas": [
+    {
+      "name": "$KERNEL.PURGE.ESBCACHE",
+      "flags": 0,
+      "value_bytes": 69,
+      "value_hex": "45000000030002065f92ac112963dd0100472fc29610dd0102800000270027040c80000020f057d4a75792b0e3ee1f832ad42d11fea7f9f22ce1d7d6e9415490f34842e162"
+    },
+    {
+      "name": "$KERNEL.PURGE.APPXFICACHE",
+      "flags": 0,
+      "value_bytes": 24,
+      "value_hex": "5f92ac112963dd017037030b000000000000000000000000"
+    },
+    {
+      "name": "N2R.USER.EA.CONTROL",
+      "flags": 0,
+      "value_bytes": 37,
+      "value_hex": "6e74667332726566732d6e61746976652d526546532d45412d726f756e64747269702d7631"
+    }
+  ],
+  "identity_bookends_match": true,
+  "content_bookends_match": true,
+  "source_write_calls": 0,
+  "source_payload_reads": 0,
+  "conversion_or_recovery_calls": 0,
+  "boot_changes": 0,
+  "unit_tests_run": false,
+  "planned_policy": "Only actual Windows conversion target projection may omit flags0 Kernel.Purge cache entries, with exact paged audit rows; raw/native source EA checks and ordinary EA preservation remain exact. Unknown kernel EAs stay refused.",
+  "grants_source_or_replay_authority": false,
+  "source_converted": false,
+  "source_booted": false,
+  "focused_compile": {
+    "exit_code": 0,
+    "wall_seconds": 21.4731902,
+    "rust_version": "1.98.1",
+    "shared_target": "target/shared-experiments",
+    "offline": true,
+    "locked": true,
+    "static_crt": true,
+    "jobs": 4,
+    "unit_tests_run": false,
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+  }
+}

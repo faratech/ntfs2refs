@@ -50,29 +50,48 @@ pub fn check_security_views(
     before: &Snapshot,
     after: &Snapshot,
 ) -> Result<SecurityView> {
+    check_security_views_with_limit(
+        sd,
+        before,
+        after,
+        crate::ntfs_security::MAX_DESCRIPTOR_BYTES as u64,
+    )
+}
+
+pub fn check_security_views_with_limit(
+    sd: &[u8],
+    before: &Snapshot,
+    after: &Snapshot,
+    maximum: u64,
+) -> Result<SecurityView> {
     for snapshot in [before, after] {
         let kernel = snapshot
             .kernel_security
             .as_ref()
             .context("kernel security view absent")?;
         ensure!(
-            kernel.native_error.is_none() && ntfs_attestation::same_security(sd, &kernel.bytes)?,
+            kernel.native_error.is_none()
+                && ntfs_attestation::same_security_with_limit(sd, &kernel.bytes, maximum)?,
             "stored/kernel security semantics differ"
         );
         ensure!(
             snapshot.security_error.is_none(),
             "API security query failed"
         );
-        crate::ntfs_security::parse_descriptor(&snapshot.security)?;
+        crate::ntfs_security::parse_descriptor_with_limit(&snapshot.security, maximum)?;
     }
     ensure!(
-        ntfs_attestation::same_security(&before.security, &after.security)?,
+        ntfs_attestation::same_security_with_limit(&before.security, &after.security, maximum)?,
         "API security projection changed"
     );
     Ok(SecurityView {
         stored_sha256: hex::encode(Sha256::digest(sd)),
         api_descriptor_hex: hex::encode(&before.security),
-        api_matches_stored: ntfs_attestation::same_security(sd, &before.security)?,
+        api_matches_stored: ntfs_attestation::same_security_with_limit(
+            sd,
+            &before.security,
+            maximum,
+        )?,
         api_stable: true,
         target_must_reproduce_both_views: true,
     })
@@ -120,9 +139,77 @@ pub fn check_metadata(
     before: &Snapshot,
     after: &Snapshot,
 ) -> Result<TimestampView> {
-    let a = ntfs_attestation::check_non_security_snapshot(f, serial, before)?;
-    let b = ntfs_attestation::check_non_security_snapshot(f, serial, after)?;
-    check_security_views(sd, before, after)?;
+    check_metadata_with_limit(
+        f,
+        serial,
+        sd,
+        before,
+        after,
+        crate::ntfs_security::MAX_DESCRIPTOR_BYTES as u64,
+    )
+}
+
+pub fn check_metadata_with_limit(
+    f: &FileInventory,
+    serial: u64,
+    sd: &[u8],
+    before: &Snapshot,
+    after: &Snapshot,
+    maximum_security_bytes: u64,
+) -> Result<TimestampView> {
+    check_metadata_with_link_counter_hint(
+        f,
+        serial,
+        sd,
+        before,
+        after,
+        maximum_security_bytes,
+        false,
+    )
+}
+
+/// The paged Windows owner has already closed the complete raw I30 join.
+/// Native before/after canonical counts still match without rewriting the hint.
+pub(crate) fn check_metadata_windows_with_limit(
+    f: &FileInventory,
+    serial: u64,
+    sd: &[u8],
+    before: &Snapshot,
+    after: &Snapshot,
+    maximum_security_bytes: u64,
+) -> Result<TimestampView> {
+    check_metadata_with_link_counter_hint(
+        f,
+        serial,
+        sd,
+        before,
+        after,
+        maximum_security_bytes,
+        true,
+    )
+}
+
+fn check_metadata_with_link_counter_hint(
+    f: &FileInventory,
+    serial: u64,
+    sd: &[u8],
+    before: &Snapshot,
+    after: &Snapshot,
+    maximum_security_bytes: u64,
+    header_is_hint: bool,
+) -> Result<TimestampView> {
+    let (a, b) = if header_is_hint {
+        (
+            ntfs_attestation::check_non_security_snapshot_windows(f, serial, before)?,
+            ntfs_attestation::check_non_security_snapshot_windows(f, serial, after)?,
+        )
+    } else {
+        (
+            ntfs_attestation::check_non_security_snapshot(f, serial, before)?,
+            ntfs_attestation::check_non_security_snapshot(f, serial, after)?,
+        )
+    };
+    check_security_views_with_limit(sd, before, after, maximum_security_bytes)?;
     let si = f
         .standard_information
         .as_ref()
@@ -145,14 +232,15 @@ pub fn check_metadata(
             .as_ref()
             .context("kernel security view absent")?;
         ensure!(
-            k.native_error.is_none() && ntfs_attestation::same_security(sd, &k.bytes)?,
+            k.native_error.is_none()
+                && ntfs_attestation::same_security_with_limit(
+                    sd,
+                    &k.bytes,
+                    maximum_security_bytes
+                )?,
             "stored/kernel security semantics differ"
         );
-        let tag = query(s, 9)?;
-        ensure!(
-            tag[4..8] == [0; 4],
-            "source-view profile refuses reparse tags"
-        );
+        ntfs_attestation::check_reparse_snapshot(f, s)?;
         if !f.is_directory {
             let stream = f
                 .streams
@@ -160,9 +248,46 @@ pub fn check_metadata(
                 .find(|s| s.name_utf16.is_empty())
                 .context("default stream absent")?;
             if !stream.resident {
+                let expected_allocation = if stream.flags == 0x8000 || stream.flags == 1 {
+                    if stream.flags == 1 {
+                        let mut attrs = f
+                            .attributes
+                            .iter()
+                            .filter(|a| a.type_code == 0x80 && a.name_utf16 == stream.name_utf16);
+                        let attr = attrs.next().context("compressed DATA attribute absent")?;
+                        ensure!(
+                            attrs.next().is_none(),
+                            "compressed DATA attribute ambiguous"
+                        );
+                        // The raw allocation header describes logical allocation;
+                        // Windows reports the physically compressed allocation.
+                        let physical = stream
+                            .extents
+                            .iter()
+                            .filter(|extent| extent.physical_offset.is_some())
+                            .try_fold(0u64, |sum, extent| {
+                                sum.checked_add(extent.length)
+                                    .context("compressed physical allocation overflow")
+                            })?;
+                        ensure!(
+                            attr.total_allocated_size == Some(physical),
+                            "compressed physical allocation header differs"
+                        );
+                    }
+                    stream
+                        .extents
+                        .iter()
+                        .filter(|extent| extent.physical_offset.is_some())
+                        .try_fold(0u64, |sum, extent| {
+                            sum.checked_add(extent.length)
+                                .context("physical allocation overflow")
+                        })?
+                } else {
+                    stream.allocated_size
+                };
                 ensure!(
                     u64::from_le_bytes(query(s, 1)?[..8].try_into().unwrap())
-                        == stream.allocated_size,
+                        == expected_allocation,
                     "native allocation size differs"
                 );
             }
@@ -197,8 +322,8 @@ pub fn diagnose(raw: &NtfsInspection, inspection_pin: &str, native: &Report) -> 
     // Per-object strict failures remain in this independent comparison.
     let _strict = ntfs_attestation::compare(raw, inspection_pin, native)?;
     ensure!(
-        matches!(native.schema_version, 5..=6),
-        "source-view policy requires native schema 5 or 6"
+        matches!(native.schema_version, 5..=14),
+        "source-view policy requires native schema 5 through 12"
     );
     let security = raw
         .security_reconciliation

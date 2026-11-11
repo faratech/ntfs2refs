@@ -1,107 +1,88 @@
-# Owning-machine conversion and recovery CLI
+# Operating and recovery guide: 0.0.1-alpha
 
-`ntfs2refs convert --request` runs the certificate-backed workflow on the
-machine owning the disks. It has no Hyper-V dependency. Run it in an elevated
-Windows process with the required volume/backup/security privileges.
+This guide describes the [published experimental Windows boot-volume alpha](https://github.com/faratech/ntfs2refs/releases/tag/0.0.1-alpha).
+See [release qualification](release-0.0.1-alpha.md) for the tested scope and
+[the archived workflow](history/cli-workflow-before-boot-alpha-closeout-20261111.md)
+for older experiments.
 
-```powershell
-$pin = (Get-FileHash -LiteralPath .\devices.json -Algorithm SHA256).Hash.ToLowerInvariant()
-ntfs2refs convert --request .\devices.json --request-sha256 $pin --output C:\ntfs2refs\runs\run-001
-```
+## Prepare
 
-The output directory must be fresh, on the Windows OS volume, with ordinary
-directory ancestry; missing parents are created and checked before use. The request is a bounded ordinary JSON file, at most
-16 KiB, matching `general_conversion::Request`. Its fields are:
+1. Make an independent backup of the source and retain access to the control OS.
+2. Boot a separate Windows installation capable of creating a ReFS Dev Drive.
+   The installed Windows being converted must be offline, attached as a data
+   volume. This does not require a VM; the VM is the lab environment.
+3. Provide independent working storage off the source disk. Leave all working
+   and recovery files in place until conversion and verification are complete.
+4. Open an elevated terminal, verify the downloaded ZIP against its published
+   SHA-256, then extract it. The current ZIP SHA-256 is
+   `4966456f4c0bac93095cd6112a0eb5f06262842b3965ae6c7e86845cf17d713e`.
 
-- `schema_version`: `1`.
-- `experiment_id`: a fresh 32-character lowercase hexadecimal identifier.
-- `pair`: actual source and shadow `GeneralDiskBinding` values, including disk
-  number, volume GUID, GPT identities, partition bounds and sector geometry.
-- `journal`: an independent `GeneralJournalStorageBinding`.
-- `max_journal_bytes`: a positive journal ceiling within the current limit.
-- `verify_existing_shadow`: normally `false`; `true` requires an existing
-  shadow to match the newly frozen source through the complete native verifier.
+The measured lab source had 22.9 GB used and consumed about 30 GB of working
+storage. Actual requirements depend on metadata, placement, rewritten data and
+recovery records. Do not interpret the lab value as a fixed maximum.
 
-Source and shadow partitions must have matching geometry on different data
-disks. The shadow must already be a separately prepared ReFS volume with label
-`n2r-retained-shadow`. Normal construction requires an empty shadow namespace
-apart from the explicitly supported Windows system-cache entries. The journal
-must be independent of both data disks. Native identities are checked against
-the actual devices; a caller-provided success flag cannot qualify a source.
-
-The current profile is deliberately bounded: NTFS 3.1 with 512-byte logical
-sectors, 4 KiB clusters and 1 KiB records; ReFS 3.14 with 4 KiB clusters; up to
-128 ordinary files, 32 directories and 256 MiB of logical contents. Source
-policy qualification currently targets Windows build 26300. Unsupported
-semantics and unknown layouts are refused. Boot/system volumes remain excluded.
-
-The workflow captures a live source freeze, checks the semantic source model,
-constructs or verifies the native ReFS shadow, freezes it, and creates the
-source certificate. It then saves the external journal and trusted ticket,
-applies the admitted patch set, records the handoff barrier and verifies the
-mounted ReFS tree. The source remains persistently excluded while raw writes
-are in progress. A failed run leaves phase diagnostics and any completed
-recovery inputs under the output directory.
-
-An image `plan` report remains non-executable. `convert --plan plan.json`
-retains its refusal behavior; it cannot be used to bypass live qualification.
-
-For recovery, use the run's generated `request.json`, `ticket.json` and the
-journal location from `journal-location.json`. Each input is pinned separately:
+## Select and convert
 
 ```powershell
-$requestPin = (Get-FileHash -LiteralPath C:\ntfs2refs\runs\run-001\request.json).Hash.ToLowerInvariant()
-$ticketPin = (Get-FileHash -LiteralPath C:\ntfs2refs\runs\run-001\ticket.json).Hash.ToLowerInvariant()
-ntfs2refs resume --journal J:\ntfs2refs-shadow\EXPERIMENT\reconstruction.journal `
-  --request C:\ntfs2refs\runs\run-001\request.json --request-sha256 $requestPin `
-  --ticket C:\ntfs2refs\runs\run-001\ticket.json --ticket-sha256 $ticketPin `
-  --output C:\ntfs2refs\runs\resume-001
+.\ntfs2refs.exe --list
+.\ntfs2refs.exe --drive D --windows-boot-volume --scratch-directory S:\runs --target-format dev-drive
 ```
 
-`rollback` uses the same pinned envelope and restores the exact admitted NTFS
-preimage before completing its rollback marker. `finalize` additionally
-requires `--expectation` and `--expectation-sha256`, matching the request's
-expected-tree hash. `rollback --after-marker` and `finalize --after-marker`
-complete an already durable marker after process death only while their existing
-exact-image proof still passes. A writable ReFS mount or label update can change
-the image; the old raw-recovery/finalization path must then refuse it.
-Recovery never starts
-a fresh apply, silently clears a foreign device's exclusion, or crosses the
-closed rollback boundary. A shadow-backed recovery needs the bound shadow
-available in its required protected state.
+Confirm the source disk and partition shown by the program. In this example,
+`D:` is the old Windows installation and `S:` is independent working storage.
+The demonstrated boot profile uses `dev-drive`; standard ReFS formatting and
+other Windows versions do not inherit this qualification.
 
-`rollback --without-shadow` explicitly selects journal-old-byte recovery when
-the enrolled shadow is unavailable. It still requires the exact pinned request,
-ticket, actual journal identity, expected target state and permitted pre-handoff
-lifecycle. It grants no forward resume or finalization authority. This public
-command passed a bounded native first-flushed-write interruption with the shadow
-detached, exact NTFS preimage proof before writable mounting and original NTFS
-availability afterward. A later clean-boot check matched four known user-file
-hashes and the original mount/label/partition identity; it did not reverify all
-twelve objects' security/timestamps or post-mount whole-image equality.
-See [the result and limits](general-native-conversion-results.md#public-shadowless-rollback-after-one-flushed-write).
+The drive interface also accepts explicit selection such as `--drive D --partition 3`.
+That syntax is not a claim that every data-volume layout or feature is qualified.
+The program refuses unsupported conditions instead of silently omitting them.
 
-For a label-only failure after handoff and the first writable ReFS mount, use
-the separate native-only command. Its pinned request must contain
-`expected_source_label`:
+The converter takes the source offline and read-only during preparation. It
+builds ReFS metadata through Windows and preserves eligible payload extents.
+The source conversion patches are applied only after preparation and the
+pre-write verification gate succeed. The final installation remains on the
+original source disk; the temporary shadow is working storage.
+
+## If a run stops
+
+- **Before apply:** the source has not received conversion patches. Preparation
+  can be started again; arbitrary power-cut resume during preparation is outside
+  this alpha's qualification.
+- **After source writes begin:** retain the working storage and use the exact
+  recovery command and checksum printed before the write. Do not start another
+  fresh conversion over the unfinished target.
 
 ```powershell
-ntfs2refs complete-label --request request.json --request-sha256 REQUEST_SHA256 `
-  --ticket ticket.json --ticket-sha256 TICKET_SHA256 --journal reconstruction.journal `
-  --expectation expectation.json --expectation-sha256 TREE_SHA256 `
-  --output C:\ntfs2refs\runs\label-completion-001
+.\ntfs2refs.exe --recover <printed-directory> --recovery-sha256 <printed-checksum>
 ```
 
-This command reads the journal exclusively and read-only to validate its native
-file identity, full immutable contents, comparison binding and exact HND marker.
-That receipt does not assert a current raw target hash or authorize replay.
-The source must already be online/writable ReFS on the original bound hardware
-partition, with the enrollment or desired label. The full strict native tree is
-verified before and after guarded label restoration, flush and readback. It
-does not open the old shadow, issue raw source writes, change disk attributes
-or rewrite journal markers. Partial failures are saved in the fresh output
-directory. An already-desired label is flushed and verified without a second
-setter call. See [the label contract](source-volume-label.md).
+The CLI also exposes `--rollback` before handoff. Do not infer a qualified
+Windows boot-volume rollback matrix from older data-volume experiments. Once
+ordinary writable ReFS use has begun, restoring old NTFS metadata is unsafe.
 
-`capabilities` reports command availability. It does not claim a production
-qualification matrix or a standalone raw ReFS formatter/writer.
+The recovered `rec-04` record establishes successful post-apply finalization and
+a healthy ReFS mount. Its independent before/after comparison was unavailable;
+it is not an arbitrary power-loss or full-content recovery qualification.
+
+## Verify the result
+
+For the lab boot claim, the harness checks that only the original disk is
+attached, Secure Boot is enabled, the running OS uses the original partition,
+C: is healthy ReFS 3.14 with 4 KiB clusters, the stock loader and ReFS driver have
+valid signatures, and sign-in reaches the desktop. A separate listing tool
+compares source and target metadata and logical stream hashes.
+
+A normal user's storage and boot setup requires its own validation. The alpha
+has not established compatibility with physical hardware, BitLocker, arbitrary
+Windows builds, every NTFS feature combination or very large volumes.
+
+## Visible differences
+
+Every preserved 8.3 short name is represented by a visible relative symbolic
+link beside its long name. For example, Explorer can show `PROGRA~1` in C:.
+NTFS-compressed files are represented without the NTFS compression flag.
+The exact listing exceptions and counts are in the release qualification.
+
+`--recheck-everything` restores the older repeated verification mode and can be
+much slower. Normal mode still performs the verification gate before the first
+source write. Neither mode establishes hardware compatibility by itself.

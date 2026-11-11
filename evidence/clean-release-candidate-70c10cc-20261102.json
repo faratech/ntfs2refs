@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "kind": "clean-committed-source-build",
+  "source_commit": "70c10ccc66b743ffeffc8f594709a2d5cb80cfb8",
+  "source_tree": "194f0e6960a579a38452468fe808e58fd29ebbc8",
+  "source_file_count": 284,
+  "manifest_path": "D:\\code\\ntfs2refs\\.lab\\development\\release-candidates\\r70c10cc\\manifest.json",
+  "manifest_sha256": "e418f4a206fef25f5f03248a057b9612f5d2bb35de50f52868e5b97ac41667ed",
+  "observed_working_bytes": 518875518,
+  "locked_dependencies": true,
+  "offline_build": true,
+  "working_tree_inputs_used": false,
+  "binaries": [
+    {
+      "name": "ntfs2refs",
+      "path": "bin/ntfs2refs.exe",
+      "bytes": 10830336,
+      "sha256": "9ba03ce562e2403fa98f0fc0b504f4ce4fddb30bdbea6448b8242756effb342b"
+    },
+    {
+      "name": "lab-selected-marker-native",
+      "path": "bin/lab-selected-marker-native.exe",
+      "bytes": 7162368,
+      "sha256": "1ad1f7ea572d7bcbe23f2387c654d0474b45bd4677cb134ac4eee49023d80e47"
+    },
+    {
+      "name": "lab-convert-native-composite",
+      "path": "bin/lab-convert-native-composite.exe",
+      "bytes": 7596544,
+      "sha256": "1425cf3a35a341c2e1d9f74dfa1c8b56f774f8e720dd6799c3df62ffa7195ec7"
+    },
+    {
+      "name": "lab-recover-native-composite",
+      "path": "bin/lab-recover-native-composite.exe",
+      "bytes": 3209216,
+      "sha256": "4b487c66367011f5ed75e008f557e198af30022f2116e41edb6e72838df3be62"
+    },
+    {
+      "name": "lab-content-digest",
+      "path": "bin/lab-content-digest.exe",
+      "bytes": 323584,
+      "sha256": "d8592a965ed89c077dc69cc0e7f2dce55458660057bbca15041982aee3b76458"
+    },
+    {
+      "name": "lab-managed-shadow",
+      "path": "bin/lab-managed-shadow.exe",
+      "bytes": 1067520,
+      "sha256": "62b2996113f1b1708fdf407f9b1f59634db4577eb9098a3dadd934a0439693c1"
+    }
+  ],
+  "unit_tests_run": false,
+  "native_tools_invoked": false,
+  "qualification_inherited": false,
+  "native_marker_qualified": false,
+  "stable_release": false,
+  "toolset_manifest": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-tools-70c10cc\\manifest.json",
+  "toolset_manifest_sha256": "b2c4962495d0da9f477ef425f2cf5d2a49b8fd133a647f2f92613d0fc4c767f0",
+  "note": "Adds recover-only enrolled marker fault facility. Inherited independent content/managed helpers preserve their original provenance. Native execution results recorded separately."
+}

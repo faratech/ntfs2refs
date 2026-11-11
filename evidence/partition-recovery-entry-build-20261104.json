@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "kind": "owning-machine-partition-AP-resume-RB-rollback-entry",
+  "status": "focused-check-passed-native-qualification-pending",
+  "reviewed_draft_patch_sha256": "044b0f0edf3e8be0aacb038e78170c038db83752a0510248261ca4e6c47f9a1b",
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/native/partition_lifecycle/staged.rs",
+      "bytes": 49069,
+      "sha256": "dc340894b3176cf29487095f379a752ccebe5ef51d0d39bce19931633230a7e5"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_owner.rs",
+      "bytes": 42806,
+      "sha256": "520f98944d67c747ae6ccc158478765847aa3b398525758b596bf2428b19ca02"
+    },
+    {
+      "path": "src/general_reconstruct/fast_verification/v4_maps/reopened.rs",
+      "bytes": 19237,
+      "sha256": "7c0d967f36c88ff3ead8c5e53c48231fa3791cc0395af097d5eb22b29338ce23"
+    },
+    {
+      "path": "src/resource_partition_alpha.rs",
+      "bytes": 22429,
+      "sha256": "0f5d284db7ba1ec645fbf45cb54f5118fe46c8d5f5880f4ed3faef4bc3960795"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/reopen/envelope.rs",
+      "bytes": 113991,
+      "sha256": "2df44c7f3581701c50b96752b9f9ef52c7b16a7ab142aad8156d1a1d8196aeda"
+    },
+    {
+      "path": "src/bin/lab-partition-recovery.rs",
+      "bytes": 3073,
+      "sha256": "81e6aa973bf0f3c35394d832f5a028b1ce3438f1c2def19edf188e79b58ea12f"
+    },
+    {
+      "path": "src/resource_partition_recovery.rs",
+      "bytes": 10761,
+      "sha256": "0509d727787db0f742d9580b2087f9ec829e2d647c99a53a38d29960ddc75799"
+    }
+  ],
+  "check_exit_code": 0,
+  "check_seconds": 31.4494306,
+  "shared_target_reused": true,
+  "unit_tests_run": false,
+  "native_run": false,
+  "public_main_or_frozen_alpha_changed": false,
+  "worker_stack_bytes": 8388608,
+  "execution_stacks_charged_bytes": 9437184,
+  "authority": "Actual private owner/token, independently supplied publication SHA256, held publication/locator/intent/J/index/expected/maps and authenticated MIXED/terminal witnesses.",
+  "resume": "Actual replay through HND, readonly native known contents plus complete authenticated physical maps before writable restoration.",
+  "rollback": "Actual replay through closed OLD/ABT plus readonly NTFS proof before writable restoration.",
+  "event_sink": "Owned durable observer drains original native events; cap and checks unchanged.",
+  "pre_AP_process_death_cancellation_supported": false,
+  "recovery_artifacts_automatically_retired": false,
+  "initial_check": "A copied draft retained an older mtime, so Cargo reused the old SDK metadata and reported the new method missing. Advancing only the seven applied source mtimes caused the SDK and root to recompile successfully; no cache deletion or code workaround.",
+  "post_check_normalization": "CRLF to LF only in appended envelope source; no semantic change.",
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+}

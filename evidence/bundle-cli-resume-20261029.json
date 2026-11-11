@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "kind": "public-bundle-cli-resume",
+  "original_run_id": "9340223f9d124a9f88e563ba669f0787",
+  "run_id": "c698a0cfd50d4199ba49bcca7dfd1614",
+  "host_case": ".lab/hyperv/streaming-v2-20261027/bundle-cli-20261029-9340223f9d124a9f88e563ba669f0787/recovery-cli-resume-c698a0cfd50d4199ba49bcca7dfd1614",
+  "public_cli": {
+    "sha256": "2cac76e012b4cf9b9d9ea5a90a3a77933856061afb4395a2c7e4b9ab4dc33ef0",
+    "argv": [
+      "--recover",
+      "C:\\ntfs2refs\\bundle-cli-20261029-9340223f9d124a9f88e563ba669f0787\\conversion",
+      "--recovery-sha256",
+      "3f3636d1ad2d64ac28920f722462d6d94639bd7d26e0ba0cecd9be7c618ee204"
+    ],
+    "stdin": "yes CRLF",
+    "pid": 4296,
+    "creation_ms": 1793248538222,
+    "retained_handle_observed": true,
+    "actual_native_exit": 0,
+    "actual_wrapper_task_exit": 0
+  },
+  "pins": {
+    "dispatch": "93ad3c19b80247f93db9554300d2b603d1c0bc6da7f9d26a98238b45ea03466e",
+    "closed_receipt": "e57d3e7b094a3ec620276426fc73e4cd6841687b09ee0fdf5eb3702cff1c90b8",
+    "preserved_receipt": "44d519beceebdc745af2e852b70808e45c1119c318d548a1db937e351e3eca77",
+    "request": "67282b215ce139e3cd1469b18e7b72db6b5ab3f382cd1b0cb25bbf06e4f45335",
+    "ticket": "83cbcbed651cbcd5947fbf0e2a7a7e08222b3a05fe8dd871bc1868b0f8c2b622",
+    "expectation": "e1d5fa0cafb0a584514d527838a626c5f8e50ae6f1e2d089cde94cf0f1f76c47",
+    "execution": "6606a67d760a69126f26cfc33b0d54db25659acf2fed05cd5a3b83443a656d43",
+    "completion": "85be7182c343b8e8bfb97b77a4f9b22139ec08bb6278cb4056c6889baaeae754"
+  },
+  "completion": {
+    "premount_exact_target_sha256": "b920ced8c88c491405cc4c77ca309c7d272ef6f20582445295d94355d9c60115",
+    "barrier": "HND",
+    "native_objects": 15,
+    "complete_logical_hashes": 10,
+    "label_and_mount_preserved": true,
+    "source_certificate_recreated": false,
+    "post_mount_raw_image_equality_claimed": false
+  },
+  "checkpoint": {
+    "id": "25a829b6-bea2-40cb-9114-e8d28e775d81",
+    "parent_id": "d121235d-f9fb-4e0e-843e-1ea4c3883221",
+    "count": 4,
+    "prior3_preserved": true,
+    "state": "Off",
+    "memory_assigned": 0,
+    "observed_utc": "2026-10-29T04:54:11.6935790+00:00"
+  },
+  "qualification": {
+    "original_controlled_flushed_write_interruption": 1,
+    "public_resume_passed": true,
+    "power_loss_qualified": false,
+    "all_ntfs_features_qualified": false,
+    "free_space_optimizer_qualified": false,
+    "boot_conversion_qualified": false,
+    "production_qualified": false
+  },
+  "scope": "Original conversion directory plus original printed bundle pin, without manual native input assembly. This records the sealed build and one controlled process-interruption case only; other builds, features and optimization paths do not inherit qualification."
+}

@@ -1,0 +1,318 @@
+{
+  "schema_version": 1,
+  "kind": "native-public-paged-resource-qualification",
+  "source_commit": "14ec1f8136d8b11f843b76347feb44768536d891",
+  "build": {
+    "manifest": "D:\\code\\ntfs2refs\\.lab\\development\\release-candidates\\r14ec1f8\\manifest.json",
+    "manifest_sha256": "1fead6f5e9b5ea15a19646a2c3c68bf0aef51ce6ecc2040f6377eebab3299e0e",
+    "binaries": 7,
+    "qualification_inherited": false,
+    "unit_tests_run": false
+  },
+  "sealed_tools": {
+    "manifest": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\paged-tools-14ec1f8\\manifest.json",
+    "sha256": "7c40e81f62aeda5a554caae10fad22fa9698fb28e3de437573f8ab278bf92585",
+    "roles": 5
+  },
+  "run_id": "eb251870789c45b988e167f6b4228807",
+  "engine_run_id": "d1741da2e123856b25d2c80fe47e0525",
+  "argv": [
+    "--drive",
+    "F",
+    "--partition",
+    "2",
+    "--minimize-scratch"
+  ],
+  "native": {
+    "exit": 0,
+    "exit_observed": true,
+    "handoff_closed": true,
+    "birth_unix_ms": 1793656474443,
+    "label_and_mount_verified": true,
+    "objects": 1084,
+    "scheduled_task_state": "Ready",
+    "pid": 5756,
+    "wall_seconds": 105.854466,
+    "scheduled_task_result": 0,
+    "all_independent_stream_hashes_match": true,
+    "independent_stream_hashes": 811
+  },
+  "preparation": {
+    "all_source_streams_checked": 811,
+    "moved_bytes": 5643501568,
+    "complete_native_maps_replayed": true,
+    "moves": 385
+  },
+  "paging": {
+    "expected_pages": 9,
+    "complete_recovery_map_inspection": {
+      "actual_final_path": "\\\\?\\Volume{c6c3318f-a7c8-47b9-be6d-6dde5e00862f}\\ProgramData\\ntfs2refs\\runs\\d1741da2e123856b25d2c80fe47e0525\\conversion\\recovery-payload-manifest.pages",
+      "base_sectors": 0,
+      "bindings": 1084,
+      "bytes": 487863,
+      "complete_paged_and_expected_map_set_validated": true,
+      "expected_tree_sha256": "638e0c2372379866e3abb7c4c910383ae2cc54d97ddfc76bfa9f9081f9407898",
+      "file_sha256": "eb9a9440cc56ac5430fd5e3f2e00f274522fff7a71cfd6ea4a1692430fa35e5b",
+      "grants_source_admission": false,
+      "grants_write_authority": false,
+      "initial_retained_content_digests_available": false,
+      "journal_opened": false,
+      "kind": "read-only-pinned-recovery-map-pages-inspection",
+      "new_selected_sha256": [
+        170,
+        185,
+        186,
+        82,
+        158,
+        194,
+        56,
+        56,
+        45,
+        143,
+        48,
+        50,
+        40,
+        198,
+        244,
+        250,
+        47,
+        80,
+        110,
+        54,
+        5,
+        4,
+        7,
+        48,
+        224,
+        177,
+        190,
+        86,
+        0,
+        69,
+        250,
+        12
+      ],
+      "pages": 9,
+      "plan_sha256": "472a968e1c69943620d9c2ef7c2b7f161c66f02c0f5bf940d19d62703bb6539a",
+      "range_count": 3094,
+      "records": 1085,
+      "schema_version": 1,
+      "selected_bytes": 2031529984,
+      "source": {
+        "disk_number": 1,
+        "identity": {
+          "disk_bytes": 68719476736,
+          "disk_guid": "1b191872-c372-41ee-a416-e18863996f54",
+          "logical_sector_bytes": 512,
+          "partition_bytes": 55834574848,
+          "partition_guid": "f06075a8-67a2-46b9-8fac-4af4da809617",
+          "partition_number": 2,
+          "partition_offset": 16777216,
+          "physical_sector_bytes": 4096
+        },
+        "volume_guid": "f06075a8-67a2-46b9-8fac-4af4da809617"
+      },
+      "source_device_opened": false,
+      "ticket_sha256": "0b40673885dd09bcda94cfc409adc32cd831c6a79013f58321dcbd4b9f174914"
+    },
+    "typed_inspector_success": true,
+    "actual_expected_counts": {
+      "data_streams": 811,
+      "directories": 273,
+      "files": 811,
+      "objects": 1084
+    },
+    "semantic_byte_budget": 16777216,
+    "expected_encoded_bytes": 1876145,
+    "admission": {
+      "data_stream_slots": 16384,
+      "data_streams": 811,
+      "directories": 273,
+      "files": 811,
+      "maximum_constructor_input_metadata_bytes": 16777216,
+      "maximum_expected_tree_bytes": 16777216,
+      "maximum_inspection_bytes": 67108864,
+      "maximum_native_report_bytes": 67108864,
+      "maximum_owned_handle_slots": 34056,
+      "object_slots": 1111,
+      "paged_resources": {
+        "expected_chunk_bytes": 786432,
+        "expected_tree_pages": {
+          "max_file_bytes": 26741238,
+          "max_page_bytes": 4194304,
+          "max_pages": 1107,
+          "max_records": 1107,
+          "max_records_per_page": 128
+        },
+        "recovery_map_pages": {
+          "max_file_bytes": 67108864,
+          "max_page_bytes": 4194304,
+          "max_pages": 1085,
+          "max_records": 1085,
+          "max_records_per_page": 128
+        },
+        "schema_version": 1
+      },
+      "projected_owned_handle_slots": 2714,
+      "raw_identities": 1111,
+      "raw_identity_slots": 2048,
+      "schema_version": 2,
+      "source_inspection_sha256": [
+        232,
+        233,
+        75,
+        121,
+        132,
+        40,
+        210,
+        22,
+        131,
+        16,
+        0,
+        150,
+        147,
+        91,
+        69,
+        229,
+        122,
+        12,
+        40,
+        229,
+        238,
+        138,
+        210,
+        198,
+        133,
+        171,
+        53,
+        104,
+        136,
+        165,
+        121,
+        158
+      ]
+    }
+  },
+  "storage": {
+    "journal_bytes": 137120208,
+    "selected_bytes": 2031529984,
+    "combined_journal_and_literal_bytes": 179919312,
+    "literal_backing_bytes": 42799104,
+    "whole_shadow_actual_allocation_measured": false,
+    "selected_ranges": 3094
+  },
+  "process_metrics": {
+    "includes_native_ntfs_preparation": true,
+    "peak_paged_memory_bytes": null,
+    "guest_c_free_before_bytes": 39613030400,
+    "scope": "actual-public-command-native-process-v1",
+    "logical_write_bytes": 2382989259,
+    "logical_write_operations": 177532,
+    "logical_other_bytes": 164668714,
+    "peak_memory_counters_available": false,
+    "physical_io_or_speedup_claimed": false,
+    "logical_other_operations": 852943,
+    "peak_memory_counter_error": null,
+    "guest_c_free_after_bytes": 38554828800,
+    "peak_working_set_bytes": null,
+    "native_io_counter_error": null,
+    "logical_read_bytes": 26093083915,
+    "wall_seconds": 105.854466,
+    "native_io_counter_query_succeeded": true,
+    "total_cpu_seconds": 64.6875,
+    "logical_read_operations": 90598,
+    "ntfs_driver_move_io_is_separate": true
+  },
+  "saved_checkpoint": {
+    "state": "Off",
+    "never_replay_closed_handoff": true,
+    "id": "f3c1460b-6811-4dd3-908c-12cc2842c35e",
+    "parent": "83290a28-1e83-4eb2-a4d3-b0e9f5a8d63b",
+    "remaining_checkpoints": 31,
+    "memory_assigned_bytes": 0
+  },
+  "archive": {
+    "pins": {
+      "observer\\wrapper-result.json": {
+        "bytes": 3865383,
+        "sha256": "750d73a3d74b23c4987dd706b6f96bc2b045c7d80ffb84d7dc8128b7a17ca9f3",
+        "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\public-min-scratch-eb251870789c45b988e167f6b4228807\\closed\\observer\\wrapper-result.json"
+      },
+      "observer\\native-terminal.json": {
+        "bytes": 4018,
+        "sha256": "70b55c4f4a104269256b31451c3b468bca596a8358d3380b4b10c7d463f667b6",
+        "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\public-min-scratch-eb251870789c45b988e167f6b4228807\\closed\\observer\\native-terminal.json"
+      },
+      "observer\\independent-target-hashes.json": {
+        "bytes": 419932,
+        "sha256": "ec2e5b271004d865fce89a7714cbcc5bbe34c508e7901ca7898fd0444636c8de",
+        "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\public-min-scratch-eb251870789c45b988e167f6b4228807\\closed\\observer\\independent-target-hashes.json"
+      },
+      "observer\\paged-metadata-verification.json": {
+        "bytes": 12594,
+        "sha256": "a8d1f5b53ca339788a6e540ae3da93bc84724e9b960c7b283212a9e6f16f467f",
+        "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\public-min-scratch-eb251870789c45b988e167f6b4228807\\closed\\observer\\paged-metadata-verification.json"
+      },
+      "observer\\public-preparation-ledger-verification.json": {
+        "bytes": 3790,
+        "sha256": "f4683280b5593633a486fd28883c46f5efa34a8f3a82e5549cd5702de1e99219",
+        "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\public-min-scratch-eb251870789c45b988e167f6b4228807\\closed\\observer\\public-preparation-ledger-verification.json"
+      },
+      "engine\\conversion\\finalization.json": {
+        "bytes": 27185993,
+        "sha256": "412c894d1cb86c60000c675e69fb826598ddb057270840730646e9d74aaa3252",
+        "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\public-min-scratch-eb251870789c45b988e167f6b4228807\\closed\\engine\\conversion\\finalization.json"
+      },
+      "engine\\conversion\\expectation.pages": {
+        "bytes": 1876145,
+        "sha256": "8826f413eefdf16f4d6012aa8f59d3c4160bb051d4dc004243fef81808911432",
+        "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\public-min-scratch-eb251870789c45b988e167f6b4228807\\closed\\engine\\conversion\\expectation.pages"
+      },
+      "engine\\conversion\\recovery-payload-manifest.pages": {
+        "bytes": 487863,
+        "sha256": "eb9a9440cc56ac5430fd5e3f2e00f274522fff7a71cfd6ea4a1692430fa35e5b",
+        "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\public-min-scratch-eb251870789c45b988e167f6b4228807\\closed\\engine\\conversion\\recovery-payload-manifest.pages"
+      }
+    },
+    "data_plane_copied": false,
+    "files": 109,
+    "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\public-min-scratch-eb251870789c45b988e167f6b4228807\\closed\\archive-manifest.json",
+    "bytes": 249337084.0,
+    "sha256": "aa0131d711ea240967791ba5d6198075b055b66f810fe1351fd00cf1e35909a9"
+  },
+  "cleanup": {
+    "schema_version": 1,
+    "kind": "superseded-public-retirement-capacity-after-reclaim",
+    "previous_retirement_result_sha256": "0b7d56cb44d44f3dcead6a5a52133b98aad4082fc0a969d82c044e386b541968",
+    "capacity_before": {
+      "ActualBytes": 313707244943,
+      "FreeBytes": 26870308864,
+      "MaximumActualBytes": 329374052988,
+      "MinimumFreeBytes": 17179869184
+    },
+    "capacity_after": {
+      "ActualBytes": 286930463472,
+      "FreeBytes": 53643284480,
+      "MaximumActualBytes": 329374052988,
+      "MinimumFreeBytes": 17179869184
+    },
+    "actual_lab_bytes_reclaimed": 26776781471,
+    "host_free_bytes_increase": 26772975616,
+    "delayed_free_space_release_observed": true,
+    "fixed_epoch_changed": false,
+    "utc": "2026-11-02T22:12:45.6118394Z"
+  },
+  "scope": {
+    "stable_release": false,
+    "conversion_ran_inside_owning_vm": true,
+    "production_marker_qualification_changed": false,
+    "physical_io_or_causal_speedup_claimed": false,
+    "arbitrary_volume_scale_qualified": false,
+    "standard_target_format_qualified": false,
+    "paged_bundle_native_recovery_qualified": false,
+    "larger_than_1280_objects_qualified": false,
+    "native_shadow_retained": true,
+    "existing_unprepared_source": true
+  },
+  "utc": "2026-11-02T22:13:50.0025173Z"
+}

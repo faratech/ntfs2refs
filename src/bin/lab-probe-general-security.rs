@@ -125,11 +125,16 @@ fn main() -> anyhow::Result<()> {
     fn inputs(object: &ntfs2refs::shadow_tree::Object) -> n2r_win32::shadow_native::Input<'_> {
         n2r_win32::shadow_native::Input {
             components: &object.path,
+            additional_names: &object.additional_names,
+            sparse: object.sparse.as_ref(),
+            named_streams: ntfs2refs::general_shadow::native_named_streams(object),
             directory: object.directory,
             times: object.stored_times,
             attributes: object.attributes,
             security: &object.security,
             expected_api_security: object.api_security.as_deref(),
+            extended_attributes: object.extended_attributes.as_ref(),
+            reparse: object.reparse.as_ref(),
             payload: &[],
             expected_length: None,
             expected_sha256: None,

@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "kind": "partition-scoped-owner-sdk-foundation",
+  "status": "focused-sdk-check-passed-upper-integration-pending",
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/native.rs",
+      "bytes": 200224,
+      "sha256": "ec51ffd630ad2f95e487c94950c7d1cbc57e2fa34ce933d71f1fbf6edef607e6"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_isolation.rs",
+      "bytes": 33864,
+      "sha256": "bd3c1ec2ae66065a1fc1d5475ea60228c3e8736ae35d17dbf436257fb8c2b098"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/paged_recovery.rs",
+      "bytes": 56550,
+      "sha256": "f11ebcce29156b8c342644ecbb1fd845f0ac6fb7f16744611756c70dff939b25"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_owner.rs",
+      "bytes": 17163,
+      "sha256": "dd0518e0c2e88be13f2f858e9eea056a486826eff9179ac9ad636ae23a7f67d9"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_dump_locations.rs",
+      "bytes": 22206,
+      "sha256": "b1c54300e004cb01cd8ae335079bfe76936cd1979682bd4706f078d3cde2665d"
+    }
+  ],
+  "check_exit": 0,
+  "check_wall_seconds": 15.3161403,
+  "check_receipt_sha256": "e3539d8944e0136625ba3b2f07736cbbdd7cae6549c253278886bbaa8e46534e",
+  "shared_target_reused": true,
+  "unit_tests_run": false,
+  "capacity": {
+    "actual_bytes": 317250806146,
+    "free_bytes": 89304236032,
+    "maximum_actual_bytes": 329374052988,
+    "minimum_free_bytes": 17179869184,
+    "additional_bytes": 2147483648,
+    "all_lab_shared_cache_and_staging_charged": true,
+    "epoch_reset": false
+  },
+  "legacy_native_body_byte_identical": true,
+  "legacy_paged_prefix_byte_identical": true,
+  "frozen_alpha_rebuilt": false,
+  "native_qualified": false,
+  "writer_admission_issuer_present": false,
+  "public_cli_enabled": false,
+  "capabilities": [
+    "Actual held private-partition owner with bounded aligned Read/Seek, complete GPT/native identity and critical configured-location checks.",
+    "Move-stable opaque identity token; no serialized or path-only admission.",
+    "Paged adapter and journal/index/lifecycle/OLD and NEW digest checks; errors poison writer and owner.",
+    "Separate private-type observation preserves existing Basic reader behavior."
+  ],
+  "remaining": [
+    "Runtime critical-volume roles and documented built-in dump-filter policy.",
+    "Live NTFS SourceContext and target-only freeze/native-RO preparation.",
+    "Explicit mixed-state recovery, partition-scope envelope, finalization and C-sibling journal disjointness.",
+    "Native end-to-end partition conversion/recovery qualification; no lower primitive is a completed converter."
+  ],
+  "evidence_scope": "Checked foundation snapshots; later runtime-role working changes are excluded from this receipt and commit."
+}

@@ -1,0 +1,36 @@
+{
+  "kind": "bounded-WMI-partition-enumeration-continuation-fix-v1",
+  "actual_case": ".lab/hyperv/streaming-v2-20261027/PUBLIC-833-actual-once-17074a80a09c4eb4880f1ac230a108e8",
+  "owned_native": {"pid": 4856, "birth_ms": 1793928873143, "exit_code": 1, "wall_seconds": 408.5174594},
+  "actual_error": "WMI partition enumeration incomplete or timed out",
+  "failed_stage": "After completed recovery image; before persistent boot selection installation",
+  "actual_failed_Next_HRESULT_not_recorded": true,
+  "completed_artifacts_preserved": {
+    "bundle_sha256": "5a562302f8e44ea2d45fcc9c3eb20eca9b7d9bbbcd55027cd448121207e25537",
+    "image_record_sha256": "31f7567de4dc076783f39c167dd147ff45355dad60bc31c4a7fe76baa35d6d7d",
+    "image_bytes": 619553823,
+    "image_sha256": "bd4ed2b31980c863677baa8b2be0e4b62721701007c558ec643f73221a11b392",
+    "raw_original_boot_request_bytes": 3510,
+    "raw_original_boot_request_sha256": "a5b980c802b2f0c7905538f1be6294eb74a3a5d35ca740287a7522f0f6d43cc7",
+    "request_extraction_preserves_original_JSON_without_reserialization": true,
+    "closed_metadata_manifest_sha256": "71ec82217bad3bc6ad9d93b84d24dab12ffc5ea0663426aa53afbda75323c2c6"
+  },
+  "fix": {
+    "WBEM_S_TIMEDOUT_without_objects": "Continue the same enumerator within the existing total deadline; do not mark coverage complete.",
+    "WBEM_S_FALSE_with_final_object": "Validate and retain the returned row before completing enumeration.",
+    "overall_deadline_seconds_unchanged": 15,
+    "complete_catalog_and_native_before_after_crosschecks_unchanged": true,
+    "invalid_results_now_include_raw_HRESULT_and_count": true,
+    "primary_contract": "https://learn.microsoft.com/en-us/windows/win32/api/wbemcli/nf-wbemcli-ienumwbemclassobject-next"
+  },
+  "focused_compile": {"exit_code": 0, "wall_seconds": 48.4165488, "unit_tests_run": false, "receipt_sha256": "37ce567a088ce77382e165a7941417d9e6023cab8e548cc0f9979e9f04f21080"},
+  "measured_preparation_evidence": {
+    "lossless_native_log_bytes": 6164023,
+    "unchanged_log_limit_bytes": 13864960,
+    "eligible_payload_bytes_omitted_by_fast_verification": 67198976,
+    "inspector_returned_bytes": 98532816,
+    "BadClus_volume_sized_hash_hypothesis_refuted": true
+  },
+  "next": "Reuse original prepared bundle and completed 833 image with the corrected installer; then qualify the cold writer. A fresh latest-public one-command case remains required.",
+  "no_reset_or_source_J_body_replay_or_BCD_write_followed_failure": true
+}

@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "kind": "native-allocation-bounded-conversion-parallel-observation",
+  "run_id": "28608bc7a5a141b29d442059a23e2fac",
+  "engine_run_id": "58d2b4f1884a31d8a55044fb0f1a736b",
+  "source_commit": "e91ead339a776d81f6da1617bbbbdcd69fb2dcd0",
+  "change": "ReFS objects observed on up to eight threads in input order; NTFS session reads for payload routes up to 4 MiB (were 64 KiB)",
+  "working_tree_note": "Built with the existing user-owned src/main.rs capabilities hunk present and unstaged.",
+  "toolset_manifest_sha256": "0cb8a4fd1484b20c9b304ec561ddfecfc704748958f4fff3b1bac52ee6ba8c61",
+  "public_cli": {"sha256": "1038b75109a6d11f9d4ba32d24f42208b725b9722006711304e53ad7230ee1a0", "argv": ["--drive", "F", "--partition", "2"], "actual_native_exit": 0},
+  "outcome": {
+    "wrapper_success": true, "native_objects": 15, "complete_logical_hashes": 10, "label_and_mount_verified": true,
+    "selected_ranges": 155, "selected_bytes": 70651904, "journal_bytes": 141324560,
+    "result_sha256": "e9c6a337bf3bd8c3e35f7c0e07bada7e23af3473d9bb6f8dbd3a5c4f553d7922",
+    "finalization_sha256": "bb3721762d0c9408e94de43d1e0fe8711e2f86e0c621f9878356ec212043dcac"
+  },
+  "timing": {
+    "seconds": 112.6,
+    "previous_seconds": {"digest_recheck_48d6a8e": 116.7},
+    "artifact_write_timeline_seconds": {"source_frozen": 20.0, "native_source": 38.9, "source_assessment": 40.2, "construction_freeze": 46.0, "changed_clusters": 83.1, "target_preservation": 83.6, "activation": 87.1, "apply": 90.8, "handoff": 93.1, "finalization": 111.9}
+  },
+  "fixture_note": "one 8 GiB file holds almost all file data, so per-file parallelism cannot show; the compare phase fell from 41.3 s to 37.1 s",
+  "archive": ".lab/hyperv/streaming-v2-20261027/alloc-drive-20261029-28608bc7a5a141b29d442059a23e2fac/closed-conversion",
+  "qualification": {"normal_public_conversion_passed": true, "interruption_resume_rollback_tested_on_this_build": false, "mutation_restart_tested_on_this_build": false, "release_qualified": false}
+}

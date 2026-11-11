@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "kind": "current-raw-GPT-and-held-native-layout-protected-source-route",
+  "actual_failed_candidate_source": "d86cb0fc04aafffe9e3ae26965b38659f3d13b52",
+  "actual_case": ".lab/hyperv/streaming-v2-20261027/PUBLIC-d86cb0f-actual-once-833b606b219249efaa90bcd1e616c48b",
+  "actual_boundary_frame": {
+    "sha256": "39d6069bc80fa102c084d0cf888cd0b83eefd79d8220e6c117547cf9fba66e3b",
+    "path": "d86cb0f-current-boot-boundary-003.png",
+    "error": "offline physical disk0 protection changed during native LAYOUT: before=3, after=0",
+    "raw_GPT_reads_after_this_query_not_reached": true
+  },
+  "current_checks_retained": [
+    "same opaque physical FileObject/source/current boot",
+    "actual DEVICE/length/alignment and disk attribute opening/closing samples",
+    "complete raw primary and backup GPT headers/arrays/CRC/every-entry correspondence",
+    "actual source volume locks/144-byte native rows acquired before exclusion",
+    "actual source3 before AP and source1 while existing writer operates",
+    "exclusive ordinary second raw writer refusal and selected-data offset bounds",
+    "same actual J/index/lifecycle/OLD-NEW checker and kernel/RAM/firmware/BCD guard"
+  ],
+  "held_provenance": {
+    "witness_from_serialized_report": false,
+    "current_full_raw_GPT_still_checked": true,
+    "protected_state_reports_current_native_requery": false,
+    "native_layout": "same-boot before exclusion complete native query, privately retained; not represented as current native query",
+    "source_write_authority_from_witness": false
+  },
+  "boot_metadata": {
+    "current_full_raw_GPT_FAT_map_BCD_hash_preserved": true,
+    "read_only_opaque_source_owner_witness_required": true,
+    "same_cause_removed_from_protected_EFI_raw_hash_and_copy": true,
+    "ordinary_native_query_resumes_only_after_opaque_closed_J_actual_SET0_available_owner": true
+  },
+  "initial_already_offline_restart_path_not_qualified": true,
+  "new_state_setters": 0,
+  "actual0_accepted_for_source_writer": false,
+  "focused_check": {
+    "exit_code": 0,
+    "receipt_sha256": "496ce58857f1211330788375e0a708825a8fe12e31559805ec0df9ae57d24fbc",
+    "unit_tests_run": false,
+    "session_id": 51675,
+    "native_run": false,
+    "wall_seconds": 60.1481256,
+    "receipt_path": ".lab\\development\\protected-native-witness-check.json"
+  },
+  "component_files": [
+    {
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline.rs",
+      "sha256": "4c6cf783ca03eb100de7bf29eeb13eb807b04881a6b82de1d50a71481f45fa68"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline/source.rs",
+      "sha256": "375809637c0b64383b5211b64f6dfa4faa143274f85a059323a231bd415e62df"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline/source/paged.rs",
+      "sha256": "1c4d8fcff99dc4f8ec19d8bc2f566166fd662003b40382c545cf945f3032615b"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline/source/prepared.rs",
+      "sha256": "be5bf13b0e9db3f7d9cda42bf65bc56a7b1e45b6ec2ae76758e4c4afc9af4868"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline/source/prepared_apply.rs",
+      "sha256": "3f4877ef542e1de2c7f0c94628b6cda35efa1c42be234042010806337ee5fb2e"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/recovery_boot/cold.rs",
+      "sha256": "01ac25b1a5dbadcdf044c334a4d31ab14e649a3eed32046f65bf232b8c505e3b"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/recovery_boot/metadata.rs",
+      "sha256": "b6f331ee7f1a14bd982364d03fe0be9293b07c7e2c247cbaf452aed3eb6b91b3"
+    }
+  ],
+  "native_qualified": false,
+  "resume_qualified": false,
+  "rollback_qualified": false,
+  "stable_release": false,
+  "main_rs_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "observed_utc": "2026-11-06T04:40:51.0783485Z"
+}

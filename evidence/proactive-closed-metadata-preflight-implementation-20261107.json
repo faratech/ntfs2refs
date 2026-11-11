@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "kind": "proactive-constructor-eligibility-and-parent-context-implementation",
+  "reason": "Detect pure constructor refusals and reconstruct source inheritance context from existing authenticated metadata before another full source observation run.",
+  "shared_constructor_checks": "Factor and reuse the actual bounded input and system-payload checks in the constructor and metadata-only preflight. No enrollment or write authority is issued.",
+  "lab_preflight": "Authenticated expected-tree pages, source assessment, source admission metadata and resource owner; all stored/API security candidates and independent EA/reparse constraints are checked with bounded refusal reporting.",
+  "parent_context": "Optional pinned corpus mode inventories root, unique ancestor directories and leaves for all stored descriptor cases, plus all six source references for the stored/API-view mismatch. Output retains full stored and paired API descriptors, identities, attributes, times and reparse data.",
+  "source_device_opens": false,
+  "native_filesystem_mutation": false,
+  "unit_tests_run": false,
+  "focused_check_exit_code": 0,
+  "focused_check_wall_seconds": 0.6180279,
+  "shared_target_reused": true,
+  "native_preflight_executed": false,
+  "source_Windows_converted": false,
+  "source_Windows_booted_ReFS": false,
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+}

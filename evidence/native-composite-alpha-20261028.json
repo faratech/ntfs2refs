@@ -1,0 +1,175 @@
+{
+  "schema_version": 1,
+  "kind": "observational-native-composite-alpha",
+  "scope": "Exact disposable profile only; no runtime admission authority or arbitrary-drive support.",
+  "source_commit": "fe7b9bc754f87319f8bc6d1c51bda6007fca5cb5",
+  "producer_sha256": "5e156f089b0fc6a67788154e841a74daad4a61028b16ea41391dc8f84e06f524",
+  "windows_build": "26300.9457",
+  "refs_sys_sha256": "3aa5d90958fc582c5f6567d2b970a3a37b3d4d80a4b58b5a8676943b7860d3c4",
+  "geometry": {
+    "target_cluster_bytes": 4096,
+    "partition_bytes": 55834574848,
+    "source_cluster_bytes": 65536,
+    "logical_sector_bytes": 512
+  },
+  "objects": 15,
+  "files": 10,
+  "logical_bytes": 8594411663,
+  "changed_source_bytes": 70557696,
+  "patches": 157,
+  "journal_bytes": 141149789,
+  "shadow_user_exception_bytes": 55,
+  "shadow_system_bytes": 20568,
+  "observed_peak_working_set_bytes": 72118272,
+  "user_mapping_totals": {
+    "user_files": 7,
+    "logical_bytes": 8594391095,
+    "aligned_initialized_nonresident_bytes": 8594391040,
+    "retained_aligned_bytes": 2721181696,
+    "relocated_aligned_bytes": 5873209344,
+    "resident_logical_bytes": 17,
+    "partial_initialized_tail_bytes": 38,
+    "uninitialized_logical_bytes": 0
+  },
+  "mapping_scope": "finalization.native.native verification observation; label restoration or later native activity is not re-observed",
+  "gates": {
+    "fresh_conversion_mutation_reboot": "passed on exact pinned corpus",
+    "provenance_recovery_instructions": "pinned converter/recovery provenance and operator instructions; offline frozen alpha package does not grant runtime admission or general release",
+    "same_build_interruption_resume_rollback": "passed: one flushed source write interrupted; separate pinned resume/native ReFS and exact-original rollback/native NTFS branches; storage power loss unqualified",
+    "unsafe_case_admission": "three startup refusal checks only; broader matrix incomplete"
+  },
+  "artifacts": [
+    {
+      "role": "finalization",
+      "path": ".lab/hyperv/streaming-v2-20261027/compact-admitted-retry-20261028/admitted-postcheck/conversion-finalization.json",
+      "sha256": "815faadbf6ad44ef03cf2aa70bc8ee0e04f9e903fe3072fdfa2c30fb80be500a",
+      "bytes": 586464
+    },
+    {
+      "role": "converted-result",
+      "path": ".lab/hyperv/streaming-v2-20261027/compact-admitted-retry-20261028/admitted-postcheck/conversion-result.json",
+      "sha256": "9918bc1d9efece53c63f05fcc77cc6605a2115ea840888736a0a5f28478d1d75",
+      "bytes": 1085
+    },
+    {
+      "role": "cold-boot",
+      "path": ".lab/hyperv/streaming-v2-20261027/compact-admitted-retry-20261028/admitted-postcheck/guest-BootVerify.json",
+      "sha256": "e1f6982e0aa2cfc5d85e6b44c875ca1837820772cc12a856f691c32bbfdb3d34",
+      "bytes": 435701
+    },
+    {
+      "role": "mutation",
+      "path": ".lab/hyperv/streaming-v2-20261027/compact-admitted-retry-20261028/admitted-postcheck/guest-Mutate.json",
+      "sha256": "f58faf21bf001490b8bb3e33a47639ada5ace1c6b18113bd397ba3a9ff026419",
+      "bytes": 35161
+    },
+    {
+      "role": "after-mutation",
+      "path": ".lab/hyperv/streaming-v2-20261027/compact-admitted-retry-20261028/admitted-postcheck/guest-AfterMutation.json",
+      "sha256": "ba4bdf795571aa84afb4a8907b4dfe1dc25e0246256b8443c057c4b94cad649f",
+      "bytes": 435520
+    },
+    {
+      "role": "reboot-after-mutation",
+      "path": ".lab/hyperv/streaming-v2-20261027/compact-admitted-retry-20261028/admitted-postcheck/guest-RebootVerify.json",
+      "sha256": "6a92fd659966fa9f4b3ff3196fed334843e5d900ed08a397b7396381597c6686",
+      "bytes": 435786
+    },
+    {
+      "role": "payload-placement",
+      "path": ".lab/hyperv/streaming-v2-20261027/compact-admitted-retry-20261028/payload-placement.json",
+      "sha256": "d6e2c2a2961df07d654c45719047483de9d69cbb55ac9c40be2672e45b80ed21",
+      "bytes": 12540
+    },
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/compact-admitted-recovery-20261028/resume/terminal-facts-20261028T204739745Z.json",
+      "role": "resume-terminal-observation",
+      "sha256": "3a66d992e03e7b7853858375ee0633a48ee4ab620d86c27df8b7940223103401",
+      "bytes": 2220
+    },
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/compact-admitted-recovery-20261028/finalize/closed-metadata/completion.json",
+      "role": "resumed-native-finalization",
+      "sha256": "4941b2d6e1b983e378f3352a901fb7c465d1587df96abfdddff27a78a1906c37",
+      "bytes": 586414
+    },
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/compact-admitted-recovery-20261028/finalize/closed-metadata/result.json",
+      "role": "resumed-native-result",
+      "sha256": "4dd871616f52825542912693cf6d020478ce4dfdf25a33aace8da07d09517df9",
+      "bytes": 414
+    },
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/compact-admitted-recovery-20261028/finalize/preserved-checkpoint.json",
+      "role": "resumed-preserved-checkpoint",
+      "sha256": "c6be153683660ac5d1bb584fcd44fe24dba7d6432c031cd80658810823842d12",
+      "bytes": 668
+    },
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/compact-admitted-recovery-20261028/rollback/closed-metadata/execution.json",
+      "role": "rollback-execution",
+      "sha256": "9b8e20d476cfecd3363e110215c3a6037e70d5fb1c3c103f65eed410e7eaee3e",
+      "bytes": 15938
+    },
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/compact-admitted-recovery-20261028/rollback/closed-metadata/completion.json",
+      "role": "rollback-completion",
+      "sha256": "5004ba099e422eacec5d248d2483dee1f838a1b6b59b338f63af7f0f95d067dd",
+      "bytes": 112539
+    },
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/compact-admitted-recovery-20261028/rollback/closed-metadata/result.json",
+      "role": "rollback-result",
+      "sha256": "5c0d96d22cf1dfe39a1a01c5608328a68e53c7d3e90914973e71fc411fb6b05c",
+      "bytes": 414
+    },
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/compact-admitted-recovery-20261028/rollback/native-readback/native-payload-readback.json",
+      "role": "rollback-native-file-readback",
+      "sha256": "c5ba2ddf367fe5412374416d98b1c9a88b766d4e1912e4f78dd55b875c13365f",
+      "bytes": 9272
+    },
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/compact-admitted-recovery-20261028/rollback/preserved-checkpoint.json",
+      "role": "rollback-preserved-checkpoint",
+      "sha256": "d8d719a9a8ac287e963102f7457dbd55dabeda0fec2312824c458b24936af985",
+      "bytes": 703
+    }
+  ],
+  "limitations": [
+    "Enrolled computer/device identities and 52-GiB fixture remain enforced.",
+    "Large payload is predominantly zero-filled; low scratch for arbitrary nonzero relocation is unproven.",
+    "Small source write count is not identical to retained physical-byte count.",
+    "Storage power loss, broad geometry/build compatibility and boot conversion are unqualified.",
+    "No unit tests added/run for this milestone."
+  ],
+  "source_documents": [
+    "docs/native-composite-experimental.md"
+  ],
+  "updated_utc": "2026-10-28T21:13:58.9190722Z",
+  "recovery": {
+    "post_mount_raw_image_equality_claimed": false,
+    "changed_bytes": 70729728,
+    "controlled_native_and_wrapper_exit": 86,
+    "finalization_run": "9554575ef3be4e78994369f79e485f33",
+    "interrupted_after_source_writes": 1,
+    "resumed_checkpoint": "ddc9226c-f0fc-43ee-b123-3d35f91508b9",
+    "vm_state": "Off",
+    "patches": 160,
+    "candidate_sha256": "419515e9efd3bb265738b32e351624637a4da91553eccb2acce1cfbec642be72",
+    "journal_bytes": 141494333,
+    "power_loss_qualified": false,
+    "rollback_native_logical_bytes": 8594411663,
+    "resume_run": "9e8d88a9964b406bb3673324f10e6960",
+    "original_source_sha256": "a90a9cd8f9fca6037b396127d161f56cc5698cae832c6bd3872d38378a367c6e",
+    "rollback_native_files": 10,
+    "partial_checkpoint": "554482bb-f2a4-4185-8023-09d60465137f",
+    "rollback_checkpoint": "c670839d-00d1-46cf-8544-6aad51bde364",
+    "recorded_source_commit": "d953baa810fb5e92fbc50bf6864cfd204e0f7f7f",
+    "all_47_checkpoints_preserved": true,
+    "rollback_run": "c5852b0ca8ef4927bd3d9e15c45132f9",
+    "interrupted_run": "949dbc98138e4514a1098081eb0226ef",
+    "memory_assigned_bytes": 0,
+    "producer_sha256": "d48a46b13d9a0c4dfc4c241d038e290a2feb571b1a368fbf54c86f3806302028"
+  }
+}

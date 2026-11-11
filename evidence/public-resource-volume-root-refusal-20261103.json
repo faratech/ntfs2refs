@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "kind": "public-resource-conversion-refusal",
+  "source_commit": "fb0fe56cdbddd9f54209db97775e5fdb73630e9c",
+  "binary_sha256": "5d4ae06238b47fc63a3442d7dd2228e5b7d375de4fd03dafcf6a1ebcd2299ac5",
+  "run_id": "6f074f84754d4c2a878e30f10fdd99e6",
+  "command": [
+    "ntfs2refs",
+    "--drive",
+    "F",
+    "--partition",
+    "2"
+  ],
+  "confirmation": "one yes CRLF",
+  "native_process": {
+    "exit_code": 1,
+    "pid": 5308,
+    "actual_exit_observed": true,
+    "creation_ms": 1793715472861,
+    "utc": "2026-11-03T14:17:53.5453612Z",
+    "stdout_bytes": 695,
+    "stderr_bytes": 165,
+    "wall_seconds": 0.6429855999999999
+  },
+  "stderr": "Conversion stopped. Preserve all recovery files at C:\\ProgramData\\ntfs2refs\\runs\\06bf2ce3c9e5cd505ab951a5a51b3c1c\nerror: explicit bounded local volume root required\n",
+  "failure_phase": "evidence ledger creation before source freeze",
+  "original_ntfs_online_at_completion": true,
+  "automatic_unchanged_ntfs_restoration_exercised": false,
+  "apply_intent_attempted": false,
+  "source_payload_writes": 0,
+  "archive_sha256": "f3c6dd2126eb5eff7b197de4a9a040706c356c2704bdddebba9b3a20464a140b",
+  "conversion_qualified": false
+}

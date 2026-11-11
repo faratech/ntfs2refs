@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "kind": "native-metadata-resume-integrated-build",
+  "base_commit": "a3158a7",
+  "check": {
+    "unit_tests_run": false,
+    "capacity": {
+      "actual_bytes": 253241898972,
+      "free_bytes": 54071341056,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 2147483648,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "shared_target_reused": true,
+    "kind": "preparation-resume-components-focused-check",
+    "wall_seconds": 41.6885784,
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+    "absolute_boot_cap": 279866334601,
+    "exit_code": 0,
+    "native_run": false
+  },
+  "source_snapshot_unchanged": true,
+  "native_qualified": false,
+  "current_vm_binary_unchanged": true,
+  "implemented": [
+    "fresh-native-private-or-final-target-shape-selection",
+    "final-target-metadata-adoption-after-carrier-transfer",
+    "hybrid-COMPLETE-source-reference-and-shadow-data-verification",
+    "read-only-safe-metadata-reopening",
+    "exact-namespace-and-EA-subset-preflight",
+    "idempotent-hardlinks-aliases-security-EAs-reparse-and-basic-metadata",
+    "durable-metadata-intent-and-completion",
+    "unchanged-downstream-original-trust-label-repair-and-protected-capture"
+  ],
+  "unsupported": [
+    "interrupted-native-allocation",
+    "partial-carrier-transfer",
+    "Captured-state-native-adoption"
+  ],
+  "readonly_open_reference": "https://winprotocoldoc.z19.web.core.windows.net/MS-FSA/%5BMS-FSA%5D-200304.pdf",
+  "source_files": [
+    {
+      "sha256": "0956e519aa88ac96f4dd525da7e6f2956978d65c4e23fa7cae6a08c40f63146c",
+      "path": "crates/n2r-win32/src/extended_attributes_native.rs"
+    },
+    {
+      "sha256": "928af45473e802a033ae9c1304183f08460300f59c077bcca6dfb47ae34fa4ad",
+      "path": "crates/n2r-win32/src/shadow_native/cache_refresh.rs"
+    },
+    {
+      "sha256": "7e784d2a47d1aef1f600ba91583fb64714c0a781c6d0724f86d9cec595c56a80",
+      "path": "crates/n2r-win32/src/shadow_native/hard_links.rs"
+    },
+    {
+      "sha256": "25ac2fb601955583fb69dbcc09decedc1f6e569af451abb7fd51b2db5227665c",
+      "path": "crates/n2r-win32/src/shadow_native/private_tree/enrollment.rs"
+    },
+    {
+      "sha256": "8175013a598aeb1aad4c20b98e2cb8c7cad5ea6c359468151dcdce4cf6bdf96e",
+      "path": "crates/n2r-win32/src/shadow_native/private_tree/metadata_recovery.rs"
+    },
+    {
+      "sha256": "54972fb9d728dd3993741c837140d309523f80313473a086ddb41a3130e7fa36",
+      "path": "crates/n2r-win32/src/shadow_native/private_tree/placement.rs"
+    },
+    {
+      "sha256": "a74d0d2d05a5ce5490728767d876c6813b7f14a6549c4d76724eb7ac22d26d95",
+      "path": "crates/n2r-win32/src/shadow_native/private_tree/recovery.rs"
+    },
+    {
+      "sha256": "76e07aebf1239dbb2dae712c3f30f442fd07218f72122bbde2a0c147e43f1fa3",
+      "path": "crates/n2r-win32/src/shadow_native/windows_aliases.rs"
+    },
+    {
+      "sha256": "d77dd4d83dcca99f92e30aa2f391b573c7a8370e913610609b5476b175763e63",
+      "path": "src/general_shadow/paged_supply/routed.rs"
+    },
+    {
+      "sha256": "5c7de5569b9184190f358d00691a40fcb3f3f76ddc92b50f6b85b8949f0e122f",
+      "path": "src/resource_preparation.rs"
+    },
+    {
+      "sha256": "a6cc6427bc3c6c7ca5301a81a7bb6a45e176c43e7d8270ff94cc3dd14d768973",
+      "path": "src/resource_preparation/resume_checkpoint.rs"
+    },
+    {
+      "sha256": "95562e7f90d52210aba5297e5c9e72b59d7e4f50009a175e9ef11d8f61ad912e",
+      "path": "src/resource_preparation/resume_session_inputs.rs"
+    }
+  ]
+}

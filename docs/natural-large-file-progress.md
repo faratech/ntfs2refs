@@ -38,3 +38,19 @@ controlled lab interruption after a flushed write, and equal-chunk comparison
 for retained requests. Both comparison passes, every pin and mutation checks
 remain in place. Missing ordinary artifact parents are now created on the
 OS volume while reparse paths and existing output directories remain refused.
+
+The later streamed free-subrun planner separates source extent length from the
+native `FSCTL_MOVE_FILE` DWORD cluster count. A free interval larger than
+`u32::MAX` target clusters becomes multiple ordered native-sized candidates;
+each consumes the existing 1,024-subrun budget. Geometry, complete dual-view
+coverage and exact free/blocked byte accounting still precede any move. A fully
+blocked source run is also split for diagnostic mapping checks, with submission
+disabled on every piece. Candidate moves retain their fresh dual bitmap check
+and measured post-move retrieval mapping. Exhausted budgets still refuse the
+whole plan, without returning a truncated success.
+
+This is a large-file prerequisite, not expanded payload admission. The legacy
+assembled-bitmap planner keeps its prior bounds, and the experimental ordinary
+tree still admits only 4 GiB total/per stream. The source change passed binary
+compilation and focused formatting checks only; it has no new native or
+large-extent qualification and is not deployed into candidate 3's active run.

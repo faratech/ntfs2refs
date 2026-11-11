@@ -5,9 +5,28 @@ use crate::layout::{self, PartitionIdentity, guid_bytes};
 use serde::{Deserialize, Serialize};
 use std::io;
 
-const MIN_DISK: u64 = 1 << 30;
-const MAX_DISK: u64 = 64 << 40;
-const MIN_PARTITION: u64 = 256 << 20;
+/// Current native bitmap/admission profile, not an on-disk format limit.
+pub const MAX_LIVE_PARTITION_BYTES: u64 = 128 * 1024 * 1024 * 1024;
+/// Experimental routing bound derived from the complete 4 KiB target bitmap
+/// read budget. Format, tree/data and exact journal-space checks remain separate.
+pub const MAX_EXPERIMENTAL_PARTITION_BYTES: u64 =
+    crate::bitmap_streaming::MAX_STREAM_BITMAP_BYTES * 8 * 4096;
+
+/// Requested topology, never native exclusion or write authority. The Windows
+/// profile additionally requires fresh runtime checks that the entire physical
+/// disk is outside current boot, system, paging and dump roles.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GeneralDiskLayoutProfile {
+    #[default]
+    DedicatedData,
+    OfflineWindows,
+}
+impl GeneralDiskLayoutProfile {
+    fn is_dedicated_data(&self) -> bool {
+        matches!(self, Self::DedicatedData)
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -15,6 +34,11 @@ pub struct GeneralDiskBinding {
     pub disk_number: u32,
     pub volume_guid: String,
     pub identity: PartitionIdentity,
+    #[serde(
+        default,
+        skip_serializing_if = "GeneralDiskLayoutProfile::is_dedicated_data"
+    )]
+    pub layout_profile: GeneralDiskLayoutProfile,
 }
 
 /// Separate physical disks with identically sized data partitions. This is a
@@ -28,8 +52,19 @@ pub struct GeneralSourceShadowBinding {
 
 impl GeneralSourceShadowBinding {
     pub fn validate(&self) -> io::Result<()> {
+        self.validate_with_resource_profile(None)
+    }
+
+    pub fn validate_with_resource_profile(
+        &self,
+        resources: Option<crate::attestation::ResourceProfile>,
+    ) -> io::Result<()> {
         self.source.validate()?;
         self.shadow.validate()?;
+        require(
+            self.shadow.layout_profile == GeneralDiskLayoutProfile::DedicatedData,
+            "a freshly owned shadow cannot use an installed-Windows source layout",
+        )?;
         let s = &self.source.identity;
         let t = &self.shadow.identity;
         require(
@@ -43,7 +78,10 @@ impl GeneralSourceShadowBinding {
             s.partition_bytes == t.partition_bytes
                 && s.logical_sector_bytes == t.logical_sector_bytes
                 && s.physical_sector_bytes == t.physical_sector_bytes
-                && s.partition_bytes <= 128 * 1024 * 1024 * 1024,
+                && s.partition_bytes
+                    <= resources.map_or(MAX_LIVE_PARTITION_BYTES, |profile| {
+                        profile.maximum_partition_bytes()
+                    }),
             "source and shadow geometry exceeds comparison profile",
         )
     }
@@ -63,26 +101,40 @@ fn require(condition: bool, message: &str) -> io::Result<()> {
 
 impl GeneralDiskBinding {
     pub fn validate(&self) -> io::Result<()> {
+        self.validate_working_storage()?;
+        require(
+            self.identity.partition_bytes.is_multiple_of(4096),
+            "unsupported dedicated data-disk geometry",
+        )
+    }
+
+    /// Identity and bounds for an already mounted working/journal filesystem.
+    /// A legitimate GPT tail can end on a logical sector rather than a 4 KiB
+    /// conversion granule. This never admits a source, shadow or raw writer;
+    /// those owners must continue to call the stricter `validate` entry point.
+    pub(crate) fn validate_working_storage(&self) -> io::Result<()> {
         let p = &self.identity;
         require(
-            self.disk_number <= 4095,
-            "disk route exceeds bounded profile",
-        )?;
-        require(
-            (MIN_DISK..=MAX_DISK).contains(&p.disk_bytes)
+            // Windows disk offsets are signed 64-bit values. The partition
+            // and GPT checks below determine the actual minimum geometry;
+            // the physical disk may be small or substantially larger than the
+            // source partition without invalidating its identity.
+            p.disk_bytes <= i64::MAX as u64
                 && p.disk_bytes.is_multiple_of(512)
-                && (1..=128).contains(&p.partition_number)
-                && p.partition_offset >= 1 << 20
+                && p.partition_number != 0
+                && p.partition_offset >= u64::from(p.physical_sector_bytes)
                 && p.partition_offset.is_multiple_of(4096)
-                && p.partition_bytes >= MIN_PARTITION
-                && p.partition_bytes.is_multiple_of(4096)
+                && p.partition_bytes >= 4096
+                && matches!(p.logical_sector_bytes, 512 | 4096)
+                && p.partition_bytes
+                    .is_multiple_of(u64::from(p.logical_sector_bytes))
                 && p.partition_offset
                     .checked_add(p.partition_bytes)
-                    .and_then(|end| end.checked_add(1 << 20))
                     .is_some_and(|end| end <= p.disk_bytes)
-                && matches!(p.logical_sector_bytes, 512 | 4096)
                 && matches!(p.physical_sector_bytes, 512 | 4096)
                 && p.physical_sector_bytes >= p.logical_sector_bytes,
+            // Actual GPT usable bounds are enforced by validate_layout;
+            // ordinary last-sector partitions need no arbitrary trailing gap.
             "unsupported dedicated data-disk geometry",
         )?;
         require(
@@ -93,14 +145,16 @@ impl GeneralDiskBinding {
         Ok(())
     }
 
+    /// Routing only. Every source/shadow/adoption owner independently performs
+    /// strict conversion-geometry validation before opening a raw capability.
     pub fn volume_path(&self) -> io::Result<String> {
-        self.validate()?;
+        self.validate_working_storage()?;
         let guid = self.volume_guid.trim_matches(['{', '}']);
         Ok(format!("\\\\?\\Volume{{{guid}}}"))
     }
 
     pub fn validate_alignment(&self, bytes: &[u8]) -> io::Result<()> {
-        self.validate()?;
+        self.validate_working_storage()?;
         require(
             bytes.len() == 28
                 && layout::u32_at(bytes, 0)? == 28
@@ -113,7 +167,7 @@ impl GeneralDiskBinding {
     }
 
     pub fn validate_volume_extent(&self, bytes: &[u8]) -> io::Result<()> {
-        self.validate()?;
+        self.validate_working_storage()?;
         require(
             bytes.len() == 32
                 && layout::u32_at(bytes, 0)? == 1
@@ -126,6 +180,17 @@ impl GeneralDiskBinding {
 
     pub fn validate_layout(&self, bytes: &[u8]) -> io::Result<()> {
         self.validate()?;
+        self.validate_layout_identity(bytes)
+    }
+
+    /// Same dedicated GPT topology checks for ordinary working storage, without
+    /// interpreting its logical-sector tail as a raw conversion write range.
+    pub(crate) fn validate_working_storage_layout(&self, bytes: &[u8]) -> io::Result<()> {
+        self.validate_working_storage()?;
+        self.validate_layout_identity(bytes)
+    }
+
+    fn validate_layout_identity(&self, bytes: &[u8]) -> io::Result<()> {
         require(
             (48..=65536).contains(&bytes.len())
                 && layout::u32_at(bytes, 0)? == 1
@@ -134,7 +199,8 @@ impl GeneralDiskBinding {
         )?;
         let count = layout::u32_at(bytes, 4)? as usize;
         require(
-            (1..=128).contains(&count) && bytes.len() == 48 + count * 144,
+            count != 0
+                && count.checked_mul(144).and_then(|n| n.checked_add(48)) == Some(bytes.len()),
             "GPT entry table incomplete",
         )?;
         let first = layout::u64_at(bytes, 24)?;
@@ -152,8 +218,13 @@ impl GeneralDiskBinding {
         )?;
         let basic = guid_bytes("ebd0a0a2-b9e5-4433-87c0-68b6b72699c7")?;
         let msr = guid_bytes("e3c9e316-0b5c-4db8-817d-f92df00215ae")?;
+        let efi = guid_bytes("c12a7328-f81f-11d2-ba4b-00a0c93ec93b")?;
+        let recovery = guid_bytes("de94bba4-06d1-4d40-a16a-bfd50179d6ac")?;
+        let windows = self.layout_profile == GeneralDiskLayoutProfile::OfflineWindows;
         let mut seen = Vec::<(u32, u64, u64)>::new();
+        let mut seen_guids = Vec::<[u8; 16]>::new();
         let (mut target, mut msr_count) = (0, 0);
+        let (mut efi_count, mut recovery_count) = (0, 0);
         for index in 0..count {
             let at = 48 + index * 144;
             let number = layout::u32_at(bytes, at + 24)?;
@@ -181,6 +252,14 @@ impl GeneralDiskBinding {
                 "duplicate, overlapping or malformed GPT partition",
             )?;
             seen.push((number, offset, end));
+            if windows {
+                let id: [u8; 16] = bytes[at + 48..at + 64].try_into().unwrap();
+                require(
+                    !seen_guids.contains(&id),
+                    "Windows GPT partition GUID is duplicated",
+                )?;
+                seen_guids.push(id);
+            }
             if number == self.identity.partition_number {
                 require(
                     kind == basic
@@ -193,14 +272,25 @@ impl GeneralDiskBinding {
                 target += 1;
             } else {
                 require(
-                    kind == msr && size <= 16 << 20 && end <= self.identity.partition_offset,
+                    // An MSR has no independently mounted user filesystem.
+                    // Its historical 16/128 MiB size and ordering do not
+                    // change this owner's whole-disk exclusion contract.
+                    kind == msr || windows && (kind == efi || kind == recovery),
                     "other data, EFI or system partitions exclude whole-disk isolation",
                 )?;
-                msr_count += 1;
+                if kind == msr {
+                    msr_count += 1;
+                } else if kind == efi {
+                    efi_count += 1;
+                } else {
+                    recovery_count += 1;
+                }
             }
         }
         require(
-            target == 1 && msr_count <= 1,
+            target == 1
+                && msr_count <= 1
+                && (!windows || msr_count == 1 && efi_count == 1 && recovery_count == 1),
             "dedicated data-disk partition set differs",
         )
     }
@@ -217,6 +307,7 @@ mod pair_tests {
         volume_guid: &str,
     ) -> GeneralDiskBinding {
         GeneralDiskBinding {
+            layout_profile: Default::default(),
             disk_number: number,
             volume_guid: volume_guid.into(),
             identity: PartitionIdentity {

@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "kind": "authorized-obsolete-leaf-checkpoint-retirement",
+  "vm_id": "2401593c-4b30-472e-9b6d-c9534cbaa599",
+  "removed_checkpoint_ids": [
+    "5ce766b0-c6e9-4007-b16d-363944240c51",
+    "bbeb8887-7da9-4d40-afcb-39e727565c8b"
+  ],
+  "retained_alpha_recovery_origin": "58bd9ceb-60bc-4b34-81e1-7af197523a80",
+  "retained_operational_results": [
+    "411c47b6-652d-432a-81f9-8bd10ff18e1b",
+    "ba81a1f8-eee9-40d6-957f-31acbb09b98e"
+  ],
+  "source_ready_checkpoint": "3343f2a4-cf81-4fa9-a504-030425a8011e",
+  "alpha_archive": {
+    "files": 113,
+    "all_files_rehashed": true,
+    "manifest_sha256": "97b2e173906a5602b7baa953798c1ee52b85d7417f6f83ec923a8a14acc49475",
+    "bytes": 328266646,
+    "data_plane_copied": false
+  },
+  "refusal_archives": {
+    "worker_entries": 14,
+    "output_entries": 2074,
+    "all_entries_read_completely": true,
+    "pre_source_write_refusal": true,
+    "output_zip_sha256": "43547fcd761975854b1bd9671bd957e824dcc429cb68d0567dfb4348c81ae0a3",
+    "worker_zip_sha256": "fad19df8849e5ef56b9c5dbde8f7493f0931c04791e111c007de3fb3b2142a22"
+  },
+  "operation": {
+    "hyper_v_api_only": true,
+    "inactive_leaves_checked": true,
+    "keep_graph_rechecked": true,
+    "manual_avhdx_deletion": false,
+    "frozen_package_and_archives_preserved": true,
+    "vm_off_and_parent_checked": true,
+    "old_restorable_result_and_debug_images_retired": true
+  },
+  "full_capacity_after": {
+    "utc": "2026-11-03T18:31:43.4544226Z",
+    "paths": [
+      {
+        "path": "D:\\code\\ntfs2refs\\.lab",
+        "bytes": 279568657534
+      },
+      {
+        "path": "D:\\code\\ntfs2refs\\target\\shared-experiments",
+        "bytes": 2352283525
+      },
+      {
+        "path": "D:\\code\\ntfs2refs\\target\\shared-experiments-staging",
+        "bytes": 7004726
+      }
+    ],
+    "capacity": {
+      "ActualBytes": 281927945785,
+      "FreeBytes": 124627722240,
+      "MaximumActualBytes": 329374052988,
+      "MinimumFreeBytes": 17179869184
+    },
+    "forecast_bytes": 42949672960,
+    "known_internal_alias_conservative_bytes": 262144,
+    "epoch_reset": false
+  },
+  "known_scope": {
+    "no_epoch_cap_or_forecast_increase": true,
+    "physical_space_release_timing_not_controlled": true,
+    "old_closed_hnd_journal_replay_prohibited": true,
+    "historical_scripts_referencing_retired_ids_are_not_executable_current_authority": true
+  },
+  "host_receipts": {
+    "result": ".lab/development/retire-old-5ce-bbeb-20261103/result.json",
+    "intent": ".lab/development/retire-old-5ce-bbeb-20261103/intent.json",
+    "capacity": ".lab/development/retire-old-5ce-bbeb-20261103/capacity-after.json"
+  }
+}

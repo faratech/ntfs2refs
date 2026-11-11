@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "kind": "cold-source-range-held-buffer-bounds",
+  "actual_failed_candidate": "3aee198b815ba313165098f822e792140efe59f9",
+  "case": ".lab/hyperv/streaming-v2-20261027/PUBLIC-3aee198-actual-once-55c4d0d272224df893559921ef1a83cb",
+  "frame_sha256": "4a4cecb5f12e9fe04d1ab50420bfa9840f8486d410a5751ec79d520296812b8f",
+  "protected_state_and_ordinary_route_passed": true,
+  "error": "source range exceeds owner resources",
+  "actual_format": {
+    "producer_chunk_bytes": 2461287,
+    "logical_bytes": [
+      179,
+      160,
+      270,
+      256,
+      211,
+      192
+    ],
+    "cold_page_cap_bytes": 2789020,
+    "producer_max_page_bytes": 3281908,
+    "cold_arena_ram_bytes": 1427978242,
+    "wire_bytes": [
+      760,
+      736,
+      880,
+      864,
+      804,
+      776
+    ]
+  },
+  "fix": "Retain poison and wire-scratch guards; compare actual held-file body and decoded bounds to existing consumer page cap before unchanged aggregate RAM leases.",
+  "unchanged": [
+    "Original authenticated PageBudget/header/chunk protocol",
+    "Complete held-file identity and SHA, footer/all chunks/logical SHA",
+    "Consumer page/RAM/scratch caps",
+    "Source/J/boot/AP/writer policy"
+  ],
+  "component": {
+    "path": "src/ntfs_inspect/paged_storage.rs",
+    "sha256": "7b74dd48831a595972f097f87062f46dfa92b5e8ceac2ca89a3cd493d8eb4e5c"
+  },
+  "focused_check": {
+    "receipt_sha256": "18e895b43ed87efaec9dfb03bf7dfff852a8b7c23213f82dcebdb39efa449c1d",
+    "native_run": false,
+    "wall_seconds": 22.7641426,
+    "session_id": 38141,
+    "unit_tests_run": false,
+    "exit_code": 0
+  },
+  "native_qualified": false,
+  "normal_conversion_qualified": false,
+  "resume_qualified": false,
+  "rollback_qualified": false,
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "observed_utc": "2026-11-06T05:41:00.3135638Z"
+}

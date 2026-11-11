@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "kind": "storage-role-selected-target-metadata-under-volume-lock",
+  "status": "lab-and-public-check-passed-native-qualification-pending",
+  "files": [
+    {
+      "sha256": "2b358b529f1e08349dcf34a1546230992cb4254a8e43ff37370427794161c4f5",
+      "path": "crates/n2r-win32/src/native/partition_storage_roles.rs",
+      "bytes": 28737
+    }
+  ],
+  "reviewed_patch_sha256": "8380e46942329dd3bd394d80083403baa09218bb0b554a3ec811f48724063118",
+  "check_exit": 0,
+  "check_wall_seconds": 32.8696308,
+  "check_receipt_sha256": "975dea7090adfa64bb9f9a4f73a0a065e0d973ab60bc1c82a18556db03fbdd20",
+  "unit_tests_run": false,
+  "native_run": false,
+  "shared_target_reused": true,
+  "behavior": [
+    "Selected partition identity is queried from a readonly physical-disk native complete GPT layout, not from another selected-volume FileObject after lock/dismount.",
+    "Disk DEVICE/LENGTH/GUID, unique selected GUID/number/extent/type and full before/after native layout equality remain enforced.",
+    "Native current Windows/critical partition role checks and fresh WMI catalogs remain.",
+    "Remaining metadata opens emit bounded actual native events and exact operation/path/OS error context."
+  ],
+  "actual_prior_refusal": {
+    "actual_failing_unflushed_operation_proven": false,
+    "conversion_journal_exists": false,
+    "error": "The device is not ready. (os error21)",
+    "locked_dismounted_extended_dasd_events_succeeded": true,
+    "native_pid": 2304,
+    "native_birth_ms": 1793836791495,
+    "source_unchanged_receipt_sha256": "e294cf920bb4a6d7ae3d0e0cb5470ae1285e228eaf5c843561ce80d56d2a95af",
+    "real_exit_code": 1,
+    "wall_seconds": 58.6320047,
+    "preparation_intent_bytes": 0
+  },
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "remaining": [
+    "Build exact fixed candidate and execute actual conversion.",
+    "Native full conversion and recovery qualification."
+  ]
+}

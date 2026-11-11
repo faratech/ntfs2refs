@@ -11,7 +11,15 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-pub(crate) const MAX_IMAGE_BYTES: u64 = 128 * 1024 * 1024 * 1024;
+pub(crate) mod digest_pipeline;
+#[cfg(windows)]
+pub(crate) mod paired_digest;
+pub(crate) mod stream_digest;
+
+// Four full passes are included in the u64 I/O report, followed by 32 bytes of
+// file-container probes. The actual converter retains its own narrower live
+// admission limits; this streaming comparison does not need a 128 GiB cap.
+pub(crate) const MAX_IMAGE_BYTES: u64 = (u64::MAX - 32) / 4;
 const MAX_RETAINED_RANGES: usize = 1024;
 const MAX_PATCH_RANGES: u32 = 65_536;
 const BUFFER_BYTES: usize = 1024 * 1024;
@@ -60,6 +68,14 @@ pub struct RetainedRangeObservation {
 }
 
 #[derive(Debug, Serialize)]
+pub struct PairedInputAccounting {
+    logical_image_bytes_compared_and_rechecked: u64,
+    actual_input_stream_bytes_read: u64,
+    candidate_complement_bytes_reused: u64,
+    native_device_io_claimed: bool,
+}
+
+#[derive(Debug, Serialize)]
 pub struct RetainedComparison {
     pub schema_version: u32,
     pub kind: String,
@@ -79,8 +95,10 @@ pub struct RetainedComparison {
     pub retained_ranges: Vec<RetainedRangeObservation>,
     pub expected_postimage_sha256: String,
     pub source_shadow_unchanged_after_comparison: bool,
-    /// Two complete passes over both files; excludes the container probes.
+    /// Input stream bytes actually read; same-chunk reuse and probes excluded.
     pub full_scan_input_bytes_read: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub paired_input_accounting: Option<PairedInputAccounting>,
     pub container_probe_bytes_read: u64,
     pub total_input_bytes_read: u64,
     pub executable: bool,
@@ -287,27 +305,69 @@ fn open_input(path: &Path, length: u64) -> Result<Input> {
     })
 }
 
+#[cfg(test)]
 pub(crate) fn hash_reader<R: Read + Seek>(reader: &mut R, length: u64) -> Result<String> {
-    hash_reader_observed(reader, length, &mut |_| {})
+    hash_reader_observed_backend(reader, length, &mut |_| {}, false)
 }
 
-fn hash_reader_observed<R: Read + Seek>(
+pub(crate) fn hash_reader_with_backend<R: Read + Seek>(
+    reader: &mut R,
+    length: u64,
+    native: bool,
+) -> Result<String> {
+    hash_reader_observed_backend(reader, length, &mut |_| {}, native)
+}
+
+/// Hash two caller-bound, equally sized images while overlapping independent
+/// digest work. Every read stays on the owning thread. The caller establishes
+/// lengths/exclusion; this returns no storage identity or write capability.
+pub(crate) fn hash_pair_pipelined<R: Read + Seek, S: Read + Seek>(
+    source: &mut R,
+    shadow: &mut S,
+    length: u64,
+    native: bool,
+) -> Result<(String, String)> {
+    ensure!(
+        length <= MAX_IMAGE_BYTES,
+        "paired hash length exceeds bound"
+    );
+    source.seek(SeekFrom::Start(0))?;
+    shadow.seek(SeekFrom::Start(0))?;
+    let mut source_hash = stream_digest::StreamDigest::new(native)?;
+    let mut shadow_hash = digest_pipeline::Pipeline::with_native_backend(BUFFER_BYTES, native)?;
+    let mut left = vec![0; BUFFER_BYTES];
+    let mut right = vec![0; BUFFER_BYTES];
+    let mut remaining = length;
+    while remaining != 0 {
+        let count = usize::try_from(remaining.min(BUFFER_BYTES as u64))?;
+        source.read_exact(&mut left[..count])?;
+        shadow.read_exact(&mut right[..count])?;
+        shadow_hash.update(&right[..count])?;
+        source_hash.update(&left[..count])?;
+        remaining -= count as u64;
+    }
+    let shadow_sha256 = hex::encode(shadow_hash.finish()?);
+    Ok((hex::encode(source_hash.finish()?), shadow_sha256))
+}
+
+fn hash_reader_observed_backend<R: Read + Seek>(
     reader: &mut R,
     length: u64,
     progress: &mut dyn FnMut(u64),
+    native: bool,
 ) -> Result<String> {
     reader.seek(SeekFrom::Start(0))?;
-    let mut hash = Sha256::new();
+    let mut hash = stream_digest::StreamDigest::new(native)?;
     let mut buffer = vec![0; BUFFER_BYTES];
     let mut remaining = length;
     while remaining != 0 {
         let count = usize::try_from(remaining.min(BUFFER_BYTES as u64))?;
         reader.read_exact(&mut buffer[..count])?;
-        hash.update(&buffer[..count]);
+        hash.update(&buffer[..count])?;
         remaining -= count as u64;
         progress(length - remaining);
     }
-    Ok(hex::encode(hash.finalize()))
+    Ok(hex::encode(hash.finish()?))
 }
 
 fn verify_input_binding(input: &Input) -> Result<()> {
@@ -347,6 +407,27 @@ struct PendingPatch {
     length: u64,
     source: Sha256,
     shadow: Sha256,
+}
+
+/// Append the contiguous changed portion of this buffer before finishing a
+/// patch or carrying it into the next buffer. Sector accounting stays in the
+/// comparison loop; digest calls operate on whole contiguous byte spans.
+fn append_patch_span(
+    pending: &mut Option<PendingPatch>,
+    start: &mut Option<usize>,
+    end: usize,
+    source: &[u8],
+    shadow: &[u8],
+) -> Result<()> {
+    if let Some(start) = start.take() {
+        let patch = pending
+            .as_mut()
+            .context("changed span has no pending patch")?;
+        patch.length += (end - start) as u64;
+        patch.source.update(&source[start..end]);
+        patch.shadow.update(&shadow[start..end]);
+    }
+    Ok(())
 }
 
 fn finish_patch(pending: &mut Option<PendingPatch>, patches: &mut Vec<ComparedPatch>) {
@@ -399,13 +480,97 @@ pub(crate) fn compare_streams_observed<R: Read + Seek, S: Read + Seek>(
     request: &RetainedCompareRequest,
     progress: &mut Reporter<'_>,
 ) -> Result<RetainedComparison> {
+    compare_streams_observed_with_resource_profile(
+        source,
+        shadow,
+        request,
+        progress,
+        crate::ntfs_admission::ResourceProfile::AlphaV1,
+    )
+}
+
+pub(crate) fn compare_streams_observed_with_resource_profile<R: Read + Seek, S: Read + Seek>(
+    source: &mut R,
+    shadow: &mut S,
+    request: &RetainedCompareRequest,
+    progress: &mut Reporter<'_>,
+    resources: crate::ntfs_admission::ResourceProfile,
+) -> Result<RetainedComparison> {
+    compare_streams_with_pair_reader(
+        source,
+        shadow,
+        request,
+        progress,
+        resources,
+        |source, shadow, _, left, right| {
+            source.read_exact(left)?;
+            shadow.read_exact(right)?;
+            Ok(0)
+        },
+    )
+}
+
+#[cfg(windows)]
+pub(crate) fn compare_compact_streams_observed(
+    source: &mut n2r_win32::GeneralFrozenPartition,
+    shadow: &mut crate::refs_hybrid::delta::DifferenceImage<
+        '_,
+        n2r_win32::GeneralFrozenPartition,
+        File,
+    >,
+    request: &RetainedCompareRequest,
+    progress: &mut Reporter<'_>,
+    resources: crate::ntfs_admission::ResourceProfile,
+) -> Result<RetainedComparison> {
+    let mut events = Vec::new();
+    let before = shadow.paired_source_state(source, &mut events)?;
+    let comparison = compare_streams_with_pair_reader(
+        source,
+        shadow,
+        request,
+        progress,
+        resources,
+        |source, shadow, offset, left, right| {
+            shadow.read_pair_from_frozen_source(source, offset, left, right)
+        },
+    )?;
+    ensure!(
+        shadow.paired_source_state(source, &mut events)? == before,
+        "paired preparation source/complement state changed"
+    );
+    Ok(comparison)
+}
+
+fn compare_streams_with_pair_reader<R: Read + Seek, S: Read + Seek>(
+    source: &mut R,
+    shadow: &mut S,
+    request: &RetainedCompareRequest,
+    progress: &mut Reporter<'_>,
+    resources: crate::ntfs_admission::ResourceProfile,
+    mut read_pair: impl FnMut(&mut R, &mut S, u64, &mut [u8], &mut [u8]) -> Result<u64>,
+) -> Result<RetainedComparison> {
     validate_request(request)?;
     progress.update(Subphase::Comparing, 0);
     source.seek(SeekFrom::Start(0))?;
     shadow.seek(SeekFrom::Start(0))?;
-    let mut source_hash = Sha256::new();
-    let mut shadow_hash = Sha256::new();
-    let mut post_hash = Sha256::new();
+    let native = cfg!(windows)
+        && resources == crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2;
+    let mut source_hash = stream_digest::StreamDigest::new(native)?;
+    let mut shadow_hash = stream_digest::StreamDigest::new(native)?;
+    // Keep small comparisons serial. Larger images can hash the independent
+    // source and shadow chunks on separate cores without changing read order,
+    // pins, patch hashes, progress accounting or the subsequent full rechecks.
+    let mut shadow_pipeline = if request.expected_length >= 64 * 1024 * 1024
+        && std::thread::available_parallelism().is_ok_and(|cores| cores.get() >= 2)
+    {
+        Some(digest_pipeline::Pipeline::with_native_backend(
+            BUFFER_BYTES,
+            native,
+        )?)
+    } else {
+        None
+    };
+    let mut post_hash = stream_digest::StreamDigest::new(native)?;
     let mut retained: Vec<_> = request
         .retained_ranges
         .iter()
@@ -421,13 +586,30 @@ pub(crate) fn compare_streams_observed<R: Read + Seek, S: Read + Seek>(
     let mut differing_bytes = 0;
     let mut differing_sectors = 0;
     let mut patch_bytes = 0_u64;
+    let mut reused_input_bytes = 0u64;
     let sector = request.sector_size as usize;
     while offset < request.expected_length {
         let count = usize::try_from((request.expected_length - offset).min(BUFFER_BYTES as u64))?;
-        source.read_exact(&mut left[..count])?;
-        shadow.read_exact(&mut right[..count])?;
-        source_hash.update(&left[..count]);
-        shadow_hash.update(&right[..count]);
+        let reused = read_pair(
+            source,
+            shadow,
+            offset,
+            &mut left[..count],
+            &mut right[..count],
+        )?;
+        ensure!(
+            reused <= count as u64,
+            "paired comparison reuse exceeds chunk"
+        );
+        reused_input_bytes = reused_input_bytes
+            .checked_add(reused)
+            .context("comparison reuse overflow")?;
+        if let Some(pipeline) = shadow_pipeline.as_mut() {
+            pipeline.update(&right[..count])?;
+        } else {
+            shadow_hash.update(&right[..count])?;
+        }
+        source_hash.update(&left[..count])?;
         progress.update(Subphase::Comparing, (offset + count as u64) * 2);
         // Equal bytes have the same hybrid value regardless of ownership.
         // Keep every retained pin proof, but hash its exact overlap in bulk
@@ -435,7 +617,7 @@ pub(crate) fn compare_streams_observed<R: Read + Seek, S: Read + Seek>(
         if left[..count] == right[..count] {
             finish_patch(&mut pending, &mut patches);
             if !wholly_shadow {
-                post_hash.update(&left[..count]);
+                post_hash.update(&left[..count])?;
             }
             let end = offset + count as u64;
             while retained_index < request.retained_ranges.len()
@@ -466,11 +648,22 @@ pub(crate) fn compare_streams_observed<R: Read + Seek, S: Read + Seek>(
             offset = end;
             continue;
         }
+        let mut patch_start = None;
+        let mut post_start = 0;
+        let mut post_retained = false;
         for index in (0..count).step_by(sector) {
             let position = offset + index as u64;
             let a = &left[index..index + sector];
             let b = &right[index..index + sector];
-            let changed = a.iter().zip(b).filter(|(x, y)| x != y).count() as u64;
+            // A buffer with one changed sector often contains hundreds of
+            // unchanged sectors. Let the optimized slice comparison skip the
+            // byte-by-byte difference count for each unchanged sector; changed
+            // sectors still receive the exact count needed by the report.
+            let changed = if a == b {
+                0
+            } else {
+                a.iter().zip(b).filter(|(x, y)| x != y).count() as u64
+            };
             differing_bytes += changed;
             differing_sectors += u64::from(changed != 0);
             while retained_index < request.retained_ranges.len()
@@ -482,7 +675,17 @@ pub(crate) fn compare_streams_observed<R: Read + Seek, S: Read + Seek>(
             }
             let in_retained = retained_index < request.retained_ranges.len()
                 && position >= request.retained_ranges[retained_index].offset;
+            if !wholly_shadow && in_retained != post_retained {
+                post_hash.update(if post_retained {
+                    &left[post_start..index]
+                } else {
+                    &right[post_start..index]
+                })?;
+                post_start = index;
+                post_retained = in_retained;
+            }
             if in_retained {
+                append_patch_span(&mut pending, &mut patch_start, index, &left, &right)?;
                 finish_patch(&mut pending, &mut patches);
                 let hashes = &mut retained[retained_index];
                 hashes.source.update(a);
@@ -490,12 +693,9 @@ pub(crate) fn compare_streams_observed<R: Read + Seek, S: Read + Seek>(
                 hashes.bytes += sector as u64;
                 hashes.differing_bytes += changed;
                 hashes.differing_sectors += u64::from(changed != 0);
-                post_hash.update(a);
             } else {
-                if !wholly_shadow {
-                    post_hash.update(b);
-                }
                 if changed == 0 {
+                    append_patch_span(&mut pending, &mut patch_start, index, &left, &right)?;
                     finish_patch(&mut pending, &mut patches);
                     continue;
                 }
@@ -518,21 +718,29 @@ pub(crate) fn compare_streams_observed<R: Read + Seek, S: Read + Seek>(
                         shadow: Sha256::new(),
                     });
                 }
-                let patch = pending.as_mut().expect("pending patch created");
-                patch.length += sector as u64;
-                patch.source.update(a);
-                patch.shadow.update(b);
+                patch_start.get_or_insert(index);
             }
+        }
+        append_patch_span(&mut pending, &mut patch_start, count, &left, &right)?;
+        if !wholly_shadow {
+            post_hash.update(if post_retained {
+                &left[post_start..count]
+            } else {
+                &right[post_start..count]
+            })?;
         }
         offset += count as u64;
     }
     finish_patch(&mut pending, &mut patches);
-    let source_sha256 = hex::encode(source_hash.finalize());
-    let shadow_sha256 = hex::encode(shadow_hash.finalize());
+    let source_sha256 = hex::encode(source_hash.finish()?);
+    let shadow_sha256 = match shadow_pipeline {
+        Some(pipeline) => hex::encode(pipeline.finish()?),
+        None => hex::encode(shadow_hash.finish()?),
+    };
     let expected_postimage_sha256 = if wholly_shadow {
         shadow_sha256.clone()
     } else {
-        hex::encode(post_hash.finalize())
+        hex::encode(post_hash.finish()?)
     };
     ensure!(
         source_sha256 == request.source_sha256,
@@ -567,16 +775,22 @@ pub(crate) fn compare_streams_observed<R: Read + Seek, S: Read + Seek>(
     }
     progress.update(Subphase::RecheckingSource, 0);
     ensure!(
-        hash_reader_observed(source, request.expected_length, &mut |bytes| {
-            progress.update(Subphase::RecheckingSource, bytes);
-        })? == source_sha256,
+        hash_reader_observed_backend(
+            source,
+            request.expected_length,
+            &mut |bytes| progress.update(Subphase::RecheckingSource, bytes),
+            native,
+        )? == source_sha256,
         "source changed after comparison"
     );
     progress.update(Subphase::RecheckingShadow, 0);
     ensure!(
-        hash_reader_observed(shadow, request.expected_length, &mut |bytes| {
-            progress.update(Subphase::RecheckingShadow, bytes);
-        })? == shadow_sha256,
+        hash_reader_observed_backend(
+            shadow,
+            request.expected_length,
+            &mut |bytes| progress.update(Subphase::RecheckingShadow, bytes),
+            native,
+        )? == shadow_sha256,
         "shadow changed after comparison"
     );
     let retained_differing_bytes = observations.iter().map(|range| range.differing_bytes).sum();
@@ -587,6 +801,7 @@ pub(crate) fn compare_streams_observed<R: Read + Seek, S: Read + Seek>(
     let full_scan_input_bytes_read = request
         .expected_length
         .checked_mul(4)
+        .and_then(|bytes| bytes.checked_sub(reused_input_bytes))
         .context("read accounting overflow")?;
     Ok(RetainedComparison {
         schema_version: 1,
@@ -615,6 +830,12 @@ pub(crate) fn compare_streams_observed<R: Read + Seek, S: Read + Seek>(
         expected_postimage_sha256,
         source_shadow_unchanged_after_comparison: true,
         full_scan_input_bytes_read,
+        paired_input_accounting: (reused_input_bytes != 0).then_some(PairedInputAccounting {
+            logical_image_bytes_compared_and_rechecked: request.expected_length * 4,
+            actual_input_stream_bytes_read: full_scan_input_bytes_read,
+            candidate_complement_bytes_reused: reused_input_bytes,
+            native_device_io_claimed: false,
+        }),
         container_probe_bytes_read: 0,
         total_input_bytes_read: full_scan_input_bytes_read,
         executable: false,

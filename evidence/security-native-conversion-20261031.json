@@ -1,0 +1,479 @@
+{
+  "converter_normalizes_acl_presence": false,
+  "audit_event_delivery_tested": false,
+  "query_scope_narrowed": false,
+  "recorded_utc": "2026-10-31T10:15:58.3347339Z",
+  "complete_default_stream_hashes": 18,
+  "coldboot_checkpoint": "c6345e1f-7cc9-43dd-8ebc-6c7b4546d06c",
+  "general_conversion_qualified": false,
+  "complete_named_stream_hashes": 8,
+  "native_elapsed_seconds": 80.5929868,
+  "public_binary_sha256": "00899bf5e046d767f8548d3979ac8674769b8e25008b1638d36e24ab71ba4975",
+  "native_exit": 0,
+  "selected_ranges": 200,
+  "current_source_getter_security_information": "0x1f",
+  "core_run_id": "d9ba5a9c418dc832d51a6029cc1bc77f",
+  "source_capture_schema": 10,
+  "production_release_ready": false,
+  "retained_fragmented_payload_extents": 1024,
+  "security_identities": 8,
+  "unit_tests_added_or_run": false,
+  "source_admitted": true,
+  "coldboot": {
+    "source_payload_writes": 0,
+    "native_exit": 0,
+    "kernel_and_api_security_bytes_match_for": 25,
+    "observer_binary_sha256": "89b3deac9f60df2752b486c44a8f9f9522de12ac74ac166053bab63a85ee695f",
+    "journal_replayed": false,
+    "all_prior_stream_hashes_and_eas_match": true,
+    "all_prior_file_ids_and_data_mappings_match": true,
+    "run_id": "d85aca0ea05743f3ab56309069af9822",
+    "native_tree_verified": true
+  },
+  "main_source_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "proofs": [
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\security-tools-fa6396f\\manifest.json",
+      "bytes": 588,
+      "sha256": "33cb3cec58dc5142fdcb7fe5d75664b7b0e813f5012c216e389b7d78444ec0a4"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\security-fixture-d813f2f240624fe3943acf11646a2297\\closed\\fixture.json",
+      "bytes": 209590,
+      "sha256": "b9def5704ea0293e015ba99c7b65aff3e03ac60d3dd740a6b5903ccaf62e8fa5"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\security-fixture-d813f2f240624fe3943acf11646a2297\\checkpoint.json",
+      "bytes": 155,
+      "sha256": "6633c9447b1680d8350b86f4caa1ed33a805d6cbb6f88ec98da6496a128a03ef"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\security-success-a8b54a6e\\archive.json",
+      "bytes": 39402,
+      "sha256": "23a3c42b37a6a1fe2ea9279d7f62816e642066eacc8a3755d8e58d435e5642ee"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\security-success-a8b54a6e\\checkpoint.json",
+      "bytes": 157,
+      "sha256": "91fefe9948cc94e1707be9d85f45f880b5e4debdfb152ec7cc9ac5e09ccca42b"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\security-success-a8b54a6e\\closed\\wrapper\\wrapper-result.json",
+      "bytes": 28367,
+      "sha256": "4c004e5f6b334f429c82aef7bb855b04e077ba8388c586688e9d0e664f79e0b7"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\security-success-a8b54a6e\\closed\\core\\conversion\\request.json",
+      "bytes": 1821,
+      "sha256": "a033eefb80996f57824660b1424a468c3edf473404b15ebd0ddcbd6704543a7a"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\security-success-a8b54a6e\\closed\\core\\conversion\\expectation.json",
+      "bytes": 381613,
+      "sha256": "5cf692eebcdba0f8cac65c9802e66a168d2f964f8c4c29d72c02558e4b2fb40d"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\security-success-a8b54a6e\\closed\\core\\conversion\\result.json",
+      "bytes": 1041,
+      "sha256": "36e7dda41d7602e5cd6f0247f9249e3c649468fe1ae6c408a51e3dc4523a8ccb"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\security-success-a8b54a6e\\closed\\core\\conversion\\handoff.json",
+      "bytes": 444,
+      "sha256": "6980379319046b462f62cad19b2b7cc66e0d569e2306119252f62135c91f9dba"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\security-success-a8b54a6e\\closed\\core\\conversion\\finalization.json",
+      "bytes": 2830768,
+      "sha256": "ef05be26a07a29b87813f7a1009b576c5388596aa87df1b6cd898f2abb74c0f5"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\security-success-a8b54a6e\\closed\\core\\conversion\\qualification\\source-basis.json",
+      "bytes": 1085608,
+      "sha256": "e3c77a035fd54d8048cc2768ac47e001265731fe6810d57db56f182c03379a63"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\security-success-a8b54a6e\\closed\\core\\conversion\\qualification\\native-source.json",
+      "bytes": 5883623,
+      "sha256": "0e013d6bf2ffc53c41786afb1fee2e3bfafada1bbcf4624b6dff40386198c2a0"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\security-success-a8b54a6e\\closed\\core\\conversion\\qualification\\construction-metadata.json",
+      "bytes": 98878,
+      "sha256": "f0742542f0681db9636f75d294bfbcf2f42b01f37f8c58fc20375a2c37dbaf2b"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\security-success-a8b54a6e\\closed\\core\\conversion\\qualification\\target-preservation.json",
+      "bytes": 4183222,
+      "sha256": "d7923d48de89561e08009a2f802167de3fef5243d60824e8d2f72570f1df78d8"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\security-verifier-fa6396f\\manifest.json",
+      "bytes": 325,
+      "sha256": "410f3f3fde991114e90b857cfa1b3989fb02f1278bd3e7c64efff0e60ad14c25"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\security-coldboot-d85aca0ea05743f3ab56309069af9822\\dispatch.json",
+      "bytes": 1229,
+      "sha256": "62a5c83ceb758c527844ab50b1b8674392e56d13f510eed636fa8f0263f36d8b"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\security-coldboot-d85aca0ea05743f3ab56309069af9822\\archive.json",
+      "bytes": 3942,
+      "sha256": "802c5a31693f2f4a7e24151fedf28d33d587179e8faf5b27807bb3b7f8b4e555"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\security-coldboot-d85aca0ea05743f3ab56309069af9822\\closed\\boot.json",
+      "bytes": 145,
+      "sha256": "787e5c581128e87bf9b0f2ae6efa85f3847627e0714681f9dce974eb4986175c"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\security-coldboot-d85aca0ea05743f3ab56309069af9822\\closed\\verification.json",
+      "bytes": 2734160,
+      "sha256": "2e38f9f5bd9e022aad21f780ff3926e6fac69b16f48809c035c5bb2ae9cc93f9"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\security-coldboot-d85aca0ea05743f3ab56309069af9822\\comparison.json",
+      "bytes": 773,
+      "sha256": "19fa36588a6a6cc9d9e44976854476841a27b54954e99b6e1a8919a55d7fa3fc"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\security-coldboot-d85aca0ea05743f3ab56309069af9822\\security-comparison.json",
+      "bytes": 255,
+      "sha256": "cd04d5dced6308199d59a6f265e93ab21dd6649c5ad34dbc77b24bdf364ff241"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\security-coldboot-d85aca0ea05743f3ab56309069af9822\\compare.ps1",
+      "bytes": 3901,
+      "sha256": "6d9b92184b02f31b1e52857fba4ae023246536875e9f2379f33251c6d5c93069"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\security-coldboot-d85aca0ea05743f3ab56309069af9822\\checkpoint.json",
+      "bytes": 156,
+      "sha256": "d0c9b573a6f148205a840d9c7e9819dddee1111e43f64ef8b1ed6521a41c8a8c"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\security-coldboot-d85aca0ea05743f3ab56309069af9822\\obsolete-checkpoint-cleanup.json",
+      "bytes": 1066,
+      "sha256": "f4c5ea0da217462bd89b7cb75ab1ec1d383477fc8fd8a3f42680ff7cf86f8faa"
+    }
+  ],
+  "schema_version": 1,
+  "source_commit": "fa6396f8287f9054d494baebddcb92e7fe069493",
+  "packed_backing_bytes": 4014080,
+  "ea_identities": 4,
+  "audit_policy_changed": false,
+  "ea_entries": 7,
+  "security_fixture_states": [
+    {
+      "requested_dacl": "present",
+      "requested_sacl": "present",
+      "requested_semantics_preserved_on_ntfs": false,
+      "case": "audited-directory",
+      "actual_dacl": "present",
+      "actual_sacl": "present",
+      "actual_control": 47124,
+      "dacl_aces": 2,
+      "sacl_aces": 2
+    },
+    {
+      "requested_dacl": "present",
+      "requested_sacl": "present",
+      "requested_semantics_preserved_on_ntfs": true,
+      "case": "audit-and-label.bin",
+      "actual_dacl": "present",
+      "actual_sacl": "present",
+      "actual_control": 45076,
+      "dacl_aces": 2,
+      "sacl_aces": 2
+    },
+    {
+      "requested_dacl": "null",
+      "requested_sacl": "present",
+      "requested_semantics_preserved_on_ntfs": true,
+      "case": "null-dacl.bin",
+      "actual_dacl": "null",
+      "actual_sacl": "present",
+      "actual_control": 45076,
+      "dacl_aces": 0,
+      "sacl_aces": 2
+    },
+    {
+      "requested_dacl": "present",
+      "requested_sacl": "present",
+      "requested_semantics_preserved_on_ntfs": true,
+      "case": "empty-dacl.bin",
+      "actual_dacl": "present",
+      "actual_sacl": "present",
+      "actual_control": 45076,
+      "dacl_aces": 0,
+      "sacl_aces": 2
+    },
+    {
+      "requested_dacl": "absent",
+      "requested_sacl": "present",
+      "requested_semantics_preserved_on_ntfs": false,
+      "case": "absent-dacl.bin",
+      "actual_dacl": "null",
+      "actual_sacl": "present",
+      "actual_control": 45076,
+      "dacl_aces": 0,
+      "sacl_aces": 2
+    },
+    {
+      "requested_dacl": "present",
+      "requested_sacl": "null",
+      "requested_semantics_preserved_on_ntfs": true,
+      "case": "null-sacl.bin",
+      "actual_dacl": "present",
+      "actual_sacl": "null",
+      "actual_control": 45076,
+      "dacl_aces": 2,
+      "sacl_aces": 0
+    },
+    {
+      "requested_dacl": "present",
+      "requested_sacl": "present",
+      "requested_semantics_preserved_on_ntfs": false,
+      "case": "empty-sacl.bin",
+      "actual_dacl": "present",
+      "actual_sacl": "null",
+      "actual_control": 45076,
+      "dacl_aces": 2,
+      "sacl_aces": 0
+    },
+    {
+      "requested_dacl": "present",
+      "requested_sacl": "absent",
+      "requested_semantics_preserved_on_ntfs": false,
+      "case": "inherited.bin",
+      "actual_dacl": "present",
+      "actual_sacl": "present",
+      "actual_control": 34836,
+      "dacl_aces": 2,
+      "sacl_aces": 2
+    }
+  ],
+  "security_preservation": {
+    "core_binding": {
+      "semantic_comparison_authority": "native converter exact raw/kernel/API gates plus separately pinned read-only Rust fixture observer",
+      "objects": 8,
+      "wrapper_parses_or_repairs_security": false,
+      "source_basis_sha256": "e3c77a035fd54d8048cc2768ac47e001265731fe6810d57db56f182c03379a63",
+      "native_source_sha256": "0e013d6bf2ffc53c41786afb1fee2e3bfafada1bbcf4624b6dff40386198c2a0",
+      "rows": [
+        {
+          "core_source_and_target_security_queries_present": true,
+          "raw_descriptor_sha256": "87cf79c0ef29b0683b09e6ab6d802b532a0d58dde48b3f7fee82f0e9f7504039",
+          "frozen_source_identity_bound": true,
+          "path": "H:\\SecurityFixture-d813f2f240624fe3943acf11646a2297",
+          "expected_target_identity_bound": true,
+          "source_record_number": 59,
+          "source_sequence_number": 1
+        },
+        {
+          "core_source_and_target_security_queries_present": true,
+          "raw_descriptor_sha256": "72959406883b5362627e82d0fb406b531de3a51713486b4b1d1dc80c6da79f78",
+          "frozen_source_identity_bound": true,
+          "path": "H:\\SecurityFixture-d813f2f240624fe3943acf11646a2297\\audit-and-label.bin",
+          "expected_target_identity_bound": true,
+          "source_record_number": 60,
+          "source_sequence_number": 1
+        },
+        {
+          "core_source_and_target_security_queries_present": true,
+          "raw_descriptor_sha256": "6a8d26fe3110bd3b47364df29becc6969d8654da4370e12c2d5f15ab4b62bda2",
+          "frozen_source_identity_bound": true,
+          "path": "H:\\SecurityFixture-d813f2f240624fe3943acf11646a2297\\null-dacl.bin",
+          "expected_target_identity_bound": true,
+          "source_record_number": 61,
+          "source_sequence_number": 1
+        },
+        {
+          "core_source_and_target_security_queries_present": true,
+          "raw_descriptor_sha256": "254991135d7eceafa71d8de501d997eae9a7a9166582fda4368d2289cd0caae7",
+          "frozen_source_identity_bound": true,
+          "path": "H:\\SecurityFixture-d813f2f240624fe3943acf11646a2297\\empty-dacl.bin",
+          "expected_target_identity_bound": true,
+          "source_record_number": 62,
+          "source_sequence_number": 1
+        },
+        {
+          "core_source_and_target_security_queries_present": true,
+          "raw_descriptor_sha256": "6a8d26fe3110bd3b47364df29becc6969d8654da4370e12c2d5f15ab4b62bda2",
+          "frozen_source_identity_bound": true,
+          "path": "H:\\SecurityFixture-d813f2f240624fe3943acf11646a2297\\absent-dacl.bin",
+          "expected_target_identity_bound": true,
+          "source_record_number": 63,
+          "source_sequence_number": 1
+        },
+        {
+          "core_source_and_target_security_queries_present": true,
+          "raw_descriptor_sha256": "2e2a39ee7f6ae91a570b2e7ecd3882512518a523cd75122be4258d9bfb6b656b",
+          "frozen_source_identity_bound": true,
+          "path": "H:\\SecurityFixture-d813f2f240624fe3943acf11646a2297\\null-sacl.bin",
+          "expected_target_identity_bound": true,
+          "source_record_number": 64,
+          "source_sequence_number": 1
+        },
+        {
+          "core_source_and_target_security_queries_present": true,
+          "raw_descriptor_sha256": "2e2a39ee7f6ae91a570b2e7ecd3882512518a523cd75122be4258d9bfb6b656b",
+          "frozen_source_identity_bound": true,
+          "path": "H:\\SecurityFixture-d813f2f240624fe3943acf11646a2297\\empty-sacl.bin",
+          "expected_target_identity_bound": true,
+          "source_record_number": 65,
+          "source_sequence_number": 1
+        },
+        {
+          "core_source_and_target_security_queries_present": true,
+          "raw_descriptor_sha256": "33b2646a488d36b0be3db949e06ae63300a23d9fe4d4321f0651e353d2f70341",
+          "frozen_source_identity_bound": true,
+          "path": "H:\\SecurityFixture-d813f2f240624fe3943acf11646a2297\\inherited.bin",
+          "expected_target_identity_bound": true,
+          "source_record_number": 66,
+          "source_sequence_number": 1
+        }
+      ]
+    },
+    "live": {
+      "tool_sha256": "efec23a0d0ea8826da66d8f0103446238f6b0f5241f66ecde64c564be1f70615",
+      "native_exit": 0,
+      "source_payload_writes": 0,
+      "security_setters": 0,
+      "raw_volume_writes": 0,
+      "independent_sha256_hashes": 7,
+      "states_observed_not_assumed": true,
+      "objects": 8,
+      "filesystem": "ReFS",
+      "source_security_semantics_match": true,
+      "report_path": "C:\\ntfs2refs\\attribute-list-convert-a8b54a6e47274b06aad6c9e0c12b9121\\security-refs-native.json",
+      "rows": [
+        {
+          "observed_ntfs_dacl_state": "present",
+          "source_api_view_matches": true,
+          "path": "H:\\SecurityFixture-d813f2f240624fe3943acf11646a2297",
+          "requested_semantics_preserved_on_ntfs": false,
+          "case": "audited-directory",
+          "file_id_info": "2d123e68363e68da00000000000000000307000000000000",
+          "independent_sha256": null,
+          "observed_ntfs_sacl_state": "present",
+          "source_security_semantics_match": true
+        },
+        {
+          "observed_ntfs_dacl_state": "present",
+          "source_api_view_matches": true,
+          "path": "H:\\SecurityFixture-d813f2f240624fe3943acf11646a2297\\audit-and-label.bin",
+          "requested_semantics_preserved_on_ntfs": true,
+          "case": "audit-and-label.bin",
+          "file_id_info": "2d123e68363e68da03000000000000000307000000000000",
+          "independent_sha256": "0ac18b4cbb6e4ab29b972b18e0588aef53d792d58e8ca9724423d72338828b78",
+          "observed_ntfs_sacl_state": "present",
+          "source_security_semantics_match": true
+        },
+        {
+          "observed_ntfs_dacl_state": "null",
+          "source_api_view_matches": true,
+          "path": "H:\\SecurityFixture-d813f2f240624fe3943acf11646a2297\\null-dacl.bin",
+          "requested_semantics_preserved_on_ntfs": true,
+          "case": "null-dacl.bin",
+          "file_id_info": "2d123e68363e68da07000000000000000307000000000000",
+          "independent_sha256": "e4f947e52a95498eb09aa81b0c5e6f39b54ce4329714ab3966f958f8cfd9dca7",
+          "observed_ntfs_sacl_state": "present",
+          "source_security_semantics_match": true
+        },
+        {
+          "observed_ntfs_dacl_state": "present",
+          "source_api_view_matches": true,
+          "path": "H:\\SecurityFixture-d813f2f240624fe3943acf11646a2297\\empty-dacl.bin",
+          "requested_semantics_preserved_on_ntfs": true,
+          "case": "empty-dacl.bin",
+          "file_id_info": "2d123e68363e68da04000000000000000307000000000000",
+          "independent_sha256": "c3d81a8c1abc7c0fdf4f1a9ac304fb53d7617f569427c8670ef525253146119d",
+          "observed_ntfs_sacl_state": "present",
+          "source_security_semantics_match": true
+        },
+        {
+          "observed_ntfs_dacl_state": "null",
+          "source_api_view_matches": true,
+          "path": "H:\\SecurityFixture-d813f2f240624fe3943acf11646a2297\\absent-dacl.bin",
+          "requested_semantics_preserved_on_ntfs": false,
+          "case": "absent-dacl.bin",
+          "file_id_info": "2d123e68363e68da02000000000000000307000000000000",
+          "independent_sha256": "2fd6aea448cb4e23d649dab8a89906b22ad924e5c26e7508b82274f606c0ef6d",
+          "observed_ntfs_sacl_state": "present",
+          "source_security_semantics_match": true
+        },
+        {
+          "observed_ntfs_dacl_state": "present",
+          "source_api_view_matches": true,
+          "path": "H:\\SecurityFixture-d813f2f240624fe3943acf11646a2297\\null-sacl.bin",
+          "requested_semantics_preserved_on_ntfs": true,
+          "case": "null-sacl.bin",
+          "file_id_info": "2d123e68363e68da08000000000000000307000000000000",
+          "independent_sha256": "cfc4636fccae16eac54ba3077d420f3a3ef9554d8ca6526930e2d4a1d8156703",
+          "observed_ntfs_sacl_state": "null",
+          "source_security_semantics_match": true
+        },
+        {
+          "observed_ntfs_dacl_state": "present",
+          "source_api_view_matches": true,
+          "path": "H:\\SecurityFixture-d813f2f240624fe3943acf11646a2297\\empty-sacl.bin",
+          "requested_semantics_preserved_on_ntfs": false,
+          "case": "empty-sacl.bin",
+          "file_id_info": "2d123e68363e68da05000000000000000307000000000000",
+          "independent_sha256": "5caeb85e2edd72ecfc49c5d913b7b61391b43a58b64740e3e144a8394f117582",
+          "observed_ntfs_sacl_state": "null",
+          "source_security_semantics_match": true
+        },
+        {
+          "observed_ntfs_dacl_state": "present",
+          "source_api_view_matches": true,
+          "path": "H:\\SecurityFixture-d813f2f240624fe3943acf11646a2297\\inherited.bin",
+          "requested_semantics_preserved_on_ntfs": false,
+          "case": "inherited.bin",
+          "file_id_info": "2d123e68363e68da06000000000000000307000000000000",
+          "independent_sha256": "ff925554f495b3d3c90ad2f0ea7a3a2f84ed652479089a6b827a482f1c82e443",
+          "observed_ntfs_sacl_state": "present",
+          "source_security_semantics_match": true
+        }
+      ],
+      "source_api_view_matches": true,
+      "report_sha256": "0d3f25bff75a6a672147d830daf25c0ccdcd8748e965208fc8fc91264fbbe8f4"
+    },
+    "fixture_sha256": "b9def5704ea0293e015ba99c7b65aff3e03ac60d3dd740a6b5903ccaf62e8fa5",
+    "tool_sha256": "efec23a0d0ea8826da66d8f0103446238f6b0f5241f66ecde64c564be1f70615",
+    "requested_states_not_assumed": true
+  },
+  "rollback_closed": true,
+  "independent_security_payload_sha256_hashes": 7,
+  "selected_bytes": 78258176,
+  "source_checkpoint": "684b9c4c-4cb9-4b58-9669-028bd8b1c946",
+  "checkpoint_cleanup": {
+    "obsolete_failed_ea_checkpoints_removed": [
+      "286e2588-3ea1-4749-9e94-f33dc16d8b6f",
+      "2c8164d8-a785-4640-ae78-236ed380cbf5"
+    ],
+    "reason": "user-authorized obsolete failure cleanup at Hyper-V 50 checkpoint maximum",
+    "remaining_count": 49,
+    "archived_evidence_preserved": true
+  },
+  "free_space_contents_compared": false,
+  "sparse_layouts": 3,
+  "retained_original_payload_bytes": 4194304,
+  "journal_bytes": 82299808,
+  "kind": "bounded-full-security-native-conversion-and-coldboot",
+  "native_objects": 25,
+  "converted_checkpoint": "a18bf3a5-462a-4c13-844b-9e5161fa2279",
+  "timing_scope": "single VM run with added security vectors; not a controlled performance comparison",
+  "run_id": "a8b54a6e47274b06aad6c9e0c12b9121",
+  "not_qualified": [
+    "actual absent-DACL source: Windows normalized requested fixture to null",
+    "actual empty-SACL source: Windows normalized requested fixture to null",
+    "conditional/object/resource-claim ACE native corpus",
+    "new-build controlled interruption/resume/rollback",
+    "physical power loss",
+    "security mutation stress",
+    "arbitrary geometry/size or full NTFS compatibility"
+  ]
+}

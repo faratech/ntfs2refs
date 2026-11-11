@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "kind": "resource-first-write-diagnostic-journal-allocation-refusal",
+  "source_commit": "a7befe8af1aad71e9cab7134f9d4aee5b87d90a4",
+  "diagnostic_binary_sha256": "03b7aa96d5f66361fd272668de5ba24e751535869c34556c46a961eca147ac8f",
+  "build_manifest_sha256": "1cceb0332abb64e015613bcaf5d06391eb2a2efdb651ded5ce24da593bcefeb0",
+  "run_id": "fc838b529f5e4d2c904c465cfde97459",
+  "checkpoint": "3343f2a4-cf81-4fa9-a504-030425a8011e",
+  "native": {
+    "pid": 5272,
+    "creation_unix_ms": 1793727899451,
+    "exit_code": 1,
+    "actual_exit_observed": true,
+    "terminal_utc": "2026-11-03T17:58:54.7927542Z",
+    "wall_seconds": 835.2523342,
+    "scheduled_task_terminal": true,
+    "source_offline": true,
+    "source_read_only": true,
+    "normal_vm_shutdown_after_worker_absence_verified": true,
+    "fresh_post_shutdown_vm_state": "Off",
+    "refused_branch_checkpoint_created": false
+  },
+  "refusal": {
+    "phase": "native-journal-preparation",
+    "message": "live native journal allocation or same-file identity changed",
+    "source_apply_intent_reached": false,
+    "source_payload_or_conversion_writes_reached": false,
+    "automatic_source_restoration_requested_by_diagnostic": false,
+    "original_guest_journal_preserved": true,
+    "post_close_journal_bytes": 5818630248,
+    "admitted_ram_bytes": 1456427008
+  },
+  "interruption_evidence": {
+    "preallocated_signal_bytes": 4096,
+    "signal_nonzero_bytes": 0,
+    "valid_first_flushed_write_signal": false,
+    "intended_partial_write_fault_reached": false,
+    "native_nonzero_exit_is_not_fault_success": true
+  },
+  "ordinary_file_probe": {
+    "receipt_sha256": "82a11e58a376e026a9d8597d0ad3eca657fb4fec27fa410268e2997ee5826981",
+    "scope": "Two new ordinary files on the same journal volume; original source and selected journal untouched",
+    "logical_bytes": 5818630248,
+    "existing_allocation_quota_bytes": 5818695783,
+    "streamed_live_allocation_before_and_after_flush_bytes": 5820645376,
+    "streamed_post_close_allocation_bytes": 5818634240,
+    "preallocated_before_write_eof_bytes": 0,
+    "preallocated_before_write_allocation_bytes": 5818634240,
+    "preallocated_live_and_post_close_allocation_bytes": 5818634240,
+    "finding": "NTFS speculative allocation while the streamed file remained open exceeded the existing quota; same-file allocation preallocation avoided that excess in this probe",
+    "original_source_or_journal_touched": false
+  },
+  "closed_evidence": {
+    "path": ".lab/hyperv/streaming-v2-20261027/resource-fixture-fc838b529f5e4d2c904c465cfde97459/closed-refusal/archive-manifest.json",
+    "sha256": "c88f344a08b8ad3fdcddf81a1d4d90ccd3f2f75714914741483da149a370a501",
+    "files": 18,
+    "bytes": 4975867,
+    "source_and_copy_hashes_checked_during_archive_creation": true,
+    "all_archived_file_hashes_rechecked": true,
+    "additional_paged_working_files_not_copied": true
+  },
+  "follow_up": {
+    "implementation": "Preallocate only the new buffered share-zero journal through its held file handle after quota reservation; preserve zero EOF and recheck same-file identity, route and actual allocation bounds before writing",
+    "quota_increased": false,
+    "marker_storage_formats_changed": false,
+    "combined_three_entry_cargo_check_passed": true,
+    "cargo_check_seconds": 9.98,
+    "pinned_release_build_available": false,
+    "corrected_converter_native_execution": false
+  },
+  "qualification": {
+    "source_conversion": false,
+    "partial_write_interruption": false,
+    "restart_resume_or_rollback": false,
+    "physical_power_loss": false,
+    "stable_release": false,
+    "unit_tests_run": false
+  }
+}

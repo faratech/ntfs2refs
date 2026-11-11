@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "kind": "native-allocation-bounded-conversion-with-allocation-brackets",
+  "run_id": "cbdc90774a11463eb80c6e7a3221267a",
+  "engine_run_id": "82dfdb9776d6a05cdb92f36c624b8ba4",
+  "source_commit": "f9d8694e8f66a28a40eb0633e95b30f1e9238c1f",
+  "working_tree_note": "Built with the existing user-owned src/main.rs capabilities hunk present and unstaged.",
+  "guarantee": "User-chosen allocation guarantee, extended to the source side: the frozen NTFS source is bound by a digest of its allocated ranges; the shadow bracket closes over its native allocation. Free-space contents are not compared or proven unchanged.",
+  "toolset_manifest_sha256": "e33a6dcdecd439529c14619376674e28290c86f86e2dd1d066305c937f733adc",
+  "public_cli": {
+    "sha256": "c996aa402ada0c0ef7d1453103179ed2f24fb3ed9677f62f0682a52e91eba91e",
+    "bytes": 7523328,
+    "argv": ["--drive", "F", "--partition", "2", "--experimental-allocation-bounded"],
+    "actual_native_exit": 0
+  },
+  "outcome": {
+    "wrapper_success": true,
+    "native_objects": 15,
+    "complete_logical_hashes": 10,
+    "label_and_mount_verified": true,
+    "selected_ranges": 160,
+    "selected_bytes": 70631424,
+    "journal_bytes": 141284000,
+    "result_sha256": "62eca92adf6faef69ab1c4dbd86a08996bfef3f0a9d6736e4a64df9286d27de5",
+    "finalization_sha256": "f7ab8f16965deb9cda6bcaf7c1ac6b658b66b7dca47ad624307e9fe67c5c1694",
+    "target_preservation_sha256": "311f03da264c26752be45598848f2a59cee6fc21f653d29d0cb5698aa8407ee1",
+    "certificate_sha256": "44fef278dea47cf8a2be35a3fe6881cde07d26f43d05e9dabacd7819ff393ea3",
+    "certificate_source_digest": "ntfs_allocated_ranges",
+    "records_hashes_verified_on_host": true
+  },
+  "source_bracket": {
+    "digest_kind": "ntfs_allocated",
+    "ranges": 3,
+    "bytes_per_pass": 8688107520,
+    "previous_bytes_per_pass": 55834574848
+  },
+  "shadow_bracket": {
+    "opening": "complete image SHA-256 plus 1 MiB chunk digests",
+    "closing_ranges": 5,
+    "closing_chunks": 14087,
+    "closing_bytes_reread": 14771290112,
+    "previous_closing_bytes": 55834574848,
+    "free_space_rechecked": false
+  },
+  "timing": {
+    "measure": "native process creation to the wrapper's native-terminal record",
+    "seconds": 592.8,
+    "comparison_seconds": {"allocation_bounded_run_1": 952.9, "allocation_bounded_run_2": 772.8, "head_whole_image": 2813.3, "frozen_alpha": 3351.7},
+    "phase_markers_seconds": {"building_refs_metadata": 172, "verifying_target": 178, "preparing_recovery_journal": 538, "applying_conversion": 542, "verifying_files": 546}
+  },
+  "io": {
+    "last_sample_read_bytes": 157000000000,
+    "last_sample_seconds_after_start": 559,
+    "per_phase_read_gb_interpolated": {"source_admission": 41.2, "verify_target": 103.1, "journal_and_apply": 4.3},
+    "previous_per_phase_read_gb": {"source_admission": 135.4, "verify_target": 145.1},
+    "note": "The opening shadow pass ran at about 235 MB/s instead of about 430 MB/s: it computed two SHA-256s per chunk on the reading thread and opened a CNG provider per chunk. A follow-up change parallelizes it."
+  },
+  "archive": ".lab/hyperv/streaming-v2-20261027/alloc-drive-20261029-cbdc90774a11463eb80c6e7a3221267a/closed-conversion",
+  "qualification": {
+    "normal_public_conversion_passed": true,
+    "interruption_resume_rollback_tested_on_this_build": false,
+    "mutation_restart_tested_on_this_build": false,
+    "release_qualified": false
+  },
+  "scope": "One normal conversion of the 52 GiB fixture with both observation brackets bounded to allocated ranges. Correct result in 592.8 s with at least 157 GB read."
+}

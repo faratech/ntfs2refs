@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "kind": "fixed64MiB-EOF0-NTFS-allocation-pilot",
+  "status": "observed-pass-with-measurement-limits",
+  "date": "2026-11-04",
+  "run_id": "bffce4ae9b2846729be7787965c43dc3",
+  "helper_path": ".lab/development/Invoke-Eof0AllocationPilot64MiB.ps1",
+  "helper_sha256": "5982d17d4921b2a14bd66938f8683b23c1972ab6df1eb598cf21cffc565aa7a0",
+  "allocation_bytes": 67108864,
+  "actual_process": {
+    "birth_ms": 1793813350676,
+    "pid": 2744,
+    "exit_code": 0,
+    "actual_owned_terminal_observed": true,
+    "owned_through_terminal": true,
+    "terminal_utc": "2026-11-04T17:29:42.0716616Z",
+    "role": "SYSTEM owned PowerShell pilot child",
+    "stdout_bytes": 483,
+    "stderr_bytes": 0,
+    "wall_seconds": 31.355538399999997
+  },
+  "guest_enrollment": {
+    "partition_guid": "{c6c3318f-a7c8-47b9-be6d-6dde5e00862f}",
+    "caller_sid": "S-1-5-18",
+    "volume_guid": "c6c3318f-a7c8-47b9-be6d-6dde5e00862f",
+    "computer": "N2R-WIN11",
+    "disk_guid": "{1f804918-e98f-4a71-9022-fc00c3cb7c26}",
+    "boot_ms": 1793813109128,
+    "cluster_bytes": 4096
+  },
+  "file_identity": {
+    "file_id": "04560200000005000000000000000000",
+    "final_GUID_path": "\\\\?\\Volume{c6c3318f-a7c8-47b9-be6d-6dde5e00862f}\\ntfs2refs\\eof0-pilot-bffce4ae9b2846729be7787965c43dc3\\reservation.bin",
+    "allocation_held": 67108864,
+    "EOF_before": 0,
+    "reservation_payload_write_calls": 0,
+    "allocation_before": 0,
+    "volume_serial_decimal": "12259941802954451809",
+    "exclusive_same_handle": true,
+    "EOF_held": 0
+  },
+  "guest_measurement": {
+    "free_before_decimal": "39247716352",
+    "free_after_decimal": "39247699968",
+    "free_restoration_observed": true,
+    "comparison_tolerance_bytes": 1048576,
+    "free_held_decimal": "39180595200",
+    "original_handle_closed": true,
+    "free_debit_decimal": "67121152",
+    "free_gain_decimal": "67104768",
+    "file_absent_after_last_handle_close": true,
+    "handled_error": null
+  },
+  "host_measurement": {
+    "before": {
+      "receipt_sha256": "b156649b5af6c46e340cbc6e53a77666193c1a4dba6ea42f040240728be5c539",
+      "combined_actual_bytes": 316947846978,
+      "allocated_bytes": 608174080,
+      "file_length": 608174080,
+      "snapshot_sha256": "e09bb151f39414f6541976b9ab7a895c9d43aefa958e239b967ceb51c7be1c6c"
+    },
+    "peak_or_hard_quota_claimed": false,
+    "zero_IO_or_metadata_only_host_growth_claimed": false,
+    "after": {
+      "receipt_sha256": "614f3a3a1480e5d9f396156a47092dcd0070b9619247b5009ed33f3e2918b80f",
+      "combined_actual_bytes": 316981407710,
+      "allocated_bytes": 641728512,
+      "file_length": 641728512,
+      "snapshot_sha256": "f38caf301a51a3be96abfa51e79f9f456322bd08384460136f6dc97a9ce9f31a"
+    },
+    "receipt_bound_acknowledgments_verified": true,
+    "method": "Get-Item.Length and GetCompressedFileSizeW, sampled around the pure census",
+    "observed_OS_leaf_growth_before_to_held": 0,
+    "background_IO_isolated": false,
+    "guest_handle_retained_through_before_and_held_snapshots": true,
+    "observed_OS_leaf_growth_before_to_after": 33554432,
+    "linear_extrapolation_to_larger_reservations_qualified": false,
+    "held": {
+      "receipt_sha256": "01504d5b8f750504fba1f121fa15e455faafa8499a4cbd54bac3de4bce347afd",
+      "combined_actual_bytes": 316947850370,
+      "allocated_bytes": 608174080,
+      "file_length": 608174080,
+      "snapshot_sha256": "67d2c6b9abfc38579cedf7bc2a77a62b47307705a61a15d0f22c50fac9085da0"
+    },
+    "OS_leaf_path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\disks\\os-child_21B8F760-F582-4966-B408-93584CC553D8.avhdx"
+  },
+  "scope": {
+    "reservation_delete_path_fallback_used": false,
+    "source_F_accessed": false,
+    "checkpoint_restore_create_delete_calls": 0,
+    "cap_changed": false,
+    "public_converter_launched": false,
+    "larger_reservation_executed": false
+  },
+  "archive": {
+    "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\eof0-pilot-64m-bffce4ae9b2846729be7787965c43dc3\\archive-manifest.json",
+    "sha256": "9a536e9776ef7f8ead6d7fb2101c306570d0067cab3ad557a0c170034d6cae8f",
+    "all_source_host_metadata_lengths_and_SHA256_verified": true
+  },
+  "final_state": {
+    "current_checkpoint": "508e5c78-289b-4ad3-9c47-286fb03ddb01",
+    "RAM": 0,
+    "all16_checkpoints_preserved": true,
+    "capacity": {
+      "actual_bytes": 317024397793,
+      "free_bytes": 89517182976,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 0,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "fresh_separate_process_verified": true,
+    "state": "Off"
+  },
+  "limits": [
+    "Only this fixed64MiB mechanism pilot is qualified.",
+    "No public low-space refusal, ENOSPC, zero-I/O, hard host quota, or larger reservation qualification.",
+    "Host growth may lag allocation and include ordinary Windows background I/O."
+  ],
+  "stable_release": false
+}

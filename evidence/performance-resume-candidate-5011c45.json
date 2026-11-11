@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "kind": "performance-and-metadata-resume-optimized-candidate",
+  "source_commit": "5011c45fd8f232b095a75e7c0b80f8e5de880a9c",
+  "exit_code": 0,
+  "wall_seconds": 332.408347,
+  "manifest_path": "D:\\code\\ntfs2refs\\.lab\\development\\release-candidates\\preparation-resume-5011c45\\manifest.json",
+  "manifest_sha256": "345fb8a6fbf65caf95c3afbb95dc2926bf0aba6707f044c3eaf8d885dba30bce",
+  "binaries": [
+    {
+      "name": "ntfs2refs",
+      "path": "bin/ntfs2refs.exe",
+      "bytes": 25837568,
+      "sha256": "267287b9b49a606ab13b8b38315efaedf41ccc79df58bbd6d909e792c4e6e493"
+    },
+    {
+      "name": "lab-refs-security-repair",
+      "path": "bin/lab-refs-security-repair.exe",
+      "bytes": 2116608,
+      "sha256": "65c44a0d54bc9a7c1a69cf51b9bc807d058955a6b0ba7ca4625da3f0832bd554"
+    },
+    {
+      "name": "lab-preflight-expected-constructor",
+      "path": "bin/lab-preflight-expected-constructor.exe",
+      "bytes": 1443840,
+      "sha256": "4af9e552c833cad50e31874ae998f0da5352056f29a449207b9612c747da7cdc"
+    },
+    {
+      "name": "lab-replay-native-source",
+      "path": "bin/lab-replay-native-source.exe",
+      "bytes": 1935360,
+      "sha256": "6a4e74151ceaa17b62ec4645d8fa720c14b91827f012c163340befa2716a9302"
+    }
+  ],
+  "shared_target_reused": true,
+  "unit_tests_run": false,
+  "native_run": false,
+  "source_before_after_verified": true,
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "capacity_before": {
+    "actual_bytes": 253241966127,
+    "free_bytes": 54070333440,
+    "maximum_actual_bytes": 329374052988,
+    "minimum_free_bytes": 17179869184,
+    "additional_bytes": 1073741824,
+    "all_lab_shared_cache_and_staging_charged": true,
+    "epoch_reset": false
+  },
+  "capacity_after": {
+    "actual_bytes": 253294416019,
+    "free_bytes": 54015627264,
+    "maximum_actual_bytes": 329374052988,
+    "minimum_free_bytes": 17179869184,
+    "additional_bytes": 0,
+    "all_lab_shared_cache_and_staging_charged": true,
+    "epoch_reset": false
+  },
+  "additional_saved_bytes": 52449892,
+  "current_vm_candidate": "1f4f3c9",
+  "current_vm_binary_unchanged": true,
+  "original_windows_refs_boot_proven": false,
+  "native_qualification_pending": true
+}

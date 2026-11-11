@@ -1,0 +1,1020 @@
+//! Recovery of an interrupted allocation-bounded conversion from its pinned
+//! bundle and self-contained selected-range journal. The bundle locates inputs
+//! only; the journal lifecycle, its complete immutable checks and the activated
+//! device state authorize recovery. No fresh apply or certificate is possible.
+use super::{compact::HeldInput, *};
+use crate::selected_journal::{self as sj, SelectedLifecycle, SelectedPlan, SelectedTicket};
+use n2r_win32::{
+    WritePolicy, general_layout::GeneralDiskBinding, journal_file::MarkerStorageUse,
+    mounted_filesystem_general, rediscover_general_volume_wait, volume_label::VolumeLabel,
+};
+use protocol::selected_artifacts::Artifact;
+use protocol::selected_native_journal::NativeSelectedJournal;
+use serde::Deserialize;
+use std::path::Component;
+use std::{
+    fs::{File, OpenOptions},
+    io::{Read, Seek, SeekFrom, Write},
+    os::windows::fs::OpenOptionsExt,
+    time::SystemTime,
+};
+
+struct ResourceExpectationPin {
+    file: File,
+    snapshot: n2r_win32::reference_file::ReferenceFileSnapshot,
+    modified: SystemTime,
+    sha256: String,
+    maximum: u64,
+}
+impl ResourceExpectationPin {
+    fn open(path: &Path, sha256: &str, maximum: u64) -> Result<Self> {
+        ensure!(
+            sha256.len() == 64
+                && sha256
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            "canonical resource expectation pin required"
+        );
+        let file = OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .custom_flags(0x0020_0000)
+            .open(path)?;
+        let snapshot =
+            n2r_win32::reference_file::observe_reference_file_handle_with_limit(&file, maximum)?;
+        ensure!(
+            snapshot.file_bytes > 0 && snapshot.number_of_links == 1,
+            "resource expectation must be an ordinary singly linked file"
+        );
+        let modified = file.metadata()?.modified()?;
+        let mut held = Self {
+            file,
+            snapshot,
+            modified,
+            sha256: sha256.into(),
+            maximum,
+        };
+        held.revalidate()?;
+        Ok(held)
+    }
+    fn revalidate(&mut self) -> Result<()> {
+        ensure!(
+            n2r_win32::reference_file::observe_reference_file_handle_with_limit(
+                &self.file,
+                self.maximum
+            )? == self.snapshot
+                && self.file.metadata()?.modified()? == self.modified,
+            "resource expectation identity/metadata changed"
+        );
+        let sha = hex::encode(n2r_win32::sha256_native::hash_range(
+            &mut self.file,
+            0,
+            self.snapshot.file_bytes,
+        )?);
+        ensure!(
+            sha == self.sha256
+                && n2r_win32::reference_file::observe_reference_file_handle_with_limit(
+                    &self.file,
+                    self.maximum
+                )? == self.snapshot
+                && self.file.metadata()?.modified()? == self.modified,
+            "resource expectation bytes changed"
+        );
+        Ok(())
+    }
+    fn copy_to(&mut self, path: &Path) -> Result<()> {
+        self.revalidate()?;
+        let mut destination = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .share_mode(0)
+            .custom_flags(0x0020_0000)
+            .open(path)?;
+        self.file.seek(SeekFrom::Start(0))?;
+        let copied = std::io::copy(
+            &mut (&mut self.file).take(self.snapshot.file_bytes),
+            &mut destination,
+        )?;
+        ensure!(
+            copied == self.snapshot.file_bytes,
+            "resource expectation copy length differs"
+        );
+        destination.flush()?;
+        destination.sync_all()?;
+        drop(destination);
+        let mut copied = Self::open(path, &self.sha256, self.maximum)?;
+        copied.revalidate()?;
+        self.revalidate()
+    }
+}
+enum ExpectationInput {
+    Legacy(HeldInput),
+    Resource(ResourceExpectationPin),
+}
+impl ExpectationInput {
+    fn bytes(&self) -> Result<&[u8]> {
+        match self {
+            Self::Legacy(h) => Ok(&h.bytes),
+            Self::Resource(_) => {
+                anyhow::bail!("resource expectation must not be rehydrated as inline JSON")
+            }
+        }
+    }
+    fn snapshot(&self) -> &n2r_win32::reference_file::ReferenceFileSnapshot {
+        match self {
+            Self::Legacy(h) => &h.snapshot,
+            Self::Resource(h) => &h.snapshot,
+        }
+    }
+    fn revalidate(&mut self) -> Result<()> {
+        match self {
+            Self::Legacy(h) => h.revalidate(),
+            Self::Resource(h) => h.revalidate(),
+        }
+    }
+    fn release_bytes(&mut self) {
+        if let Self::Legacy(h) = self {
+            h.release_bytes();
+        }
+    }
+    fn copy_resource_to(&mut self, path: &Path) -> Result<()> {
+        match self {
+            Self::Legacy(_) => Ok(()),
+            Self::Resource(h) => h.copy_to(path),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Pin {
+    path: PathBuf,
+    sha256: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Bundle {
+    schema_version: u32,
+    kind: String,
+    request: Pin,
+    plan: Pin,
+    ticket: Pin,
+    expectation: Pin,
+    #[serde(default)]
+    expectation_pages: Option<Pin>,
+    verification: Pin,
+    #[serde(default)]
+    recovery_payload_manifest: Option<Pin>,
+    journal: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    marker_storage_identity: Option<n2r_win32::journal_file::JournalFileIdentity>,
+    source: GeneralDiskBinding,
+    serialized_bundle_grants_recovery_authority: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Verification {
+    expected_mount_paths: Vec<String>,
+    expected_source_label: VolumeLabel,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AllocationRecoveryOutcome {
+    RefsCompleted,
+    NtfsRestored,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum Action {
+    Resume,
+    VerifyHandoff,
+    Rollback,
+    Abandon,
+    VerifyAborted,
+}
+
+fn ordinary_absolute(path: &Path) -> bool {
+    path.is_absolute()
+        && !path
+            .components()
+            .any(|part| matches!(part, Component::ParentDir | Component::CurDir))
+}
+
+fn open_bundle(bundle_path: &Path, bundle_sha256: &str) -> Result<(HeldInput, Bundle)> {
+    ensure!(
+        ordinary_absolute(bundle_path),
+        "allocation recovery bundle path must be absolute without traversal"
+    );
+    let held = HeldInput::open(
+        bundle_path,
+        bundle_sha256,
+        Artifact::Bundle.maximum_bytes() as u64,
+    )?;
+    let bundle: Bundle = serde_json::from_slice(&held.bytes)?;
+    ensure!(
+        bundle.schema_version == 1
+            && bundle.kind == "allocation-bounded-recovery-bundle"
+            && !bundle.serialized_bundle_grants_recovery_authority,
+        "not an allocation-bounded recovery bundle"
+    );
+    for path in [
+        &bundle.request.path,
+        &bundle.plan.path,
+        &bundle.ticket.path,
+        &bundle.expectation.path,
+        &bundle.verification.path,
+        &bundle.journal,
+    ]
+    .into_iter()
+    .chain(bundle.recovery_payload_manifest.iter().map(|pin| &pin.path))
+    .chain(bundle.expectation_pages.iter().map(|pin| &pin.path))
+    {
+        ensure!(
+            ordinary_absolute(path),
+            "allocation recovery inputs need absolute paths without traversal"
+        );
+    }
+    Ok((held, bundle))
+}
+
+/// The pinned source route, for display before the operator confirms. Recovery
+/// itself reopens and rechecks every input.
+pub fn preview_allocation(bundle_path: &Path, bundle_sha256: &str) -> Result<GeneralDiskBinding> {
+    Ok(open_bundle(bundle_path, bundle_sha256)?.1.source)
+}
+
+pub fn recover_allocation(
+    bundle_path: &Path,
+    bundle_sha256: &str,
+    rollback: bool,
+    output: &Path,
+) -> Result<AllocationRecoveryOutcome> {
+    recover_allocation_inner(
+        bundle_path,
+        bundle_sha256,
+        rollback,
+        output,
+        false,
+        None,
+        None,
+    )
+}
+
+/// Explicit enrolled-lab entry, independent of production qualification.
+pub(crate) fn recover_allocation_redundant_for_lab(
+    bundle_path: &Path,
+    bundle_sha256: &str,
+    rollback: bool,
+    output: &Path,
+    pause: Option<n2r_win32::journal_file::LabMarkerPauseRequest>,
+    fault: Option<n2r_win32::journal_file::LabMarkerFaultRequest>,
+) -> Result<AllocationRecoveryOutcome> {
+    recover_allocation_inner(
+        bundle_path,
+        bundle_sha256,
+        rollback,
+        output,
+        true,
+        pause,
+        fault,
+    )
+}
+
+fn recover_allocation_inner(
+    bundle_path: &Path,
+    bundle_sha256: &str,
+    rollback: bool,
+    output: &Path,
+    native_marker_lab: bool,
+    pause: Option<n2r_win32::journal_file::LabMarkerPauseRequest>,
+    fault: Option<n2r_win32::journal_file::LabMarkerFaultRequest>,
+) -> Result<AllocationRecoveryOutcome> {
+    let (mut bundle_input, bundle) = open_bundle(bundle_path, bundle_sha256)?;
+    let mut request_input = HeldInput::open(
+        &bundle.request.path,
+        &bundle.request.sha256,
+        Artifact::Request.maximum_bytes() as u64,
+    )?;
+    let request: crate::general_conversion::Request = serde_json::from_slice(&request_input.bytes)?;
+    request.validate()?;
+    request
+        .source_resource_profile
+        .unwrap_or_default()
+        .count_admission()?;
+    request
+        .source_resource_profile
+        .unwrap_or_default()
+        .resource_admission()?;
+    ensure!(
+        request.pair.source == bundle.source,
+        "bundle source differs from its pinned request"
+    );
+    let mut plan_input = HeldInput::open(
+        &bundle.plan.path,
+        &bundle.plan.sha256,
+        Artifact::Plan.maximum_bytes() as u64,
+    )?;
+    let plan: SelectedPlan = serde_json::from_slice(&plan_input.bytes)?;
+    plan.validate()?;
+    request.validate_selected_capacity(&plan)?;
+    let old_zero_bytes = plan.old_zero_bytes()?;
+    let source_free_bytes = plan.source_free_bytes()?;
+    let mut ticket_input = HeldInput::open(
+        &bundle.ticket.path,
+        &bundle.ticket.sha256,
+        Artifact::Ticket.maximum_bytes() as u64,
+    )?;
+    let ticket: SelectedTicket = serde_json::from_slice(&ticket_input.bytes)?;
+    if native_marker_lab || ticket.marker_profile.is_some() {
+        ensure!(
+            native_marker_lab
+                || ticket.marker_profile
+                    == protocol::selected_native_journal::production_marker_profile(&plan),
+            "redundant selected markers require a qualified native marker I/O backend"
+        );
+        ensure!(
+            ticket.marker_profile == Some(sj::SelectedMarkerProfile::RedundantSourceFreeV1)
+                && bundle.marker_storage_identity.is_some()
+                && request.schema_version == 3
+                && request.verification_policy.is_fast()
+                && request
+                    .source_resource_profile
+                    .is_some_and(|p| p.is_envelope())
+                && request.selected_capacity_policy.allows_source_free(),
+            "native marker recovery requires the pinned format-six source-free profile and identity"
+        );
+        if !native_marker_lab {
+            ensure!(
+                matches!(
+                    request.source_resource_profile,
+                    Some(
+                        crate::ntfs_admission::ResourceProfile::ExperimentalObjectEnvelopeV3(Some(
+                            _
+                        ))
+                    )
+                ),
+                "production native marker recovery requires the original admitted source descriptor"
+            );
+        }
+    } else {
+        ensure!(
+            bundle.marker_storage_identity.is_none(),
+            "legacy selected journal cannot carry a native marker storage identity"
+        );
+    }
+    let (selected_bytes, journal_bytes) = plan.validate_marker_profile(ticket.marker_profile)?;
+    ensure!(
+        ticket.selected_bytes == selected_bytes
+            && ticket.journal_length == journal_bytes
+            && journal_bytes <= request.max_journal_bytes
+            && plan.max_journal_bytes == request.max_journal_bytes
+            && plan.image_length == request.pair.source.identity.partition_bytes
+            && !ticket.whole_image_verified,
+        "allocation recovery ticket, plan and request differ"
+    );
+    let resources = request.source_resource_profile.unwrap_or_default();
+    let resource_admission = resources.resource_admission()?;
+    let paged_admission = resources
+        .count_admission()?
+        .filter(|a| a.requires_paged_metadata());
+    let mut expectation_input = if let Some(admission) = resource_admission {
+        ExpectationInput::Resource(ResourceExpectationPin::open(
+            &bundle.expectation.path,
+            &bundle.expectation.sha256,
+            admission.semantic_byte_budget(),
+        )?)
+    } else {
+        ExpectationInput::Legacy(HeldInput::open(
+            &bundle.expectation.path,
+            &bundle.expectation.sha256,
+            Artifact::Expectation.maximum_bytes() as u64,
+        )?)
+    };
+    ensure!(
+        bundle.expectation_pages.is_some()
+            == (paged_admission.is_some() || resource_admission.is_some()),
+        "expected-object page ownership must match admitted resources"
+    );
+    let expectation_pages = if let Some(admission) = resource_admission {
+        let pin = bundle
+            .expectation_pages
+            .as_ref()
+            .context("resource expectation page pin absent")?;
+        Some(crate::shadow_tree::PagedExpectedTree::open_with_resources(
+            &pin.path,
+            &pin.sha256,
+            &bundle.expectation.sha256,
+            admission,
+        )?)
+    } else if let Some(admission) = paged_admission {
+        let pin = bundle
+            .expectation_pages
+            .as_ref()
+            .context("paged expectation pin absent")?;
+        ensure!(
+            expectation_input.bytes()?.len() as u64
+                <= u64::from(admission.maximum_expected_tree_bytes),
+            "legacy expectation bytes exceed admitted semantic budget"
+        );
+        Some(crate::shadow_tree::PagedExpectedTree::open_with_limits(
+            &pin.path,
+            &pin.sha256,
+            &bundle.expectation.sha256,
+            admission.expected_page_budget()?,
+            u64::from(admission.maximum_expected_tree_bytes),
+        )?)
+    } else {
+        None
+    };
+    let inline_expectation = if expectation_pages.is_none() {
+        Some(serde_json::from_slice::<crate::shadow_tree::ExpectedTree>(
+            expectation_input.bytes()?,
+        )?)
+    } else {
+        None
+    };
+    let expectation = match (&expectation_pages, &inline_expectation) {
+        (Some(pages), None) => crate::shadow_tree::pages::ExpectedTreeView::Paged(pages),
+        (None, Some(tree)) => crate::shadow_tree::pages::ExpectedTreeView::Inline(tree),
+        _ => anyhow::bail!("recovery expectation ownership is ambiguous"),
+    };
+    use crate::shadow_tree::ExpectedObjectDomain as _;
+    crate::shadow_tree::validate_expected_domain(&expectation, resources)?;
+    expectation.revalidate_domain()?;
+    ensure!(
+        !expectation.has_extent_only_streams()? || request.verification_policy.is_fast(),
+        "hash-free recovery expectation requires the explicit fast verification policy"
+    );
+    let needs_payload_manifest =
+        request.verification_policy.is_fast() && expectation.has_extent_only_streams()?;
+    ensure!(
+        bundle.recovery_payload_manifest.is_some() == needs_payload_manifest,
+        "recovery payload manifest must match the fast hash-free expectation profile"
+    );
+    let mut recovery_payload_input: Option<HeldInput> = None;
+    let recovery_payload_proof = if let Some(pin) = &bundle.recovery_payload_manifest {
+        if n2r_win32::metadata_pages::has_magic(&pin.path)? {
+            Some(
+                protocol::fast_verification::RecoveryPayloadProof::from_pinned_pages(
+                    &pin.path,
+                    &pin.sha256,
+                    &request.pair.source,
+                    &expectation,
+                    &plan,
+                    &ticket,
+                    request.source_resource_profile.unwrap_or_default(),
+                )?,
+            )
+        } else {
+            ensure!(
+                paged_admission.is_none() && resource_admission.is_none(),
+                "admitted paged resources require a paged recovery map manifest"
+            );
+            let held = HeldInput::open(
+                &pin.path,
+                &pin.sha256,
+                Artifact::PayloadMap.maximum_bytes() as u64,
+            )?;
+            let proof = protocol::fast_verification::RecoveryPayloadProof::from_pinned_manifest(
+                &held.bytes,
+                &request.pair.source,
+                &expectation,
+                &plan,
+                &ticket,
+                request.source_resource_profile.unwrap_or_default(),
+            )?;
+            recovery_payload_input = Some(held);
+            Some(proof)
+        }
+    } else {
+        None
+    };
+    let mut verification_input = HeldInput::open(
+        &bundle.verification.path,
+        &bundle.verification.sha256,
+        Artifact::Verification.maximum_bytes() as u64,
+    )?;
+    let verification: Verification = serde_json::from_slice(&verification_input.bytes)?;
+    // Recovery metadata cannot live on a volume that must stay excluded or that
+    // transitions to a native mount during recovery.
+    for held in [
+        &bundle_input,
+        &request_input,
+        &plan_input,
+        &ticket_input,
+        &verification_input,
+    ]
+    .into_iter()
+    .chain(recovery_payload_input.iter())
+    {
+        for binding in [&request.pair.source, &request.pair.shadow] {
+            ensure!(
+                !held
+                    .snapshot
+                    .final_path
+                    .to_ascii_lowercase()
+                    .starts_with(&(binding.volume_path()?.to_ascii_lowercase() + "\\")),
+                "allocation recovery inputs must be outside the two data volumes"
+            );
+        }
+    }
+    for binding in [&request.pair.source, &request.pair.shadow] {
+        ensure!(
+            !expectation_input
+                .snapshot()
+                .final_path
+                .to_ascii_lowercase()
+                .starts_with(&(binding.volume_path()?.to_ascii_lowercase() + "\\")),
+            "resource/legacy expectation must be outside both data volumes"
+        );
+    }
+    expectation_input.revalidate()?;
+    if let Some(pages) = &expectation_pages {
+        let path = pages.final_path();
+        for binding in [&request.pair.source, &request.pair.shadow] {
+            ensure!(
+                !path
+                    .to_ascii_lowercase()
+                    .starts_with(&(binding.volume_path()?.to_ascii_lowercase() + "\\")),
+                "paged expected-object input must be outside the two data volumes"
+            );
+        }
+        pages.revalidate()?;
+    }
+    if let Some(proof) = &recovery_payload_proof {
+        if let Some(path) = proof.paged_final_path() {
+            for binding in [&request.pair.source, &request.pair.shadow] {
+                ensure!(
+                    !path
+                        .to_ascii_lowercase()
+                        .starts_with(&(binding.volume_path()?.to_ascii_lowercase() + "\\")),
+                    "paged recovery map input must be outside the two data volumes"
+                );
+            }
+        }
+        proof.revalidate_paged_manifest()?;
+    }
+    artifacts::create_output(output)?;
+    ensure!(
+        (pause.is_none() && fault.is_none()) || native_marker_lab,
+        "marker controls require the explicit native lab recovery route"
+    );
+    ensure!(
+        pause.is_none() || fault.is_none(),
+        "marker pause and marker fault are mutually exclusive"
+    );
+    let lab_pause = if let Some(pause) = pause {
+        Some(pause.reserve(
+            output,
+            &request.journal,
+            &request.pair.source,
+            &request.pair.shadow,
+            request.journal_profile()?,
+        )?)
+    } else {
+        None
+    };
+    let lab_fault = if let Some(fault) = fault {
+        let (first, peer, corrupt) = sj::lab_fault_peer_images(&ticket, fault.marker_copy.label())?;
+        Some(fault.reserve(
+            output,
+            &request.journal,
+            &request.pair.source,
+            &request.pair.shadow,
+            request.journal_profile()?,
+            first,
+            peer,
+            corrupt,
+        )?)
+    } else {
+        None
+    };
+    Artifact::Bundle.copy_for_recovery(output, &bundle_input.bytes)?;
+    Artifact::Request.copy_for_recovery(output, &request_input.bytes)?;
+    Artifact::Plan.copy_for_recovery(output, &plan_input.bytes)?;
+    Artifact::Ticket.copy_for_recovery(output, &ticket_input.bytes)?;
+    if let Some(held) = &recovery_payload_input {
+        Artifact::PayloadMap.copy_for_recovery(output, &held.bytes)?;
+    }
+    if let Some(proof) = &recovery_payload_proof {
+        proof.copy_paged_manifest(output)?;
+    }
+    if let Some(pages) = &expectation_pages {
+        pages.copy_to(&output.join("expectation.pages"))?;
+    }
+    expectation_input.copy_resource_to(&output.join("expectation.json"))?;
+    // Parsed facts own their storage and all required original-byte copies are
+    // complete. Keep the exact handles and pins through every later recheck.
+    for held in [
+        &mut bundle_input,
+        &mut request_input,
+        &mut plan_input,
+        &mut ticket_input,
+        &mut verification_input,
+    ]
+    .into_iter()
+    .chain(recovery_payload_input.iter_mut())
+    {
+        held.release_bytes();
+    }
+    expectation_input.release_bytes();
+    artifacts::save(
+        output,
+        "intent.json",
+        &serde_json::json!({
+            "schema_version":1,"kind":"allocation-bounded-recovery-intent",
+            "rollback_requested":rollback,"bundle":bundle_path,"bundle_sha256":bundle_sha256,
+            "journal":bundle.journal,"fresh_apply_authorized":false,"source_admitted":false,
+            "general_conversion_qualified":false,
+        }),
+    )?;
+    let mut phase = "selected-journal-preflight";
+    let attempted = (|| -> Result<AllocationRecoveryOutcome> {
+        let metadata = fs::symlink_metadata(&bundle.journal)?;
+        ensure!(
+            metadata.is_file()
+                && metadata.file_attributes() & 0x400 == 0
+                && metadata.len() == ticket.journal_length,
+            "selected journal is not the expected bounded ordinary file"
+        );
+        let profile = request.journal_profile()?;
+        let (mut journal, observed) = NativeSelectedJournal::open_recovery(
+            &bundle.journal,
+            &request.journal,
+            profile,
+            &ticket,
+            bundle.marker_storage_identity.as_ref(),
+            if native_marker_lab {
+                MarkerStorageUse::EnrolledUnqualifiedLab
+            } else {
+                MarkerStorageUse::QualifiedProduction
+            },
+            lab_pause,
+            lab_fault,
+        )?;
+        artifacts::save(output, "journal-identity.json", &observed)?;
+        phase = "selected-journal-lifecycle";
+        // Authenticate the actual share-zero journal once before reopening the
+        // target. The opaque owner keeps this exact mutable journal borrow
+        // through action selection, pin revalidation and replay completion.
+        // It supplies no exclusion claim about the independently reopened target.
+        let recovery_journal = sj::authenticate_recovery_exclusive(&mut journal, &plan, &ticket)?;
+        let state = recovery_journal.lifecycle();
+        let action = match (state, rollback) {
+            (SelectedLifecycle::ApplyIntent, false) => Action::Resume,
+            (SelectedLifecycle::Handoff, false) => Action::VerifyHandoff,
+            (SelectedLifecycle::ApplyIntent | SelectedLifecycle::RollbackIntent, true) => {
+                Action::Rollback
+            }
+            (SelectedLifecycle::PreparedClear, true) => Action::Abandon,
+            (SelectedLifecycle::Aborted, true) => Action::VerifyAborted,
+            (SelectedLifecycle::PreparedClear, false) => anyhow::bail!(
+                "the interrupted apply never recorded its intent; resuming would be a fresh apply that needs the original live certificate. Use --rollback to close it"
+            ),
+            (SelectedLifecycle::RollbackIntent | SelectedLifecycle::Aborted, false) => {
+                anyhow::bail!(
+                    "NTFS rollback is in progress or committed; ReFS resume is closed. Use --rollback"
+                )
+            }
+            (SelectedLifecycle::Handoff, true) => {
+                anyhow::bail!("ReFS handoff is committed; raw replay and rollback are closed")
+            }
+        };
+        artifacts::save(
+            output,
+            "lifecycle-selection.json",
+            &serde_json::json!({
+                "observed_lifecycle":state,"rollback_requested":rollback,"selected_action":action,
+                "journal_handle_held_exclusively":true,
+                "serialized_selection_grants_authority":false,
+            }),
+        )?;
+        phase = "reopen-activated-source";
+        let mut events = Vec::<NativeEvent>::new();
+        let mut target =
+            GeneralJournaledPartition::reopen(request.pair.source.clone(), &mut events)?;
+        ensure!(
+            target.state(&mut events)?.disk_attributes == 1,
+            "allocation recovery requires the already activated offline source"
+        );
+        for held in [
+            &mut bundle_input,
+            &mut request_input,
+            &mut plan_input,
+            &mut ticket_input,
+            &mut verification_input,
+        ]
+        .into_iter()
+        .chain(recovery_payload_input.iter_mut())
+        {
+            held.revalidate()?;
+        }
+        expectation_input.revalidate()?;
+        expectation.revalidate_domain()?;
+        if let Some(proof) = &recovery_payload_proof {
+            proof.revalidate_paged_manifest()?;
+        }
+        let policy = WritePolicy {
+            allowed: plan.ranges.iter().map(|r| (r.offset, r.length)).collect(),
+            retained: Vec::new(),
+            maximum_bytes: selected_bytes,
+            journal_profile: profile,
+        };
+        phase = "selected-journal-recovery";
+        // A parsed manifest supplies bounded facts only. Native extent
+        // verification below also requires the real HND/closed-journal result
+        // returned by this recovery's unchanged complete journal checks.
+        let mut verified_refs_closed = None;
+        let outcome = match action {
+            Action::Resume => {
+                if source_free_bytes != 0 {
+                    ensure!(
+                        request.selected_capacity_policy.allows_source_free()
+                            && plan.encoding_version() == 5,
+                        "source-free recovery requires format five policy"
+                    );
+                    target.arm_source_free_actual_bytes_v3_writes(
+                        policy,
+                        journal_bytes,
+                        old_zero_bytes,
+                        source_free_bytes,
+                        request.max_journal_bytes,
+                        &mut events,
+                    )?;
+                } else if old_zero_bytes != 0 && !request.selected_capacity_policy.is_conservative()
+                {
+                    ensure!(
+                        plan.encoding_version() == 4,
+                        "actual-byte recovery requires format four"
+                    );
+                    target.arm_old_zero_actual_bytes_v3_writes(
+                        policy,
+                        journal_bytes,
+                        old_zero_bytes,
+                        request.max_journal_bytes,
+                        &mut events,
+                    )?;
+                } else if old_zero_bytes != 0 {
+                    target.arm_old_zero_selected_writes(
+                        policy,
+                        journal_bytes,
+                        old_zero_bytes,
+                        &mut events,
+                    )?;
+                } else if plan.new_zero_ranges.is_empty() && plan.new_copy_ranges.is_empty() {
+                    target.arm_writes(policy, &mut events)?;
+                } else {
+                    target.arm_encoded_selected_writes(policy, journal_bytes, &mut events)?;
+                }
+                let (_, handoff) = recovery_journal.resume_and_handoff(&mut target, |resumed| {
+                    artifacts::save(output, "resume.json", resumed)?;
+                    Ok(())
+                })?;
+                artifacts::save(output, "handoff.json", &handoff)?;
+                verified_refs_closed = Some(handoff);
+                AllocationRecoveryOutcome::RefsCompleted
+            }
+            Action::VerifyHandoff => {
+                let (closed_state, verified) =
+                    recovery_journal.verify_closed_and_repair(&mut target)?;
+                ensure!(
+                    closed_state == SelectedLifecycle::Handoff,
+                    "ReFS verification requires the actual closed HND lifecycle"
+                );
+                artifacts::save(output, "verified-handoff.json", &verified)?;
+                verified_refs_closed = Some(verified);
+                AllocationRecoveryOutcome::RefsCompleted
+            }
+            Action::Rollback => {
+                if source_free_bytes != 0 {
+                    ensure!(
+                        request.selected_capacity_policy.allows_source_free()
+                            && plan.encoding_version() == 5,
+                        "source-free recovery requires format five policy"
+                    );
+                    target.arm_source_free_actual_bytes_v3_writes(
+                        policy,
+                        journal_bytes,
+                        old_zero_bytes,
+                        source_free_bytes,
+                        request.max_journal_bytes,
+                        &mut events,
+                    )?;
+                } else if old_zero_bytes != 0 && !request.selected_capacity_policy.is_conservative()
+                {
+                    ensure!(
+                        plan.encoding_version() == 4,
+                        "actual-byte recovery requires format four"
+                    );
+                    target.arm_old_zero_actual_bytes_v3_writes(
+                        policy,
+                        journal_bytes,
+                        old_zero_bytes,
+                        request.max_journal_bytes,
+                        &mut events,
+                    )?;
+                } else if old_zero_bytes != 0 {
+                    target.arm_old_zero_selected_writes(
+                        policy,
+                        journal_bytes,
+                        old_zero_bytes,
+                        &mut events,
+                    )?;
+                } else if plan.new_zero_ranges.is_empty() && plan.new_copy_ranges.is_empty() {
+                    target.arm_writes(policy, &mut events)?;
+                } else {
+                    target.arm_encoded_selected_writes(policy, journal_bytes, &mut events)?;
+                }
+                let rolled = recovery_journal.rollback(&mut target)?;
+                artifacts::save(output, "rollback.json", &rolled)?;
+                AllocationRecoveryOutcome::NtfsRestored
+            }
+            Action::Abandon => {
+                let closed = recovery_journal.abandon(&mut target)?;
+                artifacts::save(output, "abandon.json", &closed)?;
+                AllocationRecoveryOutcome::NtfsRestored
+            }
+            Action::VerifyAborted => {
+                let (_, verified) = recovery_journal.verify_closed_and_repair(&mut target)?;
+                artifacts::save(output, "verified-rollback.json", &verified)?;
+                AllocationRecoveryOutcome::NtfsRestored
+            }
+        };
+        artifacts::save(output, "recovery-events.json", &events)?;
+        for held in [
+            &mut bundle_input,
+            &mut request_input,
+            &mut plan_input,
+            &mut ticket_input,
+            &mut verification_input,
+        ]
+        .into_iter()
+        .chain(recovery_payload_input.iter_mut())
+        {
+            held.revalidate()?;
+        }
+        expectation_input.revalidate()?;
+        expectation.revalidate_domain()?;
+        if let Some(proof) = &recovery_payload_proof {
+            proof.revalidate_paged_manifest()?;
+        }
+        // One intact terminal peer already closes raw replay. Keep the target
+        // excluded unless both terminal copies pass the native barriers.
+        journal.require_native_mount_barriers(&ticket)?;
+        phase = "native-mount";
+        let mut extent_verification_receipt = None;
+        match outcome {
+            AllocationRecoveryOutcome::RefsCompleted => {
+                let mut finalization = protocol::Finalization {
+                    success: false,
+                    rollback_closed: true,
+                    handoff: None,
+                    completed_marker_proof: None,
+                    native: None,
+                    label_restoration: None,
+                    mount_paths_after: None,
+                    mount_paths_preserved: None,
+                    mount_paths_error: None,
+                    error: None,
+                    events: Vec::new(),
+                    general_conversion_qualified: false,
+                };
+                match target.bring_online(&mut finalization.events) {
+                    Ok(()) => {
+                        // A previous process may have restored the label after
+                        // its own handoff; verify against the label it left.
+                        let restored_label = matches!(action, Action::VerifyHandoff)
+                            && rediscover_general_volume_wait(
+                                request.pair.source.clone(),
+                                &mut finalization.events,
+                            )
+                            .and_then(|binding| {
+                                n2r_win32::volume_label::observe_label(binding, "ReFS")
+                            })
+                            .is_ok_and(|observed| {
+                                observed.label == verification.expected_source_label
+                            });
+                        let scope = protocol::NativeVerificationScope {
+                            pair: &request.pair,
+                            source_resource_profile: request.source_resource_profile,
+                            expected_mount_paths: Some(
+                                verification.expected_mount_paths.as_slice(),
+                            ),
+                            expected_source_label: Some(&verification.expected_source_label),
+                        };
+                        if let Some(proof) = &recovery_payload_proof {
+                            let closed = verified_refs_closed.as_ref().context(
+                                "extent recovery lacks an actual verified closed-journal result",
+                            )?;
+                            match protocol::fast_verification::verify_native_recovery_extents_scoped(
+                                &scope,
+                                &expectation,
+                                &mut finalization,
+                                proof,
+                                closed,
+                                restored_label,
+                            ) {
+                                Ok(receipt) => {
+                                    artifacts::save(
+                                        output,
+                                        "recovery-extent-verification.json",
+                                        &receipt,
+                                    )?;
+                                    extent_verification_receipt = Some(receipt);
+                                }
+                                Err(error) => finalization.error = Some(format!("{error:#}")),
+                            }
+                        } else {
+                            protocol::verify_native_scoped(
+                                &scope,
+                                &expectation,
+                                &mut finalization,
+                                restored_label,
+                            );
+                        }
+                    }
+                    Err(error) => finalization.error = Some(error.to_string()),
+                }
+                artifacts::save(output, "completion.json", &finalization)?;
+                ensure!(
+                    finalization.success,
+                    "allocation ReFS recovery verification refused; rollback stays closed: {:?}",
+                    finalization.error
+                );
+            }
+            AllocationRecoveryOutcome::NtfsRestored => {
+                let mut mount_events = Vec::new();
+                target.bring_online(&mut mount_events)?;
+                let mounted =
+                    rediscover_general_volume_wait(request.pair.source.clone(), &mut mount_events)
+                        .and_then(|binding| mounted_filesystem_general(binding, &mut mount_events));
+                artifacts::save(
+                    output,
+                    "completion.json",
+                    &serde_json::json!({
+                        "mounted_filesystem":mounted.as_ref().ok(),
+                        "error":mounted.as_ref().err().map(|error| error.to_string()),
+                        "events":mount_events,
+                    }),
+                )?;
+                ensure!(
+                    matches!(&mounted, Ok(name) if name == "NTFS"),
+                    "restored original did not mount as NTFS: {mounted:?}"
+                );
+            }
+        }
+        let mut result = serde_json::json!({
+            "schema_version":1,"kind":"allocation-bounded-recovery","success":true,
+            "observed_lifecycle":state,"action":action,"outcome":outcome,
+            // Every successful action above consumed the authenticated owner.
+            // This records that code path; it grants no replay authority.
+            "exclusive_recovery_journal_used":true,
+            "journal_format":if ticket.marker_profile.is_some() { "N2RFRE02" } else { plan.encoding_name() },
+            "journal_bytes":journal_bytes,"selected_bytes":selected_bytes,
+            "old_zero_bytes":old_zero_bytes,
+            "old_zero_payload_storage_elided":old_zero_bytes > 0,
+            "source_free_old_payload_storage_elided":source_free_bytes > 0,
+            "source_free_bytes":source_free_bytes,
+            "source_free_hash_table_bytes":source_free_bytes / 256,
+            "rollback_preserves_free_space_contents":source_free_bytes == 0,
+            "fresh_apply_authorized":false,"source_admitted":false,
+            "general_conversion_qualified":false,
+        });
+        if !request.selected_capacity_policy.is_conservative() {
+            result["selected_capacity_policy"] =
+                serde_json::to_value(request.selected_capacity_policy)?;
+        }
+        if let Some(marker_profile) = ticket.marker_profile {
+            result["marker_profile"] = serde_json::to_value(marker_profile)?;
+            result["journal_format_version"] = 6.into();
+        }
+        if let Some(receipt) = extent_verification_receipt {
+            result["actual_verification_scope"] = "pinned_extent_identity_v1".into();
+            result["full_content_hashes_compared"] = false.into();
+            result["original_unread_content_digest_reconstructed"] = false.into();
+            result["extent_verification"] = receipt;
+        }
+        artifacts::save(output, "result.json", &result)?;
+        Ok(outcome)
+    })();
+    match attempted {
+        Ok(outcome) => Ok(outcome),
+        Err(error) => {
+            artifacts::save(
+                output,
+                "failed.json",
+                &serde_json::json!({
+                    "schema_version":1,"kind":"allocation-bounded-recovery-failure",
+                    "phase":phase,"error":format!("{error:#}"),
+                    "automatic_fallback_attempted":false,"fresh_apply_authorized":false,
+                    "completion_state_must_be_inspected":true,
+                }),
+            )?;
+            Err(error)
+        }
+    }
+}

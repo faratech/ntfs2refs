@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "kind": "authenticated-closed-HND-boot-finalization-repair",
+  "actual_case": ".lab/hyperv/streaming-v2-20261027/PUBLIC-c04ed6c-actual-once-54157c2296aa4814bfb46a9173168d62",
+  "original_apply_source": "c04ed6cab181077c9a7c504acc0843de492fa1d1",
+  "authoritative_closed_ledger": {
+    "source_write_authority": false,
+    "frame_sha256": "e2d13f9a0abaab6b3aa85288d7aeb4da84d6e4169a6fdce89e5258da0ab4cfb5",
+    "complete_ledger_identity_ALLbytes_bookends": true,
+    "positive_native_write_record": true,
+    "native_events": 10161,
+    "ledger_bytes": 2030808,
+    "native_bytes_written": 203694080,
+    "closed_HND_records": 1,
+    "lines": 1033,
+    "decoder_sha256": "b2eb29e873f2bbebfd231f1b78fb39de06b60b0ce2c24d7d0a1a18af0f058b84"
+  },
+  "actual_finalization_failure": {
+    "original_media_restored": true,
+    "frame_sha256": "b2a9a2e9826b1269895fd7e4623cc874395e8dc38847fce90a4086f61a8c92a7",
+    "Source_J_private_boot_must_preserve": true,
+    "no_Restore_reprepare_replay_or_image_rebuild": true,
+    "media_restore_receipt_sha256": "7256717e41912ae9515b2f210c594a5d0c753fcff1e259f89b62714fbc66a140",
+    "operation": "terminal-boot-EFI-published-native-device",
+    "phase": "recovery-boot-terminal-EFI-publication-metadata-attempt",
+    "control_code": 2953344,
+    "native_error": 1,
+    "last_verified_store": null
+  },
+  "implementation": [
+    "EFI publication skips only a positively proven SAME current kernel-RAM held volume/DOS mapping; generic unsupported errors still fail, full catalog/EFI native144/extents/uniqueness stay.",
+    "Explicit closed-only CLI entry consumes the original native-kernel-pinned RAM bootstrap/request unchanged; rejects PreparedClear/AP/RB/rollback/pause paths.",
+    "Closed HND/allNEW or ABT/restoredOLD native/index/J qualification may use actual current-boot locks followed by actual attributes3; historical already-offline flag remains truthful.",
+    "Prepared apply/replay and source payload-writer gate hard reject closed-helper mode.",
+    "New executing helper SHA is recorded separately; OLD sealed RAM runner is held/read-only with exact native object/kernel-RAM/SHA against original WIM pin.",
+    "Original WIM marker, kernel loader/intent/bootstrap, sealed J/image artifacts, complete BCD objects and all source/J/closed native proofs remain mandatory.",
+    "No old-runner hash fiction, marker rewrite, helper binary swap, fresh NTFS admission, raw replay, source data writer, snapshot restore or forced boot selection."
+  ],
+  "focused_check": {
+    "exit_code": 0,
+    "native_run": false,
+    "unit_tests_run": false,
+    "receipt_sha256": "c97a12d2305386ce6082ecdb0f75ff9e36a4638248e409ac04f84cce06b7680a",
+    "wall_seconds": 40.2654269,
+    "session_id": 42036
+  },
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "new_helper_native_qualified": false,
+  "normal_boot_restoration_qualified": false,
+  "normal_conversion_fully_qualified": false,
+  "AP_restart_resume_qualified": false,
+  "AP_restart_rollback_qualified": false
+}

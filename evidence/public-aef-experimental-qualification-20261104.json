@@ -1,0 +1,128 @@
+{
+  "schema_version": 1,
+  "kind": "aef-public-experimental-observational-qualification",
+  "draft": false,
+  "qualification_status": "reviewed-finite-experimental",
+  "observational_only": true,
+  "finite_profile_only": true,
+  "native_matrix_complete": true,
+  "grants_runtime_authority": false,
+  "stable_release": false,
+  "published": false,
+  "physical_power_loss_qualified": false,
+  "cargo_package_version": "0.1.0",
+  "source_commit": "aef1ab3b3a6ea08f7093d83cc60462f8b799b79a",
+  "source_tree": "af8979f921bc9c7a57324addac40c8ec8bd0d968",
+  "build_manifest_sha256": "f60eca76b95fcb48a0708f44cf256f284d336b0e224a0b8e47a60d40b2dea291",
+  "source_archive_sha256": "0be3d4c3feb81878a29cfc4e04bce5e0e0717bc41f462bf2922c1bdce157dd21",
+  "public_binary": {
+    "name": "ntfs2refs",
+    "bytes": 17198080,
+    "shipped": true,
+    "sha256": "daa56b970b944efcc8cdb2987a2307231075961f5afb70c39e34f1add2b3026a"
+  },
+  "observed_profile": {
+    "source_cluster_bytes": 65536,
+    "nonboot_dedicated_data_disk": true,
+    "target_cluster_bytes": 4096,
+    "shared_running_Windows_disk_conversion_supported": false,
+    "logical_sector_bytes": 512,
+    "target_dev_drive": true,
+    "partition_bytes": 55834574848,
+    "physical_sector_bytes": 4096,
+    "key": "Win11-basic-GPT-52GiB-512e-NTFS64KiB-ReFS314-DevDrive4KiB",
+    "target_version": "3.14"
+  },
+  "gates": [
+    {
+      "key": "defaultNormal",
+      "status": "passed",
+      "passed": true,
+      "actual_case_observed": true,
+      "case_reference": "3c0b27586cb94f8ea556c1ad6283d7b6",
+      "evidence_path": "evidence/public-default-vhdx-conversion-20261104.json",
+      "evidence_sha256": "2640f201affe8b069acd3ffe6c906e0b00d5832b90be26de2e1c400e4d73aaf3"
+    },
+    {
+      "key": "thinNormal",
+      "status": "passed",
+      "passed": true,
+      "actual_case_observed": true,
+      "case_reference": "fc268ad154474588b5d4cf5226387674",
+      "evidence_path": "evidence/public-thin-conversion-20261104.json",
+      "evidence_sha256": "f614ded420616b2e5d1d992671a99fce626055b931fc6c988127e73f813b43fb"
+    },
+    {
+      "key": "controlledCut",
+      "status": "passed",
+      "passed": true,
+      "actual_case_observed": true,
+      "case_reference": "f9c1b2f236d442318afcec1df0cd24a8 controlled singleTurnOff and postboot authentication",
+      "evidence_path": "evidence/public-thin-post-cut-rollback-20261104.json",
+      "evidence_sha256": "a43274e24299ea214134215368eecbd48c5f9814bc2287a34fa9f4b2c271da37"
+    },
+    {
+      "key": "rollback",
+      "status": "passed",
+      "passed": true,
+      "actual_case_observed": true,
+      "case_reference": "b7b582216b814f21a71d7d905982a765",
+      "evidence_path": "evidence/public-thin-post-cut-rollback-20261104.json",
+      "evidence_sha256": "a43274e24299ea214134215368eecbd48c5f9814bc2287a34fa9f4b2c271da37"
+    },
+    {
+      "key": "resume",
+      "status": "passed",
+      "passed": true,
+      "actual_case_observed": true,
+      "case_reference": "b0aaf7b193624306b8e81e8c7bf59d10",
+      "evidence_path": "evidence/public-thin-post-cut-resume-20261104.json",
+      "evidence_sha256": "cd27f8128949209fecab5f56ea0f125ad9320d91ef448a114d1524319903b28e"
+    },
+    {
+      "key": "mutationReboot",
+      "status": "passed",
+      "passed": true,
+      "actual_case_observed": true,
+      "case_reference": "a5badf9e65e24beb86a1c644eede3150 mutation and a05448866d9b416b995ee4301f60c6f6 postboot verification",
+      "evidence_path": "evidence/public-thin-operational-gates-20261104.json",
+      "evidence_sha256": "26cfa43d6cc414e95ebe0102da061bce641e13a2a771e06a56011c96d6346058"
+    },
+    {
+      "key": "HNDnoReplay",
+      "status": "passed",
+      "passed": true,
+      "actual_case_observed": true,
+      "case_reference": "1c8116e88624439e8dbc6790deba482e",
+      "evidence_path": "evidence/public-thin-operational-gates-20261104.json",
+      "evidence_sha256": "26cfa43d6cc414e95ebe0102da061bce641e13a2a771e06a56011c96d6346058"
+    },
+    {
+      "key": "Jsharing32",
+      "status": "passed",
+      "passed": true,
+      "actual_case_observed": true,
+      "case_reference": "7d7417a10d4840439aac0b338abe04f5",
+      "evidence_path": "evidence/public-thin-operational-gates-20261104.json",
+      "evidence_sha256": "26cfa43d6cc414e95ebe0102da061bce641e13a2a771e06a56011c96d6346058"
+    },
+    {
+      "key": "publicLowSpaceRefusal",
+      "status": "passed",
+      "passed": true,
+      "actual_case_observed": true,
+      "case_reference": "5b4f493b0824485893352829aaa2dcea: actual public6036/birth1793815128501/exit1; helper5764/exit0; observed source preservation and cleanup",
+      "evidence_path": "evidence/public-low-space-refusal-20261104.json",
+      "evidence_sha256": "e462be39049eec02d7b8ff29a1f38d0b46585db9827e8c31a14534e8503d6361"
+    }
+  ],
+  "pending_inputs": [],
+  "notes": [
+    "Root reviewed nine exact-aef finite gates; this qualification is observational, not runtime storage authority.",
+    "Frozen814 and earlier B7 results are not inherited.",
+    "Controlled thread pause/TurnOff does not qualify physical power loss.",
+    "Low-space admission refusal does not qualify actual ENOSPC or write/flush failures.",
+    "Resource samples are not peaks/hard quotas; low-space admission-to-close host growth was5337570325 bytes within6442450944 forecast.",
+    "Broader hardware, shared running-Windows-disk partitions and a stable release remain unqualified."
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "kind": "resource-first-write-diagnostic-stopped-before-interruption",
+  "source_commit": "96f9587cf6d6ab547612ca04bad31db675763fa2",
+  "diagnostic_binary_sha256": "d562c14f93e04e32a54f50692ac155ffc62a77040a5414566a15dd2a5db2441d",
+  "build_manifest_sha256": "6e76228aeef91afe64ed925aa1e1142ad9945575ca4f7f996db73a157548517e",
+  "run_id": "6189937fca3445bfb0f216c4588641d5",
+  "checkpoint": "3343f2a4-cf81-4fa9-a504-030425a8011e",
+  "native": {
+    "pid": 5272,
+    "creation_unix_ms": 1793725411361,
+    "exit_code": 1,
+    "actual_exit_observed": true,
+    "wall_seconds": 65.2511025,
+    "scheduled_task_terminal": true,
+    "source_offline": true,
+    "source_read_only": true,
+    "placement_evacuation_submissions": 0
+  },
+  "refusal": {
+    "phase": "first shadow-placement workspace reservation",
+    "leased_arena_bytes": 942034628,
+    "registry_bytes": 3087768,
+    "requested_bytes": 571816544,
+    "admitted_ram_bytes": 1456427008,
+    "arena_poisoned": false,
+    "quota_arithmetic_not_measured_heap_exhaustion": true
+  },
+  "interruption_evidence": {
+    "preallocated_signal_bytes": 4096,
+    "signal_nonzero_bytes": 0,
+    "valid_first_flushed_write_signal": false,
+    "intended_partial_write_fault_reached": false,
+    "native_nonzero_exit_is_not_fault_success": true
+  },
+  "closed_evidence": {
+    "path": ".lab/hyperv/streaming-v2-20261027/resource-fixture-6189937fca3445bfb0f216c4588641d5/closed-refusal/archive-manifest.json",
+    "sha256": "08b5df397ca2dff5ce4a52fe74c62e0363879806b0d2ee3f9bf9c70e4b1839e4",
+    "files": 15,
+    "bytes": 80472,
+    "source_and_copy_hashes_checked": true
+  },
+  "qualification": {
+    "source_conversion": false,
+    "partial_write_interruption": false,
+    "restart_resume_or_rollback": false,
+    "stable_release": false,
+    "unit_tests_run": false
+  }
+}

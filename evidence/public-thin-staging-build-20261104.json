@@ -1,0 +1,74 @@
+{
+  "new_extent_diagnostic_rejection_only": true,
+  "legacy_VHDX_location_and_retirement_JSON_unchanged": true,
+  "unit_tests_added_or_run": false,
+  "source_parent_commit": "9e491d1f6eb3fde8abb6e5f242bb3d579b71999a",
+  "strict_geometry_acceptance_preserved": true,
+  "kind": "public-v4-thin-staging-integration-build",
+  "normal_VHDX_default_preserved": true,
+  "experimental_carrier_limit_hidden": true,
+  "V4_replay_remains_self_contained": true,
+  "focused_check": {
+    "reported_seconds": 13.91,
+    "actual_exit_code": 0,
+    "exclusive_lock_held": true,
+    "log_sha256": "c02bbc23c5df5f00b0b12faebdde52fc345d3962d8b49f29c94d7e33d1d9489c",
+    "shared_target": "target/shared-experiments"
+  },
+  "native_public_thin_conversion_qualified": false,
+  "native_graph_retirement_qualified": false,
+  "files": [
+    {
+      "bytes": 37313,
+      "path": "src/drive_cli.rs",
+      "sha256": "38a9a3aad29cc657da25f4183bba2030eabd2736bcc39a1e742e4058d2b8a54b"
+    },
+    {
+      "bytes": 28560,
+      "path": "src/drive_resource.rs",
+      "sha256": "5e38262243fed91c4f217a3de51b20e0df93a20dd45ffe33bb8f195879a10463"
+    },
+    {
+      "bytes": 4064,
+      "path": "src/drive_staging.rs",
+      "sha256": "6550ae39f93608e11942d1c2f2906adafca2f70cceeeb4c4515ffc62486e6fa8"
+    },
+    {
+      "bytes": 33385,
+      "path": "crates/n2r-win32/src/managed_shadow.rs",
+      "sha256": "feeb58bc309d50c246b89bb99bb767dde07a470a5b6bbad175e6c30d49ab82ff"
+    },
+    {
+      "bytes": 5622,
+      "path": "crates/n2r-win32/src/managed_shadow/refs_extent.rs",
+      "sha256": "06c0d24d6794e116748207dac0072fa747042491ce2216114fd3bb7e1b9e57e0"
+    },
+    {
+      "bytes": 48592,
+      "path": "crates/n2r-win32/src/managed_shadow/thin_pool.rs",
+      "sha256": "1c14a3aa70c2b059d027cd7644b0014865d20533d809b3ffe131a8cb53c7c3d8"
+    },
+    {
+      "bytes": 8685,
+      "path": "crates/n2r-win32/src/managed_shadow/thin_pool/formatted.rs",
+      "sha256": "fd54186594fda499b34f9d830dc846aaa6d19f484e15165e818ab6af99453399"
+    },
+    {
+      "bytes": 14277,
+      "path": "crates/n2r-win32/src/managed_shadow/thin_pool/bounded_carrier.rs",
+      "sha256": "aefb171c4904cf83cc251ecb17176ad9c1dd088e1543f7875dde3e324b1eb82d"
+    },
+    {
+      "bytes": 21245,
+      "path": "crates/n2r-win32/src/managed_shadow/thin_pool/retirement.rs",
+      "sha256": "80082eca32651c8577e35654f36f737442a1e6fe36b27888d90af8b3a19ec21f"
+    }
+  ],
+  "provider_potential_growth_reserved_outside_journal_and_capture": true,
+  "schema_version": 1,
+  "utc": "2026-11-04T11:12:16.8301107Z",
+  "retirement_partial_failure_is_nonfatal_no_raw_replay": true,
+  "experimental_thin_flag_hidden": true,
+  "original_provider_host_free_floor_retained": true,
+  "thin_retirement_after_live_success_only": true
+}

@@ -1,0 +1,136 @@
+{
+  "schema_version": 1,
+  "kind": "native-mixed-fixture-stage1-placement",
+  "source_commit": "4973f3151e76c1b0e9c102f33fde6bda21cff5b9",
+  "fixture": {
+    "files": 808,
+    "directories": 120,
+    "total_bytes": 9885781381,
+    "fragmented_files_among_first_200_over_1MiB": 52,
+    "generator": "lab/New-MixedFixture.ps1 seed 20261029"
+  },
+  "conversion": {
+    "run_id": "2bf2c8da7bc14801a6381fc5bac8dab6",
+    "engine_run_id": "fa45f896e62bcf79d8433f393124343d",
+    "outcome": "refused before any write in target verification",
+    "error": "delta capture budget exhausted before next output write; preserve partial artifact",
+    "changed_clusters_captured_bytes": 4951556096,
+    "source_payload_writes": 0
+  },
+  "placement": {
+    "passed": true,
+    "seconds": "about 225 (source-assessment 35.1s -> construction-placement 259.6s)",
+    "counters": {
+      "files": 808,
+      "desired_runs": 779,
+      "initial_tracked_extents": 620,
+      "owned_intersecting_desired": 711,
+      "deferred_submissions": 694,
+      "evacuation_submissions": 870,
+      "final_submissions": 568,
+      "phase_bitmap_snapshots": 3,
+      "drift_replans": 0
+    },
+    "original_coordinate_bytes": 3456536576,
+    "placement_artifact_bytes": 12332252
+  },
+  "timeline_seconds": {
+    "source_frozen": 14.7,
+    "native_source": 27.4,
+    "source_assessment": 35.1,
+    "construction_placement": 259.6,
+    "construction_freeze": 276.0,
+    "failed": 311.0
+  },
+  "regression_52gib": {
+    "run_id": "f0467c244e5644cc8e972ab3ade73c49",
+    "engine_run_id": "fcbd492bbffe5a912b64fda457d11543",
+    "success": true,
+    "native_objects": 15,
+    "complete_logical_hashes": 10,
+    "seconds": 56.7,
+    "shadow_construction_seconds": 4.3,
+    "note": "all phases slower under concurrent host load from a running design workflow; to be retimed",
+    "retime": {
+      "run_id": "dd1a2526748641dc8a828847dc9f4518",
+      "engine_run_id": "b217beda2844c8811d4bc38d45b07ce0",
+      "success": true,
+      "native_objects": 15,
+      "complete_logical_hashes": 10,
+      "seconds": 52.8,
+      "timeline_seconds": {
+        "source_frozen": 7.7,
+        "native_source": 13.6,
+        "source_assessment": 15.9,
+        "construction_placement": 19.3,
+        "construction_freeze": 19.6,
+        "changed_clusters": 35.3,
+        "activation": 39.0,
+        "apply": 42.3,
+        "handoff": 44.4,
+        "finalization": 52.4
+      },
+      "host_load": "concurrent full cargo rebuild on the host",
+      "comparison_vs_f467cbe": "admission 10.6->15.9 s and final verification 4.3->8.0 s (code untouched by stage 1) slowed; shadow construction 6.2->3.7 s (stage 1) faster",
+      "conclusion": "no stage-1 regression evident; a load-free retime is still owed"
+    },
+    "retime_load_free": {
+      "run_id": "1ca9c02942fc4af0bb83089e8a138809",
+      "engine_run_id": "d16b26511309df5088dd966343b68518",
+      "source_commit": "9ef77d08e796c13dc57f6e4717d6e8afbeb8ff8d",
+      "success": true,
+      "native_objects": 15,
+      "complete_logical_hashes": 10,
+      "seconds": 55.1,
+      "timeline_seconds": {
+        "source_frozen": 8.0,
+        "native_source": 15.4,
+        "source_assessment": 18.6,
+        "construction_placement": 22.3,
+        "construction_freeze": 22.6,
+        "changed_clusters": 40.0,
+        "activation": 43.6,
+        "apply": 46.0,
+        "handoff": 47.9,
+        "finalization": 53.1
+      },
+      "changed_classes": {
+        "changed_bytes_total": 70565888,
+        "new_is_zero": 67760128,
+        "ntfs_allocated_destination": 70332416,
+        "in_payload_route": 286720,
+        "first_route_destination_offset": 6178459648
+      },
+      "note": "no concurrent host work; admission (untouched by stage 1) 10.6 -> 18.6 s, shadow 6.2 -> 4.0 s; A/B rerun of f467cbe pending"
+    },
+    "ab_control_f467cbe": {
+      "run_id": "e148b0b078114e5a986747a016e181e0",
+      "engine_run_id": "6aac92af9920839da21a1f015e80769f",
+      "source_commit": "f467cbef48f7a5fe6e8773b13e12ac67b9507f76",
+      "success": true,
+      "native_objects": 15,
+      "complete_logical_hashes": 10,
+      "seconds": 50.7,
+      "earlier_seconds_same_commit": 40.7,
+      "timeline_seconds": {
+        "source_frozen": 7.1,
+        "native_source": 15.2,
+        "source_assessment": 17.6,
+        "construction_placement": 23.8,
+        "construction_freeze": 24.1,
+        "changed_clusters": 37.7,
+        "activation": 40.8,
+        "apply": 43.1,
+        "handoff": 44.9,
+        "finalization": 49.9
+      },
+      "conclusion": "the host slowed by about 10 s between 2026-10-29 22:20Z and 2026-10-30 03:00Z (after 64 snapshot merges and about 40 GB of fixture writes on the same SSD); stage 1 (9ef77d0, 55.1 s) is within run variance of this control and its shadow phase is 2.5 s faster (4.0 vs 6.5 s)"
+    }
+  },
+  "findings": [
+    "stage 1 lifts the 1024 ownership refusal: placement completes for 808 fragmented files",
+    "only 3.46 GB of about 9.9 GB stayed at original coordinates; the rest must be copied and journaled (old+new)",
+    "the allocation-mode changed-byte budget is (max_journal_bytes - overhead)/2 from a fixed drive journal budget, so relocated data beyond it refuses",
+    "placement still costs about 0.1 s per move from two whole-volume bitmap captures per move (2,132 moves)"
+  ]
+}

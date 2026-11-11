@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "kind": "owned-offreg-copy-post-writer-close-immutable-epoch",
+  "actual_case": ".lab/hyperv/streaming-v2-20261027/PUBLIC-1e7f8da-actual-once-82e3055452a844ac9c1db774fb15e1b1",
+  "failed_source": "1e7f8da8575c432a9c554eb547442c03c9179e60",
+  "actual_warm_failure": {
+    "pid": 4848,
+    "FULL_Windows_boot_ms": 1793961084960,
+    "birth_ms": 1793961321587,
+    "owned_exit_code": 1,
+    "before_image_or_product_restart": true,
+    "AP_or_source_data_write_claimed": false,
+    "error": "same new J offline registry object changed before immutable hold",
+    "wall_seconds": 297.2614221
+  },
+  "actual_copy_boundary_probe": {
+    "all_source_writer_closed_SHA": "29f982799ff90b7004abcc607fea12e249da5870f298d6912969235509cb942b",
+    "all_serial_FileID128_EOF_attributes_links_path_reparse_fields_equal": true,
+    "pid": 4140,
+    "all_content_equal": true,
+    "probe_sha256": "9bf7f2b603918a35d2faddb1cd503279e5712c2064f794ae02bfba4d4160a2d2",
+    "target_only_fresh_J_metadata": true,
+    "J_readonly_allocation_after_close": 114688,
+    "result_path": "offreg-copy-boundary-8682a2a0e3244bf99c495b4577347123/ACTUAL-ONE-copy-diagnostic-result.json",
+    "birth_ms": 1793962089732,
+    "logical_bytes": 114688,
+    "owned_exit_code": 0,
+    "J_writer_allocation_before_close": 262144,
+    "source_original_links": 2,
+    "Source_D_raw_Jbody_registry_product_calls": 0,
+    "source_input_unchanged": true,
+    "source_DLL_bytes": 114688
+  },
+  "implementation": [
+    "After closing the newly created J writer, obtain the real readonly immutable artifact owner.",
+    "Require identical native object ID/serial/path/EOF/attributes/links and complete SHA; permit only allocation shrink bounded by [EOF,preclose allocation].",
+    "Retain the actual closed readonly snapshot for every future immutable artifact check.",
+    "No normalization setter, source data write, snapshot/flag repin, budget/cap increase, or source/J guard reduction.",
+    "Detailed failure evidence includes both complete native snapshots and SHA equality."
+  ],
+  "focused_check": {
+    "receipt_sha256": "38a8c7c73ba0467deadb23aabd0a35bda291ca29829a15d3a19b9f0fe6fc5536",
+    "unit_tests_run": false,
+    "native_run": false,
+    "exit_code": 0,
+    "session_id": 60833,
+    "wall_seconds": 32.2661597
+  },
+  "implementation_file": "crates/n2r-win32/src/native/recovery_image.rs",
+  "implementation_sha256": "395c0d76a65a9f4e010888fc6029e5f514eb76a93a18b59c02e7d8a36df37dd3",
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "product_native_qualified": false,
+  "normal_conversion_qualified": false,
+  "AP_restart_resume_qualified": false,
+  "AP_restart_rollback_qualified": false
+}

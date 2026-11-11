@@ -24,7 +24,7 @@ const VOLUME_EXTENTS: u32 = 0x00560000;
 #[repr(C, align(8))]
 struct InfoBuffer([u8; 24]);
 
-fn information<const N: usize>(
+pub(super) fn information<const N: usize>(
     file: &File,
     class: FILE_INFO_BY_HANDLE_CLASS,
 ) -> io::Result<[u8; N]> {
@@ -48,6 +48,13 @@ fn information<const N: usize>(
 }
 
 fn file_observation(file: &File) -> io::Result<(String, JournalFileEvidence)> {
+    file_observation_with_profile(file, JournalProfile::LegacyV1)
+}
+
+pub(super) fn file_observation_with_profile(
+    file: &File,
+    profile: JournalProfile,
+) -> io::Result<(String, JournalFileEvidence)> {
     // SAFETY: file owns the handle for the complete synchronous call.
     require(
         unsafe { GetFileType(file.as_raw_handle()) } == FILE_TYPE_DISK,
@@ -83,7 +90,7 @@ fn file_observation(file: &File) -> io::Result<(String, JournalFileEvidence)> {
         disk_alignment: vec![],
         disk_layout: vec![],
     };
-    validate_file_fields(&e)?;
+    validate_file_fields_for_profile(&e, profile)?;
     Ok((path, e))
 }
 
@@ -102,7 +109,7 @@ pub fn observe_ordinary_file_handle(file: &File) -> io::Result<OrdinaryFileSnaps
     Ok(snapshot)
 }
 
-fn query(file: &File, code: u32, input: &[u8], capacity: usize) -> io::Result<Vec<u8>> {
+pub(super) fn query(file: &File, code: u32, input: &[u8], capacity: usize) -> io::Result<Vec<u8>> {
     require(
         input.len() <= 12 && (1..=65536).contains(&capacity),
         "journal observation query exceeds budget",
@@ -138,7 +145,11 @@ fn query(file: &File, code: u32, input: &[u8], capacity: usize) -> io::Result<Ve
     Ok(output)
 }
 
-fn storage_observation(volume: &File, disk: &File, e: &mut JournalFileEvidence) -> io::Result<()> {
+pub(super) fn storage_observation(
+    volume: &File,
+    disk: &File,
+    e: &mut JournalFileEvidence,
+) -> io::Result<()> {
     e.volume_extents = query(volume, VOLUME_EXTENTS, &[], 32)?;
     e.disk_device_number = query(disk, DEVICE, &[], 12)?;
     e.disk_length = query(disk, LENGTH, &[], 8)?;
@@ -183,8 +194,18 @@ pub fn observe_general_journal_file(
     file: &File,
     expected: &GeneralJournalStorageBinding,
 ) -> io::Result<JournalFileSnapshot> {
+    observe_general_journal_file_with_profile(file, expected, JournalProfile::LegacyV1)
+}
+
+/// Explicitly selected versioned capacity profile. The owning request/ticket
+/// must bind this profile independently before any write authorization.
+pub fn observe_general_journal_file_with_profile(
+    file: &File,
+    expected: &GeneralJournalStorageBinding,
+    profile: JournalProfile,
+) -> io::Result<JournalFileSnapshot> {
     expected.validate()?;
-    let (before_path, mut before) = file_observation(file)?;
+    let (before_path, mut before) = file_observation_with_profile(file, profile)?;
     let volume_path = final_volume_path(&before_path, &guid_bytes(&expected.disk.volume_guid)?)?;
     let volume = OpenOptions::new()
         .read(true)
@@ -195,8 +216,31 @@ pub fn observe_general_journal_file(
         .share_mode(3)
         .open(format!("\\\\.\\PhysicalDrive{}", expected.disk.disk_number))?;
     storage_observation(&volume, &disk, &mut before)?;
-    let snapshot = validate_general_evidence(expected, &before_path, before)?;
-    let (after_path, mut after) = file_observation(file)?;
+    let snapshot = validate_general_evidence_for_profile(expected, &before_path, before, profile)?;
+    let (after_path, mut after) = file_observation_with_profile(file, profile)?;
     storage_observation(&volume, &disk, &mut after)?;
+    finish_observation(snapshot, &after_path, &after)
+}
+
+/// Read-only existing ordinary file on the caller's ACTUAL held volume.
+/// This binds that volume's native extents plus complete physical storage
+/// before/after; no output/create/write/locking authority is returned.
+pub fn observe_general_journal_file_on_held_volume(
+    file: &File,
+    volume: &File,
+    expected: &GeneralJournalStorageBinding,
+    profile: JournalProfile,
+) -> io::Result<JournalFileSnapshot> {
+    expected.validate()?;
+    let (before_path, mut before) = file_observation_with_profile(file, profile)?;
+    final_volume_path(&before_path, &guid_bytes(&expected.disk.volume_guid)?)?;
+    let disk = OpenOptions::new()
+        .read(true)
+        .share_mode(3)
+        .open(format!("\\\\.\\PhysicalDrive{}", expected.disk.disk_number))?;
+    storage_observation(volume, &disk, &mut before)?;
+    let snapshot = validate_general_evidence_for_profile(expected, &before_path, before, profile)?;
+    let (after_path, mut after) = file_observation_with_profile(file, profile)?;
+    storage_observation(volume, &disk, &mut after)?;
     finish_observation(snapshot, &after_path, &after)
 }

@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "kind": "owning-partition-source-expected-shadow-preparation",
+  "status": "public-check-passed-native-qualification-pending",
+  "files": [
+    {
+      "path": "src/resource_preparation.rs",
+      "bytes": 37793,
+      "sha256": "7b9d754f41018323caa85bf8b7905868e18e099426967d406f3a1ae61c3db83a"
+    },
+    {
+      "path": "src/resource_partition_preparation.rs",
+      "bytes": 5275,
+      "sha256": "ba4ddd540c7a75b571bbe944d4c40bf55bd7ec962b55339e8a5a7f875098eca6"
+    }
+  ],
+  "check_exit": 0,
+  "check_wall_seconds": 22.2874068,
+  "check_receipt_sha256": "d66a606cdd4186a3a8ad4960b44789b3472d836a02acf0be31d6c96c17e659ac",
+  "shared_target_reused": true,
+  "unit_tests_run": false,
+  "native_qualified": false,
+  "frozen_alpha_rebuilt": false,
+  "writer_cli_enabled": false,
+  "behavior": [
+    "Accepts actual lifecycle guard and held external artifact arena root.",
+    "Collects and admits actual partition source, derives canonical source projection and creates/reopens resource-bound expected pages.",
+    "Releases projection decoding workspace before native allocation, retaining actual sealed pages and directory owners.",
+    "Constructs real native shadow and protected V4 capture, returning actual source/expected/target owners together."
+  ],
+  "remaining": [
+    "Prepared journal/publication/AP activation integration.",
+    "Authenticated restart and target-only terminal restoration.",
+    "Native shared-disk conversion qualification and public routing."
+  ]
+}

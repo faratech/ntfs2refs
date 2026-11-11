@@ -8,6 +8,8 @@ use anyhow::{Context, Result, ensure};
 use n2r_win32::attestation::{Report, Snapshot};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(windows)]
+pub mod paged;
 
 /// Generate an observer request in Rust so 64-bit identifiers stay exact.
 /// Collection independently checks the native route and read-only protection.
@@ -28,6 +30,7 @@ pub fn request_for_inspection(
     );
     let request = n2r_win32::attestation::Request {
         schema_version: 1,
+        resource_profile: None,
         source_inspection_sha256: inspection_sha256.into(),
         volume: format!("{}\\", binding.volume_path()?),
         disk_number: binding.disk_number,
@@ -42,6 +45,7 @@ pub fn request_for_inspection(
                 sequence_number: f.sequence_number,
             })
             .collect(),
+        extent_identity_streams: Vec::new(),
     };
     request.validate()?;
     Ok(request)
@@ -63,6 +67,7 @@ pub fn request_for_general_inspection(
     );
     let request = n2r_win32::attestation::Request {
         schema_version: 2,
+        resource_profile: None,
         source_inspection_sha256: inspection_sha256.into(),
         volume: format!("{}\\", binding.volume_path()?),
         disk_number: binding.disk_number,
@@ -77,7 +82,298 @@ pub fn request_for_general_inspection(
                 sequence_number: file.sequence_number,
             })
             .collect(),
+        extent_identity_streams: Vec::new(),
     };
+    request.validate()?;
+    Ok(request)
+}
+
+/// Opt-in collection request only. Larger native evidence cannot grant source
+/// admission or change the conversion profile by itself.
+pub fn request_for_general_inspection_with_profile(
+    raw: &NtfsInspection,
+    inspection_sha256: &str,
+    binding: &n2r_win32::general_layout::GeneralDiskBinding,
+    profile: n2r_win32::attestation::ResourceProfile,
+) -> Result<n2r_win32::attestation::Request> {
+    // Construct without the legacy identity-count check, then validate the
+    // explicitly selected profile. Geometry and route checks remain identical.
+    binding.validate()?;
+    ensure!(
+        raw.geometry.volume_size == binding.identity.partition_bytes
+            || raw.geometry.volume_size.checked_add(512) == Some(binding.identity.partition_bytes),
+        "general raw NTFS geometry differs from bound partition"
+    );
+    ensure!(
+        !raw.files.is_empty() && raw.files.len() <= profile.limits().maximum_identities,
+        "native resource profile identity budget exceeded"
+    );
+    let request = n2r_win32::attestation::Request {
+        schema_version: 3,
+        resource_profile: Some(profile),
+        source_inspection_sha256: inspection_sha256.into(),
+        volume: format!("{}\\", binding.volume_path()?),
+        disk_number: binding.disk_number,
+        partition_offset: binding.identity.partition_offset,
+        partition_length: binding.identity.partition_bytes,
+        ntfs_serial: raw.geometry.serial_number,
+        files: raw
+            .files
+            .iter()
+            .map(|f| n2r_win32::attestation::FileIdentity {
+                record_number: f.record_number,
+                sequence_number: f.sequence_number,
+            })
+            .collect(),
+        extent_identity_streams: Vec::new(),
+    };
+    request.validate()?;
+    Ok(request)
+}
+
+/// Shared structural eligibility/spec builder for explicit extent evidence.
+/// No content hash is required or invented here. Native retrieval, allocation,
+/// stable identity/EOF and the original frozen context remain separate gates.
+pub fn extent_identity_stream_request(
+    raw: &NtfsInspection,
+    file: &FileInventory,
+    stream: &crate::ntfs_inspect::StreamInventory,
+) -> Result<Option<n2r_win32::attestation::ExtentIdentityStream>> {
+    extent_identity_stream_request_with_paths(&raw.geometry, file, stream, || {
+        Ok(crate::ntfs_admission::user_paths(raw, file))
+    })
+}
+
+/// Paged-source counterpart. Complete allocation and namespace reconciliation
+/// remain prerequisite observations, not write authority. The caller retains
+/// the original source lease and the actual complete page owners separately.
+#[cfg(windows)]
+pub fn extent_identity_stream_request_domain(
+    files: &impl crate::ntfs_inspect::RootFileDomain,
+    file: &FileInventory,
+    stream: &crate::ntfs_inspect::StreamInventory,
+    allocation_closed: bool,
+    namespace_closed: bool,
+) -> Result<Option<n2r_win32::attestation::ExtentIdentityStream>> {
+    if !allocation_closed || !namespace_closed {
+        return Ok(None);
+    }
+    extent_identity_stream_request_with_paths(&files.header().geometry, file, stream, || {
+        Ok(Some(crate::ntfs_admission::paged::user_paths(files, file)?))
+    })
+}
+
+/// Canonical native collection for the explicit offline-Windows layout.
+/// This does not cover DOS path preservation or authorize target construction.
+#[cfg(windows)]
+pub(crate) fn extent_identity_stream_request_windows_domain(
+    files: &impl crate::ntfs_inspect::RootFileDomain,
+    file: &FileInventory,
+    stream: &crate::ntfs_inspect::StreamInventory,
+) -> Result<Option<n2r_win32::attestation::ExtentIdentityStream>> {
+    extent_identity_stream_request_with_paths(&files.header().geometry, file, stream, || {
+        Ok(Some(
+            crate::ntfs_admission::paged::canonical_paths_for_alias_preparation(files, file)?,
+        ))
+    })
+}
+
+fn extent_identity_stream_request_with_paths(
+    geometry: &crate::ntfs_inspect::NtfsGeometry,
+    file: &FileInventory,
+    stream: &crate::ntfs_inspect::StreamInventory,
+    source_paths: impl FnOnce() -> Result<Option<Vec<Vec<String>>>>,
+) -> Result<Option<n2r_win32::attestation::ExtentIdentityStream>> {
+    use crate::ntfs_inspect::MetadataRole;
+    if !(4096..=2 * 1024 * 1024).contains(&geometry.cluster_size)
+        || !geometry.cluster_size.is_power_of_two()
+        || file.is_directory
+        || file.record_number < 16
+        || file.base_file_reference != 0
+        || file.metadata_role != MetadataRole::OutsideExtendCandidate
+        || file.metadata_role_issue.is_some()
+        || file.is_metadata
+        || file.reparse.is_some()
+        || file
+            .standard_information
+            .as_ref()
+            .is_none_or(|s| s.file_attributes & 0x4e00 != 0)
+        || stream.resident
+        || stream.flags != 0
+        // Source evidence binds the complete initialized stream/allocation,
+        // including a partial final target cluster. Target preservation uses
+        // a distinct materialized-tail contract; this is no content digest.
+        || stream.logical_size < 4096
+        || stream.initialized_size != stream.logical_size
+        || stream.extents.is_empty()
+        || stream.extents.iter().any(|e| e.physical_offset.is_none())
+    {
+        return Ok(None);
+    }
+    let Some(paths) = source_paths()? else {
+        return Ok(None);
+    };
+    // These streams use the bounded system-payload copier, whose complete
+    // content baseline is still required. Ordinary data keeps extent evidence.
+    if paths.is_empty()
+        || paths.iter().any(|path| {
+            path.first()
+                .is_some_and(|part| part.eq_ignore_ascii_case("System Volume Information"))
+        })
+    {
+        return Ok(None);
+    }
+    ensure!(
+        file.sequence_number != 0
+            && file.record_number < 1 << 48
+            && stream.name_utf16.len() <= 255
+            && String::from_utf16(&stream.name_utf16).is_ok()
+            && !stream
+                .name_utf16
+                .iter()
+                .any(|n| matches!(*n, 0 | 0x2f | 0x5c | 0x3a)),
+        "invalid extent-identity stream identity or name"
+    );
+    let attributes: Vec<_> = file
+        .attributes
+        .iter()
+        .filter(|a| a.type_code == 0x80 && a.name_utf16 == stream.name_utf16)
+        .collect();
+    ensure!(
+        attributes.len() == 1,
+        "extent-identity DATA attribute is ambiguous"
+    );
+    let a = attributes[0];
+    ensure!(
+        !a.resident
+            && a.flags == 0
+            && a.compression_unit == 0
+            && a.total_allocated_size.is_none()
+            && a.lowest_vcn == 0
+            && a.logical_size == stream.logical_size
+            && a.initialized_size == stream.initialized_size
+            && a.allocated_size == stream.allocated_size
+            && a.extents == stream.extents,
+        "extent-identity DATA attribute differs from its stream"
+    );
+    crate::ntfs_inspect::validate_stream_mapping(a, geometry)?;
+    ensure!(
+        stream
+            .allocated_size
+            .is_multiple_of(u64::from(geometry.cluster_size))
+            && stream.extents.iter().all(|e| e
+                .length
+                .is_multiple_of(u64::from(geometry.cluster_size))
+                && e.physical_offset
+                    .is_some_and(|at| at.is_multiple_of(u64::from(geometry.cluster_size)))),
+        "extent-identity source allocation is not cluster aligned"
+    );
+    let mut extents: Vec<n2r_win32::attestation::ExtentIdentityExtent> = Vec::new();
+    for e in &stream.extents {
+        let physical = e.physical_offset.context("extent-identity source hole")?;
+        if let Some(last) = extents.last_mut()
+            && last.logical_offset.checked_add(last.length) == Some(e.logical_offset)
+            && last.physical_offset.checked_add(last.length) == Some(physical)
+        {
+            last.length = last
+                .length
+                .checked_add(e.length)
+                .context("extent-identity run overflow")?;
+        } else {
+            extents.push(n2r_win32::attestation::ExtentIdentityExtent {
+                logical_offset: e.logical_offset,
+                physical_offset: physical,
+                length: e.length,
+            });
+        }
+    }
+    Ok(Some(n2r_win32::attestation::ExtentIdentityStream {
+        identity: n2r_win32::attestation::FileIdentity {
+            record_number: file.record_number,
+            sequence_number: file.sequence_number,
+        },
+        name_utf16: stream.name_utf16.clone(),
+        cluster_bytes: geometry.cluster_size,
+        logical_size: stream.logical_size,
+        allocated_size: stream.allocated_size,
+        extents,
+    }))
+}
+
+/// A complete digest or an explicitly un-read, structurally eligible stream.
+/// This is planner evidence only, never live source/write authority.
+pub fn source_stream_evidence_valid(
+    raw: &NtfsInspection,
+    file: &FileInventory,
+    stream: &crate::ntfs_inspect::StreamInventory,
+) -> Result<bool> {
+    use crate::ntfs_inspect::LogicalHashStatus;
+    Ok(match stream.logical_hash_status {
+        LogicalHashStatus::Complete => stream
+            .logical_sha256
+            .as_deref()
+            .is_some_and(n2r_win32::content_digest::is_hex),
+        LogicalHashStatus::NotReadExtentIdentityV1 => {
+            stream.logical_sha256.is_none()
+                && extent_identity_stream_request(raw, file, stream)?.is_some()
+        }
+        _ => false,
+    })
+}
+
+pub fn request_for_general_inspection_with_policy(
+    raw: &NtfsInspection,
+    inspection_sha256: &str,
+    binding: &n2r_win32::general_layout::GeneralDiskBinding,
+    profile: n2r_win32::attestation::ResourceProfile,
+    policy: crate::verification_policy::VerificationPolicy,
+) -> Result<n2r_win32::attestation::Request> {
+    let mut request =
+        request_for_general_inspection_with_profile(raw, inspection_sha256, binding, profile)?;
+    if policy.is_fast() {
+        ensure!(
+            profile.is_streaming(),
+            "extent-identity native reads require the streaming source profile"
+        );
+        for file in &raw.files {
+            for stream in &file.streams {
+                if let Some(candidate) = extent_identity_stream_request(raw, file, stream)? {
+                    request.extent_identity_streams.push(candidate);
+                }
+            }
+        }
+        request.schema_version = 4;
+        request.validate()?;
+    }
+    Ok(request)
+}
+
+/// Fresh source admission additionally requires explicit per-directory native
+/// case evidence. Historical request builders intentionally keep schemas2–4.
+pub fn request_for_fresh_general_inspection(
+    raw: &NtfsInspection,
+    inspection_sha256: &str,
+    binding: &n2r_win32::general_layout::GeneralDiskBinding,
+    profile: Option<n2r_win32::attestation::ResourceProfile>,
+    policy: crate::verification_policy::VerificationPolicy,
+) -> Result<n2r_win32::attestation::Request> {
+    let mut request = match profile {
+        Some(profile) => request_for_general_inspection_with_policy(
+            raw,
+            inspection_sha256,
+            binding,
+            profile,
+            policy,
+        )?,
+        None => {
+            ensure!(
+                policy.is_full_content(),
+                "unprofiled fresh source cannot elide stream reads"
+            );
+            request_for_general_inspection(raw, inspection_sha256, binding)?
+        }
+    };
+    request.schema_version = if request.uses_extent_identity() { 6 } else { 5 };
     request.validate()?;
     Ok(request)
 }
@@ -104,6 +400,260 @@ pub struct Comparison {
     pub native_streams: Option<crate::ntfs_stream_attestation::Reconciliation>,
     pub native_logical_data: Option<crate::ntfs_data_attestation::Reconciliation>,
     pub native_namespace: Option<crate::ntfs_namespace_attestation::Reconciliation>,
+    /// None is historical Unknown, never an observation that flags were zero.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub directory_case_sensitivity: Option<DirectoryCaseAssessment>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DirectoryCaseAssessment {
+    pub raw_directories: usize,
+    pub matched_directories: usize,
+    pub all_directories_case_insensitive: bool,
+    pub directories: Vec<DirectoryCaseCheck>,
+}
+#[derive(Debug, Serialize)]
+pub struct DirectoryCaseCheck {
+    pub record_number: u64,
+    pub sequence_number: u16,
+    pub observation_path: &'static str,
+    pub before_flags: Option<u32>,
+    pub after_flags: Option<u32>,
+    pub matched: bool,
+    pub issues: Vec<String>,
+}
+
+fn directory_case_flags(
+    raw: &NtfsInspection,
+    file: &FileInventory,
+    queries: &[n2r_win32::attestation::Query],
+    case: Option<&n2r_win32::attestation::Query>,
+) -> Result<u32> {
+    directory_case_flags_with_serial(raw.geometry.serial_number, file, queries, case)
+}
+
+fn directory_case_flags_with_serial(
+    serial: u64,
+    file: &FileInventory,
+    queries: &[n2r_win32::attestation::Query],
+    case: Option<&n2r_win32::attestation::Query>,
+) -> Result<u32> {
+    let bytes = |class, length| -> Result<&[u8]> {
+        let mut found = queries.iter().filter(|q| q.class == class);
+        let query = found
+            .next()
+            .context("directory identity/type query missing")?;
+        ensure!(
+            found.next().is_none() && query.native_error.is_none() && query.bytes.len() == length,
+            "directory identity/type query failed or malformed (class{class})"
+        );
+        Ok(&query.bytes)
+    };
+    let basic = bytes(0, 40)?;
+    let standard = bytes(1, 24)?;
+    let id = bytes(18, 24)?;
+    ensure!(
+        u32::from_le_bytes(basic[32..36].try_into()?) & 0x10 != 0
+            && standard[21] == 1
+            && standard[20] == 0,
+        "directory case handle type/delete state differs"
+    );
+    ensure!(
+        u64::from_le_bytes(id[..8].try_into()?) == serial
+            && u64::from_le_bytes(id[8..16].try_into()?)
+                == (file.record_number | (u64::from(file.sequence_number) << 48))
+            && id[16..].iter().all(|byte| *byte == 0),
+        "directory case handle serial/file reference differs from frozen raw identity"
+    );
+    let case = case.context("directory case sensitivity is Unknown (query missing)")?;
+    ensure!(
+        case.class == 23 && case.native_error.is_none() && case.bytes.len() == 4,
+        "directory case query failed or malformed: class={}, error={:?}, bytes={}",
+        case.class,
+        case.native_error,
+        case.bytes.len()
+    );
+    Ok(u32::from_le_bytes(case.bytes[..].try_into()?))
+}
+
+#[cfg(windows)]
+pub(crate) fn check_directory_case_observation(
+    file: &FileInventory,
+    serial: u64,
+    observed: &n2r_win32::attestation::Observation,
+) -> Result<()> {
+    ensure!(
+        file.is_directory
+            && observed.identity.record_number == file.record_number
+            && observed.identity.sequence_number == file.sequence_number,
+        "directory case observation identity differs"
+    );
+    let (before, before_case, after, after_case) = if observed.open_error.is_none() {
+        ensure!(
+            observed.case_only_fallback.is_none(),
+            "successful directory open also carries fallback"
+        );
+        let a = observed
+            .before
+            .as_ref()
+            .context("directory before snapshot absent")?;
+        let b = observed
+            .after
+            .as_ref()
+            .context("directory after snapshot absent")?;
+        (
+            &a.queries,
+            a.directory_case_sensitivity.as_ref(),
+            &b.queries,
+            b.directory_case_sensitivity.as_ref(),
+        )
+    } else {
+        ensure!(
+            observed.before.is_none() && observed.after.is_none(),
+            "failed broad directory open also carries metadata"
+        );
+        let fallback = observed
+            .case_only_fallback
+            .as_ref()
+            .context("directory case fallback absent")?;
+        ensure!(
+            fallback.access_mask == 0x80 && fallback.open_error.is_none(),
+            "directory case fallback refused"
+        );
+        let a = fallback
+            .before
+            .as_ref()
+            .context("directory fallback before absent")?;
+        let b = fallback
+            .after
+            .as_ref()
+            .context("directory fallback after absent")?;
+        (
+            &a.queries,
+            a.directory_case_sensitivity.as_ref(),
+            &b.queries,
+            b.directory_case_sensitivity.as_ref(),
+        )
+    };
+    ensure!(
+        directory_case_flags_with_serial(serial, file, before, before_case)? == 0
+            && directory_case_flags_with_serial(serial, file, after, after_case)? == 0,
+        "directory has unsupported nonzero case-sensitivity flags"
+    );
+    Ok(())
+}
+
+fn compare_directory_cases(raw: &NtfsInspection, native: &Report) -> DirectoryCaseAssessment {
+    let mut directories = Vec::new();
+    for file in raw.files.iter().filter(|file| file.is_directory) {
+        let mut row = DirectoryCaseCheck {
+            record_number: file.record_number,
+            sequence_number: file.sequence_number,
+            observation_path: "missing",
+            before_flags: None,
+            after_flags: None,
+            matched: false,
+            issues: Vec::new(),
+        };
+        let checked = (|| -> Result<()> {
+            let mut matching = native.files.iter().filter(|item| {
+                item.identity.record_number == file.record_number
+                    && item.identity.sequence_number == file.sequence_number
+            });
+            let observed = matching
+                .next()
+                .context("source directory observation missing")?;
+            ensure!(
+                matching.next().is_none(),
+                "source directory observation duplicated"
+            );
+            let (before_queries, before_case, after_queries, after_case) =
+                if observed.open_error.is_none() {
+                    row.observation_path = "canonical-snapshot";
+                    ensure!(
+                        observed.case_only_fallback.is_none(),
+                        "successful metadata open also carries fallback"
+                    );
+                    let before = observed
+                        .before
+                        .as_ref()
+                        .context("before directory snapshot missing")?;
+                    let after = observed
+                        .after
+                        .as_ref()
+                        .context("after directory snapshot missing")?;
+                    (
+                        before.queries.as_slice(),
+                        before.directory_case_sensitivity.as_ref(),
+                        after.queries.as_slice(),
+                        after.directory_case_sensitivity.as_ref(),
+                    )
+                } else {
+                    row.observation_path = "read-attributes-only-fallback";
+                    ensure!(
+                        observed.before.is_none() && observed.after.is_none(),
+                        "failed broad open carries metadata snapshots"
+                    );
+                    let fallback = observed
+                        .case_only_fallback
+                        .as_ref()
+                        .context("directory case fallback missing after broad-open failure")?;
+                    ensure!(
+                        fallback.access_mask == 0x80 && fallback.open_error.is_none(),
+                        "directory read-attributes fallback failed: {:?}",
+                        fallback.open_error
+                    );
+                    let before = fallback
+                        .before
+                        .as_ref()
+                        .context("fallback before snapshot missing")?;
+                    let after = fallback
+                        .after
+                        .as_ref()
+                        .context("fallback after snapshot missing")?;
+                    (
+                        before.queries.as_slice(),
+                        before.directory_case_sensitivity.as_ref(),
+                        after.queries.as_slice(),
+                        after.directory_case_sensitivity.as_ref(),
+                    )
+                };
+            // Retain both actual query failures. A failed before query must
+            // not hide the after observation or create synthetic zero flags.
+            for (phase, queries, case) in [
+                ("before", before_queries, before_case),
+                ("after", after_queries, after_case),
+            ] {
+                match directory_case_flags(raw, file, queries, case) {
+                    Ok(flags) if phase == "before" => row.before_flags = Some(flags),
+                    Ok(flags) => row.after_flags = Some(flags),
+                    Err(error) => row.issues.push(format!("{phase}: {error:#}")),
+                }
+            }
+            if !row.issues.is_empty() {
+                return Ok(());
+            }
+            ensure!(
+                row.before_flags == Some(0) && row.after_flags == Some(0),
+                "directory has unsupported nonzero/unstable case flags: before={:?}, after={:?}",
+                row.before_flags,
+                row.after_flags
+            );
+            Ok(())
+        })();
+        match checked {
+            Ok(()) => row.matched = row.issues.is_empty(),
+            Err(error) => row.issues.push(format!("{error:#}")),
+        }
+        directories.push(row);
+    }
+    let matched = directories.iter().filter(|row| row.matched).count();
+    DirectoryCaseAssessment {
+        raw_directories: directories.len(),
+        matched_directories: matched,
+        all_directories_case_insensitive: !directories.is_empty() && matched == directories.len(),
+        directories,
+    }
 }
 fn acl_bytes(d: &Descriptor, a: &Acl) -> Result<Vec<Vec<u8>>> {
     let b = hex::decode(&d.relative_hex)?;
@@ -132,14 +682,122 @@ fn acl_equal(a: &Descriptor, ac: &Acl, b: &Descriptor, bc: &Acl) -> Result<bool>
 /// Ignore placement offsets and padding. Preserve control, SID values, ACL
 /// presence/null state, revision, ACE order and every complete ACE byte.
 pub fn same_security(a: &[u8], b: &[u8]) -> Result<bool> {
-    let a = ntfs_security::parse_descriptor(a)?;
-    let b = ntfs_security::parse_descriptor(b)?;
-    Ok(a.control == b.control
-        && a.rm_control == b.rm_control
-        && a.owner_sid == b.owner_sid
-        && a.group_sid == b.group_sid
-        && acl_equal(&a, &a.dacl, &b, &b.dacl)?
-        && acl_equal(&a, &a.sacl, &b, &b.sacl)?)
+    same_security_with_limit(a, b, ntfs_security::MAX_DESCRIPTOR_BYTES as u64)
+}
+
+/// As `same_security`, except that a SACL marked present but null equals no
+/// SACL at all: neither audits anything.
+///
+/// ReFS cannot clear the SACL-present flag once it is set, and its formatter
+/// sets it (with a null SACL) on System Volume Information. Such an object can
+/// therefore never be made bit-identical to an NTFS source with no SACL. Every
+/// other field, including a real SACL, must still match exactly.
+pub fn same_security_null_sacl_as_absent(a: &[u8], b: &[u8]) -> Result<bool> {
+    const SE_SACL_PRESENT: u16 = 0x0010;
+    let maximum = ntfs_security::MAX_DESCRIPTOR_BYTES as u64;
+    remembered_comparison(1, a, b, maximum, || {
+        let a = ntfs_security::parse_descriptor_with_limit(a, maximum)?;
+        let b = ntfs_security::parse_descriptor_with_limit(b, maximum)?;
+        let empty = |acl: &Acl| {
+            matches!(
+                acl.state,
+                ntfs_security::AclState::Absent | ntfs_security::AclState::Null
+            )
+        };
+        let (control_mask, sacl_same) = if empty(&a.sacl) && empty(&b.sacl) {
+            (!SE_SACL_PRESENT, true)
+        } else {
+            (u16::MAX, acl_equal(&a, &a.sacl, &b, &b.sacl)?)
+        };
+        Ok(a.control & control_mask == b.control & control_mask
+            && a.rm_control == b.rm_control
+            && a.owner_sid == b.owner_sid
+            && a.group_sid == b.group_sid
+            && acl_equal(&a, &a.dacl, &b, &b.dacl)?
+            && sacl_same)
+    })
+}
+/// The resource profile changes the storage bound, never descriptor meaning.
+/// SID/control/ACL states, ACE ordering and all complete ACE bytes still match.
+pub fn same_security_with_limit(a: &[u8], b: &[u8], maximum: u64) -> Result<bool> {
+    remembered_comparison(0, a, b, maximum, || {
+        let a = ntfs_security::parse_descriptor_with_limit(a, maximum)?;
+        let b = ntfs_security::parse_descriptor_with_limit(b, maximum)?;
+        Ok(a.control == b.control
+            && a.rm_control == b.rm_control
+            && a.owner_sid == b.owner_sid
+            && a.group_sid == b.group_sid
+            && acl_equal(&a, &a.dacl, &b, &b.dacl)?
+            && acl_equal(&a, &a.sacl, &b, &b.sacl)?)
+    })
+}
+
+/// The answer of a descriptor comparison for the same two byte strings.
+///
+/// A volume has hundreds of thousands of objects and a few hundred distinct
+/// security descriptors, and each comparison parsed both descriptors again.
+/// The comparison depends only on its inputs, so its answer is kept, keyed
+/// by the exact bytes of both descriptors (a hash only finds the bucket).
+/// Errors are not kept. At most `REMEMBERED_BYTES` of descriptors are held.
+fn remembered_comparison(
+    kind: u8,
+    a: &[u8],
+    b: &[u8],
+    maximum: u64,
+    compare: impl FnOnce() -> Result<bool>,
+) -> Result<bool> {
+    struct Known {
+        kind: u8,
+        maximum: u64,
+        a: Vec<u8>,
+        b: Vec<u8>,
+        same: bool,
+    }
+    #[derive(Default)]
+    struct Memory {
+        buckets: std::collections::HashMap<u128, Vec<Known>>,
+        bytes: usize,
+    }
+    const REMEMBERED_BYTES: usize = 32 * 1024 * 1024;
+    thread_local! {
+        static MEMORY: std::cell::RefCell<Memory> = std::cell::RefCell::new(Memory::default());
+    }
+    let mut hash = xxhash_rust::xxh3::Xxh3::new();
+    hash.update(&[kind]);
+    hash.update(&maximum.to_le_bytes());
+    hash.update(&(a.len() as u64).to_le_bytes());
+    hash.update(a);
+    hash.update(b);
+    let bucket = hash.digest128();
+    let known = MEMORY.with(|memory| {
+        memory.borrow().buckets.get(&bucket).and_then(|entries| {
+            entries
+                .iter()
+                .find(|known| {
+                    known.kind == kind && known.maximum == maximum && known.a == a && known.b == b
+                })
+                .map(|known| known.same)
+        })
+    });
+    if let Some(same) = known {
+        return Ok(same);
+    }
+    let same = compare()?;
+    MEMORY.with(|memory| {
+        let mut memory = memory.borrow_mut();
+        let size = a.len() + b.len() + std::mem::size_of::<Known>();
+        if memory.bytes + size <= REMEMBERED_BYTES {
+            memory.bytes += size;
+            memory.buckets.entry(bucket).or_default().push(Known {
+                kind,
+                maximum,
+                a: a.to_vec(),
+                b: b.to_vec(),
+                same,
+            });
+        }
+    });
+    Ok(same)
 }
 fn buffer(s: &Snapshot, class: i32, length: usize) -> Result<&[u8]> {
     let q: Vec<_> = s.queries.iter().filter(|q| q.class == class).collect();
@@ -204,11 +862,89 @@ pub(crate) fn check_non_time_snapshot(
 
 /// The frozen-source policy checks both descriptor views separately. Keep
 /// identity/type/size/attribute validation independent of API SD projection.
+/// Project FILE_ATTRIBUTE_SPARSE_FILE onto the opened default stream.
+/// NTFS STANDARD_INFORMATION can retain this bit when a named stream is
+/// sparse while the default stream is not. The internal NTFS EA marker is
+/// omitted by Win32 for files and directories, but only validated nonempty EA
+/// storage can identify that marker: the same numeric bit also names
+/// RECALL_ON_OPEN. All other bits and the raw SI inventory remain unchanged.
+pub(crate) fn has_verified_nonempty_eas(file: &FileInventory) -> bool {
+    crate::ntfs_extended_attributes::file_set(file).is_ok_and(|set| !set.is_empty())
+}
+
+pub(crate) fn default_stream_attributes(file: &FileInventory, attributes: u32) -> Result<u32> {
+    let attributes = if attributes & 0x40000 != 0 && has_verified_nonempty_eas(file) {
+        attributes & !0x40000
+    } else {
+        attributes
+    };
+    if file.is_directory {
+        return Ok(attributes);
+    }
+    let mut streams = file
+        .streams
+        .iter()
+        .filter(|stream| stream.name_utf16.is_empty());
+    let Some(default) = streams.next() else {
+        return Ok(attributes);
+    };
+    ensure!(
+        streams.next().is_none(),
+        "default stream attribute projection is ambiguous"
+    );
+    Ok((attributes & !0x200)
+        | if default.flags & 0x8000 != 0 {
+            0x200
+        } else {
+            0
+        })
+}
+
 pub(crate) fn check_non_security_snapshot(
     file: &FileInventory,
     serial: u64,
     s: &Snapshot,
 ) -> Result<[u64; 4]> {
+    check_non_security_snapshot_scoped(file, serial, s, false)
+}
+
+/// The frozen Windows path retains the raw FILE link counter as a hint.
+/// Complete MFT/I30 coverage remains a prerequisite, and native canonical
+/// link counts are still checked against the complete FILE_NAME inventory.
+pub(crate) fn check_non_security_snapshot_windows(
+    file: &FileInventory,
+    serial: u64,
+    s: &Snapshot,
+) -> Result<[u64; 4]> {
+    check_non_security_snapshot_scoped(file, serial, s, true)
+}
+
+fn check_non_security_snapshot_scoped(
+    file: &FileInventory,
+    serial: u64,
+    s: &Snapshot,
+    windows_counter_hint: bool,
+) -> Result<[u64; 4]> {
+    check_reparse_snapshot(file, s)?;
+    if file.extended_attributes.is_some()
+        || s.extended_attributes.is_some()
+        || s.extended_attributes_error.is_some()
+    {
+        let expected = crate::ntfs_extended_attributes::file_set(file)?;
+        ensure!(
+            s.extended_attributes_error.is_none(),
+            "native EA query failed"
+        );
+        let observed = s
+            .extended_attributes
+            .as_ref()
+            .context("native EA set missing")?;
+        observed.validate()?;
+        ensure!(
+            expected.equivalent(observed),
+            "raw/native EA semantics differ"
+        );
+    }
     ensure!(s.queries.len() == 4, "unexpected native query count");
     let id = buffer(s, 18, 24)?;
     ensure!(
@@ -224,7 +960,18 @@ pub(crate) fn check_non_security_snapshot(
         .context("missing raw standard information")?;
     // NTFS $STANDARD_INFORMATION omits the directory bit and carries internal
     // index/view flags in the high nibble, outside Win32 FILE_ATTRIBUTE_*.
-    let mut attrs = (si.file_attributes & 0x0fff_ffff) | if file.is_directory { 16 } else { 0 };
+    let projected = if file.record_number == 5
+        || matches!(
+            file.metadata_role,
+            crate::ntfs_inspect::MetadataRole::OutsideExtendCandidate
+        ) {
+        crate::ntfs_file_attributes::project_user(file)?.win32_attributes
+    } else {
+        // Keep the existing observation behavior for recognized internal
+        // indexes such as $Secure. Their replacement admission is separate.
+        (si.file_attributes & 0x0fff_ffff) | if file.is_directory { 16 } else { 0 }
+    };
+    let mut attrs = default_stream_attributes(file, projected)?;
     if attrs == 0 {
         attrs = 128;
     }
@@ -240,9 +987,19 @@ pub(crate) fn check_non_security_snapshot(
         standard[20] == 0 && standard[21] == u8::from(file.is_directory),
         "native delete/directory state differs"
     );
+    // The Windows profile preserves the raw FILE counter as a hint. Native
+    // FILE_STANDARD_INFO must match canonical links in every profile; DOS
+    // aliases retain their separate preservation obligation.
+    let native_links = file.names.iter().filter(|name| name.namespace != 2).count();
     ensure!(
-        u32le(standard, 16) == u32::from(file.hard_link_count),
-        "native link count differs"
+        (windows_counter_hint || usize::from(file.hard_link_count) == file.names.len())
+            && usize::try_from(u32le(standard, 16))? == native_links,
+        "native link count differs at FILE {}: native={}, canonical={}, raw={}, names={}",
+        file.record_number,
+        u32le(standard, 16),
+        native_links,
+        file.hard_link_count,
+        file.names.len()
     );
     if let Some(stream) = file.streams.iter().find(|s| s.name_utf16.is_empty()) {
         ensure!(
@@ -258,23 +1015,50 @@ pub(crate) fn check_non_security_snapshot(
     ])
 }
 
-pub fn compare(
-    raw: &NtfsInspection,
-    inspection_sha256: &str,
+/// Source-link evidence belongs to the opened link itself. Matching only its
+/// tag is insufficient: the full supported buffer must match the raw NTFS
+/// attribute, including path strings, offsets and relative-link flags.
+pub(crate) fn check_reparse_snapshot(file: &FileInventory, s: &Snapshot) -> Result<()> {
+    let expected = crate::ntfs_reparse::file_point(file)?;
+    let tag = buffer(s, 9, 8)?;
+    let native_tag = u32le(tag, 4);
+    let expected_tag = match &expected {
+        Some(point) => u32::from_le_bytes(
+            point
+                .buffer
+                .get(..4)
+                .context("validated raw reparse tag missing")?
+                .try_into()?,
+        ),
+        None => 0,
+    };
+    ensure!(
+        native_tag == expected_tag && (u32le(tag, 0) & 0x400 != 0) == expected.is_some(),
+        "native reparse tag/attribute differs from raw source"
+    );
+    s.validate_reparse(false)?;
+    match &s.reparse {
+        Some(observed) => {
+            ensure!(observed.error.is_none(), "native reparse query failed");
+            ensure!(
+                observed.point == expected,
+                "raw/native reparse buffers differ"
+            );
+        }
+        None => ensure!(
+            expected.is_none(),
+            "legacy native report lacks full reparse evidence"
+        ),
+    }
+    Ok(())
+}
+
+pub(crate) fn check_header_geometry(
+    geometry: &crate::ntfs_inspect::NtfsGeometry,
     native: &Report,
-) -> Result<Comparison> {
-    native.request.validate()?;
+) -> Result<()> {
     ensure!(
-        matches!(native.schema_version, 2..=6) && !native.conversion_qualified,
-        "unexpected native report kind/claim"
-    );
-    crate::ntfs_stream_attestation::validate_bitmap_schema(native)?;
-    ensure!(
-        native.request.source_inspection_sha256 == inspection_sha256,
-        "native/source report binding differs"
-    );
-    ensure!(
-        native.request.ntfs_serial == raw.geometry.serial_number,
+        native.request.ntfs_serial == geometry.serial_number,
         "source serial differs"
     );
     ensure!(
@@ -322,26 +1106,134 @@ pub fn compare(
     let data = &native.ntfs_data_before;
     ensure!(
         (96..=128).contains(&data.len())
-            && u64le(data, 0) == raw.geometry.serial_number
-            && u32le(data, 40) == u32::from(raw.geometry.bytes_per_sector)
-            && u32le(data, 44) == raw.geometry.cluster_size
-            && u32le(data, 48) == raw.geometry.file_record_size
-            && u64le(data, 8) == raw.geometry.total_sectors
-            && u64le(data, 16) == raw.geometry.total_clusters
-            && u64le(data, 64) == raw.geometry.mft_lcn
-            && u64le(data, 72) == raw.geometry.mftmirr_lcn,
+            && u64le(data, 0) == geometry.serial_number
+            && u32le(data, 40) == u32::from(geometry.bytes_per_sector)
+            && u32le(data, 44) == geometry.cluster_size
+            && u32le(data, 48) == geometry.file_record_size
+            && u64le(data, 8) == geometry.total_sectors
+            && u64le(data, 16) == geometry.total_clusters
+            && u64le(data, 64) == geometry.mft_lcn
+            && u64le(data, 72) == geometry.mftmirr_lcn,
         "native NTFS geometry differs"
     );
     ensure!(
-        native.request.partition_length == raw.geometry.volume_size
+        native.request.partition_length == geometry.volume_size
             || native.request.partition_length
-                == raw
-                    .geometry
+                == geometry
                     .volume_size
-                    .checked_add(u64::from(raw.geometry.bytes_per_sector))
+                    .checked_add(u64::from(geometry.bytes_per_sector))
                     .context("source length overflow")?,
         "native/source partition length differs"
     );
+    Ok(())
+}
+
+#[cfg(windows)]
+pub(crate) fn check_partition_header_geometry(
+    geometry: &crate::ntfs_inspect::NtfsGeometry,
+    observed: &n2r_win32::attestation_partition::PartitionPagedNtfsObservation,
+) -> Result<()> {
+    use n2r_win32::attestation::NativeObservationDomain;
+    let native = observed.domain().header();
+    ensure!(
+        observed.before() == observed.after()
+            && observed.before().partition_write_protect_error == 19
+            && observed.before().physical_disk_is_writable_succeeded
+            && observed.before().volume_extents == native.volume_extents_before
+            && observed.before().ntfs_volume_data == native.ntfs_data_before
+            && observed.before().actual_physical_disk_attributes == native.disk_attributes_before,
+        "actual partition protection does not bind native header"
+    );
+    ensure!(
+        native.request.ntfs_serial == geometry.serial_number,
+        "source serial differs"
+    );
+    ensure!(
+        native.privileges_restored
+            && native.write_protect_error_before == 0
+            && native.write_protect_error_after == 0,
+        "native protection or privilege restoration incomplete"
+    );
+    ensure!(
+        native.privilege_states.len() == 2,
+        "native privilege audit incomplete"
+    );
+    for (p, name) in native
+        .privilege_states
+        .iter()
+        .zip(["SeBackupPrivilege", "SeSecurityPrivilege"])
+    {
+        ensure!(
+            p.name == name
+                && p.enabled == p.before | 2
+                && (p.restored & !0x8000_0000) == (p.before & !0x8000_0000),
+            "native privilege audit differs"
+        );
+    }
+    ensure!(
+        native.volume_extents_before == native.volume_extents_after
+            && native.disk_attributes_before == native.disk_attributes_after
+            && native.ntfs_data_before == native.ntfs_data_after,
+        "native volume state changed"
+    );
+    let ext = &native.volume_extents_before;
+    ensure!(
+        ext.len() == 32
+            && u32le(ext, 0) == 1
+            && u32le(ext, 8) == native.request.disk_number
+            && u64le(ext, 16) == native.request.partition_offset
+            && u64le(ext, 24) == native.request.partition_length,
+        "native disk route differs"
+    );
+    let attrs = &native.disk_attributes_before;
+    ensure!(
+        attrs.len() == 16 && u32le(attrs, 0) == 16 && u64le(attrs, 8) == 0,
+        "actual physical disk state differs from partition protection profile"
+    );
+    let data = &native.ntfs_data_before;
+    ensure!(
+        (96..=128).contains(&data.len())
+            && u64le(data, 0) == geometry.serial_number
+            && u32le(data, 40) == u32::from(geometry.bytes_per_sector)
+            && u32le(data, 44) == geometry.cluster_size
+            && u32le(data, 48) == geometry.file_record_size
+            && u64le(data, 8) == geometry.total_sectors
+            && u64le(data, 16) == geometry.total_clusters
+            && u64le(data, 64) == geometry.mft_lcn
+            && u64le(data, 72) == geometry.mftmirr_lcn,
+        "native NTFS geometry differs"
+    );
+    ensure!(
+        native.request.partition_length == geometry.volume_size
+            || native.request.partition_length
+                == geometry
+                    .volume_size
+                    .checked_add(u64::from(geometry.bytes_per_sector))
+                    .context("source length overflow")?,
+        "native/source partition length differs"
+    );
+    Ok(())
+}
+
+pub fn compare(
+    raw: &NtfsInspection,
+    inspection_sha256: &str,
+    native: &Report,
+) -> Result<Comparison> {
+    if !raw.attribute_assemblies.is_empty() {
+        crate::ntfs_inspect::validate_record_coverage(raw)?;
+    }
+    native.request.validate()?;
+    ensure!(
+        matches!(native.schema_version, 2..=14) && !native.conversion_qualified,
+        "unexpected native report kind/claim"
+    );
+    crate::ntfs_stream_attestation::validate_paging_schema(native)?;
+    ensure!(
+        native.request.source_inspection_sha256 == inspection_sha256,
+        "native/source report binding differs"
+    );
+    check_header_geometry(&raw.geometry, native)?;
     ensure!(
         raw.files.len() == native.request.files.len() && raw.files.len() == native.files.len(),
         "native inventory coverage differs"
@@ -472,6 +1364,11 @@ pub fn compare(
     } else {
         None
     };
+    let directory_case_sensitivity = matches!(
+        (native.schema_version, native.request.schema_version),
+        (13, 5) | (14, 6)
+    )
+    .then(|| compare_directory_cases(raw, native));
     Ok(Comparison {
         schema_version: 1,
         source_inspection_sha256: inspection_sha256.into(),
@@ -484,14 +1381,18 @@ pub fn compare(
                 .is_none_or(|s| s.all_mappings_matched)
             && native_logical_data
                 .as_ref()
-                .is_none_or(|d| d.all_logical_data_matched)
+                .is_none_or(|d| d.all_requested_stream_evidence_matched)
             && native_namespace
                 .as_ref()
-                .is_none_or(|n| n.all_visible_names_matched),
+                .is_none_or(|n| n.all_visible_names_matched)
+            && directory_case_sensitivity
+                .as_ref()
+                .is_none_or(|evidence| evidence.all_directories_case_insensitive),
         files,
         conversion_qualified: false,
         native_streams,
         native_logical_data,
         native_namespace,
+        directory_case_sensitivity,
     })
 }

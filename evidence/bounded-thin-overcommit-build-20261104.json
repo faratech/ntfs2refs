@@ -1,0 +1,48 @@
+{
+  "notes": [
+    "Nominal and physical backing capacities are separately reported",
+    "Each member clamps to native VHDX profile64TiB, not a new logical-volume limit",
+    "Native Thin provider and resource checks decide admission",
+    "Private lab supports explicit logical partition byte argument; default remains72TiB"
+  ],
+  "nominal_member_maximum_each": 70368744177664,
+  "kind": "bounded-thin-overcommit-v2-build",
+  "native_conversion_qualified": false,
+  "carrier_host_and_nominal_pool_gates_retained": true,
+  "logical_volume_may_exceed_nominal_pool": true,
+  "schema_version": 1,
+  "native_petabyte_format_qualified": false,
+  "utc": "2026-11-04T10:34:17.6456443Z",
+  "unit_tests_added_or_run": false,
+  "planned_native_partition_bytes": 1000000000000000,
+  "profile": "bounded-carrier-thin-overcommit-v2",
+  "nominal_total_maximum": 140737488355328,
+  "public_backend_or_recovery_changed": false,
+  "source_parent_commit": "614341bc8d192ad0c043f8d9345f409095ea52a9",
+  "existing_fixed_factory_preserved": true,
+  "focused_check": {
+    "actual_exit_code": 0,
+    "exclusive_build_lock_held": true,
+    "log_sha256": "b253dc44178740867d67c305461a534c6e5c6dedb4c9cc8aa189cb6fa318a459",
+    "reported_seconds": 10.4,
+    "shared_target": "target/shared-experiments"
+  },
+  "actual_carrier_budget_bytes": 12884901888,
+  "files": [
+    {
+      "sha256": "1fa7b55b62311a895d588c6887a3df55696810c817e84427264385b549d100a8",
+      "path": "crates/n2r-win32/src/managed_shadow/thin_pool.rs",
+      "bytes": 46368
+    },
+    {
+      "sha256": "15db4af7538def745fdf3dd8517374910c8cc072fb87163f53f348ca0aab2bf1",
+      "path": "crates/n2r-win32/src/managed_shadow/thin_pool/formatted.rs",
+      "bytes": 7801
+    },
+    {
+      "sha256": "8d45df6e4757d14742f2ed3f77a88d7753a44225165fbebe31f3d3f7a4cd3662",
+      "path": "src/bin/lab-private-thin-format.rs",
+      "bytes": 9211
+    }
+  ]
+}

@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "kind": "actual-partition-recovered-origin-and-terminal-owner-transfer",
+  "status": "public-check-passed-native-integration-pending",
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/native.rs",
+      "bytes": 201006,
+      "sha256": "bf0d468b85b320eddce67e49181eb72d5a306e96b26f36d59e061cf59867aba3"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_restoration_observation.rs",
+      "bytes": 1638,
+      "sha256": "15c5815e1149f15d96776420aa5be627bab4802dddb87c93389b71d932191703"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_restoration.rs",
+      "bytes": 60366,
+      "sha256": "fdaef3c4b8b7760edfe5cd12e43929d4a4c97c07efb56189641367f43cecb1ec"
+    },
+    {
+      "path": "src/general_source_admission/resource_partition_terminal.rs",
+      "bytes": 328,
+      "sha256": "5ee8b9c6785f5d85260903fa2505bcf8627552aec97f9ff0750a5ead8dd924e2"
+    },
+    {
+      "path": "src/general_source_admission/resource_partition.rs",
+      "bytes": 51065,
+      "sha256": "0ffe3012b9b9f9b5b65a124ffde269f276b244012d95ca44cbc50fdb7a6b7668"
+    },
+    {
+      "path": "src/resource_partition_preparation.rs",
+      "bytes": 10684,
+      "sha256": "10e1889c1294177277a3d4f80ed908d47e128eb1bd6e9b1cdece77ded06bbfc4"
+    }
+  ],
+  "reviewed_origin_patch_sha256": "889a3e9ba0b9083b182a344e1776265b04b3f98d8fa9895e56cf717436ed5eaa",
+  "check_exit": 0,
+  "check_wall_seconds": 34.5149335,
+  "check_receipt_sha256": "818143b7156afe32bf7d3e921bdc9be84f5221ee1be94bfc6a00f191cda0d8c2",
+  "shared_target_reused": true,
+  "unit_tests_run": false,
+  "native_qualified": false,
+  "frozen_alpha_rebuilt": false,
+  "writer_cli_enabled": false,
+  "behavior": [
+    "Actual reopened origin authenticates held C publication/locator/intent/native pages and current private GPT/critical identity without manufacturing fresh NTFS admission.",
+    "Original parser is reused; locator source/J/restored-OLD lineage is explicitly checked and original pins remain routing data only.",
+    "Opaque origin itself grants no writer; complete SDK MIXED J/index/current-span authentication remains required.",
+    "Actual terminal read-only volume exposes native converted metadata/fidelity collection with opening and closing protection checks, including optional known-content checks.",
+    "Consuming ROOT preparation transfer drops target/capture duplicates of the old locked NTFS FileObject before terminal mount, retaining actual source/admission and expected owners."
+  ],
+  "remaining": [
+    "Fresh-live intent/J transfer callback into terminal guard.",
+    "ROOT restarted MIXED replay caller and public conversion/recovery routing.",
+    "Complete native shared-Windows-disk conversion/recovery qualification."
+  ]
+}

@@ -171,3 +171,43 @@ Complete guest disk-I/O trace/control work is still needed for an effective
 write-avoidance claim. `SetFileValidData` remains deferred: it advances validity
 for a file prefix and does not provide a safe way to expose just the fifteen
 attributed clusters while the preceding region remains unresolved.
+
+## Separate Rust private-prefix experiment, October 27–28
+
+The earlier fifteen-cluster experiment and its unresolved leading marker remain
+preserved. A new experiment used one fresh SYSTEM-only file on the separately
+owned streaming-v2 shadow, with EOF/allocation 1,052,672 bytes and an explicit
+1,048,576-byte SetFileValidData request. The NTFS source stayed offline/read-only.
+The Rust tool made no payload read or write call and restored its temporary
+manage-volume privilege. It retained the private file rather than exposing its
+unwritten contents or deleting the result.
+
+SetFileValidData succeeded. Before the call, VCN 0..1 had LCN -1 and storage
+regions were invalid. After the call and file flush, all 256 prefix clusters
+had physical mappings and storage usage 2. The extra 4 KiB tail remained storage
+invalid. Initial result SHA-256:
+`d3ac78c0abb021dc57c5ccac5d09c7a1f69e004439078f1b52b9f27ee707651e`.
+
+After a clean reboot, a metadata-only observer on the read-only shadow confirmed
+the same 24-byte FileIdInfo, EOF, stable standard information, physical prefix
+mappings and valid-prefix/invalid-tail regions. It issued no payload read/write,
+valid-data call or privilege change. Its result is
+`dbbe0e26a4be5ea2b676cca71d7c8975a6322d5650f0be4643076361d35dd3e3`.
+The first two reopen observers refused a writable-only volume helper; their
+attempts are preserved and do not provide persistence evidence. The successful
+observer uses a read-only volume handle and validates its disk extent.
+
+Evidence is under the ignored
+`.lab/hyperv/streaming-v2-20261027/candidate5/valid-data-probe` directory.
+The oracle is refs.sys `10.0.26100.8875`, SHA-256
+`3aa5d90958fc582c5f6567d2b970a3a37b3d4d80a4b58b5a8676943b7860d3c4`,
+on Windows build 26300. The initial producer is
+`d9bd5df26ebbb9f8be58446497a61dbb256e034e22a695626947b7d5bb1204d1`;
+successful observer `f07083a2c6d1c21a9f76a3f4124c7f0fe20ada4e08cebcf8b619e2a3178d1487`.
+OFF checkpoints preserve both allocation and reboot observation; no previous
+probe or converted branch was deleted.
+
+This establishes a bounded allocation/validity primitive. Physical payload
+I/O, persistence of known payload contents, arbitrary-extent adoption, secure
+end-to-end no-copy construction and conversion remain separate requirements.
+The source was not converted in this experiment. No unit tests ran.

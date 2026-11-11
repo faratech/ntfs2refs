@@ -10,6 +10,12 @@ pub trait ReportMemoryLease: Send + Sync {
 pub trait ReportMemoryAccountant: Send + Sync {
     /// Must reserve the complete request before returning a live lease.
     fn reserve(&self, bytes: u64) -> io::Result<Box<dyn ReportMemoryLease>>;
+    /// Memory for a cache the caller can do without. A payer with a shared
+    /// budget should refuse it sooner than [`Self::reserve`], leaving room
+    /// for what cannot be done without; by default the two are the same.
+    fn reserve_optional(&self, bytes: u64) -> io::Result<Box<dyn ReportMemoryLease>> {
+        self.reserve(bytes)
+    }
     /// Actual adapter allocation, excluding the Box pointer stored by the SDK.
     fn lease_heap_bytes(&self) -> u64;
 }

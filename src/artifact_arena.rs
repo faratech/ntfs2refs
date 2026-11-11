@@ -84,6 +84,8 @@ struct State {
     overhead: u64,
     index_bytes: u64,
     leased_ram_bytes: u64,
+    // The part of `leased_ram_bytes` held by optional caches.
+    optional_ram_bytes: u64,
     ram_poisoned: bool,
     prepared_closed: bool,
 }
@@ -130,6 +132,8 @@ pub struct ArtifactArena(Arc<Inner>);
 pub struct ArenaRamLease {
     arena: ArtifactArena,
     bytes: u64,
+    // Taken by `reserve_optional_ram`: counted in the optional total as well.
+    optional: bool,
 }
 impl ArenaRamLease {
     /// Return unused capacity while retaining the remainder of this lease.
@@ -149,6 +153,12 @@ impl ArenaRamLease {
             .leased_ram_bytes
             .checked_sub(self.bytes - bytes)
             .context("arena RAM lease shrink underflow")?;
+        if self.optional {
+            state.optional_ram_bytes = state
+                .optional_ram_bytes
+                .checked_sub(self.bytes - bytes)
+                .context("arena optional RAM lease shrink underflow")?;
+        }
         self.bytes = bytes;
         Ok(())
     }
@@ -900,6 +910,7 @@ impl ArtifactArena {
                 overhead: 0,
                 index_bytes: config_registry_bytes,
                 leased_ram_bytes: 0,
+                optional_ram_bytes: 0,
                 ram_poisoned: false,
                 prepared_closed: false,
             }),
@@ -1319,8 +1330,9 @@ impl ArtifactArena {
         let leased = add(state.leased_ram_bytes, bytes)?;
         ensure!(
             !state.ram_poisoned && add(leased, state.index_bytes)? <= self.0.budget.ram_bytes,
-            "aggregate artifact arena RAM exhausted or poisoned: leased={}, registry={}, requested={}, limit={}, poisoned={}",
+            "aggregate artifact arena RAM exhausted or poisoned: leased={} (of which optional caches {}), registry={}, requested={}, limit={}, poisoned={}",
             state.leased_ram_bytes,
+            state.optional_ram_bytes,
             state.index_bytes,
             bytes,
             self.0.budget.ram_bytes,
@@ -1330,6 +1342,39 @@ impl ArtifactArena {
         Ok(ArenaRamLease {
             arena: self.clone(),
             bytes,
+            optional: false,
+        })
+    }
+    /// Memory for a cache the conversion can do without (a store held in
+    /// memory instead of read page by page). All such caches together may
+    /// hold a third of the RAM budget, and one is granted only while the
+    /// arena as a whole stays under half full, so that the reservations the
+    /// conversion cannot do without always find room. A refusal is not a
+    /// failure: the caller keeps reading from disk.
+    pub fn reserve_optional_ram(&self, bytes: u64) -> Result<ArenaRamLease> {
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
+        let leased = add(state.leased_ram_bytes, bytes)?;
+        let optional = add(state.optional_ram_bytes, bytes)?;
+        ensure!(
+            !state.ram_poisoned
+                && optional <= self.0.budget.ram_bytes / 3
+                && add(leased, state.index_bytes)? <= self.0.budget.ram_bytes / 2,
+            "optional cache memory refused: leased={}, optional={}, requested={}, limit={}",
+            state.leased_ram_bytes,
+            state.optional_ram_bytes,
+            bytes,
+            self.0.budget.ram_bytes
+        );
+        state.leased_ram_bytes = leased;
+        state.optional_ram_bytes = optional;
+        Ok(ArenaRamLease {
+            arena: self.clone(),
+            bytes,
+            optional: true,
         })
     }
     pub fn reserve_group(&self, group: ArtifactGroup, maximum: u64) -> Result<ArtifactGroupPermit> {
@@ -1908,6 +1953,9 @@ impl Drop for ArenaRamLease {
                 state.leased_ram_bytes = remaining;
             } else {
                 state.ram_poisoned = true;
+            }
+            if self.optional {
+                state.optional_ram_bytes = state.optional_ram_bytes.saturating_sub(self.bytes);
             }
         }
     }

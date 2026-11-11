@@ -442,6 +442,36 @@ impl SourceScratch {
             _arena_ram: arena_ram,
         })
     }
+    /// As [`Self::lease_ram`], for a cache the caller can do without. With
+    /// an arena, see `ArtifactArena::reserve_optional_ram`; without one, the
+    /// cache may not take this ledger past half its budget.
+    pub fn lease_optional_ram(&self, bytes: u64) -> Result<SourceRamLease> {
+        let mut ledger = self.0.borrow_mut();
+        ensure!(!ledger.poisoned, "source scratch is poisoned");
+        let used = ledger
+            .ram
+            .checked_add(bytes)
+            .context("metadata RAM overflow")?;
+        ensure!(
+            used <= ledger.budget.ram_bytes
+                && (ledger.arena.is_some() || used <= ledger.budget.ram_bytes / 2),
+            "optional source metadata cache refused: active={}, requested={}, limit={}",
+            ledger.ram,
+            bytes,
+            ledger.budget.ram_bytes
+        );
+        let arena_ram = ledger
+            .arena
+            .as_ref()
+            .map(|permit| permit.arena().reserve_optional_ram(bytes))
+            .transpose()?;
+        ledger.ram = used;
+        Ok(SourceRamLease {
+            scratch: self.clone(),
+            bytes,
+            _arena_ram: arena_ram,
+        })
+    }
     fn lease_window(&self) -> Result<SourceRamLease> {
         let bytes = u64::from(self.budget().page_bytes)
             .checked_mul(3)
@@ -1041,7 +1071,7 @@ impl ResidentMetadataCache {
         if length == 0 || charge > scratch.budget().ram_bytes / divisor { return None; }
         let size = usize::try_from(length).ok()?;
         // Optional quota/allocation refusals preserve the ordinary chunk reader.
-        let ram = scratch.lease_ram(charge).ok()?;
+        let ram = scratch.lease_optional_ram(charge).ok()?;
         let mut bytes = Vec::new();
         if bytes.try_reserve_exact(size).is_err() || bytes.capacity() != size { return None; }
         Some(Self { bytes, _ram: ram })

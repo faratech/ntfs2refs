@@ -233,7 +233,7 @@ impl DirectoryCache {
         let Ok(size) = usize::try_from(length) else { return Ok(None); };
         // This is an optional optimization, never a new admission requirement.
         // Reservation/allocation refusals retain the original paged reader.
-        let Ok(ram) = scratch.lease_ram(charge) else { return Ok(None); };
+        let Ok(ram) = scratch.lease_optional_ram(charge) else { return Ok(None); };
         let mut bytes = Vec::new();
         if bytes.try_reserve_exact(size).is_err() || bytes.capacity() != size {
             return Ok(None);

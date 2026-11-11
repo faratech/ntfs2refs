@@ -16,6 +16,11 @@ impl ReportMemoryAccountant for ArenaReportMemory {
             self.0.reserve_ram(bytes).map_err(io::Error::other)?,
         )))
     }
+    fn reserve_optional(&self, bytes: u64) -> io::Result<Box<dyn ReportMemoryLease>> {
+        Ok(Box::new(ArenaReportLease(
+            self.0.reserve_optional_ram(bytes).map_err(io::Error::other)?,
+        )))
+    }
     fn lease_heap_bytes(&self) -> u64 {
         std::mem::size_of::<ArenaReportLease>() as u64
     }

@@ -528,7 +528,7 @@ impl PagedNativeObservation {
         if let Some(memory) = &result.memory {
             for reader in [&result.reader, &result.namespace_reader] {
                 let bytes = reader.borrow().resident_page_bytes()?;
-                if let Ok(lease) = memory.accountant.reserve(bytes) {
+                if let Ok(lease) = memory.accountant.reserve_optional(bytes) {
                     reader.borrow_mut().install_resident_pages()?;
                     result._resident_memory.push(lease);
                 }

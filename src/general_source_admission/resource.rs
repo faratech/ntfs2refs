@@ -261,6 +261,14 @@ impl n2r_win32::shadow_native::report_memory::ReportMemoryAccountant for SourceN
             self.0.reserve_ram(bytes).map_err(io::Error::other)?,
         )))
     }
+    fn reserve_optional(
+        &self,
+        bytes: u64,
+    ) -> io::Result<Box<dyn n2r_win32::shadow_native::report_memory::ReportMemoryLease>> {
+        Ok(Box::new(SourceNativeMemoryLease(
+            self.0.reserve_optional_ram(bytes).map_err(io::Error::other)?,
+        )))
+    }
     fn lease_heap_bytes(&self) -> u64 {
         std::mem::size_of::<SourceNativeMemoryLease>() as u64
     }

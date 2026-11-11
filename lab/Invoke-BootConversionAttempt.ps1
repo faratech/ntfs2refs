@@ -189,6 +189,10 @@ try {
         throw "Checkpoint '$CheckpointBeforeBoot' already exists; pick another name or remove it"
     }
     $hostFreeDisk = Get-HostFreeBytes
+    # A full-volume attempt grows its scratch disk to about 30 GB and the VM's
+    # own disks by about as much before the scratch disk is removed; one that
+    # started with 70 GB free was down to 12 GB at its end.
+    if (-not $Fixture -and -not $Recover -and -not $NoConvert -and $MinHostFreeGB -lt 65) { $MinHostFreeGB = 65 }
     if ($hostFreeDisk -lt [long]$MinHostFreeGB * 1GB) {
         throw ("Host volume has {0:N1} GB free; an attempt needs {1} GB. Free space first (old attempts' scratch.vhdx files)." -f ($hostFreeDisk / 1GB), $MinHostFreeGB)
     }

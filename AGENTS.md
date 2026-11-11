@@ -34,12 +34,18 @@ not count. Power-cut resume during preparation is out of scope until this works.
   the first source write (`crates/n2r-win32/src/verify_policy.rs`), not at every
   checkpoint. Outside that gate a store this process wrote is opened without
   being re-read and its pages are checked by an in-memory checksum; a digest
-  of an immutable tree is computed once; the frozen shadow is observed once
-  during capture; the journal is hashed in file order as it is written.
+  of an immutable tree is computed once; an expected object decoded once is
+  kept and handed out as a copy; the frozen shadow is observed once during
+  capture; the journal is hashed in file order as it is written.
   `--recheck-everything` restores the old behaviour everywhere.
-- In-memory copies of stores are optional: they lease through
-  `reserve_optional_ram` (a third of the RAM budget in total, and only while
-  the arena is under half full), so they cannot starve a required reservation.
+- In-memory copies of stores and of decoded objects are optional: they lease
+  through `reserve_optional_ram` (a third of the RAM budget in total, and only
+  while the arena is under half full), so they cannot starve a required
+  reservation.
+- A per-object Windows query answers into its thread's buffer
+  (`crates/n2r-win32/src/query_scratch.rs`) and copies out only the answer.
+  Do not allocate a worst-case buffer per query: at 143,000 objects that
+  made the heap the bottleneck of every walk.
 - Each stage prints a `timing:` line to stderr (`crates/n2r-win32/src/perf.rs`).
   Measure before and after any speed change, and take a `-SampleStacks`
   profile before deciding what to change: most time was in places no timer
@@ -87,6 +93,8 @@ not count. Power-cut resume during preparation is out of scope until this works.
   `-SampleStacks` records the worker's call stack a hundred times a second and
   writes `stacks.txt` (phase, step and stack per line) into the attempt folder:
   use it to find where unnamed time goes before changing anything for speed.
+  Threads a walk hands objects to are sampled too (`stack_sampler::helper`),
+  under the step's label followed by ` [helper threads]`.
 - Second VM `ntfs2refs-reference-b`, Id `7c687062-37b5-4309-b28a-486a44305202`,
   made by `lab/New-LabVmClone.ps1`: same shape, disks are differencing children
   of the reference VM's baseline disks under `.lab/hyperv/ntfs2refs-reference-b/`.

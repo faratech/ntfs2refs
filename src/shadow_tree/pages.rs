@@ -316,32 +316,6 @@ fn wire_budget(budget: PageBudget) -> Result<PageBudget> {
     Ok(wire)
 }
 
-struct Base64Bytes<'a>(&'a [u8]);
-impl std::fmt::Display for Base64Bytes<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        for value in self.0.chunks(3) {
-            let a = value[0];
-            let b = value.get(1).copied();
-            let c = value.get(2).copied();
-            let encoded = [
-                ABC[(a >> 2) as usize],
-                ABC[(((a & 3) << 4) | (b.unwrap_or(0) >> 4)) as usize],
-                b.map_or(b'=', |b| {
-                    ABC[(((b & 15) << 2) | (c.unwrap_or(0) >> 6)) as usize]
-                }),
-                c.map_or(b'=', |c| ABC[(c & 63) as usize]),
-            ];
-            f.write_str(std::str::from_utf8(&encoded).map_err(|_| std::fmt::Error)?)?;
-        }
-        Ok(())
-    }
-}
-impl Serialize for Base64Bytes<'_> {
-    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-        serializer.collect_str(self)
-    }
-}
 fn decode_chunk(value: &[u8], maximum: usize) -> Result<Vec<u8>> {
     let value: &str = serde_json::from_slice(value)?;
     let input = value.as_bytes();
@@ -370,7 +344,14 @@ fn decode_chunk(value: &[u8], maximum: usize) -> Result<Vec<u8>> {
     };
     let mut bytes = Vec::new();
     bytes.try_reserve_exact(length)?;
-    for (index, c) in input.chunks_exact(4).enumerate() {
+    // Every group but the last is four alphabet characters; only the last
+    // may be padded and takes the checked path below.
+    let complete = input.len() / 4 - 1;
+    ensure!(
+        crate::ntfs_inspect::paged_storage::decode_base64_groups(&input[..complete * 4], &mut bytes),
+        "noncanonical chunk base64 alphabet"
+    );
+    for (index, c) in input.chunks_exact(4).enumerate().skip(complete) {
         let last = index + 1 == input.len() / 4;
         let a = digit(c[0])?;
         let b = digit(c[1])?;
@@ -414,7 +395,8 @@ impl ChunkWriter<'_> {
         if self.buffer.is_empty() {
             return Ok(());
         }
-        let payload = serde_json::to_vec(&Base64Bytes(&self.buffer)).map_err(io::Error::other)?;
+        let payload = crate::ntfs_inspect::paged_storage::encode_json_base64(&self.buffer)
+            .map_err(io::Error::other)?;
         self.writer
             .push(&object_key(self.object, self.chunks), &payload)?;
         self.chunks = self
@@ -1845,7 +1827,25 @@ impl PagedExpectedTree {
         } else {
             None
         };
-        if let Some(admission) = self.resource_admission {
+        // The counting pass below refuses a row whose decoded form would pass
+        // the row budget before anything is allocated for it. Decoding takes
+        // at most a small multiple of the JSON's size (an empty string or
+        // list costs 24 bytes for 2 of text, a first list element four
+        // elements' room); `DECODE_GROWTH` is far above that. A row that
+        // cannot reach the budget even so is parsed once, not twice, and its
+        // actual memory is still checked after decoding.
+        const DECODE_GROWTH: u64 = 1024;
+        let cannot_exceed = |limit: u64| {
+            entry
+                .bytes
+                .checked_mul(DECODE_GROWTH)
+                .and_then(|n| n.checked_add(std::mem::size_of::<Object>() as u64))
+                .is_some_and(|n| n <= limit)
+        };
+        if let Some(admission) = self
+            .resource_admission
+            .filter(|admission| !cannot_exceed(admission.budget.max_row_bytes))
+        {
             let used = Cell::new(
                 entry
                     .bytes

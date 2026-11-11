@@ -7,7 +7,7 @@ use super::{
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
-    io::{self, BufReader, Read, Write},
+    io::{self, Write},
     path::{Path, PathBuf},
 };
 
@@ -216,7 +216,6 @@ pub struct SortedRecordStore {
     directory_cache: Option<DirectoryCache>,
     pin: RecordStorePin,
     maximum_record_bytes: u64,
-    read_buffer_bytes: usize,
 }
 
 struct DirectoryCache {
@@ -247,27 +246,6 @@ impl DirectoryCache {
     }
 }
 
-struct RowReader<'a> {
-    range: &'a dyn SourceMetadataRange,
-    offset: u64,
-    remaining: u64,
-}
-impl Read for RowReader<'_> {
-    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
-        let length =
-            usize::try_from(self.remaining.min(output.len() as u64)).map_err(io::Error::other)?;
-        if length == 0 {
-            return Ok(0);
-        }
-        self.range
-            .read_exact_at(self.offset, &mut output[..length])
-            .map_err(io::Error::other)?;
-        self.offset += length as u64;
-        self.remaining -= length as u64;
-        Ok(length)
-    }
-}
-
 impl SortedRecordStore {
     pub fn open(pin: &RecordStorePin, scratch: &SourceScratch) -> Result<Self> {
         ensure!(
@@ -287,10 +265,12 @@ impl SortedRecordStore {
             directory_cache,
             pin: pin.clone(),
             maximum_record_bytes: scratch.budget().record_bytes,
-            read_buffer_bytes: usize::try_from(
-                (u64::from(scratch.budget().page_bytes) / 4).clamp(1, 64 * 1024),
-            )?,
         };
+        // A store this process wrote and has not seen change (check-once
+        // policy) had every record serialized by its writer; its directory is
+        // still walked, but its records are not all parsed again to open it.
+        let parse_records =
+            !(store.data.written_by_this_process() && store.directory.written_by_this_process());
         let mut offset = 0;
         let mut previous = None;
         for ordinal in 0..store.len() {
@@ -301,17 +281,13 @@ impl SortedRecordStore {
             );
             // Parse every complete record before returning any owner. This
             // retains only bounded decoder state, not a serde Value tree.
-            let reader = BufReader::with_capacity(
-                store.read_buffer_bytes,
-                RowReader {
-                    range: &store.data,
-                    offset: start,
-                    remaining: length,
-                },
-            );
-            let mut parser = serde_json::Deserializer::from_reader(reader);
-            let _ = serde::de::IgnoredAny::deserialize(&mut parser)?;
-            parser.end()?;
+            if parse_records {
+                store.data.with_bytes_at(start, length, |bytes| {
+                    let mut parser = serde_json::Deserializer::from_slice(bytes);
+                    let _ = serde::de::IgnoredAny::deserialize(&mut parser)?;
+                    Ok(parser.end()?)
+                })?;
+            }
             previous = Some(key);
             offset = start.checked_add(length).context("record range overflow")?;
         }
@@ -375,16 +351,13 @@ impl SortedRecordStore {
         self.data.read_exact_at(offset, &mut bytes)?;
         Ok(bytes)
     }
+    /// Decodes one record. The record is parsed from its bytes in memory: a
+    /// reader-based parse took a fresh 64 KiB buffer and went through the
+    /// JSON a byte at a time for every record looked up.
     pub fn get<T: DeserializeOwned>(&self, ordinal: u64) -> Result<T> {
-        let (_, offset, remaining) = self.entry(ordinal)?;
-        Ok(serde_json::from_reader(BufReader::with_capacity(
-            self.read_buffer_bytes,
-            RowReader {
-                range: &self.data,
-                offset,
-                remaining,
-            },
-        ))?)
+        let (_, offset, length) = self.entry(ordinal)?;
+        self.data
+            .with_bytes_at(offset, length, |bytes| Ok(serde_json::from_slice(bytes)?))
     }
     pub fn find_ordinal(&self, key: [u8; 16]) -> Result<Option<u64>> {
         let mut low = 0;

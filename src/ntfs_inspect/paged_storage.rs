@@ -728,7 +728,7 @@ const BASE64_VALUES: [u8; 256] = {
 /// `bytes` as a JSON string of canonical padded base64: exactly what
 /// serializing [`Base64`] produces, written directly. The alphabet needs no
 /// JSON escaping.
-fn encode_json_base64(bytes: &[u8]) -> Result<Vec<u8>> {
+pub(crate) fn encode_json_base64(bytes: &[u8]) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     out.try_reserve_exact(bytes.len().div_ceil(3) * 4 + 2)?;
     out.push(b'"');
@@ -759,6 +759,24 @@ fn encode_json_base64(bytes: &[u8]) -> Result<Vec<u8>> {
     }
     out.push(b'"');
     Ok(out)
+}
+
+/// Decodes complete four-character groups, none of them padded, onto `out`.
+/// False if any character is outside the alphabet.
+pub(crate) fn decode_base64_groups(input: &[u8], out: &mut Vec<u8>) -> bool {
+    for value in input.chunks_exact(4) {
+        let (a, b, c, d) = (
+            BASE64_VALUES[value[0] as usize],
+            BASE64_VALUES[value[1] as usize],
+            BASE64_VALUES[value[2] as usize],
+            BASE64_VALUES[value[3] as usize],
+        );
+        if (a | b | c | d) & 0xc0 != 0 {
+            return false;
+        }
+        out.extend_from_slice(&[(a << 2) | (b >> 4), (b << 4) | (c >> 2), (c << 6) | d]);
+    }
+    true
 }
 
 fn decode(payload: &[u8], maximum: usize) -> Result<Vec<u8>> {
@@ -793,16 +811,10 @@ fn decode(payload: &[u8], maximum: usize) -> Result<Vec<u8>> {
     // Every group but the last is four alphabet characters; only the last
     // may be padded and takes the checked path below.
     let complete = input.len() / 4 - 1;
-    for value in input[..complete * 4].chunks_exact(4) {
-        let (a, b, c, d) = (
-            BASE64_VALUES[value[0] as usize],
-            BASE64_VALUES[value[1] as usize],
-            BASE64_VALUES[value[2] as usize],
-            BASE64_VALUES[value[3] as usize],
-        );
-        ensure!((a | b | c | d) & 0xc0 == 0, "noncanonical source chunk alphabet");
-        bytes.extend_from_slice(&[(a << 2) | (b >> 4), (b << 4) | (c >> 2), (c << 6) | d]);
-    }
+    ensure!(
+        decode_base64_groups(&input[..complete * 4], &mut bytes),
+        "noncanonical source chunk alphabet"
+    );
     for (index, value) in input.chunks_exact(4).enumerate().skip(complete) {
         let last = index + 1 == input.len() / 4;
         let a = digit(value[0])?;
@@ -995,6 +1007,8 @@ pub struct PagedMetadataRange {
     reader: RefCell<Reader>,
     decoded: RefCell<DecodedChunks>,
     resident: Option<ResidentMetadataCache>,
+    // Accepted as a store this process wrote, without a full decode and hash.
+    written_here: bool,
     pin: SourcePagePin,
     // Both possible decoded chunks are prepaid. Retain the same file-inventory
     // cache policy without allocating an independently maximum-sized window.
@@ -1234,6 +1248,7 @@ impl PagedMetadataRange {
             reader: RefCell::new(reader),
             decoded: RefCell::new(DecodedChunks::default()),
             resident,
+            written_here,
             pin: pin.clone(),
             _ram: ram,
             second_chunk_cache,
@@ -1243,6 +1258,38 @@ impl PagedMetadataRange {
     }
     pub fn clear_resident_cache(&mut self) {
         self.resident = None;
+    }
+    /// Whether the store was accepted as one this process wrote, without
+    /// decoding and hashing all of it again (check-once policy).
+    pub(crate) fn written_by_this_process(&self) -> bool {
+        self.written_here
+    }
+    /// Calls `visit` with `bytes` bytes at `offset`: borrowed where the
+    /// store is held in memory, otherwise read out once.
+    pub(crate) fn with_bytes_at<T>(
+        &self,
+        offset: u64,
+        bytes: u64,
+        visit: impl FnOnce(&[u8]) -> Result<T>,
+    ) -> Result<T> {
+        ensure!(
+            offset
+                .checked_add(bytes)
+                .is_some_and(|n| n <= self.pin.logical_bytes),
+            "source range read escapes metadata"
+        );
+        let size = usize::try_from(bytes).context("source record exceeds address space")?;
+        if let Some(cache) = &self.resident {
+            let start = usize::try_from(offset).context("resident source address exceeds address space")?;
+            let end = start.checked_add(size).context("resident source address overflow")?;
+            return visit(cache.bytes.get(start..end)
+                .context("resident source range differs from complete metadata")?);
+        }
+        let mut buffer = Vec::new();
+        buffer.try_reserve_exact(size)?;
+        buffer.resize(size, 0);
+        self.read_exact_at(offset, &mut buffer)?;
+        visit(&buffer)
     }
     pub fn slice(self: &Rc<Self>, offset: u64, bytes: u64) -> Result<SourceMetadataSlice> {
         ensure!(

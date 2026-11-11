@@ -640,12 +640,17 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         std::mem::size_of::<(usize, usize, u8)>() == std::mem::size_of::<(usize, usize, bool)>()
     );
     let mut ordered = Vec::new();
+    // Files with more than one name; see the listing refresh further down.
+    let mut linked = Vec::new();
     input.for_each(|index, item| {
         metadata_progress(2, index as u64);
         let flags = (u8::from(item.directory) * DIRECTORY)
             | (u8::from(item.extended_attributes.is_some()) * EXTENDED_ATTRIBUTES)
             | (u8::from(item.reparse.is_some()) * REPARSE);
         ordered.push((index, item.components.len(), flags));
+        if !item.directory && !item.additional_names.is_empty() {
+            linked.push(index);
+        }
         Ok(())
     })?;
     metadata_progress(2, input.len() as u64);
@@ -805,6 +810,39 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         if security_placeholders { aliases.restore_metadata_with_security_placeholders(input,handles,&same_security)? }
         else { aliases.restore_metadata(input,handles,&same_security)?; 0 }
     } else { 0 };
+    // ReFS keeps a copy of a file's attributes in the directory entry of each
+    // of its names and updates only the entry of the name a change is made
+    // through. The basic metadata below is set through the handle held on the
+    // first name, so every other name would go on listing the attributes the
+    // file had when that link was created: on the full Windows volume a
+    // read-only file was listed as not read-only under its System32 name.
+    // (Measured on ReFS 3.14: not corrected by time, by flushing the handle or
+    // by closing it; corrected at once by setting the same information
+    // through the other name, which needs only attribute access and so no
+    // sharing with the held handle.) Set it once through each other name,
+    // before any directory's own times are finalized below.
+    for &index in &linked {
+        (|| -> io::Result<()> {
+        let owned = input.object(index)?;
+        let view = owned.input();
+        for name in view.additional_names {
+            input.before_mutation(0)?;
+            // SYNCHRONIZE | FILE_WRITE_ATTRIBUTES | FILE_READ_ATTRIBUTES;
+            // BACKUP_SEMANTICS | OPEN_REPARSE_POINT.
+            let link = File::options()
+                .access_mode(0x0010_0180)
+                .share_mode(7)
+                .custom_flags(0x0220_0000)
+                .open(format!("{resource_root}{}", name.join("\\")))?;
+            if info(&link, 18, 24)? != identities[&index] {
+                return Err(invalid("a hard-link name opens a different object"));
+            }
+            basic(&link, &view)?;
+        }
+        Ok(())
+        })()
+        .map_err(|error| at_object(input, "hard-link listing refresh", index, error))?;
+    }
     // Reverse depth order finalizes root last, using the same held handles.
     for (ordinal, &(index, _, _)) in ordered.iter().rev().enumerate() {
         metadata_progress(6, ordinal as u64);

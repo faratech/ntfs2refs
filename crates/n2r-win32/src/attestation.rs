@@ -942,6 +942,11 @@ mod row_view;
 pub use row_view::NativeObservationRow;
 
 pub trait NativeObservationDomain {
+    /// Where an immutable domain remembers that `validate_domain_resources`
+    /// passed for it. The default remembers nothing.
+    fn resources_validated(&self) -> Option<&std::cell::Cell<bool>> {
+        None
+    }
     fn header(&self) -> &Report;
     fn len(&self) -> usize;
     fn logical_len(&self) -> usize;
@@ -1374,6 +1379,25 @@ fn measured_allocation_resources(out: &mut ResourceAudit, header: &Report, profi
 
 /// Validate the same native evidence rules through borrowed or paged rows.
 pub fn validate_domain_resources(domain: &impl NativeObservationDomain) -> io::Result<()> {
+    // The validation decodes every row and depends only on the domain, which
+    // does not change; it was run again by each stage that takes the domain
+    // (five times, twelve seconds each at the full volume). Under the
+    // check-once policy a domain that can remember passing is validated
+    // once, and once more inside a gate before a first source write.
+    let remembered = domain
+        .resources_validated()
+        .filter(|_| !crate::verify_policy::full_unremembered());
+    if remembered.is_some_and(std::cell::Cell::get) {
+        return Ok(());
+    }
+    validate_domain_resources_now(domain)?;
+    if let Some(passed) = remembered {
+        passed.set(true);
+    }
+    Ok(())
+}
+
+fn validate_domain_resources_now(domain: &impl NativeObservationDomain) -> io::Result<()> {
     let h = domain.header();
     if domain.is_paged() && h.schema_version == 16 && h.request.schema_version == 8
         && h.request.resource_profile.is_some() && h.logical_data.is_some() && h.namespace.is_some()

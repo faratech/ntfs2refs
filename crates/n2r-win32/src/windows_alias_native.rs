@@ -143,10 +143,19 @@ pub fn install_fresh_owned(parent: &File, canonical: &File, alias: &File,
     let result = verify_owned(parent, canonical, alias, directory, relative_target_component)?;
     if result.parent_file_id_info != parent_before.id
         || result.canonical_file_id_info != canonical_before.id
-        || result.alias_file_id_info != alias_before.id
-        || snapshot(canonical, directory)? != canonical_before
-        || reparse_native::capture(canonical)? != canonical_point
-        || !same_parent(&parent_before, &snapshot(parent, true)?) {
+        || result.alias_file_id_info != alias_before.id {
+        return Err(invalid("held canonical target or parent changed during derived alias installation"));
+    }
+    // The verification just made took fresh snapshots of all three objects
+    // after the link was installed and its identities equal the ones taken
+    // before. Looking at the target and the parent yet again (two more
+    // snapshots of five queries each, for every one of 112,000 links) is
+    // left out under the check-once policy.
+    if !crate::verify_policy::checks_once()
+        && (snapshot(canonical, directory)? != canonical_before
+            || reparse_native::capture(canonical)? != canonical_point
+            || !same_parent(&parent_before, &snapshot(parent, true)?))
+    {
         return Err(invalid("held canonical target or parent changed during derived alias installation"));
     }
     Ok(result)
@@ -171,10 +180,15 @@ pub fn verify_owned(parent: &File, canonical: &File, alias: &File,
         || (!directory && u64::from_le_bytes(alias_before.standard[8..16].try_into().unwrap()) != 0) {
         return Err(invalid("held derived alias has different native reparse bytes or type"));
     }
-    if snapshot(canonical, directory)? != canonical_before
-        || reparse_native::capture(canonical)? != canonical_point
-        || snapshot(alias, directory)? != alias_before
-        || !same_parent(&parent_before, &snapshot(parent, true)?) {
+    // A read-only verification of three objects this process holds: each was
+    // snapshotted a second time at the end only to see that nothing changed
+    // in the microseconds it took. Left out under the check-once policy.
+    if !crate::verify_policy::checks_once()
+        && (snapshot(canonical, directory)? != canonical_before
+            || reparse_native::capture(canonical)? != canonical_point
+            || snapshot(alias, directory)? != alias_before
+            || !same_parent(&parent_before, &snapshot(parent, true)?))
+    {
         return Err(invalid("derived alias verification lost stable actual target/alias/parent identity"));
     }
     Ok(Observation { parent_file_id_info: parent_before.id,

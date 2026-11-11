@@ -297,6 +297,9 @@ struct RowIndex {
 /// No raw handle is exposed; callers still exclude raw aliases and preexisting
 /// writable mappings under the same artifact ownership contract as other pins.
 pub struct PagedNativeObservation {
+    // Set once `validate_domain_resources` has passed for these rows and this
+    // header; cleared when the header is replaced.
+    resources_validated: std::cell::Cell<bool>,
     reader: RefCell<Reader>,
     // File and namespace rows are written in separate phases. Independent
     // authenticated page caches prevent an identity join from reloading and
@@ -543,6 +546,7 @@ impl PagedNativeObservation {
             "native observation readers differ",
         )?;
         let mut result = Self {
+            resources_validated: std::cell::Cell::new(false),
             memory,
             reader: RefCell::new(reader),
             namespace_reader: RefCell::new(namespace_reader),
@@ -666,6 +670,7 @@ impl PagedNativeObservation {
             .resource_profile
             .ok_or_else(|| io::Error::other("native refreshed profile absent"))?;
         self.refreshed_header = Some(header);
+        self.resources_validated.set(false);
         let resources = measured_domain_resources(self, profile)?;
         self.refreshed_header.as_mut().unwrap().resources = Some(resources);
         struct Count {
@@ -727,6 +732,9 @@ impl PagedNativeObservation {
     }
 }
 impl NativeObservationDomain for PagedNativeObservation {
+    fn resources_validated(&self) -> Option<&std::cell::Cell<bool>> {
+        Some(&self.resources_validated)
+    }
     fn header(&self) -> &Report {
         self.refreshed_header.as_ref().unwrap_or(&self.header)
     }

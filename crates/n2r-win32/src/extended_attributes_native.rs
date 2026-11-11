@@ -134,13 +134,28 @@ fn synchronous(file: &File) -> Result<(), Error> {
 /// An explicit terminal response is required after nonempty enumeration. Returned
 /// names are byte-preserved; Set's ordering/uniqueness is ASCII case-insensitive.
 pub fn capture(file: &File) -> Result<Set, Error> {
+    // Every object is asked for its extended attributes, in several stages.
+    // The response buffer is the same size every time; keep one per thread
+    // instead of allocating and zeroing a new one for every object.
+    thread_local! {
+        static STORAGE: std::cell::RefCell<Vec<u64>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    STORAGE.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut storage) => {
+            storage.resize(extended_attributes::MAX_EA_BYTES / 8, 0);
+            capture_into(file, &mut storage)
+        }
+        Err(_) => capture_into(file, &mut vec![0u64; extended_attributes::MAX_EA_BYTES / 8]),
+    })
+}
+
+fn capture_into(file: &File, storage: &mut [u64]) -> Result<Set, Error> {
     synchronous(file)?;
     let before = identity(file)?;
     let mut entries = Vec::new();
     let mut names = BTreeSet::new();
     let mut native_total = 0usize;
     // u64 storage supplies alignment as well as a strict fixed response bound.
-    let mut storage = vec![0u64; extended_attributes::MAX_EA_BYTES / 8];
     let mut complete = false;
     for call in 0..=extended_attributes::MAX_ENTRIES {
         storage.fill(0);

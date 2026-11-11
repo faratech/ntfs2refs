@@ -193,7 +193,15 @@ pub(crate) fn snapshot(file: &File) -> Snapshot {
         .map(|(c, n)| query(file, c, n))
         .collect();
     let (security, security_error) = security(file);
-    let mut storage = vec![0u64; MAX_SECURITY_BYTES / 8];
+    // The same 64 KiB response buffer for every object: one per thread, not
+    // a fresh zeroed allocation per object. Only the bytes the call reports
+    // as used are read from it.
+    thread_local! {
+        static STORAGE: std::cell::RefCell<Vec<u64>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    let mut held = STORAGE.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+    held.resize(MAX_SECURITY_BYTES / 8, 0);
+    let storage = &mut held;
     let mut used = 0;
     // SAFETY: live handle, aligned caller-owned descriptor output; synchronous
     // query with an explicit 64 KiB bound and returned required byte count.
@@ -222,6 +230,8 @@ pub(crate) fn snapshot(file: &File) -> Snapshot {
             native_error: Some(error.unwrap_or(13)),
         }
     };
+    // Hand the buffer back for the next object on this thread.
+    STORAGE.with(|cell| *cell.borrow_mut() = held);
     Snapshot {
         queries,
         security,

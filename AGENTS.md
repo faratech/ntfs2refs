@@ -89,7 +89,8 @@ not count. Power-cut resume during preparation is out of scope until this works.
   `-CheckpointAfterConvert <name>` saves a run that stopped after apply;
   `-Recover -Checkpoint <name>` retries its finalization with `--recover`.
   Records land in `.lab/hyperv/attempts/<n>/`. The scratch disk is deleted when
-  the attempt ends; the host volume must keep 40 GB free.
+  the attempt ends; the host volume needs 40 GB free for a fixture attempt
+  and 65 GB for a full one (it uses about 57 GB at its peak).
   `-SampleStacks` records the worker's call stack a hundred times a second and
   writes `stacks.txt` (phase, step and stack per line) into the attempt folder:
   use it to find where unnamed time goes before changing anything for speed.
@@ -116,17 +117,35 @@ not count. Power-cut resume during preparation is out of scope until this works.
 
 ## Current work
 
-In order; each step is finished when its check passes.
+The goal is met. One command, `lab\Invoke-BootConversionAttempt.ps1 -VmId <a
+lab VM>`, restores the baseline, converts the full Windows volume (143,580
+objects, 112,609 short-name links) in under 30 minutes with an identical
+before/after listing, boots disk0 alone with Secure Boot on and signs in to
+the desktop: outcome `BOOTED-ON-REFS`.
 
-1. Small fixture: a whole run (not only `--recover`) ends `converted-not-booted`
-   with an identical before/after listing, twice from a fresh restore.
-2. Remove repeated work until the 1-in-10 fixture converts in under 6 minutes;
-   use the `timing:` lines and a stack profile to pick each target. Full
-   Windows must fit in 30. What is left is mostly per-object Windows calls
-   (one thread) and SHA-256 over the changed ranges.
-3. 1-in-10 fixture: converted, identical listing.
-4. Full Windows with `-Diagnose` until the failure list is empty.
-5. Pre-boot checks on the offline source (no resumable `hiberfil.sys` or BCD
-   resume object, no WOF/CompactOS files, no `~N` paths in boot-start services),
-   boot logging and EMS on.
-6. Convert the real disk0, compare listings, boot it alone with Secure Boot on.
+Keep it that way. Before a change is committed:
+
+1. `cargo test --locked --workspace --all-targets` passes.
+2. The 1-in-10 fixture converts with an identical listing (about six minutes).
+3. A change to apply or finalization also passes `-Recover` on a run stopped
+   after apply, and a change to a per-object path also passes a full run:
+   several defects only showed at full size (a row that Windows fills on
+   large volumes, hard links, memory held per batch).
+
+Open, most useful first:
+
+1. Short names are visible. Each 8.3 name is a link beside its long name
+   with the long name's attributes, so Explorer shows `PROGRA~1` in `C:\` and
+   `MICROS~1.LNK` on the desktop. Hiding them (Hidden and System) is a
+   product decision for the owner; the listing comparison does not depend on
+   the links' attributes.
+2. Speed. A full run takes 28 to 30 minutes, spread thin: per-object Windows
+   calls on one thread (source observation, extent placement, metadata
+   restoration), the three link passes, and reading and hashing the 9 GB
+   that move through the journal. The largest single item left is the link
+   passes asking Windows for each handle's normalized path (240
+   thread-seconds a run); listing each parent directory once would prove
+   the same names and parents. Keep the mount manager out of per-object
+   paths: its queries stall unpredictably. Take a `-SampleStacks` profile of
+   a full run before choosing.
+3. Power-cut resume during preparation is still out of scope.

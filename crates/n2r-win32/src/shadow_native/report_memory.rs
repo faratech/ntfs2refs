@@ -337,6 +337,11 @@ fn snapshot_peak(maximum: u64) -> io::Result<u64> {
         1024 * 1024,
     )
 }
+/// One short-name link's native check: its metadata snapshot, and a megabyte
+/// for its stream list, reparse query and the three small pair snapshots.
+pub(super) fn alias_peak(maximum: u64) -> io::Result<u64> {
+    add(snapshot_peak(maximum)?, 1024 * 1024)
+}
 /// One root capture plus its full before/after clone. API/kernel descriptors
 /// need at most four simultaneous maximum-size byte buffers here; eight pay
 /// allocator/clone slack. The additional eight MiB cover fixed EA/reparse and

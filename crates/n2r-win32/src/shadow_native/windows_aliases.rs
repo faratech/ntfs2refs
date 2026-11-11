@@ -28,6 +28,154 @@ pub trait WindowsAliasInputDomain {
     fn require_resource_metadata(&self, admission: SourceResourceAdmission) -> io::Result<()>;
     fn revalidate(&self) -> io::Result<()>;
 }
+/// One short-name link and what its native state is checked against.
+struct AliasProbe<'a> {
+    components: &'a [String],
+    canonical_components: &'a [String],
+    directory: bool,
+    attributes: u32,
+    point: &'a crate::reparse_layout::Point,
+    canonical: &'a Input<'a>,
+}
+impl<'a> AliasProbe<'a> {
+    /// The link as an object: the canonical object's times and security,
+    /// the link's own attributes and reparse point, and no data.
+    fn expected(&self) -> Input<'a> {
+        Input {
+            components: self.components,
+            additional_names: &[],
+            directory: self.directory,
+            times: self.canonical.times,
+            attributes: self.attributes,
+            security: self.canonical.security,
+            expected_api_security: self.canonical.expected_api_security,
+            extended_attributes: None,
+            reparse: Some(self.point),
+            payload: &[],
+            expected_length: Some(0),
+            expected_sha256: None,
+            source_offset: None,
+            source_runs: Vec::new(),
+            named_streams: Vec::new(),
+            sparse: None,
+        }
+    }
+}
+/// A link's native state after every check that can be made on any thread.
+/// Its identities and its security descriptor are left to the caller, whose
+/// ledger and comparator stay on the caller's thread.
+struct AliasNative {
+    observed: crate::windows_alias_native::Observation,
+    snapshot: Snapshot,
+}
+/// A failure of one link's check, naming the link.
+fn alias_error(components: &[String], error: io::Error) -> io::Error {
+    io::Error::new(
+        error.kind(),
+        format!("short-name link \\{}: {error}", components.join("\\")),
+    )
+}
+/// Opens the link, its parent and its target (read-only, never following the
+/// link), checks the three against one another and the link against `probe`.
+fn probe_alias(
+    root: &str,
+    probe: &AliasProbe<'_>,
+    maximum_row_bytes: u64,
+    differs: &'static str,
+) -> io::Result<AliasNative> {
+    probe_alias_unnamed(root, probe, maximum_row_bytes, differs)
+        .map_err(|error| alias_error(probe.components, error))
+}
+fn probe_alias_unnamed(
+    root: &str,
+    probe: &AliasProbe<'_>,
+    maximum_row_bytes: u64,
+    differs: &'static str,
+) -> io::Result<AliasNative> {
+    let open_readonly = |components: &[String]| {
+        File::options()
+            .access_mode(super::PROTECTED_READ_ACCESS)
+            .share_mode(3)
+            .custom_flags(0x02200000)
+            .open(format!("{root}{}", components.join("\\")))
+    };
+    let parent = open_readonly(&probe.components[..probe.components.len() - 1])?;
+    let target = open_readonly(probe.canonical_components)?;
+    super::validate_bound_type(&target, probe.canonical)?;
+    let alias = open_readonly(probe.components)?;
+    let observed = crate::windows_alias_native::verify_owned(
+        &parent,
+        &target,
+        &alias,
+        probe.directory,
+        &probe
+            .canonical_components
+            .last()
+            .unwrap()
+            .encode_utf16()
+            .collect::<Vec<_>>(),
+    )?;
+    let expected = probe.expected();
+    let snapshot = super::metadata_snapshot_with_limit(&alias, &expected, Some(maximum_row_bytes));
+    let standard = super::query_bytes(&snapshot, 1, 24)?;
+    if !super::basic_matches(&expected, super::query_bytes(&snapshot, 0, 40)?)
+        || !super::reparse_matches(&expected, &snapshot)?
+        || layout::u32_at(standard, 16)? != 1
+        || standard[20] != 0
+        || standard[21] != u8::from(probe.directory)
+        || (!probe.directory && layout::u64_at(standard, 8)? != 0)
+    {
+        return Err(invalid(differs));
+    }
+    if !probe.directory {
+        super::streams::exact_list(
+            &info(&alias, 7, stream_layout::MAX_STREAM_BUFFER)?,
+            &expected,
+        )?;
+    }
+    Ok(AliasNative { observed, snapshot })
+}
+/// A recovered link row, copied out of its page owner for its batch.
+struct RecoveredRow {
+    components: Vec<String>,
+    canonical_components: Vec<String>,
+    canonical_object_index: usize,
+    parent_object_index: usize,
+    directory: bool,
+}
+/// How many links are taken at a time. Each needs three opens by path and
+/// some twenty queries, and a Windows volume has one link for most of its
+/// names: one at a time on one thread, the 112,609 links of the full volume
+/// took a minute and a half each time they were checked.
+const ALIAS_BATCH: usize = 64;
+/// [`probe_alias`] for every probe, in order. The probes run on the walk's
+/// threads when the batch's query workspace can be paid for, and one after
+/// another under the caller's own workspace when it cannot.
+fn probe_aliases(
+    root: &str,
+    probes: &[AliasProbe<'_>],
+    maximum_row_bytes: u64,
+    payer: &dyn report_memory::ReportMemoryAccountant,
+    differs: &'static str,
+) -> io::Result<Vec<AliasNative>> {
+    let prepaid = report_memory::alias_peak(maximum_row_bytes)?
+        .checked_mul(probes.len() as u64)
+        .and_then(|bytes| payer.reserve(bytes).ok());
+    match prepaid {
+        Some(workspace) => {
+            let natives = super::observe_in_parallel(probes, |probe| {
+                probe_alias(root, probe, maximum_row_bytes, differs)
+            });
+            drop(workspace);
+            natives
+        }
+        None => probes
+            .iter()
+            .map(|probe| probe_alias(root, probe, maximum_row_bytes, differs))
+            .collect(),
+    }
+}
+
 pub(super) struct NoWindowsAliases;
 impl WindowsAliasInput for () {
     fn input(&self) -> WindowsAliasInputRef<'_> {
@@ -134,12 +282,9 @@ impl VerifiedWindowsAliases {
         let mut actual = Sha256::new();
         let mut charged = 4096u64;
         let mut privileges = Privileges::enable_for(&["SeBackupPrivilege", "SeSecurityPrivilege"])?;
-        let open_readonly = |components: &[String]| {
-            File::options().access_mode(super::PROTECTED_READ_ACCESS).share_mode(3)
-                .custom_flags(0x02200000)
-                .open(format!("{root}{}", components.join("\\")))
-        };
-        let root_handle = open_readonly(&[])?;
+        let root_handle = File::options().access_mode(super::PROTECTED_READ_ACCESS).share_mode(3)
+            .custom_flags(0x02200000)
+            .open(&root)?;
         let root_id: [u8; 24] = super::info(&root_handle, 18, 24)?.try_into()
             .map_err(|_| invalid("recovered alias root native ID width differs"))?;
         let mut events = Vec::new();
@@ -147,76 +292,97 @@ impl VerifiedWindowsAliases {
         if before.disk_attributes & 2 == 0 || root_id[..8] == [0; 8] {
             return Err(invalid("recovered aliases lack physical READ_ONLY ReFS identity"));
         }
-        for index in 0..count {
-            let owner = aliases.alias(index)?;
-            let row = owner.input();
-            let directory = validate_row(input, &row, &root)?;
-            charged = charged.checked_add(row_memory(&row)?)
-                .ok_or_else(|| invalid("recovered alias rows changed after prepayment"))?;
-            if charged > bytes || row.canonical_object_index == row.parent_object_index {
-                return Err(invalid("recovered alias row or identity domain changed"));
+        const DIFFERS: &str = "recovered alias native metadata or point differs";
+        let mut next = 0;
+        while next < count {
+            let end = (next + ALIAS_BATCH).min(count);
+            // The rows of a batch are admitted, charged and digested in
+            // order on this thread, as each was before; then all of them are
+            // checked natively; then each is entered in the ledger in order.
+            // A row's owner holds a lease the size of the largest row, so
+            // only one is alive at a time: the batch keeps copies of the two
+            // paths, which the ledger entry needs in any case.
+            let mut rows = Vec::with_capacity(end - next);
+            for index in next..end {
+                let owner = aliases.alias(index)?;
+                let row = owner.input();
+                let directory = validate_row(input, &row, &root)?;
+                charged = charged.checked_add(row_memory(&row)?)
+                    .ok_or_else(|| invalid("recovered alias rows changed after prepayment"))?;
+                if charged > bytes || row.canonical_object_index == row.parent_object_index {
+                    return Err(invalid("recovered alias row or identity domain changed"));
+                }
+                row_digest(&mut actual, &row);
+                rows.push(RecoveredRow {
+                    components: row.components.to_vec(),
+                    canonical_components: row.canonical_components.to_vec(),
+                    canonical_object_index: row.canonical_object_index,
+                    parent_object_index: row.parent_object_index,
+                    directory,
+                });
             }
-            row_digest(&mut actual, &row);
-            let canonical_owner = input.object(row.canonical_object_index)?;
-            let canonical = canonical_owner.input();
-            let parent = open_readonly(&row.components[..row.components.len() - 1])?;
-            let target = open_readonly(row.canonical_components)?;
-            super::validate_bound_type(&target, &canonical)?;
-            let alias = open_readonly(row.components)?;
-            let observed = crate::windows_alias_native::verify_owned(
-                &parent, &target, &alias, directory,
-                &row.canonical_components.last().unwrap().encode_utf16().collect::<Vec<_>>(),
-            )?;
-            if observed.alias_file_id_info[..8] != root_id[..8]
-                || !identities.insert(observed.alias_file_id_info)
-            {
-                return Err(invalid("recovered aliases repeat or escape the actual ReFS volume"));
+            let canonical_owners = rows
+                .iter()
+                .map(|row| input.object(row.canonical_object_index))
+                .collect::<io::Result<Vec<_>>>()?;
+            let canonicals: Vec<_> = canonical_owners.iter().map(|owner| owner.input()).collect();
+            let points = rows
+                .iter()
+                .map(|row| {
+                    crate::reparse_layout::Point::relative_component_alias(
+                        &row.canonical_components.last().unwrap().encode_utf16().collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<io::Result<Vec<_>>>()?;
+            let probes: Vec<_> = rows
+                .iter()
+                .zip(canonicals.iter().zip(&points))
+                .map(|(row, (canonical, point))| AliasProbe {
+                    components: &row.components,
+                    canonical_components: &row.canonical_components,
+                    directory: row.directory,
+                    attributes: (canonical.attributes & 0x2027) | 0x400
+                        | if row.directory { 16 } else { 0 },
+                    point,
+                    canonical,
+                })
+                .collect();
+            let natives = probe_aliases(&root, &probes, admission.budget.max_row_bytes, payer, DIFFERS)?;
+            for ((row, probe), native) in rows.iter().zip(&probes).zip(natives) {
+                let observed = native.observed;
+                if observed.alias_file_id_info[..8] != root_id[..8]
+                    || !identities.insert(observed.alias_file_id_info)
+                {
+                    return Err(alias_error(&row.components, invalid(
+                        "recovered aliases repeat or escape the actual ReFS volume",
+                    )));
+                }
+                let matches = (|| -> io::Result<bool> {
+                    Ok(observed.point == *probe.point
+                        && super::query_bytes(&native.snapshot, 18, 24)?
+                            == observed.alias_file_id_info
+                        && super::security_matches(&probe.expected(), &native.snapshot, same)?)
+                })()
+                .map_err(|error| alias_error(&row.components, error))?;
+                if !matches {
+                    return Err(alias_error(&row.components, invalid(DIFFERS)));
+                }
+                let entry = VerifiedAlias {
+                    components: row.components.clone(),
+                    canonical_components: row.canonical_components.clone(),
+                    canonical_object_index: row.canonical_object_index,
+                    parent_object_index: row.parent_object_index,
+                    directory: probe.directory, attributes: probe.attributes,
+                    file_id_info: observed.alias_file_id_info,
+                    canonical_file_id_info: observed.canonical_file_id_info,
+                    parent_file_id_info: observed.parent_file_id_info,
+                    point: probe.point.clone(),
+                };
+                if entries.insert(row.components.clone(), entry).is_some() {
+                    return Err(alias_error(&row.components, invalid("duplicate recovered alias path")));
+                }
             }
-            let point = crate::reparse_layout::Point::relative_component_alias(
-                &row.canonical_components.last().unwrap().encode_utf16().collect::<Vec<_>>(),
-            )?;
-            let attributes = (canonical.attributes & 0x2027) | 0x400
-                | if directory { 16 } else { 0 };
-            let expected = Input {
-                components: row.components, additional_names: &[], directory,
-                times: canonical.times, attributes, security: canonical.security,
-                expected_api_security: canonical.expected_api_security,
-                extended_attributes: None, reparse: Some(&point), payload: &[],
-                expected_length: Some(0), expected_sha256: None, source_offset: None,
-                source_runs: Vec::new(), named_streams: Vec::new(), sparse: None,
-            };
-            let snapshot = super::metadata_snapshot_with_limit(
-                &alias, &expected, Some(admission.budget.max_row_bytes),
-            );
-            let standard = super::query_bytes(&snapshot, 1, 24)?;
-            if observed.point != point
-                || super::query_bytes(&snapshot, 18, 24)? != observed.alias_file_id_info
-                || !super::basic_matches(&expected, super::query_bytes(&snapshot, 0, 40)?)
-                || !super::security_matches(&expected, &snapshot, same)?
-                || !super::reparse_matches(&expected, &snapshot)?
-                || layout::u32_at(standard, 16)? != 1
-                || standard[20] != 0 || standard[21] != u8::from(directory)
-                || (!directory && layout::u64_at(standard, 8)? != 0)
-            {
-                return Err(invalid("recovered alias native metadata or point differs"));
-            }
-            if !directory {
-                super::streams::exact_list(
-                    &info(&alias, 7, stream_layout::MAX_STREAM_BUFFER)?, &expected,
-                )?;
-            }
-            let entry = VerifiedAlias {
-                components: row.components.to_vec(),
-                canonical_components: row.canonical_components.to_vec(),
-                canonical_object_index: row.canonical_object_index,
-                parent_object_index: row.parent_object_index,
-                directory, attributes, file_id_info: observed.alias_file_id_info,
-                canonical_file_id_info: observed.canonical_file_id_info,
-                parent_file_id_info: observed.parent_file_id_info, point,
-            };
-            if entries.insert(row.components.to_vec(), entry).is_some() {
-                return Err(invalid("duplicate recovered alias path"));
-            }
+            next = end;
         }
         if aliases.len() != count || preflight.finalize() != actual.finalize()
             || aliases.semantic_sha256()? != plan_digest
@@ -359,79 +525,42 @@ impl VerifiedWindowsAliases {
             ));
         }
         let root = format!("{}\\", binding.volume_path()?);
-        for entry in &self.entries {
-            let owner = input.object(entry.canonical_object_index)?;
-            let canonical = owner.input();
-            let open_readonly = |components: &[String]| {
-                File::options()
-                    .access_mode(super::PROTECTED_READ_ACCESS)
-                    .share_mode(3)
-                    .custom_flags(0x02200000)
-                    .open(format!("{root}{}", components.join("\\")))
-            };
-            let parent = open_readonly(&entry.components[..entry.components.len() - 1])?;
-            let target = open_readonly(&entry.canonical_components)?;
-            super::validate_bound_type(&target, &canonical)?;
-            let alias = open_readonly(&entry.components)?;
-            let observed = crate::windows_alias_native::verify_owned(
-                &parent,
-                &target,
-                &alias,
-                entry.directory,
-                &entry
-                    .canonical_components
-                    .last()
-                    .unwrap()
-                    .encode_utf16()
-                    .collect::<Vec<_>>(),
-            )?;
-            if observed.parent_file_id_info != entry.parent_file_id_info
-                || observed.canonical_file_id_info != entry.canonical_file_id_info
-            {
-                return Err(invalid(
-                    "readonly alias parent or canonical identity differs from its constructor owner",
-                ));
-            }
-            let expected = Input {
-                components: &entry.components,
-                additional_names: &[],
-                directory: entry.directory,
-                times: canonical.times,
-                attributes: entry.attributes,
-                security: canonical.security,
-                expected_api_security: canonical.expected_api_security,
-                extended_attributes: None,
-                reparse: Some(&entry.point),
-                payload: &[],
-                expected_length: Some(0),
-                expected_sha256: None,
-                source_offset: None,
-                source_runs: Vec::new(),
-                named_streams: Vec::new(),
-                sparse: None,
-            };
-            let snapshot = super::metadata_snapshot_with_limit(
-                &alias,
-                &expected,
-                Some(self.maximum_row_bytes),
-            );
-            let standard = super::query_bytes(&snapshot, 1, 24)?;
-            if super::query_bytes(&snapshot, 18, 24)? != entry.file_id_info
-                || !super::basic_matches(&expected, super::query_bytes(&snapshot, 0, 40)?)
-                || !super::security_matches(&expected, &snapshot, same)?
-                || !super::reparse_matches(&expected, &snapshot)?
-                || layout::u32_at(standard, 16)? != 1
-                || standard[20] != 0
-                || standard[21] != u8::from(entry.directory)
-                || (!entry.directory && layout::u64_at(standard, 8)? != 0)
-            {
-                return Err(invalid("readonly derived alias metadata differs"));
-            }
-            if !entry.directory {
-                super::streams::exact_list(
-                    &info(&alias, 7, stream_layout::MAX_STREAM_BUFFER)?,
-                    &expected,
-                )?;
+        const DIFFERS: &str = "readonly derived alias metadata differs";
+        for entries in self.entries.chunks(ALIAS_BATCH) {
+            let owners = entries
+                .iter()
+                .map(|entry| input.object(entry.canonical_object_index))
+                .collect::<io::Result<Vec<_>>>()?;
+            let canonicals: Vec<_> = owners.iter().map(|owner| owner.input()).collect();
+            let probes: Vec<_> = entries
+                .iter()
+                .zip(&canonicals)
+                .map(|(entry, canonical)| AliasProbe {
+                    components: &entry.components,
+                    canonical_components: &entry.canonical_components,
+                    directory: entry.directory,
+                    attributes: entry.attributes,
+                    point: &entry.point,
+                    canonical,
+                })
+                .collect();
+            let natives = probe_aliases(&root, &probes, self.maximum_row_bytes, payer, DIFFERS)?;
+            for ((entry, probe), native) in entries.iter().zip(&probes).zip(natives) {
+                if native.observed.parent_file_id_info != entry.parent_file_id_info
+                    || native.observed.canonical_file_id_info != entry.canonical_file_id_info
+                {
+                    return Err(alias_error(&entry.components, invalid(
+                        "readonly alias parent or canonical identity differs from its constructor owner",
+                    )));
+                }
+                let matches = (|| -> io::Result<bool> {
+                    Ok(super::query_bytes(&native.snapshot, 18, 24)? == entry.file_id_info
+                        && super::security_matches(&probe.expected(), &native.snapshot, same)?)
+                })()
+                .map_err(|error| alias_error(&entry.components, error))?;
+                if !matches {
+                    return Err(alias_error(&entry.components, invalid(DIFFERS)));
+                }
             }
         }
         let after = native::observe_general_disk_state_readonly(binding.clone(), &mut events)?;

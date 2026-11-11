@@ -294,8 +294,10 @@ fn index_value_range(
     // Table of a full Windows volume grew a second index level. Either way
     // the value is the 48-byte reference, which the caller follows only after
     // checking the child's CRC, level and table. This is an index record, not
-    // a leaf or a generic allowance for nonzero reserved fields.
-    let keyless = row.key_length == 0 && row.value_offset == 16 && row.size == 64 && row.marker == 0;
+    // a leaf or a generic allowance for nonzero reserved fields. The marker
+    // word of its index entry is not interpreted, here or for any other row:
+    // it was 0 on small trees and 0xffff on both forms on the full volume.
+    let keyless = row.key_length == 0 && row.value_offset == 16 && row.size == 64;
     let keyed = row.key_length != 0
         && u32::from(row.value_offset) == 16 + u32::from(row.key_length)
         && row.size == u32::from(row.value_offset) + 48;
@@ -1087,6 +1089,9 @@ mod index_row_tests {
         let last_page = [row(0, 0, 16, 0), row(1, 0, 16, 0), row(2, 2, 0, 0)];
         assert_eq!(index_value_range(&last_page[0], &last_page, 2, 1).unwrap(), 1032..1080);
         assert_eq!(index_value_range(&last_page[2], &last_page, 2, 1).unwrap(), 1016..1064);
+        // The same keyless row as the full Windows volume's Object Table has it.
+        let last_page = [row(0, 0, 16, 0), row(1, 2, 0, 65535)];
+        assert_eq!(index_value_range(&last_page[1], &last_page, 2, 1).unwrap(), 1016..1064);
         // Any other page of the level, as on the full Windows volume: the
         // flagged last row has a key like the rest.
         let inner_page = [row(0, 0, 16, 0), row(1, 0, 16, 0), row(2, 2, 16, 65535)];

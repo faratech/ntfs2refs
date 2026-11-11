@@ -6,8 +6,12 @@ and Clippy, verifies the x86-64 MSVC host and targets
 `x86_64-pc-windows-msvc`. This compiles the `cfg(windows)` modules and uses the
 repository's static CRT configuration.
 
-The lane checks formatting, runs Clippy, executes the workspace's ordinary
-tests and builds all workspace release executables. Cargo dependency-consuming
+The checks job checks formatting, runs Clippy and executes the workspace's
+ordinary tests. A separate parallel job builds all workspace release executables
+from the same revision. Both jobs must pass. Cold release compilation has its
+own 60-minute budget rather than sharing the checks job's 45-minute deadline;
+the original combined job left the build only about 29 minutes before cancellation.
+Cargo dependency-consuming
 commands use `--locked`; the toolchain check refuses silent drift from
 `rust-toolchain.toml`.
 

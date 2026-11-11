@@ -209,6 +209,8 @@ impl PagedPolicyIndexBuilder {
             cursor: u64::MAX,
             cached: None,
             lease_issued: false,
+            rows: None,
+            rows_refused: false,
         }))))
     }
 }
@@ -229,6 +231,10 @@ struct PolicyOwner {
     cursor: u64,
     cached: Option<(u64, PagedPolicyIndexRow)>,
     lease_issued: bool,
+    // Every row of the validated index, once any row has been asked for.
+    // `None` until then, and for good if the rows could not be held.
+    rows: Option<Vec<PagedPolicyIndexRow>>,
+    rows_refused: bool,
 }
 /// Clones share the same readonly file, buffered cursor and cache. No clone
 /// grants target access or permits any writer alias to the original file.
@@ -365,9 +371,37 @@ fn validate_index(file: &mut File, facts: PagedPolicyIndexFacts) -> io::Result<(
 }
 
 impl PolicyOwner {
+    /// Reads every row of the index into memory. A lookup by offset is a
+    /// binary search, and each probe was a seek and a read of the file.
+    fn load_rows(&mut self) -> io::Result<()> {
+        let count = self.facts.range_count as usize;
+        let mut rows = Vec::new();
+        if rows.try_reserve_exact(count).is_err() {
+            self.rows_refused = true;
+            return Ok(());
+        }
+        self.cursor = u64::MAX;
+        self.reader.seek(SeekFrom::Start(HEADER))?;
+        for _ in 0..count {
+            let mut bytes = [0u8; ROW as usize];
+            self.reader.read_exact(&mut bytes)?;
+            rows.push(PagedPolicyIndexRow::decode(&bytes));
+        }
+        self.rows = Some(rows);
+        Ok(())
+    }
     fn row(&mut self, ordinal: u64) -> io::Result<PagedPolicyIndexRow> {
         if ordinal >= u64::from(self.facts.range_count) {
             return Err(invalid("paged policy row outside index"));
+        }
+        if self.rows.is_none() && !self.rows_refused {
+            self.load_rows()?;
+        }
+        if let Some(rows) = &self.rows {
+            return rows
+                .get(ordinal as usize)
+                .copied()
+                .ok_or_else(|| invalid("paged policy row outside index"));
         }
         let at = HEADER
             .checked_add(

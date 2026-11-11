@@ -1150,13 +1150,27 @@ impl GeneralFrozenPartition {
         let journal_before = verify_journal_owner(journal, pins, facts.journal_length)?;
         let modified = journal.metadata()?.modified()?;
         check_clear_lifecycle(journal)?;
-        if crate::sha256_native::journal_body(journal, BODY, facts.journal_length - BODY, &pins.immutable_sha256)?
-            != pins.immutable_sha256
-        {
+        // The journal's body and the source's OLD bytes are on different
+        // disks and are both gigabytes: hash the one on a second thread while
+        // this one reads and hashes the other.
+        let (body, old_bytes) = {
+            let expected = pins.immutable_sha256;
+            let length = facts.journal_length - BODY;
+            let journal = &mut *journal;
+            std::thread::scope(|scope| {
+                let body = scope.spawn(move || {
+                    crate::sha256_native::journal_body(journal, BODY, length, &expected)
+                });
+                let old_bytes = verify_selected_digest(self, &policy, pins.old_selected_sha256);
+                (body.join(), old_bytes)
+            })
+        };
+        let body = body.map_err(|_| io::Error::other("journal hashing thread panicked"))??;
+        if body != pins.immutable_sha256 {
             return Err(invalid("fresh held journal immutable body differs"));
         }
         verify_index_against_journal(journal, &policy, pins)?;
-        verify_selected_digest(self, &policy, pins.old_selected_sha256)?;
+        old_bytes?;
         if self.state(events)? != before {
             return Err(invalid(
                 "fresh source exclusion or identity changed during OLD verification",

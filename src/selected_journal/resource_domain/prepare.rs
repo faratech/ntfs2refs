@@ -787,6 +787,25 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     put_u64(&mut header, 32, f.journal_length);
     file.write_all(&vec![0u8; usize::try_from(f.body_offset)?])?;
     file.write_all(&header)?;
+    // The journal's two file hashes cover its bytes in file order, and a row's
+    // descriptor is only known after its payload. They used to come from
+    // reading the finished journal back, twice over where rows copy from
+    // earlier ones, with every range hashed again (77 s for 3.2 GB). Under
+    // the check-once policy each row is read back from the file as soon as
+    // it is complete and hashed in order, so the hashes are those of the
+    // file's own bytes; the gate before the first write to the source hashes
+    // the whole body again. A journal with source-free rows rewrites its
+    // header at the end and keeps the read-back.
+    let mut written = if n2r_win32::verify_policy::checks_once() && f.source_free_bytes == 0 {
+        let mut whole = aggregate_pin_hash()?;
+        let mut immutable = aggregate_pin_hash()?;
+        whole.update(&vec![0u8; usize::try_from(f.body_offset)?])?;
+        whole.update(&header)?;
+        immutable.update(&header)?;
+        Some((whole, immutable))
+    } else {
+        None
+    };
     let mut old_selected = aggregate_pin_hash()?;
     let mut old_restored = if f.source_free_bytes != 0 {
         Some(aggregate_pin_hash()?)
@@ -864,6 +883,29 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
         let record = encode_record(row, f, old, new);
         file.seek(SeekFrom::Start(row.descriptor_offset))?;
         file.write_all(&record[..f.record_size])?;
+        if let Some((whole, immutable)) = written.as_mut() {
+            file.seek(SeekFrom::Start(row.descriptor_offset))?;
+            let mut stored = [0u8; OLD_ZERO_RECORD];
+            file.read_exact(&mut stored[..f.record_size])?;
+            ensure!(
+                stored[..f.record_size] == record[..f.record_size],
+                "journal descriptor read back differs from the one written"
+            );
+            whole.update(&stored[..f.record_size])?;
+            immutable.update(&stored[..f.record_size])?;
+            let mut left = row
+                .next_offset
+                .checked_sub(row.descriptor_offset)
+                .and_then(|n| n.checked_sub(f.record_size as u64))
+                .context("journal row layout underflow")?;
+            while left != 0 {
+                let count = usize::try_from(left.min(buffer.len() as u64))?;
+                file.read_exact(&mut buffer[..count])?;
+                whole.update(&buffer[..count])?;
+                immutable.update(&buffer[..count])?;
+                left -= count as u64;
+            }
+        }
         file.seek(SeekFrom::Start(row.next_offset))?;
     }
     let old_sha = finish(old_selected)?;
@@ -875,6 +917,10 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     footer[40..72].copy_from_slice(&new_sha);
     put_u64(&mut footer, 72, f.journal_length);
     file.write_all(&footer)?;
+    if let Some((whole, immutable)) = written.as_mut() {
+        whole.update(&footer)?;
+        immutable.update(&footer)?;
+    }
     if let Some(restored) = restored_sha {
         header[40..72].copy_from_slice(&restored);
         put_u64(&mut header, 72, f.source_free_bytes);
@@ -900,7 +946,10 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
         new_selected_sha256: new_sha,
         whole_image_verified: false,
     };
-    let (immutable, whole) = validate_readback(domain, file, &ticket, &mut buffer, &mut compare)?;
+    let (immutable, whole) = match written {
+        Some((whole, immutable)) => (finish(immutable)?, finish(whole)?),
+        None => validate_readback(domain, file, &ticket, &mut buffer, &mut compare)?,
+    };
     ticket.immutable_sha256 = immutable;
     // The whole body was just read back and compared with its sources.
     if ticket.marker_profile.is_none() {

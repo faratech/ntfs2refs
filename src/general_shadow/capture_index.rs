@@ -187,6 +187,7 @@ pub(crate) struct OwnedCaptureIndex {
     hash: Sha256,
     poisoned: bool,
     artifact: Option<crate::artifact_arena::ArtifactPathPermit>,
+    resident: ResidentRows,
 }
 #[derive(Serialize)]
 pub(crate) struct CaptureIndexPin {
@@ -213,6 +214,9 @@ pub(crate) struct ClosedCaptureIndex {
     canonical_parent: PathBuf,
     _ram: SourceRamLease,
     artifact: crate::artifact_arena::ArtifactLease,
+    // The rows this process wrote to the file, when all of them were kept.
+    resident: ResidentRows,
+    last_full: n2r_win32::verify_policy::LastFull,
 }
 
 fn parents(path: &Path) -> Result<(Vec<File>, String, PathBuf)> {
@@ -332,6 +336,43 @@ fn decode(bytes: &[u8; ROW as usize], ordinal: u64, image: u64) -> Result<Captur
     range.validate(image)?;
     Ok(range)
 }
+/// The rows written so far, as written, so a lookup of an earlier row does
+/// not cost a seek and a read of the file. An optimization only: once it
+/// cannot grow (the allocation is refused, or it would pass
+/// `MAX_RESIDENT_ROWS`) it stops and later rows are read from the file.
+#[derive(Default)]
+struct ResidentRows {
+    bytes: Vec<u8>,
+    stopped: bool,
+}
+/// 256 MiB of rows: several million changed ranges.
+const MAX_RESIDENT_ROWS: u64 = 256 * 1024 * 1024 / ROW;
+impl ResidentRows {
+    fn len(&self) -> u64 {
+        self.bytes.len() as u64 / ROW
+    }
+    /// Called with every row in order, starting from the first.
+    fn push(&mut self, row: &[u8; ROW as usize]) {
+        if self.stopped {
+            return;
+        }
+        if self.len() >= MAX_RESIDENT_ROWS || self.bytes.try_reserve(ROW as usize).is_err() {
+            self.stopped = true;
+            return;
+        }
+        self.bytes.extend_from_slice(row);
+    }
+    fn get(&self, ordinal: u64, image: u64) -> Option<Result<CaptureIndexRange>> {
+        let start = usize::try_from(ordinal.checked_mul(ROW)?).ok()?;
+        let row: &[u8; ROW as usize] = self
+            .bytes
+            .get(start..start.checked_add(ROW as usize)?)?
+            .try_into()
+            .ok()?;
+        Some(decode(row, ordinal, image))
+    }
+}
+
 fn read_row(file: &mut File, ordinal: u64, image: u64) -> Result<CaptureIndexRange> {
     let at = ordinal
         .checked_mul(ROW)
@@ -454,6 +495,7 @@ impl OwnedCaptureIndex {
             hash,
             poisoned: false,
             artifact: Some(artifact),
+            resident: ResidentRows::default(),
         })
     }
     pub(crate) fn len(&self) -> u64 {
@@ -596,6 +638,7 @@ impl OwnedCaptureIndex {
             self.file.seek(SeekFrom::Start(offset))?;
             self.file.write_all(&bytes)?;
             self.hash.update(bytes);
+            self.resident.push(&bytes);
             self.rows = self
                 .rows
                 .checked_add(1)
@@ -677,6 +720,8 @@ impl OwnedCaptureIndex {
         );
         if ordinal == self.rows {
             self.tail.context("capture tail absent")
+        } else if let Some(row) = self.resident.get(ordinal, self.image) {
+            row
         } else {
             read_row(&mut self.file, ordinal, self.image)
         }
@@ -786,8 +831,10 @@ impl OwnedCaptureIndex {
             canonical_parent: self.canonical_parent,
             _ram: self._ram,
             artifact,
+            resident: self.resident,
+            last_full: n2r_win32::verify_policy::LastFull::new(),
         };
-        value.revalidate()?;
+        value.revalidate_in_full()?;
         Ok(value)
     }
 }
@@ -838,9 +885,33 @@ impl ClosedCaptureIndex {
             ordinal < self.len(),
             "closed capture ordinal outside complete domain"
         );
+        if let Some(row) = self.resident.get(ordinal, self.pin.image_length) {
+            return row;
+        }
         read_row(&mut self.file.borrow_mut(), ordinal, self.pin.image_length)
     }
+    /// The file was read in full and checked when it was closed, and is held
+    /// read-only since. Unless a full check is due (always, without the
+    /// check-once policy; once inside each gate with it), confirm that it is
+    /// still the same file with the same length and timestamp.
     pub(crate) fn revalidate(&self) -> Result<()> {
+        if n2r_win32::verify_policy::full(&self.last_full) {
+            return self.revalidate_in_full();
+        }
+        self.artifact.revalidate()?;
+        ordinary_parents(
+            &self.pin.path,
+            &self._parents,
+            &self.parent_id,
+            &self.canonical_parent,
+        )?;
+        ensure!(
+            Snapshot::observe(&self.file.borrow())? == self.snapshot,
+            "capture index held identity changed"
+        );
+        Ok(())
+    }
+    fn revalidate_in_full(&self) -> Result<()> {
         self.artifact.revalidate()?;
         ordinary_parents(
             &self.pin.path,

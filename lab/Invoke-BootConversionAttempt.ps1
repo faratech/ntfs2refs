@@ -442,7 +442,13 @@ try {
             # A listing that differs is a failed conversion, but whether the result
             # boots is separate evidence worth having from the same run.
             $listingDiffers = $compared.exit -ne 0
-            if ($listingDiffers -and ($NoBoot -or $Diagnose)) { $verdict.outcome = 'converted-but-listing-differs'; Remove-PSSession $session; return }
+            # No listing to compare with (a -Recover of a checkpoint whose own run
+            # took none) is not a difference; say so instead.
+            $unlisted = $null -eq $compared.before
+            if ($listingDiffers -and ($NoBoot -or $Diagnose)) {
+                $verdict.outcome = if ($unlisted) { 'converted-not-compared' } else { 'converted-but-listing-differs' }
+                Remove-PSSession $session; return
+            }
         }
     }
     if ($Diagnose -or $NoBoot) { $verdict.outcome = if ($Diagnose) { 'diagnose-clean' } else { 'converted-not-booted' }; Remove-PSSession $session; return }

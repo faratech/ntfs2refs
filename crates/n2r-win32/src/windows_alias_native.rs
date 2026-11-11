@@ -85,7 +85,9 @@ fn snapshot(file: &File, directory: bool) -> io::Result<Snapshot> {
         || (attributes & 0x10 != 0) != directory {
         return Err(invalid("alias native identity/delete/type/link information is invalid"));
     }
-    Ok(Snapshot { id, standard, tag, path: file_storage::final_path_guid(file)? })
+    // `direct_child` needs each handle's path on its volume, and one volume
+    // for all three: the device path gives both.
+    Ok(Snapshot { id, standard, tag, path: file_storage::final_path_device(file)? })
 }
 fn direct_child<'a>(parent: &Snapshot, child: &'a Snapshot) -> io::Result<&'a str> {
     let (actual_parent, component) = child.path.rsplit_once('\\')

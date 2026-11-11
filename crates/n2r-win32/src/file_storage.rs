@@ -188,7 +188,30 @@ pub fn file_id_info(file: &std::fs::File) -> io::Result<String> {
 /// Actual GUID-volume path of this retained file or directory handle.
 /// No pathname reopen, probe file or device mutation occurs.
 pub fn final_path_guid(file: &std::fs::File) -> io::Result<String> {
-    use windows_sys::Win32::Storage::FileSystem::{GetFinalPathNameByHandleW, VOLUME_NAME_GUID};
+    use windows_sys::Win32::Storage::FileSystem::VOLUME_NAME_GUID;
+    let path = final_path(file, VOLUME_NAME_GUID, "GUID")?;
+    if !path.starts_with("\\\\?\\Volume{") {
+        return Err(io::Error::other("held artifact is not on a GUID volume"));
+    }
+    Ok(path)
+}
+/// Actual path of this retained handle beneath its volume's device object,
+/// such as `\Device\HarddiskVolume7\Windows\System32`. The device names the
+/// mounted volume as exactly as its GUID path does, and handles on one volume
+/// have paths beneath one device. Unlike the GUID path it is answered by the
+/// object manager alone: for the GUID name Windows opens, asks and closes
+/// the mount manager on every call, which made that query the largest single
+/// cost of checking 112,609 short-name links, three handles to a link.
+pub fn final_path_device(file: &std::fs::File) -> io::Result<String> {
+    use windows_sys::Win32::Storage::FileSystem::VOLUME_NAME_NT;
+    let path = final_path(file, VOLUME_NAME_NT, "device")?;
+    if !path.starts_with("\\Device\\") {
+        return Err(io::Error::other("held object has no volume device path"));
+    }
+    Ok(path)
+}
+fn final_path(file: &std::fs::File, form: u32, name: &str) -> io::Result<String> {
+    use windows_sys::Win32::Storage::FileSystem::GetFinalPathNameByHandleW;
     let mut path = vec![0u16; 256];
     loop {
         // SAFETY: live borrowed handle and initialized declared-size output.
@@ -197,24 +220,20 @@ pub fn final_path_guid(file: &std::fs::File) -> io::Result<String> {
                 file.as_raw_handle(),
                 path.as_mut_ptr(),
                 path.len() as u32,
-                VOLUME_NAME_GUID,
+                form,
             )
         } as usize;
         if count == 0 {
             return Err(io::Error::last_os_error());
         }
         if count < path.len() {
-            let path = String::from_utf16(&path[..count])
-                .map_err(|_| io::Error::other("invalid held GUID path UTF16"))?;
-            if !path.starts_with("\\\\?\\Volume{") {
-                return Err(io::Error::other("held artifact is not on a GUID volume"));
-            }
-            return Ok(path);
+            return String::from_utf16(&path[..count])
+                .map_err(|_| io::Error::other(format!("invalid held {name} path UTF16")));
         }
         if count > 32768 {
-            return Err(io::Error::other(
-                "held GUID path exceeds Windows representation",
-            ));
+            return Err(io::Error::other(format!(
+                "held {name} path exceeds Windows representation"
+            )));
         }
         path.resize(count, 0);
     }
@@ -465,4 +484,48 @@ pub fn observe(path: &Path) -> io::Result<StorageUse> {
         data_bytes_read: 0,
         data_bytes_written: 0,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::windows::fs::OpenOptionsExt;
+
+    fn held(path: &Path) -> std::fs::File {
+        // Attribute access with backup semantics opens directories as well.
+        std::fs::OpenOptions::new()
+            .access_mode(0x80)
+            .share_mode(7)
+            .custom_flags(0x0200_0000)
+            .open(path)
+            .unwrap()
+    }
+
+    #[test]
+    fn the_device_path_names_the_same_volume_and_place_as_the_guid_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let child = directory.path().join("Child With A Long Name.txt");
+        std::fs::write(&child, b"x").unwrap();
+        let (parent, file) = (held(directory.path()), held(&child));
+
+        let parent_device = final_path_device(&parent).unwrap();
+        let file_device = final_path_device(&file).unwrap();
+        assert!(parent_device.starts_with(r"\Device\"), "{parent_device}");
+        // A child's device path is its parent's, a separator and its name:
+        // what the short-name link check relies on.
+        assert_eq!(file_device, format!(r"{parent_device}\Child With A Long Name.txt"));
+
+        // Both forms end in the same path on the volume, and two handles on
+        // one volume share the volume part of either form.
+        let parent_guid = final_path_guid(&parent).unwrap();
+        let file_guid = final_path_guid(&file).unwrap();
+        let on_volume = |guid: &str| guid[guid.find('}').unwrap() + 1..].to_owned();
+        assert!(parent_device.ends_with(&on_volume(&parent_guid)), "{parent_device} / {parent_guid}");
+        assert!(file_device.ends_with(&on_volume(&file_guid)), "{file_device} / {file_guid}");
+        let device_of = |path: &str| path[..path.len() - on_volume(&parent_guid).len()].to_owned();
+        assert_eq!(
+            device_of(&parent_device),
+            file_device[..device_of(&parent_device).len()].to_owned()
+        );
+    }
 }

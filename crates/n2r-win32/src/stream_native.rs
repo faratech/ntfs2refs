@@ -16,34 +16,35 @@ use windows_sys::Win32::{
 };
 
 pub(crate) fn ioctl(file: &File, code: u32, input: &[u8], capacity: usize) -> IoctlQuery {
-    let mut bytes = vec![0; capacity];
-    let mut used = 0;
-    // SAFETY: live handle and initialized buffers of their declared lengths.
-    let ok = unsafe {
-        DeviceIoControl(
-            file.as_raw_handle(),
-            code,
-            if input.is_empty() {
-                ptr::null()
-            } else {
-                input.as_ptr().cast()
-            },
-            input.len() as u32,
-            bytes.as_mut_ptr().cast(),
-            capacity as u32,
-            &mut used,
-            ptr::null_mut(),
-        )
-    };
-    let mut native_error =
-        (ok == 0).then(|| io::Error::last_os_error().raw_os_error().unwrap_or(31));
-    if used as usize > capacity {
-        bytes.clear();
-        native_error = Some(13);
-    } else {
-        bytes.truncate(used as usize);
-        bytes.shrink_to_fit();
-    }
+    // The response is written into this thread's query buffer; the bytes the
+    // call reports as returned are the only ones copied out.
+    let (bytes, native_error) = crate::query_scratch::with(capacity, |response| {
+        let mut used = 0;
+        // SAFETY: live handle and initialized buffers of their declared lengths.
+        let ok = unsafe {
+            DeviceIoControl(
+                file.as_raw_handle(),
+                code,
+                if input.is_empty() {
+                    ptr::null()
+                } else {
+                    input.as_ptr().cast()
+                },
+                input.len() as u32,
+                response.as_mut_ptr().cast(),
+                capacity as u32,
+                &mut used,
+                ptr::null_mut(),
+            )
+        };
+        let native_error =
+            (ok == 0).then(|| io::Error::last_os_error().raw_os_error().unwrap_or(31));
+        if used as usize > capacity {
+            (Vec::new(), Some(13))
+        } else {
+            (response[..used as usize].to_vec(), native_error)
+        }
+    });
     IoctlQuery {
         code,
         input: input.to_vec(),
@@ -218,27 +219,49 @@ pub(crate) fn retrieval_capture(file: &File) -> io::Result<crate::retrieval_pagi
     crate::retrieval_paging::assemble_queries(&first, &continuation)
 }
 fn info(file: &File, class: i32, length: usize) -> Query {
-    let mut storage = vec![0u64; length.div_ceil(8)];
-    // SAFETY: aligned fixed-size output and a live borrowed handle.
-    let ok = unsafe {
-        GetFileInformationByHandleEx(
-            file.as_raw_handle(),
+    info_kept(file, class, length, |response| response.len())
+}
+/// The stream list of a file (class 7). Windows does not say how much of the
+/// buffer it filled, so the entries are followed to their end and only they
+/// are copied out. A list that cannot be followed is returned whole, for the
+/// caller's own parse to refuse, as before.
+fn stream_list(file: &File, capacity: usize) -> Query {
+    info_kept(file, 7, capacity, |response| {
+        layout::parse_streams_with_limits(response, response.len(), usize::MAX)
+            .map_or(response.len(), |(_, end)| end)
+    })
+}
+/// One query answered into this thread's query buffer; `meaningful` says how
+/// many of the bytes are the answer, and those are copied out.
+fn info_kept(
+    file: &File,
+    class: i32,
+    length: usize,
+    meaningful: impl FnOnce(&[u8]) -> usize,
+) -> Query {
+    crate::query_scratch::with(length, |response| {
+        // SAFETY: aligned fixed-size output and a live borrowed handle.
+        let ok = unsafe {
+            GetFileInformationByHandleEx(
+                file.as_raw_handle(),
+                class,
+                response.as_mut_ptr().cast(),
+                length as u32,
+            )
+        };
+        let error = (ok == 0).then(|| io::Error::last_os_error().raw_os_error().unwrap_or(31));
+        let bytes = if error.is_some() {
+            vec![]
+        } else {
+            let end = meaningful(response).min(length);
+            response[..end].to_vec()
+        };
+        Query {
             class,
-            storage.as_mut_ptr().cast(),
-            length as u32,
-        )
-    };
-    let error = (ok == 0).then(|| io::Error::last_os_error().raw_os_error().unwrap_or(31));
-    let bytes = if error.is_some() {
-        vec![]
-    } else {
-        unsafe { std::slice::from_raw_parts(storage.as_ptr().cast::<u8>(), length) }.to_vec()
-    };
-    Query {
-        class,
-        bytes,
-        native_error: error,
-    }
+            bytes,
+            native_error: error,
+        }
+    })
 }
 fn binding(q: &Query, r: &Request, id: &FileIdentity) -> io::Result<()> {
     if q.native_error.is_some() || q.bytes.len() != 24 {
@@ -526,7 +549,7 @@ pub(crate) fn capture(
         Err(error) => {
             return (
                 StreamCapture {
-                    enumeration: info(file, 7, layout::MAX_STREAM_BUFFER),
+                    enumeration: stream_list(file, layout::MAX_STREAM_BUFFER),
                     parse_error: Some(error.to_string()),
                     streams: Vec::new(),
                 },
@@ -534,13 +557,13 @@ pub(crate) fn capture(
             );
         }
     };
-    let mut enumeration = info(file, 7, layout::MAX_STREAM_BUFFER);
+    let mut enumeration = stream_list(file, layout::MAX_STREAM_BUFFER);
     if resource.is_some() {
         let mut capacity = layout::MAX_STREAM_BUFFER;
         let maximum = evidence_limit.min(u32::MAX as usize);
         while matches!(enumeration.native_error, Some(122 | 234)) && capacity < maximum {
             capacity = capacity.saturating_mul(2).min(maximum);
-            enumeration = info(file, 7, capacity);
+            enumeration = stream_list(file, capacity);
         }
     }
     let mut result = StreamCapture {

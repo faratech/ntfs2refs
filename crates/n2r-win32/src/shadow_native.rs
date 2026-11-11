@@ -2022,39 +2022,51 @@ fn ctl(file: &File, code: u32, input: &[u8], size: usize) -> io::Result<Vec<u8>>
     if size > 2 * 1024 * 1024 || input.len() > 64 {
         return Err(invalid("shadow control bound"));
     }
-    let mut b = vec![0; size];
-    let mut used = 0;
-    // SAFETY: borrowed handle, initialized separate buffers, synchronous call.
-    check(unsafe {
-        DeviceIoControl(
-            file.as_raw_handle(),
-            code,
-            input.as_ptr().cast(),
-            input.len() as u32,
-            b.as_mut_ptr().cast(),
-            size as u32,
-            &mut used,
-            ptr::null_mut(),
-        )
-    })?;
-    if used as usize > size {
-        return Err(invalid("oversized shadow control response"));
-    }
-    b.truncate(used as usize);
-    Ok(b)
+    crate::query_scratch::with(size, |response| {
+        let mut used = 0;
+        // SAFETY: borrowed handle, initialized separate buffers, synchronous call.
+        check(unsafe {
+            DeviceIoControl(
+                file.as_raw_handle(),
+                code,
+                input.as_ptr().cast(),
+                input.len() as u32,
+                response.as_mut_ptr().cast(),
+                size as u32,
+                &mut used,
+                ptr::null_mut(),
+            )
+        })?;
+        if used as usize > size {
+            return Err(invalid("oversized shadow control response"));
+        }
+        Ok(response[..used as usize].to_vec())
+    })
 }
 fn info(file: &File, class: i32, size: usize) -> io::Result<Vec<u8>> {
-    let mut b = vec![0u64; size.div_ceil(8)];
-    // SAFETY: aligned initialized storage of the exact class-specific size.
-    check(unsafe {
-        GetFileInformationByHandleEx(
-            file.as_raw_handle(),
-            class,
-            b.as_mut_ptr().cast(),
-            size as u32,
-        )
-    })?;
-    Ok(unsafe { std::slice::from_raw_parts(b.as_ptr().cast(), size) }.to_vec())
+    info_read(file, class, size, |response| Ok(response.to_vec()))
+}
+/// One query answered into this thread's query buffer and read there: for a
+/// class whose answer is a list of unstated length in a worst-case buffer,
+/// `read` copies out the entries and not the buffer.
+fn info_read<T>(
+    file: &File,
+    class: i32,
+    size: usize,
+    read: impl FnOnce(&[u8]) -> io::Result<T>,
+) -> io::Result<T> {
+    crate::query_scratch::with(size, |response| {
+        // SAFETY: aligned initialized storage of the exact class-specific size.
+        check(unsafe {
+            GetFileInformationByHandleEx(
+                file.as_raw_handle(),
+                class,
+                response.as_mut_ptr().cast(),
+                size as u32,
+            )
+        })?;
+        read(response)
+    })
 }
 fn suppress_access(file: &File) -> io::Result<()> {
     let no_update = FILETIME {
@@ -2154,16 +2166,18 @@ fn enumerate_with_resource_budget(file:&File,budget:Option<usize>)->io::Result<V
         } else {
             namespace_layout::CONTINUE
         };
-        let result = info(file, class, namespace_layout::CAPACITY);
+        // A refused parse carries no OS error code, so it leaves through the
+        // `?` below exactly as it did when the page was parsed out here.
+        let result = info_read(file, class, namespace_layout::CAPACITY, |page| {
+            let (_, used) = namespace_layout::parse(page)?;
+            Ok(page[..used].to_vec())
+        });
         let q = match result {
-            Ok(b) => {
-                let (_, used) = namespace_layout::parse(&b)?;
-                crate::attestation::Query {
-                    class,
-                    bytes: b[..used].to_vec(),
-                    native_error: None,
-                }
-            }
+            Ok(bytes) => crate::attestation::Query {
+                class,
+                bytes,
+                native_error: None,
+            },
             Err(e) => crate::attestation::Query {
                 class,
                 bytes: vec![],
@@ -5574,9 +5588,12 @@ fn run_role_content_domain_accounted(
         let streams = if i.directory {
             vec![]
         } else {
-            let mut b = info(&h, 7, stream_layout::MAX_STREAM_BUFFER)?;
-            let (entries, used) = stream_layout::parse_streams(&b)?;
-            streams::exact_list(&b, i)?;
+            let (entries, b) =
+                info_read(&h, 7, stream_layout::MAX_STREAM_BUFFER, |list| {
+                    let (entries, used) = stream_layout::parse_streams(list)?;
+                    streams::exact_list(list, i)?;
+                    Ok((entries, list[..used].to_vec()))
+                })?;
             let unnamed = entries
                 .iter()
                 .find(|e| e.name.is_empty())
@@ -5590,7 +5607,6 @@ fn run_role_content_domain_accounted(
             {
                 return Err(invalid("unexpected target data stream or allocation"));
             }
-            b.truncate(used);
             b
         };
         Ok(ObjectReport {

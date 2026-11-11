@@ -48,30 +48,30 @@ fn open(path: &str) -> io::Result<File> {
         .open(path)
 }
 pub(crate) fn control(file: &File, code: u32, capacity: usize) -> io::Result<Vec<u8>> {
-    let mut b = vec![0; capacity];
-    let mut used = 0;
-    // SAFETY: live borrowed handle and writable output of the declared size;
-    // synchronous IOCTL, no input or overlapped pointer.
-    if unsafe {
-        DeviceIoControl(
-            raw(file),
-            code,
-            ptr::null(),
-            0,
-            b.as_mut_ptr().cast(),
-            capacity as u32,
-            &mut used,
-            ptr::null_mut(),
-        )
-    } == 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    if used as usize > capacity {
-        return Err(invalid("oversized native IOCTL response"));
-    }
-    b.truncate(used as usize);
-    Ok(b)
+    crate::query_scratch::with(capacity, |response| {
+        let mut used = 0;
+        // SAFETY: live borrowed handle and writable output of the declared
+        // size; synchronous IOCTL, no input or overlapped pointer.
+        if unsafe {
+            DeviceIoControl(
+                raw(file),
+                code,
+                ptr::null(),
+                0,
+                response.as_mut_ptr().cast(),
+                capacity as u32,
+                &mut used,
+                ptr::null_mut(),
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        if used as usize > capacity {
+            return Err(invalid("oversized native IOCTL response"));
+        }
+        Ok(response[..used as usize].to_vec())
+    })
 }
 fn u64le(b: &[u8], at: usize) -> io::Result<u64> {
     Ok(u64::from_le_bytes(

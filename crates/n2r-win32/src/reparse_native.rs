@@ -104,40 +104,42 @@ fn empty_directory(file: &File) -> io::Result<()> {
 pub fn capture(file: &File) -> io::Result<Option<Point>> {
     synchronous(file)?;
     let before = file_storage::file_id_info(file)?;
-    let mut storage = vec![0u64; reparse_layout::MAX_REPARSE_BYTES / 8];
-    let mut used = 0u32;
-    // SAFETY: actual SDK FSCTL_GET_REPARSE_POINT (0x900a8), no input/setter;
-    // aligned initialized sixteen-KiB output and synchronous held handle.
-    let ok = unsafe {
-        DeviceIoControl(
-            file.as_raw_handle(),
-            FSCTL_GET_REPARSE_POINT,
-            ptr::null(),
-            0,
-            storage.as_mut_ptr().cast(),
-            reparse_layout::MAX_REPARSE_BYTES as u32,
-            &mut used,
-            ptr::null_mut(),
-        )
-    };
-    let error = (ok == 0).then(io::Error::last_os_error);
-    if file_storage::file_id_info(file)? != before {
-        return Err(invalid("reparse identity changed during query"));
-    }
-    if let Some(error) = error {
-        if error.raw_os_error() == Some(ERROR_NOT_A_REPARSE_POINT as i32) {
-            if used != 0 {
-                return Err(invalid("reparse absence returned unexpected payload bytes"));
-            }
-            return Ok(None);
+    // Asked of every object, and nearly always answered "not a reparse
+    // point": the sixteen KiB for the answer are this thread's query buffer.
+    crate::query_scratch::with(reparse_layout::MAX_REPARSE_BYTES, |storage| {
+        let mut used = 0u32;
+        // SAFETY: actual SDK FSCTL_GET_REPARSE_POINT (0x900a8), no input/setter;
+        // aligned initialized sixteen-KiB output and synchronous held handle.
+        let ok = unsafe {
+            DeviceIoControl(
+                file.as_raw_handle(),
+                FSCTL_GET_REPARSE_POINT,
+                ptr::null(),
+                0,
+                storage.as_mut_ptr().cast(),
+                reparse_layout::MAX_REPARSE_BYTES as u32,
+                &mut used,
+                ptr::null_mut(),
+            )
+        };
+        let error = (ok == 0).then(io::Error::last_os_error);
+        if file_storage::file_id_info(file)? != before {
+            return Err(invalid("reparse identity changed during query"));
         }
-        return Err(error);
-    }
-    if used as usize > reparse_layout::MAX_REPARSE_BYTES {
-        return Err(invalid("native reparse response exceeds sixteen KiB"));
-    }
-    let bytes = unsafe { std::slice::from_raw_parts(storage.as_ptr().cast::<u8>(), used as usize) };
-    reparse_layout::parse(bytes).map(Some)
+        if let Some(error) = error {
+            if error.raw_os_error() == Some(ERROR_NOT_A_REPARSE_POINT as i32) {
+                if used != 0 {
+                    return Err(invalid("reparse absence returned unexpected payload bytes"));
+                }
+                return Ok(None);
+            }
+            return Err(error);
+        }
+        if used as usize > reparse_layout::MAX_REPARSE_BYTES {
+            return Err(invalid("native reparse response exceeds sixteen KiB"));
+        }
+        reparse_layout::parse(&storage[..used as usize]).map(Some)
+    })
 }
 
 /// Only an actual constructor-owned fresh empty file/directory may be passed.

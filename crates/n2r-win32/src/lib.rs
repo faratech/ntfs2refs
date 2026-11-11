@@ -51,6 +51,8 @@ pub mod layout;
 pub mod layout_residual_pages;
 pub mod logical_hash;
 pub mod perf;
+#[cfg(windows)]
+pub(crate) mod query_scratch;
 pub mod stack_sampler;
 pub mod progress;
 #[cfg(windows)]

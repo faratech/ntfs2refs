@@ -169,6 +169,7 @@ fn observe_in_parallel<T: Sync, U: Send>(
     std::thread::scope(|scope| {
         for _ in 0..workers {
             scope.spawn(|| {
+                let _sampled = crate::stack_sampler::helper();
                 while !failed.load(Ordering::Acquire) {
                     let index = next.fetch_add(1, Ordering::AcqRel);
                     let Some(item) = items.get(index) else {

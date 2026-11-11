@@ -11,6 +11,11 @@
 //! K <label id> <samples> <symbol id of the innermost file:line> <symbol ids, outermost first>
 //! ```
 //!
+//! Threads the worker hands part of a step to are sampled as well, for as
+//! long as each holds the guard [`helper`] gave it. Their stacks are written
+//! under the step's label with ` [helper threads]` after it, so a step's
+//! helper samples add up to thread-seconds, not seconds.
+//!
 //! Names come from the `.pdb` beside the executable. It only observes: nothing
 //! the converter decides depends on it.
 
@@ -37,12 +42,26 @@ pub fn finish() {
     imp::finish();
 }
 
+/// The calling thread works on the sampled thread's current step: it is
+/// sampled too until the returned guard is dropped (on the same thread).
+/// Costs one atomic load when sampling is off.
+pub fn helper() -> Helper {
+    Helper(imp::helper())
+}
+
+/// See [`helper`].
+pub struct Helper(#[allow(dead_code)] Option<imp::Helper>);
+
 #[cfg(not(all(windows, target_arch = "x86_64")))]
 mod imp {
     use std::path::PathBuf;
     pub fn start(_output: PathBuf) {}
     pub fn note(_phase: Option<&str>, _step: Option<&str>) {}
     pub fn finish() {}
+    pub struct Helper;
+    pub fn helper() -> Option<Helper> {
+        None
+    }
 }
 
 #[cfg(all(windows, target_arch = "x86_64"))]
@@ -86,6 +105,44 @@ mod imp {
     static STOP: AtomicBool = AtomicBool::new(false);
     static TARGET_THREAD: AtomicU32 = AtomicU32::new(0);
     static LABEL: AtomicUsize = AtomicUsize::new(0);
+    /// Helper threads being sampled: thread identifier and an open handle
+    /// (kept as an integer so the list can be shared between threads).
+    static HELPERS: Mutex<Vec<(u32, usize)>> = Mutex::new(Vec::new());
+    /// Set in the label of a sample taken from a helper thread.
+    const HELPER_SAMPLE: usize = 1 << (usize::BITS - 1);
+    const SAMPLING_ACCESS: u32 =
+        THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION;
+
+    pub struct Helper(u32);
+    pub fn helper() -> Option<Helper> {
+        if !ENABLED.load(Relaxed) {
+            return None;
+        }
+        // SAFETY: no preconditions; returns the calling thread's identifier.
+        let thread = unsafe { GetCurrentThreadId() };
+        // SAFETY: plain call; a null result is handled below.
+        let handle = unsafe { OpenThread(SAMPLING_ACCESS, 0, thread) };
+        if handle.is_null() {
+            return None;
+        }
+        HELPERS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push((thread, handle as usize));
+        Some(Helper(thread))
+    }
+    impl Drop for Helper {
+        fn drop(&mut self) {
+            // The sampler holds this lock while it uses the handles, so a
+            // handle is never closed under it.
+            let mut helpers = HELPERS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(position) = helpers.iter().position(|(thread, _)| *thread == self.0) {
+                let (_, handle) = helpers.swap_remove(position);
+                // SAFETY: a thread handle `helper` opened, removed from the list.
+                unsafe { CloseHandle(handle as HANDLE) };
+            }
+        }
+    }
 
     pub fn start(output: PathBuf) {
         let mut state = STATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -175,25 +232,32 @@ mod imp {
                     unsafe { CloseHandle(handle) };
                 }
                 // SAFETY: plain call; a null result is handled below.
-                handle = unsafe {
-                    OpenThread(
-                        THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION,
-                        0,
-                        thread,
-                    )
-                };
+                handle = unsafe { OpenThread(SAMPLING_ACCESS, 0, thread) };
                 handle_thread = thread;
             }
             if handle.is_null() {
                 continue;
             }
+            let label = LABEL.load(Relaxed);
             let mut frames = [0u64; MAX_FRAMES];
             // SAFETY: `handle` is an open handle to another thread of this
             // process with suspend and get-context access.
             let count = unsafe { capture(handle, &mut frames) };
             if count > 0 {
-                let label = LABEL.load(Relaxed);
                 *samples.entry((label, frames[..count].into())).or_default() += 1;
+            }
+            // A helper is never stopped while it holds this lock, because the
+            // lock is held here; nothing is allocated while one is stopped.
+            let helpers = HELPERS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            for (_, helper) in helpers.iter() {
+                // SAFETY: an open handle to another thread of this process
+                // with the same access, kept open by the lock held here.
+                let count = unsafe { capture(*helper as HANDLE, &mut frames) };
+                if count > 0 {
+                    *samples
+                        .entry((label | HELPER_SAMPLE, frames[..count].into()))
+                        .or_default() += 1;
+                }
             }
         }
         if !handle.is_null() {
@@ -399,7 +463,13 @@ mod imp {
                 functions.push(function);
             }
             functions.reverse();
-            *merged.entry((*label, innermost_place, functions)).or_default() += count;
+            // Helper samples get label ids of their own, after the worker's.
+            let label = if label & HELPER_SAMPLE == 0 {
+                *label
+            } else {
+                (label & !HELPER_SAMPLE) + labels.len()
+            };
+            *merged.entry((label, innermost_place, functions)).or_default() += count;
         }
         // SAFETY: releases the symbol handler initialized above.
         unsafe { SymCleanup(process) };
@@ -411,6 +481,9 @@ mod imp {
         )?;
         for (id, label) in labels.iter().enumerate() {
             writeln!(file, "L {id} {label}")?;
+        }
+        for (id, label) in labels.iter().enumerate() {
+            writeln!(file, "L {} {label} [helper threads]", id + labels.len())?;
         }
         for (id, text) in symbols.texts.iter().enumerate() {
             writeln!(file, "S {id} {text}")?;
@@ -435,16 +508,32 @@ mod imp {
             let output = directory.path().join("stacks.txt");
             super::start(output.clone());
             super::note(Some("sampler-test"), None);
+            #[inline(never)]
+            fn busy_helper(until: Instant) -> u64 {
+                let _sampled = super::helper();
+                let mut value = 3u64;
+                while Instant::now() < until {
+                    value = std::hint::black_box(value.wrapping_mul(33).wrapping_add(5));
+                }
+                value
+            }
             let started = Instant::now();
+            let until = started + Duration::from_millis(500);
+            let helper = std::thread::spawn(move || busy_helper(until));
             let mut value = 1u64;
             while started.elapsed() < Duration::from_millis(500) {
                 value = std::hint::black_box(value.wrapping_mul(31).wrapping_add(7));
             }
+            helper.join().unwrap();
             super::finish();
             let text = std::fs::read_to_string(&output).unwrap();
             assert!(text.lines().any(|line| line.starts_with("K ")), "{text}");
             assert!(text.contains("sampler-test;"), "{text}");
             assert!(text.contains("a_busy_thread_is_sampled"), "{text}");
+            assert!(
+                text.contains("sampler-test; [helper threads]") && text.contains("busy_helper"),
+                "{text}"
+            );
         }
     }
 }

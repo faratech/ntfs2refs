@@ -5661,35 +5661,58 @@ fn run_role_content_domain_accounted(
         if let Some(memory) = &mut retained_memory {
             memory.observe_object_capacity(result.capacity())?;
         }
-        input.for_each(|_, item| {
-            let _timed = crate::perf::scope(crate::perf::Point::ShadowObject);
-            let peak = if memory_accountant.is_some() {
-                report_memory::row_peak(item, sd_limit.unwrap_or(0))?
-            } else {
-                0
+        // The paged domain hands out one decoded object at a time, which made
+        // this walk one object at a time as well: a few system calls each,
+        // for every object on the volume, on one thread. Objects are taken a
+        // batch at a time instead and observed on the available cores, with
+        // each row's query workspace paid for before its batch starts. If the
+        // ledger cannot pay for a whole batch, the batch is cut short; only a
+        // refusal for the first object of a batch is a failure, as before.
+        const BATCH: usize = 32;
+        let mut next = 0;
+        while next < input.len() {
+            let mut owners = Vec::with_capacity(BATCH);
+            for index in next..(next + BATCH).min(input.len()) {
+                owners.push(input.object(index)?);
+            }
+            let mut items: Vec<Input<'_>> = owners.iter().map(|owner| owner.input()).collect();
+            let mut leases = Vec::with_capacity(items.len());
+            for (offset, item) in items.iter().enumerate() {
+                let peak = if memory_accountant.is_some() {
+                    report_memory::row_peak(item, sd_limit.unwrap_or(0))?
+                } else {
+                    0
+                };
+                match memory_accountant.map(|payer| payer.reserve(peak)).transpose() {
+                    Ok(lease) => leases.push((lease, peak)),
+                    Err(_) if offset > 0 => break,
+                    Err(error) => {
+                        return Err(io::Error::other(format!(
+                            "native object row {}/{} query workspace {peak} bytes refused: {error}",
+                            next, input.len()
+                        )));
+                    }
+                }
+            }
+            items.truncate(leases.len());
+            let rows = {
+                let _timed = crate::perf::scope(crate::perf::Point::ShadowObject);
+                observe_in_parallel(&items, &observe)?
             };
-            let lease =
-                memory_accountant
-                    .map(|payer| {
-                        payer.reserve(peak).map_err(|error| io::Error::other(format!(
-                    "native object row {}/{} query workspace {peak} bytes refused: {error}",
-                    result.len(), input.len()
-                )))
-                    })
-                    .transpose()?;
-            let mut row = observe(item)?;
-            if let (Some(memory), Some(lease)) = (&mut retained_memory, lease) {
-                report_memory::compact_row(&mut row);
-                memory.retain(lease, &row, peak)?;
+            for (mut row, (lease, peak)) in rows.into_iter().zip(leases) {
+                if let (Some(memory), Some(lease)) = (&mut retained_memory, lease) {
+                    report_memory::compact_row(&mut row);
+                    memory.retain(lease, &row, peak)?;
+                }
+                if result.len() == result.capacity() {
+                    return Err(invalid(
+                        "native object slots exceeded their initial reservation",
+                    ));
+                }
+                result.push(row);
             }
-            if result.len() == result.capacity() {
-                return Err(invalid(
-                    "native object slots exceeded their initial reservation",
-                ));
-            }
-            result.push(row);
-            Ok(())
-        })?;
+            next += items.len();
+        }
         result
     };
     let post_mount_indexer_cache =

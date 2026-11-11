@@ -278,8 +278,11 @@ fn value_range(row: &NodeRowObservation) -> Result<std::ops::Range<usize>> {
 
 fn index_value_range(
     row: &NodeRowObservation,
-    row_count: usize,
+    rows: &[NodeRowObservation],
+    oid: u64,
+    level: u8,
 ) -> Result<std::ops::Range<usize>> {
+    let row_count = rows.len();
     if row.reserved_at_8 == 0 {
         return value_range(row);
     }
@@ -297,7 +300,25 @@ fn index_value_range(
             && row.value_length == 48
             && row.reserved_at_14 == 0
             && !row.key_value_overlap,
-        "unsupported native trust-label index boundary row"
+        "unsupported native trust-label index boundary row: table OID 0x{oid:x}, index level {level}, row {} of {row_count}: marker {}, size {}, key offset {} length {}, flags {}, value offset {} length {}, reserved {}, key/value overlap {}; every row of the page as index:flags/key length/value length/size: {}",
+        row.index,
+        row.marker,
+        row.size,
+        row.key_offset,
+        row.key_length,
+        row.reserved_at_8,
+        row.value_offset,
+        row.value_length,
+        row.reserved_at_14,
+        row.key_value_overlap,
+        rows.iter()
+            .take(64)
+            .map(|each| format!(
+                "{}:{}/{}/{}/{}",
+                each.index, each.reserved_at_8, each.key_length, each.value_length, each.size
+            ))
+            .collect::<Vec<_>>()
+            .join(" ")
     );
     let start = row.page_offset.checked_add(16).context("index value offset overflow")?;
     let end = start.checked_add(48).context("index value length overflow")?;
@@ -495,7 +516,7 @@ impl<R: Read + Seek> Walker<'_, R> {
             let span = if level == 0 {
                 value_range(row)?
             } else {
-                index_value_range(row, rows.len())?
+                index_value_range(row, &rows, kind.oid(), level)?
             };
             if level != 0 {
                 let (child_slots, child_crc) = reference(&before[span.clone()])?;

@@ -229,6 +229,59 @@ fn file_hash(file: &mut File, bytes: u64) -> io::Result<[u8; 32]> {
     }
     Ok(hash.finalize().into())
 }
+/// Files a [`Writer`] in this process finished: identity and final path, then
+/// length, timestamp and the SHA-256 it computed.
+type WrittenFiles = std::collections::HashMap<(String, String), (u64, SystemTime, [u8; 32])>;
+static WRITTEN: std::sync::Mutex<Option<WrittenFiles>> = std::sync::Mutex::new(None);
+
+fn note_written(snapshot: &Snapshot, sha256: [u8; 32]) {
+    WRITTEN
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get_or_insert_with(WrittenFiles::new)
+        .insert(
+            (snapshot.id.clone(), snapshot.final_path.clone()),
+            (snapshot.bytes, snapshot.modified, sha256),
+        );
+}
+
+/// Whether this process wrote exactly this file, unchanged since, with this
+/// SHA-256. Its writer refused any record that was not valid JSON under a
+/// strictly increasing key and hashed every byte, so under the check-once
+/// policy a reader need not hash and parse the whole file again to open it.
+/// Each page is still hashed against the index whenever it is loaded. Inside
+/// the gate before the first write to the source this is never true.
+fn written_here(snapshot: &Snapshot, sha256: &[u8; 32]) -> bool {
+    if crate::verify_policy::full_unremembered() {
+        return false;
+    }
+    WRITTEN
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .and_then(|written| written.get(&(snapshot.id.clone(), snapshot.final_path.clone())))
+        .is_some_and(|(bytes, modified, known)| {
+            *bytes == snapshot.bytes && *modified == snapshot.modified && known == sha256
+        })
+}
+
+/// One start offset for every this many records of a page.
+const START_STRIDE: u64 = 16;
+
+/// The start offset of every [`START_STRIDE`]th record of a page, so a record
+/// is found by scanning at most that many, not the whole page before it.
+fn sparse_starts(body: &[u8], count: u32, starts: &mut Vec<u32>) -> io::Result<()> {
+    starts.clear();
+    let mut at = 0usize;
+    for record in 0..u64::from(count) {
+        if record % START_STRIDE == 0 {
+            starts.push(u32::try_from(at).map_err(io::Error::other)?);
+        }
+        at = record_at(body, at)?.0;
+    }
+    Ok(())
+}
+
 fn projected(data_end: u64, pages: u64, budget: PageBudget) -> io::Result<u64> {
     let bytes = add(
         add(
@@ -257,6 +310,8 @@ pub struct Writer {
     data_end: u64,
     last_key: Option<Vec<u8>>,
     poisoned: bool,
+    // Every byte in file order as it is written: the complete-file SHA-256.
+    hash: Sha256,
 }
 impl Writer {
     pub fn new(path: &Path, purpose: [u8; 8], budget: PageBudget) -> io::Result<Self> {
@@ -275,6 +330,8 @@ impl Writer {
             "new empty metadata file required",
         )?;
         file.write_all(&header(purpose, budget))?;
+        let mut hash = Sha256::new();
+        hash.update(header(purpose, budget));
         Ok(Self {
             file,
             purpose,
@@ -286,6 +343,7 @@ impl Writer {
             data_end: HEADER,
             last_key: None,
             poisoned: false,
+            hash,
         })
     }
     /// Keys are strictly increasing binary strings; only the first may be empty.
@@ -350,6 +408,8 @@ impl Writer {
         self.file.seek(SeekFrom::Start(self.data_end))?;
         self.file.write_all(&frame)?;
         self.file.write_all(&self.body)?;
+        self.hash.update(frame);
+        self.hash.update(&self.body);
         self.data_end = next;
         self.pages += 1;
         self.pending = 0;
@@ -379,6 +439,7 @@ impl Writer {
                 .seek(SeekFrom::Start(add(self.data_end, page * INDEX)?))?;
             self.file.write_all(&frame)?;
             index_hash.update(frame);
+            self.hash.update(frame);
             at = add(at, encoded)?;
         }
         require(
@@ -400,6 +461,7 @@ impl Writer {
         footer[80..112].copy_from_slice(&Sha256::digest(header(self.purpose, self.budget)));
         self.file.seek(SeekFrom::Start(bytes - FOOTER))?;
         self.file.write_all(&footer)?;
+        self.hash.update(footer);
         self.file.flush()?;
         crate::verify_policy::flush_working_file(&self.file)?;
         let before = Snapshot::observe(&self.file)?;
@@ -407,11 +469,22 @@ impl Writer {
             before.bytes == bytes,
             "metadata completed file length differs",
         )?;
-        let sha256 = hex::encode(file_hash(&mut self.file, bytes)?);
+        // The file is written front to back, so its SHA-256 is known from the
+        // bytes handed to it. Reading it all back to hash it again is left out
+        // under the check-once policy.
+        let written: [u8; 32] = std::mem::take(&mut self.hash).finalize().into();
+        if !crate::verify_policy::checks_once() {
+            require(
+                file_hash(&mut self.file, bytes)? == written,
+                "metadata file differs from the bytes written to it",
+            )?;
+        }
         require(
             Snapshot::observe(&self.file)? == before,
             "metadata file changed while finishing",
         )?;
+        note_written(&before, written);
+        let sha256 = hex::encode(written);
         Ok(Summary {
             sha256,
             records: self.records,
@@ -547,6 +620,7 @@ struct CachedPage {
     entry: Option<Entry>,
     record: Option<(u64, usize, usize)>,
     body: Vec<u8>,
+    starts: Vec<u32>,
 }
 
 /// The largest file a reader will decide by itself to hold in memory.
@@ -567,6 +641,8 @@ pub struct Reader {
     // every earlier record in the page for each lookup.
     cached_record: Option<(u64, usize, usize)>,
     body: Vec<u8>,
+    // Sparse record offsets of the cached page; empty when it has none.
+    starts: Vec<u32>,
     body_limit: usize,
     // Optional second authenticated page, supplied by an explicitly prepaid
     // caller. The primary slot is most recently used; swaps retain each page's
@@ -639,10 +715,13 @@ impl Reader {
         let snapshot = Snapshot::observe(&file)?;
         ordinary(Path::new(&snapshot.final_path))?;
         let body_limit = Self::body_capacity_for_file(budget, snapshot.bytes)?;
-        require(
-            file_hash(&mut file, snapshot.bytes)? == sha256,
-            "metadata complete-file SHA differs",
-        )?;
+        let written_here = written_here(&snapshot, &sha256);
+        if !written_here {
+            require(
+                file_hash(&mut file, snapshot.bytes)? == sha256,
+                "metadata complete-file SHA differs",
+            )?;
+        }
         let mut actual_header = [0; 64];
         read_at(&mut file, 0, &mut actual_header)?;
         require(
@@ -693,6 +772,14 @@ impl Reader {
                 e.offset == cursor && e.first == count && add(cursor, e.bytes as u64)? <= index,
                 "metadata page index has a gap/overlap or missing records",
             )?;
+            if written_here {
+                // The index, checked against the footer above, is walked for
+                // gaps; the pages it names are hashed when they are loaded.
+                cursor = add(cursor, e.bytes as u64)?;
+                count = add(count, e.count as u64)?;
+                require(count <= records, "metadata page records exceed footer")?;
+                continue;
+            }
             load_page(
                 &mut file,
                 e,
@@ -738,6 +825,7 @@ impl Reader {
             cached,
             cached_record: None,
             body,
+            starts: Vec::new(),
             body_limit,
             secondary: None,
             resident: None,
@@ -838,6 +926,7 @@ impl Reader {
             entry: None,
             record: None,
             body,
+            starts: Vec::new(),
         });
         Ok(())
     }
@@ -899,6 +988,7 @@ impl Reader {
             std::mem::swap(&mut self.cached, &mut secondary.entry);
             std::mem::swap(&mut self.cached_record, &mut secondary.record);
             std::mem::swap(&mut self.body, &mut secondary.body);
+            std::mem::swap(&mut self.starts, &mut secondary.starts);
             self.statistics.hits = self.statistics.hits.saturating_add(1);
         } else {
             self.statistics.misses = self.statistics.misses.saturating_add(1);
@@ -936,9 +1026,11 @@ impl Reader {
                 std::mem::swap(&mut self.cached, &mut secondary.entry);
                 std::mem::swap(&mut self.cached_record, &mut secondary.record);
                 std::mem::swap(&mut self.body, &mut secondary.body);
+                std::mem::swap(&mut self.starts, &mut secondary.starts);
             }
             self.cached = None;
             self.cached_record = None;
+            self.starts.clear();
             load_page(
                 &mut self.file,
                 e,
@@ -948,16 +1040,34 @@ impl Reader {
                 &mut self.body,
                 &mut self.statistics,
             )?;
+            // Without its offsets the page is still read correctly, by
+            // scanning; a malformed page is reported by that scan as before.
+            if sparse_starts(&self.body, e.count, &mut self.starts).is_err() {
+                self.starts.clear();
+            }
             self.cached = Some(e);
             self.cached_record = None;
         }
         let e = self
             .cached
             .ok_or_else(|| io::Error::other("metadata page cache absent"))?;
-        let (first, mut at) = match self.cached_record {
-            Some((previous, start, _)) if ordinal == previous => (previous, start),
-            Some((previous, _, end)) if ordinal > previous => (previous + 1, end),
-            _ => (e.first, 0),
+        // Start from whichever known record is nearest before the one asked
+        // for: the last one decoded, or the page's sparse offsets.
+        let cursor = match self.cached_record {
+            Some((previous, start, _)) if ordinal == previous => Some((previous, start)),
+            Some((previous, _, end)) if ordinal > previous => Some((previous + 1, end)),
+            _ => None,
+        };
+        let slot = (ordinal - e.first) / START_STRIDE;
+        let indexed = usize::try_from(slot)
+            .ok()
+            .and_then(|slot| self.starts.get(slot))
+            .map(|start| (e.first + slot * START_STRIDE, *start as usize));
+        let (first, mut at) = match (cursor, indexed) {
+            (Some(cursor), Some(indexed)) if cursor.0 >= indexed.0 => cursor,
+            (_, Some(indexed)) => indexed,
+            (Some(cursor), None) => cursor,
+            (None, None) => (e.first, 0),
         };
         for current in first..=ordinal {
             let (end, key, payload) = record_at(&self.body, at)?;

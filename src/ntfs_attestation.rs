@@ -693,32 +693,102 @@ pub fn same_security(a: &[u8], b: &[u8]) -> Result<bool> {
 pub fn same_security_null_sacl_as_absent(a: &[u8], b: &[u8]) -> Result<bool> {
     const SE_SACL_PRESENT: u16 = 0x0010;
     let maximum = ntfs_security::MAX_DESCRIPTOR_BYTES as u64;
-    let a = ntfs_security::parse_descriptor_with_limit(a, maximum)?;
-    let b = ntfs_security::parse_descriptor_with_limit(b, maximum)?;
-    let empty = |acl: &Acl| matches!(acl.state, ntfs_security::AclState::Absent | ntfs_security::AclState::Null);
-    let (control_mask, sacl_same) = if empty(&a.sacl) && empty(&b.sacl) {
-        (!SE_SACL_PRESENT, true)
-    } else {
-        (u16::MAX, acl_equal(&a, &a.sacl, &b, &b.sacl)?)
-    };
-    Ok(a.control & control_mask == b.control & control_mask
-        && a.rm_control == b.rm_control
-        && a.owner_sid == b.owner_sid
-        && a.group_sid == b.group_sid
-        && acl_equal(&a, &a.dacl, &b, &b.dacl)?
-        && sacl_same)
+    remembered_comparison(1, a, b, maximum, || {
+        let a = ntfs_security::parse_descriptor_with_limit(a, maximum)?;
+        let b = ntfs_security::parse_descriptor_with_limit(b, maximum)?;
+        let empty = |acl: &Acl| matches!(acl.state, ntfs_security::AclState::Absent | ntfs_security::AclState::Null);
+        let (control_mask, sacl_same) = if empty(&a.sacl) && empty(&b.sacl) {
+            (!SE_SACL_PRESENT, true)
+        } else {
+            (u16::MAX, acl_equal(&a, &a.sacl, &b, &b.sacl)?)
+        };
+        Ok(a.control & control_mask == b.control & control_mask
+            && a.rm_control == b.rm_control
+            && a.owner_sid == b.owner_sid
+            && a.group_sid == b.group_sid
+            && acl_equal(&a, &a.dacl, &b, &b.dacl)?
+            && sacl_same)
+    })
 }
 /// The resource profile changes the storage bound, never descriptor meaning.
 /// SID/control/ACL states, ACE ordering and all complete ACE bytes still match.
 pub fn same_security_with_limit(a: &[u8], b: &[u8], maximum: u64) -> Result<bool> {
-    let a = ntfs_security::parse_descriptor_with_limit(a, maximum)?;
-    let b = ntfs_security::parse_descriptor_with_limit(b, maximum)?;
-    Ok(a.control == b.control
-        && a.rm_control == b.rm_control
-        && a.owner_sid == b.owner_sid
-        && a.group_sid == b.group_sid
-        && acl_equal(&a, &a.dacl, &b, &b.dacl)?
-        && acl_equal(&a, &a.sacl, &b, &b.sacl)?)
+    remembered_comparison(0, a, b, maximum, || {
+        let a = ntfs_security::parse_descriptor_with_limit(a, maximum)?;
+        let b = ntfs_security::parse_descriptor_with_limit(b, maximum)?;
+        Ok(a.control == b.control
+            && a.rm_control == b.rm_control
+            && a.owner_sid == b.owner_sid
+            && a.group_sid == b.group_sid
+            && acl_equal(&a, &a.dacl, &b, &b.dacl)?
+            && acl_equal(&a, &a.sacl, &b, &b.sacl)?)
+    })
+}
+
+/// The answer of a descriptor comparison for the same two byte strings.
+///
+/// A volume has hundreds of thousands of objects and a few hundred distinct
+/// security descriptors, and each comparison parsed both descriptors again.
+/// The comparison depends only on its inputs, so its answer is kept, keyed
+/// by the exact bytes of both descriptors (a hash only finds the bucket).
+/// Errors are not kept. At most `REMEMBERED_BYTES` of descriptors are held.
+fn remembered_comparison(
+    kind: u8,
+    a: &[u8],
+    b: &[u8],
+    maximum: u64,
+    compare: impl FnOnce() -> Result<bool>,
+) -> Result<bool> {
+    struct Known {
+        kind: u8,
+        maximum: u64,
+        a: Vec<u8>,
+        b: Vec<u8>,
+        same: bool,
+    }
+    #[derive(Default)]
+    struct Memory {
+        buckets: std::collections::HashMap<u128, Vec<Known>>,
+        bytes: usize,
+    }
+    const REMEMBERED_BYTES: usize = 32 * 1024 * 1024;
+    thread_local! {
+        static MEMORY: std::cell::RefCell<Memory> = std::cell::RefCell::new(Memory::default());
+    }
+    let mut hash = xxhash_rust::xxh3::Xxh3::new();
+    hash.update(&[kind]);
+    hash.update(&maximum.to_le_bytes());
+    hash.update(&(a.len() as u64).to_le_bytes());
+    hash.update(a);
+    hash.update(b);
+    let bucket = hash.digest128();
+    let known = MEMORY.with(|memory| {
+        memory.borrow().buckets.get(&bucket).and_then(|entries| {
+            entries
+                .iter()
+                .find(|known| known.kind == kind && known.maximum == maximum && known.a == a && known.b == b)
+                .map(|known| known.same)
+        })
+    });
+    if let Some(same) = known {
+        return Ok(same);
+    }
+    let same = compare()?;
+    MEMORY.with(|memory| {
+        let mut memory = memory.borrow_mut();
+        let size = a.len() + b.len() + std::mem::size_of::<Known>();
+        if memory.bytes + size <= REMEMBERED_BYTES {
+            memory.bytes += size;
+            memory.buckets.entry(bucket).or_default().push(Known {
+                kind,
+                maximum,
+                a: a.to_vec(),
+                b: b.to_vec(),
+                same,
+            });
+        }
+    });
+    Ok(same)
 }
 fn buffer(s: &Snapshot, class: i32, length: usize) -> Result<&[u8]> {
     let q: Vec<_> = s.queries.iter().filter(|q| q.class == class).collect();

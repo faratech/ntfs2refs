@@ -23,10 +23,20 @@ impl DirectoryRowCache {
     fn clear(&mut self) {
         self.rows.clear(); self.charged = 0; self.clock = 0;
     }
+    /// Drops the least recently used quarter of the rows (at least one).
+    /// Dropping only the single oldest meant a scan of the whole cache for
+    /// every row added once it was full.
     fn evict_oldest(&mut self) -> bool {
-        let Some(number) = self.rows.iter().min_by_key(|(_, row)| row.last_used).map(|(number, _)| *number)
-            else { return false; };
-        if let Some(row) = self.rows.remove(&number) { self.charged -= row.charged; }
+        if self.rows.is_empty() { return false; }
+        let mut used: Vec<u64> = self.rows.values().map(|row| row.last_used).collect();
+        let cut = used.len() / 4;
+        used.select_nth_unstable(cut);
+        let threshold = used[cut];
+        let mut freed = 0u64;
+        self.rows.retain(|_, row| {
+            if row.last_used <= threshold { freed += row.charged; false } else { true }
+        });
+        self.charged -= freed;
         true
     }
 }

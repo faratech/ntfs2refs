@@ -71,17 +71,36 @@ fn decode_key(key: &[u8]) -> io::Result<(u8, u64, u64)> {
         u64::from_be_bytes(key[9..17].try_into().unwrap()),
     ))
 }
+/// The value of each lowercase hexadecimal digit; 0xff for any other byte.
+const HEX_VALUES: [u8; 256] = {
+    let mut values = [0xffu8; 256];
+    let mut digit = 0;
+    while digit < 16 {
+        values[b"0123456789abcdef"[digit] as usize] = digit as u8;
+        digit += 1;
+    }
+    values
+};
 fn decode_chunk(payload: &[u8], maximum: usize) -> io::Result<Vec<u8>> {
     let text: &str = serde_json::from_slice(payload).map_err(io::Error::other)?;
+    let input = text.as_bytes();
     require(
-        text.len() <= maximum * 2
-            && text.len().is_multiple_of(2)
-            && text
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        input.len() <= maximum * 2 && input.len().is_multiple_of(2),
         "noncanonical native observation chunk",
     )?;
-    hex::decode(text).map_err(io::Error::other)
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(input.len() / 2)
+        .map_err(io::Error::other)?;
+    // Any byte that is not a lowercase digit sets the high bits of `seen`.
+    let mut seen = 0u8;
+    for pair in input.chunks_exact(2) {
+        let (high, low) = (HEX_VALUES[pair[0] as usize], HEX_VALUES[pair[1] as usize]);
+        seen |= high | low;
+        bytes.push((high << 4) | (low & 0x0f));
+    }
+    require(seen & 0xf0 == 0, "noncanonical native observation chunk")?;
+    Ok(bytes)
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

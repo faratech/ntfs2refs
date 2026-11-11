@@ -142,6 +142,39 @@ function Save-VmScreen([string]$Path) {
         return $true
     } catch { Say "screen capture failed: $($_.Exception.Message)"; return $false }
 }
+function Enter-Desktop {
+    # Windows answering a remote session has reached the lock screen, not the
+    # desktop. Sign in at the console as the lab account, through the VM's
+    # keyboard, and wait for that account's shell.
+    $credential = Get-GuestCredential
+    $result = [ordered]@{ shell = $false; user = $null; seconds = $null }
+    try {
+        $ns = 'root\virtualization\v2'
+        $system = Get-CimInstance -Namespace $ns -ClassName Msvm_ComputerSystem -Filter "Name='$($vmId.ToUpperInvariant())'"
+        $keyboard = Get-CimAssociatedInstance -InputObject $system -ResultClassName Msvm_Keyboard
+        $started = Get-Date
+        $null = Invoke-CimMethod -InputObject $keyboard -MethodName TypeKey -Arguments @{ keyCode = [uint32]0x20 }   # dismiss the lock screen
+        Start-Sleep -Seconds 3
+        $null = Invoke-CimMethod -InputObject $keyboard -MethodName TypeText -Arguments @{ asciiText = $credential.GetNetworkCredential().Password }
+        Start-Sleep -Seconds 1
+        $null = Invoke-CimMethod -InputObject $keyboard -MethodName TypeKey -Arguments @{ keyCode = [uint32]0x0D }
+        $deadline = (Get-Date).AddMinutes(3)
+        while ((Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 10
+            $owner = Invoke-Command -VMId $vmId -Credential $credential -ErrorAction Stop -ScriptBlock {
+                $explorer = @(Get-CimInstance Win32_Process -Filter "Name='explorer.exe'")
+                if ($explorer) { (Invoke-CimMethod -InputObject $explorer[0] -MethodName GetOwner).User }
+            }
+            if ($owner) {
+                $result.shell = $true; $result.user = [string]$owner
+                $result.seconds = [math]::Round(((Get-Date) - $started).TotalSeconds)
+                Start-Sleep -Seconds 15   # let the desktop draw before its picture is taken
+                break
+            }
+        }
+    } catch { $result.error = $_.Exception.Message }
+    $result
+}
 
 try {
     # ---- restore the baseline ------------------------------------------------
@@ -515,9 +548,11 @@ try {
         $observed.partition -eq $guest.source_partition -and $observed.partition_guid -eq $guest.source_guid -and @($observed.disks).Count -eq 1 -and
         $observed.secure_boot -eq $true -and $observed.newer_than_control_boot -and $observed.health -eq 'Healthy' -and
         -not (@($observed.signatures) | Where-Object status -NE 'Valid')
-    $verdict.boot = @{ reached_windows = $true; observed = $observed }
-    $verdict.outcome = if (-not $ok) { 'booted-but-checks-failed' } elseif ($listingDiffers) { 'booted-but-listing-differs' } else { 'BOOTED-ON-REFS' }
-    Say "disk0 booted: $($observed.filesystem) $($observed.refs_version), cluster $($observed.cluster_bytes), partition $($observed.partition), health $($observed.health) => $($verdict.outcome)"
+    $desktop = Enter-Desktop
+    $null = Save-VmScreen (Join-Path $case 'boot-desktop.png')
+    $verdict.boot = @{ reached_windows = $true; observed = $observed; desktop = $desktop }
+    $verdict.outcome = if (-not $ok) { 'booted-but-checks-failed' } elseif (-not $desktop.shell) { 'booted-without-desktop' } elseif ($listingDiffers) { 'booted-but-listing-differs' } else { 'BOOTED-ON-REFS' }
+    Say "disk0 booted: $($observed.filesystem) $($observed.refs_version), cluster $($observed.cluster_bytes), partition $($observed.partition), health $($observed.health); desktop $(if ($desktop.shell) { "reached as $($desktop.user) in $($desktop.seconds) s" } else { "not reached: $($desktop.error)" }) => $($verdict.outcome)"
     Phase 'boot'
 } catch {
     $verdict.outcome = 'harness-error'; $verdict.error = ($_ | Out-String); Say "HARNESS ERROR: $($_.Exception.Message)"; throw

@@ -643,6 +643,8 @@ pub struct Reader {
     body: Vec<u8>,
     // Sparse record offsets of the cached page; empty when it has none.
     starts: Vec<u32>,
+    // Opened as a file this process wrote, without reading all of it again.
+    written_here: bool,
     body_limit: usize,
     // Optional second authenticated page, supplied by an explicitly prepaid
     // caller. The primary slot is most recently used; swaps retain each page's
@@ -826,6 +828,7 @@ impl Reader {
             cached_record: None,
             body,
             starts: Vec::new(),
+            written_here,
             body_limit,
             secondary: None,
             resident: None,
@@ -892,6 +895,12 @@ impl Reader {
         )?;
         self.resident = Some(pages);
         Ok(())
+    }
+    /// Whether this reader accepted the file as one this process wrote
+        /// (check-once policy) instead of hashing and parsing all of it. A
+        /// caller with a whole-content check of its own may then leave it out.
+    pub fn written_by_this_process(&self) -> bool {
+        self.written_here
     }
     pub fn pages_resident(&self) -> bool {
         self.resident.is_some()

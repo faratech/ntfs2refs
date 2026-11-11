@@ -680,7 +680,10 @@ struct RangeFooter {
     logical_sha256: String,
 }
 
+// The original encoder, kept as the oracle for `encode_json_base64`.
+#[cfg(test)]
 struct Base64<'a>(&'a [u8]);
+#[cfg(test)]
 impl std::fmt::Display for Base64<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -701,6 +704,7 @@ impl std::fmt::Display for Base64<'_> {
         Ok(())
     }
 }
+#[cfg(test)]
 impl Serialize for Base64<'_> {
     fn serialize<S: serde::Serializer>(
         &self,
@@ -709,6 +713,54 @@ impl Serialize for Base64<'_> {
         serializer.collect_str(self)
     }
 }
+const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+/// The six-bit value of each base64 character; 0xff for any other byte.
+const BASE64_VALUES: [u8; 256] = {
+    let mut values = [0xffu8; 256];
+    let mut index = 0;
+    while index < 64 {
+        values[BASE64[index] as usize] = index as u8;
+        index += 1;
+    }
+    values
+};
+
+/// `bytes` as a JSON string of canonical padded base64: exactly what
+/// serializing [`Base64`] produces, written directly. The alphabet needs no
+/// JSON escaping.
+fn encode_json_base64(bytes: &[u8]) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    out.try_reserve_exact(bytes.len().div_ceil(3) * 4 + 2)?;
+    out.push(b'"');
+    let mut triples = bytes.chunks_exact(3);
+    for value in &mut triples {
+        let (a, b, c) = (value[0], value[1], value[2]);
+        out.extend_from_slice(&[
+            BASE64[(a >> 2) as usize],
+            BASE64[(((a & 3) << 4) | (b >> 4)) as usize],
+            BASE64[(((b & 15) << 2) | (c >> 6)) as usize],
+            BASE64[(c & 63) as usize],
+        ]);
+    }
+    match *triples.remainder() {
+        [a] => out.extend_from_slice(&[
+            BASE64[(a >> 2) as usize],
+            BASE64[((a & 3) << 4) as usize],
+            b'=',
+            b'=',
+        ]),
+        [a, b] => out.extend_from_slice(&[
+            BASE64[(a >> 2) as usize],
+            BASE64[(((a & 3) << 4) | (b >> 4)) as usize],
+            BASE64[((b & 15) << 2) as usize],
+            b'=',
+        ]),
+        _ => (),
+    }
+    out.push(b'"');
+    Ok(out)
+}
+
 fn decode(payload: &[u8], maximum: usize) -> Result<Vec<u8>> {
     let text: &str = serde_json::from_slice(payload)?;
     let input = text.as_bytes();
@@ -738,7 +790,20 @@ fn decode(payload: &[u8], maximum: usize) -> Result<Vec<u8>> {
     };
     let mut bytes = Vec::new();
     bytes.try_reserve_exact(length)?;
-    for (index, value) in input.chunks_exact(4).enumerate() {
+    // Every group but the last is four alphabet characters; only the last
+    // may be padded and takes the checked path below.
+    let complete = input.len() / 4 - 1;
+    for value in input[..complete * 4].chunks_exact(4) {
+        let (a, b, c, d) = (
+            BASE64_VALUES[value[0] as usize],
+            BASE64_VALUES[value[1] as usize],
+            BASE64_VALUES[value[2] as usize],
+            BASE64_VALUES[value[3] as usize],
+        );
+        ensure!((a | b | c | d) & 0xc0 == 0, "noncanonical source chunk alphabet");
+        bytes.extend_from_slice(&[(a << 2) | (b >> 4), (b << 4) | (c >> 2), (c << 6) | d]);
+    }
+    for (index, value) in input.chunks_exact(4).enumerate().skip(complete) {
         let last = index + 1 == input.len() / 4;
         let a = digit(value[0])?;
         let b = digit(value[1])?;
@@ -820,7 +885,7 @@ impl SourceRangeWriter {
         if self.body.is_empty() {
             return Ok(());
         }
-        let payload = serde_json::to_vec(&Base64(&self.body))?;
+        let payload = encode_json_base64(&self.body)?;
         // Reserve the full encoded row plus its own page and index frames.
         // Shared concurrent writers cannot overrun aggregate scratch first.
         let bytes = (payload.len() as u64)
@@ -1110,31 +1175,40 @@ impl PagedMetadataRange {
             .context("source retained reader memory overflow")?,
         )?;
         let mut resident = ResidentMetadataCache::try_new(pin.purpose, footer.logical_bytes, scratch);
-        let mut hash = Sha256::new();
-        let mut total = 0u64;
-        for ordinal in 0..footer.chunks {
-            let chunk = reader.with_record(ordinal + 1, |key, payload| {
-                if key != ordinal.to_be_bytes() {
-                    return Err(io::Error::other("source range chunk order differs"));
+        // A store this process wrote and has not seen change (check-once
+        // policy) is not decoded and hashed in full again just to open it:
+        // it is decoded only to be held in memory, and not hashed.
+        let written_here = reader.written_by_this_process();
+        if !written_here || resident.is_some() {
+            let mut hash = (!written_here).then(Sha256::new);
+            let mut total = 0u64;
+            for ordinal in 0..footer.chunks {
+                let chunk = reader.with_record(ordinal + 1, |key, payload| {
+                    if key != ordinal.to_be_bytes() {
+                        return Err(io::Error::other("source range chunk order differs"));
+                    }
+                    decode(payload, usize::try_from(decoded).map_err(io::Error::other)?)
+                        .map_err(io::Error::other)
+                })?;
+                let expected = (footer.logical_bytes - total).min(u64::from(declared_chunk));
+                ensure!(
+                    chunk.len() as u64 == expected,
+                    "source range has a short interior chunk"
+                );
+                if let Some(hash) = &mut hash {
+                    hash.update(&chunk);
                 }
-                decode(payload, usize::try_from(decoded).map_err(io::Error::other)?)
-                    .map_err(io::Error::other)
-            })?;
-            let expected = (footer.logical_bytes - total).min(u64::from(declared_chunk));
-            ensure!(
-                chunk.len() as u64 == expected,
-                "source range has a short interior chunk"
-            );
-            hash.update(&chunk);
-            if let Some(cache) = &mut resident {
-                cache.bytes.extend_from_slice(&chunk);
+                if let Some(cache) = &mut resident {
+                    cache.bytes.extend_from_slice(&chunk);
+                }
+                total += chunk.len() as u64;
             }
-            total += chunk.len() as u64;
+            ensure!(
+                total == footer.logical_bytes
+                    && hash.is_none_or(|hash| hex::encode(hash.finalize()) == pin.logical_sha256),
+                "complete source range logical SHA differs"
+            );
         }
-        ensure!(
-            total == footer.logical_bytes && hex::encode(hash.finalize()) == pin.logical_sha256,
-            "complete source range logical SHA differs"
-        );
         reader.revalidate()?;
         let created = scratch.reader_lease(pin)?;
         let second_chunk_cache = (pin.purpose == *b"N2RFILE1"
@@ -1288,5 +1362,38 @@ impl SourceMetadataRange for SourceMetadataSlice {
     }
     fn revalidate(&self) -> Result<()> {
         self.owner.revalidate()
+    }
+}
+
+#[cfg(test)]
+mod base64_tests {
+    use super::*;
+
+    fn sample(length: usize) -> Vec<u8> {
+        (0..length).map(|index| (index * 131 + 7) as u8).collect()
+    }
+
+    #[test]
+    fn the_direct_encoder_writes_what_the_serializer_wrote_and_decodes_back() {
+        for length in (1..=67).chain([4096, 100_001]) {
+            let bytes = sample(length);
+            let encoded = encode_json_base64(&bytes).unwrap();
+            assert_eq!(encoded, serde_json::to_vec(&Base64(&bytes)).unwrap(), "length {length}");
+            assert_eq!(decode(&encoded, length).unwrap(), bytes, "length {length}");
+        }
+    }
+
+    #[test]
+    fn text_that_is_not_canonical_base64_is_refused() {
+        for text in [
+            "\"QUJD*UJD\"", // a character outside the alphabet in a complete group
+            "\"QUI=QUJD\"", // padding before the last group
+            "\"QUJDQUJ\"",  // length not a multiple of four
+            "\"QUJDQR==\"", // unused bits set under the padding
+            "\"\"",
+        ] {
+            assert!(decode(text.as_bytes(), 64).is_err(), "{text}");
+        }
+        assert!(decode(b"\"QUJD\"", 2).is_err(), "longer than the working window");
     }
 }

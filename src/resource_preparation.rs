@@ -632,6 +632,7 @@ where
         let aux_scratch = SourceScratch::new_auxiliary_in_arena(source_budget, aux_group)?;
         let projection_dir = output.join("projection");
         std::fs::create_dir(&projection_dir)?;
+        n2r_win32::perf::step("derive source projection");
         let projection = if resume.is_none() {
             Some(context.derive_projection(admission, &projection_dir, &aux_scratch)?)
         } else {

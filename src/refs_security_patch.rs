@@ -286,20 +286,27 @@ fn index_value_range(
     if row.reserved_at_8 == 0 {
         return value_range(row);
     }
-    // Native 3.14 Object Tables and OID 0x530 use this final keyless
-    // child-reference row after their keyed separators. This is an index
-    // record, not a leaf or a generic allowance for nonzero reserved fields.
+    // Native 3.14 Object Tables and OID 0x530 end an index page with one
+    // child-reference row whose flag word is 2. In the last page of an index
+    // level that row has no key (64 bytes: header, then the reference). In any
+    // other page of the level it keeps its separator key like the rows before
+    // it (header, key, reference); that form first appeared when the Object
+    // Table of a full Windows volume grew a second index level. Either way
+    // the value is the 48-byte reference, which the caller follows only after
+    // checking the child's CRC, level and table. This is an index record, not
+    // a leaf or a generic allowance for nonzero reserved fields.
+    let keyless = row.key_length == 0 && row.value_offset == 16 && row.size == 64 && row.marker == 0;
+    let keyed = row.key_length != 0
+        && u32::from(row.value_offset) == 16 + u32::from(row.key_length)
+        && row.size == u32::from(row.value_offset) + 48;
     ensure!(
         row.index.checked_add(1) == Some(row_count)
-            && row.marker == 0
-            && row.size == 64
             && row.key_offset == 16
-            && row.key_length == 0
             && row.reserved_at_8 == 2
-            && row.value_offset == 16
             && row.value_length == 48
             && row.reserved_at_14 == 0
-            && !row.key_value_overlap,
+            && !row.key_value_overlap
+            && (keyless || keyed),
         "unsupported native trust-label index boundary row: table OID 0x{oid:x}, index level {level}, row {} of {row_count}: marker {}, size {}, key offset {} length {}, flags {}, value offset {} length {}, reserved {}, key/value overlap {}; every row of the page as index:flags/key length/value length/size: {}",
         row.index,
         row.marker,
@@ -320,7 +327,10 @@ fn index_value_range(
             .collect::<Vec<_>>()
             .join(" ")
     );
-    let start = row.page_offset.checked_add(16).context("index value offset overflow")?;
+    let start = row
+        .page_offset
+        .checked_add(usize::from(row.value_offset))
+        .context("index value offset overflow")?;
     let end = start.checked_add(48).context("index value length overflow")?;
     ensure!(end <= PAGE, "index value outside authenticated page");
     Ok(start..end)
@@ -1042,4 +1052,62 @@ fn plan_profile<R: Read + Seek>(
         raw_write_authority: false,
         native_security_preservation_qualified: false,
     })
+}
+
+#[cfg(test)]
+mod index_row_tests {
+    use super::*;
+
+    fn row(index: usize, flags: u16, key_length: u16, marker: u16) -> NodeRowObservation {
+        let value_offset = 16 + key_length;
+        NodeRowObservation {
+            index,
+            index_entry_offset: 0,
+            relative_offset: 0,
+            page_offset: 1000,
+            marker,
+            size: u32::from(value_offset) + 48,
+            key_offset: 16,
+            key_length,
+            reserved_at_8: flags,
+            value_offset,
+            value_length: 48,
+            reserved_at_14: 0,
+            key_value_overlap: false,
+            row_bytes_hex: String::new(),
+            row_sha256: String::new(),
+            key_sha256: String::new(),
+            value_sha256: String::new(),
+        }
+    }
+
+    #[test]
+    fn the_last_row_of_an_index_page_may_be_keyless_or_keep_its_key() {
+        // The last page of a level: keyed separators, then a keyless row.
+        let last_page = [row(0, 0, 16, 0), row(1, 0, 16, 0), row(2, 2, 0, 0)];
+        assert_eq!(index_value_range(&last_page[0], &last_page, 2, 1).unwrap(), 1032..1080);
+        assert_eq!(index_value_range(&last_page[2], &last_page, 2, 1).unwrap(), 1016..1064);
+        // Any other page of the level, as on the full Windows volume: the
+        // flagged last row has a key like the rest.
+        let inner_page = [row(0, 0, 16, 0), row(1, 0, 16, 0), row(2, 2, 16, 65535)];
+        assert_eq!(index_value_range(&inner_page[2], &inner_page, 2, 1).unwrap(), 1032..1080);
+    }
+
+    #[test]
+    fn a_flagged_index_row_anywhere_else_or_of_another_shape_is_refused() {
+        let misplaced = [row(0, 2, 16, 0), row(1, 0, 16, 0)];
+        let error = index_value_range(&misplaced[0], &misplaced, 2, 1).unwrap_err().to_string();
+        assert!(error.contains("row 0 of 2") && error.contains("flags 2"), "{error}");
+
+        let mut padded = [row(0, 0, 16, 0), row(1, 2, 16, 65535)];
+        padded[1].size += 8;
+        assert!(index_value_range(&padded[1], &padded, 2, 1).is_err());
+
+        let other_flag = [row(0, 0, 16, 0), row(1, 4, 16, 0)];
+        assert!(index_value_range(&other_flag[1], &other_flag, 2, 1).is_err());
+
+        let mut short_value = [row(0, 0, 16, 0), row(1, 2, 0, 0)];
+        short_value[1].value_length = 40;
+        assert!(index_value_range(&short_value[1], &short_value, 2, 1).is_err());
+    }
 }

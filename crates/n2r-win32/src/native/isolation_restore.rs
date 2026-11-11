@@ -209,7 +209,7 @@ impl GeneralFrozenPartition {
         close_file(management, "close-general-management", events)?;
         Ok(Self {
             file, binding, frozen_state: frozen_state.clone(), position: 0, buffer,
-            native_bytes_read: 0, resource_budget: Some(budget),
+            ahead: ReadAhead::default(), native_bytes_read: 0, resource_budget: Some(budget),
             freeze_observation: Some(GeneralFreezeObservation { mounted_ntfs, frozen_state }),
             allocation_capture: None,
         })

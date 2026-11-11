@@ -376,6 +376,10 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
         );
         checkpoint_native_events(events, &mut checkpoint_events)?;
         n2r_win32::perf::step("write changed ranges");
+        // The ranges are written in ascending order, each read first. The
+        // fault-injection path reads its first write back at once and must
+        // get it from the device, so it keeps reading range by range.
+        target.set_read_ahead(first_write_fault.is_none());
         let domain = prepared.inner._domain;
         for ordinal in 0..u64::from(ticket.range_count) {
             let row = domain.row(ordinal)?;
@@ -396,6 +400,9 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
             )?;
         }
         n2r_win32::perf::step("flush and write boot sector");
+        // Nothing read back from here on may come from memory the writes
+        // above went through.
+        target.set_read_ahead(false);
         target.sync_all()?;
         // Preserve the existing selected-journal protocol: boot granule last,
         // after every other target range has crossed its durability barrier.
@@ -419,12 +426,15 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
         ensure!(first_write_fault.is_none(), "diagnostic interruption requested but no actual changed write occurred");
         target.sync_all()?;
         n2r_win32::perf::step("read back changed ranges");
+        target.set_read_ahead(true);
         let digest = check_selected(
             &mut target,
             domain,
             &mut buffers.current,
             ticket.new_selected_sha256,
-        )?;
+        );
+        target.set_read_ahead(false);
+        let digest = digest?;
         let applied = SelectedResult {
             selected_sha256: digest,
             selected_bytes: ticket.selected_bytes,

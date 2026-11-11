@@ -1439,12 +1439,54 @@ impl Seek for GeneralLockedPartition {
 
 /// Persistently excluded general data partition. This handle has no Write
 /// implementation and cannot make the disk mountable.
+/// Read-ahead for a frozen partition, used only inside a scope the caller
+/// declares (`with_read_ahead`, or a fresh-apply writer's `set_read_ahead`).
+///
+/// The passes that verify, write and read back the changed ranges read tens
+/// of thousands of small ranges in ascending order, a device read each. With
+/// read-ahead on, a read that continues shortly after the previous one
+/// fetches a megabyte, and the ranges that follow are served from it. The
+/// window is dropped when the scope ends, and a write through the same
+/// object is copied into it, so it never holds bytes the device no longer has.
+#[derive(Default)]
+struct ReadAhead {
+    enabled: bool,
+    window: Option<AlignedBuffer>,
+    start: u64,
+    length: usize,
+    // Where the furthest forward read so far ended.
+    last_end: u64,
+}
+impl ReadAhead {
+    /// A read that starts at most this far past the previous one reads ahead.
+    const BYTES: usize = 1024 * 1024;
+    fn clear(&mut self) {
+        self.length = 0;
+        self.last_end = 0;
+    }
+    /// Keeps the window equal to the device after `bytes` were written at
+    /// partition offset `offset` through the object that owns this window.
+    fn written(&mut self, offset: u64, bytes: &[u8]) {
+        if self.length == 0 {
+            return;
+        }
+        let Some(window) = self.window.as_mut() else { return };
+        let (start, end) = (self.start, self.start + self.length as u64);
+        let (from, to) = (offset.max(start), (offset + bytes.len() as u64).min(end));
+        if from < to {
+            window.bytes_mut()[(from - start) as usize..(to - start) as usize]
+                .copy_from_slice(&bytes[(from - offset) as usize..(to - offset) as usize]);
+        }
+    }
+}
+
 pub struct GeneralFrozenPartition {
     file: File,
     binding: GeneralDiskBinding,
     frozen_state: GeneralDiskState,
     position: u64,
     buffer: AlignedBuffer,
+    ahead: ReadAhead,
     native_bytes_read: u64,
     resource_budget: Option<crate::tree_resources::ResourceBudget>,
     freeze_observation: Option<GeneralFreezeObservation>,
@@ -2009,7 +2051,7 @@ impl GeneralExclusiveRecoveryTarget {
                     frozen_state,
                     position: 0,
                     buffer: AlignedBuffer::new()?,
-                    native_bytes_read: 0,
+                    ahead: ReadAhead::default(), native_bytes_read: 0,
                 },
                 policy: None,
                 paged_policy: None,
@@ -2293,7 +2335,7 @@ impl GeneralFrozenPartition {
                 frozen_state,
                 position: 0,
                 buffer,
-                native_bytes_read: 0,
+                ahead: ReadAhead::default(), native_bytes_read: 0,
                 resource_budget: resource_admission.map(|a| a.budget),
                 freeze_observation: None,
                 allocation_capture: Some(token),
@@ -2395,7 +2437,7 @@ impl GeneralFrozenPartition {
             frozen_state: frozen,
             position: 0,
             buffer,
-            native_bytes_read: 0,
+            ahead: ReadAhead::default(), native_bytes_read: 0,
             resource_budget: None,
             freeze_observation: None,
             allocation_capture: None,
@@ -2424,7 +2466,7 @@ impl GeneralFrozenPartition {
             frozen_state,
             position: 0,
             buffer: AlignedBuffer::new()?,
-            native_bytes_read: 0,
+            ahead: ReadAhead::default(), native_bytes_read: 0,
             resource_budget: None,
             freeze_observation: None,
             allocation_capture: None,
@@ -3917,7 +3959,7 @@ impl GeneralJournaledPartition {
                 frozen_state,
                 position: 0,
                 buffer: AlignedBuffer::new()?,
-                native_bytes_read: 0,
+                ahead: ReadAhead::default(), native_bytes_read: 0,
             },
             policy: None,
             paged_policy: None,
@@ -4313,13 +4355,46 @@ impl Seek for GeneralPartitionReader {
     }
 }
 
+impl GeneralFrozenPartition {
+    /// Runs `body` with read-ahead on; see [`ReadAhead`]. For a pass that
+    /// reads ranges in ascending order and during which nothing but this
+    /// object writes to the partition.
+    pub fn with_read_ahead<T>(&mut self, body: impl FnOnce(&mut Self) -> T) -> T {
+        let previous = self.ahead.enabled;
+        self.set_read_ahead(true);
+        let result = body(self);
+        self.set_read_ahead(previous);
+        result
+    }
+    /// Turning it on starts a fresh pass and turning it off drops the
+    /// window; setting it to what it already is changes nothing.
+    pub(crate) fn set_read_ahead(&mut self, enabled: bool) {
+        if self.ahead.enabled != enabled {
+            self.ahead.enabled = enabled;
+            self.ahead.clear();
+        }
+    }
+}
+
 impl Read for GeneralFrozenPartition {
     fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        use std::os::windows::fs::FileExt;
         if output.is_empty() || self.position == self.byte_len() {
             return Ok(0);
         }
+        if self.ahead.enabled && self.ahead.length != 0 {
+            let (start, end) = (self.ahead.start, self.ahead.start + self.ahead.length as u64);
+            if (start..end).contains(&self.position) {
+                let at = (self.position - start) as usize;
+                let wanted = output.len().min(self.ahead.length - at);
+                let window = self.ahead.window.as_mut().ok_or_else(|| invalid("read-ahead window absent"))?;
+                output[..wanted].copy_from_slice(&window.bytes_mut()[at..at + wanted]);
+                self.position += wanted as u64;
+                self.ahead.last_end = self.ahead.last_end.max(self.position);
+                return Ok(wanted);
+            }
+        }
         let _timed = crate::perf::scope(crate::perf::Point::DeviceRead);
-        crate::perf::add_bytes(crate::perf::Point::DeviceRead, output.len() as u64);
         let aligned = self.position / GRANULE * GRANULE;
         let prefix = (self.position - aligned) as usize;
         let wanted = output
@@ -4330,10 +4405,46 @@ impl Read for GeneralFrozenPartition {
         if aligned + count as u64 > self.byte_len() {
             return Err(invalid("aligned frozen read escapes partition"));
         }
-        self.file.seek(SeekFrom::Start(
+        // Read ahead when this read continues, going forward, shortly after
+        // the furthest one so far; a read elsewhere is made as it is asked.
+        let continues = self.ahead.enabled
+            && self.position >= self.ahead.last_end
+            && self.position - self.ahead.last_end <= ReadAhead::BYTES as u64;
+        if self.ahead.enabled && self.position >= self.ahead.last_end {
+            self.ahead.last_end = self.position + wanted as u64;
+        }
+        if continues && count < ReadAhead::BYTES {
+            let count = (ReadAhead::BYTES as u64).min(self.byte_len() - aligned) as usize;
+            if self.ahead.window.is_none() {
+                self.ahead.window = Some(AlignedBuffer::new()?);
+            }
+            let window = self.ahead.window.as_mut().ok_or_else(|| invalid("read-ahead window absent"))?;
+            self.ahead.length = 0;
+            crate::perf::add_bytes(crate::perf::Point::DeviceRead, count as u64);
+            let read = self.file.seek_read(
+                &mut window.bytes_mut()[..count],
+                self.binding.identity.partition_offset + aligned,
+            )?;
+            self.native_bytes_read += read as u64;
+            if read != count {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "short frozen aligned read",
+                ));
+            }
+            self.ahead.start = aligned;
+            self.ahead.length = count;
+            let wanted = wanted.min(count - prefix);
+            output[..wanted].copy_from_slice(&window.bytes_mut()[prefix..prefix + wanted]);
+            self.position += wanted as u64;
+            return Ok(wanted);
+        }
+        crate::perf::add_bytes(crate::perf::Point::DeviceRead, output.len() as u64);
+        // One positional read: no separate call to move the file pointer.
+        let read = self.file.seek_read(
+            &mut self.buffer.bytes_mut()[..count],
             self.binding.identity.partition_offset + aligned,
-        ))?;
-        let read = self.file.read(&mut self.buffer.bytes_mut()[..count])?;
+        )?;
         self.native_bytes_read += read as u64;
         if read != count {
             return Err(io::Error::new(
@@ -5121,6 +5232,7 @@ mod tests {
             frozen_state,
             position: 0,
             buffer,
+            ahead: ReadAhead::default(),
             native_bytes_read: 0,
             resource_budget: None,
             freeze_observation: None,
@@ -5181,6 +5293,106 @@ mod tests {
         repeated.extend("F:\\".encode_utf16());
         repeated.extend([0, 0]);
         assert!(decode_mount_paths(&repeated, repeated.len()).is_err());
+    }
+
+    fn frozen_over_file(bytes: &[u8], offset: u64) -> GeneralFrozenPartition {
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(&vec![0xee; offset as usize]).unwrap();
+        file.write_all(bytes).unwrap();
+        GeneralFrozenPartition {
+            file,
+            binding: GeneralDiskBinding {
+                layout_profile: Default::default(),
+                disk_number: 1,
+                volume_guid: String::new(),
+                identity: PartitionIdentity {
+                    disk_guid: String::new(),
+                    partition_guid: String::new(),
+                    partition_number: 2,
+                    disk_bytes: offset + bytes.len() as u64,
+                    partition_offset: offset,
+                    partition_bytes: bytes.len() as u64,
+                    logical_sector_bytes: 512,
+                    physical_sector_bytes: 4096,
+                },
+            },
+            frozen_state: GeneralDiskState {
+                device: vec![],
+                disk_length: vec![],
+                alignment: vec![],
+                gpt_layout: vec![],
+                disk_attributes: OFFLINE | READ_ONLY,
+            },
+            position: 0,
+            buffer: AlignedBuffer::new().unwrap(),
+            ahead: ReadAhead::default(),
+            native_bytes_read: 0,
+            resource_budget: None,
+            freeze_observation: None,
+            allocation_capture: None,
+        }
+    }
+
+    #[test]
+    fn read_ahead_serves_ascending_ranges_and_never_returns_stale_bytes() {
+        use std::os::windows::fs::FileExt;
+        let mut bytes: Vec<u8> = (0..3 * 1024 * 1024u32)
+            .map(|n| (n.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .collect();
+        let mut frozen = frozen_over_file(&bytes, 4096);
+        fn read_at(frozen: &mut GeneralFrozenPartition, at: u64, length: usize) -> Vec<u8> {
+            let mut out = vec![0u8; length];
+            frozen.seek(SeekFrom::Start(at)).unwrap();
+            frozen.read_exact(&mut out).unwrap();
+            out
+        }
+        // Aligned and unaligned, with small and large gaps, one past a megabyte.
+        let ranges = [
+            (0u64, 4096usize),
+            (8192, 12288),
+            (40_960, 4096),
+            (300_001, 70_000),
+            (1_048_476, 8192),
+            (2_500_000, 300_000),
+        ];
+        for (at, length) in ranges {
+            assert_eq!(read_at(&mut frozen, at, length), bytes[at as usize..at as usize + length]);
+        }
+        assert_eq!(frozen.ahead.length, 0, "no window outside a declared scope");
+        let without = frozen.native_bytes_read;
+
+        frozen.native_bytes_read = 0;
+        frozen.with_read_ahead(|frozen| {
+            assert_eq!(read_at(frozen, 0, 4096), bytes[..4096]);
+            let after_first = frozen.native_bytes_read;
+            assert_eq!(frozen.ahead.length, ReadAhead::BYTES, "the first forward read fetches a window");
+            for (at, length) in &ranges[1..4] {
+                assert_eq!(read_at(frozen, *at, *length), bytes[*at as usize..*at as usize + *length]);
+            }
+            assert_eq!(frozen.native_bytes_read, after_first, "ranges inside the window cost no device read");
+            for (at, length) in &ranges[4..] {
+                assert_eq!(read_at(frozen, *at, *length), bytes[*at as usize..*at as usize + *length]);
+            }
+            // A read behind the window comes from the device and is right.
+            assert_eq!(read_at(frozen, 4096, 4096), bytes[4096..8192]);
+
+            // A write through the owner (as the fresh-apply writer makes) is
+            // seen by a later read whether or not the window holds that range.
+            let (start, length) = (frozen.ahead.start, frozen.ahead.length as u64);
+            for at in [start + 8192, 16_384] {
+                let new = vec![0xa5u8; 4096];
+                frozen.file.seek_write(&new, 4096 + at).unwrap();
+                frozen.ahead.written(at, &new);
+                bytes[at as usize..at as usize + 4096].copy_from_slice(&new);
+                assert_eq!(read_at(frozen, at, 4096), new);
+            }
+            assert!(start + length <= bytes.len() as u64);
+        });
+        assert_eq!(frozen.ahead.length, 0, "the window is dropped with the scope");
+        assert!(frozen.native_bytes_read >= without, "read-ahead reads at least what was asked for");
+        for (at, length) in ranges {
+            assert_eq!(read_at(&mut frozen, at, length), bytes[at as usize..at as usize + length]);
+        }
     }
 
     fn ordinary_stream() -> OfflinePartition {
@@ -5295,7 +5507,7 @@ mod tests {
             identity: binding.identity,
         };
         let mut reader = GeneralFrozenPartition {
-            resource_budget: None,
+            ahead: ReadAhead::default(), resource_budget: None,
             freeze_observation: None,
             allocation_capture: None,
             file,
@@ -5332,7 +5544,7 @@ mod tests {
         } = ordinary_stream();
         let mut target = GeneralJournaledPartition {
             inner: GeneralFrozenPartition {
-                resource_budget: None,
+                ahead: ReadAhead::default(), resource_budget: None,
                 freeze_observation: None,
                 allocation_capture: None,
                 file,

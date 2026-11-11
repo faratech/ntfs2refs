@@ -726,7 +726,10 @@ fn prepare_native_inner<'journal, 'domain, 'capture, S: ReadSeek>(
         space.available_bytes_to_caller >= f.journal_length,
         "native journal volume lacks the calculated available space"
     );
-    let (ticket, _whole) = prepare_inner(domain, source, candidate, journal, same_captured_source, capture_witness)?;
+    // The journal takes the source's changed ranges in ascending order.
+    let (ticket, _whole) = source.with_read_ahead(|source| {
+        prepare_inner(domain, source, candidate, journal, same_captured_source, capture_witness)
+    })?;
     if ticket.marker_profile.is_some() {
         journal.seal_redundant(&ticket)?;
         let marker = journal

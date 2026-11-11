@@ -338,6 +338,12 @@ impl BorrowedPagedWriter<'_> {
     pub fn state(&self, events: &mut Vec<NativeEvent>) -> io::Result<super::GeneralDiskState> {
         self.source.state(events)
     }
+    /// Read-ahead for the passes that read the changed ranges in order; see
+    /// `GeneralFrozenPartition::with_read_ahead`. Every write through this
+    /// writer is copied into the window, and dropping the writer turns it off.
+    pub fn set_read_ahead(&mut self, enabled: bool) {
+        self.source.set_read_ahead(enabled);
+    }
     pub fn sync_all(&mut self) -> io::Result<()> {
         if self.poisoned {
             return Err(invalid("cannot sync a poisoned fresh paged writer"));
@@ -347,6 +353,11 @@ impl BorrowedPagedWriter<'_> {
             return Err(error);
         }
         Ok(())
+    }
+}
+impl Drop for BorrowedPagedWriter<'_> {
+    fn drop(&mut self) {
+        self.source.set_read_ahead(false);
     }
 }
 impl Read for BorrowedPagedWriter<'_> {
@@ -409,11 +420,14 @@ impl Write for BorrowedPagedWriter<'_> {
         {
             Ok(count) if count == input.len() => {
                 self.written += count as u64;
+                let at = self.source.position;
+                self.source.ahead.written(at, input);
                 self.source.position += count as u64;
                 Ok(count)
             }
             Ok(_) => {
                 self.poisoned = true;
+                self.source.ahead.clear();
                 Err(io::Error::new(
                     io::ErrorKind::WriteZero,
                     "short fresh paged write; reopen through recovery",
@@ -421,6 +435,7 @@ impl Write for BorrowedPagedWriter<'_> {
             }
             Err(error) => {
                 self.poisoned = true;
+                self.source.ahead.clear();
                 Err(error)
             }
         }
@@ -1161,7 +1176,9 @@ impl GeneralFrozenPartition {
                 let body = scope.spawn(move || {
                     crate::sha256_native::journal_body(journal, BODY, length, &expected)
                 });
-                let old_bytes = verify_selected_digest(self, &policy, pins.old_selected_sha256);
+                let old_bytes = self.with_read_ahead(|source| {
+                    verify_selected_digest(source, &policy, pins.old_selected_sha256)
+                });
                 (body.join(), old_bytes)
             })
         };

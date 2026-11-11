@@ -52,11 +52,12 @@ param(
     [switch]$NoManifest,
     [int]$MinHostFreeGB = 40,
     [int]$ConvertTimeoutMinutes = 720,
-    [int]$BootTimeoutMinutes = 25
+    [int]$BootTimeoutMinutes = 25,
+    # The reference VM, or a clone of it made by lab/New-LabVmClone.ps1.
+    [string]$VmId = '8f7fc646-8c9f-41d0-b65a-ecfadccfc36a'
 )
 $ErrorActionPreference = 'Stop'; Set-StrictMode -Version Latest
 $workspace = Split-Path -Parent $PSScriptRoot
-$vmId = '8f7fc646-8c9f-41d0-b65a-ecfadccfc36a'
 $case = Join-Path $workspace ".lab\hyperv\attempts\$Name"
 if (Test-Path -LiteralPath $case) { throw "Attempt directory already exists: $case" }
 $null = New-Item -ItemType Directory -Path $case

@@ -267,7 +267,13 @@ impl PagedPlacementEvidence {
         };
         // Preserve EXACTLY the original compact JSON stream. SourceRangeWriter
         // already frames/base64-encodes bytes; no inner encoding is necessary.
-        serde_json::to_writer(&mut writer, value)?;
+        // The serializer writes every token separately; collect them 64 KiB
+        // at a time so the hash and the store see blocks, not single digits.
+        {
+            let mut blocks = io::BufWriter::with_capacity(64 * 1024, &mut writer);
+            serde_json::to_writer(&mut blocks, value)?;
+            blocks.flush()?;
+        }
         let bytes = writer.bytes;
         ensure!(bytes > 0, "empty placement proof");
         let record = ProofRecord {

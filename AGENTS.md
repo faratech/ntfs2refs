@@ -14,6 +14,11 @@ the desktop, and C: is disk0 partition 3, ReFS 3.14 with 4 KiB clusters, running
 stock signed `winload.efi` and `refs.sys`. A clean-installed ReFS Windows does
 not count. Power-cut resume during preparation is out of scope until this works.
 
+Second goal (owner, 2026-11-12): convert any NTFS data volume: clusters from
+512 bytes to 2 MiB, 512-byte and 4Kn sectors, 1 and 4 KiB file records, to ReFS
+with 4 or 64 KiB clusters, without fixed limits. Data stays in place only where
+it lies on target-cluster boundaries; the rest goes through the working storage.
+
 ## How the converter works
 
 - ReFS metadata is built by Windows, not by this code. The converter formats a
@@ -37,23 +42,20 @@ not count. Power-cut resume during preparation is out of scope until this works.
   (`src/execution_mode.rs`) that only a conversion can mint.
 - Working files are hashed when written and then held open; the source is
   offline, read-only and held. Full re-reads happen once, at the gate before
-  the first source write (`crates/n2r-win32/src/verify_policy.rs`). Outside
-  that gate a store this process wrote is opened without being re-read and
-  checked by an in-memory page checksum; an immutable tree's digest and a
-  decoded expected object are computed once and reused; the frozen shadow is
-  observed once during capture; the journal is hashed in file order as it is
-  written. `--recheck-everything` restores the old behaviour everywhere.
-- In-memory copies of stores and of decoded objects are optional: they lease
-  through `reserve_optional_ram` (a third of the RAM budget in total, and only
-  while the arena is under half full), so they cannot starve a required one.
+  the first source write (`crates/n2r-win32/src/verify_policy.rs`). Outside it
+  a store this process wrote is checked by an in-memory page checksum, digests
+  and decoded objects are computed once, the frozen shadow is observed once and
+  the journal is hashed as it is written. `--recheck-everything` restores the
+  old behaviour everywhere.
+- In-memory copies of stores and decoded objects lease through
+  `reserve_optional_ram` (a third of the RAM budget, arena under half full).
 - `--recover` settles a lifecycle marker whose write was cut short
   (`src/interrupted_marker.rs`); any other unexpected byte still stops it.
 - A per-object Windows query answers into its thread's buffer
-  (`crates/n2r-win32/src/query_scratch.rs`). Do not allocate a worst-case
-  buffer per query: at 143,000 objects that made the heap the bottleneck.
-- Each stage prints a `timing:` line to stderr (`crates/n2r-win32/src/perf.rs`).
-  Measure before and after any speed change, and take a `-SampleStacks`
-  profile first: most time was in places no timer named.
+  (`crates/n2r-win32/src/query_scratch.rs`); a worst-case buffer per query made
+  the heap the bottleneck at 143,000 objects.
+- Each stage prints a `timing:` line (`crates/n2r-win32/src/perf.rs`). Measure
+  before and after a speed change; take a `-SampleStacks` profile first.
 
 ## Working rules
 
@@ -97,6 +99,9 @@ not count. Power-cut resume during preparation is out of scope until this works.
 - Records land in `.lab/hyperv/attempts/<n>/`; the scratch disk is deleted
   when the attempt ends. The host volume needs 40 GB free for a fixture
   attempt and 65 GB for a full one (57 GB at peak).
+- Data volumes: with a control OS up (`-NoConvert -KeepScratch`),
+  `lab\Invoke-DataVolumeAttempt.ps1 -Name <n> -ClusterBytes <b> [-SectorBytes
+  4096] [-LargeRecords]` makes, converts and compares one in under a minute.
 - Second VM `ntfs2refs-reference-b`, Id `7c687062-37b5-4309-b28a-486a44305202`,
   made by `lab/New-LabVmClone.ps1`: same shape, disks are differencing children
   of the reference VM's baseline disks under `.lab/hyperv/ntfs2refs-reference-b/`.
@@ -115,11 +120,10 @@ not count. Power-cut resume during preparation is out of scope until this works.
 
 ## Current work
 
-The goal is met. One command, `lab\Invoke-BootConversionAttempt.ps1 -VmId <a
-lab VM>`, restores the baseline, converts the full Windows volume (143,580
-objects, 112,609 short-name links) in under 30 minutes with an identical
-before/after listing, boots disk0 alone with Secure Boot on and signs in to
-the desktop: outcome `BOOTED-ON-REFS`.
+The first goal is met: `lab\Invoke-BootConversionAttempt.ps1 -VmId <a lab VM>`
+converts the full Windows volume (143,580 objects, 112,609 short-name links) in
+under 30 minutes with an identical listing and boots it alone, Secure Boot on:
+`BOOTED-ON-REFS`. What the second still lacks is in the issue tracker.
 
 Keep it that way. Before a change is committed:
 
@@ -130,22 +134,18 @@ Keep it that way. Before a change is committed:
    on the 1-in-40 fixture that recover with an identical listing:
    `-InterruptAt apply-mid-ranges` (half way through the source writes) and
    `-InterruptAt handoff-sealed` (before finalization). A change to a
-   per-object path also passes a full run: several defects only showed at
-   full size (a row that Windows fills on large volumes, hard links, memory
-   held per batch).
+   per-object path also passes a full run (several defects only showed at
+   full size), and one to source inspection or stream planning also converts
+   data volumes of 512-byte clusters and on a 4Kn disk.
 
 Open, most useful first:
 
-1. Short names are visible. Each 8.3 name is a link beside its long name with
-   the long name's attributes, so Explorer shows `PROGRA~1` in `C:\` and
-   `MICROS~1.LNK` on the desktop. Hiding them (Hidden and System) is the
+1. Short names are visible: each 8.3 name is a link beside its long name, so
+   Explorer shows `PROGRA~1` in `C:\`. Hiding them (Hidden and System) is the
    owner's product decision; the listing comparison does not depend on it.
 2. Speed. A full run takes 28 to 30 minutes, spread thin: per-object Windows
-   calls on one thread (source observation, extent placement, metadata
-   restoration), the three link passes, and reading and hashing the 9 GB that
-   move through the journal. The largest item left is the link passes asking
-   Windows for each handle's normalized path (240 thread-seconds a run);
-   listing each parent directory once would prove the same names and parents.
-   Keep the mount manager out of per-object paths: its queries stall
-   unpredictably. Profile a full run with `-SampleStacks` before choosing.
+   calls on one thread, the three link passes (240 thread-seconds asking for
+   each handle's normalized path; listing each parent once would prove the
+   same), and hashing the 9 GB that move through the journal. Keep the mount
+   manager out of per-object paths. Profile with `-SampleStacks` first.
 3. Power-cut resume during preparation is still out of scope.

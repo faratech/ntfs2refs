@@ -58,6 +58,41 @@ runs it. The shadow's working objects admit SYSTEM alone, so a request that
 only SYSTEM is granted fails for an administrator and nowhere else: a change
 to how an object is opened or created is checked both ways.
 
+## Data volumes of other geometries
+
+The Windows partition has one geometry: 512-byte sectors, 4 KiB clusters, 1 KiB
+file records. `Invoke-DataVolumeAttempt.ps1` converts a data volume of any
+other, in a control OS that is already up:
+
+```powershell
+lab\Invoke-BootConversionAttempt.ps1 -Name prep-01 -NoConvert -KeepScratch -VmId <vm>
+lab\Invoke-DataVolumeAttempt.ps1 -Name d-512-01 -VmId <vm> -ClusterBytes 512
+lab\Invoke-DataVolumeAttempt.ps1 -Name d-4kn-01 -VmId <vm> -SectorBytes 4096 -ClusterBytes 65536
+```
+
+`-ClusterBytes` is the NTFS allocation unit, 512 bytes to 2 MiB.
+`-SectorBytes 4096` puts the volume on a 4Kn disk, which the host makes in the
+attempt's folder and attaches to the VM for the attempt. `-LargeRecords` formats
+4096-byte file records (`format /L`). `-TargetClusterBytes` passes the ReFS
+allocation unit to the converter. `-RunAs`, `-ConverterArgs`, `-Binary` and
+`-ManifestBinary` mean what they mean to the boot harness. `-ExpectRefusal
+<pattern>` is for a volume the converter must refuse.
+
+The volume gets a fixed set of content: files around every size boundary, a
+nested tree with non-ASCII and long names, named streams, hard links, a sparse
+file, LZNT1-compressed files (on clusters up to 4 KiB, where NTFS compresses),
+fragmented files, and attributes and times that are not the defaults. It is
+listed with `lab-volume-manifest`, converted, listed again and compared.
+Outcomes: `converted` (ReFS, listing identical), `converted-but-listing-differs`,
+`refused-source-unchanged` (the NTFS volume lists exactly as before, compared
+with `--exact`), `refused-as-expected`, and named failures. The volume and the
+run's working files are removed afterwards unless `-KeepVolume` is given.
+
+Before the first listing the volume is remounted once and listed when Windows
+has written its own files into `System Volume Information`. A volume made a
+moment ago would otherwise get them when it next mounts, which is after the
+conversion, and the directory's changed time would show as a difference.
+
 `-Diagnose` builds the shadow, lists every per-object failure and stops before
 publication, writing nothing to the source. It ends `diagnose-clean` (exit 0) or
 `diagnose-found-failures` (exit 3) only once the source is the same online NTFS

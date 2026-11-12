@@ -71,6 +71,9 @@ pub struct LogStorageFootprint {
     pub data_range: crate::refs_write_set::ByteRange,
     pub control_ranges: Vec<crate::refs_write_set::ByteRange>,
     pub controls: Vec<crate::refs_mlog_refs::ControlObservation>,
+    /// Sequence numbers and oldest LSNs of the two controls, compared. The
+    /// two are only required to belong to the same log instance.
+    pub control_agreement: crate::refs_mlog_refs::ControlAgreement,
     pub unparsed_information_value_bytes: usize,
     pub log_data_bytes_read: u64,
     pub log_transactions_verified: bool,
@@ -846,8 +849,10 @@ pub fn inspect<R: Read + Seek>(
             && controls[0].log_uuid == controls[1].log_uuid,
         "log controls belong to different log instances"
     );
+    let control_agreement = crate::refs_mlog_refs::compare_controls(&controls[0], &controls[1]);
     let log_storage = LogStorageFootprint {
         information_copies_agree: true,
+        control_agreement,
         data_range: crate::refs_write_set::ByteRange {
             offset: log.data_offset,
             length: log.data_length,

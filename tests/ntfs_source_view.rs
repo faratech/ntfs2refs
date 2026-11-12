@@ -13,6 +13,8 @@ fn fixture() -> (ntfs_inspect::FileInventory, Vec<u8>, Snapshot) {
         .find(|f| f.record_number == 16)
         .unwrap()
         .clone();
+    // One name, one link: the header count must equal the number of names.
+    f.names.truncate(1);
     f.hard_link_count = 1;
     f.sequence_number = 7;
     let si = f.standard_information.as_mut().unwrap();
@@ -58,7 +60,8 @@ fn fixture() -> (ntfs_inspect::FileInventory, Vec<u8>, Snapshot) {
     let mut tag = vec![0; 8];
     tag[..4].copy_from_slice(&32u32.to_le_bytes());
     let s = Snapshot {
-        extended_attributes: None,
+        // An observed absence: the raw model records one, so the native side must too.
+        extended_attributes: Some(Default::default()),
         extended_attributes_error: None,
         reparse: None,
         directory_case_sensitivity: None,
@@ -79,6 +82,13 @@ fn fixture() -> (ntfs_inspect::FileInventory, Vec<u8>, Snapshot) {
     };
     (f, sd, s)
 }
+/// The fixture for a test of refusals: unchanged, it must itself be accepted,
+/// or every `is_err()` below would hold whatever the test went on to change.
+fn valid_fixture() -> (ntfs_inspect::FileInventory, Vec<u8>, Snapshot) {
+    let (f, sd, s) = fixture();
+    check_metadata(&f, SERIAL, &sd, &s, &s).expect("the unmutated fixture is accepted");
+    (f, sd, s)
+}
 fn bytes(s: &mut Snapshot, class: i32) -> &mut Vec<u8> {
     &mut s
         .queries
@@ -88,7 +98,6 @@ fn bytes(s: &mut Snapshot, class: i32) -> &mut Vec<u8> {
         .bytes
 }
 #[test]
-#[ignore = "stale: not maintained while tests were disabled; needs triage"]
 fn exact_stored_times_keep_all_filetime_bits() {
     let (f, sd, s) = fixture();
     let v = check_metadata(&f, SERIAL, &sd, &s, &s).unwrap();
@@ -98,7 +107,6 @@ fn exact_stored_times_keep_all_filetime_bits() {
     assert_eq!(v.stored[1], 134_000_000_000_000_002);
 }
 #[test]
-#[ignore = "stale: not maintained while tests were disabled; needs triage"]
 fn cached_access_is_explicit_and_does_not_replace_the_preserved_value() {
     let (f, sd, mut a) = fixture();
     let mut b = a.clone();
@@ -135,7 +143,7 @@ fn other_time_identity_size_link_attribute_and_state_changes_are_refused() {
         (9, 0),
         (9, 4),
     ] {
-        let (f, sd, a) = fixture();
+        let (f, sd, a) = valid_fixture();
         let mut b = a.clone();
         bytes(&mut b, class)[offset] ^= 1;
         assert!(
@@ -147,7 +155,7 @@ fn other_time_identity_size_link_attribute_and_state_changes_are_refused() {
 #[test]
 fn unexplained_reserved_bytes_must_also_remain_stable() {
     for (class, offset) in [(0, 36), (1, 22), (9, 7)] {
-        let (f, sd, a) = fixture();
+        let (f, sd, a) = valid_fixture();
         let mut b = a.clone();
         bytes(&mut b, class)[offset] ^= 1;
         assert!(check_metadata(&f, SERIAL, &sd, &a, &b).is_err());
@@ -156,7 +164,7 @@ fn unexplained_reserved_bytes_must_also_remain_stable() {
 #[test]
 fn both_security_views_and_all_queries_remain_mandatory() {
     for kind in 0..8 {
-        let (f, sd, a) = fixture();
+        let (f, sd, a) = valid_fixture();
         let mut b = a.clone();
         match kind {
             0 => b.security_error = Some(5),
@@ -180,7 +188,6 @@ fn both_security_views_and_all_queries_remain_mandatory() {
 }
 
 #[test]
-#[ignore = "stale: not maintained while tests were disabled; needs triage"]
 fn stable_api_projection_is_recorded_without_changing_the_stored_descriptor() {
     let (file, _, mut before) = fixture();
     let stored=hex::decode("010004801400000020000000000000002c00000001010000000000051200000001010000000000051200000002001c000100000000001400ff011f00010100000000000512000000").unwrap();

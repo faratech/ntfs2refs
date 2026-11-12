@@ -404,21 +404,22 @@ pub(super) fn validate(binding: &GeneralDiskBinding) -> Result<()> {
         );
         held.push(file);
     }
-    for (relative, expected) in [
-        (
-            "System32\\winload.efi",
-            "1c1a978448b8e0fc2284c13d6e55fde8bf9827dca432cdc8a9be66c2e729adda",
-        ),
-        (
-            "System32\\drivers\\refs.sys",
-            "3aa5d90958fc582c5f6567d2b970a3a37b3d4d80a4b58b5a8676943b7860d3c4",
-        ),
-    ] {
-        ensure!(
-            hash(&root.join(relative))? == expected,
-            "offline Windows {relative} is outside the demonstrated Windows 11 boot profile"
-        );
-    }
+    // The loader and the ReFS driver that will boot the converted volume must
+    // be exactly those of a qualified profile. The same table is what
+    // `capabilities` reports.
+    let winload = hash(&root.join("System32\\winload.efi"))?;
+    let refs = hash(&root.join("System32\\drivers\\refs.sys"))?;
+    let profile = crate::boot_profile::matching(&winload, &refs).with_context(|| {
+        format!(
+            "offline Windows is outside every qualified boot profile: System32\\winload.efi is {winload}, System32\\drivers\\refs.sys is {refs}; qualified profiles: {}",
+            crate::boot_profile::qualified_ids()
+        )
+    })?;
+    ensure!(
+        profile.geometry_unit_bytes == REFS_GEOMETRY_UNIT,
+        "boot profile {} expects a different ReFS geometry unit",
+        profile.id
+    );
     ensure!(
         hash(&root.join("System32\\ntoskrnl.exe"))?
             == hash(&current.join("System32\\ntoskrnl.exe"))?,
@@ -434,7 +435,8 @@ pub(super) fn validate(binding: &GeneralDiskBinding) -> Result<()> {
         );
     }
     println!(
-        "Offline Windows boot profile: demonstrated Windows 11 loader/ReFS driver; matching recovery kernel."
+        "Offline Windows boot profile: demonstrated Windows 11 loader/ReFS driver ({}); matching recovery kernel.",
+        profile.id
     );
     println!(
         "The running Windows disk remains excluded. EFI, MSR and WinRE partitions are preserved."
@@ -493,6 +495,17 @@ fn hash(path: &Path) -> Result<String> {
 mod tests {
     use super::*;
     const UNIT: u64 = 64 << 20;
+
+    #[test]
+    fn every_qualified_profile_uses_the_geometry_unit_that_is_enforced() {
+        for profile in crate::boot_profile::QUALIFIED {
+            assert_eq!(
+                profile.geometry_unit_bytes, REFS_GEOMETRY_UNIT,
+                "{}",
+                profile.id
+            );
+        }
+    }
 
     #[test]
     fn geometry_is_decided_from_the_partition_length_alone() {

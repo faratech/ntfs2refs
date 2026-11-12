@@ -99,6 +99,19 @@ impl Comparison {
 }
 
 const DIFFERENCE_LIMIT: usize = 500;
+/// Every difference the comparison accepts, by the name it is counted
+/// under in `Comparison::allowed`. Anything else is reported. Short names that
+/// became same-directory links are counted apart, in `short_names_as_links`.
+pub const ALLOWED_DIFFERENCES: &[&str] = &[
+    ALLOWED_SYSTEM_VOLUME_INFORMATION,
+    ALLOWED_COMPRESSION_FLAG,
+    ALLOWED_EMPTY_SYSTEM_ACL,
+    ALLOWED_KERNEL_CACHE,
+];
+const ALLOWED_SYSTEM_VOLUME_INFORMATION: &str = "System Volume Information content";
+const ALLOWED_COMPRESSION_FLAG: &str = "NTFS compression flag removed";
+const ALLOWED_EMPTY_SYSTEM_ACL: &str = "empty system ACL versus none";
+const ALLOWED_KERNEL_CACHE: &str = "kernel cache attributes dropped";
 // ReFS reports these on its own files; NTFS never does.
 const REFS_ONLY_ATTRIBUTES: u32 = 0x8000 | 0x2_0000;
 // NTFS compression is decoded during conversion; ReFS stores the plain data.
@@ -204,7 +217,7 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
         }
         let Some(now) = after_by_path.get(record.path.as_str()) else {
             if inside_system_volume_information(&record.path) {
-                allow("System Volume Information content", &mut result.allowed);
+                allow(ALLOWED_SYSTEM_VOLUME_INFORMATION, &mut result.allowed);
             } else {
                 differ(
                     "missing after conversion",
@@ -214,7 +227,7 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
             continue;
         };
         if inside_system_volume_information(&record.path) {
-            allow("System Volume Information content", &mut result.allowed);
+            allow(ALLOWED_SYSTEM_VOLUME_INFORMATION, &mut result.allowed);
             continue;
         }
         for error in &now.errors {
@@ -236,7 +249,7 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
         );
         if was != is {
             if was & !COMPRESSED == is {
-                allow("NTFS compression flag removed", &mut result.allowed);
+                allow(ALLOWED_COMPRESSION_FLAG, &mut result.allowed);
             } else {
                 differ(
                     "attributes changed",
@@ -277,7 +290,7 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
                 let (was_base, _) = security_for_comparison(was);
                 let (is_base, _) = security_for_comparison(is);
                 if was_base == is_base {
-                    allow("empty system ACL versus none", &mut result.allowed);
+                    allow(ALLOWED_EMPTY_SYSTEM_ACL, &mut result.allowed);
                 } else {
                     differ("security changed", format!("security {was} became {is}"));
                 }
@@ -303,7 +316,7 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
                 "kernel cache attributes appeared".to_owned(),
             );
         } else if now.kernel_cache_attributes < record.kernel_cache_attributes {
-            allow("kernel cache attributes dropped", &mut result.allowed);
+            allow(ALLOWED_KERNEL_CACHE, &mut result.allowed);
         }
         if record.links != now.links {
             differ(
@@ -345,7 +358,7 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
             continue;
         }
         if inside_system_volume_information(&record.path) {
-            allow("System Volume Information content", &mut result.allowed);
+            allow(ALLOWED_SYSTEM_VOLUME_INFORMATION, &mut result.allowed);
         } else {
             differences.push(Difference {
                 path: record.path.clone(),
@@ -1130,6 +1143,21 @@ mod tests {
             &[directory("\\"), real_sacl],
         );
         assert_eq!(stricter.difference_count, 1);
+    }
+
+    #[test]
+    fn the_accepted_differences_are_exactly_the_four_documented_ones() {
+        // Widening this list is a decision about what a conversion may
+        // change, not a way to make a comparison pass.
+        assert_eq!(
+            ALLOWED_DIFFERENCES,
+            [
+                "System Volume Information content",
+                "NTFS compression flag removed",
+                "empty system ACL versus none",
+                "kernel cache attributes dropped",
+            ]
+        );
     }
 
     #[test]

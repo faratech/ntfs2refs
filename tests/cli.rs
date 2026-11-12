@@ -214,15 +214,48 @@ fn retained_comparison_pins_inputs_and_never_enables_writes() {
     assert!(!cli(&args[..7]).status.success());
     let capabilities: Value = serde_json::from_slice(&cli(&["capabilities"]).stdout).unwrap();
     assert_eq!(capabilities["retained_range_comparison"], true);
-    assert_eq!(capabilities["native_refs_writer"], false);
     assert_eq!(capabilities["conversion_writes"], cfg!(windows));
     assert_eq!(capabilities["journal_recovery"], cfg!(windows));
+}
+
+#[test]
+fn capabilities_report_what_the_executable_enforces() {
+    let capabilities: Value = serde_json::from_slice(&cli(&["capabilities"]).stdout).unwrap();
+    assert_eq!(capabilities["schema_version"], 2);
+    assert_eq!(capabilities["refs_metadata_builder"], "windows");
+
+    // The announced boot profiles are the rows the admission gate reads.
+    let announced = capabilities["qualified_boot_profiles"].as_array().unwrap();
+    let enforced = ntfs2refs::boot_profile::QUALIFIED;
+    assert!(!enforced.is_empty());
+    assert_eq!(announced.len(), enforced.len());
+    for (announced, enforced) in announced.iter().zip(enforced) {
+        assert_eq!(announced["id"], enforced.id);
+        assert_eq!(announced["winload_efi_sha256"], enforced.winload_efi_sha256);
+        assert_eq!(announced["refs_sys_sha256"], enforced.refs_sys_sha256);
+    }
+
+    // So are the diagnose refusals and its exit code for reported failures.
+    let refuses = capabilities["diagnose"]["refuses"].as_array().unwrap();
+    let table = ntfs2refs::drive_cli::DriveArgs::DIAGNOSE_REFUSES;
+    assert_eq!(refuses.len(), table.len());
+    for (announced, (option, _)) in refuses.iter().zip(table) {
+        assert_eq!(announced["option"], *option);
+    }
     assert!(
-        capabilities["qualified_boot_builds"]
-            .as_array()
-            .unwrap()
-            .is_empty()
+        capabilities["diagnose"]["exit_codes"]
+            [ntfs2refs::drive_cli::EXIT_DIAGNOSE_FAILURES.to_string()]
+        .is_string()
     );
+
+    // And the differences the listing comparison accepts.
+    let accepted: Vec<&str> = capabilities["listing_comparison"]["accepted_differences"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|name| name.as_str().unwrap())
+        .collect();
+    assert_eq!(accepted, n2r_win32::volume_manifest::ALLOWED_DIFFERENCES);
 }
 
 #[test]

@@ -1657,6 +1657,9 @@ fn validate_existing_content_domain_with_memory_and_windows_aliases(
     let mut directories = Vec::new();
     let mut expected_children: BTreeMap<Vec<String>, BTreeMap<Vec<u16>, (usize, u32)>> =
         BTreeMap::new();
+    // Set when only the root's later times differ; cleared by the entry that
+    // explains them.
+    let mut root_times_refusal = None;
     for (index, o) in report.objects.iter().enumerate() {
         let owner = input.object(index)?;
         let item = owner.input();
@@ -1733,18 +1736,25 @@ fn validate_existing_content_domain_with_memory_and_windows_aliases(
         } else {
             false
         };
+        // Windows makes "System Volume Information" on a mounted volume that
+        // has none. The new entry is allowed below, and making it moves the
+        // root's last-access, last-write and change times; whether the entry
+        // is there is known once the root's listing has been checked.
+        let root_times_moved = i.components.is_empty()
+            && allow_post_mount_svi
+            && root_basic_after_mutation.is_none()
+            && actual_basic != expected_basic
+            && only_times_moved_forward(expected_basic, actual_basic, filetime_now()?);
         // A file with no attributes is stored by NTFS as zero and reported by
         // Windows as NORMAL. That equivalence holds for every object, not
         // only sparse files; the root keeps its own exact expectation.
-        if i.components != o.components
-            || (actual_basic != expected_basic
-                && !((has_sparse(i) || !i.components.is_empty()) && basic_matches(i, actual_basic))
-                && !cache_directory_times)
-            || o.before != o.after
-        {
+        let basic_differs = actual_basic != expected_basic
+            && !((has_sparse(i) || !i.components.is_empty()) && basic_matches(i, actual_basic))
+            && !cache_directory_times;
+        if i.components != o.components || basic_differs || o.before != o.after {
             // Creation, last access, last write and change time (8 bytes each),
             // then attributes.
-            return Err(invalid(&format!(
+            let refusal = invalid(&format!(
                 "existing shadow path, basic metadata or stability differs: \\{}: path_same={}, stable={}, {} hard-link names, expected basic {}, actual basic {}",
                 i.components.join("\\"),
                 i.components == o.components,
@@ -1752,7 +1762,11 @@ fn validate_existing_content_domain_with_memory_and_windows_aliases(
                 i.additional_names.len(),
                 hex::encode(expected_basic),
                 hex::encode(actual_basic),
-            )));
+            ));
+            if !root_times_moved || i.components != o.components || o.before != o.after {
+                return Err(refusal);
+            }
+            root_times_refusal = Some(refusal);
         }
         let id = query_bytes(&o.before, 18, 24)?[8..24].to_vec();
         if id == [0; 16]
@@ -1957,6 +1971,7 @@ fn validate_existing_content_domain_with_memory_and_windows_aliases(
                 && entry.attributes & 16 != 0
                 && entry.attributes & 0x400 == 0
             {
+                root_times_refusal = None;
                 continue;
             }
             let &(child_origin, expected_attributes) = expected
@@ -2014,7 +2029,31 @@ fn validate_existing_content_domain_with_memory_and_windows_aliases(
             return Err(invalid("post-mount indexer cache missing from directory"));
         }
     }
-    Ok(())
+    // The root's times moved and no new "System Volume Information" explains it.
+    root_times_refusal.map_or(Ok(()), Err)
+}
+
+/// Whether `actual` differs from `expected` (two FILE_BASIC_INFORMATION
+/// images) only in that its last-access, last-write and change times are
+/// later, and none is later than `now`. Creation time and attributes are equal.
+fn only_times_moved_forward(expected: &[u8], actual: &[u8], now: u64) -> bool {
+    expected.len() == 40
+        && actual.len() == 40
+        && actual[..8] == expected[..8]
+        && actual[32..] == expected[32..]
+        && [8, 16, 24].into_iter().all(|at| {
+            let time = |bytes: &[u8]| u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
+            time(expected) <= time(actual) && time(actual) <= now
+        })
+}
+
+/// The system clock as a Windows FILETIME.
+fn filetime_now() -> io::Result<u64> {
+    let since_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| invalid("system clock predates Unix epoch"))?;
+    u64::try_from(since_epoch.as_nanos() / 100 + 116_444_736_000_000_000)
+        .map_err(|_| invalid("system clock exceeds the FILETIME range"))
 }
 /// Repairs only the documented creation-time loss of AUTO_INHERITED, after a
 /// fresh native read of every admitted shadow byte and namespace identity. The
@@ -2514,11 +2553,7 @@ fn observe_post_mount_indexer_cache_domain(
             "post-mount indexer cache or parent changed during observation",
         ));
     }
-    let since_epoch = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| invalid("system clock predates Unix epoch"))?;
-    let observed_filetime = u64::try_from(since_epoch.as_nanos() / 100 + 116_444_736_000_000_000)
-        .map_err(|_| invalid("post-mount cache observation clock overflow"))?;
+    let observed_filetime = filetime_now()?;
     Ok(Some(PostMountIndexerCache {
         file_id: entry.file_id,
         attributes: entry.attributes,
@@ -6095,6 +6130,67 @@ fn run_role_content_domain_accounted(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The root of a volume on which Windows made "System Volume Information"
+    /// after it mounted: its later times moved, and nothing else may have.
+    #[test]
+    fn a_root_changed_by_a_new_directory_differs_only_in_later_times() {
+        fn basic(
+            created: u64,
+            accessed: u64,
+            written: u64,
+            changed: u64,
+            attributes: u32,
+        ) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            for time in [created, accessed, written, changed] {
+                bytes.extend_from_slice(&time.to_le_bytes());
+            }
+            bytes.extend_from_slice(&attributes.to_le_bytes());
+            bytes.extend_from_slice(&[0; 4]);
+            bytes
+        }
+        let source = basic(100, 200, 200, 200, 0x16);
+        let now = 1_000;
+        // As seen in the lab: the three later times all become the moment
+        // the directory was made.
+        assert!(only_times_moved_forward(
+            &source,
+            &basic(100, 900, 900, 900, 0x16),
+            now
+        ));
+        assert!(only_times_moved_forward(
+            &source,
+            &basic(100, 200, 900, 900, 0x16),
+            now
+        ));
+        assert!(only_times_moved_forward(&source, &source, now));
+        // A time that went back, or lies in the future, is not this.
+        assert!(!only_times_moved_forward(
+            &source,
+            &basic(100, 900, 199, 900, 0x16),
+            now
+        ));
+        assert!(!only_times_moved_forward(
+            &source,
+            &basic(100, 900, 900, 1_001, 0x16),
+            now
+        ));
+        // Creation time and attributes never move.
+        assert!(!only_times_moved_forward(
+            &source,
+            &basic(101, 900, 900, 900, 0x16),
+            now
+        ));
+        assert!(!only_times_moved_forward(
+            &source,
+            &basic(100, 900, 900, 900, 0x10),
+            now
+        ));
+        assert!(!only_times_moved_forward(&source, &source[..36], now));
+        assert!(filetime_now().unwrap() > 116_444_736_000_000_000);
+    }
+
     fn retention_budget_fixture() -> RetentionAttempt {
         let mut bitmap = vec![0; 17];
         bitmap[8..16].copy_from_slice(&1_u64.to_le_bytes());

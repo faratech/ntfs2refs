@@ -92,6 +92,17 @@ fn u32_at(bytes: &[u8], offset: usize) -> Option<u32> {
         .map(|b| u32::from_le_bytes(b.try_into().expect("four bytes")))
 }
 
+/// The part of the measured region one request covers: its offset within
+/// the region and its length. The last request stops where the region does,
+/// rounded up to the 4 KiB an unbuffered read has to be a multiple of.
+fn lane_span(bytes: u64, request_bytes: usize, block: u64) -> (u64, usize) {
+    let start = block * request_bytes as u64;
+    let length = (bytes - start)
+        .min(request_bytes as u64)
+        .next_multiple_of(4096);
+    (start, length as usize)
+}
+
 /// Lab measurement: read `bytes` from `\\.\PhysicalDriveN` at `offset` with
 /// `queue_depth` unbuffered readers, each striding over `request_bytes` blocks,
 /// and return MB/s. Read-only with write sharing; it never changes the disk.
@@ -144,8 +155,9 @@ pub fn read_throughput(
                 let result = (|| -> io::Result<()> {
                     let mut block = lane;
                     while block < blocks {
-                        file.seek(SeekFrom::Start(offset + block * request_bytes as u64))?;
-                        file.read_exact(buffer)?;
+                        let (start, length) = lane_span(bytes, request_bytes, block);
+                        file.seek(SeekFrom::Start(offset + start))?;
+                        file.read_exact(&mut buffer[..length])?;
                         block += queue_depth as u64;
                     }
                     Ok(())
@@ -162,7 +174,8 @@ pub fn read_throughput(
         }
         Ok(())
     })?;
-    Ok((blocks * request_bytes as u64) as f64 / started.elapsed().as_secs_f64() / 1e6)
+    // What was read: the region, not a whole request for its last part.
+    Ok(bytes.next_multiple_of(4096) as f64 / started.elapsed().as_secs_f64() / 1e6)
 }
 
 /// Query the disk behind `file` (a `\\.\PhysicalDriveN` handle). Any property
@@ -226,5 +239,38 @@ mod tests {
         assert_eq!(admit_reply(vec![7; 16], 0).unwrap(), Vec::<u8>::new());
         let refused = admit_reply(vec![0; 16], 17).unwrap_err();
         assert_eq!(refused.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn the_benchmark_reads_its_region_and_nothing_after_it() {
+        const MIB: u64 = 1024 * 1024;
+        let spans = |bytes: u64, request: usize| -> Vec<(u64, usize)> {
+            (0..bytes.div_ceil(request as u64))
+                .map(|block| lane_span(bytes, request, block))
+                .collect()
+        };
+        // Five MiB in 4 MiB requests is 4 + 1, not 4 + 4.
+        assert_eq!(
+            spans(5 * MIB, 4 * MIB as usize),
+            vec![(0, 4 * MIB as usize), (4 * MIB, MIB as usize)]
+        );
+        // A whole number of requests is unchanged.
+        assert_eq!(
+            spans(8 * MIB, 4 * MIB as usize),
+            vec![(0, 4 * MIB as usize), (4 * MIB, 4 * MIB as usize)]
+        );
+        // A ragged end is rounded up to one 4 KiB unit, which the caller's
+        // region spacing already allows for, and never to a whole request.
+        for bytes in [1, 4095, 4097, 5 * MIB + 1, 9 * MIB - 1] {
+            let read: u64 = spans(bytes, MIB as usize)
+                .iter()
+                .map(|(_, length)| *length as u64)
+                .sum();
+            assert_eq!(read, bytes.next_multiple_of(4096), "{bytes}");
+            for (start, length) in spans(bytes, MIB as usize) {
+                assert!(length <= MIB as usize && length % 4096 == 0);
+                assert!(start + length as u64 <= bytes.next_multiple_of(4096));
+            }
+        }
     }
 }

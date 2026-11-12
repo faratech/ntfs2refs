@@ -119,7 +119,7 @@ impl Budget {
 pub fn read<R: Read + Seek>(reader: &mut R, expected: u64, budget: &mut Budget) -> Outcome {
     let _timed = crate::perf::scope(crate::perf::Point::ContentRead);
     crate::perf::add_bytes(crate::perf::Point::ContentRead, expected);
-    let mut out = Outcome {
+    let out = Outcome {
         status: Status::BudgetExceeded,
         bytes_read: 0,
         eof_confirmed: false,
@@ -135,8 +135,35 @@ pub fn read<R: Read + Seek>(reader: &mut R, expected: u64, budget: &mut Budget) 
         Ok(_) => return Outcome::refused(io::Error::other("stream did not seek to zero")),
         Err(e) => return Outcome::refused(e),
     }
+    // The thread's own buffer, no larger than the stream: a fresh, zeroed
+    // 4 MiB allocation for each of a hundred thousand small streams is what
+    // `query_scratch` exists to avoid.
+    let capacity = usize::try_from(expected.min(CHUNK as u64))
+        .unwrap_or(CHUNK)
+        .max(1);
+    #[cfg(windows)]
+    {
+        crate::query_scratch::with(capacity, |buffer| {
+            read_chunks(reader, expected, budget, out, buffer)
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        read_chunks(reader, expected, budget, out, &mut vec![0; capacity])
+    }
+}
+
+/// The reads of [`read`]: up to `CHUNK` bytes at a time into `buffer`, which
+/// holds at least `min(expected, CHUNK)` bytes and at least one, then a
+/// one-byte probe that must find the end of the stream.
+fn read_chunks<R: Read>(
+    reader: &mut R,
+    expected: u64,
+    budget: &mut Budget,
+    mut out: Outcome,
+    buffer: &mut [u8],
+) -> Outcome {
     let mut digest = crate::content_digest::Hasher::new();
-    let mut buffer = vec![0; CHUNK];
     let mut calls = 0;
     let mut interrupted = 0;
     loop {

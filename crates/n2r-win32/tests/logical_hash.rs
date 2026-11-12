@@ -16,6 +16,27 @@ fn hashes_full_data_and_confirms_eof() {
     assert_eq!(b.audit().bytes_read, 65537);
     assert_eq!(b.audit().eof_probes, 1);
 }
+/// Streams are read through one buffer the thread keeps, sized to the
+/// stream. What an earlier, longer stream left in it is never hashed, and a
+/// stream longer than one request is assembled from several.
+#[test]
+fn a_reused_buffer_hashes_only_the_stream_it_is_reading() {
+    let long = vec![0xaa; 300_000];
+    let short = b"0123456789".to_vec();
+    // One byte more than the largest single request.
+    let several: Vec<u8> = (0..4 * 1024 * 1024 + 1).map(|index| index as u8).collect();
+    let mut b = Budget::new(u64::MAX / 2);
+    for data in [&long, &short, &several, &short, &long] {
+        let before = b.audit();
+        let h = logical_hash::read(&mut Cursor::new(data), data.len() as u64, &mut b);
+        assert_eq!(h.status, Status::Complete);
+        assert_eq!(h.bytes_read, data.len() as u64);
+        assert_eq!(h.sha256, Some(content_digest::of(data)));
+        // Whole requests, then the one-byte probe for the end.
+        let requests = (data.len() as u64).div_ceil(4 * 1024 * 1024) + 1;
+        assert_eq!(b.audit().read_calls - before.read_calls, requests);
+    }
+}
 #[test]
 fn empty_stream_still_requires_eof_probe() {
     let mut b = Budget::new(1);

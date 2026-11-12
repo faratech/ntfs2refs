@@ -181,6 +181,53 @@ function Wait-Converter([string]$Root, [string]$TaskName, [string]$ScratchLetter
     }
     [pscustomobject]@{ state = $state; vm_stopped = $vmStopped; held = $held }
 }
+# Lists the source volume as it is now, compares that with the listing taken
+# before the run and records the comparison in the verdict. -Exact is for a
+# source that must not have changed (after a diagnose run or a rollback):
+# every recorded field equal, nothing accepted as an expected difference.
+# Answers identical | differs | not-compared | tool-failed.
+function Compare-Listing([string]$Exe, [string]$Letter, [string]$Directory, [switch]$Exact, [switch]$FromEarlierRun) {
+    $compared = Invoke-Command -Session $script:session -ArgumentList $Exe, "${Letter}:\", $Directory, ([bool]$Exact), ([bool]$FromEarlierRun) -ScriptBlock {
+        param($exe, $root, $directory, $exact, $fromEarlierRun)
+        $candidates = @("$directory\manifest-before.jsonl")
+        # A -Recover attempt has no listing of its own; use the one the original run took.
+        if ($fromEarlierRun) { $candidates += @(Get-ChildItem 'C:\n2r' -Directory | Sort-Object LastWriteTime -Descending | ForEach-Object { Join-Path $_.FullName 'manifest-before.jsonl' }) }
+        $before = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+        if (-not $before) { return [pscustomobject]@{ stage = 'no-before-listing'; exit = -1; differences = $null; listed = 'no listing from before the run exists'; summary = ''; before = $null } }
+        $listed = & $exe capture --root $root --output "$directory\manifest-after.jsonl" 2>&1
+        if ($LASTEXITCODE -ne 0) { return [pscustomobject]@{ stage = 'capture-after'; exit = $LASTEXITCODE; differences = $null; listed = ($listed -join ' '); summary = ''; before = $before } }
+        $report = "$directory\manifest-report.json"
+        if (Test-Path -LiteralPath $report) { Remove-Item -LiteralPath $report -Force }
+        $arguments = @('compare'); if ($exact) { $arguments += '--exact' }
+        $arguments += @('--before', $before, '--after', "$directory\manifest-after.jsonl", '--report', $report)
+        $summary = & $exe $arguments 2>&1
+        $exit = $LASTEXITCODE
+        # The count comes from the report the comparison wrote, not from its exit code alone.
+        $differences = $null
+        if (Test-Path -LiteralPath $report) { try { $differences = [int](Get-Content -Raw -LiteralPath $report | ConvertFrom-Json).difference_count } catch { $differences = $null } }
+        [pscustomobject]@{ stage = 'compare'; exit = $exit; differences = $differences; listed = ($listed -join ' '); summary = ($summary -join ' '); before = $before }
+    }
+    # A -Recover attempt took no listing of its own; an ordinary one copied its listing when it was taken.
+    if ($FromEarlierRun -and $compared.before) { Copy-Evidence $script:session $compared.before 'manifest-before.jsonl' -Required }
+    Copy-Evidence $script:session "$Directory\manifest-after.jsonl" 'manifest-after.jsonl' -Required
+    Copy-Evidence $script:session "$Directory\manifest-report.json" 'manifest-report.json' -Required:($compared.stage -eq 'compare' -and $compared.exit -in 0, 2)
+    $script:verdict.before_listing_used = $compared.before
+    # Exit 0 with no differences counted is identical; exit 2 with a report
+    # that counts differences is a real difference. Anything else (a crash,
+    # an unreadable listing, a usage error) is the listing tool failing,
+    # which says nothing about the volume. No listing to compare with (a
+    # -Recover of a checkpoint whose own run took none) is neither.
+    $result = if ($compared.stage -eq 'no-before-listing') { 'not-compared' }
+        elseif ($compared.stage -eq 'compare' -and $compared.exit -eq 0 -and $compared.differences -eq 0) { 'identical' }
+        elseif ($compared.stage -eq 'compare' -and $compared.exit -eq 2 -and $compared.differences -gt 0) { 'differs' }
+        else { 'tool-failed' }
+    $script:verdict.manifest = [ordered]@{ result = $result; exact = [bool]$Exact; stage = $compared.stage; exit = $compared.exit
+        differences = $compared.differences; listed = $compared.listed; summary = $compared.summary }
+    Say "listing after the run: $($compared.listed)"
+    Say "before/after comparison$(if ($Exact) { ', exact' }): $result ($($compared.stage) exit $($compared.exit)): $($compared.summary)"
+    Phase 'compare'
+    $result
+}
 function Save-Verdict {
     $script:verdict.evidence_complete = -not @($script:verdict.evidence | Where-Object { $_.required -and -not $_.present }).Count
     $script:verdict.finished_utc = [DateTime]::UtcNow.ToString('o')
@@ -437,7 +484,7 @@ try {
     if ($SampleStacks) { Copy-Item -LiteralPath $symbols -Destination "$guestRoot\ntfs2refs.pdb" -ToSession $session }
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'guest\Invoke-ConverterRun.ps1') -Destination "$guestRoot\worker.ps1" -ToSession $session
     $manifestExe = "$guestRoot\lab-volume-manifest.exe"
-    if (-not $NoManifest -and -not $Diagnose) {
+    if (-not $NoManifest) {
         if (-not (Test-Path -LiteralPath $ManifestBinary)) { throw "Listing tool not found: $ManifestBinary (cargo build --release --bin lab-volume-manifest)" }
         Copy-Item -LiteralPath $ManifestBinary -Destination $manifestExe -ToSession $session
         if (-not $Recover) {
@@ -555,8 +602,8 @@ try {
         Say "recovery ($RecoverMode) exit 0"
         if ($RecoverMode -eq 'rollback') {
             # What Windows says of the source now: the same partition, NTFS
-            # again, online and writable. Its contents are compared once the
-            # listing tool can compare two NTFS listings exactly.
+            # again, online and writable. Then its listing, which has to
+            # equal the one taken before the conversion in every field.
             $after = Invoke-Command -Session $session -ArgumentList $guest.source_disk, $guest.source_partition -ScriptBlock {
                 param($disk, $number)
                 $partition = Get-Partition -DiskNumber $disk -PartitionNumber $number; $volume = Get-Volume -Partition $partition
@@ -567,7 +614,12 @@ try {
             $restored = $after.filesystem -eq 'NTFS' -and $after.bytes -eq $guest.source_bytes -and $after.guid -eq $guest.source_guid -and
                 -not $after.offline -and -not $after.read_only -and $after.health -eq 'Healthy'
             Say "source after rollback: $($after.filesystem), $($after.bytes) bytes, offline $($after.offline), read-only $($after.read_only), health $($after.health)"
-            $verdict.outcome = if ($restored) { 'ROLLED-BACK-NOT-COMPARED' } else { 'rolled-back-but-unhealthy' }
+            if (-not $restored) { $verdict.outcome = 'rolled-back-but-unhealthy'; Remove-PSSession $session; return }
+            if ($NoManifest) { $verdict.outcome = 'ROLLED-BACK-NOT-COMPARED'; Remove-PSSession $session; return }
+            if (-not $after.letter) { $verdict.outcome = 'rolled-back-but-no-drive-letter'; Remove-PSSession $session; return }
+            $listing = Compare-Listing $manifestExe $after.letter $guestRoot -Exact
+            $verdict.outcome = switch ($listing) {
+                'identical' { 'ROLLED-BACK-NOT-BOOTED' } 'differs' { 'rolled-back-but-listing-differs' } default { 'rolled-back-listing-tool-failed' } }
             Remove-PSSession $session; return
         }
         # A resumed conversion is held to everything a completed one is.
@@ -611,7 +663,14 @@ try {
         $sourceIntact = $after.filesystem -eq 'NTFS' -and $after.bytes -eq $guest.source_bytes -and $after.guid -eq $guest.source_guid -and
             -not $after.offline -and -not $after.read_only
         Say "source after diagnose: $($after.filesystem), $($after.bytes) bytes, offline $($after.offline), read-only $($after.read_only), health $($after.health)"
+        # Independent of the converter: the source lists exactly as it did
+        # before the run. Nothing is accepted as an expected difference.
+        if ($sourceIntact -and -not $NoManifest) {
+            $listing = if ($after.letter) { Compare-Listing $manifestExe $after.letter $guestRoot -Exact } else { 'not-compared' }
+        }
         $verdict.outcome = if (-not $sourceIntact) { 'diagnose-changed-source' }
+            elseif ($listing -eq 'differs') { 'diagnose-source-listing-differs' }
+            elseif ($listing -in 'not-compared', 'tool-failed') { 'diagnose-source-not-compared' }
             elseif (-not $diagnosis) { 'diagnose-result-missing' }
             elseif ($exit -eq 0 -and $diagnosis.failures -eq 0 -and $diagnosis.examined_all_objects) { 'diagnose-clean' }
             elseif ($exit -eq 3 -and ($diagnosis.failures -gt 0 -or -not $diagnosis.examined_all_objects)) { 'diagnose-found-failures' }
@@ -647,42 +706,7 @@ try {
         if ($mounted.filesystem -ne 'ReFS') { $verdict.outcome = 'converter-ok-but-not-refs'; Remove-PSSession $session; return }
         if (-not $NoManifest) {
             if (-not $mounted.letter) { $verdict.outcome = 'converted-but-no-drive-letter'; Remove-PSSession $session; return }
-            $compared = Invoke-Command -Session $session -ArgumentList $manifestExe, "$($mounted.letter):\", $guestRoot -ScriptBlock {
-                param($exe, $root, $directory)
-                # A -Recover attempt has no listing of its own; use the one the original run took.
-                $before = @("$directory\manifest-before.jsonl") + @(Get-ChildItem 'C:\n2r' -Directory | Sort-Object LastWriteTime -Descending |
-                        ForEach-Object { Join-Path $_.FullName 'manifest-before.jsonl' }) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-                if (-not $before) { return [pscustomobject]@{ stage = 'no-before-listing'; exit = -1; differences = $null; listed = 'no listing from before the conversion exists'; summary = ''; before = $null } }
-                $listed = & $exe capture --root $root --output "$directory\manifest-after.jsonl" 2>&1
-                if ($LASTEXITCODE -ne 0) { return [pscustomobject]@{ stage = 'capture-after'; exit = $LASTEXITCODE; differences = $null; listed = ($listed -join ' '); summary = ''; before = $before } }
-                $report = "$directory\manifest-report.json"
-                if (Test-Path -LiteralPath $report) { Remove-Item -LiteralPath $report -Force }
-                $summary = & $exe compare --before $before --after "$directory\manifest-after.jsonl" --report $report 2>&1
-                $exit = $LASTEXITCODE
-                # The count comes from the report the comparison wrote, not from its exit code alone.
-                $differences = $null
-                if (Test-Path -LiteralPath $report) { try { $differences = [int](Get-Content -Raw -LiteralPath $report | ConvertFrom-Json).difference_count } catch { $differences = $null } }
-                [pscustomobject]@{ stage = 'compare'; exit = $exit; differences = $differences; listed = ($listed -join ' '); summary = ($summary -join ' '); before = $before }
-            }
-            # A -Recover attempt took no listing of its own; an ordinary one copied its listing when it was taken.
-            if ($Recover -and $compared.before) { Copy-Evidence $session $compared.before 'manifest-before.jsonl' -Required }
-            Copy-Evidence $session "$guestRoot\manifest-after.jsonl" 'manifest-after.jsonl' -Required
-            Copy-Evidence $session "$guestRoot\manifest-report.json" 'manifest-report.json' -Required:($compared.stage -eq 'compare' -and $compared.exit -in 0, 2)
-            $verdict.before_listing_used = $compared.before
-            # Exit 0 with no differences counted is identical; exit 2 with a report
-            # that counts differences is a real difference. Anything else (a crash,
-            # an unreadable listing, a usage error) is the listing tool failing,
-            # which says nothing about the volume. No listing to compare with (a
-            # -Recover of a checkpoint whose own run took none) is neither.
-            $listing = if ($compared.stage -eq 'no-before-listing') { 'not-compared' }
-                elseif ($compared.stage -eq 'compare' -and $compared.exit -eq 0 -and $compared.differences -eq 0) { 'identical' }
-                elseif ($compared.stage -eq 'compare' -and $compared.exit -eq 2 -and $compared.differences -gt 0) { 'differs' }
-                else { 'tool-failed' }
-            $verdict.manifest = [ordered]@{ result = $listing; stage = $compared.stage; exit = $compared.exit; differences = $compared.differences
-                listed = $compared.listed; summary = $compared.summary }
-            Say "listing after conversion: $($compared.listed)"
-            Say "before/after comparison: $listing ($($compared.stage) exit $($compared.exit)): $($compared.summary)"
-            Phase 'compare'
+            $listing = Compare-Listing $manifestExe $mounted.letter $guestRoot -FromEarlierRun:$Recover
             # A listing that differs is a failed conversion, but whether the result
             # boots is separate evidence worth having from the same run.
             if ($listing -ne 'identical' -and ($NoBoot -or $Diagnose)) {
@@ -765,7 +789,7 @@ try {
     # scratch disk is kept so the records can still be recovered.
     $missing = @($verdict.evidence | Where-Object { $_.required -and -not $_.present })
     if ($missing.Count -and $verdict.outcome -in 'converted-not-booted', 'BOOTED-ON-REFS', 'diagnose-clean', 'diagnose-found-failures',
-        'RESUMED-NOT-BOOTED', 'RESUMED-BOOTED-ON-REFS', 'ROLLED-BACK-NOT-COMPARED') {
+        'RESUMED-NOT-BOOTED', 'RESUMED-BOOTED-ON-REFS', 'ROLLED-BACK-NOT-BOOTED', 'ROLLED-BACK-NOT-COMPARED') {
         $verdict.result = $verdict.outcome; $verdict.outcome = 'incomplete-evidence'; $KeepScratch = [switch]$true
         Say "required evidence missing: $(($missing | ForEach-Object { $_.name }) -join ', '); scratch disk kept"
     }

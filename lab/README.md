@@ -28,8 +28,10 @@ A full run includes the original-disk-only boot and desktop observation:
 
 Supply `-Binary` and `-ManifestBinary` when verifying an already built package;
 otherwise the harness uses `target/release`. `-VmId` selects the second lab VM.
-`-SampleStacks` requires the matching PDB beside the executable and adds profiling.
-Do not use it merely to claim an unmeasured speed change.
+`-SampleStacks` requires the matching PDB beside the executable and writes
+`stacks.txt`: phase, step and stack per line, a hundred samples a second, helper
+and digest threads included. Use it to find where unnamed time goes before
+changing anything for speed, not merely to claim an unmeasured speed change.
 
 Recovery is checked by stopping the converter at a named point of apply,
 handoff or finalization (`crates/n2r-win32/src/lab_hold.rs` lists them), ending
@@ -40,7 +42,9 @@ its process there, and running the recovery command it printed:
 .\lab\Invoke-BootConversionAttempt.ps1 -Name rollback-check -Fixture -FixtureCheckpoint N2R-Thinned-Fixture-40 -NoBoot -InterruptAt apply-mid-ranges -RecoverMode rollback
 ```
 
-A rollback is compared with the listing taken before, in every field.
+A resume ends `RESUMED-NOT-BOOTED` and is compared as a conversion is; a
+rollback ends `ROLLED-BACK-NOT-BOOTED` and is compared with the listing taken
+before in every field (`compare --exact`: nothing allowed).
 `-RecoverMode none -CheckpointAfterConvert <name>` saves the interrupted state
 instead, and `-RecoverFrom <attempt>` recovers it later from that attempt's own
 records. `-TearMarker handoff`, with `-InterruptAt apply-handoff-durable`, leaves
@@ -48,9 +52,19 @@ the journal's handoff marker as a write that stopped part-way leaves it, so that
 recovery has to settle it first. The lab ends a process; it cannot cut power to
 the storage, and every verdict says so.
 
-`-Diagnose` runs every preparation phase and writes nothing to the source.
+`-Diagnose` builds the shadow, lists every per-object failure and stops before
+publication, writing nothing to the source. It ends `diagnose-clean` (exit 0) or
+`diagnose-found-failures` (exit 3) only once the source is the same online NTFS
+partition and lists exactly as before.
+
 `-ShapeSource <script>` runs a script from `lab\guest` against the source
-before it is listed, to give it objects a fresh Windows does not have.
+before it is listed, to give it objects a fresh Windows does not have:
+`Add-NamedStreams.ps1` (the lab volumes have no named streams) and
+`Add-DirectoryStream.ps1`, which the converter must refuse by name at admission.
+
+`verdict.json` lists every piece of evidence an attempt retains with its size
+and SHA-256, or the reason it is missing. A success without its required
+evidence is `incomplete-evidence`.
 
 A missing before-listing is `converted-not-compared`, not a successful independent
 comparison. A run is complete only when its verdict and the applicable native

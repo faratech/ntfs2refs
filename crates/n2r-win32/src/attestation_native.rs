@@ -31,6 +31,18 @@ use windows_sys::Win32::{
 // Query it explicitly in both API views; preservation comparisons remain exact.
 const COMPLETE_SECURITY_INFORMATION: u32 = 0x1f | 0x80;
 
+/// A failure while observing one source object, with its MFT record. The
+/// source is observed by file reference, before any path is resolved.
+fn at_source_record(identity: &crate::attestation::FileIdentity, error: io::Error) -> io::Error {
+    io::Error::new(
+        error.kind(),
+        format!(
+            "source observation of MFT record {} (sequence {}): {error}",
+            identity.record_number, identity.sequence_number
+        ),
+    )
+}
+
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
@@ -733,164 +745,171 @@ pub(crate) fn collect_file_metadata_with_routes(
         let _timed = crate::perf::scope(crate::perf::Point::SourceObject);
         let selected = selectors.row(index)?;
         let identity = &selected.identity;
-        let row_request;
-        let capture_request = if request.has_paged_selectors() {
-            row_request = Request {
-                files: vec![identity.clone()],
-                extent_identity_streams: selected.extent_identity_streams.clone(),
-                ..request.clone()
+        // Whatever fails for this object is reported with its file record.
+        (|| -> io::Result<()> {
+            let row_request;
+            let capture_request = if request.has_paged_selectors() {
+                row_request = Request {
+                    files: vec![identity.clone()],
+                    extent_identity_streams: selected.extent_identity_streams.clone(),
+                    ..request.clone()
+                };
+                &row_request
+            } else {
+                request
             };
-            &row_request
-        } else {
-            request
-        };
-        let mut logical = LogicalFile {
-            identity: identity.clone(),
-            before: vec![],
-            after: vec![],
-        };
-        let descriptor = FILE_ID_DESCRIPTOR {
-            dwSize: mem::size_of::<FILE_ID_DESCRIPTOR>() as u32,
-            Type: FileIdType,
-            Anonymous: FILE_ID_DESCRIPTOR_0 {
-                FileId: identity.reference() as i64,
-            },
-        };
-        // SAFETY: descriptor is initialized, valid volume hint remains open.
-        // READ_CONTROL | FILE_READ_ATTRIBUTES | FILE_READ_EA | ACCESS_SYSTEM_SECURITY;
-        // BACKUP_SEMANTICS | OPEN_REPARSE_POINT avoids following reparse targets.
-        let handle = unsafe {
-            OpenFileById(
-                raw(&volume),
-                &descriptor,
-                0x01020088,
-                7,
-                ptr::null(),
-                0x02200000,
-            )
-        };
-        let mut obs = Observation {
-            identity: identity.clone(),
-            open_error: None,
-            before: None,
-            after: None,
-            streams_before: None,
-            streams_after: None,
-            case_only_fallback: None,
-        };
-        if handle == INVALID_HANDLE_VALUE || handle.is_null() {
-            obs.open_error = Some(io::Error::last_os_error().raw_os_error().unwrap_or(31));
-            if request.requires_directory_case_sensitivity() {
-                obs.case_only_fallback = Some(case_only_fallback(&volume, &descriptor));
-                stream_bytes = stream_bytes
-                    .checked_add(obs.case_only_fallback.as_ref().unwrap().retained_bytes()?)
-                    .ok_or_else(|| invalid("native directory case fallback budget overflow"))?;
-                if stream_bytes > limits.stream_evidence_bytes {
-                    return Err(invalid(
-                        "native directory case fallback evidence budget exceeded",
-                    ));
+            let mut logical = LogicalFile {
+                identity: identity.clone(),
+                before: vec![],
+                after: vec![],
+            };
+            let descriptor = FILE_ID_DESCRIPTOR {
+                dwSize: mem::size_of::<FILE_ID_DESCRIPTOR>() as u32,
+                Type: FileIdType,
+                Anonymous: FILE_ID_DESCRIPTOR_0 {
+                    FileId: identity.reference() as i64,
+                },
+            };
+            // SAFETY: descriptor is initialized, valid volume hint remains open.
+            // READ_CONTROL | FILE_READ_ATTRIBUTES | FILE_READ_EA | ACCESS_SYSTEM_SECURITY;
+            // BACKUP_SEMANTICS | OPEN_REPARSE_POINT avoids following reparse targets.
+            let handle = unsafe {
+                OpenFileById(
+                    raw(&volume),
+                    &descriptor,
+                    0x01020088,
+                    7,
+                    ptr::null(),
+                    0x02200000,
+                )
+            };
+            let mut obs = Observation {
+                identity: identity.clone(),
+                open_error: None,
+                before: None,
+                after: None,
+                streams_before: None,
+                streams_after: None,
+                case_only_fallback: None,
+            };
+            if handle == INVALID_HANDLE_VALUE || handle.is_null() {
+                obs.open_error = Some(io::Error::last_os_error().raw_os_error().unwrap_or(31));
+                if request.requires_directory_case_sensitivity() {
+                    obs.case_only_fallback = Some(case_only_fallback(&volume, &descriptor));
+                    stream_bytes = stream_bytes
+                        .checked_add(obs.case_only_fallback.as_ref().unwrap().retained_bytes()?)
+                        .ok_or_else(|| invalid("native directory case fallback budget overflow"))?;
+                    if stream_bytes > limits.stream_evidence_bytes {
+                        return Err(invalid(
+                            "native directory case fallback evidence budget exceeded",
+                        ));
+                    }
                 }
-            }
-        } else {
-            // SAFETY: transfer the newly acquired unique file-handle ownership.
-            let file = unsafe { File::from_raw_handle(handle) };
-            obs.before = Some(match paged_security_limit {
-                Some(maximum) => source_snapshot_paged(
-                    &file,
-                    request.requires_directory_case_sensitivity(),
-                    maximum,
-                ),
-                None => source_snapshot(&file, request.requires_directory_case_sensitivity()),
-            });
-            let row_stream_budget = limits
-                .stream_evidence_bytes
-                .saturating_sub(stream_bytes)
-                .min(paged_security_limit.unwrap_or(usize::MAX));
-            let (capture, hashes) = crate::stream_native::capture(
-                &file,
-                capture_request,
-                identity,
-                &mut read_budget,
-                row_stream_budget,
-                extent_context,
-            );
-            obs.streams_before = Some(capture);
-            logical.before = hashes;
-            if single_content_pass {
-                obs.streams_after = obs.streams_before.clone();
-                logical.after = logical.before.clone();
             } else {
-                let (capture, hashes) = crate::stream_native::capture(
-                    &file,
-                    capture_request,
-                    identity,
-                    &mut read_budget,
-                    row_stream_budget
-                        .saturating_sub(
-                            obs.streams_before
-                                .as_ref()
-                                .map_or(0, StreamCapture::retained_bytes),
-                        )
-                        .saturating_sub(hash_retained_bytes(&logical.before)),
-                    extent_context,
-                );
-                obs.streams_after = Some(capture);
-                logical.after = hashes;
-            }
-            // The source is a frozen disk mounted read-only for this observation.
-            // A second snapshot through the same handle can only repeat the
-            // first; under the check-once policy it is not taken.
-            obs.after = if crate::verify_policy::checks_once() {
-                obs.before.clone()
-            } else {
-                Some(match paged_security_limit {
+                // SAFETY: transfer the newly acquired unique file-handle ownership.
+                let file = unsafe { File::from_raw_handle(handle) };
+                obs.before = Some(match paged_security_limit {
                     Some(maximum) => source_snapshot_paged(
                         &file,
                         request.requires_directory_case_sensitivity(),
                         maximum,
                     ),
                     None => source_snapshot(&file, request.requires_directory_case_sensitivity()),
-                })
-            };
-            for s in [&obs.before, &obs.after].into_iter().flatten() {
-                security_bytes = security_bytes
-                    .checked_add(s.security.len())
-                    .and_then(|n| {
-                        n.checked_add(s.kernel_security.as_ref().map_or(0, |q| q.bytes.len()))
+                });
+                let row_stream_budget = limits
+                    .stream_evidence_bytes
+                    .saturating_sub(stream_bytes)
+                    .min(paged_security_limit.unwrap_or(usize::MAX));
+                let (capture, hashes) = crate::stream_native::capture(
+                    &file,
+                    capture_request,
+                    identity,
+                    &mut read_budget,
+                    row_stream_budget,
+                    extent_context,
+                );
+                obs.streams_before = Some(capture);
+                logical.before = hashes;
+                if single_content_pass {
+                    obs.streams_after = obs.streams_before.clone();
+                    logical.after = logical.before.clone();
+                } else {
+                    let (capture, hashes) = crate::stream_native::capture(
+                        &file,
+                        capture_request,
+                        identity,
+                        &mut read_budget,
+                        row_stream_budget
+                            .saturating_sub(
+                                obs.streams_before
+                                    .as_ref()
+                                    .map_or(0, StreamCapture::retained_bytes),
+                            )
+                            .saturating_sub(hash_retained_bytes(&logical.before)),
+                        extent_context,
+                    );
+                    obs.streams_after = Some(capture);
+                    logical.after = hashes;
+                }
+                // The source is a frozen disk mounted read-only for this observation.
+                // A second snapshot through the same handle can only repeat the
+                // first; under the check-once policy it is not taken.
+                obs.after = if crate::verify_policy::checks_once() {
+                    obs.before.clone()
+                } else {
+                    Some(match paged_security_limit {
+                        Some(maximum) => source_snapshot_paged(
+                            &file,
+                            request.requires_directory_case_sensitivity(),
+                            maximum,
+                        ),
+                        None => {
+                            source_snapshot(&file, request.requires_directory_case_sensitivity())
+                        }
                     })
-                    .ok_or_else(|| invalid("native security evidence accounting overflow"))?;
-                stream_bytes = stream_bytes
-                    .checked_add(s.extended_attribute_bytes()?)
-                    .ok_or_else(|| invalid("native EA evidence budget overflow"))?;
-                stream_bytes = stream_bytes
-                    .checked_add(s.reparse_bytes()?)
-                    .ok_or_else(|| invalid("native reparse evidence budget overflow"))?;
-                stream_bytes = stream_bytes
-                    .checked_add(s.directory_case_sensitivity_bytes()?)
-                    .ok_or_else(|| invalid("native directory case evidence budget overflow"))?;
+                };
+                for s in [&obs.before, &obs.after].into_iter().flatten() {
+                    security_bytes = security_bytes
+                        .checked_add(s.security.len())
+                        .and_then(|n| {
+                            n.checked_add(s.kernel_security.as_ref().map_or(0, |q| q.bytes.len()))
+                        })
+                        .ok_or_else(|| invalid("native security evidence accounting overflow"))?;
+                    stream_bytes = stream_bytes
+                        .checked_add(s.extended_attribute_bytes()?)
+                        .ok_or_else(|| invalid("native EA evidence budget overflow"))?;
+                    stream_bytes = stream_bytes
+                        .checked_add(s.reparse_bytes()?)
+                        .ok_or_else(|| invalid("native reparse evidence budget overflow"))?;
+                    stream_bytes = stream_bytes
+                        .checked_add(s.directory_case_sensitivity_bytes()?)
+                        .ok_or_else(|| invalid("native directory case evidence budget overflow"))?;
+                }
+                if security_bytes > limits.security_bytes {
+                    return Err(invalid("native descriptor budget exhausted"));
+                }
+                for s in [&obs.streams_before, &obs.streams_after]
+                    .into_iter()
+                    .flatten()
+                {
+                    stream_bytes = stream_bytes.saturating_add(s.retained_bytes());
+                }
+                stream_bytes = stream_bytes.saturating_add(
+                    hash_retained_bytes(&logical.before) + hash_retained_bytes(&logical.after),
+                );
+                if stream_bytes > limits.stream_evidence_bytes {
+                    return Err(invalid("native stream evidence budget exhausted"));
+                }
             }
-            if security_bytes > limits.security_bytes {
-                return Err(invalid("native descriptor budget exhausted"));
+            if let Some(sink) = sink.as_deref_mut() {
+                sink.file(&selected, &obs, &logical)?;
+            } else {
+                files.push(obs);
+                logical_files.push(logical);
             }
-            for s in [&obs.streams_before, &obs.streams_after]
-                .into_iter()
-                .flatten()
-            {
-                stream_bytes = stream_bytes.saturating_add(s.retained_bytes());
-            }
-            stream_bytes = stream_bytes.saturating_add(
-                hash_retained_bytes(&logical.before) + hash_retained_bytes(&logical.after),
-            );
-            if stream_bytes > limits.stream_evidence_bytes {
-                return Err(invalid("native stream evidence budget exhausted"));
-            }
-        }
-        if let Some(sink) = sink.as_deref_mut() {
-            sink.file(&selected, &obs, &logical)?;
-        } else {
-            files.push(obs);
-            logical_files.push(logical);
-        }
+            Ok(())
+        })()
+        .map_err(|error| at_source_record(identity, error))?;
     }
     let base_after = crate::stream_native::base(&volume);
     let (bitmap_after, bitmap_after_continuation, streamed_after) =
@@ -1088,4 +1107,23 @@ pub(crate) fn metadata_refreshed_cached_volume_header(
         streamed_after: Some(streamed_after),
     });
     Ok(report)
+}
+
+#[cfg(test)]
+mod source_record_tests {
+    use super::*;
+
+    #[test]
+    fn a_source_observation_failure_names_its_file_record() {
+        let identity = crate::attestation::FileIdentity {
+            record_number: 4711,
+            sequence_number: 3,
+        };
+        let error = at_source_record(&identity, invalid("native descriptor budget exhausted"));
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            error.to_string(),
+            "source observation of MFT record 4711 (sequence 3): native descriptor budget exhausted"
+        );
+    }
 }

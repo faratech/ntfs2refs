@@ -148,6 +148,17 @@ fn valid_shadow_component(s: &str) -> bool {
 /// `observe` over `items` on up to eight threads, results in item order. Items
 /// are claimed in order, so after a failure every unclaimed item follows it;
 /// the first failure in item order is returned.
+/// A failure while observing one object of a walk, with the object's path.
+/// A reason that already names the path is left as it is.
+fn at_walk_object(item: &Input<'_>, error: io::Error) -> io::Error {
+    let path = item.components.join("\\");
+    let text = error.to_string();
+    if !path.is_empty() && text.contains(&path) {
+        return error;
+    }
+    io::Error::new(error.kind(), format!("object \\{path}: {text}"))
+}
+
 fn observe_in_parallel<T: Sync, U: Send>(
     items: &[T],
     observe: impl Fn(&T) -> io::Result<U> + Sync,
@@ -5619,7 +5630,7 @@ fn run_role_content_domain_accounted(
     } else {
         None
     };
-    let observe = |i: &Input<'_>| -> io::Result<ObjectReport> {
+    let observe_object = |i: &Input<'_>| -> io::Result<ObjectReport> {
         let path = format!("{}{}", root, i.components.join("\\"));
         let mut h = open_input(&path, i, readonly_object_access)?;
         let before = capture_metadata(&h, i);
@@ -5885,6 +5896,11 @@ fn run_role_content_domain_accounted(
                 })
                 .transpose()?,
         })
+    };
+    // Many of the checks above return a bare reason. Whatever fails for one
+    // object is reported with that object's path.
+    let observe = |i: &Input<'_>| -> io::Result<ObjectReport> {
+        observe_object(i).map_err(|error| at_walk_object(i, error))
     };
     let objects = if let Some(legacy) = legacy_input {
         observe_in_parallel(legacy, observe)?

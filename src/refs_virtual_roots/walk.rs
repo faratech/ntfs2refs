@@ -149,7 +149,114 @@ pub struct DataStorageFootprint {
     /// DATA allocation records met in a form the walk does not interpret.
     /// Their clusters are missing from `physical_ranges`.
     pub uninterpreted_data_records: u64,
+    /// Cluster references beyond the first to the same physical cluster:
+    /// `allocated_cluster_references - distinct_physical_clusters`. Sharing
+    /// is legitimate on ReFS (block cloning), so it is reported, not refused;
+    /// `physical_ranges` is the union and would otherwise hide it.
+    pub multiply_referenced_clusters: u64,
+    pub data_ranges_disjoint: bool,
+    /// Extent records whose file VCN starts before the end of the record
+    /// before it in the same leaf.
+    pub vcn_order_violations: u64,
     pub complete_stream_inventory: bool,
+}
+
+/// How many records start before the end of the one before them. Each is
+/// (file VCN, clusters), in the order a leaf stores them.
+fn vcn_order_violations(records: impl IntoIterator<Item = (u32, u32)>) -> u64 {
+    let mut next = 0u64;
+    let mut violations = 0u64;
+    for (vcn, clusters) in records {
+        if u64::from(vcn) < next {
+            violations += 1;
+        }
+        next = next.max(u64::from(vcn) + u64::from(clusters));
+    }
+    violations
+}
+
+/// Turns the extents collected by the walk into their union, and records
+/// how much of what was referenced the union does not show.
+fn finish_data_storage(storage: &mut DataStorageFootprint) -> Result<()> {
+    storage
+        .physical_ranges
+        .sort_unstable_by_key(|range| range.offset);
+    let mut union: Vec<crate::refs_write_set::ByteRange> = Vec::new();
+    for range in storage.physical_ranges.drain(..) {
+        if let Some(last) = union
+            .last_mut()
+            .filter(|last| last.offset + last.length >= range.offset)
+        {
+            last.length =
+                (last.offset + last.length).max(range.offset + range.length) - last.offset;
+        } else {
+            union.push(range);
+        }
+    }
+    storage.physical_ranges = union;
+    storage.distinct_physical_clusters =
+        storage
+            .physical_ranges
+            .iter()
+            .try_fold(0u64, |count, range| {
+                count
+                    .checked_add(range.length / CLUSTER)
+                    .context("distinct data cluster count overflow")
+            })?;
+    storage.multiply_referenced_clusters = storage
+        .allocated_cluster_references
+        .checked_sub(storage.distinct_physical_clusters)
+        .context("data extents cover more clusters than they reference")?;
+    storage.data_ranges_disjoint = storage.multiply_referenced_clusters == 0;
+    Ok(())
+}
+
+#[cfg(test)]
+mod data_storage_tests {
+    use super::*;
+
+    fn range(first_cluster: u64, clusters: u64) -> crate::refs_write_set::ByteRange {
+        crate::refs_write_set::ByteRange {
+            offset: first_cluster * CLUSTER,
+            length: clusters * CLUSTER,
+        }
+    }
+
+    #[test]
+    fn shared_clusters_are_counted_where_the_union_would_hide_them() {
+        // Two four-cluster extents that share three clusters.
+        let mut storage = DataStorageFootprint {
+            physical_ranges: vec![range(0x1_0006, 4), range(0x1_0005, 4)],
+            allocated_cluster_references: 8,
+            ..DataStorageFootprint::default()
+        };
+        finish_data_storage(&mut storage).unwrap();
+        assert_eq!(storage.physical_ranges.len(), 1);
+        assert_eq!(storage.distinct_physical_clusters, 5);
+        assert_eq!(storage.multiply_referenced_clusters, 3);
+        assert!(!storage.data_ranges_disjoint);
+
+        // Adjacent but separate extents are not shared.
+        let mut storage = DataStorageFootprint {
+            physical_ranges: vec![range(10, 4), range(14, 4), range(40, 1)],
+            allocated_cluster_references: 9,
+            ..DataStorageFootprint::default()
+        };
+        finish_data_storage(&mut storage).unwrap();
+        assert_eq!(storage.physical_ranges.len(), 2);
+        assert_eq!(storage.multiply_referenced_clusters, 0);
+        assert!(storage.data_ranges_disjoint);
+    }
+
+    #[test]
+    fn a_record_that_starts_inside_the_one_before_it_is_out_of_order() {
+        assert_eq!(vcn_order_violations([(0, 4), (4, 4), (8, 1)]), 0);
+        // A gap is a hole, not a violation.
+        assert_eq!(vcn_order_violations([(0, 4), (16, 4)]), 0);
+        assert_eq!(vcn_order_violations([(0, 4), (2, 4)]), 1);
+        assert_eq!(vcn_order_violations([(8, 4), (0, 4), (4, 4)]), 2);
+        assert_eq!(vcn_order_violations([]), 0);
+    }
 }
 
 fn consume_extent_node(
@@ -166,6 +273,14 @@ fn consume_extent_node(
     use crate::refs_extent_refs::{ExtentKind, ExtentNodeRows};
     match node.rows {
         ExtentNodeRows::Leaf(records) => {
+            storage.vcn_order_violations = storage
+                .vcn_order_violations
+                .checked_add(vcn_order_violations(
+                    records
+                        .iter()
+                        .map(|record| (record.file_vcn, record.clusters)),
+                ))
+                .context("extent order violation count overflow")?;
             for record in records {
                 storage.extent_records = storage
                     .extent_records
@@ -762,31 +877,7 @@ pub fn inspect<R: Read + Seek>(
             "observed data extent overlaps log controls"
         );
     }
-    data_storage
-        .physical_ranges
-        .sort_unstable_by_key(|range| range.offset);
-    let mut data_ranges: Vec<crate::refs_write_set::ByteRange> = Vec::new();
-    for range in data_storage.physical_ranges.drain(..) {
-        if let Some(last) = data_ranges
-            .last_mut()
-            .filter(|last| last.offset + last.length >= range.offset)
-        {
-            last.length =
-                (last.offset + last.length).max(range.offset + range.length) - last.offset;
-        } else {
-            data_ranges.push(range);
-        }
-    }
-    data_storage.physical_ranges = data_ranges;
-    data_storage.distinct_physical_clusters =
-        data_storage
-            .physical_ranges
-            .iter()
-            .try_fold(0u64, |count, range| {
-                count
-                    .checked_add(range.length / CLUSTER)
-                    .context("distinct data cluster count overflow")
-            })?;
+    finish_data_storage(&mut data_storage)?;
     for lcn in visited {
         let offset = lcn * CLUSTER;
         if let Some(last) = ranges

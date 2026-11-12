@@ -838,6 +838,7 @@ impl GeneralFrozenPartition {
             .ok_or_else(|| invalid("protected converted observer requires V4 admission"))?;
         let (report, before, observed_readonly, after) = self
             .with_readonly_refs_binding_observation(events, |protected| {
+                crate::lab_hold::reached("finalize-source-readonly");
                 let actual_label = protected_refs_label(protected.volume())?;
                 let enrollment_label = crate::volume_label::VolumeLabel::from_text("n2r-retained-shadow")?;
                 let effective_label = match expected_label {
@@ -904,6 +905,7 @@ impl GeneralFrozenPartition {
             aliases.plan_digest(),
         )?;
         let ((report,observed_aliases),before,observed_readonly,after)=self.with_readonly_refs_binding_observation(events,|protected|{
+            crate::lab_hold::reached("finalize-source-readonly");
             let actual_label=protected_refs_label(protected.volume())?;
             let enrollment_label=crate::volume_label::VolumeLabel::from_text("n2r-retained-shadow")?;
             let effective_label=match expected_label{
@@ -981,6 +983,7 @@ impl GeneralFrozenPartition {
         let plan_digest = expectations.semantic_sha256()?;
         let ((report, observed_aliases), before, observed_readonly, after) = self
             .with_readonly_refs_binding_observation(events, |protected| {
+                crate::lab_hold::reached("finalize-source-readonly");
                 let actual_label = protected_refs_label(protected.volume())?;
                 let enrollment_label =
                     crate::volume_label::VolumeLabel::from_text("n2r-retained-shadow")?;

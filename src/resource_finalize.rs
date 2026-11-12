@@ -226,6 +226,7 @@ pub(crate) fn finalize_resource_handoff_with_windows_aliases_observer<O: Prepara
             &mut events,
         )
         .context("finalization: authenticating the handoff")?;
+    n2r_win32::lab_hold::reached("finalize-authenticated");
     n2r_win32::perf::step("reopen verification metadata");
     let metadata = ReopenedVerificationMetadata::open(&handoff)
         .context("finalization: reopening verification metadata")?;
@@ -366,6 +367,7 @@ pub(crate) fn finalize_resource_handoff_with_windows_aliases_observer<O: Prepara
     let maps = metadata.compare_protected(&protected, &native)?;
     let matching_bindings = maps.bindings();
     events.phase("resource-verified-handoff-online");
+    n2r_win32::lab_hold::reached("finalize-before-online");
     n2r_win32::perf::step("bring online");
     let mounted = protected.bring_online_after_verified_observation(
         &native,
@@ -377,6 +379,7 @@ pub(crate) fn finalize_resource_handoff_with_windows_aliases_observer<O: Prepara
     )?;
     let finish_online = (|| -> Result<serde_json::Value> {
         events.checkpoint()?;
+        n2r_win32::lab_hold::reached("finalize-online");
         n2r_win32::perf::step("revalidate after mount");
         let converted = mounted.revalidate_handoff_artifacts_after_mount(&mut events)?;
         n2r_win32::perf::step("restore label and mount paths");

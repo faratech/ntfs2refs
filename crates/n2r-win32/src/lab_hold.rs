@@ -28,6 +28,15 @@ pub const POINTS: &[&str] = &[
     "apply-handoff-durable",
     // The source is sealed read-only again; finalization has not started.
     "handoff-sealed",
+    // Finalization has authenticated the handoff; the source is still sealed.
+    "finalize-authenticated",
+    // The converted source is mounted read-only for its verification.
+    "finalize-source-readonly",
+    // Verification passed and the source is sealed again; not yet online.
+    "finalize-before-online",
+    // The converted source is online; its label and mount paths are not
+    // yet restored.
+    "finalize-online",
 ];
 
 static ARMED: OnceLock<&'static str> = OnceLock::new();

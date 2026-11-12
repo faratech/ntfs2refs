@@ -101,8 +101,10 @@ not count. Power-cut resume during preparation is out of scope until this works.
   process and runs the recovery it printed. `-RecoverMode resume` compares
   as usual (`RESUMED-NOT-BOOTED`); `rollback` compares the restored NTFS
   exactly (`ROLLED-BACK-NOT-BOOTED`). Process termination, not power loss.
-  `-CheckpointAfterConvert <name>` saves a run that stopped after apply;
-  `-Recover -Checkpoint <name>` retries its finalization with `--recover`.
+  `-CheckpointAfterConvert <name>` saves a run that stopped after apply (or
+  was stopped with `-RecoverMode none`); `-RecoverFrom <attempt>` restores
+  that attempt's checkpoint and runs the recovery it printed, compared with
+  the listing it took.
   Records land in `.lab/hyperv/attempts/<n>/`; `verdict.json` lists every
   piece of evidence with its SHA-256, or why it is missing, and a success
   without its required evidence is `incomplete-evidence`. The scratch disk

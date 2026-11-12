@@ -967,6 +967,11 @@ fn acl(bytes: &[u8], offset: usize, present: bool) -> Result<Acl> {
         });
         at += n;
     }
+    // `at` may stop short of `length`. That is not a malformed ACL: Windows
+    // defines AclSize as covering "the ACL structure, all the ACEs, and the
+    // potential unused memory" and reports the remainder as AclBytesFree
+    // (ACL_SIZE_INFORMATION). The whole declared length is kept and hashed
+    // with the descriptor, so no byte of it is hidden from any comparison.
     Ok(Acl {
         state: AclState::Present,
         offset,

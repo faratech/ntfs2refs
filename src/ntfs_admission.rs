@@ -629,6 +629,145 @@ pub struct Gate {
     pub detail: String,
 }
 
+/// The objects the preservation policy does not admit. Every one is written
+/// to the comparison pages with its reasons; the first few are also kept
+/// here, so that the refusal itself can say which objects it is about.
+#[derive(Debug, Default)]
+pub(crate) struct RefusedObjects {
+    count: u64,
+    first: Vec<String>,
+}
+
+impl RefusedObjects {
+    /// How many refused objects a message spells out.
+    const NAMED: usize = 12;
+
+    pub(crate) fn note(&mut self, record_number: u64, path: Option<&[String]>, issues: &[String]) {
+        self.count = self.count.saturating_add(1);
+        if self.first.len() < Self::NAMED {
+            let place = match path {
+                Some(components) => format!("\\{}", components.join("\\")),
+                None => "(path not resolved)".to_owned(),
+            };
+            self.first.push(format!(
+                "MFT record {record_number} {place}: {}",
+                issues.join("; ")
+            ));
+        }
+    }
+
+    /// The detail of the objects gate: what it requires and, when objects
+    /// were refused, which and why.
+    pub(crate) fn detail(&self, requirement: &str) -> String {
+        if self.count == 0 {
+            return requirement.to_owned();
+        }
+        let mut text = format!(
+            "{requirement}; {} object{} outside what this converter preserves: {}",
+            self.count,
+            if self.count == 1 { " is" } else { "s are" },
+            self.first.join(" | ")
+        );
+        let unnamed = self.count - self.first.len() as u64;
+        if unnamed > 0 {
+            text.push_str(&format!(
+                " | and {unnamed} more, each recorded with its reasons in source-comparison.data.pages"
+            ));
+        }
+        text
+    }
+}
+
+/// A source refusal: the gates that failed and, for each, what it requires
+/// and found. A list of gate codes alone does not say what to change.
+pub(crate) fn source_refusal<'a>(route: &str, failed: impl Iterator<Item = &'a Gate>) -> String {
+    let failed: Vec<&Gate> = failed.collect();
+    let codes: Vec<&str> = failed.iter().map(|gate| gate.code.as_str()).collect();
+    let mut text = format!("{route} source evidence refused: {codes:?}");
+    for gate in failed {
+        text.push_str(&format!("\n  {}: {}", gate.code, gate.detail));
+    }
+    text
+}
+
+#[cfg(test)]
+mod refusal_tests {
+    use super::*;
+
+    #[test]
+    fn a_refusal_names_the_refused_objects_and_their_reasons() {
+        let requirement = "every transferred user object passes the preservation policy";
+        let mut refused = RefusedObjects::default();
+        assert_eq!(refused.detail(requirement), requirement);
+
+        refused.note(
+            39561,
+            Some(&["shape".to_owned(), "folder".to_owned()]),
+            &["directory data streams exceed the profile".to_owned()],
+        );
+        refused.note(7, None, &["first".to_owned(), "second".to_owned()]);
+        let detail = refused.detail(requirement);
+        assert!(detail.starts_with(requirement), "{detail}");
+        assert!(detail.contains("2 objects are outside"), "{detail}");
+        assert!(
+            detail.contains(
+                "MFT record 39561 \\shape\\folder: directory data streams exceed the profile"
+            ),
+            "{detail}"
+        );
+        assert!(
+            detail.contains("MFT record 7 (path not resolved): first; second"),
+            "{detail}"
+        );
+
+        // Only the first few are spelled out; the rest are counted.
+        for record in 100..120 {
+            refused.note(record, None, &["reason".to_owned()]);
+        }
+        let detail = refused.detail(requirement);
+        assert!(detail.contains("22 objects are outside"), "{detail}");
+        assert!(detail.contains("and 10 more"), "{detail}");
+        assert!(!detail.contains("MFT record 119"), "{detail}");
+    }
+
+    #[test]
+    fn a_source_refusal_gives_each_failed_gate_with_its_detail() {
+        let gates = [
+            Gate {
+                code: "objects".into(),
+                satisfied: false,
+                detail:
+                    "1 object is outside what this converter preserves: MFT record 5 \\x: reason"
+                        .into(),
+            },
+            Gate {
+                code: "internal_replacement_state".into(),
+                satisfied: false,
+                detail: "only after all independent source obligations close".into(),
+            },
+        ];
+        let text = source_refusal("resource", gates.iter());
+        let mut lines = text.lines();
+        assert_eq!(
+            lines.next(),
+            Some("resource source evidence refused: [\"objects\", \"internal_replacement_state\"]")
+        );
+        assert_eq!(
+            lines.next(),
+            Some(
+                "  objects: 1 object is outside what this converter preserves: MFT record 5 \\x: reason"
+            )
+        );
+        assert_eq!(
+            lines.next(),
+            Some(
+                "  internal_replacement_state: only after all independent source obligations close"
+            )
+        );
+        assert_eq!(lines.next(), None);
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct InternalReplacement {
     pub record_number: u64,

@@ -62,6 +62,20 @@ fn directory_path_for_alias_preparation(
     anyhow::bail!("source parent chain cycles or does not reach the root")
 }
 
+/// A path to name a refused object by, in a message. The admission path
+/// resolver accepts only names it would transfer, so an object that also has
+/// a short name falls through to the resolver that tolerates those. This
+/// names an object; it admits nothing.
+pub(crate) fn refused_object_path(
+    files: &impl RootFileDomain,
+    file: &FileInventory,
+) -> Option<Vec<String>> {
+    user_paths(files, file)
+        .or_else(|_| canonical_paths_for_alias_preparation(files, file))
+        .ok()
+        .and_then(|paths| paths.into_iter().next())
+}
+
 /// Canonical long paths for a separately journaled short-name preparation.
 /// This does not satisfy normal source admission or permit dropping aliases.
 pub(crate) fn canonical_paths_for_alias_preparation(

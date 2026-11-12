@@ -369,29 +369,46 @@ impl LiveNtfsObservation {
         &self.after.binding
     }
 }
+/// A disk made online and read-only for an observation. It is put back
+/// offline and read-only by `finish`, whose result the caller reports.
 struct ReadonlyObservationLease<'a> {
     file: &'a File,
     events: &'a mut Vec<NativeEvent>,
-    restoration_attempted: bool,
+    /// True only once the disk is offline and read-only again.
+    restored: bool,
 }
 impl ReadonlyObservationLease<'_> {
     fn finish(&mut self) -> io::Result<()> {
-        self.restoration_attempted = true;
-        set_attributes(self.file, OFFLINE | READ_ONLY, self.events)?;
+        Self::restore(self.file, self.events)?;
+        self.restored = true;
+        Ok(())
+    }
+    fn restore(file: &File, events: &mut Vec<NativeEvent>) -> io::Result<()> {
+        set_attributes(file, OFFLINE | READ_ONLY, events)?;
         control(
-            self.file,
+            file,
             "refresh-excluded-source-properties",
             UPDATE_PROPERTIES,
             &[],
             0,
-            self.events,
+            events,
         )?;
         Ok(())
     }
 }
 impl Drop for ReadonlyObservationLease<'_> {
     fn drop(&mut self) {
-        if !self.restoration_attempted {
+        if self.restored {
+            return;
+        }
+        // Either `finish` was never reached or it failed. The lease opened
+        // this exposure, so it tries once more to close it; the caller has
+        // already taken the first failure and reports that one. A full event
+        // batch must not defeat the attempt: the control wrapper issues
+        // nothing once the batch is full, so it then gets a batch of its own.
+        if self.events.len() + 8 >= crate::MAX_BATCH_EVENTS {
+            self.restored = Self::restore(self.file, &mut Vec::new()).is_ok();
+        } else {
             let _ = self.finish();
         }
     }
@@ -3199,7 +3216,7 @@ impl GeneralFrozenPartition {
         let mut lease = ReadonlyObservationLease {
             file: &management,
             events,
-            restoration_attempted: false,
+            restored: false,
         };
         set_attributes(lease.file, READ_ONLY, lease.events)?;
         control(
@@ -3866,7 +3883,7 @@ impl GeneralFrozenPartition {
         let mut lease = ReadonlyObservationLease {
             file: &management,
             events,
-            restoration_attempted: false,
+            restored: false,
         };
         let collected = (|| {
             set_attributes(lease.file, READ_ONLY, lease.events)?;
@@ -5037,7 +5054,7 @@ impl OfflinePartition {
         let mut lease = ReadonlyObservationLease {
             file: &management,
             events,
-            restoration_attempted: false,
+            restored: false,
         };
         set_attributes(lease.file, READ_ONLY, lease.events)?;
         control(
@@ -5291,6 +5308,58 @@ impl Seek for OfflinePartition {
 mod tests {
     use super::*;
     use crate::layout::PartitionIdentity;
+
+    #[test]
+    fn a_lease_whose_restoration_failed_tries_once_more_when_dropped() {
+        // An ordinary file refuses the disk-attribute control, which stands
+        // in for a restoration that fails.
+        let file = tempfile::tempfile().unwrap();
+        let mut events = Vec::new();
+        let after_finish;
+        {
+            let mut lease = ReadonlyObservationLease {
+                file: &file,
+                events: &mut events,
+                restored: false,
+            };
+            assert!(lease.finish().is_err());
+            assert!(!lease.restored, "a failed restoration is not a restoration");
+            after_finish = lease.events.len();
+            assert!(after_finish > 0, "the failed control is on record");
+        }
+        assert_eq!(
+            events.len(),
+            after_finish * 2,
+            "dropping the lease made exactly one more attempt"
+        );
+
+        // A lease that restored (or one marked so) is left alone.
+        let mut events = Vec::new();
+        drop(ReadonlyObservationLease {
+            file: &file,
+            events: &mut events,
+            restored: true,
+        });
+        assert!(events.is_empty());
+
+        // With the batch full the retry still runs, on a batch of its own.
+        let mut events: Vec<NativeEvent> = (0..crate::MAX_BATCH_EVENTS)
+            .map(|_| NativeEvent {
+                operation: "filler".into(),
+                control_code: 0,
+                input: Vec::new(),
+                succeeded: true,
+                native_error: None,
+                output: Vec::new(),
+            })
+            .collect();
+        drop(ReadonlyObservationLease {
+            file: &file,
+            events: &mut events,
+            restored: false,
+        });
+        assert_eq!(events.len(), crate::MAX_BATCH_EVENTS);
+    }
 
     #[test]
     fn a_diagnose_run_cannot_make_a_disk_writable_for_raw_access() {

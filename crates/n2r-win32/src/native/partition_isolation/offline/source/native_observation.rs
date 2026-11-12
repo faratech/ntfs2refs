@@ -452,7 +452,8 @@ struct ReadonlyLease<'a> {
     core: &'a mut Core,
     management: File,
     events: &'a mut Vec<NativeEvent>,
-    restore_attempted: bool,
+    /// True only once the disk is offline and read-only again.
+    restored: bool,
     entered: bool,
 }
 impl ReadonlyLease<'_> {
@@ -497,7 +498,6 @@ impl ReadonlyLease<'_> {
         )
     }
     fn finish(&mut self) -> io::Result<()> {
-        self.restore_attempted = true;
         let result = (|| {
             set_attributes(&self.management, 3, self.events)?;
             require(
@@ -518,6 +518,9 @@ impl ReadonlyLease<'_> {
             self.core.expected_attributes = 3;
             Ok(())
         })();
+        // Only a disk that is offline and read-only again counts: a failed
+        // attempt leaves the lease to try once more when it is dropped.
+        self.restored = result.is_ok();
         if result.is_err() {
             self.core.poisoned = true;
         }
@@ -537,7 +540,7 @@ impl ReadonlyLease<'_> {
 }
 impl Drop for ReadonlyLease<'_> {
     fn drop(&mut self) {
-        if self.entered && !self.restore_attempted {
+        if self.entered && !self.restored {
             if self.finish().is_err() {
                 self.core.poisoned = true;
             }
@@ -702,7 +705,7 @@ impl OfflineFrozenSource {
             core: &mut self.core,
             management,
             events,
-            restore_attempted: false,
+            restored: false,
             entered: false,
         };
         let operation: io::Result<_> = (|| {

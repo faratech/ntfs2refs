@@ -500,12 +500,31 @@ mod capture {
     fn i64_at(bytes: &[u8], at: usize) -> i64 {
         i64::from_le_bytes(bytes[at..at + 8].try_into().expect("eight bytes"))
     }
-    fn utf16(bytes: &[u8]) -> String {
+    /// The text of little-endian UTF-16 bytes, or their code units when they
+    /// are not valid UTF-16. NTFS permits unpaired surrogates in names; a
+    /// lossy conversion would record a different name.
+    pub(super) fn utf16(bytes: &[u8]) -> Result<String, Vec<u16>> {
         let units: Vec<u16> = bytes
             .chunks_exact(2)
             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
             .collect();
-        String::from_utf16_lossy(&units)
+        String::from_utf16(&units).map_err(|_| units)
+    }
+
+    /// A name the listing cannot hold exactly. Its object could not be
+    /// reopened by the recorded path, and two such names could share one.
+    #[derive(Debug)]
+    struct InvalidName(String);
+    impl std::fmt::Display for InvalidName {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(&self.0)
+        }
+    }
+    impl std::error::Error for InvalidName {}
+    fn invalid_name(directory: &str, what: &str, units: &[u16]) -> io::Error {
+        io::Error::other(InvalidName(format!(
+            "directory {directory} holds a {what} that is not valid UTF-16 and cannot be listed exactly: {units:04x?}"
+        )))
     }
 
     /// One directory's entries, with the short names NTFS keeps beside them.
@@ -526,10 +545,12 @@ mod capture {
                 let entry = &bytes[at..];
                 let next = u32_at(entry, 0) as usize;
                 let name_bytes = u32_at(entry, 60) as usize;
-                let name = utf16(&entry[104..104 + name_bytes]);
+                let name = utf16(&entry[104..104 + name_bytes])
+                    .map_err(|units| invalid_name(path, "name", &units))?;
                 if name != "." && name != ".." {
                     let short_bytes = entry[68] as usize;
-                    let short = utf16(&entry[70..70 + short_bytes]);
+                    let short = utf16(&entry[70..70 + short_bytes])
+                        .map_err(|units| invalid_name(path, "short name", &units))?;
                     out.push(Pending {
                         path: if path == "\\" {
                             format!("\\{name}")
@@ -613,10 +634,11 @@ mod capture {
                 .iter()
                 .position(|unit| *unit == 0)
                 .unwrap_or(units.len());
-            let value = String::from_utf16_lossy(&units[..end]);
+            let value = String::from_utf16(&units[..end]);
             // SAFETY: allocated by the conversion call above.
             unsafe { LocalFree(text.cast()) };
-            return Ok(value);
+            return value
+                .map_err(|_| io::Error::other("security descriptor text is not valid UTF-16"));
         }
         Err(last.unwrap_or_else(|| io::Error::other("security descriptor unavailable")))
     }
@@ -656,7 +678,9 @@ mod capture {
             let entry = &bytes[at..];
             let next = u32_at(entry, 0) as usize;
             let name_bytes = u32_at(entry, 4) as usize;
-            let name = utf16(&entry[24..24 + name_bytes]);
+            let name = utf16(&entry[24..24 + name_bytes]).map_err(|units| {
+                io::Error::other(format!("a stream name is not valid UTF-16: {units:04x?}"))
+            })?;
             if name != "::$DATA" {
                 let stream_name = name.strip_suffix(":$DATA").unwrap_or(&name);
                 let mut stream = File::options()
@@ -687,7 +711,9 @@ mod capture {
         }
         let offset = u16::from_le_bytes([buffer[8], buffer[9]]) as usize;
         let length = u16::from_le_bytes([buffer[10], buffer[11]]) as usize;
-        buffer.get(20 + offset..20 + offset + length).map(utf16)
+        buffer
+            .get(20 + offset..20 + offset + length)
+            .and_then(|name| utf16(name).ok())
     }
 
     fn observe(prefix: &str, pending: Pending, buffer: &mut [u8]) -> Record {
@@ -852,6 +878,14 @@ mod capture {
             }
             let path = entry.path.clone();
             if let Err(error) = list(&prefix, &path, &mut pending) {
+                // Not an unreadable object to note and carry on from: the
+                // listing itself would misname what the volume holds.
+                if error
+                    .get_ref()
+                    .is_some_and(|inner| inner.is::<InvalidName>())
+                {
+                    return Err(error);
+                }
                 listing_errors.push((path, error.to_string()));
             }
         }
@@ -1039,6 +1073,27 @@ mod tests {
         let comparison = compare(&before, &split);
         assert_eq!(comparison.difference_count, 1);
         assert!(comparison.differences[0].what.contains("hard-link set"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn names_that_are_not_valid_utf16_are_rejected_not_altered() {
+        let bytes = |units: &[u16]| -> Vec<u8> {
+            units.iter().flat_map(|unit| unit.to_le_bytes()).collect()
+        };
+        assert_eq!(
+            capture::utf16(&bytes(&[0x41, 0x65e5])).unwrap(),
+            "A\u{65e5}"
+        );
+        // A surrogate pair is one character; a lone surrogate is not text.
+        assert_eq!(
+            capture::utf16(&bytes(&[0xd83d, 0xde00])).unwrap(),
+            "\u{1f600}"
+        );
+        assert_eq!(
+            capture::utf16(&bytes(&[0xd800, 0x41])).unwrap_err(),
+            [0xd800, 0x41]
+        );
     }
 
     #[test]

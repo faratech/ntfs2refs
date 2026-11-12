@@ -72,7 +72,8 @@ $progressLog = Join-Path $case 'progress.log'
 $verdict = [ordered]@{ name = $Name; fixture = [bool]$Fixture; diagnose = [bool]$Diagnose; started_utc = [DateTime]::UtcNow.ToString('o')
     phases = [ordered]@{}; converter = $null; boot = $null; outcome = 'incomplete' }
 $phaseWatch = [Diagnostics.Stopwatch]::StartNew()
-$listingDiffers = $false
+# identical | differs | not-compared | tool-failed; 'not-run' when no comparison was asked for.
+$listing = 'not-run'
 
 function Say([string]$Text) {
     $line = '{0} {1}' -f (Get-Date -Format 'HH:mm:ss'), $Text
@@ -491,27 +492,40 @@ try {
                 # A -Recover attempt has no listing of its own; use the one the original run took.
                 $before = @("$directory\manifest-before.jsonl") + @(Get-ChildItem 'C:\n2r' -Directory | Sort-Object LastWriteTime -Descending |
                         ForEach-Object { Join-Path $_.FullName 'manifest-before.jsonl' }) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-                if (-not $before) { return [pscustomobject]@{ exit = -1; listed = 'no listing from before the conversion exists'; summary = ''; before = $null } }
+                if (-not $before) { return [pscustomobject]@{ stage = 'no-before-listing'; exit = -1; differences = $null; listed = 'no listing from before the conversion exists'; summary = ''; before = $null } }
                 $listed = & $exe capture --root $root --output "$directory\manifest-after.jsonl" 2>&1
-                if ($LASTEXITCODE -ne 0) { return [pscustomobject]@{ exit = $LASTEXITCODE; listed = ($listed -join ' '); summary = ''; before = $before } }
-                $summary = & $exe compare --before $before --after "$directory\manifest-after.jsonl" --report "$directory\manifest-report.json" 2>&1
-                [pscustomobject]@{ exit = $LASTEXITCODE; listed = ($listed -join ' '); summary = ($summary -join ' '); before = $before }
+                if ($LASTEXITCODE -ne 0) { return [pscustomobject]@{ stage = 'capture-after'; exit = $LASTEXITCODE; differences = $null; listed = ($listed -join ' '); summary = ''; before = $before } }
+                $report = "$directory\manifest-report.json"
+                if (Test-Path -LiteralPath $report) { Remove-Item -LiteralPath $report -Force }
+                $summary = & $exe compare --before $before --after "$directory\manifest-after.jsonl" --report $report 2>&1
+                $exit = $LASTEXITCODE
+                # The count comes from the report the comparison wrote, not from its exit code alone.
+                $differences = $null
+                if (Test-Path -LiteralPath $report) { try { $differences = [int](Get-Content -Raw -LiteralPath $report | ConvertFrom-Json).difference_count } catch { $differences = $null } }
+                [pscustomobject]@{ stage = 'compare'; exit = $exit; differences = $differences; listed = ($listed -join ' '); summary = ($summary -join ' '); before = $before }
             }
             foreach ($pair in @(@($compared.before, 'manifest-before.jsonl'), @("$guestRoot\manifest-after.jsonl", 'manifest-after.jsonl'), @("$guestRoot\manifest-report.json", 'manifest-report.json'))) {
                 if ($pair[0]) { try { Copy-Item -LiteralPath $pair[0] -Destination (Join-Path $case $pair[1]) -FromSession $session -ErrorAction Stop } catch { } }
             }
-            $verdict.manifest = [ordered]@{ exit = $compared.exit; listed = $compared.listed; summary = $compared.summary }
+            # Exit 0 with no differences counted is identical; exit 2 with a report
+            # that counts differences is a real difference. Anything else (a crash,
+            # an unreadable listing, a usage error) is the listing tool failing,
+            # which says nothing about the volume. No listing to compare with (a
+            # -Recover of a checkpoint whose own run took none) is neither.
+            $listing = if ($compared.stage -eq 'no-before-listing') { 'not-compared' }
+                elseif ($compared.stage -eq 'compare' -and $compared.exit -eq 0 -and $compared.differences -eq 0) { 'identical' }
+                elseif ($compared.stage -eq 'compare' -and $compared.exit -eq 2 -and $compared.differences -gt 0) { 'differs' }
+                else { 'tool-failed' }
+            $verdict.manifest = [ordered]@{ result = $listing; stage = $compared.stage; exit = $compared.exit; differences = $compared.differences
+                listed = $compared.listed; summary = $compared.summary }
             Say "listing after conversion: $($compared.listed)"
-            Say "before/after comparison (exit $($compared.exit)): $($compared.summary)"
+            Say "before/after comparison: $listing ($($compared.stage) exit $($compared.exit)): $($compared.summary)"
             Phase 'compare'
             # A listing that differs is a failed conversion, but whether the result
             # boots is separate evidence worth having from the same run.
-            $listingDiffers = $compared.exit -ne 0
-            # No listing to compare with (a -Recover of a checkpoint whose own run
-            # took none) is not a difference; say so instead.
-            $unlisted = $null -eq $compared.before
-            if ($listingDiffers -and ($NoBoot -or $Diagnose)) {
-                $verdict.outcome = if ($unlisted) { 'converted-not-compared' } else { 'converted-but-listing-differs' }
+            if ($listing -ne 'identical' -and ($NoBoot -or $Diagnose)) {
+                $verdict.outcome = switch ($listing) {
+                    'not-compared' { 'converted-not-compared' } 'differs' { 'converted-but-listing-differs' } default { 'converted-listing-tool-failed' } }
                 Remove-PSSession $session; return
             }
         }
@@ -575,7 +589,10 @@ try {
     $desktop = Enter-Desktop
     $null = Save-VmScreen (Join-Path $case 'boot-desktop.png')
     $verdict.boot = @{ reached_windows = $true; observed = $observed; desktop = $desktop }
-    $verdict.outcome = if (-not $ok) { 'booted-but-checks-failed' } elseif (-not $desktop.shell) { 'booted-without-desktop' } elseif ($listingDiffers) { 'booted-but-listing-differs' } else { 'BOOTED-ON-REFS' }
+    # Only an identical listing (or one the operator switched off) can end as BOOTED-ON-REFS.
+    $verdict.outcome = if (-not $ok) { 'booted-but-checks-failed' } elseif (-not $desktop.shell) { 'booted-without-desktop' }
+        elseif ($listing -eq 'differs') { 'booted-but-listing-differs' } elseif ($listing -eq 'not-compared') { 'booted-not-compared' }
+        elseif ($listing -eq 'tool-failed') { 'booted-listing-tool-failed' } else { 'BOOTED-ON-REFS' }
     Say "disk0 booted: $($observed.filesystem) $($observed.refs_version), cluster $($observed.cluster_bytes), partition $($observed.partition), health $($observed.health); desktop $(if ($desktop.shell) { "reached as $($desktop.user) in $($desktop.seconds) s" } else { "not reached: $($desktop.error)" }) => $($verdict.outcome)"
     Phase 'boot'
 } catch {

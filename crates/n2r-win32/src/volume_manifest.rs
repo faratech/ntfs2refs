@@ -176,9 +176,11 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
             );
         }
         // An 8.3 name must survive as a same-directory link to the long name.
+        // The converter links every separately stored short name whose text
+        // is not exactly the long name, so the same test decides it here.
         if let Some(short) = &record.short_name {
             let (parent, leaf) = parent_and_leaf(&record.path);
-            if !short.eq_ignore_ascii_case(leaf) {
+            if short != leaf {
                 let alias = join(parent, short);
                 match after_by_path.get(alias.as_str()) {
                     Some(link)
@@ -1051,6 +1053,26 @@ mod tests {
         let lost = compare(&before, &[directory("\\"), converted]);
         assert_eq!(lost.difference_count, 1);
         assert_eq!(lost.differences[0].what, "short name PROGRA~1 was lost");
+    }
+
+    #[test]
+    fn a_short_name_differing_only_by_case_still_needs_its_link() {
+        let mut long = file("\\readme.txt", "11");
+        long.short_name = Some("README.TXT".to_owned());
+        let mut converted = long.clone();
+        converted.short_name = None;
+        let comparison = compare(&[directory("\\"), long], &[directory("\\"), converted]);
+        assert_eq!(comparison.difference_count, 1, "{comparison:?}");
+        assert_eq!(comparison.difference_kinds["short name lost"], 1);
+
+        // A short name with exactly the long name's text is not a second name.
+        let mut same = file("\\README.TXT", "11");
+        same.short_name = Some("README.TXT".to_owned());
+        let mut after = same.clone();
+        after.short_name = None;
+        let comparison = compare(&[directory("\\"), same], &[directory("\\"), after]);
+        assert!(comparison.identical(), "{comparison:?}");
+        assert_eq!(comparison.short_names_as_links, 0);
     }
 
     #[test]

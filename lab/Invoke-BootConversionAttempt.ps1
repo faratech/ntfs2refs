@@ -91,13 +91,17 @@ function Phase([string]$PhaseName) {
 }
 # Every piece of evidence an attempt retains is recorded with its size and
 # SHA-256, or with the reason it is missing. Nothing is dropped silently.
-function Add-Evidence([string]$Label, [string]$Path, [string]$MissingReason, [switch]$Required) {
+function Add-Evidence([string]$Label, [string]$Path, [string]$MissingReason, [switch]$Required, [Nullable[long]]$GuestBytes, [string]$GuestSha256) {
     if ($Path -and (Test-Path -LiteralPath $Path)) {
         $script:verdict.evidence.Add([ordered]@{ name = $Label; present = $true; required = [bool]$Required
                 bytes = (Get-Item -LiteralPath $Path).Length; sha256 = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() })
     } else {
-        $script:verdict.evidence.Add([ordered]@{ name = $Label; present = $false; required = [bool]$Required
-                reason = if ($MissingReason) { $MissingReason } else { 'not found' } })
+        $entry = [ordered]@{ name = $Label; present = $false; required = [bool]$Required
+            reason = if ($MissingReason) { $MissingReason } else { 'not found' } }
+        # A record left in the guest is still identified: its size and digest there.
+        if ($null -ne $GuestBytes) { $entry.guest_bytes = $GuestBytes }
+        if ($GuestSha256) { $entry.guest_sha256 = $GuestSha256 }
+        $script:verdict.evidence.Add($entry)
         if ($Required) { Say "required evidence missing: $Label ($MissingReason)" }
     }
 }
@@ -108,6 +112,31 @@ function Copy-Evidence($Session, [string]$GuestPath, [string]$Label, [switch]$Re
         Copy-Item -LiteralPath $GuestPath -Destination $target -FromSession $Session -ErrorAction Stop
     } catch { $reason = $_.Exception.Message }
     Add-Evidence $Label $target $reason -Required:$Required
+}
+# Copies the small records (json, txt, log) under a guest directory. One it
+# leaves behind is named with its size, its digest taken in the guest and
+# the reason, so the verdict accounts for every record the run wrote.
+function Copy-RunRecords([string]$GuestDirectory, [string]$LabelRoot) {
+    try {
+        $found = Invoke-Command -Session $script:session -ArgumentList $GuestDirectory -ScriptBlock {
+            param($directory)
+            $failures = @()
+            $files = @(Get-ChildItem -LiteralPath $directory -Recurse -File -ErrorAction SilentlyContinue -ErrorVariable failures |
+                    Where-Object { $_.Extension -in '.json', '.txt', '.log' } | Sort-Object FullName | ForEach-Object {
+                        $digest = $null
+                        if ($_.Length -gt 4MB) { try { $digest = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() } catch { $digest = $null } }
+                        [pscustomobject]@{ FullName = $_.FullName; Length = $_.Length; Sha256 = $digest } })
+            [pscustomobject]@{ files = $files; errors = @($failures | ForEach-Object { "$_" }) }
+        }
+        foreach ($failure in @($found.errors)) { Add-Evidence $LabelRoot $null "listing ${GuestDirectory}: $failure" }
+        $copied = 0
+        foreach ($record in @($found.files)) {
+            $label = Join-Path $LabelRoot $record.FullName.Substring($GuestDirectory.Length).TrimStart('\')
+            if ($record.Length -gt 4MB) { Add-Evidence $label $null 'not copied: over the 4 MB record limit' -GuestBytes $record.Length -GuestSha256 $record.Sha256 }
+            elseif ($copied -ge 400) { Add-Evidence $label $null 'not copied: over the 400-record limit' -GuestBytes $record.Length }
+            else { Copy-Evidence $script:session $record.FullName $label; $copied++ }
+        }
+    } catch { Add-Evidence $LabelRoot $null "collection failed: $($_.Exception.Message)" -Required }
 }
 # Starts ntfs2refs.exe in the guest as SYSTEM, through the worker beside it.
 function Start-Converter([string]$Root, [string]$TaskName, [string[]]$Arguments) {
@@ -528,6 +557,11 @@ try {
     $run = Wait-Converter $guestRoot $taskName $guest.scratch_letter $InterruptAt
     $state = $run.state; $vmStopped = $run.vm_stopped
     if ($vmStopped) {
+        # Nothing can be copied out of a guest that is not running. Say which
+        # records that leaves behind instead of ending with an empty list.
+        foreach ($leaf in 'stdout.log', 'stderr.log', 'native-process.json', 'native-terminal.json', 'run.json', 'run records') {
+            Add-Evidence $leaf $null "not collected: $vmStopped" -Required
+        }
         $verdict.converter = [ordered]@{ arguments = $arguments; exit = $null; stopped = $vmStopped }
         $verdict.outcome = 'vm-stopped'; Phase 'convert'; return
     }
@@ -538,24 +572,7 @@ try {
     # Written only when the worker fails, and only when stacks were asked for.
     Copy-Evidence $session "$guestRoot\worker-error.txt" 'worker-error.txt'
     Copy-Evidence $session "$guestRoot\stacks.txt" 'stacks.txt' -Required:$SampleStacks
-    try {
-        $listing_ = Invoke-Command -Session $session -ArgumentList $scratchDirectory -ScriptBlock {
-            param($scratch)
-            $failures = @()
-            $found = @(Get-ChildItem -LiteralPath $scratch -Recurse -File -ErrorAction SilentlyContinue -ErrorVariable failures |
-                    Where-Object { $_.Extension -in '.json', '.txt', '.log' } | Select-Object FullName, Length)
-            [pscustomobject]@{ files = $found; errors = @($failures | ForEach-Object { "$_" }) }
-        }
-        foreach ($failure in @($listing_.errors)) { Add-Evidence 'run records' $null "listing the run directory: $failure" }
-        $collected = 0
-        foreach ($record in @($listing_.files)) {
-            $relative = $record.FullName.Substring($scratchDirectory.Length).TrimStart('\'); $label = Join-Path 'run' $relative
-            # Small records are copied; the rest are named with the reason, not dropped.
-            if ($record.Length -gt 4MB) { Add-Evidence $label $null "not collected: $($record.Length) bytes is over the 4 MB record limit" }
-            elseif ($collected -ge 400) { Add-Evidence $label $null 'not collected: over the 400-record limit' }
-            else { Copy-Evidence $session $record.FullName $label; $collected++ }
-        }
-    } catch { Add-Evidence 'run records' $null "collection failed: $($_.Exception.Message)" -Required }
+    Copy-RunRecords $scratchDirectory 'run'
     $exit = if ($state -and $state.terminal) { [int]$state.terminal.native_exit } else { $null }
     $verdict.converter = [ordered]@{ arguments = $arguments; exit = $exit
         wall_seconds = if ($state -and $state.terminal) { $state.terminal.wall_seconds } else { $null }
@@ -588,6 +605,13 @@ try {
             Copy-Evidence $session "$recoverRoot\$leaf" (Join-Path 'recover' $leaf) -Required
         }
         Copy-Evidence $session "$recoverRoot\worker-error.txt" (Join-Path 'recover' 'worker-error.txt')
+        # Recovery writes its own records beside the journal, not under the run.
+        if (-not $recovery.vm_stopped) {
+            $recoveryDirectories = @(Invoke-Command -Session $session -ArgumentList "$($guest.scratch_letter):\" -ScriptBlock {
+                    param($root) @(Get-ChildItem -LiteralPath $root -Directory -Filter 'ntfs2refs-recovery-*' | ForEach-Object FullName) })
+            if (-not $recoveryDirectories.Count) { Add-Evidence 'recover-records' $null 'recovery left no ntfs2refs-recovery-* directory on the journal volume' }
+            foreach ($directory in $recoveryDirectories) { Copy-RunRecords $directory (Join-Path 'recover-records' (Split-Path -Leaf $directory)) }
+        }
         $recoverState = $recovery.state
         $recoverExit = if ($recoverState -and $recoverState.terminal) { [int]$recoverState.terminal.native_exit } else { $null }
         $verdict.recovery = [ordered]@{ mode = $RecoverMode; arguments = $recoverArguments; exit = $recoverExit; stopped = $recovery.vm_stopped

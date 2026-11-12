@@ -46,6 +46,15 @@ ntfs2refs cancel --run-directory C:\ntfs2refs\runs\run-001 `
   --output C:\ntfs2refs\cancel\run-001
 ```
 
+Both commands read the runs of `ntfs2refs --drive <letter>
+--whole-image-verification`, whose run directory is `<recovery files>\conversion`.
+That conversion leaves its source offline and read-only when it stops before it
+has published a recovery bundle; it then prints the `cancel` command for that
+run with the three digests filled in. Once a recovery bundle exists
+(`compact-recovery-bundle.json`), `cancel` refuses and the printed `--recover`
+command, with `--rollback`, is the way back. A frozen-source record whose digest
+covers only part of the image is refused: `cancel` proves the whole image.
+
 Worker failure or a JSON success flag alone cannot authorize cancellation.
 Activated sources, changed bytes, ambiguous markers and unavailable evidence
 remain refused. Failures preserve diagnostics and never trigger automatic

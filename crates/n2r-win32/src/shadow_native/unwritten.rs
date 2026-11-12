@@ -677,9 +677,14 @@ impl PrivatePlaceholder {
                     || destination_lcn < *l + u64::from(*n) && *l < physical_end.unwrap_or(0)
             })
         {
-            return Err(invalid(
-                "private unwritten placement state, overlap or bounds differ",
-            ));
+            return Err(invalid(&format!(
+                "private unwritten placement state, overlap or bounds differ for {}: \
+                 {clusters} clusters from VCN {starting_vcn} to LCN {destination_lcn} \
+                 (reposition {reposition}, {} placements, {} submissions)",
+                self.path,
+                self.placed.len(),
+                self.move_submissions
+            )));
         }
         if let Err(error) = self.verify_placements_prepaid(self.resource.is_some()) {
             self.poisoned = true;

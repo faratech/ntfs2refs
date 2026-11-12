@@ -423,7 +423,8 @@ pub(super) fn preparation_intent_matches(directory: &Path, sha: &str) -> Result<
     let resumed = directory.join("resume-intent.json");
     ensure!(
         !(old.exists() && resumed.exists()),
-        "ambiguous preparation recovery protocol"
+        "ambiguous preparation recovery protocol: {} holds both preparation-intent.json and resume-intent.json",
+        directory.display()
     );
     let path = if resumed.exists() { resumed } else { old };
     ensure!(
@@ -438,18 +439,24 @@ pub(super) fn preparation_intent_matches(directory: &Path, sha: &str) -> Result<
         .read(true)
         .share_mode(1)
         .custom_flags(0x0020_0000)
-        .open(&path)?;
+        .open(&path)
+        .with_context(|| format!("opening the preparation intent {}", path.display()))?;
     let before =
-        n2r_win32::reference_file::observe_reference_file_handle_with_limit(&file, maximum)?;
+        n2r_win32::reference_file::observe_reference_file_handle_with_limit(&file, maximum)
+            .with_context(|| format!("observing the preparation intent {}", path.display()))?;
     ensure!(
         before.file_bytes > 0 && before.number_of_links == 1,
-        "bounded ordinary preparation intent required"
+        "bounded ordinary preparation intent required: {} is {} bytes with {} links",
+        path.display(),
+        before.file_bytes,
+        before.number_of_links
     );
     let actual = n2r_win32::sha256_native::hash_range(&mut file, 0, before.file_bytes)?;
     ensure!(
         n2r_win32::reference_file::observe_reference_file_handle_with_limit(&file, maximum)?
             == before,
-        "preparation route changed during protocol selection"
+        "preparation route changed during protocol selection: {}",
+        path.display()
     );
     Ok(actual == expected)
 }

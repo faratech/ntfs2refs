@@ -2050,8 +2050,20 @@ impl ReopenedResourceRecovery {
             index_path,
             maximum_index_bytes,
         )
-        .context("observing the reopened recovery journal")?;
-        let initial_lifecycle = observation.lifecycle()?;
+        .with_context(|| {
+            format!(
+                "observing the reopened recovery journal {}",
+                locator.journal_path().display()
+            )
+        })?;
+        // A marker that is neither clear nor exact is refused here; say which
+        // journal holds it.
+        let initial_lifecycle = observation.lifecycle().with_context(|| {
+            format!(
+                "reading the lifecycle markers of the recovery journal {}",
+                locator.journal_path().display()
+            )
+        })?;
         n2r_win32::perf::step("retire journal index");
         observation.retire()?;
         n2r_win32::perf::step("reopen converted source");

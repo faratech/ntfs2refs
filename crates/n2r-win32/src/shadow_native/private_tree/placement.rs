@@ -1828,7 +1828,15 @@ fn run_domain_inner(
             || file.logical_length() != item.logical_length()
             || file.valid_prefix() != 0
         {
-            return Err(invalid("private placement input or zero-VDL state differs"));
+            return Err(invalid(&format!(
+                "private placement input or zero-VDL state differs for slot {index}, {path}: \
+                 directory={}, placeholder at {}, placeholder length {} against {}, valid prefix {}",
+                item.directory,
+                file.path,
+                file.logical_length(),
+                item.logical_length(),
+                file.valid_prefix()
+            )));
         }
         let runs = source_runs(&item, partition)?;
         for run in &runs {
@@ -1852,11 +1860,14 @@ fn run_domain_inner(
         ));
     }
     avoid.sort_by_key(|r| r.0);
-    if avoid
+    if let Some(pair) = avoid
         .windows(2)
-        .any(|w| w[0].0.checked_add(w[0].1).is_none_or(|end| end > w[1].0))
+        .find(|w| w[0].0.checked_add(w[0].1).is_none_or(|end| end > w[1].0))
     {
-        return Err(invalid("source desired physical ownership overlaps"));
+        return Err(invalid(&format!(
+            "source desired physical ownership overlaps: {} bytes at offset {} and {} bytes at offset {}",
+            pair[0].1, pair[0].0, pair[1].1, pair[1].0
+        )));
     }
     let mut evidence = Evidence::new(sink, limits.evidence);
     let mut move_bytes = 0u64;
@@ -2206,14 +2217,21 @@ fn run_domain_inner(
             if proof["native_error"] != serde_json::Value::Null
                 || proof["all_placements_match"] != true
             {
+                let refusal = format!(
+                    "selective unwritten evacuation refused for slot {}: {length} bytes at logical offset {} \
+                     to physical offset {}, native error {}, placements match {}; preserve without retry",
+                    movement.file_index,
+                    movement.logical_offset + offset,
+                    movement.destination_offset + offset,
+                    proof["native_error"],
+                    proof["all_placements_match"]
+                );
                 tree.placement_progress["failed_native_move"] = evidence
                     .failed_move(serde_json::json!({
                         "object_index":movement.file_index,"phase":"evacuate-blocker","proof":proof
                     }))
                     .map_err(|e| invalid(&e))?;
-                return Err(invalid(
-                    "selective unwritten evacuation refused; preserve without retry",
-                ));
+                return Err(invalid(&refusal));
             }
             counters.evacuation_submissions += 1;
             let recorded = evidence.push_move(

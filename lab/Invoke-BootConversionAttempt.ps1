@@ -63,6 +63,13 @@ param(
     # there, then run the recovery command it printed and compare as usual.
     [string]$InterruptAt,
     [ValidateSet('resume', 'rollback', 'none')][string]$RecoverMode = 'resume',
+    # With -InterruptAt apply-handoff-durable: before recovery runs, leave the
+    # journal's handoff marker as a write that stopped part-way leaves it (its
+    # first 512-byte sector written, its last one clear). The lab cannot cut
+    # power to the storage; this is the image such a cut leaves, made by hand
+    # once the converter's process has ended. Recovery has to settle the
+    # marker before it can read the journal, and has to say that it did.
+    [ValidateSet('handoff')][string]$TearMarker,
     [int]$SourceDisk = 0,
     [int]$SourcePartition = 3,
     # Independent check: list the source before conversion and the converted
@@ -78,6 +85,9 @@ param(
 $ErrorActionPreference = 'Stop'; Set-StrictMode -Version Latest
 $workspace = Split-Path -Parent $PSScriptRoot
 $Recover = [bool]$RecoverFrom
+if ($TearMarker -and ($InterruptAt -ne 'apply-handoff-durable' -or $RecoverMode -eq 'none')) {
+    throw '-TearMarker handoff needs -InterruptAt apply-handoff-durable and a -RecoverMode: the marker has to be whole, and nothing after it done, when it is torn'
+}
 $case = Join-Path $workspace ".lab\hyperv\attempts\$Name"
 if (Test-Path -LiteralPath $case) { throw "Attempt directory already exists: $case" }
 $null = New-Item -ItemType Directory -Path $case
@@ -687,6 +697,33 @@ try {
         if (-not $printed) { $verdict.outcome = 'interrupted-without-recovery-command'; Say 'the interrupted run printed no "To recover:" line'; Remove-PSSession $session; return }
         $recoverArguments = @('--recover', $printed.Matches[0].Groups[1].Value, '--recovery-sha256', $printed.Matches[0].Groups[2].Value)
         if ($RecoverMode -eq 'rollback') { $recoverArguments += '--rollback' }
+        if ($TearMarker) {
+            $torn = Invoke-Command -Session $session -ArgumentList "$($printed.Matches[0].Groups[1].Value)\selected.journal", $TearMarker -ScriptBlock {
+                param($journal, $marker)
+                $magic = @{ handoff = 'N2RSHN01' }[$marker]; $offset = @{ handoff = 0 }[$marker]
+                $sha = [Security.Cryptography.SHA256]::Create()
+                $digest = { param($bytes) [BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-', '').ToLowerInvariant() }
+                $stream = [IO.File]::Open($journal, 'Open', 'ReadWrite', 'None')
+                try {
+                    $granule = New-Object byte[] 4096
+                    $null = $stream.Seek($offset, 'Begin')
+                    if ($stream.Read($granule, 0, 4096) -ne 4096) { throw "short read of the $marker marker in $journal" }
+                    $lastSector = @($granule[3584..4095] | Where-Object { $_ -ne 0 })
+                    if ([Text.Encoding]::ASCII.GetString($granule, 0, 8) -ne $magic -or -not $lastSector.Count) {
+                        throw "$journal does not hold a whole $marker marker at offset $offset"
+                    }
+                    $whole = & $digest $granule
+                    [Array]::Clear($granule, 3584, 512)
+                    $null = $stream.Seek($offset, 'Begin'); $stream.Write($granule, 0, 4096); $stream.Flush($true)
+                    $left = & $digest $granule
+                } finally { $stream.Dispose() }
+                [pscustomobject]@{ journal = $journal; marker = $marker; offset = $offset; whole_sha256 = $whole; torn_sha256 = $left }
+            }
+            $verdict.torn_marker = [ordered]@{ marker = $torn.marker; journal = $torn.journal; journal_offset = $torn.offset
+                image = 'first 512-byte sector written, last sector clear'; whole_sha256 = $torn.whole_sha256; torn_sha256 = $torn.torn_sha256
+                evidence_kind = 'marker image made by hand after the process ended; not a power loss'; settled_by_recovery = $false }
+            Say "left the $($torn.marker) marker of $($torn.journal) partly written (last sector cleared)"
+        }
         $recoverRoot = "$guestRoot-recover"; $recoverTask = "N2R-Recover-$Name"
         Invoke-Command -Session $session -ArgumentList $guestRoot, $recoverRoot -ScriptBlock {
             param($from, $to) $null = New-Item -ItemType Directory -Path $to -Force
@@ -716,6 +753,17 @@ try {
             Remove-PSSession $session; return
         }
         Say "recovery ($RecoverMode) exit 0"
+        if ($TearMarker) {
+            # A recovery that got through without noticing the marker read
+            # something other than what was left for it.
+            $reported = Select-String -LiteralPath (Join-Path $case 'recover\stderr.log') -SimpleMatch -Quiet -Pattern "held a partly written $TearMarker marker"
+            $verdict.torn_marker.settled_by_recovery = [bool]$reported
+            if (-not $reported) {
+                $verdict.outcome = 'torn-marker-not-reported'; Say "recovery succeeded without reporting the partly written $TearMarker marker"
+                Remove-PSSession $session; return
+            }
+            Say "recovery reported and settled the partly written $TearMarker marker"
+        }
         if ($RecoverMode -eq 'rollback') {
             # What Windows says of the source now: the same partition, NTFS
             # again, online and writable. Then its listing, which has to

@@ -412,6 +412,14 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
             }
             let row = domain.row(ordinal)?;
             let skip = if row.capture.offset == 0 { GRANULE } else { 0 };
+            // The boot granule of a range at offset 0 is written last, on its
+            // own. A range there shorter than one granule cannot be split.
+            let length = row.capture.length.checked_sub(skip).with_context(|| {
+                format!(
+                    "apply: changed range {ordinal} at source offset 0 is {} bytes, shorter than the {GRANULE}-byte boot granule",
+                    row.capture.length
+                )
+            })?;
             write_span(
                 &mut target,
                 prepared.inner._journal,
@@ -419,7 +427,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
                 ordinal,
                 row,
                 skip,
-                row.capture.length - skip,
+                length,
                 &mut buffers,
                 &mut first_write_fault,
                 &target_before,

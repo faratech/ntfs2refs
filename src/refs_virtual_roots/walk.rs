@@ -59,10 +59,46 @@ pub struct MetadataFootprint {
     pub physical_ranges: Vec<crate::refs_write_set::ByteRange>,
     pub page_transcript_sha256: String,
     pub trees: Vec<TreeFootprint>,
+    /// Object trees whose root page was authenticated but is not in a form
+    /// this reader decodes. The page is in `physical_ranges`; nothing below
+    /// it was followed.
+    pub rejected_trees: Vec<TreeRejection>,
+    pub object_trees_complete: bool,
     pub data_storage: DataStorageFootprint,
     pub log_storage: LogStorageFootprint,
     pub complete_allocation_graph_verified: bool,
     pub selective_capture_executable: bool,
+}
+
+/// An object tree that was set aside instead of ending the walk.
+#[derive(Debug, Serialize)]
+pub struct TreeRejection {
+    pub object_id: u64,
+    pub table_id: u64,
+    pub pages_read: u32,
+    pub reason: String,
+}
+
+/// Whether an object tree whose root cannot be decoded may be recorded and
+/// passed over. The root directory and the two log tables may not: the
+/// footprint depends on them. A system root never may.
+fn object_root_may_be_set_aside(object_id: Option<u64>) -> bool {
+    matches!(object_id, Some(id) if !matches!(id, 9 | 10 | 0x600))
+}
+
+#[cfg(test)]
+mod rejection_tests {
+    use super::object_root_may_be_set_aside;
+
+    #[test]
+    fn only_an_ordinary_object_tree_may_be_set_aside() {
+        assert!(object_root_may_be_set_aside(Some(5)));
+        assert!(object_root_may_be_set_aside(Some(0x701)));
+        for required in [9, 10, 0x600] {
+            assert!(!object_root_may_be_set_aside(Some(required)));
+        }
+        assert!(!object_root_may_be_set_aside(None));
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -473,7 +509,8 @@ pub fn inspect<R: Read + Seek>(
     let mut primary_objects = BTreeMap::new();
     let mut duplicate_objects = BTreeMap::new();
     let mut log_references = BTreeMap::new();
-    while let Some(request) = requests.pop_front() {
+    let mut rejected_trees = Vec::new();
+    'trees: while let Some(request) = requests.pop_front() {
         let TreeRequest {
             root_index,
             object_id,
@@ -588,8 +625,31 @@ pub fn inspect<R: Read + Seek>(
                     refs_node::inspect_object_root_node(&bytes, table_id)
                 } else {
                     refs_node::inspect_system_root_node(&bytes, table_id)
-                }
-                .with_context(|| format!("metadata root {root_index:?} table {table_id}"))?;
+                };
+                let root = match root {
+                    Ok(root) => root,
+                    // The page is authenticated and already counted; only its
+                    // contents are not understood. One such object must not
+                    // cost the footprint of every other tree.
+                    Err(error) if object_root_may_be_set_aside(object_id) => {
+                        ensure!(
+                            rejected_trees.len() < 65_536,
+                            "rejected object tree count exceeds bounded profile"
+                        );
+                        rejected_trees.push(TreeRejection {
+                            object_id: object_id.unwrap_or_default(),
+                            table_id,
+                            pages_read: total_pages - start_pages,
+                            reason: format!("{error:#}"),
+                        });
+                        continue 'trees;
+                    }
+                    Err(error) => {
+                        return Err(
+                            error.context(format!("metadata root {root_index:?} table {table_id}"))
+                        );
+                    }
+                };
                 expected_rows = Some(root.whole_table_row_count);
                 schema_id = Some(root.schema_id);
                 (root.node_level, root.index_node, root.rows)
@@ -915,6 +975,8 @@ pub fn inspect<R: Read + Seek>(
         physical_ranges: ranges,
         page_transcript_sha256: hex::encode(transcript.finalize()),
         trees,
+        object_trees_complete: rejected_trees.is_empty(),
+        rejected_trees,
         data_storage,
         log_storage,
         complete_allocation_graph_verified: false,

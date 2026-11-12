@@ -427,6 +427,32 @@ fn run_all<T: Send, S, R: Send>(
     Ok(outputs)
 }
 
+/// Calls `query` with `buffer`, doubling the buffer while Windows reports that
+/// the answer needs more room, up to `limit_bytes`.
+#[cfg(any(windows, test))]
+fn query_growing(
+    buffer: &mut Vec<u64>,
+    limit_bytes: usize,
+    what: &str,
+    mut query: impl FnMut(&mut [u64]) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    loop {
+        match query(buffer) {
+            // ERROR_MORE_DATA, ERROR_BAD_LENGTH: the answer did not fit.
+            Err(error) if matches!(error.raw_os_error(), Some(234 | 24)) => {
+                let bytes = buffer.len() * 8;
+                if bytes >= limit_bytes {
+                    return Err(std::io::Error::other(format!(
+                        "{what} does not fit in {limit_bytes} bytes: {error}"
+                    )));
+                }
+                buffer.resize((bytes * 2).clamp(8, limit_bytes).div_ceil(8), 0);
+            }
+            other => return other,
+        }
+    }
+}
+
 #[cfg(windows)]
 pub use capture::capture;
 
@@ -528,18 +554,22 @@ mod capture {
     }
 
     /// One directory's entries, with the short names NTFS keeps beside them.
-    fn list(prefix: &str, path: &str, out: &mut Vec<Pending>) -> io::Result<()> {
+    fn list(
+        prefix: &str,
+        path: &str,
+        buffer: &mut [u64],
+        out: &mut Vec<Pending>,
+    ) -> io::Result<()> {
         let directory = open(prefix, path)?;
-        let mut buffer = vec![0u64; 32 * 1024];
         loop {
             // FileIdBothDirectoryInfo
-            match information(&directory, 10, &mut buffer) {
+            match information(&directory, 10, buffer) {
                 Ok(()) => (),
                 // ERROR_NO_MORE_FILES
                 Err(error) if error.raw_os_error() == Some(18) => return Ok(()),
                 Err(error) => return Err(error),
             }
-            let bytes = bytes_of(&buffer);
+            let bytes = bytes_of(buffer);
             let mut at = 0usize;
             loop {
                 let entry = &bytes[at..];
@@ -657,21 +687,42 @@ mod capture {
         }
     }
 
+    /// One worker's reusable buffers: the file content being hashed, and the
+    /// stream list of the object being observed.
+    struct Workspace {
+        content: Vec<u8>,
+        streams: Vec<u64>,
+    }
+    impl Workspace {
+        fn new() -> Self {
+            Self {
+                content: vec![0u8; 1024 * 1024],
+                streams: vec![0u64; 8192],
+            }
+        }
+    }
+    // A stream list larger than this is not one this tool holds in memory.
+    const STREAM_LIST_LIMIT: usize = 64 * 1024 * 1024;
+
     fn named_streams(
         prefix: &str,
         path: &str,
         file: &File,
         buffer: &mut [u8],
+        listing: &mut Vec<u64>,
     ) -> io::Result<Vec<Stream>> {
-        let mut listing = vec![0u64; 8192];
-        // FileStreamInfo
-        match information(file, 7, &mut listing) {
+        // FileStreamInfo. Many or long-named streams need more than the
+        // starting 64 KiB, so the list grows until the answer fits.
+        let listed = super::query_growing(listing, STREAM_LIST_LIMIT, "the stream list", |room| {
+            information(file, 7, room)
+        });
+        match listed {
             Ok(()) => (),
             // ERROR_HANDLE_EOF: no streams at all (a directory without any).
             Err(error) if error.raw_os_error() == Some(38) => return Ok(Vec::new()),
             Err(error) => return Err(error),
         }
-        let bytes = bytes_of(&listing);
+        let bytes = bytes_of(listing);
         let mut streams = Vec::new();
         let mut at = 0usize;
         loop {
@@ -716,7 +767,11 @@ mod capture {
             .and_then(|name| utf16(name).ok())
     }
 
-    fn observe(prefix: &str, pending: Pending, buffer: &mut [u8]) -> Record {
+    fn observe(prefix: &str, pending: Pending, workspace: &mut Workspace) -> Record {
+        let Workspace {
+            content: buffer,
+            streams,
+        } = workspace;
         let directory = pending.attributes & DIRECTORY != 0;
         let mut record = Record {
             path: pending.path,
@@ -820,7 +875,7 @@ mod capture {
                 Err(error) => note(&mut record, "extended attributes", &format!("{error:?}")),
             }
         }
-        match named_streams(prefix, &record.path, &file, buffer) {
+        match named_streams(prefix, &record.path, &file, buffer, streams) {
             Ok(streams) => record.streams = streams,
             Err(error) => note(&mut record, "named streams", &error),
         }
@@ -868,6 +923,7 @@ mod capture {
             short_name: None,
         }];
         let mut listing_errors = Vec::new();
+        let mut entries = vec![0u64; 32 * 1024];
         let mut next = 0usize;
         while next < pending.len() {
             let entry = &pending[next];
@@ -877,7 +933,7 @@ mod capture {
                 continue;
             }
             let path = entry.path.clone();
-            if let Err(error) = list(&prefix, &path, &mut pending) {
+            if let Err(error) = list(&prefix, &path, &mut entries, &mut pending) {
                 // Not an unreadable object to note and carry on from: the
                 // listing itself would misname what the volume holds.
                 if error
@@ -893,9 +949,9 @@ mod capture {
         let mut records: Vec<Record> = super::run_all(
             pending,
             threads,
-            || vec![0u8; 1024 * 1024],
+            Workspace::new,
             |entry: &Pending| entry.path.clone(),
-            |buffer, entry| observe(&prefix, entry, buffer),
+            |workspace, entry| observe(&prefix, entry, workspace),
         )?;
         for (path, error) in listing_errors {
             if let Some(record) = records.iter_mut().find(|record| record.path == path) {
@@ -1073,6 +1129,42 @@ mod tests {
         let comparison = compare(&before, &split);
         assert_eq!(comparison.difference_count, 1);
         assert!(comparison.differences[0].what.contains("hard-link set"));
+    }
+
+    #[test]
+    fn a_query_buffer_grows_until_the_answer_fits_or_the_limit_is_reached() {
+        let more_data = || std::io::Error::from_raw_os_error(234);
+        let mut buffer = vec![0u64; 4];
+        let mut calls = 0;
+        query_growing(&mut buffer, 1024, "test", |room| {
+            calls += 1;
+            if room.len() < 32 {
+                Err(more_data())
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap();
+        assert_eq!((buffer.len(), calls), (32, 4));
+
+        // 256 bytes held; one doubling reaches the 512-byte limit, then it stops.
+        let error =
+            query_growing(&mut buffer, 512, "the stream list", |_| Err(more_data())).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("the stream list does not fit in 512 bytes"),
+            "{error}"
+        );
+        assert_eq!(buffer.len(), 64);
+
+        // Any other failure is returned as it is, without growing.
+        let denied = query_growing(&mut buffer, 4096, "test", |_| {
+            Err(std::io::Error::from_raw_os_error(5))
+        })
+        .unwrap_err();
+        assert_eq!(denied.raw_os_error(), Some(5));
+        assert_eq!(buffer.len(), 64);
     }
 
     #[cfg(windows)]

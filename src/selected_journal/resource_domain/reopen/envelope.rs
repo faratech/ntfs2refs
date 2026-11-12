@@ -431,6 +431,63 @@ impl HeldFile {
     }
 }
 
+/// Disk attributes of a source that is online and read-only: what
+/// finalization sets while Windows mounts the converted volume for its
+/// verification, and what a process that dies during that verification
+/// leaves behind.
+const ONLINE_READ_ONLY: u64 = 2;
+
+/// Whether a recovery has to seal the source again before it can reopen it.
+///
+/// Only after a durable handoff: nothing remains to be written from the
+/// journal, and a read-only disk has had nothing written to it, so sealing
+/// it is exactly what the interrupted verification would have done on its
+/// way out. In every other lifecycle an online disk is not a state this
+/// recovery left, and the reopen below refuses it.
+fn interrupted_verification_left_source_online(
+    lifecycle: SelectedLifecycle,
+    disk_attributes: u64,
+) -> bool {
+    lifecycle == SelectedLifecycle::Handoff && disk_attributes == ONLINE_READ_ONLY
+}
+
+/// Dismounts and seals a converted source that an interrupted verification
+/// left online and read-only. Returns whether it did anything.
+fn reseal_after_interrupted_verification(
+    source: &GeneralDiskBinding,
+    lifecycle: SelectedLifecycle,
+    events: &mut Vec<NativeEvent>,
+) -> Result<bool> {
+    // Nothing is asked of the disk in any other lifecycle: those reopen
+    // exactly as they did before.
+    if lifecycle != SelectedLifecycle::Handoff {
+        return Ok(false);
+    }
+    let state = n2r_win32::observe_general_disk_state_readonly(source.clone(), events)
+        .context("observing the converted source disk before reopening it")?;
+    if !interrupted_verification_left_source_online(lifecycle, state.disk_attributes) {
+        return Ok(false);
+    }
+    // Locks and dismounts the read-only volume, then sets the disk offline
+    // and read-only again; refuses if the volume is in use or the disk is
+    // not the one this recovery is bound to.
+    let (sealed, changed) = GeneralFrozenPartition::restore_exclusion(source.clone(), events)
+        .with_context(|| {
+            format!(
+                "disk {} was left online and read-only by a verification that did not finish; \
+                 sealing it again failed (close anything that has its volume open and retry)",
+                source.disk_number
+            )
+        })?;
+    drop(sealed);
+    eprintln!(
+        "Disk {} was online and read-only, as an interrupted verification leaves it; \
+         it is sealed again and recovery continues.",
+        source.disk_number
+    );
+    Ok(changed)
+}
+
 enum ObservedTarget {
     Frozen(GeneralFrozenPartition),
     Activated(GeneralExclusiveRecoveryTarget),
@@ -2036,6 +2093,11 @@ impl ReopenedResourceRecovery {
         let (target, initial_state, mounted) = match online {
             Some((mounted, state)) => (None, state, Some(mounted)),
             None => {
+                reseal_after_interrupted_verification(
+                    &publication.source,
+                    initial_lifecycle,
+                    events,
+                )?;
                 let target = ObservedTarget::reopen(publication.source.clone(), events)
                     .context("reopening the converted source partition")?;
                 let state = target.state(events)?;
@@ -3189,5 +3251,43 @@ impl ReopenedPartitionResourceRecovery {
             "extent_only_streams":extent_streams,"recovery_files_retired":false,
             "native_terminal_verified_before_writable":true,"stable_release_qualification":false}),
         )
+    }
+}
+
+#[cfg(test)]
+mod interrupted_verification_tests {
+    use super::*;
+
+    #[test]
+    fn only_a_read_only_online_source_after_handoff_is_sealed_again() {
+        // What a verification that did not finish leaves: handoff durable,
+        // disk online and read-only.
+        assert!(interrupted_verification_left_source_online(
+            SelectedLifecycle::Handoff,
+            ONLINE_READ_ONLY
+        ));
+        // Online and writable (0) is the terminal state, reconciled
+        // elsewhere; offline (1) and offline read-only (3) reopen as they are.
+        for attributes in [0, 1, 3] {
+            assert!(!interrupted_verification_left_source_online(
+                SelectedLifecycle::Handoff,
+                attributes
+            ));
+        }
+        // Before a handoff an online disk is never something to repair here:
+        // the journal may still have bytes to write or to restore.
+        for lifecycle in [
+            SelectedLifecycle::PreparedClear,
+            SelectedLifecycle::ApplyIntent,
+            SelectedLifecycle::RollbackIntent,
+            SelectedLifecycle::Aborted,
+        ] {
+            for attributes in [0, 1, 2, 3] {
+                assert!(
+                    !interrupted_verification_left_source_online(lifecycle, attributes),
+                    "{lifecycle:?} with attributes {attributes}"
+                );
+            }
+        }
     }
 }

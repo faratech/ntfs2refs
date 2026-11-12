@@ -31,11 +31,26 @@ otherwise the harness uses `target/release`. `-VmId` selects the second lab VM.
 `-SampleStacks` requires the matching PDB beside the executable and adds profiling.
 Do not use it merely to claim an unmeasured speed change.
 
-To finalize an existing saved after-apply state:
+Recovery is checked by stopping the converter at a named point of apply,
+handoff or finalization (`crates/n2r-win32/src/lab_hold.rs` lists them), ending
+its process there, and running the recovery command it printed:
 
 ```powershell
-.\lab\Invoke-BootConversionAttempt.ps1 -Name recovery-check -Recover -Checkpoint N2R-Small-Applied -NoBoot -KeepScratch
+.\lab\Invoke-BootConversionAttempt.ps1 -Name resume-check -Fixture -FixtureCheckpoint N2R-Thinned-Fixture-40 -NoBoot -InterruptAt apply-mid-ranges
+.\lab\Invoke-BootConversionAttempt.ps1 -Name rollback-check -Fixture -FixtureCheckpoint N2R-Thinned-Fixture-40 -NoBoot -InterruptAt apply-mid-ranges -RecoverMode rollback
 ```
+
+A rollback is compared with the listing taken before, in every field.
+`-RecoverMode none -CheckpointAfterConvert <name>` saves the interrupted state
+instead, and `-RecoverFrom <attempt>` recovers it later from that attempt's own
+records. `-TearMarker handoff`, with `-InterruptAt apply-handoff-durable`, leaves
+the journal's handoff marker as a write that stopped part-way leaves it, so that
+recovery has to settle it first. The lab ends a process; it cannot cut power to
+the storage, and every verdict says so.
+
+`-Diagnose` runs every preparation phase and writes nothing to the source.
+`-ShapeSource <script>` runs a script from `lab\guest` against the source
+before it is listed, to give it objects a fresh Windows does not have.
 
 A missing before-listing is `converted-not-compared`, not a successful independent
 comparison. A run is complete only when its verdict and the applicable native
@@ -53,6 +68,14 @@ Before any cleanup, preserve the verdict, progress, source and target listings,
 comparison report, binary hashes, recovery output and boot evidence with hashes.
 Do not delete the reference baseline checkpoint: the second VM's disks depend
 on its parent chain. Ask before deleting `.lab` artifacts.
+
+## Older scripts
+
+Most of the other scripts here were written for one VM or checkpoint of an
+earlier stage, and that VM or checkpoint is gone. [RETIRED.md](RETIRED.md) lists
+the 161 that cannot run; do not start from one. They are kept unchanged as the
+record of those stages, and a test fails if a script names a retired VM without
+being listed.
 
 The earlier lab procedures and budgets are preserved in
 [the historical guide](../docs/history/lab-README-before-boot-alpha-closeout-20261111.md).

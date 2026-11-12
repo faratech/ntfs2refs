@@ -49,6 +49,9 @@ not count. Power-cut resume during preparation is out of scope until this works.
   through `reserve_optional_ram` (a third of the RAM budget in total, and only
   while the arena is under half full), so they cannot starve a required
   reservation.
+- `--recover` first settles a lifecycle marker whose write was cut short
+  (`src/interrupted_marker.rs`), then repeats every source check. Any other
+  unexpected byte in a marker or a journaled range stops both directions.
 - A per-object Windows query answers into its thread's buffer
   (`crates/n2r-win32/src/query_scratch.rs`) and copies out only the answer.
   Do not allocate a worst-case buffer per query: at 143,000 objects that
@@ -101,7 +104,8 @@ not count. Power-cut resume during preparation is out of scope until this works.
     process and runs the recovery it printed: `-RecoverMode resume`
     (`RESUMED-NOT-BOOTED`, compared as usual) or `rollback`
     (`ROLLED-BACK-NOT-BOOTED`, compared exactly). Process termination, not
-    power loss. `-RecoverMode none -CheckpointAfterConvert <name>` saves the
+    power loss; `-TearMarker handoff` adds the marker image a power loss
+    leaves. `-RecoverMode none -CheckpointAfterConvert <name>` saves the
     stopped state instead; `-RecoverFrom <attempt>` recovers it later from
     that attempt's own checkpoint, command and listing.
   - `-ShapeSource <script>` runs a `lab\guest` script against the source
@@ -113,18 +117,16 @@ not count. Power-cut resume during preparation is out of scope until this works.
     without its required evidence is `incomplete-evidence`.
   - The scratch disk is deleted when the attempt ends. The host volume needs
     40 GB free for a fixture attempt and 65 GB for a full one (57 GB at peak).
-  - `-SampleStacks` writes `stacks.txt` (phase, step and stack per line, a
-    hundred samples a second, helper and digest threads included): use it to
-    find where unnamed time goes before changing anything for speed.
+  - `-SampleStacks` writes `stacks.txt`: phase, step and stack per line, a
+    hundred samples a second, helper and digest threads included.
 - Second VM `ntfs2refs-reference-b`, Id `7c687062-37b5-4309-b28a-486a44305202`,
   made by `lab/New-LabVmClone.ps1`: same shape, disks are differencing children
   of the reference VM's baseline disks under `.lab/hyperv/ntfs2refs-reference-b/`.
   Besides the baseline it holds `N2R-Full-Converted-08`, a saved converted
-  state. Pass `-VmId` to the harness to run a
-  full-volume attempt on it while fixtures run on the reference VM (give the
-  two VMs no more than about 48 GB between them). Never delete the reference
-  VM's baseline checkpoint: that merges into the shared parents and breaks the
-  clone.
+  state. Pass `-VmId` to the harness to run a full-volume attempt on it while
+  fixtures run on the reference VM (give the two VMs no more than about 48 GB
+  between them). Never delete the reference VM's baseline checkpoint: that
+  merges into the shared parents and breaks the clone.
 - Build both binaries first: `cargo build --locked --release --bin ntfs2refs
   --bin lab-volume-manifest`.
 - Disks (SCSI 0), under `.lab/hyperv/isolated-reference-20261026-review/disks/`:
@@ -134,7 +136,8 @@ not count. Power-cut resume during preparation is out of scope until this works.
   - location 3: DVD, Windows 11 26300.9457 install media.
   - location 4: oracle disk under `.lab/hyperv/trust-security-raw-…/`.
 - Keep the VM's disk chains, the credential and the install media. Other
-  directories under `.lab/hyperv` are closed run records.
+  directories under `.lab/hyperv` are closed run records. `lab/RETIRED.md`
+  lists the scripts written for VMs that are gone; do not start from one.
 
 ## Current work
 

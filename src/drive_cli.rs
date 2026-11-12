@@ -147,6 +147,18 @@ fn parse_controlled_pause_nonce(value: &str) -> std::result::Result<String, Stri
 }
 /// Exit code of a diagnose run that completed and reported failures.
 pub const EXIT_DIAGNOSE_FAILURES: u8 = 3;
+/// Exit code of `--list` when some disk or volume could not be queried: what
+/// was printed is a partial list and must not be read as the whole machine.
+pub const EXIT_LIST_INCOMPLETE: u8 = 4;
+
+/// What `--list` exits with, from whether the inventory covered every device.
+pub(crate) fn list_exit_code(enumeration_complete: bool) -> u8 {
+    if enumeration_complete {
+        0
+    } else {
+        EXIT_LIST_INCOMPLETE
+    }
+}
 
 /// The question asked before anything is started. A diagnose run is not a
 /// conversion and is not confirmed as one.
@@ -394,7 +406,11 @@ mod windows {
             }
         }
         if !inventory.enumeration_complete {
-            eprintln!("Some devices could not be queried; see the inventory errors above.");
+            eprintln!(
+                "Some devices could not be queried; see the inventory errors above. \
+                 This list is incomplete (exit code {}).",
+                super::EXIT_LIST_INCOMPLETE
+            );
         }
     }
     fn save_new(path: &std::path::Path, value: &impl serde::Serialize) -> Result<()> {
@@ -656,7 +672,7 @@ mod windows {
         let inventory = drive_inventory::inventory_drives_readonly()?;
         if args.list {
             list(&inventory);
-            return Ok(0);
+            return Ok(super::list_exit_code(inventory.enumeration_complete));
         }
         let values = args.drive.as_ref().context("drive selection required")?;
         let drive = values.first().context("drive value required")?;
@@ -1297,6 +1313,16 @@ mod tests {
         #[command(flatten)]
         drive: DriveArgs,
     }
+    #[test]
+    fn a_partial_drive_list_does_not_exit_as_a_complete_one() {
+        assert_eq!(list_exit_code(true), 0);
+        assert_eq!(list_exit_code(false), EXIT_LIST_INCOMPLETE);
+        // Distinct from success, a failure, a usage error and diagnose failures.
+        for taken in [0, 1, 2, EXIT_DIAGNOSE_FAILURES] {
+            assert_ne!(EXIT_LIST_INCOMPLETE, taken);
+        }
+    }
+
     fn parse(extra: &[&str]) -> std::result::Result<DriveArgs, clap::Error> {
         let mut arguments = vec!["ntfs2refs", "--drive", "D"];
         arguments.extend_from_slice(extra);

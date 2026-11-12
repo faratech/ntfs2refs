@@ -465,6 +465,14 @@ fn run() -> Result<u8> {
                          "change": "files are moved through NTFS before the source is frozen",
                          "undone_if_the_run_stops": false},
                     ],
+                    "list": {
+                        "option": "--list",
+                        "exit_codes": {
+                            "0": "every disk and volume was queried",
+                            (ntfs2refs::drive_cli::EXIT_LIST_INCOMPLETE.to_string()):
+                                "some device could not be queried; the list is partial",
+                        },
+                    },
                     "diagnose": {
                         "option": "--diagnose",
                         "ntfs2refs_writes_to_source": false,

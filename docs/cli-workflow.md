@@ -28,6 +28,9 @@ recovery records. Do not interpret the lab value as a fixed maximum.
 .\ntfs2refs.exe --drive D --windows-boot-volume --scratch-directory S:\runs --target-format dev-drive
 ```
 
+`--list` exits 0 when every disk and volume answered, and 4 when some device
+could not be queried: the list it printed is then partial.
+
 Confirm the source disk and partition shown by the program. In this example,
 `D:` is the old Windows installation and `S:` is independent working storage.
 The demonstrated boot profile uses `dev-drive`; standard ReFS formatting and

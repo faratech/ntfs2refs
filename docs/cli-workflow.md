@@ -73,6 +73,35 @@ The recovered `rec-04` record establishes successful post-apply finalization and
 a healthy ReFS mount. Its independent before/after comparison was unavailable;
 it is not an arbitrary power-loss or full-content recovery qualification.
 
+### What recovery checks before it writes
+
+Recovery reads the journal's lifecycle and every journaled range of the source
+before it writes anything. It stops, having changed nothing, when either is not
+what the run left:
+
+- **A byte in a journaled range that is neither the old nor the new content.**
+  Resume and rollback both stop, naming the range and the byte's offset. The
+  converter writes only old or new bytes into those ranges, and only while the
+  disk is offline, so a third value means something else wrote to the disk or
+  the storage returned different data. Recovery cannot know what else around
+  it changed, and writing either image over an unknown state could destroy
+  what is left. This is deliberate, and there is no switch to override it: the
+  disk stays offline and untouched. Repairing the named range is a manual
+  matter outside this tool; recovery can be run again afterwards.
+- **A lifecycle marker that is not one of this journal's.** Refused.
+- **A lifecycle marker that was being written when the run stopped.** A power
+  loss or host crash in the middle of a marker write can leave the marker
+  partly on the disk. Recovery recognises exactly that: whole 512-byte sectors
+  of the marker and of what the granule held before, beside the state the
+  journal is in while that marker is written, and only while the source disk
+  is in the offline state that marker is written in. It says what it found,
+  treats the marker as not written, and continues from there; every check of
+  the source is then repeated before anything is written. Only `--recover`
+  does this: other commands refuse such a journal. The lab can end a process
+  but cannot cut power to storage, so this is covered by tests of the marker
+  images and by a lab run in which the image is made by hand, not by a real
+  power loss.
+
 ## Verify the result
 
 For the lab boot claim, the harness checks that only the original disk is

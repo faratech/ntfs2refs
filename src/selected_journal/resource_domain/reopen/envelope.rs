@@ -488,6 +488,111 @@ fn reseal_after_interrupted_verification(
     Ok(changed)
 }
 
+/// The state of the source disk in which the whole-disk resource route
+/// writes each lifecycle marker. The apply intent is written while the disk
+/// is still offline and read-only (3), before it is made writable; the
+/// rollback intent, the handoff and a rollback's abort are written while it
+/// is offline and writable (1); an abandoned run's abort is written in
+/// whichever of the two the run was left in.
+fn marker_source_attributes(marker: crate::interrupted_marker::Marker) -> &'static [u64] {
+    use crate::interrupted_marker::Marker;
+    match marker {
+        Marker::ApplyIntent => &[3],
+        Marker::RollbackIntent | Marker::Handoff | Marker::AbortAfterRollback => &[1],
+        Marker::AbortAfterAbandon => &[1, 3],
+    }
+}
+
+#[cfg(test)]
+mod marker_source_state_tests {
+    use super::marker_source_attributes as written_in;
+    use crate::interrupted_marker::Marker;
+
+    #[test]
+    fn each_marker_is_settled_only_in_the_disk_state_it_is_written_in() {
+        // The apply intent precedes the writable transition.
+        assert_eq!(written_in(Marker::ApplyIntent), &[3]);
+        for marker in [
+            Marker::RollbackIntent,
+            Marker::Handoff,
+            Marker::AbortAfterRollback,
+        ] {
+            assert_eq!(written_in(marker), &[1], "{marker:?}");
+        }
+        assert_eq!(written_in(Marker::AbortAfterAbandon), &[1, 3]);
+        // Never beside an online disk, read-only or not.
+        for marker in [
+            Marker::ApplyIntent,
+            Marker::RollbackIntent,
+            Marker::Handoff,
+            Marker::AbortAfterRollback,
+            Marker::AbortAfterAbandon,
+        ] {
+            assert!(!written_in(marker).contains(&0), "{marker:?}");
+            assert!(!written_in(marker).contains(&2), "{marker:?}");
+        }
+    }
+}
+
+/// Settles a lifecycle marker whose write was cut short, before a recovery
+/// reads the journal's lifecycle (see `interrupted_marker`). Only recovery
+/// commands call this: an inspection or a finalizer refuses such a journal
+/// as before.
+///
+/// `whole_disk_source` is the source disk of a whole-disk conversion. The
+/// marker is settled only if that disk is in the state the marker is written
+/// in; otherwise it is reported, nothing is changed, and recovery stops. A
+/// partition-scoped recovery holds its partition through its owner, which
+/// its caller has authenticated, and passes `None`.
+fn settle_interrupted_marker(
+    journal: &mut BoundNativeRecoveryJournal,
+    ticket: &super::sj::SelectedTicket,
+    path: &Path,
+    whole_disk_source: Option<&GeneralDiskBinding>,
+    events: &mut Vec<NativeEvent>,
+) -> Result<()> {
+    let (journal, _) = journal.split_for_observation()?;
+    let Some(found) = super::sj::find_interrupted_marker(journal, ticket).with_context(|| {
+        format!(
+            "looking for a partly written lifecycle marker in the recovery journal {}",
+            path.display()
+        )
+    })?
+    else {
+        return Ok(());
+    };
+    if let Some(source) = whole_disk_source {
+        let state = n2r_win32::observe_general_disk_state_readonly(source.clone(), events)
+            .context("observing the source disk before settling a partly written journal marker")?;
+        crate::interrupted_marker::require_source_state(
+            found,
+            path,
+            source.disk_number,
+            state.disk_attributes,
+            marker_source_attributes(found.marker),
+        )?;
+    }
+    let settled = super::sj::settle_interrupted_marker(journal, ticket)
+        .with_context(|| {
+            format!(
+                "settling the partly written {} marker of the recovery journal {}",
+                found.name,
+                path.display()
+            )
+        })?
+        .context("the partly written journal marker changed while it was being settled")?;
+    crate::interrupted_marker::announce(&settled, path);
+    events.push(NativeEvent {
+        operation: "interrupted-journal-marker-settled".into(),
+        control_code: 0,
+        input: vec![],
+        succeeded: true,
+        native_error: None,
+        output: serde_json::to_vec(&settled)?,
+    });
+    Ok(())
+}
+
 enum ObservedTarget {
     Frozen(GeneralFrozenPartition),
     Activated(GeneralExclusiveRecoveryTarget),
@@ -907,6 +1012,7 @@ impl ReopenedPartitionResourceRecovery {
             index_path,
             maximum_index_bytes,
             events,
+            false,
         )? {
             ReopenedPartitionRestart::Closed(value) if value.kind() == kind => Ok(value),
             _ => anyhow::bail!(
@@ -944,6 +1050,7 @@ impl ReopenedPartitionResourceRecovery {
             index_path,
             maximum_index_bytes,
             events,
+            false,
         )? {
             ReopenedPartitionRestart::Replay(value) => Ok(value),
             ReopenedPartitionRestart::Closed(_) => {
@@ -966,6 +1073,9 @@ impl ReopenedPartitionResourceRecovery {
         index_path: &Path,
         maximum_index_bytes: u64,
         events: &mut Vec<NativeEvent>,
+        // The recovery command settles a marker write that was cut short;
+        // terminal-only callers refuse such a journal as before.
+        settle_interrupted: bool,
     ) -> Result<ReopenedPartitionRestart> {
         ensure!(
             group.group() == ArtifactGroup::RecoveryCopy
@@ -1224,6 +1334,17 @@ impl ReopenedPartitionResourceRecovery {
             &artifacts,
             events,
         )?;
+        if settle_interrupted {
+            // The partition's owner, the restart origin and the artifact
+            // volume were authenticated above.
+            settle_interrupted_marker(
+                &mut journal,
+                locator.ticket(),
+                locator.journal_path(),
+                None,
+                events,
+            )?;
+        }
         let mut observation = BoundJournalObservation::open(
             &mut journal,
             locator.ticket(),
@@ -2038,6 +2159,17 @@ impl ReopenedResourceRecovery {
                     && facts.marker_native_qualified == locator.marker_native_qualified(),
                 "native journal owner and published locator differ"
             );
+        }
+        if allow_online_terminal {
+            // Set by the recovery command alone. The inspection and the
+            // finalizer, which share this function, refuse such a journal.
+            settle_interrupted_marker(
+                &mut journal,
+                locator.ticket(),
+                locator.journal_path(),
+                Some(&publication.source),
+                events,
+            )?;
         }
         let _index_parent = hold_index_parent(index_path, &volume)
             .with_context(|| format!("holding the directory of {}", index_path.display()))?;

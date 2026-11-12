@@ -685,6 +685,43 @@ fn recover_allocation_inner(
             lab_fault,
         )?;
         artifacts::save(output, "journal-identity.json", &observed)?;
+        // A marker write that was cut short is settled before the lifecycle
+        // is read (see `interrupted_marker`), on the journal held exclusively
+        // here. This route writes every marker while the source disk is
+        // offline and writable.
+        if let Some(found) =
+            sj::find_interrupted_marker(&mut journal, &ticket).with_context(|| {
+                format!(
+                    "looking for a partly written lifecycle marker in the recovery journal {}",
+                    bundle.journal.display()
+                )
+            })?
+        {
+            phase = "selected-journal-interrupted-marker";
+            let mut disk_events = Vec::<NativeEvent>::new();
+            let state = n2r_win32::observe_general_disk_state_readonly(
+                request.pair.source.clone(),
+                &mut disk_events,
+            )?;
+            crate::interrupted_marker::require_source_state(
+                found,
+                &bundle.journal,
+                request.pair.source.disk_number,
+                state.disk_attributes,
+                &[1],
+            )?;
+            let settled = sj::settle_interrupted_marker(&mut journal, &ticket)
+                .with_context(|| {
+                    format!(
+                        "settling the partly written {} marker of the recovery journal {}",
+                        found.name,
+                        bundle.journal.display()
+                    )
+                })?
+                .context("the partly written journal marker changed while it was being settled")?;
+            crate::interrupted_marker::announce(&settled, &bundle.journal);
+            artifacts::save(output, "interrupted-marker.json", &settled)?;
+        }
         phase = "selected-journal-lifecycle";
         // Authenticate the actual share-zero journal once before reopening the
         // target. The opaque owner keeps this exact mutable journal borrow

@@ -1169,6 +1169,135 @@ pub(crate) fn inspect_journal_lifecycle<J: ReadSeek>(
     Ok((state, descriptor))
 }
 
+/// Whether either lifecycle granule could be a partly written marker (see
+/// `interrupted_marker`). It reads the two granules and nothing else. The
+/// exact markers need digests kept in the journal's body, which
+/// `find_interrupted_marker` authenticates in full; this says whether that
+/// is worth doing, and is false for every journal whose markers are whole.
+pub(crate) fn may_hold_interrupted_marker<J: ReadSeek>(journal: &mut J) -> Result<bool> {
+    let mut prefix = [0u8; BODY_START as usize];
+    read_at(journal, 0, &mut prefix)?;
+    Ok(prefix.chunks_exact(GRANULE as usize).any(|granule| {
+        crate::interrupted_marker::may_be_partly_written(
+            granule.try_into().expect("one marker granule"),
+        )
+    }))
+}
+
+/// The marker writes of this journal that can be found interrupted, and how
+/// each is settled. The intent granule goes from clear to an apply or a
+/// rollback intent, and between the two; the handoff granule goes from clear
+/// to the ReFS handoff beside a clear or apply intent, or to the NTFS
+/// rollback completion beside a clear or rollback intent.
+///
+/// A write over a clear granule is settled as not written. This engine lets
+/// a run change direction either way, so an intent stopped between apply and
+/// rollback does not say which was being written over which; it is settled
+/// as rollback, the direction that is open from either and never writes new
+/// bytes. The journal's whole body is authenticated here, before anything is
+/// compared with it.
+fn interrupted_marker_writes<J: ReadSeek>(
+    journal: &mut J,
+    ticket: &JournalTicket,
+    observed_binding: &JournalBinding,
+) -> Result<Vec<crate::interrupted_marker::MarkerWrite>> {
+    use crate::interrupted_marker::{Marker, MarkerWrite};
+    let descriptor = inspect_completed_journal(journal, ticket, observed_binding)?;
+    let new_image = &descriptor.expected_postimage_sha256;
+    let old_image = &descriptor.request.source_sha256;
+    let clear = [0u8; GRANULE as usize];
+    let apply = marker(b"N2RINT01", 1, ticket, new_image)?;
+    let undo = marker(b"N2RINT01", 2, ticket, old_image)?;
+    let handoff = marker(b"N2RHND01", 3, ticket, new_image)?;
+    let completion = marker(b"N2RABT01", 4, ticket, old_image)?;
+    let not_written = |marker, name, offset, after, beside_at, beside| MarkerWrite {
+        marker,
+        name,
+        offset,
+        before: clear,
+        after,
+        settled: clear,
+        settled_as: "not written",
+        beside: (beside_at, beside),
+    };
+    Ok(vec![
+        not_written(
+            Marker::ApplyIntent,
+            "apply intent",
+            GRANULE,
+            apply,
+            0,
+            vec![clear],
+        ),
+        not_written(
+            Marker::RollbackIntent,
+            "rollback intent",
+            GRANULE,
+            undo,
+            0,
+            vec![clear],
+        ),
+        MarkerWrite {
+            marker: Marker::RollbackIntent,
+            name: "rollback intent",
+            offset: GRANULE,
+            before: apply,
+            after: undo,
+            settled: undo,
+            settled_as: "written",
+            beside: (0, vec![clear]),
+        },
+        not_written(
+            Marker::Handoff,
+            "handoff",
+            0,
+            handoff,
+            GRANULE,
+            vec![apply, clear],
+        ),
+        not_written(
+            Marker::AbortAfterRollback,
+            "rollback completion",
+            0,
+            completion,
+            GRANULE,
+            vec![undo, clear],
+        ),
+    ])
+}
+
+/// The marker whose write this journal shows was interrupted, if any. Writes
+/// nothing.
+pub(crate) fn find_interrupted_marker<J: ReadSeek>(
+    journal: &mut J,
+    ticket: &JournalTicket,
+    observed_binding: &JournalBinding,
+) -> Result<Option<crate::interrupted_marker::Found>> {
+    if !may_hold_interrupted_marker(journal)? {
+        return Ok(None);
+    }
+    let writes = interrupted_marker_writes(journal, ticket, observed_binding)?;
+    crate::interrupted_marker::found(journal, &writes)
+}
+
+/// Settles the interrupted marker write `find_interrupted_marker` reports,
+/// before a recovery command reads the lifecycle. The caller holds the
+/// journal exclusively and has seen the source offline and writable, the
+/// state this engine writes every marker in. Returns `None`, having written
+/// nothing, when the markers are whole (or are not this journal's: those are
+/// refused where the lifecycle is read, as before).
+pub(crate) fn settle_interrupted_marker<J: DurableIo>(
+    journal: &mut J,
+    ticket: &JournalTicket,
+    observed_binding: &JournalBinding,
+) -> Result<Option<crate::interrupted_marker::SettledMarker>> {
+    if !may_hold_interrupted_marker(journal)? {
+        return Ok(None);
+    }
+    let writes = interrupted_marker_writes(journal, ticket, observed_binding)?;
+    crate::interrupted_marker::settle(journal, &writes)
+}
+
 fn normalized_target<T: ReadSeek, J: Read + Seek>(
     target: &mut T,
     journal: &mut J,
@@ -2324,7 +2453,9 @@ pub fn rollback_without_shadow<T: DurableIo, J: DurableIo>(
 }
 
 /// Irreversibly close this core's recovery BEFORE any writable native mount.
-/// A failed/partial marker is also a barrier; it must never be cleared here.
+/// A failed/partial marker is also a barrier; it is never cleared here. A
+/// recovery command settles a marker write that was cut short before it
+/// calls into this engine (`interrupted_marker`).
 pub fn mark_handoff<T: DurableIo, S: ReadSeek, J: DurableIo>(
     target: &mut T,
     shadow: &mut S,
@@ -2747,6 +2878,186 @@ mod capacity_budget_tests {
             default_journal.bytes.get_ref(),
             explicit_journal.bytes.get_ref()
         );
+    }
+
+    #[test]
+    fn an_interrupted_marker_write_is_settled_before_the_lifecycle_is_read() {
+        use crate::interrupted_marker::Marker;
+        let (old, new, request) = fixture();
+        let mut source = Memory::new(old.clone());
+        let mut shadow = Memory::new(new.clone());
+        let mut journal = Memory::new(vec![]);
+        let binding = test_binding();
+        let summary = prepare_journal_with_profile(
+            &mut source,
+            &mut shadow,
+            &mut journal,
+            &request,
+            &binding,
+            16 << 30,
+            JournalProfile::ExperimentalLargeV2,
+        )
+        .unwrap();
+        let ticket = &summary.ticket;
+        // The journal as prepared, after the apply, after the handoff, after
+        // a rollback of the apply, and after that rollback was completed.
+        let prepared = journal.bytes.get_ref().clone();
+        let mut target = Memory::new(old.clone());
+        apply(&mut target, &mut shadow, &mut journal, ticket, &binding).unwrap();
+        let applied = journal.bytes.get_ref().clone();
+        let mut handed = Memory::new(applied.clone());
+        mark_handoff(&mut target, &mut shadow, &mut handed, ticket, &binding).unwrap();
+        let handed_off = handed.bytes.get_ref().clone();
+        rollback(&mut target, &mut shadow, &mut journal, ticket, &binding).unwrap();
+        let rolled_back = journal.bytes.get_ref().clone();
+        mark_rollback_complete(&mut target, &mut shadow, &mut journal, ticket, &binding).unwrap();
+        let rollback_completed = journal.bytes.get_ref().clone();
+
+        const INTENT: usize = GRANULE as usize;
+        // `journal` with the marker granule at `at` as a write of `after`'s
+        // granule leaves it when it stops after the given 512-byte sectors.
+        let stopped = |journal: &[u8], after: &[u8], at: usize, sectors: &[usize]| {
+            let mut bytes = journal.to_vec();
+            for &sector in sectors {
+                let range = at + sector * 512..at + (sector + 1) * 512;
+                bytes[range.clone()].copy_from_slice(&after[range]);
+            }
+            Memory::new(bytes)
+        };
+        let state = |journal: &mut Memory| {
+            inspect_journal_lifecycle(journal, ticket, &binding, &request).map(|(state, _)| state)
+        };
+        // Finds and settles: the lifecycle must be unreadable before, and
+        // nothing partly written may be left after.
+        let settle = |journal: &mut Memory| {
+            assert!(state(journal).is_err());
+            let found = find_interrupted_marker(journal, ticket, &binding)
+                .unwrap()
+                .unwrap();
+            let settled = settle_interrupted_marker(journal, ticket, &binding)
+                .unwrap()
+                .unwrap();
+            assert_eq!(settled.marker, found.name);
+            assert!(!may_hold_interrupted_marker(journal).unwrap());
+            (found.marker, settled.marker, settled.settled_as)
+        };
+
+        // A handoff stopped part-way: not written. Beside the apply intent
+        // the apply stands, and the engine's resume and handoff run from it.
+        for sectors in [&[0][..], &[7][..]] {
+            let mut torn = stopped(&applied, &handed_off, 0, sectors);
+            assert_eq!(
+                settle(&mut torn),
+                (Marker::Handoff, "handoff", "not written")
+            );
+            assert_eq!(torn.bytes.get_ref(), &applied);
+            assert_eq!(state(&mut torn).unwrap(), JournalLifecycle::ApplyIntent);
+            let mut target = Memory::new(new.clone());
+            resume(&mut target, &mut shadow, &mut torn, ticket, &binding).unwrap();
+            mark_handoff(&mut target, &mut shadow, &mut torn, ticket, &binding).unwrap();
+            assert_eq!(torn.bytes.get_ref(), &handed_off);
+            assert_eq!(target.bytes.get_ref(), &new);
+        }
+        // The same beside a clear intent.
+        let mut torn = stopped(&prepared, &handed_off, 0, &[0]);
+        assert_eq!(
+            settle(&mut torn),
+            (Marker::Handoff, "handoff", "not written")
+        );
+        assert_eq!(torn.bytes.get_ref(), &prepared);
+
+        // An apply intent, or a rollback intent, stopped part-way over a
+        // clear granule: not written; nothing was recorded.
+        for (after, marker, name) in [
+            (&applied, Marker::ApplyIntent, "apply intent"),
+            (&rolled_back, Marker::RollbackIntent, "rollback intent"),
+        ] {
+            for sectors in [&[0][..], &[7][..]] {
+                let mut torn = stopped(&prepared, after, INTENT, sectors);
+                assert_eq!(settle(&mut torn), (marker, name, "not written"));
+                assert_eq!(torn.bytes.get_ref(), &prepared);
+                assert_eq!(state(&mut torn).unwrap(), JournalLifecycle::PreparedClear);
+            }
+        }
+
+        // An intent stopped between apply and rollback, either sector first:
+        // settled as rollback. A resume asked of the saved run is refused,
+        // and the engine's rollback restores the old image.
+        for sectors in [&[0][..], &[7][..]] {
+            let mut torn = stopped(&applied, &rolled_back, INTENT, sectors);
+            assert_eq!(
+                settle(&mut torn),
+                (Marker::RollbackIntent, "rollback intent", "written")
+            );
+            assert_eq!(torn.bytes.get_ref(), &rolled_back);
+            assert_eq!(state(&mut torn).unwrap(), JournalLifecycle::RollbackIntent);
+            assert!(require_durable_apply_intent(&mut torn, ticket, &binding, &request).is_err());
+            let mut target = Memory::new(new.clone());
+            rollback(&mut target, &mut shadow, &mut torn, ticket, &binding).unwrap();
+            assert_eq!(target.bytes.get_ref(), &old);
+        }
+
+        // A rollback completion stopped part-way: not written, beside the
+        // rollback intent (which stands) or a clear one.
+        for (before, lifecycle) in [
+            (&rolled_back, JournalLifecycle::RollbackIntent),
+            (&prepared, JournalLifecycle::PreparedClear),
+        ] {
+            let mut torn = stopped(before, &rollback_completed, 0, &[7]);
+            assert_eq!(
+                settle(&mut torn),
+                (
+                    Marker::AbortAfterRollback,
+                    "rollback completion",
+                    "not written"
+                )
+            );
+            assert_eq!(torn.bytes.get_ref(), before);
+            assert_eq!(state(&mut torn).unwrap(), lifecycle);
+        }
+
+        // Whole markers are never looked into further, and nothing is written.
+        for exact in [
+            &prepared,
+            &applied,
+            &handed_off,
+            &rolled_back,
+            &rollback_completed,
+        ] {
+            let mut journal = Memory::new(exact.clone());
+            assert!(state(&mut journal).is_ok());
+            assert!(!may_hold_interrupted_marker(&mut journal).unwrap());
+            assert_eq!(
+                settle_interrupted_marker(&mut journal, ticket, &binding).unwrap(),
+                None
+            );
+            assert_eq!(journal.bytes.get_ref(), exact);
+        }
+        // Not an interrupted write, and refused as before: a marker with one
+        // changed byte, a handoff stopped beside a rollback intent, a
+        // rollback completion stopped beside the apply intent.
+        let mut changed = handed_off.clone();
+        changed[3] ^= 1;
+        let handoff_beside_rollback = stopped(&rolled_back, &handed_off, 0, &[0])
+            .bytes
+            .into_inner();
+        let completion_beside_apply = stopped(&applied, &rollback_completed, 0, &[0])
+            .bytes
+            .into_inner();
+        for bytes in [changed, handoff_beside_rollback, completion_beside_apply] {
+            let mut journal = Memory::new(bytes.clone());
+            assert!(may_hold_interrupted_marker(&mut journal).unwrap());
+            assert_eq!(
+                find_interrupted_marker(&mut journal, ticket, &binding).unwrap(),
+                None
+            );
+            assert_eq!(
+                settle_interrupted_marker(&mut journal, ticket, &binding).unwrap(),
+                None
+            );
+            assert_eq!(journal.bytes.get_ref(), &bytes);
+            assert!(state(&mut journal).is_err());
+        }
     }
 
     #[test]

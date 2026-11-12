@@ -339,7 +339,9 @@ impl BoundJournalObservation<'_> {
     }
 
     /// Close a never-started, actually clear journal without issuing any
-    /// source writes. A failed/torn marker remains an explicit recovery error.
+    /// source writes. A marker write that fails here is an explicit error; one
+    /// that a power loss cut short is settled by the next recovery, before it
+    /// reads the lifecycle (`interrupted_marker`).
     pub(super) fn abandon_clear_data<R: Read + Seek>(
         &mut self,
         target: &mut R,

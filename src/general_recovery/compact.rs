@@ -429,6 +429,53 @@ fn recover_compact_impl(
             "opened compact journal length differs from pinned ticket"
         );
         artifacts::save(output, "journal-identity.json", &observed)?;
+        // A marker write that was cut short is settled before the lifecycle
+        // is read (see `interrupted_marker`), on the journal held exclusively
+        // here. This route writes every marker while the source disk is
+        // offline and writable.
+        if crate::lab_reconstruct::may_hold_interrupted_marker(&mut journal)? {
+            phase = "compact-journal-interrupted-marker";
+            let bound =
+                protocol::compact_binding(&request, &observed.identity, &artifact_identity)?;
+            let found =
+                crate::lab_reconstruct::find_interrupted_marker(&mut journal, &ticket, &bound)
+                    .with_context(|| {
+                        format!(
+                            "looking for a partly written lifecycle marker in the recovery \
+                             journal {}",
+                            inputs.journal.display()
+                        )
+                    })?;
+            if let Some(found) = found {
+                let mut disk_events = Vec::<NativeEvent>::new();
+                let state = n2r_win32::observe_general_disk_state_readonly(
+                    request.pair.source.clone(),
+                    &mut disk_events,
+                )?;
+                crate::interrupted_marker::require_source_state(
+                    found,
+                    &inputs.journal,
+                    request.pair.source.disk_number,
+                    state.disk_attributes,
+                    &[1],
+                )?;
+                let settled = crate::lab_reconstruct::settle_interrupted_marker(
+                    &mut journal,
+                    &ticket,
+                    &bound,
+                )
+                .with_context(|| {
+                    format!(
+                        "settling the partly written {} marker of the recovery journal {}",
+                        found.name,
+                        inputs.journal.display()
+                    )
+                })?
+                .context("the partly written journal marker changed while it was being settled")?;
+                crate::interrupted_marker::announce(&settled, &inputs.journal);
+                artifacts::save(output, "interrupted-marker.json", &settled)?;
+            }
+        }
         // Public automatic routing observes the same journal held exclusively
         // below. Explicit experimental operations keep their existing path.
         let operation = if select_lifecycle {

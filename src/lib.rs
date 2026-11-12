@@ -47,6 +47,7 @@ pub mod general_shadow;
 pub mod general_source_admission;
 #[cfg(windows)]
 pub mod general_target_preservation;
+pub(crate) mod interrupted_marker;
 #[cfg(windows)]
 pub mod lab_native;
 #[cfg(windows)]

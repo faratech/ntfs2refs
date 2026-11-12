@@ -112,8 +112,18 @@ pub(crate) fn recover_resource_allocation_with_observer<O: PreparationObserver>(
             events.checkpoint()?;
         }
         (false, SelectedLifecycle::Handoff) | (true, SelectedLifecycle::Aborted) => (),
-        _ => anyhow::bail!(
-            "requested recovery direction conflicts with the actual durable journal lifecycle: {initial:?}"
+        (false, SelectedLifecycle::PreparedClear) => anyhow::bail!(
+            "the conversion stopped before its apply intent was recorded: nothing was written \
+             to the source and there is nothing to resume. Run the same recovery command with \
+             --rollback to close the journal and return the NTFS volume"
+        ),
+        (false, SelectedLifecycle::RollbackIntent | SelectedLifecycle::Aborted) => anyhow::bail!(
+            "a rollback is recorded in the journal ({initial:?}); a resume is closed. Run the \
+             same recovery command with --rollback to finish it"
+        ),
+        (true, SelectedLifecycle::Handoff) => anyhow::bail!(
+            "the ReFS handoff is recorded in the journal; a rollback is closed. Run the \
+             recovery command without --rollback to finish the conversion"
         ),
     }
     if rollback {

@@ -324,6 +324,39 @@ fn run_prepared_offline_mode(
         budget: request.boot_budget,
         postflush_pause_nonce: request.controlled_pause_nonce.clone(),
     };
+    // A marker write that was cut short is settled before the lifecycle is
+    // read (see `interrupted_marker`). The source is held excluded above,
+    // the state in which this runner writes every marker. A closed-only boot
+    // repair writes nothing to the journal and refuses such a journal as
+    // before.
+    if !closed_only_boot_repair {
+        let (native, _) = journal.split_for_observation()?;
+        let ticket = &bundle.core().ticket;
+        let path = &bundle.core().journal_path;
+        let found = crate::selected_journal::find_interrupted_marker(native, ticket).with_context(
+            || {
+                format!(
+                    "looking for a partly written lifecycle marker in the recovery journal {}",
+                    path.display()
+                )
+            },
+        )?;
+        if let Some(found) = found {
+            let settled = crate::selected_journal::settle_interrupted_marker(native, ticket)
+                .with_context(|| {
+                    format!(
+                        "settling the partly written {} marker of the recovery journal {}",
+                        found.name,
+                        path.display()
+                    )
+                })?
+                .context("the partly written journal marker changed while it was being settled")?;
+            crate::interrupted_marker::announce(&settled, path);
+            observer.lock()?.record(&serde_json::json!({
+                "kind":"interrupted-journal-marker-settled","settled":settled,
+            }))?;
+        }
+    }
     let lifecycle = {
         let (native, _) = journal.split_for_observation()?;
         crate::selected_journal::classify(native, &bundle.core().ticket)?

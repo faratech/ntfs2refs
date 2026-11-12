@@ -71,6 +71,10 @@ fn is_zero(value: &u32) -> bool {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Difference {
     pub path: String,
+    /// One of a fixed set of labels, so differences can be counted by kind
+    /// whatever names and values `what` goes on to quote.
+    #[serde(default)]
+    pub kind: String,
     pub what: String,
 }
 
@@ -83,7 +87,7 @@ pub struct Comparison {
     /// Expected differences, counted by kind.
     pub allowed: BTreeMap<String, usize>,
     pub difference_count: usize,
-    /// Every difference, counted by kind (numbers replaced by N).
+    /// Every difference, counted by its fixed kind.
     pub difference_kinds: BTreeMap<String, usize>,
     /// The first differences, in path order.
     pub differences: Vec<Difference>,
@@ -158,14 +162,18 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
     let mut explained_after: BTreeSet<String> = BTreeSet::new();
 
     for record in before {
-        let mut differ = |what: String| {
+        let mut differ = |kind: &str, what: String| {
             differences.push(Difference {
                 path: record.path.clone(),
+                kind: kind.to_owned(),
                 what,
             })
         };
         for error in &record.errors {
-            differ(format!("could not be read before conversion: {error}"));
+            differ(
+                "unreadable before conversion",
+                format!("could not be read before conversion: {error}"),
+            );
         }
         // An 8.3 name must survive as a same-directory link to the long name.
         if let Some(short) = &record.short_name {
@@ -184,10 +192,11 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
                     Some(_) if before_paths.contains(alias.as_str()) => {
                         // A real object of that name exists; it is compared on its own.
                     }
-                    Some(_) => differ(format!(
-                        "short name {short} exists but is not a link to {leaf}"
-                    )),
-                    None => differ(format!("short name {short} was lost")),
+                    Some(_) => differ(
+                        "short name is not a link to its long name",
+                        format!("short name {short} exists but is not a link to {leaf}"),
+                    ),
+                    None => differ("short name lost", format!("short name {short} was lost")),
                 }
             }
         }
@@ -195,7 +204,10 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
             if inside_system_volume_information(&record.path) {
                 allow("System Volume Information content", &mut result.allowed);
             } else {
-                differ("missing after conversion".to_owned());
+                differ(
+                    "missing after conversion",
+                    "missing after conversion".to_owned(),
+                );
             }
             continue;
         };
@@ -204,10 +216,16 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
             continue;
         }
         for error in &now.errors {
-            differ(format!("could not be read after conversion: {error}"));
+            differ(
+                "unreadable after conversion",
+                format!("could not be read after conversion: {error}"),
+            );
         }
         if now.directory != record.directory {
-            differ("file/directory kind changed".to_owned());
+            differ(
+                "file/directory kind changed",
+                "file/directory kind changed".to_owned(),
+            );
             continue;
         }
         let (was, is) = (
@@ -218,10 +236,13 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
             if was & !COMPRESSED == is {
                 allow("NTFS compression flag removed", &mut result.allowed);
             } else {
-                differ(format!(
-                    "attributes {:#x} became {:#x}",
-                    record.attributes, now.attributes
-                ));
+                differ(
+                    "attributes changed",
+                    format!(
+                        "attributes {:#x} became {:#x}",
+                        record.attributes, now.attributes
+                    ),
+                );
             }
         }
         for (name, was, is) in [
@@ -230,17 +251,23 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
             ("change time", record.changed, now.changed),
         ] {
             if was != is {
-                differ(format!("{name} {was} became {is}"));
+                differ(
+                    &format!("{name} changed"),
+                    format!("{name} {was} became {is}"),
+                );
             }
         }
         if !record.directory && record.bytes != now.bytes {
-            differ(format!("size {} became {}", record.bytes, now.bytes));
+            differ(
+                "size changed",
+                format!("size {} became {}", record.bytes, now.bytes),
+            );
         }
         if record.sha256 != now.sha256 {
-            differ("content differs".to_owned());
+            differ("content differs", "content differs".to_owned());
         }
         if record.streams != now.streams {
-            differ("named streams differ".to_owned());
+            differ("named streams differ", "named streams differ".to_owned());
         }
         match (&record.security, &now.security) {
             (Some(was), Some(is)) if was == is => (),
@@ -250,28 +277,37 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
                 if was_base == is_base {
                     allow("empty system ACL versus none", &mut result.allowed);
                 } else {
-                    differ(format!("security {was} became {is}"));
+                    differ("security changed", format!("security {was} became {is}"));
                 }
             }
             (None, None) => (),
-            _ => differ("security could not be read on one side".to_owned()),
+            _ => differ(
+                "security unreadable on one side",
+                "security could not be read on one side".to_owned(),
+            ),
         }
         if record.reparse_tag != now.reparse_tag || record.reparse_sha256 != now.reparse_sha256 {
-            differ("reparse point differs".to_owned());
+            differ("reparse point differs", "reparse point differs".to_owned());
         }
         if record.extended_attributes != now.extended_attributes {
-            differ("extended attributes differ".to_owned());
+            differ(
+                "extended attributes differ",
+                "extended attributes differ".to_owned(),
+            );
         }
         if now.kernel_cache_attributes > record.kernel_cache_attributes {
-            differ("kernel cache attributes appeared".to_owned());
+            differ(
+                "kernel cache attributes appeared",
+                "kernel cache attributes appeared".to_owned(),
+            );
         } else if now.kernel_cache_attributes < record.kernel_cache_attributes {
             allow("kernel cache attributes dropped", &mut result.allowed);
         }
         if record.links != now.links {
-            differ(format!(
-                "hard-link count {} became {}",
-                record.links, now.links
-            ));
+            differ(
+                "hard-link count changed",
+                format!("hard-link count {} became {}", record.links, now.links),
+            );
         }
     }
 
@@ -297,6 +333,7 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
     for names in before_groups.difference(&after_groups) {
         differences.push(Difference {
             path: names.iter().next().cloned().unwrap_or_default(),
+            kind: "hard-link set not preserved".to_owned(),
             what: format!("hard-link set of {} names is not preserved", names.len()),
         });
     }
@@ -310,6 +347,7 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
         } else {
             differences.push(Difference {
                 path: record.path.clone(),
+                kind: "appeared after conversion".to_owned(),
                 what: "appeared after conversion".to_owned(),
             });
         }
@@ -318,20 +356,10 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
     differences.sort_by(|a, b| a.path.cmp(&b.path).then_with(|| a.what.cmp(&b.what)));
     result.difference_count = differences.len();
     for difference in &differences {
-        let mut kind = String::new();
-        let mut in_number = false;
-        for character in difference.what.chars().take(60) {
-            if character.is_ascii_digit() {
-                if !in_number {
-                    kind.push('N');
-                }
-                in_number = true;
-            } else {
-                in_number = false;
-                kind.push(character);
-            }
-        }
-        *result.difference_kinds.entry(kind).or_default() += 1;
+        *result
+            .difference_kinds
+            .entry(difference.kind.clone())
+            .or_default() += 1;
     }
     differences.truncate(DIFFERENCE_LIMIT);
     result.differences = differences;
@@ -1111,7 +1139,39 @@ mod tests {
         let mut b = file("\\b", "22");
         b.changed = 77;
         let comparison = compare(&before, &[directory("\\"), a, b]);
-        assert_eq!(comparison.difference_kinds["change time N became N"], 2);
+        assert_eq!(comparison.difference_kinds["change time changed"], 2);
+    }
+
+    #[test]
+    fn kinds_do_not_depend_on_the_names_and_values_a_difference_quotes() {
+        let named = |path: &str, short: &str, sddl: &str| {
+            let mut record = file(path, "11");
+            record.short_name = Some(short.to_owned());
+            record.security = Some(sddl.to_owned());
+            record
+        };
+        let before = vec![
+            directory("\\"),
+            named("\\Program Files", "PROGRA~1", "O:SYG:SYD:(A;;FA;;;SY)"),
+            named("\\Common Files", "COMMON~1", "O:BAG:BAD:(A;;FA;;;BA)"),
+        ];
+        let mut after = before.clone();
+        for record in &mut after[1..] {
+            record.short_name = None;
+            record.security = Some("O:WDG:WDD:(A;;FA;;;WD)".to_owned());
+        }
+        let comparison = compare(&before, &after);
+        assert_eq!(comparison.difference_count, 4, "{comparison:?}");
+        assert_eq!(comparison.difference_kinds.len(), 2, "{comparison:?}");
+        assert_eq!(comparison.difference_kinds["short name lost"], 2);
+        assert_eq!(comparison.difference_kinds["security changed"], 2);
+        // The detail still names what differed.
+        assert!(
+            comparison
+                .differences
+                .iter()
+                .any(|difference| difference.what == "short name PROGRA~1 was lost")
+        );
     }
 
     #[test]

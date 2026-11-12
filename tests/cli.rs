@@ -314,6 +314,24 @@ fn conversion_request_refuses_hash_size_and_forged_flags_before_device_io() {
 }
 
 #[test]
+fn diagnose_is_refused_at_parse_time_with_options_that_would_change_the_source() {
+    let cases: [&[&str]; 3] = [
+        &["--whole-image-verification"],
+        &["--minimize-scratch"],
+        &["--offline-media", "E:\\"],
+    ];
+    for extra in cases {
+        let mut arguments = vec!["--drive", "D", "--diagnose"];
+        arguments.extend_from_slice(extra);
+        let result = cli(&arguments);
+        // The parser's own exit code: nothing has been opened or listed yet.
+        assert_eq!(result.status.code(), Some(2), "{arguments:?}");
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(stderr.contains("cannot be used with"), "{stderr}");
+    }
+}
+
+#[test]
 fn recovery_requires_all_pinned_inputs_when_request_is_supplied() {
     for command in ["resume", "rollback", "finalize"] {
         let result = cli(&[

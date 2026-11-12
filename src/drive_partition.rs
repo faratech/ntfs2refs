@@ -274,9 +274,12 @@ pub(super) fn convert(
     args: &DriveArgs,
     selected: PartitionSelection,
     before: VolumeDiscovery,
+    // This route has no diagnose stop: it changes the GPT entry and the boot
+    // configuration, then restarts into the conversion.
+    authority: &crate::execution_mode::SourceChangeAuthority,
 ) -> Result<u8> {
     if args.offline_recovery_media.is_some() {
-        return offline::convert(args, selected, before);
+        return offline::convert(args, selected, before, authority);
     }
     require_shared_conversion_backend()?;
     ensure!(

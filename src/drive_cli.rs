@@ -77,7 +77,12 @@ pub struct DriveArgs {
     /// Build the complete ReFS shadow, report every per-object failure instead
     /// of stopping at the first, then stop before anything is published or
     /// written to the source. The source volume is left as NTFS.
-    #[arg(long, requires = "drive", conflicts_with_all = ["list", "recover", "rollback"])]
+    #[arg(long, requires = "drive", conflicts_with_all = [
+        "list", "recover", "rollback", "whole_image_verification", "minimize_scratch",
+        "offline_recovery_media", "controlled_post_flush_pause_nonce",
+        "acknowledge_controlled_post_flush_pause", "experimental_thin_shadow",
+        "experimental_thin_backing_bytes",
+    ])]
     pub diagnose: bool,
     /// Re-read every working file and the whole source at every checkpoint
     /// instead of once, immediately before the first write to the source.
@@ -124,6 +129,72 @@ fn parse_controlled_pause_nonce(value: &str) -> std::result::Result<String, Stri
 impl DriveArgs {
     pub fn requested(&self) -> bool {
         self.list || self.drive.is_some() || self.recover.is_some()
+    }
+
+    /// What `--diagnose` cannot be combined with, and why. Diagnose never
+    /// changes the source; each of these would, or has no diagnose stop.
+    pub const DIAGNOSE_REFUSES: &'static [(&'static str, &'static str)] = &[
+        (
+            "--whole-image-verification",
+            "that route has no diagnose stop and would apply the conversion",
+        ),
+        (
+            "--minimize-scratch",
+            "it moves files on the source before preparation starts",
+        ),
+        (
+            "--offline-media",
+            "that route arms a restart into the conversion",
+        ),
+        (
+            "--controlled-post-flush-pause-nonce",
+            "it controls a run that writes to the source",
+        ),
+        (
+            "--acknowledge-controlled-post-flush-pause",
+            "it controls a run that writes to the source",
+        ),
+        (
+            "--experimental-thin-shadow",
+            "diagnose builds and removes only the ordinary shadow",
+        ),
+        (
+            "--experimental-thin-backing-bytes",
+            "diagnose builds and removes only the ordinary shadow",
+        ),
+    ];
+
+    /// Decides once, before anything is opened, whether this run converts or
+    /// only diagnoses, and refuses a diagnose it could not honour. The parser
+    /// rejects the same combinations; this holds whatever built the arguments.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(crate) fn execution_mode(&self) -> Result<crate::execution_mode::ExecutionMode> {
+        use crate::execution_mode::ExecutionMode;
+        if !self.diagnose {
+            return Ok(ExecutionMode::Convert);
+        }
+        ensure!(
+            self.drive.is_some() && !self.list && self.recover.is_none() && !self.rollback,
+            "--diagnose applies only to a --drive selection"
+        );
+        // In the order of DIAGNOSE_REFUSES; a test sets each field in turn
+        // and checks that the refusal names its flag.
+        let requested = [
+            self.whole_image_verification,
+            self.minimize_scratch,
+            self.offline_recovery_media.is_some(),
+            self.controlled_post_flush_pause_nonce.is_some(),
+            self.acknowledge_controlled_post_flush_pause,
+            self.experimental_thin_shadow,
+            self.experimental_thin_backing_bytes.is_some(),
+        ];
+        for ((flag, reason), requested) in Self::DIAGNOSE_REFUSES.iter().zip(requested) {
+            ensure!(
+                !requested,
+                "--diagnose cannot be combined with {flag}: {reason}. Nothing was changed."
+            );
+        }
+        Ok(ExecutionMode::Diagnose)
     }
 }
 pub fn run(args: DriveArgs) -> Result<u8> {
@@ -345,6 +416,8 @@ mod windows {
         budget: crate::general_qualification::CompactConstructionBudget,
         output: PathBuf,
         allocation_bounded: bool,
+        // This backend has no diagnose stop: it activates the source and applies.
+        _authority: &crate::execution_mode::SourceChangeAuthority,
     ) -> Result<()> {
         let worker_output = output.clone();
         std::thread::scope(|scope| {
@@ -427,6 +500,7 @@ mod windows {
         Ok(answer.len() < 65 && matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
     }
     pub(super) fn run(args: DriveArgs) -> Result<u8> {
+        let mode = args.execution_mode()?;
         if let Some(directory) = args.recover {
             let checksum = args
                 .recovery_sha256
@@ -516,13 +590,16 @@ mod windows {
                     && disk.contains_running_windows == Some(true)
             })
         {
+            // This route has no diagnose stop; refuse before discovering anything.
+            let authority = mode
+                .source_change_authority("conversion of a partition on the running Windows disk")?;
             let before = discovery::discover(
                 &selected.volume_guid_path,
                 Role::Journal {
                     allow_additional_partitions: true,
                 },
             )?;
-            return super::partition::convert(&args, selected, before);
+            return super::partition::convert(&args, selected, before, &authority);
         }
         ensure!(
             args.controlled_post_flush_pause_nonce.is_none()
@@ -649,6 +726,7 @@ mod windows {
             target_format,
             args.experimental_thin_shadow,
             args.experimental_thin_backing_bytes,
+            mode,
         )
     }
     fn convert_selected(
@@ -662,6 +740,7 @@ mod windows {
         target_format: n2r_win32::managed_shadow::TargetFormatProfile,
         thin_shadow: bool,
         thin_backing_bytes: Option<u64>,
+        mode: crate::execution_mode::ExecutionMode,
     ) -> Result<u8> {
         let system = n2r_win32::current_windows_directory()?
             .to_str()
@@ -873,8 +952,10 @@ mod windows {
                 provider_commitment,
                 if thin_shadow { reserve } else { 0 },
                 staged.staging_allocation_meter(),
+                mode,
             )
         } else {
+            let authority = mode.source_change_authority("whole-image conversion")?;
             if minimize_scratch {
                 println!("Preparing NTFS file placement to reduce recovery storage.");
                 let preparation = crate::ntfs_preparation::prepare(
@@ -935,7 +1016,13 @@ mod windows {
             };
             // Keep the native attachment owner on this thread until the conversion
             // worker has returned, including error/panic handling.
-            convert_with_progress(request, budget, output.clone(), allocation_bounded)
+            convert_with_progress(
+                request,
+                budget,
+                output.clone(),
+                allocation_bounded,
+                &authority,
+            )
         };
         let output = run.join("conversion");
         match result {
@@ -1034,6 +1121,109 @@ mod windows {
                 );
                 Err(e)
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::execution_mode::ExecutionMode;
+    use clap::{Parser, error::ErrorKind};
+
+    #[derive(Parser, Debug)]
+    struct Cli {
+        #[command(flatten)]
+        drive: DriveArgs,
+    }
+    fn parse(extra: &[&str]) -> std::result::Result<DriveArgs, clap::Error> {
+        let mut arguments = vec!["ntfs2refs", "--drive", "D"];
+        arguments.extend_from_slice(extra);
+        Cli::try_parse_from(arguments).map(|cli| cli.drive)
+    }
+    const NONCE: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+
+    #[test]
+    fn a_conversion_and_a_plain_diagnose_are_admitted() {
+        let mode = |extra: &[&str]| parse(extra).unwrap().execution_mode().unwrap();
+        assert_eq!(mode(&[]), ExecutionMode::Convert);
+        assert_eq!(mode(&["--diagnose"]), ExecutionMode::Diagnose);
+        assert_eq!(
+            mode(&[
+                "--diagnose",
+                "--windows-boot-volume",
+                "--verify-full-content",
+                "--recheck-everything",
+            ]),
+            ExecutionMode::Diagnose
+        );
+        // Without --diagnose these are ordinary conversion requests.
+        assert_eq!(mode(&["--minimize-scratch"]), ExecutionMode::Convert);
+        assert_eq!(
+            mode(&["--whole-image-verification"]),
+            ExecutionMode::Convert
+        );
+    }
+
+    #[test]
+    fn the_parser_rejects_diagnose_with_every_option_it_cannot_honour() {
+        let cases: [&[&str]; 6] = [
+            &["--whole-image-verification"],
+            &["--minimize-scratch"],
+            &["--offline-media", "E:\\"],
+            &["--experimental-thin-shadow"],
+            &[
+                "--experimental-thin-shadow",
+                "--experimental-thin-backing-bytes",
+                "1073741824",
+            ],
+            &[
+                "--controlled-post-flush-pause-nonce",
+                NONCE,
+                "--acknowledge-controlled-post-flush-pause",
+            ],
+        ];
+        for extra in cases {
+            // Each is accepted by the parser on its own.
+            assert!(parse(extra).is_ok(), "{extra:?}");
+            let mut arguments = vec!["--diagnose"];
+            arguments.extend_from_slice(extra);
+            let error = parse(&arguments).unwrap_err();
+            assert_eq!(
+                error.kind(),
+                ErrorKind::ArgumentConflict,
+                "{arguments:?}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn admission_refuses_each_combination_whatever_built_the_arguments() {
+        type Set = fn(&mut DriveArgs);
+        let cases: [Set; 7] = [
+            |a| a.whole_image_verification = true,
+            |a| a.minimize_scratch = true,
+            |a| a.offline_recovery_media = Some(PathBuf::from("E:\\")),
+            |a| a.controlled_post_flush_pause_nonce = Some(NONCE.to_owned()),
+            |a| a.acknowledge_controlled_post_flush_pause = true,
+            |a| a.experimental_thin_shadow = true,
+            |a| a.experimental_thin_backing_bytes = Some(1 << 30),
+        ];
+        assert_eq!(cases.len(), DriveArgs::DIAGNOSE_REFUSES.len());
+        for (set, (flag, reason)) in cases.iter().zip(DriveArgs::DIAGNOSE_REFUSES) {
+            let mut arguments = parse(&["--diagnose"]).unwrap();
+            set(&mut arguments);
+            let refusal = arguments.execution_mode().unwrap_err().to_string();
+            assert!(
+                refusal.contains(flag) && refusal.contains(reason),
+                "{flag}: {refusal}"
+            );
+            arguments.diagnose = false;
+            assert_eq!(
+                arguments.execution_mode().unwrap(),
+                ExecutionMode::Convert,
+                "{flag}"
+            );
         }
     }
 }

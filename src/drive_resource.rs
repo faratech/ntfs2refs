@@ -99,6 +99,7 @@ pub(crate) fn convert_owned(
         0,
         0,
         Ok(None),
+        crate::execution_mode::ExecutionMode::Convert,
     )
 }
 
@@ -113,6 +114,7 @@ pub(crate) fn convert_owned_with_provider_commitment(
     provider_commitment: u64,
     provider_minimum_free_bytes: u64,
     staging_meter: std::io::Result<Option<n2r_win32::managed_shadow::StagingAllocationMeter>>,
+    mode: crate::execution_mode::ExecutionMode,
 ) -> Result<()> {
     let first = n2r_win32::resource_native::observe_available_resources(run)?;
     let staging_meter = staging_meter.context("observe actual staging backing owner")?;
@@ -189,6 +191,8 @@ pub(crate) fn convert_owned_with_provider_commitment(
     // The public CLI selects this policy for --minimize-scratch. Prealignment
     // runs on live NTFS before the final frozen source certificate exists.
     if selected_capacity_policy == SelectedCapacityPolicy::SourceFreeActualBytesV1 {
+        // These moves happen on the live source, before any diagnose stop.
+        let authority = mode.source_change_authority("NTFS prealignment (--minimize-scratch)")?;
         println!("Preparing NTFS file placement to reduce recovery storage.");
         let prepass = (|| -> Result<()> {
             let available = n2r_win32::resource_native::observe_available_resources(run)?;
@@ -209,6 +213,7 @@ pub(crate) fn convert_owned_with_provider_commitment(
                 keep,
                 evidence_remaining,
                 &mut observer,
+                &authority,
             )
         })();
         if let Err(error) = prepass {

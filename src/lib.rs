@@ -17,6 +17,7 @@ pub mod compact_recovery_bundle;
 pub mod corpus;
 pub mod drive_cli;
 pub mod drive_recovery;
+pub(crate) mod execution_mode;
 pub mod extent_adoption;
 pub mod fixed_vhd;
 #[cfg(windows)]

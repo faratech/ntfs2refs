@@ -69,6 +69,19 @@ fn query(file: &File, property: u32, capacity: usize) -> io::Result<Vec<u8>> {
     if ok == 0 {
         return Err(io::Error::last_os_error());
     }
+    admit_reply(output, returned)
+}
+
+/// The bytes Windows says it wrote into `output`. A count larger than the
+/// buffer is not an answer: `truncate` would leave the buffer whole, and its
+/// zero padding would then be read as property fields.
+fn admit_reply(mut output: Vec<u8>, returned: u32) -> io::Result<Vec<u8>> {
+    if returned as usize > output.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "storage property query returned more bytes than its buffer",
+        ));
+    }
     output.truncate(returned as usize);
     Ok(output)
 }
@@ -199,5 +212,19 @@ pub fn for_disk(file: &File) -> IoProfile {
         request_bytes: request,
         queue_depth,
         source: "storage-properties",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_reply_longer_than_its_buffer_is_refused_not_padded() {
+        assert_eq!(admit_reply(vec![7; 16], 8).unwrap(), vec![7; 8]);
+        assert_eq!(admit_reply(vec![7; 16], 16).unwrap(), vec![7; 16]);
+        assert_eq!(admit_reply(vec![7; 16], 0).unwrap(), Vec::<u8>::new());
+        let refused = admit_reply(vec![0; 16], 17).unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::InvalidData);
     }
 }

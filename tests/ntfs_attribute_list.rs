@@ -8,6 +8,30 @@ use sha2::{Digest, Sha256};
 fn hash(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
+/// A resident value is checked against whichever digest was recorded for
+/// it: the 32-digit content digest an inspection records today, or the
+/// 64-digit SHA-256 that evidence retained from before that change holds.
+#[test]
+fn a_resident_value_is_checked_against_the_digest_that_was_recorded() {
+    let bytes = b"a resident attribute list";
+    let current = n2r_win32::content_digest::of(bytes);
+    let retained = hash(bytes);
+    assert_eq!((current.len(), retained.len()), (32, 64));
+    assert!(list::resident_digest_matches(&current, bytes));
+    assert!(list::resident_digest_matches(&retained, bytes));
+    for expected in [&current, &retained] {
+        assert!(!list::resident_digest_matches(expected, b"other bytes"));
+    }
+    // A well-formed digest of the wrong content, and malformed ones.
+    assert!(!list::resident_digest_matches(&"0".repeat(32), bytes));
+    assert!(!list::resident_digest_matches(&"0".repeat(64), bytes));
+    assert!(!list::resident_digest_matches(&current[..31], bytes));
+    assert!(!list::resident_digest_matches(
+        &current.to_uppercase(),
+        bytes
+    ));
+    assert!(!list::resident_digest_matches("", bytes));
+}
 fn geometry() -> NtfsGeometry {
     NtfsGeometry {
         bytes_per_sector: 512,

@@ -9,6 +9,34 @@ use resource::Limits as PlacementLimits;
 pub use resource::{PlacementEvidenceSink, ResourcePlacementReport};
 
 const MOVE_BYTES: u64 = 512 * 1024 * 1024;
+
+/// A move's length as the cluster count Windows is asked to move. Every move
+/// planned here is a whole number of 4 KiB clusters and fits one request; a
+/// length that is not would otherwise be floored and truncated in silence.
+fn move_clusters(length: u64) -> io::Result<u32> {
+    if !length.is_multiple_of(4096) {
+        return Err(invalid(&format!(
+            "a placement move of {length} bytes is not a whole number of clusters"
+        )));
+    }
+    u32::try_from(length / 4096).map_err(|_| {
+        invalid(&format!(
+            "a placement move of {length} bytes is more clusters than one request holds"
+        ))
+    })
+}
+
+/// The byte range of `clusters` clusters that start at cluster `first`.
+fn cluster_span(first: u64, clusters: u32) -> io::Result<(u64, u64)> {
+    first
+        .checked_mul(4096)
+        .and_then(|start| Some((start, start.checked_add(u64::from(clusters) * 4096)?)))
+        .ok_or_else(|| {
+            invalid(&format!(
+                "{clusters} clusters from cluster {first} lie beyond any byte offset"
+            ))
+        })
+}
 /// Tree-wide FSCTL_MOVE_FILE submissions, shared by every phase.
 const MAX_MOVES: usize = super::MAX_PLACEMENT_SUBMISSIONS;
 /// Planner ceiling on tree-wide desired NTFS runs (E): a fragmented tree of
@@ -1092,7 +1120,7 @@ fn allocate_deferred(
             step.index,
             step.logical / 4096,
             step.destination / 4096,
-            (step.length / 4096) as u32,
+            move_clusters(step.length)?,
             false,
             wanted.limits.resource,
             |destination| {
@@ -1824,7 +1852,10 @@ fn run_domain_inner(
         ));
     }
     avoid.sort_by_key(|r| r.0);
-    if avoid.windows(2).any(|w| w[0].0 + w[0].1 > w[1].0) {
+    if avoid
+        .windows(2)
+        .any(|w| w[0].0.checked_add(w[0].1).is_none_or(|end| end > w[1].0))
+    {
         return Err(invalid("source desired physical ownership overlaps"));
     }
     let mut evidence = Evidence::new(sink, limits.evidence);
@@ -1910,16 +1941,16 @@ fn run_domain_inner(
                 if holes.len() == limits.tracked {
                     return Err(invalid("resource deferred hole index exhausted"));
                 }
-                let start = vcn * 4096;
-                holes.push((*index, start, start + u64::from(clusters) * 4096));
+                let (start, end) = cluster_span(vcn, clusters)?;
+                holes.push((*index, start, end));
             }
         } else {
             let file_holes = file.track_current_prefix()?;
             counters.initial_tracked_extents += file.tracked_mappings().len();
             counters.deferred_holes += file_holes.len();
             for (vcn, clusters) in file_holes {
-                let start = vcn * 4096;
-                holes.push((*index, start, start + u64::from(clusters) * 4096));
+                let (start, end) = cluster_span(vcn, clusters)?;
+                holes.push((*index, start, end));
             }
         }
     }
@@ -1981,8 +2012,8 @@ fn run_domain_inner(
             owned.push(shadow_evacuation::Extent {
                 file_index: u32::try_from(*index)
                     .map_err(|_| invalid("placement slot exceeds planner identity"))?,
-                logical_offset: v * 4096,
-                physical_offset: l * 4096,
+                logical_offset: cluster_span(v, n)?.0,
+                physical_offset: cluster_span(l, n)?.0,
                 length: u64::from(n) * 4096,
             });
         }
@@ -2155,7 +2186,7 @@ fn run_domain_inner(
                 movement.file_index as usize,
                 (movement.logical_offset + offset) / 4096,
                 (movement.destination_offset + offset) / 4096,
-                (length / 4096) as u32,
+                move_clusters(length)?,
                 true,
                 limits.resource,
                 |destination| {
@@ -2413,7 +2444,7 @@ fn run_domain_inner(
                                 index,
                                 logical / 4096,
                                 physical / 4096,
-                                (length / 4096) as u32,
+                                move_clusters(length)?,
                                 true,
                                 limits.resource,
                                 |destination| {

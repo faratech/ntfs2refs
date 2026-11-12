@@ -5707,13 +5707,18 @@ fn run_role_content_domain_accounted(
                     {
                         return Err(invalid("shadow physical mapping is invalid"));
                     }
-                    end += r.clusters;
+                    end = end
+                        .checked_add(r.clusters)
+                        .ok_or_else(|| invalid("shadow physical mapping length overflows"))?;
                 }
+                let mapped_bytes = end
+                    .checked_mul(4096)
+                    .ok_or_else(|| invalid("shadow physical mapping length overflows"))?;
                 if i.sparse.is_none()
-                    && ((!ordinary && end * 4096 != i.logical_length())
+                    && ((!ordinary && mapped_bytes != i.logical_length())
                         || (ordinary
                             && !resident_data
-                            && (end * 4096 != expected_allocation
+                            && (mapped_bytes != expected_allocation
                                 || (expected_allocation == 0 && i.logical_length() > 4096)
                                 || (expected_allocation != 0
                                     && expected_allocation

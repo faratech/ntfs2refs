@@ -11,6 +11,88 @@ fn announce_recovery_phase(operation: ExperimentalCompactOperation, message: &st
     let _ = writeln!(std::io::stderr(), "Recovery {operation:?}: {message}");
 }
 
+/// What a recovery run from a saved directory does, given what its journal
+/// durably records and which direction was asked for.
+///
+/// The compact engine itself can change direction until a handoff, and its
+/// laboratory uses that. A recovery started from a directory is held to
+/// more: it never begins an apply that the conversion had not durably
+/// begun, and it never turns a recorded rollback back into a conversion.
+fn select_recovery_operation(
+    lifecycle: crate::lab_reconstruct::JournalLifecycle,
+    requested: ExperimentalCompactOperation,
+) -> Result<ExperimentalCompactOperation> {
+    use crate::lab_reconstruct::JournalLifecycle;
+    Ok(match lifecycle {
+        JournalLifecycle::PreparedClear => {
+            // Nothing has been written from this journal. Writing now would
+            // be a first apply, begun by a recovery instead of by the
+            // conversion that prepared and checked the journal.
+            ensure!(
+                requested == ExperimentalCompactOperation::Rollback,
+                "the conversion stopped before it recorded an apply intent: nothing was written, \
+                 and a resume would start the conversion anew; use --rollback to return the NTFS volume"
+            );
+            requested
+        }
+        JournalLifecycle::RollbackIntent => {
+            ensure!(
+                requested == ExperimentalCompactOperation::Rollback,
+                "a rollback is recorded in the journal; ReFS resume is closed; use --rollback to finish it"
+            );
+            requested
+        }
+        JournalLifecycle::ApplyIntent => requested,
+        JournalLifecycle::RefsHandoff => {
+            ensure!(
+                requested == ExperimentalCompactOperation::Resume,
+                "ReFS handoff is committed; raw replay, rollback and a new handoff are closed"
+            );
+            ExperimentalCompactOperation::FinalizeAfterMarker
+        }
+        JournalLifecycle::NtfsRollback => {
+            ensure!(
+                requested == ExperimentalCompactOperation::Rollback,
+                "NTFS rollback is committed; ReFS resume is closed; use --rollback to finalize NTFS"
+            );
+            ExperimentalCompactOperation::FinalizeRollback
+        }
+    })
+}
+
+#[cfg(test)]
+mod recovery_selection_tests {
+    use super::ExperimentalCompactOperation::{
+        Finalize, FinalizeAfterMarker, FinalizeRollback, Resume, Rollback,
+    };
+    use super::select_recovery_operation as select;
+    use crate::lab_reconstruct::JournalLifecycle::{
+        ApplyIntent, NtfsRollback, PreparedClear, RefsHandoff, RollbackIntent,
+    };
+
+    #[test]
+    fn a_recovery_never_starts_an_apply_or_reverses_a_recorded_rollback() {
+        // Nothing written yet: only the way back is offered.
+        assert_eq!(select(PreparedClear, Rollback).unwrap(), Rollback);
+        for refused in [Resume, Finalize] {
+            let error = select(PreparedClear, refused).unwrap_err().to_string();
+            assert!(error.contains("use --rollback"), "{error}");
+        }
+        // A recorded rollback is finished, not reversed.
+        assert_eq!(select(RollbackIntent, Rollback).unwrap(), Rollback);
+        let error = select(RollbackIntent, Resume).unwrap_err().to_string();
+        assert!(error.contains("resume is closed"), "{error}");
+        // A durably begun apply may go either way, as before.
+        assert_eq!(select(ApplyIntent, Resume).unwrap(), Resume);
+        assert_eq!(select(ApplyIntent, Rollback).unwrap(), Rollback);
+        // Terminal states are unchanged.
+        assert_eq!(select(RefsHandoff, Resume).unwrap(), FinalizeAfterMarker);
+        assert!(select(RefsHandoff, Rollback).is_err());
+        assert_eq!(select(NtfsRollback, Rollback).unwrap(), FinalizeRollback);
+        assert!(select(NtfsRollback, Resume).is_err());
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExperimentalCompactOperation {
@@ -322,25 +404,7 @@ fn recover_compact_impl(
                 .map(|p| (p.offset, p.length))
                 .collect();
             artifact.layout().require_exact_write_ranges(&ranges)?;
-            let selected = match lifecycle {
-                JournalLifecycle::PreparedClear
-                | JournalLifecycle::ApplyIntent
-                | JournalLifecycle::RollbackIntent => operation,
-                JournalLifecycle::RefsHandoff => {
-                    ensure!(
-                        operation == ExperimentalCompactOperation::Resume,
-                        "ReFS handoff is committed; raw replay, rollback and a new handoff are closed"
-                    );
-                    ExperimentalCompactOperation::FinalizeAfterMarker
-                }
-                JournalLifecycle::NtfsRollback => {
-                    ensure!(
-                        operation == ExperimentalCompactOperation::Rollback,
-                        "NTFS rollback is committed; ReFS resume is closed; use --rollback to finalize NTFS"
-                    );
-                    ExperimentalCompactOperation::FinalizeRollback
-                }
-            };
+            let selected = select_recovery_operation(lifecycle, operation)?;
             artifacts::save(
                 output,
                 "lifecycle-selection.json",

@@ -523,6 +523,26 @@ fn complete_fragmented_nonresident_list_uses_a_separate_storage_version() {
     );
 }
 
+/// NTFS may hold more clusters for a nonresident value than the value needs:
+/// it grows such an attribute several clusters at a time, most visibly on
+/// small clusters. What the header says is allocated must be what is mapped.
+#[test]
+fn a_nonresident_list_may_hold_more_clusters_than_its_value_needs() {
+    let (mut base, _, _, geometry) = nonresident_fixture();
+    let a = &mut base.attributes[2];
+    a.allocated_size = 12288;
+    a.extents.push(Extent {
+        logical_offset: 8192,
+        physical_offset: Some(510 * 4096),
+        length: 4096,
+    });
+    list::validate_list_storage(a, &geometry).unwrap();
+    a.allocated_size = 16384;
+    assert!(list::validate_list_storage(a, &geometry).is_err());
+    a.allocated_size = 12288 + 512;
+    assert!(list::validate_list_storage(a, &geometry).is_err());
+}
+
 #[test]
 fn nonresident_list_refuses_synthetic_zeroes_incomplete_storage_and_payload_overlap() {
     for case in 0..17 {

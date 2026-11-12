@@ -1122,9 +1122,18 @@ fn validate_stream_source(stream: StreamRef<'_>, physical: &mut Vec<(u64, u64)>)
             physical.push((offset, extent.length));
             previous_end = logical_end;
         }
+        // Every island that stays in place lies inside allocated, initialized
+        // data. The reverse holds only where the source's clusters are at
+        // least the target's: an island on smaller clusters that does not
+        // start on a target cluster boundary is copied, not kept.
         ensure!(
-            actual == expected,
-            "sparse initialized islands do not cover the allocated VDL prefix"
+            actual.iter().all(|island| {
+                expected.iter().any(|allocated| {
+                    allocated.offset <= island.offset
+                        && island.offset + island.length <= allocated.offset + allocated.length
+                })
+            }),
+            "sparse initialized islands lie outside the allocated VDL prefix"
         );
         return Ok(());
     }

@@ -97,9 +97,9 @@ pub struct ResourceLimits {
 }
 
 impl ResourceProfile {
-    /// Source allocation units are independent of the fixed 4 KiB ReFS target.
-    /// The expanded geometry remains explicitly experimental and still uses
-    /// the same bounded tree, native-observation and journal requirements.
+    /// Source allocation units are independent of the ReFS target's. A run
+    /// that does not lie on the target's cluster boundaries cannot stay where
+    /// it is: the stream plan copies such a stream instead of retaining it.
     pub fn supports_source_geometry(self, geometry: &ntfs::NtfsGeometry) -> bool {
         geometry.bytes_per_sector == 512
             && geometry.file_record_size == 1024
@@ -110,8 +110,7 @@ impl ResourceProfile {
                 | Self::ExperimentalStreamingTreeV2
                 | Self::ExperimentalObjectEnvelopeV3(_)
                 | Self::ResourceBoundedV4(_) => {
-                    geometry.cluster_size >= 4096
-                        && crate::ntfs_index::supports_cluster_size(geometry.cluster_size)
+                    crate::ntfs_index::supports_cluster_size(geometry.cluster_size)
                 }
             }
     }

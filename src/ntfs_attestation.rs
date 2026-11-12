@@ -178,6 +178,9 @@ pub(crate) fn extent_identity_stream_request_windows_domain(
     })
 }
 
+/// The ReFS allocation unit data must be aligned to in order to stay in place.
+const TARGET_CLUSTER: u64 = 4096;
+
 fn extent_identity_stream_request_with_paths(
     geometry: &crate::ntfs_inspect::NtfsGeometry,
     file: &FileInventory,
@@ -185,8 +188,18 @@ fn extent_identity_stream_request_with_paths(
     source_paths: impl FnOnce() -> Result<Option<Vec<Vec<String>>>>,
 ) -> Result<Option<n2r_win32::attestation::ExtentIdentityStream>> {
     use crate::ntfs_inspect::MetadataRole;
-    if !(4096..=2 * 1024 * 1024).contains(&geometry.cluster_size)
+    if !(512..=2 * 1024 * 1024).contains(&geometry.cluster_size)
         || !geometry.cluster_size.is_power_of_two()
+        // Extent evidence is for a stream that stays where it is. On source
+        // clusters smaller than the target's, a run can start or end inside
+        // a target cluster; such a stream is copied, and so is hashed.
+        || !stream.allocated_size.is_multiple_of(TARGET_CLUSTER)
+        || stream.extents.iter().any(|e| {
+            !e.logical_offset.is_multiple_of(TARGET_CLUSTER)
+                || !e.length.is_multiple_of(TARGET_CLUSTER)
+                || e.physical_offset
+                    .is_some_and(|at| !at.is_multiple_of(TARGET_CLUSTER))
+        })
         || file.is_directory
         || file.record_number < 16
         || file.base_file_reference != 0

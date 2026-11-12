@@ -112,7 +112,7 @@ fn route(volume: &File, disk: &File, r: &Request) -> io::Result<Route> {
     };
     let cluster_bytes = u32le(&data, 44)?;
     let supported_clusters = if r.resource_profile.is_some() {
-        cluster_bytes.is_power_of_two() && (4096..=2 * 1024 * 1024).contains(&cluster_bytes)
+        cluster_bytes.is_power_of_two() && (512..=2 * 1024 * 1024).contains(&cluster_bytes)
     } else {
         cluster_bytes == 4096
     };

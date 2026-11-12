@@ -116,7 +116,7 @@ fn sparse_candidate(
     );
     let cluster = u64::from(geometry.cluster_size);
     ensure!(
-        cluster >= CLUSTER && cluster.is_multiple_of(CLUSTER),
+        cluster.is_power_of_two() && (512..=2 * 1024 * 1024).contains(&cluster),
         "sparse source geometry differs"
     );
     let rounded = stream
@@ -137,6 +137,16 @@ fn sparse_candidate(
                 && extent.length > 0
                 && extent.length.is_multiple_of(cluster),
             "sparse source mapping has a gap or invalid run"
+        );
+        // The target's sparse layout is in its own clusters. NTFS allocates a
+        // sparse stream in granules of 8 KiB and more, so a run ends inside a
+        // target cluster only where a stream on smaller clusters was punched
+        // cluster by cluster.
+        ensure!(
+            extent.logical_offset.is_multiple_of(CLUSTER) && extent.length.is_multiple_of(CLUSTER),
+            "sparse run at logical offset {}, {} bytes, does not lie on {CLUSTER}-byte target cluster boundaries",
+            extent.logical_offset,
+            extent.length
         );
         coverage = coverage
             .checked_add(extent.length)
@@ -167,8 +177,11 @@ fn sparse_candidate(
                     .checked_add(logical_end - extent.logical_offset)
                     .context("sparse initialized byte overflow")?;
             }
+            // An island stays where it is only if it starts on a target
+            // cluster boundary; on smaller source clusters it may not, and
+            // is then copied like the stream's tail.
             let retained_end = coverage.min(initialized_end);
-            if retained_end > extent.logical_offset {
+            if retained_end > extent.logical_offset && offset.is_multiple_of(CLUSTER) {
                 let length = retained_end - extent.logical_offset;
                 initialized_extents.push(Extent {
                     logical_offset: extent.logical_offset,

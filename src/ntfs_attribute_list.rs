@@ -416,13 +416,21 @@ fn validate_initialized_metadata(
         .logical_size
         .checked_next_multiple_of(cluster)
         .context("attribute-list allocation overflow")?;
+    // NTFS may hold more clusters than the value needs: it grows such an
+    // attribute several clusters at a time, most visibly on small clusters.
+    // The mapping must cover exactly what the header says is allocated.
+    let allocated = attribute.allocated_size;
     ensure!(
         attribute.resident_sha256.is_none()
             && attribute.resident_metadata_hex.is_none()
-            && attribute.allocated_size == rounded
+            && allocated >= rounded
+            && allocated.is_multiple_of(cluster)
             && !attribute.extents.is_empty()
             && attribute.extents.len() <= maximum_runs,
-        "nonresident attribute-list allocation/form exceeds profile"
+        "nonresident attribute type {kind:#x} allocation/form exceeds profile: {} bytes, {} allocated on {cluster}-byte clusters, {} runs (at most {maximum_runs})",
+        attribute.logical_size,
+        attribute.allocated_size,
+        attribute.extents.len()
     );
     let mut next = 0u64;
     let mut physical = Vec::new();
@@ -446,10 +454,13 @@ fn validate_initialized_metadata(
         next = next
             .checked_add(extent.length)
             .context("attribute-list coverage overflow")?;
-        ensure!(next <= rounded, "attribute-list mapping exceeds allocation");
+        ensure!(
+            next <= allocated,
+            "attribute-list mapping exceeds allocation"
+        );
         physical.push((start, end));
     }
-    ensure!(next == rounded, "attribute-list mapping is incomplete");
+    ensure!(next == allocated, "attribute-list mapping is incomplete");
     physical.sort_unstable();
     ensure!(
         physical.windows(2).all(|p| p[0].1 <= p[1].0),

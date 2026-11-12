@@ -928,9 +928,7 @@ impl PagedSourceFingerprint {
                 let mut coverage = 0u64;
                 for extent in &stream.extents {
                     ensure!(
-                        extent.logical_offset == coverage
-                            && extent.length > 0
-                            && extent.length.is_multiple_of(GRANULE),
+                        extent.logical_offset == coverage && extent.length > 0,
                         "invalid fingerprint DATA coverage"
                     );
                     coverage = coverage
@@ -939,17 +937,20 @@ impl PagedSourceFingerprint {
                     let start = extent
                         .physical_offset
                         .context("plain fingerprint DATA has a sparse run")?;
-                    ensure!(
-                        start.is_multiple_of(GRANULE),
-                        "unaligned fingerprint DATA physical run"
-                    );
                     if extent.logical_offset < prefix {
                         let length = extent.length.min(prefix - extent.logical_offset);
                         let end = start
                             .checked_add(length)
                             .context("fingerprint payload overflow")?
                             .min(final_granule);
-                        let start = start.max(GRANULE);
+                        // Whole granules only. On source clusters smaller
+                        // than a granule a run can start or end inside one;
+                        // those edges stay in what the fingerprint reads.
+                        let start = start
+                            .max(GRANULE)
+                            .checked_next_multiple_of(GRANULE)
+                            .context("fingerprint payload overflow")?;
+                        let end = end / GRANULE * GRANULE;
                         if start < end {
                             omitted.push(
                                 key(start, ordinal),

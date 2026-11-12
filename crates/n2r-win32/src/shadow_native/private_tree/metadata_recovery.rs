@@ -135,7 +135,7 @@ pub fn classify_payloads_domain(
                 .share_mode(3)
                 .custom_flags(0x02200000)
                 .open(&path)?;
-            if !crate::file_storage::final_path_guid(&file)?.eq_ignore_ascii_case(&path) {
+            if !crate::file_storage::held_at_guid_path(&file, &path)? {
                 return Err(invalid("payload EOF probe escaped its exact shadow path"));
             }
             let before = identity(&file)?;
@@ -766,7 +766,7 @@ pub fn adopt_domain(
             }
             let path = format!("{root}{}", item.components.join("\\"));
             let file = open_transition(&path, item.directory, item.reparse)?;
-            if !crate::file_storage::final_path_guid(&file)?.eq_ignore_ascii_case(&path) {
+            if !crate::file_storage::held_at_guid_path(&file, &path)? {
                 return Err(invalid("metadata recovery final native path differs"));
             }
             handles.insert(index, file);

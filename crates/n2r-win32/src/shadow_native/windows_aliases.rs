@@ -982,7 +982,7 @@ impl StagedWindowsAliases {
                     .as_mut()
                     .and_then(|held| held.remove(row.components))
                 {
-                    if !crate::file_storage::final_path_guid(&file)?.eq_ignore_ascii_case(&path)
+                    if !crate::file_storage::held_at_guid_path(&file, &path)?
                         || crate::reparse_native::capture(&file)?
                             .as_ref()
                             .is_some_and(|actual| actual != &point)

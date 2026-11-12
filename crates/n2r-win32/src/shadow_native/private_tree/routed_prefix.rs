@@ -110,7 +110,7 @@ fn capture(
         || standard[21] != 0
         || id[8..24] == [0; 16]
         || attrs & (0x10 | 0x200 | 0x400 | 0x800 | 0x4000) != 0
-        || !crate::file_storage::final_path_guid(file)?.eq_ignore_ascii_case(path)
+        || !crate::file_storage::held_at_guid_path(file, path)?
     {
         return Err(bad(
             "private routed prefix native identity/EOF/type differs",
@@ -208,7 +208,7 @@ fn capture(
         || sd != after_sd
         || mapping.canonical != after_mapping.canonical
         || !storage.same_transcript(&after_storage)
-        || !crate::file_storage::final_path_guid(file)?.eq_ignore_ascii_case(path)
+        || !crate::file_storage::held_at_guid_path(file, path)?
     {
         return Err(bad(
             "private routed prefix metadata/security/mapping/validity changed during observation",

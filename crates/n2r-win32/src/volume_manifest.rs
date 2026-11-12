@@ -338,6 +338,95 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
     result
 }
 
+/// Runs `work` over every item on up to `threads` threads, each with its own
+/// `state`, and returns one output per item in no particular order.
+///
+/// A panic in `work` fails the whole run and names the item. Dropping what a
+/// panicked thread had finished would leave a listing that looks complete and
+/// later compares as if objects had gone missing or appeared.
+#[cfg(any(windows, test))]
+fn run_all<T: Send, S, R: Send>(
+    items: Vec<T>,
+    threads: usize,
+    state: impl Fn() -> S + Sync,
+    label: impl Fn(&T) -> String + Sync,
+    work: impl Fn(&mut S, T) -> R + Sync,
+) -> std::io::Result<Vec<R>> {
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+    let total = items.len();
+    let slots: Vec<Mutex<Option<T>>> = items
+        .into_iter()
+        .map(|item| Mutex::new(Some(item)))
+        .collect();
+    let cursor = AtomicUsize::new(0);
+    let stop = AtomicBool::new(false);
+    let finished: Vec<Result<Vec<R>, String>> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..threads.clamp(1, 64).min(total.max(1)))
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut own = state();
+                    let mut done = Vec::new();
+                    while !stop.load(Ordering::Acquire) {
+                        let index = cursor.fetch_add(1, Ordering::Relaxed);
+                        let Some(slot) = slots.get(index) else {
+                            break;
+                        };
+                        let item = slot
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .take();
+                        let Some(item) = item else {
+                            continue;
+                        };
+                        let name = label(&item);
+                        let observed =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                work(&mut own, item)
+                            }));
+                        match observed {
+                            Ok(output) => done.push(output),
+                            Err(payload) => {
+                                stop.store(true, Ordering::Release);
+                                let message = payload
+                                    .downcast_ref::<&str>()
+                                    .map(|text| (*text).to_owned())
+                                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                                    .unwrap_or_else(|| "no message".to_owned());
+                                return Err(format!(
+                                    "capture worker panicked while observing {name}: {message}"
+                                ));
+                            }
+                        }
+                    }
+                    Ok(done)
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .map(|worker| {
+                worker.join().unwrap_or_else(|_| {
+                    Err("capture worker panicked outside an observation".to_owned())
+                })
+            })
+            .collect()
+    });
+    let mut outputs = Vec::with_capacity(total);
+    for result in finished {
+        outputs.extend(result.map_err(std::io::Error::other)?);
+    }
+    if outputs.len() != total {
+        return Err(std::io::Error::other(format!(
+            "capture observed {} of {total} listed objects",
+            outputs.len()
+        )));
+    }
+    Ok(outputs)
+}
+
 #[cfg(windows)]
 pub use capture::capture;
 
@@ -351,7 +440,6 @@ mod capture {
         os::windows::{ffi::OsStrExt, fs::OpenOptionsExt, io::AsRawHandle},
         path::Path,
         ptr,
-        sync::atomic::{AtomicUsize, Ordering},
     };
     use windows_sys::Win32::{
         Foundation::LocalFree,
@@ -768,39 +856,13 @@ mod capture {
             }
         }
 
-        let total = pending.len();
-        let slots: Vec<std::sync::Mutex<Option<Pending>>> = pending
-            .into_iter()
-            .map(|entry| std::sync::Mutex::new(Some(entry)))
-            .collect();
-        let cursor = AtomicUsize::new(0);
-        let mut records: Vec<Record> = std::thread::scope(|scope| {
-            let workers: Vec<_> = (0..threads.clamp(1, 64))
-                .map(|_| {
-                    scope.spawn(|| {
-                        let mut buffer = vec![0u8; 1024 * 1024];
-                        let mut done = Vec::new();
-                        loop {
-                            let index = cursor.fetch_add(1, Ordering::Relaxed);
-                            if index >= total {
-                                return done;
-                            }
-                            let entry = slots[index]
-                                .lock()
-                                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                                .take();
-                            if let Some(entry) = entry {
-                                done.push(observe(&prefix, entry, &mut buffer));
-                            }
-                        }
-                    })
-                })
-                .collect();
-            workers
-                .into_iter()
-                .flat_map(|worker| worker.join().unwrap_or_default())
-                .collect()
-        });
+        let mut records: Vec<Record> = super::run_all(
+            pending,
+            threads,
+            || vec![0u8; 1024 * 1024],
+            |entry: &Pending| entry.path.clone(),
+            |buffer, entry| observe(&prefix, entry, buffer),
+        )?;
         for (path, error) in listing_errors {
             if let Some(record) = records.iter_mut().find(|record| record.path == path) {
                 record.errors.push(format!("directory listing: {error}"));
@@ -977,6 +1039,43 @@ mod tests {
         let comparison = compare(&before, &split);
         assert_eq!(comparison.difference_count, 1);
         assert!(comparison.differences[0].what.contains("hard-link set"));
+    }
+
+    #[test]
+    fn every_item_is_observed_once_and_a_panic_fails_the_run_naming_the_item() {
+        let mut outputs = run_all(
+            (0..1000u32).collect(),
+            8,
+            || 0u32,
+            |number| number.to_string(),
+            |seen, number| {
+                *seen += 1;
+                number * 2
+            },
+        )
+        .unwrap();
+        outputs.sort_unstable();
+        assert_eq!(outputs, (0..1000u32).map(|n| n * 2).collect::<Vec<_>>());
+
+        let error = run_all(
+            (0..1000u32).collect(),
+            8,
+            || (),
+            |number| format!("\\object-{number}"),
+            |(), number| {
+                assert_ne!(number, 617, "boom");
+                number
+            },
+        )
+        .unwrap_err();
+        let text = error.to_string();
+        assert!(
+            text.contains("\\object-617") && text.contains("boom"),
+            "{text}"
+        );
+
+        let none = run_all(Vec::<u32>::new(), 8, || (), |n| n.to_string(), |(), n| n).unwrap();
+        assert!(none.is_empty());
     }
 
     /// A backslash and nine three-byte characters (U+65E5): 28 bytes, in which

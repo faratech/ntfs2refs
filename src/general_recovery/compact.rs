@@ -11,6 +11,48 @@ fn announce_recovery_phase(operation: ExperimentalCompactOperation, message: &st
     let _ = writeln!(std::io::stderr(), "Recovery {operation:?}: {message}");
 }
 
+/// Whether a recovery finishes on the mounted volume instead of on the
+/// offline disk: only for a committed handoff or rollback, and only when the
+/// source disk is fully online (no offline or read-only attribute). That is
+/// the state a run leaves when it stops, or its verification fails, after it
+/// has brought the disk back; before, recovery required the disk offline and
+/// could not be entered again.
+fn finishes_on_mounted_volume(
+    operation: ExperimentalCompactOperation,
+    source_disk_attributes: u64,
+) -> bool {
+    matches!(
+        operation,
+        ExperimentalCompactOperation::FinalizeAfterMarker
+            | ExperimentalCompactOperation::FinalizeRollback
+    ) && source_disk_attributes == 0
+}
+
+#[cfg(test)]
+mod online_terminal_tests {
+    use super::ExperimentalCompactOperation::{
+        Finalize, FinalizeAfterMarker, FinalizeRollback, Resume, Rollback,
+    };
+    use super::finishes_on_mounted_volume as online;
+
+    #[test]
+    fn only_a_committed_run_with_its_source_online_finishes_on_the_mounted_volume() {
+        assert!(online(FinalizeAfterMarker, 0));
+        assert!(online(FinalizeRollback, 0));
+        // Offline (1), read-only (2) or both (3): the offline path, as before.
+        for attributes in [1, 2, 3] {
+            assert!(!online(FinalizeAfterMarker, attributes));
+            assert!(!online(FinalizeRollback, attributes));
+        }
+        // Anything that may still write from the journal never does.
+        for operation in [Resume, Rollback, Finalize] {
+            for attributes in [0, 1, 2, 3] {
+                assert!(!online(operation, attributes), "{operation:?} {attributes}");
+            }
+        }
+    }
+}
+
 /// What a recovery run from a saved directory does, given what its journal
 /// durably records and which direction was asked for.
 ///
@@ -432,6 +474,81 @@ fn recover_compact_impl(
             operation
         };
         effective_operation = operation;
+        if matches!(
+            operation,
+            ExperimentalCompactOperation::FinalizeAfterMarker
+                | ExperimentalCompactOperation::FinalizeRollback
+        ) {
+            phase = "compact-online-terminal";
+            let mut events = Vec::<NativeEvent>::new();
+            let state = n2r_win32::observe_general_disk_state_readonly(
+                request.pair.source.clone(),
+                &mut events,
+            )?;
+            if finishes_on_mounted_volume(operation, state.disk_attributes) {
+                announce_recovery_phase(
+                    operation,
+                    "the source is already online; checking the journal marker and the mounted volume",
+                );
+                request_input.revalidate()?;
+                ticket_input.revalidate()?;
+                expectation_input.revalidate()?;
+                if operation == ExperimentalCompactOperation::FinalizeAfterMarker {
+                    let completed = protocol::compact_finalize::finalize_online_after_marker(
+                        &request,
+                        &mut artifact,
+                        &mut journal,
+                        &ticket,
+                        &expectation_input.bytes,
+                        events,
+                    )?;
+                    artifacts::save(output, "completion.json", &completed)?;
+                    ensure!(
+                        completed.success
+                            && completed.rollback_closed
+                            && completed.native.is_some(),
+                        "compact ReFS handoff is committed and the source is online, but the mounted volume \
+                         did not verify; rollback stays closed: {:?}",
+                        completed.error
+                    );
+                } else {
+                    let completed = protocol::compact_finalize::finalize_online_rollback(
+                        &request,
+                        &mut artifact,
+                        &mut journal,
+                        &ticket,
+                        events,
+                    )?;
+                    artifacts::save(output, "completion.json", &completed)?;
+                    ensure!(
+                        completed.success
+                            && completed.replay_closed
+                            && completed.mounted_filesystem.as_deref() == Some("NTFS"),
+                        "compact NTFS rollback is committed and the source is online, but it did not \
+                         mount as NTFS: {:?}",
+                        completed.error
+                    );
+                }
+                request_input.revalidate()?;
+                ticket_input.revalidate()?;
+                expectation_input.revalidate()?;
+                artifact.revalidate()?;
+                artifacts::save(
+                    output,
+                    "result.json",
+                    &serde_json::json!({
+                        "schema_version":1,"kind":"experimental-compact-recovery","success":true,
+                        "operation":operation,"fresh_apply_authorized":false,"source_admitted":false,
+                        "source_was_already_online":true,"offline_image_proof_repeated":false,
+                        "raw_replay_performed":false,"target_remains_offline":false,
+                        "rollback_closed":operation==ExperimentalCompactOperation::FinalizeAfterMarker,
+                        "ntfs_rollback_completed":operation==ExperimentalCompactOperation::FinalizeRollback,
+                        "artifact_identity_sha256":artifact_identity,"general_conversion_qualified":false,
+                    }),
+                )?;
+                return Ok(());
+            }
+        }
         phase = "reopen-activated-compact-disks";
         let mut events = Vec::<NativeEvent>::new();
         let mut target =

@@ -287,6 +287,40 @@ function Remove-Scratch {
         Say ("scratch disk removed; host has {0:N0} GB free" -f ((Get-HostFreeBytes) / 1GB))
     } catch { Say "scratch disk not removed: $($_.Exception.Message)" }
 }
+# The boot step detaches every disk but disk0. Those are the VM's active
+# differencing disks for the attempt. Restoring a checkpoint discards the
+# active disks that are attached, so the detached ones used to stay behind
+# for good, about 4.5 GB per booted attempt. The boot step now records what
+# it detached, and the next attempt on the same VM puts those disks back
+# before it restores its checkpoint: Hyper-V then discards them with the
+# rest of the old attempt's state. The harness itself deletes nothing.
+function Get-DetachedDiskRecord { Join-Path $workspace ".lab\hyperv\detached-disks-$vmId.json" }
+function Save-DetachedDisks($Disks) {
+    $record = [ordered]@{ vm_id = $vmId; attempt = $Name; detached_utc = [DateTime]::UtcNow.ToString('o')
+        disks = @($Disks | ForEach-Object { [ordered]@{ path = $_.Path; controller_number = $_.ControllerNumber; controller_location = $_.ControllerLocation } }) }
+    $record | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Get-DetachedDiskRecord) -Encoding UTF8
+}
+function Restore-DetachedDisks {
+    $file = Get-DetachedDiskRecord
+    if (-not (Test-Path -LiteralPath $file)) { return }
+    $record = Get-Content -LiteralPath $file -Raw | ConvertFrom-Json
+    $returned = 0
+    foreach ($disk in @($record.disks)) {
+        # Only a differencing disk that still exists, into the slot it came from.
+        if ($disk.path -notlike '*.avhdx' -or -not (Test-Path -LiteralPath $disk.path)) { continue }
+        $vm = Get-LabVm
+        $taken = Get-VMHardDiskDrive -VM $vm | Where-Object { $_.ControllerNumber -eq $disk.controller_number -and $_.ControllerLocation -eq $disk.controller_location }
+        if ($taken -or (Get-VMHardDiskDrive -VM $vm | Where-Object Path -EQ $disk.path)) { continue }
+        try {
+            Add-VMHardDiskDrive -VM $vm -ControllerType SCSI -ControllerNumber $disk.controller_number -ControllerLocation $disk.controller_location -Path $disk.path -ErrorAction Stop
+            $returned++
+        } catch { Say "could not return $(Split-Path -Leaf $disk.path) to the VM: $($_.Exception.Message)" }
+    }
+    if ($returned) { Say "returned $returned disk(s) that attempt '$($record.attempt)' detached for its boot step; the restore discards them with that attempt's state" }
+    # The record is spent whether or not every disk could be returned.
+    [ordered]@{ vm_id = $vmId; attempt = $record.attempt; disks = @(); returned = $returned; returned_utc = [DateTime]::UtcNow.ToString('o') } |
+        ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $file -Encoding UTF8
+}
 function Get-GuestCredential {
     $saved = Import-Clixml -LiteralPath (Join-Path $workspace '.lab\hyperv\win11\secrets\guest-credential.xml')
     [pscredential]::new('LabAdmin', $saved.Password)
@@ -405,6 +439,7 @@ try {
     }
     Say "attempt ${Name}: restoring checkpoint '$($snapshots[0].Name)'"
     if ($vm.State -ne 'Off') { Stop-VM -VM $vm -TurnOff -Force }
+    Restore-DetachedDisks
     Restore-VMSnapshot -VMSnapshot $snapshots[0] -Confirm:$false
     $vm = Get-LabVm
     if ($vm.State -eq 'Saved') { Remove-VMSavedState -VM $vm; $vm = Get-LabVm }
@@ -811,7 +846,12 @@ try {
         Say "saved the converted, not yet booted state as checkpoint '$CheckpointBeforeBoot'"
     }
     $vm = Get-LabVm
-    Get-VMHardDiskDrive -VM $vm | Where-Object { -not ($_.ControllerNumber -eq 0 -and $_.ControllerLocation -eq 0) } | Remove-VMHardDiskDrive
+    $others = @(Get-VMHardDiskDrive -VM $vm | Where-Object { -not ($_.ControllerNumber -eq 0 -and $_.ControllerLocation -eq 0) })
+    # The scratch disk is this attempt's own file and is removed when it ends.
+    $returnable = @($others | Where-Object { $_.Path -ne (Join-Path $case 'scratch.vhdx') })
+    Save-DetachedDisks $returnable
+    $verdict.detached_for_boot = @($returnable | ForEach-Object { $_.Path })
+    $others | Remove-VMHardDiskDrive
     Get-VMDvdDrive -VM $vm | Remove-VMDvdDrive
     $disk0 = Get-VMHardDiskDrive -VM $vm
     if (@($disk0).Count -ne 1) { throw 'Expected exactly disk0 to remain attached' }

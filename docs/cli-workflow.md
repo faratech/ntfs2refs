@@ -37,6 +37,11 @@ The drive interface also accepts explicit selection such as `--drive D --partiti
 That syntax is not a claim that every data-volume layout or feature is qualified.
 The program refuses unsupported conditions instead of silently omitting them.
 
+If the Windows partition's length is not a multiple of 64 MiB, the converter
+first asks the Windows NTFS driver to shrink it to one (by less than 64 MiB).
+It says so before the confirmation prompt. The shrink is not undone if the run
+stops later.
+
 The converter takes the source offline and read-only during preparation. It
 builds ReFS metadata through Windows and preserves eligible payload extents.
 The source conversion patches are applied only after preparation and the
@@ -45,9 +50,10 @@ original source disk; the temporary shadow is working storage.
 
 ## If a run stops
 
-- **Before apply:** the source has not received conversion patches. Preparation
-  can be started again; arbitrary power-cut resume during preparation is outside
-  this alpha's qualification.
+- **Before apply:** the source has not received conversion patches and is
+  returned as NTFS. If the geometry shrink ran, the partition keeps its slightly
+  smaller size. Start again from the beginning; arbitrary power-cut resume
+  during preparation is outside this alpha's qualification.
 - **After source writes begin:** retain the working storage and use the exact
   recovery command and checksum printed before the write. Do not start another
   fresh conversion over the unfinished target.
@@ -83,6 +89,40 @@ link beside its long name. For example, Explorer can show `PROGRA~1` in C:.
 NTFS-compressed files are represented without the NTFS compression flag.
 The exact listing exceptions and counts are in the release qualification.
 
-`--recheck-everything` restores the older repeated verification mode and can be
-much slower. Normal mode still performs the verification gate before the first
-source write. Neither mode establishes hardware compatibility by itself.
+## Check first with `--diagnose`
+
+```powershell
+.\ntfs2refs.exe --drive D --windows-boot-volume --scratch-directory S:\runs --target-format dev-drive --diagnose
+```
+
+A diagnose run builds the complete ReFS shadow in the working directory, reports
+every per-object failure instead of stopping at the first, and stops before
+anything is published. ntfs2refs writes nothing to the source: it is offline and
+read-only meanwhile and is returned as NTFS.
+
+| Exit code | Meaning |
+| ---: | --- |
+| 0 | Every object was examined and none failed |
+| 3 | Failures were reported, or the run stopped at its failure limit |
+| 1 | The diagnosis itself could not finish |
+
+Diagnose is refused, before anything is started, where it could not keep that
+promise: when a conversion would first shrink the partition (see above), and
+with `--minimize-scratch`, `--whole-image-verification` or `--offline-media`.
+It does not exercise the recovery journal, the apply step or the boot.
+
+## Verification options
+
+- **Default.** Data that stays in place is proven by the identity of its
+  extents; resident, compressed, sparse and partly initialized streams, tails
+  and everything rewritten are read and checksummed
+  ([details](fast-verification.md)). Working files and the source are re-read
+  in full once, at the gate before the first source write.
+- **`--verify-full-content`** changes *what* is checked: every stream's complete
+  contents are read and hashed. The recorded boot qualification used the default.
+- **`--recheck-everything`** changes *how often*, not what: the full re-reads
+  happen at every checkpoint instead of once at the gate. Much slower.
+- **`--whole-image-verification`** is a different route for data volumes that
+  compares and journals the whole image.
+
+None of these establishes hardware compatibility by itself.

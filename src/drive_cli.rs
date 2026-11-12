@@ -34,7 +34,10 @@ pub struct DriveArgs {
     #[arg(long = "offline-media", requires = "drive")]
     pub offline_recovery_media: Option<PathBuf>,
     /// Convert an offline Windows installation from a different physical
-    /// Windows boot disk. The running Windows volume remains excluded.
+    /// Windows boot disk. The running Windows volume remains excluded. A
+    /// partition whose length is not a multiple of 64 MiB is first shrunk to
+    /// one by the Windows NTFS driver; that is announced before the prompt and
+    /// is not undone if the run stops later.
     #[arg(long, requires="drive", conflicts_with_all=["offline_recovery_media","whole_image_verification","experimental_thin_shadow"])]
     pub windows_boot_volume: bool,
     /// Native target format: dev-drive (experimental default) or standard ReFS.
@@ -68,10 +71,13 @@ pub struct DriveArgs {
     pub whole_image_verification: bool,
     /// Verify complete logical contents of every stream. Extent-identity fast
     /// verification is the allocation-bounded default; full mode stays available.
+    /// This changes what is checked.
     #[arg(long, requires = "drive")]
     pub verify_full_content: bool,
     /// Experimental: reduce recovery storage by leaving unused NTFS space unrestored on
     /// rollback. Requires fast verification and no VSS snapshots/diff areas.
+    /// It first moves files on the source through NTFS; those moves are not
+    /// undone if the run stops later.
     #[arg(long, requires = "drive", conflicts_with_all = ["whole_image_verification", "verify_full_content"])]
     pub minimize_scratch: bool,
     /// Check without converting: build the ReFS shadow, report every
@@ -89,7 +95,8 @@ pub struct DriveArgs {
     pub diagnose: bool,
     /// Re-read every working file and the whole source at every checkpoint
     /// instead of once, immediately before the first write to the source.
-    /// Much slower; the result is the same.
+    /// Much slower; the result is the same. This changes how often things
+    /// are checked, not what.
     #[arg(long, requires = "drive", conflicts_with_all = ["list", "recover", "rollback"])]
     pub recheck_everything: bool,
     /// Laboratory: sample the worker's call stack a hundred times a second

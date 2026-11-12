@@ -27,8 +27,15 @@ not count. Power-cut resume during preparation is out of scope until this works.
   (`src/resource_preparation.rs`), then apply
   (`src/selected_journal/resource_domain/prepare/qualification/apply.rs`) and
   finalize (`src/resource_finalize.rs`).
-- Nothing is written to the source before the journal apply step. Everything
-  earlier is preparation and is safe to abandon.
+- The converter's own writes to the source start at the journal apply step.
+  Two earlier steps change it through the NTFS driver: a Windows partition
+  whose length is not a multiple of 64 MiB is first shrunk to one
+  (`drive_boot::normalize_geometry`; announced before the prompt, not
+  reverted; the lab partition needs none), and `--minimize-scratch` moves
+  files before the freeze. Everything else before apply is safe to abandon.
+- `--diagnose` never changes the source. It refuses both of those steps, and
+  every entry that changes the source takes a `SourceChangeAuthority`
+  (`src/execution_mode.rs`) that only a conversion can mint.
 - Working files are hashed when written and then held open; the source is
   offline, read-only and held. Full re-reads happen once, at the gate before
   the first source write (`crates/n2r-win32/src/verify_policy.rs`), not at every
@@ -85,7 +92,9 @@ not count. Power-cut resume during preparation is out of scope until this works.
 - Harness: `lab\Invoke-BootConversionAttempt.ps1 -Name <n> -Fixture
   -FixtureCheckpoint N2R-Thinned-Fixture-40 -NoBoot`. Without `-Fixture` it uses
   the full baseline; without `-NoBoot` it boots disk0 alone afterwards.
-  `-Diagnose` reports every per-object failure and writes nothing.
+  `-Diagnose` builds the shadow, lists every per-object failure and stops
+  before publication: `diagnose-clean` (exit 0) or `diagnose-found-failures`
+  (exit 3), after checking the source is still the same online NTFS partition.
   `-CheckpointAfterConvert <name>` saves a run that stopped after apply;
   `-Recover -Checkpoint <name>` retries its finalization with `--recover`.
   Records land in `.lab/hyperv/attempts/<n>/`. The scratch disk is deleted when

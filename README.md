@@ -53,8 +53,10 @@ Use the printed command from the separate control OS after an interrupted apply:
 .\ntfs2refs.exe --recover <printed-directory> --recovery-sha256 <printed-checksum>
 ```
 
-Preparation interrupted before apply can be started again. Power-cut resume
-through every preparation stage is not qualified. Post-apply recovery was observed
+A run that stops before apply leaves NTFS in place and can be started again
+from the beginning (a partition the converter had to shrink to a 64 MiB
+multiple keeps that size). Power-cut resume through every preparation stage is
+not qualified. Post-apply recovery was observed
 separately; its precise evidence and limits are described in the release guide.
 
 ## Development

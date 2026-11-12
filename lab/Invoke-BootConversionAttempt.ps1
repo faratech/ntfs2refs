@@ -70,7 +70,8 @@ if (-not $Binary) { $Binary = Join-Path $workspace 'target\release\ntfs2refs.exe
 if (-not $ManifestBinary) { $ManifestBinary = Join-Path $workspace 'target\release\lab-volume-manifest.exe' }
 $progressLog = Join-Path $case 'progress.log'
 $verdict = [ordered]@{ name = $Name; fixture = [bool]$Fixture; diagnose = [bool]$Diagnose; started_utc = [DateTime]::UtcNow.ToString('o')
-    phases = [ordered]@{}; converter = $null; boot = $null; outcome = 'incomplete' }
+    phases = [ordered]@{}; converter = $null; boot = $null; outcome = 'incomplete'
+    evidence = [System.Collections.Generic.List[object]]::new(); evidence_complete = $false }
 $phaseWatch = [Diagnostics.Stopwatch]::StartNew()
 # identical | differs | not-compared | tool-failed; 'not-run' when no comparison was asked for.
 $listing = 'not-run'
@@ -83,7 +84,28 @@ function Phase([string]$PhaseName) {
     $script:verdict.phases[$PhaseName] = [Math]::Round($script:phaseWatch.Elapsed.TotalSeconds, 1)
     $script:phaseWatch.Restart(); Say "done: $PhaseName"
 }
+# Every piece of evidence an attempt retains is recorded with its size and
+# SHA-256, or with the reason it is missing. Nothing is dropped silently.
+function Add-Evidence([string]$Label, [string]$Path, [string]$MissingReason, [switch]$Required) {
+    if ($Path -and (Test-Path -LiteralPath $Path)) {
+        $script:verdict.evidence.Add([ordered]@{ name = $Label; present = $true; required = [bool]$Required
+                bytes = (Get-Item -LiteralPath $Path).Length; sha256 = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() })
+    } else {
+        $script:verdict.evidence.Add([ordered]@{ name = $Label; present = $false; required = [bool]$Required
+                reason = if ($MissingReason) { $MissingReason } else { 'not found' } })
+        if ($Required) { Say "required evidence missing: $Label ($MissingReason)" }
+    }
+}
+function Copy-Evidence($Session, [string]$GuestPath, [string]$Label, [switch]$Required) {
+    $target = Join-Path $case $Label; $reason = $null
+    try {
+        $null = New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force
+        Copy-Item -LiteralPath $GuestPath -Destination $target -FromSession $Session -ErrorAction Stop
+    } catch { $reason = $_.Exception.Message }
+    Add-Evidence $Label $target $reason -Required:$Required
+}
 function Save-Verdict {
+    $script:verdict.evidence_complete = -not @($script:verdict.evidence | Where-Object { $_.required -and -not $_.present }).Count
     $script:verdict.finished_utc = [DateTime]::UtcNow.ToString('o')
     $script:verdict | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $case 'verdict.json') -Encoding UTF8
 }
@@ -341,6 +363,8 @@ try {
             $listed = Invoke-Command -Session $session -ArgumentList $manifestExe, "$($guest.source_letter):\", "$guestRoot\manifest-before.jsonl" -ScriptBlock {
                 param($exe, $root, $output) $text = & $exe capture --root $root --output $output 2>&1; [pscustomobject]@{ exit = $LASTEXITCODE; text = ($text -join ' ') } }
             if ($listed.exit -ne 0) { throw "Listing the source before conversion failed: $($listed.text)" }
+            # Kept on the host from now on, whatever becomes of the run and the guest.
+            Copy-Evidence $session "$guestRoot\manifest-before.jsonl" 'manifest-before.jsonl' -Required
             Say "source listed before conversion: $($listed.text)"; Phase 'list-before'
         }
     }
@@ -430,19 +454,30 @@ try {
         $verdict.outcome = 'vm-stopped'; Phase 'convert'; return
     }
     # ---- collect evidence -------------------------------------------------------
-    foreach ($leaf in 'stdout.log', 'stderr.log', 'native-process.json', 'native-terminal.json', 'worker-error.txt', 'run.json', 'stacks.txt') {
-        try { Copy-Item -LiteralPath "$guestRoot\$leaf" -Destination (Join-Path $case $leaf) -FromSession $session -ErrorAction Stop } catch { }
+    foreach ($leaf in 'stdout.log', 'stderr.log', 'native-process.json', 'native-terminal.json', 'run.json') {
+        Copy-Evidence $session "$guestRoot\$leaf" $leaf -Required
     }
+    # Written only when the worker fails, and only when stacks were asked for.
+    Copy-Evidence $session "$guestRoot\worker-error.txt" 'worker-error.txt'
+    Copy-Evidence $session "$guestRoot\stacks.txt" 'stacks.txt' -Required:$SampleStacks
     try {
-        $records = Invoke-Command -Session $session -ArgumentList $scratchDirectory -ScriptBlock {
-            param($scratch) @(Get-ChildItem -LiteralPath $scratch -Recurse -File -ErrorAction SilentlyContinue |
-                    Where-Object { $_.Extension -in '.json', '.txt', '.log' -and $_.Length -le 4MB } | Select-Object -First 400 -ExpandProperty FullName) }
-        foreach ($record in $records) {
-            $relative = $record.Substring($scratchDirectory.Length).TrimStart('\'); $target = Join-Path (Join-Path $case 'run') $relative
-            $null = New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force
-            try { Copy-Item -LiteralPath $record -Destination $target -FromSession $session -ErrorAction Stop } catch { }
+        $listing_ = Invoke-Command -Session $session -ArgumentList $scratchDirectory -ScriptBlock {
+            param($scratch)
+            $failures = @()
+            $found = @(Get-ChildItem -LiteralPath $scratch -Recurse -File -ErrorAction SilentlyContinue -ErrorVariable failures |
+                    Where-Object { $_.Extension -in '.json', '.txt', '.log' } | Select-Object FullName, Length)
+            [pscustomobject]@{ files = $found; errors = @($failures | ForEach-Object { "$_" }) }
         }
-    } catch { Say "run record collection failed: $($_.Exception.Message)" }
+        foreach ($failure in @($listing_.errors)) { Add-Evidence 'run records' $null "listing the run directory: $failure" }
+        $collected = 0
+        foreach ($record in @($listing_.files)) {
+            $relative = $record.FullName.Substring($scratchDirectory.Length).TrimStart('\'); $label = Join-Path 'run' $relative
+            # Small records are copied; the rest are named with the reason, not dropped.
+            if ($record.Length -gt 4MB) { Add-Evidence $label $null "not collected: $($record.Length) bytes is over the 4 MB record limit" }
+            elseif ($collected -ge 400) { Add-Evidence $label $null 'not collected: over the 400-record limit' }
+            else { Copy-Evidence $session $record.FullName $label; $collected++ }
+        }
+    } catch { Add-Evidence 'run records' $null "collection failed: $($_.Exception.Message)" -Required }
     $exit = if ($state -and $state.terminal) { [int]$state.terminal.native_exit } else { $null }
     $verdict.converter = [ordered]@{ arguments = $arguments; exit = $exit
         wall_seconds = if ($state -and $state.terminal) { $state.terminal.wall_seconds } else { $null }
@@ -503,15 +538,22 @@ try {
             $refs = if ($letter) { @(& "$env:SystemRoot\System32\fsutil.exe" fsinfo refsinfo "${letter}:" 2>&1) -join "`n" } else { '' }
             # Repair-Volume -Scan is not offered for a Dev Drive. What the ReFS
             # driver itself logged while mounting and reading the volume is.
-            $refsEvents = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; Level = 1, 2, 3; StartTime = (Get-Date).AddHours(-2) } -ErrorAction SilentlyContinue |
-                    Where-Object ProviderName -Match 'ReFS' | Select-Object -First 20 | ForEach-Object { '{0:HH:mm:ss} {1} {2}: {3}' -f $_.TimeCreated, $_.Id, $_.LevelDisplayName, (($_.Message -split "`n")[0]) })
-            $scan = if ($refsEvents.Count) { "$($refsEvents.Count) ReFS warning/error events: $($refsEvents -join ' || ')" } else { 'no ReFS warnings or errors logged' }
+            # "No events were found" is an answer; any other failure means the log was not read.
+            $scanError = $null; $refsEvents = @()
+            try {
+                $refsEvents = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; Level = 1, 2, 3; StartTime = (Get-Date).AddHours(-2) } -ErrorAction Stop |
+                        Where-Object ProviderName -Match 'ReFS' | Select-Object -First 20 | ForEach-Object { '{0:HH:mm:ss} {1} {2}: {3}' -f $_.TimeCreated, $_.Id, $_.LevelDisplayName, (($_.Message -split "`n")[0]) })
+            } catch { if ($_.FullyQualifiedErrorId -notlike 'NoMatchingEventsFound*') { $scanError = $_.Exception.Message } }
+            $scan = if ($scanError) { "event log query failed: $scanError" }
+                elseif ($refsEvents.Count) { "$($refsEvents.Count) ReFS warning/error events: $($refsEvents -join ' || ')" } else { 'no ReFS warnings or errors logged' }
             $sample = if ($letter) { @(Get-ChildItem -LiteralPath "${letter}:\" -Force -ErrorAction SilentlyContinue | Select-Object -First 40 -ExpandProperty Name) } else { @() }
             [pscustomobject]@{ letter = $letter; filesystem = [string]$volume.FileSystem; health = [string]$volume.HealthStatus
                 cluster_bytes = $volume.AllocationUnitSize; used_bytes = $volume.Size - $volume.SizeRemaining
-                refs_version = ($refs -replace '(?s).*REFS Volume Version\s*:\s*([\d.]+).*', '$1'); scan = $scan; root_entries = $sample }
+                refs_version = ($refs -replace '(?s).*REFS Volume Version\s*:\s*([\d.]+).*', '$1'); scan = $scan; scan_failed = [bool]$scanError; root_entries = $sample }
         }
         $verdict.mounted = $mounted | Select-Object * -ExcludeProperty PSComputerName, RunspaceId, PSShowComputerName
+        # A log that could not be read is not a log with nothing in it.
+        if ($mounted.scan_failed) { Add-Evidence 'refs-event-scan' $null $mounted.scan -Required }
         Say "source partition now mounts as $($mounted.filesystem) $($mounted.refs_version), health $($mounted.health), $([math]::Round($mounted.used_bytes / 1GB, 2)) GB used; $($mounted.scan)"
         if ($mounted.filesystem -ne 'ReFS') { $verdict.outcome = 'converter-ok-but-not-refs'; Remove-PSSession $session; return }
         if (-not $NoManifest) {
@@ -533,9 +575,11 @@ try {
                 if (Test-Path -LiteralPath $report) { try { $differences = [int](Get-Content -Raw -LiteralPath $report | ConvertFrom-Json).difference_count } catch { $differences = $null } }
                 [pscustomobject]@{ stage = 'compare'; exit = $exit; differences = $differences; listed = ($listed -join ' '); summary = ($summary -join ' '); before = $before }
             }
-            foreach ($pair in @(@($compared.before, 'manifest-before.jsonl'), @("$guestRoot\manifest-after.jsonl", 'manifest-after.jsonl'), @("$guestRoot\manifest-report.json", 'manifest-report.json'))) {
-                if ($pair[0]) { try { Copy-Item -LiteralPath $pair[0] -Destination (Join-Path $case $pair[1]) -FromSession $session -ErrorAction Stop } catch { } }
-            }
+            # A -Recover attempt took no listing of its own; an ordinary one copied its listing when it was taken.
+            if ($Recover -and $compared.before) { Copy-Evidence $session $compared.before 'manifest-before.jsonl' -Required }
+            Copy-Evidence $session "$guestRoot\manifest-after.jsonl" 'manifest-after.jsonl' -Required
+            Copy-Evidence $session "$guestRoot\manifest-report.json" 'manifest-report.json' -Required:($compared.stage -eq 'compare' -and $compared.exit -in 0, 2)
+            $verdict.before_listing_used = $compared.before
             # Exit 0 with no differences counted is identical; exit 2 with a report
             # that counts differences is a real difference. Anything else (a crash,
             # an unreadable listing, a usage error) is the listing tool failing,
@@ -627,6 +671,14 @@ try {
 } catch {
     $verdict.outcome = 'harness-error'; $verdict.error = ($_ | Out-String); Say "HARNESS ERROR: $($_.Exception.Message)"; throw
 } finally {
+    # A result is only as good as the records that support it: a success whose
+    # required evidence was not retained is reported as incomplete, and its
+    # scratch disk is kept so the records can still be recovered.
+    $missing = @($verdict.evidence | Where-Object { $_.required -and -not $_.present })
+    if ($missing.Count -and $verdict.outcome -in 'converted-not-booted', 'BOOTED-ON-REFS', 'diagnose-clean', 'diagnose-found-failures') {
+        $verdict.result = $verdict.outcome; $verdict.outcome = 'incomplete-evidence'; $KeepScratch = [switch]$true
+        Say "required evidence missing: $(($missing | ForEach-Object { $_.name }) -join ', '); scratch disk kept"
+    }
     if (-not $KeepScratch -and -not $NoConvert) { Remove-Scratch }
     Save-Verdict; Say "outcome: $($verdict.outcome). Records: $case"
 }

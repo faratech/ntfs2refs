@@ -148,9 +148,11 @@ fn larger_resource_assessment_refuses_byte_overflow_without_panicking() {
 }
 
 #[test]
-#[ignore = "stale: not maintained while tests were disabled; needs triage"]
 fn larger_resource_gate_enforces_the_exact_four_gib_logical_limit() {
     let mut raw = fixture();
+    // The limit is on a file's logical bytes across all of its streams, so
+    // the fixture's small named stream is taken out of the sum.
+    raw.files[1].streams.truncate(1);
     for (logical_bytes, expected) in [(4u64 << 30, true), ((4u64 << 30) + 1, false)] {
         raw.files[1].streams[0].logical_size = logical_bytes;
         let result = a::assess_ordinary_with_resource_profile(
@@ -203,25 +205,26 @@ fn internal_role_requires_exact_identity_name_type_and_ancestry() {
     assert!(a::internal_role(&r, &r.files[1]).is_none());
 }
 #[test]
-#[ignore = "stale: not maintained while tests were disabled; needs triage"]
 fn extend_candidate_is_not_a_blanket_metadata_exemption() {
     let mut r = fixture();
     let mut extend = r.files[0].clone();
     extend.record_number = 11;
     extend.names = vec![name("$Extend", 5)];
-    r.files.push(extend);
-    let f = &mut r.files[1];
+    // Path lookup needs the records in record order: 5, 11, then 24.
+    r.files.insert(1, extend);
+    let f = &mut r.files[2];
     f.record_number = 24;
     f.metadata_role = MetadataRole::ExtendDescendantCandidate;
     f.names = vec![name("$Quota", 11)];
     f.names[0].namespace = 0;
     assert_eq!(
-        a::internal_role(&r, &r.files[1]).as_deref(),
+        a::internal_role(&r, &r.files[2]).as_deref(),
         Some("$Extend\\$Quota")
     );
-    r.files[1].names = vec![name("unrecognized", 11)];
+    r.files[2].names = vec![name("unrecognized", 11)];
+    assert!(a::internal_role(&r, &r.files[2]).is_none());
     let result = a::assess(&r, &comparison(&r), 5);
-    assert_eq!(result.objects[1].disposition, Disposition::Reject);
+    assert_eq!(result.objects[2].disposition, Disposition::Reject);
     assert!(!result.execution_authorized);
 }
 

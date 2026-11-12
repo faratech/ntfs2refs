@@ -87,7 +87,6 @@ fn logical_reader_recovers_resident_and_nonresident_bytes_and_rejects_changed_pa
 }
 
 #[test]
-#[ignore = "stale: not maintained while tests were disabled; needs triage"]
 fn source_stream_plan_separates_retainable_payload_from_named_materialization() {
     let image = support::image();
     let mut raw = ntfs_inspect::inspect(&mut Cursor::new(image), 2 * 1024 * 1024).unwrap();
@@ -102,7 +101,9 @@ fn source_stream_plan_separates_retainable_payload_from_named_materialization() 
         user.iter()
             .all(|s| s.disposition == Disposition::MaterializeCandidate)
     );
-    assert!(user.iter().any(|s| s.target_named_stream_support_pending));
+    // Named streams are created on the target now; none is left pending.
+    assert!(user.iter().any(|s| !s.name_utf16.is_empty()));
+    assert!(user.iter().all(|s| !s.target_named_stream_support_pending));
     let file = raw
         .files
         .iter_mut()

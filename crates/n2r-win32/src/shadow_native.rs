@@ -56,21 +56,58 @@ use windows_sys::Win32::{
     System::IO::DeviceIoControl,
 };
 
+/// What Windows reports of a mounted ReFS volume (FSCTL_GET_REFS_VOLUME_DATA).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RefsVolumeData {
+    pub major: u32,
+    pub minor: u32,
+    /// Logical sector of the disk under the volume: 512, or 4096 on a 4Kn disk.
+    pub sector_bytes: u32,
+    pub cluster_bytes: u32,
+    pub clusters: u64,
+}
+
+/// Reads the volume's own description and requires it to cover exactly the
+/// partition. Which version and cluster size are acceptable is the caller's.
+pub(crate) fn query_refs_volume_data(
+    volume: &File,
+    partition_bytes: u64,
+) -> io::Result<RefsVolumeData> {
+    let data = ctl(volume, 0x000902d8, &[], 256)?;
+    if data.len() < 64 || !(64..=data.len()).contains(&(layout::u32_at(&data, 0)? as usize)) {
+        return Err(invalid("ReFS volume data is truncated"));
+    }
+    let observed = RefsVolumeData {
+        major: layout::u32_at(&data, 4)?,
+        minor: layout::u32_at(&data, 8)?,
+        sector_bytes: layout::u32_at(&data, 56)?,
+        cluster_bytes: layout::u32_at(&data, 60)?,
+        clusters: layout::u64_at(&data, 32)?,
+    };
+    let sectors = layout::u64_at(&data, 24)?;
+    if !matches!(observed.sector_bytes, 512 | 4096)
+        || !matches!(observed.cluster_bytes, 4096 | 65536)
+        || sectors != partition_bytes / u64::from(observed.sector_bytes)
+        || observed.clusters != partition_bytes / u64::from(observed.cluster_bytes)
+    {
+        return Err(invalid(&format!(
+            "ReFS volume data does not describe the {partition_bytes}-byte partition: {sectors} sectors of {} bytes, {} clusters of {} bytes",
+            observed.sector_bytes, observed.clusters, observed.cluster_bytes
+        )));
+    }
+    Ok(observed)
+}
+
 // Shared native format check for expanded observations and live construction.
 pub(crate) fn query_refs_314_volume_data(volume: &File, partition_bytes: u64) -> io::Result<u64> {
-    let data = ctl(volume, 0x000902d8, &[], 256)?;
-    if data.len() < 64
-        || !(64..=data.len()).contains(&(layout::u32_at(&data, 0)? as usize))
-        || layout::u32_at(&data, 4)? != 3
-        || layout::u32_at(&data, 8)? != 14
-        || layout::u64_at(&data, 24)? != partition_bytes / 512
-        || layout::u64_at(&data, 32)? != partition_bytes / 4096
-        || layout::u32_at(&data, 56)? != 512
-        || layout::u32_at(&data, 60)? != 4096
-    {
-        return Err(invalid("protected ReFS volume-data profile differs"));
+    let observed = query_refs_volume_data(volume, partition_bytes)?;
+    if observed.major != 3 || observed.minor != 14 || observed.cluster_bytes != 4096 {
+        return Err(invalid(&format!(
+            "protected ReFS volume-data profile differs: ReFS {}.{} with {}-byte clusters",
+            observed.major, observed.minor, observed.cluster_bytes
+        )));
     }
-    Ok(layout::u64_at(&data, 32)?)
+    Ok(observed.clusters)
 }
 
 #[derive(Clone, Serialize)]
@@ -5287,8 +5324,9 @@ fn run_role_content_domain_accounted(
     }
     let clusters = if use_volume_data {
         let clusters = query_refs_314_volume_data(volume, binding.identity.partition_bytes)?;
-        bps = 512;
-        spc = 8;
+        let observed = query_refs_volume_data(volume, binding.identity.partition_bytes)?;
+        bps = observed.sector_bytes;
+        spc = observed.cluster_bytes / observed.sector_bytes;
         clusters
     } else {
         u64::from(legacy_clusters)
@@ -5302,7 +5340,12 @@ fn run_role_content_domain_accounted(
         .ok_or_else(|| invalid("unterminated converted volume label"))?;
     let label_matches = volume_label_matches(&label[..label_end], expected_label)?;
     validate_scoped_observation_access(before.disk_attributes, flags, protected)?;
-    if text(&fs) != "ReFS" || !label_matches || spc != 8 || bps != 512 {
+    // One 4 KiB cluster: eight 512-byte sectors, or one of a 4Kn disk.
+    if text(&fs) != "ReFS"
+        || !label_matches
+        || !matches!(bps, 512 | 4096)
+        || u64::from(spc) * u64::from(bps) != 4096
+    {
         return Err(invalid(
             "shadow filesystem, label, geometry or read-only flag differs",
         ));

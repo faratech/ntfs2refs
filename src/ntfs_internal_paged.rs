@@ -460,10 +460,10 @@ fn verify_domain_with_windows<R: Read + Seek>(
     let geometry = &source.header().geometry;
     ensure!(
         ntfs_index::supports_cluster_size(geometry.cluster_size)
-            && geometry.bytes_per_sector == 512
-            && geometry.file_record_size == 1024
+            && matches!(geometry.bytes_per_sector, 512 | 4096)
+            && matches!(geometry.file_record_size, 1024 | 4096)
             && geometry.index_record_size == 4096,
-        "supported-cluster MFT scan with 512-byte sectors and4KiB indexes required"
+        "the internal index scan requires 512- or 4096-byte sectors, 1 or 4 KiB file records and 4 KiB index records"
     );
     ensure!(
         !root.exists(),

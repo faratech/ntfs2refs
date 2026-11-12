@@ -101,8 +101,8 @@ impl ResourceProfile {
     /// that does not lie on the target's cluster boundaries cannot stay where
     /// it is: the stream plan copies such a stream instead of retaining it.
     pub fn supports_source_geometry(self, geometry: &ntfs::NtfsGeometry) -> bool {
-        geometry.bytes_per_sector == 512
-            && geometry.file_record_size == 1024
+        matches!(geometry.bytes_per_sector, 512 | 4096)
+            && matches!(geometry.file_record_size, 1024 | 4096)
             && geometry.index_record_size == 4096
             && match self {
                 Self::AlphaV1 => geometry.cluster_size == 4096,

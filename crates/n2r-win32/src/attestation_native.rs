@@ -123,7 +123,7 @@ fn route(volume: &File, disk: &File, r: &Request) -> io::Result<Route> {
         || u64le(&ext, 24)? != r.partition_length
         || data.len() < 96
         || u64le(&data, 0)? != r.ntfs_serial
-        || u32le(&data, 40)? != 512
+        || !matches!(u32le(&data, 40)?, 512 | 4096)
         || !supported_clusters
         || attrs.len() != 16
         || u32le(&attrs, 0)? != 16

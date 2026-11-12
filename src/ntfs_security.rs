@@ -343,7 +343,7 @@ pub fn reconcile_paged(
     files.revalidate()?;
     capture.revalidate()?;
     ensure!(
-        files.header().geometry.bytes_per_sector == 512
+        matches!(files.header().geometry.bytes_per_sector, 512 | 4096)
             && files.header().geometry.index_record_size == 4096
             && ntfs_index::supports_cluster_size(files.header().geometry.cluster_size),
         "paged security indexes require supported NTFS index geometry"

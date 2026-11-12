@@ -97,7 +97,8 @@ fn object(number: u64, directory: bool, names: Vec<Link>) -> FileInventory {
         reparse: None,
         record_number: number,
         sequence_number: 1,
-        hard_link_count: names.iter().filter(|n| n.namespace != 2).count() as u16,
+        // The FILE header counts every $FILE_NAME attribute, DOS aliases included.
+        hard_link_count: names.len() as u16,
         is_directory: directory,
         is_metadata: number < 16,
         metadata_role: MetadataRole::NotClassified,
@@ -283,7 +284,6 @@ fn preserves_raw_utf16_without_lossy_identity() {
     assert!(ns::reconcile(&files, &[d], &upcase()).is_ok());
 }
 #[test]
-#[ignore = "stale: not maintained while tests were disabled; needs triage"]
 fn accepts_hardlinks_and_dos_alias_as_distinct_index_links() {
     let a = link("Alpha", 16);
     let b = link("Beta", 16);
@@ -292,8 +292,16 @@ fn accepts_hardlinks_and_dos_alias_as_distinct_index_links() {
     let mut a = link("ALT", 16);
     a.namespace = 2;
     let b = link("longfilename", 16);
-    let files = vec![root_object(), object(16, false, vec![a.clone(), b.clone()])];
-    assert!(ns::reconcile(&files, &[directory(&[a, b])], &upcase()).is_ok());
+    let mut files = vec![root_object(), object(16, false, vec![a.clone(), b.clone()])];
+    assert!(ns::reconcile(&files, &[directory(&[a.clone(), b.clone()])], &upcase()).is_ok());
+    // A header that leaves the DOS alias out of its count is not the record
+    // NTFS writes for these two names.
+    files[1].hard_link_count = 1;
+    let error = ns::reconcile(&files, &[directory(&[a, b])], &upcase()).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("header/name count differs"),
+        "{error:#}"
+    );
 }
 #[test]
 fn rejects_missing_or_fabricated_index_entries() {

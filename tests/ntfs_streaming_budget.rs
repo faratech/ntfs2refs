@@ -46,11 +46,12 @@ impl Seek for VirtualImage {
     }
 }
 
+// The stream's content digest (XXH3-128) over everything written.
 #[derive(Default)]
 struct CountingWriter {
     bytes: u64,
     max_write: usize,
-    digest: Sha256,
+    digest: n2r_win32::content_digest::Hasher,
 }
 impl Write for CountingWriter {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -92,7 +93,7 @@ fn large_virtual_fixture() -> (VirtualImage, ntfs_inspect::NtfsInspection, u64, 
         }
         at += u32::from_le_bytes(prefix[at + 4..at + 8].try_into().unwrap()) as usize;
     }
-    let mut hash = Sha256::new();
+    let mut hash = n2r_win32::content_digest::Hasher::new();
     hash.update(b"Synthetic content");
     let zero = [0u8; 65536];
     let mut remaining = size - 17;
@@ -101,7 +102,7 @@ fn large_virtual_fixture() -> (VirtualImage, ntfs_inspect::NtfsInspection, u64, 
         hash.update(&zero[..count]);
         remaining -= count as u64;
     }
-    let expected = hex::encode(hash.finalize());
+    let expected = hash.finish();
     let file = raw
         .files
         .iter_mut()
@@ -145,7 +146,6 @@ fn large_virtual_fixture() -> (VirtualImage, ntfs_inspect::NtfsInspection, u64, 
 }
 
 #[test]
-#[ignore = "stale: not maintained while tests were disabled; needs triage"]
 fn larger_than_alpha_file_streams_with_bounded_memory_and_cumulative_budget() {
     let (mut image, raw, size, expected) = large_virtual_fixture();
     let mut legacy = CountingWriter::default();
@@ -160,8 +160,12 @@ fn larger_than_alpha_file_streams_with_bounded_memory_and_cumulative_budget() {
     assert_eq!(proof.logical_bytes, size);
     assert_eq!(proof.sha256, expected);
     assert_eq!(sink.bytes, size);
-    assert_eq!(hex::encode(sink.digest.finalize()), expected);
-    assert!(image.max_read <= 65536 && sink.max_write <= 65536);
+    assert_eq!(sink.digest.finish(), expected);
+    // Memory stays bounded by the reader's fixed chunk, whatever the file size.
+    assert!(
+        image.max_read <= ntfs_inspect::SESSION_READ_BYTES
+            && sink.max_write <= ntfs_inspect::SESSION_READ_BYTES
+    );
     assert_eq!(budget.reserved_bytes(), size);
 
     let tail =

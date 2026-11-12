@@ -42,3 +42,33 @@ pub fn is_hex(value: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Tests elsewhere derive their expectations from `of`. This pins `of`
+    // itself to the algorithm, so they cannot all drift together.
+    #[test]
+    fn the_digest_is_xxh3_128_in_canonical_hex() {
+        // The published XXH3-128 value of the empty input with seed 0.
+        assert_eq!(of(&[]), "99aa06d3014798d86001c324468d497f");
+        assert_eq!(Hasher::new().finish(), of(&[]));
+
+        let mut streamed = Hasher::new();
+        streamed.update(b"a");
+        streamed.update(b"bc");
+        assert_eq!(streamed.finish(), of(b"abc"));
+        assert_ne!(of(b"abc"), of(b"abd"));
+    }
+
+    #[test]
+    fn only_the_32_character_lowercase_form_is_a_content_digest() {
+        assert!(is_hex(&of(b"abc")));
+        assert_eq!(of(b"abc").len(), HEX_LEN);
+        // A SHA-256 in hex, an uppercase digest and a non-hex string are not.
+        assert!(!is_hex(&"a".repeat(64)));
+        assert!(!is_hex(&"A".repeat(HEX_LEN)));
+        assert!(!is_hex(&"z".repeat(HEX_LEN)));
+    }
+}

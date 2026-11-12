@@ -189,7 +189,9 @@ fn legacy_attr(data: &[u8]) -> AttributeInventory {
         compression_unit: 0,
         total_allocated_size: None,
         extents: Vec::new(),
-        resident_sha256: Some(sec::hash(data)),
+        // A resident attribute carries the content digest; a descriptor's own
+        // evidence hash stays SHA-256.
+        resident_sha256: Some(n2r_win32::content_digest::of(data)),
         resident_metadata_hex: Some(hex::encode(data)),
     }
 }
@@ -493,7 +495,6 @@ fn binds_files_by_central_id_and_refuses_unknown_ids() {
     assert!(sec::bind_files(&[file(Some(257))], &table.records).is_err());
 }
 #[test]
-#[ignore = "stale: not maintained while tests were disabled; needs triage"]
 fn binds_legacy_bytes_only_with_matching_source_attribute() {
     let b = empty();
     let record = sec::DescriptorRecord {

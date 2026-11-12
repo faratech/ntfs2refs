@@ -42,6 +42,56 @@ fn compare(before: &Path, after: &Path, report: &Path) -> std::process::Output {
         .unwrap()
 }
 
+fn compare_exact(before: &Path, after: &Path, report: &Path) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_lab-volume-manifest"))
+        .arg("compare")
+        .arg("--exact")
+        .arg("--before")
+        .arg(before)
+        .arg("--after")
+        .arg(after)
+        .arg("--report")
+        .arg(report)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn an_unchanged_ntfs_listing_is_identical_only_to_the_exact_comparison() {
+    let directory = tempfile::tempdir().unwrap();
+    let (before, after, report) = (
+        directory.path().join("before.jsonl"),
+        directory.path().join("after.jsonl"),
+        directory.path().join("report.json"),
+    );
+    // NTFS keeps the 8.3 name as part of the same directory entry.
+    let mut named = record("\\Program Files", true, None);
+    named.short_name = Some("PROGRA~1".to_owned());
+    let listing = [record("\\", true, None), named];
+    save(&before, &listing);
+    save(&after, &listing);
+
+    let exact = compare_exact(&before, &after, &report);
+    assert_eq!(
+        exact.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&exact.stderr)
+    );
+    // The conversion comparison expects that short name to have become a link.
+    let converted = compare(&before, &after, &report);
+    assert_eq!(converted.status.code(), Some(2));
+
+    // And the exact comparison accepts no change at all.
+    let mut changed = listing.clone();
+    changed[1].short_name = None;
+    save(&after, &changed);
+    let differs = compare_exact(&before, &after, &report);
+    assert_eq!(differs.status.code(), Some(2));
+    let written: serde_json::Value = serde_json::from_slice(&fs::read(&report).unwrap()).unwrap();
+    assert_eq!(written["difference_kinds"]["short name changed"], 1);
+}
+
 /// A backslash and nine three-byte characters: the length of
 /// "\System Volume Information" falls inside the last one.
 fn boundary_path() -> String {

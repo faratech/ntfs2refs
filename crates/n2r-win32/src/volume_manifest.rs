@@ -381,6 +381,180 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
     result
 }
 
+/// Compares two listings of a volume that must not have changed at all: the
+/// NTFS source before and after a diagnose run, or before a conversion and
+/// after its rollback. Every recorded field of every object must be equal,
+/// short names included, and nothing is accepted as an expected difference.
+pub fn compare_exact(before: &[Record], after: &[Record]) -> Comparison {
+    let mut result = Comparison {
+        before_objects: before.len(),
+        after_objects: after.len(),
+        ..Comparison::default()
+    };
+    let mut differences: Vec<Difference> = Vec::new();
+    let after_by_path: BTreeMap<&str, &Record> = after
+        .iter()
+        .map(|record| (record.path.as_str(), record))
+        .collect();
+    let before_paths: BTreeSet<&str> = before.iter().map(|record| record.path.as_str()).collect();
+
+    for record in before {
+        let mut differ = |kind: &str, what: String| {
+            differences.push(Difference {
+                path: record.path.clone(),
+                kind: kind.to_owned(),
+                what,
+            })
+        };
+        for error in &record.errors {
+            differ(
+                "unreadable before",
+                format!("could not be read before: {error}"),
+            );
+        }
+        let Some(now) = after_by_path.get(record.path.as_str()) else {
+            differ("missing afterwards", "missing afterwards".to_owned());
+            continue;
+        };
+        for error in &now.errors {
+            differ(
+                "unreadable afterwards",
+                format!("could not be read afterwards: {error}"),
+            );
+        }
+        if now.directory != record.directory {
+            differ(
+                "file/directory kind changed",
+                "file/directory kind changed".to_owned(),
+            );
+            continue;
+        }
+        if record.attributes != now.attributes {
+            differ(
+                "attributes changed",
+                format!(
+                    "attributes {:#x} became {:#x}",
+                    record.attributes, now.attributes
+                ),
+            );
+        }
+        for (name, was, is) in [
+            ("creation time", record.created, now.created),
+            ("last write time", record.written, now.written),
+            ("change time", record.changed, now.changed),
+        ] {
+            if was != is {
+                differ(
+                    &format!("{name} changed"),
+                    format!("{name} {was} became {is}"),
+                );
+            }
+        }
+        if record.bytes != now.bytes {
+            differ(
+                "size changed",
+                format!("size {} became {}", record.bytes, now.bytes),
+            );
+        }
+        if record.short_name != now.short_name {
+            differ(
+                "short name changed",
+                format!(
+                    "short name {:?} became {:?}",
+                    record.short_name, now.short_name
+                ),
+            );
+        }
+        if record.sha256 != now.sha256 {
+            differ("content differs", "content differs".to_owned());
+        }
+        if record.streams != now.streams {
+            differ("named streams differ", "named streams differ".to_owned());
+        }
+        if record.security != now.security {
+            differ(
+                "security changed",
+                format!("security {:?} became {:?}", record.security, now.security),
+            );
+        }
+        if record.reparse_tag != now.reparse_tag
+            || record.reparse_sha256 != now.reparse_sha256
+            || record.relative_link_target != now.relative_link_target
+        {
+            differ("reparse point differs", "reparse point differs".to_owned());
+        }
+        if record.extended_attributes != now.extended_attributes {
+            differ(
+                "extended attributes differ",
+                "extended attributes differ".to_owned(),
+            );
+        }
+        if record.kernel_cache_attributes != now.kernel_cache_attributes {
+            differ(
+                "kernel cache attributes changed",
+                format!(
+                    "kernel cache attributes {} became {}",
+                    record.kernel_cache_attributes, now.kernel_cache_attributes
+                ),
+            );
+        }
+        if record.links != now.links {
+            differ(
+                "hard-link count changed",
+                format!("hard-link count {} became {}", record.links, now.links),
+            );
+        }
+    }
+
+    // The same names must share one file before and afterwards. A group's
+    // identifier means something only within its own listing.
+    let groups = |records: &[Record]| -> BTreeSet<BTreeSet<String>> {
+        let mut by_group: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
+        for record in records {
+            if let Some(group) = &record.link_group {
+                by_group
+                    .entry(group)
+                    .or_default()
+                    .insert(record.path.clone());
+            }
+        }
+        by_group
+            .into_values()
+            .filter(|names| names.len() > 1)
+            .collect()
+    };
+    let (before_groups, after_groups) = (groups(before), groups(after));
+    for names in before_groups.symmetric_difference(&after_groups) {
+        differences.push(Difference {
+            path: names.iter().next().cloned().unwrap_or_default(),
+            kind: "hard-link set changed".to_owned(),
+            what: format!("hard-link set of {} names is not the same", names.len()),
+        });
+    }
+
+    for record in after {
+        if !before_paths.contains(record.path.as_str()) {
+            differences.push(Difference {
+                path: record.path.clone(),
+                kind: "appeared afterwards".to_owned(),
+                what: "appeared afterwards".to_owned(),
+            });
+        }
+    }
+
+    differences.sort_by(|a, b| a.path.cmp(&b.path).then_with(|| a.what.cmp(&b.what)));
+    result.difference_count = differences.len();
+    for difference in &differences {
+        *result
+            .difference_kinds
+            .entry(difference.kind.clone())
+            .or_default() += 1;
+    }
+    differences.truncate(DIFFERENCE_LIMIT);
+    result.differences = differences;
+    result
+}
+
 /// Runs `work` over every item on up to `threads` threads, each with its own
 /// `state`, and returns one output per item in no particular order.
 ///
@@ -1143,6 +1317,86 @@ mod tests {
             &[directory("\\"), real_sacl],
         );
         assert_eq!(stricter.difference_count, 1);
+    }
+
+    #[test]
+    fn an_exact_comparison_accepts_nothing_a_conversion_comparison_accepts() {
+        let mut compressed = file("\\z", "11");
+        compressed.attributes = 0x820;
+        let mut cached = file("\\k", "22");
+        cached.kernel_cache_attributes = 2;
+        let mut named = file("\\Program Files", "33");
+        named.short_name = Some("PROGRA~1".to_owned());
+        let before = vec![
+            directory("\\"),
+            compressed,
+            cached,
+            named,
+            file("\\System Volume Information\\x", "44"),
+        ];
+        // An unchanged NTFS volume, short names and all, is identical.
+        let unchanged = compare_exact(&before, &before);
+        assert!(unchanged.identical(), "{unchanged:?}");
+        assert!(unchanged.allowed.is_empty());
+        assert_eq!(unchanged.short_names_as_links, 0);
+
+        // Each of the things a conversion may leave is a difference here.
+        let mut after = before.clone();
+        after[1].attributes = 0x20;
+        after[2].kernel_cache_attributes = 0;
+        after[3].short_name = None;
+        after[4].sha256 = Some("55".to_owned());
+        let comparison = compare_exact(&before, &after);
+        assert_eq!(comparison.difference_count, 4, "{comparison:?}");
+        assert!(comparison.allowed.is_empty());
+        for kind in [
+            "attributes changed",
+            "kernel cache attributes changed",
+            "short name changed",
+            "content differs",
+        ] {
+            assert_eq!(comparison.difference_kinds[kind], 1, "{kind}");
+        }
+    }
+
+    #[test]
+    fn an_exact_comparison_reports_missing_added_and_relinked_objects() {
+        let linked = |path: &str, group: &str| {
+            let mut record = file(path, "11");
+            record.links = 2;
+            record.link_group = Some(group.to_owned());
+            record
+        };
+        let before = vec![
+            directory("\\"),
+            linked("\\a", "x"),
+            linked("\\b", "x"),
+            file("\\c", "33"),
+        ];
+        // Group identifiers differ between listings; the sets of names do not.
+        let same = vec![
+            directory("\\"),
+            linked("\\a", "q"),
+            linked("\\b", "q"),
+            file("\\c", "33"),
+        ];
+        assert!(compare_exact(&before, &same).identical());
+
+        let changed = vec![
+            directory("\\"),
+            linked("\\a", "q"),
+            linked("\\b", "r"),
+            file("\\d", "33"),
+        ];
+        let comparison = compare_exact(&before, &changed);
+        assert_eq!(comparison.difference_count, 3, "{comparison:?}");
+        for kind in [
+            "hard-link set changed",
+            "missing afterwards",
+            "appeared afterwards",
+        ] {
+            assert_eq!(comparison.difference_kinds[kind], 1, "{kind}");
+        }
     }
 
     #[test]

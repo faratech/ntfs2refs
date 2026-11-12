@@ -125,7 +125,10 @@ It does not exercise the recovery journal, the apply step or the boot.
   contents are read and hashed. The recorded boot qualification used the default.
 - **`--recheck-everything`** changes *how often*, not what: the full re-reads
   happen at every checkpoint instead of once at the gate. Much slower.
-- **`--whole-image-verification`** is a different route for data volumes that
-  compares and journals the whole image.
+- **`--whole-image-verification`** is a different, older route for data
+  volumes that compares and journals the whole image. Unlike the default
+  route, which is bounded only by the machine's memory and working storage,
+  it keeps fixed limits: 1,024 files, 256 directories and 4,096 placed NTFS
+  runs. A larger volume is refused before anything is written.
 
 None of these establishes hardware compatibility by itself.

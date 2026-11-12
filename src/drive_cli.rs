@@ -62,7 +62,9 @@ pub struct DriveArgs {
     pub experimental_allocation_bounded: bool,
     /// Compare and journal the complete source and ReFS images instead of only
     /// the ranges the new ReFS allocates. Much slower; also proves that free
-    /// space is unchanged.
+    /// space is unchanged. This older route keeps fixed limits the default
+    /// route does not have: at most 1,024 files, 256 directories and 4,096
+    /// placed NTFS runs. A larger volume is refused before anything is written.
     #[arg(
         long,
         requires = "drive",

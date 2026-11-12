@@ -235,6 +235,25 @@ fn capabilities_report_what_the_executable_enforces() {
         assert_eq!(announced["refs_sys_sha256"], enforced.refs_sys_sha256);
     }
 
+    // The one route that keeps fixed limits says what they are.
+    let routes = capabilities["conversion_routes"].as_array().unwrap();
+    let whole_image = routes
+        .iter()
+        .find(|route| route["route"] == "whole-image")
+        .unwrap();
+    let legacy = ntfs2refs::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2.limits();
+    assert_eq!(whole_image["fixed_limits"]["files"], legacy.maximum_files);
+    assert_eq!(
+        whole_image["fixed_limits"]["directories"],
+        legacy.maximum_directories
+    );
+    for route in routes
+        .iter()
+        .filter(|route| route["route"] != "whole-image")
+    {
+        assert!(route.get("fixed_limits").is_none(), "{route}");
+    }
+
     // So are the diagnose refusals and its exit code for reported failures.
     let refuses = capabilities["diagnose"]["refuses"].as_array().unwrap();
     let table = ntfs2refs::drive_cli::DriveArgs::DIAGNOSE_REFUSES;

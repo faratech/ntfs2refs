@@ -300,6 +300,103 @@ fn decode_leaf(
     })
 }
 
+/// The checkpoint the allocator reads: the one with the highest body clock
+/// among those whose own checksum holds, as its location and that clock.
+///
+/// That checkpoint must also pass the profile every other reader of this
+/// volume requires (`refs_required_ranges::valid_checkpoint`): referenced by
+/// a superblock, header signature, version and location, header clock equal
+/// to body clock, format 3.14, thirteen ordered roots. Selecting by a weaker
+/// test let the allocator settle on a generation the footprint and root
+/// readers reject, and then fail further on against the wrong layer. It is
+/// refused here, not skipped: falling back to an older generation would let
+/// the allocator answer for a volume state the other readers refuse.
+fn select_checkpoint(checkpoints: &[crate::refs_bootstrap::AnchorProbe]) -> Result<(u64, u64)> {
+    let candidates: Vec<_> = checkpoints
+        .iter()
+        .filter(|c| c.rejection.is_none() && c.self_checksum.as_ref().is_some_and(|s| s.matches))
+        .filter_map(|c| c.checkpoint.as_ref().map(|body| (c, body.virtual_clock)))
+        .collect();
+    let (selected, clock) = *candidates
+        .iter()
+        .max_by_key(|&&(_, clock)| clock)
+        .context("valid checkpoint absent")?;
+    ensure!(
+        candidates
+            .iter()
+            .filter(|&&(_, other)| other == clock)
+            .count()
+            == 1,
+        "highest valid checkpoint clock is ambiguous"
+    );
+    ensure!(
+        crate::refs_required_ranges::valid_checkpoint(selected),
+        "the highest-clock checkpoint (LCN {}, clock {clock}) does not have the supported profile: \
+         superblock reference, header, header/body clock, version 3.14 or root list",
+        selected.lcn
+    );
+    Ok((selected.lcn, clock))
+}
+
+#[cfg(test)]
+mod checkpoint_selection_tests {
+    use super::select_checkpoint;
+    use crate::refs_bootstrap::AnchorProbe;
+    use serde_json::json;
+
+    fn probe(lcn: u64, clock: u64, header_clock_matches: bool) -> AnchorProbe {
+        let roots: Vec<_> = (0..13)
+            .map(|index| {
+                json!({"index": index, "descriptor_offset": 0, "lcn_slots": [1, 0, 0, 0], "flags": 0,
+                    "checksum_type": 2, "checksum_data_offset": 8, "checksum_data_length": 8,
+                    "stored_checksum_bytes_hex": "00".repeat(8), "descriptor_sha256": "1".repeat(64),
+                    "addressed_page_read": false})
+            })
+            .collect();
+        serde_json::from_value(json!({
+            "kind": "CHKP", "lcn": lcn, "byte_offset": lcn * 4096, "bytes_read": 16384,
+            "sha256": "2".repeat(64), "referenced_by_superblock_lcns": [30],
+            "header": {"signature": "CHKP", "version": 2, "volume_signature": 42,
+                "virtual_clock": clock, "tree_update_clock": clock, "lcn_slots": [lcn, 0, 0, 0]},
+            "self_checksum": {"descriptor_offset": 224, "descriptor_length": 48, "algorithm": "CRC32-C",
+                "coverage_bytes": 4096, "stored": 1, "computed": 1, "matches": true},
+            "superblock": null,
+            "checkpoint": {"version_echo": 917507, "major_version": 3, "minor_version": 14,
+                "virtual_clock": clock, "allocator_clock": clock, "header_clock_matches": header_clock_matches,
+                "flags": 1666, "indirect_root_list": true, "reference_size": 48, "roots": roots},
+            "rejection": null
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn the_allocator_selects_only_a_checkpoint_the_other_readers_accept() {
+        // Two sound generations: the newer one is read.
+        assert_eq!(
+            select_checkpoint(&[probe(600, 20, true), probe(700, 21, true)]).unwrap(),
+            (700, 21)
+        );
+        // The newest body clock belongs to a checkpoint whose header clock
+        // disagrees with it. It is refused, and the older one is not used.
+        let refused = select_checkpoint(&[probe(600, 20, true), probe(700, 21, false)])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains("LCN 700") && refused.contains("supported profile"),
+            "{refused}"
+        );
+        // An unsound older generation does not matter.
+        assert_eq!(
+            select_checkpoint(&[probe(600, 20, false), probe(700, 21, true)]).unwrap(),
+            (700, 21)
+        );
+        // Unchanged: a tie is ambiguous, and nothing to choose from is absent.
+        let tie = select_checkpoint(&[probe(600, 21, true), probe(700, 21, true)]).unwrap_err();
+        assert!(tie.to_string().contains("ambiguous"), "{tie}");
+        assert!(select_checkpoint(&[]).is_err());
+    }
+}
+
 /// Read the higher-clock checkpoint's Medium allocator root and its one level
 /// of leaves. Unknown layouts fail closed; this does not establish that every
 /// Medium-free cluster is safe from Small-allocator or metadata ownership.
@@ -329,24 +426,7 @@ pub fn inspect_medium_with_resource_profile(
         "unsupported Medium allocator profile"
     );
     let bootstrap = refs.bootstrap.context("bootstrap observation absent")?;
-    let valid_checkpoints: Vec<_> = bootstrap
-        .checkpoints
-        .iter()
-        .filter(|c| c.rejection.is_none() && c.self_checksum.as_ref().is_some_and(|s| s.matches))
-        .filter_map(|c| c.checkpoint.as_ref().map(|cp| (c.lcn, cp.virtual_clock)))
-        .collect();
-    let checkpoint = *valid_checkpoints
-        .iter()
-        .max_by_key(|&&(_, clock)| clock)
-        .context("valid checkpoint absent")?;
-    ensure!(
-        valid_checkpoints
-            .iter()
-            .filter(|&&(_, clock)| clock == checkpoint.1)
-            .count()
-            == 1,
-        "highest valid checkpoint clock is ambiguous"
-    );
+    let checkpoint = select_checkpoint(&bootstrap.checkpoints)?;
     let container = bootstrap
         .container_tables
         .as_ref()
@@ -732,24 +812,7 @@ pub fn inspect_small_with_resource_profile(
         "unsupported Small allocator profile"
     );
     let bootstrap = refs.bootstrap.context("bootstrap observation absent")?;
-    let valid_checkpoints: Vec<_> = bootstrap
-        .checkpoints
-        .iter()
-        .filter(|c| c.rejection.is_none() && c.self_checksum.as_ref().is_some_and(|s| s.matches))
-        .filter_map(|c| c.checkpoint.as_ref().map(|cp| (c.lcn, cp.virtual_clock)))
-        .collect();
-    let checkpoint = *valid_checkpoints
-        .iter()
-        .max_by_key(|&&(_, clock)| clock)
-        .context("valid checkpoint absent")?;
-    ensure!(
-        valid_checkpoints
-            .iter()
-            .filter(|&&(_, clock)| clock == checkpoint.1)
-            .count()
-            == 1,
-        "highest valid checkpoint clock is ambiguous"
-    );
+    let checkpoint = select_checkpoint(&bootstrap.checkpoints)?;
     let reference = bootstrap
         .physical_root_references
         .iter()

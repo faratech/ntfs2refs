@@ -512,6 +512,7 @@ mod windows {
     fn report_diagnosis(
         run: &std::path::Path,
         outcome: &crate::resource_preparation::DiagnoseOutcome,
+        shadow_removed: bool,
     ) -> Result<u8> {
         let clean = outcome.failures.is_empty() && !outcome.stopped_at_limit;
         if let Err(error) = save_new(&run.join("diagnose-result.json"), outcome) {
@@ -525,6 +526,7 @@ mod windows {
                 "examined_all_objects": !outcome.stopped_at_limit,
                 "source_disk": outcome.restored_disk_number,
                 "ntfs2refs_wrote_to_source": false,
+                "shadow_removed": shadow_removed,
             })
         );
         if clean {
@@ -1108,10 +1110,30 @@ mod windows {
         let output = run.join("conversion");
         match result {
             Ok(super::resource::ConversionOutcome::Diagnosed(outcome)) => {
-                // The shadow was built only to be examined. Like every
-                // unfinished run's working files, it is left in place.
-                drop(staged);
-                report_diagnosis(&run, &outcome)
+                // The shadow was built only to be examined; nothing was
+                // published from it, so it is detached and removed.
+                let shadow_removed = match staged.retire_after_diagnose() {
+                    Some(retirement) => {
+                        if !retirement.success() {
+                            eprintln!(
+                                "Diagnose finished, but its temporary shadow could not be removed (stopped at {}: {}). It remains in {}.",
+                                retirement.phase(),
+                                retirement.error().unwrap_or("cleanup incomplete"),
+                                run.display()
+                            );
+                        }
+                        if let Err(error) =
+                            save_new(&run.join("shadow-retirement.json"), &retirement)
+                        {
+                            eprintln!(
+                                "The temporary-shadow cleanup receipt could not be saved: {error}"
+                            );
+                        }
+                        retirement.success()
+                    }
+                    None => false,
+                };
+                report_diagnosis(&run, &outcome, shadow_removed)
             }
             Ok(super::resource::ConversionOutcome::Converted) => {
                 if allocation_bounded {

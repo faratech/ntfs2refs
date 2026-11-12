@@ -88,6 +88,16 @@ impl StageOwner {
         }
     }
 
+    /// A diagnose run's shadow was built only to be examined; nothing was
+    /// published and nothing depends on it. Thin staging is refused in
+    /// diagnose mode, so its owner is kept as every failure path keeps it.
+    pub(crate) fn retire_after_diagnose(self) -> Option<RetirementReceipt> {
+        match self {
+            Self::Vhdx(owner) => Some(RetirementReceipt::Vhdx(owner.retire_unpublished())),
+            Self::Thin(_) => None,
+        }
+    }
+
     /// Called only after live V4 HND/native finalization has succeeded and its
     /// construction/raw owners are closed. Failure never grants replay rights.
     pub(crate) fn retire_after_successful_v4(self) -> RetirementReceipt {

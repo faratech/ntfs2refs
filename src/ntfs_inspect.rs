@@ -823,6 +823,32 @@ fn parse_runs(
     Ok(extents)
 }
 
+/// The sequence number stride of NTFS's update sequence arrays. It is a
+/// constant of the on-disk format, not the device's sector size: a protected
+/// structure carries one saved word for every 512 bytes of itself, and one
+/// for the sequence number, whatever the sector size of the disk
+/// (MULTI_SECTOR_HEADER: "(size of structure / 512 + 1) * sizeof(USHORT)").
+/// A 4096-byte record on a 4K-native disk therefore has nine, not two.
+pub(crate) const USA_STRIDE: usize = 512;
+
+/// How many words a protected structure's update sequence array holds.
+pub(crate) fn usa_entries(structure_bytes: usize) -> usize {
+    structure_bytes / USA_STRIDE + 1
+}
+
+#[cfg(test)]
+mod update_sequence_tests {
+    use super::{USA_STRIDE, usa_entries};
+
+    #[test]
+    fn the_update_sequence_stride_does_not_follow_the_sector_size() {
+        assert_eq!(USA_STRIDE, 512);
+        // A 1 KiB file record and a 4 KiB index record, on any sector size.
+        assert_eq!(usa_entries(1024), 3);
+        assert_eq!(usa_entries(4096), 9);
+    }
+}
+
 fn parse_record(mut bytes: Vec<u8>, geometry: &NtfsGeometry) -> Result<Record> {
     ensure!(
         bytes.len() == geometry.file_record_size as usize && bytes.len() >= 48,
@@ -840,7 +866,7 @@ fn parse_record(mut bytes: Vec<u8>, geometry: &NtfsGeometry) -> Result<Record> {
         "update sequence array overlaps the fixed FILE header or is unaligned"
     );
     ensure!(
-        usa_count == bytes.len() / 512 + 1,
+        usa_count == usa_entries(bytes.len()),
         "invalid update sequence array count"
     );
     let usa_end = usa
@@ -852,7 +878,7 @@ fn parse_record(mut bytes: Vec<u8>, geometry: &NtfsGeometry) -> Result<Record> {
     );
     let sequence = [bytes[usa], bytes[usa + 1]];
     for index in 1..usa_count {
-        let tail = index * 512 - 2;
+        let tail = index * USA_STRIDE - 2;
         ensure!(
             bytes[tail..tail + 2] == sequence,
             "torn file record: update sequence mismatch"

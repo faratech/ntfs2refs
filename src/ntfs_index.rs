@@ -233,8 +233,12 @@ fn fixup(mut b: Vec<u8>, expected_vcn: u64) -> Result<(Vec<u8>, usize)> {
     );
     let usa = usize::from(u16le(&b, 4)?);
     let count = usize::from(u16le(&b, 6)?);
+    // One word per 512-byte stride of the record and one for the sequence
+    // number: a constant of the format, not the device's sector size.
     ensure!(
-        usa >= 40 && count == 9 && usa + 2 * count <= 510,
+        usa >= 40
+            && count == crate::ntfs_inspect::usa_entries(b.len())
+            && usa + 2 * count <= crate::ntfs_inspect::USA_STRIDE - 2,
         "invalid INDX update-sequence array"
     );
     ensure!(
@@ -244,7 +248,7 @@ fn fixup(mut b: Vec<u8>, expected_vcn: u64) -> Result<(Vec<u8>, usize)> {
     let sequence = u16le(&b, usa)?;
     ensure!(sequence != 0, "zero INDX update sequence");
     for sector in 1..count {
-        let tail = sector * 512 - 2;
+        let tail = sector * crate::ntfs_inspect::USA_STRIDE - 2;
         ensure!(u16le(&b, tail)? == sequence, "torn INDX record");
         let replacement = [b[usa + sector * 2], b[usa + sector * 2 + 1]];
         b[tail..tail + 2].copy_from_slice(&replacement);

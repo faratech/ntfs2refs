@@ -52,6 +52,12 @@ the journal's handoff marker as a write that stopped part-way leaves it, so that
 recovery has to settle it first. The lab ends a process; it cannot cut power to
 the storage, and every verdict says so.
 
+The converter runs in the control OS as SYSTEM unless `-RunAs administrator` is
+given, which runs it as the guest's elevated administrator, the way an owner
+runs it. The shadow's working objects admit SYSTEM alone, so a request that
+only SYSTEM is granted fails for an administrator and nowhere else: a change
+to how an object is opened or created is checked both ways.
+
 `-Diagnose` builds the shadow, lists every per-object failure and stops before
 publication, writing nothing to the source. It ends `diagnose-clean` (exit 0) or
 `diagnose-found-failures` (exit 3) only once the source is the same online NTFS

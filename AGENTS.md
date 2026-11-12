@@ -46,9 +46,8 @@ not count. Power-cut resume during preparation is out of scope until this works.
 - In-memory copies of stores and of decoded objects are optional: they lease
   through `reserve_optional_ram` (a third of the RAM budget in total, and only
   while the arena is under half full), so they cannot starve a required one.
-- `--recover` first settles a lifecycle marker whose write was cut short
-  (`src/interrupted_marker.rs`), then repeats every source check. Any other
-  unexpected byte in a marker or a journaled range stops both directions.
+- `--recover` settles a lifecycle marker whose write was cut short
+  (`src/interrupted_marker.rs`); any other unexpected byte still stops it.
 - A per-object Windows query answers into its thread's buffer
   (`crates/n2r-win32/src/query_scratch.rs`). Do not allocate a worst-case
   buffer per query: at 143,000 objects that made the heap the bottleneck.
@@ -66,8 +65,7 @@ not count. Power-cut resume during preparation is out of scope until this works.
   (`lab-volume-manifest`) is identical. Do not widen its allow-list to pass.
 - An error must name the object, path, phase and OS error. Fix the message
   before fixing the bug if it does not.
-- Use `cargo test --locked --workspace --all-targets`. Add a test with each fix
-  where one is practical. Any source file may be edited.
+- Add a test with each fix where one is practical. Any source file may be edited.
 - Size lab resources from the machine. Do not add fixed capacity caps or
   per-run pinned helper scripts (PIDs, hashes, sizes).
 - Keep every check that protects the source before the first write, and the
@@ -94,7 +92,8 @@ not count. Power-cut resume during preparation is out of scope until this works.
   `lab/README.md` describes `-Diagnose` (nothing is written; the source must
   list exactly as before), `-InterruptAt` and `-RecoverMode` (the process is
   ended, not the power; `-TearMarker handoff` adds the marker image a power
-  loss leaves), `-RecoverFrom`, `-ShapeSource` and `-SampleStacks`.
+  loss leaves), `-RecoverFrom`, `-ShapeSource`, `-SampleStacks` and `-RunAs
+  administrator` (otherwise the converter runs as SYSTEM).
 - Records land in `.lab/hyperv/attempts/<n>/`; the scratch disk is deleted
   when the attempt ends. The host volume needs 40 GB free for a fixture
   attempt and 65 GB for a full one (57 GB at peak).
@@ -125,7 +124,8 @@ the desktop: outcome `BOOTED-ON-REFS`.
 Keep it that way. Before a change is committed:
 
 1. `cargo test --locked --workspace --all-targets` passes.
-2. The 1-in-10 fixture converts with an identical listing (about six minutes).
+2. The 1-in-10 fixture converts with an identical listing (about six
+   minutes), and the 1-in-40 one does with `-RunAs administrator`.
 3. A change to apply, finalization or recovery also passes interrupted runs
    on the 1-in-40 fixture that recover with an identical listing:
    `-InterruptAt apply-mid-ranges` (half way through the source writes) and

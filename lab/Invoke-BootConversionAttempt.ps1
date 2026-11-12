@@ -70,6 +70,12 @@ param(
     # once the converter's process has ended. Recovery has to settle the
     # marker before it can read the journal, and has to say that it did.
     [ValidateSet('handoff')][string]$TearMarker,
+    # The account the converter (and its recovery) runs as in the control OS.
+    # 'system' is what every attempt used before this switch existed, and it
+    # hid that an administrator was refused: the converter's working objects
+    # admit SYSTEM alone. 'administrator' is what an owner's elevated terminal
+    # is: the guest's administrator, elevated, with no stored password.
+    [ValidateSet('system', 'administrator')][string]$RunAs = 'system',
     [int]$SourceDisk = 0,
     [int]$SourcePartition = 3,
     # Independent check: list the source before conversion and the converted
@@ -97,6 +103,8 @@ $progressLog = Join-Path $case 'progress.log'
 $verdict = [ordered]@{ name = $Name; fixture = [bool]$Fixture; diagnose = [bool]$Diagnose; started_utc = [DateTime]::UtcNow.ToString('o')
     phases = [ordered]@{}; converter = $null; boot = $null; outcome = 'incomplete'
     evidence = [System.Collections.Generic.List[object]]::new(); evidence_complete = $false }
+$verdict.run_as = $RunAs
+$script:workerSession = $null; $script:workerJob = $null
 $phaseWatch = [Diagnostics.Stopwatch]::StartNew()
 # identical | differs | not-compared | tool-failed; 'not-run' when no comparison was asked for.
 $listing = 'not-run'
@@ -160,18 +168,39 @@ function Copy-RunRecords([string]$GuestDirectory, [string]$LabelRoot) {
 }
 # Starts ntfs2refs.exe in the guest as SYSTEM, through the worker beside it.
 function Start-Converter([string]$Root, [string]$TaskName, [string[]]$Arguments) {
-    Invoke-Command -Session $script:session -ArgumentList $Root, $TaskName, ($Arguments -join "`t") -ScriptBlock {
-        param($root, $task, $joined)
-        $arguments = [string[]]$joined.Split("`t")
-        [IO.File]::WriteAllText("$root\run.json", (@{ arguments = @($arguments) } | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
-        $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
-            -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File $root\worker.ps1 -Root $root"
-        $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
-        $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
-        $null = Register-ScheduledTask -TaskName $task -Action $action -Principal $principal -Settings $settings
-        Start-ScheduledTask -TaskName $task
+    Invoke-Command -Session $script:session -ArgumentList $Root, ($Arguments -join "`t") -ScriptBlock {
+        param($root, $joined)
+        [IO.File]::WriteAllText("$root\run.json", (@{ arguments = @([string[]]$joined.Split("`t")) } | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
     }
-    Say "converter started: ntfs2refs.exe $($Arguments -join ' ')"
+    Stop-AdministratorWorker
+    if ($RunAs -eq 'administrator') {
+        # The worker runs in a guest session of its own, as that session's
+        # account: the guest's administrator, elevated, which is what an
+        # owner's elevated terminal is. (A scheduled task for that account
+        # stays queued in this guest and never starts.) The session lives as
+        # long as this harness does; the converter ends with it.
+        $script:workerSession = New-PSSession -VMId $vmId -Credential (Get-GuestCredential)
+        $script:workerJob = Invoke-Command -Session $script:workerSession -ArgumentList $Root -AsJob -ScriptBlock {
+            param($root)
+            & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$root\worker.ps1" -Root $root
+        }
+    } else {
+        Invoke-Command -Session $script:session -ArgumentList $Root, $TaskName -ScriptBlock {
+            param($root, $task)
+            $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+                -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File $root\worker.ps1 -Root $root"
+            $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+            $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+            $null = Register-ScheduledTask -TaskName $task -Action $action -Principal $principal -Settings $settings
+            Start-ScheduledTask -TaskName $task
+        }
+    }
+    Say "converter started as ${RunAs}: ntfs2refs.exe $($Arguments -join ' ')"
+}
+# Ends the guest session an administrator run's worker lived in, if any.
+function Stop-AdministratorWorker {
+    if ($script:workerJob) { Remove-Job -Job $script:workerJob -Force -ErrorAction SilentlyContinue; $script:workerJob = $null }
+    if ($script:workerSession) { Remove-PSSession $script:workerSession -ErrorAction SilentlyContinue; $script:workerSession = $null }
 }
 # Follows a started converter until it ends. With -HoldPoint, the converter
 # is expected to stop at that laboratory hold and report it; its process is
@@ -194,7 +223,7 @@ function Wait-Converter([string]$Root, [string]$TaskName, [string]$ScratchLetter
                 $tail = { param($path) if (Test-Path -LiteralPath $path) { @(Get-Content -LiteralPath $path -Tail 3 -Encoding UTF8) } else { @() } }
                 $hold = if (Test-Path -LiteralPath "$root\stdout.log") { Select-String -LiteralPath "$root\stdout.log" -SimpleMatch -Pattern '"kind":"lab-hold-v1"' | Select-Object -Last 1 } else { $null }
                 [pscustomobject]@{
-                    task = (Get-ScheduledTask -TaskName $task).State.ToString()
+                    task = $(try { (Get-ScheduledTask -TaskName $task -ErrorAction Stop).State.ToString() } catch { 'none' })
                     terminal = if (Test-Path "$root\native-terminal.json") { Get-Content "$root\native-terminal.json" -Raw | ConvertFrom-Json } else { $null }
                     worker_error = if (Test-Path "$root\worker-error.txt") { Get-Content "$root\worker-error.txt" -Raw } else { $null }
                     stdout = & $tail "$root\stdout.log"; stderr = & $tail "$root\stderr.log"
@@ -225,7 +254,9 @@ function Wait-Converter([string]$Root, [string]$TaskName, [string]$ScratchLetter
             $lastLine = $phaseKey
             Say ("[{0:N0} min] {1} | scratch free {2:N1} GB, control free {3:N1} GB" -f ($phaseWatch.Elapsed.TotalMinutes), $line, ($state.scratch_free / 1GB), ($state.control_free / 1GB))
         }
-        if ($state.terminal -or $state.worker_error -or ($state.task -ne 'Running' -and $polls -gt 3)) { break }
+        # An administrator run has no task: its worker is the job in its own session.
+        $running = if ($RunAs -eq 'administrator') { $script:workerJob -and $script:workerJob.State -eq 'Running' } else { $state.task -eq 'Running' }
+        if ($state.terminal -or $state.worker_error -or (-not $running -and $polls -gt 3)) { break }
         if ((Get-Date) -gt $deadline) { Say 'converter timed out; leaving it running for inspection'; break }
     }
     [pscustomobject]@{ state = $state; vm_stopped = $vmStopped; held = $held }
@@ -975,6 +1006,7 @@ try {
         $verdict.result = $verdict.outcome; $verdict.outcome = 'incomplete-evidence'; $KeepScratch = [switch]$true
         Say "required evidence missing: $(($missing | ForEach-Object { $_.name }) -join ', '); scratch disk kept"
     }
+    Stop-AdministratorWorker
     if (-not $KeepScratch -and -not $NoConvert) { Remove-Scratch }
     Save-Verdict; Say "outcome: $($verdict.outcome). Records: $case"
 }

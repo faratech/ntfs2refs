@@ -22,6 +22,22 @@ pub(super) fn at_object(
     )
 }
 
+/// The handle a pass holds for an object. Every object has one; a missing
+/// one is an inconsistency inside the converter and is reported with the
+/// object's index (the caller adds its path) instead of ending in a panic.
+fn held(handles: &BTreeMap<usize, File>, index: usize) -> io::Result<&File> {
+    handles
+        .get(&index)
+        .ok_or_else(|| io::Error::other(format!("no handle is held for object {index}")))
+}
+
+/// The file identity recorded for an object when its handle was first read.
+fn identity_of(identities: &BTreeMap<usize, Vec<u8>>, index: usize) -> io::Result<&Vec<u8>> {
+    identities.get(&index).ok_or_else(|| {
+        io::Error::other(format!("no file identity was recorded for object {index}"))
+    })
+}
+
 /// Both sides of a descriptor comparison, so a mismatch can be diagnosed from
 /// the message alone.
 pub(super) fn security_difference(item: &Input<'_>, actual: &Snapshot) -> String {
@@ -669,11 +685,11 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                 continue;
             }
             if (points_installed && directory.reparse.is_some())
-                || (recovering && crate::reparse_native::capture(&handles[&index])?.is_some())
+                || (recovering && crate::reparse_native::capture(held(handles, index)?)?.is_some())
             {
                 continue;
             }
-            let handle = &handles[&index];
+            let handle = held(handles, index)?;
             let (enumeration_budget, _enumeration_memory) = if let Some(payer) = enumeration_payer {
                 let count = expected_children
                     .get(directory.components)
@@ -721,7 +737,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                     } else {
                         (entry.attributes & 0x400 != 0) != (points_installed && child_reparse)
                     })
-                    || entry.file_id.as_slice() != &identities[&child_index][8..24]
+                    || entry.file_id.as_slice() != &identity_of(&identities, child_index)?[8..24]
                 {
                     return Err(invalid("owned metadata namespace identity or type differs"));
                 }
@@ -800,8 +816,8 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                 provisional_security_objects += 1;
             }
             let item = &view;
-            let handle = &handles[&index];
-            if info(handle, 18, 24)? != identities[&index] {
+            let handle = held(handles, index)?;
+            if info(handle, 18, 24)? != *identity_of(&identities, index)? {
                 return Err(invalid(
                     "owned identity changed before security restoration",
                 ));
@@ -865,8 +881,8 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             let view = owned.input();
             let item = &view;
             if let Some(expected) = item.extended_attributes {
-                let handle = &handles[&index];
-                if info(handle, 18, 24)? != identities[&index] {
+                let handle = held(handles, index)?;
+                if info(handle, 18, 24)? != *identity_of(&identities, index)? {
                     return Err(invalid("owned identity changed before EA restoration"));
                 }
                 let current = if recovering {
@@ -918,8 +934,8 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         let view = owned.input();
         let item = &view;
         if let Some(point) = item.reparse {
-            let handle = &handles[&index];
-            if info(handle, 18, 24)? != identities[&index] {
+            let handle = held(handles, index)?;
+            if info(handle, 18, 24)? != *identity_of(&identities, index)? {
                 return Err(invalid(
                     "owned identity changed before reparse installation",
                 ));
@@ -977,7 +993,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                     .share_mode(7)
                     .custom_flags(0x0220_0000)
                     .open(format!("{resource_root}{}", name.join("\\")))?;
-                if info(&link, 18, 24)? != identities[&index] {
+                if info(&link, 18, 24)? != *identity_of(&identities, index)? {
                     return Err(invalid("a hard-link name opens a different object"));
                 }
                 basic(&link, &view)?;
@@ -993,8 +1009,8 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             let owned = input.object(index)?;
             let view = owned.input();
             let item = &view;
-            let handle = &handles[&index];
-            if info(handle, 18, 24)? != identities[&index] {
+            let handle = held(handles, index)?;
+            if info(handle, 18, 24)? != *identity_of(&identities, index)? {
                 return Err(invalid("owned identity changed before basic restoration"));
             }
             if !recovering || !basic_matches(item, &info(handle, 0, 40)?) {
@@ -1029,14 +1045,14 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             view.expected_api_security = temporary.api.as_deref();
         }
         let item = &view;
-        let handle = &handles[&index];
+        let handle = held(handles, index)?;
         let actual = metadata_snapshot_with_limit(
             handle,
             item,
             resource_admission.map(|a| a.budget.max_row_bytes),
         );
         // Report which facet differs; one combined refusal cannot be acted on.
-        let identity_same = query_bytes(&actual, 18, 24)? == identities[&index];
+        let identity_same = query_bytes(&actual, 18, 24)? == identity_of(&identities, index)?.as_slice();
         let basic_same = basic_matches(item, query_bytes(&actual, 0, 40)?);
         let security_same = security_matches(item, &actual, &same_security)?;
         let ea_same = extended_attributes_match(item, &actual)?;

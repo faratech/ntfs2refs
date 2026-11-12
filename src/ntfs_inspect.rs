@@ -3278,14 +3278,29 @@ impl PlainStreamRangeSession {
         let end = offset
             .checked_add(length)
             .context("hole logical overflow")?;
+        // As for an initialized range: a sparse attribute may carry
+        // compression unit 4 (its allocation granule) with no encoding.
+        let unit_supported = if a.flags == 0x8000 {
+            matches!(a.compression_unit, 0 | 4)
+        } else {
+            a.compression_unit == 0
+        };
         ensure!(
             !self.poisoned
                 && self.allow_sparse
                 && !a.resident
                 && a.flags & !0x8000 == 0
-                && a.compression_unit == 0
+                && unit_supported
                 && end <= a.logical_size,
-            "logical hole requires checked uncompressed sparse DATA"
+            "logical hole requires checked uncompressed sparse DATA: failed_session={}, sparse_allowed={}, resident={}, flags={:#x}, compression_unit={}, offset={}, length={}, logical={}",
+            self.poisoned,
+            self.allow_sparse,
+            a.resident,
+            a.flags,
+            a.compression_unit,
+            offset,
+            length,
+            a.logical_size
         );
         let initialized_end = end.min(a.initialized_size);
         let mut cursor = offset.min(initialized_end);

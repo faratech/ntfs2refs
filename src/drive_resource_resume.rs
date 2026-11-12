@@ -255,11 +255,15 @@ fn execute_resume(
     observer.enable_durable_preparation_cancellation()?;
     let result = (|| -> Result<()> {
         let mut aliases = None;
+        // Resuming an interrupted preparation is always a conversion.
+        let authority = crate::execution_mode::ExecutionMode::Convert
+            .source_change_authority("the journal apply of a resumed preparation")?;
         let (publication, sha) = crate::resource_preparation::resume_with(
             request,
             &run.join("conversion"),
             observer,
             saved,
+            &authority,
             |prepared, events, observer| {
                 let path = prepared.publication_path().to_path_buf();
                 let sha = parse_sha(prepared.publication_sha256())?;

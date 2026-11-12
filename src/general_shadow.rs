@@ -148,16 +148,27 @@ pub(crate) struct PagedInputs<'a>(pub &'a crate::shadow_tree::PagedExpectedTree)
 /// Per-object failures collected by a diagnose run. Collecting never grants
 /// anything: the owner that installs this must refuse to publish afterwards.
 #[derive(Clone, Default)]
-pub(crate) struct DeferredFailures(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+pub(crate) struct DeferredFailures(std::sync::Arc<std::sync::Mutex<Deferred>>);
+#[derive(Default)]
+struct Deferred {
+    failures: Vec<String>,
+    /// The run was stopped at the limit, so not every object was examined.
+    stopped_at_limit: bool,
+}
 impl DeferredFailures {
     /// Past this many the run is not learning anything new; stop it.
     const LIMIT: usize = 500;
     fn record(&self, error: std::io::Error) -> std::io::Result<()> {
-        let mut failures = self
+        let mut state = self
             .0
             .lock()
             .map_err(|_| std::io::Error::other("diagnose sink poisoned"))?;
+        let Deferred {
+            failures,
+            stopped_at_limit,
+        } = &mut *state;
         if failures.len() >= Self::LIMIT {
+            *stopped_at_limit = true;
             return Err(std::io::Error::new(
                 error.kind(),
                 format!(
@@ -174,8 +185,16 @@ impl DeferredFailures {
     pub(crate) fn take(&self) -> Vec<String> {
         self.0
             .lock()
-            .map(|mut failures| std::mem::take(&mut *failures))
+            .map(|mut state| std::mem::take(&mut state.failures))
             .unwrap_or_default()
+    }
+    /// Whether the run was cut short at the failure limit. A poisoned sink
+    /// counts as cut short: it cannot vouch that every object was examined.
+    pub(crate) fn stopped_at_limit(&self) -> bool {
+        self.0
+            .lock()
+            .map(|state| state.stopped_at_limit)
+            .unwrap_or(true)
     }
 }
 /// Capacity policy over the real authenticated input owner. This adapter

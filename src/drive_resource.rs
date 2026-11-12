@@ -83,6 +83,13 @@ fn save(path: &Path, value: &impl Serialize) -> Result<()> {
     Ok(())
 }
 
+/// How a confirmed run on the default route ended.
+pub(crate) enum ConversionOutcome {
+    Converted,
+    /// A diagnose run: the shadow was built and examined; nothing was applied.
+    Diagnosed(crate::resource_preparation::DiagnoseOutcome),
+}
+
 pub(crate) fn convert_owned(
     pair: GeneralSourceShadowBinding,
     journal: GeneralJournalStorageBinding,
@@ -101,6 +108,7 @@ pub(crate) fn convert_owned(
         Ok(None),
         crate::execution_mode::ExecutionMode::Convert,
     )
+    .map(|_| ())
 }
 
 /// Preserve the remaining maximum provider growth outside capture/journal
@@ -115,7 +123,7 @@ pub(crate) fn convert_owned_with_provider_commitment(
     provider_minimum_free_bytes: u64,
     staging_meter: std::io::Result<Option<n2r_win32::managed_shadow::StagingAllocationMeter>>,
     mode: crate::execution_mode::ExecutionMode,
-) -> Result<()> {
+) -> Result<ConversionOutcome> {
     let first = n2r_win32::resource_native::observe_available_resources(run)?;
     let staging_meter = staging_meter.context("observe actual staging backing owner")?;
     let backing_guard = staging_meter
@@ -293,11 +301,19 @@ pub(crate) fn convert_owned_with_provider_commitment(
     if !crate::resource_preparation::recheck_everything() {
         n2r_win32::verify_policy::check_once();
     }
-    let result = (|| -> Result<()> {
+    let result = (|| -> Result<ConversionOutcome> {
+        if mode == crate::execution_mode::ExecutionMode::Diagnose {
+            // No apply closure exists on this path: the shadow is built, every
+            // per-object failure is reported and the source is returned as NTFS.
+            return crate::resource_preparation::diagnose(request, &prepared_output, &mut observer)
+                .map(ConversionOutcome::Diagnosed);
+        }
+        let authority = mode.source_change_authority("the journal apply")?;
         let (publication, sha) = crate::resource_preparation::prepare_with(
             request,
             &prepared_output,
             &mut observer,
+            &authority,
             |prepared, events, observer| {
                 let path = prepared.publication_path().to_path_buf();
                 let sha = parse_sha(prepared.publication_sha256())?;
@@ -366,7 +382,7 @@ pub(crate) fn convert_owned_with_provider_commitment(
         if let Err(error) = save(&run.join("resource-completion.json"), &finalized) {
             eprintln!("Conversion completed; the completion report could not be saved: {error}");
         }
-        Ok(())
+        Ok(ConversionOutcome::Converted)
     })();
     // Evidence closing is observational after a successful native finalizer;
     // it cannot reopen replay or change an already completed handoff.

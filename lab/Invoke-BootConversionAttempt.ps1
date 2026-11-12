@@ -13,7 +13,7 @@
 
 .EXAMPLE
   lab\Invoke-BootConversionAttempt.ps1 -Fixture            # thinned fixture, full route, boot
-  lab\Invoke-BootConversionAttempt.ps1 -Diagnose           # full Windows, report every failure, write nothing
+  lab\Invoke-BootConversionAttempt.ps1 -Diagnose           # full Windows: build the shadow, list every per-object failure, stop before publication
   lab\Invoke-BootConversionAttempt.ps1                     # full Windows, convert and boot
   lab\Invoke-BootConversionAttempt.ps1 -NoConvert          # restore and prepare only, leave the control OS up
 #>
@@ -449,7 +449,10 @@ try {
         peak_working_set_bytes = if ($state -and $state.terminal) { $state.terminal.peak_working_set_bytes } else { $null }
         stderr_tail = if ($state) { @($state.stderr) } else { @() }; worker_error = if ($state) { $state.worker_error } else { $null } }
     Phase 'convert'
-    if ($null -eq $exit -or $exit -ne 0) {
+    # A diagnose run exits 0 when it found nothing and 3 when it reported
+    # failures; either way the diagnosis itself completed.
+    $diagnosed = $Diagnose -and ($exit -eq 0 -or $exit -eq 3)
+    if (-not $diagnosed -and ($null -eq $exit -or $exit -ne 0)) {
         $verdict.outcome = if ($null -eq $exit) { 'converter-did-not-finish' } else { 'converter-failed' }
         Say "converter exit: $exit. stderr: $((@($state.stderr) -join ' | '))"; Remove-PSSession $session
         if ($CheckpointAfterConvert) {
@@ -464,7 +467,33 @@ try {
         }
         return
     }
-    Say 'converter exit 0'
+    Say "converter exit $exit"
+    if ($Diagnose) {
+        # The converter's own account of the diagnosis, then what Windows says
+        # of the source afterwards: the same partition, NTFS, online, writable.
+        $diagnosis = $null; $log = Join-Path $case 'stdout.log'
+        if (Test-Path -LiteralPath $log) {
+            $found = Select-String -LiteralPath $log -SimpleMatch -Pattern '"kind":"diagnose-result-v1"' | Select-Object -Last 1
+            if ($found) { try { $diagnosis = $found.Line | ConvertFrom-Json } catch { $diagnosis = $null } }
+        }
+        $verdict.diagnosis = $diagnosis
+        $after = Invoke-Command -Session $session -ArgumentList $guest.source_disk, $guest.source_partition -ScriptBlock {
+            param($disk, $number)
+            $partition = Get-Partition -DiskNumber $disk -PartitionNumber $number; $volume = Get-Volume -Partition $partition
+            [pscustomobject]@{ filesystem = [string]$volume.FileSystem; health = [string]$volume.HealthStatus; bytes = $partition.Size; guid = $partition.Guid
+                letter = [string]$partition.DriveLetter; offline = [bool]$partition.IsOffline; read_only = [bool]$partition.IsReadOnly }
+        }
+        $verdict.source_after_diagnose = $after | Select-Object * -ExcludeProperty PSComputerName, RunspaceId, PSShowComputerName
+        $sourceIntact = $after.filesystem -eq 'NTFS' -and $after.bytes -eq $guest.source_bytes -and $after.guid -eq $guest.source_guid -and
+            -not $after.offline -and -not $after.read_only
+        Say "source after diagnose: $($after.filesystem), $($after.bytes) bytes, offline $($after.offline), read-only $($after.read_only), health $($after.health)"
+        $verdict.outcome = if (-not $sourceIntact) { 'diagnose-changed-source' }
+            elseif (-not $diagnosis) { 'diagnose-result-missing' }
+            elseif ($exit -eq 0 -and $diagnosis.failures -eq 0 -and $diagnosis.examined_all_objects) { 'diagnose-clean' }
+            elseif ($exit -eq 3 -and ($diagnosis.failures -gt 0 -or -not $diagnosis.examined_all_objects)) { 'diagnose-found-failures' }
+            else { 'diagnose-result-inconsistent' }
+        Remove-PSSession $session; return
+    }
     if (-not $Diagnose) {
         # Independent of the converter: does Windows itself mount the result as ReFS?
         $mounted = Invoke-Command -Session $session -ArgumentList $guest.source_disk, $guest.source_partition -ScriptBlock {
@@ -530,7 +559,7 @@ try {
             }
         }
     }
-    if ($Diagnose -or $NoBoot) { $verdict.outcome = if ($Diagnose) { 'diagnose-clean' } else { 'converted-not-booted' }; Remove-PSSession $session; return }
+    if ($NoBoot) { $verdict.outcome = 'converted-not-booted'; Remove-PSSession $session; return }
 
     # ---- boot disk0 alone ------------------------------------------------------
     $controlBoot = Invoke-Command -Session $session -ScriptBlock { (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o') }

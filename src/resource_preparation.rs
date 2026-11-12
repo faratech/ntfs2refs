@@ -44,15 +44,81 @@ pub(crate) mod resume_session_inputs;
 pub(crate) mod resume_workspace;
 use anyhow::{Context, Result, ensure};
 
-/// Process-wide diagnose switch, set once by the command line before
-/// preparation starts. In diagnose mode preparation collects per-object
-/// failures and always stops before publication.
-static DIAGNOSE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-pub(crate) fn set_diagnose() {
-    DIAGNOSE.store(true, std::sync::atomic::Ordering::SeqCst);
+/// What a preparation is for. A conversion carries the closure that applies
+/// the prepared journal. A diagnose run has none: it collects per-object
+/// failures and stops before publication, so nothing it builds can reach
+/// the source.
+enum Goal<F> {
+    Convert(F),
+    Diagnose,
 }
-fn diagnose() -> bool {
-    DIAGNOSE.load(std::sync::atomic::Ordering::SeqCst)
+
+/// How a diagnose run ended, once the source was back as unchanged NTFS.
+#[derive(Clone, Debug, serde::Serialize)]
+pub(crate) struct DiagnoseOutcome {
+    /// One line for each object the shadow could not be built for.
+    pub failures: Vec<String>,
+    /// The run stopped at its failure limit before examining every object.
+    pub stopped_at_limit: bool,
+    /// The disk on which the unchanged NTFS source was restored.
+    pub restored_disk_number: u32,
+}
+impl std::fmt::Display for DiagnoseOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "diagnose complete: {} per-object failures{}; nothing was published or written to the source",
+            self.failures.len(),
+            if self.stopped_at_limit {
+                " (stopped at the failure limit)"
+            } else {
+                ""
+            }
+        )
+    }
+}
+impl std::error::Error for DiagnoseOutcome {}
+
+/// Raised at the diagnose stop. The failure path that restores the source
+/// turns it into a [`DiagnoseOutcome`]; if the source cannot be restored it
+/// stays an ordinary error.
+#[derive(Debug)]
+struct DiagnoseStop;
+impl std::fmt::Display for DiagnoseStop {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("diagnose stopped before publication")
+    }
+}
+impl std::error::Error for DiagnoseStop {}
+
+/// The apply closure a diagnose run does not have.
+type NeverApplied<O> = for<'journal, 'domain, 'capture, 'proof, 'scope, 'expected> fn(
+    ResourcePreparedConversion<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>,
+    &mut Vec<NativeEvent>,
+    &mut O,
+) -> Result<
+    std::convert::Infallible,
+>;
+
+/// Builds the shadow, reports every per-object failure and stops before
+/// publication. There is no apply closure on this path. `Ok` means the
+/// diagnosis finished and the source is back as unchanged NTFS.
+pub(crate) fn diagnose<O: PreparationObserver>(
+    request: ResourcePreparationRequest,
+    output: &Path,
+    observer: &mut O,
+) -> Result<DiagnoseOutcome> {
+    let stopped: Result<std::convert::Infallible> = prepare_with_mode(
+        request,
+        output,
+        observer,
+        Goal::<NeverApplied<O>>::Diagnose,
+        None,
+    );
+    match stopped {
+        Ok(never) => match never {},
+        Err(error) => error.downcast::<DiagnoseOutcome>(),
+    }
 }
 
 /// Process-wide switch for `--recheck-everything`: re-read every working file
@@ -431,6 +497,8 @@ pub(crate) fn prepare_with<T, O, F>(
     request: ResourcePreparationRequest,
     output: &Path,
     observer: &mut O,
+    // `consume` applies the prepared journal to the source.
+    _authority: &crate::execution_mode::SourceChangeAuthority,
     consume: F,
 ) -> Result<T>
 where
@@ -441,7 +509,7 @@ where
         &mut O,
     ) -> Result<T>,
 {
-    prepare_with_mode(request, output, observer, consume, None)
+    prepare_with_mode(request, output, observer, Goal::Convert(consume), None)
 }
 
 pub(crate) fn resume_with<T, O, F>(
@@ -449,6 +517,7 @@ pub(crate) fn resume_with<T, O, F>(
     output: &Path,
     observer: &mut O,
     resume: &ResumePreparation,
+    _authority: &crate::execution_mode::SourceChangeAuthority,
     consume: F,
 ) -> Result<T>
 where
@@ -459,14 +528,20 @@ where
         &mut O,
     ) -> Result<T>,
 {
-    prepare_with_mode(request, output, observer, consume, Some(resume))
+    prepare_with_mode(
+        request,
+        output,
+        observer,
+        Goal::Convert(consume),
+        Some(resume),
+    )
 }
 
 fn prepare_with_mode<T, O, F>(
     mut request: ResourcePreparationRequest,
     output: &Path,
     observer: &mut O,
-    consume: F,
+    goal: Goal<F>,
     resume: Option<&ResumePreparation>,
 ) -> Result<T>
 where
@@ -610,6 +685,9 @@ where
     events.phase(phase);
     let mut context = source_result?;
     let mut published: Option<(PathBuf, [u8; 32])> = None;
+    // Held outside the preparation below so that its failure path can report them.
+    let diagnose_failures =
+        matches!(goal, Goal::Diagnose).then(general_shadow::DeferredFailures::default);
     let result = (|| -> Result<T> {
         events.checkpoint()?;
         events.phase("source-recheck");
@@ -851,7 +929,6 @@ where
         n2r_win32::perf::step("prepare shadow inputs and checkpoints");
         let maximum_source_read_bytes = request.source_read_budget(&expected, admission)?;
         let backing_guard = events.observer.backing_resource_guard();
-        let diagnose_failures = diagnose().then(general_shadow::DeferredFailures::default);
         let inputs = general_shadow::GuardedInputs::new(
             PagedInputs(&expected),
             backing_guard.clone(),
@@ -1400,16 +1477,14 @@ where
             "phase":"metadata-completed","page_cache":expected.page_cache_statistics(),
             "alias_projection":expected.alias_projection_statistics(),"diagnostic_only":true}),
         )?;
-        // Diagnose gate. Nothing has been published or written to the source
+        // Diagnose stop. Nothing has been published or written to the source
         // yet; returning an error here takes the ordinary cancellation path,
-        // which restores NTFS access.
-        if let Some(sink) = &diagnose_failures {
-            let failures = sink.take();
-            anyhow::bail!(
-                "diagnose complete: {} per-object failures; nothing was published or written to the source",
-                failures.len()
-            );
-        }
+        // which restores NTFS access and reports the outcome. Only a
+        // conversion has an apply closure to go on with.
+        let consume = match goal {
+            Goal::Diagnose => return Err(anyhow::Error::new(DiagnoseStop)),
+            Goal::Convert(consume) => consume,
+        };
         events.phase("source-after-shadow-construction");
         context.recheck_source(&mut events)?;
         events.checkpoint()?;
@@ -1765,7 +1840,21 @@ where
                     return Err(original.context("prepublication source remains protected for authenticated guard cancellation"));
                 }
                 match abort::restore_live_source(context, &mut events) {
-                    Ok(mounted) => Err(original.context(format!("conversion failed before publication; unchanged original NTFS restored on disk {}", mounted.disk_number))),
+                    Ok(mounted) => {
+                        // A diagnose run ends here by design, at its stop or
+                        // at its failure limit, with the source restored.
+                        if let Some(sink) = &diagnose_failures {
+                            let stopped_at_limit = sink.stopped_at_limit();
+                            if stopped_at_limit || original.is::<DiagnoseStop>() {
+                                return Err(anyhow::Error::new(DiagnoseOutcome {
+                                    failures: sink.take(),
+                                    stopped_at_limit,
+                                    restored_disk_number: mounted.disk_number,
+                                }));
+                            }
+                        }
+                        Err(original.context(format!("conversion failed before publication; unchanged original NTFS restored on disk {}", mounted.disk_number)))
+                    }
                     Err(cleanup) => Err(original.context(format!("conversion failed before publication; original NTFS cleanup did not complete and source may remain excluded or already be online: {cleanup:#}"))),
                 }
             }

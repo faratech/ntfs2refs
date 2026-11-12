@@ -74,9 +74,12 @@ pub struct DriveArgs {
     /// rollback. Requires fast verification and no VSS snapshots/diff areas.
     #[arg(long, requires = "drive", conflicts_with_all = ["whole_image_verification", "verify_full_content"])]
     pub minimize_scratch: bool,
-    /// Build the complete ReFS shadow, report every per-object failure instead
-    /// of stopping at the first, then stop before anything is published or
-    /// written to the source. The source volume is left as NTFS.
+    /// Check without converting: build the ReFS shadow, report every
+    /// per-object failure instead of stopping at the first, then stop before
+    /// anything is published. ntfs2refs writes nothing to the source. Exit 0:
+    /// no failures; 3: failures reported. Refused when a conversion would
+    /// first shrink the partition, and with --minimize-scratch,
+    /// --whole-image-verification or --offline-media.
     #[arg(long, requires = "drive", conflicts_with_all = [
         "list", "recover", "rollback", "whole_image_verification", "minimize_scratch",
         "offline_recovery_media", "controlled_post_flush_pause_nonce",
@@ -126,6 +129,23 @@ fn parse_controlled_pause_nonce(value: &str) -> std::result::Result<String, Stri
         Err("controlled pause requires an independently chosen64-character lowercase hexadecimal nonce".into())
     }
 }
+/// Exit code of a diagnose run that completed and reported failures.
+pub const EXIT_DIAGNOSE_FAILURES: u8 = 3;
+
+/// The question asked before anything is started. A diagnose run is not a
+/// conversion and is not confirmed as one.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn confirmation_prompt(mode: crate::execution_mode::ExecutionMode) -> &'static str {
+    match mode {
+        crate::execution_mode::ExecutionMode::Convert => {
+            "Convert this partition to ReFS in place, preserving supported files? [y/N]"
+        }
+        crate::execution_mode::ExecutionMode::Diagnose => {
+            "Diagnose this partition without converting it? It is taken offline and read-only meanwhile, is not written to by ntfs2refs, and is returned as NTFS. [y/N]"
+        }
+    }
+}
+
 impl DriveArgs {
     pub fn requested(&self) -> bool {
         self.list || self.drive.is_some() || self.recover.is_some()
@@ -487,6 +507,50 @@ mod windows {
             result
         })
     }
+    /// One machine-readable line and a saved report. Exit 0 only when every
+    /// object was examined and none failed.
+    fn report_diagnosis(
+        run: &std::path::Path,
+        outcome: &crate::resource_preparation::DiagnoseOutcome,
+    ) -> Result<u8> {
+        let clean = outcome.failures.is_empty() && !outcome.stopped_at_limit;
+        if let Err(error) = save_new(&run.join("diagnose-result.json"), outcome) {
+            eprintln!("The diagnose report could not be saved: {error}");
+        }
+        println!(
+            "{}",
+            serde_json::json!({
+                "kind": "diagnose-result-v1",
+                "failures": outcome.failures.len(),
+                "examined_all_objects": !outcome.stopped_at_limit,
+                "source_disk": outcome.restored_disk_number,
+                "ntfs2refs_wrote_to_source": false,
+            })
+        );
+        if clean {
+            println!(
+                "Diagnose complete: no per-object failures. The source is unchanged NTFS on disk {}.",
+                outcome.restored_disk_number
+            );
+        } else {
+            println!(
+                "Diagnose complete: {} per-object failure(s) reported above{}. The source is unchanged NTFS on disk {}.",
+                outcome.failures.len(),
+                if outcome.stopped_at_limit {
+                    "; it stopped at the failure limit before examining every object"
+                } else {
+                    ""
+                },
+                outcome.restored_disk_number
+            );
+        }
+        println!("Working files: {}", run.display());
+        Ok(if clean {
+            0
+        } else {
+            super::EXIT_DIAGNOSE_FAILURES
+        })
+    }
     // Same bounded affirmative confirmation for both actual source scopes.
     pub(super) fn confirm(prompt: &str) -> Result<bool> {
         println!("{prompt}");
@@ -705,16 +769,15 @@ mod windows {
         if let Some(decision) = boot_geometry {
             super::boot::describe_geometry(decision);
         }
-        if args.diagnose {
-            crate::resource_preparation::set_diagnose();
+        if mode == crate::execution_mode::ExecutionMode::Diagnose {
             println!(
-                "Diagnose mode: every per-object failure is reported and nothing is written to the source."
+                "Diagnose mode: the ReFS shadow is built in the working directory and every per-object failure is reported. ntfs2refs writes nothing to the source."
             );
         }
         if args.recheck_everything {
             crate::resource_preparation::set_recheck_everything();
         }
-        if !confirm("Convert this partition to ReFS in place, preserving supported files? [y/N]")? {
+        if !confirm(confirmation_prompt(mode))? {
             println!("Cancelled. No conversion started.");
             return Ok(0);
         }
@@ -1040,10 +1103,17 @@ mod windows {
                 allocation_bounded,
                 &authority,
             )
+            .map(|()| super::resource::ConversionOutcome::Converted)
         };
         let output = run.join("conversion");
         match result {
-            Ok(()) => {
+            Ok(super::resource::ConversionOutcome::Diagnosed(outcome)) => {
+                // The shadow was built only to be examined. Like every
+                // unfinished run's working files, it is left in place.
+                drop(staged);
+                report_diagnosis(&run, &outcome)
+            }
+            Ok(super::resource::ConversionOutcome::Converted) => {
                 if allocation_bounded {
                     // This live Ok comes only after V4 HND/native finalization
                     // returned and all construction/raw owners were released.
@@ -1132,10 +1202,17 @@ mod windows {
                     );
                     return Err(e);
                 }
-                eprintln!(
-                    "Conversion stopped. Preserve all recovery files at {}",
-                    run.display()
-                );
+                if mode == crate::execution_mode::ExecutionMode::Diagnose {
+                    eprintln!(
+                        "Diagnose could not finish. Its working files are at {}",
+                        run.display()
+                    );
+                } else {
+                    eprintln!(
+                        "Conversion stopped. Preserve all recovery files at {}",
+                        run.display()
+                    );
+                }
                 Err(e)
             }
         }
@@ -1159,6 +1236,20 @@ mod tests {
         Cli::try_parse_from(arguments).map(|cli| cli.drive)
     }
     const NONCE: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+
+    #[test]
+    fn a_diagnose_run_is_not_confirmed_as_a_conversion() {
+        assert!(
+            confirmation_prompt(ExecutionMode::Convert)
+                .starts_with("Convert this partition to ReFS in place")
+        );
+        let diagnose = confirmation_prompt(ExecutionMode::Diagnose);
+        assert!(
+            diagnose.starts_with("Diagnose this partition without converting it")
+                && !diagnose.contains("Convert this partition"),
+            "{diagnose}"
+        );
+    }
 
     #[test]
     fn a_conversion_and_a_plain_diagnose_are_admitted() {

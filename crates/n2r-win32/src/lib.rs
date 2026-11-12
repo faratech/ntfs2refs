@@ -38,6 +38,7 @@ pub mod io_profile;
 pub mod journal_file;
 #[cfg(windows)]
 pub mod lab_compression_fixture;
+pub mod lab_hold;
 #[cfg(windows)]
 pub mod lab_job;
 #[cfg(windows)]

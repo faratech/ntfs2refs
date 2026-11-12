@@ -124,6 +124,15 @@ pub struct DriveArgs {
         requires_all = ["drive", "controlled_post_flush_pause_nonce"],
         conflicts_with_all = ["list", "recover", "recovery_sha256", "rollback", "whole_image_verification", "experimental_thin_shadow", "experimental_thin_backing_bytes"])]
     pub acknowledge_controlled_post_flush_pause: bool,
+    /// Laboratory: stop for ever at a named point of apply or handoff, so
+    /// that recovery can be exercised from there. The run never completes.
+    #[arg(long, hide = true, value_name = "POINT",
+        requires_all = ["drive", "acknowledge_lab_hold_never_completes"],
+        conflicts_with_all = ["list", "recover", "recovery_sha256", "rollback", "diagnose"])]
+    pub lab_hold_at: Option<String>,
+    /// Laboratory: separate acknowledgement that a held run never completes.
+    #[arg(long, hide = true, requires = "lab_hold_at")]
+    pub acknowledge_lab_hold_never_completes: bool,
 }
 fn parse_controlled_pause_nonce(value: &str) -> std::result::Result<String, String> {
     if value.len() == 64
@@ -189,6 +198,7 @@ impl DriveArgs {
             "--experimental-thin-backing-bytes",
             "diagnose builds and removes only the ordinary shadow",
         ),
+        ("--lab-hold-at", "it stops a run that writes to the source"),
     ];
 
     /// Decides once, before anything is opened, whether this run converts or
@@ -214,6 +224,7 @@ impl DriveArgs {
             self.acknowledge_controlled_post_flush_pause,
             self.experimental_thin_shadow,
             self.experimental_thin_backing_bytes.is_some(),
+            self.lab_hold_at.is_some(),
         ];
         for ((flag, reason), requested) in Self::DIAGNOSE_REFUSES.iter().zip(requested) {
             ensure!(
@@ -574,6 +585,14 @@ mod windows {
     }
     pub(super) fn run(args: DriveArgs) -> Result<u8> {
         let mode = args.execution_mode()?;
+        if let Some(point) = &args.lab_hold_at {
+            ensure!(
+                args.acknowledge_lab_hold_never_completes,
+                "a laboratory hold needs --acknowledge-lab-hold-never-completes"
+            );
+            // An unknown point is refused here, before anything is opened.
+            n2r_win32::lab_hold::arm(point)?;
+        }
         if let Some(directory) = args.recover {
             let checksum = args
                 .recovery_sha256
@@ -663,6 +682,10 @@ mod windows {
                     && disk.contains_running_windows == Some(true)
             })
         {
+            ensure!(
+                args.lab_hold_at.is_none(),
+                "laboratory holds apply only to a dedicated or Windows boot source"
+            );
             // This route has no diagnose stop; refuse before discovering anything.
             let authority = mode
                 .source_change_authority("conversion of a partition on the running Windows disk")?;
@@ -785,6 +808,9 @@ mod windows {
         }
         if args.recheck_everything {
             crate::resource_preparation::set_recheck_everything();
+        }
+        if let Some(point) = n2r_win32::lab_hold::armed() {
+            println!("Laboratory hold armed at {point}: this run stops there and never completes.");
         }
         if !confirm(confirmation_prompt(mode))? {
             println!("Cancelled. No conversion started.");
@@ -916,7 +942,7 @@ mod windows {
         fs::create_dir(&run)?;
         save_new(
             &run.join("drive-selection.json"),
-            &serde_json::json!({"selected":selected,"source":before,"confirmation":"interactive affirmative","journal_budget_bytes":journal_bytes,"requested_target_format":target_format,"explicit_trust_or_filter_configuration_requested":false,"source_write_authority":false}),
+            &serde_json::json!({"selected":selected,"source":before,"confirmation":"interactive affirmative","journal_budget_bytes":journal_bytes,"requested_target_format":target_format,"explicit_trust_or_filter_configuration_requested":false,"source_write_authority":false,"lab_hold_point":n2r_win32::lab_hold::armed()}),
         )?;
         let native_creation_admission = if thin_shadow {
             None
@@ -1267,6 +1293,20 @@ mod tests {
     const NONCE: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
     #[test]
+    fn a_laboratory_hold_needs_its_own_acknowledgement() {
+        assert!(parse(&["--lab-hold-at", "handoff-sealed"]).is_err());
+        assert!(parse(&["--acknowledge-lab-hold-never-completes"]).is_err());
+        let held = parse(&[
+            "--lab-hold-at",
+            "handoff-sealed",
+            "--acknowledge-lab-hold-never-completes",
+        ])
+        .unwrap();
+        assert_eq!(held.lab_hold_at.as_deref(), Some("handoff-sealed"));
+        assert_eq!(held.execution_mode().unwrap(), ExecutionMode::Convert);
+    }
+
+    #[test]
     fn a_diagnose_run_is_not_confirmed_as_a_conversion() {
         assert!(
             confirmation_prompt(ExecutionMode::Convert)
@@ -1304,7 +1344,12 @@ mod tests {
 
     #[test]
     fn the_parser_rejects_diagnose_with_every_option_it_cannot_honour() {
-        let cases: [&[&str]; 6] = [
+        let cases: [&[&str]; 7] = [
+            &[
+                "--lab-hold-at",
+                "handoff-sealed",
+                "--acknowledge-lab-hold-never-completes",
+            ],
             &["--whole-image-verification"],
             &["--minimize-scratch"],
             &["--offline-media", "E:\\"],
@@ -1337,7 +1382,7 @@ mod tests {
     #[test]
     fn admission_refuses_each_combination_whatever_built_the_arguments() {
         type Set = fn(&mut DriveArgs);
-        let cases: [Set; 7] = [
+        let cases: [Set; 8] = [
             |a| a.whole_image_verification = true,
             |a| a.minimize_scratch = true,
             |a| a.offline_recovery_media = Some(PathBuf::from("E:\\")),
@@ -1345,6 +1390,7 @@ mod tests {
             |a| a.acknowledge_controlled_post_flush_pause = true,
             |a| a.experimental_thin_shadow = true,
             |a| a.experimental_thin_backing_bytes = Some(1 << 30),
+            |a| a.lab_hold_at = Some("handoff-sealed".to_owned()),
         ];
         assert_eq!(cases.len(), DriveArgs::DIAGNOSE_REFUSES.len());
         for (set, (flag, reason)) in cases.iter().zip(DriveArgs::DIAGNOSE_REFUSES) {

@@ -349,6 +349,7 @@ pub(crate) fn convert_owned_with_provider_commitment(
                 // released too; the finalizer rebuilds it from the published
                 // records, exactly as a restarted `--recover` does.
                 drop(applied);
+                n2r_win32::lab_hold::reached("handoff-sealed");
                 Ok((path, sha))
             },
         )?;

@@ -8,6 +8,11 @@ unresolved/contended evidence. A successful status invocation means a report
 was written; `can_request` lists commands whose own remaining checks must
 still pass. The report grants no execution authority or current-image proof.
 
+The pinned artifacts are validated before anything is created. A wrong pin or
+a missing run directory fails the command (exit 1) and leaves no output
+directory behind; only an artifact held by another process still yields a
+report, with state `busy`.
+
 ```powershell
 ntfs2refs operation-state --run-directory C:\ntfs2refs\runs\run-001 `
   --intent-sha256 INTENT_FILE_SHA256 --frozen-source-sha256 FREEZE_FILE_SHA256 `

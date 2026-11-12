@@ -602,7 +602,28 @@ pub fn classify(
   _=>(State::Unresolved,vec![],vec!["device attributes, artifacts and journal lifecycle do not establish a supported state".into()]),
  }
 }
+/// A sharing or lock violation on an artifact: another process holds it.
+fn sharing_conflict(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .any(|cause| matches!(cause.raw_os_error(), Some(32 | 33)))
+}
+
 pub fn inspect(inputs: &Inputs, output: &Path) -> Result<Report> {
+    // Nothing is created until the pinned run artifacts have validated. A
+    // wrong pin or a missing run used to leave the output directory behind,
+    // where it then blocked every later operation that needs a fresh one.
+    // Only an artifact held by another process still produces a report: that
+    // is a state of the run, not a mistake in the request.
+    let loaded = match load(inputs) {
+        Err(error) if !sharing_conflict(&error) => {
+            return Err(error.context(
+                "operation-state: the pinned run artifacts did not validate; nothing was created",
+            ));
+        }
+        loaded => loaded,
+    };
     crate::general_qualification::create_output(output)?;
     let mut report = Report {
         schema_version: 1,
@@ -624,7 +645,7 @@ pub fn inspect(inputs: &Inputs, output: &Path) -> Result<Report> {
         disk_attributes_changed: false,
     };
     let attempt = (|| -> Result<()> {
-        let run = load(inputs)?;
+        let run = loaded?;
         let source = n2r_win32::observe_general_disk_state_readonly(
             run.intent.pair.source.clone(),
             &mut report.events,
@@ -679,10 +700,7 @@ pub fn inspect(inputs: &Inputs, output: &Path) -> Result<Report> {
         Ok(())
     })();
     if let Err(e) = attempt {
-        if e.chain()
-            .filter_map(|v| v.downcast_ref::<std::io::Error>())
-            .any(|v| matches!(v.raw_os_error(), Some(32 | 33)))
-        {
+        if sharing_conflict(&e) {
             report.state = State::Busy;
             report.required_further_proofs.push("an artifact sharing conflict exists; worker identity/liveness is not established by this report".into());
         }

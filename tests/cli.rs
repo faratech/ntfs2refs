@@ -386,6 +386,54 @@ fn recovery_requires_all_pinned_inputs_when_request_is_supplied() {
 }
 
 #[test]
+fn operation_state_creates_nothing_when_its_pinned_inputs_do_not_validate() {
+    let temp = tempfile::tempdir().unwrap();
+    let run = temp.path().join("run");
+    std::fs::create_dir(&run).unwrap();
+    std::fs::write(run.join("conversion-intent.json"), "{}").unwrap();
+    let output = temp.path().join("never-created");
+    // A well-formed pin that is not the digest of that file.
+    let pin = "0".repeat(64);
+    let result = cli(&[
+        "operation-state",
+        "--run-directory",
+        run.to_str().unwrap(),
+        "--intent-sha256",
+        &pin,
+        "--output",
+        output.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        result.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("nothing was created"),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(
+        !output.exists(),
+        "a refused inspection left its output directory"
+    );
+
+    // The same with no run directory at all.
+    let absent = cli(&[
+        "operation-state",
+        "--run-directory",
+        temp.path().join("no-such-run").to_str().unwrap(),
+        "--intent-sha256",
+        &pin,
+        "--output",
+        output.to_str().unwrap(),
+    ]);
+    assert_eq!(absent.status.code(), Some(1));
+    assert!(!output.exists());
+}
+
+#[test]
 fn shadowless_recovery_refuses_resume_and_finalize_before_reading_inputs() {
     let temp = tempfile::tempdir().unwrap();
     let output = temp.path().join("never-created");

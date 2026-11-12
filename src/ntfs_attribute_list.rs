@@ -215,7 +215,9 @@ pub struct Assembly {
     pub canonical_origins: Option<Vec<CanonicalOrigin>>,
 }
 
-fn resident_digest_valid(expected: &str) -> bool {
+/// A stream digest in either retained form: the 32-digit content digest an
+/// inspection records today, or the 64-digit SHA-256 older records hold.
+pub(crate) fn resident_digest_valid(expected: &str) -> bool {
     matches!(expected.len(), 32 | 64)
         && expected
             .bytes()

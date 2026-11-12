@@ -80,12 +80,12 @@ pub fn plan_stream(
         .logical_sha256
         .as_deref()
         .context("complete logical stream lacks digest")?;
+    // What an inspection records today is the 32-digit content digest; a
+    // saved inspection from before that change holds a 64-digit SHA-256.
     ensure!(
-        digest.len() == 64
-            && digest
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
-        "invalid logical stream digest"
+        crate::ntfs_attribute_list::resident_digest_valid(digest),
+        "invalid logical stream digest: {} characters, not a 32- or 64-digit lowercase hex digest",
+        digest.len()
     );
     let mut last = 0u64;
     for range in target_occupied {
@@ -239,7 +239,8 @@ mod tests {
                 .sum(),
             extents,
             resident_sha256: None,
-            logical_sha256: Some("a".repeat(64)),
+            // The digest a real inspection records, not one it cannot.
+            logical_sha256: Some(n2r_win32::content_digest::of(b"x")),
             logical_hash_status: LogicalHashStatus::Complete,
         }
     }
@@ -345,5 +346,38 @@ mod tests {
         let p = plan_stream(&s, 1024, 4096, 65536, &[]).unwrap();
         assert_eq!(p.segments[0].action, Action::Materialize);
         assert_eq!(p.segments[1].action, Action::Relocate);
+    }
+
+    #[test]
+    fn a_stream_digest_is_accepted_in_both_retained_forms_and_no_other() {
+        let extent = || {
+            vec![Extent {
+                logical_offset: 0,
+                physical_offset: Some(8192),
+                length: 4096,
+            }]
+        };
+        // The content digest an inspection records today.
+        let mut s = stream(4096, extent());
+        assert!(plan_stream(&s, 4096, 4096, 65536, &[]).is_ok());
+        // The SHA-256 a saved inspection from before that change holds.
+        s.logical_sha256 = Some("a".repeat(64));
+        assert!(plan_stream(&s, 4096, 4096, 65536, &[]).is_ok());
+        for bad in [
+            "a".repeat(31),
+            "a".repeat(33),
+            "A".repeat(32),
+            "g".repeat(32),
+            String::new(),
+        ] {
+            s.logical_sha256 = Some(bad.clone());
+            let refused = plan_stream(&s, 4096, 4096, 65536, &[])
+                .unwrap_err()
+                .to_string();
+            assert!(
+                refused.contains("invalid logical stream digest"),
+                "{bad}: {refused}"
+            );
+        }
     }
 }

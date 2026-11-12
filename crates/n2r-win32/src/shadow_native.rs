@@ -2194,11 +2194,89 @@ fn suppress_access(file: &File) -> io::Result<()> {
     // SAFETY: documented per-handle suppression, no stored timestamp supplied.
     check(unsafe { SetFileTime(file.as_raw_handle(), ptr::null(), &no_update, ptr::null()) })
 }
+/// Access for a handle that restores an object's metadata: every specific
+/// file right but FILE_DELETE_CHILD (0x40), with READ_CONTROL, WRITE_DAC,
+/// WRITE_OWNER, SYNCHRONIZE and ACCESS_SYSTEM_SECURITY, and never DELETE.
+///
+/// The private objects of a shadow admit SYSTEM alone. An elevated
+/// administrator reaches them only through the backup and restore
+/// privileges, which grant exactly these rights. FILE_DELETE_CHILD is not
+/// among them, no code here uses it, and asking for it (the mask used to be
+/// 0x011e01ff) made every conversion fail for an administrator at the first
+/// private directory, while SYSTEM, the only account the lab ran as, was
+/// never refused.
+pub(crate) const METADATA_WRITE_ACCESS: u32 = 0x011e_01bf;
+
+/// FILE_FLAG_BACKUP_SEMANTICS on a file that is created in, or opened from, a
+/// private directory. Without it Windows decides by the directory's own
+/// descriptor whether a file may be added, and that descriptor admits SYSTEM
+/// alone; with it the restore privilege decides, as it does for every
+/// directory (`CreateDirectoryW` always asks with backup intent). It changes
+/// nothing for SYSTEM.
+pub(crate) const BACKUP_INTENT: u32 = 0x0200_0000;
+
+/// Creates a private file, or a named stream on one, that must not exist yet.
+///
+/// A whole file is created with CREATE_NEW. A named stream is asked for with
+/// OPEN_ALWAYS and refused if Windows reports that it was already there. ReFS
+/// does not let an administrator CREATE_NEW a stream on a file whose
+/// descriptor admits SYSTEM alone, even with the restore privilege and backup
+/// intent (error 5), while the same caller may create it with OPEN_ALWAYS;
+/// probed on the lab's ReFS, 2026-11-12. SYSTEM gets the same new stream
+/// either way, and an existing one is refused either way.
+pub(crate) fn create_fresh(
+    path: &[u16],
+    named_stream: bool,
+    access: u32,
+    security: &SECURITY_ATTRIBUTES,
+    flags: u32,
+) -> io::Result<File> {
+    const CREATE_NEW: u32 = 1;
+    const OPEN_ALWAYS: u32 = 4;
+    const ERROR_ALREADY_EXISTS: i32 = 183;
+    if path.last() != Some(&0) {
+        return Err(invalid("private object path is not NUL-terminated"));
+    }
+    // SAFETY: NUL-terminated path, live descriptor, no sharing, no template.
+    let handle = unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            access,
+            0,
+            security,
+            if named_stream {
+                OPEN_ALWAYS
+            } else {
+                CREATE_NEW
+            },
+            flags,
+            ptr::null_mut(),
+        )
+    };
+    let reported = io::Error::last_os_error();
+    if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+        return Err(reported);
+    }
+    // SAFETY: unique ownership of the handle just returned.
+    let file = unsafe { File::from_raw_handle(handle) };
+    if named_stream && reported.raw_os_error() == Some(ERROR_ALREADY_EXISTS) {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "the private named stream already exists",
+        ));
+    }
+    Ok(file)
+}
+
 fn open(path: &str, directory: bool, write: bool) -> io::Result<File> {
     let f = File::options()
         // Metadata handles need WRITE_DAC/WRITE_OWNER, never DELETE. Retaining
         // the root handle must not prevent its later finalization/observation.
-        .access_mode(if write { 0x011e01ff } else { 0x01020189 })
+        .access_mode(if write {
+            METADATA_WRITE_ACCESS
+        } else {
+            0x01020189
+        })
         .share_mode(3)
         .custom_flags(0x02200000)
         .open(path)?;
@@ -2676,11 +2754,11 @@ fn create(
     let h = unsafe {
         CreateFileW(
             name.as_ptr(),
-            0x011f01ff,
+            METADATA_WRITE_ACCESS | 0x10000,
             0,
             &sa,
             1,
-            crate::verify_policy::shadow_file_flags(0x80200000),
+            crate::verify_policy::shadow_file_flags(0x80200000 | BACKUP_INTENT),
             ptr::null_mut(),
         )
     };
@@ -6208,6 +6286,90 @@ mod tests {
                 .is_err()
             );
         }
+    }
+
+    #[test]
+    fn a_fresh_file_or_stream_is_created_once_and_an_existing_one_is_refused() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("placeholder.bin");
+        let stream = format!("{}:tag", file.display());
+        let path = |text: &str| wide(text);
+        let security = SECURITY_ATTRIBUTES {
+            nLength: mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: ptr::null_mut(),
+            bInheritHandle: 0,
+        };
+        let create = |text: &str, named_stream: bool| {
+            create_fresh(&path(text), named_stream, 0xc002_0000, &security, 0x80)
+        };
+        // A whole file: created, then refused as existing (ERROR_FILE_EXISTS),
+        // also while it is held.
+        let base = create(file.to_str().unwrap(), false).unwrap();
+        assert_eq!(
+            create(file.to_str().unwrap(), false)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(80)
+        );
+        // A named stream on it, with the base still held as the converter
+        // holds it: created once, with nothing in it.
+        let mut created = create(&stream, true).unwrap();
+        created.write_all(b"first").unwrap();
+        drop(created);
+        // The same stream again is refused, and what it holds is untouched.
+        let refused = create(&stream, true).unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::AlreadyExists, "{refused}");
+        drop(base);
+        assert_eq!(std::fs::read(&stream).unwrap(), b"first");
+        // Once the base is closed, the existing file is refused as existing.
+        assert_eq!(
+            create(file.to_str().unwrap(), false)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(80)
+        );
+        // A path without its terminator is never handed to Windows.
+        let unterminated: Vec<u16> = "x".encode_utf16().collect();
+        assert!(create_fresh(&unterminated, false, 0xc002_0000, &security, 0x80).is_err());
+    }
+
+    #[test]
+    fn handles_ask_only_for_rights_the_backup_and_restore_privileges_grant() {
+        // SeBackupPrivilege grants READ_CONTROL, ACCESS_SYSTEM_SECURITY,
+        // FILE_GENERIC_READ and FILE_TRAVERSE; SeRestorePrivilege grants
+        // WRITE_DAC, WRITE_OWNER, ACCESS_SYSTEM_SECURITY, FILE_GENERIC_WRITE,
+        // FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY and DELETE. Anything else is
+        // decided by the object's own descriptor, which for a private object
+        // admits SYSTEM alone.
+        const FILE_GENERIC_READ: u32 = 0x0012_0089;
+        const FILE_GENERIC_WRITE: u32 = 0x0012_0116;
+        const FILE_TRAVERSE: u32 = 0x20;
+        const DELETE: u32 = 0x0001_0000;
+        let granted = 0x0002_0000
+            | 0x0100_0000
+            | FILE_GENERIC_READ
+            | FILE_TRAVERSE
+            | 0x0004_0000
+            | 0x0008_0000
+            | FILE_GENERIC_WRITE
+            | 0x2
+            | 0x4
+            | DELETE;
+        for mask in [
+            METADATA_WRITE_ACCESS,
+            METADATA_WRITE_ACCESS | DELETE,
+            METADATA_WRITE_ACCESS & !0x6,
+            PROTECTED_READ_ACCESS,
+            PROTECTED_READ_ACCESS | 0x10100,
+            0x0102_0189,
+            0x0102_0181,
+        ] {
+            assert_eq!(mask & !granted, 0, "{mask:#x} asks for more");
+        }
+        // FILE_DELETE_CHILD is the one right the old mask asked for beyond
+        // them, and metadata handles never ask for DELETE.
+        assert_eq!(METADATA_WRITE_ACCESS | 0x40, 0x011e_01ff);
+        assert_eq!(METADATA_WRITE_ACCESS & DELETE, 0);
     }
 
     #[test]

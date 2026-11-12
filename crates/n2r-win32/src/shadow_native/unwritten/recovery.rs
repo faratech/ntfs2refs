@@ -177,7 +177,7 @@ impl PrivatePlaceholder {
         let file = File::options()
             .access_mode(0xc1020000 | if retire { 0x10000 } else { 0 })
             .share_mode(0)
-            .custom_flags(0x80200080)
+            .custom_flags(0x80200080 | crate::shadow_native::BACKUP_INTENT)
             .open(&path)?;
         super::super::validate_open_type(&file, false)?;
         super::super::private_tree::recovery::require_private_security(&file, false)?;

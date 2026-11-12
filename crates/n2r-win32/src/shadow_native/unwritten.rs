@@ -360,28 +360,22 @@ impl PrivatePlaceholder {
         };
         let path = super::streams::path(root, components, stream_name)?;
         let name = wide(&path);
-        // SAFETY: caller-bound volume root, validated components, CREATE_NEW,
+        // Caller-bound volume root, validated components, a fresh object only,
         // sharing disabled and SYSTEM-only protected security descriptor.
-        let handle = unsafe {
-            CreateFileW(
-                name.as_ptr(),
-                0xc0020000 | if retire { 0x10000 } else { 0 },
-                0,
-                &sa,
-                1,
-                crate::verify_policy::shadow_file_flags(0x80200080),
-                ptr::null_mut(),
-            )
-        };
-        let error = io::Error::last_os_error();
+        let created = crate::shadow_native::create_fresh(
+            &name,
+            !stream_name.is_empty(),
+            0xc0020000 | if retire { 0x10000 } else { 0 },
+            &sa,
+            crate::verify_policy::shadow_file_flags(
+                0x80200080 | crate::shadow_native::BACKUP_INTENT,
+            ),
+        );
+        // SAFETY: the descriptor allocated above, freed exactly once.
         unsafe {
             LocalFree(descriptor);
         }
-        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
-            return Err(error);
-        }
-        // SAFETY: unique ownership of the successfully created native handle.
-        let file = unsafe { File::from_raw_handle(handle) };
+        let file = created?;
         ctl(&file, 0x9c280, &[0; 8], 0)?;
         if bytes >= 4096 {
             let allocation = bytes

@@ -207,9 +207,9 @@ fn open_transition(
     // semantics. Security, EA and basic metadata use their narrower rights.
     let mut file = File::options()
         .access_mode(if directory {
-            0x011e01ff
+            crate::shadow_native::METADATA_WRITE_ACCESS
         } else {
-            0x011e01ff & !0x6
+            crate::shadow_native::METADATA_WRITE_ACCESS & !0x6
         })
         .share_mode(3)
         .custom_flags(0x02200000)
@@ -240,7 +240,7 @@ fn open_transition(
         }
         let before = identity(&file)?;
         let setter = File::options()
-            .access_mode(0x011e01ff)
+            .access_mode(crate::shadow_native::METADATA_WRITE_ACCESS)
             .share_mode(3)
             .custom_flags(0x02200000)
             .open(path)?;

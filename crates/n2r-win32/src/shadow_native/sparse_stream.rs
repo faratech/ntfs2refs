@@ -46,7 +46,8 @@ impl CarrierDirectory {
         }
         let path = format!("{}\\{component}", root.trim_end_matches('\\'));
         let file = File::options()
-            .access_mode(0x011f01ff)
+            // With DELETE: the carrier directory is removed when it is done.
+            .access_mode(crate::shadow_native::METADATA_WRITE_ACCESS | 0x10000)
             .share_mode(3)
             .custom_flags(0x02200000)
             .open(&path)?;
@@ -92,7 +93,7 @@ impl CarrierDirectory {
             return Err(io::Error::last_os_error());
         }
         let file = File::options()
-            .access_mode(0x011f01ff)
+            .access_mode(crate::shadow_native::METADATA_WRITE_ACCESS | 0x10000)
             .share_mode(3)
             .custom_flags(0x02200000)
             .open(&path)?;
@@ -146,7 +147,7 @@ impl Target {
         let file = File::options()
             .access_mode(0xc1020000)
             .share_mode(0)
-            .custom_flags(0x80200080)
+            .custom_flags(0x80200080 | crate::shadow_native::BACKUP_INTENT)
             .open(&path)?;
         validate_open_type(&file, false)?;
         private_tree::recovery::require_private_security(&file, false)?;
@@ -267,21 +268,15 @@ impl Target {
             bInheritHandle: 0,
         };
         let before = base.map(|f| info(f, 18, 24)).transpose()?;
-        let handle = unsafe {
-            CreateFileW(
-                wide(&path).as_ptr(),
-                0xc0020000,
-                0,
-                &attrs,
-                1,
-                crate::verify_policy::shadow_file_flags(0x80200080),
-                ptr::null_mut(),
-            )
-        };
-        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
-            return Err(io::Error::last_os_error());
-        }
-        let file = unsafe { File::from_raw_handle(handle) };
+        let file = crate::shadow_native::create_fresh(
+            &wide(&path),
+            !name.is_empty(),
+            0xc0020000,
+            &attrs,
+            crate::verify_policy::shadow_file_flags(
+                0x80200080 | crate::shadow_native::BACKUP_INTENT,
+            ),
+        )?;
         if let Some(id) = before {
             if info(&file, 18, 24)? != id || info(base.unwrap(), 18, 24)? != id {
                 return Err(invalid("sparse ADS differs from its base identity"));

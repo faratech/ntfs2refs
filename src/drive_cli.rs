@@ -585,6 +585,11 @@ mod windows {
     }
     pub(super) fn run(args: DriveArgs) -> Result<u8> {
         let mode = args.execution_mode()?;
+        if mode == crate::execution_mode::ExecutionMode::Diagnose {
+            // A backstop beneath the routes: nothing in this process may now
+            // open a disk to raw writes.
+            n2r_win32::forbid_raw_write_activation();
+        }
         if let Some(point) = &args.lab_hold_at {
             ensure!(
                 args.acknowledge_lab_hold_never_completes,

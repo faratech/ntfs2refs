@@ -132,6 +132,8 @@ pub use native::PartitionMixedReplayGate;
 #[cfg(windows)]
 pub use native::PartitionTerminalNativeObservation;
 #[cfg(windows)]
+pub use native::forbid_raw_write_activation;
+#[cfg(windows)]
 pub use native::offline_environment;
 #[cfg(windows)]
 pub use native::partition_isolation;

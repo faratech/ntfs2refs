@@ -740,14 +740,43 @@ fn attributes(file: &File, events: &mut Vec<NativeEvent>) -> io::Result<u64> {
     Ok(attributes)
 }
 
+/// Set once by a diagnose run, which never changes a source. From then on no
+/// disk can be moved to offline-and-writable, the state every raw write to a
+/// held disk starts from, whichever route asks for it. This is a backstop:
+/// the routes themselves already refuse.
+static RAW_WRITE_ACTIVATION_FORBIDDEN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Forbids, for the rest of this process, moving any disk to
+/// offline-and-writable. There is no way to permit it again.
+pub fn forbid_raw_write_activation() {
+    RAW_WRITE_ACTIVATION_FORBIDDEN.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+fn admit_attribute_transition(value: u64, raw_write_forbidden: bool) -> io::Result<()> {
+    if value & !(OFFLINE | READ_ONLY) != 0 {
+        return Err(invalid("unknown requested attributes"));
+    }
+    // Offline with read-only (a freeze), read-only alone and fully online
+    // never open a disk to raw writes. Offline alone does.
+    if value == OFFLINE && raw_write_forbidden {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "diagnose mode never makes a disk writable for raw access; the transition to offline and writable was refused",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn set_attributes(
     file: &File,
     value: u64,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<()> {
-    if value & !(OFFLINE | READ_ONLY) != 0 {
-        return Err(invalid("unknown requested attributes"));
-    }
+    admit_attribute_transition(
+        value,
+        RAW_WRITE_ACTIVATION_FORBIDDEN.load(std::sync::atomic::Ordering::SeqCst),
+    )?;
     let mut bytes = [0_u8; 40];
     bytes[..4].copy_from_slice(&40_u32.to_le_bytes());
     bytes[4] = 1; // Persist: the exclusion must survive a restart.
@@ -5257,6 +5286,21 @@ impl Seek for OfflinePartition {
 mod tests {
     use super::*;
     use crate::layout::PartitionIdentity;
+
+    #[test]
+    fn a_diagnose_run_cannot_make_a_disk_writable_for_raw_access() {
+        // A freeze, a read-only publication and a return to online are what
+        // a diagnose run needs, and stay available.
+        for value in [0, READ_ONLY, OFFLINE | READ_ONLY] {
+            assert!(admit_attribute_transition(value, true).is_ok());
+            assert!(admit_attribute_transition(value, false).is_ok());
+        }
+        assert!(admit_attribute_transition(OFFLINE, false).is_ok());
+        let refused = admit_attribute_transition(OFFLINE, true).unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::PermissionDenied);
+        assert!(refused.to_string().contains("diagnose mode"), "{refused}");
+        assert!(admit_attribute_transition(4, false).is_err());
+    }
 
     fn allocation_test_bitmap(bits: u16) -> Vec<u8> {
         let mut bytes = vec![0; 18];

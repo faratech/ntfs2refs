@@ -314,6 +314,8 @@ function Restore-DetachedDisks {
     $file = Get-DetachedDiskRecord
     if (-not (Test-Path -LiteralPath $file)) { return }
     $record = Get-Content -LiteralPath $file -Raw | ConvertFrom-Json
+    # A record already acted on lists no disks.
+    if (-not @($record.disks).Count) { return }
     $returned = 0
     foreach ($disk in @($record.disks)) {
         # Only a differencing disk that still exists, into the slot it came from.
@@ -439,14 +441,6 @@ try {
     if ($CheckpointBeforeBoot -and (Get-VMSnapshot -VM $vm | Where-Object Name -EQ $CheckpointBeforeBoot)) {
         throw "Checkpoint '$CheckpointBeforeBoot' already exists; pick another name or remove it"
     }
-    $hostFreeDisk = Get-HostFreeBytes
-    # A full-volume attempt grows its scratch disk to about 30 GB and the VM's
-    # own disks by about as much before the scratch disk is removed; one that
-    # started with 70 GB free was down to 12 GB at its end.
-    if (-not $Fixture -and -not $Recover -and -not $NoConvert -and $MinHostFreeGB -lt 65) { $MinHostFreeGB = 65 }
-    if ($hostFreeDisk -lt [long]$MinHostFreeGB * 1GB) {
-        throw ("Host volume has {0:N1} GB free; an attempt needs {1} GB. Free space first (old attempts' scratch.vhdx files)." -f ($hostFreeDisk / 1GB), $MinHostFreeGB)
-    }
     Say "attempt ${Name}: restoring checkpoint '$($snapshots[0].Name)'"
     if ($vm.State -ne 'Off') { Stop-VM -VM $vm -TurnOff -Force }
     Restore-DetachedDisks
@@ -454,6 +448,23 @@ try {
     $vm = Get-LabVm
     if ($vm.State -eq 'Saved') { Remove-VMSavedState -VM $vm; $vm = Get-LabVm }
     if ($vm.State -ne 'Off') { Stop-VM -VM $vm -TurnOff -Force; $vm = Get-LabVm }
+    # Measured here, not before the restore. What the previous attempt on this
+    # VM left on the host volume (the changes to its disks, several GB) is
+    # released by the restore; counted against this attempt, it refused runs
+    # that had room, most often the one after an attempt that booted.
+    # A full-volume attempt grows its scratch disk to about 30 GB and the VM's
+    # own disks by about as much before the scratch disk is removed; one that
+    # started with 70 GB free was down to 12 GB at its end.
+    if (-not $Fixture -and -not $Recover -and -not $NoConvert -and $MinHostFreeGB -lt 65) { $MinHostFreeGB = 65 }
+    # Hyper-V frees the disks a restore discards after it returns: within
+    # seconds for a small attempt, more than half a minute for a larger one.
+    $hostFreeDisk = Get-HostFreeBytes
+    for ($waited = 0; $hostFreeDisk -lt [long]$MinHostFreeGB * 1GB -and $waited -lt 180; $waited += 2) {
+        Start-Sleep -Seconds 2; $hostFreeDisk = Get-HostFreeBytes
+    }
+    if ($hostFreeDisk -lt [long]$MinHostFreeGB * 1GB) {
+        throw ("Host volume has {0:N1} GB free with checkpoint '{2}' restored; an attempt needs {1} GB. Free space first (old attempts' scratch.vhdx files, or the other lab VM's last attempt)." -f ($hostFreeDisk / 1GB), $MinHostFreeGB, $snapshots[0].Name)
+    }
     $hostFree = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory * 1KB
     $memory = [Math]::Min([long]$MemoryGB * 1GB, [long]($hostFree * 0.8 / 1GB) * 1GB)
     if ($memory -lt 8GB) { throw "Host has too little free memory for the VM: $([Math]::Round($hostFree/1GB,1)) GB free" }

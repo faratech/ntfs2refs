@@ -437,9 +437,11 @@ pub(super) fn convert(
             ),
             None => resource_partition_alpha::run(request, &output, true),
         })?;
-    worker.join().map_err(|_| {
-        anyhow::anyhow!(
-            "partition conversion worker panicked; preserve the printed run and actual source state"
+    worker.join().map_err(|panic| {
+        crate::panic_report::worker_error(
+            "public-partition-conversion",
+            panic,
+            "preserve the printed run and actual source state",
         )
     })??;
     Ok(0)
@@ -677,9 +679,11 @@ pub(super) fn try_recover(directory: &Path, checksum: &str, rollback: bool) -> R
         .name("public-partition-recovery".into())
         .stack_size(resource_partition_alpha::PARTITION_RECOVERY_WORKER_STACK_BYTES)
         .spawn(move || resource_partition_alpha::run_recovery(request, &output, true))?;
-    worker.join().map_err(|_| {
-        anyhow::anyhow!(
-            "partition recovery worker panicked; preserve actual source and original artifacts"
+    worker.join().map_err(|panic| {
+        crate::panic_report::worker_error(
+            "public-partition-recovery",
+            panic,
+            "preserve actual source and original artifacts",
         )
     })??;
     drop(locator);

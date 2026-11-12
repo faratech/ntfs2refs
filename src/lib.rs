@@ -86,6 +86,7 @@ mod ntfs_storage_class;
 pub mod ntfs_stream_attestation;
 pub mod ntfs_stream_plan;
 pub mod ntfs_transactions;
+pub(crate) mod panic_report;
 #[cfg(windows)]
 pub(crate) mod parallel_digest;
 pub mod payload_copy_plan;

@@ -245,6 +245,7 @@ pub fn run(args: DriveArgs) -> Result<u8> {
         if let Some(output) = &args.sample_stacks {
             n2r_win32::stack_sampler::start(output.clone());
         }
+        crate::panic_report::install();
         std::thread::Builder::new()
             .name("ntfs2refs-drive".to_owned())
             .stack_size(16 * 1024 * 1024)
@@ -255,7 +256,13 @@ pub fn run(args: DriveArgs) -> Result<u8> {
             })
             .context("could not create the drive worker stack")?
             .join()
-            .map_err(|_| anyhow::anyhow!("drive worker panicked; preserve its recovery records"))?
+            .map_err(|panic| {
+                crate::panic_report::worker_error(
+                    "ntfs2refs-drive",
+                    panic,
+                    "preserve its recovery records",
+                )
+            })?
     }
     #[cfg(not(windows))]
     {

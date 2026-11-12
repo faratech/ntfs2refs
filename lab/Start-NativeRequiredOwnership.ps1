@@ -14,6 +14,12 @@ $binding=(Get-Content -LiteralPath $completion -Raw|ConvertFrom-Json).native.nat
 Need ($binding.disk_number-eq1-and[guid]$binding.identity.disk_guid-eq[guid]'1b191872-c372-41ee-a416-e18863996f54'-and[guid]$binding.identity.partition_guid-eq[guid]'f06075a8-67a2-46b9-8fac-4af4da809617'-and$binding.identity.disk_bytes-eq64GB-and$binding.identity.partition_offset-eq16MB-and$binding.identity.partition_bytes-eq52GB) 'Exact disposable source1 route required'
 $binary=Join-Path $workspace 'target\release\lab-freeze-refs-allocation.exe';$meta=Get-Item -LiteralPath $binary
 Need (-not$meta.PSIsContainer-and-not($meta.Attributes-band[IO.FileAttributes]::ReparsePoint)-and$meta.Length-le32MB) 'Ordinary bounded built tool required'
+# The binary is whatever is in target\release: only its own hash identifies it.
+# What git says of the tree is recorded as observed, never as the binary's source.
+$ErrorActionPreference='Continue'
+$head=(& git -C $workspace rev-parse HEAD 2>$null) -join '';$headOk=($LASTEXITCODE-eq0-and$head-cmatch'\A[0-9a-f]{40}\z')
+$status=@(& git -C $workspace status --porcelain 2>$null);$statusOk=($LASTEXITCODE-eq0)
+$ErrorActionPreference='Stop'
 $pin=(Get-FileHash -LiteralPath $binary).Hash.ToLowerInvariant();$run=[guid]::NewGuid().ToString('N');$root=Join-Path $workspace ('.lab\hyperv\streaming-v2-20261027\ownership-native-20261029-'+$run);$stage='C:\ntfs2refs\ownership-native-'+$run;$task='N2R-RequiredOwnership-'+$run
 $null=New-Item -ItemType Directory -Path $root
 function Save([string]$name,$value){$bytes=[Text.UTF8Encoding]::new($false).GetBytes(($value|ConvertTo-Json -Depth 15));$f=[IO.File]::Open((Join-Path $root $name),'CreateNew','Write','Read');try{$f.Write($bytes,0,$bytes.Length);$f.Flush($true)}finally{$f.Dispose()}}
@@ -57,7 +63,7 @@ try{
  $body=$body.Replace('__CONFIG__',[Convert]::ToBase64String([Text.UTF8Encoding]::new($false).GetBytes(($c|ConvertTo-Json -Compress))))
  $wrapper=Join-Path $root 'wrapper.ps1';[IO.File]::WriteAllText($wrapper,$body,[Text.UTF8Encoding]::new($false));$wrapperPin=(Get-FileHash -LiteralPath $wrapper).Hash.ToLowerInvariant()
  Copy-Item -LiteralPath $binary -ToSession $session -Destination (Join-Path $stage 'lab-freeze-refs-allocation.exe');Copy-Item -LiteralPath $wrapper -ToSession $session -Destination (Join-Path $stage 'wrapper.ps1')
- HostGuard;Save 'dispatch.json' @{schema_version=1;kind='native-required-ownership-dispatch';run_id=$run;vm_id=$id.ToString('D');parent_id=$parent.ToString('D');task_name=$task;guest_stage=$stage;request_sha256=$ready.request_sha256;binary_sha256=$pin;binary_bytes=$meta.Length;wrapper_sha256=$wrapperPin;source_commit=(& git -C $workspace rev-parse HEAD);user_main_hunk_unstaged=$true;capacity=$capacity;forecast_bytes=2GB;raw_reconstruction_authorized=$false;utc=[DateTime]::UtcNow.ToString('o')}
+ HostGuard;Save 'dispatch.json' @{schema_version=1;kind='native-required-ownership-dispatch';run_id=$run;vm_id=$id.ToString('D');parent_id=$parent.ToString('D');task_name=$task;guest_stage=$stage;request_sha256=$ready.request_sha256;binary_sha256=$pin;binary_bytes=$meta.Length;wrapper_sha256=$wrapperPin;source_commit=$(if($headOk){$head});source_commit_observed=$headOk;source_tree_status_observed=$statusOk;source_tree_dirty=$(if($statusOk){$status.Count-gt0});source_commit_verified=$false;binary_provenance='unsealed target\release build; identified only by binary_sha256';capacity=$capacity;forecast_bytes=2GB;raw_reconstruction_authorized=$false;utc=[DateTime]::UtcNow.ToString('o')}
  Invoke-Command -Session $session -ArgumentList $stage,$task,$wrapperPin -ScriptBlock {param($stage,$task,$pin)
   $ErrorActionPreference='Stop';$path=Join-Path $stage 'wrapper.ps1';if((Get-FileHash -LiteralPath $path).Hash.ToLowerInvariant()-cne$pin-or(Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue)){throw 'Fresh pinned SYSTEM wrapper required'}
   $action=New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "'+$path+'"')

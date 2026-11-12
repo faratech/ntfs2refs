@@ -1033,6 +1033,14 @@ fn execute_with_interruption(
             lab_reconstruct::apply(target, shadow, journal, ticket, &observed)?
         }
         (RecoveryOperation::Resume, None) => {
+            // A resume asked of a saved run continues an apply that was
+            // durably begun; it never begins one or reverses a rollback.
+            lab_reconstruct::require_durable_apply_intent(
+                journal,
+                ticket,
+                &observed,
+                &request.comparison,
+            )?;
             lab_reconstruct::resume(target, shadow, journal, ticket, &observed)?
         }
         (RecoveryOperation::Rollback, None) => {

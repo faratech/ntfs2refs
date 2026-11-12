@@ -1071,6 +1071,46 @@ pub fn inspect_completed_journal<J: ReadSeek>(
     })
 }
 
+/// What a recovery that was asked to resume must find in the journal: this
+/// conversion's own apply intent, durable and whole. A journal with nothing
+/// recorded has had nothing written from it, so writing now would begin the
+/// conversion from a recovery; a recorded rollback is to be finished, not
+/// reversed; and an intent that cannot be read says nothing about either.
+/// In each of those a rollback is the only way on, and stays available.
+///
+/// This is asked by the commands that recover a saved run. The engine's own
+/// `apply`, `resume` and `rollback` are unchanged: its laboratory changes
+/// direction on purpose.
+pub(crate) fn require_durable_apply_intent<J: ReadSeek>(
+    journal: &mut J,
+    ticket: &JournalTicket,
+    observed_binding: &JournalBinding,
+    expected_request: &RetainedCompareRequest,
+) -> Result<()> {
+    let (lifecycle, _) =
+        inspect_journal_lifecycle(journal, ticket, observed_binding, expected_request).context(
+            "a resume needs a journal whose lifecycle can be read; only a rollback may proceed from here",
+        )?;
+    match lifecycle {
+        JournalLifecycle::ApplyIntent => Ok(()),
+        JournalLifecycle::PreparedClear => anyhow::bail!(
+            "the conversion stopped before it recorded an apply intent: nothing was written, \
+             and a resume would start the conversion anew; roll back to return the NTFS volume"
+        ),
+        JournalLifecycle::RollbackIntent => anyhow::bail!(
+            "a rollback is recorded in the journal; a resume is closed; roll back to finish it"
+        ),
+        JournalLifecycle::RefsHandoff => {
+            anyhow::bail!(
+                "the ReFS handoff is committed; there is nothing to resume, only to finalize"
+            )
+        }
+        JournalLifecycle::NtfsRollback => {
+            anyhow::bail!("the NTFS rollback is committed; a resume is closed")
+        }
+    }
+}
+
 /// Runtime observation only, never deserialized into replay or mount authority.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -2707,6 +2747,56 @@ mod capacity_budget_tests {
             default_journal.bytes.get_ref(),
             explicit_journal.bytes.get_ref()
         );
+    }
+
+    #[test]
+    fn a_recovery_resume_requires_the_conversions_own_durable_apply_intent() {
+        let (old, new, request) = fixture();
+        let mut source = Memory::new(old.clone());
+        let mut shadow = Memory::new(new.clone());
+        let mut journal = Memory::new(vec![]);
+        let binding = test_binding();
+        let summary = prepare_journal_with_profile(
+            &mut source,
+            &mut shadow,
+            &mut journal,
+            &request,
+            &binding,
+            16 << 30,
+            JournalProfile::ExperimentalLargeV2,
+        )
+        .unwrap();
+        let ticket = &summary.ticket;
+        let refusal = |journal: &mut Memory| {
+            format!(
+                "{:#}",
+                require_durable_apply_intent(journal, ticket, &binding, &request).unwrap_err()
+            )
+        };
+
+        // Nothing recorded: a resume would be the first apply.
+        let clear = refusal(&mut journal);
+        assert!(clear.contains("nothing was written"), "{clear}");
+
+        // An apply that was durably begun (here, also finished) may be resumed.
+        let mut target = Memory::new(old.clone());
+        apply(&mut target, &mut shadow, &mut journal, ticket, &binding).unwrap();
+        require_durable_apply_intent(&mut journal, ticket, &binding, &request).unwrap();
+
+        // An intent that cannot be read says nothing; only a rollback is left.
+        let mut damaged = journal.clone();
+        damaged.bytes.get_mut()[GRANULE as usize + 9] ^= 1;
+        let unreadable = refusal(&mut damaged);
+        assert!(
+            unreadable.contains("only a rollback may proceed"),
+            "{unreadable}"
+        );
+
+        // A recorded rollback is finished, not reversed.
+        rollback(&mut target, &mut shadow, &mut journal, ticket, &binding).unwrap();
+        assert_eq!(target.bytes.get_ref(), &old);
+        let rolled = refusal(&mut journal);
+        assert!(rolled.contains("a rollback is recorded"), "{rolled}");
     }
 
     #[test]

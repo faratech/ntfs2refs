@@ -416,6 +416,19 @@ fn recover_compact_impl(
             )?;
             selected
         } else {
+            // An explicit operation keeps its own dispatch, but a resume is
+            // held to the journal all the same.
+            if operation == ExperimentalCompactOperation::Resume {
+                phase = "compact-journal-lifecycle";
+                let bound =
+                    protocol::compact_binding(&request, &observed.identity, &artifact_identity)?;
+                crate::lab_reconstruct::require_durable_apply_intent(
+                    &mut journal,
+                    &ticket,
+                    &bound,
+                    &request.comparison,
+                )?;
+            }
             operation
         };
         effective_operation = operation;

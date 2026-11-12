@@ -4673,6 +4673,7 @@ impl Read for GeneralFrozenPartition {
                 output[..wanted].copy_from_slice(&window.bytes_mut()[at..at + wanted]);
                 self.position += wanted as u64;
                 self.ahead.last_end = self.ahead.last_end.max(self.position);
+                crate::perf::add_bytes(crate::perf::Point::DeviceReadServed, wanted as u64);
                 return Ok(wanted);
             }
         }
@@ -4723,9 +4724,13 @@ impl Read for GeneralFrozenPartition {
             let wanted = wanted.min(count - prefix);
             output[..wanted].copy_from_slice(&window.bytes_mut()[prefix..prefix + wanted]);
             self.position += wanted as u64;
+            crate::perf::add_bytes(crate::perf::Point::DeviceReadServed, wanted as u64);
             return Ok(wanted);
         }
-        crate::perf::add_bytes(crate::perf::Point::DeviceRead, output.len() as u64);
+        // What the device is asked for, as in the read-ahead branch above:
+        // whole granules, not the caller's length.
+        crate::perf::add_bytes(crate::perf::Point::DeviceRead, count as u64);
+        crate::perf::add_bytes(crate::perf::Point::DeviceReadServed, wanted as u64);
         // One positional read: no separate call to move the file pointer.
         let read = self.file.seek_read(
             &mut self.buffer.bytes_mut()[..count],

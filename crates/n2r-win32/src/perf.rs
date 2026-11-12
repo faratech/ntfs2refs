@@ -37,6 +37,9 @@ points! {
     JournalRead => "journal read-back",
     ArenaRevalidation => "working-file re-validation",
     DeviceRead => "device read",
+    // Bytes only: what readers were handed, from the device or from the
+    // read-ahead window. Against "device read" it shows what read-ahead costs.
+    DeviceReadServed => "device bytes served",
     DeviceWrite => "device write",
     SourceObject => "source object observation",
     ShadowObject => "shadow object observation",
@@ -45,7 +48,6 @@ points! {
     ContentRead => "file content read",
     VolumeWait => "wait for volume",
     RecoveryFileOpen => "recovery file reopen",
-    NativeWalk => "native tree walk",
 }
 const COUNT: usize = LABELS.len();
 
@@ -267,5 +269,17 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("freeze check"), "{text}");
+    }
+
+    #[test]
+    fn a_point_with_bytes_and_no_calls_is_still_reported() {
+        // "device bytes served" is only ever added to, never timed.
+        let before = snapshot();
+        add_bytes(Point::DeviceReadServed, 1 << 30);
+        let text = line("example", 1.0, &before, &snapshot());
+        assert!(
+            text.contains("device bytes served 0.0s x0 1.00 GB"),
+            "{text}"
+        );
     }
 }

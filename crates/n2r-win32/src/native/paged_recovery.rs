@@ -431,6 +431,9 @@ impl Write for BorrowedPagedWriter<'_> {
             .partition_offset
             .checked_add(self.source.position)
             .ok_or_else(|| invalid("fresh paged disk offset overflow"))?;
+        // The device write itself, apart from the policy check above.
+        let _timed = crate::perf::scope(crate::perf::Point::DeviceWrite);
+        crate::perf::add_bytes(crate::perf::Point::DeviceWrite, input.len() as u64);
         self.source.file.seek(SeekFrom::Start(offset))?;
         self.source.buffer.bytes_mut()[..input.len()].copy_from_slice(input);
         self.requested = attempted;
@@ -1320,6 +1323,7 @@ impl GeneralFrozenPartition {
             let journal = &mut *journal;
             std::thread::scope(|scope| {
                 let body = scope.spawn(move || {
+                    let _sampled = crate::stack_sampler::helper();
                     crate::sha256_native::journal_body(journal, BODY, length, &expected)
                 });
                 let old_bytes = self.with_read_ahead(|source| {

@@ -402,6 +402,7 @@ impl OriginalPrefetch {
         let worker = std::thread::Builder::new()
             .name("n2r-original-prefetch".into())
             .spawn(move || {
+                let _sampled = n2r_win32::stack_sampler::helper();
                 for range in selection {
                     let mut done = 0;
                     while done < range.length {

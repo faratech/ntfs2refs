@@ -202,6 +202,7 @@ impl Overlapped {
         let worker = std::thread::Builder::new()
             .name("n2r-stream-digest".into())
             .spawn(move || {
+                let _sampled = crate::stack_sampler::helper();
                 // The CNG object lives only on this worker.
                 let mut hash = Sha256::new()?;
                 while let Ok(buffer) = chunks.recv() {

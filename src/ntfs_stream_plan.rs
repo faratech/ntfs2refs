@@ -104,7 +104,10 @@ fn sparse_candidate(
         attribute.flags == stream.flags
             && !attribute.resident
             && attribute.lowest_vcn == 0
-            && matches!(attribute.compression_unit, 0 | 4)
+            && crate::ntfs_inspect::sparse_unit_supported(
+                attribute.compression_unit,
+                geometry.cluster_size,
+            )
             && attribute.extents == stream.extents
             && attribute.logical_size == stream.logical_size
             && attribute.initialized_size == stream.initialized_size
@@ -255,6 +258,7 @@ pub fn classify_with_resource_profile(raw: &NtfsInspection, resources: ResourceP
                 full_prefix,
                 physical,
                 has_single,
+                ..
             } = candidate_source(
                 &raw.geometry,
                 file,
@@ -337,6 +341,8 @@ pub fn classify_with_resource_profile(raw: &NtfsInspection, resources: ResourceP
 struct PreparedCandidate {
     disposition: Disposition,
     reason: &'static str,
+    /// Why a sparse stream's own mapping was not accepted, when it was not.
+    sparse_refusal: Option<String>,
     sparse: Option<SparseCandidate>,
     full_prefix: u64,
     physical: Option<u64>,
@@ -356,9 +362,12 @@ fn candidate_source(
     let named = !stream.name_utf16.is_empty();
     let sparse_requested = stream.flags == 0x8000;
 
-    let sparse = sparse_requested
-        .then(|| sparse_candidate(geometry, file, stream))
-        .and_then(|value| value.ok());
+    let (sparse, sparse_refusal) =
+        match sparse_requested.then(|| sparse_candidate(geometry, file, stream)) {
+            Some(Ok(candidate)) => (Some(candidate), None),
+            Some(Err(error)) => (None, Some(format!("{error:#}"))),
+            None => (None, None),
+        };
 
     let single = stream.extents.first().filter(|_| stream.extents.len() == 1);
     let physical = single.and_then(|e| e.physical_offset);
@@ -440,6 +449,7 @@ fn candidate_source(
     PreparedCandidate {
         disposition,
         reason,
+        sparse_refusal,
         sparse,
         full_prefix,
         physical,
@@ -538,11 +548,17 @@ fn classify_stream_domain_scoped(
         file.streams.len() as u64 <= admission.data_streams,
         maximum_extents,
     );
+    let reason = match &candidate.sparse_refusal {
+        Some(refusal) if candidate.disposition == Disposition::Reject => {
+            format!("{}: {refusal}", candidate.reason)
+        }
+        _ => candidate.reason.to_owned(),
+    };
     Ok(finish_candidate(
         file,
         stream,
         candidate.disposition,
-        candidate.reason,
+        &reason,
         &candidate.sparse,
         candidate.full_prefix,
         candidate.physical,

@@ -837,6 +837,42 @@ pub(crate) fn usa_entries(structure_bytes: usize) -> usize {
 }
 
 #[cfg(test)]
+mod sparse_unit_tests {
+    use super::sparse_unit_supported;
+
+    #[test]
+    fn a_sparse_attribute_records_its_allocation_granule_for_the_cluster_size() {
+        // Unit 3 on 8 KiB clusters and unit 1 on 32 KiB were read off volumes
+        // in the lab; a 64 KiB granule gives the rest above 4 KiB.
+        for (cluster, unit) in [
+            (512, 4),
+            (1024, 4),
+            (2048, 4),
+            (4096, 4),
+            (8192, 3),
+            (16384, 2),
+            (32768, 1),
+            (65536, 0),
+            (2 * 1024 * 1024, 0),
+        ] {
+            assert!(sparse_unit_supported(unit, cluster), "{cluster}: {unit}");
+            // An attribute made before it was marked sparse.
+            assert!(sparse_unit_supported(0, cluster), "{cluster}: 0");
+        }
+        for (cluster, unit) in [
+            (4096, 3),
+            (8192, 4),
+            (16384, 3),
+            (32768, 2),
+            (65536, 1),
+            (131072, 4),
+        ] {
+            assert!(!sparse_unit_supported(unit, cluster), "{cluster}: {unit}");
+        }
+    }
+}
+
+#[cfg(test)]
 mod update_sequence_tests {
     use super::{USA_STRIDE, usa_entries};
 
@@ -1677,10 +1713,15 @@ fn logical_hash_metadata_status(
     {
         Some(LogicalHashStatus::UnsupportedFlags)
     } else if a.compression_unit != 0
-        && !((a.flags & 0x8000 != 0 || a.flags == 1) && a.compression_unit == 4)
+        && !(if a.flags == 0x8000 {
+            sparse_unit_supported(a.compression_unit, geometry.cluster_size)
+        } else {
+            (a.flags & 0x8000 != 0 || a.flags == 1) && a.compression_unit == 4
+        })
     {
-        // Native sparse attributes can carry unit 4 without compression. The
-        // compression method flags, not the unit alone, distinguish that case.
+        // Native sparse attributes carry their allocation granule as a unit
+        // without compression. The compression method flags, not the unit
+        // alone, distinguish that case.
         Some(LogicalHashStatus::UnsupportedCompressionUnit)
     } else {
         None
@@ -2462,7 +2503,7 @@ fn checked_data_attribute<R: Read + Seek>(
                 || (allow_sparse
                     && data.report.flags == 0x8000
                     && !data.report.resident
-                    && matches!(data.report.compression_unit, 0 | 4))
+                    && sparse_unit_supported(data.report.compression_unit, geometry.cluster_size))
                 || (compressed
                     && crate::ntfs_compression::supported(&data.report, geometry).is_ok()))
             && data.report.logical_size == stream.logical_size,
@@ -2921,9 +2962,38 @@ pub struct StreamRangeReadProof {
     pub allocation: Option<StreamAllocationEvidence>,
 }
 
+/// The compression unit NTFS records on a sparse attribute that is not
+/// compressed. Nothing is encoded: the unit is the granule a sparse stream is
+/// allocated in, as a power of two of clusters. Windows writes 16 clusters on
+/// clusters of 4 KiB and smaller, and 64 KiB on larger ones: 8 clusters of
+/// 8 KiB (unit 3), 4 of 16 KiB, 2 of 32 KiB, and unit 0 from 64 KiB up. An
+/// attribute that was made before it was marked sparse keeps unit 0.
+pub(crate) fn sparse_unit_supported(compression_unit: u16, cluster_size: u32) -> bool {
+    let granule = match cluster_size {
+        512..=4096 => 4,
+        8192 => 3,
+        16384 => 2,
+        32768 => 1,
+        _ => 0,
+    };
+    compression_unit == 0 || compression_unit == granule
+}
+
+/// The same, where the volume's cluster size is not at hand: the attribute
+/// was admitted with it, and a range of it only needs telling apart from
+/// compressed data, which carries a method flag.
+fn admitted_uncompressed_unit(a: &AttributeInventory) -> bool {
+    if a.flags == 0x8000 {
+        a.compression_unit <= 4
+    } else {
+        a.compression_unit == 0
+    }
+}
+
 /// Shared metadata-only eligibility for an initialized physical DATA range.
-/// A sparse NTFS attribute may use compression-unit 4 without compressed
-/// encoding; compressed/encrypted flags and bytes beyond VDL remain excluded.
+/// A sparse NTFS attribute carries its allocation granule as a compression
+/// unit without compressed encoding; compressed/encrypted flags and bytes
+/// beyond VDL remain excluded.
 pub(crate) fn require_initialized_uncompressed_range(
     a: &AttributeInventory,
     offset: u64,
@@ -2932,15 +3002,10 @@ pub(crate) fn require_initialized_uncompressed_range(
     let end = offset
         .checked_add(length)
         .context("reference logical overflow")?;
-    let unit_supported = if a.flags == 0x8000 {
-        matches!(a.compression_unit, 0 | 4)
-    } else {
-        a.compression_unit == 0
-    };
     ensure!(
         !a.resident
             && a.flags & !0x8000 == 0
-            && unit_supported
+            && admitted_uncompressed_unit(a)
             && end <= a.initialized_size
             && end <= a.logical_size,
         "retained reference is not initialized uncompressed source DATA: resident={}, flags={:#x}, compression_unit={}, offset={}, length={}, end={}, initialized={}, logical={}",
@@ -3170,11 +3235,7 @@ impl PlainStreamRangeSession {
         if length == 0
             || a.resident
             || a.flags & !0x8000 != 0
-            || !(if a.flags == 0x8000 {
-                matches!(a.compression_unit, 0 | 4)
-            } else {
-                a.compression_unit == 0
-            })
+            || !admitted_uncompressed_unit(a)
             || end > a.initialized_size
         {
             return Ok(None);
@@ -3278,19 +3339,14 @@ impl PlainStreamRangeSession {
         let end = offset
             .checked_add(length)
             .context("hole logical overflow")?;
-        // As for an initialized range: a sparse attribute may carry
-        // compression unit 4 (its allocation granule) with no encoding.
-        let unit_supported = if a.flags == 0x8000 {
-            matches!(a.compression_unit, 0 | 4)
-        } else {
-            a.compression_unit == 0
-        };
+        // As for an initialized range: a sparse attribute carries its
+        // allocation granule as a compression unit, with no encoding.
         ensure!(
             !self.poisoned
                 && self.allow_sparse
                 && !a.resident
                 && a.flags & !0x8000 == 0
-                && unit_supported
+                && admitted_uncompressed_unit(a)
                 && end <= a.logical_size,
             "logical hole requires checked uncompressed sparse DATA: failed_session={}, sparse_allowed={}, resident={}, flags={:#x}, compression_unit={}, offset={}, length={}, logical={}",
             self.poisoned,

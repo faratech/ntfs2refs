@@ -269,7 +269,7 @@ fn pinned_root_txf_has_exact_internal_form_but_replacement_is_not_admitted() {
         !root
             .issues
             .iter()
-            .any(|issue| issue == "unsupported or unassembled attribute semantics")
+            .any(|issue| issue.starts_with("unsupported or unassembled attribute semantics"))
     );
     assert!(
         !assessed

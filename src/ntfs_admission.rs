@@ -1450,82 +1450,93 @@ pub(crate) fn user_issues_with_context_alias_scope(
         issues
             .push("names, depth, short-name aliases or directory links exceed the profile".into());
     }
-    if f.base_file_reference != 0
-        || f.attributes.iter().any(|a| {
-            let plain =
-                matches!(a.type_code, 0x10 | 0x30 | 0x50) && a.name_utf16.is_empty() && a.resident;
-            let data = !f.is_directory
-                && a.type_code == 0x80
-                && (a.name_utf16.is_empty()
-                    || (ordinary && valid_named_stream_name(&a.name_utf16)));
-            let index = f.is_directory
-                && matches!(a.type_code, 0x90 | 0xa0 | 0xb0)
-                && ntfs_namespace::is_i30(&a.name_utf16);
-            let root_txf = f.record_number == 5 && f.is_directory && recognized_root_txf(a);
-            let windows_txf = windows_alias_paths_preserved
-                && verified_windows_txf_metadata
-                && recognized_root_txf(a);
-            let windows_object_id = windows_alias_paths_preserved
-                && verified_windows_object_id_disposition
-                && a.type_code == 0x40
-                && a.name_utf16.is_empty()
-                && a.resident
-                && a.flags == 0
-                && a.logical_size == 16
-                && a.initialized_size == 16
-                && a.allocated_size == 16
-                && a.lowest_vcn == 0
-                && a.compression_unit == 0
-                && a.extents.is_empty();
-            #[cfg(windows)]
-            let default_storage_hint = windows_alias_paths_preserved
-                && default_storage_hint_normalization
-                && crate::ntfs_storage_class::recognized_default(a);
-            #[cfg(not(windows))]
-            let default_storage_hint = {
-                let _ = default_storage_hint_normalization;
-                false
-            };
-            let ea = ea_supported && matches!(a.type_code, 0xd0 | 0xe0) && a.name_utf16.is_empty();
-            let point = reparse.is_some() && a.type_code == 0xc0 && a.name_utf16.is_empty();
-            let sparse_data = ordinary
-                && data
-                && !a.resident
-                && a.flags == 0x8000
-                && matches!(a.compression_unit, 0 | 4);
-            let compressed_data = ordinary
-                && data
-                && a.flags == 1
-                && crate::ntfs_compression::supported(a, geometry).is_ok();
-            // Resident I30 compression is an inheritance policy marker; the
-            // index value still passes the complete raw namespace parser.
-            let compressed_directory_policy = ordinary
-                && index
-                && a.type_code == 0x90
-                && a.resident
-                && a.flags == 1
-                && a.compression_unit == 0
-                && a.extents.is_empty()
-                && f.standard_information
-                    .as_ref()
-                    .is_some_and(|si| si.file_attributes & 0x800 != 0);
-            !(plain
-                || data
-                || index
-                || root_txf
-                || windows_txf
-                || windows_object_id
-                || ea
-                || point
-                || default_storage_hint)
-                || ((a.flags != 0 || a.compression_unit != 0)
-                    && !sparse_data
-                    && !compressed_data
-                    && !compressed_directory_policy)
-                || a.lowest_vcn != 0
-        })
-    {
-        issues.push("unsupported or unassembled attribute semantics".into());
+    let unsupported_attribute = f.attributes.iter().find(|a| {
+        let plain =
+            matches!(a.type_code, 0x10 | 0x30 | 0x50) && a.name_utf16.is_empty() && a.resident;
+        let data = !f.is_directory
+            && a.type_code == 0x80
+            && (a.name_utf16.is_empty() || (ordinary && valid_named_stream_name(&a.name_utf16)));
+        let index = f.is_directory
+            && matches!(a.type_code, 0x90 | 0xa0 | 0xb0)
+            && ntfs_namespace::is_i30(&a.name_utf16);
+        let root_txf = f.record_number == 5 && f.is_directory && recognized_root_txf(a);
+        let windows_txf = windows_alias_paths_preserved
+            && verified_windows_txf_metadata
+            && recognized_root_txf(a);
+        let windows_object_id = windows_alias_paths_preserved
+            && verified_windows_object_id_disposition
+            && a.type_code == 0x40
+            && a.name_utf16.is_empty()
+            && a.resident
+            && a.flags == 0
+            && a.logical_size == 16
+            && a.initialized_size == 16
+            && a.allocated_size == 16
+            && a.lowest_vcn == 0
+            && a.compression_unit == 0
+            && a.extents.is_empty();
+        #[cfg(windows)]
+        let default_storage_hint = windows_alias_paths_preserved
+            && default_storage_hint_normalization
+            && crate::ntfs_storage_class::recognized_default(a);
+        #[cfg(not(windows))]
+        let default_storage_hint = {
+            let _ = default_storage_hint_normalization;
+            false
+        };
+        let ea = ea_supported && matches!(a.type_code, 0xd0 | 0xe0) && a.name_utf16.is_empty();
+        let point = reparse.is_some() && a.type_code == 0xc0 && a.name_utf16.is_empty();
+        let sparse_data = ordinary
+            && data
+            && !a.resident
+            && a.flags == 0x8000
+            && crate::ntfs_inspect::sparse_unit_supported(
+                a.compression_unit,
+                geometry.cluster_size,
+            );
+        let compressed_data = ordinary
+            && data
+            && a.flags == 1
+            && crate::ntfs_compression::supported(a, geometry).is_ok();
+        // Resident I30 compression is an inheritance policy marker; the
+        // index value still passes the complete raw namespace parser.
+        let compressed_directory_policy = ordinary
+            && index
+            && a.type_code == 0x90
+            && a.resident
+            && a.flags == 1
+            && a.compression_unit == 0
+            && a.extents.is_empty()
+            && f.standard_information
+                .as_ref()
+                .is_some_and(|si| si.file_attributes & 0x800 != 0);
+        !(plain
+            || data
+            || index
+            || root_txf
+            || windows_txf
+            || windows_object_id
+            || ea
+            || point
+            || default_storage_hint)
+            || ((a.flags != 0 || a.compression_unit != 0)
+                && !sparse_data
+                && !compressed_data
+                && !compressed_directory_policy)
+            || a.lowest_vcn != 0
+    });
+    if f.base_file_reference != 0 {
+        issues.push("unsupported or unassembled attribute semantics: an extension record".into());
+    } else if let Some(a) = unsupported_attribute {
+        issues.push(format!(
+            "unsupported or unassembled attribute semantics: attribute type {:#x} {:?}, {}, flags {:#x}, compression unit {}, lowest VCN {}",
+            a.type_code,
+            String::from_utf16_lossy(&a.name_utf16),
+            if a.resident { "resident" } else { "nonresident" },
+            a.flags,
+            a.compression_unit,
+            a.lowest_vcn
+        ));
     }
     if f.record_number == 5
         && f.attributes

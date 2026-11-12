@@ -1048,12 +1048,19 @@ fn planned_stream_source(
     if resources != ntfs_admission::ResourceProfile::AlphaV1
         || candidate.is_some_and(|c| c.sparse.is_some())
     {
-        ensure!(
-            candidate.is_some_and(
-                |decision| decision.disposition != ntfs_stream_plan::Disposition::Reject
+        match candidate {
+            Some(decision) => ensure!(
+                decision.disposition != ntfs_stream_plan::Disposition::Reject,
+                "source stream is not a candidate under the selected resource profile: MFT record {} stream {:?}, {} bytes: {}",
+                decision.record_number,
+                String::from_utf16_lossy(&decision.name_utf16),
+                decision.logical_bytes,
+                decision.reason
             ),
-            "source stream is not a candidate under the selected resource profile"
-        );
+            None => anyhow::bail!(
+                "source stream is not a candidate under the selected resource profile: it has no decision"
+            ),
+        }
     }
     let source_offset = candidate
         .filter(|decision| decision.disposition == ntfs_stream_plan::Disposition::RetainCandidate)

@@ -794,7 +794,10 @@ pub(super) fn checked_data_attribute_domain<R: Read + Seek>(
                 || (allow_sparse
                     && data.report.flags == 0x8000
                     && !data.report.resident
-                    && matches!(data.report.compression_unit, 0 | 4))
+                    && super::sparse_unit_supported(
+                        data.report.compression_unit,
+                        geometry.cluster_size,
+                    ))
                 || (compressed
                     && crate::ntfs_compression::supported(&data.report, geometry).is_ok()))
             && data.report.logical_size == stream.logical_size,

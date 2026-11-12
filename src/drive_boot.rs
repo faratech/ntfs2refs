@@ -1,6 +1,7 @@
 //! Build-specific boot compatibility checks. These are routing/preservation
 //! requirements; only the existing native source issuer authorizes writes.
-use anyhow::{Context, Result, ensure};
+use crate::execution_mode::{ExecutionMode, SourceChangeAuthority};
+use anyhow::{Context, Result, bail, ensure};
 use n2r_win32::general_layout::{GeneralDiskBinding, GeneralDiskLayoutProfile};
 use sha2::{Digest, Sha256};
 use std::{
@@ -16,9 +17,68 @@ use std::{
 
 const REFS_GEOMETRY_UNIT: u64 = 64 << 20;
 
-pub(super) fn describe_geometry(binding: &GeneralDiskBinding) {
-    let remainder = binding.identity.partition_bytes % REFS_GEOMETRY_UNIT;
-    if remainder != 0 {
+/// What preparing ReFS geometry requires of the source partition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum GeometryDecision {
+    /// Its length is already a multiple of the ReFS geometry unit.
+    Aligned,
+    /// The Windows NTFS driver must first shrink it to one.
+    Shrink {
+        target_bytes: u64,
+        shrink_bytes: u64,
+    },
+}
+
+/// Decided from the partition length alone, before anything is asked of the
+/// user, so that a diagnose run which could not be honoured never starts.
+pub(super) fn geometry_decision(partition_bytes: u64) -> Result<GeometryDecision> {
+    let shrink_bytes = partition_bytes % REFS_GEOMETRY_UNIT;
+    if shrink_bytes == 0 {
+        return Ok(GeometryDecision::Aligned);
+    }
+    let target_bytes = partition_bytes
+        .checked_sub(shrink_bytes)
+        .context("boot geometry underflow")?;
+    ensure!(
+        target_bytes > 0
+            && shrink_bytes < REFS_GEOMETRY_UNIT
+            && target_bytes.is_multiple_of(REFS_GEOMETRY_UNIT),
+        "bounded ReFS geometry adjustment required"
+    );
+    Ok(GeometryDecision::Shrink {
+        target_bytes,
+        shrink_bytes,
+    })
+}
+
+/// Diagnose never changes the source, so it cannot run where a conversion
+/// would first have to shrink the partition.
+pub(super) fn admit_geometry(
+    decision: GeometryDecision,
+    partition_bytes: u64,
+    mode: ExecutionMode,
+) -> Result<()> {
+    if let (
+        GeometryDecision::Shrink {
+            target_bytes,
+            shrink_bytes,
+        },
+        ExecutionMode::Diagnose,
+    ) = (decision, mode)
+    {
+        bail!(
+            "--diagnose cannot run on this partition: a conversion would first have the Windows NTFS driver shrink it by {shrink_bytes} bytes, from {partition_bytes} to {target_bytes} (a multiple of 64 MiB), and diagnose never changes the source. Nothing was changed."
+        );
+    }
+    Ok(())
+}
+
+pub(super) fn describe_geometry(decision: GeometryDecision) {
+    if let GeometryDecision::Shrink {
+        shrink_bytes: remainder,
+        ..
+    } = decision
+    {
         println!(
             "Windows boot preparation must shrink this NTFS partition by {remainder} bytes using the Windows NTFS driver before creating ReFS metadata."
         );
@@ -33,6 +93,8 @@ pub(super) fn describe_geometry(binding: &GeneralDiskBinding) {
 pub(super) fn normalize_geometry(
     before: n2r_win32::discovery::VolumeDiscovery,
     run: &Path,
+    // The NTFS driver resizes the source here, and it is not undone.
+    _authority: &SourceChangeAuthority,
 ) -> Result<n2r_win32::discovery::VolumeDiscovery> {
     use n2r_win32::discovery::{self, Role};
     ensure!(
@@ -40,17 +102,13 @@ pub(super) fn normalize_geometry(
         "explicit offline Windows maintenance required"
     );
     let old = before.binding.identity.partition_bytes;
-    let remainder = old % REFS_GEOMETRY_UNIT;
-    if remainder == 0 {
+    let GeometryDecision::Shrink {
+        target_bytes: target,
+        shrink_bytes: remainder,
+    } = geometry_decision(old)?
+    else {
         return Ok(before);
-    }
-    let target = old
-        .checked_sub(remainder)
-        .context("boot geometry underflow")?;
-    ensure!(
-        target > 0 && remainder < REFS_GEOMETRY_UNIT && target.is_multiple_of(REFS_GEOMETRY_UNIT),
-        "bounded ReFS geometry adjustment required"
-    );
+    };
     let mut events = Vec::new();
     let fresh = discovery::discover(&before.volume_guid_path, Role::OfflineWindowsSource)?;
     ensure!(
@@ -429,4 +487,56 @@ fn hash(path: &Path) -> Result<String> {
         "boot component changed during hashing"
     );
     Ok(hex::encode(hash.finalize()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    const UNIT: u64 = 64 << 20;
+
+    #[test]
+    fn geometry_is_decided_from_the_partition_length_alone() {
+        assert_eq!(
+            geometry_decision(987 * UNIT).unwrap(),
+            GeometryDecision::Aligned
+        );
+        assert_eq!(
+            geometry_decision(987 * UNIT + 4096).unwrap(),
+            GeometryDecision::Shrink {
+                target_bytes: 987 * UNIT,
+                shrink_bytes: 4096
+            }
+        );
+        assert_eq!(
+            geometry_decision(2 * UNIT - 512).unwrap(),
+            GeometryDecision::Shrink {
+                target_bytes: UNIT,
+                shrink_bytes: UNIT - 512
+            }
+        );
+        // Shrinking to nothing is not an adjustment.
+        assert!(geometry_decision(UNIT - 4096).is_err());
+    }
+
+    #[test]
+    fn diagnose_is_refused_only_where_a_conversion_would_shrink_the_partition() {
+        let shrink = GeometryDecision::Shrink {
+            target_bytes: 987 * UNIT,
+            shrink_bytes: 4096,
+        };
+        let unaligned = 987 * UNIT + 4096;
+        for mode in [ExecutionMode::Convert, ExecutionMode::Diagnose] {
+            assert!(admit_geometry(GeometryDecision::Aligned, 987 * UNIT, mode).is_ok());
+        }
+        assert!(admit_geometry(shrink, unaligned, ExecutionMode::Convert).is_ok());
+        let refusal = admit_geometry(shrink, unaligned, ExecutionMode::Diagnose)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refusal.contains("shrink it by 4096 bytes")
+                && refusal.contains(&unaligned.to_string())
+                && refusal.contains("Nothing was changed"),
+            "{refusal}"
+        );
+    }
 }

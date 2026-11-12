@@ -625,9 +625,17 @@ mod windows {
             before.filesystem == "NTFS",
             "selected partition must currently be NTFS"
         );
-        if args.windows_boot_volume {
+        // Decided from the partition length before anything is asked, so a
+        // diagnose that could not be honoured stops here.
+        let boot_geometry = if args.windows_boot_volume {
+            let partition_bytes = before.binding.identity.partition_bytes;
+            let decision = super::boot::geometry_decision(partition_bytes)?;
+            super::boot::admit_geometry(decision, partition_bytes, mode)?;
             super::boot::validate(&before.binding)?;
-        }
+            Some(decision)
+        } else {
+            None
+        };
         let resources = if !args.whole_image_verification {
             crate::ntfs_admission::ResourceProfile::ResourceBoundedV4(None)
         } else {
@@ -694,8 +702,8 @@ mod windows {
                 "Reduced scratch: rollback restores allocated NTFS data and metadata; unused-space contents may change. Volumes with VSS snapshots or hosted diff areas are refused."
             );
         }
-        if args.windows_boot_volume {
-            super::boot::describe_geometry(&before.binding);
+        if let Some(decision) = boot_geometry {
+            super::boot::describe_geometry(decision);
         }
         if args.diagnose {
             crate::resource_preparation::set_diagnose();
@@ -727,6 +735,7 @@ mod windows {
             args.experimental_thin_shadow,
             args.experimental_thin_backing_bytes,
             mode,
+            boot_geometry,
         )
     }
     fn convert_selected(
@@ -741,6 +750,7 @@ mod windows {
         thin_shadow: bool,
         thin_backing_bytes: Option<u64>,
         mode: crate::execution_mode::ExecutionMode,
+        boot_geometry: Option<super::boot::GeometryDecision>,
     ) -> Result<u8> {
         let system = n2r_win32::current_windows_directory()?
             .to_str()
@@ -847,10 +857,17 @@ mod windows {
             )?;
             Some(admitted)
         };
-        let before = if before.binding.layout_profile
-            == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows
-        {
-            super::boot::normalize_geometry(before, &run)?
+        ensure!(
+            boot_geometry.is_some()
+                == (before.binding.layout_profile
+                    == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows),
+            "boot geometry was not decided for the selected source layout"
+        );
+        let before = if let Some(super::boot::GeometryDecision::Shrink { .. }) = boot_geometry {
+            let authority = mode.source_change_authority(
+                "the Windows NTFS driver shrink that prepares ReFS geometry",
+            )?;
+            super::boot::normalize_geometry(before, &run, &authority)?
         } else {
             before
         };

@@ -33,6 +33,15 @@ pub struct TreeFootprint {
     pub own_record_attribute_tables: usize,
     pub external_attribute_pages: u32,
     pub external_extent_pages: u32,
+    /// DATA allocation records of this tree in a form the walk does not
+    /// interpret: their extents were not followed and are in no range list.
+    pub uninterpreted_data_records: u64,
+    /// Whether this tree's leaf rows were read as file records. Only object
+    /// trees of schema 0x130 are; the rows of any other tree are counted and
+    /// nothing in them is followed.
+    pub file_records_interpreted: bool,
+    /// False when a DATA record of this tree was left uninterpreted: its
+    /// extent tree is a descendant that was not walked.
     pub index_descendants_complete: bool,
     pub leaf_external_references_followed: bool,
 }
@@ -137,6 +146,9 @@ pub struct DataStorageFootprint {
     pub sparse_clusters: u64,
     pub physical_ranges: Vec<crate::refs_write_set::ByteRange>,
     pub external_payload_bytes_read: u64,
+    /// DATA allocation records met in a form the walk does not interpret.
+    /// Their clusters are missing from `physical_ranges`.
+    pub uninterpreted_data_records: u64,
     pub complete_stream_inventory: bool,
 }
 
@@ -238,9 +250,17 @@ fn consume_attribute_rows(
     total_pages: u32,
     limits: WalkLimits,
     reserved_roots: usize,
-) -> Result<()> {
+) -> Result<u64> {
+    // How many DATA records here were in the form that is not interpreted.
+    let mut uninterpreted = 0u64;
     for row in rows {
-        if let Some(data) = crate::refs_record_refs::inspect_data_extent_node(row)? {
+        if crate::refs_record_refs::is_uninterpreted_data_record(row)? {
+            uninterpreted += 1;
+            storage.uninterpreted_data_records = storage
+                .uninterpreted_data_records
+                .checked_add(1)
+                .context("uninterpreted DATA record count overflow")?;
+        } else if let Some(data) = crate::refs_record_refs::inspect_data_extent_node(row)? {
             storage.streams_observed = storage
                 .streams_observed
                 .checked_add(1)
@@ -258,7 +278,7 @@ fn consume_attribute_rows(
             )?;
         }
     }
-    Ok(())
+    Ok(uninterpreted)
 }
 
 /// Call only with bootstrap/container observations collected from this same
@@ -365,6 +385,7 @@ pub fn inspect<R: Read + Seek>(
         let mut extent_pages = 0u32;
         let mut embedded_tables = 0usize;
         let mut own_tables = 0usize;
+        let mut tree_uninterpreted = 0u64;
         while let Some(item) = pending.pop() {
             ensure!(
                 total_pages < limits.max_pages,
@@ -525,7 +546,7 @@ pub fn inspect<R: Read + Seek>(
                     *count = count
                         .checked_add(rows.len() as u64)
                         .context("attribute row count overflow")?;
-                    consume_attribute_rows(
+                    tree_uninterpreted += consume_attribute_rows(
                         &rows,
                         &map,
                         clusters,
@@ -593,7 +614,7 @@ pub fn inspect<R: Read + Seek>(
                                         });
                                     }
                                 } else {
-                                    consume_attribute_rows(
+                                    tree_uninterpreted += consume_attribute_rows(
                                         &record.node.rows,
                                         &map,
                                         clusters,
@@ -632,7 +653,9 @@ pub fn inspect<R: Read + Seek>(
             own_record_attribute_tables: own_tables,
             external_attribute_pages: attribute_pages,
             external_extent_pages: extent_pages,
-            index_descendants_complete: true,
+            uninterpreted_data_records: tree_uninterpreted,
+            file_records_interpreted: object_id.is_some() && schema_id == Some(0x130),
+            index_descendants_complete: tree_uninterpreted == 0,
             leaf_external_references_followed: false,
         });
         if root_index == Some(5) {

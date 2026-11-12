@@ -117,9 +117,13 @@ fn join(parent: &str, leaf: &str) -> String {
     }
 }
 fn inside_system_volume_information(path: &str) -> bool {
-    path.len() > SYSTEM_VOLUME_INFORMATION.len()
-        && path[..SYSTEM_VOLUME_INFORMATION.len()].eq_ignore_ascii_case(SYSTEM_VOLUME_INFORMATION)
-        && path.as_bytes()[SYSTEM_VOLUME_INFORMATION.len()] == b'\\'
+    // Compared as bytes. A path is arbitrary UTF-8, so the prefix length need
+    // not fall on one of its character boundaries, and slicing the string
+    // there would panic.
+    let (bytes, prefix) = (path.as_bytes(), SYSTEM_VOLUME_INFORMATION.as_bytes());
+    bytes.len() > prefix.len()
+        && bytes[..prefix.len()].eq_ignore_ascii_case(prefix)
+        && bytes[prefix.len()] == b'\\'
 }
 fn attributes_for_comparison(attributes: u32) -> u32 {
     attributes & !REFS_ONLY_ATTRIBUTES & !NORMAL
@@ -973,5 +977,90 @@ mod tests {
         let comparison = compare(&before, &split);
         assert_eq!(comparison.difference_count, 1);
         assert!(comparison.differences[0].what.contains("hard-link set"));
+    }
+
+    /// A backslash and nine three-byte characters (U+65E5): 28 bytes, in which
+    /// byte 26, the length of "\System Volume Information", is not a
+    /// character boundary.
+    fn boundary_path() -> String {
+        format!("\\{}", "\u{65e5}".repeat(9))
+    }
+
+    #[test]
+    fn a_path_that_the_exempt_prefix_length_splits_mid_character_is_compared() {
+        let path = boundary_path();
+        assert_eq!(path.len(), 28);
+        assert!(!path.is_char_boundary(SYSTEM_VOLUME_INFORMATION.len()));
+        assert!(!inside_system_volume_information(&path));
+
+        let listing = vec![directory("\\"), file(&path, "aa")];
+        let comparison = compare(&listing, &listing);
+        assert!(comparison.identical(), "{comparison:?}");
+
+        let missing = compare(&listing, &[directory("\\")]);
+        assert_eq!(missing.difference_count, 1, "{missing:?}");
+        assert_eq!(missing.differences[0].path, path);
+        assert_eq!(missing.differences[0].what, "missing after conversion");
+
+        let appeared = compare(&[directory("\\")], &listing);
+        assert_eq!(appeared.difference_count, 1, "{appeared:?}");
+        assert_eq!(appeared.differences[0].what, "appeared after conversion");
+    }
+
+    #[test]
+    fn supplementary_plane_and_long_mixed_script_paths_are_compared() {
+        // U+1D4B3 and U+1F600 take four bytes each in UTF-8 and two units in UTF-16.
+        let astral = "\\\u{1d4b3}\u{1f600}\\a\u{1f600}b.txt";
+        // Han, Cyrillic, an emoji and ASCII in every component.
+        let component =
+            "\u{6570}\u{636e}-\u{434}\u{430}\u{43d}\u{43d}\u{44b}\u{435}-\u{1f600}-data";
+        let long = format!("\\{}", vec![component; 24].join("\\"));
+        assert!(long.chars().count() > 400);
+        let inside = format!("{SYSTEM_VOLUME_INFORMATION}{long}");
+        let listing = vec![
+            directory("\\"),
+            file(astral, "11"),
+            file(&long, "22"),
+            file(&inside, "33"),
+        ];
+        let comparison = compare(&listing, &listing);
+        assert!(comparison.identical(), "{comparison:?}");
+        assert_eq!(comparison.allowed["System Volume Information content"], 1);
+
+        let mut changed = listing.clone();
+        changed[1].sha256 = Some("ee".to_owned());
+        changed[2].sha256 = Some("ff".to_owned());
+        let comparison = compare(&listing, &changed);
+        assert_eq!(comparison.difference_count, 2, "{comparison:?}");
+        assert!(
+            comparison
+                .differences
+                .iter()
+                .all(|difference| difference.what == "content differs")
+        );
+    }
+
+    #[test]
+    fn only_the_system_volume_information_directory_itself_is_exempt() {
+        assert!(inside_system_volume_information(
+            "\\System Volume Information\\x"
+        ));
+        assert!(inside_system_volume_information(
+            "\\SYSTEM VOLUME INFORMATION\\x"
+        ));
+        // The directory's own entry, and names that merely begin the same way.
+        assert!(!inside_system_volume_information(SYSTEM_VOLUME_INFORMATION));
+        assert!(!inside_system_volume_information(
+            "\\System Volume Informationx\\y"
+        ));
+        let lookalike = "\\System Volume Information\u{65e5}\\x";
+        assert!(!inside_system_volume_information(lookalike));
+
+        let comparison = compare(
+            &[directory("\\"), file(lookalike, "11")],
+            &[directory("\\")],
+        );
+        assert_eq!(comparison.difference_count, 1, "{comparison:?}");
+        assert!(comparison.allowed.is_empty(), "{comparison:?}");
     }
 }

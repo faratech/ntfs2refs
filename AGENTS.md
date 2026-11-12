@@ -95,11 +95,17 @@ not count. Power-cut resume during preparation is out of scope until this works.
   `-Diagnose` builds the shadow, lists every per-object failure and stops
   before publication: `diagnose-clean` (exit 0) or `diagnose-found-failures`
   (exit 3), after checking the source is still the same online NTFS partition.
+  `-InterruptAt <point>` stops the converter at a named point of apply or
+  handoff (`crates/n2r-win32/src/lab_hold.rs`), ends its process, runs the
+  recovery it printed (`-RecoverMode resume` or `rollback`) and compares as
+  usual: `RESUMED-NOT-BOOTED`. This is process termination, not power loss.
   `-CheckpointAfterConvert <name>` saves a run that stopped after apply;
   `-Recover -Checkpoint <name>` retries its finalization with `--recover`.
-  Records land in `.lab/hyperv/attempts/<n>/`. The scratch disk is deleted when
-  the attempt ends; the host volume needs 40 GB free for a fixture attempt
-  and 65 GB for a full one (it uses about 57 GB at its peak).
+  Records land in `.lab/hyperv/attempts/<n>/`; `verdict.json` lists every
+  piece of evidence with its SHA-256, or why it is missing, and a success
+  without its required evidence is `incomplete-evidence`. The scratch disk
+  is deleted when the attempt ends; the host volume needs 40 GB free for a
+  fixture attempt and 65 GB for a full one (it uses about 57 GB at its peak).
   `-SampleStacks` records the worker's call stack a hundred times a second and
   writes `stacks.txt` (phase, step and stack per line) into the attempt folder:
   use it to find where unnamed time goes before changing anything for speed.
@@ -136,8 +142,11 @@ Keep it that way. Before a change is committed:
 
 1. `cargo test --locked --workspace --all-targets` passes.
 2. The 1-in-10 fixture converts with an identical listing (about six minutes).
-3. A change to apply or finalization also passes `-Recover` on a run stopped
-   after apply, and a change to a per-object path also passes a full run:
+3. A change to apply, finalization or recovery also passes an interrupted run
+   that recovers with an identical listing, on the 1-in-40 fixture:
+   `-InterruptAt apply-mid-ranges` (stopped half way through the source
+   writes) and `-InterruptAt handoff-sealed` (stopped before finalization).
+   A change to a per-object path also passes a full run:
    several defects only showed at full size (a row that Windows fills on
    large volumes, hard links, memory held per batch).
 

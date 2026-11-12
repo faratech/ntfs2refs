@@ -49,6 +49,11 @@ param(
     # Restore -Checkpoint (one saved by -CheckpointAfterConvert) and run
     # `ntfs2refs --recover` with the command the original run printed.
     [switch]$Recover,
+    # Recovery qualification. Stop the converter at a named point of apply or
+    # handoff (crates/n2r-win32/src/lab_hold.rs lists them), end its process
+    # there, then run the recovery command it printed and compare as usual.
+    [string]$InterruptAt,
+    [ValidateSet('resume', 'rollback', 'none')][string]$RecoverMode = 'resume',
     [int]$SourceDisk = 0,
     [int]$SourcePartition = 3,
     # Independent check: list the source before conversion and the converted
@@ -103,6 +108,78 @@ function Copy-Evidence($Session, [string]$GuestPath, [string]$Label, [switch]$Re
         Copy-Item -LiteralPath $GuestPath -Destination $target -FromSession $Session -ErrorAction Stop
     } catch { $reason = $_.Exception.Message }
     Add-Evidence $Label $target $reason -Required:$Required
+}
+# Starts ntfs2refs.exe in the guest as SYSTEM, through the worker beside it.
+function Start-Converter([string]$Root, [string]$TaskName, [string[]]$Arguments) {
+    Invoke-Command -Session $script:session -ArgumentList $Root, $TaskName, ($Arguments -join "`t") -ScriptBlock {
+        param($root, $task, $joined)
+        $arguments = [string[]]$joined.Split("`t")
+        [IO.File]::WriteAllText("$root\run.json", (@{ arguments = @($arguments) } | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+        $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+            -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File $root\worker.ps1 -Root $root"
+        $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+        $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+        $null = Register-ScheduledTask -TaskName $task -Action $action -Principal $principal -Settings $settings
+        Start-ScheduledTask -TaskName $task
+    }
+    Say "converter started: ntfs2refs.exe $($Arguments -join ' ')"
+}
+# Follows a started converter until it ends. With -HoldPoint, the converter
+# is expected to stop at that laboratory hold and report it; its process is
+# then ended, which is the interruption under test.
+function Wait-Converter([string]$Root, [string]$TaskName, [string]$ScratchLetter, [string]$HoldPoint) {
+    $deadline = (Get-Date).AddMinutes($ConvertTimeoutMinutes); $lastLine = ''; $state = $null; $polls = 0; $failedPolls = 0; $vmStopped = $null; $held = $null
+    while ($true) {
+        Start-Sleep -Seconds 20; $polls++
+        # Hyper-V pauses the VM when the host volume fills and turns it off
+        # later. Either way the converter is not running; say so and stop.
+        $vmState = (Get-LabVm).State.ToString()
+        if ($vmState -ne 'Running') {
+            $vmStopped = "VM is $vmState; host volume has {0:N1} GB free" -f ((Get-HostFreeBytes) / 1GB)
+            Say "converter cannot continue: $vmStopped"; break
+        }
+        try {
+            if ($script:session.State -ne 'Opened') { Remove-PSSession $script:session -ErrorAction SilentlyContinue; $script:session = Wait-Guest 5 $null; if (-not $script:session) { throw 'guest session lost' } }
+            $state = Invoke-Command -Session $script:session -ArgumentList $Root, $TaskName, $ScratchLetter -ErrorAction Stop -ScriptBlock {
+                param($root, $task, $letter)
+                $tail = { param($path) if (Test-Path -LiteralPath $path) { @(Get-Content -LiteralPath $path -Tail 3 -Encoding UTF8) } else { @() } }
+                $hold = if (Test-Path -LiteralPath "$root\stdout.log") { Select-String -LiteralPath "$root\stdout.log" -SimpleMatch -Pattern '"kind":"lab-hold-v1"' | Select-Object -Last 1 } else { $null }
+                [pscustomobject]@{
+                    task = (Get-ScheduledTask -TaskName $task).State.ToString()
+                    terminal = if (Test-Path "$root\native-terminal.json") { Get-Content "$root\native-terminal.json" -Raw | ConvertFrom-Json } else { $null }
+                    worker_error = if (Test-Path "$root\worker-error.txt") { Get-Content "$root\worker-error.txt" -Raw } else { $null }
+                    stdout = & $tail "$root\stdout.log"; stderr = & $tail "$root\stderr.log"
+                    hold = if ($hold) { $hold.Line } else { $null }
+                    scratch_free = (Get-Volume -DriveLetter $letter).SizeRemaining
+                    control_free = (Get-Volume -DriveLetter $env:SystemDrive[0]).SizeRemaining
+                }
+            }
+            $failedPolls = 0
+        } catch {
+            $failedPolls++; Say "poll failed ($failedPolls): $($_.Exception.Message)"
+            if ($failedPolls -ge 9) { $vmStopped = 'control OS stopped answering'; break }
+            continue
+        }
+        if ($HoldPoint -and $state.hold -and -not $held -and -not $state.terminal) {
+            $held = $state.hold
+            Say "converter is holding at its laboratory point: $held; ending its process"
+            Invoke-Command -Session $script:session -ArgumentList $Root -ErrorAction Stop -ScriptBlock {
+                param($root) $id = (Get-Content -LiteralPath "$root\native-process.json" -Raw | ConvertFrom-Json).pid
+                Stop-Process -Id $id -Force -ErrorAction Stop }
+            continue
+        }
+        $line = @($state.stdout) | Select-Object -Last 1
+        # The converter reports progress as JSON; show the short form.
+        if ($line -like '{"kind":"conversion-progress-v1"*') { try { $p = $line | ConvertFrom-Json; $line = '{0}: {1} pass {2}, {3}/{4} {5}' -f $p.label, $p.progress.phase, $p.progress.pass, $p.progress.completed, $p.progress.total, $p.progress.unit } catch { } }
+        $phaseKey = ($line -replace '\d+/', '')
+        if (($line -and $phaseKey -ne $lastLine) -or $polls % 15 -eq 0) {
+            $lastLine = $phaseKey
+            Say ("[{0:N0} min] {1} | scratch free {2:N1} GB, control free {3:N1} GB" -f ($phaseWatch.Elapsed.TotalMinutes), $line, ($state.scratch_free / 1GB), ($state.control_free / 1GB))
+        }
+        if ($state.terminal -or $state.worker_error -or ($state.task -ne 'Running' -and $polls -gt 3)) { break }
+        if ((Get-Date) -gt $deadline) { Say 'converter timed out; leaving it running for inspection'; break }
+    }
+    [pscustomobject]@{ state = $state; vm_stopped = $vmStopped; held = $held }
 }
 function Save-Verdict {
     $script:verdict.evidence_complete = -not @($script:verdict.evidence | Where-Object { $_.required -and -not $_.present }).Count
@@ -344,6 +421,10 @@ try {
     $arguments = if ($Recover) { @('--recover', $guest.recover_directory, '--recovery-sha256', $guest.recover_sha256) }
         else { @('--drive', $guest.source_letter, '--windows-boot-volume', '--scratch-directory', $scratchDirectory, '--target-format', 'dev-drive') }
     if ($Diagnose) { $arguments += '--diagnose' }
+    if ($InterruptAt) {
+        if ($Recover -or $Diagnose) { throw '-InterruptAt applies to a conversion, not to -Recover or -Diagnose' }
+        $arguments += @('--lab-hold-at', $InterruptAt, '--acknowledge-lab-hold-never-completes')
+    }
     $arguments += $ConverterArgs
     $symbols = [IO.Path]::ChangeExtension($Binary, '.pdb')
     if ($SampleStacks) {
@@ -396,59 +477,9 @@ try {
         } catch { Say "boot readiness check failed: $($_.Exception.Message)" }
     }
     $taskName = "N2R-Attempt-$Name"
-    Invoke-Command -Session $session -ArgumentList $guestRoot, $taskName, ($arguments -join "`t") -ScriptBlock {
-        param($root, $task, $joined)
-        $arguments = [string[]]$joined.Split("`t")
-        [IO.File]::WriteAllText("$root\run.json", (@{ arguments = @($arguments) } | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
-        $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
-            -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File $root\worker.ps1 -Root $root"
-        $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
-        $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
-        $null = Register-ScheduledTask -TaskName $task -Action $action -Principal $principal -Settings $settings
-        Start-ScheduledTask -TaskName $task
-    }
-    Say "converter started: ntfs2refs.exe $($arguments -join ' ')"
-    $deadline = (Get-Date).AddMinutes($ConvertTimeoutMinutes); $lastLine = ''; $state = $null; $polls = 0; $failedPolls = 0; $vmStopped = $null
-    while ($true) {
-        Start-Sleep -Seconds 20; $polls++
-        # Hyper-V pauses the VM when the host volume fills and turns it off
-        # later. Either way the converter is not running; say so and stop.
-        $vmState = (Get-LabVm).State.ToString()
-        if ($vmState -ne 'Running') {
-            $vmStopped = "VM is $vmState; host volume has {0:N1} GB free" -f ((Get-HostFreeBytes) / 1GB)
-            Say "converter cannot continue: $vmStopped"; break
-        }
-        try {
-            if ($session.State -ne 'Opened') { Remove-PSSession $session -ErrorAction SilentlyContinue; $session = Wait-Guest 5 $null; if (-not $session) { throw 'guest session lost' } }
-            $state = Invoke-Command -Session $session -ArgumentList $guestRoot, $taskName, $guest.scratch_letter -ErrorAction Stop -ScriptBlock {
-                param($root, $task, $letter)
-                $tail = { param($path) if (Test-Path -LiteralPath $path) { @(Get-Content -LiteralPath $path -Tail 3 -Encoding UTF8) } else { @() } }
-                [pscustomobject]@{
-                    task = (Get-ScheduledTask -TaskName $task).State.ToString()
-                    terminal = if (Test-Path "$root\native-terminal.json") { Get-Content "$root\native-terminal.json" -Raw | ConvertFrom-Json } else { $null }
-                    worker_error = if (Test-Path "$root\worker-error.txt") { Get-Content "$root\worker-error.txt" -Raw } else { $null }
-                    stdout = & $tail "$root\stdout.log"; stderr = & $tail "$root\stderr.log"
-                    scratch_free = (Get-Volume -DriveLetter $letter).SizeRemaining
-                    control_free = (Get-Volume -DriveLetter $env:SystemDrive[0]).SizeRemaining
-                }
-            }
-            $failedPolls = 0
-        } catch {
-            $failedPolls++; Say "poll failed ($failedPolls): $($_.Exception.Message)"
-            if ($failedPolls -ge 9) { $vmStopped = 'control OS stopped answering'; break }
-            continue
-        }
-        $line = @($state.stdout) | Select-Object -Last 1
-        # The converter reports progress as JSON; show the short form.
-        if ($line -like '{"kind":"conversion-progress-v1"*') { try { $p = $line | ConvertFrom-Json; $line = '{0}: {1} pass {2}, {3}/{4} {5}' -f $p.label, $p.progress.phase, $p.progress.pass, $p.progress.completed, $p.progress.total, $p.progress.unit } catch { } }
-        $phaseKey = ($line -replace '\d+/', '')
-        if (($line -and $phaseKey -ne $lastLine) -or $polls % 15 -eq 0) {
-            $lastLine = $phaseKey
-            Say ("[{0:N0} min] {1} | scratch free {2:N1} GB, control free {3:N1} GB" -f ($phaseWatch.Elapsed.TotalMinutes), $line, ($state.scratch_free / 1GB), ($state.control_free / 1GB))
-        }
-        if ($state.terminal -or $state.worker_error -or ($state.task -ne 'Running' -and $polls -gt 3)) { break }
-        if ((Get-Date) -gt $deadline) { Say 'converter timed out; leaving it running for inspection'; break }
-    }
+    Start-Converter $guestRoot $taskName $arguments
+    $run = Wait-Converter $guestRoot $taskName $guest.scratch_letter $InterruptAt
+    $state = $run.state; $vmStopped = $run.vm_stopped
     if ($vmStopped) {
         $verdict.converter = [ordered]@{ arguments = $arguments; exit = $null; stopped = $vmStopped }
         $verdict.outcome = 'vm-stopped'; Phase 'convert'; return
@@ -484,6 +515,64 @@ try {
         peak_working_set_bytes = if ($state -and $state.terminal) { $state.terminal.peak_working_set_bytes } else { $null }
         stderr_tail = if ($state) { @($state.stderr) } else { @() }; worker_error = if ($state) { $state.worker_error } else { $null } }
     Phase 'convert'
+    if ($InterruptAt) {
+        # The interruption under test: the converter stopped at the named
+        # point and its process was ended there. Recovery starts from what
+        # that left on the disks, with nothing but the command it printed.
+        $verdict.interrupt = [ordered]@{ point = $InterruptAt; kind = 'process-termination'; held = $run.held; converter_exit = $exit
+            evidence_kinds = [ordered]@{ process_termination = [bool]$run.held; vm_interruption = $false
+                storage_power_loss = 'not covered: the lab cannot cut power to the storage' } }
+        if (-not $run.held) {
+            $verdict.outcome = 'interrupt-not-reached'; Say "the converter ended (exit $exit) without reaching the hold at $InterruptAt"
+            Remove-PSSession $session; return
+        }
+        if ($RecoverMode -eq 'none') { $verdict.outcome = 'interrupted-not-recovered'; Remove-PSSession $session; return }
+        $printed = Select-String -LiteralPath (Join-Path $case 'stdout.log') -Pattern '^To recover: ntfs2refs --recover "(.+)" --recovery-sha256 ([0-9a-f]{64})' | Select-Object -Last 1
+        if (-not $printed) { $verdict.outcome = 'interrupted-without-recovery-command'; Say 'the interrupted run printed no "To recover:" line'; Remove-PSSession $session; return }
+        $recoverArguments = @('--recover', $printed.Matches[0].Groups[1].Value, '--recovery-sha256', $printed.Matches[0].Groups[2].Value)
+        if ($RecoverMode -eq 'rollback') { $recoverArguments += '--rollback' }
+        $recoverRoot = "$guestRoot-recover"; $recoverTask = "N2R-Recover-$Name"
+        Invoke-Command -Session $session -ArgumentList $guestRoot, $recoverRoot -ScriptBlock {
+            param($from, $to) $null = New-Item -ItemType Directory -Path $to -Force
+            Copy-Item -LiteralPath "$from\ntfs2refs.exe", "$from\worker.ps1" -Destination $to }
+        Start-Converter $recoverRoot $recoverTask $recoverArguments
+        $recovery = Wait-Converter $recoverRoot $recoverTask $guest.scratch_letter $null
+        foreach ($leaf in 'stdout.log', 'stderr.log', 'native-process.json', 'native-terminal.json', 'run.json') {
+            Copy-Evidence $session "$recoverRoot\$leaf" (Join-Path 'recover' $leaf) -Required
+        }
+        Copy-Evidence $session "$recoverRoot\worker-error.txt" (Join-Path 'recover' 'worker-error.txt')
+        $recoverState = $recovery.state
+        $recoverExit = if ($recoverState -and $recoverState.terminal) { [int]$recoverState.terminal.native_exit } else { $null }
+        $verdict.recovery = [ordered]@{ mode = $RecoverMode; arguments = $recoverArguments; exit = $recoverExit; stopped = $recovery.vm_stopped
+            wall_seconds = if ($recoverState -and $recoverState.terminal) { $recoverState.terminal.wall_seconds } else { $null }
+            stderr_tail = if ($recoverState) { @($recoverState.stderr) } else { @() } }
+        Phase 'recover'
+        if ($recovery.vm_stopped -or $null -eq $recoverExit -or $recoverExit -ne 0) {
+            $verdict.outcome = 'recover-failed'
+            Say "recovery ($RecoverMode) exit: $recoverExit. stderr: $(if ($recoverState) { @($recoverState.stderr) -join ' | ' })"
+            Remove-PSSession $session; return
+        }
+        Say "recovery ($RecoverMode) exit 0"
+        if ($RecoverMode -eq 'rollback') {
+            # What Windows says of the source now: the same partition, NTFS
+            # again, online and writable. Its contents are compared once the
+            # listing tool can compare two NTFS listings exactly.
+            $after = Invoke-Command -Session $session -ArgumentList $guest.source_disk, $guest.source_partition -ScriptBlock {
+                param($disk, $number)
+                $partition = Get-Partition -DiskNumber $disk -PartitionNumber $number; $volume = Get-Volume -Partition $partition
+                [pscustomobject]@{ filesystem = [string]$volume.FileSystem; health = [string]$volume.HealthStatus; bytes = $partition.Size; guid = $partition.Guid
+                    letter = [string]$partition.DriveLetter; offline = [bool]$partition.IsOffline; read_only = [bool]$partition.IsReadOnly }
+            }
+            $verdict.source_after_rollback = $after | Select-Object * -ExcludeProperty PSComputerName, RunspaceId, PSShowComputerName
+            $restored = $after.filesystem -eq 'NTFS' -and $after.bytes -eq $guest.source_bytes -and $after.guid -eq $guest.source_guid -and
+                -not $after.offline -and -not $after.read_only -and $after.health -eq 'Healthy'
+            Say "source after rollback: $($after.filesystem), $($after.bytes) bytes, offline $($after.offline), read-only $($after.read_only), health $($after.health)"
+            $verdict.outcome = if ($restored) { 'ROLLED-BACK-NOT-COMPARED' } else { 'rolled-back-but-unhealthy' }
+            Remove-PSSession $session; return
+        }
+        # A resumed conversion is held to everything a completed one is.
+        $exit = 0
+    }
     # A diagnose run exits 0 when it found nothing and 3 when it reported
     # failures; either way the diagnosis itself completed.
     $diagnosed = $Diagnose -and ($exit -eq 0 -or $exit -eq 3)
@@ -603,7 +692,7 @@ try {
             }
         }
     }
-    if ($NoBoot) { $verdict.outcome = 'converted-not-booted'; Remove-PSSession $session; return }
+    if ($NoBoot) { $verdict.outcome = if ($InterruptAt) { 'RESUMED-NOT-BOOTED' } else { 'converted-not-booted' }; Remove-PSSession $session; return }
 
     # ---- boot disk0 alone ------------------------------------------------------
     $controlBoot = Invoke-Command -Session $session -ScriptBlock { (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o') }
@@ -665,7 +754,7 @@ try {
     # Only an identical listing (or one the operator switched off) can end as BOOTED-ON-REFS.
     $verdict.outcome = if (-not $ok) { 'booted-but-checks-failed' } elseif (-not $desktop.shell) { 'booted-without-desktop' }
         elseif ($listing -eq 'differs') { 'booted-but-listing-differs' } elseif ($listing -eq 'not-compared') { 'booted-not-compared' }
-        elseif ($listing -eq 'tool-failed') { 'booted-listing-tool-failed' } else { 'BOOTED-ON-REFS' }
+        elseif ($listing -eq 'tool-failed') { 'booted-listing-tool-failed' } elseif ($InterruptAt) { 'RESUMED-BOOTED-ON-REFS' } else { 'BOOTED-ON-REFS' }
     Say "disk0 booted: $($observed.filesystem) $($observed.refs_version), cluster $($observed.cluster_bytes), partition $($observed.partition), health $($observed.health); desktop $(if ($desktop.shell) { "reached as $($desktop.user) in $($desktop.seconds) s" } else { "not reached: $($desktop.error)" }) => $($verdict.outcome)"
     Phase 'boot'
 } catch {
@@ -675,7 +764,8 @@ try {
     # required evidence was not retained is reported as incomplete, and its
     # scratch disk is kept so the records can still be recovered.
     $missing = @($verdict.evidence | Where-Object { $_.required -and -not $_.present })
-    if ($missing.Count -and $verdict.outcome -in 'converted-not-booted', 'BOOTED-ON-REFS', 'diagnose-clean', 'diagnose-found-failures') {
+    if ($missing.Count -and $verdict.outcome -in 'converted-not-booted', 'BOOTED-ON-REFS', 'diagnose-clean', 'diagnose-found-failures',
+        'RESUMED-NOT-BOOTED', 'RESUMED-BOOTED-ON-REFS', 'ROLLED-BACK-NOT-COMPARED') {
         $verdict.result = $verdict.outcome; $verdict.outcome = 'incomplete-evidence'; $KeepScratch = [switch]$true
         Say "required evidence missing: $(($missing | ForEach-Object { $_.name }) -join ', '); scratch disk kept"
     }

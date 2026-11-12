@@ -92,33 +92,35 @@ not count. Power-cut resume during preparation is out of scope until this works.
 - Harness: `lab\Invoke-BootConversionAttempt.ps1 -Name <n> -Fixture
   -FixtureCheckpoint N2R-Thinned-Fixture-40 -NoBoot`. Without `-Fixture` it uses
   the full baseline; without `-NoBoot` it boots disk0 alone afterwards.
-  `-Diagnose` builds the shadow, lists every per-object failure and stops
-  before publication: `diagnose-clean` (exit 0) or `diagnose-found-failures`
-  (exit 3), after checking the source is still the same online NTFS partition
-  and lists exactly as it did before (`compare --exact`: nothing allowed).
-  `-InterruptAt <point>` stops the converter at a named point of apply,
-  handoff or finalization (`crates/n2r-win32/src/lab_hold.rs`), ends its
-  process and runs the recovery it printed. `-RecoverMode resume` compares
-  as usual (`RESUMED-NOT-BOOTED`); `rollback` compares the restored NTFS
-  exactly (`ROLLED-BACK-NOT-BOOTED`). Process termination, not power loss.
-  `-CheckpointAfterConvert <name>` saves a run that stopped after apply (or
-  was stopped with `-RecoverMode none`); `-RecoverFrom <attempt>` restores
-  that attempt's checkpoint and runs the recovery it printed, compared with
-  the listing it took.
-  Records land in `.lab/hyperv/attempts/<n>/`; `verdict.json` lists every
-  piece of evidence with its SHA-256, or why it is missing, and a success
-  without its required evidence is `incomplete-evidence`. The scratch disk
-  is deleted when the attempt ends; the host volume needs 40 GB free for a
-  fixture attempt and 65 GB for a full one (it uses about 57 GB at its peak).
-  `-SampleStacks` records the worker's call stack a hundred times a second and
-  writes `stacks.txt` (phase, step and stack per line) into the attempt folder:
-  use it to find where unnamed time goes before changing anything for speed.
-  Threads a walk hands objects to are sampled too (`stack_sampler::helper`),
-  under the step's label followed by ` [helper threads]`.
+  - `-Diagnose` builds the shadow, lists every per-object failure and stops
+    before publication: `diagnose-clean` (exit 0) or `diagnose-found-failures`
+    (exit 3), once the source is the same online NTFS partition and lists
+    exactly as before (`compare --exact`: nothing allowed).
+  - `-InterruptAt <point>` stops the converter at a named point of apply,
+    handoff or finalization (`crates/n2r-win32/src/lab_hold.rs`), ends its
+    process and runs the recovery it printed: `-RecoverMode resume`
+    (`RESUMED-NOT-BOOTED`, compared as usual) or `rollback`
+    (`ROLLED-BACK-NOT-BOOTED`, compared exactly). Process termination, not
+    power loss. `-RecoverMode none -CheckpointAfterConvert <name>` saves the
+    stopped state instead; `-RecoverFrom <attempt>` recovers it later from
+    that attempt's own checkpoint, command and listing.
+  - `-ShapeSource <script>` runs a `lab\guest` script against the source
+    before it is listed, for features the lab volumes lack:
+    `Add-NamedStreams.ps1` (they have no named streams), and
+    `Add-DirectoryStream.ps1`, which must be refused by name at admission.
+  - Records land in `.lab/hyperv/attempts/<n>/`. `verdict.json` lists every
+    piece of evidence with its SHA-256 or why it is missing; a success
+    without its required evidence is `incomplete-evidence`.
+  - The scratch disk is deleted when the attempt ends. The host volume needs
+    40 GB free for a fixture attempt and 65 GB for a full one (57 GB at peak).
+  - `-SampleStacks` writes `stacks.txt` (phase, step and stack per line, a
+    hundred samples a second, helper and digest threads included): use it to
+    find where unnamed time goes before changing anything for speed.
 - Second VM `ntfs2refs-reference-b`, Id `7c687062-37b5-4309-b28a-486a44305202`,
   made by `lab/New-LabVmClone.ps1`: same shape, disks are differencing children
   of the reference VM's baseline disks under `.lab/hyperv/ntfs2refs-reference-b/`.
-  It has only the baseline checkpoint. Pass `-VmId` to the harness to run a
+  Besides the baseline it holds `N2R-Full-Converted-08`, a saved converted
+  state. Pass `-VmId` to the harness to run a
   full-volume attempt on it while fixtures run on the reference VM (give the
   two VMs no more than about 48 GB between them). Never delete the reference
   VM's baseline checkpoint: that merges into the shared parents and breaks the

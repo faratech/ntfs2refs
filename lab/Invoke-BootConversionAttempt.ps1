@@ -32,6 +32,11 @@ param(
     # folder, one line per distinct call stack with its sample count.
     [switch]$SampleStacks,
     [switch]$Fixture,
+    # A script (a name under lab\guest, or a path) run in the control OS
+    # against the mounted source before it is listed, to give it features a
+    # freshly installed Windows volume lacks, such as named streams. It
+    # receives -SourceLetter and prints one line saying what it made.
+    [string]$ShapeSource,
     [switch]$Diagnose,
     [switch]$NoBoot,
     [switch]$NoConvert,
@@ -532,6 +537,22 @@ try {
     Copy-Item -LiteralPath $Binary -Destination "$guestRoot\ntfs2refs.exe" -ToSession $session
     if ($SampleStacks) { Copy-Item -LiteralPath $symbols -Destination "$guestRoot\ntfs2refs.pdb" -ToSession $session }
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'guest\Invoke-ConverterRun.ps1') -Destination "$guestRoot\worker.ps1" -ToSession $session
+    if ($ShapeSource) {
+        if ($Recover) { throw '-ShapeSource applies to a new attempt, not to -RecoverFrom' }
+        $shapePath = if (Test-Path -LiteralPath $ShapeSource) { (Resolve-Path -LiteralPath $ShapeSource).Path } else { Join-Path $PSScriptRoot "guest\$ShapeSource" }
+        if (-not (Test-Path -LiteralPath $shapePath)) { throw "Shape script not found: $ShapeSource" }
+        Copy-Item -LiteralPath $shapePath -Destination "$guestRoot\shape.ps1" -ToSession $session
+        $shaped = Invoke-Command -Session $session -ArgumentList "$guestRoot\shape.ps1", $guest.source_letter -ScriptBlock {
+            param($script, $letter)
+            $text = & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $script -SourceLetter $letter 2>&1
+            [pscustomobject]@{ exit = $LASTEXITCODE; text = (@($text) -join ' ') }
+        }
+        if ($shaped.exit -ne 0) { throw "Shaping the source with $(Split-Path -Leaf $shapePath) failed (exit $($shaped.exit)): $($shaped.text)" }
+        # The source that is listed, converted and compared is the shaped one.
+        $verdict.source_shape = [ordered]@{ script = (Split-Path -Leaf $shapePath)
+            sha256 = (Get-FileHash -LiteralPath $shapePath -Algorithm SHA256).Hash.ToLowerInvariant(); result = $shaped.text }
+        Say "source shaped by $(Split-Path -Leaf $shapePath): $($shaped.text)"; Phase 'shape'
+    }
     $manifestExe = "$guestRoot\lab-volume-manifest.exe"
     if (-not $NoManifest) {
         if (-not (Test-Path -LiteralPath $ManifestBinary)) { throw "Listing tool not found: $ManifestBinary (cargo build --release --bin lab-volume-manifest)" }

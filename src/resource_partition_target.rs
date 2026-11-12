@@ -198,10 +198,13 @@ fn prepare_partition_target_capture_inner(
             && request.capture_arena_bytes > 0,
         "actual partition target request/limits differ"
     );
-    n2r_win32::shadow_native::private_tree::validate_placement_limits(
-        request.maximum_placement_bytes,
-        request.maximum_placement_submissions,
-    )?;
+    // The same bound as the dedicated-disk route: present, and derived from
+    // the partition by the caller. Placement itself stops at its byte and
+    // memory budgets.
+    ensure!(
+        request.maximum_placement_bytes > 0 && request.maximum_placement_submissions > 0,
+        "actual partition placement limits are empty"
+    );
     request
         .capture_budget
         .validate(request.pair.source.identity.partition_bytes)?;

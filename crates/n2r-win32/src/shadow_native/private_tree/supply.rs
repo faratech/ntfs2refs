@@ -99,7 +99,7 @@ pub(super) fn workspace_bytes(tree: &PrivateTree, index: usize, name: &[u16]) ->
     // second parsed PreparedMapping. This is the same conservative query
     // multiplier used by the native constructor, independent of source row
     // size. Coordinate cloning and stable-sort scratch can coexist with it.
-    let mut bytes = mul(crate::retrieval_paging::MAX_RETURNED_BYTES as u64, 32)?;
+    let mut bytes = mul(crate::retrieval_paging::max_returned_bytes() as u64, 32)?;
     bytes = add(bytes, 4 * 1024 * 1024)?;
     bytes = add(bytes, mul(path as u64 + 4096, 16)?)?;
     bytes = add(bytes, mul(name.len() as u64, 32)?)?;

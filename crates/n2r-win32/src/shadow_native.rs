@@ -2268,6 +2268,42 @@ fn info_read<T>(
         read(response)
     })
 }
+/// A file's stream list (FileStreamInfo), read in this thread's query
+/// buffer. Nearly every file answers within the first 64 KiB. One with
+/// hundreds of named streams needs more: the query is repeated with a larger
+/// buffer, up to what an NTFS file can have.
+fn stream_info_read<T>(file: &File, read: impl FnOnce(&[u8]) -> io::Result<T>) -> io::Result<T> {
+    let mut size = stream_layout::MAX_STREAM_BUFFER;
+    let mut read = Some(read);
+    loop {
+        let result = crate::query_scratch::with(size, |response| {
+            // SAFETY: aligned initialized storage of the stated size.
+            check(unsafe {
+                GetFileInformationByHandleEx(
+                    file.as_raw_handle(),
+                    7,
+                    response.as_mut_ptr().cast(),
+                    size as u32,
+                )
+            })?;
+            (read.take().expect("the list is read once"))(response)
+        });
+        match result {
+            // ERROR_INSUFFICIENT_BUFFER or ERROR_MORE_DATA: the list is longer.
+            Err(error)
+                if read.is_some()
+                    && matches!(error.raw_os_error(), Some(122 | 234))
+                    && size < stream_layout::MAX_STREAM_LIST_BYTES =>
+            {
+                size = (size * 2).min(stream_layout::MAX_STREAM_LIST_BYTES);
+            }
+            other => return other,
+        }
+    }
+}
+fn stream_info(file: &File) -> io::Result<Vec<u8>> {
+    stream_info_read(file, |response| Ok(response.to_vec()))
+}
 fn suppress_access(file: &File) -> io::Result<()> {
     let no_update = FILETIME {
         dwLowDateTime: u32::MAX,
@@ -2567,7 +2603,7 @@ fn observe_post_mount_indexer_cache_domain(
             "post-mount indexer cache identity, type, size or security query differs",
         ));
     }
-    let mut streams = info(&file, 7, stream_layout::MAX_STREAM_BUFFER)?;
+    let mut streams = stream_info(&file)?;
     let (entries, used) = stream_layout::parse_streams(&streams)?;
     if entries.len() != 1 || !entries[0].name.is_empty() || entries[0].logical_size != 76 {
         return Err(invalid("post-mount indexer cache has unexpected streams"));
@@ -2723,7 +2759,7 @@ fn existing_system_entries_domain(
                     "target-only indexer cache identity or size differs",
                 ));
             }
-            let stream_bytes = info(&file, 7, stream_layout::MAX_STREAM_BUFFER)?;
+            let stream_bytes = stream_info(&file)?;
             let (streams, _) = stream_layout::parse_streams(&stream_bytes)?;
             if streams.len() != 1 || !streams[0].name.is_empty() || streams[0].logical_size != 76 {
                 return Err(invalid("target-only indexer cache streams differ"));
@@ -5986,7 +6022,7 @@ fn run_role_content_domain_accounted(
         let streams = if i.directory {
             vec![]
         } else {
-            let (entries, b) = info_read(&h, 7, stream_layout::MAX_STREAM_BUFFER, |list| {
+            let (entries, b) = stream_info_read(&h, |list| {
                 let (entries, used) = stream_layout::parse_streams(list)?;
                 streams::exact_list(list, i)?;
                 Ok((entries, list[..used].to_vec()))

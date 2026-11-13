@@ -905,9 +905,19 @@ fn stream_record_identity(record: &RecordEvidence, complete_file: bool) -> Resul
                 attribute.compression_unit == 4
                     || attribute.lowest_vcn > 0 && attribute.compression_unit == 0
             };
+        // Sparse DATA carries its allocation granule as a unit on the
+        // segment that starts the stream and none on a continuation; the
+        // unit is checked against the cluster size when the stream is merged.
+        let sparse_data = complete_file
+            && attribute.type_code == 0x80
+            && attribute.flags == 0x8000
+            && !attribute.resident
+            && attribute.compression_unit <= 4;
         ensure!(
             instances.insert(attribute.instance)
-                && (attribute.flags == 0 && attribute.compression_unit == 0 || encoded_data)
+                && (attribute.flags == 0 && attribute.compression_unit == 0
+                    || encoded_data
+                    || sparse_data)
                 && (attribute.type_code == 0x80
                     || complete_file && matches!(attribute.type_code, 0x90 | 0xa0 | 0xb0 | 0x100)
                     || attribute.name_utf16.is_empty()),
@@ -1192,6 +1202,18 @@ fn assemble_attributes_inner(
         );
         let mut merged: AttributeInventory = (**leader).clone();
         let compressed = complete_file && leader.type_code == 0x80 && leader.flags == 1;
+        let sparse =
+            complete_file && leader.type_code == 0x80 && leader.flags == 0x8000 && !leader.resident;
+        ensure!(
+            !sparse
+                || crate::ntfs_inspect::sparse_unit_supported(
+                    leader.compression_unit,
+                    geometry.cluster_size
+                ),
+            "sparse DATA compression unit {} does not match {}-byte clusters",
+            leader.compression_unit,
+            geometry.cluster_size
+        );
         if leader.resident {
             ensure!(
                 segments.len() == 1,
@@ -1211,7 +1233,7 @@ fn assemble_attributes_inner(
                     !segment.resident
                         && segment.flags == leader.flags
                         && (segment.compression_unit == leader.compression_unit
-                            || compressed
+                            || (compressed || sparse)
                                 && segment.lowest_vcn > 0
                                 && segment.compression_unit == 0)
                         && segment.lowest_vcn.checked_mul(cluster) == Some(next)
@@ -1240,7 +1262,10 @@ fn assemble_attributes_inner(
                         );
                         physical.push((start, end));
                     } else {
-                        ensure!(compressed, "sparse ordinary DATA remains unsupported");
+                        ensure!(
+                            compressed || sparse,
+                            "a hole in DATA that is neither sparse nor compressed"
+                        );
                     }
                     next = next
                         .checked_add(extent.length)

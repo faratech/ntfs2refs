@@ -639,7 +639,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             identities.insert(index, id);
             if !item.directory {
                 let standard = info(handle, 1, 24)?;
-                let streams = info(handle, 7, stream_layout::MAX_STREAM_BUFFER)?;
+                let streams = stream_info(handle)?;
                 super::streams::exact_list(&streams, item)?;
                 if layout::u64_at(&standard, 8)? != item.logical_length()
                     || layout::u32_at(&standard, 16)? != super::hard_links::count(item)?
@@ -1087,7 +1087,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         }
         if !item.directory {
             let standard = info(handle, 1, 24)?;
-            let streams = info(handle, 7, stream_layout::MAX_STREAM_BUFFER)?;
+            let streams = stream_info(handle)?;
             super::streams::exact_list(&streams, item)?;
             if layout::u64_at(&standard, 8)? != item.logical_length()
                 || layout::u32_at(&standard, 16)? != super::hard_links::count(item)?
@@ -1345,7 +1345,7 @@ pub fn run(
             return Err(invalid("indexer cache identity changed before refresh"));
         }
         let standard = query_bytes(&state, 1, 24)?;
-        let stream_bytes = info(&file, 7, stream_layout::MAX_STREAM_BUFFER)?;
+        let stream_bytes = stream_info(&file)?;
         let (streams, _) = stream_layout::parse_streams(&stream_bytes)?;
         if layout::u64_at(standard, 8)? != 76
             || u32::from_le_bytes(standard[16..20].try_into().unwrap()) != 1

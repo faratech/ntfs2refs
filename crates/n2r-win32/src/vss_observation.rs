@@ -15,7 +15,10 @@
 use serde::Serialize;
 use std::{ffi::c_void, io, marker::PhantomData, mem, ptr, rc::Rc};
 
-const MAX_OBJECTS: usize = 4096;
+/// A guard against a provider whose enumeration never ends, not a limit
+/// on what a machine may hold: Windows keeps at most 512 shadow copies of a
+/// volume, so this is the full set of two thousand volumes.
+const MAX_OBJECTS: usize = 1 << 20;
 const MAX_STRING_UNITS: usize = 1024;
 const S_OK: i32 = 0;
 const S_FALSE: i32 = 1;
@@ -792,7 +795,9 @@ fn count(total: &mut usize) -> io::Result<()> {
         .checked_add(1)
         .ok_or_else(|| invalid("VSS object count overflow"))?;
     if *total > MAX_OBJECTS {
-        return Err(invalid("VSS catalog exceeds bounded object budget"));
+        return Err(invalid(&format!(
+            "the VSS provider listed more than {MAX_OBJECTS} objects; its enumeration is taken not to end"
+        )));
     }
     Ok(())
 }

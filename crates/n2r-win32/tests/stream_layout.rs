@@ -1,4 +1,7 @@
-use n2r_win32::stream_layout::{parse_retrieval, parse_streams};
+use n2r_win32::stream_layout::{
+    MAX_FILE_STREAMS, MAX_STREAM_LIST_BYTES, parse_retrieval, parse_streams,
+    parse_streams_with_limits,
+};
 fn p32(b: &mut [u8], o: usize, n: u32) {
     b[o..o + 4].copy_from_slice(&n.to_le_bytes());
 }
@@ -95,11 +98,28 @@ fn rejects_duplicate_names_and_count_exhaustion() {
     let mut b = named("::$DATA", true);
     b.extend(named("::$DATA", false));
     assert!(parse_streams(&b).is_err());
-    let mut b = vec![];
-    for i in 0..65 {
-        b.extend(named(&format!(":s{i}:$DATA"), i < 64));
+    // More streams than the older fixed profiles' 64: a file may have as
+    // many as its attribute list can name.
+    let list = |count: usize| {
+        let mut b = vec![];
+        for i in 0..count {
+            b.extend(named(&format!(":s{i}:$DATA"), i + 1 < count));
+        }
+        b
+    };
+    for count in [65, 200, MAX_FILE_STREAMS - 1] {
+        let b = list(count);
+        assert!(b.len() <= MAX_STREAM_LIST_BYTES, "{count}");
+        assert_eq!(parse_streams(&b).unwrap().0.len(), count);
     }
-    assert!(parse_streams(&b).is_err());
+    assert!(parse_streams(&list(MAX_FILE_STREAMS + 1)).is_err());
+    // A caller with a smaller budget of its own still refuses at it.
+    let b = list(65);
+    assert!(parse_streams_with_limits(&b, b.len(), 64).is_err());
+    assert_eq!(
+        parse_streams_with_limits(&b, b.len(), 66).unwrap().0.len(),
+        65
+    );
 }
 #[test]
 fn parses_sparse_retrieval() {

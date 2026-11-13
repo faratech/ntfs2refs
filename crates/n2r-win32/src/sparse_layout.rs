@@ -11,6 +11,12 @@ pub fn cluster_bytes() -> u64 {
 /// its own from its budget, and a layout itself is bounded by its stream.
 pub const MAX_LAYOUT_RANGES: usize = crate::stream_layout::MAX_COMPLETE_EXTENTS;
 
+/// The most allocated ranges (or holes) a stream that rounds to `rounded`
+/// bytes can have: they alternate, and each is at least one target cluster.
+fn maximum_ranges(rounded: u64) -> u64 {
+    rounded / cluster_bytes() / 2 + 1
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LogicalRange {
@@ -80,8 +86,19 @@ impl SparseLayout {
         mut allocated: Vec<LogicalRange>,
     ) -> io::Result<Self> {
         let rounded = rounded_length(logical_length)?;
-        if allocated.len() > MAX_LAYOUT_RANGES || initialized_length > logical_length {
-            return Err(invalid("sparse range count or initialized length differs"));
+        if initialized_length > logical_length {
+            return Err(invalid(&format!(
+                "sparse initialized length {initialized_length} exceeds the stream's {logical_length} bytes"
+            )));
+        }
+        // No fixed number of islands: a stream cannot have more separate
+        // ranges than it has clusters, and whoever holds the layout pays for
+        // it from its own budget.
+        if allocated.len() as u64 > maximum_ranges(rounded) {
+            return Err(invalid(&format!(
+                "sparse stream of {logical_length} bytes cannot have {} allocated ranges",
+                allocated.len()
+            )));
         }
         allocated.sort_unstable_by_key(|range| range.offset);
         let mut normalized: Vec<LogicalRange> = Vec::with_capacity(allocated.len());
@@ -128,9 +145,14 @@ impl SparseLayout {
                 .allocated
                 .len()
                 .checked_add(self.holes.len())
-                .is_none_or(|count| count > MAX_LAYOUT_RANGES)
+                .is_none_or(|count| count as u64 > maximum_ranges(rounded).saturating_mul(2))
         {
-            return Err(invalid("sparse VDL or combined range count exceeds bounds"));
+            return Err(invalid(&format!(
+                "sparse VDL {} or range count {} + {} exceeds what a stream of {logical_length} bytes can have",
+                self.initialized_length,
+                self.allocated.len(),
+                self.holes.len()
+            )));
         }
         let mut previous_end = 0u64;
         let cluster = cluster_bytes();
@@ -167,5 +189,56 @@ impl SparseLayout {
             sum.checked_add(range.length)
                 .ok_or_else(|| invalid("sparse hole byte count overflow"))
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn range(offset: u64, length: u64) -> LogicalRange {
+        LogicalRange { offset, length }
+    }
+
+    #[test]
+    fn allocated_ranges_are_whole_clusters_of_the_target_unit() {
+        let islands = || vec![range(4096, 8192)];
+        let layout = SparseLayout::from_allocated(70_000, 70_000, islands()).unwrap();
+        assert_eq!(layout.holes, [range(0, 4096), range(12_288, 57_712)]);
+        crate::target_cluster::with(65536, || {
+            // An island on 4 KiB boundaries is not on 64 KiB ones.
+            assert!(SparseLayout::from_allocated(70_000, 70_000, islands()).is_err());
+            assert!(layout.validate(70_000).is_err());
+            let layout =
+                SparseLayout::from_allocated(70_000, 70_000, vec![range(65_536, 65_536)]).unwrap();
+            assert_eq!(layout.holes, [range(0, 65_536)]);
+            assert_eq!(layout.allocated_bytes().unwrap(), 65_536);
+            // The end of file rounds up to 131,072 bytes and no further.
+            assert!(
+                SparseLayout::from_allocated(70_000, 70_000, vec![range(131_072, 65_536)]).is_err()
+            );
+        });
+        assert!(layout.validate(70_000).is_ok());
+    }
+
+    /// A sparse file with more islands than the 65,536 that used to be the
+    /// most: as many ranges as the stream has room for, and no more.
+    #[test]
+    fn a_layout_may_have_as_many_islands_as_its_stream_has_clusters_for() {
+        let islands = 70_000u64;
+        // One 4 KiB island in every second cluster.
+        let length = islands * 8192;
+        let allocated: Vec<_> = (0..islands).map(|i| range(i * 8192, 4096)).collect();
+        let layout = SparseLayout::from_allocated(length, length, allocated).unwrap();
+        assert_eq!(layout.allocated.len(), 70_000);
+        assert_eq!(layout.holes.len(), 70_000);
+        layout.validate(length).unwrap();
+        // The same islands cannot belong to a stream too short to hold them.
+        assert!(layout.validate(length / 2).is_err());
+        let mut impossible = layout.clone();
+        impossible
+            .holes
+            .extend(std::iter::repeat_n(range(0, 4096), 140_010));
+        assert!(impossible.validate(length).is_err());
     }
 }

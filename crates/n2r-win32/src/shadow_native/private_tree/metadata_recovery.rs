@@ -140,7 +140,7 @@ pub fn classify_payloads_domain(
                 return Err(invalid("payload EOF probe escaped its exact shadow path"));
             }
             let before = identity(&file)?;
-            let raw = info(&file, 7, stream_layout::MAX_STREAM_BUFFER)?;
+            let raw = stream_info(&file)?;
             let (actual, _) = stream_layout::parse_streams(&raw)?;
             for position in 0..=object.named_streams.len() {
                 let name = if position == 0 {
@@ -174,9 +174,7 @@ pub fn classify_payloads_domain(
                     ));
                 }
             }
-            if identity(&file)? != before
-                || info(&file, 7, stream_layout::MAX_STREAM_BUFFER)? != raw
-            {
+            if identity(&file)? != before || stream_info(&file)? != raw {
                 return Err(invalid("payload EOF probe changed"));
             }
         }
@@ -794,10 +792,7 @@ pub fn adopt_domain(
         }
         identities.insert(index, id);
         if !item.directory {
-            super::super::streams::exact_list(
-                &info(file, 7, stream_layout::MAX_STREAM_BUFFER)?,
-                &item,
-            )?;
+            super::super::streams::exact_list(&stream_info(file)?, &item)?;
         }
         input.progress(
             Update::new(
@@ -950,7 +945,7 @@ impl PendingMetadataRecovery {
                         return Err(invalid("recovered alias link/delete state differs"));
                     }
                     if !name.directory {
-                        let raw = info(&alias, 7, stream_layout::MAX_STREAM_BUFFER)?;
+                        let raw = stream_info(&alias)?;
                         let (streams, _) = stream_layout::parse_streams(&raw)?;
                         if streams.len() != 1
                             || !streams[0].name.is_empty()

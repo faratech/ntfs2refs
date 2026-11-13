@@ -155,9 +155,20 @@ struct Deferred {
     /// The run was stopped at the limit, so not every object was examined.
     stopped_at_limit: bool,
 }
+/// How many failures a diagnose run lists before it stops: past that many it
+/// is rarely learning anything new. `--diagnose-limit` changes it, and 0
+/// lists every failure on the volume.
+static DIAGNOSE_LIMIT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(500);
+pub(crate) fn set_diagnose_limit(limit: usize) {
+    DIAGNOSE_LIMIT.store(
+        if limit == 0 { usize::MAX } else { limit },
+        std::sync::atomic::Ordering::SeqCst,
+    );
+}
 impl DeferredFailures {
-    /// Past this many the run is not learning anything new; stop it.
-    const LIMIT: usize = 500;
+    fn limit() -> usize {
+        DIAGNOSE_LIMIT.load(std::sync::atomic::Ordering::SeqCst)
+    }
     fn record(&self, error: std::io::Error) -> std::io::Result<()> {
         let mut state = self
             .0
@@ -167,13 +178,13 @@ impl DeferredFailures {
             failures,
             stopped_at_limit,
         } = &mut *state;
-        if failures.len() >= Self::LIMIT {
+        if failures.len() >= Self::limit() {
             *stopped_at_limit = true;
             return Err(std::io::Error::new(
                 error.kind(),
                 format!(
-                    "diagnose limit of {} failures reached; last: {error}",
-                    Self::LIMIT
+                    "diagnose limit of {} failures reached (--diagnose-limit raises it; 0 lists them all); last: {error}",
+                    Self::limit()
                 ),
             ));
         }

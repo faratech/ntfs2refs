@@ -134,7 +134,7 @@ impl Owner {
         let mut n = add(
             add(
                 mul(self.row_bytes, 8)?,
-                mul(crate::retrieval_paging::MAX_RETURNED_BYTES as u64, 32)?,
+                mul(crate::retrieval_paging::max_returned_bytes() as u64, 32)?,
             )?,
             mul(add(path, 4096)?, mul(streams, 16)?)?,
         )?;

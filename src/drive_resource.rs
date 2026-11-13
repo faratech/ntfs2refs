@@ -57,6 +57,12 @@ fn budget(
     };
     result.validate()?;
     available.validate_budget(result)?;
+    // One stream's complete mapping may have as many extents as leave the
+    // largest reservation made for it (32 copies of its pages) within a
+    // sixty-fourth of the memory budget; never fewer than the fixed 65,536.
+    n2r_win32::stream_layout::raise_complete_extent_limit(
+        usize::try_from(ram / 65_536).unwrap_or(usize::MAX),
+    );
     Ok(result)
 }
 

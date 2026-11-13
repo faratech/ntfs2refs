@@ -529,7 +529,7 @@ struct Reservation {
 
 impl Reservation {
     fn new() -> Result<Self, String> {
-        Self::with_pages(crate::retrieval_paging::MAX_PAGES)
+        Self::with_pages(crate::retrieval_paging::max_pages())
     }
     fn with_pages(pages: usize) -> Result<Self, String> {
         let base = saved_size(&widest_move_record(0, pages)?)?;

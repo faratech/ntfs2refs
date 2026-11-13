@@ -400,12 +400,23 @@ fn sparse_peak(s: Option<&crate::sparse_layout::SparseLayout>) -> io::Result<u64
 /// maximum. Covers the existing bounded raw retrieval/namespace APIs and
 /// their simultaneous decode buffers; all arithmetic is checked before I/O.
 pub(super) fn row_peak(i: &Input<'_>, maximum: u64) -> io::Result<u64> {
-    let retrieval = mul(crate::retrieval_paging::MAX_RETURNED_BYTES as u64, 16)?;
-    let stream = add(
-        add(mul(snapshot_peak(maximum)?, 2)?, retrieval)?,
-        4 * 1024 * 1024,
+    // Each stream's mapping is charged by what a stream of its length can
+    // need. Charging every stream the largest mapping there is refused a
+    // file with a few hundred small named streams for want of memory.
+    let stream = |length: u64| -> io::Result<u64> {
+        let retrieval = mul(
+            crate::retrieval_paging::returned_bytes_for_stream(length) as u64,
+            16,
+        )?;
+        add(
+            add(mul(snapshot_peak(maximum)?, 2)?, retrieval)?,
+            4 * 1024 * 1024,
+        )
+    };
+    let mut n = add(
+        stream(i.logical_length())?,
+        mul(namespace_layout::MAX_EVIDENCE as u64, 12)?,
     )?;
-    let mut n = add(stream, mul(namespace_layout::MAX_EVIDENCE as u64, 12)?)?;
     let path_bytes = i.components.iter().try_fold(
         mul(i.components.len() as u64, mem::size_of::<String>() as u64)?,
         |n, s| add(n, s.len() as u64),
@@ -413,7 +424,10 @@ pub(super) fn row_peak(i: &Input<'_>, maximum: u64) -> io::Result<u64> {
     n = add(n, mul(path_bytes, 4)?)?;
     n = add(n, sparse_peak(i.sparse)?)?;
     for named in &i.named_streams {
-        n = add(n, add(stream, sparse_peak(named.sparse)?)?)?;
+        n = add(
+            n,
+            add(stream(named.expected_length)?, sparse_peak(named.sparse)?)?,
+        )?;
     }
     for alias in i.additional_names {
         n = add(

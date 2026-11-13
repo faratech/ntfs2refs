@@ -320,7 +320,7 @@ fn exact_children(
     Ok(())
 }
 fn exact_streams(file: &File, item: &Input<'_>) -> io::Result<()> {
-    let raw = info(file, 7, stream_layout::MAX_STREAM_BUFFER)?;
+    let raw = stream_info(file)?;
     let (entries, _) = stream_layout::parse_streams(&raw)?;
     if entries.len() != 1 + item.named_streams.len() {
         return Err(invalid("recovered stream set count differs"));
@@ -601,7 +601,7 @@ fn adopt_recovery_domain(
                     {
                         return Err(invalid("recovered formatter file exceeds native profile"));
                     }
-                    let raw = info(&handle, 7, stream_layout::MAX_STREAM_BUFFER)?;
+                    let raw = stream_info(&handle)?;
                     let (streams, _) = stream_layout::parse_streams(&raw)?;
                     if streams.len() != 1 || !streams[0].name.is_empty() {
                         return Err(invalid("recovered formatter file has named streams"));
@@ -712,8 +712,7 @@ fn adopt_recovery_domain(
                             false,
                             &root_id[..8],
                         )?;
-                        let streams =
-                            info(file.metadata_handle(), 7, stream_layout::MAX_STREAM_BUFFER)?;
+                        let streams = stream_info(file.metadata_handle())?;
                         let (entries, _) = stream_layout::parse_streams(&streams)?;
                         if entries.len() != 1
                             || !entries[0].name.is_empty()

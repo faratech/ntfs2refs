@@ -523,6 +523,78 @@ fn complete_fragmented_nonresident_list_uses_a_separate_storage_version() {
     );
 }
 
+/// A sparse stream whose mapping needs more than one file record (a large
+/// sparse file with many islands) is assembled like a plain one: the segment
+/// that starts the stream carries the allocation granule as its compression
+/// unit, a continuation carries none, and a run may be a hole.
+#[test]
+fn a_sparse_stream_that_spans_file_records_is_assembled_with_its_holes() {
+    let limits = || list::AssemblyLimits::from_working_bytes(16 << 20, 1024).unwrap();
+    let sparse = || {
+        let (mut base, mut extensions, bytes, g) = fixture(false);
+        // A complete file's resident metadata comes with its bytes.
+        base.attributes[0].resident_metadata_hex = Some(hex::encode([0u8; 48]));
+        // A file name of one character: 66 bytes and the name.
+        let mut name = [0u8; 68];
+        name[64] = 1;
+        name[66] = b'f';
+        let file_name = &mut base.attributes[1];
+        file_name.logical_size = 68;
+        file_name.initialized_size = 68;
+        file_name.allocated_size = 68;
+        file_name.resident_sha256 = Some(hash(&name));
+        file_name.resident_metadata_hex = Some(hex::encode(name));
+        base.attributes[3].flags = 0x8000;
+        base.attributes[3].compression_unit = 4;
+        for record in &mut extensions {
+            record.attributes[0].flags = 0x8000;
+        }
+        // The middle cluster is a hole.
+        extensions[0].attributes[0].extents[0].physical_offset = None;
+        (base, extensions, bytes, g)
+    };
+    let (base, extensions, bytes, g) = sparse();
+    let (canonical, _) =
+        list::assemble_attributes_resource(base, extensions, &bytes, &g, limits()).unwrap();
+    let stream = canonical.iter().find(|a| a.type_code == 0x80).unwrap();
+    assert_eq!((stream.flags, stream.compression_unit), (0x8000, 4));
+    assert_eq!(
+        stream
+            .extents
+            .iter()
+            .map(|e| (e.logical_offset, e.physical_offset, e.length))
+            .collect::<Vec<_>>(),
+        [
+            (0, Some(100 * 4096), 4096),
+            (4096, None, 4096),
+            (8192, Some(300 * 4096), 4096)
+        ]
+    );
+
+    // A unit that 4 KiB clusters do not have, and a hole in a stream that is
+    // neither sparse nor compressed, are refused.
+    let (mut base, extensions, bytes, g) = sparse();
+    base.attributes[3].compression_unit = 3;
+    let error =
+        list::assemble_attributes_resource(base, extensions, &bytes, &g, limits()).unwrap_err();
+    assert!(
+        error.to_string().contains("compression unit 3"),
+        "{error:#}"
+    );
+    let (mut base, mut extensions, bytes, g) = sparse();
+    base.attributes[3].flags = 0;
+    base.attributes[3].compression_unit = 0;
+    for record in &mut extensions {
+        record.attributes[0].flags = 0;
+    }
+    let error =
+        list::assemble_attributes_resource(base, extensions, &bytes, &g, limits()).unwrap_err();
+    assert!(
+        error.to_string().contains("neither sparse nor compressed"),
+        "{error:#}"
+    );
+}
+
 /// NTFS may hold more clusters for a nonresident value than the value needs:
 /// it grows such an attribute several clusters at a time, most visibly on
 /// small clusters. What the header says is allocated must be what is mapped.

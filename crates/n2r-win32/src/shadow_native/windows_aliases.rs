@@ -128,10 +128,7 @@ fn probe_alias_unnamed(
         return Err(invalid(differs));
     }
     if !probe.directory {
-        super::streams::exact_list(
-            &info(&alias, 7, stream_layout::MAX_STREAM_BUFFER)?,
-            &expected,
-        )?;
+        super::streams::exact_list(&stream_info(&alias)?, &expected)?;
     }
     Ok(AliasNative { observed, snapshot })
 }

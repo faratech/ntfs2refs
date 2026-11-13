@@ -101,6 +101,10 @@ pub struct DriveArgs {
         "experimental_thin_backing_bytes",
     ])]
     pub diagnose: bool,
+    /// How many failures --diagnose lists before it stops (default 500);
+    /// 0 lists every failure on the volume.
+    #[arg(long, requires = "diagnose")]
+    pub diagnose_limit: Option<usize>,
     /// Re-read every working file and the whole source at every checkpoint
     /// instead of once, immediately before the first write to the source.
     /// Much slower; the result is the same. This changes how often things
@@ -900,6 +904,9 @@ mod windows {
         }
         if args.recheck_everything {
             crate::resource_preparation::set_recheck_everything();
+        }
+        if let Some(limit) = args.diagnose_limit {
+            crate::general_shadow::set_diagnose_limit(limit);
         }
         if let Some(point) = n2r_win32::lab_hold::armed() {
             println!("Laboratory hold armed at {point}: this run stops there and never completes.");

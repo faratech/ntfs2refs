@@ -221,8 +221,30 @@ fn retained_comparison_pins_inputs_and_never_enables_writes() {
 #[test]
 fn capabilities_report_what_the_executable_enforces() {
     let capabilities: Value = serde_json::from_slice(&cli(&["capabilities"]).stdout).unwrap();
-    assert_eq!(capabilities["schema_version"], 3);
+    assert_eq!(capabilities["schema_version"], 4);
     assert_eq!(capabilities["refs_metadata_builder"], "windows");
+    // What is announced as not carried over or refused is what the code says.
+    let data_volume = &capabilities["data_volume"];
+    assert!(
+        data_volume["not_carried_over"][0]["what"]
+            .as_str()
+            .unwrap()
+            .starts_with("object IDs")
+    );
+    assert!(
+        ntfs2refs::ntfs_admission::SHORT_NAME_REMEDY.contains(
+            data_volume["refused_by_name"][0]["remedy"]
+                .as_str()
+                .unwrap()
+                .split(',')
+                .next()
+                .unwrap()
+        )
+    );
+    assert_eq!(
+        capabilities["windows_builds"]["confirmed_builds"],
+        serde_json::json!(n2r_win32::windows_build::LAB_BUILDS)
+    );
 
     // The geometry announced is the geometry the admission gate accepts.
     let geometry = |sector: u16, cluster: u32, file_record: u32, index_record: u32| {

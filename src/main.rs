@@ -433,7 +433,7 @@ fn run() -> Result<u8> {
                 .collect();
             output(
                 &serde_json::json!({
-                    "schema_version": 3,
+                    "schema_version": 4,
                     "raw_image_inspection": true,
                     "ntfs_inventory_complete": false,
                     "refs_header_inspection": true,
@@ -479,7 +479,36 @@ fn run() -> Result<u8> {
                     },
                     "windows_builds": {
                         "minimum_build": n2r_win32::windows_build::MINIMUM_BUILD,
-                        "confirmed_builds": [26100, 26300],
+                        "confirmed_builds": n2r_win32::windows_build::LAB_BUILDS,
+                        "other_builds": "accepted, with a notice before the prompt that the build has not been tried",
+                    },
+                    // What a data volume that has been in use meets.
+                    "data_volume": {
+                        "disk_layout": "a GPT disk on which the volume is the only partition apart from a Microsoft reserved partition; --list says for each NTFS partition whether it qualifies",
+                        "requires": ["administrator rights, checked before a disk is opened",
+                                     "the Windows build, checked before a disk is opened"],
+                        "not_carried_over": [
+                            {"what": "object IDs of files and directories, which Windows gives to the targets of shortcuts",
+                             "why": "ReFS has no object IDs",
+                             "record": "each is matched with the volume's object-ID index and kept in the run's records; their number is printed"},
+                            {"what": "the NTFS compression flag", "why": "compressed data is stored as ordinary data on ReFS"},
+                            {"what": "the change journal", "why": "the converted volume starts a new one"},
+                        ],
+                        "refused_by_name": [
+                            {"what": "8.3 short names", "remedy": "fsutil 8dot3name strip, then fsutil 8dot3name set <drive>: 1"},
+                            {"what": "a BitLocker-encrypted volume", "remedy": "decrypt it (manage-bde -off)"},
+                            {"what": "shadow copies of the volume, snapshot storage kept on it, or a shadow-copy provider other than Windows' own and Hyper-V's",
+                             "remedy": "delete the shadow copies; the provider is named"},
+                            {"what": "EFS-encrypted files", "remedy": "cipher /d"},
+                            {"what": "files with the TEMPORARY or OFFLINE attribute"},
+                            {"what": "reparse points other than symbolic links, junctions and app execution aliases (Data Deduplication, compact /exe, cloud placeholders, WSL)",
+                             "remedy": "named per kind"},
+                            {"what": "a named data stream on a directory"},
+                            {"what": "disk quotas in use", "remedy": "fsutil quota disable"},
+                            {"what": "case-sensitive directories", "remedy": "fsutil file setCaseSensitiveInfo <directory> disable"},
+                            {"what": "a dirty volume, an NTFS log that was not closed, an open transaction", "remedy": "chkdsk /f, or a clean dismount"},
+                            {"what": "a volume with no file on it", "remedy": "format it as ReFS"},
+                        ],
                     },
                     "source_changes_before_apply": [
                         {"when": "the partition length is not a multiple of 64 MiB (ReFS covers a volume in whole units of that size)",

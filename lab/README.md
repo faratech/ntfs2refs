@@ -4,7 +4,7 @@ The current route is `Invoke-BootConversionAttempt.ps1`. It restores a disposabl
 NTFS baseline, runs the converter from a separate control OS, compares independent
 before/after volume listings, and optionally boots the original source disk alone.
 See [AGENTS.md](../AGENTS.md) for the VM identities and standing rules, and
-[release qualification](../docs/release-0.0.1-alpha.md) for the frozen alpha.
+[release qualification](../docs/history/release-0.0.1-alpha.md) for the frozen alpha.
 
 ## Existing checks
 
@@ -49,8 +49,15 @@ before in every field (`compare --exact`: nothing allowed).
 instead, and `-RecoverFrom <attempt>` recovers it later from that attempt's own
 records. `-TearMarker handoff`, with `-InterruptAt apply-handoff-durable`, leaves
 the journal's handoff marker as a write that stopped part-way leaves it, so that
-recovery has to settle it first. The lab ends a process; it cannot cut power to
-the storage, and every verdict says so.
+recovery has to settle it first.
+
+`-InterruptKind vm` turns the VM off at the hold instead of ending the
+converter's process, as if the machine's power had gone: whatever the guest had
+not flushed is lost, the control OS starts again, and recovery runs in that
+fresh Windows. The verdict records the kind (`vm-turned-off`). The virtual
+disks are the host's files, so this is a machine that loses power with storage
+that keeps what reached it; the lab cannot cut power to the storage itself, and
+every verdict says so.
 
 The converter runs in the control OS as SYSTEM unless `-RunAs administrator` is
 given, which runs it as the guest's elevated administrator, the way an owner
@@ -93,6 +100,30 @@ which used to be fixed: one with 200 named streams, and a sparse file with
 `-Islands` separately allocated islands (70,000 by default), whose mapping
 needs many file records.
 
+`-Features <name,...>` adds what a volume that has been in use has, made by
+`guest\Add-VolumeFeatures.ps1` after the content. These convert: `objectids`
+(a file with an object ID, and a shortcut to a file and to a directory, which
+give their targets one), `manyobjectids` (`-DirectoryEntries` files with object
+IDs, so that the volume's object-ID index outgrows its root), `security`
+(explicit and deny entries, a protected directory, another owner, an audit
+entry), `ea` (extended attributes), `links` (junction and symbolic links),
+`longpath` (a path over 260 characters), `deep` (40 nested directories),
+`bigdir` (`-DirectoryEntries` entries in one directory), `bigfile` (a dense
+file of `-BigFileGB` GiB), `full` (a nearly full, fragmented volume), `copy`
+(a directory of the control OS, copied with its security), `usn` (a change
+journal) and `shortnames-stripped` (8.3 names removed with `fsutil`, the remedy
+the refusal gives). `-Content lived-in` is the mixed content with `copy`,
+`objectids`, `security`, `ea`, `links`, `longpath`, `deep`, `bigdir` and `usn`.
+
+These are refused, each by name: `shortnames`, `temporary`, `offline`, `efs`,
+`wof` (a `compact /exe` file), `quota`, `casesensitive`, `snapshot`,
+`bitlocker` and `dirstream`. A feature that cannot be made ends the attempt as
+`feature-not-made`: it is never skipped silently. A volume with shadow copies
+or BitLocker holds files of Windows' own that nothing may open; when those are
+the only differences of a refused volume, as many before as after, the attempt
+is still `refused-source-unchanged`. Run `bitlocker` last: Windows then writes
+its recovery folders to every volume that arrives afterwards.
+
 The volume gets a fixed set of content: files around every size boundary, a
 nested tree with non-ASCII and long names, named streams, hard links, a sparse
 file, LZNT1-compressed files (on clusters up to 4 KiB, where NTFS compresses),
@@ -105,10 +136,27 @@ the geometry NTFS reported, the ReFS version and cluster size afterwards, and
 the partition's length before and after. The volume and the run's working files
 are removed afterwards unless `-KeepVolume` is given.
 
-Before the first listing the volume is remounted once and listed when Windows
-has written its own files into `System Volume Information`. A volume made a
-moment ago would otherwise get them when it next mounts, which is after the
-conversion, and the directory's changed time would show as a difference.
+Before the first listing the volume is mounted afresh and listed when Windows
+has written its own files into `System Volume Information` (the indexer's, and
+on a volume with junctions the mount manager's database) and two listings in a
+row find as many entries there. A volume made a moment ago would otherwise get
+them when it next mounts, which is after the conversion, and the directory's
+changed times would show as a difference.
+
+`-Acceptance` uses a volume whose conversion gave an identical listing, with
+`guest\Test-ConvertedVolumeUse.ps1`: it reads a sample of what was converted,
+creates 1,500 files and reads them back, appends to, overwrites and truncates
+converted files, renames and deletes, makes a named stream, a hard link,
+symbolic links, an access entry and a sparse file, writes up to 6 GiB and
+frees it again, makes and reads a shadow copy, runs the consistency scan
+Windows offers, takes the volume offline and brings it back five times, reads
+the converted files again, and looks for ReFS errors in the event log. A
+failed step makes the outcome `converted-but-use-failed`; `acceptance.json`
+has every step. `-NativeRefsControl` is its control: nothing is converted,
+Windows formats the volume as ReFS itself, the content goes on it (`-Content
+minimal` with features ReFS can hold) and the same use test runs
+(`control-passed`, `control-use-failed`). A step that fails there too is how
+ReFS or this Windows behaves, not what a conversion left.
 
 `-Diagnose` builds the shadow, lists every per-object failure and stops before
 publication, writing nothing to the source. It ends `diagnose-clean` (exit 0) or
@@ -117,8 +165,11 @@ partition and lists exactly as before.
 
 `-ShapeSource <script>` runs a script from `lab\guest` against the source
 before it is listed, to give it objects a fresh Windows does not have:
-`Add-NamedStreams.ps1` (the lab volumes have no named streams) and
-`Add-DirectoryStream.ps1`, which the converter must refuse by name at admission.
+`Add-NamedStreams.ps1` (the lab volumes have no named streams),
+`Add-UsedWindowsObjects.ps1` (a tree 25 directories deep, 320 object IDs and
+two shortcuts: the installed Windows has no directory deeper than 16 and an
+object-ID index of one block), and `Add-DirectoryStream.ps1`, which the
+converter must refuse by name at admission.
 
 `verdict.json` lists every piece of evidence an attempt retains with its size
 and SHA-256, or the reason it is missing. A success without its required

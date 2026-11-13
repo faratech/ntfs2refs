@@ -40,7 +40,7 @@ listed buffer, checked each buffer against its recorded artifact hash, and
 inspected exactly those sixteen bitmap bits. The pair SHA-256 is
 `145398b640302197acbcf71e8b21dfaa629507ac916179971ea3e579b92c849d`.
 [Pinned pair](../../.lab/hyperv/retained-preparation/win11-20261024T034206826Z/pair/pair.json),
-[full collision analysis](../bounded-converter-next-step.md#measured-bitmap-conflict-at-the-original-location).
+[full collision analysis](../history/bounded-converter-next-step.md#measured-bitmap-conflict-at-the-original-location).
 
 | Saved query | Allocated bits among LCN6263..6278 | SHA-256 |
 | --- | --- | --- |
@@ -74,7 +74,7 @@ negative first-cluster mapping remained unresolved. Require complete positive
 mapping, raw/logical hash agreement, and both validity views over all 64 KiB.
 [Retrieval pointers](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-fsctl_get_retrieval_pointers),
 [region usage definitions](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-file_region_info),
-[measured VDL outcome](../native-vdl-observation.md).
+[measured VDL outcome](../history/native-vdl-observation.md).
 
 Keep measured `CHECKSUM_TYPE_NONE` with flags zero in the first profile. Microsoft
 distinguishes that algorithm from disabling checksum enforcement, and ReFS still
@@ -175,7 +175,7 @@ then verifies the original full partition hash. Handoff requires the complete
 postimage and durably closes recovery before the mount boundary; partial/nonzero
 handoff records remain barriers. Preserving these rules avoids an allocation
 dependency graph or live target-to-target copying.
-[Existing journal contract](../lab-reconstruction-journal.md).
+[Existing journal contract](../history/lab-reconstruction-journal.md).
 
 Flush and unbuffered-I/O contracts explain the API sequence, but do not by
 themselves qualify every storage stack under power failure. Microsoft documents

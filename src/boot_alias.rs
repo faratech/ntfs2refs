@@ -280,9 +280,11 @@ pub(crate) fn aliases_for(
         *path
             .last_mut()
             .context("Windows alias cannot replace the volume root")? = alias_name;
+        // The default route's rule, for a directory's link as for a file's.
         ensure!(
-            crate::shadow_tree::expected_path_fits(&path, !file.is_directory),
-            "Windows alias path exceeds native representation"
+            crate::shadow_tree::expected_path_fits(&path, true),
+            "the short-name link \\{} does not fit Windows' extended-length form",
+            path.join("\\")
         );
         rows.push(WindowsPathAlias {
             source_record: file.record_number,

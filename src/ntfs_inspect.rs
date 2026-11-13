@@ -617,13 +617,27 @@ fn record_size(encoded: u8, cluster_size: u32, label: &str) -> Result<u32> {
     Ok(size)
 }
 
+/// Whether a partition's first sector is BitLocker's: it carries this name
+/// where a file system's own would be.
+pub fn is_bitlocker_boot_sector(bytes: &[u8]) -> bool {
+    bytes.get(3..11) == Some(b"-FVE-FS-")
+}
+
 /// Validate a partition boot sector before allowing any dependent allocation.
 /// `length` is the length of the bounded partition reader, not a VHDX container.
 pub fn inspect_boot_sector(bytes: &[u8], length: u64) -> Result<NtfsGeometry> {
     ensure!(bytes.len() >= 512, "truncated NTFS boot sector");
+    // Windows shows an unlocked BitLocker volume as NTFS, but the bytes on
+    // its disk, which are what a conversion in place reads and writes, are
+    // ciphertext behind this boot sector.
+    ensure!(
+        !is_bitlocker_boot_sector(bytes),
+        "the volume is encrypted with BitLocker, so the bytes on its disk are not NTFS and cannot be converted in place. Turn BitLocker off for the volume and wait until it is fully decrypted (manage-bde -off <drive>, then manage-bde -status <drive>), and convert it then; suspending protection is not enough"
+    );
     ensure!(
         &bytes[3..11] == b"NTFS    ",
-        "not an NTFS partition boot sector"
+        "not an NTFS partition boot sector (its file-system name is {:?})",
+        String::from_utf8_lossy(&bytes[3..11])
     );
     ensure!(
         bytes[510..512] == [0x55, 0xaa],
@@ -3760,8 +3774,14 @@ fn inventory_record<R: Read + Seek>(
             capture_extended_attributes(reader, &record, geometry)
                 .with_context(|| format!("capturing EAs for MFT record {number}"))?,
         ),
-        reparse: capture_reparse(reader, &record, geometry)
-            .with_context(|| format!("capturing reparse point for MFT record {number}"))?,
+        reparse: capture_reparse(reader, &record, geometry).with_context(|| {
+            // The record's names have not been read yet; Windows resolves
+            // the path from the file ID while the volume is mounted.
+            format!(
+                "MFT record {number} (its path: `fsutil file queryFileNameById <drive>: {:#x}`)",
+                number | (u64::from(record.sequence) << 48)
+            )
+        })?,
     };
     if record.base != 0 {
         blocker(

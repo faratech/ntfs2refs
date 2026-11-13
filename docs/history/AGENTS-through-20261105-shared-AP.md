@@ -57,7 +57,7 @@ Reviewed qualification: `evidence/public-aef-experimental-qualification-20261104
 Verified package: `.lab/packages/experimental-aef-public-3e15ac0829db452dbbb5d9c8b4c9d7e1/ntfs2refs-aef-public-experimental.zip`,
 19254647 bytes/SHA `00016d67e5580416f08a73c585c934b811fdd113d0325b24e17da9d42fda5514`.
 All12 ZIP entry lengths/hashes were checked; only executable is ntfs2refs.exe. Source/build provenance and small case receipts are included.
-See `docs/aef-experimental-alpha-20261104.md`, shipping README `userdocs/experimental-aef-candidate.md`,
+See `docs/history/aef-experimental-alpha-20261104.md`, shipping README `userdocs/experimental-aef-candidate.md`,
 and `evidence/public-aef-experimental-package-20261104.json`. This is LOCAL experimental packaging, no tag/publication/stable release.
 The ignored qualification-aef-DRAFT.json is superseded; it must not be used for packaging.
 
@@ -199,7 +199,7 @@ FrozenalphaZIP/sourceaef1ab3 andpublicCLIwhole-diskguards stayunchanged. src/mai
 no newnativeGO. **CurrentOff766containsPRIVATE T; no restore casually.** Lastcensus317250100370/free89303965696, all16keepers/fixedepoch unchanged.
 Microsoft's [volume-OFFLINE contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddvol/ni-ntddvol-ioctl_volume_offline) blocks all volumeI/O;
 private-type route avoids that dead path. Existing whole-disk guards/certificates stay unchanged.
-See `docs/ntfs-conversion-policy.md` for implemented preserve/materialize/refuse semantics and qualification boundaries.
+See `docs/history/ntfs-conversion-policy.md` for implemented preserve/materialize/refuse semantics and qualification boundaries.
 ## Latest checked partition construction milestone
 
 Development **3b42108** integrates the actual partition source through native shadow enrollment, placement,

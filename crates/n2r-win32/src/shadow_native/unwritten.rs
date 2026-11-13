@@ -328,16 +328,32 @@ impl PrivatePlaceholder {
         partition: u64,
         retire: bool,
     ) -> io::Result<Self> {
-        if components.is_empty()
-            || components.len() > 16
-            || components
-                .iter()
-                .any(|s| !crate::shadow_names::valid_unicode_component(s))
-            || bytes > partition
+        // The path has to fit Windows' extended-length form. How deep it may
+        // be is the calling route's rule, checked when its tree was admitted:
+        // a fixed sixteen components here refused, on the default route, any
+        // file with allocated data that lay deeper.
+        let refuse = |what: String| io::Error::new(io::ErrorKind::InvalidData, what);
+        if components.is_empty() || !super::hard_links::resource_path_valid(root, components) {
+            return Err(refuse(format!(
+                "a path of {} components does not fit Windows' extended-length form",
+                components.len()
+            )));
+        }
+        if let Some(part) = components
+            .iter()
+            .find(|s| !crate::shadow_names::valid_unicode_component(s))
+        {
+            return Err(refuse(format!(
+                "the name {part:?} is not one a private allocation can be made under"
+            )));
+        }
+        if bytes > partition
             || partition > crate::general_layout::MAX_EXPERIMENTAL_PARTITION_BYTES
             || i64::try_from(bytes).is_err()
         {
-            return Err(invalid("private named allocation geometry or path differs"));
+            return Err(refuse(format!(
+                "an allocation of {bytes} bytes does not fit a partition of {partition} bytes"
+            )));
         }
         let sddl = wide("O:SYG:SYD:P(A;;FA;;;SY)");
         let mut descriptor = ptr::null_mut();

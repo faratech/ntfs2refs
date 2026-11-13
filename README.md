@@ -30,7 +30,7 @@ construction and recovery files. The recorded 22.9 GB source used about 30 GB
 of working storage. This is a measurement for that source, not a general bound.
 
 Read the [operating and recovery guide](docs/cli-workflow.md) and
-[exact release qualification](docs/release-0.0.1-alpha.md) before running it.
+[exact release qualification](docs/history/release-0.0.1-alpha.md) before running it.
 
 ## Data volumes
 
@@ -58,10 +58,31 @@ multiple of that is first shrunk to one by the Windows NTFS driver (by less
 than 64 MiB). The converter says so before it asks for confirmation, and the
 shrink is not undone if the run stops later.
 
-The converter needs Windows build 26100 or later (Windows 11 24H2, Windows
-Server 2025). `ntfs2refs capabilities` lists what a build of the tool admits;
-[the lab guide](lab/README.md) describes how each geometry was converted and
-compared.
+The converter needs administrator rights and Windows build 26100 or later
+(Windows 11 24H2, Windows Server 2025); it checks both before it opens a disk.
+`ntfs2refs --list` says for each NTFS partition whether it can be converted and,
+if not, why: the volume has to be the only partition on a GPT disk, apart from
+a Microsoft reserved partition.
+
+A volume that has been in use converts with these stated differences:
+
+- **Object IDs are not carried over.** Windows gives a file one when a shortcut
+  to it is made; ReFS has none. Each is checked against the volume's own index
+  and kept in the run's records, and the run prints how many there are.
+- **NTFS compression is removed**: compressed data becomes ordinary data.
+- **The change journal starts anew.**
+
+It is refused, before anything is written and with what to do about it, if it
+has 8.3 short names (`fsutil 8dot3name strip` removes them), is encrypted with
+BitLocker, has shadow copies, holds EFS-encrypted files, reparse points other
+than symbolic links and junctions (cloud placeholders, `compact /exe`, Data
+Deduplication), disk quotas in use or case-sensitive directories, or was not
+dismounted cleanly. `ntfs2refs --drive E --diagnose` reports these without
+converting.
+
+`ntfs2refs capabilities` lists what a build of the tool admits;
+[the lab guide](lab/README.md) describes how each geometry and each of these
+cases was converted or refused and compared.
 
 ## What conversion preserves
 

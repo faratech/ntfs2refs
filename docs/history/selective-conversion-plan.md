@@ -1,0 +1,205 @@
+# Selective conversion plan (ntfs2btrfs-style)
+
+Goal: make conversion cost proportional to what changes, not to the volume size,
+the way fast in-place converters do. This is a plan with measured inputs; the
+projected figures are projections, not results.
+
+## How the fast converters work
+
+| Converter | Model | Reads |
+|---|---|---|
+| [ntfs2btrfs](https://github.com/maharmstone/ntfs2btrfs/) | Reads `$Bitmap` and `$MFT::$BITMAP`, maps data runs in place ("mapped directly"), copies only what cannot stay ("rewrote"/"inlined"), builds Btrfs trees in memory, writes them into free space, superblocks last. Rollback keeps the original image as a reflink. | NTFS metadata, plus one optional pass over data for checksums (`--no-datasum` skips it). |
+| [btrfs-convert](https://btrfs.wiki.kernel.org/index.php/Conversion_from_Ext3) | Same model for ext2/3/4 via libe2fs; original saved as an image file. | Source metadata. |
+| [fstransform](https://github.com/cosmos72/fstransform) | Copies files into a loop file in free space, then remaps blocks. About 1 min/GB; no NTFS support. | Everything, about twice. |
+
+No open-source project writes ReFS 3.x. [Paragon's driver](https://www.phoronix.com/news/ReFS-Linux-Write)
+is proprietary, and [libfsrefs](https://github.com/libyal/libfsrefs/blob/main/documentation/Resilient%20File%20System%20(ReFS).asciidoc)
+and [forefst](https://github.com/xbqt/forefst) only read. So this project keeps
+Windows as the ReFS metadata writer (the native shadow) rather than writing ReFS
+trees itself, and applies the ntfs2btrfs model to *finding and journaling* the
+write set.
+
+## Where ntfs2refs already matches, and where it does not
+
+Writes already match the model: the measured HEAD run wrote 70,615,040 bytes in
+158 ranges to a 52 GiB volume and left file data in place. Reads do not: the
+write set is found by comparing every byte of the source with a source-backed
+shadow view, and the run re-reads both images several times, about 15 volume reads
+(at least 816.6 GB) in 46m53s. See [the readiness notes](release-0.0.1-readiness.md).
+
+## Measured basis for an allocation-driven write set
+
+The HEAD run's own protected observation of the frozen shadow
+(`target-preservation.json`, SHA-256
+`6b3b67919feb718e683fd90745d31cd8684c11da2cc68afced10adc79077d512`, archived with
+the run) records Windows' metadata-inclusive allocation of the shadow and
+classifies every byte the full comparison found changed:
+
+| Quantity | Bytes |
+|---|---:|
+| Shadow allocation (metadata-inclusive native bitmap, 5 ranges) | 14,768,467,968 |
+| of which file-data routes (13) | 8,594,411,520 |
+| of which neither anchors nor file data (metadata zone and the like) | 6,173,782,016 |
+| Changed bytes found by the full comparison | 70,615,040 |
+| Changed bytes inside the shadow allocation | 70,615,040 (100%) |
+| Changed bytes outside it | 0 |
+| Changed bytes inside file-data routes | 286,720 |
+
+The 286,720 bytes inside file-data routes are not end-of-file slack. They are file
+data that the shadow placed at physical locations other than the NTFS runs:
+pieces that must be copied, as ntfs2btrfs "rewrites" what it cannot map. File-data
+routes therefore cannot simply be skipped, and the selection must include them
+unless location identity with the NTFS runs is proven.
+
+One fixture is not a proof that changes never fall outside the allocation. Bytes
+that ReFS's own allocator marks free are not part of the filesystem's state, which
+is the same assumption every converter above makes about the target, but this
+project has not yet authenticated that. The diagnostic stays false for
+`allocation_graph_complete`.
+
+## Native confirmation of the allocation-driven write set
+
+Commit `11e0513` added a non-gating diagnostic that, after the complete capture,
+plans the write set over only the frozen shadow's protected allocation through a
+fresh source-backed view. Run `9ac7538c…` (sealed build `c2bae79b…`) converted the
+fixture normally (exit 0, HND, 15 objects / 10 hashes, label and mount verified)
+and recorded:
+
+| | Allocation-driven plan | Complete capture |
+|---|---:|---:|
+| Bytes compared per side | 14,768,467,968 | 55,834,574,848 |
+| Changed ranges | 159 | 159 |
+| Changed bytes | 70,615,040 | 70,615,040 |
+| Identical write set | yes | — |
+
+Its 13.5 s elapsed time was warm-cache (it ran right after the complete capture
+read the same bytes) and is not a cold measurement. The selected journal for the
+plan would be 141,251,152 bytes. See
+[the receipt](../../evidence/selective-plan-native-20261029.json). Step 2 below is
+therefore validated on one native run; it still authorizes nothing.
+
+## First allocation-bounded native conversion
+
+Commits `45f263a` (backend) and `1ac5682` (launcher) implement steps 1–3 behind
+the hidden `--experimental-allocation-bounded` drive flag. Run `3869576a…`
+converted the fixture: native exit 0, 15 objects / 10 complete hashes, label and
+mount verified, F: ReFS 4 KiB. See
+[the receipt](../../evidence/allocation-bounded-conversion-20261029.json).
+
+| | Whole-image HEAD | Allocation-bounded |
+|---|---:|---:|
+| Process start to exit | 2,813.3 s (46m53s) | 952.9 s (15m53s) |
+| Bytes read (last sample) | ≥ 816.6 GB | ≥ 295.0 GB |
+| Journal preparation / apply | 634 s / 294 s | about 4 s / 2 s |
+| Bytes written | 70,615,040 | 70,647,808 (151 ranges) |
+
+Remaining reads by phase (approximate): inspect and build 135 GB, verify target
+145 GB (about two complete shadow bracket hashes plus the 2 × 14.77 GB
+allocation comparison), file verification about 11 GB. Next savings, in order:
+bracket the protected shadow observation over its allocation only (about 80 GB),
+then replace the whole-source certificate hash (step 4).
+
+### Where the remaining reads are (allocation-bounded run)
+
+The "Building ReFS metadata" label appears only when shadow construction starts,
+about 520 s in, and construction then takes about 8 s. Almost all of phase 1 is
+source admission, which brackets its native observation with two complete source
+hashes: `prepare_source_context` hashes the frozen source, `observe_ntfs_files`
+reads it through a read-only native mount (about 24 GB at ~128 MB/s), and
+`general_source_admission::assess` hashes the whole source again. The
+verify-target phase brackets the shadow observation the same way. Candidate
+savings: bound the source bracket to NTFS-allocated ranges, which the inspection
+knows beforehand (about 2 × 46 GB less), and close the shadow bracket over its
+native allocation with per-chunk digests from the opening pass (about 41 GB
+less). The source change alters what admission binds, from a whole-source hash
+to an allocated-range digest, so it needs an explicit decision before it is made.
+
+Recovery for this mode is implemented in `b49eae6` and was exercised natively
+from one controlled interruption (exit 86 after the first flushed write), a guest
+restart, then both public directions from the identical interrupted state:
+`--recover` resumed to ReFS with 15 objects / 10 hashes, and `--recover
+--rollback` restored NTFS with all 7 user files matching their original SHA-256.
+See [the receipt](../../evidence/allocation-bounded-recovery-matrix-20261029.json).
+Other interruption points and physical power loss remain untested. The conversion publishes `allocation-recovery-bundle.json` (pins only)
+before activation and prints its checksum; `--recover` routes to
+`general_recovery::recover_allocation` when only that bundle exists. The
+selected journal's own lifecycle chooses the action:
+
+| Journal state | `--recover` | `--recover --rollback` |
+|---|---|---|
+| Clear (apply never started) | refused: would be a fresh apply | close with ABT after proving old bytes, mount NTFS |
+| Apply intent | resume, HND, native ReFS checks | restore old bytes, ABT, mount NTFS |
+| Rollback intent | refused | finish rollback, ABT, mount NTFS |
+| HND | recheck new bytes, native ReFS checks | refused |
+| ABT | refused | recheck old bytes, mount NTFS |
+
+The journal holds both byte versions, so recovery needs neither the shadow nor
+the packed capture. The lab binary injects the fault with `--selected-devices
+--allocation-bounded --interrupt-after-writes N`.
+
+## Proposed path
+
+1. **Coarse selection from the frozen shadow's allocation.** Take the metadata
+   allocation ranges and known anchors that the protected observation already
+   holds inside its bracket, as `SelectedRange`s. No new device reads.
+2. **Exact selection.** Run `selected_journal::changed_plan` with the frozen
+   source as `source` and the existing source-backed shadow view as `candidate`,
+   over only the coarse ranges. Projected reads on this fixture: about 14.8 GB
+   from each side instead of whole images. A later refinement can drop file-data
+   routes whose physical runs provably equal the NTFS runs, leaving about 6.2 GB.
+3. **Device-bound selected journal.** Prepare the `N2RSEL01` journal on the
+   existing independent recovery storage, apply to the source under the existing
+   exclusion and write-policy handles, and hand off with the existing native
+   mount verification (15 objects, 10 complete hashes on this fixture).
+4. **Admission and recovery binding.** The live source certificate currently binds
+   a whole-source SHA-256. A selective certificate must bind the NTFS metadata
+   inventory, the selected old/new hashes and the frozen-device identity instead,
+   without weakening "never recreate the certificate from JSON". Version the
+   recovery bundle so `N2RSEL01` journals are recognized and the full-image API
+   still refuses them.
+5. **Qualify on the lab fixture**: normal conversion, then the
+   interruption/resume/rollback matrix, comparing time and bytes read with the
+   46m53s HEAD baseline.
+
+Steps 1–2 are read-only. Steps 3–5 write to the disposable lab source only, behind
+the checkpoint.
+
+## Integration map: what each whole-image identity becomes
+
+The current pipeline (`general_conversion::composite`) binds every stage to a
+whole-image SHA-256, so the selective path is a parallel pipeline rather than a
+journal swap. Per stage, with the measured HEAD reads in 52 GiB volumes:
+
+| Stage (current code) | Whole-image dependency | Selective replacement |
+|---|---|---|
+| Source admission, `prepare_source_context` (part of 2.4) | Live certificate binds a complete source SHA-256 | Certificate binds the NTFS inventory hash, the retained-route mapping and the selected old-bytes hash, still issued only by the live core. |
+| Protected shadow bracket, `bracket_image_with_resource_profile` (2 of 6.2) | Two complete shadow hashes | Bracket over the shadow's allocated ranges only; the scratch shadow's free space never reaches the target. |
+| Complete capture plus rehashes (4 of 6.2) | Full address-space comparison and pair hashes | `plan_changed_granules` over the protected allocation, validated above. |
+| Journal preparation, `prepare_compact_paired_with_progress` (3.2) | Complete source/candidate scans, postimage equals `comparison.shadow_sha256` | `selected_journal::prepare` over the plan (about 141 MB journal on this fixture). |
+| Apply, `compact::execute` (2.0) | Verifies the complete result | `selected_journal::apply`, which reads back every written range. |
+| Handoff, `compact_finalize` (≥ 0.8) | HND on the compact journal, then native mount verification | `selected_journal::handoff`, then the same native mount verification (15 objects, 10 complete hashes), which stays as the end-to-end check. |
+| Recovery bundle and typed Resume/Rollback | Pins whole-image hashes and the compact journal format | Versioned bundle that recognizes `N2RSEL01`; the full-image API keeps refusing it. |
+
+Reads that would remain on this fixture: NTFS metadata inspection, native shadow
+construction, about 29.5 GB of allocation-bounded comparison, the 141 MB journal,
+write readback, and about 8.6 GB of mounted file hashing. That projects to tens of
+GB instead of about 850 GB; it is a projection until a selective run measures it.
+Admission is the stage that needs the most care: it is where "never recreate the
+certificate from JSON" and "no whole-image hash" must both hold.
+
+### What already exists for the write side, and the first blocker
+
+- `reconstruct::compact::activate` turns the frozen source into a
+  `GeneralJournaledPartition` (offline, writable) through its own binding checks.
+- `GeneralJournaledPartition::arm_writes(WritePolicy { allowed, retained,
+  maximum_bytes, journal_profile })` permits native writes only inside `allowed`,
+  bounded and single-use; `bring_online` stays the only mount transition. It
+  implements `DurableIo`, so `selected_journal::apply`/`handoff` can write through
+  it with `allowed` set to the planned ranges.
+- Blocker: admission is coupled to the complete capture.
+  `assessment.qualify_composite_target(&raw, &proof)` and
+  `proof.data_ties_verified()` require `complete_native_address_space_compared`.
+  Even a staged selective mode that keeps today's whole-source certificate needs a
+  new selective preservation proof type and a certificate method that accepts it.
+  That is the first code step. Projected end-to-end reads are tens of GB rather than ~816 GB;
+that remains a projection until step 5 measures it.

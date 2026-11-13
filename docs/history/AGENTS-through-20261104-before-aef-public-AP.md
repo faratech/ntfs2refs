@@ -246,7 +246,7 @@ Public-only local ZIP:
 SHA129a037136a1c68ac89418c7fdcdfecc8b7d269cc4fb5d89026efeb57e7c4a82.
 All11entries independently checked. Finite normal/mutation/coldboot/interrupted
 first-flushed-write/resume/rollback/early-cancel/refusal/HND cases passed on that
-EXACT source/binary only. See docs/frozen-resource-alpha-20261104.md and its
+EXACT source/binary only. See docs/history/frozen-resource-alpha-20261104.md and its
 package/qualification evidence. No stable release or general hardware claim.
 
 Latest qualified public VHDX candidate b7d97fb ran778e45f2bc4b4291b9d3cb4c9cfebc05,
@@ -304,7 +304,7 @@ passed; native speed/conversion improvement is NOT measured or qualified yet.
 
 See evidence/private-thin-native-format-20261104.json,
 evidence/private-thin-petabyte-profile-refusal-20261104.json and
- docs/private-thin-pool-addressability.md for exact profile/metadata pins.
+ docs/history/private-thin-pool-addressability.md for exact profile/metadata pins.
 
 ## Remaining hardware and safety contracts
 

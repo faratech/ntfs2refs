@@ -161,7 +161,7 @@ member/pool/provider/native/file checks passed. Sampled retained file allocation
 kernel quotas/full-volume capacity. Closed16files27122B manifest
 c7a5d682bb29bb1859fd4ad73d7e251b091b519af4d6c8721b14cc53b1ff80a3.
 See `evidence/private-thin-rust-constructor-20261104.json` and
-`docs/private-thin-pool-addressability.md` for the exact scope and artifact pins.
+`docs/history/private-thin-pool-addressability.md` for the exact scope and artifact pins.
 The first pool was preserved. Both cases are saved in c60; raw native numbers
 are pre-shutdown observations, NOT persistent routes. No GPT/ReFS format,
 payload adoption, public-backend change, restart discovery or recovery qualified.

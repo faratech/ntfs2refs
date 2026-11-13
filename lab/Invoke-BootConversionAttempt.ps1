@@ -62,6 +62,17 @@ param(
     # handoff (crates/n2r-win32/src/lab_hold.rs lists them), end its process
     # there, then run the recovery command it printed and compare as usual.
     [string]$InterruptAt,
+    # How the converter is interrupted there. 'process' ends its process.
+    # 'vm' turns the VM off, as if the machine's power had gone: whatever the
+    # guest had not flushed is lost, the control OS starts again, and
+    # recovery runs in that fresh Windows. (The virtual disks themselves are
+    # the host's files; power to the storage cannot be cut in the lab.)
+    [ValidateSet('process', 'vm')][string]$InterruptKind = 'process',
+    # After disk0 has booted on ReFS, use that Windows: files in a profile, a
+    # path through a former short name, sfc, DISM, a feature enabled and
+    # disabled, two more starts (guest\Test-ConvertedWindowsUse.ps1). With
+    # -NoConvert it is the control: the unconverted Windows, used the same way.
+    [switch]$Acceptance,
     [ValidateSet('resume', 'rollback', 'none')][string]$RecoverMode = 'resume',
     # With -InterruptAt apply-handoff-durable: before recovery runs, leave the
     # journal's handoff marker as a write that stopped part-way leaves it (its
@@ -240,6 +251,21 @@ function Wait-Converter([string]$Root, [string]$TaskName, [string]$ScratchLetter
         }
         if ($HoldPoint -and $state.hold -and -not $held -and -not $state.terminal) {
             $held = $state.hold
+            if ($InterruptKind -eq 'vm') {
+                # What the user would still have: the output on their screen.
+                # (Read, not copied: the worker holds the log open for writing.)
+                try {
+                    $shown = Invoke-Command -Session $script:session -ArgumentList $Root -ErrorAction Stop -ScriptBlock { param($root) Get-Content -LiteralPath "$root\stdout.log" -Raw -Encoding UTF8 }
+                    [IO.File]::WriteAllText((Join-Path $case 'stdout-before-vm-off.log'), "$shown", [Text.UTF8Encoding]::new($false))
+                } catch { Say "could not save the output before the VM was turned off: $($_.Exception.Message)" }
+                Say "converter is holding at its laboratory point: $held; turning the VM off"
+                Remove-PSSession $script:session -ErrorAction SilentlyContinue
+                Stop-VM -VM (Get-LabVm) -TurnOff -Force
+                Start-VM -VM (Get-LabVm)
+                $script:session = Wait-Guest 15 $null
+                if ($script:session) { Say 'the control OS has started again' } else { $vmStopped = 'the control OS did not start again after the VM was turned off' }
+                break
+            }
             Say "converter is holding at its laboratory point: $held; ending its process"
             Invoke-Command -Session $script:session -ArgumentList $Root -ErrorAction Stop -ScriptBlock {
                 param($root) $id = (Get-Content -LiteralPath "$root\native-process.json" -Raw | ConvertFrom-Json).pid
@@ -380,6 +406,99 @@ function Wait-Guest([int]$Minutes, [scriptblock]$EachMinute) {
         if ($EachMinute -and $tick % 6 -eq 0) { & $EachMinute ([int]($tick / 6)) }
     }
     return $null
+}
+# Shuts the control OS down, detaches every disk but disk0 and boots it alone,
+# Secure Boot on. Answers what the Windows that came up says of itself and
+# whether its desktop was reached; $null when no usable Windows came up (the
+# verdict's boot record then says how far it got).
+function Start-Disk0Alone {
+    $controlBoot = Invoke-Command -Session $script:session -ScriptBlock { (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o') }
+    Remove-PSSession $script:session
+    try { Stop-VM -VM (Get-LabVm) -Force } catch { Stop-VM -VM (Get-LabVm) -TurnOff -Force }
+    if ($CheckpointBeforeBoot) {
+        Checkpoint-VM -VM (Get-LabVm) -SnapshotName $CheckpointBeforeBoot
+        $script:KeepScratch = [switch]$true; $verdict.converted_checkpoint = $CheckpointBeforeBoot
+        Say "saved the converted, not yet booted state as checkpoint '$CheckpointBeforeBoot'"
+    }
+    $vm = Get-LabVm
+    $others = @(Get-VMHardDiskDrive -VM $vm | Where-Object { -not ($_.ControllerNumber -eq 0 -and $_.ControllerLocation -eq 0) })
+    # The scratch disk is this attempt's own file and is removed when it ends.
+    $returnable = @($others | Where-Object { $_.Path -ne (Join-Path $case 'scratch.vhdx') })
+    Save-DetachedDisks $returnable
+    $verdict.detached_for_boot = @($returnable | ForEach-Object { $_.Path })
+    $others | Remove-VMHardDiskDrive
+    Get-VMDvdDrive -VM $vm | Remove-VMDvdDrive
+    $disk0 = Get-VMHardDiskDrive -VM $vm
+    if (@($disk0).Count -ne 1) { throw 'Expected exactly disk0 to remain attached' }
+    Set-VMFirmware -VM $vm -FirstBootDevice $disk0
+    Say 'booting the original disk0 alone, Secure Boot on'
+    Start-VM -VM $vm
+    $script:shots = 0
+    $booted = Wait-Guest $BootTimeoutMinutes {
+        param($minute)
+        if ($minute -le 5 -or $minute % 5 -eq 0) { $script:shots++; $null = Save-VmScreen (Join-Path $case ('boot-{0:D2}min.png' -f $minute)) }
+        $heartbeat = (Get-VMIntegrationService -VM (Get-LabVm) -Name 'Heartbeat').PrimaryStatusDescription
+        Say "waiting for Windows on disk0: minute $minute, VM $((Get-LabVm).State), heartbeat $heartbeat"
+    }
+    $null = Save-VmScreen (Join-Path $case 'boot-final.png')
+    if (-not $booted) {
+        $verdict.boot = @{ reached_windows = $false; vm_state = (Get-LabVm).State.ToString()
+            heartbeat = (Get-VMIntegrationService -VM (Get-LabVm) -Name 'Heartbeat').PrimaryStatusDescription }
+        return $null
+    }
+    $observed = Invoke-Command -Session $booted -ArgumentList $controlBoot -ScriptBlock {
+        param($controlBoot)
+        $os = Get-CimInstance Win32_OperatingSystem; $partition = Get-Partition -DriveLetter $env:SystemDrive[0]; $volume = Get-Volume -DriveLetter $env:SystemDrive[0]
+        $refs = @(& "$env:SystemRoot\System32\fsutil.exe" fsinfo refsinfo "$env:SystemDrive" 2>&1)
+        $setup = Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\Setup'
+        $signatures = foreach ($relative in 'System32\winload.efi', 'System32\drivers\refs.sys') {
+            $signature = Get-AuthenticodeSignature -LiteralPath (Join-Path $env:SystemRoot $relative)
+            [pscustomobject]@{ file = $relative; status = [string]$signature.Status; signer = $signature.SignerCertificate.Subject }
+        }
+        [pscustomobject]@{
+            boot_utc = $os.LastBootUpTime.ToUniversalTime().ToString('o'); newer_than_control_boot = $os.LastBootUpTime.ToUniversalTime() -gt [DateTime]::Parse($controlBoot).ToUniversalTime()
+            windows_directory = $os.WindowsDirectory; build = $os.BuildNumber; disk = $partition.DiskNumber; partition = $partition.PartitionNumber
+            partition_guid = $partition.Guid; filesystem = [string]$volume.FileSystem; cluster_bytes = $volume.AllocationUnitSize
+            health = [string]$volume.HealthStatus; refs_version = (($refs -join "`n") -replace '(?s).*REFS Volume Version\s*:\s*([\d.]+).*', '$1')
+            secure_boot = (Confirm-SecureBootUEFI); setup_in_progress = $setup.SystemSetupInProgress; oobe_in_progress = $setup.OOBEInProgress
+            signatures = @($signatures); disks = @(Get-Disk | Select-Object Number, Size)
+        }
+    }
+    Remove-PSSession $booted
+    $observed = $observed | Select-Object * -ExcludeProperty PSComputerName, RunspaceId, PSShowComputerName
+    $desktop = Enter-Desktop
+    $null = Save-VmScreen (Join-Path $case 'boot-desktop.png')
+    [pscustomobject]@{ observed = $observed; desktop = $desktop }
+}
+# Runs guest\Test-ConvertedWindowsUse.ps1 in the Windows that booted from disk0,
+# records every step, then shuts that Windows down and starts it twice more.
+function Invoke-WindowsUseTest([string]$Expected) {
+    $result = [ordered]@{ passed = $false; steps = @(); restarts = @() }
+    $guestSession = Wait-Guest 10 $null
+    if (-not $guestSession) { $result.error = 'the booted Windows did not answer'; return [pscustomobject]$result }
+    try {
+        # (As text: the guest's execution policy does not run files, and nothing has to be copied.)
+        $script = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'guest\Test-ConvertedWindowsUse.ps1')
+        $json = Invoke-Command -Session $guestSession -ArgumentList $script -ScriptBlock { param($script) & ([scriptblock]::Create($script)) }
+        $use = ($json | Select-Object -Last 1) | ConvertFrom-Json
+        [IO.File]::WriteAllText((Join-Path $case 'acceptance.json'), "$($json | Select-Object -Last 1)", [Text.UTF8Encoding]::new($false))
+    } finally { Remove-PSSession $guestSession -ErrorAction SilentlyContinue }
+    $result.steps = @($use.steps)
+    foreach ($step in $use.steps) { Say ("use: {0}: {1} ({2} s): {3}" -f $step.step, $(if ($null -eq $step.ok) { 'skipped' } elseif ($step.ok) { 'ok' } else { 'FAILED' }), $step.seconds, $step.detail) }
+    $restartsOk = $true
+    foreach ($round in 1, 2) {
+        try { Stop-VM -VM (Get-LabVm) -Force } catch { Stop-VM -VM (Get-LabVm) -TurnOff -Force }
+        Start-VM -VM (Get-LabVm)
+        $guestSession = Wait-Guest $BootTimeoutMinutes $null
+        if (-not $guestSession) { $result.restarts += "start ${round}: Windows did not come back"; $restartsOk = $false; break }
+        $state = Invoke-Command -Session $guestSession -ScriptBlock { $volume = Get-Volume -DriveLetter $env:SystemDrive[0]; "$($volume.FileSystem) $($volume.HealthStatus)" }
+        Remove-PSSession $guestSession
+        $result.restarts += "start ${round}: $state"
+        if ($state -ne "$Expected Healthy") { $restartsOk = $false }
+    }
+    Say "use: shut down and started again twice: $($result.restarts -join '; ')"
+    $result.passed = [bool]$use.passed -and $restartsOk
+    [pscustomobject]$result
 }
 function Save-VmScreen([string]$Path) {
     # A picture of the console is the fastest way to read a boot failure.
@@ -601,6 +720,19 @@ try {
         $guest.source_letter, $guest.source_disk, $guest.source_partition, ($guest.source_used_bytes / 1GB), $guest.scratch_letter,
         $guest.scratch_filesystem, ($guest.scratch_free_bytes / 1GB), ($guest.free_memory_bytes / 1GB))
     Phase 'prepare'
+    if ($NoConvert -and $Acceptance) {
+        # Nothing is converted: what the use test finds here is what this
+        # Windows does anyway.
+        $started = Start-Disk0Alone | Select-Object -Last 1
+        if (-not $started -or -not $started.PSObject.Properties['observed']) { $verdict.outcome = 'control-boot-failed'; Phase 'boot'; return }
+        $verdict.boot = @{ reached_windows = $true; observed = $started.observed; desktop = $started.desktop }
+        Say "disk0 booted unconverted: $($started.observed.filesystem), health $($started.observed.health)"
+        Phase 'boot'
+        $use = Invoke-WindowsUseTest 'NTFS' | Select-Object -Last 1
+        $verdict.acceptance = $use
+        $verdict.outcome = if ($use.passed) { 'control-passed' } else { 'control-use-failed' }
+        Phase 'use'; return
+    }
     if ($NoConvert) { $verdict.outcome = 'prepared-only'; Remove-PSSession $session; return }
 
     # ---- run the converter ------------------------------------------------------
@@ -701,7 +833,8 @@ try {
     }
     # ---- collect evidence -------------------------------------------------------
     foreach ($leaf in 'stdout.log', 'stderr.log', 'native-process.json', 'native-terminal.json', 'run.json') {
-        Copy-Evidence $session "$guestRoot\$leaf" $leaf -Required
+        # A converter that went down with its machine wrote no terminal record.
+        Copy-Evidence $session "$guestRoot\$leaf" $leaf -Required:($leaf -ne 'native-terminal.json' -or -not ($InterruptAt -and $InterruptKind -eq 'vm'))
     }
     # Written only when the worker fails, and only when stacks were asked for.
     Copy-Evidence $session "$guestRoot\worker-error.txt" 'worker-error.txt'
@@ -717,8 +850,8 @@ try {
         # The interruption under test: the converter stopped at the named
         # point and its process was ended there. Recovery starts from what
         # that left on the disks, with nothing but the command it printed.
-        $verdict.interrupt = [ordered]@{ point = $InterruptAt; kind = 'process-termination'; held = $run.held; converter_exit = $exit
-            evidence_kinds = [ordered]@{ process_termination = [bool]$run.held; vm_interruption = $false
+        $verdict.interrupt = [ordered]@{ point = $InterruptAt; kind = $(if ($InterruptKind -eq 'vm') { 'vm-turned-off' } else { 'process-termination' }); held = $run.held; converter_exit = $exit
+            evidence_kinds = [ordered]@{ process_termination = ([bool]$run.held -and $InterruptKind -eq 'process'); vm_interruption = ([bool]$run.held -and $InterruptKind -eq 'vm')
                 storage_power_loss = 'not covered: the lab cannot cut power to the storage' } }
         if (-not $run.held) {
             $verdict.outcome = 'interrupt-not-reached'; Say "the converter ended (exit $exit) without reaching the hold at $InterruptAt"
@@ -736,6 +869,21 @@ try {
             return
         }
         $printed = Select-String -LiteralPath (Join-Path $case 'stdout.log') -Pattern '^To recover: ntfs2refs --recover "(.+)" --recovery-sha256 ([0-9a-f]{64})' | Select-Object -Last 1
+        $beforeOff = Join-Path $case 'stdout-before-vm-off.log'
+        if (-not $printed -and (Test-Path -LiteralPath $beforeOff)) {
+            # The log file lost its end with the machine; the line had been printed.
+            $printed = Select-String -LiteralPath $beforeOff -Pattern '^To recover: ntfs2refs --recover "(.+)" --recovery-sha256 ([0-9a-f]{64})' | Select-Object -Last 1
+            if ($printed) { $verdict.interrupt.recovery_command_from = 'the output saved before the VM was turned off; the log file in the guest had lost it'; Say 'the guest log lost the "To recover:" line with the machine; using the output saved before the VM was turned off' }
+        }
+        if ($printed -and $InterruptKind -eq 'vm') {
+            # Someone who lost the screen as well can still recover: the
+            # checksum is the SHA-256 of the envelope in that directory.
+            $onDisk = Invoke-Command -Session $session -ArgumentList $printed.Matches[0].Groups[1].Value -ScriptBlock {
+                param($directory) $file = Join-Path $directory 'recovery-envelope.json'
+                if (Test-Path -LiteralPath $file) { (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() } else { $null } }
+            $verdict.interrupt.envelope_after_restart = [ordered]@{ sha256 = $onDisk; equals_printed_checksum = ($onDisk -eq $printed.Matches[0].Groups[2].Value) }
+            Say "recovery envelope after the restart: $(if ($onDisk -eq $printed.Matches[0].Groups[2].Value) { 'its SHA-256 is the printed checksum' } elseif ($onDisk) { "its SHA-256 is $onDisk, not the printed checksum" } else { 'not found' })"
+        }
         if (-not $printed) { $verdict.outcome = 'interrupted-without-recovery-command'; Say 'the interrupted run printed no "To recover:" line'; Remove-PSSession $session; return }
         $recoverArguments = @('--recover', $printed.Matches[0].Groups[1].Value, '--recovery-sha256', $printed.Matches[0].Groups[2].Value)
         if ($RecoverMode -eq 'rollback') { $recoverArguments += '--rollback' }
@@ -826,7 +974,17 @@ try {
             $listing = Compare-Listing $manifestExe $after.letter $guestRoot -Exact
             $verdict.outcome = switch ($listing) {
                 'identical' { 'ROLLED-BACK-NOT-BOOTED' } 'differs' { 'rolled-back-but-listing-differs' } default { 'rolled-back-listing-tool-failed' } }
-            Remove-PSSession $session; return
+            if ($NoBoot -or $listing -ne 'identical') { Remove-PSSession $session; return }
+            # The installation that was rolled back has to start as it did before.
+            $started = Start-Disk0Alone | Select-Object -Last 1
+            if (-not $started -or -not $started.PSObject.Properties['observed']) { $verdict.outcome = 'rolled-back-but-boot-failed'; Say "after the rollback disk0 did not reach a usable Windows within $BootTimeoutMinutes minutes; see boot-*.png"; Phase 'boot'; return }
+            $observed = $started.observed; $desktop = $started.desktop
+            $ok = $observed.filesystem -eq 'NTFS' -and $observed.partition -eq $guest.source_partition -and $observed.partition_guid -eq $guest.source_guid -and
+                @($observed.disks).Count -eq 1 -and $observed.secure_boot -eq $true -and $observed.newer_than_control_boot -and $observed.health -eq 'Healthy'
+            $verdict.boot = @{ reached_windows = $true; observed = $observed; desktop = $desktop }
+            $verdict.outcome = if (-not $ok) { 'rolled-back-booted-but-checks-failed' } elseif (-not $desktop.shell) { 'rolled-back-booted-without-desktop' } else { 'ROLLED-BACK-BOOTED-ON-NTFS' }
+            Say "disk0 booted after the rollback: $($observed.filesystem), partition $($observed.partition), health $($observed.health); desktop $(if ($desktop.shell) { "reached as $($desktop.user) in $($desktop.seconds) s" } else { "not reached: $($desktop.error)" }) => $($verdict.outcome)"
+            Phase 'boot'; return
         }
         # A resumed conversion is held to everything a completed one is.
         $exit = 0
@@ -927,66 +1085,13 @@ try {
     if ($NoBoot) { $verdict.outcome = if ($resumed) { 'RESUMED-NOT-BOOTED' } else { 'converted-not-booted' }; Remove-PSSession $session; return }
 
     # ---- boot disk0 alone ------------------------------------------------------
-    $controlBoot = Invoke-Command -Session $session -ScriptBlock { (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o') }
-    Remove-PSSession $session
-    try { Stop-VM -VM (Get-LabVm) -Force } catch { Stop-VM -VM (Get-LabVm) -TurnOff -Force }
-    if ($CheckpointBeforeBoot) {
-        Checkpoint-VM -VM (Get-LabVm) -SnapshotName $CheckpointBeforeBoot
-        $KeepScratch = [switch]$true; $verdict.converted_checkpoint = $CheckpointBeforeBoot
-        Say "saved the converted, not yet booted state as checkpoint '$CheckpointBeforeBoot'"
-    }
-    $vm = Get-LabVm
-    $others = @(Get-VMHardDiskDrive -VM $vm | Where-Object { -not ($_.ControllerNumber -eq 0 -and $_.ControllerLocation -eq 0) })
-    # The scratch disk is this attempt's own file and is removed when it ends.
-    $returnable = @($others | Where-Object { $_.Path -ne (Join-Path $case 'scratch.vhdx') })
-    Save-DetachedDisks $returnable
-    $verdict.detached_for_boot = @($returnable | ForEach-Object { $_.Path })
-    $others | Remove-VMHardDiskDrive
-    Get-VMDvdDrive -VM $vm | Remove-VMDvdDrive
-    $disk0 = Get-VMHardDiskDrive -VM $vm
-    if (@($disk0).Count -ne 1) { throw 'Expected exactly disk0 to remain attached' }
-    Set-VMFirmware -VM $vm -FirstBootDevice $disk0
-    Say 'booting the original disk0 alone, Secure Boot on'
-    Start-VM -VM $vm
-    $shots = 0
-    $session = Wait-Guest $BootTimeoutMinutes {
-        param($minute)
-        if ($minute -le 5 -or $minute % 5 -eq 0) { $script:shots++; $null = Save-VmScreen (Join-Path $case ('boot-{0:D2}min.png' -f $minute)) }
-        $heartbeat = (Get-VMIntegrationService -VM (Get-LabVm) -Name 'Heartbeat').PrimaryStatusDescription
-        Say "waiting for Windows on disk0: minute $minute, VM $((Get-LabVm).State), heartbeat $heartbeat"
-    }
-    $null = Save-VmScreen (Join-Path $case 'boot-final.png')
-    if (-not $session) {
-        $verdict.boot = @{ reached_windows = $false; vm_state = (Get-LabVm).State.ToString()
-            heartbeat = (Get-VMIntegrationService -VM (Get-LabVm) -Name 'Heartbeat').PrimaryStatusDescription }
-        $verdict.outcome = 'boot-failed'; Say "disk0 did not reach a usable Windows within $BootTimeoutMinutes minutes; see boot-*.png"; Phase 'boot'; return
-    }
-    $observed = Invoke-Command -Session $session -ArgumentList $controlBoot -ScriptBlock {
-        param($controlBoot)
-        $os = Get-CimInstance Win32_OperatingSystem; $partition = Get-Partition -DriveLetter $env:SystemDrive[0]; $volume = Get-Volume -DriveLetter $env:SystemDrive[0]
-        $refs = @(& "$env:SystemRoot\System32\fsutil.exe" fsinfo refsinfo "$env:SystemDrive" 2>&1)
-        $setup = Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\Setup'
-        $signatures = foreach ($relative in 'System32\winload.efi', 'System32\drivers\refs.sys') {
-            $signature = Get-AuthenticodeSignature -LiteralPath (Join-Path $env:SystemRoot $relative)
-            [pscustomobject]@{ file = $relative; status = [string]$signature.Status; signer = $signature.SignerCertificate.Subject }
-        }
-        [pscustomobject]@{
-            boot_utc = $os.LastBootUpTime.ToUniversalTime().ToString('o'); newer_than_control_boot = $os.LastBootUpTime.ToUniversalTime() -gt [DateTime]::Parse($controlBoot).ToUniversalTime()
-            windows_directory = $os.WindowsDirectory; build = $os.BuildNumber; disk = $partition.DiskNumber; partition = $partition.PartitionNumber
-            partition_guid = $partition.Guid; filesystem = [string]$volume.FileSystem; cluster_bytes = $volume.AllocationUnitSize
-            health = [string]$volume.HealthStatus; refs_version = (($refs -join "`n") -replace '(?s).*REFS Volume Version\s*:\s*([\d.]+).*', '$1')
-            secure_boot = (Confirm-SecureBootUEFI); setup_in_progress = $setup.SystemSetupInProgress; oobe_in_progress = $setup.OOBEInProgress
-            signatures = @($signatures); disks = @(Get-Disk | Select-Object Number, Size)
-        }
-    }
-    Remove-PSSession $session
-    $observed = $observed | Select-Object * -ExcludeProperty PSComputerName, RunspaceId, PSShowComputerName
+    $started = Start-Disk0Alone | Select-Object -Last 1
+    if (-not $started -or -not $started.PSObject.Properties['observed']) { $verdict.outcome = 'boot-failed'; Say "disk0 did not reach a usable Windows within $BootTimeoutMinutes minutes; see boot-*.png"; Phase 'boot'; return }
+    $observed = $started.observed; $desktop = $started.desktop
     $ok = $observed.filesystem -eq 'ReFS' -and $observed.refs_version -eq '3.14' -and $observed.cluster_bytes -eq 4096 -and
         $observed.partition -eq $guest.source_partition -and $observed.partition_guid -eq $guest.source_guid -and @($observed.disks).Count -eq 1 -and
         $observed.secure_boot -eq $true -and $observed.newer_than_control_boot -and $observed.health -eq 'Healthy' -and
         -not (@($observed.signatures) | Where-Object status -NE 'Valid')
-    $desktop = Enter-Desktop
-    $null = Save-VmScreen (Join-Path $case 'boot-desktop.png')
     $verdict.boot = @{ reached_windows = $true; observed = $observed; desktop = $desktop }
     # Only an identical listing (or one the operator switched off) can end as BOOTED-ON-REFS.
     $verdict.outcome = if (-not $ok) { 'booted-but-checks-failed' } elseif (-not $desktop.shell) { 'booted-without-desktop' }
@@ -994,6 +1099,13 @@ try {
         elseif ($listing -eq 'tool-failed') { 'booted-listing-tool-failed' } elseif ($resumed) { 'RESUMED-BOOTED-ON-REFS' } else { 'BOOTED-ON-REFS' }
     Say "disk0 booted: $($observed.filesystem) $($observed.refs_version), cluster $($observed.cluster_bytes), partition $($observed.partition), health $($observed.health); desktop $(if ($desktop.shell) { "reached as $($desktop.user) in $($desktop.seconds) s" } else { "not reached: $($desktop.error)" }) => $($verdict.outcome)"
     Phase 'boot'
+    if ($Acceptance -and $verdict.outcome -in 'BOOTED-ON-REFS', 'RESUMED-BOOTED-ON-REFS') {
+        # Reaching the desktop is not the same as going on being used and serviced.
+        $use = Invoke-WindowsUseTest 'ReFS' | Select-Object -Last 1
+        $verdict.acceptance = $use
+        if (-not $use.passed) { $verdict.result = $verdict.outcome; $verdict.outcome = "$($verdict.outcome)-BUT-USE-FAILED" }
+        Phase 'use'
+    }
 } catch {
     $verdict.outcome = 'harness-error'; $verdict.error = ($_ | Out-String); Say "HARNESS ERROR: $($_.Exception.Message)"; throw
 } finally {
@@ -1002,7 +1114,7 @@ try {
     # scratch disk is kept so the records can still be recovered.
     $missing = @($verdict.evidence | Where-Object { $_.required -and -not $_.present })
     if ($missing.Count -and $verdict.outcome -in 'converted-not-booted', 'BOOTED-ON-REFS', 'diagnose-clean', 'diagnose-found-failures',
-        'RESUMED-NOT-BOOTED', 'RESUMED-BOOTED-ON-REFS', 'ROLLED-BACK-NOT-BOOTED', 'ROLLED-BACK-NOT-COMPARED') {
+        'RESUMED-NOT-BOOTED', 'RESUMED-BOOTED-ON-REFS', 'ROLLED-BACK-NOT-BOOTED', 'ROLLED-BACK-BOOTED-ON-NTFS', 'ROLLED-BACK-NOT-COMPARED') {
         $verdict.result = $verdict.outcome; $verdict.outcome = 'incomplete-evidence'; $KeepScratch = [switch]$true
         Say "required evidence missing: $(($missing | ForEach-Object { $_.name }) -join ', '); scratch disk kept"
     }

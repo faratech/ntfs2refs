@@ -152,7 +152,7 @@ is not termination. Root owns VM mutations; delta metadata-only observation.
 Local frozen package: .lab/releases/ntfs2refs-alpha-20261029-fb5548.zip,
 SHAf826606342c9b2a06ef18a35996915d60c0c54fd840fbc71c21ddb26f854577b.
 It contains the exact tested mainfb5548 and the scope/instructions in
-docs/frozen-drive-alpha-20261029.md. Package record:
+docs/history/frozen-drive-alpha-20261029.md. Package record:
 evidence/frozen-drive-alpha-package-20261029.json. No runtime authority is
 granted by this package. Keep the existing user main.rs hunk unstaged.
 The coordinating agent owns VM mutations. Delegated agents work on source only
@@ -165,7 +165,7 @@ format, stage or overwrite that hunk without an explicit instruction.
 
 ## What the recorded results establish
 
-See [build provenance](docs/experimental-build-provenance.md) and its
+See [build provenance](docs/history/experimental-build-provenance.md) and its
 [evidence index](evidence/experimental-build-provenance-20261029.json)
 for full hashes, exact archived reports and limits.
 

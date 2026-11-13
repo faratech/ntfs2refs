@@ -36,7 +36,7 @@ Do not redefine completion as the existing small-corpus success.
 
 The user resumed implementation of the ntfs2btrfs comparison's performance plan,
 retaining the native-shadow alpha. New work adds source-free format-5 recovery
-storage and actual-read COPY reuse; see docs/native-shadow-performance.md.
+storage and actual-read COPY reuse; see docs/history/native-shadow-performance.md.
 Existing formats/default requests remain unchanged. The new --minimize-scratch
 mode is explicit and has not yet passed a full native conversion/recovery run.
 No unit tests were added/run; focused builds and owned-file checks are used.
@@ -159,7 +159,7 @@ receipt7149e13e. Final-idle02:36:23.4990939Z preceded normalstop/finalNTFS48.
 Checkpoint receipt SHA169ae84302d6f12220fd820c89b87c54fceb1ec3477bb3bd45df8dae81b7867c.
 Both new journal-owner directions are qualified for this recorded old journal
 and conservative request only. Final native IO/CPU unavailable; preserve that
-limitation. See docs/exclusive-recovery-native.md and its evidence JSON.
+limitation. See docs/history/exclusive-recovery-native.md and its evidence JSON.
 NEXT: qualify actual-byte capacity on a fresh8329 conversion with J8GiB.
 Use the sealed actual-byte-capacity-tools-adf08e9/manifest.json,
 SHA4f62f03a1ae0ba978358e9128c3418d8c153cb0b63537248938c12e3788ea107;
@@ -181,7 +181,7 @@ request and does NOT qualify expanded actual-byte capacity.
 - Frozen E4ff old-zero matrix is complete: first flushed write86, clean restart,
   Resume0/HND, separate original-state Rollback0/ABT, all811 hashes both ways.
   Old-selected checksum exactly matched original ticket. This is not arbitrary
-  faults or physical-power-loss qualification. See docs/old-zero-recovery-matrix.md
+  faults or physical-power-loss qualification. See docs/history/old-zero-recovery-matrix.md
   and evidence/old-zero-recovery-matrix-20261031.json.
 - Preserve new normal6bef3bd2-db31-45fe-9e6c-939c812b7375, interrupteddea902f6,
   clean grown source

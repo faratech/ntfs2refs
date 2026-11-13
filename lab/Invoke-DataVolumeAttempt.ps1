@@ -41,8 +41,18 @@ param(
     # ReFS allocation unit of the target, passed as --target-cluster-bytes; 0 leaves the converter's default.
     [int]$TargetClusterBytes = 0,
     [ValidateSet('system', 'administrator')][string]$RunAs = 'system',
-    # What to put on the volume: the fixed mixed set, or nothing but one file.
-    [ValidateSet('mixed', 'minimal', 'many')][string]$Content = 'mixed',
+    # What to put on the volume: the fixed mixed set, nothing but one file, a
+    # file of many streams and one of many islands, or the mixed set with what
+    # a volume that has been in use has (see -Features).
+    [ValidateSet('mixed', 'minimal', 'many', 'lived-in')][string]$Content = 'mixed',
+    # NTFS features to add after the content, made by guest\Add-VolumeFeatures.ps1:
+    # objectids, security, ea, links, longpath, deep, bigdir, bigfile, full,
+    # copy, usn (all of which convert; -Content lived-in adds them except
+    # bigfile and full), and shortnames, temporary, offline, efs, wof, quota,
+    # casesensitive, snapshot, bitlocker, dirstream (which are refused).
+    [string[]]$Features = @(),
+    [int]$DirectoryEntries = 20000,
+    [int]$BigFileGB = 6,
     # Further converter arguments, for example '--diagnose'.
     [string[]]$ConverterArgs = @(),
     # A pattern the converter's error must match for a refusal to count as expected.
@@ -63,6 +73,18 @@ param(
     [string]$Binary,
     [string]$ManifestBinary,
     [int]$TimeoutMinutes = 60,
+    # After a conversion whose listing is identical, use the volume: write,
+    # change, rename and delete files, fill it and free it, snapshot it, mount
+    # it again (guest\Test-ConvertedVolumeUse.ps1). A step that fails makes
+    # the outcome converted-but-use-failed.
+    [switch]$Acceptance,
+    # The control for -Acceptance: nothing is converted. Windows formats the
+    # volume as ReFS itself, the content is put on it, and the same use test
+    # runs. What fails here too is how ReFS or this Windows behaves; what
+    # fails only on a converted volume is the conversion's. Use it with
+    # -Content minimal and features that ReFS can hold (copy, security, ea,
+    # links, longpath, deep, bigdir).
+    [switch]$NativeRefsControl,
     [switch]$KeepVolume
 )
 $ErrorActionPreference = 'Stop'; Set-StrictMode -Version Latest
@@ -86,6 +108,21 @@ $verdict = [ordered]@{
     listing_tool_sha256 = (Get-FileHash -LiteralPath $ManifestBinary -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 function Save-Verdict { [IO.File]::WriteAllText((Join-Path $records 'verdict.json'), ($verdict | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false)) }
+
+# Runs guest\Test-ConvertedVolumeUse.ps1 on V:, records every step and answers its result.
+function Invoke-UseTest([string]$Root) {
+    Copy-Item -ToSession $session -LiteralPath (Join-Path $PSScriptRoot 'guest\Test-ConvertedVolumeUse.ps1') -Destination "$Root\use.ps1" -Force
+    $useJson = Invoke-Command -Session $session -ArgumentList $Root -ScriptBlock {
+        param($root)
+        $block = [scriptblock]::Create((Get-Content -LiteralPath "$root\use.ps1" -Raw))
+        & $block -Root 'V:\' -WorkDirectory "$root\use" -ProgressFile "$root\use-progress.log"
+    }
+    $use = ($useJson | Select-Object -Last 1) | ConvertFrom-Json
+    Set-Content -LiteralPath (Join-Path $records 'acceptance.json') -Value ($useJson | Select-Object -Last 1) -Encoding UTF8
+    $verdict.acceptance = $use
+    foreach ($step in $use.steps) { Say ("use: {0}: {1} ({2} s): {3}" -f $step.step, $(if ($null -eq $step.ok) { 'skipped' } elseif ($step.ok) { 'ok' } else { 'FAILED' }), $step.seconds, $step.detail) }
+    $use
+}
 
 $vm = Get-VM -Id $VmId
 if ($vm.State -ne 'Running') { throw "VM $($vm.Name) is $($vm.State). Start its control OS first: Invoke-BootConversionAttempt.ps1 -Name <n> -NoConvert -KeepScratch -VmId $VmId" }
@@ -121,6 +158,7 @@ try {
     }
     Copy-Item -ToSession $session -LiteralPath $ManifestBinary -Destination "$guestRoot\lab-volume-manifest.exe" -Force
     Copy-Item -ToSession $session -LiteralPath (Join-Path $PSScriptRoot 'guest\Invoke-ConverterRun.ps1') -Destination "$guestRoot\worker.ps1" -Force
+    Copy-Item -ToSession $session -LiteralPath (Join-Path $PSScriptRoot 'guest\Add-VolumeFeatures.ps1') -Destination "$guestRoot\features.ps1" -Force
 
     # The source disk: a VHDX in the guest, or for 4Kn one the host attaches.
     $sizeMB = $PartitionMB + 2048
@@ -133,8 +171,9 @@ try {
     # A VHDX reports 4096-byte physical sectors, and NTFS will not format a
     # cluster smaller than the physical sector; a VHD reports 512.
     $container = if ($ClusterBytes -lt 4096) { 'vhd' } else { 'vhdx' }
-    $made = Invoke-Command -Session $session -ArgumentList $guestRoot, $Name, $sizeMB, $PartitionMB, $SectorBytes, $unit, ([bool]$LargeRecords), @($ready), $container -ScriptBlock {
-        param($root, $name, $sizeMB, $partitionMB, $sectorBytes, $unit, $largeRecords, $known, $container)
+    if ($NativeRefsControl -and $Content -ne 'minimal') { throw '-NativeRefsControl takes -Content minimal: the mixed content uses what only NTFS has' }
+    $made = Invoke-Command -Session $session -ArgumentList $guestRoot, $Name, $sizeMB, $PartitionMB, $SectorBytes, $unit, ([bool]$LargeRecords), @($ready), $container, ([bool]$NativeRefsControl), $TargetFormat -ScriptBlock {
+        param($root, $name, $sizeMB, $partitionMB, $sectorBytes, $unit, $largeRecords, $known, $container, $native, $targetFormat)
         if ($sectorBytes -eq 4096) {
             $deadline = (Get-Date).AddSeconds(60)
             do { Start-Sleep -Milliseconds 500; $new = @(Get-Disk | Where-Object { $_.Number -notin $known -and $_.LogicalSectorSize -eq 4096 }) } until ($new.Count -eq 1 -or (Get-Date) -gt $deadline)
@@ -151,10 +190,12 @@ try {
         $diskpart = & diskpart.exe /s "$root\make.txt" 2>&1 | Out-String
         if (-not (Get-Partition -DriveLetter V -ErrorAction SilentlyContinue)) { throw "diskpart made no volume V:`n$diskpart" }
         $arguments = @('V:', '/FS:NTFS', "/A:$unit", '/Q', '/Y', '/V:DATALAB'); if ($largeRecords) { $arguments += '/L' }
+        if ($native) { $arguments = @('V:', '/FS:ReFS', '/Q', '/Y', '/V:DATALAB'); if ($targetFormat -eq 'dev-drive') { $arguments += '/DevDrv' } }
         $format = & "$env:SystemRoot\System32\format.com" $arguments 2>&1 | Out-String
         $volume = Get-Volume -DriveLetter V
-        if ($volume.FileSystem -ne 'NTFS') { throw "format.com $($arguments -join ' ') left V: as '$($volume.FileSystem)':`n$format" }
-        $ntfs = (& fsutil.exe fsinfo ntfsinfo V: 2>&1 | Out-String)
+        $wanted = if ($native) { 'ReFS' } else { 'NTFS' }
+        if ($volume.FileSystem -ne $wanted) { throw "format.com $($arguments -join ' ') left V: as '$($volume.FileSystem)':`n$format" }
+        $ntfs = (& fsutil.exe fsinfo $(if ($native) { 'refsinfo' } else { 'ntfsinfo' }) V: 2>&1 | Out-String)
         $partition = Get-Partition -DriveLetter V
         [pscustomobject]@{ diskpart = $diskpart; format = $format; ntfsinfo = $ntfs; disk = $partition.DiskNumber; partition = $partition.PartitionNumber
             bytes = $partition.Size; offset = $partition.Offset; logical_sector = (Get-Disk -Number $partition.DiskNumber).LogicalSectorSize }
@@ -164,7 +205,7 @@ try {
     $verdict.source.observed = [ordered]@{ bytes_per_sector = & $field 'Bytes Per Sector'; bytes_per_cluster = & $field 'Bytes Per Cluster'
         bytes_per_file_record = & $field 'Bytes Per FileRecord Segment'; partition_bytes = $made.bytes; partition_offset = $made.offset; disk_logical_sector = $made.logical_sector }
     Say "source V: disk $($made.disk) partition $($made.partition), $($made.bytes) bytes; NTFS reports $($verdict.source.observed.bytes_per_sector)-byte sectors, $($verdict.source.observed.bytes_per_cluster)-byte clusters, $($verdict.source.observed.bytes_per_file_record)-byte file records"
-    if ($verdict.source.observed.bytes_per_cluster -ne $ClusterBytes) { throw "the volume has $($verdict.source.observed.bytes_per_cluster)-byte clusters, not the $ClusterBytes asked for" }
+    if (-not $NativeRefsControl -and $verdict.source.observed.bytes_per_cluster -ne $ClusterBytes) { throw "the volume has $($verdict.source.observed.bytes_per_cluster)-byte clusters, not the $ClusterBytes asked for" }
 
     $filled = Invoke-Command -Session $session -ArgumentList $Content, $ClusterBytes, $Islands -ScriptBlock {
         param($content, $cluster, $islands)
@@ -254,24 +295,57 @@ try {
     }
     Say "content: $filled"
 
-    $listed = Invoke-Command -Session $session -ArgumentList $guestRoot -ScriptBlock {
-        param($root)
+    $wanted = @($Features | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
+    if ($Content -eq 'lived-in') { $wanted = @(@('copy', 'objectids', 'security', 'ea', 'links', 'longpath', 'deep', 'bigdir', 'usn') + $wanted | Select-Object -Unique) }
+    if ($wanted) {
+        try {
+            # (As a script block: the guest's execution policy does not run files.)
+            $featureJson = Invoke-Command -Session $session -ArgumentList $guestRoot, $wanted, $DirectoryEntries, $BigFileGB -ScriptBlock {
+                param($root, $features, $entries, $bigGB)
+                $block = [scriptblock]::Create((Get-Content -LiteralPath "$root\features.ps1" -Raw))
+                & $block -Root 'V:\' -Features $features -DirectoryEntries $entries -BigFileGB $bigGB
+            }
+        } catch { $verdict.outcome = 'feature-not-made'; throw "a feature could not be put on the volume: $($_.Exception.Message)" }
+        $verdict.source.features = ($featureJson | Select-Object -Last 1) | ConvertFrom-Json
+        Set-Content -LiteralPath (Join-Path $records 'features.json') -Value ($featureJson | Select-Object -Last 1) -Encoding UTF8
+        Say "features: $($wanted -join ', ')"
+    }
+    if ($NativeRefsControl) {
+        # Nothing to convert: the volume is ReFS as Windows made it.
+        $use = Invoke-UseTest $guestRoot
+        $verdict.outcome = if ($use.passed) { 'control-passed' } else { 'control-use-failed' }
+        return
+    }
+
+    # A volume the bitlocker feature encrypted locks whenever it is mounted
+    # again (the converter's freeze and return are such a remount, and so is
+    # the one below); a volume in use is unlocked, so the lab unlocks it.
+    $unlock = 'if (Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue) { $b = Get-BitLockerVolume -MountPoint "V:" -ErrorAction SilentlyContinue; if ($b -and "$($b.LockStatus)" -eq "Locked") { $null = Unlock-BitLocker -MountPoint "V:" -Password (ConvertTo-SecureString "Lab-volume-password-2026" -AsPlainText -Force) } }'
+    $listed = Invoke-Command -Session $session -ArgumentList $guestRoot, $unlock, ([bool]($wanted -contains 'links')) -ScriptBlock {
+        param($root, $unlock, $junctions)
+        $unlock = [scriptblock]::Create($unlock)
         # Windows writes its own files into "System Volume Information" when a
-        # volume arrives (the search indexer's IndexerVolumeGuid among them).
-        # A volume in use has them already; one made a moment ago gets them
-        # when it next mounts, which would be after it was converted. So the
-        # volume is remounted (again every 20 s: a guest that has just
-        # started has no indexer yet) and listed when the file is there.
-        $deadline = (Get-Date).AddSeconds(150); $remount = Get-Date; $settled = $false
+        # volume arrives: the search indexer's IndexerVolumeGuid and, on a
+        # volume with junctions, the mount manager's database. A volume in use
+        # has them already; one made a moment ago gets them when it next
+        # mounts, which would be after it was converted, and the directory's
+        # changed times would show as a difference. So the volume is mounted
+        # afresh first (again every 20 s: a guest that has just started has
+        # no indexer yet), and listed when those files are there and two
+        # listings in a row find as many entries in that directory.
+        $deadline = (Get-Date).AddSeconds(150); $settled = $false; $previous = -1
+        $mountAfresh = { $number = (Get-Partition -DriveLetter V).DiskNumber; Set-Disk -Number $number -IsOffline $true; Set-Disk -Number $number -IsOffline $false }
+        & $mountAfresh; $remount = (Get-Date).AddSeconds(20)
         do {
             Start-Sleep -Seconds 2
+            & $unlock
             $text = & "$root\lab-volume-manifest.exe" capture --root 'V:\' --output "$root\manifest-before.jsonl" 2>&1
             if ($LASTEXITCODE -ne 0) { break }
-            $settled = [bool](Select-String -LiteralPath "$root\manifest-before.jsonl" -Pattern 'IndexerVolumeGuid' -SimpleMatch -Quiet)
-            if (-not $settled -and (Get-Date) -ge $remount) {
-                $number = (Get-Partition -DriveLetter V).DiskNumber
-                Set-Disk -Number $number -IsOffline $true; Set-Disk -Number $number -IsOffline $false; $remount = (Get-Date).AddSeconds(20)
-            }
+            $own = @(Select-String -LiteralPath "$root\manifest-before.jsonl" -Pattern 'System Volume Information' -SimpleMatch)
+            $has = { param($leaf) [bool]($own | Where-Object { $_.Line -like "*$leaf*" }) }
+            $settled = (& $has 'IndexerVolumeGuid') -and (-not $junctions -or (& $has 'MountPointManagerRemoteDatabase')) -and $own.Count -eq $previous
+            $previous = $own.Count
+            if (-not $settled -and (Get-Date) -ge $remount) { & $mountAfresh; $remount = (Get-Date).AddSeconds(20); $previous = -1 }
         } until ($settled -or (Get-Date) -gt $deadline)
         [pscustomobject]@{ exit = $LASTEXITCODE; text = ($text -join ' '); settled = $settled }
     }
@@ -359,9 +433,10 @@ try {
         Say "recovery started: ntfs2refs $($recover -join ' ')"
         $ended = (Wait-Worker $guestRoot '').ended
     }
-    $run = Invoke-Command -Session $session -ArgumentList $guestRoot, $task -ScriptBlock {
-        param($root, $task)
+    $run = Invoke-Command -Session $session -ArgumentList $guestRoot, $task, $unlock -ScriptBlock {
+        param($root, $task, $unlock)
         Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue
+        try { & ([scriptblock]::Create($unlock)) } catch { }
         $terminal = if (Test-Path "$root\native-terminal.json") { Get-Content "$root\native-terminal.json" -Raw | ConvertFrom-Json } else { $null }
         $volume = Get-Volume -DriveLetter V -ErrorAction SilentlyContinue
         $partition = Get-Partition -DriveLetter V -ErrorAction SilentlyContinue
@@ -406,15 +481,30 @@ try {
             $arguments = @('compare'); if ($exact) { $arguments += '--exact' }
             $arguments += @('--before', "$root\manifest-before.jsonl", '--after', "$root\manifest-after.jsonl", '--report', "$root\manifest-report.json")
             $summary = & "$root\lab-volume-manifest.exe" $arguments 2>&1
-            $exit = $LASTEXITCODE; $differences = $null
-            if (Test-Path -LiteralPath "$root\manifest-report.json") { try { $differences = [int](Get-Content -Raw -LiteralPath "$root\manifest-report.json" | ConvertFrom-Json).difference_count } catch { $differences = $null } }
-            [pscustomobject]@{ stage = 'compare'; exit = $exit; differences = $differences; listed = ($listed -join ' '); summary = ($summary -join ' ') }
+            $exit = $LASTEXITCODE; $differences = $null; $kinds = @{}
+            if (Test-Path -LiteralPath "$root\manifest-report.json") {
+                try {
+                    $report = Get-Content -Raw -LiteralPath "$root\manifest-report.json" | ConvertFrom-Json
+                    $differences = [int]$report.difference_count
+                    foreach ($kind in $report.difference_kinds.PSObject.Properties) { $kinds[$kind.Name] = [int]$kind.Value }
+                } catch { $differences = $null }
+            }
+            [pscustomobject]@{ stage = 'compare'; exit = $exit; differences = $differences; kinds = $kinds; listed = ($listed -join ' '); summary = ($summary -join ' ') }
         }
         foreach ($leaf in 'manifest-after.jsonl', 'manifest-report.json') { try { Copy-Item -FromSession $session -LiteralPath "$guestRoot\$leaf" -Destination $records } catch { } }
         # Exit 0 with nothing counted is identical; exit 2 with a count is a
         # real difference; anything else is the listing tool failing.
         $listing = if ($compared.stage -eq 'compare' -and $compared.exit -eq 0 -and $compared.differences -eq 0) { 'identical' }
             elseif ($compared.stage -eq 'compare' -and $compared.exit -eq 2 -and $compared.differences -gt 0) { 'differs' } else { 'tool-failed' }
+        # A volume with shadow copies or BitLocker holds files of Windows' own
+        # that nothing may open. They count as differences because they could
+        # not be read; when that is all there is, and as many before as after,
+        # a refused volume is as unchanged as a listing can show. Only for a
+        # refusal: on a converted volume every file has to be readable.
+        if ($listing -eq 'differs' -and -not $converted -and @($compared.kinds.Keys).Count -eq 2 -and
+            $compared.kinds['unreadable before'] -gt 0 -and $compared.kinds['unreadable before'] -eq $compared.kinds['unreadable afterwards']) {
+            $listing = 'unreadable-both-times'
+        }
         $verdict.manifest = [ordered]@{ result = $listing; exact = (-not $converted); stage = $compared.stage; exit = $compared.exit; differences = $compared.differences; listed = $compared.listed; summary = $compared.summary }
         Say "listing after the run: $($compared.listed)"
         Say "before/after comparison$(if (-not $converted) { ', exact' }): $listing ($($compared.stage) exit $($compared.exit)): $($compared.summary)"
@@ -435,10 +525,16 @@ try {
     } elseif ($converted) {
         switch ($listing) { 'identical' { 'converted' } 'differs' { 'converted-but-listing-differs' } default { 'converted-listing-tool-failed' } }
     } elseif ($run.exit -eq 0) { 'exit-0-but-not-refs' }
-    elseif ($returned -and $listing -eq 'identical') { if ($ExpectRefusal -and $errorLine -match $ExpectRefusal) { 'refused-as-expected' } else { 'refused-source-unchanged' } }
+    elseif ($returned -and $listing -in 'identical', 'unreadable-both-times') { if ($ExpectRefusal -and $errorLine -match $ExpectRefusal) { 'refused-as-expected' } else { 'refused-source-unchanged' } }
     elseif ($returned) { "refused-source-listing-$listing" }
     elseif ($run.filesystem -eq 'ReFS') { 'failed-after-conversion' }
     else { 'failed-source-not-returned' }
+    if ($Acceptance -and $verdict.outcome -in 'converted', 'resumed') {
+        # The listing shows what was carried over; this shows that the result
+        # is a volume one can go on working with.
+        $use = Invoke-UseTest $guestRoot
+        if (-not $use.passed) { $verdict.outcome = "$($verdict.outcome)-but-use-failed" }
+    }
 } catch {
     $verdict.error = "$($_.Exception.Message)"
     Say "error: $($_.Exception.Message)"

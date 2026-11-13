@@ -569,6 +569,11 @@ fn run() -> Result<u8> {
                          "change": "files are moved through NTFS before the source is frozen",
                          "undone_if_the_run_stops": false},
                     ],
+                    "unattended": {
+                        "option": "--yes",
+                        "answers": "every question of the run",
+                        "requires": "--volume-serial for a conversion or a diagnose run (the serial number --list prints); a recovery is bound to its run by its checksum",
+                    },
                     "list": {
                         "option": "--list",
                         "exit_codes": {

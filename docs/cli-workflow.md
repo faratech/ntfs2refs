@@ -338,9 +338,24 @@ differences it accepts.
 | `--target-format dev-drive\|standard` | How Windows formats the new file system |
 | `--windows-boot-volume` | The volume is an installed Windows that is not running |
 | `--recover <dir> --recovery-sha256 <sum>` `[--rollback]` | Finishes, or undoes, an interrupted run |
+| `--yes` `--volume-serial XXXX-XXXX` | Runs without asking; see below |
 | `--verify-full-content` | Reads and hashes the complete contents of every stream |
 | `--recheck-everything` | Repeats the full re-reads at every checkpoint |
 | `--minimize-scratch` | Experimental: less working storage; see below |
+
+### Without the prompt
+
+A script passes `--yes`, which answers every question of the run. Because the
+question it answers is the one that shows which volume is about to be
+converted, a conversion or a diagnose run then also needs
+`--volume-serial XXXX-XXXX`, the volume's serial number as `--list` and `vol`
+print it. A run whose drive letter leads to another volume is refused before
+anything is opened. A recovery needs only `--yes`: its checksum already binds
+it to its run.
+
+```powershell
+.\ntfs2refs.exe --drive E --scratch-directory S:\runs --yes --volume-serial 1A2B-3C4D
+```
 
 ### Verification
 

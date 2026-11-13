@@ -26,6 +26,8 @@ pub struct VolumeInventory {
     pub filesystem: Option<String>,
     pub label: Option<String>,
     pub filesystem_read_only: Option<bool>,
+    /// The volume serial number Windows reports (the low half of an NTFS one).
+    pub volume_serial: Option<u32>,
     pub contains_running_windows: Option<bool>,
     pub extents: Vec<VolumeExtent>,
     pub errors: Vec<InventoryError>,
@@ -48,6 +50,11 @@ pub struct PartitionInventory {
     pub mount_paths: Vec<String>,
     pub filesystem: Option<String>,
     pub label: Option<String>,
+    /// The serial number of the one volume on this partition, as `vol` prints it.
+    pub volume_serial: Option<u32>,
+    /// Whether the partition's first sector is BitLocker's. `None`: not
+    /// looked at (reading it takes administrator rights), or not readable.
+    pub bitlocker: Option<bool>,
     pub read_only: Option<bool>,
     pub offline: Option<bool>,
     pub contains_running_windows: Option<bool>,
@@ -378,6 +385,8 @@ mod tests {
             mount_paths: Vec::new(),
             filesystem: filesystem.map(str::to_owned),
             label: None,
+            volume_serial: None,
+            bitlocker: Some(false),
             read_only: None,
             offline: None,
             contains_running_windows: Some(false),

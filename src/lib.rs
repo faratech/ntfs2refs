@@ -15,6 +15,7 @@ pub mod capability_evidence;
 pub mod compact_fixture;
 #[cfg(windows)]
 pub mod compact_recovery_bundle;
+pub mod confirmation;
 pub mod corpus;
 pub mod drive_cli;
 pub mod drive_recovery;

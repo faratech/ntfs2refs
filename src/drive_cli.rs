@@ -29,6 +29,17 @@ pub struct DriveArgs {
     /// Exact partition number. A letter must already identify that partition.
     #[arg(long, requires = "drive")]
     pub partition: Option<u32>,
+    /// The serial number of the volume that is meant, as --list and `vol`
+    /// print it (1A2B-3C4D). A run on a volume with another serial number is
+    /// refused before anything is opened. Required with --yes.
+    #[arg(long, requires = "drive", value_name = "XXXX-XXXX", value_parser = crate::confirmation::parse_volume_serial)]
+    pub volume_serial: Option<u32>,
+    /// Answer every question of this run with yes, for a script. A conversion
+    /// or a diagnose run also needs --volume-serial, so that a wrong drive
+    /// letter is refused instead of converted; a recovery is already bound to
+    /// its run by its checksum.
+    #[arg(long, conflicts_with = "list")]
+    pub yes: bool,
     /// Working directory for the run's temporary virtual disk and recovery
     /// files, on a different disk from the volume. Keep it until the
     /// conversion has finished.
@@ -236,6 +247,17 @@ impl DriveArgs {
         ("--lab-hold-at", "it stops a run that writes to the source"),
     ];
 
+    /// `--yes` answers the question that names the volume, so it is taken
+    /// only with something else that names it: the volume's serial number
+    /// for a conversion or a diagnose run, the checksum for a recovery.
+    pub(crate) fn unattended(&self) -> Result<bool> {
+        ensure!(
+            !self.yes || self.recover.is_some() || self.volume_serial.is_some(),
+            "--yes needs --volume-serial: the serial number of the volume to convert, as `ntfs2refs --list` prints it. Nothing was changed."
+        );
+        Ok(self.yes)
+    }
+
     /// Decides once, before anything is opened, whether this run converts or
     /// only diagnoses, and refuses a diagnose it could not honour. The parser
     /// rejects the same combinations; this holds whatever built the arguments.
@@ -376,6 +398,12 @@ mod windows {
                     notes.push(clean(&note));
                 } else if let Some(reason) = &part.unsupported_reason {
                     notes.push(clean(reason));
+                }
+                if let Some(serial) = part.volume_serial {
+                    notes.push(format!(
+                        "serial {}",
+                        crate::confirmation::format_volume_serial(serial)
+                    ));
                 }
                 if let Some(name) = &part.gpt_name {
                     if !name.is_empty() {
@@ -661,13 +689,7 @@ mod windows {
     pub(super) fn confirm(prompt: &str) -> Result<bool> {
         println!("{prompt}");
         print!("> ");
-        io::stdout().flush()?;
-        let input = io::stdin();
-        let mut bounded = input.lock().take(65);
-        let mut answer = String::new();
-        bounded.read_line(&mut answer)?;
-        drop(bounded);
-        Ok(answer.len() < 65 && matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
+        Ok(crate::confirmation::answer()?)
     }
     /// Administrator rights, asked before a disk is opened. Without them the
     /// first device open failed, with an OS error and no advice.
@@ -693,6 +715,9 @@ mod windows {
     }
     pub(super) fn run(args: DriveArgs) -> Result<u8> {
         let mode = args.execution_mode()?;
+        if args.unattended()? {
+            crate::confirmation::assume_yes();
+        }
         if mode == crate::execution_mode::ExecutionMode::Diagnose {
             // A backstop beneath the routes: nothing in this process may now
             // open a disk to raw writes.
@@ -804,6 +829,23 @@ mod windows {
             _ => anyhow::bail!("use --drive D or --drive DISK partition NUMBER"),
         };
         let selected = drive_inventory::resolve_selection(&inventory, drive, partition)?;
+        if let Some(wanted) = args.volume_serial {
+            // The volume that was meant, checked before anything is opened.
+            let found = selected.partition.volume_serial;
+            ensure!(
+                found == Some(wanted),
+                "--volume-serial {} does not name the volume at {}: {}. Nothing was changed.",
+                crate::confirmation::format_volume_serial(wanted),
+                clean(drive),
+                match found {
+                    Some(serial) => format!(
+                        "its serial number is {}",
+                        crate::confirmation::format_volume_serial(serial)
+                    ),
+                    None => "Windows gave no serial number for it".into(),
+                }
+            );
+        }
         ensure!(
             selected.partition.filesystem.as_deref() != Some("ReFS"),
             "selected partition is already ReFS"

@@ -270,6 +270,8 @@ fn layout(disk: &mut DiskInventory, bytes: &[u8]) -> io::Result<()> {
             mount_paths: vec![],
             filesystem: None,
             label: None,
+            volume_serial: None,
+            bitlocker: None,
             read_only: disk.read_only,
             offline: disk.offline,
             contains_running_windows: None,
@@ -450,6 +452,7 @@ fn volume(root: String, windows: Option<&str>) -> VolumeInventory {
         filesystem: None,
         label: None,
         filesystem_read_only: None,
+        volume_serial: None,
         extents: vec![],
         errors: vec![],
     };
@@ -481,6 +484,7 @@ fn volume(root: String, windows: Option<&str>) -> VolumeInventory {
             Ok((label, filesystem)) => {
                 result.label = Some(label);
                 result.filesystem = Some(filesystem);
+                result.volume_serial = Some(serial);
                 result.filesystem_read_only = Some(flags & 0x0008_0000 != 0);
             }
             Err(value) => result
@@ -716,10 +720,12 @@ pub(super) fn inventory() -> io::Result<DriveInventory> {
                 if part.volume_guid_paths.len() == 1 {
                     part.filesystem = volume.filesystem.clone();
                     part.label = volume.label.clone();
+                    part.volume_serial = volume.volume_serial;
                     part.contains_running_windows = volume.contains_running_windows;
                 } else {
                     part.filesystem = None;
                     part.label = None;
+                    part.volume_serial = None;
                     part.unsupported_reason = Some("multiple volumes map to this partition".into());
                 }
                 if volume.filesystem_read_only == Some(true) {

@@ -505,6 +505,41 @@ fn conversion_request_refuses_hash_size_and_forged_flags_before_device_io() {
 }
 
 #[test]
+fn an_unattended_run_has_to_name_its_volume() {
+    // --yes answers the question that shows the volume, so it needs the
+    // volume's serial number. Refused before anything is listed or opened.
+    for arguments in [
+        vec!["--drive", "D", "--yes"],
+        vec!["--drive", "D", "--diagnose", "--yes"],
+    ] {
+        let result = cli(&arguments);
+        assert!(!result.status.success(), "{arguments:?}");
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        #[cfg(windows)]
+        assert!(
+            stderr.contains("--yes needs --volume-serial")
+                && stderr.contains("Nothing was changed"),
+            "{stderr}"
+        );
+        #[cfg(not(windows))]
+        assert!(stderr.contains("Windows"), "{stderr}");
+    }
+    // A serial number that is not one is the parser's to refuse.
+    for bad in ["E:", "1A2B-3C4", "not-a-serial"] {
+        let result = cli(&["--drive", "D", "--yes", "--volume-serial", bad]);
+        assert_eq!(result.status.code(), Some(2), "{bad}");
+        assert!(
+            String::from_utf8_lossy(&result.stderr).contains("eight hexadecimal digits"),
+            "{bad}"
+        );
+    }
+    // Listing asks nothing.
+    assert_eq!(cli(&["--list", "--yes"]).status.code(), Some(2));
+    let help = String::from_utf8(cli(&["--help"]).stdout).unwrap();
+    assert!(help.contains("--yes") && help.contains("--volume-serial"));
+}
+
+#[test]
 fn diagnose_is_refused_at_parse_time_with_options_that_would_change_the_source() {
     let cases: [&[&str]; 3] = [
         &["--whole-image-verification"],

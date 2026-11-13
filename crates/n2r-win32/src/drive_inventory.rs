@@ -95,6 +95,30 @@ pub struct PartitionSelection {
     pub mutation_authorized: bool,
 }
 
+/// What to say when a drive letter leads to no volume. A disk that is
+/// offline has no letters, and a conversion that was cut off leaves its disk
+/// offline: that is the case someone is most likely to be in.
+fn no_volume_at(inventory: &DriveInventory, root: &str) -> String {
+    let offline: Vec<String> = inventory
+        .disks
+        .iter()
+        .filter(|disk| disk.offline == Some(true))
+        .map(|disk| disk.disk_number.to_string())
+        .collect();
+    if offline.is_empty() {
+        return format!(
+            "no volume is mounted as {root}; `ntfs2refs --list` shows the volumes there are"
+        );
+    }
+    format!(
+        "no volume is mounted as {root}. Disk {} offline, and a volume on an offline disk has no drive letter. If a conversion of that volume was cut off, do not start another: run the `--recover` command that run printed (the one with `--rollback` gives the NTFS volume back). `ntfs2refs --list` shows the disks",
+        match offline.as_slice() {
+            [one] => format!("{one} is"),
+            many => format!("{} are", many.join(", ")),
+        }
+    )
+}
+
 pub fn parse_drive_letter(value: &str) -> io::Result<char> {
     let bytes = value.as_bytes();
     if !matches!(bytes.len(), 1 | 2 | 3)
@@ -141,10 +165,26 @@ pub fn resolve_selection(
                     .any(|path| path.eq_ignore_ascii_case(&root))
             })
             .collect();
-        if volumes.len() != 1 || volumes[0].extents.len() != 1 || !volumes[0].errors.is_empty() {
-            return Err(invalid(
-                "letter has absent/ambiguous/unsupported volume mapping",
-            ));
+        if volumes.is_empty() {
+            return Err(invalid(&no_volume_at(inventory, &root)));
+        }
+        if volumes.len() != 1 {
+            return Err(invalid(&format!(
+                "{} volumes are mounted as {root}; select the partition by disk number and --partition instead",
+                volumes.len()
+            )));
+        }
+        if volumes[0].extents.len() != 1 {
+            return Err(invalid(&format!(
+                "the volume mounted as {root} lies on {} disk extents (a spanned, striped or mirrored volume); only a volume that is one partition can be converted",
+                volumes[0].extents.len()
+            )));
+        }
+        if let Some(error) = volumes[0].errors.first() {
+            return Err(invalid(&format!(
+                "Windows did not answer every question about the volume mounted as {root} ({}: {}); `ntfs2refs --list` shows what it did answer",
+                error.operation, error.message
+            )));
         }
         let volume = volumes[0];
         let extent = &volume.extents[0];
@@ -362,6 +402,47 @@ mod tests {
         }
     }
     const BASIC: &str = "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7";
+
+    #[test]
+    fn a_letter_that_leads_to_no_volume_says_so_and_names_an_offline_disk() {
+        let inventory = |offline: bool| DriveInventory {
+            schema_version: 1,
+            disks: vec![DiskInventory {
+                offline: Some(offline),
+                ..disk("GPT", vec![partition(2, BASIC, Some("NTFS"))])
+            }],
+            volumes: Vec::new(),
+            logical_drive_roots: Vec::new(),
+            errors: Vec::new(),
+            enumeration_complete: true,
+            source_authorized: false,
+            mutation_authorized: false,
+        };
+        let refused = |offline: bool| {
+            resolve_selection(&inventory(offline), "V", None)
+                .unwrap_err()
+                .to_string()
+        };
+        let plain = refused(false);
+        assert!(
+            plain.contains("no volume is mounted as V:\\") && plain.contains("--list"),
+            "{plain}"
+        );
+        assert!(!plain.contains("offline"), "{plain}");
+        // What a run that was cut off while it prepared leaves behind.
+        let after_a_stop = refused(true);
+        for expected in [
+            "Disk 1 is offline",
+            "--recover",
+            "--rollback",
+            "do not start another",
+        ] {
+            assert!(
+                after_a_stop.contains(expected),
+                "{expected}: {after_a_stop}"
+            );
+        }
+    }
 
     #[test]
     fn list_says_which_partitions_the_default_route_takes_and_why_not() {

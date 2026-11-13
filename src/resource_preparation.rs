@@ -648,6 +648,15 @@ where
             pin.path.display(),
             pin.sha256
         );
+        // From here until "To recover:" is printed nothing is written to
+        // the volume, but it is held offline and read-only. A run that is
+        // cut off in between leaves it so; this is the way back, and the
+        // lab runs exactly this line (-StopDuringPreparation).
+        println!(
+            "If this run is cut off while it prepares (before any \"To recover:\" line), the volume stays offline and read-only. To get it back as NTFS: ntfs2refs --recover \"{}\" --recovery-sha256 {} --rollback",
+            output.display(),
+            pin.sha256
+        );
         std::io::stdout().flush()?;
     }
     events.checkpoint()?;

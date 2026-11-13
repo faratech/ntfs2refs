@@ -321,7 +321,7 @@ impl<'expected> ReopenedWindowsAliasNativeDomain<'expected> {
                 && std::iter::once(&object.path)
                     .chain(&object.additional_names)
                     .any(|path| path == &row.canonical_path)
-                && crate::shadow_tree::expected_path_fits(&row.path, !directory)
+                && crate::shadow_tree::expected_path_fits(&row.path, true)
                 && row
                     .path
                     .iter()

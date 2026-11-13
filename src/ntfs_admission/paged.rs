@@ -111,9 +111,15 @@ pub(crate) fn canonical_paths_for_alias_preparation(
         if file.record_number != 5 {
             path.push(String::from_utf16(&name.name_utf16)?);
         }
+        // The default route's rule for a file and a directory alike: the
+        // path has to fit Windows' extended-length form. (The second
+        // argument says which route's rule applies, not what the object
+        // is; `!file.is_directory` held every directory of a Windows
+        // volume to the older routes' sixteen components.)
         ensure!(
-            crate::shadow_tree::expected_path_fits(&path, !file.is_directory),
-            "alias preparation path exceeds native representation"
+            crate::shadow_tree::expected_path_fits(&path, true),
+            "the path \\{} does not fit Windows' extended-length form",
+            path.join("\\")
         );
         paths.push(path);
     }

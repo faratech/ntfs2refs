@@ -23,6 +23,10 @@ refused-source-unchanged (the converter stopped and the NTFS volume lists
 exactly as before), refused-as-expected (the same, and -ExpectRefusal matched),
 and named failures. With -InterruptAt: resumed (recovered to ReFS, listing
 identical) or rolled-back (recovered to NTFS, listing exactly as before).
+With -StopDuringPreparation: preparation-cancelled (the command the run
+printed for this case gave the NTFS volume back, listing exactly as before)
+or, with -AfterStop restart, restart-refused-then-cancelled (a new run was
+refused with that way back named, and it then worked).
 Records land in .lab\hyperv\attempts\<Name>\.
 #>
 [CmdletBinding()]
@@ -62,6 +66,17 @@ param(
     # run is then recovered with the command it printed.
     [string]$InterruptAt,
     [ValidateSet('resume', 'rollback')][string]$RecoverMode = 'resume',
+    # A phase of preparation, as the converter's progress records name it (for
+    # example payload_supply or recovery_journal): the converter's process is
+    # ended as soon as it reports that phase, before it has printed a
+    # recovery command or written to the volume. What that leaves is recorded.
+    [string]$StopDuringPreparation,
+    # What is done about a preparation that was stopped. 'cancel' runs the
+    # command the run printed for this case at its start. 'restart' first
+    # starts the same conversion again as if nothing had happened, which is
+    # what someone does who did not see the run stop: it has to be refused
+    # with words that name the way back, and the cancellation is run then.
+    [ValidateSet('cancel', 'restart')][string]$AfterStop = 'cancel',
     # Run the converter with --diagnose: nothing is written, and the volume
     # must list exactly as before whatever it reports.
     [switch]$Diagnose,
@@ -94,6 +109,7 @@ if (-not $ManifestBinary) { $ManifestBinary = Join-Path $workspace 'target\relea
 foreach ($file in $Binary, $ManifestBinary) { if (-not (Test-Path -LiteralPath $file)) { throw "Not found: $file (cargo build --locked --release --bin ntfs2refs --bin lab-volume-manifest)" } }
 if ($ClusterBytes -lt 512 -or $ClusterBytes -gt 2097152 -or ($ClusterBytes -band ($ClusterBytes - 1))) { throw "-ClusterBytes $ClusterBytes is not a power of two from 512 to 2097152" }
 if ($ClusterBytes -lt $SectorBytes) { throw "-ClusterBytes $ClusterBytes is smaller than the $SectorBytes-byte sector" }
+if ($StopDuringPreparation -and ($InterruptAt -or $Diagnose)) { throw '-StopDuringPreparation is a run of its own: not with -InterruptAt or -Diagnose' }
 
 $records = Join-Path $workspace ".lab\hyperv\attempts\$Name"
 if (Test-Path -LiteralPath $records) { throw "Attempt '$Name' already has records at $records; choose another -Name" }
@@ -378,26 +394,40 @@ try {
         }
     }
     # Waits for the worker to end. With a hold point, the converter is ended
-    # once it reports that it is held there. Answers whether the worker ended
-    # and whether the hold was reached.
-    function Wait-Worker([string]$Root, [string]$HoldAt) {
-        $deadline = (Get-Date).AddMinutes($TimeoutMinutes); $held = $false
+    # once it reports that it is held there; with a phase of preparation, as
+    # soon as its progress names that phase. Answers whether the worker ended,
+    # whether the hold was reached and whether it was stopped in the phase.
+    function Wait-Worker([string]$Root, [string]$HoldAt, [string]$StopInPhase) {
+        $deadline = (Get-Date).AddMinutes($TimeoutMinutes); $held = $false; $stopped = $false
         do {
-            Start-Sleep -Seconds 2
-            $state = Invoke-Command -Session $session -ArgumentList $Root, ([bool]$HoldAt -and -not $held) -ScriptBlock {
-                param($root, $watchHold)
+            if (-not $StopInPhase -or $stopped) { Start-Sleep -Seconds 2 }
+            $state = Invoke-Command -Session $session -ArgumentList $Root, ([bool]$HoldAt -and -not $held), $(if ($stopped) { '' } else { $StopInPhase }) -ScriptBlock {
+                param($root, $watchHold, $phase)
                 $ended = (Test-Path "$root\native-terminal.json") -or (Test-Path "$root\worker-error.txt")
-                $atHold = $false
+                $atHold = $false; $inPhase = $false
+                if ($phase -and -not $ended) {
+                    # Looked for ten times a second, so that the stop lands in the phase and not after it.
+                    $until = (Get-Date).AddSeconds(2)
+                    do {
+                        if ((Test-Path "$root\stdout.log") -and (Select-String -LiteralPath "$root\stdout.log" -SimpleMatch -Pattern "`"phase`":`"$phase`"" -Quiet)) {
+                            Get-Process -Name ntfs2refs -ErrorAction SilentlyContinue | Stop-Process -Force
+                            $inPhase = $true; break
+                        }
+                        Start-Sleep -Milliseconds 100
+                        $ended = (Test-Path "$root\native-terminal.json") -or (Test-Path "$root\worker-error.txt")
+                    } until ($ended -or (Get-Date) -ge $until)
+                }
                 if ($watchHold -and -not $ended -and (Test-Path "$root\stdout.log")) {
                     $atHold = [bool](Select-String -LiteralPath "$root\stdout.log" -SimpleMatch -Pattern '"kind":"lab-hold-v1"' -Quiet)
                     # The lab ends a process; it cannot cut power to the storage.
                     if ($atHold) { Get-Process -Name ntfs2refs -ErrorAction SilentlyContinue | Stop-Process -Force }
                 }
-                [pscustomobject]@{ ended = $ended; at_hold = $atHold }
+                [pscustomobject]@{ ended = $ended; at_hold = $atHold; in_phase = $inPhase }
             }
             if ($state.at_hold) { $held = $true; Say "the converter reported its hold at '$HoldAt' and was ended" }
+            if ($state.in_phase) { $stopped = $true; Say "the converter reported the phase '$StopInPhase' and was ended" }
         } until ($state.ended -or (Get-Date) -gt $deadline)
-        [pscustomobject]@{ ended = [bool]$state.ended; held = $held }
+        [pscustomobject]@{ ended = [bool]$state.ended; held = $held; stopped = $stopped }
     }
     $arguments = @('--drive', 'V', '--scratch-directory', 'S:\datalab\runs', '--target-format', $TargetFormat)
     if ($TargetClusterBytes) { $arguments += @('--target-cluster-bytes', "$TargetClusterBytes") }
@@ -409,8 +439,67 @@ try {
     $task = "N2R-DataLab-$Name"
     Start-Worker $guestRoot $arguments $task
     Say "converter started: ntfs2refs $($arguments -join ' ')"
-    $waited = Wait-Worker $guestRoot $InterruptAt
+    $waited = Wait-Worker $guestRoot $InterruptAt $StopDuringPreparation
     $ended = $waited.ended
+    if ($StopDuringPreparation) {
+        # The converter was ended while it prepared: it had not printed a
+        # recovery command and had not written to the volume. What is the
+        # volume now, and does what the run offers for this case work?
+        foreach ($leaf in 'stdout.log', 'stderr.log') {
+            try { Copy-Item -FromSession $session -LiteralPath "$guestRoot\$leaf" -Destination (Join-Path $records "interrupted-$leaf") } catch { }
+        }
+        if (-not $waited.stopped) { $verdict.outcome = 'preparation-phase-not-reached'; throw "the converter ended without reporting the phase '$StopDuringPreparation'" }
+        $shown = Join-Path $records 'interrupted-stdout.log'
+        if (Select-String -LiteralPath $shown -Pattern '^To recover: ' -Quiet) {
+            $verdict.outcome = 'stopped-after-preparation'; throw "the converter had printed its recovery command before it was ended in '$StopDuringPreparation': not a stop during preparation"
+        }
+        $left = Invoke-Command -Session $session -ScriptBlock {
+            [pscustomobject]@{ mounted = [bool](Get-Partition -DriveLetter V -ErrorAction SilentlyContinue)
+                offline = @(Get-Disk | Where-Object IsOffline | ForEach-Object Number); read_only = @(Get-Disk | Where-Object IsReadOnly | ForEach-Object Number) } }
+        $verdict.stopped_in_phase = $StopDuringPreparation; $verdict.after_stop = $AfterStop
+        $verdict.left_by_the_stop = [ordered]@{ v_mounted = [bool]$left.mounted; offline_disks = @($left.offline); read_only_disks = @($left.read_only) }
+        Say "the stop left V: $(if ($left.mounted) { 'mounted' } else { 'not mounted' }); offline disks: $(@($left.offline) -join ', '); read-only disks: $(@($left.read_only) -join ', ')"
+        # The command the run printed for this case, exactly as it printed it.
+        $printed = Select-String -LiteralPath $shown -Pattern 'To get it back as NTFS: ntfs2refs --recover "(.+)" --recovery-sha256 ([0-9a-f]{64}) --rollback' | Select-Object -First 1
+        if (-not $printed) { $verdict.outcome = 'stopped-without-cancel-command'; throw 'the stopped run had not printed the command that cancels its preparation' }
+        $cancel = @('--recover', $printed.Matches[0].Groups[1].Value, '--recovery-sha256', $printed.Matches[0].Groups[2].Value, '--rollback')
+        $verdict.cancel_arguments = $cancel
+        $stoppedRoot = $guestRoot
+        $stage = {
+            param($leaf)
+            $root = "$stoppedRoot\$leaf"
+            Invoke-Command -Session $session -ArgumentList $root, $stoppedRoot -ScriptBlock {
+                param($root, $from)
+                $null = New-Item -ItemType Directory -Path $root -Force
+                foreach ($file in 'ntfs2refs.exe', 'lab-volume-manifest.exe', 'worker.ps1', 'manifest-before.jsonl') { Copy-Item -LiteralPath (Join-Path $from $file) -Destination $root }
+            }
+            $root
+        }
+        if ($AfterStop -eq 'restart') {
+            # Someone who did not see the run stop starts it again.
+            $restartRoot = & $stage 'restart'
+            Start-Worker $restartRoot $arguments $task
+            Say "started again: ntfs2refs $($arguments -join ' ')"
+            $null = Wait-Worker $restartRoot '' ''
+            $again = Invoke-Command -Session $session -ArgumentList $restartRoot -ScriptBlock {
+                param($root)
+                $terminal = if (Test-Path "$root\native-terminal.json") { Get-Content "$root\native-terminal.json" -Raw | ConvertFrom-Json } else { $null }
+                $said = if (Test-Path "$root\stderr.log") { [string](Get-Content -LiteralPath "$root\stderr.log" -Encoding UTF8 | Where-Object { $_ -match '^error:' } | Select-Object -Last 1) } else { '' }
+                [pscustomobject]@{ exit = if ($terminal) { [int]$terminal.native_exit } else { $null }; error = $said }
+            }
+            foreach ($leaf in 'stdout.log', 'stderr.log') {
+                try { Copy-Item -FromSession $session -LiteralPath "$restartRoot\$leaf" -Destination (Join-Path $records "restart-$leaf") } catch { }
+            }
+            # The refusal has to lead to the command above: it names the offline disk and --recover.
+            $verdict.restart = [ordered]@{ exit = $again.exit; error = $again.error
+                names_the_way_back = ($again.exit -ne 0 -and $again.error -match 'offline' -and $again.error -match '--recover') }
+            Say "the new run ended with exit $($again.exit): $($again.error)"
+        }
+        $guestRoot = & $stage 'recover'
+        Start-Worker $guestRoot $cancel $task
+        Say "cancelling the preparation: ntfs2refs $($cancel -join ' ')"
+        $ended = (Wait-Worker $guestRoot '' '').ended
+    }
     if ($InterruptAt) {
         # The interrupted run's own output, then the recovery it printed.
         foreach ($leaf in 'stdout.log', 'stderr.log') {
@@ -431,7 +520,7 @@ try {
         }
         Start-Worker $guestRoot $recover $task
         Say "recovery started: ntfs2refs $($recover -join ' ')"
-        $ended = (Wait-Worker $guestRoot '').ended
+        $ended = (Wait-Worker $guestRoot '' '').ended
     }
     $run = Invoke-Command -Session $session -ArgumentList $guestRoot, $task, $unlock -ScriptBlock {
         param($root, $task, $unlock)
@@ -509,7 +598,19 @@ try {
         Say "listing after the run: $($compared.listed)"
         Say "before/after comparison$(if (-not $converted) { ', exact' }): $listing ($($compared.stage) exit $($compared.exit)): $($compared.summary)"
     }
-    $verdict.outcome = if ($InterruptAt -and $RecoverMode -eq 'rollback') {
+    $verdict.outcome = if ($StopDuringPreparation -and $AfterStop -eq 'cancel') {
+        # Nothing had been written: the NTFS volume must be back and list exactly as before.
+        if ($run.exit -eq 0 -and $returned -and $listing -eq 'identical') { 'preparation-cancelled' }
+        elseif ($run.exit -eq 0 -and $returned) { "preparation-cancelled-but-listing-$listing" }
+        else { 'preparation-cancel-failed' }
+    } elseif ($StopDuringPreparation) {
+        # The new run must have been refused with the way back named, and that way must then have worked.
+        if ($verdict.restart.exit -eq 0) { 'restart-was-not-refused' }
+        elseif (-not $verdict.restart.names_the_way_back) { 'restart-refused-without-the-way-back' }
+        elseif ($run.exit -eq 0 -and $returned -and $listing -eq 'identical') { 'restart-refused-then-cancelled' }
+        elseif ($run.exit -eq 0 -and $returned) { "restart-refused-then-cancelled-but-listing-$listing" }
+        else { 'restart-refused-then-cancel-failed' }
+    } elseif ($InterruptAt -and $RecoverMode -eq 'rollback') {
         # A rollback returns the NTFS volume, which must list exactly as before.
         if ($run.exit -eq 0 -and $returned -and $listing -eq 'identical') { 'rolled-back' }
         elseif ($run.exit -eq 0 -and $returned) { "rolled-back-but-listing-$listing" }

@@ -95,6 +95,19 @@ NTFS volume listing exactly as before (`rolled-back`). `-Diagnose` runs the
 converter with `--diagnose`; whatever it reports, the volume must list exactly
 as before (`diagnose-clean`, `diagnose-found-failures`).
 
+`-StopDuringPreparation <phase>` ends the converter as soon as its progress
+names that phase of preparation (`payload_supply`, `recovery_journal`, ...):
+before it has printed a recovery command, and before anything is written to
+the volume. The verdict records what the stop left (whether `V:` is mounted,
+which disks are offline or read-only). Then, with `-AfterStop cancel` (the
+default), the harness runs the command the run printed for this case at its
+start (`To get it back as NTFS: ntfs2refs --recover ... --rollback`), and the
+NTFS volume must be back and list exactly as before (`preparation-cancelled`).
+With `-AfterStop restart` it first starts the same conversion again, as
+someone does who did not see the run stop: that run has to be refused with
+words that name the offline disk and `--recover`, and the cancellation is
+run then (`restart-refused-then-cancelled`).
+
 `-Content many` replaces the mixed content with two files that are past numbers
 which used to be fixed: one with 200 named streams, and a sparse file with
 `-Islands` separately allocated islands (70,000 by default), whose mapping

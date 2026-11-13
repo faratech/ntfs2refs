@@ -75,7 +75,8 @@ pub fn parse_directory(
     parse_directory_with_cluster_size(reference, root, allocation, initialized, bitmap, 4096)
 }
 
-/// Geometry-aware namespace decoding; index records remain 4 KiB/512-sector.
+/// As [`parse_directory_with_geometry`], with the 4 KiB index records
+/// Windows formats.
 pub fn parse_directory_with_cluster_size(
     reference: u64,
     root: &[u8],
@@ -84,10 +85,31 @@ pub fn parse_directory_with_cluster_size(
     bitmap: &[u8],
     cluster_bytes: u32,
 ) -> Result<Directory> {
+    parse_directory_with_geometry(
+        reference,
+        root,
+        allocation,
+        initialized,
+        bitmap,
+        cluster_bytes,
+        crate::ntfs_index::DEFAULT_INDEX_RECORD_BYTES,
+    )
+}
+
+/// Namespace decoding for the volume's cluster and index record sizes.
+pub fn parse_directory_with_geometry(
+    reference: u64,
+    root: &[u8],
+    allocation: &[u8],
+    initialized: u64,
+    bitmap: &[u8],
+    cluster_bytes: u32,
+    index_record_bytes: u32,
+) -> Result<Directory> {
     use crate::ntfs_index::{self, Input, Profile};
     ensure!(reference >> 48 != 0, "invalid directory identity");
     let mut name_units = 0usize;
-    let parsed = ntfs_index::parse_with_cluster_size(
+    let parsed = ntfs_index::parse_with_geometry(
         Input {
             root,
             allocation,
@@ -96,6 +118,7 @@ pub fn parse_directory_with_cluster_size(
         },
         Profile::FILE_NAME,
         cluster_bytes,
+        index_record_bytes,
         |header, key, _value| {
             ensure!(key.len() >= 68, "short FILE_NAME index key");
             let n = usize::from(key[64]);

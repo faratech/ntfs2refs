@@ -344,11 +344,12 @@ pub fn reconcile_paged(
     capture.revalidate()?;
     ensure!(
         matches!(files.header().geometry.bytes_per_sector, 512 | 4096)
-            && files.header().geometry.index_record_size == 4096
+            && ntfs_index::supports_index_record_size(files.header().geometry.index_record_size)
             && ntfs_index::supports_cluster_size(files.header().geometry.cluster_size),
         "paged security indexes require supported NTFS index geometry"
     );
     let cluster = files.header().geometry.cluster_size;
+    let index_record = files.header().geometry.index_record_size;
     let mut central_writer =
         SortedRecordWriter::new(&base.join("security-central"), *b"N2RSCEN1", scratch)?;
     let mut previous: Option<Header> = None;
@@ -358,6 +359,7 @@ pub fn reconcile_paged(
         capture.index(IndexKind::Id)?,
         Profile::SECURITY_ID,
         cluster,
+        index_record,
         scratch,
         &base.join("security-sii.visited"),
         |_entry, key, value| {
@@ -393,6 +395,7 @@ pub fn reconcile_paged(
         capture.index(IndexKind::Hash)?,
         Profile::SECURITY_HASH,
         cluster,
+        index_record,
         scratch,
         &base.join("security-sdh.visited"),
         |_entry, key, value| {

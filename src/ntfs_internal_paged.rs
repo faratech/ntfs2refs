@@ -357,7 +357,8 @@ fn storage<R: Read + Seek>(
         ensure!(
             !a.resident
                 && a.logical_size > 0
-                && a.logical_size.is_multiple_of(4096)
+                && a.logical_size
+                    .is_multiple_of(u64::from(source.header().geometry.index_record_size))
                 && a.initialized_size <= a.logical_size,
             "internal index allocation form differs"
         );
@@ -462,7 +463,7 @@ fn verify_domain_with_windows<R: Read + Seek>(
         ntfs_index::supports_cluster_size(geometry.cluster_size)
             && matches!(geometry.bytes_per_sector, 512 | 4096)
             && matches!(geometry.file_record_size, 1024 | 4096)
-            && geometry.index_record_size == 4096,
+            && ntfs_index::supports_index_record_size(geometry.index_record_size),
         "the internal index scan requires 512- or 4096-byte sectors, 1 or 4 KiB file records and 4 KiB index records"
     );
     ensure!(
@@ -585,6 +586,7 @@ fn verify_domain_with_windows<R: Read + Seek>(
             },
             profile,
             geometry.cluster_size,
+            geometry.index_record_size,
             &scratch,
             &root.join(format!("index-{ordinal}.visited")),
             |_, key, value| {

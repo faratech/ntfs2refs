@@ -103,7 +103,7 @@ impl ResourceProfile {
     pub fn supports_source_geometry(self, geometry: &ntfs::NtfsGeometry) -> bool {
         matches!(geometry.bytes_per_sector, 512 | 4096)
             && matches!(geometry.file_record_size, 1024 | 4096)
-            && geometry.index_record_size == 4096
+            && crate::ntfs_index::supports_index_record_size(geometry.index_record_size)
             && match self {
                 Self::AlphaV1 => geometry.cluster_size == 4096,
                 Self::ExperimentalLargeTreeV1

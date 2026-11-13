@@ -228,7 +228,7 @@ where
 
 fn fixup(mut b: Vec<u8>, expected_vcn: u64) -> Result<(Vec<u8>, usize)> {
     ensure!(
-        b.len() == 4096 && b.get(..4) == Some(b"INDX"),
+        supports_index_record_size(b.len() as u32) && b.get(..4) == Some(b"INDX"),
         "invalid INDX signature/size"
     );
     let usa = usize::from(u16le(&b, 4)?);
@@ -296,34 +296,72 @@ where
     parse_with_cluster_size(input, profile, 4096, decode)
 }
 
-/// Whether cluster geometry can be represented by this 512-byte-sector walker.
-/// Index records remain 4 KiB; this is not a conversion capability.
+/// The size of index record Windows formats on every volume.
+pub const DEFAULT_INDEX_RECORD_BYTES: u32 = 4096;
+
+/// Whether cluster geometry can be represented by this walker.
 pub fn supports_cluster_size(cluster_bytes: u32) -> bool {
     cluster_bytes.is_power_of_two() && (512..=2 * 1024 * 1024).contains(&cluster_bytes)
 }
 
-/// Decode index addresses in clusters when an index record spans whole
-/// clusters, or in 512-byte units when clusters exceed the index-record size.
-/// Bitmap slots always count index records, regardless of either address unit.
+/// Whether an index record of this size can be walked: a power of two from
+/// 512 bytes to 64 KiB, which is what the boot sector can state. Its
+/// update-sequence array, one word per 512 bytes, then still fits in the
+/// first 512 bytes of the record.
+pub fn supports_index_record_size(record_bytes: u32) -> bool {
+    record_bytes.is_power_of_two() && (512..=65536).contains(&record_bytes)
+}
+
+/// How many address units one index record spans. An index addresses its
+/// records in clusters when a record is a whole number of clusters, and in
+/// 512-byte units when a cluster is larger than a record. Bitmap slots always
+/// count index records, whatever the address unit.
+pub fn units_per_index_record(cluster_bytes: u32, record_bytes: u32) -> Result<u32> {
+    ensure!(
+        supports_cluster_size(cluster_bytes) && supports_index_record_size(record_bytes),
+        "unsupported index geometry: {cluster_bytes}-byte clusters, {record_bytes}-byte index records"
+    );
+    let address_bytes = if cluster_bytes <= record_bytes {
+        cluster_bytes
+    } else {
+        512
+    };
+    Ok(record_bytes / address_bytes)
+}
+
+/// As [`parse_with_geometry`], with the 4 KiB index records Windows formats.
 pub fn parse_with_cluster_size<K: Clone, F>(
     input: Input<'_>,
     profile: Profile,
     cluster_bytes: u32,
+    decode: F,
+) -> Result<Index<K>>
+where
+    F: FnMut(&[u8], &[u8], &[u8]) -> Result<K>,
+{
+    parse_with_geometry(
+        input,
+        profile,
+        cluster_bytes,
+        DEFAULT_INDEX_RECORD_BYTES,
+        decode,
+    )
+}
+
+/// Walks a whole index held in memory, for the volume's cluster and index
+/// record sizes.
+pub fn parse_with_geometry<K: Clone, F>(
+    input: Input<'_>,
+    profile: Profile,
+    cluster_bytes: u32,
+    record_bytes: u32,
     mut decode: F,
 ) -> Result<Index<K>>
 where
     F: FnMut(&[u8], &[u8], &[u8]) -> Result<K>,
 {
-    ensure!(
-        supports_cluster_size(cluster_bytes),
-        "unsupported index cluster geometry"
-    );
-    let address_bytes = if cluster_bytes <= 4096 {
-        cluster_bytes
-    } else {
-        512
-    };
-    let units_per_record = 4096 / address_bytes;
+    let units_per_record = units_per_index_record(cluster_bytes, record_bytes)?;
+    let record = record_bytes as usize;
     let Input {
         root,
         allocation,
@@ -337,19 +375,19 @@ where
     ensure!(
         u32le(root, 0)? == profile.indexed_type
             && u32le(root, 4)? == profile.collation
-            && u32le(root, 8)? == 4096
+            && u32le(root, 8)? == record_bytes
             && u32::from(root[12]) == units_per_record
             && root[13..16] == [0, 0, 0],
         "unsupported index type/collation/geometry"
     );
     ensure!(
         allocation.len() <= MAX_INDEX_BYTES
-            && allocation.len().is_multiple_of(4096)
+            && allocation.len().is_multiple_of(record)
             && initialized <= allocation.len() as u64
             && bitmap.len() <= 4096,
         "index allocation bound exceeded"
     );
-    let slots = allocation.len() / 4096;
+    let slots = allocation.len() / record;
     ensure!(bitmap.len() * 8 >= slots, "index bitmap is too short");
     ensure!(
         (slots..bitmap.len() * 8).all(|slot| bitmap[slot / 8] & (1 << (slot % 8)) == 0),
@@ -363,13 +401,16 @@ where
             continue;
         }
         ensure!(
-            ((slot + 1) * 4096) as u64 <= initialized,
+            ((slot + 1) * record) as u64 <= initialized,
             "allocated index block is uninitialized"
         );
         let address = (slot as u64)
             .checked_mul(u64::from(units_per_record))
             .context("index address overflow")?;
-        let (bytes, usa_end) = fixup(allocation[slot * 4096..(slot + 1) * 4096].to_vec(), address)?;
+        let (bytes, usa_end) = fixup(
+            allocation[slot * record..(slot + 1) * record].to_vec(),
+            address,
+        )?;
         let parsed = node(&bytes, 24, usa_end, profile.encoding, &mut decode)?;
         total_entries += parsed.entries.len();
         ensure!(total_entries <= MAX_ENTRIES, "index entry limit exceeded");

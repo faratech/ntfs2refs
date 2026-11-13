@@ -219,7 +219,7 @@ impl PagedSecurityCapture {
             ensure!(
                 self.secure.is_none()
                     && matches!(geometry.bytes_per_sector, 512 | 4096)
-                    && geometry.index_record_size == 4096
+                    && crate::ntfs_index::supports_index_record_size(geometry.index_record_size)
                     && crate::ntfs_index::supports_cluster_size(geometry.cluster_size),
                 "unsupported or duplicate Secure index geometry"
             );

@@ -69,9 +69,47 @@ its qualification.
   size. Everything else is copied through the working storage: from clusters
   smaller than the target's that is most of the volume, and the working
   storage needs room for it.
-- **Windows.** Build 26100 or later. An older build is refused by name.
+- **Windows.** Build 26100 or later, and administrator rights. Both are
+  checked before a disk is opened; an older build is refused by name. On a
+  build other than 26100 and 26300, or when Windows formats a ReFS other than
+  3.14, the run says before it starts that the lab has not tried that.
 - **Recovery.** The recovery command is the same as for a boot volume. It
   takes the ReFS cluster size and version from the run's own records.
+
+### What a volume that has been in use meets
+
+`ntfs2refs --list` says for each NTFS partition whether a conversion would take
+it: the volume has to be the only partition on a GPT disk, apart from a
+Microsoft reserved partition. A partition beside the running Windows, a second
+data partition on the disk, or an MBR disk is refused, and the list says which.
+
+Not carried over, and said so by the run:
+
+| What | Why | What happens |
+|---|---|---|
+| Object IDs of files and directories | Windows gives one to the target of a shortcut; ReFS has none | Each is matched with the volume's object-ID index and kept in the run's records (`internal-indexes\object-ids-not-carried-over`); the run prints their number. A shortcut still finds its target by path |
+| NTFS compression | ReFS stores the data uncompressed | The data is the same; the volume needs room for it |
+| The change journal | It describes the NTFS volume | The converted volume starts a new one |
+
+Refused before anything is written, each with what was found and what to do:
+
+| Found | Do |
+|---|---|
+| 8.3 short names (their number and one of them are given) | `fsutil 8dot3name strip /s /f E:\`, then `fsutil 8dot3name set E: 1` |
+| BitLocker | Decrypt the volume: `manage-bde -off E:`; suspending is not enough |
+| Shadow copies of the volume, or snapshot storage kept on it | `vssadmin delete shadows /for=E:` |
+| A shadow-copy provider other than Windows' own and Hyper-V's (backup software) | The provider is named. No volume is converted while it is installed |
+| EFS-encrypted files | `cipher /d` |
+| Files with the TEMPORARY or OFFLINE attribute | Clear the attribute, or move the files |
+| Cloud placeholders, `compact /exe` files, Data Deduplication, WSL files | The kind is named, with the record number to find the file by |
+| A named data stream on a directory | Remove the stream |
+| Disk quotas in use | `fsutil quota disable E:` and delete the entries |
+| Case-sensitive directories | `fsutil file setCaseSensitiveInfo <directory> disable` |
+| A dirty volume, an NTFS log that was not closed, an open transaction | `chkdsk E: /f`, or dismount cleanly |
+| A program holding a file on the volume open | Close it; the converter waits 20 seconds first |
+| No file at all on the volume | Format it as ReFS |
+
+`--diagnose` (below) reports the same without converting.
 
 The source's size is bounded by the machine: memory and working storage decide
 how many objects, streams and extents a run can hold, and a volume beyond them

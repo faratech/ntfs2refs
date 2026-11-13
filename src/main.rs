@@ -576,6 +576,8 @@ fn run() -> Result<u8> {
                     },
                     "list": {
                         "option": "--list",
+                        "shows": "for each NTFS partition whether a conversion would take it, and its volume serial number",
+                        "bitlocker": "shown when --list runs elevated (it reads each partition's first sector); otherwise it says that BitLocker was not checked",
                         "exit_codes": {
                             "0": "every disk and volume was queried",
                             (ntfs2refs::drive_cli::EXIT_LIST_INCOMPLETE.to_string()):

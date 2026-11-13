@@ -37,7 +37,12 @@ bounds: see [how large a volume can be](#how-large-a-volume-can-be).
 It lists every disk and partition and says for each NTFS partition whether a
 conversion would take it and, if not, why: it is the running Windows, shares
 its disk with it, has other partitions beside it, or is on a disk that is not
-GPT. BitLocker is not shown there; it is found when a run starts.
+GPT. Each volume is shown with its serial number.
+
+Windows reports a volume encrypted with BitLocker as NTFS. From an elevated
+terminal `--list` reads each partition's first sector and says where that is
+so; without elevation it says that BitLocker was not checked. A run finds it
+either way, in its first second.
 
 `--list` exits 0 when every disk and volume answered, and 4 when some device
 could not be queried: the list it printed is then partial.

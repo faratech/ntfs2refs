@@ -781,8 +781,13 @@ mod windows {
             }
             return crate::drive_recovery::run(&directory, &checksum, args.rollback);
         }
-        let inventory = drive_inventory::inventory_drives_readonly()?;
+        let mut inventory = drive_inventory::inventory_drives_readonly()?;
         if args.list {
+            // Windows reports a BitLocker volume as NTFS. What it is shows in
+            // its first sector, which only an elevated process may read.
+            if n2r_win32::run_environment::is_elevated().unwrap_or(false) {
+                drive_inventory::annotate_bitlocker(&mut inventory);
+            }
             list(&inventory);
             return Ok(super::list_exit_code(inventory.enumeration_complete));
         }

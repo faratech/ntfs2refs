@@ -304,6 +304,24 @@ fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
+/// BitLocker replaces the NTFS boot sector's file-system name with its own.
+/// The sector has to come from the disk: through the volume, an unlocked
+/// BitLocker volume shows the NTFS one.
+pub fn is_bitlocker_boot_sector(bytes: &[u8]) -> bool {
+    bytes.get(3..11) == Some(b"-FVE-FS-")
+}
+
+/// Reads the first sector of every partition that could hold an NTFS volume
+/// and records whether it is BitLocker's. Needs administrator rights; a
+/// partition that cannot be read keeps `None`. Reads only.
+#[cfg(windows)]
+pub fn annotate_bitlocker(inventory: &mut DriveInventory) {
+    native::annotate_bitlocker(inventory)
+}
+#[cfg(not(windows))]
+pub fn annotate_bitlocker(_inventory: &mut DriveInventory) {}
+
+const TYPE_BASIC_DATA: &str = "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7";
 const TYPE_EFI: &str = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b";
 const TYPE_MSR: &str = "e3c9e316-0b5c-4db8-817d-f92df00215ae";
 const TYPE_RECOVERY: &str = "de94bba4-06d1-4d40-a16a-bfd50179d6ac";
@@ -314,12 +332,21 @@ const TYPE_RECOVERY: &str = "de94bba4-06d1-4d40-a16a-bfd50179d6ac";
 /// partition that is not NTFS: there is nothing to convert.
 ///
 /// This is advice for `--list`. It admits nothing; a run examines the disk
-/// itself, and the volume's contents can still refuse it (BitLocker shows
-/// here as NTFS, for one).
+/// itself, and the volume's contents can still refuse it.
 pub fn conversion_note(disk: &DiskInventory, partition: &PartitionInventory) -> Option<String> {
+    // Windows reports an unlocked BitLocker volume as NTFS and a locked one
+    // as nothing at all; its first sector says what it is.
+    if partition.bitlocker == Some(true) {
+        return Some("not convertible: encrypted with BitLocker; decrypt it first (manage-bde -off <drive>), suspending is not enough".into());
+    }
     if partition.filesystem.as_deref() != Some("NTFS") {
         return None;
     }
+    let unchecked = if partition.bitlocker.is_none() {
+        "; BitLocker not checked (run --list from an elevated terminal)"
+    } else {
+        ""
+    };
     if partition.contains_running_windows == Some(true) {
         return Some("not convertible: this is the running Windows (convert it from another Windows installation)".into());
     }
@@ -346,14 +373,16 @@ pub fn conversion_note(disk: &DiskInventory, partition: &PartitionInventory) -> 
         .collect();
     let count = |wanted: &str| others.iter().filter(|kind| kind.as_str() == wanted).count();
     if others.iter().all(|kind| kind == TYPE_MSR) && others.len() <= 1 {
-        return Some("convertible as a data volume".into());
+        return Some(format!("convertible as a data volume{unchecked}"));
     }
     if others.len() == 3
         && count(TYPE_EFI) == 1
         && count(TYPE_MSR) == 1
         && count(TYPE_RECOVERY) == 1
     {
-        return Some("convertible as a Windows boot volume (--windows-boot-volume), if it is a qualified Windows build".into());
+        return Some(format!(
+            "convertible as a Windows boot volume (--windows-boot-volume), if it is a qualified Windows build{unchecked}"
+        ));
     }
     Some(format!(
         "not convertible: the disk holds {} other partition(s); a data volume has to be the only one on its disk, apart from a Microsoft reserved partition",
@@ -451,6 +480,43 @@ mod tests {
                 "{expected}: {after_a_stop}"
             );
         }
+    }
+
+    #[test]
+    fn list_says_what_it_knows_of_bitlocker() {
+        let only = |bitlocker: Option<bool>, filesystem: Option<&str>| {
+            let mut data = partition(1, BASIC, filesystem);
+            data.bitlocker = bitlocker;
+            let disk = disk("GPT", vec![data]);
+            conversion_note(&disk, &disk.partitions[0])
+        };
+        // Seen in the first sector: Windows calls an unlocked one NTFS and a
+        // locked one nothing at all.
+        for filesystem in [Some("NTFS"), None] {
+            let note = only(Some(true), filesystem).unwrap();
+            assert!(
+                note.starts_with("not convertible: encrypted with BitLocker")
+                    && note.contains("manage-bde -off"),
+                "{note}"
+            );
+        }
+        // Looked at, and not BitLocker.
+        assert_eq!(
+            only(Some(false), Some("NTFS")).as_deref(),
+            Some("convertible as a data volume")
+        );
+        // Not looked at: the list was not made by an elevated process.
+        let unchecked = only(None, Some("NTFS")).unwrap();
+        assert!(
+            unchecked.starts_with("convertible as a data volume")
+                && unchecked.contains("BitLocker not checked")
+                && unchecked.contains("elevated"),
+            "{unchecked}"
+        );
+        assert_eq!(only(None, None), None);
+        assert!(is_bitlocker_boot_sector(b"\xeb\x58\x90-FVE-FS-\0\x02"));
+        assert!(!is_bitlocker_boot_sector(b"\xeb\x52\x90NTFS    \0\x02"));
+        assert!(!is_bitlocker_boot_sector(b"\xeb\x58"));
     }
 
     #[test]

@@ -63,6 +63,47 @@ fn open_device(path: &str) -> io::Result<File> {
     // No data write/read access, locks, privilege changes or storage setters.
     OpenOptions::new().access_mode(0).share_mode(7).open(path)
 }
+
+/// The first sector of a partition, read through its disk: the only read of
+/// stored data this inventory makes, and only when asked (it needs
+/// administrator rights). One 4096-byte read covers a sector of either size.
+fn first_sector(disk_number: u32, offset: u64) -> io::Result<[u8; 4096]> {
+    use std::os::windows::fs::FileExt;
+    let disk = OpenOptions::new()
+        .read(true)
+        .share_mode(7)
+        .open(format!(r"\\.\PhysicalDrive{disk_number}"))?;
+    let mut sector = [0u8; 4096];
+    let read = disk.seek_read(&mut sector, offset)?;
+    if read < 512 {
+        return Err(invalid("short read of a partition's first sector"));
+    }
+    Ok(sector)
+}
+
+pub(super) fn annotate_bitlocker(inventory: &mut DriveInventory) {
+    for disk in &mut inventory.disks {
+        for part in &mut disk.partitions {
+            // A volume Windows calls NTFS, or one it cannot name on a
+            // partition that is meant for a file system (a locked BitLocker
+            // volume shows no file system at all).
+            let candidate = match part.filesystem.as_deref() {
+                Some("NTFS") => true,
+                Some(_) => false,
+                None => {
+                    part.partition_type_guid.as_deref() == Some(super::TYPE_BASIC_DATA)
+                        || part.mbr_type == Some(0x07)
+                }
+            };
+            let (true, Some(offset)) = (candidate, part.offset_bytes) else {
+                continue;
+            };
+            if let Ok(sector) = first_sector(disk.disk_number, offset) {
+                part.bitlocker = Some(super::is_bitlocker_boot_sector(&sector));
+            }
+        }
+    }
+}
 fn query(file: &File, code: u32, capacity: usize) -> io::Result<Vec<u8>> {
     if !matches!(
         code,

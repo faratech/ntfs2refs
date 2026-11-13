@@ -169,7 +169,7 @@ try {
     $notes.Add('')
     $notes.Add('Refused before anything is written:')
     $notes.Add('')
-    foreach ($item in $reportedCapabilities.data_volume.refused_by_name) { $notes.Add("- $($item.what)$(if ($item.PSObject.Properties['remedy']) { " ($($item.remedy))" }).") }
+    foreach ($item in $reportedCapabilities.data_volume.refused_by_name) { $notes.Add("- $($item.what)$(if ($item.PSObject.Properties['remedy']) { ". To do: $($item.remedy)" }).") }
     $notes.Add('')
     $notes.Add('## What was shown, and what was not')
     $notes.Add('')

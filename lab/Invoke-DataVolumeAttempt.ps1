@@ -100,6 +100,12 @@ param(
     # -Content minimal and features that ReFS can hold (copy, security, ea,
     # links, longpath, deep, bigdir).
     [switch]$NativeRefsControl,
+    # Run the converter as a script would: `--yes --volume-serial <the volume's
+    # serial number>`, with nothing typed at its prompt. A recovery gets --yes.
+    [switch]$Unattended,
+    # With -Unattended: give a serial number that is not the volume's. The run
+    # has to refuse before it opens anything.
+    [switch]$WrongSerial,
     [switch]$KeepVolume
 )
 $ErrorActionPreference = 'Stop'; Set-StrictMode -Version Latest
@@ -374,8 +380,8 @@ try {
     # folder with these converter arguments: as SYSTEM from a scheduled task,
     # or as the elevated administrator in a session of its own.
     function Start-Worker([string]$Root, [string[]]$Arguments, [string]$Task) {
-        Invoke-Command -Session $session -ArgumentList $Root, ($Arguments -join "`t") -ScriptBlock {
-            param($root, $joined) [IO.File]::WriteAllText("$root\run.json", (@{ arguments = @([string[]]$joined.Split("`t")) } | ConvertTo-Json), [Text.UTF8Encoding]::new($false)) }
+        Invoke-Command -Session $session -ArgumentList $Root, ($Arguments -join "`t"), (-not $Unattended) -ScriptBlock {
+            param($root, $joined, $answer) [IO.File]::WriteAllText("$root\run.json", (@{ arguments = @([string[]]$joined.Split("`t")); answer = [bool]$answer } | ConvertTo-Json), [Text.UTF8Encoding]::new($false)) }
         if ($RunAs -eq 'administrator') {
             if ($script:worker) { Remove-PSSession $script:worker -ErrorAction SilentlyContinue }
             $script:worker = New-PSSession -VMId $VmId -Credential $credential
@@ -434,6 +440,25 @@ try {
     if ($InterruptAt) { $arguments += @('--lab-hold-at', $InterruptAt, '--acknowledge-lab-hold-never-completes') }
     if ($SampleStacks) { $arguments += @('--sample-stacks', "$guestRoot\stacks.txt") }
     if ($Diagnose) { $arguments += '--diagnose' }
+    # What --list says of the volume, as an elevated user sees it: whether a
+    # conversion would take it, its serial number, and BitLocker.
+    $listed = Invoke-Command -Session $session -ArgumentList $guestRoot -ScriptBlock {
+        param($root)
+        $text = @(& "$root\ntfs2refs.exe" --list 2>&1 | ForEach-Object { "$_" })
+        [IO.File]::WriteAllLines("$root\list.txt", [string[]]$text, [Text.UTF8Encoding]::new($false))
+        $row = [string]($text | Where-Object { $_ -match '\sV:\\' } | Select-Object -First 1)
+        [pscustomobject]@{ exit = $LASTEXITCODE; row = $row.Trim(); serial = if ($row -match 'serial ([0-9A-F]{4}-[0-9A-F]{4})') { $Matches[1] } else { $null } }
+    }
+    try { Copy-Item -FromSession $session -LiteralPath "$guestRoot\list.txt" -Destination $records } catch { }
+    $verdict.list = [ordered]@{ exit = $listed.exit; row = $listed.row; serial = $listed.serial }
+    Say "--list: $($listed.row)"
+    if ('bitlocker' -in $wanted -and $listed.row -notmatch 'encrypted with BitLocker') {
+        $verdict.outcome = 'list-did-not-show-bitlocker'; throw "--list does not say that V: is encrypted with BitLocker: $($listed.row)"
+    }
+    if ($Unattended) {
+        if (-not $listed.serial) { $verdict.outcome = 'list-did-not-show-serial'; throw "--list shows no serial number for V:: $($listed.row)" }
+        $arguments += @('--yes', '--volume-serial', $(if ($WrongSerial) { '0000-0000' } else { $listed.serial }))
+    }
     $arguments += $ConverterArgs
     $verdict.converter_arguments = $arguments
     $task = "N2R-DataLab-$Name"
@@ -463,6 +488,7 @@ try {
         $printed = Select-String -LiteralPath $shown -Pattern 'To get it back as NTFS: ntfs2refs --recover "(.+)" --recovery-sha256 ([0-9a-f]{64}) --rollback' | Select-Object -First 1
         if (-not $printed) { $verdict.outcome = 'stopped-without-cancel-command'; throw 'the stopped run had not printed the command that cancels its preparation' }
         $cancel = @('--recover', $printed.Matches[0].Groups[1].Value, '--recovery-sha256', $printed.Matches[0].Groups[2].Value, '--rollback')
+        if ($Unattended) { $cancel += '--yes' }
         $verdict.cancel_arguments = $cancel
         $stoppedRoot = $guestRoot
         $stage = {
@@ -510,6 +536,7 @@ try {
         if (-not $printed) { $verdict.outcome = 'interrupted-without-recovery-command'; throw 'the interrupted run printed no "To recover:" line' }
         $recover = @('--recover', $printed.Matches[0].Groups[1].Value, '--recovery-sha256', $printed.Matches[0].Groups[2].Value)
         if ($RecoverMode -eq 'rollback') { $recover += '--rollback' }
+        if ($Unattended) { $recover += '--yes' }
         $verdict.interrupted_at = $InterruptAt; $verdict.recover_mode = $RecoverMode; $verdict.recovery_arguments = $recover
         # A folder of its own, so the interrupted run's records stay as they are.
         $guestRoot = "$guestRoot\recover"

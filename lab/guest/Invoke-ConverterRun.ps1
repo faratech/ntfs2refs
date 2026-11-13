@@ -1,7 +1,9 @@
 <# Guest worker for one converter run. Reads run.json beside itself, starts
    ntfs2refs.exe with the listed arguments, answers its one confirmation
-   prompt, streams stdout/stderr to files and writes native-terminal.json when
-   the process exits. It pins nothing: the host harness decides what to run. #>
+   prompt (unless run.json says "answer": false, for a run that has to consent
+   by its own --yes), streams stdout/stderr to files and writes
+   native-terminal.json when the process exits. It pins nothing: the host
+   harness decides what to run. #>
 param([Parameter(Mandatory)][string]$Root)
 $ErrorActionPreference = 'Stop'; Set-StrictMode -Version Latest
 $utf8 = [Text.UTF8Encoding]::new($false)
@@ -28,7 +30,10 @@ try {
     $errTask = $process.StandardError.BaseStream.CopyToAsync($errors, 65536)
     [IO.File]::WriteAllText((Join-Path $Root 'native-process.json'),
         (@{ pid = $process.Id; arguments = $arguments; started_utc = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json), $utf8)
-    $process.StandardInput.WriteLine('y'); $process.StandardInput.Flush(); $process.StandardInput.Close()
+    # An unattended run gets no answer from here: its standard input is closed empty.
+    $answers = -not ($run.PSObject.Properties['answer'] -and $run.answer -eq $false)
+    if ($answers) { $process.StandardInput.WriteLine('y'); $process.StandardInput.Flush() }
+    $process.StandardInput.Close()
     $peak = 0L
     while (-not $process.WaitForExit(1000)) { $process.Refresh(); $peak = [Math]::Max($peak, $process.PeakWorkingSet64) }
     $watch.Stop()

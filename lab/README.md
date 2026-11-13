@@ -109,6 +109,14 @@ someone does who did not see the run stop: that run has to be refused with
 words that name the offline disk and `--recover`, and the cancellation is
 run then (`restart-refused-then-cancelled`).
 
+Every attempt records what `ntfs2refs --list` says of the volume beforehand
+(`list.txt`; the verdict has the volume's row). `-Unattended` runs the
+converter as a script would, with `--yes --volume-serial <the serial number
+--list printed>` and nothing typed at its prompt; a recovery gets `--yes`.
+`-WrongSerial` gives it a serial number that is not the volume's, which has to
+be refused before anything is opened (`-ExpectRefusal volume-serial`). The
+`bitlocker` case also requires `--list` to say that the volume is encrypted.
+
 `-Content many` replaces the mixed content with two files that are past numbers
 which used to be fixed: one with 200 named streams, and a sparse file with
 `-Islands` separately allocated islands (70,000 by default), whose mapping

@@ -9,10 +9,25 @@ use std::{
     process::ExitCode,
 };
 
+/// What `--help` ends with: the order to do things in, and where the rest is.
+const AFTER_HELP: &str = "\
+Start with these, from an elevated terminal:
+  ntfs2refs --list
+  ntfs2refs --drive E --scratch-directory S:\\runs --diagnose
+  ntfs2refs --drive E --scratch-directory S:\\runs
+
+--list says for each NTFS partition whether it can be converted. --diagnose
+checks a volume without writing to it. A conversion prints a recovery command
+before its first write to the volume; keep it. docs/cli-workflow.md is the
+guide. `ntfs2refs capabilities` prints what this executable admits and
+refuses, and names the commands of earlier designs that this help no longer
+lists.";
+
 #[derive(Parser)]
 #[command(
     version,
-    about = "NTFS/ReFS inspection and experimental certificate-backed data-volume conversion.",
+    about = "Converts an NTFS volume to ReFS in place.",
+    after_help = AFTER_HELP,
     args_conflicts_with_subcommands = true,
     arg_required_else_help = true
 )]
@@ -27,9 +42,14 @@ enum Target {
     Win11,
     Server,
 }
+/// `capabilities` is the command of the product. The others are research
+/// tools for raw images and the request-file commands of earlier designs:
+/// they still work and have their own `--help`, and `capabilities` names
+/// them, but the top-level help does not list them.
 #[derive(Subcommand)]
 enum Command {
     /// Inspect a raw partition image (never a VHDX container or live device).
+    #[command(hide = true)]
     Inspect {
         #[arg(long)]
         image: PathBuf,
@@ -40,6 +60,7 @@ enum Command {
         stream_hash_budget_mib: u64,
     },
     /// Produce a non-executable feasibility report with explicit blockers.
+    #[command(hide = true)]
     Plan {
         #[arg(long)]
         image: PathBuf,
@@ -58,15 +79,17 @@ enum Command {
         output: Option<PathBuf>,
     },
     /// Verify byte identity against an inspection report; not conversion validity.
+    #[command(hide = true)]
     Verify {
         #[arg(long)]
         image: PathBuf,
         #[arg(long)]
         baseline: PathBuf,
     },
-    /// List the implemented and gated capabilities.
+    /// Print, as JSON, what this executable admits, refuses and does not carry over.
     Capabilities,
     /// Compare same-sized native-format corpus images in bounded memory.
+    #[command(hide = true)]
     Diff {
         #[arg(long)]
         before: PathBuf,
@@ -78,6 +101,7 @@ enum Command {
         output: Option<PathBuf>,
     },
     /// Compare frozen images while retaining explicit source byte ranges; never authorizes writes.
+    #[command(hide = true)]
     CompareRetained {
         #[arg(long)]
         source: PathBuf,
@@ -90,6 +114,7 @@ enum Command {
         output: Option<PathBuf>,
     },
     /// Convert a bound data volume through live qualification and an external journal.
+    #[command(hide = true)]
     Convert {
         /// Legacy feasibility plans remain non-executable.
         #[arg(long, required_unless_present = "request", conflicts_with = "request")]
@@ -104,16 +129,22 @@ enum Command {
         output: Option<PathBuf>,
     },
     /// Resume an already activated offline target using pinned recovery inputs.
+    #[command(hide = true)]
     Resume(RecoveryArgs),
     /// Restore the admitted NTFS preimage before the handoff barrier.
+    #[command(hide = true)]
     Rollback(RecoveryArgs),
     /// Complete native ReFS handoff after an exact completed apply.
+    #[command(hide = true)]
     Finalize(RecoveryArgs),
     /// Complete only the source label on a strictly verified mounted ReFS target.
+    #[command(hide = true)]
     CompleteLabel(LabelCompletionArgs),
     /// Report verified public-run lifecycle facts without changing disk state.
+    #[command(hide = true)]
     OperationState(RunOperationArgs),
     /// Restore unchanged NTFS availability before reconstruction activation.
+    #[command(hide = true)]
     Cancel(RunOperationArgs),
 }
 
@@ -352,6 +383,19 @@ fn recover(args: RecoveryArgs, operation: &str) -> Result<()> {
         anyhow::bail!("native journal recovery requires Windows")
     }
 }
+/// The hidden subcommands, as `capabilities` names them. A test holds this
+/// to the commands the parser has and to what `--help` lists.
+const HIDDEN_IMAGE_COMMANDS: &[&str] = &["inspect", "plan", "verify", "diff", "compare-retained"];
+const HIDDEN_REQUEST_COMMANDS: &[&str] = &[
+    "convert",
+    "resume",
+    "rollback",
+    "finalize",
+    "complete-label",
+    "operation-state",
+    "cancel",
+];
+
 fn run() -> Result<u8> {
     let cli = Cli::parse();
     if cli.drive.requested() {
@@ -433,7 +477,8 @@ fn run() -> Result<u8> {
                 .collect();
             output(
                 &serde_json::json!({
-                    "schema_version": 4,
+                    "schema_version": 5,
+                    "tool_version": env!("CARGO_PKG_VERSION"),
                     "raw_image_inspection": true,
                     "ntfs_inventory_complete": false,
                     "refs_header_inspection": true,
@@ -446,17 +491,23 @@ fn run() -> Result<u8> {
                     "refs_metadata_builder": "windows",
                     "raw_refs_writes": ["trust-label patch on the temporary shadow"],
                     "conversion_routes": [
-                        {"route": "windows-boot-volume", "option": "--windows-boot-volume",
-                         "status": "qualified for the listed boot profiles only"},
-                        {"route": "dedicated-data-volume", "option": "--drive",
-                         "status": "experimental; not qualified by a release"},
-                        {"route": "whole-image", "option": "--whole-image-verification",
-                         "status": "experimental; data volumes only",
+                        {"route": "dedicated-data-volume", "option": "--drive", "in_help": true,
+                         "status": "the default route; what the lab showed of it is in docs/feature-matrix.md and docs/recovery-matrix.md"},
+                        {"route": "windows-boot-volume", "option": "--windows-boot-volume", "in_help": true,
+                         "status": "admitted for the listed boot profiles only; converted, booted and used in the lab"},
+                        {"route": "whole-image", "option": "--whole-image-verification", "in_help": false,
+                         "status": "an earlier design; experimental; data volumes only",
                          "fixed_limits": {"files": 1024, "directories": 256, "placed_ntfs_runs": 4096},
                          "limits_note": "refused before anything is written; the other routes are bounded by the machine's memory and working storage, not by fixed counts"},
-                        {"route": "shared-disk", "option": "--offline-media",
-                         "status": "experimental; native qualification in progress"},
+                        {"route": "shared-disk", "option": "--offline-media", "in_help": false,
+                         "status": "an earlier design; experimental; needs ntfs2refs-recovery.exe, which no release ships"},
                     ],
+                    // Subcommands that still work and that --help no longer lists.
+                    "commands_not_in_help": {
+                        "status": "experimental; kept so that the records of earlier builds can still be read; not covered by the matrices",
+                        "raw_image_research": HIDDEN_IMAGE_COMMANDS,
+                        "request_file_route": HIDDEN_REQUEST_COMMANDS,
+                    },
                     // The rows the boot-volume admission gate enforces.
                     "qualified_boot_profiles": ntfs2refs::boot_profile::QUALIFIED,
                     // What the default data-volume route admits. A Windows
@@ -559,9 +610,34 @@ fn run() -> Result<u8> {
                         "maximum_logical_bytes": large.maximum_logical_bytes,
                         "native_qualified": false,
                     },
-                    "qualification_registry_scope": registry.scope,
-                    "recorded_qualification": registry.matrix()?,
-                    "recorded_evidence_grants_runtime_authority": false,
+                    // What the lab showed of this route, and what it did not.
+                    "lab_evidence": {
+                        "feature_matrix": "docs/feature-matrix.md",
+                        "recovery_matrix": "docs/recovery-matrix.md",
+                        "guide": "docs/cli-workflow.md",
+                        "grants_runtime_authority": false,
+                        "not_shown": [
+                            "a physical disk: every lab disk is virtual",
+                            "a volume holding more than 23 GB",
+                            "a power cut to the storage itself: the lab ends the converter's process or turns the virtual machine off",
+                            "a Windows build other than those in windows_builds.confirmed_builds, and a ReFS version other than 3.14",
+                            "a conversion to standard ReFS (--target-format standard)",
+                            "--minimize-scratch, and the routes and commands that --help does not list",
+                        ],
+                    },
+                    // The registry of 2026-10-28 records builds before 0.2.0.
+                    // Its schema has fixed limits per profile and no entry
+                    // for a boot volume or a data volume as they are now, so
+                    // it is counted here and no longer printed.
+                    "earlier_builds": {
+                        "registry": "evidence/qualification-registry.json",
+                        "scope": registry.scope,
+                        "profiles": registry.profiles.len(),
+                        "evidence_records": registry.evidence.len(),
+                        "claims": registry.claims.len(),
+                        "documents": "docs/history",
+                        "note": "observations of builds before 0.2.0, kept as they were recorded; they are not statements about this executable",
+                    },
                 }),
                 None,
             )?;

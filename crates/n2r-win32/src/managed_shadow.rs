@@ -760,6 +760,67 @@ pub fn create_with_profile(
     })
 }
 
+/// The last lines format.com wrote, which is where it gives its reason
+/// ("ReFS file system is not supported on this device."). Empty when the
+/// logs cannot be read: the refusal is reported either way.
+fn formatter_said(path: &Path) -> String {
+    let mut lines = Vec::new();
+    for log in ["format.stdout.log", "format.stderr.log"] {
+        let Ok(bytes) = fs::read(path.with_extension(log)) else {
+            continue;
+        };
+        let tail = &bytes[bytes.len().saturating_sub(4096)..];
+        lines.extend(
+            String::from_utf8_lossy(tail)
+                .lines()
+                .map(|line| {
+                    line.chars()
+                        .filter(|c| !c.is_control())
+                        .collect::<String>()
+                        .trim()
+                        .to_owned()
+                })
+                .filter(|line| !line.is_empty())
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .take(2)
+                .rev(),
+        );
+    }
+    lines.join(" / ")
+}
+
+/// What a run says when Windows will not format its working volume. The
+/// source has not been written to at this point.
+fn format_refusal(
+    target_format: TargetFormatProfile,
+    cluster_bytes: u64,
+    status: &str,
+    said: &str,
+    path: &Path,
+) -> String {
+    let (asked, advice) = match target_format {
+        TargetFormatProfile::DevDrive => (
+            "a Dev Drive (format /FS:ReFS /DevDrv)",
+            "Dev Drive formatting may be turned off on this machine, by policy or because this Windows does not have it",
+        ),
+        TargetFormatProfile::StandardReFs => (
+            "an ordinary ReFS volume (format /FS:ReFS)",
+            "this Windows does not format ordinary ReFS volumes here; the default target, --target-format dev-drive, may be available",
+        ),
+    };
+    let said = if said.is_empty() {
+        String::new()
+    } else {
+        format!(", saying: {said}")
+    };
+    format!(
+        "Windows would not format the run's temporary working volume as {asked} with {cluster_bytes}-byte clusters: format.com ended with {status}{said}. {advice}. There is no fallback from one target format to the other. Nothing has been written to the volume to convert. The working files, with the formatter's full output, are kept beside {}",
+        path.display()
+    )
+}
+
 // Private formatting boundary, shared by VHDX and constructor-owned thin disks.
 // No public API accepts an arbitrary binding as formatting authority.
 fn format_new_owned(
@@ -827,9 +888,13 @@ fn format_new_owned(
     stdout.sync_all()?;
     stderr.sync_all()?;
     if !status.success() {
-        return Err(io::Error::other(format!(
-            "owned staging {target_format} native format refused ({status}); no fallback; backing retained at {}",
-            path.display()
+        let said = formatter_said(path);
+        return Err(io::Error::other(format_refusal(
+            target_format,
+            cluster,
+            &status.to_string(),
+            &said,
+            path,
         )));
     }
     owner.verify_owned()?;
@@ -923,4 +988,58 @@ fn format_new_owned(
     }
     owner.verify_owned()?;
     Ok((binding, format_policy, data))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_format_refusal_says_what_was_asked_what_windows_said_and_what_to_do() {
+        let temp = std::env::temp_dir().join(format!("n2r-format-refusal-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp);
+        fs::create_dir_all(&temp).unwrap();
+        let path = temp.join("shadow.vhdx");
+        fs::write(
+            path.with_extension("format.stdout.log"),
+            "The type of the file system is RAW.\r\nThe new file system is REFS.\r\n\r\nReFS file system is not supported on this device.\r\n",
+        )
+        .unwrap();
+        let said = formatter_said(&path);
+        assert!(
+            said.ends_with("ReFS file system is not supported on this device."),
+            "{said}"
+        );
+        let standard = format_refusal(
+            TargetFormatProfile::StandardReFs,
+            4096,
+            "exit code: 4",
+            &said,
+            &path,
+        );
+        for expected in [
+            "an ordinary ReFS volume",
+            "4096-byte clusters",
+            "exit code: 4",
+            "ReFS file system is not supported on this device.",
+            "--target-format dev-drive",
+            "no fallback",
+            "Nothing has been written to the volume to convert",
+        ] {
+            assert!(standard.contains(expected), "{expected}: {standard}");
+        }
+        // Without the formatter's output the refusal is still whole.
+        let developer = format_refusal(
+            TargetFormatProfile::DevDrive,
+            65536,
+            "exit code: 1",
+            &formatter_said(&temp.join("absent.vhdx")),
+            &path,
+        );
+        assert!(
+            developer.contains("a Dev Drive") && developer.contains("exit code: 1. Dev Drive"),
+            "{developer}"
+        );
+        fs::remove_dir_all(&temp).unwrap();
+    }
 }

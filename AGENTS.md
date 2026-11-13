@@ -98,6 +98,11 @@ it lies on target-cluster boundaries; the rest goes through the working storage.
   `-SampleStacks` and `-RunAs administrator` (otherwise it runs as SYSTEM).
   `lab\Write-RecoveryMatrix.ps1` writes `docs/recovery-matrix.md` from the
   attempts' verdicts.
+- A release is built by `lab\New-Release.ps1` from the commit tagged with the
+  version in `Cargo.toml`, which is also what the executable and
+  `capabilities` report. `README.md`, `docs/cli-workflow.md` and the two
+  matrices describe the tool as it is; `tests/current_documents.rs` holds
+  them to that. A document of an earlier design goes to `docs/history/`.
 - Records land in `.lab/hyperv/attempts/<n>/`; the scratch disk is deleted
   when the attempt ends. The host volume needs 40 GB free for a fixture
   attempt and 65 GB for a full one (57 GB at peak).
@@ -158,6 +163,7 @@ Open, most useful first:
    each handle's normalized path; listing each parent once would prove the
    same), and hashing the 9 GB that move through the journal. Keep the mount
    manager out of per-object paths. Profile with `-SampleStacks` first.
-3. Power-cut resume during preparation is still out of scope.
-4. Not shown: a physical disk, and more than 23 GB of data (#86); use of the
-   booted converted Windows beyond its first desktop (#85).
+3. A run cut off while it prepares is cancelled with the command it printed
+   at its start and started again (`-StopDuringPreparation` shows it);
+   resuming a preparation after a power cut is still out of scope.
+4. Not shown: a physical disk, and more than 23 GB of data (#86).

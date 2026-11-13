@@ -12,7 +12,7 @@ struct Arguments {
     source: PathBuf,
     #[arg(long)]
     output: PathBuf,
-    /// JSON selection derived from verified guest evidence; see docs/fixed-vhd-extraction.md.
+    /// JSON selection derived from verified guest evidence; see docs/history/fixed-vhd-extraction.md.
     #[arg(long)]
     selection: PathBuf,
 }

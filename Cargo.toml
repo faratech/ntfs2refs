@@ -1,9 +1,9 @@
 [package]
 name = "ntfs2refs"
-version = "0.1.0"
+version = "0.2.0-beta.1"
 edition = "2024"
 rust-version = "1.98"
-description = "Offline NTFS to ReFS conversion research and validation tools"
+description = "Converts an NTFS volume to ReFS in place"
 publish = false
 default-run = "ntfs2refs"
 

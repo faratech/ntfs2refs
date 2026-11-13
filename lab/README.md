@@ -3,8 +3,9 @@
 The current route is `Invoke-BootConversionAttempt.ps1`. It restores a disposable
 NTFS baseline, runs the converter from a separate control OS, compares independent
 before/after volume listings, and optionally boots the original source disk alone.
-See [AGENTS.md](../AGENTS.md) for the VM identities and standing rules, and
-[release qualification](../docs/history/release-0.0.1-alpha.md) for the frozen alpha.
+See [AGENTS.md](../AGENTS.md) for the VM identities and standing rules, and the
+[feature matrix](../docs/feature-matrix.md) and the
+[recovery matrix](../docs/recovery-matrix.md) for what the attempts have shown.
 
 ## Existing checks
 
@@ -94,6 +95,19 @@ with ReFS and an identical listing (`resumed`), `-RecoverMode rollback` with the
 NTFS volume listing exactly as before (`rolled-back`). `-Diagnose` runs the
 converter with `--diagnose`; whatever it reports, the volume must list exactly
 as before (`diagnose-clean`, `diagnose-found-failures`).
+
+`-StopDuringPreparation <phase>` ends the converter as soon as its progress
+names that phase of preparation (`payload_supply`, `recovery_journal`, ...):
+before it has printed a recovery command, and before anything is written to
+the volume. The verdict records what the stop left (whether `V:` is mounted,
+which disks are offline or read-only). Then, with `-AfterStop cancel` (the
+default), the harness runs the command the run printed for this case at its
+start (`To get it back as NTFS: ntfs2refs --recover ... --rollback`), and the
+NTFS volume must be back and list exactly as before (`preparation-cancelled`).
+With `-AfterStop restart` it first starts the same conversion again, as
+someone does who did not see the run stop: that run has to be refused with
+words that name the offline disk and `--recover`, and the cancellation is
+run then (`restart-refused-then-cancelled`).
 
 `-Content many` replaces the mixed content with two files that are past numbers
 which used to be fixed: one with 200 named streams, and a sparse file with
@@ -191,6 +205,28 @@ Before any cleanup, preserve the verdict, progress, source and target listings,
 comparison report, binary hashes, recovery output and boot evidence with hashes.
 Do not delete the reference baseline checkpoint: the second VM's disks depend
 on its parent chain. Ask before deleting `.lab` artifacts.
+
+## Building a release
+
+`New-Release.ps1` builds the release of the version in `Cargo.toml` from a
+clean checkout of the commit that carries that version as its tag: the ZIP
+(both executables, `capabilities.json`, the README, the guide, the two
+matrices and the notes), its SHA-256 file, a source archive and
+`RELEASE-NOTES.md`. The notes are generated from what the executable's
+`capabilities` reports and name the matrices; nothing in them is typed by
+hand. It refuses a tree with uncommitted changes and an executable that
+reports another version, and it publishes nothing: it ends by printing the
+two commands that would.
+
+```powershell
+lab\New-Release.ps1 -AllowUntagged                     # a rehearsal of any commit
+lab\New-Release.ps1 -ComparedWith <dir of the lab's build>
+```
+
+The lab runs a frozen copy of a build, made before the commit exists.
+`-ComparedWith` names that copy: the release's executables have to equal it
+byte for byte apart from the stamps the linker puts into every link (its
+time, the checksum, the PDB's signature), and the notes then say so.
 
 ## Older scripts
 

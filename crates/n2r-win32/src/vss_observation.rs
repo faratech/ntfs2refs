@@ -452,47 +452,77 @@ impl Observation {
     /// bind source freeze/exclusion; this is not a global VSS serialization lease.
     pub fn require_observed_catalog_clear(&self) -> io::Result<()> {
         self.require_observed_snapshot_absence()?;
+        if let Some(area) = self.hosted_diff_areas.first() {
+            return Err(invalid(format!(
+                "this volume stores shadow copies of {} ({} bytes of snapshot storage in use, {} area(s) in all): a conversion in place would destroy them. Delete those shadow copies or move their storage to another volume (`vssadmin list shadowstorage`), then convert",
+                area.original_volume,
+                area.used_bytes,
+                self.hosted_diff_areas.len()
+            )));
+        }
         if !self.hosted_storage_enumerated
             || !matches!(self.hosted_diff_area_query_hresult, Some(S_OK | S_FALSE))
             || self
                 .providers
                 .iter()
                 .any(|p| p.id == guid(SOFTWARE_PROVIDER) && !p.hosted_diff_areas_query_completed)
-            || !self.hosted_diff_areas.is_empty()
         {
-            return Err(invalid(
-                "VSS hosted differential storage is not completely observed and clear",
-            ));
+            return Err(invalid(format!(
+                "Windows did not answer completely whether this volume stores shadow copies of any volume (query result {:?}); without that answer the volume is not converted",
+                self.hosted_diff_area_query_hresult
+            )));
         }
         Ok(())
     }
 
+    /// The same conditions as ever, each with its own words: a refusal
+    /// used to be one sentence that named none of them.
     pub fn require_observed_snapshot_absence(&self) -> io::Result<()> {
-        if !self.provider_inventory_completed
-            || !(1..=2).contains(&self.providers.len())
+        let presence = &self.source_snapshot_presence;
+        if presence.hresult == S_OK && presence.snapshots_present {
+            return Err(invalid(
+                "the volume has shadow copies (snapshots: restore points, previous versions, or a backup's). A conversion in place would destroy them: delete them first (`vssadmin delete shadows /for=<drive>:`), then convert",
+            ));
+        }
+        if presence.hresult != S_OK || presence.compatibility_flags != 0 {
+            return Err(invalid(format!(
+                "Windows did not say plainly whether the volume has shadow copies (result {:#x}, compatibility flags {:#x}); without that answer the volume is not converted",
+                presence.hresult, presence.compatibility_flags
+            )));
+        }
+        if !self.provider_inventory_completed {
+            return Err(invalid(
+                "the list of installed shadow-copy (VSS) providers could not be read completely; without it the volume is not converted",
+            ));
+        }
+        let known = |p: &Provider| {
+            if p.id == guid(SOFTWARE_PROVIDER) {
+                p.kind == 1 && p.storage_role == "guest_local_differential_storage"
+            } else {
+                p.id == guid(HYPERV_PROVIDER)
+                    && p.class_id == guid(HYPERV_CLASS)
+                    && p.kind == 2
+                    && p.storage_role == "hyperv_host_vm_image"
+            }
+        };
+        if let Some(provider) = self.providers.iter().find(|p| !known(p)) {
+            return Err(invalid(format!(
+                "a shadow-copy (VSS) provider that the converter does not know is installed: \"{}\" version {} ({{{}}}). Such a provider, usually part of backup software, may keep snapshot storage the converter cannot see, so no volume is converted while it is installed. The volume itself has no shadow copies",
+                provider.name, provider.version, provider.id
+            )));
+        }
+        if !(1..=2).contains(&self.providers.len())
             || self
                 .providers
                 .iter()
                 .filter(|p| p.id == guid(SOFTWARE_PROVIDER))
                 .count()
                 != 1
-            || self.providers.iter().any(|p| {
-                if p.id == guid(SOFTWARE_PROVIDER) {
-                    p.kind != 1 || p.storage_role != "guest_local_differential_storage"
-                } else {
-                    p.id != guid(HYPERV_PROVIDER)
-                        || p.class_id != guid(HYPERV_CLASS)
-                        || p.kind != 2
-                        || p.storage_role != "hyperv_host_vm_image"
-                }
-            })
-            || self.source_snapshot_presence.hresult != S_OK
-            || self.source_snapshot_presence.snapshots_present
-            || self.source_snapshot_presence.compatibility_flags != 0
         {
-            return Err(invalid(
-                "VSS source-presence/storage observation is not clear for the source volume",
-            ));
+            return Err(invalid(format!(
+                "Windows' own shadow-copy provider is missing or listed more than once among the {} installed provider(s); the volume is not converted",
+                self.providers.len()
+            )));
         }
         Ok(())
     }
@@ -862,4 +892,105 @@ fn hresult(operation: &str, hr: i32) -> io::Error {
 }
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
+}
+
+#[cfg(test)]
+mod refusal_tests {
+    use super::*;
+
+    fn clear() -> Observation {
+        Observation {
+            schema_version: 1,
+            kind: "test",
+            source_volume_guid: "volume".into(),
+            snapshot_context: 0,
+            completed_snapshot_count_all_volumes: Some(0),
+            source_snapshot_presence: SourceSnapshotPresence {
+                api: "IsVolumeSnapshotted",
+                scope: "source",
+                hresult: S_OK,
+                snapshots_present: false,
+                compatibility_flags: 0,
+            },
+            providers: vec![Provider {
+                id: guid(SOFTWARE_PROVIDER),
+                class_id: String::new(),
+                name: "Microsoft Software Shadow Copy provider 1.0".into(),
+                kind: 1,
+                version: "1.0.0.7".into(),
+                hosted_diff_areas_query_completed: true,
+                storage_role: "guest_local_differential_storage",
+            }],
+            hosted_diff_areas: Vec::new(),
+            hosted_diff_area_query_hresult: Some(S_OK),
+            hosted_storage_enumerated: true,
+            completed_catalog_enumeration: true,
+            provider_inventory_completed: true,
+            inflight_snapshot_operations_excluded: false,
+            source_exclusion_proven: false,
+            execution_authorized: false,
+        }
+    }
+
+    #[test]
+    fn a_shadow_copy_refusal_says_which_condition_it_met() {
+        clear().require_observed_catalog_clear().unwrap();
+
+        let mut snapshots = clear();
+        snapshots.source_snapshot_presence.snapshots_present = true;
+        let refusal = snapshots
+            .require_observed_catalog_clear()
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refusal.contains("has shadow copies") && refusal.contains("vssadmin delete shadows"),
+            "{refusal}"
+        );
+
+        // A provider of a backup product: named, and the volume is said to be clear.
+        let mut provider = clear();
+        provider.providers.push(Provider {
+            id: "11111111-2222-3333-4444-555555555555".into(),
+            class_id: String::new(),
+            name: "Some Backup VSS Provider".into(),
+            kind: 2,
+            version: "9.1".into(),
+            hosted_diff_areas_query_completed: false,
+            storage_role: "unknown",
+        });
+        let refusal = provider
+            .require_observed_catalog_clear()
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refusal.contains("Some Backup VSS Provider")
+                && refusal.contains("11111111-2222-3333-4444-555555555555")
+                && refusal.contains("The volume itself has no shadow copies"),
+            "{refusal}"
+        );
+
+        // Snapshot storage of another volume kept on this one.
+        let mut storage = clear();
+        storage.hosted_diff_areas.push(HostedDiffArea {
+            provider_id: guid(SOFTWARE_PROVIDER),
+            original_volume: "\\\\?\\Volume{other}\\".into(),
+            storage_volume: "volume".into(),
+            maximum_bytes: 1 << 30,
+            allocated_bytes: 1 << 20,
+            used_bytes: 4096,
+        });
+        let refusal = storage
+            .require_observed_catalog_clear()
+            .unwrap_err()
+            .to_string();
+        assert!(refusal.contains("stores shadow copies of"), "{refusal}");
+
+        let mut unanswered = clear();
+        unanswered.source_snapshot_presence.hresult = 0x8004_2301u32 as i32;
+        let refusal = unanswered
+            .require_observed_catalog_clear()
+            .unwrap_err()
+            .to_string();
+        assert!(refusal.contains("did not say plainly"), "{refusal}");
+    }
 }

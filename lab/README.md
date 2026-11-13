@@ -3,8 +3,9 @@
 The current route is `Invoke-BootConversionAttempt.ps1`. It restores a disposable
 NTFS baseline, runs the converter from a separate control OS, compares independent
 before/after volume listings, and optionally boots the original source disk alone.
-See [AGENTS.md](../AGENTS.md) for the VM identities and standing rules, and
-[release qualification](../docs/history/release-0.0.1-alpha.md) for the frozen alpha.
+See [AGENTS.md](../AGENTS.md) for the VM identities and standing rules, and the
+[feature matrix](../docs/feature-matrix.md) and the
+[recovery matrix](../docs/recovery-matrix.md) for what the attempts have shown.
 
 ## Existing checks
 

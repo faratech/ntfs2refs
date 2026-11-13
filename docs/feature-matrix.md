@@ -78,3 +78,8 @@ These take the same paths as rows above, or are checked by tests only.
 - Index records other than 4 KiB, a ReFS later than 3.14, and a Windows build
   other than 26100 and 26300: nothing in the lab makes them. A run on such a
   build or ReFS version says that it is the first.
+- A conversion to standard ReFS (`--target-format standard`): the lab's
+  Windows 11 does not format one, and the run stops there with what Windows
+  said, before the volume is touched.
+- `--minimize-scratch`, and the routes and commands of earlier designs that
+  `--help` no longer lists.

@@ -163,6 +163,7 @@ Open, most useful first:
    each handle's normalized path; listing each parent once would prove the
    same), and hashing the 9 GB that move through the journal. Keep the mount
    manager out of per-object paths. Profile with `-SampleStacks` first.
-3. Power-cut resume during preparation is still out of scope.
-4. Not shown: a physical disk, and more than 23 GB of data (#86); use of the
-   booted converted Windows beyond its first desktop (#85).
+3. A run cut off while it prepares is cancelled with the command it printed
+   at its start and started again (`-StopDuringPreparation` shows it);
+   resuming a preparation after a power cut is still out of scope.
+4. Not shown: a physical disk, and more than 23 GB of data (#86).

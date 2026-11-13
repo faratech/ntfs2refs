@@ -51,7 +51,7 @@ that ReFS lacks the feature.
 | Named `$DATA` streams can exist on both files and directories; enumeration distinguishes no streams from unsupported enumeration. [FindFirstStreamW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-findfirststreamw) | Preserve raw names, contents, lengths, initialization and allocation for every stream. Default-stream hashing is insufficient. Refuse ADS initially; enumerate directory ADS too. |
 | Reparse tags identify opaque data and associated filter behavior. [Reparse points](https://learn.microsoft.com/en-us/windows/win32/fileio/reparse-points) | Open without following; inventory tag/data and required provider. Qualify each tag separately, including path/volume-identity translation. Never silently dereference a link or hydrate a placeholder into an ordinary file. Initially refuse reparse objects. |
 | Handle-based security queries return owner, group, DACL and SACL; SACL access needs the caller's security privilege. Concurrent descriptor changes are not handled automatically. [GetSecurityInfo](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-getsecurityinfo) | Freeze objects; retain SID values, ACE order, inheritance/protection controls and absent/null/empty distinctions. Unreadable SACL is unknown, not absent. Recheck after final namespace creation. Limit privileges to the converter's process and restore them. |
-| Names, timestamps and attributes are separately observable metadata; ordinary inspection changed NTFS access times in our [fixture experiments](../native-retained-fixture.md). | Preserve exact UTF-16 namespace and all admitted metadata; detect case/normalization collisions before creation. Keep observation nonmutating through the reviewed per-handle policy. Refuse unsupported attributes, EAs and ambiguous names; never substitute inherited defaults. |
+| Names, timestamps and attributes are separately observable metadata; ordinary inspection changed NTFS access times in our [fixture experiments](../history/native-retained-fixture.md). | Preserve exact UTF-16 namespace and all admitted metadata; detect case/normalization collisions before creation. Keep observation nonmutating through the reviewed per-handle policy. Refuse unsupported attributes, EAs and ambiguous names; never substitute inherited defaults. |
 | Sparse files and Sparse VDL are distinct from allocation/EOF. Cached and device-valid regions have different definitions. [FILE_REGION_INFO](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-file_region_info) | Preserve logical zeros, holes, EOF and validity semantics; do not expose stale allocation. Initially admit only the fully initialized profile with independent logical/raw-byte correspondence. Refuse unresolved sparse/negative mappings. |
 | NTFS compression and ReFS compression use distinct documented interfaces/algorithms, above. | Raw compressed NTFS runs cannot be assumed usable as ordinary ReFS payload. Refuse until decode/re-encode semantics and extra space are planned and tested; preserve requested behavior explicitly. |
 | ReFS filesystem encryption is version-qualified; BitLocker is a separate feature in the overview. | Refuse EFS until key/recipient metadata, authenticated access and raw-versus-plaintext semantics are qualified on the actual target. Refuse protected/locked volume layouts outside the admitted profile. Never silently decrypt as “preservation.” |
@@ -98,7 +98,7 @@ returned start/coverage and meaningful bits; do not turn buffer padding into
 coverage. Our build accepted the 16-byte EX input, but that observation is not
 all-build qualification. At original NTFS LCN6263, archived ReFS legacy bits are
 free while metadata-inclusive bits are used: a concrete reason to refuse forced
-placement there. [Pinned evidence and calculation](../bounded-converter-next-step.md).
+placement there. [Pinned evidence and calculation](../history/bounded-converter-next-step.md).
 
 ReFS block cloning requires both files on the **same ReFS volume**, cluster-aligned
 ranges and matching integrity settings; it creates shared allocation with
@@ -123,7 +123,7 @@ checksums. [Integrity streams](https://learn.microsoft.com/en-us/windows-server/
 `FSCTL_QUERY_FILE_REGIONS` has filesystem-specific desired-usage requirements in
 [MS-FSA](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/acadee02-c40d-4f73-92d0-0f10e866e11f).
 Do not demand an unsupported NTFS storage query and then invent its answer. Our
-[remount observation](../native-vdl-observation.md) measured cached-valid 64 KiB,
+[remount observation](../history/native-vdl-observation.md) measured cached-valid 64 KiB,
 storage-invalid 64 KiB and a partly unresolved map, so allocation success alone
 never admits a retained range. Current initialized-source and shadow evidence
 remain separate, strict contracts.
@@ -137,6 +137,6 @@ budget shadow payload plus durable pre/postimage journal space. Refuse incomplet
 inventory, unknown metadata/owners, incompatible semantics and insufficient space.
 After reconstruction, verify the admitted contracts through a fresh native
 read-only mount; a whole-volume hash before mount is not a substitute for those
-checks. See the [bounded next increment](../bounded-converter-next-step.md) and
+checks. See the [bounded next increment](../history/bounded-converter-next-step.md) and
 [architecture obligations](conversion-architecture.md). These requirements do
 not expand the present single-fixture conversion qualification.

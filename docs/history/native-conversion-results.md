@@ -61,7 +61,7 @@ The clean reboot/remount and controlled native allocation/mutation workload
 passed as recorded below. Native power loss, journal recovery, large tree growth,
 post-mutation reboot/allocation and arbitrary-source admission remain
 unqualified. The current construction uses metadata produced in a native ReFS
-shadow; [REFSNT writer evaluation](research/refsnt-writer-evaluation.md) is a
+shadow; [REFSNT writer evaluation](../research/refsnt-writer-evaluation.md) is a
 separate research path. These results do not establish a general no-recopy or
 low-scratch converter, and boot conversion remains deferred.
 

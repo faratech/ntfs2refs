@@ -35,14 +35,14 @@ installation has not yet been shown booting from its converted original disk.
 | Journal preparation | One held capture witness covers the nested preparation calls. Full opening and error-safe closing checks replace seven full capture checks with two; source/target, offset/layout, independent journal readback and sealing remain. |
 
 The first batch passed the focused component check recorded in
-[`performance-resume-integrated-build-20261109.json`](../evidence/performance-resume-integrated-build-20261109.json).
+[`performance-resume-integrated-build-20261109.json`](../../evidence/performance-resume-integrated-build-20261109.json).
 The second batch passed the frozen-source component check recorded in
-[`performance-resume-second-build-20261109.json`](../evidence/performance-resume-second-build-20261109.json)
+[`performance-resume-second-build-20261109.json`](../../evidence/performance-resume-second-build-20261109.json)
 (43.16 seconds, shared target reused, all recorded source hashes unchanged).
 No new unit-test suite
 or competing VM benchmark was started. The mixed-metadata integration passed
 the exact-source check recorded in
-[`native-metadata-resume-build-20261109.json`](../evidence/native-metadata-resume-build-20261109.json)
+[`native-metadata-resume-build-20261109.json`](../../evidence/native-metadata-resume-build-20261109.json)
 (41.69 seconds). It has not yet been exercised in the VM. Interrupted allocation,
 partial carrier transfer and captured-state adoption remain explicit refusals.
 End-to-end native qualification is still required.
@@ -50,7 +50,7 @@ End-to-end native qualification is still required.
 The optimized executable was built from commit `5011c45` using the shared target
 in 332.41 seconds. The saved storage increase was 52,449,892 bytes; no additional
 VM run was launched. The manifest and executable hashes are recorded in
-[`performance-resume-candidate-5011c45.json`](../evidence/performance-resume-candidate-5011c45.json).
+[`performance-resume-candidate-5011c45.json`](../../evidence/performance-resume-candidate-5011c45.json).
 The currently running VM continues with its frozen `1f4f3c9` executable.
 
 Recovered COMPLETE streams use the existing hybrid rule: freshly proven
@@ -75,14 +75,14 @@ files keep their attributes. The Windows read-only access rule is documented in
 | Build reuse is incomplete | The shared target and stable source staging exist, but a changed source contract cleans both project packages, even for a change confined to one package. |
 
 Primary code locations:
-[page reader](../crates/n2r-win32/src/metadata_pages.rs),
-[Expected decoder](../src/shadow_tree/pages.rs),
-[alias creation](../crates/n2r-win32/src/shadow_native/windows_aliases.rs),
-[resume admission](../src/resource_preparation/resume_session_inputs.rs),
-[metadata transition](../crates/n2r-win32/src/shadow_native/private_tree/metadata.rs),
-[cache generation](../src/resource_preparation/resume_checkpoint.rs),
-[provider accounting](../src/drive_staging.rs), and
-[release builder](../lab/Build-ReleaseCandidate.ps1).
+[page reader](../../crates/n2r-win32/src/metadata_pages.rs),
+[Expected decoder](../../src/shadow_tree/pages.rs),
+[alias creation](../../crates/n2r-win32/src/shadow_native/windows_aliases.rs),
+[resume admission](../../src/resource_preparation/resume_session_inputs.rs),
+[metadata transition](../../crates/n2r-win32/src/shadow_native/private_tree/metadata.rs),
+[cache generation](../../src/resource_preparation/resume_checkpoint.rs),
+[provider accounting](../../src/drive_staging.rs), and
+[release builder](../../lab/Build-ReleaseCandidate.ps1).
 
 The current payload-ready receipt is a useful scale reference: 17,174,299,038
 logical bytes, 10,062,319,616 retained at source coordinates, 6,773,952,512 routed
@@ -390,7 +390,7 @@ compared with105,470,433,073 in the earlier case. These are logical transfer
 counters, not physical traffic or a controlled timing comparison. Observed
 native wall time was285.8896735s, versus276.7805697s previously; a speedup has
 not been established. CPU/hash work remains a major cost.
-[Exact native scope and archived pins](../evidence/native-capture-copy-reuse-20261101.json).
+[Exact native scope and archived pins](../../evidence/native-capture-copy-reuse-20261101.json).
 
 That source's free destinations were all canonically zero after fine-grained
 capture, so the planner correctly retained exact-restoration format4. Journal
@@ -409,7 +409,7 @@ The later c2c1ef3 native run qualified that preparation path: it reused another
 Native-verified logical reads were94,053,323,457 bytes. The two construction
 optimizations therefore removed two measured duplicate5.66-GB source passes.
 This remains a logical-I/O result, not a controlled wall-time speedup claim.
-[Exact paired-preparation result and pins](../evidence/native-paired-preparation-copy-reuse-20261101.json).
+[Exact paired-preparation result and pins](../../evidence/native-paired-preparation-copy-reuse-20261101.json).
 
 [NTFS-managed collision preparation](ntfs-owned-preparation.md) is now implemented
 for the explicit scratch-minimizing mode. The scoped native run moved5.64GB
@@ -432,7 +432,7 @@ Actual journal format wasN2RFRE01 with402,669,568 hash-only free bytes and a
 mount, with scoped free-space rollback semantics. Native interruption/Resume/
 Rollback still require separate qualification. The result is preserved at051b650a;
 the older unprepared31d7 checkpoint was retired after verifying both archives.
-[Exact result and pins](../evidence/prepared-source-performance-native-20261101.json).
+[Exact result and pins](../../evidence/prepared-source-performance-native-20261101.json).
 
 ## Closing-buffer reuse candidate
 
@@ -457,7 +457,7 @@ bytes and checked6,048,186,368 zero bytes each. Native-verified logical reads we
 The epochs/cache conditions were not controlled. Source/copy-verified87-file
 metadata archive and checkpointf8f7db07 preserve the result. This does not qualify
 the later directory-case runtime or its recovery matrix.
-[Exact measured scope and pins](../evidence/closing-buffer-native-20261101.json).
+[Exact measured scope and pins](../../evidence/closing-buffer-native-20261101.json).
 
 ## Source-free recovery storage
 
@@ -552,7 +552,7 @@ Primary contracts: [snapshot presence](https://learn.microsoft.com/windows/win32
 
 ## Current evidence and remaining work
 
-[Recorded scope, artifact pins and results](../evidence/native-shadow-performance-20261101.json).
+[Recorded scope, artifact pins and results](../../evidence/native-shadow-performance-20261101.json).
 
 Focused builds and owned ordinary-file experiments cover the new format5 and
 existing legacy copy/old-zero encoding. Native capture-read reuse and clean
@@ -625,7 +625,7 @@ Overall observer-close reads fell by 9,989,575,064 bytes, while writes rose by
 431,350,092 bytes. Runtime increased by 65.010655 seconds versus f856, so this
 run establishes a read reduction, not a wall-clock speedup. The counts are
 logical process transfers, not physical storage I/O or exact final counters.
-See [the recorded result](../evidence/public-resource-read-reuse-20261103.json).
+See [the recorded result](../../evidence/public-resource-read-reuse-20261103.json).
 
 The next change applies the same scoped opening/closing pattern to publication
 of independent recovery-copy files. It retains both complete owner/journal
@@ -663,5 +663,5 @@ journal; the subsequent normal HND recovery exited zero without raw replay.
 Retained regular-file allocation after reboot was 1,227,365,280 bytes, including
 the 185,135,104-byte journal and 824,180,736-byte shadow. This is not peak scratch
 and excludes global filesystem/directory overhead. See
-[the exact result and limits](../evidence/public-resource-cng-20261103.json).
+[the exact result and limits](../../evidence/public-resource-cng-20261103.json).
 Interrupted AP resume/rollback still need this exact candidate's own cases.

@@ -11,7 +11,7 @@ SHA-256 readback without permission repair.
 The run took 80.59 seconds on this VM. It is not a controlled performance
 comparison. After reboot, all file IDs and data mappings matched the converted
 state; all 25 kernel/API descriptor buffers also matched byte-for-byte.
-See [the native evidence](../evidence/security-native-conversion-20261031.json).
+See [the native evidence](../../evidence/security-native-conversion-20261031.json).
 Mutation, interruption/recovery, physical power loss and broader ACE/geometry
 combinations remain unqualified for this exact build.
 

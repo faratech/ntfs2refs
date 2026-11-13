@@ -84,14 +84,14 @@ native stream reads and reconciled the1084-object namespace/security model.
 The prepared NTFS source/empty-shadow state is saved ascb802669. Wrapper path,
 UTF8 and PS5 array-decoding failures are retained; their completion helpers only
 read files and never repeated a move. See the
-[exact evidence and artifact pins](../evidence/ntfs-owned-preparation-native-20261101.json).
+[exact evidence and artifact pins](../../evidence/ntfs-owned-preparation-native-20261101.json).
 
 The subsequent conversion passed through native ReFS and all811 independent
 hashes. Its journal was131,301,000 bytes versus5,773,273,160 previously; source-free
 format5 avoided storing402,669,568 free bytes, using1,572,928 hash-table bytes.
 Native wall time was62.2871679s after18.5202009s NTFS preparation. These observations
 exclude full lab baseline/observer work and are not a controlled physical-I/O
-benchmark. See [conversion evidence](../evidence/prepared-source-performance-native-20261101.json).
+benchmark. See [conversion evidence](../../evidence/prepared-source-performance-native-20261101.json).
 
 The versioned `Start-PreparedSourcePerformanceExperiment.ps1` uses that prepared
 checkpoint, its newly captured full baseline and the same owned empty shadow.

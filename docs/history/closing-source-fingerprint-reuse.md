@@ -25,7 +25,7 @@ Clean runtimef69614b subsequently passed the actual public conversion and all811
 independent logical hashes/1084 objects. Its closing pass checked123539456 bytes:
 113623040 came from actual old-source capture buffers and9916416 were separately
 read gaps. The recorded gap buffer was4194304 bytes and the canonical fingerprint
-matched before proof release. See [the native case](../evidence/cleanf696-public-native-20261102.json).
+matched before proof release. See [the native case](../../evidence/cleanf696-public-native-20261102.json).
 Native wall time was113.1028816 seconds including385 NTFS moves; this is one run,
 not a controlled physical-I/O or speedup comparison. Journal plus literal storage
 was186955512 bytes, excluding other shadow backing and lab evidence.

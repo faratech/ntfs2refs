@@ -32,5 +32,5 @@ release builds pass. Sealed `cc6cd28` now passed one normal F: case: native0/HND
 Plans/formatter metadata differ slightly; this is logical accounting, not a
 controlled speed or physical-I/O result. Mixed-state recovery, arbitrary faults
 and power loss remain outside this qualification. Later aggregate-SHA and V3
-builds were not used. [Native evidence](../evidence/mixed-exact-journal-native-20261031.json).
+builds were not used. [Native evidence](../../evidence/mixed-exact-journal-native-20261031.json).
 No unit tests were added or run.

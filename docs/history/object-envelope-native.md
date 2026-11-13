@@ -61,4 +61,4 @@ within the fixed epoch. Only reviewed obsolete `ecd548f8` and `ce9b92c2` were
 removed through Hyper-V; all host evidence/baselines remain.
 
 No unit tests, recovery, mutation, arbitrary interruption or power-loss
-qualification is claimed. [Evidence and artifact pins](../evidence/object-envelope-native-20261031.json).
+qualification is claimed. [Evidence and artifact pins](../../evidence/object-envelope-native-20261031.json).

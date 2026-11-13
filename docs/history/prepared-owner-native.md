@@ -52,4 +52,4 @@ unchanged budget. Only obsolete `1c75c73f` was removed through Hyper-V after its
 archive/dependency verification; all host evidence and the recovery matrix
 branches remain preserved.
 
-[Exact pins, phase timestamps and final state](../evidence/prepared-owner-native-20261031.json).
+[Exact pins, phase timestamps and final state](../../evidence/prepared-owner-native-20261031.json).

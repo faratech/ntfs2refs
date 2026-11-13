@@ -41,13 +41,13 @@ execution and shutdown, within its 6 GiB forecast. Earlier allocation samples
 were smaller; they are neither a peak nor a hard quota. This is a lab-case
 cost, not a conversion scratch estimate.
 
-Use the included [README](../userdocs/experimental-aef-candidate.md) for selection,
+Use the included [README](../../userdocs/experimental-aef-candidate.md) for selection,
 conversion and recovery commands. Preserve independent backups and the exact
 recovery directory/checksum printed by each operation. Conversion runs on the
 machine owning the disk; Hyper-V is test infrastructure.
 
-The [qualification](../evidence/public-aef-experimental-qualification-20261104.json)
-and [package record](../evidence/public-aef-experimental-package-20261104.json)
+The [qualification](../../evidence/public-aef-experimental-qualification-20261104.json)
+and [package record](../../evidence/public-aef-experimental-package-20261104.json)
 bind the unchanged executable and all case receipts. Boot/system conversion,
 data partitions sharing the running Windows disk, arbitrary geometry/features,
 physical power loss and actual ENOSPC/write/flush failures remain outside this

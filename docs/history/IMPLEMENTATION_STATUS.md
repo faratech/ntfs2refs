@@ -1,11 +1,11 @@
 <!-- Current release closeout -->
-> This file is a historical implementation log. The current Windows boot-volume alpha and its evidence are documented in [release qualification](docs/release-0.0.1-alpha.md) and [AGENTS.md](AGENTS.md). Older pending statements below retain their original dates and do not override the current release.
+> This file is a historical implementation log. The current Windows boot-volume alpha and its evidence are documented in [release qualification](release-0.0.1-alpha.md) and [AGENTS.md](../../AGENTS.md). Older pending statements below retain their original dates and do not override the current release.
 
 # Implementation handoff
 
 Current bounded evidence is recorded in
-[`evidence/qualification-registry.json`](evidence/qualification-registry.json)
-and [the native results](docs/general-native-conversion-results.md). Public
+[`evidence/qualification-registry.json`](../../evidence/qualification-registry.json)
+and [the native results](general-native-conversion-results.md). Public
 conversion of a fourteen-object tree passed integrated protected admission,
 automatic source-label restoration and a separate strict native check, retaining
 a normally allocated 128 MiB extent after synthetic allocation history. The
@@ -42,7 +42,7 @@ now has an actual post-lock/dismount source basis. The Rust helper persists
 offline/read-only exclusion, hashes and inspects the owning device, verifies
 backups and revalidates the complete source. A clean guest restart preserved
 exclusion, full hash and byte-identical inspection. No source extent was moved.
-See [native source-freeze evidence](docs/native-ntfs-source-freeze.md).
+See [native source-freeze evidence](native-ntfs-source-freeze.md).
 Native read-only NTFS observation then matched every user stream, extent and
 directory. All seven non-root user objects and root have matching stored/kernel
 and API security views. Read-only CHKDSK passed; the source remained byte-identical.
@@ -56,12 +56,12 @@ The workspace passes 388 tests with five ignored, formatting/clippy and 19 lab
 guards. Seven archive rejection cases pass without touching source artifacts.
 
 Previous implementation: P0 logical-stream verification is finished and committed
-at `8935e11`; [native evidence](docs/native-ntfs-logical-data.md) covers all eight
+at `8935e11`; [native evidence](native-ntfs-logical-data.md) covers all eight
 fixture streams with the protected source unchanged. Native schema 5 now adds
 directory enumeration and exact name/reference reconciliation. The fixture
 directory's eight names match; root enumeration omits reserved NTFS names and
 two internal directories refuse opens. These remain explicit, with no blanket
-metadata exemption. See [source-admission progress](docs/source-admission-progress.md).
+metadata exemption. See [source-admission progress](source-admission-progress.md).
 The single read-only policy assessment recognizes 27 internal roles and reports
 nine root/user-object refusals on the deliberately broad control corpus. Actual
 source reads verify its backup boot sector and all four mirrored MFT records.
@@ -80,7 +80,7 @@ The whole 262,143-cluster bitmap matches the raw ownership ledger. Sixteen
 queryable identities match 13 data streams, including every fixture object and
 all eight fixture data streams. Native refusals remain explicit; whole-corpus
 admission and general conversion are still false. See
-[stream evidence](docs/native-ntfs-stream-attestation.md).
+[stream evidence](native-ntfs-stream-attestation.md).
 The final collector/host/native/comparison hashes are
 `7f91c70e7356eefba48d1905be19999694ab4dc8b6153144b881bbf4b691c31c`,
 `e4b62cbd35411fb9f7ac9e6e847a62cc3a885365d7e561c731a20e409015c235`,
@@ -101,7 +101,7 @@ descriptors matched the raw model. Thirteen `GetSecurityInfo` views differed in
 inheritance flags, and root last-access time changed in cache while the raw
 partition hash stayed unchanged. Those differences and system-record refusals
 remain explicit; the final strict comparator accepts only two complete records.
-See [native source observations](docs/native-ntfs-file-attestation.md).
+See [native source observations](native-ntfs-file-attestation.md).
 The final host/native/comparison hashes are respectively
 `83c11a16a7d0cf368c08f06e756467bd4bc70151939dc7631f4cf9605f5e543f`,
 `d9d27b87bf283dfebc60fe62d52c68e292a83c8ed31cc8c4132433c7ddabd519`,
@@ -118,7 +118,7 @@ mirrors/hashes, SII/SDH indexes and central/legacy descriptor bindings. The
 empty/populated native captures resolve 11/14 descriptors across 28/36 MFT
 records. Windows buffer validation agrees on 28/44 ACEs in PowerShell 5/7.
 Namespace, allocation and security raw models all reconcile on both images.
-See [security evidence](docs/ntfs-security-reconciliation.md). The workspace
+See [security evidence](ntfs-security-reconciliation.md). The workspace
 passes 296 tests with five ignored, plus formatting and clippy. Evidence is
 under ignored `.lab/development/security-observation-20261024T130105835Z`,
 summary SHA-256 `3d2c7539c0ba8b03b2d7b71a0bb422bb76e0bc4e10e2ae1eac78a46b759f9e2a`.
@@ -136,7 +136,7 @@ root/allocation pages, bitmap reachability, USA fixups, B-tree key order,
 MFT/index membership and sequence references, link counts and root reachability.
 The empty/populated native NTFS captures reconcile 24/33 entries respectively;
 their raw allocation models also reconcile. See
-[namespace evidence and limits](docs/ntfs-namespace-reconciliation.md).
+[namespace evidence and limits](ntfs-namespace-reconciliation.md).
 At that milestone 32 new tests brought the workspace to 256 with five ignored,
 plus clippy with warnings denied and formatting checks. General admission
 still needs native enumeration/identity and allocation cross-checks, security
@@ -158,7 +158,7 @@ checks and archive validation pass in PowerShell 5/7. No Rust source changed.
 Outcome checkpoint `751d896d-6d03-4efb-9530-e5dc209ed0ba` is named
 `converted-allocation-9f1bc0d1cb444fcc8390e263ff38e96d`. The VM is off at 4 GiB
 on installed-clean, with no unknown operation/session. See
-[native results](docs/native-conversion-results.md) for pins and failed-case
+[native results](native-conversion-results.md) for pins and failed-case
 dispositions. Next qualify native interruption/recovery and allocation after
 another reboot; arbitrary-source admission and general conversion remain open.
 
@@ -190,7 +190,7 @@ Latest verified state: 224 ordinary Rust tests pass across the workspace, with
 five explicitly ignored native/child-process tests. The raw NTFS inspector now
 reconciles a bounded attribute ownership model with initialized bitmap bytes;
 this remains diagnostic and does not grant source admission. See
-[allocation reconciliation](docs/ntfs-allocation-reconciliation.md). The
+[allocation reconciliation](ntfs-allocation-reconciliation.md). The
 new journal core contains actual old/new payloads, pinned recovery and a durable
 handoff barrier; file-based interruption/recovery tests pass. The bounded native
 adapter and `lab-native-probe` now also passed both complete native phases in
@@ -231,7 +231,7 @@ converted checkpoint is `e7fda999-ad2e-4792-9011-e9b4fdaebf21`, named
 at4GiB on installed-clean. No operation/session remains live or unknown.
 The guest used the original frozen release; the224-test development build is in
 a separate ignored target directory. See the
-[native conversion result](docs/native-conversion-results.md) for scope and
+[native conversion result](native-conversion-results.md) for scope and
 remaining clean-remount, mutation, recovery and general-admission work.
 Earlier, the target's offline state survived restart, but the original shadow
 reattachment profile surfaced its fresh device online/read-write and was refused.
@@ -306,7 +306,7 @@ ReFS observation all passed the prepared fixture.
 The completed probe and its source pins remain unchanged.
 Failed branches/evidence are preserved; consult the latest host-result and
 failure-preservation records for live state. See
-[preparation measurements](docs/retained-preparation-results.md). Native journal
+[preparation measurements](retained-preparation-results.md). Native journal
 integration and its explicit CLI exist with file-tested recovery, but have not
 run against a guest device. Release artifacts and source pins are archived in
 `.lab/builds/release-20261024T025141160Z.json`; neither CLI performs an automatic
@@ -408,7 +408,7 @@ online transition.
    not no-copy adoption of NTFS payload.
 3. Evaluate zero-VDL placement and guest-created native shadow metadata behind
    the bounded-space, address, coverage and reconstruction gates in
-   `docs/native-allocation-feasibility.md`. Native formatting is confined to
+   `docs/history/native-allocation-feasibility.md`. Native formatting is confined to
    scratch; the original NTFS conversion target must never be formatted.
 4. Implement same-partition conversion/recovery only after metadata completeness,
    collision planning and journal behavior are qualified. Boot work is deferred.
@@ -478,12 +478,12 @@ Ordinary ReFS Format-Volume refused both the 1 GiB data control and the
 No ReFS boot was attempted. OS-preparation evidence is in
 `refs-boot/win11-20261023T214143830Z`. Every completed case exported evidence,
 shut down cleanly and restored installed-clean; the VM is off at baseline.
-See `docs/lab-results.md` for hashes, limitations and source-update provenance.
+See `docs/history/lab-results.md` for hashes, limitations and source-update provenance.
 
 Do not rerun Complete-LabBaseline against its now-complete state. Native
 allocation APIs are a researched alternative to a handwritten writer, but
 arbitrary placement/physical mapping/bounded shadow metadata remain unproven;
-see `docs/native-allocation-feasibility.md`. No conversion writes are enabled.
+see `docs/history/native-allocation-feasibility.md`. No conversion writes are enabled.
 
 `NativeDevDrive` completed successfully: `devdrive/win11-20261023T230635404Z`.
 Native guest formatting produced ReFS 3.14, 4 KiB clusters. Both 4 MiB and 61-byte
@@ -513,7 +513,7 @@ established. New `analysis-20261023T233638844Z/evidence-validation.json` binds
 sample to the completed capture. It confirms the sampled offset 6,174,015,488;
 original provisional/discovery records remain unchanged. Validation read only
 4,289,024 raw bytes and did not rehash the image or access the fixed VHD.
-See `docs/lab-results.md` for its hash and limits. These are lab analysis results;
+See `docs/history/lab-results.md` for its hash and limits. These are lab analysis results;
 real conversion stays inside the target machine.
 
 Native initialized-file placement completed at 2026-10-24 00:06:09 UTC under
@@ -527,7 +527,7 @@ checks in PowerShell 5 and 7; guest probe tests pass 82. This measures initializ
 native movement only: raw destination matching, zero-VDL movement, payload-copy
 avoidance, metadata adoption and conversion remain unqualified. The next proposed
 read-only measurement reads the old and new 64 KiB ranges inside the guest and
-checks the old range's current free state. See `docs/native-range-read-design.md`
+checks the old range's current free state. See `docs/history/native-range-read-design.md`
 before implementation.
 
 The preceding Rust release includes conservative NTFS metadata ancestry, bounded
@@ -588,7 +588,7 @@ native test, fmt and Clippy pass. Root reviewed and rebuilt the release, with
 conversion/writer/recovery capability flags still false. Provenance:
 `.lab/builds/release-20261024T004943649Z.json`; main binary SHA-256
 `31c34c786ce229d8988783c47a3e0b872669fbc79cfa43292c84738db256a7d0`.
-See `docs/refs-virtual-roots.md` for the exact profile and bounds.
+See `docs/history/refs-virtual-roots.md` for the exact profile and bounds.
 
 `NativeVdlObservation` completed at 2026-10-24 01:02:11 UTC under
 `vdl-observation/win11-20261024T010103919Z`. The metadata-only observer opened
@@ -621,7 +621,7 @@ unchanged, with failed-branch checkpoint `1195b3f6-b1ba-4b64-84b2-4f657e2b0166`.
 A fresh read-only inspection and reviewed clean shutdown preceded baseline
 restoration. The narrow fix has actual Windows file-handle regression coverage;
 247 guest and 251 host checks pass in PS5/PS7. No metadata writer, payload-copy
-avoidance or conversion gate is promoted. See `docs/native-protected-range-read.md`.
+avoidance or conversion gate is promoted. See `docs/history/native-protected-range-read.md`.
 
 The release at 2026-10-24 01:30 UTC adds `retained_compare.rs` and the
 `compare-retained` CLI. It pins complete source/shadow images and every retained
@@ -639,8 +639,8 @@ Fmt and Clippy pass. Root and an independent agent reviewed the changes, and
 root built and smoke-checked the release. Provenance record:
 `.lab/builds/release-20261024T013013347Z.json`; main executable SHA-256
 `a3d3f0ca1c00e01ee481811eac81d3f592f829367e25e20140a10a1437a1155f`.
-See `docs/retained-range-comparison.md` and the finite native fixture design in
-`docs/next-extent-preservation-milestone.md`.
+See `docs/history/retained-range-comparison.md` and the finite native fixture design in
+`docs/history/next-extent-preservation-milestone.md`.
 
 `RustRetainedCompare` completed at 2026-10-24 01:39:57 UTC under
 `retained-compare/win11-20261024T013857976Z`, run

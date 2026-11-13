@@ -6,7 +6,7 @@ An experimental Rust NTFS-to-ReFS converter for data volumes, with a Hyper-V
 laboratory. Conversion runs on the Windows machine owning the disk; the program
 does not require a hypervisor. Windows OS-volume and boot conversion remain deferred.
 
-The [frozen resource-bounded alpha](docs/frozen-resource-alpha-20261104.md)
+The [frozen resource-bounded alpha](docs/history/frozen-resource-alpha-20261104.md)
 is now packaged from unchanged source `814f380`. That exact executable passed
 conversion, mutation/reboot readback, separately restarted resume and rollback,
 preparation cancellation, and the recorded refusal cases. Independent checks
@@ -16,7 +16,7 @@ and [exact qualification scope](evidence/frozen-resource-alpha-814-qualification
 It remains experimental: dedicated nonboot data disks only, with broader
 hardware, feature, size and power-loss qualification still open.
 
-The [frozen 2026-10-29 drive alpha](docs/frozen-drive-alpha-20261029.md) passed
+The [frozen 2026-10-29 drive alpha](docs/history/frozen-drive-alpha-20261029.md) passed
 normal conversion, ordinary file mutation and reboot readback on its 52 GiB
 fixture: 15 objects and all 10 file hashes matched. Its exact executable and
 qualification limits are pinned separately from later development builds.
@@ -30,9 +30,9 @@ The current default uses allocation-bounded capture and payload retention;
 `--whole-image-verification` selects the earlier whole-image path. Repeated
 allocated-range reads, backend/geometry limits and relocation costs remain, so
 this is not yet a metadata-proportional, arbitrary-volume release. See the
-[current performance and compatibility limits](docs/release-0.0.1-readiness.md).
+[current performance and compatibility limits](docs/history/release-0.0.1-readiness.md).
 
-The [NTFS compatibility comparison](docs/ntfs-compatibility-comparison-20261030.md)
+The [NTFS compatibility comparison](docs/history/ntfs-compatibility-comparison-20261030.md)
 separates our native results and remaining gaps from ntfs2btrfs, btrfs-convert,
 fstransform and NTFS-3G. No tool in that comparison establishes universal,
 lossless NTFS-to-ReFS compatibility.
@@ -54,20 +54,20 @@ support; see the [pinned evidence](evidence/attribute-list-native-conversion-202
 Bounded Windows extended attributes now survive conversion and reboot too:
 seven EAs across four file/directory identities, including binary data, an
 8 KiB value and `FILE_NEED_EA`. All 17 objects, 19 stream hashes and existing
-data mappings matched after boot. See the [EA contract](docs/ntfs-extended-attributes.md)
+data mappings matched after boot. See the [EA contract](docs/history/ntfs-extended-attributes.md)
 and [native evidence](evidence/ea-native-conversion-20261031.json).
 
 Security preservation now includes audit SACLs, integrity labels, inherited
 auditing, null DACLs and empty DACLs. Conversion and reboot readback passed on
 the combined 25-object fixture, with 26 matching stream hashes and independent
-security-file hashes. See the [security contract](docs/ntfs-security-preservation.md)
+security-file hashes. See the [security contract](docs/history/ntfs-security-preservation.md)
 and [scoped evidence](evidence/security-native-conversion-20261031.json).
 
 Relative/absolute symbolic links and junctions now survive conversion and
 reboot in the combined 36-object fixture. Six exact point buffers and tags
 matched, four known routes resolved correctly, and dangling/cyclic links were
 inventoried without traversal. All 32 stream hashes matched. See the
-[reparse contract](docs/ntfs-reparse-preservation.md) and
+[reparse contract](docs/history/ntfs-reparse-preservation.md) and
 [native evidence](evidence/reparse-native-conversion-20261031.json).
 
 Reusing bitmap evidence and phase planners reduced the same fragmented fixture
@@ -126,8 +126,8 @@ count does not establish payload-independent scratch for arbitrary nonzero data.
 The frozen laboratory path has since passed same-build interruption, resume
 and rollback. Newer managed staging has passed typed reboot recovery in both
 directions and the public bundle Resume described above. Exact binaries and
-scopes remain separate; see the [build provenance](docs/experimental-build-provenance.md)
-and [pinned results](docs/native-composite-experimental.md).
+scopes remain separate; see the [build provenance](docs/history/experimental-build-provenance.md)
+and [pinned results](docs/history/native-composite-experimental.md).
 
 **The public Rust CLI converted a fourteen-object tree on its original 52 GiB
 partition while retaining a normally allocated 128 MiB payload extent.**
@@ -142,7 +142,7 @@ Shadow initialization remained payload-proportional; allocated scratch and full
 process I/O were not measured. A bounded native mutation workload, strict
 fourteen-object verification afterward and strict verification after clean
 reboot also passed. The original 128 MiB mapping/hash and source label survived
-with the shadow absent. See the [exact result and limits](docs/general-native-conversion-results.md#public-fourteen-object-conversion-with-a-retained-128-mib-extent).
+with the shadow absent. See the [exact result and limits](docs/history/general-native-conversion-results.md#public-fourteen-object-conversion-with-a-retained-128-mib-extent).
 
 The earlier twelve-object public run relocated every ordinary payload and
 retained zero bytes; its strict native/reboot result remains separately pinned.
@@ -151,25 +151,25 @@ retained zero bytes; its strict native/reboot result remains separately pinned.
 The same partition became readable through Microsoft's ReFS driver while the
 64 KiB payload extent stayed unchanged. A clean reboot/remount and a native
 50 MiB create/grow/truncate/rename/delete workload also passed. See the
-[native result and its limits](docs/native-conversion-results.md).
+[native result and its limits](docs/history/native-conversion-results.md).
 **An existing four-file tree has now also converted on its original partition.**
 Microsoft's ReFS driver matched all file contents, names, stored timestamps and
 permissions. The source extents were never prearranged; all four payload ranges
 required relocation because they conflicted with ReFS metadata. See the
-[tree conversion result and its limits](docs/tree-conversion-results.md).
+[tree conversion result and its limits](docs/history/tree-conversion-results.md).
 The Windows executable now exposes an experimental
 [owning-machine conversion and recovery CLI](docs/cli-workflow.md). Conversion
 requires live source/target qualification and an independent journal; image
 feasibility plans remain non-executable. The current profile is bounded and
 boot volumes remain excluded.
-The [source-label path](docs/source-volume-label.md) passed fresh capture,
+The [source-label path](docs/history/source-volume-label.md) passed fresh capture,
 frozen reconciliation and automatic finalization in the fourteen-object run.
 Separate native-only completion, repetition and reboot passed earlier on the
 twelve-object tree; that command does not replay the raw journal.
-Admission now requires [protected target semantics](docs/protected-target-semantics.md)
+Admission now requires [protected target semantics](docs/history/protected-target-semantics.md)
 on the exact frozen image. Equal complete hashes across protected observation
 passed both the earlier helper check and the fresh full conversion. Public
-[operation state and preactivation cancel](docs/public-cancel-and-operation-state.md)
+[operation state and preactivation cancel](docs/history/public-cancel-and-operation-state.md)
 and explicit shadowless rollback are implemented; positive native recovery
 qualification is recorded separately from unit tests. Public preactivation
 cancellation passed on the 52 GiB fixture. Public `rollback --without-shadow`
@@ -179,36 +179,36 @@ the original mount/label and four known user files. Those four files and
 original availability also matched after a clean reboot; complete postboot
 metadata/security semantics were not rechecked. This is one process-fault
 case; storage power-loss and broader interruption coverage remain open.
-The [general guest conversion result](docs/general-native-conversion-results.md)
+The [general guest conversion result](docs/history/general-native-conversion-results.md)
 records a separate successful same-partition run, post-handoff mutation and
 reboot, with its current source-admission and retained-extent limits.
-The inspector now reconciles [raw NTFS directory indexes and MFT names](docs/ntfs-namespace-reconciliation.md)
+The inspector now reconciles [raw NTFS directory indexes and MFT names](docs/history/ntfs-namespace-reconciliation.md)
 on its initial profile, alongside allocation ownership diagnostics.
-It also resolves [central and legacy security descriptors](docs/ntfs-security-reconciliation.md),
+It also resolves [central and legacy security descriptors](docs/history/ntfs-security-reconciliation.md),
 with independent Windows buffer-parser checks on the native captures.
-The [Rust file-handle collector](docs/native-ntfs-file-attestation.md) now also
+The [Rust file-handle collector](docs/history/native-ntfs-file-attestation.md) now also
 compares those bytes with native queries inside the VM. Kernel descriptors
 matched 16 source objects; API inheritance views and cached root access time
 exposed differences retained in the strict comparison. The
-[paired security-view implementation](docs/paired-security-and-resident-data.md)
+[paired security-view implementation](docs/history/paired-security-and-resident-data.md)
 now records API projections separately and has reproduced both views on native
 ReFS, including the two resident Windows cache files.
-Native [stream/extent and bitmap reconciliation](docs/native-ntfs-stream-attestation.md)
+Native [stream/extent and bitmap reconciliation](docs/history/native-ntfs-stream-attestation.md)
 now matches the full control-volume bitmap and every fixture object's stream
-mapping, including ADS and sparse holes. Native [logical-stream hashing](docs/native-ntfs-logical-data.md)
+mapping, including ADS and sparse holes. Native [logical-stream hashing](docs/history/native-ntfs-logical-data.md)
 also matches every supported fixture stream without changing the protected
 source. The certificate-backed runs issued device-bound certificates with all
 admission gates satisfied and completed its connected journal/cutover path.
-The [source-admission work](docs/source-admission-progress.md) now includes
+The [source-admission work](docs/history/source-admission-progress.md) now includes
 native directory observations, explicit object dispositions and actual backup
 boot/MFT-mirror checks. It reports remaining refusals; an admission certificate
 has not yet been issued for arbitrary existing volumes.
-An [existing four-file tree now has a native post-exclusion source basis](docs/native-ntfs-source-freeze.md),
+An [existing four-file tree now has a native post-exclusion source basis](docs/history/native-ntfs-source-freeze.md),
 verified across restart and read-only Windows inspection. Its physical placement
 was untouched. Same-partition conversion has passed. A separate first-write
 interruption now resumes from the durable journal to a native ReFS mount and
 survives a clean reboot; broader fault injection remains open.
-An [independent native ReFS shadow](docs/existing-tree-shadow.md) now reproduces
+An [independent native ReFS shadow](docs/history/existing-tree-shadow.md) now reproduces
 that tree's contents, all four stored timestamps, permissions and names after a
 clean restart. All four natural source locations conflict with ReFS metadata;
 the diagnostic plan explicitly records relocation of all 512 KiB. The frozen
@@ -288,12 +288,12 @@ Its schema-2 plan includes a schema-4 read-only source-stream classification
 with retained and materialized byte candidates; those estimates do not grant
 write authority or predict final ReFS placement.
 
-The separate [retained-range comparator](docs/retained-range-comparison.md)
+The separate [retained-range comparator](docs/history/retained-range-comparison.md)
 reports every differing sector outside explicitly pinned source ranges and
 hashes the hypothetical reconstructed image. It produces no patch payloads or
-write authority. This supports the [one-extent reconstruction milestone](docs/next-extent-preservation-milestone.md);
+write authority. This supports the [one-extent reconstruction milestone](docs/history/next-extent-preservation-milestone.md);
 the prepared native result is separate from the later live-admission run. The
-[laboratory journal core](docs/lab-reconstruction-journal.md) stores real old/new
+[laboratory journal core](docs/history/lab-reconstruction-journal.md) stores real old/new
 bytes and passes file-based interruption, resume and rollback tests. Its trusted
 ticket, persistent mount exclusion, raw Apply and protected native observation
 passed the prepared fixture. A separate native first-write interruption/resume
@@ -310,8 +310,8 @@ fixture. It can issue bounded raw writes; it is not a general converter. It
 requires pinned requests and independently pinned recovery tickets, preserves
 failure artifacts, and never brings a disk online. Its prepared-fixture
 Prepare/Apply/Handoff path passed; it grants no general converter capability.
-See [the journal contract](docs/lab-reconstruction-journal.md).
-See [the ntfs2btrfs design review](docs/ntfs2btrfs-design-lessons.md) for the
+See [the journal contract](docs/history/lab-reconstruction-journal.md).
+See [the ntfs2btrfs design review](docs/history/ntfs2btrfs-design-lessons.md) for the
 allocation, collision and rollback concepts informing this work.
 The [conversion architecture research](docs/research/conversion-architecture.md)
 connects those concepts to ReFS's different metadata structures. It links the
@@ -322,7 +322,7 @@ The [user-report reconciliation](docs/research/user-report-reconciliation.md)
 checks the supplied research against pinned sources and the current implementation.
 The [REFSNT evaluation](docs/research/refsnt-writer-evaluation.md) identifies its
 extent-adoption primitive and records reproduced read-only corpus results.
-The [native writer control](docs/native-refs-writer-acceptance.md) now distinguishes
+The [native writer control](docs/history/native-refs-writer-acceptance.md) now distinguishes
 the rejected overlay candidate from a separate accepted, unmodified two-file
 reference import. The baseline has no writer overlay or adopted file and does
 not establish writer acceptance, mutation or reboot qualification.
@@ -338,7 +338,7 @@ returning an incomplete result. Supported metadata DATA streams count too. The
 special unflagged `$BadClus:$Bad` layout is explicitly unsupported for hashing;
 its observed flags and extents remain in the report. Hashes do not establish complete metadata
 preservation or allocation ownership.
-The [allocation reconciliation](docs/ntfs-allocation-reconciliation.md) now
+The [allocation reconciliation](docs/history/ntfs-allocation-reconciliation.md) now
 compares decoded physical attribute intervals with the volume bitmap while
 leaving native and semantic source admission as separate requirements.
 
@@ -387,13 +387,13 @@ current build refused a required locked-volume query, so no raw sample qualified
 `NativeProtectedRangeRead` separately establishes disk read-only protection inside
 the guest, checks the mounted allocation maps, and samples two fixed 64 KiB
 ranges under a lock. It retains protection and preserves incomplete runs for
-inspection. See [the protected-read results](docs/native-protected-range-read.md).
+inspection. See [the protected-read results](docs/history/native-protected-range-read.md).
 `NativeVdlProbe` measures valid-data length on the known initialized file, then
 conditionally allocates one private 64 KiB file without payload I/O. It records
 cached and on-disk valid-data regions and preserves any changed test branch.
 `NativeVdlObservation` reopens that saved branch for metadata-only observation
 after remount. The observed ReFS profile has sparse validity; cached and on-disk
-region states differ. See [the validity implications](docs/sparse-validity-implications.md).
+region states differ. See [the validity implications](docs/history/sparse-validity-implications.md).
 `RustRetainedCompare` checks the standalone Rust comparison command inside the
 guest using two new 8 KiB files on its OS volume, verifies the exact report and
 unchanged inputs, exports evidence, and restores the clean baseline.
@@ -418,10 +418,10 @@ partition as destination, and BCDBoot's documented offline servicing option.
   implementation is qualified. Use VM checkpoints afterward.
 - Qualify Server and Windows 11 builds independently with signed boot components.
 
-[Research findings](docs/research.md) distinguish Microsoft documentation from
-reverse-engineering hypotheses. [Qualification gates](docs/format-gates.md)
+[Research findings](docs/history/research.md) distinguish Microsoft documentation from
+reverse-engineering hypotheses. [Qualification gates](docs/history/format-gates.md)
 define the evidence still needed before enabling writes.
-The [measured lab results](docs/lab-results.md) record native captures, stream
+The [measured lab results](docs/history/lab-results.md) record native captures, stream
 comparisons, formatter refusals and their remaining limits.
 
 The recovery test model exercises durable/volatile state, torn writes, reordered

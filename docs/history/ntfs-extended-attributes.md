@@ -12,7 +12,7 @@ and all seven EAs matched. The original fragmented 4 MiB stayed in place.
 The observed runtime was 88.73 seconds; this is not a controlled speed comparison.
 Cold-boot observer `737f994` then verified the same tree, EAs, identities and
 data mappings through the public conversion's pinned read-only bundle inputs.
-See [the native evidence](../evidence/ea-native-conversion-20261031.json).
+See [the native evidence](../../evidence/ea-native-conversion-20261031.json).
 Mutation, interruption/recovery and physical power loss remain unqualified
 for this exact runtime.
 
@@ -32,9 +32,9 @@ for this exact runtime.
   file/directory handle. The complete set must agree with raw NTFS evidence.
   Named DATA-stream handles do not issue file-level EA queries.
 
-See [raw inventory](../src/ntfs_extended_attributes.rs),
-[portable layouts](../crates/n2r-win32/src/extended_attributes.rs), and
-[source comparison](../src/ntfs_attestation.rs).
+See [raw inventory](../../src/ntfs_extended_attributes.rs),
+[portable layouts](../../crates/n2r-win32/src/extended_attributes.rs), and
+[source comparison](../../src/ntfs_attestation.rs).
 
 ## Semantics and native collection
 

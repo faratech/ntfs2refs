@@ -2,7 +2,7 @@
 
 Initial investigation: 2026-10-23. Native differential update: 2026-10-25.
 The initial byte audit below was read-only. The later [controlled per-volume
-policy experiment](research/ntfs-volume-flag-0080.md) used a disposable VM
+policy experiment](../research/ntfs-volume-flag-0080.md) used a disposable VM
 snapshot, confirmed `0x0080 -> 0x0000 -> 0x0080`, restored the policy, and
 returned the VM to its saved recovered ReFS branch.
 

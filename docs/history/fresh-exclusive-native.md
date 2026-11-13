@@ -53,4 +53,4 @@ revalidation; all host evidence and baselines remain.
 
 Case-sensitive-directory and VSS admission remain unimplemented compatibility
 work. No unit tests or broad compatibility/scale/boot qualification is claimed.
-[Evidence and artifact pins](../evidence/fresh-exclusive-native-20261031.json).
+[Evidence and artifact pins](../../evidence/fresh-exclusive-native-20261031.json).

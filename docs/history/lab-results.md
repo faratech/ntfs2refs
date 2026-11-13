@@ -162,7 +162,7 @@ checkpoint was selected, and no child trees or general virtual-to-physical
 translation were traversed. Complete metadata, allocation/refcount ownership
 and filesystem health remain unqualified.
 
-A new [evidence validation record](../.lab/hyperv/corpus/devdrive-20261023T231918797Z/analysis-20261023T233638844Z/evidence-validation.json)
+A new [evidence validation record](../../.lab/hyperv/corpus/devdrive-20261023T231918797Z/analysis-20261023T233638844Z/evidence-validation.json)
 links the completed capture, reader and native evidence. It compared all 36
 provisional bootstrap range entries with the completed raw image and reread
 the 4 MiB payload sample, using 4,289,024 raw-image bytes total. It did not rehash

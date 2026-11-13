@@ -57,5 +57,5 @@ and host free space 66,088,849,408 bytes under the unchanged budget. One invalid
 checkpoint parameter failed before creating a checkpoint; the corrected call
 created the final checkpoint once. It was not a native recovery failure.
 
-[Artifact pins and exact identities](../evidence/envelope-recovery-matrix-20261031.json).
+[Artifact pins and exact identities](../../evidence/envelope-recovery-matrix-20261031.json).
 No unit tests were added or run.

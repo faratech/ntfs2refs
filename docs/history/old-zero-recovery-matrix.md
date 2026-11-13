@@ -58,5 +58,5 @@ A fresh process confirmed Off / RAM 0 / 50 checkpoints at
 2026-11-01T01:50:19.9562642Z. Actual lab usage was 322,376,794,614 bytes and
 host free space 22,809,677,824 bytes under the unchanged budget. Normal `6bef3bd2`,
 interrupted `dea902f6`, resumed `033e05bd` and source branches remain preserved.
-[Exact pins and scope](../evidence/old-zero-recovery-matrix-20261031.json).
+[Exact pins and scope](../../evidence/old-zero-recovery-matrix-20261031.json).
 No unit tests were added or run. Broader scale and compatibility remain unfinished.

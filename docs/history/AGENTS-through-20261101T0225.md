@@ -36,7 +36,7 @@ conflicts faults and runs genuine admission. SourceSome cannot be restored.
 Actual-byte-only capacity samples now include policy/O/projectedJ/combined;
 they remain sampled space observations, not a full rolling-O ledger. Conservative
 rows unchanged. Focused public/fault release build passes (1m04s); new native
-qualification remains pending. See docs/recovery-runtime-compatibility.md.
+qualification remains pending. See docs/history/recovery-runtime-compatibility.md.
 
 The FROZEN e4ff old-zero native matrix is COMPLETE: controlled first flushed
 write exit86, clean restart, public Resume0/HND and separate original-branch
@@ -48,7 +48,7 @@ schema2 prepared owner, positive O=5,587,685,376 and self-contained format4
 J=5,849,731,480<D all passed. Cold shadow6 was absent in both recoveries; no
 attach/rebind. Product Resume checked complete1084 maps plus known157 hashes /
 119009 payload bytes;654 digests stay absent,650 tails/1371388 bytes stay bound.
-See `docs/old-zero-recovery-matrix.md` and its evidence JSON. This does NOT
+See `docs/history/old-zero-recovery-matrix.md` and its evidence JSON. This does NOT
 qualify newer capacity87a or recovery-ownerb88, arbitrary faults or physical loss.
 
 At matrix closure, VM was confirmed fresh at2026-11-01T01:50:19Z: Off/RAM0/50 snapshots,
@@ -81,7 +81,7 @@ Legacy public APIs retain all independent validation. Successful allocation
 recovery reports actual `exclusive_recovery_journal_used=true`, not authority.
 Code-accounted savings for e4ff plan: Resume34,805,884,512 logical J reads and
 Rollback17,402,942,256; no measured/physical-I/O claim. See
-`docs/journal-exclusive-recovery.md`. This is NOT in the frozen e4ff VM binaries.
+`docs/history/journal-exclusive-recovery.md`. This is NOT in the frozen e4ff VM binaries.
 
 New optional capacity-policy implementation is compiled/reviewed, natively
 UNQUALIFIED. `old_zero_actual_bytes_v1` is restricted to fresh schema3 fast
@@ -96,7 +96,7 @@ and partition/ranges. Pinned-request recovery selects it only after full actual
 journal/lifecycle authentication. CLI/binder and omitted policy remain
 conservative; no new mode is enabled in the frozen e4ff VM run. Focused cargo
 check for library/public/fault/binder passed in21.02s, no unit tests. See
-`docs/actual-byte-capacity.md`. A new native experiment is still required.
+`docs/history/actual-byte-capacity.md`. A new native experiment is still required.
 
 CURRENT e4ff old-zero recovery matrix: actual producer5208/birth1793495149312
 exited86 after the first flushed write, no Apply/HND, source1attrs1/shadow6attrs3.
@@ -144,7 +144,7 @@ remain. Actual process reads 105,470,433,073 / writes 17,446,733,391 bytes;
 CPU 253.421875 user / 22.359375 kernel seconds. These are logical counters,
 not physical I/O or a controlled timing comparison. Same grown 8329/fresh f5de/
 growth835: 1,084 objects / 654 absent digests / 650 tails / 1,371,388 bytes.
-See `docs/old-zero-native.md` and `evidence/old-zero-native-20261031.json`.
+See `docs/history/old-zero-native.md` and `evidence/old-zero-native-20261031.json`.
 
 Current VM, confirmed fresh at 2026-11-01T01:00:04Z: Off / RAM 0 / 47 snapshots,
 converted ReFS `6bef3bd2-db31-45fe-9e6c-939c812b7375`, parent clean grown `8329`.
@@ -180,7 +180,7 @@ SHA `44827ea6397d5ead7b5ecd05c9f4a496753a6a871fddafa138f26b9bb36e2ac4`.
 The scoped normal native result above passed; native fault/recovery/mutation
 and physical power loss remain pending for this format. Do not transfer the
 older sealed recovery matrix to this new runtime.
-See `docs/old-zero-journal.md`. No unit tests were added or run.
+See `docs/history/old-zero-journal.md`. No unit tests were added or run.
 
 Before the new native attempt, root removed only obsolete inactive leaves
 `2c964314`, `a18bf3a5`, `acb5449f`, `bb8a6475` through Hyper-V after rehashing
@@ -202,7 +202,7 @@ reads 28,487,536,640 equal `2D + copy + literal + 12,288` marker bytes exactly.
 The avoided duplicate load on this plan is 17,136,951,040 logical bytes. Prior f2
 process reads were 17,144,221,184 bytes higher; differing plans/formatter metadata
 preclude controlled timing or physical-I/O claims. CPU was 270.4375 user /
-26.546875 kernel seconds. See `docs/prepared-owner-native.md` and
+26.546875 kernel seconds. See `docs/history/prepared-owner-native.md` and
 `evidence/prepared-owner-native-20261031.json`.
 
 Current VM, confirmed from a fresh process at 2026-11-01T00:24:16Z: Off / RAM 0 /
@@ -228,10 +228,10 @@ by the lab controllers. Focused library/CLI check, independent review, AST
 parsing, release build and the scoped normal native case above pass. This new
 owner's fault/recovery/mutation/power-loss qualification remains pending; the
 following `07b0164` matrix belongs to its original sealed binaries.
-See `docs/journal-prepared-exclusive-owner.md`. No unit tests.
+See `docs/history/journal-prepared-exclusive-owner.md`. No unit tests.
 
 The grown-tree fresh-exclusive recovery matrix is complete. See
-`docs/envelope-recovery-matrix.md` and
+`docs/history/envelope-recovery-matrix.md` and
 `evidence/envelope-recovery-matrix-20261031.json` for the exact artifact pins.
 The lab fault path uses sealed source `07b0164`, public binary `c11af38e`, and
 fault binary `73e92d3f`. It enters the real V3 planning-None -> admitted-Some,
@@ -311,7 +311,7 @@ free66,124,685,312B insidefixed329,374,052,988B/17,179,869,184B epoch.
 RemovedONLYobsolete42d viaHyperV after69archive+46dependencypins verified;
 ALLhostevidence/baselinesstay. Preservecurrent1c75/eaa/8329,6fe/371,tailmatrix,
 oldint9ce/resume9bb,D1cold d939,f4bf. Evidence: evidence/fresh-exclusive-native-20261031.json;
-docs/fresh-exclusive-native.md. No units. Broadercompatibility/scale/bootgoalactive.
+docs/history/fresh-exclusive-native.md. No units. Broadercompatibility/scale/bootgoalactive.
 
 NEXT (proposal, NOTimplemented): source directory case-flag refusal on actual
 handles before/after, newlive native reports13/14 and gatebeforecertificate;
@@ -333,7 +333,7 @@ read reduction2D is code-path accounting, notphysicalIO. Focused check/release
 and two reviews pass; the scoped f2normal qualification above passed.
 Recovery/faultqualification remainsopen. Includes e6dzerocache; neither was
 used in the earlier qualified f32 below.
-See docs/journal-fresh-exclusive-writes.md. No unit tests.
+See docs/history/journal-fresh-exclusive-writes.md. No unit tests.
 
 The following older milestones/current VM labels are historical; preservation
 and cleanup state above is authoritative.
@@ -377,7 +377,7 @@ free65,217,228,800B staysinsidefixed329,374,052,988B/17,179,869,184B epoch.
 RemovedONLYobsoleteecd548f8+ce9b92c2 viaHyperV after71+43archives/depsrehashed;
 ALLhostevidence/baselinesstay. Preserveeaa/8329/42d,6fe/371,tail3cbc/119/643/fcc,
 oldint9ce/resume9bb,D1cold d939,f4bf. Evidence: evidence/object-envelope-native-20261031.json;
-docs/object-envelope-native.md. No V3/aggregateCPU recovery/mutation/powerloss/
+docs/history/object-envelope-native.md. No V3/aggregateCPU recovery/mutation/powerloss/
 arbitraryfault orlargerscalequalification. Zero-cachee6d78a7 was NOTused and
 remainsfocused-check/review-only, nativelyunqualified. No units. Broadgoalactive.
 
@@ -394,7 +394,7 @@ review and public release build pass; no units. Public9849344B SHA
 includes this V3 and aggregate CPU scheduling. The scoped normal case above
 qualified273directories/811files, not recovery or arbitrary counts. Freshlab
 observers validate exactV3 descriptors withoutmasking profile differences. See
-docs/object-resource-envelope.md. Paged manifests/scale/compatibility stay open.
+docs/history/object-resource-envelope.md. Paged manifests/scale/compatibility stay open.
 
 Aggregate SHA scheduling: selected-side and immutable journal aggregate SHA-256
 updates use the existing bounded digest pipeline on machines with at least three
@@ -404,7 +404,7 @@ are joined before ticket/record publication. Serial fallback stays on smaller
 machines. Focused library/CLI check and independent review pass; the scoped
 f32 normal qualification above passed. Recovery/faultqualification remainsopen.
 It was NOT in sealed cc6cd28. See
-docs/journal-parallel-aggregates.md. No unit tests.
+docs/history/journal-parallel-aggregates.md. No unit tests.
 
 The following older native milestones and former current VM labels are history;
 the current preservation/cleanup state above is authoritative.
@@ -438,7 +438,7 @@ ONEcheckpoint; a freshprocess settledinitialstalecachedparent toactual
 epoch. RemovedONLYobsoletefull78513f35 after57closedfiles+31index/dependencypins
 rehashed; ALLhostbaseline/evidencefilesstay. Keepcurrent42d,mixedecd,6fe/371sources,
 tail3cbc/119/643/fcc,oldint9ce/resume9bb,D1cold d939,f4bf. Evidence:
-evidence/mixed-exact-journal-native-20261031.json; docs/mixed-exact-journal-verification.md.
+evidence/mixed-exact-journal-native-20261031.json; docs/history/mixed-exact-journal-verification.md.
 Three recordedlabaccess-time reconciliations; allothercanonicalmetadataexact,
 productexpectations/timestampsuntouched. No cc6 recovery/mutation/powerloss or
 newCPU/V3qualification transfers. No units; broadergoal remainsunfinished.
@@ -451,8 +451,8 @@ Loader/ticket/plan/payload/footer/immutable checks, bounds, SHAfailures and ever
 barrier stay. Library/CLI/release checks+independentreviewpass; the scopedcc6 F
 normal qualification above passed. Recovery/faultqualification remains pending.
 No unit tests. It was NOT in the earlier sealed18b F run. See
-docs/exact-selected-target-verification.md. Current publicprofile scaling guards
-and required next manifest work are documented in docs/scaling-budget-gaps.md;
+docs/history/exact-selected-target-verification.md. Current publicprofile scaling guards
+and required next manifest work are documented in docs/history/scaling-budget-gaps.md;
 no arbitrary volume/file-count support is claimed.
 
 Built subsequent CPU/allocation candidate reuses two1MiB preparation buffers and
@@ -462,7 +462,7 @@ before the final full target check, preserving phase working-set bounds. No
 read/check/digest/order/flush/marker change. Library/CLI checks, independentreview
 and release builds pass; the scopedcc6 normal Fcaseabove qualifiedthispath.
 Recovery/faultqualification remains pending. No unit tests. See
-docs/journal-buffer-reuse.md. This was NOT in the sealed18bdea8 F case below.
+docs/history/journal-buffer-reuse.md. This was NOT in the sealed18bdea8 F case below.
 
 The following earlier native results and former current VM labels are historical;
 the current checkpoint/preservation/cleanup state above is authoritative.
@@ -493,7 +493,7 @@ fixed329,374,052,988B/17,179,869,184B epoch. RemovedONLYobsoleteoldNTFSb809 via
 HyperV after73archive/index/derivedreceipt files rehashed; ALLhostevidence/
 baselinesstay. Preserve newmixedecd,6fe/371sources,3cbc/119/643/fcctailmatrix,
 oldint9ce/resume9bb,large785,D1cold d939,f4bf. Evidence:
-evidence/mixed-fast-journal-native-20261031.json; docs/mixed-fast-journal-verification.md.
+evidence/mixed-fast-journal-native-20261031.json; docs/history/mixed-fast-journal-verification.md.
 Runtime18b differsfromlab05f511f; later05bbuffers/cc6exact-target builds remain
 BUILT/UNQUALIFIED and were NOTused. No18b recovery/powerloss/mutation qualification
 transfersfromoldercases. One recordedlabaccess-time reconciliation only; product
@@ -534,7 +534,7 @@ epoch. Obsolete0cf18d65/44c48db9/9bfbe6f7 were removed only viaHyperV after
 fresh archive/index/SHA revalidation; ALL host baseline/metadata files stay.
 Keep oldrecovery9ce/9bb/b809, sources371/6fe,large785,D1cold d939 and f4bf.
 Evidence: evidence/partial-tail-recovery-matrix-20261031.json;
-docs/partial-tail-recovery.md. Runtime3ce is distinct from observer e96fb28/23ac651
+docs/history/partial-tail-recovery.md. Runtime3ce is distinct from observer e96fb28/23ac651
 and newer18bdea8 journal-preparation optimization (not used here). No unit tests.
 Only one controlled exit86 plus clean restart is qualified; broader faults,
 power-loss, mutation, F-scale, D2 and broader objectives remain unfinished.
@@ -546,7 +546,7 @@ descriptor/footer checks, resolved copies, marker-clear checks and flushes stay.
 Issue mode is private to a fresh share-zero journal; full/fault/recovery paths
 still use their original trusted-pin checks. Binary format/ticket values unchanged
 for identical inputs. Focused library/CLI and release builds pass; native large
-qualification pending. No unit tests added/run. See docs/journal-preparation-readback.md.
+qualification pending. No unit tests added/run. See docs/history/journal-preparation-readback.md.
 This candidate is separate from the sealed3ce15c7 tail recovery matrix
 completed above; its native evidence does not qualify this newer candidate.
 
@@ -573,7 +573,7 @@ were terminal/idle before normal stop. Actual lab264,253,771,757B/free80,898,650
 remain within the unchanged epoch. Obsolete228c7aa3/e9bc8adf were removed only via
 Hyper-V after archive rehash; all host metadata/baselines remain. Keep old normal44c,
 int9ce/resume9bb/NTFSb809, sources371/6fe,large785,D1cold d939,f4bf and current/refusal.
-Evidence: evidence/partial-tail-extent-native-20261031.json; docs/partial-tail-extent-verification.md.
+Evidence: evidence/partial-tail-extent-native-20261031.json; docs/history/partial-tail-extent-verification.md.
 Runtime3ce15c7 and harness eac8b83 are distinct. No tail recovery, F-scale,
 mutation/cold-boot/power-loss qualification transfers from this normal case.
 The exact7ced whole-cluster recovery matrix below remains separately preserved.
@@ -637,7 +637,7 @@ used full raw fallback (0 elisions), then its observer failed on empty-property
 enumeration;103 closed files/84,376,938B and checkpoint058f1ca5 remain. Neither is
 a successful initial-scan-elision result. Obsolete904cbd98/30b37828/863e9372 were
 removed only through Hyper-V after their retained archives rehashed. No replay.
-Evidence: evidence/raw-extent-verification-native-20261031.json; docs/raw-extent-verification.md.
+Evidence: evidence/raw-extent-verification-native-20261031.json; docs/history/raw-extent-verification.md.
 Focused builds pass; no unit tests added/run. The exact7ced controlled
 interruption/resume/rollback matrix above is now separately qualified. Broader
 scale/compatibility/power-loss work remains.
@@ -715,7 +715,7 @@ consumed-byteSHA256brackets excludingONLYauthenticatedoverlaidpayloadroutes,
 old/newmemcmpfastpathwithsamebytefallback, advisoryphaseprocesscounters.
 ACTUALsource/targetfilehashesstillFULLandexplicitlyreported—doNOTclaimthe
 hash-free retainedcertificatepathisfinished. No fakecontentdigests.Fullmode,
-faultentriesandfreshrecoveryretainlegacycompletechecks. See docs/fast-verification.md.
+faultentriesandfreshrecoveryretainlegacycompletechecks. See docs/history/fast-verification.md.
 Librarycheckandfocusedpublic/verifier/bindreleasebuildspass; nativeD3stage above passes.
 
 D3 decision (2026-10-31): the user chose "Use extent-based fast verification
@@ -751,7 +751,7 @@ Recovery uses pinned original ceilings, never remaining free space. Legacy1/2
 serialization and dense bounds remain. Checked-reader typed comparisons remove
 temporary JSON allocation/cloning but preserve every boot/MFT/record reread.
 Focused library/public/verifier/bind release builds pass; native schema3 pending.
-See docs/capacity-pinned-journals.md. No unit tests added/run.
+See docs/history/capacity-pinned-journals.md. No unit tests added/run.
 Large sealed d974efe run98153ebb/core51e20d11 on original808-file/120-directory
 9,885,781,381B NTFS64K source6fe2d6b6 reached qualification, then refused before
 activation: selected journal exceeds16GiB caller budget. D15,139,008,512B,
@@ -786,7 +786,7 @@ Report62,144,751B remains under64MiB. Journal+backing95,292,928B.
 Normal ReFS checkpoint8a53c8cc; coldc7fd1596 passed all44IDs/maps,10aliasIDs,
 39hashes,7EAs and7 independent compression hashes. Current VM Off/RAM0 at
 d939f576-4868-43d0-bde8-2a6f742dd489;50 checkpoints, no active workers/tasks.
-See evidence/destination-window-native-20261031.json and docs/destination-bitmap-windows.md.
+See evidence/destination-window-native-20261031.json and docs/history/destination-bitmap-windows.md.
 Source371ae756 remains. Obsolete697fb084/95e64fda branches were removed only
 after archive rehash; all closed evidence remains. Legacyf4bf5238 was left
 intact after archive mismatch, never force its deletion to bypass that guard.
@@ -821,7 +821,7 @@ Original uncompressed4MiB/1,024 extents remain in place. Cold boot preserves
 all44 canonical IDs/maps,10 alias IDs and all prior hashes/metadata. It adds
 no new source-retention comparison. Runtime94.686s is not a controlled speedup.
 Journal89,071,680B plus backing6,701,056B. See
-evidence/compression-native-conversion-20261031.json and docs/ntfs-compression-normalization.md.
+evidence/compression-native-conversion-20261031.json and docs/history/ntfs-compression-normalization.md.
 Source371ae756-faf2-40ac-bf86-5e8e1d744e30 and normal ReFS30b37828 remain.
 Current VM state is Off/RAM0 at cold ReFS8e9562df-3c32-428f-a981-a0a48bec5d08;
 50 checkpoints remain. All workers/tasks were terminal and idle before stop.
@@ -899,7 +899,7 @@ passed17 objects/19 stream hashes, all7 EAs and unchanged data mappings/IDs.
 The observer uses the actual pinned allocation bundle; it never replays a
 journal or manufactures a source certificate. An older observer721aa4db failed
 before queries on the public-request format; no conversion was replayed.
-See evidence/ea-native-conversion-20261031.json and docs/ntfs-extended-attributes.md.
+See evidence/ea-native-conversion-20261031.json and docs/history/ntfs-extended-attributes.md.
 The NTFS EA source is1fc4b960 and initial converted ReFS is2c964314. No mutation,
 new-build interruption/resume/rollback or physical power-loss claim is made.
 No worker is active. Next: explicit VSS/case flags, remaining reparse forms,
@@ -927,7 +927,7 @@ use read-only backup handles, never permission repair. All25 kernel/API SD
 buffers, file IDs and data mappings match after boot. Runtime80.593s is not a
 controlled performance comparison; 4MiB/1,024 payload extents remain in place.
 Journal82,299,808B plus backing4,014,080B. See
-evidence/security-native-conversion-20261031.json and docs/ntfs-security-preservation.md.
+evidence/security-native-conversion-20261031.json and docs/history/ntfs-security-preservation.md.
 The NTFS source is684b9c4c; normal ReFS isa18bf3a5; cold ReFS isc6345e1f.
 The fixture records requested versus actual descriptors. Windows normalized
 requested absent DACLs and empty SACLs to null on NTFS creation; do not claim
@@ -949,7 +949,7 @@ known routes resolve on ReFS; dangling/cycle routes are metadata-only, never
 followed during inventory. Cold boot preserves all buffers/IDs/data mappings.
 Normal runtime90.884s is not a controlled speedup. Journal83,164,544B plus
 backing4,374,528B; 4MiB/1,024 original payload extents remain in place.
-See evidence/reparse-native-conversion-20261031.json and docs/ntfs-reparse-preservation.md.
+See evidence/reparse-native-conversion-20261031.json and docs/history/ntfs-reparse-preservation.md.
 The NTFS source ise4186f31, converted ReFS is9bfbe6f7 and cold ReFS is95e64fda.
 Source schema11 binds exact GET/tag/buffer data, distinct from missing/error.
 Points install after ACL propagation/EAs and before basic timestamps; symbolic
@@ -1183,7 +1183,7 @@ checkpoints remain, including the verified NTFS rollback in ec034c81.
 Preserve every existing checkpoint/evidence item for this active follow-up.
 
 The requested GitHub compatibility review is recorded in
-docs/release-0.0.1-readiness.md. ntfs2btrfs has broader conversion coverage but
+docs/history/release-0.0.1-readiness.md. ntfs2btrfs has broader conversion coverage but
 also warning/skip/truncation paths; do not copy that data-loss policy. Our next
 feature slices are identity/named-stream modeling, hard links/sparse/VDL,
 security/reparse/EAs/extension records and compressed logical content. ReFS
@@ -1326,7 +1326,7 @@ Any new native run needs a fresh restore of the intended
 checkpoint, verified from a new PowerShell process. HEAD da13331 converted the
 52GiB fixture in 2,813.3s vs the frozen alpha's 3,351.7s, still reading at
 least 816.6GB; see evidence/head-drive-measurement-20261029.json and
-docs/release-0.0.1-readiness.md. That binary has no mutation/reboot/recovery
+docs/history/release-0.0.1-readiness.md. That binary has no mutation/reboot/recovery
 results. lab/Start-HeadDriveMeasurement.ps1 runs a sealed HEAD toolset. It has fixed4GiB RAM, 4CPU, no NIC. Host
 hostname is SINGULARITY: the lab VMs and the WSL Ubuntu distro are local to it.
 The two original checkpoints remain:
@@ -1358,7 +1358,7 @@ HND,15objects/10fullfilehashes,label/F. Separate public Rollback
 exact pre-mount NTFSc5b58e4869d2a9c366c6b8daeb63f4507ef0b660ec98d7a743f404b4047e7734,
 ABT,NTFS64K,label/F. No post-mount NTFS file hashes or physical power-loss claim.
 See evidence/optimized-drive-alpha-{interruption,resume,rollback}-20261029.json
-and docs/frozen-drive-alpha-20261029.md. Do not transfer this qualification to
+and docs/history/frozen-drive-alpha-20261029.md. Do not transfer this qualification to
 later performance or metadata-reader code.
 
 Frozen package .lab/releases/ntfs2refs-alpha-20261029-fb5548.zip remains unchanged,
@@ -1386,7 +1386,7 @@ metadata and physical-data footprints. On the existing research image it reads
 1,897,488B for46pages,3inline attribute tables,2DATA versions/68extents and
 1,025distinct data clusters, without external payload reads. No spilled
 attribute/extent page path was exercised in that image. Cross-container data
-runs currently refuse. See docs/refs-metadata-footprint.md and its evidence.
+runs currently refuse. See docs/history/refs-metadata-footprint.md and its evidence.
 Current reader work also traverses both checkpoint generations with independent
 maps and physical container/Small trees; it supports declared own-record nodes
 and Logfile Information OIDs9/A plus matching checked MLog controls. The existing
@@ -1413,7 +1413,7 @@ stores every selected byte (including equal bytes), so feed it a pruned plan:
 selected_journal::changed_plan narrows a coarse selection to the differing 4 KiB
 granules (ordinary-file integration passed; evidence/selected-journal-changed-plan-20261029.json).
 It authenticates nothing and is valid only under the caller's exclusion.
-See docs/selected-range-journal.md and its evidence.
+See docs/history/selected-range-journal.md and its evidence.
 
 Native allocation observation: commit f539345 reads the ReFS bitmap through a
 protected physically read-only mount after freeze (the earlier post-lock query
@@ -1430,7 +1430,7 @@ geometry (pinned query-070/071 in retained-preparation win11-20261024T034206826Z
 shows the same metadata-inclusive prefix, checkpoint LCN and final range, so the
 prefix is consistent with the format metadata zone (inference, not proof). See
 evidence/native-required-ownership-protected-readonly-20261029.json and the end
-of docs/refs-metadata-footprint.md. Next: authenticate the footprint inputs
+of docs/history/refs-metadata-footprint.md. Next: authenticate the footprint inputs
 (keep the prefix zone as required), then wire the selected journal to a device.
 Expect the journal to hold old+new for the whole union.
 
@@ -1439,7 +1439,7 @@ only. Keep ignored images, journals, binaries and secrets out of Git. The
 coordinating agent owns VM mutation; delegated agents work on source unless
 explicitly assigned metadata-only observation.
 
-Selective path direction (user chose it, 2026-10-29): docs/selective-conversion-plan.md.
+Selective path direction (user chose it, 2026-10-29): docs/history/selective-conversion-plan.md.
 Guarantee decision (user, 2026-10-29): selective mode adopts the ntfs2btrfs
 allocation-based guarantee. Bytes that ReFS's own allocator marks free in the
 protected frozen shadow need not be compared or written; the per-range write
@@ -1558,7 +1558,7 @@ constant caps on files, directories, extents, runs, moves, ranges or evidence
 size. Evidence may move to disk but must stay complete and verifiable; any
 change that narrows what is checked still needs its own user decision. Design
 workflow: wf_5c358166-e1b; stage-1 placement implementation: wf_40ba8e07-e64.
-Draft plan with verifier corrections: docs/unbounded-scale-design.md.
+Draft plan with verifier corrections: docs/history/unbounded-scale-design.md.
 MOVED-DATA DECISION (user, 2026-10-29): "Hybrid": protect relocated data by
 staging it in the volume's own free space when there is room (ntfs2btrfs model:
 originals stay intact until handoff, so only those ranges need journaling),
@@ -1575,7 +1575,7 @@ written over NTFS file data inside the ReFS metadata-inclusive prefix
 [0, 6,174,015,488); the fresh ReFS writes almost none of that zone (the shadow
 VHDX stays 172 MB). Projected changed bytes about 12.4 GB of 12.2 GB compared;
 an external old+new journal would need about 37 GB of OS-volume space for a
-9.9 GB dataset. Hybrid design drafts: docs/hybrid-write-model-design.md.
+9.9 GB dataset. Hybrid design drafts: docs/history/hybrid-write-model-design.md.
 HYBRID DECISIONS (user, 2026-10-30):
 - ZONE ZEROS: "Probe, then skip if proven": first prove in the lab that a ReFS
   format over a disk pre-filled with random data leaves the reserved zone's old
@@ -1681,7 +1681,7 @@ origin/codex/isolated-journal-observation.
 REFSNT and forensic parsers remain external research. Do not copy GPL reference
 engines into the Rust product runtime or claim compatibility from their checkers.
 
-The source/evidence comparison in docs/ntfs-compatibility-comparison-20261030.md
+The source/evidence comparison in docs/history/ntfs-compatibility-comparison-20261030.md
 pins ntfs2btrfs and similar upstream tools. Do not copy their skip/truncate
 policies into a lossless claim. The audit found no explicit live VSS or
 directory case-sensitivity gate/preservation path; these are admission gaps,

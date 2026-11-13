@@ -5,7 +5,7 @@ fixture through the public `--drive H --partition 2` command. The native ReFS
 driver accepted 44 objects, 30 default stream hashes, nine named stream hashes,
 three sparse layouts, seven EAs, the prior security vectors and six reparse
 points. The new compression fixture contributed eight identities and seven
-logical streams. See [the pinned native evidence](../evidence/compression-native-conversion-20261031.json).
+logical streams. See [the pinned native evidence](../../evidence/compression-native-conversion-20261031.json).
 Cold-boot readback `ccafd9f0` also passed: all 39 default/named stream hashes,
 44 canonical IDs and retrieval maps, ten alias IDs and seven EA entries matched
 the completed conversion. The separate compression observer again checked all

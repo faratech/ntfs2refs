@@ -34,5 +34,5 @@ passed the grown V3 controlled first-flushed-write interruption, clean restart,
 public Resume and separate Rollback; each recovery observer matched all 811
 stream hashes. Arbitrary faults and physical power loss remain unqualified.
 [Recovery scope](envelope-recovery-matrix.md).
-[Native evidence](../evidence/object-envelope-native-20261031.json).
+[Native evidence](../../evidence/object-envelope-native-20261031.json).
 No unit tests were added or run.

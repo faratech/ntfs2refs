@@ -80,7 +80,7 @@ read-only), zero converter source-payload writes and `execution_authorized:
 false`. No source activation, native ReFS finalization or successful conversion
 is claimed. The 43 closed metadata files, their hashes and failure checkpoint
 `ce9b92c2` are preserved separately. See
-[the scoped refusal evidence](../evidence/mixed-capacity-refusal-20261031.json).
+[the scoped refusal evidence](../../evidence/mixed-capacity-refusal-20261031.json).
 
 Candidate `d33d8ec` introduced profile 3. That refusal and its build pins alone
 did not establish native conversion. The subsequent `fd577f2` observation below
@@ -130,7 +130,7 @@ of the same independently populated NTFS partition through `--drive F
 stream hashes. The original label and `F:\` mount path were restored. The saved
 converted checkpoint is `78513f35`. This is the full-content pipeline: the later
 D3 fast-verification changes are not part of this sealed executable.
-See [the native evidence](../evidence/mixed-capacity-native-20261031.json).
+See [the native evidence](../../evidence/mixed-capacity-native-20261031.json).
 
 The volume flush succeeded in 122,187 microseconds. Complete native bitmap
 observations measured 75,542,528 desired free bytes before it and 3,822,333,952

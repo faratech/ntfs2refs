@@ -34,4 +34,4 @@ normally stopped at the restored NTFS checkpoint.
 
 This qualifies one controlled exit plus clean restart, not arbitrary interruption
 points, hard power-off, physical power loss or subsequent mutation. No unit tests
-were added or run. [Evidence and artifact pins](../evidence/raw-extent-recovery-matrix-20261031.json).
+were added or run. [Evidence and artifact pins](../../evidence/raw-extent-recovery-matrix-20261031.json).

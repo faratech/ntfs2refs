@@ -23,7 +23,7 @@ filter or registry operation. See Microsoft's [structure contract](https://learn
 and [Dev Drive query documentation](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/fsutil-devdrv).
 
 The saved4d8 converted source was actually queried as a developer volume that
-was not trusted on the machine; see [the observation](../evidence/converted-volume-policy-4d8ca99-20261102.json).
+was not trusted on the machine; see [the observation](../../evidence/converted-volume-policy-4d8ca99-20261102.json).
 This fact is not standard-ReFS qualification. The new native query's returned
 mask behavior, both target choices and post-handoff reporting require native
 execution before release claims. No unit tests were added or run.
@@ -40,7 +40,7 @@ unknown. The failed attempt is preserved and the source remained online NTFS.
 Clean05c1abd then passed native conversion and all811 independent stream hashes/
 1084objects. The shadow was positively developer/trusted while the SOURCE was
 independently developer/untrusted, with designation matching the request. See
-[the corrected native case](../evidence/corrected-devdrive-public-05c1abd-20261102.json).
+[the corrected native case](../../evidence/corrected-devdrive-public-05c1abd-20261102.json).
 
 An explicit `--target-format standard` run on a separately restored source then
 received format.com exit4 and “ReFS file system is not supported on this device.”
@@ -48,4 +48,4 @@ The source remained online NTFS and no source preparation, freeze, certificate
 or journal was reached. No alternate format was attempted. This records the
 device's formatter refusal, not a successful standard-ReFS conversion or a
 universal claim about Windows editions. Standard qualification remains open.
-See [the refusal](../evidence/standard-format-refusal-05c1abd-20261102.json).
+See [the refusal](../../evidence/standard-format-refusal-05c1abd-20261102.json).

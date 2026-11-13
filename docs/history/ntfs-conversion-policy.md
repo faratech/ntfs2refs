@@ -37,10 +37,10 @@ Its independent observer verified logical contents and namespace, but did not
 independently recheck every original ACL/SACL/timestamp after conversion;
 native metadata completion is separate evidence.
 
-The principal policy code is [source admission](../src/ntfs_admission.rs),
-[paged admission](../src/ntfs_admission/paged.rs),
-[stream disposition](../src/ntfs_stream_plan.rs),
-[compression](../src/ntfs_compression.rs), and
-[native metadata reconstruction](../crates/n2r-win32/src/shadow_native/private_tree/metadata.rs).
+The principal policy code is [source admission](../../src/ntfs_admission.rs),
+[paged admission](../../src/ntfs_admission/paged.rs),
+[stream disposition](../../src/ntfs_stream_plan.rs),
+[compression](../../src/ntfs_compression.rs), and
+[native metadata reconstruction](../../crates/n2r-win32/src/shadow_native/private_tree/metadata.rs).
 Broader geometry and feature-specific native cases remain work for the project;
 the frozen executable and its existing evidence stay unchanged.

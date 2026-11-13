@@ -209,7 +209,7 @@ The dirty-state and volume-policy questions are now separate gates. On the
 Windows 11 source, the native dirty result is false, on-disk dirty bit is
 clear, and NTFS version is 3.1, so `clean_volume` passes. The observed
 `0x0080` volume policy bit was confirmed by a controlled native disabled /
-enabled / restored-disabled differential; see [the experiment](research/ntfs-volume-flag-0080.md).
+enabled / restored-disabled differential; see [the experiment](../research/ntfs-volume-flag-0080.md).
 Its gate can now clear only on build 26300 with an actual frozen-source native
 policy witness and no DOS-only aliases. The live binding passed on October 25:
 all eight user objects passed the frozen source-view policy, and the complete

@@ -11,7 +11,7 @@ The combined tree had 36 objects, 24 default and eight named stream hashes,
 seven EAs and three sparse layouts. Existing security vectors also matched.
 The observed conversion took 90.88 seconds; this is not a controlled speedup.
 All point buffers, prior file IDs, stream hashes and data mappings matched
-after reboot. See [the native evidence](../evidence/reparse-native-conversion-20261031.json).
+after reboot. See [the native evidence](../../evidence/reparse-native-conversion-20261031.json).
 Exact-build interruption/recovery, mutation, power loss and broader reparse
 forms remain unqualified.
 

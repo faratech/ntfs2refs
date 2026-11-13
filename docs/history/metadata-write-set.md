@@ -1,7 +1,7 @@
 # Candidate ReFS target write set
 
 The dated observations below retain their original checkpoint and storage
-counts. Current laboratory state and cleanup policy are in [AGENTS.md](../AGENTS.md).
+counts. Current laboratory state and cleanup policy are in [AGENTS.md](../../AGENTS.md).
 
 Protected layout observation now captures the paginated metadata-inclusive
 bitmap through its existing read-only volume lease. Coverage diagnostics bind

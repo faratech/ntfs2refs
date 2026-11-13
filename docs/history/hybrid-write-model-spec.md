@@ -1,6 +1,6 @@
 # Hybrid write model specification N2RSEL02-H (draft, UNVERIFIED)
 
-Status (2026-10-30): produced by workflow wf_d119eceb-3ac (two grounding readers, one specifier) from the user's HYBRID DECISIONS and both earlier verdicts. Its two adversarial verifiers and the reviser did not run (usage limit); nothing here is verified or adopted. Grounding corrections: the two verdicts in docs/hybrid-write-model-design.md sit after the wrong designs (verdict 1 reviews N2RSEL02, verdict 2 reviews N2RHYB01); the drafts use opposite class letters; 'N2RSEL02' names two different formats across the docs.
+Status (2026-10-30): produced by workflow wf_d119eceb-3ac (two grounding readers, one specifier) from the user's HYBRID DECISIONS and both earlier verdicts. Its two adversarial verifiers and the reviser did not run (usage limit); nothing here is verified or adopted. Grounding corrections: the two verdicts in docs/history/hybrid-write-model-design.md sit after the wrong designs (verdict 1 reviews N2RSEL02, verdict 2 reviews N2RHYB01); the drafts use opposite class letters; 'N2RSEL02' names two different formats across the docs.
 
 ## Name
 N2RSEL02-H: range-class hybrid journal (format 2) with staged free-destination writes, dual-copy markers, per-granule XXH3-128 table, phase-independent resolver, pinned resource-bounded capacity
@@ -134,5 +134,5 @@ I1 Class soundness: every changed granule is in exactly one record; A records ar
 - Recovery reads R origins from the source device; a media error on a retained range blocks resume (not rollback).
 - Pre-activation stranding at attributes 3, label/mount-path completion never retried after bring_online, and the bundle checksum living only on stdout until result.json are unchanged.
 - Every N2RSEL02-H run changes journal, ticket and bundle pins; N2RSEL01 power-off and recovery evidence does not transfer and the full matrix must be requalified on the hybrid build.
-- The name N2RSEL02 is also used by docs/unbounded-scale-design.md for a u64 N2RSEL01; the format byte (2) and header magic here are the same string, so that doc must adopt this definition or rename its variant.
+- The name N2RSEL02 is also used by docs/history/unbounded-scale-design.md for a u64 N2RSEL01; the format byte (2) and header magic here are the same string, so that doc must adopt this definition or rename its variant.
 - Resume refuses an A record whose accumulated SHA-256 differs from new_sha256 after the granule checks passed (journal/table inconsistency); the state is stranded with protection kept, not corrupted.

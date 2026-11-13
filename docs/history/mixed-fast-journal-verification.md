@@ -56,4 +56,4 @@ Runtime `18bdea8` is separate from harness `05f511f`. Later buffer-reuse
 `05b6d5e` and exact selected-target check `cc6cd28` builds were not used.
 This is one normal F: corpus result; it does not qualify recovery for this
 runtime, arbitrary interruption, physical power loss or subsequent mutation.
-No unit tests were added or run. [Evidence and artifact pins](../evidence/mixed-fast-journal-native-20261031.json).
+No unit tests were added or run. [Evidence and artifact pins](../../evidence/mixed-fast-journal-native-20261031.json).

@@ -54,6 +54,6 @@ host free space 52,696,043,520 bytes under the unchanged budget. New resumed
 ReFS `8087814c`, the original interruption, old restored NTFS `35c9a8f8`,
 normal `6bef3bd2` and sources remain preserved.
 
-[Exact provenance, pins and limits](../evidence/exclusive-recovery-native-20261031.json).
+[Exact provenance, pins and limits](../../evidence/exclusive-recovery-native-20261031.json).
 Arbitrary faults, physical power loss, broader scale and compatibility remain
 unfinished. No unit tests were added or run.

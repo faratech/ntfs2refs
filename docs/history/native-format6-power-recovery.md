@@ -55,16 +55,16 @@ with1084 complete map bindings and the native metadata/namespace/storage checks.
 Result checkpoint `2d62e6da-38b0-4c88-972d-750b1fc8eb31` is saved Off/RAM0.
 The41-file/56804081-byte archive receipt is
 `4cad6c65852ae60a94835434f7a87fed9f39093db18476e364d7297eaed8c3d6`.
-See [the interruption](../evidence/native-format6-HND1-power-interruption-20261102.json)
-and [the closed verification](../evidence/native-format6-HND1-power-recovery-20261102.json).
+See [the interruption](../../evidence/native-format6-HND1-power-interruption-20261102.json)
+and [the closed verification](../../evidence/native-format6-HND1-power-recovery-20261102.json).
 
 ## Rollback-intent and abort-completion power cases
 
-The new [pause adapter](../lab/Start-NativeRollbackMarkerPause.ps1) starts an
+The new [pause adapter](../../lab/Start-NativeRollbackMarkerPause.ps1) starts an
 explicit rollback from original AP1 checkpoint8d. Root cuts power only after
 the selected RB1 or ABT1 copy has been flushed/read back and its closed32KiB
 signal matches the actual live process twice. The
-[nested recovery helper](../lab/Start-NativeRollbackPowerRecovery.ps1) binds
+[nested recovery helper](../../lab/Start-NativeRollbackPowerRecovery.ps1) binds
 both power receipts and checkpoint ancestry, keeping the original AP1 bundle
 separate from the new paused producer's process/configuration/signal.
 
@@ -82,8 +82,8 @@ it does not claim a separate semantic/content rescan or restoration of free
 space. The first-copy cuts exercise missing peers, not actual damaged-peer
 bytes, failing Win32 I/O calls or physical storage power loss.
 
-See the [RB1 recovery](../evidence/native-format6-RB1-power-recovery-20261102.json)
-and [ABT1 verification](../evidence/native-format6-ABT1-power-recovery-20261102.json).
+See the [RB1 recovery](../../evidence/native-format6-RB1-power-recovery-20261102.json)
+and [ABT1 verification](../../evidence/native-format6-ABT1-power-recovery-20261102.json).
 
 ## Native and host guard changes
 
@@ -96,7 +96,7 @@ before RB/payload writes. Public `verify_closed` remains read-only; legacy marke
 retains its original single pass.
 
 The actual-power helper is
-[Start-NativeMarkerPowerRecovery.ps1](../lab/Start-NativeMarkerPowerRecovery.ps1),
+[Start-NativeMarkerPowerRecovery.ps1](../../lab/Start-NativeMarkerPowerRecovery.ps1),
 SHA256 `df88c9d563d1abc488e67322c966dcaced0a332936490e83fc14658193ed2def`.
 It checks the actual-power receipt, original process/argv, closed signal and
 artifact pins before native recovery. SYSTEM preflight and main execution use
@@ -117,7 +117,7 @@ virtual geometry and log state are explicitly unqueried. Present-shadow checks
 still require the exact attached provider and offline/read-only native binding.
 
 Earlier `Get-DiskImage` queries returned AccessDenied even under SYSTEM. The
-separate [read-only native probe](../lab/Get-NativeManagedShadowProviderProbe.ps1)
+separate [read-only native probe](../../lab/Get-NativeManagedShadowProviderProbe.ps1)
 also returned actual `OpenVirtualDisk` error5 with all later queries unknown.
 Those errors never establish absence. Raw headers showed a nonzero LogGuid,
 consistent with a replay requirement, but their CRCs were not validated and the

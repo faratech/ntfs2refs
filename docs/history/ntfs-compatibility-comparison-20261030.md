@@ -15,7 +15,7 @@ and cold-boot evidence: seven EAs on four identities, including directories,
 binary data, an 8 KiB value and `FILE_NEED_EA`. The EA refusal in the original
 matrix below describes the earlier audited revision. Current bounds and
 qualification are in [the EA contract](ntfs-extended-attributes.md) and
-[native receipt](../evidence/ea-native-conversion-20261031.json).
+[native receipt](../../evidence/ea-native-conversion-20261031.json).
 
 The later `fa6396f` security expansion also passed conversion and reboot with
 audit SACLs, mandatory labels, inherited auditing, null DACLs and empty DACLs.
@@ -23,7 +23,7 @@ The earlier security refusals in the matrix are historical. Requested absent
 DACLs and empty SACLs were normalized by Windows while creating the NTFS
 fixture, so those original source states are not qualified by this result.
 See [the security contract](ntfs-security-preservation.md) and
-[receipt](../evidence/security-native-conversion-20261031.json).
+[receipt](../../evidence/security-native-conversion-20261031.json).
 
 Runtime `439a55c` subsequently passed conversion and reboot with relative and
 absolute symlinks, directory links and a junction. Six point buffers/tags and
@@ -31,7 +31,7 @@ the complete NTFS `$R` index matched. Four known functional routes passed;
 dangling/cyclic routes were metadata-only checks. Generic provider/cloud tags
 remain refused. The original reparse refusal below is historical; see the
 [current contract](ntfs-reparse-preservation.md) and
-[receipt](../evidence/reparse-native-conversion-20261031.json).
+[receipt](../../evidence/reparse-native-conversion-20261031.json).
 
 ## External implementations
 
@@ -109,12 +109,12 @@ It does not mean every size, combination or Windows build is qualified.
 | Geometry and scale | Source profile requires 512-byte sectors, 1 KiB MFT records and 4 KiB index records; expanded cluster handling is experimental. Target is formatter-created ReFS 3.14/4 KiB with `/DevDrv`; actual formatter acceptance is required. Fixed resource limits remain; universal volume-size support is not established. |
 | Boot/OS volume, BitLocker, clustered/tiered storage | No general conversion qualification; boot remains deferred. Do not infer support from either filesystem's own feature list. |
 
-Source anchors: [admission and names](../src/ntfs_admission.rs),
-[shadow security/metadata requirements](../src/shadow_tree.rs),
-[multi-record assembly](../src/ntfs_attribute_list.rs),
-[OS-disk exclusion](../crates/n2r-win32/src/discovery.rs),
-[disk-layout constraints](../crates/n2r-win32/src/general_layout.rs),
-and [stream limits](../crates/n2r-win32/src/stream_layout.rs).
+Source anchors: [admission and names](../../src/ntfs_admission.rs),
+[shadow security/metadata requirements](../../src/shadow_tree.rs),
+[multi-record assembly](../../src/ntfs_attribute_list.rs),
+[OS-disk exclusion](../../crates/n2r-win32/src/discovery.rs),
+[disk-layout constraints](../../crates/n2r-win32/src/general_layout.rs),
+and [stream limits](../../crates/n2r-win32/src/stream_layout.rs).
 The streaming profile still allows only 1,024 files, 256 directories, 64 streams
 per file and 16,384 streams per tree. Those are implementation limits, not NTFS
 or ReFS format limits; raising one constant does not remove coupled budgets.
@@ -122,12 +122,12 @@ The journal still has a 16 GiB cap. Multi-stream assembly also has a 64 KiB
 list limit, 1,024 extension records and 1,024 aggregate DATA runs.
 
 Native receipts:
-[hard links](../evidence/hardlink-native-conversion-20261030.json),
-[ADS](../evidence/ads-native-conversion-20261030.json),
-[sparse conversion](../evidence/sparse-native-conversion-20261030.json),
-[sparse recovery](../evidence/sparse-native-recovery-20261030.json),
-[multi-record conversion](../evidence/attribute-list-native-conversion-20261030.json),
-and [latest measured fragmented conversion](../evidence/bitmap-planning-performance-20261030.json).
+[hard links](../../evidence/hardlink-native-conversion-20261030.json),
+[ADS](../../evidence/ads-native-conversion-20261030.json),
+[sparse conversion](../../evidence/sparse-native-conversion-20261030.json),
+[sparse recovery](../../evidence/sparse-native-recovery-20261030.json),
+[multi-record conversion](../../evidence/attribute-list-native-conversion-20261030.json),
+and [latest measured fragmented conversion](../../evidence/bitmap-planning-performance-20261030.json).
 The latest performance binary does not inherit earlier builds' reboot, mutation
 or recovery qualification.
 

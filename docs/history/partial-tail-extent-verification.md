@@ -50,7 +50,7 @@ The 133 closed metadata files (86,221,996 bytes) are SHA verified. The VM is
 normally stopped at ReFS checkpoint `3cbc9ae0-c7da-49ab-bd08-ca0c48275f03`.
 Native wall time was 24.630 seconds in one run with uncontrolled cache/host
 conditions; no general or physical-I/O speed claim follows. See
-[the native evidence](../evidence/partial-tail-extent-native-20261031.json).
+[the native evidence](../../evidence/partial-tail-extent-native-20261031.json).
 
 Focused builds pass. Tail-specific recovery, F-scale, mutation and power-loss
 qualification remain pending; the earlier `7ced37b` whole-cluster recovery matrix

@@ -32,7 +32,7 @@ Rollback29/2,643,077. All copied metadata was length/SHA verified. Raw journals
 and payload backing were not copied. Tasks and native workers were terminal
 before each normal shutdown; the three original/result branches remain saved.
 
-See [the pinned matrix evidence](../evidence/native-format6-controlled-matrix-20261102.json).
+See [the pinned matrix evidence](../../evidence/native-format6-controlled-matrix-20261102.json).
 These process-interruption results do not establish VM hard-power, physical
 power-loss, arbitrary volume size/count or universal hardware qualification.
 No unit tests were added or run. Power-boundary cases use a separately frozen

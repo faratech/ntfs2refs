@@ -20,7 +20,7 @@ the A/B physical-byte correspondence, but its launcher failed before the second
 restart/whole-partition phase. Later conversion outcomes must be recorded
 separately; they are not assumed by this plan.
 [Preparation evidence](native-retained-fixture.md#fresh-native-preparation-passed),
-[runtime status](../IMPLEMENTATION_STATUS.md)
+[runtime status](IMPLEMENTATION_STATUS.md)
 
 The same pinned `pair.json` records the original placement:
 
@@ -39,9 +39,9 @@ original LCN6263 is unusable. Test native shadow placement at an otherwise
 eligible cluster-aligned source location before treating alignment alone as a
 reason to relocate. The source evidence SHA-256 is
 `145398b640302197acbcf71e8b21dfaa629507ac916179971ea3e579b92c849d`.
-[Pinned pair evidence](../.lab/hyperv/retained-preparation/win11-20261024T034206826Z/pair/pair.json),
-[construction gate](../lab/guest/NativeRetainedFixture.cs),
-[raw probe gate](../src/lab_native.rs)
+[Pinned pair evidence](../../.lab/hyperv/retained-preparation/win11-20261024T034206826Z/pair/pair.json),
+[construction gate](../../lab/guest/NativeRetainedFixture.cs),
+[raw probe gate](../../src/lab_native.rs)
 
 ### Measured bitmap conflict at the original location
 
@@ -77,9 +77,9 @@ The generic Rust comparator already accepts multiple retained ranges, and the
 journal core implements bounded reconstruction and pre-handoff recovery. The
 native adapter deliberately accepts exactly one 64 KiB range. Its limit should
 change only after a new inventory/attestation layer proves every proposed range.
-[Comparator](../src/retained_compare.rs),
-[journal](../src/lab_reconstruct.rs),
-[native request gate](../src/lab_native_reconstruct.rs)
+[Comparator](../../src/retained_compare.rs),
+[journal](../../src/lab_reconstruct.rs),
+[native request gate](../../src/lab_native_reconstruct.rs)
 
 The failed VDL experiment is not a shortcut: its cached validity covered EOF,
 storage validity covered none, and its first cluster had an unresolved negative
@@ -149,7 +149,7 @@ for; an `is_metadata` flag or a dollar-prefixed name is insufficient. An
 attribute list in any record needed to establish completeness is a refusal
 until its continuations are assembled; rejecting only lists on user files would
 leave an ownership hole. Keep all unsupported objects in the rejection report.
-[Current reader](../src/ntfs_inspect.rs),
+[Current reader](../../src/ntfs_inspect.rs),
 [metadata-role limits](ntfs-metadata-roles.md)
 
 The reader does validate cluster alignment, stream VCN coverage, partition

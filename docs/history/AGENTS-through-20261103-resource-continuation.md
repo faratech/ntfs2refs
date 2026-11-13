@@ -481,7 +481,7 @@ observer/native composite converter/recovery); no units run. Actual PagedInspect
 producer and raw/native comparison are connected through the new owning-machine
 lab-observe-resource-source entry. Public V4 conversion/certificate/recovery
 orchestration is pending; no new native qualification is inherited. Details in
-docs/resource-based-admission.md. B now owns NEW shadow_tree/source_pages.rs only.
+docs/history/resource-based-admission.md. B now owns NEW shadow_tree/source_pages.rs only.
 
 LATEST USER CLEANUP (2026-11-03): deleted28 obsolete checkpoint nodes through
 Hyper-V, preserving children and all host archives. Only FIVE remain:
@@ -690,7 +690,7 @@ NARROW coherent ntfs_file_attributes projection now implemented/reviewed and
 4bincheckpassed15.38s: knownSI10000000 onlyMFTdir+coherentuniqueI30, targetWin32
 Dir10; unknownhighuserflagsrefuse. Source/tree/nativeuser comparison shareit;
 internal$Secure/$Extend observation remainscompatible. Normal80/otherlowmasks
-unchanged. See docs/ntfs-directory-attribute-projection.md. Nativefix PENDING.
+unchanged. See docs/history/ntfs-directory-attribute-projection.md. Nativefix PENDING.
 NEXT: commitfix, cleanbuild8bins+seal, NEW versioned directory-attribute full
 baseline launcher(agentpublic_readonly_completion writing; preservece2), restore
 a062fresh/start once, runfixedfullbaseline, thenNEWlargepublicadapter andnew
@@ -759,7 +759,7 @@ Namespace scalarindexes avoid repeatedwholeobjectdecodes perchild/directory.
 NEXT: finish NEW page-aware public observer controller (existing sealedhelpers
 unchanged), cleanbuild/seal exact committed source, qualify fresh native
 conversion then >1280object tree and independent original-state resume/rollback.
-See docs/paged-resource-metadata.md. All older evidence retained. Globalproduction
+See docs/history/paged-resource-metadata.md. All older evidence retained. Globalproduction
 marker flag staysFALSE; no stable/tag/broadscale claim. Mainc6unchanged.
 
 ## Earlier release continuation (2026-11-02 21:03 UTC)
@@ -1116,7 +1116,7 @@ exceptions only), fullnative move-map replay, security/namespace/fullmap/tails
 all PASSED through readonlycompletion3569935d09754470af1bdfdaf014facb. No native
 conversion/recovery replay. Original schema-tail and duplicate cached-access
 observer failures preserved. Source required273/5 provenreplaced internal dirs
-of278raw, actual$Deleted29error87 remainsUnknown. See docs/public-min-scratch-native.md
+of278raw, actual$Deleted29error87 remainsUnknown. See docs/history/public-min-scratch-native.md
 and evidence/public-min-scratch-native-20261102.json.
 
 Product records: C:\ProgramData\ntfs2refs\runs\0dd148940f0c665732d7e146426ff52c\conversion.
@@ -1170,7 +1170,7 @@ hook and both-terminal-peer online barrier behind ONLY explicit enrolled lab
 lab-selected-marker-native acknowledgments. Independent source review and focused
 build passed. One valid terminal closes replay; degraded peers stay offline.
 Native/hard-power qualification remains open; production defaults unchanged.
-See docs/redundant-selected-markers.md.
+See docs/history/redundant-selected-markers.md.
 
 Memory codee596322 streams bounded artifact saves/hashing, borrows exported maps,
 moves parsed maps into recovery lookup and directly compares mounted bindings.
@@ -1273,13 +1273,13 @@ ntfs2refs-streaming-v2-20261027;4GiB fixed/4CPU/noNIC. Credentials only Import-C
 .lab/hyperv/win11/secrets/guest-credential.xml, never print. Keep current051b,
 preparedcb, sources8329/6fe2/371a/9c42, guardedf4bf, H cold d939, original old-format
 interrupteddea9 and recovery8087/d40b, original format5 fault7721, Resumed9, Rollback67eda and latestf8f7 (15 states). All other older listed IDs were
-retired. Old recovery compatibility evidence is in docs/exclusive-recovery-native.md.
+retired. Old recovery compatibility evidence is in docs/history/exclusive-recovery-native.md.
 ## Evidence and current implementations
 
 - Frozen E4ff old-zero matrix is complete: first flushed write86, clean restart,
   Resume0/HND, separate original-state Rollback0/ABT, all811 hashes both ways.
   Old-selected checksum exactly matched original ticket. This is not arbitrary
-  faults or physical-power-loss qualification. See docs/old-zero-recovery-matrix.md
+  faults or physical-power-loss qualification. See docs/history/old-zero-recovery-matrix.md
   and evidence/old-zero-recovery-matrix-20261031.json.
 - The retained states include latest051b, grown source8329, original F source6fe2,
   H source371a, sparse source9c42 with guardedf4bf, H cold resultd939, interrupted

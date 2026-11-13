@@ -61,7 +61,7 @@ sound post-reboot reacquisition protocol remain necessary before integration.
 The test partition's original GPT attributes and T: access were restored, its
 NTFS marker matched, and C: remained healthy. The VM was normally shut down and
 the completed branch saved. See the exact build, receipts and limits in
-[the recorded experiment](../evidence/partition-scoped-source-20261103.json).
+[the recorded experiment](../../evidence/partition-scoped-source-20261103.json).
 The separate frozen `814f380` converter has since completed its own native
 conversion and recovery cases; see the [packaged alpha](frozen-resource-alpha-20261104.md).
 Those dedicated-disk results do not qualify this partition-scoped writer.
@@ -86,6 +86,6 @@ issued no payload write or retry. All 26 probe metadata files (353,925 bytes) an
 12 restoration files (76,970 bytes) are closed and length/SHA-256 verified.
 The VM was normally shut down and independently observed Off with zero assigned
 RAM, still parented to `766c9abc`; no new checkpoint was created. See
-[the exact refusal and restoration evidence](../evidence/partition-fresh-lock-write-refusal-20261104.json).
+[the exact refusal and restoration evidence](../../evidence/partition-fresh-lock-write-refusal-20261104.json).
 The frozen `814f380` converter remains unchanged, and no partition writer was
 integrated or enabled.

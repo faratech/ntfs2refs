@@ -32,4 +32,4 @@ The next Rust candidate reuses closing metadata read buffers. Its focused and
 optimized builds and source review passed; none of this c2 native recovery
 evidence qualifies that new runtime. No unit tests were added or run.
 
-[Exact observations and artifact pins](../evidence/source-free-recovery-native-20261101.json).
+[Exact observations and artifact pins](../../evidence/source-free-recovery-native-20261101.json).

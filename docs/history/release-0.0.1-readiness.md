@@ -6,7 +6,7 @@ conversion and desktop result are documented in
 [the release qualification](release-0.0.1-alpha.md).
 
 The older readiness notes are preserved verbatim in
-[the pre-closeout archive](history/release-readiness-before-boot-alpha-closeout-20261111.md).
+[the pre-closeout archive](release-readiness-before-boot-alpha-closeout-20261111.md).
 Their statements that boot conversion is deferred refer to earlier builds.
 
 ## Closeout scope

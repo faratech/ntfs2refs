@@ -60,4 +60,4 @@ all host baseline and evidence files remain.
 This qualifies one normal F: case for the sealed cc6 implementation. It does
 not qualify cc6 recovery, arbitrary interruption, power loss, later mutation,
 or the newer CPU/V3 candidates. No unit tests were added or run.
-[Evidence and artifact pins](../evidence/mixed-exact-journal-native-20261031.json).
+[Evidence and artifact pins](../../evidence/mixed-exact-journal-native-20261031.json).

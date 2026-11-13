@@ -11,7 +11,7 @@ That snapshot is byte-identical to the user's current unstaged edit, which was
 left untouched. The overlay removes two reported experimental capability
 fields; it does not change the conversion or recovery implementation.
 
-The [source/build record](../evidence/public-build-provenance-9099110-20261030.json)
+The [source/build record](../../evidence/public-build-provenance-9099110-20261030.json)
 pins a Git source archive, the exact overlay, an 805-file source manifest,
 the tested executable, and its matching PDB. The compiler is Rust 1.98.1;
 the preserved configuration enables static CRT and release overflow checks.
@@ -37,7 +37,7 @@ These results belong to the exact builds and corpus below. They do not establish
 a generally safe release or support for arbitrary volumes.
 
 The machine-readable index is
-[experimental-build-provenance-20261029.json](../evidence/experimental-build-provenance-20261029.json).
+[experimental-build-provenance-20261029.json](../../evidence/experimental-build-provenance-20261029.json).
 It records hashes of closed host-side reports. It grants no source admission,
 attribute-change, formatting, or journal-replay authority. This reconciliation
 read closed metadata and existing executables; it did not rerun the laboratory
@@ -60,7 +60,7 @@ the preserved working-tree capabilities change. Binary hashes identify the
 artifacts that actually ran.
 
 The public affirmative result is recorded separately in
-[drive-cli-native-20261028.json](../evidence/drive-cli-native-20261028.json).
+[drive-cli-native-20261028.json](../../evidence/drive-cli-native-20261028.json).
 It is **not** a test of the `866fc5...` binary with the `565fb0...` recovery
 binary. The managed `48094c...` / `565fb0...` pair exercised the streaming-v2
 reconstruction protocol with its own original source certificate, request,
@@ -154,7 +154,7 @@ the separately pinned `c71d2a...` / `571e07...` observation tools. They do not
 create a test of the separate public `866fc5...` binary with recovery `565fb0...`.
 
 The older `5e156f...` mutation/reboot result in
-[native-composite-alpha-20261028.json](../evidence/native-composite-alpha-20261028.json)
+[native-composite-alpha-20261028.json](../../evidence/native-composite-alpha-20261028.json)
 and [native-composite-experimental.md](native-composite-experimental.md) remains
 historical evidence for that build. It was not reused to qualify this new
 post-recovery mutation/reboot result. Older observer reports retain their

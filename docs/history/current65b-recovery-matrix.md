@@ -41,7 +41,7 @@ reading: 59 files/88,491,263 bytes for Resume and 57 files/61,769,941 bytes for
 Rollback. All project tasks and workers were terminal before normal shutdown.
 The VM is off, with both completed branches and the original interruption saved.
 
-See [the pinned evidence](../evidence/current65b-recovery-matrix-20261102.json).
+See [the pinned evidence](../../evidence/current65b-recovery-matrix-20261102.json).
 This proves controlled process recovery for this format5 corpus. It does not
 qualify format6 markers, physical power loss, the later memory/artifact runtime,
 or arbitrary volume sizes and counts. No unit tests were added or run.

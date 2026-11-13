@@ -39,4 +39,4 @@ original owned process and snapshot, and the refusal artifacts. It completed
 Ready/0 without another converter process or VSS mutation. The original Ready/1
 observer failure is preserved. The empty shadow used100MiB of backing storage;
 its formatting preceded the gate and is not counted as zero total writes.
-See [the pinned native case](../evidence/public-positive-vss-refusal-4d8ca99-20261102.json).
+See [the pinned native case](../../evidence/public-positive-vss-refusal-4d8ca99-20261102.json).

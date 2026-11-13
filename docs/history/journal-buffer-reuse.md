@@ -32,5 +32,5 @@ and exact selected-target checks, passed one normal F: case: native0/HND,
 seconds; the independent observer finished 141.877 seconds later. This single
 case does not measure allocation counts or establish a controlled speed gain,
 and it does not qualify rollback/recovery or arbitrary faults. Later CPU/V3
-builds were not used. [Native evidence](../evidence/mixed-exact-journal-native-20261031.json).
+builds were not used. [Native evidence](../../evidence/mixed-exact-journal-native-20261031.json).
 No unit tests were added or run.

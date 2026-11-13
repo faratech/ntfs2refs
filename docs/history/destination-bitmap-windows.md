@@ -41,7 +41,7 @@ placement report. It replays both selectors for every move and reports their
 actual native query/returned-byte totals; it does not access a volume or create
 source-write authority. No unit tests were added or run. Native D1 conversion
 passed on runtime `d974efe` through public conversion `fea0a1ec` / core
-`eb9a8205`. See [the pinned native evidence](../evidence/destination-window-native-20261031.json).
+`eb9a8205`. See [the pinned native evidence](../../evidence/destination-window-native-20261031.json).
 
 The same saved NTFS source checkpoint used for the preceding full-map run
 contained the combined compression, fragmentation, ADS, hard-link, sparse, EA,

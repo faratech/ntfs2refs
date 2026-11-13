@@ -47,7 +47,7 @@ not create that physical capacity.
 
 The metadata-only closure contains 37 files / 156,492 source bytes, with every
 source and host length and SHA verified. Its manifest is pinned in
-[the experiment evidence](../evidence/private-thin-pool-addressability-20261104.json).
+[the experiment evidence](../../evidence/private-thin-pool-addressability-20261104.json).
 No VHDX or payload data was copied or hashed during closure.
 
 The public native-shadow backend still uses one VHDX. Integrating a private
@@ -58,7 +58,7 @@ this provider remain unqualified. The existing alpha gains no new size claim
 from this experiment.
 
 The Rust constructor stage is now implemented in
-[`thin_pool.rs`](../crates/n2r-win32/src/managed_shadow/thin_pool.rs).
+[`thin_pool.rs`](../../crates/n2r-win32/src/managed_shadow/thin_pool.rs).
 `create_new` accepts a fresh directory, an exact storage-subsystem identity,
 requested address space and explicit resource budgets. It creates its own two
 members, retains their provider and backing-file owners, and checks the resulting
@@ -85,7 +85,7 @@ members and RAW virtual disk 10. Neither pool was reset or reused for a retry.
 The constructor admits the complete two-member backing profile, metadata reserve
 and separate Rust/PowerShell RAM shares before work. Actual free space and child
 working set are sampled; they are not kernel quotas or physical reservations.
-See [the build record](../evidence/private-thin-pool-constructor-build-20261104.json).
+See [the build record](../../evidence/private-thin-pool-constructor-build-20261104.json).
 
 The successful constructor sampled 75,530,512 bytes of retained regular-file
 allocation before writing its final observation receipt and 219,471,872 bytes of
@@ -94,7 +94,7 @@ neither supplies physical capacity for a populated petabyte filesystem. The
 failed case's 15 metadata files (20,923 bytes) and successful case's 16 files
 (27,122 bytes) were copied with source/host length and SHA checks; VHDX members
 and payloads were excluded. See
-[the exact Rust constructor evidence](../evidence/private-thin-rust-constructor-20261104.json).
+[the exact Rust constructor evidence](../../evidence/private-thin-rust-constructor-20261104.json).
 Reattachment, ReFS formatting, payload I/O, conversion, recovery and replacement
 of the public single-VHDX backend remain separate unqualified steps.
 
@@ -131,7 +131,7 @@ process exited 0 in 1.9802705 seconds. This is a small common-path smoke result;
 it qualifies neither large thin formatting nor source conversion. The failure's
 25 metadata files / 49,129 bytes and the smoke case's 13 files / 97,920 bytes
 were closed with source/host length and SHA checks, excluding images and payloads.
-See [the scoped refusal evidence](../evidence/private-thin-format-refusal-20261104.json).
+See [the scoped refusal evidence](../../evidence/private-thin-format-refusal-20261104.json).
 The next bounded-carrier implementation has no native qualification from either
 result. Public conversion/recovery and the frozen alpha retain their existing
 scope.
@@ -145,7 +145,7 @@ succeeded. The carrier remained NTFS with 12,606,513,152 bytes free, and its
 member directory was empty. The old failed pool was preserved; F: was observed
 as NTFS without a payload rehash. The 13 metadata files / 39,381 bytes were
 archived with source/host length and SHA checks. See
-[the exact carrier-path refusal](../evidence/carrier-guid-sampling-refusal-20261104.json).
+[the exact carrier-path refusal](../../evidence/carrier-guid-sampling-refusal-20261104.json).
 This case establishes those path observations, not target ReFS formatting,
 conversion or recovery.
 
@@ -169,7 +169,7 @@ twice as external storage.
 
 All 33 metadata files / 170,168 bytes were closed with source/host length and
 SHA checks, preserving both earlier failed cases. See
-[the native 72 TiB evidence](../evidence/private-thin-native-format-20261104.json).
+[the native 72 TiB evidence](../../evidence/private-thin-native-format-20261104.json).
 This establishes private owned formatting and the small ordinary file probe.
 Public backend integration, conversion, restart recovery and large-offset or
 populated-volume I/O remain separate work.
@@ -192,7 +192,7 @@ peak scratch. The 31 metadata files / 90,881 bytes preserve the successful
 Windows formatter log, failed SDK result and the independently queried 152-byte
 native geometry. The earlier 72 TiB volume remained present; F: was observed
 as NTFS without a payload hash. See
-[the petabyte profile-refusal evidence](../evidence/private-thin-petabyte-profile-refusal-20261104.json).
+[the petabyte profile-refusal evidence](../../evidence/private-thin-petabyte-profile-refusal-20261104.json).
 This does not admit a petabyte conversion or establish large-offset data I/O,
 recovery, public backend integration or cleanup qualification.
 
@@ -207,4 +207,4 @@ including all 13 real digest-process terminals. This establishes logical NTFS
 restoration, not a bit-identical source image. The allocation guard remains in
 place, and this refused run supplies no thin conversion or retirement
 qualification. See
-[the allocation-refusal evidence](../evidence/public-thin-preparation-allocation-refusal-20261104.json).
+[the allocation-refusal evidence](../../evidence/public-thin-preparation-allocation-refusal-20261104.json).

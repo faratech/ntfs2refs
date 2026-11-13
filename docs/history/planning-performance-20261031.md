@@ -83,4 +83,4 @@ comparison. No new interruption/recovery, mutation, physical-power-loss or
 unrestricted-size qualification is claimed. Focused release builds pass;
 no unit tests were added or run. Pinned artifacts and the complete comparison
 scope are recorded in
-[the native evidence](../evidence/planning-performance-native-20261031.json).
+[the native evidence](../../evidence/planning-performance-native-20261031.json).

@@ -28,7 +28,7 @@ conversion speed were not measured.
 
 All 13 metadata/control files (97,323 bytes) were copied with source/host length
 and SHA-256 verification. No executable, disk image or journal was copied. See
-[the exact primitive evidence](../evidence/owned-shadow-retirement-primitive-20261104.json).
+[the exact primitive evidence](../../evidence/owned-shadow-retirement-primitive-20261104.json).
 
 The separate `b7d97fb` public conversion used
 `ntfs2refs --drive F --partition 2 --minimize-scratch` and exited 0 in
@@ -47,7 +47,7 @@ with source/host length and SHA-256 checks.
 The shadow's recorded allocation changed from 740 MiB before detach to 712 MiB
 before deletion; these remain file-level observations, without a physical-space,
 RAM or speed improvement claim. See
-[the public integration evidence](../evidence/public-owned-shadow-retirement-20261104.json).
+[the public integration evidence](../../evidence/public-owned-shadow-retirement-20261104.json).
 
 Independent observers subsequently matched all 811 original XXH3-128 streams
 (9,885,801,949 logical bytes), 1,534 baseline namespace/type/length objects and

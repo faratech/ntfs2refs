@@ -19,13 +19,13 @@ not physical traffic or exact final counters. Timing and journal comparisons
 with older profiles are observations rather than a controlled benchmark.
 The normal early-guard transition was exercised. Separate Frozen restart
 cancellation subsequently passed; mixed-copy repair remains unqualified. See the
-[exact native conversion and resource record](../evidence/public-resource-minimize-20261103.json).
+[exact native conversion and resource record](../../evidence/public-resource-minimize-20261103.json).
 
 The same frozen candidate also passed a real read-only exclusive journal-open
 failure (native ERROR32/exit1) followed by native exit0 online HND reconciliation.
 The normal wrapper reported a separate output-parser failure; the actual native
 result is preserved. This covers journal-open failure, not active write/flush
-or readback failure. See [the scoped record](../evidence/resource-v4-hnd-open-failure-20261103.json).
+or readback failure. See [the scoped record](../../evidence/resource-v4-hnd-open-failure-20261103.json).
 The verified full minimum-scratch HND branch is saved. The separate prepare-only
 low-free-reserve case subsequently refused at capture before J/AP. After a normal
 restart, the ordinary LabAdmin public command cancelled the authenticated Frozen
@@ -34,7 +34,7 @@ payload writes, and durably closed both guard copies as Cancelled. All811 known
 stream hashes and1024 extra directory paths matched independently. This covers
 reserve admission and normal Frozen restart cancellation, not actual ENOSPC,
 active write/flush/readback failure or torn/corrupt guard repair. See
-[the exact early-cancellation record](../evidence/resource-v4-early-cancel-20261103.json).
+[the exact early-cancellation record](../../evidence/resource-v4-early-cancel-20261103.json).
 
 ## Actual restart recovery and next performance run — 2026-11-03
 
@@ -45,8 +45,8 @@ NTFS in 462.84s; resume returned healthy ReFS in 935.26s with 2558 verified
 metadata/map bindings. All811 original XXH3 stream hashes matched independently
 in both directions. The additional1024 directory paths were captured on restored
 NTFS and matched exactly on resumed ReFS. See the exact
-[rollback](../evidence/resource-v4-restart-rollback-20261103.json) and
-[resume](../evidence/resource-v4-restart-resume-20261103.json) records.
+[rollback](../../evidence/resource-v4-restart-rollback-20261103.json) and
+[resume](../../evidence/resource-v4-restart-resume-20261103.json) records.
 
 The subsequent public scratch-minimizing run completed and passed mutation
 and cold-boot observations as recorded above. The verified HND branch and
@@ -61,7 +61,7 @@ original streams (9,885,801,949 logical bytes), and every baseline hash matched.
 The original1534 names, types and lengths also matched. The1024 added directories
 were covered by the conversion-time2558 bindings but were not independently
 re-enumerated after boot. This does not establish mutation or interrupted V4
-recovery. See [the cold-boot record](../evidence/public-resource-coldboot-content-20261103.json).
+recovery. See [the cold-boot record](../../evidence/public-resource-coldboot-content-20261103.json).
 
 The public `ntfs2refs --drive F --partition 2` command from exact experimental
 source `5a8b781728726fec5e0f9351fa3b61c8633a7e19` completed with observed native
@@ -70,7 +70,7 @@ identities and2558 user objects:811 files and1747 directories. Native protected
 verification matched2558 metadata/map bindings,157 known-content stream hashes
 and654 extent-only streams. Windows reported healthy ReFS, the original label
 and mount paths were preserved, and the actual journal closed HND. See
-[the exact native record](../evidence/public-resource-first-conversion-20261103.json).
+[the exact native record](../../evidence/public-resource-first-conversion-20261103.json).
 
 Together these establish the first full public V4 conversion and the separate
 cold-remount/original811-stream verification above. Mutation, interrupted
@@ -105,7 +105,7 @@ volume without raw replay or stale selected-byte comparison. All33 new file
 lengths and hashes remained unchanged. Native exit0 took133.685 seconds;
 observer-close process transfers were36.76GB read, not physical storage traffic.
 Interrupted V4 resume/rollback, missing-path repair and ABT still require their
-own cases. See [the exact recovery result](../evidence/resource-online-terminal-recovery-20261103.json).
+own cases. See [the exact recovery result](../../evidence/resource-online-terminal-recovery-20261103.json).
 
 The first public already-online recovery attempt on built source`a9f3436`
 refused before journal opening because output discovery used the source-only
@@ -114,7 +114,7 @@ remained online ReFS. The follow-up uses a typed journal-only read-only query,
 bracketing mount enumeration with complete `Role::Journal` discoveries. Source
 and shadow exclusions remain unchanged. Its focused Windows check passed in
 10.73 seconds; the pinned native success above resolves this route refusal. See
-[the original refusal](../evidence/resource-recovery-os-journal-refusal-20261103.json).
+[the original refusal](../../evidence/resource-recovery-os-journal-refusal-20261103.json).
 
 The diagnostic now has an opt-in `--apply-and-verify
 --interrupt-after-first-flushed-write` case. It preallocates a share-zero signal
@@ -131,7 +131,7 @@ first placement submission:942,034,628 leased bytes plus3,087,768 registry bytes
 could not admit a571,816,544-byte workspace under the same1,456,427,008-byte RAM
 budget. The source stayed offline/read-only and the preallocated signal remained
 all zero. Exit1 is therefore a preparation refusal, not successful fault
-injection. See [the recorded refusal](../evidence/resource-first-write-placement-refusal-20261103.json).
+injection. See [the recorded refusal](../../evidence/resource-first-write-placement-refusal-20261103.json).
 
 The follow-up removes an unused full-serialization-buffer allowance from the
 streamed resource placement path, preserving both actual JSON values and the
@@ -160,7 +160,7 @@ within the existing quota. The compiled correction reserves quota before
 preallocation, retains zero EOF and checks actual identity/allocation before
 streaming. It changes neither the quota nor marker-storage formats. The
 original journal was untouched by the probe. See
-[the refusal and probe](../evidence/resource-first-write-journal-refusal-20261103.json).
+[the refusal and probe](../../evidence/resource-first-write-journal-refusal-20261103.json).
 
 The corrected pinned`acbcc1b` diagnostic subsequently completed resource
 preparation and reached its real fresh writer under the unchanged1,456,427,008
@@ -172,7 +172,7 @@ or boot metadata, not copied user payload. The original AP state was saved Off
 at checkpoint`a51e134b-9c2f-4de6-9794-37e8d664b79a` after normal shutdown, then
 booted for actual public recovery. Resume and independent Rollback remain
 unproven; no physical power loss was exercised. See
-[the closed first-write evidence](../evidence/resource-first-flushed-write-20261103.json).
+[the closed first-write evidence](../../evidence/resource-first-flushed-write-20261103.json).
 
 The first actual restarted public Resume on acbcc then failed after90.833
 seconds with`artifact changed before retirement`, while preparing recovery
@@ -186,7 +186,7 @@ writer before reopening readonly produced stable final metadata. The SDK
 ordering fix at`a0b29e04dd2e83086823349724e7e2a8ccf905f5` preserves complete index
 checks and strict retirement and compiled in10.07 seconds. Its pinned build is
 complete; separate Resume remains pending. The saved AP
-origin remains protected. See [the refusal and probes](../evidence/resource-restart-retirement-refusal-20261103.json).
+origin remains protected. See [the refusal and probes](../../evidence/resource-restart-retirement-refusal-20261103.json).
 
 The corrected a0b public command then completed actual Rollback after restart
 from the original first-metadata-write AP checkpoint. Native exit0 took462.837
@@ -197,7 +197,7 @@ matched all811 original XXH3 streams/9,885,801,949 bytes and1,534 baseline
 path/type/length objects. It captured and rechecked1,024 additional directory
 names on NTFS for subsequent comparison; this did not independently audit all
 ACLs/times or prove absence of extra objects. See
-[the rollback record](../evidence/resource-v4-restart-rollback-20261103.json).
+[the rollback record](../../evidence/resource-v4-restart-rollback-20261103.json).
 This qualifies the old acbcc producer with the new a0b recovery reader, not
 fresh a0b preparation/guard behavior, copied-user-payload interruption, Resume,
 or physical power loss. The closed ABT branch must never be replayed.
@@ -318,7 +318,7 @@ On the same saved 2,585-record source, raw/native observation completed in
 641.207 seconds before and 51.209 seconds after the page-cache changes; both
 matched all 2,558 user objects and recorded the same raw-reader byte count.
 The host cache was not controlled. These are source-inspection observations,
-not a full-conversion benchmark. See the [record](../evidence/resource-paged-cache-comparison-20261103.json).
+not a full-conversion benchmark. See the [record](../../evidence/resource-paged-cache-comparison-20261103.json).
 
 Geometry and feature support remain explicit: the active raw namespace/security
 walker still interprets 512-byte NTFS sectors and 4 KiB index records. Dedicated
@@ -334,13 +334,13 @@ The source-only observer built from `68ef19e` completed against the saved
 identities and the expected-tree projection contains 2,558 user objects. The
 observer reported zero unresolved source blockers; its source disk remained
 offline and read-only at completion. The closed evidence archive and binary
-are pinned in [the observation record](../evidence/resource-live-source-evidence-20261103.json).
+are pinned in [the observation record](../../evidence/resource-live-source-evidence-20261103.json).
 
 This was not a conversion or recovery run. Shared artifact ownership,
 target security/timestamp preservation, and target resource-profile support
 remain incomplete; no source admission or execution authority was issued.
 
-The subsequent [shared-arena observation](../evidence/resource-source-arena-20261103.json)
+The subsequent [shared-arena observation](../../evidence/resource-source-arena-20261103.json)
 passed against the same fixture with both source and native groups sealed and
 no unresolved source blockers. The first attempt safely refused a verbatim
 Windows path during source inspection; the corrected observer retains the
@@ -351,7 +351,7 @@ arena obligations still prevent admission or execution.
 The first end-to-end resource diagnostic passed the source and fixture
 allocation checks, then refused during expected-tree projection because the
 shared RAM budget was exhausted. It did not populate the shadow or activate
-the source. The [refusal record](../evidence/resource-fixture-ram-refusal-20261103.json)
+the source. The [refusal record](../../evidence/resource-fixture-ram-refusal-20261103.json)
 preserves the actual process result and evidence archive pins. The next change
 reduces initial external-sort reservations while retaining bounded spill;
 it is not yet qualified by a completed native conversion.
@@ -359,7 +359,7 @@ it is not yet qualified by a completed native conversion.
 With count-hinted sort batches, the next diagnostic built the complete
 2,558-object expected tree. It then refused before shadow population because
 the newly formatted shadow's label differed from the native constructor's
-required label. The [record](../evidence/resource-fixture-shadow-label-refusal-20261103.json)
+required label. The [record](../../evidence/resource-fixture-shadow-label-refusal-20261103.json)
 contains the actual exit and archive pins. The reported 308,727,808 bytes of
 private commit was a single pre-shadow observation, not a peak measurement.
 
@@ -368,12 +368,12 @@ allocation and placement on the disposable ReFS shadow. It then refused before
 copying source payload because the materialization plan exceeded its 2 GiB
 budget. The plan did not report the required amount, so the next step is to
 measure and explain that amount before raising the limit. The source stayed
-offline and read-only. See the [record](../evidence/resource-fixture-materialization-refusal-20261103.json).
+offline and read-only. See the [record](../../evidence/resource-fixture-materialization-refusal-20261103.json).
 
 An instrumented repeat measured 4,225,110,016 source-reference bytes and
 5,660,671,365 bytes classified for shadow materialization, after
 13,581,152,256 bytes of shadow moves. The move count does not represent source
-payload writes. The [measurement](../evidence/resource-fixture-placement-measurement-20261103.json)
+payload writes. The [measurement](../../evidence/resource-fixture-placement-measurement-20261103.json)
 is a diagnostic refusal, not a completed conversion. A proof-bound routed
 prefix path is being developed to avoid first copying eligible relocated data
 into the shadow; its later target/journal I/O still needs measurement.
@@ -381,7 +381,7 @@ into the shadow; its later target/journal I/O still needs measurement.
 The first routed diagnostic completed placement but refused during routed
 preparation when its source-metadata RAM ledger was exhausted. The source
 remained offline and read-only; capture and conversion did not complete. The
-[refusal record](../evidence/resource-fixture-routed-ram-refusal-20261103.json)
+[refusal record](../../evidence/resource-fixture-routed-ram-refusal-20261103.json)
 preserves the native exit and evidence pins. The current work reduces
 overlapping per-stream reservations while keeping the shared RAM limit.
 
@@ -392,12 +392,12 @@ It then refused during routed-prefix verification on a reported hole. The
 error did not identify the hole's location, so it is not yet known whether it
 was inside the required prefix or in a trailing suffix. The source remained
 offline/read-only; no conversion completed. See the
-[measurement](../evidence/resource-fixture-prefix-hole-refusal-20261103.json).
+[measurement](../../evidence/resource-fixture-prefix-hole-refusal-20261103.json).
 
 After the prefix-scope correction, the next diagnostic progressed further but
 refused an MFT workspace reservation: its actual shared-ledger commitments
 would have exceeded the 1,456,427,008-byte limit by 4,515,605 bytes. The
-[record](../evidence/resource-fixture-arena-ram-refusal-20261103.json) retains
+[record](../../evidence/resource-fixture-arena-ram-refusal-20261103.json) retains
 the native result. The correction targets the lifetime of existing buffers;
 it does not increase the configured RAM budget.
 
@@ -407,12 +407,12 @@ coordinates, and 1,469,829 bytes were materialized into the shadow. The
 reported 1,469,829 logical source bytes read apply to that verification stage,
 not the complete run. Target capture then refused a projection-budget mismatch;
 no conversion or recovery authority was issued. See the
-[record](../evidence/resource-fixture-routed-supply-20261103.json).
+[record](../../evidence/resource-fixture-routed-supply-20261103.json).
 
 The subsequent diagnostic passed that page-budget mismatch and completed
 routed supply again. It then refused while rebuilding the target's source
 projection because a later target workspace overlapped that projection's own
-RAM reservation. The [record](../evidence/resource-fixture-target-ram-refusal-20261103.json)
+RAM reservation. The [record](../../evidence/resource-fixture-target-ram-refusal-20261103.json)
 captures the actual ledger values and exit. Source and shadow remained
 offline/read-only; conversion and recovery remain unqualified.
 

@@ -1,4 +1,4 @@
-> Historical copy of `docs/release-0.0.1-readiness.md` from the frozen release. Relative links below use the original location. [View the original document](https://github.com/faratech/ntfs2refs/blob/3aaaf11bb4e5a4891942feeabc974d4188916e98/docs/release-0.0.1-readiness.md).
+> Historical copy of `docs/history/release-0.0.1-readiness.md` from the frozen release. Relative links below use the original location. [View the original document](https://github.com/faratech/ntfs2refs/blob/3aaaf11bb4e5a4891942feeabc974d4188916e98/docs/history/release-0.0.1-readiness.md).
 
 # 0.0.1 release readiness — 2026-10-29
 

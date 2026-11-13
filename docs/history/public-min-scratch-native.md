@@ -32,4 +32,4 @@ This qualifies the bounded public workflow and recorded runtime. Exact-build
 interruption/recovery, production release, arbitrary scale and the redundant
 marker native path remain separate work. No unit tests were added or run.
 
-[Exact metrics, scope and artifact pins](../evidence/public-min-scratch-native-20261102.json).
+[Exact metrics, scope and artifact pins](../../evidence/public-min-scratch-native-20261102.json).

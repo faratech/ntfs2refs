@@ -1,7 +1,7 @@
 # Operating and recovery guide: 0.0.1-alpha
 
 This guide describes the [published experimental Windows boot-volume alpha](https://github.com/faratech/ntfs2refs/releases/tag/0.0.1-alpha).
-See [release qualification](release-0.0.1-alpha.md) for the tested scope and
+See [release qualification](history/release-0.0.1-alpha.md) for the tested scope and
 [the archived workflow](history/cli-workflow-before-boot-alpha-closeout-20261111.md)
 for older experiments.
 
@@ -239,7 +239,7 @@ It does not exercise the recovery journal, the apply step or the boot.
 - **Default.** Data that stays in place is proven by the identity of its
   extents; resident, compressed, sparse and partly initialized streams, tails
   and everything rewritten are read and checksummed
-  ([details](fast-verification.md)). Working files and the source are re-read
+  ([details](history/fast-verification.md)). Working files and the source are re-read
   in full once, at the gate before the first source write.
 - **`--verify-full-content`** changes *what* is checked: every stream's complete
   contents are read and hashed. The recorded boot qualification used the default.

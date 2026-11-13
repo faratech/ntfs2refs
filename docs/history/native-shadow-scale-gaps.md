@@ -46,7 +46,7 @@ in the initial snapshots, a different quantity from logical bitmap reservation.
 No constant-reservation, speed, complete-ownership or consumed-set claim follows.
 The normal formatter remains unchanged; metadata was archived, and disposable
 images were discarded by the subsequent controlled fixture restore. See the
-[exact native cohorts and scope](../evidence/native-shadow-seed-growth-20261104.json).
+[exact native cohorts and scope](../../evidence/native-shadow-seed-growth-20261104.json).
 
 The frozen 814 candidate remains unchanged. These are open requirements for
 the broader project, not claims made by its bounded native results.

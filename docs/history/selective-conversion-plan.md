@@ -75,7 +75,7 @@ and recorded:
 Its 13.5 s elapsed time was warm-cache (it ran right after the complete capture
 read the same bytes) and is not a cold measurement. The selected journal for the
 plan would be 141,251,152 bytes. See
-[the receipt](../evidence/selective-plan-native-20261029.json). Step 2 below is
+[the receipt](../../evidence/selective-plan-native-20261029.json). Step 2 below is
 therefore validated on one native run; it still authorizes nothing.
 
 ## First allocation-bounded native conversion
@@ -84,7 +84,7 @@ Commits `45f263a` (backend) and `1ac5682` (launcher) implement steps 1–3 behin
 the hidden `--experimental-allocation-bounded` drive flag. Run `3869576a…`
 converted the fixture: native exit 0, 15 objects / 10 complete hashes, label and
 mount verified, F: ReFS 4 KiB. See
-[the receipt](../evidence/allocation-bounded-conversion-20261029.json).
+[the receipt](../../evidence/allocation-bounded-conversion-20261029.json).
 
 | | Whole-image HEAD | Allocation-bounded |
 |---|---:|---:|
@@ -119,7 +119,7 @@ from one controlled interruption (exit 86 after the first flushed write), a gues
 restart, then both public directions from the identical interrupted state:
 `--recover` resumed to ReFS with 15 objects / 10 hashes, and `--recover
 --rollback` restored NTFS with all 7 user files matching their original SHA-256.
-See [the receipt](../evidence/allocation-bounded-recovery-matrix-20261029.json).
+See [the receipt](../../evidence/allocation-bounded-recovery-matrix-20261029.json).
 Other interruption points and physical power loss remain untested. The conversion publishes `allocation-recovery-bundle.json` (pins only)
 before activation and prints its checksum; `--recover` routes to
 `general_recovery::recover_allocation` when only that bundle exists. The

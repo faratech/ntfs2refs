@@ -57,9 +57,9 @@ including one straddling an internal 1 MiB read chunk), read exactly the coarse
 bytes from each input with zero denied reads, and needed a 41,360-byte journal
 instead of 6,431,040. The pruned plan then applied and handed off, the whole
 coarse region matched the candidate, and five outside blocks were unchanged. See
-the [planning receipt](../evidence/selected-journal-changed-plan-20261029.json).
+the [planning receipt](../../evidence/selected-journal-changed-plan-20261029.json).
 
-The [recorded integration](../evidence/selected-journal-integration-20261029.json)
+The [recorded integration](../../evidence/selected-journal-integration-20261029.json)
 passed. It is an ordinary-file observation, not Windows device, power-failure,
 filesystem-ownership or native conversion qualification. No unit tests were
 added or run.
@@ -95,14 +95,14 @@ legacy arming path is unchanged. Exact plan sizing and a fresh free-space check
 precede journal creation and source activation. The existing 16 GiB native
 journal ceiling still applies; this change does not claim unbounded capacity.
 
-The [owned-file integration](../evidence/zero-payload-journal-20261030.json)
+The [owned-file integration](../../evidence/zero-payload-journal-20261030.json)
 stored 16 KiB of selected changes using a 29,096-byte journal versus 41,360
 bytes with the legacy format. It omitted 12 KiB of new zero payload and retained
 all old bytes. Short-write resume/rollback and false-zero rejection passed;
 the legacy output matched the preserved journals byte for byte. This result
 does not establish native-volume or physical power-loss qualification.
 
-The [native conversion observation](../evidence/zero-payload-native-20261030.json)
+The [native conversion observation](../../evidence/zero-payload-native-20261030.json)
 then passed the public drive conversion on the 52 GiB fixture: 15 objects and
 10 full file hashes, label/mount preserved, N2RZERO1 and closed HND. It stored
 2,887,680 bytes of packed payload and 73,559,152 bytes of journal. Dense storage
@@ -113,7 +113,7 @@ The same662f4ae build subsequently passed controlled one-write interruption,
 guest restart, public resume to ReFS15 objects/10 hashes and an independent
 public rollback to NTFS with7/7 user-file hashes matching. Both directions
 started from the same interrupted snapshot; see the
-[native recovery record](../evidence/zero-payload-recovery-20261030.json).
+[native recovery record](../../evidence/zero-payload-recovery-20261030.json).
 Mutation/reboot and physical power loss on this build remain unverified. The
 initial pre-activation capacity-query refusal is retained in the conversion
 evidence record. These native results do not qualify later loader changes.
@@ -127,7 +127,7 @@ zeros contribute only to the logical digests. Each lifecycle boundary still
 performs its required fresh verification; this removes the duplicate read
 within that verification, not the boundary itself.
 
-The [focused integration](../evidence/journal-single-pass-20261030.json) observed
+The [focused integration](../../evidence/journal-single-pass-20261030.json) observed
 41,360 instead of 74,528 bytes read for one legacy lifecycle check, and 29,096
 instead of 50,000 bytes for the zero encoding. All four completed journals
 matched the preserved earlier bytes, with interrupted resume and rollback
@@ -161,7 +161,7 @@ The exact journal size is:
   + 2 * selected_bytes - new_zero_bytes - new_copy_bytes + 80
 ```
 
-The [ordinary-file integration](../evidence/payload-reference-integration-20261030.json)
+The [ordinary-file integration](../../evidence/payload-reference-integration-20261030.json)
 includes forward and backward copies spanning old records, overwritten
 origins, interruption, resume, rollback, and rejection of an incorrect copy.
 It used 58,176 journal bytes instead of 82,640. Earlier journal encodings

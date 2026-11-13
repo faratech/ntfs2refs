@@ -287,7 +287,7 @@ Important broadergoal gap: oneVHDXbackend virtualsize64TBlimit (including64MiB
 margin) cannotserve1000TB. Large NTFSclusterdecoderalreadysupports2MiB, but
 extent-onlyevidencebuilder+SDKstill4–64KiB; bigger fallsbackfullhash. Active
 geometry still512Bsector/1024BFRS/4096Bindex. Do NOTclaimarbitraryHW/scale;
-see docs/native-shadow-scale-gaps.md. Nativeformat50GiBseed→grow is a FUTURE
+see docs/history/native-shadow-scale-gaps.md. Nativeformat50GiBseed→grow is a FUTURE
 disposableemptyimagehypothesis only, cannotbypassVHDXlimit andhasnoperfproof.
 No independentReFSwriterrestart. These remain open full-goal requirements.
 
@@ -337,7 +337,7 @@ post-reboot owner reacquisition without clearing exclusion to evade refusal.
 
 Original T attributes and access path were restored; C and both markers matched.
 No physical writer was connected to the product, whole-disk guards unchanged.
-See evidence/partition-scoped-source-20261103.json and docs/partition-scoped-source.md.
+See evidence/partition-scoped-source-20261103.json and docs/history/partition-scoped-source.md.
 ALL24 guest source metadata files/1373304B were independently length/SHA-verified:
 .lab/hyperv/streaming-v2-20261027/partition-probe-803bb22b85044f74916d9cc6fda878c8/closed/manifest-verified.json,
 SHA8bdfd914ce5c70cdd4a6dbe043cf8c9e705fb12ca343d2d36e281b75927c5253.

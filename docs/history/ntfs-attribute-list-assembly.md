@@ -34,7 +34,7 @@ extension record. All 1,024 payload extents remained at their source physical
 locations, all nine alias/stream SHA-256 checks passed, and a cold boot preserved
 the observations. The result covers this schema-5 fixture; schema 6 and other
 combinations need their own native coverage. See
-[the conversion evidence](../evidence/attribute-list-native-conversion-20261030.json).
+[the conversion evidence](../../evidence/attribute-list-native-conversion-20261030.json).
 
 Ordinary named streams are placed through owned ordinary carriers and cloned
 into their final nonsparse ADS. This avoids depending on a successful

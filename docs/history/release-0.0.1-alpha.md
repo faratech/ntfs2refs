@@ -87,7 +87,7 @@ physical power-loss tolerance or a Windows boot-volume rollback matrix.
 
 ## Operating scope
 
-Use the [operating guide](cli-workflow.md). The demonstrated path runs from a
+Use the [operating guide](../cli-workflow.md). The demonstrated path runs from a
 separate Windows installation, with the source not in use, and creates a ReFS
 Dev Drive shadow. It used about 30 GB of independent working storage for the
 recorded source. The final boot uses the original disk alone.
@@ -102,5 +102,5 @@ started again; it is not a universally resumable transaction.
 The published executable remains the reference artifact. Subsequent formatting,
 documentation and integration commits do not replace its hashes or imply new
 native qualification. Code changes that alter conversion, apply or finalization
-need the checks described in [AGENTS.md](../AGENTS.md). Hosted CI checks building
+need the checks described in [AGENTS.md](../../AGENTS.md). Hosted CI checks building
 and ordinary tests; it does not exercise Hyper-V, source-disk writes or boot.

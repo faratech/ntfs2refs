@@ -61,7 +61,7 @@ conditions; no general speedup or physical-I/O claim follows. The 133 closed
 metadata files (86,066,547 bytes) are SHA verified, and the stopped result is saved
 at checkpoint `44c48db9-c9ad-452f-8811-ce32a170c979`. Earlier SVI-copy refusal and
 full-fallback/observer-failure cases remain separately preserved. See
-[the native evidence](../evidence/raw-extent-verification-native-20261031.json).
+[the native evidence](../../evidence/raw-extent-verification-native-20261031.json).
 
 The same runtime also passed a separate first-flushed-write interruption,
 Resume and Rollback matrix with the pinned manifest. See

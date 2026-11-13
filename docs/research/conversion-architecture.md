@@ -61,13 +61,13 @@ In-place means reconstructing the original partition while preserving its
 admitted files. It does not require every byte to remain at its old address.
 For example, our original file location LCN6263..6278 is occupied in the ReFS
 metadata-inclusive bitmap, despite appearing free in the legacy view.
-The [pinned evidence](../bounded-converter-next-step.md) supports relocation or
+The [pinned evidence](../history/bounded-converter-next-step.md) supports relocation or
 refusal for that location; it does not identify an immovable ReFS structure.
 
 ReFS block cloning cannot serve as a cross-filesystem import operation: its
 source and destination must already reside on the same ReFS volume and have
 compatible integrity settings. Consequently the Btrfs reflink rollback image
-in [ntfs2btrfs](../ntfs2btrfs-design-lessons.md) is not a drop-in ReFS recovery
+in [ntfs2btrfs](../history/ntfs2btrfs-design-lessons.md) is not a drop-in ReFS recovery
 scheme. Our external journal contains actual bytes and is independent of the
 destination filesystem's allocator. [Microsoft block-cloning restrictions](https://learn.microsoft.com/en-us/windows/win32/fileio/block-cloning).
 
@@ -88,5 +88,5 @@ admission rule. [ReFS overview](https://learn.microsoft.com/en-us/windows-server
 Current experiment boundaries remain one controlled retained extent, explicit
 integrity NONE, an independent journal device and a fixed Windows/ReFS profile.
 General source admission, native interruption recovery and boot conversion are
-separate outstanding milestones. Consult [runtime status](../../IMPLEMENTATION_STATUS.md)
+separate outstanding milestones. Consult [runtime status](../history/IMPLEMENTATION_STATUS.md)
 for actual completed phases; research conclusions do not promote a failed run.

@@ -35,4 +35,4 @@ The new offline VM and copied disk hashes are recorded in its `manifest.json`.
 Measured free space after provisioning was about 126.7 GiB. Growth remains an
 allowance, not a hard cap on dynamic backing files. No existing VM/checkpoint
 backing files were copied as writable parents or modified. No guest boot or
-native experiment was performed. See [the preservation record](../lab/PRESERVATION.md).
+native experiment was performed. See [the preservation record](../../lab/PRESERVATION.md).

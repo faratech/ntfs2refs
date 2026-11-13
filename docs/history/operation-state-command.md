@@ -16,7 +16,7 @@ ntfs2refs-state-command --run-directory C:\ntfs2refs\runs\run-001 `
 
 The JSON's `powershell_command` calls only `operation-state`. Review it, then
 run it with the reviewed converter in the elevated Windows context required
-by [the public workflow](cli-workflow.md). Each supplied pin hashes the artifact
+by [the public workflow](../cli-workflow.md). Each supplied pin hashes the artifact
 file itself, including `qualification/source-frozen.json`; it is not the raw
 partition hash recorded inside that file. Optional pins are included exactly
 when their artifacts are present. Missing, malformed, oversized or redirected

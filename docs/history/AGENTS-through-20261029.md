@@ -1041,7 +1041,7 @@ PID1660/taskN2R-PrivateTree-98c2e2625f94488b8dfbb85eb3118184 TERMINAL0; controll
 through canonical metadata restoration and exact admission into existing journal,
 then native same-partition read/mutation/recovery. Keep frozen-graph limitations
 explicit; no blind serialized-ticket promotion or writer research detour.
-No unit tests added/run. See docs/private-tree-allocation.md.
+No unit tests added/run. See docs/history/private-tree-allocation.md.
 
 Traced difference run5db90571a9c24aaaaccdaa7742df2468 TERMINAL1: filesystem
 root query/LOCK/explicit flush SUCCEEDED; BOTH post-lock bitmap queries returned
@@ -1138,7 +1138,7 @@ no physical-I/O or low-scratch conversion claim. Fresh controller mode
 -DirectDeferredPlacement uses LOWER9-GiB move budget/11-GiB capacity allowance,
 requires exact restored6ff baseline/all27 snapshots and a fresh output root.
 Do not reuse the previous partial constructor. Native result pending; no
-unit tests added/run. See docs/private-tree-allocation.md.
+unit tests added/run. See docs/history/private-tree-allocation.md.
 
 Tree placement now uses SELECTIVE unwritten evacuation, superseding blanket
 whole-prefix parking. PrivatePlaceholder binds allocated runs from its actual
@@ -1149,7 +1149,7 @@ checks/poisoning. Final original-coordinate refs are recomputed from live
 tracked maps and include already-correct positions. Release build passed;
 native whole-tree/storage qualification remains pending, no physical IO or
 content authority claim. All26 snapshots/VM OFF remain. No unit tests added/run.
-See docs/private-tree-allocation.md; plan backing growth before execution.
+See docs/history/private-tree-allocation.md; plan backing growth before execution.
 
 Source-backed logical hybrid verification is now implemented/wired through
 explicit --verify-logical-hybrid after planned materialization. It hashes all
@@ -1161,7 +1161,7 @@ Release build passed, but native full mixed-path execution is NOT qualified.
 This is NOT frozen metadata-graph validation, source admission or cutover
 authority. Source/system metadata, required-byte capture and recoverable
 compact conversion remain. All26 snapshots preserved/VM OFF. No unit tests
-added/run; details in docs/private-tree-allocation.md.
+added/run; details in docs/history/private-tree-allocation.md.
 
 Live SupplyPlan plus streamed relocation materialization is implemented.
 PrivateTree stores successful original-coordinate ranges internally, requires
@@ -1175,7 +1175,7 @@ flush/readback and bounded receipt samples+ordered digest. CLI opts in via
 Release build passed, but native whole-tree path remains unqualified. Plan
 physical movement/backing growth before execution: preserve all26 snapshots
 and64-GiB reserve. VM remains OFF; no unit tests added/run. Details in
-docs/private-tree-allocation.md. Source-backed hybrid verification, canonical
+docs/history/private-tree-allocation.md. Source-backed hybrid verification, canonical
 admission, metadata restoration and compact cutover are NOT complete.
 
 Tree-wide unwritten parking/original-coordinate placement is implemented in
@@ -1190,7 +1190,7 @@ source write authority or default converter change. Release build passed,
 but no native whole-tree execution yet. Forecast physical movement/scratch
 before running it; existing1-MiB proof cannot qualify this path. All26 snapshots
 remain/VM OFF at4de54cba. No unit tests added/run. Details in
-docs/private-tree-allocation.md. Temporary payload supply, source-backed hybrid,
+docs/history/private-tree-allocation.md. Temporary payload supply, source-backed hybrid,
 source metadata restoration and compact cutover/recovery remain unfinished.
 
 Unwritten planned second-stage repositioning is implemented/native observed
@@ -1206,7 +1206,7 @@ Evidence unwritten-reposition-20261028. Current VM OFF at4de54cba-235b-4d49-9b90
 parent6ffb6bdc, all26 snapshots preserved/RAM released. Contents/NTFS adoption
 and physical IO are unqualified. Next integrate tree-wide scratch/free-space
 planning and original-source placement before VDL/materialization. See
-docs/native-unwritten-placement.md. No unit tests added/run.
+docs/history/native-unwritten-placement.md. No unit tests added/run.
 
 Native partial-tail staging PASSED (c079e47), runcc4109eec29a4643ae5a7e4d1021f8e6.
 Actual source one-byte tail at8 GiB was copied/flushed/read back, plus17-byte
@@ -1219,7 +1219,7 @@ result1629301c5b19af272f5436258c1a072f8771fc758a71ffd9b8f1a74b65562694.
 Evidence private-tree-tail-materialization-20261028. New shadow child150 MiB,
 excluding parents/OS/journal/evidence. Current VM OFF at1da04080-dceb-4127-9540-c6826e45c543,
 parent6ffb6bdc, all25 snapshots preserved/RAM released. No unit tests added/run.
-See docs/private-tree-allocation.md; do not rerun its constructor/task. Large
+See docs/history/private-tree-allocation.md; do not rerun its constructor/task. Large
 mapping/content, source metadata and low-scratch cutover remain incomplete.
 
 Small source materialization is now wired into lab-allocate-private-tree via
@@ -1236,7 +1236,7 @@ child measured116 MiB, not full-chain/workflow scratch. Current VM OFF at
 a6fd7138-6e44-46cb-89a9-883e360bd00e, parent6ffb6bdc, all24 snapshots preserved
 and4-GiB RAM released. Do not rerun its constructor/task. Native tail/gap proof,
 large mapping/supply, metadata restoration and low-scratch conversion remain.
-See docs/private-tree-allocation.md. No unit tests added/run.
+See docs/history/private-tree-allocation.md. No unit tests added/run.
 
 Low-scratch implementation resumed after the completed recovery case. New
 bounded range reader/private materializer APIs are connected across
@@ -1248,7 +1248,7 @@ Per-file prefix/write/readback counters are explicit; failures poison the
 private file. No source writer, early ACL restoration or default conversion
 path change. Release build passed for lab-allocate-private-tree and
 lab-probe-native-valid-data; native new-path qualification still pending.
-See docs/private-tree-allocation.md. No unit tests added/run. VM remains OFF
+See docs/history/private-tree-allocation.md. No unit tests added/run. VM remains OFF
 at rollback checkpoint452c3211 with all23 snapshots preserved.
 
 Candidate13's retained8-GiB PROCESS RECOVERY CASE IS COMPLETE. Exit86/partial
@@ -1261,7 +1261,7 @@ Current VM is OFF at452c3211-cc0f-4c95-acc4-d9c4100627a7; resumed ReFS is OFF
 at4aa9e176-decf-4cb1-85fb-6b3fe0aed0c4; both parent partial4d73dd8d.
 All23 snapshots/evidence remain;4-GiB RAM released. Host chain94431 completed,
 as did monitor42487 and resume/finalize chain46262. NEVER restart these jobs.
-Full paths/pins/scope: docs/streaming-v2-retained-recovery.md. This is NOT
+Full paths/pins/scope: docs/history/streaming-v2-retained-recovery.md. This is NOT
 physical-power-loss qualification or a low-scratch conversion. No unit tests
 added/run. Next implementation priority returns to integrating allocation-only
 tree staging, actual payload supply/metadata restoration and recoverable
@@ -1407,7 +1407,7 @@ retained physical positions for2,721,431,552 bytes. Final guest report
 All13 guest postcheck files/binaries archived and rehashed; manifest
 28b5628a0da13222621cf5d4c13bb6dd8cb6bd74f8a872c309c233ed9bb92d72.
 Current VM is OFF at49094105-ed4b-4447-9f23-86a3a22b394f, parentae80bfd5-7b8d-4e60-80b4-6e236c841390,
-all20 checkpoints preserved/RAM released. See docs/streaming-v2-retained-conversion.md
+all20 checkpoints preserved/RAM released. See docs/history/streaming-v2-retained-conversion.md
 for full pins, scope and next recovery plan. Do not repeat mutation or replay
 its closed journal. Highest remaining acceptance gate is guest-local process
 interruption/resume/rollback for this retained8-GiB profile, using a NEW run on
@@ -1423,7 +1423,7 @@ passed exact namespace/length/mapping checks after the empty/subcluster fix;
 result21d2253c40e0be83c8ab431e4351130e3963183be7dcad78e4a4531cf9d3ec2c.
 All nine user descriptors were checked protected SYSTEM-only. Contents,
 source metadata restoration, root/system data and conversion remain pending.
-See docs/private-tree-allocation.md. New shadow-child storage measured134 MiB,
+See docs/history/private-tree-allocation.md. New shadow-child storage measured134 MiB,
 excluding shared parents/OS/journal/evidence; no total-scratch claim follows.
 OFF checkpointebb2feb4-dc0f-4551-93ee-9a031f96b7ca preserves it, all19 prior/current
 checkpoints retained. No unit tests added/run.
@@ -1459,7 +1459,7 @@ advanced VDL and flushed. Both pre-move bitmap views were free; post-flush
 mapping and storage-valid prefix agree. Producerf505043f24455c0c13c7c50975a92d3631b72fc7f491a90f178b2d56281af598,
 result4a8198cee059e28aeead8313b7cf36208ec9c17f5b21ba395bd2a81545c4691f.
 Zero tool payload reads/writes; physical payload I/O/scratch were unmeasured.
-See docs/native-unwritten-placement.md. This does NOT qualify allocation-only
+See docs/history/native-unwritten-placement.md. This does NOT qualify allocation-only
 conversion or replace the full-shadow path. Native initial placement logic
 remains hard-bound to the exact disposable guest/disks and SYSTEM-only file.
 No unit tests added/run. The experiment is OFF at80907930-4a43-4cbc-b26b-dafd14dea4e8,
@@ -1511,16 +1511,16 @@ Focus on nonboot data volumes. Boot conversion remains deferred.
 
 Mike's latest priority is a frozen native-shadow alpha and end-to-end conversion/
 recovery tests. Independent-writer research and its journal-fencing prerequisites
-are parked off that path; see [the parked scope](docs/isolated-journal-writer-exclusion.md).
+are parked off that path; see [the parked scope](docs/history/isolated-journal-writer-exclusion.md).
 Preserve all existing VM/checkpoint and experiment evidence. Use a separately
 owned disposable alpha fixture for new native tests, with exact bindings and budgets.
 The frozen engine is tagged `alpha-native-shadow-20261026`; follow
-[the alpha scope](docs/native-shadow-alpha.md). Work on its native harness and
+[the alpha scope](docs/history/native-shadow-alpha.md). Work on its native harness and
 conversion/recovery results before adding more parser or writer features.
 
 The later disposable large beta is VM `6c4793d2-cdee-468b-bf3b-1c11cae0b501`,
 240 GiB NTFS/64 KiB to ReFS/4 KiB, fixed 4 GiB RAM, no NIC. See
-[its actual state](docs/native-shadow-large-beta.md). Its first public run
+[its actual state](docs/history/native-shadow-large-beta.md). Its first public run
 refused before source freeze on a legacy fixed-layout TxF path; failure receipts
 and staged binaries are preserved. New attempts must first prove the prior task
 terminal and use fresh candidate/run paths. Do not reset any earlier protected VM
@@ -1585,7 +1585,7 @@ from the source before deleting it through Windows. Unknown SVI entries still
 refuse. Legacy profiles retain their existing behavior. Use its dedicated
 collector and never redispatch on an observation timeout. Candidates 1/2 did not
 convert; candidate 3's later success is recorded below and in
-[the run](docs/streaming-v2-native.md).
+[the run](docs/history/streaming-v2-native.md).
 
 Candidate 2 (`b82e5dbbdd1d4ae899315954c37a2609`) also refused before source
 payload writes, with a generic access-denied error in construction. Its raw/native
@@ -1623,7 +1623,7 @@ report as a conversion certificate or trigger postchecks before terminal handoff
 
 Later source adds CNG SHA-256 only to streaming V2's three full-source hash
 passes and protected target before/after brackets; see
-[the measured scope](docs/native-sha256-performance.md). The same
+[the measured scope](docs/history/native-sha256-performance.md). The same
 real 1 GiB corpus image matched its pinned digest with both backends; native
 was about 1.66 times faster on this no-SHA-instruction host. This is a host
 observation, not native conversion or guest performance qualification. Candidate
@@ -1673,7 +1673,7 @@ in target preservation. Controlled producer SHA-256 is
 `a5e557d422fa73faba8e6a2683182a3b60536be61714f9e38684c891366a44e8`,
 source caf9853 plus the unchanged capabilities dirty patch. It will exit 86 after
 one flushed write, before handoff. Observe that exact task; do not redispatch.
-See [the recovery branch](docs/streaming-v2-recovery.md). No recovery outcome is
+See [the recovery branch](docs/history/streaming-v2-recovery.md). No recovery outcome is
 recorded yet. Preserve the interrupted branch and verify persistent exclusion
 after reboot before executing explicit recovery with its original staged helper.
 It subsequently entered journal preparation; its initial CNG comparison passed
@@ -1750,7 +1750,7 @@ fresh dual-map free space and source-range exclusion before every native move,
 then measures the exact result. It never moves metadata or touches the NTFS
 source. Planning resource/space limits are recorded before any move and retain
 the old conversion path; execution failure aborts, without retry. No existing
-native success qualifies this code. See [the scope](docs/shadow-user-evacuation.md).
+native success qualifies this code. See [the scope](docs/history/shadow-user-evacuation.md).
 Batch evacuation for dense layouts and avoiding full shadow payload copies are
 still unfinished. Preserve all eight passed/interrupted checkpoints.
 
@@ -1793,7 +1793,7 @@ On this Windows host, also read `C:\Users\mfara\.codex\RTK.md` when present.
 ## Verified baseline as of 2026-10-26
 
 - The frozen native-shadow alpha has separate bounded native evidence in
-  [its result report](docs/native-shadow-alpha-results.md): normal public conversion
+  [its result report](docs/history/native-shadow-alpha-results.md): normal public conversion
   of 15 admitted objects, 128 MiB retained, strict native verification, mutation
   and reboot passed. Its independent preactivation cancellation branch also
   passed complete frozen-image verification, seven user-file checks and reboot.
@@ -1859,10 +1859,10 @@ On this Windows host, also read `C:\Users\mfara\.codex\RTK.md` when present.
 
 Use the detailed reports rather than inferring broader support:
 
-- [Native conversion results](docs/general-native-conversion-results.md)
-- [Source labels and native completion](docs/source-volume-label.md)
+- [Native conversion results](docs/history/general-native-conversion-results.md)
+- [Source labels and native completion](docs/history/source-volume-label.md)
 - [Owning-machine CLI](docs/cli-workflow.md)
-- [Device binding discovery](docs/device-binding-discovery.md)
+- [Device binding discovery](docs/history/device-binding-discovery.md)
 - [Strict writer research](research/refsnt-adopt/README.md)
 
 The post-freeze candidate adds an explicitly selected experimental journal
@@ -1936,14 +1936,14 @@ ID/physical-start indexes remain live only, while diagnostics retain mapping
 and page-transcript digests plus the root observation. Lookup data and its
 private root/volume binding are not serialized; imported JSON cannot recreate
 them. Both container copies must agree, with every followed page authenticated.
-See [compact traversal](docs/refs-compact-containers.md). This has compilation
+See [compact traversal](docs/history/refs-compact-containers.md). This has compilation
 evidence only. Default routing and other conversion/resource limits remain;
 the explicit expanded routing budget is not native qualification and inherits
 no driver acceptance or recovery result from the frozen alpha.
 Separate opt-in source-stream and bitmap assembly primitives support larger
 logical ranges. See
-[streaming budgets](docs/ntfs-streaming-budget.md) and
-[bitmap pagination](docs/native-bitmap-pagination.md). These primitives do not
+[streaming budgets](docs/history/ntfs-streaming-budget.md) and
+[bitmap pagination](docs/history/native-bitmap-pagination.md). These primitives do not
 authorize conversion and are not part of the frozen alpha's native evidence.
 
 The bounded profile is NTFS 3.1, 512-byte logical sectors, 4 KiB clusters and
@@ -1973,16 +1973,16 @@ Parser support for a feature is not evidence that conversion preserves it.
   shared by live source, shadow and frozen allocation collection. Native report
   schema 6 replays original page responses; legacy reports reject continuations.
   Complete-map/page hashes have distinct contracts. See
-  [native bitmap pagination](docs/native-bitmap-pagination.md). This source work
+  [native bitmap pagination](docs/history/native-bitmap-pagination.md). This source work
   has no native paging qualification and does not widen conversion authority.
 - `crates/n2r-win32/src/retrieval_paging.rs`: bounded complete stream mappings
   and raw-page provenance. Report schema 7 replays retrieval continuations;
   legacy schemas retain their single-response rules. Shadow placement verifies
-  the explicitly assembled map. See [retrieval pagination](docs/native-retrieval-pagination.md).
+  the explicitly assembled map. See [retrieval pagination](docs/history/native-retrieval-pagination.md).
   This does not add NTFS attribute-list support or native conversion qualification.
 
 The later bounded attribute-list implementation is in `src/ntfs_attribute_list.rs`
-and `src/ntfs_assembled_io.rs`; see [the profile](docs/ntfs-attribute-list-assembly.md).
+and `src/ntfs_assembled_io.rs`; see [the profile](docs/history/ntfs-attribute-list-assembly.md).
 Ordinary files can assemble unnamed unencoded DATA through a complete list and
 uniquely owned extension records. Canonical files contain each stream once;
 `attribute_assemblies` preserves original records and list bytes. Require
@@ -1997,7 +1997,7 @@ actual MFT bitmap bytes and conserve its full allocated-record domain. It loads
 only reachable initialized record ranges, including learned noncontiguous islands;
 no-progress/unreachable graphs refuse. Stream, resident-metadata, backup, log and
 internal-index rereads rebuild the actual bootstrap. See
-[MFT bootstrap](docs/ntfs-mft-bootstrap.md). This has synthetic source coverage only.
+[MFT bootstrap](docs/history/ntfs-mft-bootstrap.md). This has synthetic source coverage only.
 Other system/directory lists, auxiliary lists/bitmaps needing further assembly,
 named or encoded segments and unsupported forms remain refused. Existing file/data/run
 bounds remain. This is source/test coverage, with no new native qualification.
@@ -2092,7 +2092,7 @@ not formatting, reference import, a writer experiment, conversion or further cle
 
 Source-only baseline prerequisites are in `lab/IsolatedBaselineGuards.psm1` and
 `lab/guest/IsolatedJournalZero.cs`; see
-[the source boundary](docs/isolated-baseline-prerequisites.md). They validate
+[the source boundary](docs/history/isolated-baseline-prerequisites.md). They validate
 structural observations and a complete same-stream zero receipt, and return
 review plans only. They neither attest a live native source nor grant write
 authority. No journal initialization/import runner has run. A separately admitted
@@ -2118,7 +2118,7 @@ of the timestamp change is unproven. Preserve all receipts and do not retry the
 observation, weaken that refusal or initialize/format/import storage from this
 result. Host backing ownership and exclusion across storage aliases remain
 separate gates; no-sharing access alone is not that proof. The detailed chronology
-and pins are in [the prerequisite report](docs/isolated-baseline-prerequisites.md).
+and pins are in [the prerequisite report](docs/history/isolated-baseline-prerequisites.md).
 
 Dispatch long work once, retain its task handle and collect terminal evidence.
 `Collect-LabAdmittedConversion.ps1` reports live phase and I/O counters; those
@@ -2126,7 +2126,7 @@ counters are not a completion percentage. The current full-image workflow can
 read many multiples of the partition size. During journal preparation its
 optional `journalProgress` shows the comparison/recheck subphase, combined scan
 bytes and elapsed time even before the first journal write. Missing or partial
-telemetry is ignored; see [the progress contract](docs/journal-preparation-progress.md).
+telemetry is ignored; see [the progress contract](docs/history/journal-preparation-progress.md).
 Guest-local shadow attachment may
 disappear across reboot; raw recovery must restore its exact enrolled backing
 through the existing helper when required.

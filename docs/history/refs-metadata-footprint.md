@@ -26,7 +26,7 @@ descendants completed: 12 pages, 192 KiB, five coalesced physical ranges. Total
 reader input including bootstrap/container inspection was 1,340,432 bytes.
 This is a read-only observation on that research image, not a conversion or a
 measurement of all metadata needed by ReFS. The receipt is recorded in
-[the evidence file](../evidence/refs-metadata-footprint-20261029.json).
+[the evidence file](../../evidence/refs-metadata-footprint-20261029.json).
 
 The Medium and Small allocator readers also retain physical-page footprints
 from their already checked addresses without additional reads. Those separate
@@ -42,7 +42,7 @@ trees, 46 total pages, 12 physical ranges, and 1,897,488 total reader bytes.
 Only compact 80/88-byte CRC64 Object Table values are decoded; legacy/upgraded
 forms still refuse. Directory/file embedded leaf references, log storage and
 the other omissions above are not yet resolved. See the
-[expanded receipt](../evidence/refs-object-footprint-20261029.json).
+[expanded receipt](../../evidence/refs-object-footprint-20261029.json).
 
 The next reader version decodes inline filename records, follows supported
 spilled attribute pages, and follows indexed DATA extent maps. It translates
@@ -55,7 +55,7 @@ The existing image exercised three inline attribute tables, two DATA versions,
 68 extent records and 1,025 allocated clusters. Total reader input stayed at
 1,897,488 bytes, with no external payload reads. It did not exercise spilled
 attribute or extent pages; those paths remain unqualified. See the
-[extent receipt](../evidence/refs-extent-footprint-20261029.json).
+[extent receipt](../../evidence/refs-extent-footprint-20261029.json).
 
 Only compact 3.14 DATA records and the documented plain/checksummed extent
 forms are accepted. Cross-container data runs currently refuse rather than
@@ -79,7 +79,7 @@ or certified, and the location record's trailing eight bytes remain unparsed.
 On the existing image, both generations completed with 2,372,624 total reader
 bytes and 145 charged page operations. The observed metadata union covered
 538,177,536 bytes, including the 512 MiB circular log. Six declared own-record
-attribute nodes were also parsed. The [receipt](../evidence/refs-generation-log-footprint-20261029.json)
+attribute nodes were also parsed. The [receipt](../../evidence/refs-generation-log-footprint-20261029.json)
 does not establish complete ownership or authorize selective conversion.
 
 ## Native allocation reconciliation on the converted volume
@@ -88,10 +88,10 @@ does not establish complete ownership or authorize selective conversion.
 converted ReFS volume (disk offline/read-only afterwards) and obtains the
 allocation bitmap through a protected, physically read-only mount. A first
 attempt that queried the bitmap after taking the volume lock was refused by the
-filesystem (native error 21, [receipt](../evidence/native-required-ownership-lock-refusal-20261029.json))
+filesystem (native error 21, [receipt](../../evidence/native-required-ownership-lock-refusal-20261029.json))
 and is not retried or substituted.
 
-The [protected read-only run](../evidence/native-required-ownership-protected-readonly-20261029.json)
+The [protected read-only run](../../evidence/native-required-ownership-protected-readonly-20261029.json)
 passed on the 52 GiB converted volume. The raw metadata reader's required ranges
 (9,132,548,096 bytes observed; 9,602,035,712 in the raw union) are all allocated
 in the native bitmap, which reports 14,768,467,968 allocated bytes. The reader

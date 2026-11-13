@@ -46,4 +46,4 @@ and metadata files remain.
 This covers one controlled exit 86 plus clean restart. It does not qualify other
 interruption points, physical power loss, F-scale, or later mutation. The newer
 `18bdea8` journal-preparation optimization was not used. No unit tests were added
-or run. [Evidence and artifact pins](../evidence/partial-tail-recovery-matrix-20261031.json).
+or run. [Evidence and artifact pins](../../evidence/partial-tail-recovery-matrix-20261031.json).

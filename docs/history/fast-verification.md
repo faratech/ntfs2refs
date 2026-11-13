@@ -109,7 +109,7 @@ receipt. These are single runs with uncontrolled cache/host conditions; the
 result does not establish an improvement over D1 or reduced physical I/O.
 The 125 closed metadata files (83,275,284 bytes) were copied and SHA-256 checked.
 That run was saved at checkpoint `904cbd98-f87c-4a30-91c0-dedda106062f`.
-See [the native evidence](../evidence/fast-v2-native-20261031.json).
+See [the native evidence](../../evidence/fast-v2-native-20261031.json).
 
 Runtime `e606c53` then passed native conversion `95833c80` / core `c2e31ace`
 in 34.826 seconds: 44 objects, all 53 protected object/stream bindings unchanged,
@@ -130,7 +130,7 @@ retaining their existing field checks and legacy schema paths. The two closed
 archives contain 100/40 metadata files (82,719,759/2,457,084 bytes), all SHA checked.
 That run was saved at native-completed checkpoint
 `26607589-a002-4e25-9102-199ef9fc52e7`; no extra observer checkpoint was created
-at the 50-checkpoint limit. See [the native and observer evidence](../evidence/extent-verification-native-20261031.json).
+at the 50-checkpoint limit. See [the native and observer evidence](../../evidence/extent-verification-native-20261031.json).
 
 These single-run timings do not establish an improvement over the earlier
 32.852-second D1 baseline or reduced physical I/O. Focused release builds passed;

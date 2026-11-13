@@ -133,7 +133,7 @@ Fixture request .lab/development/fixture-diagnostic-request-3343.json SHA27f96da
   Keep8a. NEVER replay its old raw journal. Use the current operation above, not this historical Off observation.
 - Frozen814 source814f380aa38be4d94e2a71ad221c779e5ab4dc7b/publicSHA0f5be1c72b05ff030aad85b21be2c37f32ecccbf214af1ee4d6f7afd4807fafb.
   Public-only ZIP .lab/packages/frozen-814-public-f969ce0e6ea94179bda483015c41982a/ntfs2refs-814-public-experimental.zip
-  SHA129a037136a1c68ac89418c7fdcdfecc8b7d269cc4fb5d89026efeb57e7c4a82; all11entries checked. See docs/frozen-resource-alpha-20261104.md.
+  SHA129a037136a1c68ac89418c7fdcdfecc8b7d269cc4fb5d89026efeb57e7c4a82; all11entries checked. See docs/history/frozen-resource-alpha-20261104.md.
   Its finite normal/mutation/coldboot/first-flushed-write/resume/rollback/early-cancel/refusal/HND proofs belong ONLY to that exact build.
 - 8be refused before publication, auto-restored NTFS; independent811/1534/1024 plus all1024UTF16 paths were verified. F9 directly identified
   capture.index EOF560896/allocation655360/grant560896/slack65535, before-pub NTFS restoration. Earlier exact probes did NOT reproduce;
@@ -166,7 +166,7 @@ Fixture request .lab/development/fixture-diagnostic-request-3343.json SHA27f96da
   Count carrier plus external metadata ONCE, not nested members twice. Sampled allocation/free/RAM is not peak, hard quota or reservation. Preserve strict format gates.
 - Controlled aef AP/public rollback/public resume/mutation-reboot/terminal gates passed on this finite profile.
   Default VHDX conversion, copied-payload interruption, actual ENOSPC/write-flush errors, physical power and broader geometry/hardware remain unqualified.
-  See docs/private-thin-pool-addressability.md and per-case evidence; no broad-completion/stable-release claim.
+  See docs/history/private-thin-pool-addressability.md and per-case evidence; no broad-completion/stable-release claim.
 
 ## Fixed capacity and cleanup
 

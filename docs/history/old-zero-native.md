@@ -55,7 +55,7 @@ free space 49,858,801,664 bytes under the unchanged budget. Four reviewed
 obsolete leaves were removed through Hyper-V after archive/dependency checks;
 all host evidence, the prior prepared-owner case and recovery branches remain
 preserved. Exact artifact pins and final state are recorded in
-[the evidence](../evidence/old-zero-native-20261031.json).
+[the evidence](../../evidence/old-zero-native-20261031.json).
 
 This qualifies one normal old-zero conversion. The earlier `0474927` manual
 helper results concern owned ordinary files; the earlier `07b0164` native

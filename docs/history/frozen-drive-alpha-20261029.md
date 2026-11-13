@@ -56,18 +56,18 @@ scratch for arbitrary nonzero data.
 Public resume/finalize on this exact candidate passed after its controlled
 one-write interruption and reboot: native/task0, exact target hash, HND, native
 15 objects/10 complete hashes, and preserved label/mount. Its recovered branch
-was saved separately. See the [resume receipt](../evidence/optimized-drive-alpha-resume-20261029.json).
+was saved separately. See the [resume receipt](../../evidence/optimized-drive-alpha-resume-20261029.json).
 Independent public rollback on this candidate also passed from the saved
 interrupted state: native/task0, exact frozen NTFS image restored before mount,
 ABT, NTFS64K, original label/F preserved. No post-mount file hashes are claimed.
-See the [rollback receipt](../evidence/optimized-drive-alpha-rollback-20261029.json).
+See the [rollback receipt](../../evidence/optimized-drive-alpha-rollback-20261029.json).
 These results apply to one controlled one-write interruption; other failure
 points and physical power loss remain unqualified.
 The same-source controlled converter subsequently reached its intended exit86
 after one flushed write, published its original native recovery bundle, and
 preserved the interrupted branch. That branch booted with its source still
 offline; public resume then passed as recorded above. See the
-[interruption receipt](../evidence/optimized-drive-alpha-interruption-20261029.json).
+[interruption receipt](../../evidence/optimized-drive-alpha-interruption-20261029.json).
 
 Other sizes, Windows builds and features need their own qualification.
 Arbitrary-size conversion, boot conversion and physical power-loss recovery

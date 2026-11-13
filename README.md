@@ -30,7 +30,7 @@ construction and recovery files. The recorded 22.9 GB source used about 30 GB
 of working storage. This is a measurement for that source, not a general bound.
 
 Read the [operating and recovery guide](docs/cli-workflow.md) and
-[exact release qualification](docs/release-0.0.1-alpha.md) before running it.
+[exact release qualification](docs/history/release-0.0.1-alpha.md) before running it.
 
 ## Data volumes
 

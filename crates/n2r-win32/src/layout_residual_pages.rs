@@ -67,8 +67,8 @@ fn validate(row: &LayoutResidualResult, objects: u64) -> io::Result<()> {
         (e.object_index as u64) < objects
             && e.stream_name_utf16.len() <= 255
             && !e.stream_name_utf16.contains(&0)
-            && e.logical_offset.is_multiple_of(4096)
-            && (1..4096).contains(&e.length)
+            && crate::target_cluster::aligned(e.logical_offset)
+            && (1..crate::target_cluster::bytes()).contains(&e.length)
             && e.logical_offset
                 .checked_add(e.length)
                 .is_some_and(|n| n <= i64::MAX as u64)

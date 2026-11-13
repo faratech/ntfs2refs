@@ -84,8 +84,8 @@ impl TargetHintBuilder {
             .context("native shadow hint escapes partition")?;
         ensure!(
             length > 0
-                && offset.is_multiple_of(4096)
-                && length.is_multiple_of(4096)
+                && n2r_win32::target_cluster::aligned(offset)
+                && n2r_win32::target_cluster::aligned(length)
                 && offset >= self.last[slot],
             "native shadow hint order/alignment differs"
         );

@@ -76,7 +76,7 @@ impl Limits {
             subruns: retention_layout::MAX_SUBRUNS,
             moves,
             evidence: MAX_PLACEMENT_ARTIFACT_BYTES,
-            bitmap: crate::bitmap_streaming::source_limits(partition / 4096)?,
+            bitmap: crate::bitmap_streaming::source_limits(partition / cluster())?,
             resource: false,
         })
     }
@@ -89,9 +89,9 @@ impl Limits {
     ) -> io::Result<Self> {
         admission.validate()?;
         if partition == 0
-            || !partition.is_multiple_of(4096)
+            || !partition.is_multiple_of(cluster())
             || i64::try_from(partition).is_err()
-            || move_bytes < 4096
+            || move_bytes < cluster()
             || requested_moves == 0
         {
             return Err(invalid(
@@ -104,10 +104,10 @@ impl Limits {
         // against actual counts before each phase, not this whole maximum.
         let slots = usize::try_from(admission.budget.retained_index_bytes / 8192)
             .map_err(io::Error::other)?;
-        let byte_moves = usize::try_from(move_bytes / 4096).map_err(io::Error::other)?;
+        let byte_moves = usize::try_from(move_bytes / cluster()).map_err(io::Error::other)?;
         let moves = requested_moves.min(byte_moves);
         let bitmap = crate::bitmap_streaming::resource_source_limits(
-            partition / 4096,
+            partition / cluster(),
             admission.budget.max_row_bytes,
         )?;
         let scratch_intervals = bitmap

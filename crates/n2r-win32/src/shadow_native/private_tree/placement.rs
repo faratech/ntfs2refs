@@ -10,16 +10,21 @@ pub use resource::{PlacementEvidenceSink, ResourcePlacementReport};
 
 const MOVE_BYTES: u64 = 512 * 1024 * 1024;
 
+/// Bytes in one cluster of the shadow volume.
+fn cluster() -> u64 {
+    crate::target_cluster::bytes()
+}
+
 /// A move's length as the cluster count Windows is asked to move. Every move
-/// planned here is a whole number of 4 KiB clusters and fits one request; a
+/// planned here is a whole number of target clusters and fits one request; a
 /// length that is not would otherwise be floored and truncated in silence.
 fn move_clusters(length: u64) -> io::Result<u32> {
-    if !length.is_multiple_of(4096) {
+    if !length.is_multiple_of(cluster()) {
         return Err(invalid(&format!(
             "a placement move of {length} bytes is not a whole number of clusters"
         )));
     }
-    u32::try_from(length / 4096).map_err(|_| {
+    u32::try_from(length / cluster()).map_err(|_| {
         invalid(&format!(
             "a placement move of {length} bytes is more clusters than one request holds"
         ))
@@ -28,9 +33,10 @@ fn move_clusters(length: u64) -> io::Result<u32> {
 
 /// The byte range of `clusters` clusters that start at cluster `first`.
 fn cluster_span(first: u64, clusters: u32) -> io::Result<(u64, u64)> {
+    let cluster = cluster();
     first
-        .checked_mul(4096)
-        .and_then(|start| Some((start, start.checked_add(u64::from(clusters) * 4096)?)))
+        .checked_mul(cluster)
+        .and_then(|start| Some((start, start.checked_add(u64::from(clusters) * cluster)?)))
         .ok_or_else(|| {
             invalid(&format!(
                 "{clusters} clusters from cluster {first} lie beyond any byte offset"
@@ -206,7 +212,7 @@ fn validate_stream_slots(tree: &PrivateTree, input: &impl InputDomain) -> io::Re
         let object = owner.input();
         let original = streams::view_object(&object, &key.name_utf16)?;
         let needs_carrier = original.sparse.is_some()
-            || (!key.name_utf16.is_empty() && original.logical_length() >= 4096);
+            || (!key.name_utf16.is_empty() && original.logical_length() >= cluster());
         if needs_carrier != tree.sparse_targets.contains_key(key) {
             return Err(invalid("stream and carrier association differs"));
         }
@@ -228,12 +234,12 @@ fn validate_stream_slots(tree: &PrivateTree, input: &impl InputDomain) -> io::Re
         } else {
             original.sparse.is_none()
                 && !key.name_utf16.is_empty()
-                && original.logical_length() >= 4096
+                && original.logical_length() >= cluster()
                 && target.layout.initialized_length == original.logical_length()
                 && target.layout.holes.is_empty()
                 && target.layout.allocated.len() == 1
                 && target.layout.allocated[0].offset == 0
-                && original.logical_length().checked_next_multiple_of(4096)
+                && crate::target_cluster::ceil(original.logical_length())
                     == Some(target.layout.allocated[0].length)
         };
         if !layout_matches
@@ -681,7 +687,7 @@ fn barrier_snapshot(
         "legacy_allocated_clusters":a.allocated_clusters,
         "metadata_allocated_clusters":b.allocated_clusters,
         "desired_eligible_free_bytes":free_bytes,
-        "volume_clusters":partition / 4096,
+        "volume_clusters":partition / cluster(),
         "observation_scope":"full-volume"
     }))
 }
@@ -842,7 +848,7 @@ fn intersects_desired(avoid: &[(u64, u64)], offset: u64, length: u64) -> bool {
 }
 
 pub(super) fn source_runs(item: &Input<'_>, partition: u64) -> io::Result<Vec<SourceRun>> {
-    let prefix = item.logical_length() / 4096 * 4096;
+    let prefix = crate::target_cluster::floor(item.logical_length());
     if item.source_offset.is_some() && !item.source_runs.is_empty() {
         return Err(invalid("mixed source placement forms"));
     }
@@ -862,8 +868,8 @@ pub(super) fn source_runs(item: &Input<'_>, partition: u64) -> io::Result<Vec<So
             .ok_or_else(|| invalid("private placement rejects source holes"))?;
         if run.length == 0
             || run.logical_offset != logical
-            || !run.length.is_multiple_of(4096)
-            || !physical.is_multiple_of(4096)
+            || !run.length.is_multiple_of(cluster())
+            || !physical.is_multiple_of(cluster())
             || physical
                 .checked_add(run.length)
                 .is_none_or(|v| v > partition)
@@ -1118,8 +1124,8 @@ fn allocate_deferred(
         let attempt = resource::move_slot(
             tree,
             step.index,
-            step.logical / 4096,
-            step.destination / 4096,
+            step.logical / cluster(),
+            step.destination / cluster(),
             move_clusters(step.length)?,
             false,
             wanted.limits.resource,
@@ -1407,7 +1413,7 @@ pub(super) fn rehydrate_recovered_resource_domain(
         let owner = input.object(key.object_index)?;
         let object = owner.input();
         let item = tree.placement_view_object(&object, key)?;
-        let prefix = item.logical_length() / 4096 * 4096;
+        let prefix = crate::target_cluster::floor(item.logical_length());
         if file.logical_length() != item.logical_length()
             || file.path != placement_path(tree, key, &item)?
             || file.valid_prefix()
@@ -1433,7 +1439,7 @@ pub(super) fn rehydrate_recovered_resource_domain(
             if n == 0
                 || v != cursor
                 || l.checked_add(u64::from(n))
-                    .is_none_or(|e| e > tree.pair.shadow.identity.partition_bytes / 4096)
+                    .is_none_or(|e| e > tree.pair.shadow.identity.partition_bytes / cluster())
             {
                 return Err(invalid(
                     "placed recovery mapping is not a complete dense prefix",
@@ -1443,18 +1449,18 @@ pub(super) fn rehydrate_recovered_resource_domain(
                 .checked_add(u64::from(n))
                 .ok_or_else(|| invalid("placed recovery logical map overflow"))?;
         }
-        if cursor != prefix / 4096 {
+        if cursor != prefix / cluster() {
             return Err(invalid("placed recovery complete prefix map absent"));
         }
         let mut ranges = Vec::new();
         for source in source_runs(&item, tree.pair.shadow.identity.partition_bytes)? {
-            let wanted_vcn = source.logical_offset / 4096;
+            let wanted_vcn = source.logical_offset / cluster();
             let wanted_lcn = source
                 .physical_offset
                 .ok_or_else(|| invalid("placed recovery source LCN absent"))?
-                / 4096;
+                / cluster();
             let wanted_end = wanted_vcn
-                .checked_add(source.length / 4096)
+                .checked_add(source.length / cluster())
                 .ok_or_else(|| invalid("placed recovery source VCN overflow"))?;
             let first = tracked.partition_point(|&(v, _, n)| v + u64::from(n) <= wanted_vcn);
             for &(v, l, n) in &tracked[first..] {
@@ -1470,7 +1476,11 @@ pub(super) fn rehydrate_recovered_resource_domain(
                     return Err(invalid("placed recovery coordinate index exhausted"));
                 }
                 retained_ranges += 1;
-                let row = (start * 4096, (l + start - v) * 4096, (end - start) * 4096);
+                let row = (
+                    start * cluster(),
+                    (l + start - v) * cluster(),
+                    (end - start) * cluster(),
+                );
                 retained_bytes = retained_bytes
                     .checked_add(row.2)
                     .ok_or_else(|| invalid("placed recovery retained bytes overflow"))?;
@@ -1525,10 +1535,11 @@ fn unfinished_runs(
         .ok_or_else(|| invalid("recovered desired physical range absent"))?;
     let mut cursor = start;
     let mut out = Vec::new();
+    let cluster = cluster();
     for &(v, l, n) in file.tracked_mappings() {
-        let a = (v * 4096).max(start);
-        let b = ((v + u64::from(n)) * 4096).min(end);
-        if a >= b || l * 4096 + a - v * 4096 != wanted + a - start {
+        let a = (v * cluster).max(start);
+        let b = ((v + u64::from(n)) * cluster).min(end);
+        if a >= b || l * cluster + a - v * cluster != wanted + a - start {
             continue;
         }
         if a > cursor {
@@ -1587,9 +1598,7 @@ pub(super) fn audit_recovered_maps(tree: &PrivateTree, bytes: u64, moves: usize)
     let b = metadata.view(partition)?;
     let mut ranges = Vec::new();
     for target in tree.sparse_targets.values() {
-        let rounded = target
-            .logical_length
-            .checked_next_multiple_of(4096)
+        let rounded = crate::target_cluster::ceil(target.logical_length)
             .ok_or_else(|| invalid("recovered target EOF overflow"))?;
         let identity = info(&target.file, 18, 24)?;
         let standard = info(&target.file, 1, 24)?;
@@ -1626,11 +1635,11 @@ pub(super) fn audit_recovered_maps(tree: &PrivateTree, bytes: u64, moves: usize)
                     return Err(invalid("recovered allocation range bound exhausted"));
                 }
                 let offset = lcn
-                    .checked_mul(4096)
+                    .checked_mul(cluster())
                     .ok_or_else(|| invalid("recovered target LCN overflow"))?;
                 let length = run
                     .clusters
-                    .checked_mul(4096)
+                    .checked_mul(cluster())
                     .ok_or_else(|| invalid("recovered target allocation overflow"))?;
                 let aa = a.candidate(offset, length)?;
                 let bb = b.candidate(offset, length)?;
@@ -1659,8 +1668,8 @@ pub(super) fn audit_recovered_maps(tree: &PrivateTree, bytes: u64, moves: usize)
             if clusters == 0 || ranges.len() == limits.tracked {
                 return Err(invalid("recovered allocation range bound exhausted"));
             }
-            let aa = a.candidate(lcn * 4096, clusters * 4096)?;
-            let bb = b.candidate(lcn * 4096, clusters * 4096)?;
+            let aa = a.candidate(lcn * cluster(), clusters * cluster())?;
+            let bb = b.candidate(lcn * cluster(), clusters * cluster())?;
             if aa.allocated_clusters != clusters || bb.allocated_clusters != clusters {
                 return Err(invalid(
                     "native recovered ownership is absent from a complete bitmap view",
@@ -2025,7 +2034,7 @@ fn run_domain_inner(
                     .map_err(|_| invalid("placement slot exceeds planner identity"))?,
                 logical_offset: cluster_span(v, n)?.0,
                 physical_offset: cluster_span(l, n)?.0,
-                length: u64::from(n) * 4096,
+                length: u64::from(n) * cluster(),
             });
         }
         for run in &desired[index] {
@@ -2195,8 +2204,8 @@ fn run_domain_inner(
             let attempt = resource::move_slot(
                 tree,
                 movement.file_index as usize,
-                (movement.logical_offset + offset) / 4096,
-                (movement.destination_offset + offset) / 4096,
+                (movement.logical_offset + offset) / cluster(),
+                (movement.destination_offset + offset) / cluster(),
                 move_clusters(length)?,
                 true,
                 limits.resource,
@@ -2460,8 +2469,8 @@ fn run_domain_inner(
                             let attempt = resource::move_slot(
                                 tree,
                                 index,
-                                logical / 4096,
-                                physical / 4096,
+                                logical / cluster(),
+                                physical / cluster(),
                                 move_clusters(length)?,
                                 true,
                                 limits.resource,
@@ -2574,9 +2583,9 @@ fn run_domain_inner(
         }
         let mut first_tracked = 0;
         for source in &desired[&index] {
-            let wanted_vcn = source.logical_offset / 4096;
-            let wanted_lcn = source.physical_offset.unwrap() / 4096;
-            let wanted_end = wanted_vcn + source.length / 4096;
+            let wanted_vcn = source.logical_offset / cluster();
+            let wanted_lcn = source.physical_offset.unwrap() / cluster();
+            let wanted_end = wanted_vcn + source.length / cluster();
             while tracked
                 .get(first_tracked)
                 .is_some_and(|&(v, _, n)| v + u64::from(n) <= wanted_vcn)
@@ -2592,9 +2601,9 @@ fn run_domain_inner(
                 if start >= end || l + start - v != wanted_lcn + start - wanted_vcn {
                     continue;
                 }
-                let logical = start * 4096;
-                let physical = (l + start - v) * 4096;
-                let length = (end - start) * 4096;
+                let logical = start * cluster();
+                let physical = (l + start - v) * cluster();
+                let length = (end - start) * cluster();
                 original_coordinates
                     .entry(index)
                     .or_default()
@@ -2682,4 +2691,20 @@ fn run_domain_inner(
         result["post_evacuation_barrier"] = barrier;
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn moves_and_spans_are_counted_in_target_clusters() {
+        assert_eq!(move_clusters(8192).unwrap(), 2);
+        assert_eq!(cluster_span(2, 3).unwrap(), (8192, 20_480));
+        crate::target_cluster::with(65536, || {
+            assert!(move_clusters(8192).is_err());
+            assert_eq!(move_clusters(131_072).unwrap(), 2);
+            assert_eq!(cluster_span(2, 3).unwrap(), (131_072, 327_680));
+        });
+    }
 }

@@ -49,15 +49,17 @@ pub(super) fn observe_formatted(
     binding.validate_volume_extent(&before)?;
     if data.len() < 64
         || !(64..=data.len()).contains(&(layout::u32_at(data, 0)? as usize))
-        || layout::u32_at(data, 4)? != 3
-        || layout::u32_at(data, 8)? != 14
+        || (layout::u32_at(data, 4)?, layout::u32_at(data, 8)?) != crate::target_refs_version::get()
         || !matches!(layout::u32_at(data, 56)?, 512 | 4096)
         || layout::u32_at(data, 56)? != binding.identity.logical_sector_bytes
-        || layout::u32_at(data, 60)? != 4096
+        || layout::u32_at(data, 60)? != crate::target_cluster::bytes_u32()
     {
-        return Err(invalid(
-            "observed extent is not the native ReFS3.14/4KiB geometry profile",
-        ));
+        return Err(invalid(&format!(
+            "observed extent is not the native ReFS {}.{} geometry profile with {}-byte clusters",
+            crate::target_refs_version::get().0,
+            crate::target_refs_version::get().1,
+            crate::target_cluster::bytes()
+        )));
     }
     let sector = layout::u32_at(data, 56)?;
     let cluster = layout::u32_at(data, 60)?;
@@ -109,7 +111,11 @@ pub(super) fn observe_formatted(
     Ok(Observation {
         schema_version: 1,
         kind: "observed-native-refs-filesystem-extent",
-        geometry_profile: "native-refs3.14-4k-observed-extent-v1",
+        geometry_profile: if cluster == 65536 {
+            "native-refs3.14-64k-observed-extent-v1"
+        } else {
+            "native-refs3.14-4k-observed-extent-v1"
+        },
         binding: binding.clone(),
         physical_partition_bytes: partition,
         filesystem_bytes,
@@ -120,8 +126,8 @@ pub(super) fn observe_formatted(
         native_total_clusters: clusters,
         bytes_per_sector: sector,
         bytes_per_cluster: cluster,
-        refs_major: 3,
-        refs_minor: 14,
+        refs_major: crate::target_refs_version::get().0,
+        refs_minor: crate::target_refs_version::get().1,
         primary_vbr: vbr.to_vec(),
         primary_vbr_native_geometry_agree: true,
         held_volume_route_unchanged: true,

@@ -10,6 +10,11 @@ use windows_sys::Win32::{
     System::Ioctl::{FSCTL_DUPLICATE_EXTENTS_TO_FILE, FSCTL_SET_SPARSE},
 };
 
+/// Bytes in one cluster of the shadow volume.
+fn cluster() -> u64 {
+    crate::target_cluster::bytes()
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct Island {
     pub logical: u64,
@@ -152,7 +157,7 @@ impl Target {
         validate_open_type(&file, false)?;
         private_tree::recovery::require_private_security(&file, false)?;
         let rounded = length
-            .checked_next_multiple_of(4096)
+            .checked_next_multiple_of(cluster())
             .ok_or_else(|| invalid("recovered sparse EOF overflow"))?;
         unwritten::recovery::require_zero_storage_vdl(&file, rounded)?;
         let standard = info(&file, 1, 24)?;
@@ -230,13 +235,13 @@ impl Target {
         length: u64,
         base: Option<&File>,
     ) -> io::Result<Self> {
-        if name.is_empty() || length < 4096 || base.is_none() {
+        if name.is_empty() || length < cluster() || base.is_none() {
             return Err(invalid(
                 "plain carrier target requires a nonempty allocated ADS",
             ));
         }
         let rounded = length
-            .checked_next_multiple_of(4096)
+            .checked_next_multiple_of(cluster())
             .ok_or_else(|| invalid("plain ADS EOF overflow"))?;
         let layout = SparseLayout::from_allocated(
             length,
@@ -293,7 +298,7 @@ impl Target {
         }
         file.set_len(
             length
-                .checked_next_multiple_of(4096)
+                .checked_next_multiple_of(cluster())
                 .ok_or_else(|| invalid("sparse EOF overflow"))?,
         )?;
         let mut dense = 0;
@@ -352,7 +357,7 @@ impl Target {
             vec![SourceRun {
                 logical_offset: 0,
                 physical_offset: Some(offset),
-                length: item.logical_length() / 4096 * 4096,
+                length: item.logical_length() / cluster() * cluster(),
             }]
         } else {
             item.source_runs.clone()
@@ -399,8 +404,8 @@ impl Target {
                 }
             }
             let capture = crate::stream_native::retrieval_capture(carrier.metadata_handle())?;
-            let visible = self.logical_length % 4096;
-            let tail_start = self.logical_length / 4096 * 4096;
+            let visible = self.logical_length % cluster();
+            let tail_start = self.logical_length / cluster() * cluster();
             if visible != 0 {
                 if let Some(island) = self
                     .islands
@@ -408,7 +413,7 @@ impl Target {
                     .find(|i| i.logical <= tail_start && tail_start < i.logical + i.length)
                 {
                     let dense = island.dense + tail_start - island.logical;
-                    let old_lcn = lcn_at(&capture.runs, dense / 4096)?;
+                    let old_lcn = lcn_at(&capture.runs, dense / cluster())?;
                     let mut bytes = vec![0; visible as usize];
                     carrier.read_initialized_at(dense, &mut bytes)?;
                     tail = Some((tail_start, old_lcn, bytes));
@@ -452,12 +457,12 @@ impl Target {
                 &runs,
                 "after-final-eof",
                 &carrier_path,
-                tail.as_ref().map(|(at, _, _)| at / 4096),
+                tail.as_ref().map(|(at, _, _)| at / cluster()),
             )?;
         }
         let tail_proof = if let Some((offset, old_lcn, expected)) = tail {
             let after = capture(&self.file, self.logical_length)?.0;
-            let new_lcn = lcn_at(&after, offset / 4096)?;
+            let new_lcn = lcn_at(&after, offset / cluster())?;
             let mut actual = vec![0; expected.len()];
             self.file.seek(SeekFrom::Start(offset))?;
             self.file.read_exact(&mut actual)?;
@@ -501,13 +506,13 @@ impl Target {
     ) -> io::Result<()> {
         if let Some(vcn) = permitted_partial_vcn {
             if phase != "after-final-eof"
-                || self.logical_length % 4096 == 0
-                || vcn != self.logical_length / 4096
+                || self.logical_length % cluster() == 0
+                || vcn != self.logical_length / cluster()
                 || !self
                     .layout
                     .allocated
                     .iter()
-                    .any(|r| r.offset / 4096 <= vcn && vcn < (r.offset + r.length) / 4096)
+                    .any(|r| r.offset / cluster() <= vcn && vcn < (r.offset + r.length) / cluster())
             {
                 return Err(invalid(
                     "invalid sparse partial-cluster verification exception",
@@ -517,17 +522,17 @@ impl Target {
         let target = capture(&self.file, self.logical_length)?.0;
         for island in &self.islands {
             for run in runs {
-                let from = (run.vcn * 4096).max(island.dense);
-                let end = ((run.vcn + run.clusters) * 4096).min(island.dense + island.length);
+                let from = (run.vcn * cluster()).max(island.dense);
+                let end = ((run.vcn + run.clusters) * cluster()).min(island.dense + island.length);
                 if from >= end {
                     continue;
                 }
                 let lcn = run
                     .lcn
                     .ok_or_else(|| invalid("sparse carrier contains a hole"))?
-                    + (from / 4096 - run.vcn);
-                let original_target_vcn = (island.logical + from - island.dense) / 4096;
-                let original_target_end = original_target_vcn + (end - from) / 4096;
+                    + (from / cluster() - run.vcn);
+                let original_target_vcn = (island.logical + from - island.dense) / cluster();
+                let original_target_end = original_target_vcn + (end - from) / cluster();
                 let segments = if let Some(vcn) = permitted_partial_vcn
                     .filter(|vcn| original_target_vcn <= *vcn && *vcn < original_target_end)
                 {
@@ -592,11 +597,11 @@ pub(super) fn require_recovered_island(
 ) -> io::Result<()> {
     let start = run
         .vcn
-        .checked_mul(4096)
+        .checked_mul(cluster())
         .ok_or_else(|| invalid("recovered sparse VCN overflow"))?;
     let end = run
         .clusters
-        .checked_mul(4096)
+        .checked_mul(cluster())
         .and_then(|n| start.checked_add(n))
         .ok_or_else(|| invalid("recovered sparse interval overflow"))?;
     let mut cursor = start;
@@ -759,16 +764,16 @@ fn observe_mode(
     }
     let (runs, _) = capture(file, length)?;
     let rounded = length
-        .checked_next_multiple_of(4096)
+        .checked_next_multiple_of(cluster())
         .ok_or_else(|| invalid("sparse EOF overflow"))?;
     let mut allocated: Vec<LogicalRange> = Vec::new();
     for run in runs.iter().filter(|r| r.lcn.is_some()) {
         let start = run
             .vcn
-            .checked_mul(4096)
+            .checked_mul(cluster())
             .ok_or_else(|| invalid("sparse VCN overflow"))?;
         let end = (run.vcn + run.clusters)
-            .checked_mul(4096)
+            .checked_mul(cluster())
             .ok_or_else(|| invalid("sparse run overflow"))?
             .min(rounded);
         if start >= end {

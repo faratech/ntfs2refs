@@ -179,7 +179,9 @@ pub(crate) fn extent_identity_stream_request_windows_domain(
 }
 
 /// The ReFS allocation unit data must be aligned to in order to stay in place.
-const TARGET_CLUSTER: u64 = 4096;
+fn target_cluster() -> u64 {
+    n2r_win32::target_cluster::bytes()
+}
 
 fn extent_identity_stream_request_with_paths(
     geometry: &crate::ntfs_inspect::NtfsGeometry,
@@ -188,17 +190,18 @@ fn extent_identity_stream_request_with_paths(
     source_paths: impl FnOnce() -> Result<Option<Vec<Vec<String>>>>,
 ) -> Result<Option<n2r_win32::attestation::ExtentIdentityStream>> {
     use crate::ntfs_inspect::MetadataRole;
+    let target = target_cluster();
     if !(512..=2 * 1024 * 1024).contains(&geometry.cluster_size)
         || !geometry.cluster_size.is_power_of_two()
         // Extent evidence is for a stream that stays where it is. On source
         // clusters smaller than the target's, a run can start or end inside
         // a target cluster; such a stream is copied, and so is hashed.
-        || !stream.allocated_size.is_multiple_of(TARGET_CLUSTER)
+        || !stream.allocated_size.is_multiple_of(target)
         || stream.extents.iter().any(|e| {
-            !e.logical_offset.is_multiple_of(TARGET_CLUSTER)
-                || !e.length.is_multiple_of(TARGET_CLUSTER)
+            !e.logical_offset.is_multiple_of(target)
+                || !e.length.is_multiple_of(target)
                 || e.physical_offset
-                    .is_some_and(|at| !at.is_multiple_of(TARGET_CLUSTER))
+                    .is_some_and(|at| !at.is_multiple_of(target))
         })
         || file.is_directory
         || file.record_number < 16
@@ -216,7 +219,7 @@ fn extent_identity_stream_request_with_paths(
         // Source evidence binds the complete initialized stream/allocation,
         // including a partial final target cluster. Target preservation uses
         // a distinct materialized-tail contract; this is no content digest.
-        || stream.logical_size < 4096
+        || stream.logical_size < target
         || stream.initialized_size != stream.logical_size
         || stream.extents.is_empty()
         || stream.extents.iter().any(|e| e.physical_offset.is_none())

@@ -648,7 +648,9 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                 {
                     return Err(invalid("owned metadata stream shape differs"));
                 }
-                if item.logical_length() != 0 && layout::u64_at(&standard, 0)? >= 4096 {
+                if item.logical_length() != 0
+                    && layout::u64_at(&standard, 0)? >= crate::target_cluster::bytes()
+                {
                     let canonical = crate::stream_native::retrieval_capture(handle)?.canonical;
                     // Keep the full-query comparison, retaining only its exact
                     // length and SHA-256 between metadata phases. A paged object
@@ -1106,7 +1108,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                 &actual,
                 false,
                 false,
-                pair.shadow.identity.partition_bytes / 4096,
+                pair.shadow.identity.partition_bytes / crate::target_cluster::bytes(),
                 resource_admission
                     .map(|a| usize::try_from(a.budget.max_row_bytes).map_err(io::Error::other))
                     .transpose()?,
@@ -1483,7 +1485,7 @@ pub fn run(
                 &actual,
                 false,
                 false,
-                pair.shadow.identity.partition_bytes / 4096,
+                pair.shadow.identity.partition_bytes / crate::target_cluster::bytes(),
                 None,
             )?;
             if let Some(layout) = item.sparse {

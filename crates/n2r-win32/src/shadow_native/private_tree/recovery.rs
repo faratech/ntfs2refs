@@ -336,12 +336,11 @@ fn exact_streams(file: &File, item: &Input<'_>) -> io::Result<()> {
                 .ok_or_else(|| invalid("recovered unexpected named stream"))?;
             (
                 n.expected_length,
-                n.sparse.is_some() || n.expected_length >= 4096,
+                n.sparse.is_some() || n.expected_length >= crate::target_cluster::bytes(),
             )
         };
         let expected = if carrier_target {
-            length
-                .checked_next_multiple_of(4096)
+            crate::target_cluster::ceil(length)
                 .ok_or_else(|| invalid("recovered stream EOF overflow"))?
         } else {
             length
@@ -447,7 +446,7 @@ fn adopt_recovery_domain(
     let remaining_bytes = limits
         .cumulative_maximum_move_bytes
         .checked_sub(prior_bytes)
-        .filter(|n| *n >= 4096)
+        .filter(|n| *n >= crate::target_cluster::bytes())
         .ok_or_else(|| invalid("cumulative moved-byte allowance exhausted"))?;
     let origin_memory = payer.reserve(65536)?;
     let memory = memory::Owner::new(
@@ -513,7 +512,8 @@ fn adopt_recovery_domain(
     let needs_carriers = input.any(|i| {
         i.sparse.is_some_and(|s| !s.allocated.is_empty())
             || i.named_streams.iter().any(|s| {
-                s.expected_length >= 4096 || s.sparse.is_some_and(|v| !v.allocated.is_empty())
+                s.expected_length >= crate::target_cluster::bytes()
+                    || s.sparse.is_some_and(|v| !v.allocated.is_empty())
             })
     })?;
     let mut candidates = initial
@@ -649,7 +649,9 @@ fn adopt_recovery_domain(
                 } else {
                     StreamKey::named(index, name)
                 };
-                if sparse.is_some() || (!name.is_empty() && length >= 4096) {
+                if sparse.is_some()
+                    || (!name.is_empty() && length >= crate::target_cluster::bytes())
+                {
                     let plain;
                     let layout = if let Some(s) = sparse {
                         s
@@ -659,8 +661,7 @@ fn adopt_recovery_domain(
                             length,
                             vec![crate::sparse_layout::LogicalRange {
                                 offset: 0,
-                                length: length
-                                    .checked_next_multiple_of(4096)
+                                length: crate::target_cluster::ceil(length)
                                     .ok_or_else(|| invalid("recovered plain EOF overflow"))?,
                             }],
                         )?;
@@ -892,7 +893,7 @@ impl PrivateTree {
         offset: u64,
         expected: &[u8],
     ) -> io::Result<()> {
-        let prefix = logical_length / 4096 * 4096;
+        let prefix = crate::target_cluster::floor(logical_length);
         let end = offset
             .checked_add(expected.len() as u64)
             .ok_or_else(|| invalid("recovered tail interval overflow"))?;
@@ -920,8 +921,9 @@ impl PrivateTree {
             .memory
             .as_ref()
             .ok_or_else(|| invalid("recovered tail payer absent"))?
-            .working(4096)?;
-        let mut actual = [0u8; 4096];
+            .working(crate::target_cluster::bytes())?;
+        // A tail is shorter than one target cluster.
+        let mut actual = vec![0u8; crate::target_cluster::bytes_usize()];
         let count = (logical_length - prefix) as usize;
         self.read_materialized_range_named(index, name, prefix, &mut actual[..count])?;
         let start = (prefix - offset) as usize;

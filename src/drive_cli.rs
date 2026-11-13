@@ -44,6 +44,12 @@ pub struct DriveArgs {
     /// Standard formatting must be supported by Windows; no fallback is used.
     #[arg(long, requires = "drive", value_parser = ["dev-drive", "standard"])]
     pub target_format: Option<String>,
+    /// Allocation unit of the ReFS target in bytes: 4096 (default) or 65536.
+    /// Data stays where it is only if it lies on boundaries of this size, so
+    /// 65536 suits a source with clusters of 64 KiB or larger; from smaller
+    /// clusters most data is copied through the working storage instead.
+    #[arg(long, requires = "drive", value_parser = ["4096", "65536"])]
+    pub target_cluster_bytes: Option<String>,
     /// Recover an interrupted run using its original saved conversion directory.
     #[arg(long, requires = "recovery_sha256", conflicts_with_all = ["list", "drive", "partition", "scratch_directory"])]
     pub recover: Option<PathBuf>,
@@ -712,6 +718,23 @@ mod windows {
         }
         let values = args.drive.as_ref().context("drive selection required")?;
         let drive = values.first().context("drive value required")?;
+        // Chosen before anything is planned: every count of target clusters
+        // in this process uses it.
+        let target_cluster: u64 = args
+            .target_cluster_bytes
+            .as_deref()
+            .unwrap_or("4096")
+            .parse()
+            .context("target cluster size")?;
+        ensure!(
+            target_cluster == n2r_win32::target_cluster::DEFAULT_BYTES
+                || !(args.windows_boot_volume
+                    || args.whole_image_verification
+                    || args.offline_recovery_media.is_some()
+                    || args.experimental_thin_shadow),
+            "a {target_cluster}-byte ReFS allocation unit is for a data volume on the default route; a Windows boot volume, whole-image verification, offline media and the thin shadow use 4096"
+        );
+        n2r_win32::target_cluster::choose(target_cluster)?;
         let partition = match values.as_slice() {
             [_] => args.partition,
             [_, marker, number] => {
@@ -749,6 +772,10 @@ mod windows {
             ensure!(
                 args.lab_hold_at.is_none(),
                 "laboratory holds apply only to a dedicated or Windows boot source"
+            );
+            ensure!(
+                target_cluster == n2r_win32::target_cluster::DEFAULT_BYTES,
+                "a {target_cluster}-byte ReFS allocation unit is for a volume on a disk of its own; a partition on the running Windows disk uses 4096"
             );
             // This route has no diagnose stop; refuse before discovering anything.
             let authority = mode
@@ -830,12 +857,13 @@ mod windows {
             .unwrap_or("dev-drive")
             .parse()?;
         println!(
-            "Requested target: {} (ReFS, 4 KiB clusters).",
+            "Requested target: {} (ReFS, {} KiB clusters).",
             if target_format.is_dev_drive() {
                 "Dev Drive; experimental default"
             } else {
                 "standard ReFS; Windows formatter support required"
-            }
+            },
+            n2r_win32::target_cluster::bytes() / 1024
         );
         println!(
             "Windows will report the converted volume's actual developer designation and trust state."

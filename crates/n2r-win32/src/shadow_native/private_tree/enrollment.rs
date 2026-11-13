@@ -145,7 +145,8 @@ impl ConstructionEnrollment<'_> {
             "kind":"live-native-shadow-construction-enrollment",
             "pair":self.pair,"source_before":self.source_before,"shadow_before":self.shadow_before,
             "root_file_id_info":self.root_id,"original_observed_source_freeze":true,
-            "refs_major":3,"refs_minor":14,"cluster_bytes":4096,"sector_bytes":512,
+            "refs_major":crate::target_refs_version::get().0,"refs_minor":crate::target_refs_version::get().1,
+            "cluster_bytes":crate::target_cluster::bytes(),"sector_bytes":512,
             "retrieval_base_sectors":0,"source_write_authority":false,
             "serialized_observation_is_not_authority":true,"events":self.events,
         })

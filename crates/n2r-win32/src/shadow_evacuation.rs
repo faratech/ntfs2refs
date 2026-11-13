@@ -4,7 +4,9 @@ use crate::bitmap_layout;
 use serde::Serialize;
 use std::{collections::BTreeMap, io};
 
-const CLUSTER: u64 = 4096;
+fn cluster_bytes() -> u64 {
+    crate::target_cluster::bytes()
+}
 /// Ceiling for any one validated extent list. The intersection is a sorted
 /// sweep, so this bounds memory (32 B per extent), not a nested product.
 pub const MAX_EXTENTS: usize = 65_536;
@@ -134,10 +136,10 @@ fn plan_ranges_bounded(
     max_map_ranges: usize,
 ) -> io::Result<Plan> {
     if partition == 0
-        || !partition.is_multiple_of(CLUSTER)
+        || !partition.is_multiple_of(cluster_bytes())
         || partition > i64::MAX as u64
         || !(1..=limits.max_moves).contains(&move_budget)
-        || !limits.margin.is_multiple_of(CLUSTER)
+        || !limits.margin.is_multiple_of(cluster_bytes())
         || limits.margin.checked_mul(2).is_none_or(|m| m >= partition)
     {
         return Err(invalid("streaming evacuation geometry differs"));
@@ -149,7 +151,7 @@ fn plan_ranges_bounded(
                 "evacuation interval budget exceeded",
             ));
         }
-        if map.cluster_count != partition / CLUSTER
+        if map.cluster_count != partition / cluster_bytes()
             || map.ranges.len() > max_map_ranges
             || map.bitmap_sha256.len() != 64
             || !map
@@ -169,14 +171,14 @@ fn plan_ranges_bounded(
                 .ok_or_else(|| invalid("evacuation allocation escapes partition"))?;
             if range.offset < end
                 || range.length == 0
-                || !range.offset.is_multiple_of(CLUSTER)
-                || !range.length.is_multiple_of(CLUSTER)
+                || !range.offset.is_multiple_of(cluster_bytes())
+                || !range.length.is_multiple_of(cluster_bytes())
             {
                 return Err(invalid(
                     "evacuation allocation ordering or alignment differs",
                 ));
             }
-            allocated += range.length / CLUSTER;
+            allocated += range.length / cluster_bytes();
             end = next;
         }
         if allocated != map.allocated_clusters {
@@ -305,7 +307,7 @@ fn plan_ranges_bounded(
             }
             let length = (free_end - cursor)
                 .min(extent.length - done)
-                .min(u32::MAX as u64 * CLUSTER);
+                .min(u32::MAX as u64 * cluster_bytes());
             if length == 0 {
                 return Err(invalid("empty evacuation free interval"));
             }
@@ -318,9 +320,9 @@ fn plan_ranges_bounded(
                 source_offset: extent.physical_offset + done,
                 destination_offset: cursor,
                 length,
-                starting_vcn: (extent.logical_offset + done) / CLUSTER,
-                destination_lcn: cursor / CLUSTER,
-                clusters: (length / CLUSTER) as u32,
+                starting_vcn: (extent.logical_offset + done) / cluster_bytes(),
+                destination_lcn: cursor / cluster_bytes(),
+                clusters: (length / cluster_bytes()) as u32,
             });
             cursor += length;
             done += length;
@@ -396,8 +398,8 @@ pub(crate) fn plan_ranges_resource(
         )?,
         2,
     )?;
-    let native_splits =
-        usize::try_from(partition / (u64::from(u32::MAX) * CLUSTER)).map_err(io::Error::other)?;
+    let native_splits = usize::try_from(partition / (u64::from(u32::MAX) * cluster_bytes()))
+        .map_err(io::Error::other)?;
     let max_output = add(add(blocked, occupied)?, native_splits)?.min(move_budget);
     let bytes = (extents as u64)
         .checked_mul(512)
@@ -448,7 +450,7 @@ fn invalid(message: &str) -> io::Error {
 fn validated_extents(extents: &[Extent], partition: u64) -> io::Result<Vec<Extent>> {
     if extents
         .iter()
-        .any(|extent| u32::try_from(extent.length / CLUSTER).is_err())
+        .any(|extent| u32::try_from(extent.length / cluster_bytes()).is_err())
     {
         return Err(invalid("legacy evacuation extent exceeds native move size"));
     }
@@ -478,9 +480,9 @@ fn validated_extents_streamed(
             .checked_add(extent.length)
             .ok_or_else(|| invalid("evacuation physical extent overflow"))?;
         if extent.length == 0
-            || !extent.length.is_multiple_of(CLUSTER)
-            || !extent.logical_offset.is_multiple_of(CLUSTER)
-            || !extent.physical_offset.is_multiple_of(CLUSTER)
+            || !extent.length.is_multiple_of(cluster_bytes())
+            || !extent.logical_offset.is_multiple_of(cluster_bytes())
+            || !extent.physical_offset.is_multiple_of(cluster_bytes())
             || physical_end > partition
             || logical_end > partition
         {
@@ -535,13 +537,13 @@ impl Allocator<'_> {
         while self.exclusion < self.excluded.len()
             && (self.excluded[self.exclusion].physical_offset
                 + self.excluded[self.exclusion].length)
-                / CLUSTER
+                / cluster_bytes()
                 <= cluster
         {
             self.exclusion += 1;
         }
         let excluded = self.exclusion < self.excluded.len()
-            && self.excluded[self.exclusion].physical_offset / CLUSTER <= cluster;
+            && self.excluded[self.exclusion].physical_offset / cluster_bytes() <= cluster;
         let at = 16 + (cluster / 8) as usize;
         let mask = 1u8 << (cluster % 8);
         Ok(Some((
@@ -581,16 +583,16 @@ pub fn plan(
     limits: Limits,
 ) -> io::Result<Plan> {
     if partition == 0
-        || !partition.is_multiple_of(CLUSTER)
+        || !partition.is_multiple_of(cluster_bytes())
         || !(1..=LEGACY_MAX_MOVES).contains(&limits.max_moves)
         || !(1..=MAX_SCAN_CLUSTERS).contains(&limits.max_scan_clusters)
         || !(1..=MAX_EVACUATION_BYTES).contains(&limits.max_evacuation_bytes)
     {
         return Err(invalid("evacuation geometry or resource budget differs"));
     }
-    let legacy_header = bitmap_layout::candidate(legacy, 0, CLUSTER, partition)?;
-    let metadata_header = bitmap_layout::candidate(metadata, 0, CLUSTER, partition)?;
-    let domain = partition / CLUSTER;
+    let legacy_header = bitmap_layout::candidate(legacy, 0, cluster_bytes(), partition)?;
+    let metadata_header = bitmap_layout::candidate(metadata, 0, cluster_bytes(), partition)?;
+    let domain = partition / cluster_bytes();
     if legacy_header.declared_clusters != domain || metadata_header.declared_clusters != domain {
         return Err(invalid(
             "evacuation bitmaps do not cover the same complete partition domain",
@@ -601,8 +603,8 @@ pub fn plan(
     let mut blocked = Vec::new();
     let mut already_in_place_bytes = 0u64;
     for extent in &owned {
-        for cluster in
-            extent.physical_offset / CLUSTER..(extent.physical_offset + extent.length) / CLUSTER
+        for cluster in extent.physical_offset / cluster_bytes()
+            ..(extent.physical_offset + extent.length) / cluster_bytes()
         {
             let at = 16 + (cluster / 8) as usize;
             let mask = 1u8 << (cluster % 8);
@@ -658,19 +660,17 @@ pub fn plan(
                 return Err(invalid("evacuation move budget exceeded"));
             }
             let (destination, count) = allocator
-                .next_run((extent.length - completed) / CLUSTER)?
-                .ok_or_else(|| {
-                invalid("insufficient free space outside all source candidates")
-            })?;
+                .next_run((extent.length - completed) / cluster_bytes())?
+                .ok_or_else(|| invalid("insufficient free space outside all source candidates"))?;
             let logical_offset = extent.logical_offset + completed;
-            let length = count * CLUSTER;
+            let length = count * cluster_bytes();
             moves.push(Move {
                 file_index: extent.file_index,
                 logical_offset,
                 source_offset: extent.physical_offset + completed,
-                destination_offset: destination * CLUSTER,
+                destination_offset: destination * cluster_bytes(),
                 length,
-                starting_vcn: logical_offset / CLUSTER,
+                starting_vcn: logical_offset / cluster_bytes(),
                 destination_lcn: destination,
                 clusters: u32::try_from(count)
                     .map_err(|_| invalid("evacuation move exceeds u32 cluster count"))?,

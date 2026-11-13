@@ -77,11 +77,12 @@ pub fn classify_payloads_domain(
             .ok_or_else(|| invalid("payload native classification workspace overflow"))?,
     )?;
     enrollment.revalidate()?;
+    let cluster = crate::target_cluster::bytes();
     let expected = input.any(|item| {
         item.sparse
             .is_some_and(|layout| !layout.allocated.is_empty())
             || item.named_streams.iter().any(|stream| {
-                stream.expected_length >= 4096
+                stream.expected_length >= cluster
                     || stream
                         .sparse
                         .is_some_and(|layout| !layout.allocated.is_empty())
@@ -121,11 +122,11 @@ pub fn classify_payloads_domain(
             if object.directory {
                 continue;
             }
-            if object.logical_length() % 4096 == 0
+            if object.logical_length() % cluster == 0
                 && object
                     .named_streams
                     .iter()
-                    .all(|stream| stream.expected_length % 4096 == 0)
+                    .all(|stream| stream.expected_length % cluster == 0)
             {
                 continue;
             }
@@ -149,7 +150,7 @@ pub fn classify_payloads_domain(
                 };
                 let item = super::super::streams::view_object(&object, name)?;
                 let length = item.logical_length();
-                if length % 4096 == 0 {
+                if length % cluster == 0 {
                     continue;
                 }
                 let found = actual
@@ -157,14 +158,14 @@ pub fn classify_payloads_domain(
                     .find(|stream| stream.name == name)
                     .ok_or_else(|| invalid("payload EOF probe stream absent"))?;
                 let rounded = length
-                    .checked_next_multiple_of(4096)
+                    .checked_next_multiple_of(cluster)
                     .ok_or_else(|| invalid("payload EOF probe overflow"))?;
                 if found.logical_size == rounded {
                     private = true;
                 } else if found.logical_size == length {
                     // Ordinary private files already use logical EOF. Only
                     // rounded carrier targets distinguish a completed transfer.
-                    if item.sparse.is_some() || (!name.is_empty() && length >= 4096) {
+                    if item.sparse.is_some() || (!name.is_empty() && length >= cluster) {
                         final_targets = true;
                     }
                 } else {
@@ -267,7 +268,8 @@ fn stream_state(
     let before = identity(file)?;
     let standard = info(file, 1, 24)?;
     let length = item.logical_length();
-    let prefix = length / 4096 * 4096;
+    let cluster = crate::target_cluster::bytes();
+    let prefix = length / cluster * cluster;
     let allocation = layout::u64_at(&standard, 0)?;
     if layout::u64_at(&standard, 8)? != length || standard[20] != 0 || standard[21] != 0 {
         return Err(invalid(
@@ -308,8 +310,8 @@ fn stream_state(
                 || match run.lcn {
                     Some(lcn) => lcn
                         .checked_add(run.clusters)
-                        .is_none_or(|n| n > partition / 4096),
-                    None => item.sparse.is_none() && run.vcn < prefix / 4096,
+                        .is_none_or(|n| n > partition / cluster),
+                    None => item.sparse.is_none() && run.vcn < prefix / cluster,
                 }
             {
                 return Err(invalid(
@@ -328,18 +330,18 @@ fn stream_state(
                 output.push(SourceRun {
                     logical_offset: run
                         .vcn
-                        .checked_mul(4096)
+                        .checked_mul(cluster)
                         .ok_or_else(|| invalid("recovery mapping offset overflow"))?,
                     physical_offset: run
                         .lcn
                         .map(|lcn| {
-                            lcn.checked_mul(4096)
+                            lcn.checked_mul(cluster)
                                 .ok_or_else(|| invalid("recovery mapping physical overflow"))
                         })
                         .transpose()?,
                     length: run
                         .clusters
-                        .checked_mul(4096)
+                        .checked_mul(cluster)
                         .ok_or_else(|| invalid("recovery mapping length overflow"))?,
                 });
             }
@@ -353,11 +355,11 @@ fn stream_state(
                     Ok(crate::sparse_layout::LogicalRange {
                         offset: run
                             .vcn
-                            .checked_mul(4096)
+                            .checked_mul(cluster)
                             .ok_or_else(|| invalid("sparse offset overflow"))?,
                         length: run
                             .clusters
-                            .checked_mul(4096)
+                            .checked_mul(cluster)
                             .ok_or_else(|| invalid("sparse length overflow"))?,
                     })
                 })
@@ -374,8 +376,8 @@ fn stream_state(
             }
         }
         if item.sparse.is_none()
-            && (allocated.checked_mul(4096) != Some(allocation)
-                || end.checked_mul(4096).is_none_or(|end| end < prefix)
+            && (allocated.checked_mul(cluster) != Some(allocation)
+                || end.checked_mul(cluster).is_none_or(|end| end < prefix)
                 || allocation < prefix
                 || allocation
                     > length
@@ -433,7 +435,8 @@ fn hash_hybrid_complete(
     source_read: &mut impl FnMut(usize, &[u16], u64, Option<u64>, &mut [u8]) -> io::Result<()>,
 ) -> io::Result<(String, u64)> {
     let length = item.logical_length();
-    let prefix = length / 4096 * 4096;
+    let cluster = crate::target_cluster::bytes();
+    let prefix = length / cluster * cluster;
     let sources = if prefix == 0 {
         Vec::new()
     } else if item.sparse.is_none() {
@@ -454,10 +457,10 @@ fn hash_hybrid_complete(
     for source in &sources {
         if source.length == 0
             || source.logical_offset < previous_end
-            || !source.logical_offset.is_multiple_of(4096)
-            || !source.length.is_multiple_of(4096)
+            || !source.logical_offset.is_multiple_of(cluster)
+            || !source.length.is_multiple_of(cluster)
             || source.physical_offset.is_some_and(|physical| {
-                !physical.is_multiple_of(4096)
+                !physical.is_multiple_of(cluster)
                     || physical
                         .checked_add(source.length)
                         .is_none_or(|end| end > partition)
@@ -1110,7 +1113,7 @@ impl PendingMetadataRecovery {
                         .ok_or_else(|| invalid("recovery complete-byte count overflow"))?;
                 } else {
                     let length = item.logical_length();
-                    let prefix = length / 4096 * 4096;
+                    let prefix = crate::target_cluster::floor(length);
                     if prefix == 0 || item.sparse.is_some() {
                         return Err(invalid(
                             "metadata recovery digest-free stream lacks ordinary source prefix",
@@ -1149,9 +1152,10 @@ impl PendingMetadataRecovery {
                         ));
                     }
                     if prefix < length {
+                        // A tail is shorter than one target cluster.
                         let count = (length - prefix) as usize;
-                        let mut wanted = [0u8; 4096];
-                        let mut actual = [0u8; 4096];
+                        let mut wanted = vec![0u8; count];
+                        let mut actual = vec![0u8; count];
                         source_read(index, name, prefix, None, &mut wanted[..count])?;
                         file.seek(SeekFrom::Start(prefix))?;
                         file.read_exact(&mut actual[..count])?;

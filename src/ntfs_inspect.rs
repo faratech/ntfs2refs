@@ -3943,7 +3943,7 @@ fn inventory_record<R: Read + Seek>(
                     && a.flags == 0
                     && a.compression_unit == 0
                     && a.lowest_vcn == 0
-                    && a.logical_size >= 4096
+                    && a.logical_size >= n2r_win32::target_cluster::bytes()
                     && a.initialized_size == a.logical_size
                     && a.extents.iter().all(|e| e.physical_offset.is_some());
                 let (logical_hash_status, logical_sha256) = if deferred || preparation_only {

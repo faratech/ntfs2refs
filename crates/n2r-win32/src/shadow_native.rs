@@ -101,10 +101,14 @@ pub(crate) fn query_refs_volume_data(
 // Shared native format check for expanded observations and live construction.
 pub(crate) fn query_refs_314_volume_data(volume: &File, partition_bytes: u64) -> io::Result<u64> {
     let observed = query_refs_volume_data(volume, partition_bytes)?;
-    if observed.major != 3 || observed.minor != 14 || observed.cluster_bytes != 4096 {
+    // The volume must have the allocation unit this process chose and the
+    // version the run's shadow was formatted with.
+    let chosen = crate::target_cluster::bytes();
+    let version = crate::target_refs_version::get();
+    if (observed.major, observed.minor) != version || u64::from(observed.cluster_bytes) != chosen {
         return Err(invalid(&format!(
-            "protected ReFS volume-data profile differs: ReFS {}.{} with {}-byte clusters",
-            observed.major, observed.minor, observed.cluster_bytes
+            "protected ReFS volume-data profile differs: ReFS {}.{} with {}-byte clusters, where {}.{} with {chosen}-byte clusters is expected",
+            observed.major, observed.minor, observed.cluster_bytes, version.0, version.1
         )));
     }
     Ok(observed.clusters)
@@ -268,7 +272,8 @@ fn hash_exact_stream(reader: &mut impl Read, length: u64) -> io::Result<String> 
 }
 
 fn resident_allocation(logical: u64, allocated: u64) -> bool {
-    logical <= 4096 && allocated < 4096 && allocated >= logical
+    let cluster = crate::target_cluster::bytes();
+    logical <= cluster && allocated < cluster && allocated >= logical
 }
 
 fn volume_label_matches(
@@ -942,7 +947,8 @@ fn retain_run_on_shadow(
     let offset = run
         .physical_offset
         .ok_or_else(|| invalid("source placement hole"))?;
-    let starting_vcn = run.logical_offset / 4096;
+    let cluster = crate::target_cluster::bytes();
+    let starting_vcn = run.logical_offset / cluster;
     let h = open(&format!("{}{}", root, i.components.join("\\")), false, true)?;
     let before_capture = crate::stream_native::retrieval_capture(&h)?;
     let mapping_before = before_capture.canonical;
@@ -964,18 +970,18 @@ fn retain_run_on_shadow(
             }
         }
     };
-    if candidate.legacy.declared_clusters != partition / 4096
-        || candidate.metadata_inclusive.declared_clusters != partition / 4096
-        || candidate.legacy.start_lcn != offset / 4096
-        || candidate.metadata_inclusive.start_lcn != offset / 4096
-        || candidate.legacy.clusters != run.length / 4096
-        || candidate.metadata_inclusive.clusters != run.length / 4096
+    if candidate.legacy.declared_clusters != partition / cluster
+        || candidate.metadata_inclusive.declared_clusters != partition / cluster
+        || candidate.legacy.start_lcn != offset / cluster
+        || candidate.metadata_inclusive.start_lcn != offset / cluster
+        || candidate.legacy.clusters != run.length / cluster
+        || candidate.metadata_inclusive.clusters != run.length / cluster
     {
         return Err(invalid("retention bitmap domain is incomplete or changed"));
     }
     let clusters =
-        u32::try_from(run.length / 4096).map_err(|_| invalid("retention cluster budget"))?;
-    let destination_lcn = offset / 4096;
+        u32::try_from(run.length / cluster).map_err(|_| invalid("retention cluster budget"))?;
+    let destination_lcn = offset / cluster;
     let matches = |b: &[u8]| -> io::Result<bool> {
         mapping_matches_run(
             &stream_layout::parse_complete_retrieval(b)?,
@@ -1134,7 +1140,7 @@ fn retain_source_run_once(
         }
         // A later free-space change must not turn this diagnostic into an
         // unplanned move. Already-correct placement is still recorded.
-        let chunk_bytes = crate::retention_layout::MAX_MOVE_BYTES;
+        let chunk_bytes = crate::retention_layout::max_move_bytes();
         if run.length.div_ceil(chunk_bytes) > remaining as u64 {
             return Err(invalid("retention diagnostic chunk budget exceeded"));
         }
@@ -3359,6 +3365,7 @@ pub(crate) fn observe_general_layout_residuals_readonly_domain(
         resource_profile,
     )?;
     let mut required = Vec::new();
+    let cluster = crate::target_cluster::bytes();
     for index in 0..input.len() {
         let owner = input.object(index)?;
         let view = owner.input();
@@ -3366,22 +3373,22 @@ pub(crate) fn observe_general_layout_residuals_readonly_domain(
         if item.directory {
             continue;
         }
-        if item.logical_length() % 4096 != 0
+        if item.logical_length() % cluster != 0
             && item.sparse.is_none_or(|s| {
                 s.allocated.iter().any(|r| {
-                    r.offset <= item.logical_length() / 4096 * 4096
-                        && r.offset + r.length > item.logical_length() / 4096 * 4096
+                    r.offset <= item.logical_length() / cluster * cluster
+                        && r.offset + r.length > item.logical_length() / cluster * cluster
                 })
             })
         {
             required.push((index, Vec::new(), item.logical_length()));
         }
         for stream in &item.named_streams {
-            if stream.expected_length % 4096 != 0
+            if stream.expected_length % cluster != 0
                 && stream.sparse.is_none_or(|s| {
                     s.allocated.iter().any(|r| {
-                        r.offset <= stream.expected_length / 4096 * 4096
-                            && r.offset + r.length > stream.expected_length / 4096 * 4096
+                        r.offset <= stream.expected_length / cluster * cluster
+                            && r.offset + r.length > stream.expected_length / cluster * cluster
                     })
                 })
             {
@@ -3395,8 +3402,8 @@ pub(crate) fn observe_general_layout_residuals_readonly_domain(
     for ((index, name, length), expected) in required.iter().zip(residuals) {
         if expected.object_index != *index
             || expected.stream_name_utf16 != *name
-            || expected.logical_offset != length / 4096 * 4096
-            || expected.length != length % 4096
+            || expected.logical_offset != length / cluster * cluster
+            || expected.length != length % cluster
             || expected.length == 0
             || expected.sha256.len() != 64
             || !expected
@@ -3423,7 +3430,8 @@ pub(crate) fn observe_general_layout_residuals_readonly_domain(
     }
     let mut privileges = Privileges::enable_for(&["SeBackupPrivilege", "SeSecurityPrivilege"])?;
     let root = format!("\\\\?\\Volume{{{}}}\\", binding.volume_guid);
-    let mut buffer = [0u8; 4096];
+    // A residual is shorter than one target cluster.
+    let mut buffer = vec![0u8; crate::target_cluster::bytes_usize()];
     let mut bytes_read = 0u64;
     for expected in residuals {
         let object = &native.objects[expected.object_index];
@@ -3478,9 +3486,10 @@ fn required_residuals(
     mut visit: impl FnMut(u64, usize, &[u16], u64) -> io::Result<()>,
 ) -> io::Result<u64> {
     let mut count = 0u64;
+    let cluster = crate::target_cluster::bytes();
     let needed = |length: u64, sparse: Option<&crate::sparse_layout::SparseLayout>| {
-        let offset = length / 4096 * 4096;
-        length % 4096 != 0
+        let offset = length / cluster * cluster;
+        length % cluster != 0
             && sparse.is_none_or(|s| {
                 s.allocated.iter().any(|r| {
                     r.offset <= offset
@@ -3717,8 +3726,8 @@ fn observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_o
         let expected = provider.expectation(ordinal)?;
         if expected.object_index != index
             || expected.stream_name_utf16 != name
-            || expected.logical_offset != length / 4096 * 4096
-            || expected.length != length % 4096
+            || expected.logical_offset != crate::target_cluster::floor(length)
+            || expected.length != length % crate::target_cluster::bytes()
             || expected.length == 0
             || expected.sha256.len() != 64
             || !expected
@@ -3785,7 +3794,8 @@ fn observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_o
         count,
     )?;
     let mut bytes_read = 0u64;
-    let mut buffer = [0u8; 4096];
+    // A residual is shorter than one target cluster.
+    let mut buffer = vec![0u8; crate::target_cluster::bytes_usize()];
     let observed = required_residuals(input, |ordinal, index, name, length| {
         let _query_memory = memory
             .map(|payer| {
@@ -5089,6 +5099,7 @@ fn run_role_content_domain_accounted(
             return Err(invalid("source scalar index exceeds its prepaid capacity"));
         }
     }
+    let cluster = crate::target_cluster::bytes();
     for index in 0..input.len() {
         let owner = input.object(index)?;
         let item = owner.input();
@@ -5098,14 +5109,14 @@ fn run_role_content_domain_accounted(
         }
         if let Some(offset) = i.source_offset {
             let route_length = if !verify_file_contents && i.expected_sha256.is_none() {
-                i.logical_length() / 4096 * 4096
+                i.logical_length() / cluster * cluster
             } else {
                 i.logical_length()
             };
             if i.directory
                 || route_length == 0
-                || !route_length.is_multiple_of(4096)
-                || !offset.is_multiple_of(4096)
+                || !route_length.is_multiple_of(cluster)
+                || !offset.is_multiple_of(cluster)
                 || !offset
                     .checked_add(route_length)
                     .is_some_and(|end| end <= binding.identity.partition_bytes)
@@ -5129,7 +5140,7 @@ fn run_role_content_domain_accounted(
                 // sparse layout; holes and bytes beyond VDL cannot be retained.
                 let logical_placement_ok = if let Some(sparse) = i.sparse {
                     run.logical_offset >= covered
-                        && logical_end <= sparse.initialized_length / 4096 * 4096
+                        && logical_end <= sparse.initialized_length / cluster * cluster
                         && sparse.allocated.iter().any(|range| {
                             range.offset <= run.logical_offset
                                 && range.offset + range.length >= logical_end
@@ -5139,9 +5150,9 @@ fn run_role_content_domain_accounted(
                 };
                 if !logical_placement_ok
                     || run.length == 0
-                    || !run.logical_offset.is_multiple_of(4096)
-                    || !run.length.is_multiple_of(4096)
-                    || !offset.is_multiple_of(4096)
+                    || !run.logical_offset.is_multiple_of(cluster)
+                    || !run.length.is_multiple_of(cluster)
+                    || !offset.is_multiple_of(cluster)
                     || !offset
                         .checked_add(run.length)
                         .is_some_and(|end| end <= binding.identity.partition_bytes)
@@ -5153,7 +5164,7 @@ fn run_role_content_domain_accounted(
             }
             if i.directory
                 || covered == 0
-                || covered > i.logical_length() / 4096 * 4096
+                || covered > i.logical_length() / cluster * cluster
                 || (memory_accountant.is_none() && i.source_runs.len() > 1024)
             {
                 return Err(invalid("fragmented source placement coverage differs"));
@@ -5340,11 +5351,11 @@ fn run_role_content_domain_accounted(
         .ok_or_else(|| invalid("unterminated converted volume label"))?;
     let label_matches = volume_label_matches(&label[..label_end], expected_label)?;
     validate_scoped_observation_access(before.disk_attributes, flags, protected)?;
-    // One 4 KiB cluster: eight 512-byte sectors, or one of a 4Kn disk.
+    // One target cluster, in 512-byte sectors or those of a 4Kn disk.
     if text(&fs) != "ReFS"
         || !label_matches
         || !matches!(bps, 512 | 4096)
-        || u64::from(spc) * u64::from(bps) != 4096
+        || u64::from(spc) * u64::from(bps) != crate::target_cluster::bytes()
     {
         return Err(invalid(
             "shadow filesystem, label, geometry or read-only flag differs",
@@ -5563,7 +5574,7 @@ fn run_role_content_domain_accounted(
                 for i in input.iter().filter(|i| !i.directory) {
                     if let Some(offset) = i.source_offset
                         && i.logical_length() > 0
-                        && i.logical_length().is_multiple_of(4096)
+                        && crate::target_cluster::aligned(i.logical_length())
                     {
                         retain_source_run_on_shadow(
                             &volume,
@@ -5713,7 +5724,7 @@ fn run_role_content_domain_accounted(
                 (resource_admission, memory_accountant, &mut retained_memory)
             {
                 let limits = crate::bitmap_streaming::resource_source_limits(
-                    binding.identity.partition_bytes / 4096,
+                    binding.identity.partition_bytes / crate::target_cluster::bytes(),
                     admission.budget.max_row_bytes,
                 )?;
                 memory.retain_bitmap_workspace(
@@ -5878,18 +5889,19 @@ fn run_role_content_domain_accounted(
                         .checked_add(r.clusters)
                         .ok_or_else(|| invalid("shadow physical mapping length overflows"))?;
                 }
+                let cluster = crate::target_cluster::bytes();
                 let mapped_bytes = end
-                    .checked_mul(4096)
+                    .checked_mul(cluster)
                     .ok_or_else(|| invalid("shadow physical mapping length overflows"))?;
                 if i.sparse.is_none()
                     && ((!ordinary && mapped_bytes != i.logical_length())
                         || (ordinary
                             && !resident_data
                             && (mapped_bytes != expected_allocation
-                                || (expected_allocation == 0 && i.logical_length() > 4096)
+                                || (expected_allocation == 0 && i.logical_length() > cluster)
                                 || (expected_allocation != 0
                                     && expected_allocation
-                                        < i.logical_length().next_multiple_of(4096))
+                                        < i.logical_length().next_multiple_of(cluster))
                                 || expected_allocation
                                     > i.logical_length().next_multiple_of(65536))))
                 {
@@ -5936,7 +5948,7 @@ fn run_role_content_domain_accounted(
                 })?;
                 if integrity.len() != 16
                     || integrity[..8] != [0; 8]
-                    || layout::u32_at(&integrity, 12)? != 4096
+                    || layout::u32_at(&integrity, 12)? != crate::target_cluster::bytes_u32()
                 {
                     return Err(invalid("shadow data integrity profile differs"));
                 }
@@ -6028,9 +6040,10 @@ fn run_role_content_domain_accounted(
                 .filter(|_| mode != Mode::ObserveLayout)
                 .map(|offset| -> io::Result<_> {
                     let candidate_bytes = if i.expected_sha256.is_none() {
-                        i.logical_length() / 4096 * 4096
+                        crate::target_cluster::floor(i.logical_length())
                     } else {
-                        i.logical_length().next_multiple_of(4096)
+                        i.logical_length()
+                            .next_multiple_of(crate::target_cluster::bytes())
                     };
                     let (legacy_view, metadata_view) = candidate_views
                         .as_ref()
@@ -6557,6 +6570,25 @@ mod tests {
         for (logical, allocated) in [(76, 0), (76, 64), (4096, 4096), (1, 4096), (4097, 8192)] {
             assert!(!resident_allocation(logical, allocated));
         }
+    }
+    #[test]
+    fn a_64_kib_target_counts_resident_data_and_prefixes_in_its_own_clusters() {
+        let partition = 1 << 30;
+        assert!(!resident_allocation(40_000, 40_000));
+        assert!(streams::validate_extent_only(40_000, Some(4096), &[], false, partition).is_ok());
+        crate::target_cluster::with(65536, || {
+            // Less than one cluster of data, stored without a cluster.
+            assert!(resident_allocation(40_000, 40_000));
+            assert!(!resident_allocation(40_000, 65_536));
+            assert!(!resident_allocation(70_000, 131_072));
+            // Extent evidence needs a whole cluster, on cluster boundaries.
+            let extent_only = |length, offset| {
+                streams::validate_extent_only(length, Some(offset), &[], false, partition)
+            };
+            assert!(extent_only(40_000, 131_072).is_err());
+            assert!(extent_only(200_000, 4096).is_err());
+            assert!(extent_only(200_000, 131_072).is_ok());
+        });
     }
     #[test]
     fn api_projection_never_substitutes_for_the_stored_kernel_descriptor() {

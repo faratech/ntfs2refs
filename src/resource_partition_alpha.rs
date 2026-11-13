@@ -993,13 +993,16 @@ pub use recovery::{
 /// The placement work a partition of this size may need: bytes moved, and
 /// move submissions. Both follow from the partition, as on the
 /// dedicated-disk route: four times its bytes, and one submission per
-/// cluster of that. There is no fixed ceiling; a count that large is never
-/// reached, and placement stops at its byte and memory budgets first.
+/// target cluster of that. There is no fixed ceiling; a count that large is
+/// never reached, and placement stops at its byte and memory budgets first.
 fn placement_work(partition_bytes: u64) -> Result<(u64, usize)> {
     let bytes = partition_bytes
         .checked_mul(4)
         .context("placement work overflow")?;
-    Ok((bytes, usize::try_from(bytes / 4096)?))
+    Ok((
+        bytes,
+        usize::try_from(bytes / n2r_win32::target_cluster::bytes())?,
+    ))
 }
 
 #[cfg(test)]

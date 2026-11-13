@@ -280,8 +280,11 @@ pub(crate) fn convert_owned_with_provider_commitment(
         verification_policy,
         selected_capacity_policy,
         maximum_placement_bytes,
-        maximum_placement_submissions: usize::try_from(maximum_placement_bytes / 4096)
-            .context("placement operation format overflow")?,
+        // One submission moves at least one target cluster.
+        maximum_placement_submissions: usize::try_from(
+            maximum_placement_bytes / n2r_win32::target_cluster::bytes(),
+        )
+        .context("placement operation format overflow")?,
         maximum_materialized_bytes: capture,
         maximum_source_read_bytes: None,
         capture_arena_bytes: capture,
@@ -631,6 +634,10 @@ struct PublicationRoutes {
     source: GeneralDiskBinding,
     shadow: GeneralDiskBinding,
     locator: RouteFile,
+    #[serde(default)]
+    target_cluster_bytes: Option<u64>,
+    #[serde(default)]
+    target_refs_version: Option<(u32, u32)>,
     serialized_publication_grants_authority: bool,
 }
 #[derive(Deserialize)]
@@ -684,6 +691,19 @@ fn route_inputs(
             && !route.serialized_publication_grants_authority,
         "not a resource recovery envelope"
     );
+    // The run's ReFS allocation unit, before anything of it is read back:
+    // 4 KiB unless the run recorded another.
+    n2r_win32::target_cluster::choose(
+        route
+            .target_cluster_bytes
+            .unwrap_or(n2r_win32::target_cluster::DEFAULT_BYTES),
+    )
+    .context("the recovery envelope's ReFS allocation unit")?;
+    let (major, minor) = route
+        .target_refs_version
+        .unwrap_or(n2r_win32::target_refs_version::DEFAULT);
+    n2r_win32::target_refs_version::choose(major, minor)
+        .context("the recovery envelope's ReFS version")?;
     let mut locator = pin(
         &route.locator.path,
         parse_sha(&route.locator.sha256)?,

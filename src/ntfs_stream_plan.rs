@@ -1,5 +1,5 @@
-//! Read-only source payload classification for a 4 KiB ReFS target. This is
-//! not namespace admission or a target allocation/write plan.
+//! Read-only source payload classification for the ReFS target's cluster
+//! size. This is not namespace admission or a target allocation/write plan.
 use crate::{
     ntfs_admission::ResourceProfile,
     ntfs_inspect::{Extent, FileInventory, MetadataRole, NtfsInspection, StreamInventory},
@@ -8,7 +8,10 @@ use anyhow::{Context, Result, ensure};
 use n2r_win32::sparse_layout::{LogicalRange, SparseLayout};
 use serde::{Deserialize, Serialize};
 
-const CLUSTER: u64 = 4096;
+/// Bytes in one cluster of the ReFS target, not of the NTFS source.
+fn target_cluster() -> u64 {
+    n2r_win32::target_cluster::bytes()
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -119,11 +122,12 @@ fn sparse_candidate(
         cluster.is_power_of_two() && (512..=2 * 1024 * 1024).contains(&cluster),
         "sparse source geometry differs"
     );
+    let target = target_cluster();
     let rounded = stream
         .logical_size
-        .checked_next_multiple_of(CLUSTER)
+        .checked_next_multiple_of(target)
         .context("sparse EOF overflow")?;
-    let initialized_end = stream.initialized_size / CLUSTER * CLUSTER;
+    let initialized_end = stream.initialized_size / target * target;
     let mut coverage = 0u64;
     let mut physical_bytes = 0u64;
     let mut physical_ranges = Vec::new();
@@ -137,16 +141,6 @@ fn sparse_candidate(
                 && extent.length > 0
                 && extent.length.is_multiple_of(cluster),
             "sparse source mapping has a gap or invalid run"
-        );
-        // The target's sparse layout is in its own clusters. NTFS allocates a
-        // sparse stream in granules of 8 KiB and more, so a run ends inside a
-        // target cluster only where a stream on smaller clusters was punched
-        // cluster by cluster.
-        ensure!(
-            extent.logical_offset.is_multiple_of(CLUSTER) && extent.length.is_multiple_of(CLUSTER),
-            "sparse run at logical offset {}, {} bytes, does not lie on {CLUSTER}-byte target cluster boundaries",
-            extent.logical_offset,
-            extent.length
         );
         coverage = coverage
             .checked_add(extent.length)
@@ -164,10 +158,25 @@ fn sparse_candidate(
                 .context("sparse physical byte overflow")?;
             physical_ranges.push((offset, extent.length));
             if extent.logical_offset < rounded {
-                allocated.push(LogicalRange {
-                    offset: extent.logical_offset,
-                    length: extent.length.min(rounded - extent.logical_offset),
-                });
+                // The target allocates whole clusters of its own. A source
+                // run that begins or ends inside one (its granule is smaller:
+                // 8 KiB on 512-byte clusters) takes the whole of it, and the
+                // part of that cluster the source left as a hole is written
+                // as the zeros it reads as.
+                let start = extent.logical_offset / target * target;
+                let end = coverage
+                    .checked_next_multiple_of(target)
+                    .context("sparse allocation overflow")?
+                    .min(rounded);
+                match allocated.last_mut() {
+                    Some(LogicalRange { offset, length }) if *offset + *length >= start => {
+                        *length = end - *offset;
+                    }
+                    _ => allocated.push(LogicalRange {
+                        offset: start,
+                        length: end - start,
+                    }),
+                }
             }
             let logical_end = coverage
                 .min(stream.logical_size)
@@ -178,10 +187,14 @@ fn sparse_candidate(
                     .context("sparse initialized byte overflow")?;
             }
             // An island stays where it is only if it starts on a target
-            // cluster boundary; on smaller source clusters it may not, and
-            // is then copied like the stream's tail.
-            let retained_end = coverage.min(initialized_end);
-            if retained_end > extent.logical_offset && offset.is_multiple_of(CLUSTER) {
+            // cluster boundary, logically and physically, and then only in
+            // whole target clusters; on smaller source clusters it may not,
+            // and what cannot stay is copied like the stream's tail.
+            let retained_end = coverage.min(initialized_end) / target * target;
+            if retained_end > extent.logical_offset
+                && extent.logical_offset.is_multiple_of(target)
+                && offset.is_multiple_of(target)
+            {
                 let length = retained_end - extent.logical_offset;
                 initialized_extents.push(Extent {
                     logical_offset: extent.logical_offset,
@@ -384,17 +397,18 @@ fn candidate_source(
 
     let single = stream.extents.first().filter(|_| stream.extents.len() == 1);
     let physical = single.and_then(|e| e.physical_offset);
-    let full_prefix = stream.initialized_size.min(stream.logical_size) / CLUSTER * CLUSTER;
-    let rounded = stream.logical_size.checked_next_multiple_of(CLUSTER);
+    let target = target_cluster();
+    let full_prefix = stream.initialized_size.min(stream.logical_size) / target * target;
+    let rounded = stream.logical_size.checked_next_multiple_of(target);
     let mut covered = 0u64;
     let physical_runs = !stream.extents.is_empty()
         && stream.extents.len() <= maximum_extents
         && stream.extents.iter().all(|extent| {
             let valid = extent.logical_offset == covered
                 && extent.length > 0
-                && extent.length.is_multiple_of(CLUSTER)
+                && extent.length.is_multiple_of(target)
                 && extent.physical_offset.is_some_and(|offset| {
-                    offset.is_multiple_of(CLUSTER)
+                    offset.is_multiple_of(target)
                         && offset
                             .checked_add(extent.length)
                             .is_some_and(|end| end <= geometry.volume_size)
@@ -415,7 +429,7 @@ fn candidate_source(
                 // initialized logical clusters, never the unused reservation.
                 && rounded.is_some_and(|minimum| {
                     stream.allocated_size >= minimum
-                        && stream.allocated_size.is_multiple_of(CLUSTER)
+                        && stream.allocated_size.is_multiple_of(target)
                 })
                 && physical_runs;
     let (disposition, reason) = if !resources.supports_source_geometry(geometry)
@@ -625,5 +639,121 @@ fn finish_candidate(
         target_named_stream_support_pending: false,
         target_sparse_support_pending: false,
         reason: reason.into(),
+    }
+}
+
+#[cfg(test)]
+mod sparse_tests {
+    use super::*;
+    use crate::ntfs_inspect::{AttributeInventory, MetadataRole, NtfsGeometry};
+
+    /// A sparse stream on 512-byte clusters, where NTFS allocates in 8 KiB
+    /// granules: an island at the start that lies on 4 KiB boundaries, a
+    /// hole, an island whose clusters start between 4 KiB boundaries, and a
+    /// hole to the end.
+    fn small_cluster_sparse_file() -> (NtfsGeometry, FileInventory, StreamInventory) {
+        let geometry = NtfsGeometry {
+            bytes_per_sector: 512,
+            sectors_per_cluster: 1,
+            cluster_size: 512,
+            total_sectors: 1 << 20,
+            volume_size: 512 << 20,
+            total_clusters: 1 << 20,
+            mft_lcn: 4,
+            mftmirr_lcn: 8,
+            file_record_size: 1024,
+            index_record_size: 4096,
+            serial_number: 1,
+        };
+        let run = |logical_offset, physical_offset, length| Extent {
+            logical_offset,
+            physical_offset,
+            length,
+        };
+        let extents = vec![
+            run(0, Some(40 * 4096), 8192),
+            run(8192, None, 65536),
+            run(73728, Some(90 * 4096 + 512), 8192),
+            run(81920, None, 122_880),
+        ];
+        let stream = StreamInventory {
+            name: String::new(),
+            name_utf16: vec![],
+            resident: false,
+            flags: 0x8000,
+            logical_size: 200_000,
+            initialized_size: 200_000,
+            allocated_size: 204_800,
+            extents: extents.clone(),
+            resident_sha256: None,
+            logical_sha256: None,
+            logical_hash_status: Default::default(),
+        };
+        let attribute = AttributeInventory {
+            type_code: 0x80,
+            instance: 1,
+            name_utf16: vec![],
+            flags: 0x8000,
+            resident: false,
+            logical_size: stream.logical_size,
+            initialized_size: stream.initialized_size,
+            allocated_size: stream.allocated_size,
+            lowest_vcn: 0,
+            compression_unit: 4,
+            total_allocated_size: Some(16384),
+            extents,
+            resident_sha256: None,
+            resident_metadata_hex: None,
+        };
+        let file = FileInventory {
+            record_number: 40,
+            sequence_number: 1,
+            hard_link_count: 1,
+            is_directory: false,
+            is_metadata: false,
+            metadata_role: MetadataRole::OutsideExtendCandidate,
+            metadata_role_issue: None,
+            base_file_reference: 0,
+            names: vec![],
+            standard_information: None,
+            streams: vec![stream.clone()],
+            attributes: vec![attribute],
+            extended_attributes: None,
+            reparse: None,
+        };
+        (geometry, file, stream)
+    }
+
+    #[test]
+    fn an_island_stays_only_where_it_lies_on_target_clusters_and_is_copied_otherwise() {
+        let (geometry, file, stream) = small_cluster_sparse_file();
+        // A 4 KiB target: both islands are whole target clusters. The first
+        // starts on a 4 KiB boundary on disk and stays; the second does not
+        // and is copied.
+        let plan = sparse_candidate(&geometry, &file, &stream).unwrap();
+        let ranges = |plan: &SparseCandidate| -> Vec<(u64, u64)> {
+            plan.layout
+                .allocated
+                .iter()
+                .map(|range| (range.offset, range.length))
+                .collect()
+        };
+        assert_eq!(ranges(&plan), [(0, 8192), (73728, 8192)]);
+        assert_eq!(plan.retained, 8192);
+        assert_eq!(plan.initialized_extents.len(), 1);
+        assert_eq!(plan.initialized_extents[0].physical_offset, Some(40 * 4096));
+        assert_eq!(plan.materialized, 8192);
+
+        // A 64 KiB target: an 8 KiB island is part of a target cluster, so
+        // each takes the whole of the cluster it lies in (here the two
+        // clusters touch and become one range), and nothing can stay.
+        n2r_win32::target_cluster::with(65536, || {
+            let plan = sparse_candidate(&geometry, &file, &stream).unwrap();
+            assert_eq!(ranges(&plan), [(0, 131_072)]);
+            assert_eq!(plan.retained, 0);
+            assert!(plan.initialized_extents.is_empty());
+            assert_eq!(plan.materialized, 16384);
+            assert_eq!(plan.zero_logical, 200_000 - 16384);
+        });
     }
 }

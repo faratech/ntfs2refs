@@ -378,7 +378,7 @@ impl ExtentIdentityStream {
             // Source maps still cover all allocation through rounded EOF.
             // A partial logical tail is bound by exact EOF, not rounded away;
             // its target materialization is a separate semantic contract.
-            || self.logical_size < 4096
+            || self.logical_size < crate::target_cluster::bytes()
             || self.logical_size > self.allocated_size
             || !self.allocated_size.is_multiple_of(cluster)
             || self.name_utf16.len() > 255

@@ -1947,8 +1947,10 @@ fn capture_allocation_with_resource_profile(
         .map(crate::attestation::ResourceProfile::resource_admission)
         .transpose()?
         .flatten();
-    let limits =
-        crate::attestation::source_bitmap_limits(resource_profile, partition_bytes / 4096)?;
+    let limits = crate::attestation::source_bitmap_limits(
+        resource_profile,
+        partition_bytes / crate::target_cluster::bytes(),
+    )?;
     let mut observe = |name: &str, input: &[u8]| {
         let result = if resource_admission.is_some() {
             crate::bitmap_observation::Observation::capture_with_limits(
@@ -2337,13 +2339,13 @@ impl GeneralFrozenPartition {
             .transpose()?
             .flatten();
         if resource_profile.is_none()
-            && 16 + (binding.identity.partition_bytes / 4096).div_ceil(8)
+            && 16 + (binding.identity.partition_bytes / crate::target_cluster::bytes()).div_ceil(8)
                 > crate::bitmap_paging::MAX_COMPLETE_BYTES as u64
         {
             return Err(invalid("allocation capture exceeds complete bitmap budget"));
         }
         if resource_profile.is_some() {
-            let clusters = binding.identity.partition_bytes / 4096;
+            let clusters = binding.identity.partition_bytes / crate::target_cluster::bytes();
             crate::bitmap_streaming::Collector::new(
                 clusters,
                 crate::attestation::source_bitmap_limits(resource_profile, clusters)?,
@@ -3343,14 +3345,15 @@ impl GeneralFrozenPartition {
             return Err(invalid("protected allocation exceeds resource profile"));
         }
         if resource_profile.is_none()
-            && 16 + (length / 4096).div_ceil(8) > crate::bitmap_paging::MAX_COMPLETE_BYTES as u64
+            && 16 + (length / crate::target_cluster::bytes()).div_ceil(8)
+                > crate::bitmap_paging::MAX_COMPLETE_BYTES as u64
         {
             return Err(invalid(
                 "protected allocation exceeds complete bitmap budget",
             ));
         }
         if resource_profile.is_some() {
-            let clusters = length / 4096;
+            let clusters = length / crate::target_cluster::bytes();
             crate::bitmap_streaming::Collector::new(
                 clusters,
                 crate::attestation::source_bitmap_limits(resource_profile, clusters)?,

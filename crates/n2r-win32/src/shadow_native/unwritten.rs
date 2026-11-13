@@ -273,8 +273,8 @@ impl PrivatePlaceholder {
     pub fn allocate(root: &str, experiment: &str, bytes: u64, partition: u64) -> io::Result<Self> {
         if experiment.len() != 32
             || !experiment.bytes().all(|b| b.is_ascii_hexdigit())
-            || bytes < 4096
-            || !bytes.is_multiple_of(4096)
+            || bytes < crate::target_cluster::bytes()
+            || !crate::target_cluster::aligned(bytes)
         {
             return Err(invalid("private allocation geometry or identity differs"));
         }
@@ -377,12 +377,9 @@ impl PrivatePlaceholder {
         }
         let file = created?;
         ctl(&file, 0x9c280, &[0; 8], 0)?;
-        if bytes >= 4096 {
-            let allocation = bytes
-                .checked_add(4095)
-                .ok_or_else(|| invalid("private allocation overflow"))?
-                / 4096
-                * 4096;
+        if bytes >= crate::target_cluster::bytes() {
+            let allocation = crate::target_cluster::ceil(bytes)
+                .ok_or_else(|| invalid("private allocation overflow"))?;
             // SAFETY: aligned FILE_ALLOCATION_INFO and synchronous live handle.
             if unsafe {
                 SetFileInformationByHandle(
@@ -657,15 +654,17 @@ impl PrivatePlaceholder {
             .map_or(MAX_FILE_PLACEMENTS, |r| r.max_tracked_slots);
         let logical_end = starting_vcn.checked_add(u64::from(clusters));
         let physical_end = destination_lcn.checked_add(u64::from(clusters));
+        let cluster = crate::target_cluster::bytes();
         if self.poisoned
             || self.valid_data_submitted
             || self.valid_prefix != 0
             || self.move_submissions >= max_submissions
             || clusters == 0
-            || !self.partition.is_multiple_of(4096)
-            || destination_lcn < 256
-            || logical_end.is_none_or(|v| v > self.bytes / 4096)
-            || physical_end.is_none_or(|v| v > self.partition / 4096)
+            || !self.partition.is_multiple_of(cluster)
+            // The first mebibyte of the volume is never a destination.
+            || destination_lcn < (1 << 20) / cluster
+            || logical_end.is_none_or(|v| v > self.bytes / cluster)
+            || physical_end.is_none_or(|v| v > self.partition / cluster)
             || self.placed.iter().any(|(v, l, n)| {
                 (!reposition && starting_vcn < *v + u64::from(*n) && *v < logical_end.unwrap_or(0))
                     || destination_lcn < *l + u64::from(*n) && *l < physical_end.unwrap_or(0)
@@ -742,7 +741,7 @@ impl PrivatePlaceholder {
             .map(|r| r.reserve_placed(next.len(), next.capacity()))
             .transpose()?;
         let request = bitmap_window::Request {
-            volume_clusters: self.partition / 4096,
+            volume_clusters: self.partition / cluster,
             starting_lcn: destination_lcn,
             clusters: u64::from(clusters),
         };
@@ -836,7 +835,7 @@ impl PrivatePlaceholder {
             || self.valid_prefix != 0
             || bytes == 0
             || bytes > self.bytes
-            || !bytes.is_multiple_of(4096)
+            || !crate::target_cluster::aligned(bytes)
         {
             return Err(invalid("private validity state or length differs"));
         }
@@ -849,8 +848,9 @@ impl PrivatePlaceholder {
             let mut runs = self.placed.clone();
             runs.sort_by_key(|r| r.0);
             let mut cursor = 0;
+            let prefix_clusters = bytes / crate::target_cluster::bytes();
             for (vcn, _, clusters) in runs {
-                if vcn >= bytes / 4096 {
+                if vcn >= prefix_clusters {
                     break;
                 }
                 if vcn != cursor {
@@ -858,7 +858,7 @@ impl PrivatePlaceholder {
                 }
                 cursor += u64::from(clusters);
             }
-            if cursor < bytes / 4096 {
+            if cursor < prefix_clusters {
                 return Err(invalid("private placed prefix is incomplete"));
             }
         }
@@ -1002,7 +1002,7 @@ impl PrivatePlaceholder {
         {
             return Err(invalid("fresh zero-VDL mapping required for tracking"));
         }
-        let clusters = self.bytes / 4096;
+        let clusters = self.bytes / crate::target_cluster::bytes();
         self.initial_mapping_tracked = true;
         if clusters == 0 {
             return Ok(vec![]);
@@ -1038,7 +1038,7 @@ impl PrivatePlaceholder {
                         .ok_or_else(|| invalid("tracked LCN overflow"))?;
                     if physical
                         .checked_add(u64::from(count))
-                        .is_none_or(|v| v > self.partition / 4096)
+                        .is_none_or(|v| v > self.partition / crate::target_cluster::bytes())
                     {
                         return Err(invalid("tracked private mapping escapes partition"));
                     }

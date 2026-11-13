@@ -218,7 +218,7 @@ pub fn materialize_private_supply_plan_domain(
         }
         for stream in object.data_streams() {
             if stream.sparse.is_none() {
-                let prefix = stream.length / 4096 * 4096;
+                let prefix = n2r_win32::target_cluster::floor(stream.length);
                 if prefix != 0 {
                     template.advance_placed_prefix_named(index, stream.name_utf16, prefix)?;
                 }

@@ -4,11 +4,7 @@ fn invalid(message: &str) -> io::Error {
     io::Error::other(message)
 }
 pub(super) fn require(file: &File, bytes: u64) -> io::Result<()> {
-    let rounded = bytes
-        .checked_add(4095)
-        .ok_or_else(|| invalid("VDL EOF overflow"))?
-        / 4096
-        * 4096;
+    let rounded = crate::target_cluster::ceil(bytes).ok_or_else(|| invalid("VDL EOF overflow"))?;
     let mut cursor = 0u64;
     loop {
         let mut input = [0u8; 24];

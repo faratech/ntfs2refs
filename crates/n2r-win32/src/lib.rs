@@ -101,6 +101,8 @@ pub mod sparse_layout;
 pub mod stream_layout;
 #[cfg(windows)]
 mod stream_native;
+pub mod target_cluster;
+pub mod target_refs_version;
 pub mod tree_resources;
 #[cfg(windows)]
 pub mod txf_native;

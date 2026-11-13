@@ -248,13 +248,25 @@ impl FormatProfiles {
             native_purpose: *b"N2RNAT01",
             expected_purpose: *b"N2REXP01",
             expected_schema: 3,
-            refs_major: 3,
-            refs_minor: 14,
-            cluster_bytes: 4096,
+            refs_major: n2r_win32::target_refs_version::get().0 as u16,
+            refs_minor: n2r_win32::target_refs_version::get().1 as u16,
+            cluster_bytes: n2r_win32::target_cluster::bytes_u32(),
             placement_archive_schema: 3,
         }
     }
     pub(crate) fn supported(&self) -> bool {
+        // A resumed preparation works in the ReFS allocation unit and
+        // version its run recorded; this process takes them, or already
+        // works with others.
+        if n2r_win32::target_cluster::choose(u64::from(self.cluster_bytes)).is_err()
+            || n2r_win32::target_refs_version::choose(
+                u32::from(self.refs_major),
+                u32::from(self.refs_minor),
+            )
+            .is_err()
+        {
+            return false;
+        }
         let mut compatible = self.clone();
         if !matches!(compatible.source_cache_schema, 1 | 2) {
             return false;

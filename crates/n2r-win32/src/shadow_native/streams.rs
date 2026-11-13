@@ -140,7 +140,7 @@ pub(super) fn validate_extent_only(
     sparse: bool,
     partition: u64,
 ) -> io::Result<()> {
-    let prefix = length / 4096 * 4096;
+    let prefix = crate::target_cluster::floor(length);
     if prefix == 0 || sparse {
         return Err(invalid(
             "digest-free input requires a nonempty whole-cluster plain source prefix",
@@ -148,8 +148,8 @@ pub(super) fn validate_extent_only(
     }
     let bound = |offset: u64, bytes: u64| {
         bytes != 0
-            && offset.is_multiple_of(4096)
-            && bytes.is_multiple_of(4096)
+            && crate::target_cluster::aligned(offset)
+            && crate::target_cluster::aligned(bytes)
             && offset
                 .checked_add(bytes)
                 .is_some_and(|end| end <= partition)
@@ -329,7 +329,12 @@ pub(super) fn observe(
                 }
                 end = r.vcn + r.clusters;
             }
-            if named.sparse.is_none() && end < named.expected_length.div_ceil(4096) {
+            if named.sparse.is_none()
+                && end
+                    < named
+                        .expected_length
+                        .div_ceil(crate::target_cluster::bytes())
+            {
                 return Err(invalid("named stream mapping is incomplete"));
             }
             (cap.canonical, Some(cap.proof))
@@ -371,7 +376,7 @@ pub(super) fn observe(
         let integrity = ctl(&file, 0x9027c, &[], 16)?;
         if integrity.len() != 16
             || integrity[..8] != [0; 8]
-            || layout::u32_at(&integrity, 12)? != 4096
+            || layout::u32_at(&integrity, 12)? != crate::target_cluster::bytes_u32()
         {
             return Err(invalid("named stream integrity profile differs"));
         }

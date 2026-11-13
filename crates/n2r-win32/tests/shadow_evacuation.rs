@@ -1,5 +1,6 @@
 use n2r_win32::bitmap_layout;
 // The planner is included by path, so give it the crate paths it names.
+use n2r_win32::target_cluster;
 mod shadow_native {
     pub mod report_memory {
         pub use n2r_win32::shadow_native::report_memory::*;

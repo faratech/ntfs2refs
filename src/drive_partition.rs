@@ -467,6 +467,10 @@ struct PublicationRoute {
     source: GeneralDiskBinding,
     shadow: GeneralDiskBinding,
     locator: FileRoute,
+    #[serde(default)]
+    target_cluster_bytes: Option<u64>,
+    #[serde(default)]
+    target_refs_version: Option<(u32, u32)>,
     serialized_publication_grants_authority: bool,
 }
 #[derive(Deserialize)]
@@ -596,6 +600,17 @@ pub(super) fn try_recover(directory: &Path, checksum: &str, rollback: bool) -> R
         !route.serialized_publication_grants_authority && source_binding.storage == route.source,
         "foreign partition recovery publication route"
     );
+    n2r_win32::target_cluster::choose(
+        route
+            .target_cluster_bytes
+            .unwrap_or(n2r_win32::target_cluster::DEFAULT_BYTES),
+    )
+    .context("the recovery publication's ReFS allocation unit")?;
+    let (major, minor) = route
+        .target_refs_version
+        .unwrap_or(n2r_win32::target_refs_version::DEFAULT);
+    n2r_win32::target_refs_version::choose(major, minor)
+        .context("the recovery publication's ReFS version")?;
     route.source.validate()?;
     route.shadow.validate()?;
     let mut locator = Pinned::open(&route.locator.path, digest(&route.locator.sha256)?, maximum)?;

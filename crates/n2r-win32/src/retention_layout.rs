@@ -5,14 +5,18 @@ use crate::bitmap_layout;
 use serde::Serialize;
 use std::io;
 
-const CLUSTER: u64 = 4096;
+fn cluster() -> u64 {
+    crate::target_cluster::bytes()
+}
 /// Output-vector ceiling (48 B per subrun). Private-tree placement passes its
 /// remaining native submissions as the budget, so this matches
 /// private_tree::MAX_PLACEMENT_SUBMISSIONS; older callers pass their own.
 pub const MAX_SUBRUNS: usize = 32_768;
 // FSCTL_MOVE_FILE counts clusters in a DWORD. This bounds each submitted move,
 // not the length of the original file or of a streamed bitmap interval.
-pub(crate) const MAX_MOVE_BYTES: u64 = u32::MAX as u64 * CLUSTER;
+pub(crate) fn max_move_bytes() -> u64 {
+    u32::MAX as u64 * cluster()
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct SourceRun {
@@ -75,10 +79,10 @@ impl<'a> StreamedPlanner<'a> {
         metadata: &'a crate::bitmap_streaming::Summary,
         partition: u64,
     ) -> io::Result<Self> {
-        if partition == 0 || !partition.is_multiple_of(CLUSTER) {
+        if partition == 0 || !partition.is_multiple_of(cluster()) {
             return Err(invalid("streamed retention partition geometry differs"));
         }
-        let domain = partition / CLUSTER;
+        let domain = partition / cluster();
         Self::build(
             legacy,
             metadata,
@@ -95,10 +99,10 @@ impl<'a> StreamedPlanner<'a> {
         limits: crate::bitmap_streaming::Limits,
         resource_capacity: Option<usize>,
     ) -> io::Result<Self> {
-        if partition == 0 || !partition.is_multiple_of(CLUSTER) {
+        if partition == 0 || !partition.is_multiple_of(cluster()) {
             return Err(invalid("streamed retention partition geometry differs"));
         }
-        let domain = partition / CLUSTER;
+        let domain = partition / cluster();
         for summary in [legacy, metadata] {
             summary.validate(domain, limits)?;
             if summary.declared_clusters != domain {
@@ -158,11 +162,11 @@ impl<'a> StreamedPlanner<'a> {
         if max_subruns == 0
             || (!resource && max_subruns > MAX_SUBRUNS)
             || partition == 0
-            || !partition.is_multiple_of(CLUSTER)
+            || !partition.is_multiple_of(cluster())
             || run.length == 0
-            || !run.length.is_multiple_of(CLUSTER)
-            || !run.logical_offset.is_multiple_of(CLUSTER)
-            || !run.physical_offset.is_multiple_of(CLUSTER)
+            || !run.length.is_multiple_of(cluster())
+            || !run.logical_offset.is_multiple_of(cluster())
+            || !run.physical_offset.is_multiple_of(cluster())
             || run.logical_offset.checked_add(run.length).is_none()
             || run
                 .physical_offset
@@ -171,8 +175,8 @@ impl<'a> StreamedPlanner<'a> {
         {
             return Err(invalid("streamed retention run geometry or budget differs"));
         }
-        let start = run.physical_offset / CLUSTER;
-        let end = start + run.length / CLUSTER;
+        let start = run.physical_offset / cluster();
+        let end = start + run.length / cluster();
         let first = self.occupied.partition_point(|range| range.1 <= start);
         let mut cursor = start;
         let mut free_clusters = 0u64;
@@ -180,7 +184,7 @@ impl<'a> StreamedPlanner<'a> {
         if resource {
             // A free complement gains at most one interval per occupied
             // interval, plus splits at the native DWORD cluster limit.
-            let split = usize::try_from((run.length / CLUSTER).div_ceil(u64::from(u32::MAX)))
+            let split = usize::try_from((run.length / cluster()).div_ceil(u64::from(u32::MAX)))
                 .map_err(io::Error::other)?;
             let capacity = self
                 .occupied
@@ -202,13 +206,13 @@ impl<'a> StreamedPlanner<'a> {
                     return Err(invalid("retention free-subrun budget exceeded"));
                 }
                 let count = (end - begin).min(u64::from(u32::MAX)) as u32;
-                let physical_offset = begin * CLUSTER;
-                let logical_offset = run.logical_offset + (begin - start) * CLUSTER;
+                let physical_offset = begin * cluster();
+                let logical_offset = run.logical_offset + (begin - start) * cluster();
                 subruns.push(FreeSubrun {
                     logical_offset,
                     physical_offset,
-                    length: u64::from(count) * CLUSTER,
-                    starting_vcn: logical_offset / CLUSTER,
+                    length: u64::from(count) * cluster(),
+                    starting_vcn: logical_offset / cluster(),
                     destination_lcn: begin,
                     clusters: count,
                 });
@@ -238,8 +242,8 @@ impl<'a> StreamedPlanner<'a> {
             source: run,
             legacy_bitmap_sha256: legacy.canonical_bitmap_sha256.clone(),
             metadata_bitmap_sha256: metadata.canonical_bitmap_sha256.clone(),
-            free_bytes: free_clusters * CLUSTER,
-            blocked_bytes: run.length - free_clusters * CLUSTER,
+            free_bytes: free_clusters * cluster(),
+            blocked_bytes: run.length - free_clusters * cluster(),
             subruns,
         })
     }
@@ -306,7 +310,7 @@ impl ResourcePlanner<'_> {
         if remaining_subruns == 0 || remaining_subruns > self.max_subruns {
             return Err(invalid("resource retention remaining budget differs"));
         }
-        let split = usize::try_from((run.length / CLUSTER).div_ceil(u64::from(u32::MAX)))
+        let split = usize::try_from((run.length / cluster()).div_ceil(u64::from(u32::MAX)))
             .map_err(io::Error::other)?;
         let slots = self
             .planner
@@ -357,15 +361,15 @@ pub fn plan_free_subruns(
 ) -> io::Result<Plan> {
     if !(1..=MAX_SUBRUNS).contains(&max_subruns)
         || partition == 0
-        || !partition.is_multiple_of(CLUSTER)
+        || !partition.is_multiple_of(cluster())
         || run.length == 0
-        || !run.length.is_multiple_of(CLUSTER)
-        || !run.logical_offset.is_multiple_of(CLUSTER)
-        || !run.physical_offset.is_multiple_of(CLUSTER)
+        || !run.length.is_multiple_of(cluster())
+        || !run.logical_offset.is_multiple_of(cluster())
+        || !run.physical_offset.is_multiple_of(cluster())
     {
         return Err(invalid("retention run geometry or subrun budget differs"));
     }
-    let clusters = run.length / CLUSTER;
+    let clusters = run.length / cluster();
     u32::try_from(clusters).map_err(|_| invalid("retention run exceeds u32 cluster count"))?;
     run.logical_offset
         .checked_add(run.length)
@@ -383,7 +387,7 @@ pub fn plan_free_subruns(
         bitmap_layout::candidate(legacy, run.physical_offset, run.length, partition)?;
     let metadata_candidate =
         bitmap_layout::candidate(metadata, run.physical_offset, run.length, partition)?;
-    let domain = partition / CLUSTER;
+    let domain = partition / cluster();
     if legacy_candidate.declared_clusters != domain
         || metadata_candidate.declared_clusters != domain
     {
@@ -391,7 +395,7 @@ pub fn plan_free_subruns(
             "retention bitmaps do not cover the same complete partition domain",
         ));
     }
-    let first = run.physical_offset / CLUSTER;
+    let first = run.physical_offset / cluster();
     let mut start = None;
     let mut free_clusters = 0u64;
     let mut subruns = Vec::new();
@@ -411,16 +415,16 @@ pub fn plan_free_subruns(
             if subruns.len() == max_subruns {
                 return Err(invalid("retention free-subrun budget exceeded"));
             }
-            let logical_offset = run.logical_offset + begin * CLUSTER;
-            let physical_offset = run.physical_offset + begin * CLUSTER;
+            let logical_offset = run.logical_offset + begin * cluster();
+            let physical_offset = run.physical_offset + begin * cluster();
             let count = u32::try_from(relative - begin)
                 .map_err(|_| invalid("retention subrun exceeds u32 cluster count"))?;
             subruns.push(FreeSubrun {
                 logical_offset,
                 physical_offset,
-                length: u64::from(count) * CLUSTER,
-                starting_vcn: logical_offset / CLUSTER,
-                destination_lcn: physical_offset / CLUSTER,
+                length: u64::from(count) * cluster(),
+                starting_vcn: logical_offset / cluster(),
+                destination_lcn: physical_offset / cluster(),
                 clusters: count,
             });
         }
@@ -429,8 +433,8 @@ pub fn plan_free_subruns(
         source: run,
         legacy_bitmap_sha256: legacy_candidate.bitmap_sha256,
         metadata_bitmap_sha256: metadata_candidate.bitmap_sha256,
-        free_bytes: free_clusters * CLUSTER,
-        blocked_bytes: (clusters - free_clusters) * CLUSTER,
+        free_bytes: free_clusters * cluster(),
+        blocked_bytes: (clusters - free_clusters) * cluster(),
         subruns,
     })
 }

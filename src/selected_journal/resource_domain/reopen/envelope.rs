@@ -98,7 +98,29 @@ struct Publication {
     ticket_sha256: String,
     expected_mount_paths: Vec<String>,
     expected_source_label: VolumeLabel,
+    /// The ReFS allocation unit of the run, written only when it is not the
+    /// 4 KiB every earlier run used, so those runs' records are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target_cluster_bytes: Option<u64>,
+    /// The ReFS version of the run's shadow, written only when it is not the
+    /// 3.14 every earlier run had.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target_refs_version: Option<(u32, u32)>,
     serialized_publication_grants_authority: bool,
+}
+
+/// Everything read back from a run is counted in the unit the run recorded.
+/// This process takes that unit, or refuses if it already works in another.
+fn adopt_target_cluster(recorded: Option<u64>) -> Result<()> {
+    n2r_win32::target_cluster::choose(recorded.unwrap_or(n2r_win32::target_cluster::DEFAULT_BYTES))
+        .context("the recovery publication's ReFS allocation unit")
+}
+
+/// The same for the ReFS version the run's shadow was formatted with.
+fn adopt_target_refs_version(recorded: Option<(u32, u32)>) -> Result<()> {
+    let (major, minor) = recorded.unwrap_or(n2r_win32::target_refs_version::DEFAULT);
+    n2r_win32::target_refs_version::choose(major, minor)
+        .context("the recovery publication's ReFS version")
 }
 
 fn digest(text: &str) -> Result<[u8; 32]> {
@@ -784,6 +806,8 @@ impl ReopenedPartitionResourceRecovery {
         )?;
         publication_file.file.seek(SeekFrom::Start(0))?;
         let publication: Publication = serde_json::from_reader(&mut publication_file.file)?;
+        adopt_target_cluster(publication.target_cluster_bytes)?;
+        adopt_target_refs_version(publication.target_refs_version)?;
         let mut canonical = HashSink {
             bytes: 0,
             maximum: size,
@@ -1114,6 +1138,8 @@ impl ReopenedPartitionResourceRecovery {
         )?;
         publication_file.file.seek(SeekFrom::Start(0))?;
         let publication: Publication = serde_json::from_reader(&mut publication_file.file)?;
+        adopt_target_cluster(publication.target_cluster_bytes)?;
+        adopt_target_refs_version(publication.target_refs_version)?;
         let mut canonical = HashSink {
             bytes: 0,
             maximum: size,
@@ -1997,6 +2023,8 @@ impl ReopenedResourceRecovery {
         )?;
         publication_file.file.seek(SeekFrom::Start(0))?;
         let publication: Publication = serde_json::from_reader(&mut publication_file.file)?;
+        adopt_target_cluster(publication.target_cluster_bytes)?;
+        adopt_target_refs_version(publication.target_refs_version)?;
         let mut canonical = HashSink {
             bytes: 0,
             maximum: size,

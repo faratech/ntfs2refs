@@ -174,9 +174,7 @@ fn page_end(page: &IoctlQuery, start: u64, length: u64, usage: u32, tail: bool) 
         return Err(bad("initialized-region returned/total counts differ"));
     }
     let maximum = if tail {
-        length
-            .checked_next_multiple_of(4096)
-            .ok_or_else(|| bad("initialized EOF overflow"))?
+        crate::target_cluster::ceil(length).ok_or_else(|| bad("initialized EOF overflow"))?
     } else {
         length
     };

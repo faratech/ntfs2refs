@@ -170,9 +170,9 @@ fn visit_data_inner(
         if bytes == 0
             || logical < cursor
             || end > length
-            || !logical.is_multiple_of(4096)
-            || !physical.is_multiple_of(4096)
-            || !bytes.is_multiple_of(4096)
+            || !crate::target_cluster::aligned(logical)
+            || !crate::target_cluster::aligned(physical)
+            || !crate::target_cluster::aligned(bytes)
         {
             return Err(invalid(
                 "live original-coordinate references overlap or escape file",

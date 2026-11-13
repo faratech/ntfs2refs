@@ -46,7 +46,8 @@ pub fn verify_route(
     binding.validate_volume_extent(&response.bytes)
 }
 
-/// Reuse the converter's existing native ReFS 3.14/4-KiB geometry check.
+/// Reuse the converter's existing native ReFS 3.14 geometry check, which
+/// requires the chosen allocation unit.
 /// Its return value is the observed cluster domain, not an ownership proof.
 pub fn refs_314_clusters(
     volume: &File,

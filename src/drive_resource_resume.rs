@@ -174,7 +174,7 @@ pub(super) fn resume_preparation_in_workspace(
     let prior = origin.conservative_spend.old_work_upper_bytes;
     let uncertain = origin.conservative_spend.uncertain_operation_upper_bytes;
     let prior_ops = usize::try_from(origin.conservative_spend.old_submission_upper)?;
-    let new_ops = usize::try_from(new_work / 4096)?;
+    let new_ops = usize::try_from(new_work / n2r_win32::target_cluster::bytes())?;
     let saved = ResumePreparation {
         arena_root: root,
         arena,
@@ -609,7 +609,7 @@ fn resume_session(directory: &Path, intent_sha: [u8; 32], workspace: Option<&Pat
             .partition_bytes
             .checked_mul(4)
             .context("restart allowance overflow")?;
-        let new_ops = usize::try_from(new_work / 4096)?;
+        let new_ops = usize::try_from(new_work / n2r_win32::target_cluster::bytes())?;
         let limits = RecoveryLimits {
             cumulative_maximum_move_bytes: spend
                 .prior_move_bytes_upper

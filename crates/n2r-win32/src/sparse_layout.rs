@@ -3,7 +3,12 @@
 use serde::{Deserialize, Serialize};
 use std::io;
 
-pub const CLUSTER_BYTES: u64 = 4096;
+/// Allocated ranges are whole clusters of the target volume.
+pub fn cluster_bytes() -> u64 {
+    crate::target_cluster::bytes()
+}
+/// The range count of the older fixed profiles; the resource profile sizes
+/// its own from its budget, and a layout itself is bounded by its stream.
 pub const MAX_LAYOUT_RANGES: usize = crate::stream_layout::MAX_COMPLETE_EXTENTS;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,9 +37,10 @@ fn rounded_length(length: u64) -> io::Result<u64> {
             "sparse logical length exceeds native signed bounds",
         ));
     }
+    let cluster = cluster_bytes();
     length
-        .checked_add(CLUSTER_BYTES - 1)
-        .map(|n| n / CLUSTER_BYTES * CLUSTER_BYTES)
+        .checked_add(cluster - 1)
+        .map(|n| n / cluster * cluster)
         .ok_or_else(|| invalid("sparse logical rounding overflow"))
 }
 fn end(range: &LogicalRange) -> io::Result<u64> {
@@ -79,10 +85,11 @@ impl SparseLayout {
         }
         allocated.sort_unstable_by_key(|range| range.offset);
         let mut normalized: Vec<LogicalRange> = Vec::with_capacity(allocated.len());
+        let cluster = cluster_bytes();
         for range in allocated {
             if range.length == 0
-                || !range.offset.is_multiple_of(CLUSTER_BYTES)
-                || !range.length.is_multiple_of(CLUSTER_BYTES)
+                || !range.offset.is_multiple_of(cluster)
+                || !range.length.is_multiple_of(cluster)
                 || end(&range)? > rounded
             {
                 return Err(invalid(
@@ -126,11 +133,12 @@ impl SparseLayout {
             return Err(invalid("sparse VDL or combined range count exceeds bounds"));
         }
         let mut previous_end = 0u64;
+        let cluster = cluster_bytes();
         for range in &self.allocated {
             let range_end = end(range)?;
             if range.length == 0
-                || !range.offset.is_multiple_of(CLUSTER_BYTES)
-                || !range.length.is_multiple_of(CLUSTER_BYTES)
+                || !range.offset.is_multiple_of(cluster)
+                || !range.length.is_multiple_of(cluster)
                 || range.offset < previous_end
                 || range_end > rounded
             {

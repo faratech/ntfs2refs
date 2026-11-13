@@ -38,7 +38,8 @@ pub fn allocated_ranges_with_profile(
     profile: crate::bitmap_paging::AssemblyProfile,
 ) -> io::Result<AllocationMap> {
     let bad = |message| io::Error::new(io::ErrorKind::InvalidData, message);
-    if !partition.is_multiple_of(4096)
+    let cluster = crate::target_cluster::bytes();
+    if !partition.is_multiple_of(cluster)
         || bytes.len() < 16
         || bytes.len() > profile.max_complete_bytes()
         || bytes[..8] != [0; 8]
@@ -47,7 +48,7 @@ pub fn allocated_ranges_with_profile(
     }
     let bits = i64::from_le_bytes(bytes[8..16].try_into().unwrap());
     if bits <= 0
-        || bits as u64 != partition / 4096
+        || bits as u64 != partition / cluster
         || bytes.len() - 16 < (bits as u64).div_ceil(8) as usize
     {
         return Err(bad("metadata-inclusive bitmap is incomplete"));
@@ -115,9 +116,10 @@ fn push_range(ranges: &mut Vec<AllocatedRange>, start: u64, end: u64) -> io::Res
             "metadata-inclusive allocation range budget exceeded",
         ));
     }
+    let cluster = crate::target_cluster::bytes();
     ranges.push(AllocatedRange {
-        offset: start * 4096,
-        length: (end - start) * 4096,
+        offset: start * cluster,
+        length: (end - start) * cluster,
     });
     Ok(())
 }
@@ -164,7 +166,7 @@ impl<'a> BitmapView<'a> {
         }
         let bits = i64::from_le_bytes(bytes[8..16].try_into().unwrap());
         if bits <= 0
-            || bits as u64 > partition / 4096
+            || bits as u64 > partition / crate::target_cluster::bytes()
             || ((bytes.len() - 16) as u64) < (bits as u64).div_ceil(8)
         {
             return Err(candidate_error());
@@ -177,11 +179,12 @@ impl<'a> BitmapView<'a> {
     }
 
     pub(crate) fn candidate(&self, offset: u64, length: u64) -> io::Result<Candidate> {
-        if !offset.is_multiple_of(4096) || length == 0 || !length.is_multiple_of(4096) {
+        let cluster = crate::target_cluster::bytes();
+        if !offset.is_multiple_of(cluster) || length == 0 || !length.is_multiple_of(cluster) {
             return Err(candidate_error());
         }
-        let start = offset / 4096;
-        let clusters = length / 4096;
+        let start = offset / cluster;
+        let clusters = length / cluster;
         let end = start.checked_add(clusters).ok_or_else(candidate_error)?;
         if end > self.bits {
             return Err(candidate_error());
@@ -241,7 +244,8 @@ pub fn candidate_with_profile(
     profile: crate::bitmap_paging::AssemblyProfile,
 ) -> io::Result<Candidate> {
     // Reject invalid geometry before hashing a potentially multi-megabyte map.
-    if !offset.is_multiple_of(4096) || length == 0 || !length.is_multiple_of(4096) {
+    let cluster = crate::target_cluster::bytes();
+    if !offset.is_multiple_of(cluster) || length == 0 || !length.is_multiple_of(cluster) {
         return Err(candidate_error());
     }
     BitmapView::new_with_profile(bytes, partition, profile)?.candidate(offset, length)
@@ -270,6 +274,37 @@ mod tests {
                 .unwrap()
                 .allocated_clusters,
             4
+        );
+    }
+    #[test]
+    fn a_bit_is_one_cluster_of_the_target_unit() {
+        let mut b = bitmap();
+        b[16] = 0b0000_0110;
+        crate::target_cluster::with(65536, || {
+            let partition = 16 * 65536;
+            assert_eq!(
+                allocated_ranges(&b, partition).unwrap().ranges,
+                [AllocatedRange {
+                    offset: 65536,
+                    length: 131_072
+                }]
+            );
+            let found = candidate(&b, 65536, 196_608, partition).unwrap();
+            assert_eq!(
+                (found.start_lcn, found.clusters, found.allocated_clusters),
+                (1, 3, 2)
+            );
+            // Sixteen bits do not cover sixteen 4 KiB clusters here, and a
+            // 4 KiB range is not a whole number of clusters.
+            assert!(allocated_ranges(&b, 16 * 4096).is_err());
+            assert!(candidate(&b, 4096, 4096, partition).is_err());
+        });
+        assert_eq!(
+            allocated_ranges(&b, 16 * 4096).unwrap().ranges,
+            [AllocatedRange {
+                offset: 4096,
+                length: 8192
+            }]
         );
     }
     #[test]

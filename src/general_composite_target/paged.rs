@@ -238,7 +238,9 @@ impl SourceTailProvider {
         expected.require_resource_owner(admission)?;
         bytes.require_admission(admission)?;
         let mut writer = SortedRecordWriter::new(path, *b"N2RSRTL1", scratch)?;
-        let mut buffer = [0; 4096];
+        // A tail is shorter than one target cluster.
+        let cluster = n2r_win32::target_cluster::bytes();
+        let mut buffer = vec![0; usize::try_from(cluster)?];
         for index in 0..expected.len() {
             let object = expected.object_leased(index)?;
             if object.directory {
@@ -246,8 +248,9 @@ impl SourceTailProvider {
             }
             // Pay for this actual object's reference vector before allocating
             // it; the expected-object lease separately owns the names/data.
-            // The reserve also covers the one 4 KiB tail and bounded current
-            // source proof/expectation name copies, not an entire maximum row.
+            // The reserve also covers the one tail, of less than a target
+            // cluster, and bounded current source proof/expectation name
+            // copies, not an entire maximum row.
             let count = object
                 .data_streams()
                 .filter(|s| s.tail_requires_materialization())
@@ -264,7 +267,7 @@ impl SourceTailProvider {
             let admitted = reference_bytes
                 .checked_mul(2)
                 .and_then(|n| n.checked_add((max_name_units as u64).checked_mul(16)?))
-                .and_then(|n| n.checked_add(65536))
+                .and_then(|n| n.checked_add(65536 - 4096 + cluster))
                 .context("source tail RAM overflow")?;
             ensure!(
                 reference_bytes
@@ -288,9 +291,12 @@ impl SourceTailProvider {
                 .is_some_and(|n| n <= admitted), "source tail reference allocation differs");
             tails.sort_unstable_by(|a, b| a.name_utf16.cmp(b.name_utf16));
             for (ordinal, stream) in tails.into_iter().enumerate() {
-                let offset = stream.length / 4096 * 4096;
+                let offset = stream.length / cluster * cluster;
                 let count = usize::try_from(stream.length - offset)?;
-                ensure!((1..4096).contains(&count), "source tail width differs");
+                ensure!(
+                    (1..buffer.len()).contains(&count),
+                    "source tail width differs"
+                );
                 let identity = PagedStreamIdentity {
                     record_number: object.record_number,
                     sequence_number: object.sequence_number,
@@ -503,7 +509,9 @@ fn allocated(
         .as_ref()
         .context("complete protected allocation page proof absent")?;
     ensure!(
-        map.cluster_count.checked_mul(4096) == Some(image)
+        map.cluster_count
+            .checked_mul(n2r_win32::target_cluster::bytes())
+            == Some(image)
             && proof.cluster_count == map.cluster_count
             && proof.canonical_bitmap_sha256 == map.bitmap_sha256,
         "protected complete allocation domain/proof differs"
@@ -525,7 +533,9 @@ fn allocated(
     }
     let output = Intervals::finish(sort, path, image, scratch, *b"N2RTALC1")?;
     ensure!(
-        map.allocated_clusters.checked_mul(4096) == Some(output.bytes),
+        map.allocated_clusters
+            .checked_mul(n2r_win32::target_cluster::bytes())
+            == Some(output.bytes),
         "protected allocation count/order differs"
     );
     Ok(output)

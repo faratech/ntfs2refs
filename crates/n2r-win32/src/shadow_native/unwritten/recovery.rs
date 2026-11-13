@@ -90,7 +90,7 @@ impl PrivatePlaceholder {
             if let Some(lcn) = run.lcn {
                 if lcn
                     .checked_add(run.clusters)
-                    .is_none_or(|n| n > self.partition / 4096)
+                    .is_none_or(|n| n > self.partition / crate::target_cluster::bytes())
                 {
                     return Err(invalid("recovered full retrieval map escapes partition"));
                 }
@@ -197,10 +197,11 @@ impl PrivatePlaceholder {
         // can be retained: the normal supply pass rewrites their entire EOF.
         // Keep valid_prefix/materialized_bytes zero so recovery never treats
         // their current contents as admitted payload.
-        if bytes >= 4096 && !placed_ready {
+        let cluster = crate::target_cluster::bytes();
+        if bytes >= cluster && !placed_ready {
             require_zero_storage_vdl(&file, bytes)?;
         }
-        let prefix = bytes / 4096 * 4096;
+        let prefix = bytes / cluster * cluster;
         let mut placed_resource = if placed_ready {
             Some(resource::ResourcePlacement::new(
                 admission,
@@ -238,7 +239,7 @@ impl PrivatePlaceholder {
                 retrieval_extents = capture.runs.len();
                 let mut cursor = 0u64;
                 for run in &capture.runs {
-                    if run.vcn >= prefix / 4096 {
+                    if run.vcn >= prefix / cluster {
                         break;
                     }
                     let lcn = run
@@ -251,7 +252,7 @@ impl PrivatePlaceholder {
                         .vcn
                         .checked_add(run.clusters)
                         .ok_or_else(|| invalid("placed recovery VCN overflow"))?
-                        .min(prefix / 4096);
+                        .min(prefix / cluster);
                     let mut at = run.vcn;
                     while at < end {
                         if placed_map.len() == resource.max_tracked_slots {
@@ -263,7 +264,7 @@ impl PrivatePlaceholder {
                             .ok_or_else(|| invalid("placed recovery LCN overflow"))?;
                         if physical
                             .checked_add(u64::from(count))
-                            .is_none_or(|n| n > partition / 4096)
+                            .is_none_or(|n| n > partition / cluster)
                         {
                             return Err(invalid("placed recovery map escapes shadow"));
                         }
@@ -272,7 +273,7 @@ impl PrivatePlaceholder {
                     }
                     cursor = end;
                 }
-                if cursor != prefix / 4096 {
+                if cursor != prefix / cluster {
                     return Err(invalid("placed recovery prefix allocation ends early"));
                 }
                 super::super::initialized_regions::capture_initialized(
@@ -384,7 +385,7 @@ impl PrivatePlaceholder {
         // There is no whole-cluster placement prefix for a tiny stream.
         // Its physical allocation was audited separately, and supply rewrites
         // the complete EOF; neither resident bytes nor a tail become retained.
-        if self.bytes < 4096 {
+        if self.bytes < crate::target_cluster::bytes() {
             let identity = super::super::info(&self.file, 18, 24)?;
             let standard = super::super::info(&self.file, 1, 24)?;
             if !self.placed.is_empty()
@@ -412,7 +413,7 @@ impl PrivatePlaceholder {
         // pieces inside formerly observed holes before deriving that hole set.
         let capture = resource.capture(&self.file)?;
         let mut first_tracked = 0usize;
-        let prefix = self.bytes / 4096;
+        let prefix = self.bytes / crate::target_cluster::bytes();
         for run in &capture.runs {
             let Some(lcn) = run.lcn else {
                 continue;
@@ -452,7 +453,7 @@ impl PrivatePlaceholder {
                 .checked_add(u64::from(count))
                 .ok_or_else(|| invalid("recovered VCN overflow"))?;
         }
-        let end = self.bytes / 4096;
+        let end = self.bytes / crate::target_cluster::bytes();
         while cursor < end {
             let count = (end - cursor).min(u64::from(u32::MAX)) as u32;
             holes.push((cursor, count));

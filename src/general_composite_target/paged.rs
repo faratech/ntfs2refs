@@ -772,12 +772,26 @@ fn source_in_place(
         scratch,
         routes.len(),
     )?;
+    // The routes of one stream follow one another. Closing a stream's
+    // session reads its file records again and checks its mapping; done
+    // after every route, a stream in thousands of runs was opened and closed
+    // once per run, which is quadratic in its runs. The session is closed
+    // when the stream changes, and after every route only where everything
+    // is re-read at each step.
+    let every_route = n2r_win32::verify_policy::full_unremembered();
+    let mut open: Option<(usize, Vec<u16>)> = None;
     for ordinal in 0..routes.len() {
         let route = routes.route(ordinal)?;
         let object = expected.object_leased(route.object_index())?;
         let stream = object
             .stream(route.stream_name_utf16())
             .context("in-place source stream absent")?;
+        if open.as_ref().is_some_and(|(index, name)| {
+            *index != route.object_index() || name != stream.name_utf16
+        }) {
+            bytes.finish_stream()?;
+            open = None;
+        }
         let id = PagedStreamIdentity {
             record_number: object.record_number,
             sequence_number: object.sequence_number,
@@ -799,6 +813,13 @@ fn source_in_place(
                 },
             )?;
         }
+        if every_route {
+            bytes.finish_stream()?;
+        } else if open.is_none() {
+            open = Some((route.object_index(), stream.name_utf16.to_vec()));
+        }
+    }
+    if open.is_some() {
         bytes.finish_stream()?;
     }
     Intervals::finish(sort, path, image, scratch, *b"N2RTIPL1")

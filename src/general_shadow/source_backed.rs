@@ -1195,8 +1195,8 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
         result
     }
 
-    /// Actual checked range bytes with mapping revalidated before returning to
-    /// a destination writer. Whole-stream content is claimed only when read.
+    /// Actual checked range bytes. The mapping is revalidated when the session
+    /// of the stream closes. Whole-stream content is claimed only when read.
     pub(crate) fn read_range_proof(
         &mut self,
         identity: &PagedStreamIdentity<'_>,
@@ -1224,7 +1224,16 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
             }
         }
         let sha256 = hex::encode(sha2::Sha256::digest(&*output));
-        self.finish_stream()?;
+        // Closing the stream's session reads its file record again (all of
+        // them, for a stream with an attribute list) and checks the mapping.
+        // Where everything is re-read at each step that happens after every
+        // range. Otherwise it happens once, when the caller finishes the
+        // stream or moves to another: a stream copied in many pieces (a
+        // sparse file with thousands of islands) would otherwise be opened
+        // and closed once per piece, which is quadratic in its runs.
+        if n2r_win32::verify_policy::full_unremembered() {
+            self.finish_stream()?;
+        }
         Ok(crate::ntfs_inspect::StreamRangeReadProof {
             record_number: identity.record_number,
             stream_name_utf16: identity.name_utf16.to_vec(),

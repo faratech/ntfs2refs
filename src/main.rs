@@ -9,10 +9,25 @@ use std::{
     process::ExitCode,
 };
 
+/// What `--help` ends with: the order to do things in, and where the rest is.
+const AFTER_HELP: &str = "\
+Start with these, from an elevated terminal:
+  ntfs2refs --list
+  ntfs2refs --drive E --scratch-directory S:\\runs --diagnose
+  ntfs2refs --drive E --scratch-directory S:\\runs
+
+--list says for each NTFS partition whether it can be converted. --diagnose
+checks a volume without writing to it. A conversion prints a recovery command
+before its first write to the volume; keep it. docs/cli-workflow.md is the
+guide. `ntfs2refs capabilities` prints what this executable admits and
+refuses, and names the commands of earlier designs that this help no longer
+lists.";
+
 #[derive(Parser)]
 #[command(
     version,
-    about = "NTFS/ReFS inspection and experimental certificate-backed data-volume conversion.",
+    about = "Converts an NTFS volume to ReFS in place.",
+    after_help = AFTER_HELP,
     args_conflicts_with_subcommands = true,
     arg_required_else_help = true
 )]
@@ -27,9 +42,14 @@ enum Target {
     Win11,
     Server,
 }
+/// `capabilities` is the command of the product. The others are research
+/// tools for raw images and the request-file commands of earlier designs:
+/// they still work and have their own `--help`, and `capabilities` names
+/// them, but the top-level help does not list them.
 #[derive(Subcommand)]
 enum Command {
     /// Inspect a raw partition image (never a VHDX container or live device).
+    #[command(hide = true)]
     Inspect {
         #[arg(long)]
         image: PathBuf,
@@ -40,6 +60,7 @@ enum Command {
         stream_hash_budget_mib: u64,
     },
     /// Produce a non-executable feasibility report with explicit blockers.
+    #[command(hide = true)]
     Plan {
         #[arg(long)]
         image: PathBuf,
@@ -58,15 +79,17 @@ enum Command {
         output: Option<PathBuf>,
     },
     /// Verify byte identity against an inspection report; not conversion validity.
+    #[command(hide = true)]
     Verify {
         #[arg(long)]
         image: PathBuf,
         #[arg(long)]
         baseline: PathBuf,
     },
-    /// List the implemented and gated capabilities.
+    /// Print, as JSON, what this executable admits, refuses and does not carry over.
     Capabilities,
     /// Compare same-sized native-format corpus images in bounded memory.
+    #[command(hide = true)]
     Diff {
         #[arg(long)]
         before: PathBuf,
@@ -78,6 +101,7 @@ enum Command {
         output: Option<PathBuf>,
     },
     /// Compare frozen images while retaining explicit source byte ranges; never authorizes writes.
+    #[command(hide = true)]
     CompareRetained {
         #[arg(long)]
         source: PathBuf,
@@ -90,6 +114,7 @@ enum Command {
         output: Option<PathBuf>,
     },
     /// Convert a bound data volume through live qualification and an external journal.
+    #[command(hide = true)]
     Convert {
         /// Legacy feasibility plans remain non-executable.
         #[arg(long, required_unless_present = "request", conflicts_with = "request")]
@@ -104,16 +129,22 @@ enum Command {
         output: Option<PathBuf>,
     },
     /// Resume an already activated offline target using pinned recovery inputs.
+    #[command(hide = true)]
     Resume(RecoveryArgs),
     /// Restore the admitted NTFS preimage before the handoff barrier.
+    #[command(hide = true)]
     Rollback(RecoveryArgs),
     /// Complete native ReFS handoff after an exact completed apply.
+    #[command(hide = true)]
     Finalize(RecoveryArgs),
     /// Complete only the source label on a strictly verified mounted ReFS target.
+    #[command(hide = true)]
     CompleteLabel(LabelCompletionArgs),
     /// Report verified public-run lifecycle facts without changing disk state.
+    #[command(hide = true)]
     OperationState(RunOperationArgs),
     /// Restore unchanged NTFS availability before reconstruction activation.
+    #[command(hide = true)]
     Cancel(RunOperationArgs),
 }
 

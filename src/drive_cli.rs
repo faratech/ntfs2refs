@@ -18,30 +18,35 @@ mod staging;
 
 #[derive(Args, Debug)]
 pub struct DriveArgs {
-    /// Show available Windows disks, partition numbers and mounted volumes.
+    /// Show the disks and partitions, and for each NTFS partition whether
+    /// it can be converted and, if not, why.
     #[arg(long, conflicts_with_all = ["drive", "partition", "scratch_directory", "recover", "recovery_sha256", "rollback"])]
     pub list: bool,
-    /// Drive letter or disk number; also accepts --drive D partition 2.
+    /// The volume to convert: a drive letter, or a disk number with
+    /// --partition. Also accepts --drive D partition 2.
     #[arg(long, num_args = 1..=3, value_name = "DRIVE", conflicts_with_all = ["list", "recover", "recovery_sha256", "rollback"])]
     pub drive: Option<Vec<String>>,
     /// Exact partition number. A letter must already identify that partition.
     #[arg(long, requires = "drive")]
     pub partition: Option<u32>,
-    /// Working directory; shared-disk conversion requires a different physical disk.
+    /// Working directory for the run's temporary virtual disk and recovery
+    /// files, on a different disk from the volume. Keep it until the
+    /// conversion has finished.
     #[arg(long, requires = "drive")]
     pub scratch_directory: Option<PathBuf>,
-    /// Mounted Windows installation-media directory for offline shared-disk conversion.
-    #[arg(long = "offline-media", requires = "drive")]
+    /// Mounted Windows installation-media directory for offline shared-disk
+    /// conversion. An earlier design: it needs ntfs2refs-recovery.exe, which
+    /// no release ships, and is not listed by --help.
+    #[arg(long = "offline-media", requires = "drive", hide = true)]
     pub offline_recovery_media: Option<PathBuf>,
-    /// Convert an offline Windows installation from a different physical
-    /// Windows boot disk. The running Windows volume remains excluded. A
-    /// partition whose length is not a multiple of 64 MiB is first shrunk to
-    /// one by the Windows NTFS driver; that is announced before the prompt and
-    /// is not undone if the run stops later.
+    /// The volume is an installed Windows that is not running; the Windows
+    /// that runs the converter is on another disk and is never converted.
+    /// Admitted for the boot profiles `ntfs2refs capabilities` lists.
     #[arg(long, requires="drive", conflicts_with_all=["offline_recovery_media","whole_image_verification","experimental_thin_shadow"])]
     pub windows_boot_volume: bool,
-    /// Native target format: dev-drive (experimental default) or standard ReFS.
-    /// Standard formatting must be supported by Windows; no fallback is used.
+    /// How Windows formats the new file system: dev-drive (the default) or
+    /// standard. Standard works only where Windows itself formats ordinary
+    /// ReFS volumes; there is no fallback from one to the other.
     #[arg(long, requires = "drive", value_parser = ["dev-drive", "standard"])]
     pub target_format: Option<String>,
     /// Allocation unit of the ReFS target in bytes: 4096 (default) or 65536.
@@ -50,17 +55,21 @@ pub struct DriveArgs {
     /// clusters most data is copied through the working storage instead.
     #[arg(long, requires = "drive", value_parser = ["4096", "65536"])]
     pub target_cluster_bytes: Option<String>,
-    /// Recover an interrupted run using its original saved conversion directory.
+    /// Finish an interrupted run from its conversion directory, as printed
+    /// in its "To recover:" line. With --rollback, undo it instead.
     #[arg(long, requires = "recovery_sha256", conflicts_with_all = ["list", "drive", "partition", "scratch_directory"])]
     pub recover: Option<PathBuf>,
-    /// Original recovery or preparation SHA-256 printed before source changes.
+    /// The checksum printed with that directory (the SHA-256 of its
+    /// recovery-envelope.json), or the preparation SHA-256 printed at the
+    /// start of a run that had not yet written to the volume.
     #[arg(long, requires = "recover")]
     pub recovery_sha256: Option<String>,
     /// Continue prepublication preparation on a different independent local
     /// volume. Saved source evidence and the existing shadow are reused.
     #[arg(long, requires = "recover", conflicts_with = "rollback")]
     pub resume_workspace: Option<PathBuf>,
-    /// Restore NTFS, or cancel unfinished preparation, before handoff only.
+    /// With --recover: put the NTFS volume back as it was, or cancel a
+    /// preparation that had not finished. Possible until the handoff only.
     #[arg(long, requires = "recover")]
     pub rollback: bool,
     /// Accepted for compatibility: allocation-bounded conversion is the default.
@@ -71,29 +80,31 @@ pub struct DriveArgs {
     /// space is unchanged. This older route keeps fixed limits the default
     /// route does not have: at most 1,024 files, 256 directories and 4,096
     /// placed NTFS runs. A larger volume is refused before anything is written.
+    /// An earlier design, not listed by --help.
     #[arg(
         long,
         requires = "drive",
-        conflicts_with = "experimental_allocation_bounded"
+        conflicts_with = "experimental_allocation_bounded",
+        hide = true
     )]
     pub whole_image_verification: bool,
-    /// Verify complete logical contents of every stream. Extent-identity fast
-    /// verification is the allocation-bounded default; full mode stays available.
-    /// This changes what is checked.
+    /// Read and hash the complete contents of every stream. By default,
+    /// data that stays in place is proven by the identity of its extents and
+    /// only the rest is read. Slower. This changes what is checked.
     #[arg(long, requires = "drive")]
     pub verify_full_content: bool,
-    /// Experimental: reduce recovery storage by leaving unused NTFS space unrestored on
-    /// rollback. Requires fast verification and no VSS snapshots/diff areas.
-    /// It first moves files on the source through NTFS; those moves are not
-    /// undone if the run stops later.
+    /// Experimental: reduce the working storage by not saving what unused
+    /// NTFS space holds, so a rollback does not restore it. It first moves
+    /// files on the volume through NTFS; those moves are not undone if the
+    /// run stops later. Refused with --verify-full-content and on a volume
+    /// with shadow copies.
     #[arg(long, requires = "drive", conflicts_with_all = ["whole_image_verification", "verify_full_content"])]
     pub minimize_scratch: bool,
     /// Check without converting: build the ReFS shadow, report every
     /// per-object failure instead of stopping at the first, then stop before
     /// anything is published. ntfs2refs writes nothing to the source. Exit 0:
     /// no failures; 3: failures reported. Refused when a conversion would
-    /// first shrink the partition, and with --minimize-scratch,
-    /// --whole-image-verification or --offline-media.
+    /// first shrink the partition, and with --minimize-scratch.
     #[arg(long, requires = "drive", conflicts_with_all = [
         "list", "recover", "rollback", "whole_image_verification", "minimize_scratch",
         "offline_recovery_media", "controlled_post_flush_pause_nonce",
@@ -901,9 +912,9 @@ mod windows {
         println!(
             "Requested target: {} (ReFS, {} KiB clusters).",
             if target_format.is_dev_drive() {
-                "Dev Drive; experimental default"
+                "Dev Drive, the default"
             } else {
-                "standard ReFS; Windows formatter support required"
+                "standard ReFS, if this Windows formats it"
             },
             n2r_win32::target_cluster::bytes() / 1024
         );

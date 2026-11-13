@@ -349,7 +349,10 @@ mod windows {
                         .join(",")
                 };
                 let mut notes = Vec::new();
-                if part.contains_running_windows == Some(true) {
+                // Whether a conversion would take it, and why not: what a
+                // run would otherwise say only after it had started.
+                let conversion = drive_inventory::conversion_note(disk, part);
+                if part.contains_running_windows == Some(true) && conversion.is_none() {
                     notes.push("running Windows".into());
                 }
                 if part.offline == Some(true) {
@@ -358,7 +361,9 @@ mod windows {
                 if part.read_only == Some(true) {
                     notes.push("read-only".into());
                 }
-                if let Some(reason) = &part.unsupported_reason {
+                if let Some(note) = conversion {
+                    notes.push(clean(&note));
+                } else if let Some(reason) = &part.unsupported_reason {
                     notes.push(clean(reason));
                 }
                 if let Some(name) = &part.gpt_name {

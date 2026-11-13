@@ -256,3 +256,194 @@ pub fn inventory_drives_readonly() -> io::Result<DriveInventory> {
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
+
+const TYPE_EFI: &str = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b";
+const TYPE_MSR: &str = "e3c9e316-0b5c-4db8-817d-f92df00215ae";
+const TYPE_RECOVERY: &str = "de94bba4-06d1-4d40-a16a-bfd50179d6ac";
+
+/// What a conversion would say about one partition, from the inventory
+/// alone: whether its disk has the layout the converter takes, in the words
+/// a refusal would otherwise only use minutes into a run. `None` for a
+/// partition that is not NTFS: there is nothing to convert.
+///
+/// This is advice for `--list`. It admits nothing; a run examines the disk
+/// itself, and the volume's contents can still refuse it (BitLocker shows
+/// here as NTFS, for one).
+pub fn conversion_note(disk: &DiskInventory, partition: &PartitionInventory) -> Option<String> {
+    if partition.filesystem.as_deref() != Some("NTFS") {
+        return None;
+    }
+    if partition.contains_running_windows == Some(true) {
+        return Some("not convertible: this is the running Windows (convert it from another Windows installation)".into());
+    }
+    if let Some(reason) = &partition.unsupported_reason {
+        return Some(format!("not convertible: {reason}"));
+    }
+    if disk.partition_style.as_deref() != Some("GPT") {
+        return Some(format!(
+            "not convertible: the disk is {}, and the converter takes GPT disks only",
+            disk.partition_style
+                .as_deref()
+                .unwrap_or("of an unknown partition style")
+        ));
+    }
+    if disk.contains_running_windows == Some(true) {
+        return Some("not convertible: it shares its disk with the running Windows, and a conversion takes the whole disk offline".into());
+    }
+    let kind = |other: &PartitionInventory| other.partition_type_guid.clone().unwrap_or_default();
+    let others: Vec<String> = disk
+        .partitions
+        .iter()
+        .filter(|other| other.partition_number != partition.partition_number)
+        .map(kind)
+        .collect();
+    let count = |wanted: &str| others.iter().filter(|kind| kind.as_str() == wanted).count();
+    if others.iter().all(|kind| kind == TYPE_MSR) && others.len() <= 1 {
+        return Some("convertible as a data volume".into());
+    }
+    if others.len() == 3
+        && count(TYPE_EFI) == 1
+        && count(TYPE_MSR) == 1
+        && count(TYPE_RECOVERY) == 1
+    {
+        return Some("convertible as a Windows boot volume (--windows-boot-volume), if it is a qualified Windows build".into());
+    }
+    Some(format!(
+        "not convertible: the disk holds {} other partition(s); a data volume has to be the only one on its disk, apart from a Microsoft reserved partition",
+        others
+            .iter()
+            .filter(|kind| kind.as_str() != TYPE_MSR)
+            .count()
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn partition(number: u32, kind: &str, filesystem: Option<&str>) -> PartitionInventory {
+        PartitionInventory {
+            disk_number: 1,
+            partition_number: number,
+            partition_style: "GPT".into(),
+            offset_bytes: Some(u64::from(number) << 30),
+            size_bytes: Some(1 << 30),
+            partition_guid: None,
+            partition_type_guid: Some(kind.into()),
+            gpt_name: None,
+            mbr_type: None,
+            mbr_active: None,
+            service_partition: None,
+            volume_guid_paths: Vec::new(),
+            mount_paths: Vec::new(),
+            filesystem: filesystem.map(str::to_owned),
+            label: None,
+            read_only: None,
+            offline: None,
+            contains_running_windows: Some(false),
+            is_system: None,
+            unsupported_reason: None,
+        }
+    }
+    fn disk(style: &str, partitions: Vec<PartitionInventory>) -> DiskInventory {
+        DiskInventory {
+            disk_number: 1,
+            device_path: "\\\\.\\PhysicalDrive1".into(),
+            size_bytes: Some(1 << 40),
+            partition_style: Some(style.into()),
+            disk_guid: None,
+            mbr_signature: None,
+            read_only: Some(false),
+            offline: Some(false),
+            contains_running_windows: Some(false),
+            is_system: None,
+            partitions,
+            errors: Vec::new(),
+        }
+    }
+    const BASIC: &str = "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7";
+
+    #[test]
+    fn list_says_which_partitions_the_default_route_takes_and_why_not() {
+        let note = |disk: &DiskInventory, number: u32| {
+            conversion_note(
+                disk,
+                disk.partitions
+                    .iter()
+                    .find(|p| p.partition_number == number)
+                    .unwrap(),
+            )
+        };
+        // A data volume alone on its disk, with or without a reserved partition.
+        let alone = disk(
+            "GPT",
+            vec![
+                partition(1, TYPE_MSR, None),
+                partition(2, BASIC, Some("NTFS")),
+            ],
+        );
+        assert_eq!(
+            note(&alone, 2).as_deref(),
+            Some("convertible as a data volume")
+        );
+        assert_eq!(note(&alone, 1), None);
+        let only = disk("GPT", vec![partition(1, BASIC, Some("NTFS"))]);
+        assert_eq!(
+            note(&only, 1).as_deref(),
+            Some("convertible as a data volume")
+        );
+        // Two data partitions on one disk.
+        let shared = disk(
+            "GPT",
+            vec![
+                partition(1, TYPE_MSR, None),
+                partition(2, BASIC, Some("NTFS")),
+                partition(3, BASIC, Some("NTFS")),
+            ],
+        );
+        assert!(
+            note(&shared, 2).unwrap().contains("1 other partition"),
+            "{:?}",
+            note(&shared, 2)
+        );
+        // An offline Windows disk.
+        let windows = disk(
+            "GPT",
+            vec![
+                partition(1, TYPE_EFI, Some("FAT32")),
+                partition(2, TYPE_MSR, None),
+                partition(3, BASIC, Some("NTFS")),
+                partition(4, TYPE_RECOVERY, Some("NTFS")),
+            ],
+        );
+        assert!(
+            note(&windows, 3)
+                .unwrap()
+                .starts_with("convertible as a Windows boot volume")
+        );
+        // MBR, the running Windows and its disk, and a volume that is already ReFS.
+        let mbr = disk("MBR", vec![partition(1, BASIC, Some("NTFS"))]);
+        assert!(note(&mbr, 1).unwrap().contains("the disk is MBR"));
+        let mut running = disk(
+            "GPT",
+            vec![
+                partition(1, BASIC, Some("NTFS")),
+                partition(2, BASIC, Some("NTFS")),
+            ],
+        );
+        running.contains_running_windows = Some(true);
+        running.partitions[0].contains_running_windows = Some(true);
+        assert!(
+            note(&running, 1)
+                .unwrap()
+                .contains("this is the running Windows")
+        );
+        assert!(
+            note(&running, 2)
+                .unwrap()
+                .contains("shares its disk with the running Windows")
+        );
+        let refs = disk("GPT", vec![partition(1, BASIC, Some("ReFS"))]);
+        assert_eq!(note(&refs, 1), None);
+    }
+}

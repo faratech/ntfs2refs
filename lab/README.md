@@ -192,6 +192,28 @@ comparison report, binary hashes, recovery output and boot evidence with hashes.
 Do not delete the reference baseline checkpoint: the second VM's disks depend
 on its parent chain. Ask before deleting `.lab` artifacts.
 
+## Building a release
+
+`New-Release.ps1` builds the release of the version in `Cargo.toml` from a
+clean checkout of the commit that carries that version as its tag: the ZIP
+(both executables, `capabilities.json`, the README, the guide, the two
+matrices and the notes), its SHA-256 file, a source archive and
+`RELEASE-NOTES.md`. The notes are generated from what the executable's
+`capabilities` reports and name the matrices; nothing in them is typed by
+hand. It refuses a tree with uncommitted changes and an executable that
+reports another version, and it publishes nothing: it ends by printing the
+two commands that would.
+
+```powershell
+lab\New-Release.ps1 -AllowUntagged                     # a rehearsal of any commit
+lab\New-Release.ps1 -ComparedWith <dir of the lab's build>
+```
+
+The lab runs a frozen copy of a build, made before the commit exists.
+`-ComparedWith` names that copy: the release's executables have to equal it
+byte for byte apart from the stamps the linker puts into every link (its
+time, the checksum, the PDB's signature), and the notes then say so.
+
 ## Older scripts
 
 Most of the other scripts here were written for one VM or checkpoint of an

@@ -221,8 +221,20 @@ fn retained_comparison_pins_inputs_and_never_enables_writes() {
 #[test]
 fn capabilities_report_what_the_executable_enforces() {
     let capabilities: Value = serde_json::from_slice(&cli(&["capabilities"]).stdout).unwrap();
-    assert_eq!(capabilities["schema_version"], 4);
+    assert_eq!(capabilities["schema_version"], 5);
+    assert_eq!(capabilities["tool_version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(capabilities["refs_metadata_builder"], "windows");
+    // The documents it points at are in the tree.
+    for document in ["feature_matrix", "recovery_matrix", "guide"] {
+        let path = capabilities["lab_evidence"][document].as_str().unwrap();
+        assert!(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(path)
+                .is_file(),
+            "{path}"
+        );
+    }
+    assert!(capabilities.get("recorded_qualification").is_none());
     // What is announced as not carried over or refused is what the code says.
     let data_volume = &capabilities["data_volume"];
     assert!(
@@ -349,6 +361,59 @@ fn capabilities_report_what_the_executable_enforces() {
         .map(|name| name.as_str().unwrap())
         .collect();
     assert_eq!(accepted, n2r_win32::volume_manifest::ALLOWED_DIFFERENCES);
+}
+
+#[test]
+fn help_lists_the_product_and_capabilities_names_what_it_leaves_out() {
+    let version = String::from_utf8(cli(&["--version"]).stdout).unwrap();
+    assert_eq!(
+        version.trim(),
+        format!("ntfs2refs {}", env!("CARGO_PKG_VERSION"))
+    );
+    let help = String::from_utf8(cli(&["--help"]).stdout).unwrap();
+    let listed: Vec<&str> = help
+        .lines()
+        .skip_while(|line| !line.starts_with("Commands:"))
+        .skip(1)
+        .take_while(|line| line.starts_with("  "))
+        .filter_map(|line| line.split_whitespace().next())
+        .collect();
+    assert_eq!(listed, ["capabilities", "help"], "{help}");
+    for option in [
+        "--list",
+        "--drive",
+        "--scratch-directory",
+        "--diagnose",
+        "--recover",
+        "--rollback",
+        "--target-cluster-bytes",
+    ] {
+        assert!(help.contains(option), "{option}");
+    }
+
+    let capabilities: Value = serde_json::from_slice(&cli(&["capabilities"]).stdout).unwrap();
+    // A route is in the help exactly when capabilities says it is.
+    for route in capabilities["conversion_routes"].as_array().unwrap() {
+        let option = route["option"].as_str().unwrap();
+        assert_eq!(
+            help.contains(option),
+            route["in_help"].as_bool().unwrap(),
+            "{option}"
+        );
+    }
+    // Every command the help leaves out is named, and still answers.
+    let hidden = &capabilities["commands_not_in_help"];
+    let mut named = 0;
+    for group in ["raw_image_research", "request_file_route"] {
+        for command in hidden[group].as_array().unwrap() {
+            let command = command.as_str().unwrap();
+            assert!(!listed.contains(&command), "{command}");
+            let own = cli(&[command, "--help"]);
+            assert!(own.status.success(), "{command}");
+            named += 1;
+        }
+    }
+    assert_eq!(named, 12);
 }
 
 #[test]

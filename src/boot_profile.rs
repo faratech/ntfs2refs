@@ -38,7 +38,7 @@ pub const QUALIFIED: &[BootProfile] = &[BootProfile {
     cluster_bytes: 4096,
     logical_sector_bytes: 512,
     geometry_unit_bytes: 64 << 20,
-    qualified_by: "docs/release-0.0.1-alpha.md (full-16)",
+    qualified_by: "docs/history/release-0.0.1-alpha.md (full-16)",
 }];
 
 /// The qualified profile whose loader and ReFS driver are exactly these.

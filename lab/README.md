@@ -78,6 +78,13 @@ lab\Invoke-DataVolumeAttempt.ps1 -Name d-512-01 -VmId <vm> -ClusterBytes 512
 lab\Invoke-DataVolumeAttempt.ps1 -Name d-4kn-01 -VmId <vm> -SectorBytes 4096 -ClusterBytes 65536
 ```
 
+A VM with Windows Server, which formats ordinary ReFS as well as Dev Drives,
+is made by `lab\New-ServerLabVm.ps1 -Iso <Windows Server ISO>`: Windows Setup
+runs inside the new VM from a generated answer file, a scratch volume `S:` is
+added, and a baseline checkpoint is taken. Start that VM and give the harness
+its id with `-VmId` and its credential file with `-CredentialPath`;
+`-TargetFormat standard` then converts to ordinary ReFS.
+
 `-ClusterBytes` is the NTFS allocation unit, 512 bytes to 2 MiB.
 `-SectorBytes 4096` puts the volume on a 4Kn disk, which the host makes in the
 attempt's folder and attaches to the VM for the attempt. `-LargeRecords` formats

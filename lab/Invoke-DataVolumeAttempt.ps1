@@ -33,6 +33,9 @@ Records land in .lab\hyperv\attempts\<Name>\.
 param(
     [Parameter(Mandatory)][string]$Name,
     [string]$VmId = '8f7fc646-8c9f-41d0-b65a-ecfadccfc36a',
+    # The guest account's saved credential. The reference VMs share one; a VM
+    # made by New-ServerLabVm.ps1 has its own and prints where it is.
+    [string]$CredentialPath,
     # NTFS allocation unit of the source, in bytes: 512 through 2097152.
     [int]$ClusterBytes = 4096,
     # Logical sector size of the source disk. 4096 is a 4Kn disk.
@@ -148,7 +151,8 @@ function Invoke-UseTest([string]$Root) {
 
 $vm = Get-VM -Id $VmId
 if ($vm.State -ne 'Running') { throw "VM $($vm.Name) is $($vm.State). Start its control OS first: Invoke-BootConversionAttempt.ps1 -Name <n> -NoConvert -KeepScratch -VmId $VmId" }
-$saved = Import-Clixml -LiteralPath (Join-Path $workspace '.lab\hyperv\win11\secrets\guest-credential.xml')
+if (-not $CredentialPath) { $CredentialPath = Join-Path $workspace '.lab\hyperv\win11\secrets\guest-credential.xml' }
+$saved = Import-Clixml -LiteralPath $CredentialPath
 $credential = [pscredential]::new('LabAdmin', $saved.Password)
 $session = New-PSSession -VMId $VmId -Credential $credential
 $hostDisk = $null; $worker = $null

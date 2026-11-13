@@ -138,7 +138,6 @@ fn duplicate_stream_is_refused() {
 }
 
 #[test]
-#[ignore = "stale: not maintained while tests were disabled; needs triage"]
 fn native_logical_zero_tail_matches_without_exposing_stale_physical_bytes() {
     let mut bytes = support::image();
     let mut data = support::nonresident(0x80, &[0x11, 2, 100, 0], 5001, 2);
@@ -150,7 +149,7 @@ fn native_logical_zero_tail_matches_without_exposing_stale_physical_bytes() {
     let raw = ntfs_inspect::inspect(&mut Cursor::new(&bytes), bytes.len() as u64).unwrap();
     let f = raw.files.iter().find(|f| f.record_number == 16).unwrap();
     let logical = [vec![0x41; 4099], vec![0; 902]].concat();
-    let logical_hash = hex::encode(Sha256::digest(&logical));
+    let logical_hash = n2r_win32::content_digest::of(&logical);
     assert_eq!(f.streams[0].logical_sha256.as_ref(), Some(&logical_hash));
     let mut n = observation(f, raw.geometry.serial_number);
     for pass in [&mut n.before, &mut n.after] {
@@ -158,8 +157,8 @@ fn native_logical_zero_tail_matches_without_exposing_stale_physical_bytes() {
     }
     assert_eq!(check_file(f, &n, raw.geometry.serial_number).unwrap(), 5001);
     // A native observation exposing stale disk bytes must fail reconciliation.
-    n.after[0].outcome.sha256 = Some(hex::encode(Sha256::digest(
+    n.after[0].outcome.sha256 = Some(n2r_win32::content_digest::of(
         &bytes[100 * 4096..100 * 4096 + 5001],
-    )));
+    ));
     assert!(check_file(f, &n, raw.geometry.serial_number).is_err());
 }

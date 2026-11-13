@@ -74,6 +74,12 @@ fn ordinary(path: &Path) -> io::Result<()> {
     }
     Ok(())
 }
+/// The boot sector's sectors-per-cluster byte, kept as NTFS wrote it. Up to
+/// 128 it is the count, a power of two. A cluster of more sectors than a byte
+/// holds is written as the negated exponent: 0xF4 (2^12 sectors) to 0xFF (2).
+fn valid_sectors_per_cluster(encoded: u8) -> bool {
+    encoded.is_power_of_two() || encoded >= 0xf4
+}
 fn normalized(state: &GeneralDiskState) -> io::Result<String> {
     let mut state = state.clone();
     state.disk_attributes = 0;
@@ -172,7 +178,7 @@ impl Intent {
                 && !self.serialized_intent_grants_authority
                 && self.state_file.bytes == STATE_BYTES
                 && matches!(self.bytes_per_sector, 512 | 4096)
-                && self.sectors_per_cluster.is_power_of_two(),
+                && valid_sectors_per_cluster(self.sectors_per_cluster),
             "invalid preparation intent",
         )?;
         for data in [&self.source, &self.shadow] {
@@ -1049,5 +1055,28 @@ impl PreparationGuard {
             "preservation_basis":"durable pre-AP guard, exact native layout and locked NTFS boot; no raw source writer issued",
             "mount_paths":paths,"label_preserved":true,"journal_replayed":false}),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_sectors_per_cluster;
+
+    #[test]
+    fn every_cluster_size_ntfs_formats_has_a_valid_sectors_per_cluster_byte() {
+        // 512-byte sectors: 512 B (1 sector) to 64 KiB (128) are counts;
+        // 128 KiB (2^8 sectors) to 2 MiB (2^12) are negated exponents.
+        for count in [1u8, 2, 4, 8, 16, 32, 64, 128] {
+            assert!(valid_sectors_per_cluster(count), "{count}");
+        }
+        for exponent in 8..=12i8 {
+            assert!(valid_sectors_per_cluster((-exponent) as u8), "2^{exponent}");
+        }
+        // 4096-byte sectors: 2 MiB is 2^9 sectors.
+        assert!(valid_sectors_per_cluster((-9i8) as u8));
+        // Neither a count nor an exponent NTFS writes.
+        for invalid in [0u8, 3, 12, 100, 129, 0xf3] {
+            assert!(!valid_sectors_per_cluster(invalid), "{invalid}");
+        }
     }
 }

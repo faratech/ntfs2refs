@@ -7,6 +7,7 @@ pub mod artifact_arena;
 pub mod block_io;
 #[cfg(windows)]
 pub mod boot_alias;
+pub mod boot_profile;
 #[cfg(windows)]
 pub mod boot_source;
 pub mod capability_evidence;
@@ -17,6 +18,7 @@ pub mod compact_recovery_bundle;
 pub mod corpus;
 pub mod drive_cli;
 pub mod drive_recovery;
+pub(crate) mod execution_mode;
 pub mod extent_adoption;
 pub mod fixed_vhd;
 #[cfg(windows)]
@@ -45,6 +47,7 @@ pub mod general_shadow;
 pub mod general_source_admission;
 #[cfg(windows)]
 pub mod general_target_preservation;
+pub(crate) mod interrupted_marker;
 #[cfg(windows)]
 pub mod lab_native;
 #[cfg(windows)]
@@ -84,6 +87,7 @@ mod ntfs_storage_class;
 pub mod ntfs_stream_attestation;
 pub mod ntfs_stream_plan;
 pub mod ntfs_transactions;
+pub(crate) mod panic_report;
 #[cfg(windows)]
 pub(crate) mod parallel_digest;
 pub mod payload_copy_plan;

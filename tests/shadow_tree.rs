@@ -1,7 +1,12 @@
 #[allow(dead_code, reason = "Shared synthetic parser fixture")]
 mod support;
+use n2r_win32::content_digest::HEX_LEN;
 use ntfs2refs::{ntfs_inspect as n, ntfs_security as s, shadow_tree};
 use std::io::Cursor;
+
+// Positions in `model().files`, which are in record order as derivation requires.
+const ROOT: usize = 0;
+const FILE: usize = 1;
 
 // Synthetic semantic input only. Native qualification always re-inspects the
 // actual excluded device and rehashes it; these flags cannot admit a volume.
@@ -29,7 +34,7 @@ fn model() -> n::NtfsInspection {
     stream.allocated_size = 65536;
     stream.extents[0].length = 65536;
     stream.logical_hash_status = n::LogicalHashStatus::Complete;
-    stream.logical_sha256 = Some("a".repeat(64));
+    stream.logical_sha256 = Some("a".repeat(HEX_LEN));
     file.attributes.retain(|a| a.name_utf16.is_empty());
     let si = file.standard_information.as_mut().unwrap();
     si.creation_time = 101;
@@ -43,7 +48,7 @@ fn model() -> n::NtfsInspection {
     root.names[0].name_utf16 = vec![46];
     root.streams.clear();
     root.attributes.retain(|a| a.type_code != 0x80);
-    raw.files = vec![file, root]; // Derivation must sort parent before child.
+    raw.files = vec![root, file]; // Record 5 before record 16.
     raw.records_scanned = raw.files.len() as u64;
     raw.allocation_reconciliation.as_mut().unwrap().status =
         n::AllocationReconciliationStatus::ConsistentRawModel;
@@ -81,8 +86,15 @@ fn model() -> n::NtfsInspection {
     });
     raw
 }
+/// The model for a test of refusals: it must itself be accepted, or every
+/// `is_err()` below would hold whatever the test went on to change.
+fn valid_model() -> n::NtfsInspection {
+    let raw = model();
+    shadow_tree::derive(&raw).expect("the unmutated model derives");
+    shadow_tree::derive_ordinary(&raw).expect("the unmutated model derives as an ordinary tree");
+    raw
+}
 #[test]
-#[ignore = "stale: not maintained while tests were disabled; needs triage"]
 fn derives_stored_times_and_physical_payload_without_native_write_authority() {
     let raw = model();
     let t = shadow_tree::derive(&raw).unwrap();
@@ -91,12 +103,11 @@ fn derives_stored_times_and_physical_payload_without_native_write_authority() {
     assert_eq!(t.objects[1].stored_times, [101, 102, 103, 104]);
     assert_eq!(
         t.objects[1].source_offset,
-        raw.files[0].streams[0].extents[0].physical_offset
+        raw.files[FILE].streams[0].extents[0].physical_offset
     );
     assert_eq!(t.logical_bytes, 65536);
 }
 #[test]
-#[ignore = "stale: not maintained while tests were disabled; needs triage"]
 fn alpha_stream_plan_keeps_the_existing_serialized_contract() {
     let plan = ntfs2refs::ntfs_stream_plan::classify(&model());
     let expected = serde_json::json!({
@@ -107,7 +118,7 @@ fn alpha_stream_plan_keeps_the_existing_serialized_contract() {
             "sequence_number": 1,
             "name_utf16": [],
             "logical_bytes": 65536,
-            "logical_sha256": "a".repeat(64),
+            "logical_sha256": "a".repeat(HEX_LEN),
             "source_offset": 100 * 4096,
             "disposition": "retain_candidate",
             "target_named_stream_support_pending": false,
@@ -123,11 +134,10 @@ fn alpha_stream_plan_keeps_the_existing_serialized_contract() {
 }
 
 #[test]
-#[ignore = "stale: not maintained while tests were disabled; needs triage"]
 fn larger_stream_plan_refuses_the_1025th_user_file() {
     use ntfs2refs::{ntfs_admission::ResourceProfile, ntfs_stream_plan};
     let mut raw = model();
-    let template = raw.files[0].clone();
+    let template = raw.files[FILE].clone();
     for index in 0..1024 {
         let mut file = template.clone();
         file.record_number = 17 + index;
@@ -152,12 +162,11 @@ fn larger_stream_plan_refuses_the_1025th_user_file() {
 }
 
 #[test]
-#[ignore = "stale: not maintained while tests were disabled; needs triage"]
 fn larger_tree_is_opt_in_and_rejected_by_the_legacy_target_contract() {
     use ntfs2refs::{ntfs_admission::ResourceProfile, ntfs_stream_plan};
     let mut raw = model();
     raw.geometry.volume_size = 8 << 30;
-    let stream = &mut raw.files[0].streams[0];
+    let stream = &mut raw.files[FILE].streams[0];
     stream.logical_size = 2 << 30;
     stream.initialized_size = stream.logical_size;
     stream.allocated_size = stream.logical_size;
@@ -201,7 +210,6 @@ fn larger_tree_is_opt_in_and_rejected_by_the_legacy_target_contract() {
 }
 
 #[test]
-#[ignore = "stale: not maintained while tests were disabled; needs triage"]
 fn large_stream_planning_checks_aggregate_bounds_and_keeps_encoding_refusals() {
     use ntfs2refs::{
         ntfs_admission::ResourceProfile,
@@ -210,13 +218,13 @@ fn large_stream_planning_checks_aggregate_bounds_and_keeps_encoding_refusals() {
     let selected = ResourceProfile::ExperimentalLargeTreeV1;
     let mut raw = model();
     raw.geometry.volume_size = 16 << 30;
-    let stream = &mut raw.files[0].streams[0];
+    let stream = &mut raw.files[FILE].streams[0];
     stream.logical_size = 3 << 30;
     stream.initialized_size = stream.logical_size;
     stream.allocated_size = stream.logical_size;
     stream.extents[0].physical_offset = Some(4096);
     stream.extents[0].length = stream.logical_size;
-    let mut extra = raw.files[0].clone();
+    let mut extra = raw.files[FILE].clone();
     extra.record_number = 17;
     extra.streams[0].extents[0].physical_offset = Some(4 << 30);
     raw.files.push(extra);
@@ -224,21 +232,21 @@ fn large_stream_planning_checks_aggregate_bounds_and_keeps_encoding_refusals() {
     assert_eq!(plan.retained_candidate_bytes, 3 << 30);
     assert_eq!(plan.rejected_streams, 1);
     assert_eq!(plan.streams[1].disposition, Disposition::Reject);
-    raw.files[0].streams[0].flags = 1;
+    raw.files[FILE].streams[0].flags = 1;
     assert_eq!(
         ntfs_stream_plan::classify_with_resource_profile(&raw, selected).streams[0].disposition,
         Disposition::Reject
     );
-    raw.files[0].streams[0].flags = 0;
-    raw.files[0].streams[0].logical_size = 4 << 30;
-    raw.files[0].streams[0].initialized_size = 4 << 30;
-    raw.files[0].streams[0].allocated_size = 4 << 30;
-    raw.files[0].streams[0].extents[0].length = 4 << 30;
+    raw.files[FILE].streams[0].flags = 0;
+    raw.files[FILE].streams[0].logical_size = 4 << 30;
+    raw.files[FILE].streams[0].initialized_size = 4 << 30;
+    raw.files[FILE].streams[0].allocated_size = 4 << 30;
+    raw.files[FILE].streams[0].extents[0].length = 4 << 30;
     assert_eq!(
         ntfs_stream_plan::classify_with_resource_profile(&raw, selected).streams[0].disposition,
         Disposition::RetainCandidate
     );
-    raw.files[0].streams[0].logical_size = (4 << 30) + 1;
+    raw.files[FILE].streams[0].logical_size = (4 << 30) + 1;
     assert_eq!(
         ntfs_stream_plan::classify_with_resource_profile(&raw, selected).streams[0].disposition,
         Disposition::Reject
@@ -246,7 +254,6 @@ fn large_stream_planning_checks_aggregate_bounds_and_keeps_encoding_refusals() {
 }
 
 #[test]
-#[ignore = "stale: not maintained while tests were disabled; needs triage"]
 fn larger_expected_tree_enforces_file_directory_and_overflow_bounds() {
     use ntfs2refs::ntfs_admission::ResourceProfile;
     let selected = ResourceProfile::ExperimentalLargeTreeV1;
@@ -287,7 +294,6 @@ fn larger_expected_tree_enforces_file_directory_and_overflow_bounds() {
 }
 
 #[test]
-#[ignore = "stale: not maintained while tests were disabled; needs triage"]
 fn pinned_ordinary_expectation_round_trips_and_rejects_changed_digest() {
     let tree = shadow_tree::derive_ordinary(&model()).unwrap();
     let expected = shadow_tree::ExpectedTree::from(&tree);
@@ -300,12 +306,11 @@ fn pinned_ordinary_expectation_round_trips_and_rejects_changed_digest() {
         .iter_mut()
         .find(|o| !o.directory)
         .unwrap()
-        .sha256 = Some("z".repeat(64));
+        .sha256 = Some("z".repeat(HEX_LEN));
     assert!(replay.validate().is_err());
 }
 
 #[test]
-#[ignore = "stale: not maintained while tests were disabled; needs triage"]
 fn expected_tree_requires_parent_before_child_and_unique_source_identity() {
     let tree = shadow_tree::derive_ordinary(&model()).unwrap();
     let mut expected = shadow_tree::ExpectedTree::from(&tree);
@@ -321,7 +326,6 @@ fn expected_tree_requires_parent_before_child_and_unique_source_identity() {
 }
 
 #[test]
-#[ignore = "stale: not maintained while tests were disabled; needs triage"]
 fn ordinary_expected_tree_accepts_internal_spaces_in_a_filename() {
     let tree = shadow_tree::derive_ordinary(&model()).unwrap();
     let mut expected = shadow_tree::ExpectedTree::from(&tree);
@@ -330,7 +334,7 @@ fn ordinary_expected_tree_accepts_internal_spaces_in_a_filename() {
 }
 #[test]
 fn inconsistent_raw_views_missing_security_and_stale_parent_are_refused() {
-    let raw = model();
+    let raw = valid_model();
     let mut b = raw.clone();
     b.records_scanned += 1;
     assert!(shadow_tree::derive(&b).is_err());
@@ -346,14 +350,14 @@ fn inconsistent_raw_views_missing_security_and_stale_parent_are_refused() {
     b.security_reconciliation.as_mut().unwrap().bindings.pop();
     assert!(shadow_tree::derive(&b).is_err());
     let mut b = raw.clone();
-    b.files[0].names[0].parent_sequence_number += 1;
+    b.files[FILE].names[0].parent_sequence_number += 1;
     assert!(shadow_tree::derive(&b).is_err());
 }
 #[test]
 fn resident_sparse_tail_and_extra_streams_do_not_become_shadow_support() {
     for mutation in 0..4 {
-        let mut b = model();
-        let file = &mut b.files[0];
+        let mut b = valid_model();
+        let file = &mut b.files[FILE];
         match mutation {
             0 => file.streams[0].resident = true,
             1 => file.streams[0].extents[0].physical_offset = None,
@@ -365,8 +369,8 @@ fn resident_sparse_tail_and_extra_streams_do_not_become_shadow_support() {
 }
 #[test]
 fn duplicate_destination_and_overlapping_source_ownership_are_refused() {
-    let mut b = model();
-    let mut extra = b.files[0].clone();
+    let mut b = valid_model();
+    let mut extra = b.files[FILE].clone();
     extra.record_number += 1;
     b.files.push(extra);
     assert!(shadow_tree::derive(&b).is_err());
@@ -384,12 +388,12 @@ fn duplicate_destination_and_overlapping_source_ownership_are_refused() {
 }
 #[test]
 fn metadata_label_cannot_hide_unknown_objects_and_root_attributes() {
-    let mut b = model();
-    b.files[0].is_metadata = true;
-    b.files[0].metadata_role = n::MetadataRole::NotClassified;
+    let mut b = valid_model();
+    b.files[FILE].is_metadata = true;
+    b.files[FILE].metadata_role = n::MetadataRole::NotClassified;
     assert!(shadow_tree::derive(&b).is_err());
-    let mut b = model();
-    b.files[1].attributes[0].type_code = 0x40;
+    let mut b = valid_model();
+    b.files[ROOT].attributes[0].type_code = 0x40;
     assert!(shadow_tree::derive(&b).is_err());
 }
 #[test]

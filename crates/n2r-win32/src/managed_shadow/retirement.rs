@@ -152,9 +152,50 @@ impl ManagedShadow {
     /// Legacy/failure paths must retain ordinary permanent-attachment Drop.
     /// This cannot access a source disk or retire any journal/evidence file.
     pub fn retire_after_successful_v4(self) -> ShadowRetirementReceipt {
-        let mut receipt = ShadowRetirementReceipt {
+        let mut receipt = self.retirement_receipt("owned-shadow-post-v4-retirement");
+        let result = self.retire_owned(&mut receipt);
+        match result {
+            Ok(()) => receipt.success = true,
+            Err(error) => {
+                receipt.native_error = error.raw_os_error();
+                receipt.error = Some(error.to_string());
+            }
+        }
+        receipt
+    }
+
+    /// Retire a shadow that was built but never published: a diagnose run's.
+    /// Nothing depends on it. It is first frozen, as a finished shadow is, and
+    /// then retired through the same exact-identity path. Like that path this
+    /// cannot access a source disk or retire any journal or evidence file; a
+    /// failure leaves the shadow attached and says where it stopped.
+    pub fn retire_unpublished(self) -> ShadowRetirementReceipt {
+        let mut receipt = self.retirement_receipt("owned-shadow-unpublished-retirement");
+        receipt.phase = "freeze-unpublished-shadow";
+        let mut events = Vec::new();
+        // Lock, dismount and persist OFFLINE|READ_ONLY on the shadow's own
+        // disk. Dropping the frozen owner does not bring it back online.
+        let result =
+            native::GeneralFrozenPartition::isolate(self._owned_binding.clone(), &mut events)
+                .map(drop)
+                .and_then(|()| {
+                    receipt.phase = "verify-owned-shadow";
+                    self.retire_owned(&mut receipt)
+                });
+        match result {
+            Ok(()) => receipt.success = true,
+            Err(error) => {
+                receipt.native_error = error.raw_os_error();
+                receipt.error = Some(error.to_string());
+            }
+        }
+        receipt
+    }
+
+    fn retirement_receipt(&self, kind: &'static str) -> ShadowRetirementReceipt {
+        ShadowRetirementReceipt {
             schema_version: 1,
-            kind: "owned-shadow-post-v4-retirement",
+            kind,
             path: self._backing.path.clone(),
             virtual_disk_id: guid_text(&self._attachment.created.id),
             shadow: self._owned_binding.clone(),
@@ -174,16 +215,7 @@ impl ManagedShadow {
             source_device_access_issued: false,
             recovery_files_retired: false,
             physical_freed_bytes_or_ram_reduction_measured: false,
-        };
-        let result = self.retire_owned(&mut receipt);
-        match result {
-            Ok(()) => receipt.success = true,
-            Err(error) => {
-                receipt.native_error = error.raw_os_error();
-                receipt.error = Some(error.to_string());
-            }
         }
-        receipt
     }
 
     fn retire_owned(self, receipt: &mut ShadowRetirementReceipt) -> io::Result<()> {

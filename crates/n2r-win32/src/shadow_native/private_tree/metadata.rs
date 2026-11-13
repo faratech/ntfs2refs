@@ -405,7 +405,7 @@ fn complete_domain_body(
     let guard_count = guards.len() as u64;
     for (ordinal, (key, (identity, guard))) in guards.into_iter().enumerate() {
         stream_progress(3, ordinal as u64, guard_count);
-        let handle = reopen(&guard, 0x011e01ff)?;
+        let handle = reopen(&guard, crate::shadow_native::METADATA_WRITE_ACCESS)?;
         suppress_access(&handle)?;
         validate_open_type(&handle, false)?;
         if info(&handle, 18, 24)? != identity {

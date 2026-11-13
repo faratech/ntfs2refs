@@ -189,7 +189,9 @@ fn legacy_attr(data: &[u8]) -> AttributeInventory {
         compression_unit: 0,
         total_allocated_size: None,
         extents: Vec::new(),
-        resident_sha256: Some(sec::hash(data)),
+        // A resident attribute carries the content digest; a descriptor's own
+        // evidence hash stays SHA-256.
+        resident_sha256: Some(n2r_win32::content_digest::of(data)),
         resident_metadata_hex: Some(hex::encode(data)),
     }
 }
@@ -339,6 +341,32 @@ fn rejects_bad_acl_bounds_revision_and_reserved_bytes() {
         let mut b = good.clone();
         b[at] = value;
         assert!(sec::parse_descriptor(&b).is_err(), "offset{at}");
+    }
+}
+/// An ACL's declared size may exceed its header and ACEs: Windows defines
+/// AclSize as including "the potential unused memory" and reports it as
+/// AclBytesFree. Such a descriptor is valid, and every byte of it is kept;
+/// refusing it would refuse volumes that Windows itself accepts.
+#[test]
+fn an_acl_may_carry_unused_bytes_after_its_last_ace() {
+    for aces in [vec![ace(0, &[])], vec![]] {
+        let exact = descriptor(&aces, false, 2);
+        let tight = sec::parse_descriptor(&exact).unwrap();
+        // Eight unused bytes inside the ACL: its size grows, its ACE count does not.
+        let mut roomy = exact.clone();
+        roomy.extend([0u8; 8]);
+        let size = u16::from_le_bytes([roomy[22], roomy[23]]) + 8;
+        p16(&mut roomy, 22, size);
+        let parsed = sec::parse_descriptor(&roomy).unwrap();
+        assert_eq!(parsed.dacl.aces.len(), aces.len());
+        assert_eq!(parsed.dacl.length, tight.dacl.length + 8);
+        assert_eq!(parsed.minimum_length, tight.minimum_length + 8);
+        // The unused bytes are part of what is recorded and hashed.
+        assert_eq!(parsed.relative_hex.len(), tight.relative_hex.len() + 16);
+        assert_ne!(parsed.sha256, tight.sha256);
+        // A size that is not a whole number of 32-bit words is still refused.
+        p16(&mut roomy, 22, size - 2);
+        assert!(sec::parse_descriptor(&roomy).is_err());
     }
 }
 #[test]
@@ -493,7 +521,6 @@ fn binds_files_by_central_id_and_refuses_unknown_ids() {
     assert!(sec::bind_files(&[file(Some(257))], &table.records).is_err());
 }
 #[test]
-#[ignore = "stale: not maintained while tests were disabled; needs triage"]
 fn binds_legacy_bytes_only_with_matching_source_attribute() {
     let b = empty();
     let record = sec::DescriptorRecord {

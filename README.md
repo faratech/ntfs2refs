@@ -32,6 +32,37 @@ of working storage. This is a measurement for that source, not a general bound.
 Read the [operating and recovery guide](docs/cli-workflow.md) and
 [exact release qualification](docs/release-0.0.1-alpha.md) before running it.
 
+## Data volumes
+
+A data volume on a disk of its own is converted with `--drive` alone. This is
+newer than the release above and is not part of its qualification.
+
+```powershell
+.\ntfs2refs.exe --drive E --scratch-directory S:\runs
+.\ntfs2refs.exe --drive E --scratch-directory S:\runs --target-cluster-bytes 65536
+```
+
+The source may have any geometry Windows formats NTFS with: clusters from 512
+bytes to 2 MiB, 512-byte or 4096-byte (4Kn) sectors, 1 KiB or 4 KiB file
+records. The target is ReFS with 4 KiB clusters, or with 64 KiB clusters when
+`--target-cluster-bytes 65536` is given.
+
+Data stays where it is only if it lies on boundaries of the target's cluster
+size; the rest is copied through the working storage, which then needs room for
+it. From NTFS clusters of 4 KiB or more to a 4 KiB target, and of 64 KiB or
+more to a 64 KiB target, file data stays in place. From smaller clusters most
+of it is copied.
+
+ReFS covers a volume in whole units of 64 MiB. A partition that is not a
+multiple of that is first shrunk to one by the Windows NTFS driver (by less
+than 64 MiB). The converter says so before it asks for confirmation, and the
+shrink is not undone if the run stops later.
+
+The converter needs Windows build 26100 or later (Windows 11 24H2, Windows
+Server 2025). `ntfs2refs capabilities` lists what a build of the tool admits;
+[the lab guide](lab/README.md) describes how each geometry was converted and
+compared.
+
 ## What conversion preserves
 
 Windows builds the new ReFS metadata on a temporary shadow. The converter retains
@@ -53,8 +84,11 @@ Use the printed command from the separate control OS after an interrupted apply:
 .\ntfs2refs.exe --recover <printed-directory> --recovery-sha256 <printed-checksum>
 ```
 
-Preparation interrupted before apply can be started again. Power-cut resume
-through every preparation stage is not qualified. Post-apply recovery was observed
+A run that stops before apply leaves NTFS in place and can be started again
+from the beginning (a partition the converter had to shrink to a 64 MiB
+multiple keeps that size). A recovery works in the ReFS cluster size the run
+was started with; it is not given again. Power-cut resume through every preparation stage is
+not qualified. Post-apply recovery was observed
 separately; its precise evidence and limits are described in the release guide.
 
 ## Development

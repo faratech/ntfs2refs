@@ -28,7 +28,7 @@ impl Observation {
         partition: u64,
         streaming: bool,
     ) -> io::Result<Self> {
-        if partition == 0 || !partition.is_multiple_of(4096) {
+        if partition == 0 || !crate::target_cluster::aligned(partition) {
             return Err(bad("target bitmap partition geometry differs"));
         }
         if streaming {
@@ -36,7 +36,7 @@ impl Observation {
                 volume,
                 template,
                 partition,
-                crate::bitmap_streaming::source_limits(partition / 4096)?,
+                crate::bitmap_streaming::source_limits(partition / crate::target_cluster::bytes())?,
             )
         } else {
             Ok(Self::Assembled(crate::stream_native::bitmap_capture(
@@ -52,12 +52,12 @@ impl Observation {
         partition: u64,
         limits: Limits,
     ) -> io::Result<Self> {
-        if partition == 0 || !partition.is_multiple_of(4096) {
+        if partition == 0 || !crate::target_cluster::aligned(partition) {
             return Err(bad("target bitmap partition geometry differs"));
         }
         let collected = crate::stream_native::bitmap_streamed_with_limits(
             volume,
-            partition / 4096,
+            partition / crate::target_cluster::bytes(),
             template,
             limits,
         )?;
@@ -72,7 +72,7 @@ impl Observation {
         partition: u64,
         limits: Limits,
     ) -> io::Result<Self> {
-        if partition == 0 || !partition.is_multiple_of(4096) {
+        if partition == 0 || !crate::target_cluster::aligned(partition) {
             return Err(bad("target bitmap partition geometry differs"));
         }
         let capacity = limits
@@ -81,7 +81,7 @@ impl Observation {
             .ok_or_else(|| bad("target bitmap capacity envelope overflow"))?;
         let collected = crate::stream_native::bitmap_streamed_with_bounded_ranges(
             volume,
-            partition / 4096,
+            partition / crate::target_cluster::bytes(),
             template,
             limits,
         )?;
@@ -94,7 +94,7 @@ impl Observation {
         range_capacity_limit: Option<usize>,
     ) -> io::Result<Self> {
         let (first_proof, summary) = collected.into_observation_parts();
-        if summary.declared_clusters != partition / 4096 {
+        if summary.declared_clusters != partition / crate::target_cluster::bytes() {
             return Err(bad("target bitmap domain differs from partition"));
         }
         let proof = Proof {
@@ -126,8 +126,10 @@ impl Observation {
             Self::Streamed {
                 summary, limits, ..
             } => {
-                summary.validate(partition / 4096, *limits)?;
-                if !partition.is_multiple_of(4096) || summary.declared_clusters != partition / 4096
+                let cluster = crate::target_cluster::bytes();
+                summary.validate(partition / cluster, *limits)?;
+                if !partition.is_multiple_of(cluster)
+                    || summary.declared_clusters != partition / cluster
                 {
                     return Err(bad("streamed target bitmap domain differs"));
                 }
@@ -153,15 +155,16 @@ impl Observation {
                         "allocation map actual capacity exceeds prepaid envelope",
                     ));
                 }
+                let cluster = crate::target_cluster::bytes();
                 for range in &summary.allocated_ranges {
                     ranges.push(bitmap_layout::AllocatedRange {
                         offset: range
                             .starting_lcn
-                            .checked_mul(4096)
+                            .checked_mul(cluster)
                             .ok_or_else(|| bad("allocation range offset overflow"))?,
                         length: range
                             .clusters
-                            .checked_mul(4096)
+                            .checked_mul(cluster)
                             .ok_or_else(|| bad("allocation range length overflow"))?,
                     });
                 }
@@ -254,11 +257,13 @@ impl View<'_> {
         match self {
             Self::Assembled(view) => view.candidate(offset, length),
             Self::Streamed(summary) => {
-                if !offset.is_multiple_of(4096) || length == 0 || !length.is_multiple_of(4096) {
+                let cluster = crate::target_cluster::bytes();
+                if !offset.is_multiple_of(cluster) || length == 0 || !length.is_multiple_of(cluster)
+                {
                     return Err(bad("target candidate geometry differs"));
                 }
-                let start = offset / 4096;
-                let clusters = length / 4096;
+                let start = offset / cluster;
+                let clusters = length / cluster;
                 let end = start
                     .checked_add(clusters)
                     .filter(|end| *end <= summary.cluster_count)

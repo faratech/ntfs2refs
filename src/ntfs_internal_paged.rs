@@ -83,7 +83,7 @@ impl PagedVerifiedIndexes {
         let native = &native.observation;
         if observed.domain().header().request.source_inspection_sha256 != self.inspection_sha256
             || !self.default_quotas_only
-            || native.windows_version != [10, 0, 26300]
+            || !n2r_win32::windows_build::supported(native.windows_version)
             || native.rm_handle_profile != "volume-root-directory-physical-disk-read-only"
             || !native
                 .quota_before
@@ -120,7 +120,7 @@ impl PagedVerifiedIndexes {
         let native = observed.txf().observation();
         if observed.domain().header().request.source_inspection_sha256 != self.inspection_sha256
             || !self.default_quotas_only
-            || native.windows_version != [10, 0, 26300]
+            || !n2r_win32::windows_build::supported(native.windows_version)
             || native.rm_handle_profile != "volume-root-directory-selected-partition-read-only"
             || !native
                 .quota_before
@@ -357,7 +357,8 @@ fn storage<R: Read + Seek>(
         ensure!(
             !a.resident
                 && a.logical_size > 0
-                && a.logical_size.is_multiple_of(4096)
+                && a.logical_size
+                    .is_multiple_of(u64::from(source.header().geometry.index_record_size))
                 && a.initialized_size <= a.logical_size,
             "internal index allocation form differs"
         );
@@ -460,10 +461,10 @@ fn verify_domain_with_windows<R: Read + Seek>(
     let geometry = &source.header().geometry;
     ensure!(
         ntfs_index::supports_cluster_size(geometry.cluster_size)
-            && geometry.bytes_per_sector == 512
-            && geometry.file_record_size == 1024
-            && geometry.index_record_size == 4096,
-        "supported-cluster MFT scan with 512-byte sectors and4KiB indexes required"
+            && matches!(geometry.bytes_per_sector, 512 | 4096)
+            && matches!(geometry.file_record_size, 1024 | 4096)
+            && ntfs_index::supports_index_record_size(geometry.index_record_size),
+        "the internal index scan requires 512- or 4096-byte sectors, 1 or 4 KiB file records and 4 KiB index records"
     );
     ensure!(
         !root.exists(),
@@ -585,6 +586,7 @@ fn verify_domain_with_windows<R: Read + Seek>(
             },
             profile,
             geometry.cluster_size,
+            geometry.index_record_size,
             &scratch,
             &root.join(format!("index-{ordinal}.visited")),
             |_, key, value| {

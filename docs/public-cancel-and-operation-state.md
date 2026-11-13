@@ -8,6 +8,11 @@ unresolved/contended evidence. A successful status invocation means a report
 was written; `can_request` lists commands whose own remaining checks must
 still pass. The report grants no execution authority or current-image proof.
 
+The pinned artifacts are validated before anything is created. A wrong pin or
+a missing run directory fails the command (exit 1) and leaves no output
+directory behind; only an artifact held by another process still yields a
+report, with state `busy`.
+
 ```powershell
 ntfs2refs operation-state --run-directory C:\ntfs2refs\runs\run-001 `
   --intent-sha256 INTENT_FILE_SHA256 --frozen-source-sha256 FREEZE_FILE_SHA256 `
@@ -40,6 +45,15 @@ ntfs2refs cancel --run-directory C:\ntfs2refs\runs\run-001 `
   --mount-paths-sha256 MOUNT_PATHS_FILE_SHA256 `
   --output C:\ntfs2refs\cancel\run-001
 ```
+
+Both commands read the runs of `ntfs2refs --drive <letter>
+--whole-image-verification`, whose run directory is `<recovery files>\conversion`.
+That conversion leaves its source offline and read-only when it stops before it
+has published a recovery bundle; it then prints the `cancel` command for that
+run with the three digests filled in. Once a recovery bundle exists
+(`compact-recovery-bundle.json`), `cancel` refuses and the printed `--recover`
+command, with `--rollback`, is the way back. A frozen-source record whose digest
+covers only part of the image is refused: `cancel` proves the whole image.
 
 Worker failure or a JSON success flag alone cannot authorize cancellation.
 Activated sources, changed bytes, ambiguous markers and unavailable evidence

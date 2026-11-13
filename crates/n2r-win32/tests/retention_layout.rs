@@ -130,3 +130,28 @@ fn rejects_overflow_unaligned_ranges_u32_counts_and_exhausted_budget() {
             .contains("u32")
     );
 }
+
+#[test]
+fn a_64_kib_target_is_planned_in_its_own_clusters() {
+    const K: u64 = 65536;
+    n2r_win32::target_cluster::with(K, || {
+        let legacy = bitmap(64, &[10]);
+        let metadata = bitmap(64, &[12, 13]);
+        let run = SourceRun {
+            logical_offset: 16 * K,
+            physical_offset: 8 * K,
+            length: 8 * K,
+        };
+        let plan = plan_free_subruns(&legacy, &metadata, run, 64 * K, 16).unwrap();
+        assert_eq!(
+            plan.subruns
+                .iter()
+                .map(|r| (r.starting_vcn, r.destination_lcn, r.clusters, r.length))
+                .collect::<Vec<_>>(),
+            [(16, 8, 2, 2 * K), (19, 11, 1, K), (22, 14, 2, 2 * K)]
+        );
+        assert_eq!((plan.free_bytes, plan.blocked_bytes), (5 * K, 3 * K));
+        // The run of the other tests lies on 4 KiB boundaries only.
+        assert!(plan_free_subruns(&legacy, &metadata, source(), 64 * K, 16).is_err());
+    });
+}

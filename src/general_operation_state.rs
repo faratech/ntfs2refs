@@ -44,9 +44,33 @@ pub struct FrozenSource {
     pub state: GeneralDiskState,
     pub freeze_observation: serde_json::Value,
     pub source_payload_writes: u64,
+    /// What `source_sha256` covers. The first public runs recorded none of
+    /// these: their digest was always of the whole image. Later conversions
+    /// say so, and can record a digest of part of the image instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_digest_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_digest_ranges: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_digest_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inspection_read_ranges: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inspection_reads_within_digest: Option<bool>,
 }
 impl FrozenSource {
     pub fn validate(&self, intent: &general_conversion::Request) -> Result<()> {
+        // A cancel proves the source unchanged by hashing the whole image.
+        ensure!(
+            self.source_digest_kind
+                .as_deref()
+                .is_none_or(|kind| kind == "whole_image")
+                && self.source_digest_ranges.is_none()
+                && self.source_digest_bytes.is_none(),
+            "the frozen source was recorded with a digest of part of the image ({}); this command \
+             proves the whole image and cannot use it",
+            self.source_digest_kind.as_deref().unwrap_or("unnamed")
+        );
         self.binding.validate()?;
         ensure!(
             self.schema_version == 1
@@ -168,15 +192,53 @@ fn optional<T: serde::de::DeserializeOwned>(
         .map(|p| read_pinned(&path, p, max, files))
         .transpose()
 }
+/// What marks a run as having gone past the point a cancel may act on: the
+/// records of an apply, and a published recovery bundle, whose journal
+/// `--recover` (with `--rollback`) is the way back from.
+const POSTACTIVATION_ARTIFACTS: [&str; 5] = [
+    "apply.json",
+    "finalization.json",
+    "result.json",
+    "compact-recovery-bundle.json",
+    "allocation-recovery-bundle.json",
+];
+
+/// The request a run's `conversion-intent.json` records. The first public
+/// `convert` wrote the request itself. The whole-image and the older
+/// allocation conversions write a record around it, with their own kind;
+/// until this was read, `cancel` and `operation-state` refused every run
+/// those conversions made.
+fn recorded_request(recorded: serde_json::Value) -> Result<general_conversion::Request> {
+    const AROUND_A_REQUEST: [&str; 2] = [
+        "experimental-live-composite-conversion-intent",
+        "experimental-allocation-bounded-conversion-intent",
+    ];
+    let Some(kind) = recorded.get("kind") else {
+        return serde_json::from_value(recorded)
+            .context("conversion-intent.json is not a conversion request");
+    };
+    let kind = kind.as_str().unwrap_or_default();
+    ensure!(
+        AROUND_A_REQUEST.contains(&kind),
+        "conversion-intent.json is of a kind this command does not know: {kind:?}"
+    );
+    let request = recorded
+        .get("request")
+        .cloned()
+        .context("conversion-intent.json records no request")?;
+    serde_json::from_value(request)
+        .context("the request recorded in conversion-intent.json is not a conversion request")
+}
+
 pub(crate) fn load(inputs: &Inputs) -> Result<RunArtifacts> {
     ordinary_run(&inputs.run_directory)?;
     let mut files = vec![];
-    let intent: general_conversion::Request = read_pinned(
+    let intent = recorded_request(read_pinned(
         &inputs.run_directory.join("conversion-intent.json"),
         &inputs.intent_sha256,
-        16384,
+        1 << 20,
         &mut files,
-    )?;
+    )?)?;
     intent.validate()?;
     let frozen: Option<FrozenSource> = optional(
         &inputs.run_directory,
@@ -250,7 +312,7 @@ pub(crate) fn load(inputs: &Inputs) -> Result<RunArtifacts> {
         );
     }
     let mut blocking_artifacts = vec![];
-    for name in ["apply.json", "finalization.json", "result.json"] {
+    for name in POSTACTIVATION_ARTIFACTS {
         match fs::symlink_metadata(inputs.run_directory.join(name)) {
             Ok(_) => blocking_artifacts.push(name.into()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
@@ -505,7 +567,7 @@ pub(crate) fn require_no_activation(run: &RunArtifacts, journal: &JournalLease) 
             ),
         "reconstruction activation/intent or unresolved lifecycle prevents cancel"
     );
-    for name in ["apply.json", "finalization.json", "result.json"] {
+    for name in POSTACTIVATION_ARTIFACTS {
         ensure!(
             matches!(fs::symlink_metadata(run.inputs.run_directory.join(name)),Err(ref e)if e.kind()==std::io::ErrorKind::NotFound),
             "postactivation artifact exists or cannot be excluded: {name}"
@@ -602,7 +664,28 @@ pub fn classify(
   _=>(State::Unresolved,vec![],vec!["device attributes, artifacts and journal lifecycle do not establish a supported state".into()]),
  }
 }
+/// A sharing or lock violation on an artifact: another process holds it.
+fn sharing_conflict(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .any(|cause| matches!(cause.raw_os_error(), Some(32 | 33)))
+}
+
 pub fn inspect(inputs: &Inputs, output: &Path) -> Result<Report> {
+    // Nothing is created until the pinned run artifacts have validated. A
+    // wrong pin or a missing run used to leave the output directory behind,
+    // where it then blocked every later operation that needs a fresh one.
+    // Only an artifact held by another process still produces a report: that
+    // is a state of the run, not a mistake in the request.
+    let loaded = match load(inputs) {
+        Err(error) if !sharing_conflict(&error) => {
+            return Err(error.context(
+                "operation-state: the pinned run artifacts did not validate; nothing was created",
+            ));
+        }
+        loaded => loaded,
+    };
     crate::general_qualification::create_output(output)?;
     let mut report = Report {
         schema_version: 1,
@@ -624,7 +707,7 @@ pub fn inspect(inputs: &Inputs, output: &Path) -> Result<Report> {
         disk_attributes_changed: false,
     };
     let attempt = (|| -> Result<()> {
-        let run = load(inputs)?;
+        let run = loaded?;
         let source = n2r_win32::observe_general_disk_state_readonly(
             run.intent.pair.source.clone(),
             &mut report.events,
@@ -679,10 +762,7 @@ pub fn inspect(inputs: &Inputs, output: &Path) -> Result<Report> {
         Ok(())
     })();
     if let Err(e) = attempt {
-        if e.chain()
-            .filter_map(|v| v.downcast_ref::<std::io::Error>())
-            .any(|v| matches!(v.raw_os_error(), Some(32 | 33)))
-        {
+        if sharing_conflict(&e) {
             report.state = State::Busy;
             report.required_further_proofs.push("an artifact sharing conflict exists; worker identity/liveness is not established by this report".into());
         }
@@ -695,6 +775,85 @@ pub fn inspect(inputs: &Inputs, output: &Path) -> Result<Report> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The records of a `--whole-image-verification` run in the lab that froze
+    // its source and then stopped, before a journal existed (2026-11-12).
+    const STOPPED_RUN_INTENT: &str = include_str!(
+        "../tests/fixtures/whole-image-run-stopped-before-apply/conversion-intent.json"
+    );
+    const STOPPED_RUN_FROZEN: &str =
+        include_str!("../tests/fixtures/whole-image-run-stopped-before-apply/source-frozen.json");
+    const STOPPED_RUN_MOUNTS: &str = include_str!(
+        "../tests/fixtures/whole-image-run-stopped-before-apply/source-mount-paths.json"
+    );
+
+    fn stopped_run() -> (general_conversion::Request, FrozenSource) {
+        let intent = recorded_request(serde_json::from_str(STOPPED_RUN_INTENT).unwrap()).unwrap();
+        (intent, serde_json::from_str(STOPPED_RUN_FROZEN).unwrap())
+    }
+
+    #[test]
+    fn the_records_of_a_whole_image_run_stopped_before_apply_are_readable() {
+        let (intent, frozen) = stopped_run();
+        intent.validate().unwrap();
+        frozen.validate(&intent).unwrap();
+        assert_eq!(frozen.source_digest_kind.as_deref(), Some("whole_image"));
+        let mounts: MountPathObservation = serde_json::from_str(STOPPED_RUN_MOUNTS).unwrap();
+        assert!(mounts.binding == intent.pair.source && mounts.all_paths_resolve_to_bound_volume);
+        // The request alone, as the first public runs recorded it, reads the same.
+        let recorded: serde_json::Value = serde_json::from_str(STOPPED_RUN_INTENT).unwrap();
+        let alone = recorded_request(recorded["request"].clone()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&alone).unwrap(),
+            serde_json::to_value(&intent).unwrap()
+        );
+    }
+
+    #[test]
+    fn an_intent_of_an_unknown_kind_or_without_a_request_is_refused() {
+        let mut recorded: serde_json::Value = serde_json::from_str(STOPPED_RUN_INTENT).unwrap();
+        recorded["kind"] = "something-else".into();
+        let refusal = format!("{:#}", recorded_request(recorded.clone()).unwrap_err());
+        assert!(refusal.contains("does not know"), "{refusal}");
+        recorded["kind"] = "experimental-allocation-bounded-conversion-intent".into();
+        recorded_request(recorded.clone()).unwrap();
+        recorded.as_object_mut().unwrap().remove("request");
+        let refusal = format!("{:#}", recorded_request(recorded).unwrap_err());
+        assert!(refusal.contains("records no request"), "{refusal}");
+        // Neither a record with a kind nor a request.
+        assert!(recorded_request(serde_json::json!({"schema_version":1})).is_err());
+    }
+
+    #[test]
+    fn only_a_source_frozen_by_its_whole_image_digest_can_be_cancelled() {
+        let (intent, mut frozen) = stopped_run();
+        // A digest of part of the image cannot be proved by hashing all of it.
+        frozen.source_digest_kind = Some("allocated_ranges".into());
+        let refusal = format!("{:#}", frozen.validate(&intent).unwrap_err());
+        assert!(refusal.contains("part of the image"), "{refusal}");
+        frozen.source_digest_kind = Some("whole_image".into());
+        frozen.source_digest_ranges = Some(3);
+        assert!(frozen.validate(&intent).is_err());
+        // The first public runs recorded no kind: always the whole image.
+        frozen.source_digest_kind = None;
+        frozen.source_digest_ranges = None;
+        frozen.validate(&intent).unwrap();
+        // An activated source is refused, as before.
+        frozen.state.disk_attributes = 1;
+        assert!(frozen.validate(&intent).is_err());
+    }
+
+    #[test]
+    fn a_published_recovery_bundle_is_past_the_point_of_a_cancel() {
+        for name in [
+            "apply.json",
+            "compact-recovery-bundle.json",
+            "allocation-recovery-bundle.json",
+        ] {
+            assert!(POSTACTIVATION_ARTIFACTS.contains(&name), "{name}");
+        }
+    }
+
     #[test]
     fn classifier_never_turns_handoff_partial_intent_or_unknown_source_into_cancel() {
         let (s, ops, proofs) = classify(3, &JournalState::PreparedClear, None, true, false, false);

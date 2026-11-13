@@ -395,7 +395,10 @@ fn set_attributes(f: &File, a: u64) -> io::Result<()> {
     b[8..16].copy_from_slice(&a.to_le_bytes());
     b[16..24].copy_from_slice(&3u64.to_le_bytes());
     control(f, SET_ATTRIBUTES, &b, 0)?;
-    require(attributes(f)? == a, "persistent disk transition failed")
+    require(attributes(f)? == a, "persistent disk transition failed")?;
+    // As native::set_attributes does: the persisted value sits in the lazily
+    // written SYSTEM hive until it is flushed.
+    native::flush_persisted_attributes(&mut Vec::new())
 }
 impl FreshReferenceDisk {
     pub fn open_blank(binding: Binding) -> io::Result<Self> {

@@ -806,7 +806,18 @@ fn format_new_owned(
     if target_format.is_dev_drive() {
         format_args.push("/DevDrv".into());
     }
-    format_args.extend(["/Q", "/A:4096", "/V:n2r-retained-shadow", "/Y"].map(String::from));
+    let cluster = crate::target_cluster::bytes();
+    format_args.extend([
+        "/Q".to_owned(),
+        // format.com spells 65536 as 64K and does not take the number.
+        if cluster == 65536 {
+            "/A:64K".to_owned()
+        } else {
+            format!("/A:{cluster}")
+        },
+        "/V:n2r-retained-shadow".to_owned(),
+        "/Y".to_owned(),
+    ]);
     let status = Command::new(formatter)
         .args(&format_args)
         .stdin(Stdio::null())
@@ -830,20 +841,29 @@ fn format_new_owned(
         || observed.filesystem != "ReFS"
         || observed.label != "n2r-retained-shadow"
         || observed.bytes_per_sector != geometry.logical
-        || u64::from(observed.bytes_per_sector) * u64::from(observed.sectors_per_cluster) != 4096
+        || u64::from(observed.bytes_per_sector) * u64::from(observed.sectors_per_cluster) != cluster
     {
         return Err(invalid("formatted owned staging binding/profile differs"));
     }
     let volume = native::device_file(&binding.volume_path()?, false, false)?;
     let data = control(&volume, 0x000902d8, &[], 256)?;
+    // The version is whatever this Windows formats; the run works with that
+    // one from here on. A version it cannot work with is refused by name.
+    if data.len() >= 64 {
+        crate::target_refs_version::choose(layout::u32_at(&data, 4)?, layout::u32_at(&data, 8)?)
+            .map_err(|error| {
+                io::Error::other(format!(
+                    "the shadow Windows formatted cannot be used: {error}; backing retained at {}",
+                    path.display()
+                ))
+            })?;
+    }
     if data.len() < 64
         || !(64..=data.len()).contains(&(layout::u32_at(&data, 0)? as usize))
-        || layout::u32_at(&data, 4)? != 3
-        || layout::u32_at(&data, 8)? != 14
         || layout::u64_at(&data, 24)? != partition_bytes / u64::from(geometry.logical)
-        || layout::u64_at(&data, 32)? != partition_bytes / 4096
+        || layout::u64_at(&data, 32)? != partition_bytes / cluster
         || layout::u32_at(&data, 56)? != geometry.logical
-        || layout::u32_at(&data, 60)? != 4096
+        || u64::from(layout::u32_at(&data, 60)?) != cluster
     {
         // Keep full-partition admission strict. A native formatter can declare
         // a shorter filesystem extent; diagnose it without granting that
@@ -875,9 +895,9 @@ fn format_new_owned(
                 extent.uncovered_tail_bytes,
             )));
         }
-        return Err(invalid(
-            "formatted owned staging is not the selected ReFS3.14 profile",
-        ));
+        return Err(invalid(&format!(
+            "formatted owned staging is not the selected profile: ReFS covering the whole partition in {cluster}-byte clusters",
+        )));
     }
     let mut policy_events = Vec::new();
     let observed_policy = crate::volume_policy::observe(&binding, &mut policy_events);

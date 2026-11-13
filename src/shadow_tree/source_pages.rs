@@ -163,11 +163,13 @@ fn stream_evidence(
                     .is_some(),
                 "source extent-only stream is not eligible"
             );
-            Ok(Some(if stream.logical_size.is_multiple_of(4096) {
-                SourceStreamEvidence::ExtentIdentityV1
-            } else {
-                SourceStreamEvidence::ExtentIdentityWithMaterializedTailV1
-            }))
+            Ok(Some(
+                if n2r_win32::target_cluster::aligned(stream.logical_size) {
+                    SourceStreamEvidence::ExtentIdentityV1
+                } else {
+                    SourceStreamEvidence::ExtentIdentityWithMaterializedTailV1
+                },
+            ))
         }
         _ => anyhow::bail!("source stream evidence is incomplete"),
     }

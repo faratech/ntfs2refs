@@ -131,6 +131,19 @@ pub fn attribute_child(row: &NodeRowObservation) -> Result<AttributeChild> {
     })
 }
 
+/// Whether a row is a DATA allocation record in the form this reader does
+/// not interpret (version identifier 8). [`inspect_data_extent_node`] answers
+/// `None` for it, exactly as it does for a row that is not a DATA record at
+/// all, so a walk has to ask this to know that a stream's extents were not
+/// followed.
+pub fn is_uninterpreted_data_record(row: &NodeRowObservation) -> Result<bool> {
+    let (key, _) = parts(row)?;
+    Ok(key.len() == 40
+        && u32le(&key, 8) == 0x8000_0002
+        && u32le(&key, 12) == 0x000e_0080
+        && u32le(&key, 16) == 8)
+}
+
 /// Recognize the compact 3.14 multi-instance DATA allocation record. The
 /// enclosing record and any referenced children must be authenticated by the
 /// caller; resident DATA and the separate stream-set record are not extents.
@@ -231,4 +244,51 @@ pub fn inspect_logfile_information_row(
         log_ownership_complete: false,
         raw_write_authority: false,
     }))
+}
+
+#[cfg(test)]
+mod uninterpreted_data_tests {
+    use super::*;
+
+    /// A row with a 40-byte key carrying the given attribute tag and DATA
+    /// version identifier, and an eight-byte value.
+    fn row(attribute: u32, version_sub_id: u32) -> NodeRowObservation {
+        let mut bytes = vec![0u8; 16 + 40 + 8];
+        bytes[16 + 8..16 + 12].copy_from_slice(&0x8000_0002u32.to_le_bytes());
+        bytes[16 + 12..16 + 16].copy_from_slice(&attribute.to_le_bytes());
+        bytes[16 + 16..16 + 20].copy_from_slice(&version_sub_id.to_le_bytes());
+        NodeRowObservation {
+            index: 0,
+            index_entry_offset: 0,
+            relative_offset: 0,
+            page_offset: 0,
+            marker: 0,
+            size: bytes.len() as u32,
+            key_offset: 16,
+            key_length: 40,
+            reserved_at_8: 0,
+            value_offset: 56,
+            value_length: 8,
+            reserved_at_14: 0,
+            key_value_overlap: false,
+            row_sha256: hex::encode(Sha256::digest(&bytes)),
+            key_sha256: hex::encode(Sha256::digest(&bytes[16..56])),
+            value_sha256: hex::encode(Sha256::digest(&bytes[56..])),
+            row_bytes_hex: hex::encode(&bytes),
+        }
+    }
+
+    #[test]
+    fn a_data_record_that_is_not_interpreted_is_told_apart_from_a_row_that_is_not_data() {
+        // Both answer `None` to the extent reader...
+        let skipped = row(0x000e_0080, 8);
+        let other = row(0x000e_0030, 8);
+        assert!(inspect_data_extent_node(&skipped).unwrap().is_none());
+        assert!(inspect_data_extent_node(&other).unwrap().is_none());
+        // ...and only the first is a stream whose extents were left behind.
+        assert!(is_uninterpreted_data_record(&skipped).unwrap());
+        assert!(!is_uninterpreted_data_record(&other).unwrap());
+        // A DATA record in the interpreted form is not counted as skipped.
+        assert!(!is_uninterpreted_data_record(&row(0x000e_0080, 0x1000)).unwrap());
+    }
 }

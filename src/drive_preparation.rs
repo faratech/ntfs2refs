@@ -28,6 +28,8 @@ pub(super) fn run(
     free_reserve: u64,
     evidence_remaining: u64,
     observer: &mut impl PreparationObserver,
+    // Prealignment moves files on the live source and is not undone.
+    _authority: &crate::execution_mode::SourceChangeAuthority,
 ) -> Result<()> {
     let root = run.join("ntfs-prealignment");
     let _ancestry = create_external_output(&root, journal)?;

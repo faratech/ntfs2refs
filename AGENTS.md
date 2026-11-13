@@ -14,6 +14,11 @@ the desktop, and C: is disk0 partition 3, ReFS 3.14 with 4 KiB clusters, running
 stock signed `winload.efi` and `refs.sys`. A clean-installed ReFS Windows does
 not count. Power-cut resume during preparation is out of scope until this works.
 
+Second goal (owner, 2026-11-12): convert any NTFS data volume: clusters from
+512 bytes to 2 MiB, 512-byte and 4Kn sectors, 1 and 4 KiB file records, to ReFS
+with 4 or 64 KiB clusters, without fixed limits. Data stays in place only where
+it lies on target-cluster boundaries; the rest goes through the working storage.
+
 ## How the converter works
 
 - ReFS metadata is built by Windows, not by this code. The converter formats a
@@ -27,29 +32,30 @@ not count. Power-cut resume during preparation is out of scope until this works.
   (`src/resource_preparation.rs`), then apply
   (`src/selected_journal/resource_domain/prepare/qualification/apply.rs`) and
   finalize (`src/resource_finalize.rs`).
-- Nothing is written to the source before the journal apply step. Everything
-  earlier is preparation and is safe to abandon.
+- The converter's own writes to the source start at the journal apply step.
+  Everything earlier is safe to abandon, except two steps that change the
+  source through the NTFS driver: a partition whose length is not a multiple
+  of 64 MiB is first shrunk to one (`drive_boot::normalize_geometry`; announced
+  before the prompt, not reverted; the lab's Windows partition needs none),
+  and `--minimize-scratch` moves files before the freeze. `--diagnose` refuses
+  both: every entry that changes the source takes a `SourceChangeAuthority`
+  (`src/execution_mode.rs`) that only a conversion can mint.
 - Working files are hashed when written and then held open; the source is
   offline, read-only and held. Full re-reads happen once, at the gate before
-  the first source write (`crates/n2r-win32/src/verify_policy.rs`), not at every
-  checkpoint. Outside that gate a store this process wrote is opened without
-  being re-read and its pages are checked by an in-memory checksum; a digest
-  of an immutable tree is computed once; an expected object decoded once is
-  kept and handed out as a copy; the frozen shadow is observed once during
-  capture; the journal is hashed in file order as it is written.
-  `--recheck-everything` restores the old behaviour everywhere.
-- In-memory copies of stores and of decoded objects are optional: they lease
-  through `reserve_optional_ram` (a third of the RAM budget in total, and only
-  while the arena is under half full), so they cannot starve a required
-  reservation.
+  the first source write (`crates/n2r-win32/src/verify_policy.rs`). Outside it
+  a store this process wrote is checked by an in-memory page checksum, digests
+  and decoded objects are computed once, the frozen shadow is observed once and
+  the journal is hashed as it is written. `--recheck-everything` restores the
+  old behaviour everywhere.
+- In-memory copies of stores and decoded objects lease through
+  `reserve_optional_ram` (a third of the RAM budget, arena under half full).
+- `--recover` settles a lifecycle marker whose write was cut short
+  (`src/interrupted_marker.rs`); any other unexpected byte still stops it.
 - A per-object Windows query answers into its thread's buffer
-  (`crates/n2r-win32/src/query_scratch.rs`) and copies out only the answer.
-  Do not allocate a worst-case buffer per query: at 143,000 objects that
-  made the heap the bottleneck of every walk.
-- Each stage prints a `timing:` line to stderr (`crates/n2r-win32/src/perf.rs`).
-  Measure before and after any speed change, and take a `-SampleStacks`
-  profile before deciding what to change: most time was in places no timer
-  named.
+  (`crates/n2r-win32/src/query_scratch.rs`); a worst-case buffer per query made
+  the heap the bottleneck at 143,000 objects.
+- Each stage prints a `timing:` line (`crates/n2r-win32/src/perf.rs`). Measure
+  before and after a speed change; take a `-SampleStacks` profile first.
 
 ## Working rules
 
@@ -61,8 +67,7 @@ not count. Power-cut resume during preparation is out of scope until this works.
   (`lab-volume-manifest`) is identical. Do not widen its allow-list to pass.
 - An error must name the object, path, phase and OS error. Fix the message
   before fixing the bug if it does not.
-- Use `cargo test --locked --workspace --all-targets`. Add a test with each fix
-  where one is practical. Any source file may be edited.
+- Add a test with each fix where one is practical. Any source file may be edited.
 - Size lab resources from the machine. Do not add fixed capacity caps or
   per-run pinned helper scripts (PIDs, hashes, sizes).
 - Keep every check that protects the source before the first write, and the
@@ -74,7 +79,8 @@ not count. Power-cut resume during preparation is out of scope until this works.
 ## Lab
 
 - Host: 16 logical CPUs, 64 GB RAM. `cargo` is at `%USERPROFILE%\.cargo\bin`
-  (not on PATH). Toolchain 1.98.1.
+  (not on PATH), toolchain 1.98.1. Build both binaries first: `cargo build
+  --locked --release --bin ntfs2refs --bin lab-volume-manifest`.
 - VM `ntfs2refs-reference-isolated`, Id `8f7fc646-8c9f-41d0-b65a-ecfadccfc36a`,
   generation 2, Secure Boot on, no network adapter. Guest credential:
   `.lab/hyperv/win11/secrets/guest-credential.xml` (user `LabAdmin`).
@@ -85,67 +91,64 @@ not count. Power-cut resume during preparation is out of scope until this works.
 - Harness: `lab\Invoke-BootConversionAttempt.ps1 -Name <n> -Fixture
   -FixtureCheckpoint N2R-Thinned-Fixture-40 -NoBoot`. Without `-Fixture` it uses
   the full baseline; without `-NoBoot` it boots disk0 alone afterwards.
-  `-Diagnose` reports every per-object failure and writes nothing.
-  `-CheckpointAfterConvert <name>` saves a run that stopped after apply;
-  `-Recover -Checkpoint <name>` retries its finalization with `--recover`.
-  Records land in `.lab/hyperv/attempts/<n>/`. The scratch disk is deleted when
-  the attempt ends; the host volume needs 40 GB free for a fixture attempt
-  and 65 GB for a full one (it uses about 57 GB at its peak).
-  `-SampleStacks` records the worker's call stack a hundred times a second and
-  writes `stacks.txt` (phase, step and stack per line) into the attempt folder:
-  use it to find where unnamed time goes before changing anything for speed.
-  Threads a walk hands objects to are sampled too (`stack_sampler::helper`),
-  under the step's label followed by ` [helper threads]`.
+  `lab/README.md` describes `-Diagnose` (nothing is written; the source must
+  list exactly as before), `-InterruptAt` and `-RecoverMode` (the process is
+  ended, not the power; `-TearMarker handoff` adds the marker image a power
+  loss leaves), `-RecoverFrom`, `-ShapeSource`, `-SampleStacks` and `-RunAs
+  administrator` (otherwise the converter runs as SYSTEM).
+- Records land in `.lab/hyperv/attempts/<n>/`; the scratch disk is deleted
+  when the attempt ends. The host volume needs 40 GB free for a fixture
+  attempt and 65 GB for a full one (57 GB at peak).
+- Data volumes: with a control OS up (`-NoConvert -KeepScratch`),
+  `lab\Invoke-DataVolumeAttempt.ps1 -Name <n> -ClusterBytes <b> [-SectorBytes
+  4096] [-LargeRecords] [-TargetClusterBytes 65536]` makes, converts and
+  compares one in under a minute; `lab/README.md` lists the other switches.
 - Second VM `ntfs2refs-reference-b`, Id `7c687062-37b5-4309-b28a-486a44305202`,
   made by `lab/New-LabVmClone.ps1`: same shape, disks are differencing children
   of the reference VM's baseline disks under `.lab/hyperv/ntfs2refs-reference-b/`.
-  It has only the baseline checkpoint. Pass `-VmId` to the harness to run a
-  full-volume attempt on it while fixtures run on the reference VM (give the
+  It also holds `N2R-Full-Converted-08`, a saved converted state. `-VmId` runs
+  a full-volume attempt on it while fixtures run on the reference VM (give the
   two VMs no more than about 48 GB between them). Never delete the reference
-  VM's baseline checkpoint: that merges into the shared parents and breaks the
-  clone.
-- Build both binaries first: `cargo build --locked --release --bin ntfs2refs
-  --bin lab-volume-manifest`.
+  VM's baseline checkpoint: that merges into the shared parents and breaks it.
 - Disks (SCSI 0), under `.lab/hyperv/isolated-reference-20261026-review/disks/`:
-  - location 0: disk0, the original NTFS Windows (`os.vhdx` chain), the source.
-  - location 1: control OS, natively ReFS (`target.vhdx` chain); runs the converter.
-  - location 2: journal disk (`journal.vhdx` chain).
-  - location 3: DVD, Windows 11 26300.9457 install media.
-  - location 4: oracle disk under `.lab/hyperv/trust-security-raw-…/`.
+  0 disk0, the original NTFS Windows and the source (`os.vhdx` chain); 1 the
+  control OS, natively ReFS, which runs the converter (`target.vhdx` chain);
+  2 the journal disk (`journal.vhdx` chain); 3 the DVD, Windows 11 26300.9457
+  install media; 4 the oracle disk under `.lab/hyperv/trust-security-raw-…/`.
 - Keep the VM's disk chains, the credential and the install media. Other
-  directories under `.lab/hyperv` are closed run records.
+  directories under `.lab/hyperv` are closed run records. `lab/RETIRED.md`
+  lists the scripts written for VMs that are gone; do not start from one.
 
 ## Current work
 
-The goal is met. One command, `lab\Invoke-BootConversionAttempt.ps1 -VmId <a
-lab VM>`, restores the baseline, converts the full Windows volume (143,580
-objects, 112,609 short-name links) in under 30 minutes with an identical
-before/after listing, boots disk0 alone with Secure Boot on and signs in to
-the desktop: outcome `BOOTED-ON-REFS`.
+The first goal is met: `lab\Invoke-BootConversionAttempt.ps1 -VmId <a lab VM>`
+converts the full Windows volume (143,580 objects, 112,609 short-name links) in
+under 30 minutes with an identical listing and boots it alone, Secure Boot on:
+`BOOTED-ON-REFS`. The second is met for every geometry Windows formats, to both
+target units. Not shown in the lab, because nothing there makes them: index
+records other than 4 KiB, a ReFS after 3.14, a build besides 26100 and 26300.
 
 Keep it that way. Before a change is committed:
 
 1. `cargo test --locked --workspace --all-targets` passes.
-2. The 1-in-10 fixture converts with an identical listing (about six minutes).
-3. A change to apply or finalization also passes `-Recover` on a run stopped
-   after apply, and a change to a per-object path also passes a full run:
-   several defects only showed at full size (a row that Windows fills on
-   large volumes, hard links, memory held per batch).
+2. The 1-in-10 fixture converts with an identical listing (about six
+   minutes), and the 1-in-40 one does with `-RunAs administrator`.
+3. A change to apply, finalization or recovery also passes interrupted runs
+   on the 1-in-40 fixture that recover with an identical listing:
+   `-InterruptAt apply-mid-ranges` (half way through the source writes) and
+   `-InterruptAt handoff-sealed` (before finalization). A change to a
+   per-object path also passes a full run (several defects only showed at
+   full size), and one to source inspection or stream planning also converts
+   data volumes of 512-byte clusters and on a 4Kn disk, to both target units.
 
 Open, most useful first:
 
-1. Short names are visible. Each 8.3 name is a link beside its long name
-   with the long name's attributes, so Explorer shows `PROGRA~1` in `C:\` and
-   `MICROS~1.LNK` on the desktop. Hiding them (Hidden and System) is a
-   product decision for the owner; the listing comparison does not depend on
-   the links' attributes.
+1. Short names are visible: each 8.3 name is a link beside its long name, so
+   Explorer shows `PROGRA~1` in `C:\`. Hiding them (Hidden and System) is the
+   owner's product decision; the listing comparison does not depend on it.
 2. Speed. A full run takes 28 to 30 minutes, spread thin: per-object Windows
-   calls on one thread (source observation, extent placement, metadata
-   restoration), the three link passes, and reading and hashing the 9 GB
-   that move through the journal. The largest single item left is the link
-   passes asking Windows for each handle's normalized path (240
-   thread-seconds a run); listing each parent directory once would prove
-   the same names and parents. Keep the mount manager out of per-object
-   paths: its queries stall unpredictably. Take a `-SampleStacks` profile of
-   a full run before choosing.
+   calls on one thread, the three link passes (240 thread-seconds asking for
+   each handle's normalized path; listing each parent once would prove the
+   same), and hashing the 9 GB that move through the journal. Keep the mount
+   manager out of per-object paths. Profile with `-SampleStacks` first.
 3. Power-cut resume during preparation is still out of scope.

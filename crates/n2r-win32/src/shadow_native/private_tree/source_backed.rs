@@ -27,7 +27,7 @@ fn require_digest_free_residual(
     name: &[u16],
     length: u64,
 ) -> io::Result<()> {
-    let prefix = length / 4096 * 4096;
+    let prefix = crate::target_cluster::floor(length);
     if length == prefix {
         return Ok(());
     }
@@ -199,6 +199,7 @@ impl SourceBackedRoutes {
         {
             return Err(invalid("protected source-backed layout context differs"));
         }
+        let cluster = crate::target_cluster::bytes();
         let mut payload_bytes = 0u64;
         for (index, object) in report.objects.iter().enumerate() {
             let standard = query_bytes(&object.before, 1, 24)?;
@@ -208,7 +209,7 @@ impl SourceBackedRoutes {
             for named in &object.named_streams {
                 let ns = query_bytes(&named.before, 1, 24)?;
                 let length = layout::u64_at(ns, 8)?;
-                let prefix = length / 4096 * 4096;
+                let prefix = length / cluster * cluster;
                 let sparse = named.sparse.as_ref();
                 if named.expected_sha256.is_none()
                     && (prefix == 0 || sparse.is_some() || named.resident_data)
@@ -238,14 +239,14 @@ impl SourceBackedRoutes {
                 for run in stream_layout::parse_complete_retrieval(&named.retrieval)? {
                     let at = run
                         .vcn
-                        .checked_mul(4096)
+                        .checked_mul(cluster)
                         .ok_or_else(|| invalid("named VCN overflow"))?;
                     if at >= prefix {
                         break;
                     }
                     let bytes = run
                         .clusters
-                        .checked_mul(4096)
+                        .checked_mul(cluster)
                         .ok_or_else(|| invalid("named length overflow"))?
                         .min(prefix - at);
                     let Some(lcn) = run.lcn else {
@@ -256,7 +257,7 @@ impl SourceBackedRoutes {
                         }
                     };
                     let offset = lcn
-                        .checked_mul(4096)
+                        .checked_mul(cluster)
                         .ok_or_else(|| invalid("named LCN overflow"))?;
                     if (sparse.is_none() && at != covered) || bytes == 0 {
                         return Err(invalid("named prefix coverage differs"));
@@ -285,7 +286,7 @@ impl SourceBackedRoutes {
                     .ok_or_else(|| invalid("named route payload overflow"))?;
             }
             let length = layout::u64_at(standard, 8)?;
-            let prefix = length / 4096 * 4096;
+            let prefix = length / cluster * cluster;
             let sparse = object.sparse.as_ref();
             if prefix == 0 || (sparse.is_some() && object.retrieval.is_empty()) {
                 continue;
@@ -316,14 +317,14 @@ impl SourceBackedRoutes {
             for run in stream_layout::parse_complete_retrieval(&object.retrieval)? {
                 let at = run
                     .vcn
-                    .checked_mul(4096)
+                    .checked_mul(cluster)
                     .ok_or_else(|| invalid("protected payload VCN overflow"))?;
                 if at >= prefix {
                     break;
                 }
                 let bytes = run
                     .clusters
-                    .checked_mul(4096)
+                    .checked_mul(cluster)
                     .ok_or_else(|| invalid("protected payload length overflow"))?
                     .min(prefix - at);
                 let Some(lcn) = run.lcn else {
@@ -334,7 +335,7 @@ impl SourceBackedRoutes {
                     }
                 };
                 let offset = lcn
-                    .checked_mul(4096)
+                    .checked_mul(cluster)
                     .ok_or_else(|| invalid("protected payload LCN overflow"))?;
                 if (sparse.is_none() && at != covered) || bytes == 0 {
                     return Err(invalid("protected payload prefix coverage differs"));
@@ -415,6 +416,7 @@ impl SourceBackedRoutes {
         Ok(result)
     }
     fn revalidate_mounted(&self) -> io::Result<()> {
+        let cluster = crate::target_cluster::bytes();
         let mut seen = BTreeSet::new();
         let mut ids = BTreeMap::new();
         for route in &self.entries {
@@ -452,9 +454,9 @@ impl SourceBackedRoutes {
                 if r.native_file_id != route.native_file_id
                     || !mapping_matches_run(
                         &runs,
-                        r.logical_offset / 4096,
-                        r.target_physical_offset / 4096,
-                        (r.length / 4096) as u32,
+                        r.logical_offset / cluster,
+                        r.target_physical_offset / cluster,
+                        (r.length / cluster) as u32,
                     )?
                 {
                     return Err(invalid(
@@ -540,6 +542,7 @@ pub(super) fn capture(tree: &PrivateTree, input: &[Input<'_>]) -> io::Result<Sou
             "complete live placement/input required for source-backed routes",
         ));
     }
+    let cluster = crate::target_cluster::bytes();
     let mut entries = Vec::new();
     let mut payload_bytes = 0u64;
     for (key, file) in &tree.files {
@@ -572,7 +575,7 @@ pub(super) fn capture(tree: &PrivateTree, input: &[Input<'_>]) -> io::Result<Sou
             item.components,
             item.logical_length(),
         )?;
-        let prefix = file.logical_length() / 4096 * 4096;
+        let prefix = file.logical_length() / cluster * cluster;
         if file.valid_prefix() < prefix {
             return Err(invalid("source-backed prefix is not storage-valid"));
         }
@@ -581,8 +584,8 @@ pub(super) fn capture(tree: &PrivateTree, input: &[Input<'_>]) -> io::Result<Sou
         let mut cursor = 0u64;
         let mut stream_payload = 0u64;
         for (vcn, lcn, clusters) in mapped {
-            let length = u64::from(clusters) * 4096;
-            if vcn * 4096 != cursor || length == 0 || cursor + length > prefix {
+            let length = u64::from(clusters) * cluster;
+            if vcn * cluster != cursor || length == 0 || cursor + length > prefix {
                 return Err(invalid("source-backed logical coverage differs"));
             }
             let parts = if let Some(target) = tree.sparse_targets.get(key) {
@@ -606,7 +609,7 @@ pub(super) fn capture(tree: &PrivateTree, input: &[Input<'_>]) -> io::Result<Sou
             for part in parts {
                 let n = part
                     .length
-                    .min((logical_length / 4096 * 4096).saturating_sub(part.logical));
+                    .min((logical_length / cluster * cluster).saturating_sub(part.logical));
                 if n == 0 {
                     continue;
                 }
@@ -614,7 +617,7 @@ pub(super) fn capture(tree: &PrivateTree, input: &[Input<'_>]) -> io::Result<Sou
                     object_index: index,
                     stream_name_utf16: key.name_utf16.clone(),
                     logical_offset: part.logical,
-                    target_physical_offset: lcn * 4096 + part.dense - cursor,
+                    target_physical_offset: lcn * cluster + part.dense - cursor,
                     length: n,
                     stream_length: logical_length,
                     components: item.components.to_vec(),

@@ -988,6 +988,28 @@ fn execute_with_interruption(
         "general execution requires an excluded target and shadow"
     );
     let before = observe_journal(journal, request)?;
+    // A recovery settles a marker write that was cut short before the
+    // journal's lifecycle is read (see `interrupted_marker`). The target was
+    // required offline and writable above, the state this engine writes
+    // every marker in, and the journal is held by the caller.
+    if matches!(
+        operation,
+        RecoveryOperation::Resume | RecoveryOperation::Rollback
+    ) && lab_reconstruct::may_hold_interrupted_marker(journal)?
+    {
+        let bound = binding(request, &before.identity)?;
+        let settled = lab_reconstruct::settle_interrupted_marker(journal, ticket, &bound).map_err(
+            |error| {
+                error.context(format!(
+                    "settling a partly written lifecycle marker of the recovery journal {}",
+                    before.final_path
+                ))
+            },
+        )?;
+        if let Some(settled) = settled {
+            crate::interrupted_marker::announce(&settled, std::path::Path::new(&before.final_path));
+        }
+    }
     let descriptor = validated_ticket(
         request,
         journal,
@@ -1033,6 +1055,14 @@ fn execute_with_interruption(
             lab_reconstruct::apply(target, shadow, journal, ticket, &observed)?
         }
         (RecoveryOperation::Resume, None) => {
+            // A resume asked of a saved run continues an apply that was
+            // durably begun; it never begins one or reverses a rollback.
+            lab_reconstruct::require_durable_apply_intent(
+                journal,
+                ticket,
+                &observed,
+                &request.comparison,
+            )?;
             lab_reconstruct::resume(target, shadow, journal, ticket, &observed)?
         }
         (RecoveryOperation::Rollback, None) => {

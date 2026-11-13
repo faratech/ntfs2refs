@@ -399,6 +399,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
             "fresh activation changed source exclusion or the protected shadow"
         );
         checkpoint_native_events(events, &mut checkpoint_events)?;
+        n2r_win32::lab_hold::reached("apply-activated");
         n2r_win32::perf::step("write changed ranges");
         // The ranges are written in ascending order, each read first. The
         // fault-injection path reads its first write back at once and must
@@ -406,8 +407,19 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
         target.set_read_ahead(first_write_fault.is_none());
         let domain = prepared.inner._domain;
         for ordinal in 0..u64::from(ticket.range_count) {
+            if ordinal == u64::from(ticket.range_count) / 2 {
+                n2r_win32::lab_hold::reached("apply-mid-ranges");
+            }
             let row = domain.row(ordinal)?;
             let skip = if row.capture.offset == 0 { GRANULE } else { 0 };
+            // The boot granule of a range at offset 0 is written last, on its
+            // own. A range there shorter than one granule cannot be split.
+            let length = row.capture.length.checked_sub(skip).with_context(|| {
+                format!(
+                    "apply: changed range {ordinal} at source offset 0 is {} bytes, shorter than the {GRANULE}-byte boot granule",
+                    row.capture.length
+                )
+            })?;
             write_span(
                 &mut target,
                 prepared.inner._journal,
@@ -415,7 +427,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
                 ordinal,
                 row,
                 skip,
-                row.capture.length - skip,
+                length,
                 &mut buffers,
                 &mut first_write_fault,
                 &target_before,
@@ -427,7 +439,9 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
         // Nothing read back from here on may come from memory the writes
         // above went through.
         target.set_read_ahead(false);
+        n2r_win32::lab_hold::reached("apply-ranges-written");
         target.sync_all()?;
+        n2r_win32::lab_hold::reached("apply-before-boot-granule");
         // Preserve the existing selected-journal protocol: boot granule last,
         // after every other target range has crossed its durability barrier.
         let first = domain.row(0)?;
@@ -451,6 +465,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
             first_write_fault.is_none(),
             "diagnostic interruption requested but no actual changed write occurred"
         );
+        n2r_win32::lab_hold::reached("apply-boot-granule-written");
         target.sync_all()?;
         n2r_win32::perf::step("read back changed ranges");
         target.set_read_ahead(true);
@@ -506,6 +521,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
             "fresh journal intent changed before HND"
         );
         n2r_win32::perf::step("write handoff marker");
+        n2r_win32::lab_hold::reached("apply-before-handoff");
         sj::write_lifecycle_marker(prepared.inner._journal, ticket, MarkerKind::Handoff)?;
         prepared
             .inner
@@ -515,6 +531,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
             sj::classify(prepared.inner._journal, ticket)? == sj::SelectedLifecycle::Handoff,
             "fresh journal HND did not close the original apply intent"
         );
+        n2r_win32::lab_hold::reached("apply-handoff-durable");
         ensure!(
             target.state(events)? == target_before,
             "fresh source identity or offline exclusion changed across HND"

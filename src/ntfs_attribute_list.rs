@@ -215,7 +215,9 @@ pub struct Assembly {
     pub canonical_origins: Option<Vec<CanonicalOrigin>>,
 }
 
-fn resident_digest_valid(expected: &str) -> bool {
+/// A stream digest in either retained form: the 32-digit content digest an
+/// inspection records today, or the 64-digit SHA-256 older records hold.
+pub(crate) fn resident_digest_valid(expected: &str) -> bool {
     matches!(expected.len(), 32 | 64)
         && expected
             .bytes()
@@ -414,13 +416,21 @@ fn validate_initialized_metadata(
         .logical_size
         .checked_next_multiple_of(cluster)
         .context("attribute-list allocation overflow")?;
+    // NTFS may hold more clusters than the value needs: it grows such an
+    // attribute several clusters at a time, most visibly on small clusters.
+    // The mapping must cover exactly what the header says is allocated.
+    let allocated = attribute.allocated_size;
     ensure!(
         attribute.resident_sha256.is_none()
             && attribute.resident_metadata_hex.is_none()
-            && attribute.allocated_size == rounded
+            && allocated >= rounded
+            && allocated.is_multiple_of(cluster)
             && !attribute.extents.is_empty()
             && attribute.extents.len() <= maximum_runs,
-        "nonresident attribute-list allocation/form exceeds profile"
+        "nonresident attribute type {kind:#x} allocation/form exceeds profile: {} bytes, {} allocated on {cluster}-byte clusters, {} runs (at most {maximum_runs})",
+        attribute.logical_size,
+        attribute.allocated_size,
+        attribute.extents.len()
     );
     let mut next = 0u64;
     let mut physical = Vec::new();
@@ -444,10 +454,13 @@ fn validate_initialized_metadata(
         next = next
             .checked_add(extent.length)
             .context("attribute-list coverage overflow")?;
-        ensure!(next <= rounded, "attribute-list mapping exceeds allocation");
+        ensure!(
+            next <= allocated,
+            "attribute-list mapping exceeds allocation"
+        );
         physical.push((start, end));
     }
-    ensure!(next == rounded, "attribute-list mapping is incomplete");
+    ensure!(next == allocated, "attribute-list mapping is incomplete");
     physical.sort_unstable();
     ensure!(
         physical.windows(2).all(|p| p[0].1 <= p[1].0),
@@ -892,9 +905,19 @@ fn stream_record_identity(record: &RecordEvidence, complete_file: bool) -> Resul
                 attribute.compression_unit == 4
                     || attribute.lowest_vcn > 0 && attribute.compression_unit == 0
             };
+        // Sparse DATA carries its allocation granule as a unit on the
+        // segment that starts the stream and none on a continuation; the
+        // unit is checked against the cluster size when the stream is merged.
+        let sparse_data = complete_file
+            && attribute.type_code == 0x80
+            && attribute.flags == 0x8000
+            && !attribute.resident
+            && attribute.compression_unit <= 4;
         ensure!(
             instances.insert(attribute.instance)
-                && (attribute.flags == 0 && attribute.compression_unit == 0 || encoded_data)
+                && (attribute.flags == 0 && attribute.compression_unit == 0
+                    || encoded_data
+                    || sparse_data)
                 && (attribute.type_code == 0x80
                     || complete_file && matches!(attribute.type_code, 0x90 | 0xa0 | 0xb0 | 0x100)
                     || attribute.name_utf16.is_empty()),
@@ -1179,6 +1202,18 @@ fn assemble_attributes_inner(
         );
         let mut merged: AttributeInventory = (**leader).clone();
         let compressed = complete_file && leader.type_code == 0x80 && leader.flags == 1;
+        let sparse =
+            complete_file && leader.type_code == 0x80 && leader.flags == 0x8000 && !leader.resident;
+        ensure!(
+            !sparse
+                || crate::ntfs_inspect::sparse_unit_supported(
+                    leader.compression_unit,
+                    geometry.cluster_size
+                ),
+            "sparse DATA compression unit {} does not match {}-byte clusters",
+            leader.compression_unit,
+            geometry.cluster_size
+        );
         if leader.resident {
             ensure!(
                 segments.len() == 1,
@@ -1198,7 +1233,7 @@ fn assemble_attributes_inner(
                     !segment.resident
                         && segment.flags == leader.flags
                         && (segment.compression_unit == leader.compression_unit
-                            || compressed
+                            || (compressed || sparse)
                                 && segment.lowest_vcn > 0
                                 && segment.compression_unit == 0)
                         && segment.lowest_vcn.checked_mul(cluster) == Some(next)
@@ -1227,7 +1262,10 @@ fn assemble_attributes_inner(
                         );
                         physical.push((start, end));
                     } else {
-                        ensure!(compressed, "sparse ordinary DATA remains unsupported");
+                        ensure!(
+                            compressed || sparse,
+                            "a hole in DATA that is neither sparse nor compressed"
+                        );
                     }
                     next = next
                         .checked_add(extent.length)

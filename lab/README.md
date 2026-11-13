@@ -28,14 +28,101 @@ A full run includes the original-disk-only boot and desktop observation:
 
 Supply `-Binary` and `-ManifestBinary` when verifying an already built package;
 otherwise the harness uses `target/release`. `-VmId` selects the second lab VM.
-`-SampleStacks` requires the matching PDB beside the executable and adds profiling.
-Do not use it merely to claim an unmeasured speed change.
+`-SampleStacks` requires the matching PDB beside the executable and writes
+`stacks.txt`: phase, step and stack per line, a hundred samples a second, helper
+and digest threads included. Use it to find where unnamed time goes before
+changing anything for speed, not merely to claim an unmeasured speed change.
 
-To finalize an existing saved after-apply state:
+Recovery is checked by stopping the converter at a named point of apply,
+handoff or finalization (`crates/n2r-win32/src/lab_hold.rs` lists them), ending
+its process there, and running the recovery command it printed:
 
 ```powershell
-.\lab\Invoke-BootConversionAttempt.ps1 -Name recovery-check -Recover -Checkpoint N2R-Small-Applied -NoBoot -KeepScratch
+.\lab\Invoke-BootConversionAttempt.ps1 -Name resume-check -Fixture -FixtureCheckpoint N2R-Thinned-Fixture-40 -NoBoot -InterruptAt apply-mid-ranges
+.\lab\Invoke-BootConversionAttempt.ps1 -Name rollback-check -Fixture -FixtureCheckpoint N2R-Thinned-Fixture-40 -NoBoot -InterruptAt apply-mid-ranges -RecoverMode rollback
 ```
+
+A resume ends `RESUMED-NOT-BOOTED` and is compared as a conversion is; a
+rollback ends `ROLLED-BACK-NOT-BOOTED` and is compared with the listing taken
+before in every field (`compare --exact`: nothing allowed).
+`-RecoverMode none -CheckpointAfterConvert <name>` saves the interrupted state
+instead, and `-RecoverFrom <attempt>` recovers it later from that attempt's own
+records. `-TearMarker handoff`, with `-InterruptAt apply-handoff-durable`, leaves
+the journal's handoff marker as a write that stopped part-way leaves it, so that
+recovery has to settle it first. The lab ends a process; it cannot cut power to
+the storage, and every verdict says so.
+
+The converter runs in the control OS as SYSTEM unless `-RunAs administrator` is
+given, which runs it as the guest's elevated administrator, the way an owner
+runs it. The shadow's working objects admit SYSTEM alone, so a request that
+only SYSTEM is granted fails for an administrator and nowhere else: a change
+to how an object is opened or created is checked both ways.
+
+## Data volumes of other geometries
+
+The Windows partition has one geometry: 512-byte sectors, 4 KiB clusters, 1 KiB
+file records. `Invoke-DataVolumeAttempt.ps1` converts a data volume of any
+other, in a control OS that is already up:
+
+```powershell
+lab\Invoke-BootConversionAttempt.ps1 -Name prep-01 -NoConvert -KeepScratch -VmId <vm>
+lab\Invoke-DataVolumeAttempt.ps1 -Name d-512-01 -VmId <vm> -ClusterBytes 512
+lab\Invoke-DataVolumeAttempt.ps1 -Name d-4kn-01 -VmId <vm> -SectorBytes 4096 -ClusterBytes 65536
+```
+
+`-ClusterBytes` is the NTFS allocation unit, 512 bytes to 2 MiB.
+`-SectorBytes 4096` puts the volume on a 4Kn disk, which the host makes in the
+attempt's folder and attaches to the VM for the attempt. `-LargeRecords` formats
+4096-byte file records (`format /L`). `-PartitionMB` sets the partition's size;
+one that is not a multiple of 64 makes the converter shrink it first.
+`-TargetClusterBytes 65536` converts to 64 KiB ReFS clusters. `-RunAs`,
+`-ConverterArgs`, `-Binary`, `-ManifestBinary` and `-SampleStacks` mean what
+they mean to the boot harness. `-ExpectRefusal <pattern>` is for a volume the
+converter must refuse.
+
+`-InterruptAt <point>` (for example `apply-mid-ranges` or `handoff-sealed`)
+ends the converter when it reports that it is held at that point, then runs the
+recovery command the run printed: `-RecoverMode resume` (the default) must end
+with ReFS and an identical listing (`resumed`), `-RecoverMode rollback` with the
+NTFS volume listing exactly as before (`rolled-back`). `-Diagnose` runs the
+converter with `--diagnose`; whatever it reports, the volume must list exactly
+as before (`diagnose-clean`, `diagnose-found-failures`).
+
+`-Content many` replaces the mixed content with two files that are past numbers
+which used to be fixed: one with 200 named streams, and a sparse file with
+`-Islands` separately allocated islands (70,000 by default), whose mapping
+needs many file records.
+
+The volume gets a fixed set of content: files around every size boundary, a
+nested tree with non-ASCII and long names, named streams, hard links, a sparse
+file, LZNT1-compressed files (on clusters up to 4 KiB, where NTFS compresses),
+fragmented files, and attributes and times that are not the defaults. It is
+listed with `lab-volume-manifest`, converted, listed again and compared.
+Outcomes: `converted` (ReFS, listing identical), `converted-but-listing-differs`,
+`refused-source-unchanged` (the NTFS volume lists exactly as before, compared
+with `--exact`), `refused-as-expected`, and named failures. The verdict records
+the geometry NTFS reported, the ReFS version and cluster size afterwards, and
+the partition's length before and after. The volume and the run's working files
+are removed afterwards unless `-KeepVolume` is given.
+
+Before the first listing the volume is remounted once and listed when Windows
+has written its own files into `System Volume Information`. A volume made a
+moment ago would otherwise get them when it next mounts, which is after the
+conversion, and the directory's changed time would show as a difference.
+
+`-Diagnose` builds the shadow, lists every per-object failure and stops before
+publication, writing nothing to the source. It ends `diagnose-clean` (exit 0) or
+`diagnose-found-failures` (exit 3) only once the source is the same online NTFS
+partition and lists exactly as before.
+
+`-ShapeSource <script>` runs a script from `lab\guest` against the source
+before it is listed, to give it objects a fresh Windows does not have:
+`Add-NamedStreams.ps1` (the lab volumes have no named streams) and
+`Add-DirectoryStream.ps1`, which the converter must refuse by name at admission.
+
+`verdict.json` lists every piece of evidence an attempt retains with its size
+and SHA-256, or the reason it is missing. A success without its required
+evidence is `incomplete-evidence`.
 
 A missing before-listing is `converted-not-compared`, not a successful independent
 comparison. A run is complete only when its verdict and the applicable native
@@ -53,6 +140,14 @@ Before any cleanup, preserve the verdict, progress, source and target listings,
 comparison report, binary hashes, recovery output and boot evidence with hashes.
 Do not delete the reference baseline checkpoint: the second VM's disks depend
 on its parent chain. Ask before deleting `.lab` artifacts.
+
+## Older scripts
+
+Most of the other scripts here were written for one VM or checkpoint of an
+earlier stage, and that VM or checkpoint is gone. [RETIRED.md](RETIRED.md) lists
+the 161 that cannot run; do not start from one. They are kept unchanged as the
+record of those stages, and a test fails if a script names a retired VM without
+being listed.
 
 The earlier lab procedures and budgets are preserved in
 [the historical guide](../docs/history/lab-README-before-boot-alpha-closeout-20261111.md).

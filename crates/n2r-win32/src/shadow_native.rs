@@ -56,21 +56,62 @@ use windows_sys::Win32::{
     System::IO::DeviceIoControl,
 };
 
+/// What Windows reports of a mounted ReFS volume (FSCTL_GET_REFS_VOLUME_DATA).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RefsVolumeData {
+    pub major: u32,
+    pub minor: u32,
+    /// Logical sector of the disk under the volume: 512, or 4096 on a 4Kn disk.
+    pub sector_bytes: u32,
+    pub cluster_bytes: u32,
+    pub clusters: u64,
+}
+
+/// Reads the volume's own description and requires it to cover exactly the
+/// partition. Which version and cluster size are acceptable is the caller's.
+pub(crate) fn query_refs_volume_data(
+    volume: &File,
+    partition_bytes: u64,
+) -> io::Result<RefsVolumeData> {
+    let data = ctl(volume, 0x000902d8, &[], 256)?;
+    if data.len() < 64 || !(64..=data.len()).contains(&(layout::u32_at(&data, 0)? as usize)) {
+        return Err(invalid("ReFS volume data is truncated"));
+    }
+    let observed = RefsVolumeData {
+        major: layout::u32_at(&data, 4)?,
+        minor: layout::u32_at(&data, 8)?,
+        sector_bytes: layout::u32_at(&data, 56)?,
+        cluster_bytes: layout::u32_at(&data, 60)?,
+        clusters: layout::u64_at(&data, 32)?,
+    };
+    let sectors = layout::u64_at(&data, 24)?;
+    if !matches!(observed.sector_bytes, 512 | 4096)
+        || !matches!(observed.cluster_bytes, 4096 | 65536)
+        || sectors != partition_bytes / u64::from(observed.sector_bytes)
+        || observed.clusters != partition_bytes / u64::from(observed.cluster_bytes)
+    {
+        return Err(invalid(&format!(
+            "ReFS volume data does not describe the {partition_bytes}-byte partition: {sectors} sectors of {} bytes, {} clusters of {} bytes",
+            observed.sector_bytes, observed.clusters, observed.cluster_bytes
+        )));
+    }
+    Ok(observed)
+}
+
 // Shared native format check for expanded observations and live construction.
 pub(crate) fn query_refs_314_volume_data(volume: &File, partition_bytes: u64) -> io::Result<u64> {
-    let data = ctl(volume, 0x000902d8, &[], 256)?;
-    if data.len() < 64
-        || !(64..=data.len()).contains(&(layout::u32_at(&data, 0)? as usize))
-        || layout::u32_at(&data, 4)? != 3
-        || layout::u32_at(&data, 8)? != 14
-        || layout::u64_at(&data, 24)? != partition_bytes / 512
-        || layout::u64_at(&data, 32)? != partition_bytes / 4096
-        || layout::u32_at(&data, 56)? != 512
-        || layout::u32_at(&data, 60)? != 4096
-    {
-        return Err(invalid("protected ReFS volume-data profile differs"));
+    let observed = query_refs_volume_data(volume, partition_bytes)?;
+    // The volume must have the allocation unit this process chose and the
+    // version the run's shadow was formatted with.
+    let chosen = crate::target_cluster::bytes();
+    let version = crate::target_refs_version::get();
+    if (observed.major, observed.minor) != version || u64::from(observed.cluster_bytes) != chosen {
+        return Err(invalid(&format!(
+            "protected ReFS volume-data profile differs: ReFS {}.{} with {}-byte clusters, where {}.{} with {chosen}-byte clusters is expected",
+            observed.major, observed.minor, observed.cluster_bytes, version.0, version.1
+        )));
     }
-    Ok(layout::u64_at(&data, 32)?)
+    Ok(observed.clusters)
 }
 
 #[derive(Clone, Serialize)]
@@ -148,6 +189,17 @@ fn valid_shadow_component(s: &str) -> bool {
 /// `observe` over `items` on up to eight threads, results in item order. Items
 /// are claimed in order, so after a failure every unclaimed item follows it;
 /// the first failure in item order is returned.
+/// A failure while observing one object of a walk, with the object's path.
+/// A reason that already names the path is left as it is.
+fn at_walk_object(item: &Input<'_>, error: io::Error) -> io::Error {
+    let path = item.components.join("\\");
+    let text = error.to_string();
+    if !path.is_empty() && text.contains(&path) {
+        return error;
+    }
+    io::Error::new(error.kind(), format!("object \\{path}: {text}"))
+}
+
 fn observe_in_parallel<T: Sync, U: Send>(
     items: &[T],
     observe: impl Fn(&T) -> io::Result<U> + Sync,
@@ -220,7 +272,8 @@ fn hash_exact_stream(reader: &mut impl Read, length: u64) -> io::Result<String> 
 }
 
 fn resident_allocation(logical: u64, allocated: u64) -> bool {
-    logical <= 4096 && allocated < 4096 && allocated >= logical
+    let cluster = crate::target_cluster::bytes();
+    logical <= cluster && allocated < cluster && allocated >= logical
 }
 
 fn volume_label_matches(
@@ -894,7 +947,8 @@ fn retain_run_on_shadow(
     let offset = run
         .physical_offset
         .ok_or_else(|| invalid("source placement hole"))?;
-    let starting_vcn = run.logical_offset / 4096;
+    let cluster = crate::target_cluster::bytes();
+    let starting_vcn = run.logical_offset / cluster;
     let h = open(&format!("{}{}", root, i.components.join("\\")), false, true)?;
     let before_capture = crate::stream_native::retrieval_capture(&h)?;
     let mapping_before = before_capture.canonical;
@@ -916,18 +970,18 @@ fn retain_run_on_shadow(
             }
         }
     };
-    if candidate.legacy.declared_clusters != partition / 4096
-        || candidate.metadata_inclusive.declared_clusters != partition / 4096
-        || candidate.legacy.start_lcn != offset / 4096
-        || candidate.metadata_inclusive.start_lcn != offset / 4096
-        || candidate.legacy.clusters != run.length / 4096
-        || candidate.metadata_inclusive.clusters != run.length / 4096
+    if candidate.legacy.declared_clusters != partition / cluster
+        || candidate.metadata_inclusive.declared_clusters != partition / cluster
+        || candidate.legacy.start_lcn != offset / cluster
+        || candidate.metadata_inclusive.start_lcn != offset / cluster
+        || candidate.legacy.clusters != run.length / cluster
+        || candidate.metadata_inclusive.clusters != run.length / cluster
     {
         return Err(invalid("retention bitmap domain is incomplete or changed"));
     }
     let clusters =
-        u32::try_from(run.length / 4096).map_err(|_| invalid("retention cluster budget"))?;
-    let destination_lcn = offset / 4096;
+        u32::try_from(run.length / cluster).map_err(|_| invalid("retention cluster budget"))?;
+    let destination_lcn = offset / cluster;
     let matches = |b: &[u8]| -> io::Result<bool> {
         mapping_matches_run(
             &stream_layout::parse_complete_retrieval(b)?,
@@ -1086,7 +1140,7 @@ fn retain_source_run_once(
         }
         // A later free-space change must not turn this diagnostic into an
         // unplanned move. Already-correct placement is still recorded.
-        let chunk_bytes = crate::retention_layout::MAX_MOVE_BYTES;
+        let chunk_bytes = crate::retention_layout::max_move_bytes();
         if run.length.div_ceil(chunk_bytes) > remaining as u64 {
             return Err(invalid("retention diagnostic chunk budget exceeded"));
         }
@@ -1646,6 +1700,9 @@ fn validate_existing_content_domain_with_memory_and_windows_aliases(
     let mut directories = Vec::new();
     let mut expected_children: BTreeMap<Vec<String>, BTreeMap<Vec<u16>, (usize, u32)>> =
         BTreeMap::new();
+    // Set when only the root's later times differ; cleared by the entry that
+    // explains them.
+    let mut root_times_refusal = None;
     for (index, o) in report.objects.iter().enumerate() {
         let owner = input.object(index)?;
         let item = owner.input();
@@ -1722,18 +1779,25 @@ fn validate_existing_content_domain_with_memory_and_windows_aliases(
         } else {
             false
         };
+        // Windows makes "System Volume Information" on a mounted volume that
+        // has none. The new entry is allowed below, and making it moves the
+        // root's last-access, last-write and change times; whether the entry
+        // is there is known once the root's listing has been checked.
+        let root_times_moved = i.components.is_empty()
+            && allow_post_mount_svi
+            && root_basic_after_mutation.is_none()
+            && actual_basic != expected_basic
+            && only_times_moved_forward(expected_basic, actual_basic, filetime_now()?);
         // A file with no attributes is stored by NTFS as zero and reported by
         // Windows as NORMAL. That equivalence holds for every object, not
         // only sparse files; the root keeps its own exact expectation.
-        if i.components != o.components
-            || (actual_basic != expected_basic
-                && !((has_sparse(i) || !i.components.is_empty()) && basic_matches(i, actual_basic))
-                && !cache_directory_times)
-            || o.before != o.after
-        {
+        let basic_differs = actual_basic != expected_basic
+            && !((has_sparse(i) || !i.components.is_empty()) && basic_matches(i, actual_basic))
+            && !cache_directory_times;
+        if i.components != o.components || basic_differs || o.before != o.after {
             // Creation, last access, last write and change time (8 bytes each),
             // then attributes.
-            return Err(invalid(&format!(
+            let refusal = invalid(&format!(
                 "existing shadow path, basic metadata or stability differs: \\{}: path_same={}, stable={}, {} hard-link names, expected basic {}, actual basic {}",
                 i.components.join("\\"),
                 i.components == o.components,
@@ -1741,7 +1805,11 @@ fn validate_existing_content_domain_with_memory_and_windows_aliases(
                 i.additional_names.len(),
                 hex::encode(expected_basic),
                 hex::encode(actual_basic),
-            )));
+            ));
+            if !root_times_moved || i.components != o.components || o.before != o.after {
+                return Err(refusal);
+            }
+            root_times_refusal = Some(refusal);
         }
         let id = query_bytes(&o.before, 18, 24)?[8..24].to_vec();
         if id == [0; 16]
@@ -1946,6 +2014,7 @@ fn validate_existing_content_domain_with_memory_and_windows_aliases(
                 && entry.attributes & 16 != 0
                 && entry.attributes & 0x400 == 0
             {
+                root_times_refusal = None;
                 continue;
             }
             let &(child_origin, expected_attributes) = expected
@@ -2003,7 +2072,31 @@ fn validate_existing_content_domain_with_memory_and_windows_aliases(
             return Err(invalid("post-mount indexer cache missing from directory"));
         }
     }
-    Ok(())
+    // The root's times moved and no new "System Volume Information" explains it.
+    root_times_refusal.map_or(Ok(()), Err)
+}
+
+/// Whether `actual` differs from `expected` (two FILE_BASIC_INFORMATION
+/// images) only in that its last-access, last-write and change times are
+/// later, and none is later than `now`. Creation time and attributes are equal.
+fn only_times_moved_forward(expected: &[u8], actual: &[u8], now: u64) -> bool {
+    expected.len() == 40
+        && actual.len() == 40
+        && actual[..8] == expected[..8]
+        && actual[32..] == expected[32..]
+        && [8, 16, 24].into_iter().all(|at| {
+            let time = |bytes: &[u8]| u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
+            time(expected) <= time(actual) && time(actual) <= now
+        })
+}
+
+/// The system clock as a Windows FILETIME.
+fn filetime_now() -> io::Result<u64> {
+    let since_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| invalid("system clock predates Unix epoch"))?;
+    u64::try_from(since_epoch.as_nanos() / 100 + 116_444_736_000_000_000)
+        .map_err(|_| invalid("system clock exceeds the FILETIME range"))
 }
 /// Repairs only the documented creation-time loss of AUTO_INHERITED, after a
 /// fresh native read of every admitted shadow byte and namespace identity. The
@@ -2175,6 +2268,42 @@ fn info_read<T>(
         read(response)
     })
 }
+/// A file's stream list (FileStreamInfo), read in this thread's query
+/// buffer. Nearly every file answers within the first 64 KiB. One with
+/// hundreds of named streams needs more: the query is repeated with a larger
+/// buffer, up to what an NTFS file can have.
+fn stream_info_read<T>(file: &File, read: impl FnOnce(&[u8]) -> io::Result<T>) -> io::Result<T> {
+    let mut size = stream_layout::MAX_STREAM_BUFFER;
+    let mut read = Some(read);
+    loop {
+        let result = crate::query_scratch::with(size, |response| {
+            // SAFETY: aligned initialized storage of the stated size.
+            check(unsafe {
+                GetFileInformationByHandleEx(
+                    file.as_raw_handle(),
+                    7,
+                    response.as_mut_ptr().cast(),
+                    size as u32,
+                )
+            })?;
+            (read.take().expect("the list is read once"))(response)
+        });
+        match result {
+            // ERROR_INSUFFICIENT_BUFFER or ERROR_MORE_DATA: the list is longer.
+            Err(error)
+                if read.is_some()
+                    && matches!(error.raw_os_error(), Some(122 | 234))
+                    && size < stream_layout::MAX_STREAM_LIST_BYTES =>
+            {
+                size = (size * 2).min(stream_layout::MAX_STREAM_LIST_BYTES);
+            }
+            other => return other,
+        }
+    }
+}
+fn stream_info(file: &File) -> io::Result<Vec<u8>> {
+    stream_info_read(file, |response| Ok(response.to_vec()))
+}
 fn suppress_access(file: &File) -> io::Result<()> {
     let no_update = FILETIME {
         dwLowDateTime: u32::MAX,
@@ -2183,11 +2312,89 @@ fn suppress_access(file: &File) -> io::Result<()> {
     // SAFETY: documented per-handle suppression, no stored timestamp supplied.
     check(unsafe { SetFileTime(file.as_raw_handle(), ptr::null(), &no_update, ptr::null()) })
 }
+/// Access for a handle that restores an object's metadata: every specific
+/// file right but FILE_DELETE_CHILD (0x40), with READ_CONTROL, WRITE_DAC,
+/// WRITE_OWNER, SYNCHRONIZE and ACCESS_SYSTEM_SECURITY, and never DELETE.
+///
+/// The private objects of a shadow admit SYSTEM alone. An elevated
+/// administrator reaches them only through the backup and restore
+/// privileges, which grant exactly these rights. FILE_DELETE_CHILD is not
+/// among them, no code here uses it, and asking for it (the mask used to be
+/// 0x011e01ff) made every conversion fail for an administrator at the first
+/// private directory, while SYSTEM, the only account the lab ran as, was
+/// never refused.
+pub(crate) const METADATA_WRITE_ACCESS: u32 = 0x011e_01bf;
+
+/// FILE_FLAG_BACKUP_SEMANTICS on a file that is created in, or opened from, a
+/// private directory. Without it Windows decides by the directory's own
+/// descriptor whether a file may be added, and that descriptor admits SYSTEM
+/// alone; with it the restore privilege decides, as it does for every
+/// directory (`CreateDirectoryW` always asks with backup intent). It changes
+/// nothing for SYSTEM.
+pub(crate) const BACKUP_INTENT: u32 = 0x0200_0000;
+
+/// Creates a private file, or a named stream on one, that must not exist yet.
+///
+/// A whole file is created with CREATE_NEW. A named stream is asked for with
+/// OPEN_ALWAYS and refused if Windows reports that it was already there. ReFS
+/// does not let an administrator CREATE_NEW a stream on a file whose
+/// descriptor admits SYSTEM alone, even with the restore privilege and backup
+/// intent (error 5), while the same caller may create it with OPEN_ALWAYS;
+/// probed on the lab's ReFS, 2026-11-12. SYSTEM gets the same new stream
+/// either way, and an existing one is refused either way.
+pub(crate) fn create_fresh(
+    path: &[u16],
+    named_stream: bool,
+    access: u32,
+    security: &SECURITY_ATTRIBUTES,
+    flags: u32,
+) -> io::Result<File> {
+    const CREATE_NEW: u32 = 1;
+    const OPEN_ALWAYS: u32 = 4;
+    const ERROR_ALREADY_EXISTS: i32 = 183;
+    if path.last() != Some(&0) {
+        return Err(invalid("private object path is not NUL-terminated"));
+    }
+    // SAFETY: NUL-terminated path, live descriptor, no sharing, no template.
+    let handle = unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            access,
+            0,
+            security,
+            if named_stream {
+                OPEN_ALWAYS
+            } else {
+                CREATE_NEW
+            },
+            flags,
+            ptr::null_mut(),
+        )
+    };
+    let reported = io::Error::last_os_error();
+    if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+        return Err(reported);
+    }
+    // SAFETY: unique ownership of the handle just returned.
+    let file = unsafe { File::from_raw_handle(handle) };
+    if named_stream && reported.raw_os_error() == Some(ERROR_ALREADY_EXISTS) {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "the private named stream already exists",
+        ));
+    }
+    Ok(file)
+}
+
 fn open(path: &str, directory: bool, write: bool) -> io::Result<File> {
     let f = File::options()
         // Metadata handles need WRITE_DAC/WRITE_OWNER, never DELETE. Retaining
         // the root handle must not prevent its later finalization/observation.
-        .access_mode(if write { 0x011e01ff } else { 0x01020189 })
+        .access_mode(if write {
+            METADATA_WRITE_ACCESS
+        } else {
+            0x01020189
+        })
         .share_mode(3)
         .custom_flags(0x02200000)
         .open(path)?;
@@ -2396,7 +2603,7 @@ fn observe_post_mount_indexer_cache_domain(
             "post-mount indexer cache identity, type, size or security query differs",
         ));
     }
-    let mut streams = info(&file, 7, stream_layout::MAX_STREAM_BUFFER)?;
+    let mut streams = stream_info(&file)?;
     let (entries, used) = stream_layout::parse_streams(&streams)?;
     if entries.len() != 1 || !entries[0].name.is_empty() || entries[0].logical_size != 76 {
         return Err(invalid("post-mount indexer cache has unexpected streams"));
@@ -2425,11 +2632,7 @@ fn observe_post_mount_indexer_cache_domain(
             "post-mount indexer cache or parent changed during observation",
         ));
     }
-    let since_epoch = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| invalid("system clock predates Unix epoch"))?;
-    let observed_filetime = u64::try_from(since_epoch.as_nanos() / 100 + 116_444_736_000_000_000)
-        .map_err(|_| invalid("post-mount cache observation clock overflow"))?;
+    let observed_filetime = filetime_now()?;
     Ok(Some(PostMountIndexerCache {
         file_id: entry.file_id,
         attributes: entry.attributes,
@@ -2556,7 +2759,7 @@ fn existing_system_entries_domain(
                     "target-only indexer cache identity or size differs",
                 ));
             }
-            let stream_bytes = info(&file, 7, stream_layout::MAX_STREAM_BUFFER)?;
+            let stream_bytes = stream_info(&file)?;
             let (streams, _) = stream_layout::parse_streams(&stream_bytes)?;
             if streams.len() != 1 || !streams[0].name.is_empty() || streams[0].logical_size != 76 {
                 return Err(invalid("target-only indexer cache streams differ"));
@@ -2665,11 +2868,11 @@ fn create(
     let h = unsafe {
         CreateFileW(
             name.as_ptr(),
-            0x011f01ff,
+            METADATA_WRITE_ACCESS | 0x10000,
             0,
             &sa,
             1,
-            crate::verify_policy::shadow_file_flags(0x80200000),
+            crate::verify_policy::shadow_file_flags(0x80200000 | BACKUP_INTENT),
             ptr::null_mut(),
         )
     };
@@ -3198,6 +3401,7 @@ pub(crate) fn observe_general_layout_residuals_readonly_domain(
         resource_profile,
     )?;
     let mut required = Vec::new();
+    let cluster = crate::target_cluster::bytes();
     for index in 0..input.len() {
         let owner = input.object(index)?;
         let view = owner.input();
@@ -3205,22 +3409,22 @@ pub(crate) fn observe_general_layout_residuals_readonly_domain(
         if item.directory {
             continue;
         }
-        if item.logical_length() % 4096 != 0
+        if item.logical_length() % cluster != 0
             && item.sparse.is_none_or(|s| {
                 s.allocated.iter().any(|r| {
-                    r.offset <= item.logical_length() / 4096 * 4096
-                        && r.offset + r.length > item.logical_length() / 4096 * 4096
+                    r.offset <= item.logical_length() / cluster * cluster
+                        && r.offset + r.length > item.logical_length() / cluster * cluster
                 })
             })
         {
             required.push((index, Vec::new(), item.logical_length()));
         }
         for stream in &item.named_streams {
-            if stream.expected_length % 4096 != 0
+            if stream.expected_length % cluster != 0
                 && stream.sparse.is_none_or(|s| {
                     s.allocated.iter().any(|r| {
-                        r.offset <= stream.expected_length / 4096 * 4096
-                            && r.offset + r.length > stream.expected_length / 4096 * 4096
+                        r.offset <= stream.expected_length / cluster * cluster
+                            && r.offset + r.length > stream.expected_length / cluster * cluster
                     })
                 })
             {
@@ -3234,8 +3438,8 @@ pub(crate) fn observe_general_layout_residuals_readonly_domain(
     for ((index, name, length), expected) in required.iter().zip(residuals) {
         if expected.object_index != *index
             || expected.stream_name_utf16 != *name
-            || expected.logical_offset != length / 4096 * 4096
-            || expected.length != length % 4096
+            || expected.logical_offset != length / cluster * cluster
+            || expected.length != length % cluster
             || expected.length == 0
             || expected.sha256.len() != 64
             || !expected
@@ -3262,7 +3466,8 @@ pub(crate) fn observe_general_layout_residuals_readonly_domain(
     }
     let mut privileges = Privileges::enable_for(&["SeBackupPrivilege", "SeSecurityPrivilege"])?;
     let root = format!("\\\\?\\Volume{{{}}}\\", binding.volume_guid);
-    let mut buffer = [0u8; 4096];
+    // A residual is shorter than one target cluster.
+    let mut buffer = vec![0u8; crate::target_cluster::bytes_usize()];
     let mut bytes_read = 0u64;
     for expected in residuals {
         let object = &native.objects[expected.object_index];
@@ -3317,9 +3522,10 @@ fn required_residuals(
     mut visit: impl FnMut(u64, usize, &[u16], u64) -> io::Result<()>,
 ) -> io::Result<u64> {
     let mut count = 0u64;
+    let cluster = crate::target_cluster::bytes();
     let needed = |length: u64, sparse: Option<&crate::sparse_layout::SparseLayout>| {
-        let offset = length / 4096 * 4096;
-        length % 4096 != 0
+        let offset = length / cluster * cluster;
+        length % cluster != 0
             && sparse.is_none_or(|s| {
                 s.allocated.iter().any(|r| {
                     r.offset <= offset
@@ -3556,8 +3762,8 @@ fn observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_o
         let expected = provider.expectation(ordinal)?;
         if expected.object_index != index
             || expected.stream_name_utf16 != name
-            || expected.logical_offset != length / 4096 * 4096
-            || expected.length != length % 4096
+            || expected.logical_offset != crate::target_cluster::floor(length)
+            || expected.length != length % crate::target_cluster::bytes()
             || expected.length == 0
             || expected.sha256.len() != 64
             || !expected
@@ -3624,7 +3830,8 @@ fn observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_o
         count,
     )?;
     let mut bytes_read = 0u64;
-    let mut buffer = [0u8; 4096];
+    // A residual is shorter than one target cluster.
+    let mut buffer = vec![0u8; crate::target_cluster::bytes_usize()];
     let observed = required_residuals(input, |ordinal, index, name, length| {
         let _query_memory = memory
             .map(|payer| {
@@ -4928,6 +5135,7 @@ fn run_role_content_domain_accounted(
             return Err(invalid("source scalar index exceeds its prepaid capacity"));
         }
     }
+    let cluster = crate::target_cluster::bytes();
     for index in 0..input.len() {
         let owner = input.object(index)?;
         let item = owner.input();
@@ -4937,14 +5145,14 @@ fn run_role_content_domain_accounted(
         }
         if let Some(offset) = i.source_offset {
             let route_length = if !verify_file_contents && i.expected_sha256.is_none() {
-                i.logical_length() / 4096 * 4096
+                i.logical_length() / cluster * cluster
             } else {
                 i.logical_length()
             };
             if i.directory
                 || route_length == 0
-                || !route_length.is_multiple_of(4096)
-                || !offset.is_multiple_of(4096)
+                || !route_length.is_multiple_of(cluster)
+                || !offset.is_multiple_of(cluster)
                 || !offset
                     .checked_add(route_length)
                     .is_some_and(|end| end <= binding.identity.partition_bytes)
@@ -4968,7 +5176,7 @@ fn run_role_content_domain_accounted(
                 // sparse layout; holes and bytes beyond VDL cannot be retained.
                 let logical_placement_ok = if let Some(sparse) = i.sparse {
                     run.logical_offset >= covered
-                        && logical_end <= sparse.initialized_length / 4096 * 4096
+                        && logical_end <= sparse.initialized_length / cluster * cluster
                         && sparse.allocated.iter().any(|range| {
                             range.offset <= run.logical_offset
                                 && range.offset + range.length >= logical_end
@@ -4978,9 +5186,9 @@ fn run_role_content_domain_accounted(
                 };
                 if !logical_placement_ok
                     || run.length == 0
-                    || !run.logical_offset.is_multiple_of(4096)
-                    || !run.length.is_multiple_of(4096)
-                    || !offset.is_multiple_of(4096)
+                    || !run.logical_offset.is_multiple_of(cluster)
+                    || !run.length.is_multiple_of(cluster)
+                    || !offset.is_multiple_of(cluster)
                     || !offset
                         .checked_add(run.length)
                         .is_some_and(|end| end <= binding.identity.partition_bytes)
@@ -4992,7 +5200,7 @@ fn run_role_content_domain_accounted(
             }
             if i.directory
                 || covered == 0
-                || covered > i.logical_length() / 4096 * 4096
+                || covered > i.logical_length() / cluster * cluster
                 || (memory_accountant.is_none() && i.source_runs.len() > 1024)
             {
                 return Err(invalid("fragmented source placement coverage differs"));
@@ -5163,8 +5371,9 @@ fn run_role_content_domain_accounted(
     }
     let clusters = if use_volume_data {
         let clusters = query_refs_314_volume_data(volume, binding.identity.partition_bytes)?;
-        bps = 512;
-        spc = 8;
+        let observed = query_refs_volume_data(volume, binding.identity.partition_bytes)?;
+        bps = observed.sector_bytes;
+        spc = observed.cluster_bytes / observed.sector_bytes;
         clusters
     } else {
         u64::from(legacy_clusters)
@@ -5178,7 +5387,12 @@ fn run_role_content_domain_accounted(
         .ok_or_else(|| invalid("unterminated converted volume label"))?;
     let label_matches = volume_label_matches(&label[..label_end], expected_label)?;
     validate_scoped_observation_access(before.disk_attributes, flags, protected)?;
-    if text(&fs) != "ReFS" || !label_matches || spc != 8 || bps != 512 {
+    // One target cluster, in 512-byte sectors or those of a 4Kn disk.
+    if text(&fs) != "ReFS"
+        || !label_matches
+        || !matches!(bps, 512 | 4096)
+        || u64::from(spc) * u64::from(bps) != crate::target_cluster::bytes()
+    {
         return Err(invalid(
             "shadow filesystem, label, geometry or read-only flag differs",
         ));
@@ -5396,7 +5610,7 @@ fn run_role_content_domain_accounted(
                 for i in input.iter().filter(|i| !i.directory) {
                     if let Some(offset) = i.source_offset
                         && i.logical_length() > 0
-                        && i.logical_length().is_multiple_of(4096)
+                        && crate::target_cluster::aligned(i.logical_length())
                     {
                         retain_source_run_on_shadow(
                             &volume,
@@ -5546,7 +5760,7 @@ fn run_role_content_domain_accounted(
                 (resource_admission, memory_accountant, &mut retained_memory)
             {
                 let limits = crate::bitmap_streaming::resource_source_limits(
-                    binding.identity.partition_bytes / 4096,
+                    binding.identity.partition_bytes / crate::target_cluster::bytes(),
                     admission.budget.max_row_bytes,
                 )?;
                 memory.retain_bitmap_workspace(
@@ -5619,7 +5833,7 @@ fn run_role_content_domain_accounted(
     } else {
         None
     };
-    let observe = |i: &Input<'_>| -> io::Result<ObjectReport> {
+    let observe_object = |i: &Input<'_>| -> io::Result<ObjectReport> {
         let path = format!("{}{}", root, i.components.join("\\"));
         let mut h = open_input(&path, i, readonly_object_access)?;
         let before = capture_metadata(&h, i);
@@ -5707,17 +5921,23 @@ fn run_role_content_domain_accounted(
                     {
                         return Err(invalid("shadow physical mapping is invalid"));
                     }
-                    end += r.clusters;
+                    end = end
+                        .checked_add(r.clusters)
+                        .ok_or_else(|| invalid("shadow physical mapping length overflows"))?;
                 }
+                let cluster = crate::target_cluster::bytes();
+                let mapped_bytes = end
+                    .checked_mul(cluster)
+                    .ok_or_else(|| invalid("shadow physical mapping length overflows"))?;
                 if i.sparse.is_none()
-                    && ((!ordinary && end * 4096 != i.logical_length())
+                    && ((!ordinary && mapped_bytes != i.logical_length())
                         || (ordinary
                             && !resident_data
-                            && (end * 4096 != expected_allocation
-                                || (expected_allocation == 0 && i.logical_length() > 4096)
+                            && (mapped_bytes != expected_allocation
+                                || (expected_allocation == 0 && i.logical_length() > cluster)
                                 || (expected_allocation != 0
                                     && expected_allocation
-                                        < i.logical_length().next_multiple_of(4096))
+                                        < i.logical_length().next_multiple_of(cluster))
                                 || expected_allocation
                                     > i.logical_length().next_multiple_of(65536))))
                 {
@@ -5764,7 +5984,7 @@ fn run_role_content_domain_accounted(
                 })?;
                 if integrity.len() != 16
                     || integrity[..8] != [0; 8]
-                    || layout::u32_at(&integrity, 12)? != 4096
+                    || layout::u32_at(&integrity, 12)? != crate::target_cluster::bytes_u32()
                 {
                     return Err(invalid("shadow data integrity profile differs"));
                 }
@@ -5802,7 +6022,7 @@ fn run_role_content_domain_accounted(
         let streams = if i.directory {
             vec![]
         } else {
-            let (entries, b) = info_read(&h, 7, stream_layout::MAX_STREAM_BUFFER, |list| {
+            let (entries, b) = stream_info_read(&h, |list| {
                 let (entries, used) = stream_layout::parse_streams(list)?;
                 streams::exact_list(list, i)?;
                 Ok((entries, list[..used].to_vec()))
@@ -5856,9 +6076,10 @@ fn run_role_content_domain_accounted(
                 .filter(|_| mode != Mode::ObserveLayout)
                 .map(|offset| -> io::Result<_> {
                     let candidate_bytes = if i.expected_sha256.is_none() {
-                        i.logical_length() / 4096 * 4096
+                        crate::target_cluster::floor(i.logical_length())
                     } else {
-                        i.logical_length().next_multiple_of(4096)
+                        i.logical_length()
+                            .next_multiple_of(crate::target_cluster::bytes())
                     };
                     let (legacy_view, metadata_view) = candidate_views
                         .as_ref()
@@ -5880,6 +6101,11 @@ fn run_role_content_domain_accounted(
                 })
                 .transpose()?,
         })
+    };
+    // Many of the checks above return a bare reason. Whatever fails for one
+    // object is reported with that object's path.
+    let observe = |i: &Input<'_>| -> io::Result<ObjectReport> {
+        observe_object(i).map_err(|error| at_walk_object(i, error))
     };
     let objects = if let Some(legacy) = legacy_input {
         observe_in_parallel(legacy, observe)?
@@ -5996,6 +6222,67 @@ fn run_role_content_domain_accounted(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The root of a volume on which Windows made "System Volume Information"
+    /// after it mounted: its later times moved, and nothing else may have.
+    #[test]
+    fn a_root_changed_by_a_new_directory_differs_only_in_later_times() {
+        fn basic(
+            created: u64,
+            accessed: u64,
+            written: u64,
+            changed: u64,
+            attributes: u32,
+        ) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            for time in [created, accessed, written, changed] {
+                bytes.extend_from_slice(&time.to_le_bytes());
+            }
+            bytes.extend_from_slice(&attributes.to_le_bytes());
+            bytes.extend_from_slice(&[0; 4]);
+            bytes
+        }
+        let source = basic(100, 200, 200, 200, 0x16);
+        let now = 1_000;
+        // As seen in the lab: the three later times all become the moment
+        // the directory was made.
+        assert!(only_times_moved_forward(
+            &source,
+            &basic(100, 900, 900, 900, 0x16),
+            now
+        ));
+        assert!(only_times_moved_forward(
+            &source,
+            &basic(100, 200, 900, 900, 0x16),
+            now
+        ));
+        assert!(only_times_moved_forward(&source, &source, now));
+        // A time that went back, or lies in the future, is not this.
+        assert!(!only_times_moved_forward(
+            &source,
+            &basic(100, 900, 199, 900, 0x16),
+            now
+        ));
+        assert!(!only_times_moved_forward(
+            &source,
+            &basic(100, 900, 900, 1_001, 0x16),
+            now
+        ));
+        // Creation time and attributes never move.
+        assert!(!only_times_moved_forward(
+            &source,
+            &basic(101, 900, 900, 900, 0x16),
+            now
+        ));
+        assert!(!only_times_moved_forward(
+            &source,
+            &basic(100, 900, 900, 900, 0x10),
+            now
+        ));
+        assert!(!only_times_moved_forward(&source, &source[..36], now));
+        assert!(filetime_now().unwrap() > 116_444_736_000_000_000);
+    }
+
     fn retention_budget_fixture() -> RetentionAttempt {
         let mut bitmap = vec![0; 17];
         bitmap[8..16].copy_from_slice(&1_u64.to_le_bytes());
@@ -6190,6 +6477,90 @@ mod tests {
     }
 
     #[test]
+    fn a_fresh_file_or_stream_is_created_once_and_an_existing_one_is_refused() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("placeholder.bin");
+        let stream = format!("{}:tag", file.display());
+        let path = |text: &str| wide(text);
+        let security = SECURITY_ATTRIBUTES {
+            nLength: mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: ptr::null_mut(),
+            bInheritHandle: 0,
+        };
+        let create = |text: &str, named_stream: bool| {
+            create_fresh(&path(text), named_stream, 0xc002_0000, &security, 0x80)
+        };
+        // A whole file: created, then refused as existing (ERROR_FILE_EXISTS),
+        // also while it is held.
+        let base = create(file.to_str().unwrap(), false).unwrap();
+        assert_eq!(
+            create(file.to_str().unwrap(), false)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(80)
+        );
+        // A named stream on it, with the base still held as the converter
+        // holds it: created once, with nothing in it.
+        let mut created = create(&stream, true).unwrap();
+        created.write_all(b"first").unwrap();
+        drop(created);
+        // The same stream again is refused, and what it holds is untouched.
+        let refused = create(&stream, true).unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::AlreadyExists, "{refused}");
+        drop(base);
+        assert_eq!(std::fs::read(&stream).unwrap(), b"first");
+        // Once the base is closed, the existing file is refused as existing.
+        assert_eq!(
+            create(file.to_str().unwrap(), false)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(80)
+        );
+        // A path without its terminator is never handed to Windows.
+        let unterminated: Vec<u16> = "x".encode_utf16().collect();
+        assert!(create_fresh(&unterminated, false, 0xc002_0000, &security, 0x80).is_err());
+    }
+
+    #[test]
+    fn handles_ask_only_for_rights_the_backup_and_restore_privileges_grant() {
+        // SeBackupPrivilege grants READ_CONTROL, ACCESS_SYSTEM_SECURITY,
+        // FILE_GENERIC_READ and FILE_TRAVERSE; SeRestorePrivilege grants
+        // WRITE_DAC, WRITE_OWNER, ACCESS_SYSTEM_SECURITY, FILE_GENERIC_WRITE,
+        // FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY and DELETE. Anything else is
+        // decided by the object's own descriptor, which for a private object
+        // admits SYSTEM alone.
+        const FILE_GENERIC_READ: u32 = 0x0012_0089;
+        const FILE_GENERIC_WRITE: u32 = 0x0012_0116;
+        const FILE_TRAVERSE: u32 = 0x20;
+        const DELETE: u32 = 0x0001_0000;
+        let granted = 0x0002_0000
+            | 0x0100_0000
+            | FILE_GENERIC_READ
+            | FILE_TRAVERSE
+            | 0x0004_0000
+            | 0x0008_0000
+            | FILE_GENERIC_WRITE
+            | 0x2
+            | 0x4
+            | DELETE;
+        for mask in [
+            METADATA_WRITE_ACCESS,
+            METADATA_WRITE_ACCESS | DELETE,
+            METADATA_WRITE_ACCESS & !0x6,
+            PROTECTED_READ_ACCESS,
+            PROTECTED_READ_ACCESS | 0x10100,
+            0x0102_0189,
+            0x0102_0181,
+        ] {
+            assert_eq!(mask & !granted, 0, "{mask:#x} asks for more");
+        }
+        // FILE_DELETE_CHILD is the one right the old mask asked for beyond
+        // them, and metadata handles never ask for DELETE.
+        assert_eq!(METADATA_WRITE_ACCESS | 0x40, 0x011e_01ff);
+        assert_eq!(METADATA_WRITE_ACCESS & DELETE, 0);
+    }
+
+    #[test]
     fn protected_file_handles_request_no_write_or_delete_rights() {
         let write_or_delete = 0x40000000
             | 0x10000000
@@ -6235,6 +6606,25 @@ mod tests {
         for (logical, allocated) in [(76, 0), (76, 64), (4096, 4096), (1, 4096), (4097, 8192)] {
             assert!(!resident_allocation(logical, allocated));
         }
+    }
+    #[test]
+    fn a_64_kib_target_counts_resident_data_and_prefixes_in_its_own_clusters() {
+        let partition = 1 << 30;
+        assert!(!resident_allocation(40_000, 40_000));
+        assert!(streams::validate_extent_only(40_000, Some(4096), &[], false, partition).is_ok());
+        crate::target_cluster::with(65536, || {
+            // Less than one cluster of data, stored without a cluster.
+            assert!(resident_allocation(40_000, 40_000));
+            assert!(!resident_allocation(40_000, 65_536));
+            assert!(!resident_allocation(70_000, 131_072));
+            // Extent evidence needs a whole cluster, on cluster boundaries.
+            let extent_only = |length, offset| {
+                streams::validate_extent_only(length, Some(offset), &[], false, partition)
+            };
+            assert!(extent_only(40_000, 131_072).is_err());
+            assert!(extent_only(200_000, 4096).is_err());
+            assert!(extent_only(200_000, 131_072).is_ok());
+        });
     }
     #[test]
     fn api_projection_never_substitutes_for_the_stored_kernel_descriptor() {

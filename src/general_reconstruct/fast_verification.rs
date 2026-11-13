@@ -1330,8 +1330,8 @@ impl FreshPayloadProof {
                     .context("extent-only partial tail has no retained protected observation")?;
                 ensure!(
                     protected.residual_contents_verified()
-                        && actual.logical_offset == stream.length / 4096 * 4096
-                        && actual.length == stream.length % 4096
+                        && actual.logical_offset == n2r_win32::target_cluster::floor(stream.length)
+                        && actual.length == stream.length % n2r_win32::target_cluster::bytes()
                         && actual.sha256.len() == 64,
                     "extent-only partial tail lacks exact protected source-to-target residual verification"
                 );
@@ -2102,7 +2102,7 @@ pub(crate) fn verify_native_recovery_extents_scoped(
                 {
                     unknown_partial_streams += 1;
                     unknown_partial_tail_bytes = unknown_partial_tail_bytes
-                        .checked_add(stream.length % 4096)
+                        .checked_add(stream.length % n2r_win32::target_cluster::bytes())
                         .context("recovery extent-tail byte total overflow")?;
                 }
             }

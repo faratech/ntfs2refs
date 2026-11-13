@@ -145,7 +145,8 @@ fn fixture() -> (ntfs_inspect::NtfsInspection, Report) {
     let mut tag = vec![0; 8];
     p32(&mut tag, 0, 32);
     let s = Snapshot {
-        extended_attributes: None,
+        // An observed absence: the raw model records one, so the native side must too.
+        extended_attributes: Some(Default::default()),
         extended_attributes_error: None,
         reparse: None,
         directory_case_sensitivity: None,
@@ -235,11 +236,10 @@ fn fixture() -> (ntfs_inspect::NtfsInspection, Report) {
     (raw, report)
 }
 #[test]
-#[ignore = "stale: not maintained while tests were disabled; needs triage"]
 fn matched_native_metadata_is_still_diagnostic() {
     let (raw, r) = fixture();
     let c = compare(&raw, &"a".repeat(64), &r).unwrap();
-    assert!(c.all_requested_metadata_matched);
+    assert!(c.all_requested_metadata_matched, "{:?}", c.files);
     assert!(!c.conversion_qualified);
 }
 

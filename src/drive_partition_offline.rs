@@ -45,6 +45,7 @@ pub(super) fn convert(
     args: &DriveArgs,
     selected: PartitionSelection,
     before: VolumeDiscovery,
+    _authority: &crate::execution_mode::SourceChangeAuthority,
 ) -> Result<u8> {
     ensure!(
         before.disk_is_windows_disk

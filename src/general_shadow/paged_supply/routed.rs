@@ -57,7 +57,7 @@ fn eligible_prefix(stream: StreamRef<'_>) -> Result<Option<u64>> {
         stream.sha256.is_none() && stream.sparse.is_none(),
         "routed prefix requires the explicit plain extent-identity evidence"
     );
-    let prefix = stream.length / 4096 * 4096;
+    let prefix = n2r_win32::target_cluster::floor(stream.length);
     ensure!(
         prefix != 0
             && match evidence {
@@ -88,15 +88,16 @@ fn source_pieces(
     let end = offset
         .checked_add(length)
         .context("routed source interval overflow")?;
+    let cluster = n2r_win32::target_cluster::bytes();
     ensure!(
-        offset.is_multiple_of(4096)
-            && length.is_multiple_of(4096)
-            && end <= stream.length / 4096 * 4096,
+        offset.is_multiple_of(cluster)
+            && length.is_multiple_of(cluster)
+            && end <= stream.length / cluster * cluster,
         "routed source interval is not a full prefix"
     );
     if let Some(base) = stream.source_offset {
         ensure!(
-            stream.source_extents.is_empty() && base.is_multiple_of(4096),
+            stream.source_extents.is_empty() && base.is_multiple_of(cluster),
             "routed source offset differs"
         );
         return emit(
@@ -119,7 +120,7 @@ fn source_pieces(
             break;
         }
         ensure!(
-            run.logical_offset <= cursor && run.length > 0 && run.length.is_multiple_of(4096),
+            run.logical_offset <= cursor && run.length > 0 && run.length.is_multiple_of(cluster),
             "routed source has a gap or unaligned run"
         );
         let physical = run
@@ -129,7 +130,7 @@ fn source_pieces(
             .context("routed physical overflow")?;
         let length = end.min(run_end) - cursor;
         ensure!(
-            physical.is_multiple_of(4096) && length.is_multiple_of(4096),
+            physical.is_multiple_of(cluster) && length.is_multiple_of(cluster),
             "routed source physical span is unaligned"
         );
         emit(cursor, length, physical)?;
@@ -377,7 +378,7 @@ pub(crate) fn preflight_source_references(
             continue;
         }
         for stream in object.data_streams() {
-            let prefix = stream.length / 4096 * 4096;
+            let prefix = n2r_win32::target_cluster::floor(stream.length);
             if prefix == 0 || (stream.source_offset.is_none() && stream.source_extents.is_empty()) {
                 continue;
             }

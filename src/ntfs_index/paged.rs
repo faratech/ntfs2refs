@@ -19,10 +19,11 @@ pub struct IndexWalkSummary {
     pub index_blocks: u64,
 }
 
-// The format remains the existing4KiB INDX/512-byte-sector interpretation.
-// This is a per-node working charge derived from that intrinsic byte window,
-// not an index cardinality or B-tree-depth cap.
-const FRAME_RAM: u64 = 4096 * 4 + 256 * std::mem::size_of::<Entry<()>>() as u64;
+// A per-node working charge derived from the index record's own byte
+// window, not an index cardinality or B-tree-depth cap.
+fn frame_ram(record_bytes: u32) -> u64 {
+    u64::from(record_bytes) * 4 + 256 * std::mem::size_of::<Entry<()>>() as u64
+}
 struct Span {
     at: usize,
     length: usize,
@@ -236,14 +237,15 @@ pub fn walk_ranges(
     input: SourceIndexRanges<'_>,
     profile: Profile,
     cluster_bytes: u32,
+    index_record_bytes: u32,
     scratch: &SourceScratch,
     visited_path: &Path,
     mut emit: impl FnMut(&[u8], &[u8], &[u8]) -> Result<()>,
 ) -> Result<IndexWalkSummary> {
-    ensure!(
-        supports_cluster_size(cluster_bytes),
-        "unsupported index cluster geometry"
-    );
+    // Records of the volume's own size, addressed in clusters or, where a
+    // cluster is larger than a record, in 512-byte units.
+    let units = units_per_index_record(cluster_bytes, index_record_bytes)?;
+    let record = u64::from(index_record_bytes);
     input.root.revalidate()?;
     if let Some(range) = input.allocation {
         range.revalidate()?;
@@ -253,21 +255,15 @@ pub fn walk_ranges(
     }
     let root_len = input.root.byte_len();
     ensure!((48..=4096).contains(&root_len), "invalid index root bound");
-    let ram = scratch.lease_ram(FRAME_RAM)?;
+    let ram = scratch.lease_ram(frame_ram(index_record_bytes))?;
     let mut root = Vec::new();
     root.try_reserve_exact(root_len as usize)?;
     root.resize(root_len as usize, 0);
     input.root.read_exact_at(0, &mut root)?;
-    let address_bytes = if cluster_bytes <= 4096 {
-        cluster_bytes
-    } else {
-        512
-    };
-    let units = 4096 / address_bytes;
     ensure!(
         u32le(&root, 0)? == profile.indexed_type
             && u32le(&root, 4)? == profile.collation
-            && u32le(&root, 8)? == 4096
+            && u32le(&root, 8)? == index_record_bytes
             && u32::from(root[12]) == units
             && root[13..16] == [0, 0, 0],
         "unsupported index type/collation/geometry"
@@ -275,10 +271,11 @@ pub fn walk_ranges(
     let allocation_len = input.allocation.map_or(0, SourceMetadataRange::byte_len);
     let bitmap_len = input.bitmap.map_or(0, SourceMetadataRange::byte_len);
     ensure!(
-        allocation_len.is_multiple_of(4096) && input.initialized_allocation_bytes <= allocation_len,
+        allocation_len.is_multiple_of(record)
+            && input.initialized_allocation_bytes <= allocation_len,
         "index allocation or initialized domain differs"
     );
-    let slots = allocation_len / 4096;
+    let slots = allocation_len / record;
     ensure!(
         bitmap_len.checked_mul(8).is_some_and(|n| n >= slots),
         "index bitmap is too short"
@@ -288,19 +285,19 @@ pub fn walk_ranges(
         ensure!(slot < slots, "child references out-of-range index block");
         ensure!(
             slot.checked_add(1)
-                .and_then(|n| n.checked_mul(4096))
+                .and_then(|n| n.checked_mul(record))
                 .is_some_and(|n| n <= input.initialized_allocation_bytes),
             "allocated index block is uninitialized"
         );
-        let ram = scratch.lease_ram(FRAME_RAM)?;
+        let ram = scratch.lease_ram(frame_ram(index_record_bytes))?;
         let mut bytes = Vec::new();
-        bytes.try_reserve_exact(4096)?;
-        bytes.resize(4096, 0);
+        bytes.try_reserve_exact(index_record_bytes as usize)?;
+        bytes.resize(index_record_bytes as usize, 0);
         input
             .allocation
             .context("allocated index block has no stream")?
             .read_exact_at(
-                slot.checked_mul(4096).context("index offset overflow")?,
+                slot.checked_mul(record).context("index offset overflow")?,
                 &mut bytes,
             )?;
         let address = slot

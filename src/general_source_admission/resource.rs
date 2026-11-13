@@ -654,7 +654,7 @@ fn short_names(
         && observed.before() == observed.after()
         && observed.before().disk_attributes == 3
         && policy.schema_version == 2
-        && policy.windows_version == [10, 0, 26300]
+        && n2r_win32::windows_build::supported(policy.windows_version)
         && policy.short_name_state_stable
         && policy
             .persistent_state_before
@@ -1456,6 +1456,7 @@ impl ResourceSourceContext {
                 SortedRecordWriter::new(&output.join("source-comparison"), *b"N2RSCMP1", &scratch)?;
             let mut row_count = 0u64;
             let mut policy_rejections = 0u64;
+            let mut refused = ntfs_admission::RefusedObjects::default();
             let mut no_dos = true;
             let (mut files, mut directories, mut streams, mut logical_bytes) =
                 (0u64, 0u64, 0u64, 0u64);
@@ -1563,6 +1564,11 @@ impl ResourceSourceContext {
                     policy_rejections = policy_rejections
                         .checked_add(u64::from(!issues.is_empty()))
                         .context("policy refusal count overflow")?;
+                    if !issues.is_empty() {
+                        // Kept for the refusal message: which object, and why.
+                        let path = ntfs_admission::paged::refused_object_path(&raw, &file);
+                        refused.note(file.record_number, path.as_deref(), &issues);
+                    }
                     if file.is_directory {
                         raw_directories = raw_directories
                             .checked_add(1)
@@ -1740,6 +1746,9 @@ impl ResourceSourceContext {
                 && logical_bytes <= i64::MAX as u64;
             let source_objects =
                 comparison.all_supported_user_views_compatible && policy_rejections == 0;
+            let objects_detail = refused.detail(
+                "every transferred user object passes shared preservation policy and actual native views",
+            );
             for (code, satisfied, detail) in [
                 (
                     "geometry",
@@ -1793,11 +1802,7 @@ impl ResourceSourceContext {
                     true,
                     "compare_domain checked both complete native bitmap summaries against frozen allocation",
                 ),
-                (
-                    "objects",
-                    source_objects,
-                    "every transferred user object passes shared preservation policy and actual native views",
-                ),
+                ("objects", source_objects, objects_detail.as_str()),
                 (
                     "resource_limits",
                     resource_counts,
@@ -2163,11 +2168,11 @@ impl ResourceSourceContext {
                         | "windows_alias_target_preservation"
                 ) && !g.satisfied
             })
-            .map(|g| g.code.as_str())
             .collect();
         ensure!(
             failed.is_empty(),
-            "resource source evidence refused: {failed:?}"
+            "{}",
+            ntfs_admission::source_refusal("resource", failed.iter().copied())
         );
         Ok(())
     }

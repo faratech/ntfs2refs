@@ -218,6 +218,11 @@ impl RecoveryAttachment {
             ));
         }
         require_write_protected(&disk, required.disk_attributes, "after protection control")?;
+        // Persist=1 lands in the SYSTEM hive, which Windows writes lazily. A
+        // power-off before that write would bring the shadow back without
+        // the bits just read back; do not report them until they are on disk.
+        native::flush_persisted_attributes(&mut events)
+            .map_err(|e| operation_error("flush the persisted shadow protection to disk", e))?;
         Ok(())
     }
 }

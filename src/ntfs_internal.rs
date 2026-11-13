@@ -120,7 +120,7 @@ impl VerifiedIndexes {
         let native = &native.observation;
         if observed.report().request.source_inspection_sha256 != self.inspection_sha256
             || !self.default_quotas_only
-            || native.windows_version != [10, 0, 26300]
+            || !n2r_win32::windows_build::supported(native.windows_version)
             || native.rm_handle_profile != "volume-root-directory-physical-disk-read-only"
             || !native
                 .quota_before

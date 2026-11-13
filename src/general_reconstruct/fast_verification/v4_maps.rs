@@ -255,8 +255,9 @@ fn visit(
                     .context("V4 extent tail protected observation absent")?;
                 ensure!(
                     proof.native().report().residual_contents_verified()
-                        && residual.logical_offset == stream.length / 4096 * 4096
-                        && residual.length == stream.length % 4096
+                        && residual.logical_offset
+                            == n2r_win32::target_cluster::floor(stream.length)
+                        && residual.length == stream.length % n2r_win32::target_cluster::bytes()
                         && residual.sha256.len() == 64,
                     "V4 extent tail verification differs"
                 );

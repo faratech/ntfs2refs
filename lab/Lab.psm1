@@ -207,16 +207,22 @@ function Import-LabMedia {
         $listing = & $sevenZip l '-slt' '--' $iso.FullName 2>&1
         if ($LASTEXITCODE -ne 0) { throw '7-Zip could not read the ISO directory.' }
         $listing | Set-Content -LiteralPath (Join-Path $mediaRoot 'iso-directory.txt') -Encoding UTF8
-        & $sevenZip e '-y' ("-o" + $mediaRoot) '--' $iso.FullName 'setup.exe' | Out-Null
-        if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath (Join-Path $mediaRoot 'setup.exe'))) {
-            $setup = Get-Item -LiteralPath (Join-Path $mediaRoot 'setup.exe')
-            $setupVersion = $setup.VersionInfo.FileVersion
-            $setupSignature = [string](Get-AuthenticodeSignature -LiteralPath $setup.FullName).Status
+        # A failed extraction is a failed import, not a record with empty fields.
+        $extraction = & $sevenZip e '-y' ("-o" + $mediaRoot) '--' $iso.FullName 'setup.exe' 2>&1
+        $setupPath = Join-Path $mediaRoot 'setup.exe'
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $setupPath -PathType Leaf)) {
+            throw "7-Zip could not extract setup.exe from '$($iso.FullName)' (exit $LASTEXITCODE): $(($extraction | Select-Object -Last 3) -join ' ')"
         }
+        $setup = Get-Item -LiteralPath $setupPath
+        $setupVersion = $setup.VersionInfo.FileVersion
+        $setupSignature = [string](Get-AuthenticodeSignature -LiteralPath $setup.FullName).Status
     }
+    # Without 7-Zip nothing was examined; the record says so instead of
+    # carrying empty setup fields that read like an observation.
+    $setupExtraction = if ($sevenZip) { 'extracted' } else { 'not-attempted: 7-Zip is not installed' }
     $imageInfo = $null
     if ($sevenZip) { $imageInfo = & (Join-Path $Configuration.Workspace 'scripts\Get-IsoImageInfo.ps1') -IsoPath $iso.FullName -PassThru }
-    $record = [pscustomobject]@{ schemaVersion = 1; isoPath = $iso.FullName; sha256 = $hash; length = $length; lastWriteUtc = $modified.ToString('o'); setupFileVersion = $setupVersion; setupSignatureStatus = $setupSignature; installImages = $imageInfo; installedOsBuild = $null; note = 'Install-image metadata is verified from the WIM XML; capture the actually installed and serviced build from the guest as well.' }
+    $record = [pscustomobject]@{ schemaVersion = 1; isoPath = $iso.FullName; sha256 = $hash; length = $length; lastWriteUtc = $modified.ToString('o'); setupExtraction = $setupExtraction; setupFileVersion = $setupVersion; setupSignatureStatus = $setupSignature; installImages = $imageInfo; installedOsBuild = $null; note = 'Install-image metadata is verified from the WIM XML; capture the actually installed and serviced build from the guest as well.' }
     $record | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $mediaRoot 'media.json') -Encoding UTF8
     $record
 }

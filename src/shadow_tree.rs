@@ -19,6 +19,11 @@ use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Bytes in one cluster of the ReFS target, not of the NTFS source.
+fn target_cluster() -> u64 {
+    n2r_win32::target_cluster::bytes()
+}
+
 /// Actual source evidence, never a fabricated content digest. Native mapping
 /// reconciliation and the original live freeze are still required for admission.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -59,10 +64,10 @@ pub struct StreamRef<'a> {
 }
 impl StreamRef<'_> {
     pub fn tail_requires_materialization(&self) -> bool {
-        if self.length.is_multiple_of(4096) {
+        if self.length.is_multiple_of(target_cluster()) {
             return false;
         }
-        let tail = self.length / 4096 * 4096;
+        let tail = self.length / target_cluster() * target_cluster();
         self.sparse.is_none_or(|sparse| {
             sparse.allocated.iter().any(|range| {
                 range.offset <= tail
@@ -1048,12 +1053,19 @@ fn planned_stream_source(
     if resources != ntfs_admission::ResourceProfile::AlphaV1
         || candidate.is_some_and(|c| c.sparse.is_some())
     {
-        ensure!(
-            candidate.is_some_and(
-                |decision| decision.disposition != ntfs_stream_plan::Disposition::Reject
+        match candidate {
+            Some(decision) => ensure!(
+                decision.disposition != ntfs_stream_plan::Disposition::Reject,
+                "source stream is not a candidate under the selected resource profile: MFT record {} stream {:?}, {} bytes: {}",
+                decision.record_number,
+                String::from_utf16_lossy(&decision.name_utf16),
+                decision.logical_bytes,
+                decision.reason
             ),
-            "source stream is not a candidate under the selected resource profile"
-        );
+            None => anyhow::bail!(
+                "source stream is not a candidate under the selected resource profile: it has no decision"
+            ),
+        }
     }
     let source_offset = candidate
         .filter(|decision| decision.disposition == ntfs_stream_plan::Disposition::RetainCandidate)
@@ -1079,7 +1091,7 @@ fn validate_stream_source(stream: StreamRef<'_>, physical: &mut Vec<(u64, u64)>)
             stream.source_offset.is_none(),
             "sparse stream requires explicit physical islands"
         );
-        let initialized_end = sparse.initialized_length / 4096 * 4096;
+        let initialized_end = sparse.initialized_length / target_cluster() * target_cluster();
         let mut expected = Vec::new();
         for allocated in &sparse.allocated {
             let end = allocated
@@ -1103,11 +1115,11 @@ fn validate_stream_source(stream: StreamRef<'_>, physical: &mut Vec<(u64, u64)>)
                 .context("sparse island overflow")?;
             ensure!(
                 extent.length > 0
-                    && extent.length.is_multiple_of(4096)
-                    && extent.logical_offset.is_multiple_of(4096)
+                    && extent.length.is_multiple_of(target_cluster())
+                    && extent.logical_offset.is_multiple_of(target_cluster())
                     && extent.logical_offset >= previous_end
                     && logical_end <= initialized_end
-                    && offset.is_multiple_of(4096)
+                    && offset.is_multiple_of(target_cluster())
                     && offset.checked_add(extent.length).is_some(),
                 "invalid sparse initialized physical island"
             );
@@ -1115,9 +1127,18 @@ fn validate_stream_source(stream: StreamRef<'_>, physical: &mut Vec<(u64, u64)>)
             physical.push((offset, extent.length));
             previous_end = logical_end;
         }
+        // Every island that stays in place lies inside allocated, initialized
+        // data. The reverse holds only where the source's clusters are at
+        // least the target's: an island on smaller clusters that does not
+        // start on a target cluster boundary is copied, not kept.
         ensure!(
-            actual == expected,
-            "sparse initialized islands do not cover the allocated VDL prefix"
+            actual.iter().all(|island| {
+                expected.iter().any(|allocated| {
+                    allocated.offset <= island.offset
+                        && island.offset + island.length <= allocated.offset + allocated.length
+                })
+            }),
+            "sparse initialized islands lie outside the allocated VDL prefix"
         );
         return Ok(());
     }
@@ -1128,8 +1149,8 @@ fn validate_stream_source(stream: StreamRef<'_>, physical: &mut Vec<(u64, u64)>)
     if let Some(offset) = stream.source_offset {
         ensure!(
             stream.length > 0
-                && stream.length.is_multiple_of(4096)
-                && offset.is_multiple_of(4096)
+                && stream.length.is_multiple_of(target_cluster())
+                && offset.is_multiple_of(target_cluster())
                 && offset.checked_add(stream.length).is_some(),
             "expected single source run differs"
         );
@@ -1144,8 +1165,8 @@ fn validate_stream_source(stream: StreamRef<'_>, physical: &mut Vec<(u64, u64)>)
             ensure!(
                 extent.logical_offset == covered
                     && extent.length > 0
-                    && extent.length.is_multiple_of(4096)
-                    && offset.is_multiple_of(4096)
+                    && extent.length.is_multiple_of(target_cluster())
+                    && offset.is_multiple_of(target_cluster())
                     && offset.checked_add(extent.length).is_some(),
                 "expected fragmented source run differs"
             );
@@ -1155,7 +1176,7 @@ fn validate_stream_source(stream: StreamRef<'_>, physical: &mut Vec<(u64, u64)>)
             physical.push((offset, extent.length));
         }
         ensure!(
-            covered <= stream.length / 4096 * 4096,
+            covered <= stream.length / target_cluster() * target_cluster(),
             "source initialized-cluster prefix differs"
         );
     }
@@ -1185,11 +1206,13 @@ fn source_stream_evidence(
                         .is_some(),
                 "source extent-only stream is not eligible"
             );
-            Ok(Some(if stream.logical_size.is_multiple_of(4096) {
-                SourceStreamEvidence::ExtentIdentityV1
-            } else {
-                SourceStreamEvidence::ExtentIdentityWithMaterializedTailV1
-            }))
+            Ok(Some(
+                if stream.logical_size.is_multiple_of(target_cluster()) {
+                    SourceStreamEvidence::ExtentIdentityV1
+                } else {
+                    SourceStreamEvidence::ExtentIdentityWithMaterializedTailV1
+                },
+            ))
         }
         _ => anyhow::bail!("source stream evidence is incomplete"),
     }
@@ -1202,13 +1225,16 @@ fn validate_stream_evidence(stream: StreamRef<'_>) -> Result<()> {
             "invalid content digest"
         ),
         (None, Some(evidence)) => {
-            let prefix = stream.length / 4096 * 4096;
+            let prefix = stream.length / target_cluster() * target_cluster();
             let partial_tail =
                 evidence == SourceStreamEvidence::ExtentIdentityWithMaterializedTailV1;
             let shape_matches = match evidence {
-                SourceStreamEvidence::ExtentIdentityV1 => stream.length.is_multiple_of(4096),
+                SourceStreamEvidence::ExtentIdentityV1 => {
+                    stream.length.is_multiple_of(target_cluster())
+                }
                 SourceStreamEvidence::ExtentIdentityWithMaterializedTailV1 => {
-                    !stream.length.is_multiple_of(4096) && stream.tail_requires_materialization()
+                    !stream.length.is_multiple_of(target_cluster())
+                        && stream.tail_requires_materialization()
                 }
             };
             ensure!(
@@ -1220,7 +1246,7 @@ fn validate_stream_evidence(stream: StreamRef<'_>) -> Result<()> {
                 ensure!(
                     !partial_tail
                         && stream.source_extents.is_empty()
-                        && offset.is_multiple_of(4096)
+                        && offset.is_multiple_of(target_cluster())
                         && offset.checked_add(stream.length).is_some(),
                     "invalid extent-only single mapping"
                 );
@@ -1230,10 +1256,10 @@ fn validate_stream_evidence(stream: StreamRef<'_>) -> Result<()> {
                     ensure!(
                         extent.logical_offset == covered
                             && extent.length > 0
-                            && extent.length.is_multiple_of(4096)
+                            && extent.length.is_multiple_of(target_cluster())
                             && extent
                                 .physical_offset
-                                .is_some_and(|p| p.is_multiple_of(4096)
+                                .is_some_and(|p| p.is_multiple_of(target_cluster())
                                     && p.checked_add(extent.length).is_some()),
                         "invalid extent-only mapping"
                     );
@@ -1326,5 +1352,50 @@ mod tests {
         assert!(valid_component("doc1.bin"));
         assert!(valid_component("Quarterly Report 1.txt"));
         assert!(valid_component("Q4 (final) #1 & notes.txt"));
+    }
+
+    fn plain(length: u64, source_extents: &[ntfs::Extent]) -> StreamRef<'_> {
+        StreamRef {
+            name_utf16: &[],
+            source_offset: None,
+            source_extents,
+            length,
+            sha256: None,
+            source_evidence: Some(SourceStreamEvidence::ExtentIdentityWithMaterializedTailV1),
+            sparse: None,
+        }
+    }
+
+    #[test]
+    fn a_tail_is_what_follows_the_last_whole_target_cluster() {
+        assert!(!plain(8192, &[]).tail_requires_materialization());
+        assert!(plain(200_000, &[]).tail_requires_materialization());
+        n2r_win32::target_cluster::with(65536, || {
+            // Two 4 KiB clusters are a part of one 64 KiB cluster.
+            assert!(plain(8192, &[]).tail_requires_materialization());
+            assert!(plain(200_000, &[]).tail_requires_materialization());
+            assert!(!plain(196_608, &[]).tail_requires_materialization());
+        });
+    }
+
+    #[test]
+    fn a_source_run_stays_in_place_only_on_target_cluster_boundaries() {
+        // 200,000 bytes: a prefix of 196,608 in either unit, and a tail.
+        let run = |physical| {
+            [ntfs::Extent {
+                logical_offset: 0,
+                physical_offset: Some(physical),
+                length: 196_608,
+            }]
+        };
+        let check = |extents: &[ntfs::Extent]| {
+            validate_stream_source(plain(200_000, extents), &mut Vec::new())
+        };
+        let (on_64_kib, on_4_kib) = (run(262_144), run(20_480));
+        assert!(check(&on_64_kib).is_ok() && check(&on_4_kib).is_ok());
+        n2r_win32::target_cluster::with(65536, || {
+            assert!(check(&on_64_kib).is_ok());
+            assert!(check(&on_4_kib).is_err());
+        });
     }
 }

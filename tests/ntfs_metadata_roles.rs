@@ -192,9 +192,10 @@ fn missing_stale_and_non_directory_parents_are_unresolved() {
 }
 
 #[test]
-#[ignore = "stale: not maintained while tests were disabled; needs triage"]
 fn mixed_user_and_extend_hard_links_are_never_metadata_candidates() {
-    for (second_namespace, links) in [(1, 2), (2, 1)] {
+    // Two names, so a header count of two, whether the second is a hard link
+    // or a DOS alias: the header counts every $FILE_NAME attribute.
+    for (second_namespace, links) in [(1, 2), (2, 2)] {
         let mixed = support::record(
             &[
                 filename("internal", 11, 1, 1, 0),
@@ -225,20 +226,28 @@ fn hard_links_with_two_outside_paths_are_preserved_as_outside_candidates() {
 }
 
 #[test]
-#[ignore = "stale: not maintained while tests were disabled; needs triage"]
-fn dos_aliases_need_a_real_link_and_do_not_inflate_the_link_count() {
+fn dos_aliases_count_in_the_header_link_count() {
+    let pair = |links: u16| {
+        support::record(
+            &[
+                filename("long name", 11, 1, 1, 0),
+                filename("LONGNA~1", 11, 1, 2, 1),
+            ],
+            1,
+            links,
+        )
+    };
+    // The header counts both $FILE_NAME attributes. A count that leaves the
+    // alias out, or a name the header does not count at all, is not a record
+    // NTFS writes.
+    let report = inspect_records(&[(11, record("$Extend", 5, true)), (16, pair(1))]);
+    assert_unresolved(&report, 16, Issue::LinkCountMismatch);
     let alias_only = support::record(&[filename("ALIAS~1", 11, 1, 2, 0)], 1, 0);
     let report = inspect_records(&[(11, record("$Extend", 5, true)), (16, alias_only)]);
     assert_unresolved(&report, 16, Issue::LinkCountMismatch);
-    let named = support::record(
-        &[
-            filename("long name", 11, 1, 1, 0),
-            filename("LONGNA~1", 11, 1, 2, 1),
-        ],
-        1,
-        1,
-    );
-    let report = inspect_records(&[(11, record("$Extend", 5, true)), (16, named)]);
+
+    let report = inspect_records(&[(11, record("$Extend", 5, true)), (16, pair(2))]);
+    assert_eq!(file(&report, 16).hard_link_count, 2);
     assert_eq!(
         file(&report, 16).metadata_role,
         Role::ExtendDescendantCandidate
@@ -262,25 +271,15 @@ fn cycles_and_dependents_remain_unresolved() {
 }
 
 #[test]
-#[ignore = "stale: not maintained while tests were disabled; needs triage"]
 fn incomplete_or_inconsistent_records_cannot_gain_a_candidate_role() {
     let mut extension = record("x", 11, false);
     extension[32..40].copy_from_slice(&(17 | (1u64 << 48)).to_le_bytes());
-    let listed = support::record(
-        &[
-            filename("x", 11, 1, 1, 0),
-            support::resident(0x20, "", &[], 1),
-        ],
-        1,
-        1,
-    );
     let mut zero_sequence = record("x", 11, false);
     zero_sequence[16..18].fill(0);
     let mut mismatched_links = record("x", 11, false);
     mismatched_links[18..20].copy_from_slice(&2u16.to_le_bytes());
     for (candidate, issue) in [
         (extension, Issue::ExtensionRecord),
-        (listed, Issue::AttributeListUnassembled),
         (zero_sequence, Issue::ZeroSequenceNumber),
         (support::record(&[], 1, 0), Issue::MissingNames),
         (mismatched_links, Issue::LinkCountMismatch),

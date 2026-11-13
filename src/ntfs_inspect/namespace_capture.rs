@@ -478,6 +478,7 @@ impl PagedNamespaceCapture {
             },
             crate::ntfs_index::Profile::FILE_NAME,
             geometry.cluster_size,
+            geometry.index_record_size,
             &scratch,
             &self.root.join(format!("i30-{number}-visited.bits")),
             |header, key, _| {

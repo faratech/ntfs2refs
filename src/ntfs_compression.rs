@@ -20,19 +20,29 @@ use crate::ntfs_inspect::{AttributeInventory, Extent, NtfsGeometry};
 use anyhow::{Context, Result, ensure};
 use std::io::{Read, Seek, SeekFrom};
 
-const CLUSTER: u64 = 4096;
-const UNIT: u64 = 16 * CLUSTER;
+/// NTFS compresses in units of 16 clusters, and only on clusters of 4 KiB
+/// and smaller: 8 KiB units of 512-byte clusters up to 64 KiB units.
+const UNIT_CLUSTERS: u64 = 16;
+const MAX_CLUSTER: u32 = 4096;
+/// An LZNT1 chunk decodes to 4096 bytes whatever the cluster size.
 const CHUNK: usize = 4096;
+
+fn unit_bytes(g: &NtfsGeometry) -> Result<u64> {
+    ensure!(
+        g.cluster_size.is_power_of_two() && (512..=MAX_CLUSTER).contains(&g.cluster_size),
+        "NTFS compresses only on clusters of 512 bytes to 4 KiB; this volume has {}-byte clusters",
+        g.cluster_size
+    );
+    Ok(UNIT_CLUSTERS * u64::from(g.cluster_size))
+}
 
 /// Check encoding, geometry, complete mapping and physical allocation before
 /// any logical byte is accepted. This is not source-volume admission.
 pub fn supported(a: &AttributeInventory, g: &NtfsGeometry) -> Result<()> {
     ensure!(a.type_code == 0x80, "compression reader supports DATA only");
     ensure!(a.flags == 1, "unsupported NTFS compression encoding");
-    ensure!(
-        g.cluster_size == CLUSTER as u32,
-        "LZNT1 profile requires 4 KiB source clusters"
-    );
+    let unit = unit_bytes(g)?;
+    let cluster = u64::from(g.cluster_size);
     ensure!(a.lowest_vcn == 0, "LZNT1 mapping must start at VCN zero");
     if a.resident {
         ensure!(
@@ -54,7 +64,7 @@ pub fn supported(a: &AttributeInventory, g: &NtfsGeometry) -> Result<()> {
         "compressed DATA initialized size exceeds EOF"
     );
     ensure!(
-        a.allocated_size.is_multiple_of(CLUSTER),
+        a.allocated_size.is_multiple_of(cluster),
         "compressed DATA allocation is not cluster aligned"
     );
 
@@ -72,7 +82,7 @@ pub fn supported(a: &AttributeInventory, g: &NtfsGeometry) -> Result<()> {
             "compressed DATA mapping gap or overlap"
         );
         ensure!(
-            e.length > 0 && e.length.is_multiple_of(CLUSTER),
+            e.length > 0 && e.length.is_multiple_of(cluster),
             "invalid compressed DATA run length"
         );
         coverage = coverage
@@ -80,11 +90,11 @@ pub fn supported(a: &AttributeInventory, g: &NtfsGeometry) -> Result<()> {
             .context("compressed DATA coverage overflow")?;
         if let Some(start) = e.physical_offset {
             ensure!(
-                !previous_hole || e.logical_offset.is_multiple_of(UNIT),
+                !previous_hole || e.logical_offset.is_multiple_of(unit),
                 "physical run follows compression padding inside one unit"
             );
             ensure!(
-                start.is_multiple_of(CLUSTER),
+                start.is_multiple_of(cluster),
                 "compressed DATA physical offset is not cluster aligned"
             );
             let end = start
@@ -110,9 +120,9 @@ pub fn supported(a: &AttributeInventory, g: &NtfsGeometry) -> Result<()> {
     );
     // A mixed unit is encoded as its physical prefix and a complete remainder
     // of padding. A final partial raw unit is permitted if it covers EOF.
-    if previous_hole && !last_physical_end.is_multiple_of(UNIT) {
+    if previous_hole && !last_physical_end.is_multiple_of(unit) {
         let padded_end = last_physical_end
-            .checked_add(UNIT - last_physical_end % UNIT)
+            .checked_add(unit - last_physical_end % unit)
             .context("compressed unit padding overflow")?;
         ensure!(
             coverage >= padded_end,
@@ -143,6 +153,8 @@ pub struct Reader {
     logical_size: u64,
     initialized_size: u64,
     coverage: u64,
+    /// Bytes in one compression unit of this volume.
+    unit: u64,
     cached_start: Option<u64>,
     decoded: Vec<u8>,
     encoded: Vec<u8>,
@@ -151,6 +163,7 @@ pub struct Reader {
 impl Reader {
     pub fn new(a: &AttributeInventory, g: &NtfsGeometry) -> Result<Self> {
         supported(a, g)?;
+        let unit = unit_bytes(g)?;
         ensure!(
             !a.resident,
             "resident compression-policy DATA requires checked resident bytes"
@@ -162,14 +175,15 @@ impl Reader {
         extents.extend_from_slice(&a.extents);
         let mut decoded = Vec::new();
         decoded
-            .try_reserve_exact(UNIT as usize)
+            .try_reserve_exact(unit as usize)
             .context("compressed reader unit allocation")?;
-        decoded.resize(UNIT as usize, 0);
+        decoded.resize(unit as usize, 0);
         let mut encoded = Vec::new();
         encoded
-            .try_reserve_exact(UNIT as usize)
+            .try_reserve_exact(unit as usize)
             .context("compressed reader encoded allocation")?;
         Ok(Self {
+            unit,
             coverage: a.extents.last().map_or(0, |e| e.logical_offset + e.length),
             extents,
             logical_size: a.logical_size,
@@ -197,12 +211,12 @@ impl Reader {
         let valid_end = end.min(self.initialized_size);
         let mut offset = logical_offset;
         while offset < valid_end {
-            let unit = offset / UNIT * UNIT;
+            let unit = offset / self.unit * self.unit;
             if self.cached_start != Some(unit) {
                 self.load_unit(source, unit)?;
             }
             let within = (offset - unit) as usize;
-            let length = (valid_end - offset).min(UNIT - (offset - unit)) as usize;
+            let length = (valid_end - offset).min(self.unit - (offset - unit)) as usize;
             let destination = (offset - logical_offset) as usize;
             out[destination..destination + length]
                 .copy_from_slice(&self.decoded[within..within + length]);
@@ -216,7 +230,7 @@ impl Reader {
         self.decoded.fill(0);
         self.encoded.clear();
         let end = start
-            .checked_add(UNIT)
+            .checked_add(self.unit)
             .context("compression unit end overflow")?
             .min(self.coverage);
         ensure!(start < end, "missing compressed unit mapping");
@@ -243,7 +257,7 @@ impl Reader {
                 let new = old
                     .checked_add(length as usize)
                     .context("compressed unit length overflow")?;
-                ensure!(new <= UNIT as usize, "compressed unit exceeds buffer");
+                ensure!(new <= self.unit as usize, "compressed unit exceeds buffer");
                 self.encoded.resize(new, 0);
                 source
                     .seek(SeekFrom::Start(physical + position - e.logical_offset))
@@ -257,7 +271,7 @@ impl Reader {
             position += length;
             index += 1;
         }
-        let required = self.initialized_size.saturating_sub(start).min(UNIT) as usize;
+        let required = self.initialized_size.saturating_sub(start).min(self.unit) as usize;
         if !hole {
             ensure!(
                 self.encoded.len() >= required,
@@ -266,7 +280,7 @@ impl Reader {
             self.decoded[..self.encoded.len()].copy_from_slice(&self.encoded);
         } else if !self.encoded.is_empty() {
             ensure!(
-                end - start == UNIT,
+                end - start == self.unit,
                 "encoded compression unit lacks complete mapping"
             );
             let produced = decode_lznt1(&self.encoded, &mut self.decoded)?;

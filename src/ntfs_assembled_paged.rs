@@ -241,7 +241,13 @@ impl PagedMftResolver {
                     && a.report.compression_unit == 0
                     || a.report.type_code == 0x80
                         && a.report.flags == 1
-                        && matches!(a.report.compression_unit, 0 | 4)),
+                        && matches!(a.report.compression_unit, 0 | 4)
+                    // Sparse DATA: its unit is checked against the cluster
+                    // size when the stream is assembled.
+                    || a.report.type_code == 0x80
+                        && a.report.flags == 0x8000
+                        && !a.report.resident
+                        && a.report.compression_unit <= 4),
             "unsupported resource-bound attribute-list FILE {number}, flags={:#x}, attributes={:?}",
             record.flags,
             record

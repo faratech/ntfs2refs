@@ -732,17 +732,12 @@ fn run_inner(
             &mut events,
         )?
     };
-    let placement = binding
-        .storage
-        .identity
-        .partition_bytes
-        .checked_mul(4)
-        .context("placement work overflow")?;
+    let (placement, placement_submissions) =
+        placement_work(binding.storage.identity.partition_bytes)?;
     let target = PartitionTargetRequest {
         pair,
         maximum_placement_bytes: placement,
-        maximum_placement_submissions: usize::try_from(placement / 4096)?
-            .min(n2r_win32::shadow_native::private_tree::MAX_PLACEMENT_SUBMISSIONS),
+        maximum_placement_submissions: placement_submissions,
         maximum_materialized_bytes: capture,
         maximum_source_read_bytes: i64::MAX as u64,
         capture_arena_bytes: capture,
@@ -994,3 +989,36 @@ pub use recovery::{
     PARTITION_RECOVERY_WORKER_STACK_BYTES, PartitionRecoveryDirection, PartitionRecoveryRequest,
     run_recovery,
 };
+
+/// The placement work a partition of this size may need: bytes moved, and
+/// move submissions. Both follow from the partition, as on the
+/// dedicated-disk route: four times its bytes, and one submission per
+/// target cluster of that. There is no fixed ceiling; a count that large is
+/// never reached, and placement stops at its byte and memory budgets first.
+fn placement_work(partition_bytes: u64) -> Result<(u64, usize)> {
+    let bytes = partition_bytes
+        .checked_mul(4)
+        .context("placement work overflow")?;
+    Ok((
+        bytes,
+        usize::try_from(bytes / n2r_win32::target_cluster::bytes())?,
+    ))
+}
+
+#[cfg(test)]
+mod placement_work_tests {
+    use super::placement_work;
+
+    #[test]
+    fn placement_submissions_grow_with_the_partition() {
+        // The lab's 62 GiB source and a 1 TiB volume: neither is held to
+        // the 32,768 submissions this route used to stop at.
+        let (bytes, submissions) = placement_work(62 << 30).unwrap();
+        assert_eq!(bytes, 248 << 30);
+        assert_eq!(submissions, (248 << 30) / 4096);
+        let (_, large) = placement_work(1 << 40).unwrap();
+        assert_eq!(large, 1 << 30);
+        assert!(large > 32_768);
+        assert!(placement_work(u64::MAX / 2).is_err());
+    }
+}

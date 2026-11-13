@@ -10,7 +10,7 @@ use windows_sys::Win32::{
     Foundation::INVALID_HANDLE_VALUE,
     Storage::FileSystem::{
         CreateFileW, FILE_ID_DESCRIPTOR, FILE_ID_DESCRIPTOR_0, FileIdType,
-        GetFileInformationByHandleEx, GetFinalPathNameByHandleW, OpenFileById, ReOpenFile,
+        GetFileInformationByHandleEx, OpenFileById, ReOpenFile,
     },
     System::IO::DeviceIoControl,
 };
@@ -277,30 +277,29 @@ fn binding(q: &Query, r: &Request, id: &FileIdentity) -> io::Result<()> {
     Ok(())
 }
 fn named(file: &File, r: &Request, name: &[u16]) -> io::Result<File> {
-    let mut path = vec![0u16; 32768];
-    // SAFETY: live source handle and caller-owned UTF-16 output buffer.
-    let n = unsafe {
-        GetFinalPathNameByHandleW(
-            file.as_raw_handle(),
-            path.as_mut_ptr(),
-            path.len() as u32,
-            1,
-        )
-    } as usize;
-    if n == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    if n >= path.len() {
-        return Err(io::Error::other("source path exceeds bound"));
-    }
-    path.truncate(n);
-    let prefix: Vec<u16> = r.volume.encode_utf16().collect();
-    if path.len() < prefix.len()
-        || !path[..prefix.len()].iter().zip(&prefix).all(|(a, b)| {
-            a == b || (*a < 128 && *b < 128 && (*a as u8).eq_ignore_ascii_case(&(*b as u8)))
-        })
-        || path.contains(&0)
-    {
+    named_on_volume(file, &r.volume, name)
+}
+
+/// Opens the named stream of a held file. The file is named by its path
+/// beneath the volume's device object, which the object manager answers and
+/// which is checked to lie on the pinned volume: the volume-GUID form of the
+/// same question goes to the mount manager for every stream, and its
+/// answers stall unpredictably.
+fn named_on_volume(file: &File, volume_root: &str, name: &[u16]) -> io::Result<File> {
+    let device_path =
+        crate::file_storage::device_path_on_volume(file, volume_root).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("source path is outside pinned volume: {error}"),
+            )
+        })?;
+    // The same object by its device path, through the global root of the
+    // object namespace.
+    let mut path: Vec<u16> = r"\\?\GLOBALROOT"
+        .encode_utf16()
+        .chain(device_path.encode_utf16())
+        .collect();
+    if path.contains(&0) {
         return Err(io::Error::other("source path is outside pinned volume"));
     }
     path.push(58);
@@ -695,4 +694,56 @@ pub(crate) fn capture(
         }
     }
     (result, hashes)
+}
+
+#[cfg(test)]
+mod named_stream_tests {
+    use super::*;
+    use std::os::windows::fs::OpenOptionsExt;
+
+    /// The access the source observer holds a file with: attributes only,
+    /// backup semantics, reparse points opened as themselves.
+    fn held(path: &std::path::Path) -> File {
+        std::fs::OpenOptions::new()
+            .access_mode(0x80)
+            .share_mode(7)
+            .custom_flags(0x0220_0000)
+            .open(path)
+            .unwrap()
+    }
+
+    #[test]
+    fn a_named_stream_is_opened_by_the_device_path_of_its_held_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let base = directory.path().join("Bericht für März.txt");
+        std::fs::write(&base, b"1").unwrap();
+        let stream_path = format!("{}:notes", base.display());
+        if std::fs::write(&stream_path, b"twelve bytes").is_err() {
+            // The temporary volume has no named streams (not NTFS or ReFS).
+            return;
+        }
+        let file = held(&base);
+        let guid = crate::file_storage::final_path_guid(&file).unwrap();
+        let root = &guid[..guid.find('}').unwrap() + 2];
+        let name: Vec<u16> = "notes".encode_utf16().collect();
+
+        let stream = named_on_volume(&file, root, &name).unwrap();
+        // It is the stream, not the file: its own length, and the stream's
+        // handle reopens for reading as the observer does.
+        assert_eq!(stream.metadata().unwrap().len(), 12);
+        assert_eq!(file.metadata().unwrap().len(), 1);
+
+        // A stream that does not exist is the file system's own error.
+        let absent: Vec<u16> = "absent".encode_utf16().collect();
+        let error = named_on_volume(&file, root, &absent).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(2), "{error}");
+
+        // A held file is not found on a volume it is not on.
+        let elsewhere = r"\\?\Volume{00000000-0000-0000-0000-000000000000}\";
+        let refused = named_on_volume(&file, elsewhere, &name).unwrap_err();
+        assert!(
+            refused.to_string().contains("outside pinned volume"),
+            "{refused}"
+        );
+    }
 }

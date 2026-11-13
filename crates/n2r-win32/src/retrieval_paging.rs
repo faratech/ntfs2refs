@@ -12,6 +12,33 @@ pub const PAGE_CAPACITY: usize = stream_layout::RETRIEVAL_CAPACITY;
 pub const MAX_PAGES: usize = 128;
 pub const MAX_RETURNED_BYTES: usize =
     2 * stream_layout::COMPLETE_RETRIEVAL_CAPACITY + 16 * MAX_PAGES;
+/// Pages one complete mapping may take in this process: two for every
+/// response's worth of extents, as the fixed 128 are for 65,536.
+pub fn max_pages() -> usize {
+    (stream_layout::complete_extent_limit() / stream_layout::MAX_EXTENTS * 2).max(MAX_PAGES)
+}
+/// Bytes one complete mapping's pages and assembled form may take.
+pub fn max_returned_bytes() -> usize {
+    2 * stream_layout::complete_retrieval_capacity() + 16 * max_pages()
+}
+/// Bytes the pages and assembled form of one stream's mapping can take, for
+/// a stream of `stream_bytes`. A stream cannot be in more extents than it
+/// has clusters; the allowance is twice that and one response's worth more,
+/// for allocation beyond its end, and never more than the process's limit.
+/// A file with hundreds of small named streams is then charged for what
+/// those streams can need, not for hundreds of the largest mapping there is.
+pub fn returned_bytes_for_stream(stream_bytes: u64) -> usize {
+    let clusters = stream_bytes.div_ceil(crate::target_cluster::bytes());
+    let extents = usize::try_from(
+        clusters
+            .saturating_mul(2)
+            .saturating_add(stream_layout::MAX_EXTENTS as u64),
+    )
+    .unwrap_or(usize::MAX)
+    .min(stream_layout::complete_extent_limit());
+    let pages = (extents / stream_layout::MAX_EXTENTS * 2).max(2);
+    2 * (16 + 16 * extents) + 16 * pages
+}
 pub const MORE_DATA: i32 = 234;
 pub const ENCODING: &str = "assembled-zero-vcn-retrieval-v1";
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -86,9 +113,9 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            max_returned_bytes: MAX_RETURNED_BYTES,
-            max_extents: MAX_COMPLETE_EXTENTS,
-            max_pages: MAX_PAGES,
+            max_returned_bytes: max_returned_bytes(),
+            max_extents: stream_layout::complete_extent_limit(),
+            max_pages: max_pages(),
         }
     }
 }
@@ -110,6 +137,47 @@ impl Limits {
         })
     }
 }
+#[cfg(test)]
+mod limit_tests {
+    use super::*;
+
+    /// With no memory budget stated, the limits are the fixed ones the older
+    /// profiles have always had. (A route that states a budget raises the
+    /// extent count for its process; no test here does.)
+    #[test]
+    fn a_stream_is_charged_for_the_extents_it_has_room_for() {
+        // A stream of a few bytes: one response's worth of extents.
+        let small = returned_bytes_for_stream(100);
+        assert_eq!(small, 2 * (16 + 16 * 1026) + 16 * 2);
+        // A stream too large for the limit to matter is charged the limit.
+        assert_eq!(returned_bytes_for_stream(u64::MAX), max_returned_bytes());
+        assert_eq!(returned_bytes_for_stream(1 << 40), max_returned_bytes());
+        // In between it grows with the stream, and with the cluster size it
+        // shrinks: the same bytes are fewer 64 KiB clusters.
+        let megabyte = returned_bytes_for_stream(1 << 20);
+        assert!(small < megabyte && megabyte < max_returned_bytes());
+        crate::target_cluster::with(65536, || {
+            assert!(returned_bytes_for_stream(1 << 20) < megabyte);
+        });
+    }
+
+    #[test]
+    fn without_a_budget_the_limits_are_the_fixed_ones() {
+        assert_eq!(stream_layout::complete_extent_limit(), MAX_COMPLETE_EXTENTS);
+        assert_eq!(max_pages(), MAX_PAGES);
+        assert_eq!(max_returned_bytes(), MAX_RETURNED_BYTES);
+        let limits = Limits::default();
+        assert_eq!(
+            (
+                limits.max_extents,
+                limits.max_pages,
+                limits.max_returned_bytes
+            ),
+            (MAX_COMPLETE_EXTENTS, MAX_PAGES, MAX_RETURNED_BYTES)
+        );
+    }
+}
+
 pub struct Assembler {
     runs: Vec<Run>,
     covered: u64,
@@ -222,7 +290,13 @@ impl Assembler {
                     self.runs.last_mut().unwrap().clusters += appended.clusters;
                 } else {
                     if self.runs.len() >= self.limits.max_extents {
-                        return Err(bad("complete retrieval extent budget exceeded"));
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "a stream is in more than {} separate extents, the most this run's memory budget allows for one stream's mapping",
+                                self.limits.max_extents
+                            ),
+                        ));
                     };
                     self.runs.push(appended);
                 }

@@ -148,21 +148,43 @@ pub(crate) struct PagedInputs<'a>(pub &'a crate::shadow_tree::PagedExpectedTree)
 /// Per-object failures collected by a diagnose run. Collecting never grants
 /// anything: the owner that installs this must refuse to publish afterwards.
 #[derive(Clone, Default)]
-pub(crate) struct DeferredFailures(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+pub(crate) struct DeferredFailures(std::sync::Arc<std::sync::Mutex<Deferred>>);
+#[derive(Default)]
+struct Deferred {
+    failures: Vec<String>,
+    /// The run was stopped at the limit, so not every object was examined.
+    stopped_at_limit: bool,
+}
+/// How many failures a diagnose run lists before it stops: past that many it
+/// is rarely learning anything new. `--diagnose-limit` changes it, and 0
+/// lists every failure on the volume.
+static DIAGNOSE_LIMIT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(500);
+pub(crate) fn set_diagnose_limit(limit: usize) {
+    DIAGNOSE_LIMIT.store(
+        if limit == 0 { usize::MAX } else { limit },
+        std::sync::atomic::Ordering::SeqCst,
+    );
+}
 impl DeferredFailures {
-    /// Past this many the run is not learning anything new; stop it.
-    const LIMIT: usize = 500;
+    fn limit() -> usize {
+        DIAGNOSE_LIMIT.load(std::sync::atomic::Ordering::SeqCst)
+    }
     fn record(&self, error: std::io::Error) -> std::io::Result<()> {
-        let mut failures = self
+        let mut state = self
             .0
             .lock()
             .map_err(|_| std::io::Error::other("diagnose sink poisoned"))?;
-        if failures.len() >= Self::LIMIT {
+        let Deferred {
+            failures,
+            stopped_at_limit,
+        } = &mut *state;
+        if failures.len() >= Self::limit() {
+            *stopped_at_limit = true;
             return Err(std::io::Error::new(
                 error.kind(),
                 format!(
-                    "diagnose limit of {} failures reached; last: {error}",
-                    Self::LIMIT
+                    "diagnose limit of {} failures reached (--diagnose-limit raises it; 0 lists them all); last: {error}",
+                    Self::limit()
                 ),
             ));
         }
@@ -174,8 +196,16 @@ impl DeferredFailures {
     pub(crate) fn take(&self) -> Vec<String> {
         self.0
             .lock()
-            .map(|mut failures| std::mem::take(&mut *failures))
+            .map(|mut state| std::mem::take(&mut state.failures))
             .unwrap_or_default()
+    }
+    /// Whether the run was cut short at the failure limit. A poisoned sink
+    /// counts as cut short: it cannot vouch that every object was examined.
+    pub(crate) fn stopped_at_limit(&self) -> bool {
+        self.0
+            .lock()
+            .map(|state| state.stopped_at_limit)
+            .unwrap_or(true)
     }
 }
 /// Capacity policy over the real authenticated input owner. This adapter

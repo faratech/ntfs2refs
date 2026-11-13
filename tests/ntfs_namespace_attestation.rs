@@ -9,6 +9,8 @@ use ntfs2refs::{
     ntfs_namespace_attestation::{check_directory, check_projected_directory},
 };
 use std::io::Cursor;
+// Position of the root (record 5) in the reserved-root fixture's record order.
+const RESERVED_ROOT: usize = 5;
 fn query(class: i32, bytes: Vec<u8>, native_error: Option<i32>) -> Query {
     Query {
         class,
@@ -175,14 +177,26 @@ fn reserved_root_fixture() -> (NtfsInspection, NamespaceFile) {
         f.names[0].name_utf16 = name.encode_utf16().collect();
         r.files.push(f);
     }
+    // Path lookup needs the records in record order, which puts the root
+    // (record 5) at position RESERVED_ROOT.
+    r.files.sort_by_key(|f| f.record_number);
+    assert_eq!(r.files[RESERVED_ROOT].record_number, 5);
+    (r, n)
+}
+/// The reserved-root fixture for a test of refusals: unchanged, its projected
+/// directory must itself be accepted, or every `is_err()` below would hold
+/// whatever the test went on to change.
+fn valid_reserved_root_fixture() -> (NtfsInspection, NamespaceFile) {
+    let (r, n) = reserved_root_fixture();
+    check_projected_directory(&r, &r.files[RESERVED_ROOT], &n)
+        .expect("the unmutated reserved-root fixture is accepted");
     (r, n)
 }
 #[test]
-#[ignore = "stale: not maintained while tests were disabled; needs triage"]
 fn optional_root_system_names_remain_identity_bound_and_reported() {
     let (r, mut n) = reserved_root_fixture();
-    assert!(check_directory(&r, &r.files[0], &n).is_err());
-    let p = check_projected_directory(&r, &r.files[0], &n).unwrap();
+    assert!(check_directory(&r, &r.files[RESERVED_ROOT], &n).is_err());
+    let p = check_projected_directory(&r, &r.files[RESERVED_ROOT], &n).unwrap();
     assert_eq!(p.visible_names, 1);
     assert_eq!(p.internal_visibility.len(), 11);
     assert!(p.internal_visibility.iter().all(|i| !i.visible));
@@ -192,7 +206,7 @@ fn optional_root_system_names_remain_identity_bound_and_reported() {
             .calls
             .insert(1, query(n::CONTINUE, entry("$MFT", 1u64 << 48, 32), None));
     }
-    let p = check_projected_directory(&r, &r.files[0], &n).unwrap();
+    let p = check_projected_directory(&r, &r.files[RESERVED_ROOT], &n).unwrap();
     assert_eq!(p.visible_names, 2);
     assert_eq!(
         p.internal_visibility.iter().filter(|i| i.visible).count(),
@@ -202,11 +216,11 @@ fn optional_root_system_names_remain_identity_bound_and_reported() {
 #[test]
 fn projection_cannot_hide_a_user_name_or_a_failed_enumeration() {
     for error in [n::END, 5] {
-        let (r, mut x) = reserved_root_fixture();
+        let (r, mut x) = valid_reserved_root_fixture();
         for pass in [&mut x.before, &mut x.after] {
             pass.as_mut().unwrap().calls = vec![query(n::RESTART, vec![], Some(error))];
         }
-        assert!(check_projected_directory(&r, &r.files[0], &x).is_err());
+        assert!(check_projected_directory(&r, &r.files[RESERVED_ROOT], &x).is_err());
     }
 }
 #[test]
@@ -217,27 +231,27 @@ fn wrong_visible_internal_ids_types_and_unknown_names_are_refused() {
         entry("$MFT", 1u64 << 48, 16),
         entry("$unknown", 1u64 << 48, 32),
     ] {
-        let (r, mut x) = reserved_root_fixture();
+        let (r, mut x) = valid_reserved_root_fixture();
         for pass in [&mut x.before, &mut x.after] {
             pass.as_mut()
                 .unwrap()
                 .calls
                 .insert(1, query(n::CONTINUE, data.clone(), None));
         }
-        assert!(check_projected_directory(&r, &r.files[0], &x).is_err());
+        assert!(check_projected_directory(&r, &r.files[RESERVED_ROOT], &x).is_err());
     }
 }
 #[test]
 fn internal_visibility_changes_and_false_metadata_roles_are_refused() {
-    let (r, mut x) = reserved_root_fixture();
+    let (r, mut x) = valid_reserved_root_fixture();
     x.after
         .as_mut()
         .unwrap()
         .calls
         .insert(1, query(n::CONTINUE, entry("$MFT", 1u64 << 48, 32), None));
-    assert!(check_projected_directory(&r, &r.files[0], &x).is_err());
+    assert!(check_projected_directory(&r, &r.files[RESERVED_ROOT], &x).is_err());
     for kind in 0..4 {
-        let (mut r, x) = reserved_root_fixture();
+        let (mut r, x) = valid_reserved_root_fixture();
         let f = r.files.iter_mut().find(|f| f.record_number == 0).unwrap();
         match kind {
             0 => f.names[0].name_utf16 = "$MFT-copy".encode_utf16().collect(),
@@ -245,6 +259,6 @@ fn internal_visibility_changes_and_false_metadata_roles_are_refused() {
             2 => f.metadata_role = ntfs2refs::ntfs_inspect::MetadataRole::NotClassified,
             _ => f.is_directory = true,
         }
-        assert!(check_projected_directory(&r, &r.files[0], &x).is_err());
+        assert!(check_projected_directory(&r, &r.files[RESERVED_ROOT], &x).is_err());
     }
 }

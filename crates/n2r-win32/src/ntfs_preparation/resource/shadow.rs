@@ -58,8 +58,9 @@ pub fn observe_shadow_occupancy(
         "actual empty-shadow role/route differs",
     )?;
     let length = binding.identity.partition_bytes;
+    let cluster = crate::target_cluster::bytes();
     require(
-        length > 0 && length <= i64::MAX as u64 && length.is_multiple_of(4096),
+        length > 0 && length <= i64::MAX as u64 && length.is_multiple_of(cluster),
         "shadow hint geometry exceeds native signed IO domain",
     )?;
     let before = native::observe_general_disk_state_readonly(binding.clone(), &mut Vec::new())?;
@@ -79,7 +80,7 @@ pub fn observe_shadow_occupancy(
     }
     let clusters = crate::bitmap_window_native::refs_314_clusters(&volume, &binding)?;
     require(
-        clusters == length / 4096,
+        clusters == length / cluster,
         "shadow complete bitmap domain differs",
     )?;
     let limits = crate::bitmap_streaming::resource_source_limits(clusters, budget.max_row_bytes)?;
@@ -115,11 +116,11 @@ pub fn observe_shadow_occupancy(
         for range in &summary.allocated_ranges {
             let offset = range
                 .starting_lcn
-                .checked_mul(4096)
+                .checked_mul(cluster)
                 .ok_or_else(|| invalid("shadow hint offset overflow"))?;
             let bytes = range
                 .clusters
-                .checked_mul(4096)
+                .checked_mul(cluster)
                 .ok_or_else(|| invalid("shadow hint length overflow"))?;
             require(
                 bytes > 0 && offset.checked_add(bytes).is_some_and(|n| n <= length),

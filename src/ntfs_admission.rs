@@ -97,21 +97,20 @@ pub struct ResourceLimits {
 }
 
 impl ResourceProfile {
-    /// Source allocation units are independent of the fixed 4 KiB ReFS target.
-    /// The expanded geometry remains explicitly experimental and still uses
-    /// the same bounded tree, native-observation and journal requirements.
+    /// Source allocation units are independent of the ReFS target's. A run
+    /// that does not lie on the target's cluster boundaries cannot stay where
+    /// it is: the stream plan copies such a stream instead of retaining it.
     pub fn supports_source_geometry(self, geometry: &ntfs::NtfsGeometry) -> bool {
-        geometry.bytes_per_sector == 512
-            && geometry.file_record_size == 1024
-            && geometry.index_record_size == 4096
+        matches!(geometry.bytes_per_sector, 512 | 4096)
+            && matches!(geometry.file_record_size, 1024 | 4096)
+            && crate::ntfs_index::supports_index_record_size(geometry.index_record_size)
             && match self {
                 Self::AlphaV1 => geometry.cluster_size == 4096,
                 Self::ExperimentalLargeTreeV1
                 | Self::ExperimentalStreamingTreeV2
                 | Self::ExperimentalObjectEnvelopeV3(_)
                 | Self::ResourceBoundedV4(_) => {
-                    geometry.cluster_size >= 4096
-                        && crate::ntfs_index::supports_cluster_size(geometry.cluster_size)
+                    crate::ntfs_index::supports_cluster_size(geometry.cluster_size)
                 }
             }
     }
@@ -565,7 +564,7 @@ pub(crate) fn bind_short_name_policy(
             .iter()
             .any(|file| file.names.iter().any(|name| name.namespace == 2))
         || policy.schema_version != 2
-        || policy.windows_version != [10, 0, 26300]
+        || !n2r_win32::windows_build::supported(policy.windows_version)
         || !policy.short_name_state_stable
         || !policy
             .persistent_state_before
@@ -627,6 +626,145 @@ pub struct Gate {
     pub code: String,
     pub satisfied: bool,
     pub detail: String,
+}
+
+/// The objects the preservation policy does not admit. Every one is written
+/// to the comparison pages with its reasons; the first few are also kept
+/// here, so that the refusal itself can say which objects it is about.
+#[derive(Debug, Default)]
+pub(crate) struct RefusedObjects {
+    count: u64,
+    first: Vec<String>,
+}
+
+impl RefusedObjects {
+    /// How many refused objects a message spells out.
+    const NAMED: usize = 12;
+
+    pub(crate) fn note(&mut self, record_number: u64, path: Option<&[String]>, issues: &[String]) {
+        self.count = self.count.saturating_add(1);
+        if self.first.len() < Self::NAMED {
+            let place = match path {
+                Some(components) => format!("\\{}", components.join("\\")),
+                None => "(path not resolved)".to_owned(),
+            };
+            self.first.push(format!(
+                "MFT record {record_number} {place}: {}",
+                issues.join("; ")
+            ));
+        }
+    }
+
+    /// The detail of the objects gate: what it requires and, when objects
+    /// were refused, which and why.
+    pub(crate) fn detail(&self, requirement: &str) -> String {
+        if self.count == 0 {
+            return requirement.to_owned();
+        }
+        let mut text = format!(
+            "{requirement}; {} object{} outside what this converter preserves: {}",
+            self.count,
+            if self.count == 1 { " is" } else { "s are" },
+            self.first.join(" | ")
+        );
+        let unnamed = self.count - self.first.len() as u64;
+        if unnamed > 0 {
+            text.push_str(&format!(
+                " | and {unnamed} more, each recorded with its reasons in source-comparison.data.pages"
+            ));
+        }
+        text
+    }
+}
+
+/// A source refusal: the gates that failed and, for each, what it requires
+/// and found. A list of gate codes alone does not say what to change.
+pub(crate) fn source_refusal<'a>(route: &str, failed: impl Iterator<Item = &'a Gate>) -> String {
+    let failed: Vec<&Gate> = failed.collect();
+    let codes: Vec<&str> = failed.iter().map(|gate| gate.code.as_str()).collect();
+    let mut text = format!("{route} source evidence refused: {codes:?}");
+    for gate in failed {
+        text.push_str(&format!("\n  {}: {}", gate.code, gate.detail));
+    }
+    text
+}
+
+#[cfg(test)]
+mod refusal_tests {
+    use super::*;
+
+    #[test]
+    fn a_refusal_names_the_refused_objects_and_their_reasons() {
+        let requirement = "every transferred user object passes the preservation policy";
+        let mut refused = RefusedObjects::default();
+        assert_eq!(refused.detail(requirement), requirement);
+
+        refused.note(
+            39561,
+            Some(&["shape".to_owned(), "folder".to_owned()]),
+            &["directory data streams exceed the profile".to_owned()],
+        );
+        refused.note(7, None, &["first".to_owned(), "second".to_owned()]);
+        let detail = refused.detail(requirement);
+        assert!(detail.starts_with(requirement), "{detail}");
+        assert!(detail.contains("2 objects are outside"), "{detail}");
+        assert!(
+            detail.contains(
+                "MFT record 39561 \\shape\\folder: directory data streams exceed the profile"
+            ),
+            "{detail}"
+        );
+        assert!(
+            detail.contains("MFT record 7 (path not resolved): first; second"),
+            "{detail}"
+        );
+
+        // Only the first few are spelled out; the rest are counted.
+        for record in 100..120 {
+            refused.note(record, None, &["reason".to_owned()]);
+        }
+        let detail = refused.detail(requirement);
+        assert!(detail.contains("22 objects are outside"), "{detail}");
+        assert!(detail.contains("and 10 more"), "{detail}");
+        assert!(!detail.contains("MFT record 119"), "{detail}");
+    }
+
+    #[test]
+    fn a_source_refusal_gives_each_failed_gate_with_its_detail() {
+        let gates = [
+            Gate {
+                code: "objects".into(),
+                satisfied: false,
+                detail:
+                    "1 object is outside what this converter preserves: MFT record 5 \\x: reason"
+                        .into(),
+            },
+            Gate {
+                code: "internal_replacement_state".into(),
+                satisfied: false,
+                detail: "only after all independent source obligations close".into(),
+            },
+        ];
+        let text = source_refusal("resource", gates.iter());
+        let mut lines = text.lines();
+        assert_eq!(
+            lines.next(),
+            Some("resource source evidence refused: [\"objects\", \"internal_replacement_state\"]")
+        );
+        assert_eq!(
+            lines.next(),
+            Some(
+                "  objects: 1 object is outside what this converter preserves: MFT record 5 \\x: reason"
+            )
+        );
+        assert_eq!(
+            lines.next(),
+            Some(
+                "  internal_replacement_state: only after all independent source obligations close"
+            )
+        );
+        assert_eq!(lines.next(), None);
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1311,82 +1449,93 @@ pub(crate) fn user_issues_with_context_alias_scope(
         issues
             .push("names, depth, short-name aliases or directory links exceed the profile".into());
     }
-    if f.base_file_reference != 0
-        || f.attributes.iter().any(|a| {
-            let plain =
-                matches!(a.type_code, 0x10 | 0x30 | 0x50) && a.name_utf16.is_empty() && a.resident;
-            let data = !f.is_directory
-                && a.type_code == 0x80
-                && (a.name_utf16.is_empty()
-                    || (ordinary && valid_named_stream_name(&a.name_utf16)));
-            let index = f.is_directory
-                && matches!(a.type_code, 0x90 | 0xa0 | 0xb0)
-                && ntfs_namespace::is_i30(&a.name_utf16);
-            let root_txf = f.record_number == 5 && f.is_directory && recognized_root_txf(a);
-            let windows_txf = windows_alias_paths_preserved
-                && verified_windows_txf_metadata
-                && recognized_root_txf(a);
-            let windows_object_id = windows_alias_paths_preserved
-                && verified_windows_object_id_disposition
-                && a.type_code == 0x40
-                && a.name_utf16.is_empty()
-                && a.resident
-                && a.flags == 0
-                && a.logical_size == 16
-                && a.initialized_size == 16
-                && a.allocated_size == 16
-                && a.lowest_vcn == 0
-                && a.compression_unit == 0
-                && a.extents.is_empty();
-            #[cfg(windows)]
-            let default_storage_hint = windows_alias_paths_preserved
-                && default_storage_hint_normalization
-                && crate::ntfs_storage_class::recognized_default(a);
-            #[cfg(not(windows))]
-            let default_storage_hint = {
-                let _ = default_storage_hint_normalization;
-                false
-            };
-            let ea = ea_supported && matches!(a.type_code, 0xd0 | 0xe0) && a.name_utf16.is_empty();
-            let point = reparse.is_some() && a.type_code == 0xc0 && a.name_utf16.is_empty();
-            let sparse_data = ordinary
-                && data
-                && !a.resident
-                && a.flags == 0x8000
-                && matches!(a.compression_unit, 0 | 4);
-            let compressed_data = ordinary
-                && data
-                && a.flags == 1
-                && crate::ntfs_compression::supported(a, geometry).is_ok();
-            // Resident I30 compression is an inheritance policy marker; the
-            // index value still passes the complete raw namespace parser.
-            let compressed_directory_policy = ordinary
-                && index
-                && a.type_code == 0x90
-                && a.resident
-                && a.flags == 1
-                && a.compression_unit == 0
-                && a.extents.is_empty()
-                && f.standard_information
-                    .as_ref()
-                    .is_some_and(|si| si.file_attributes & 0x800 != 0);
-            !(plain
-                || data
-                || index
-                || root_txf
-                || windows_txf
-                || windows_object_id
-                || ea
-                || point
-                || default_storage_hint)
-                || ((a.flags != 0 || a.compression_unit != 0)
-                    && !sparse_data
-                    && !compressed_data
-                    && !compressed_directory_policy)
-                || a.lowest_vcn != 0
-        })
-    {
-        issues.push("unsupported or unassembled attribute semantics".into());
+    let unsupported_attribute = f.attributes.iter().find(|a| {
+        let plain =
+            matches!(a.type_code, 0x10 | 0x30 | 0x50) && a.name_utf16.is_empty() && a.resident;
+        let data = !f.is_directory
+            && a.type_code == 0x80
+            && (a.name_utf16.is_empty() || (ordinary && valid_named_stream_name(&a.name_utf16)));
+        let index = f.is_directory
+            && matches!(a.type_code, 0x90 | 0xa0 | 0xb0)
+            && ntfs_namespace::is_i30(&a.name_utf16);
+        let root_txf = f.record_number == 5 && f.is_directory && recognized_root_txf(a);
+        let windows_txf = windows_alias_paths_preserved
+            && verified_windows_txf_metadata
+            && recognized_root_txf(a);
+        let windows_object_id = windows_alias_paths_preserved
+            && verified_windows_object_id_disposition
+            && a.type_code == 0x40
+            && a.name_utf16.is_empty()
+            && a.resident
+            && a.flags == 0
+            && a.logical_size == 16
+            && a.initialized_size == 16
+            && a.allocated_size == 16
+            && a.lowest_vcn == 0
+            && a.compression_unit == 0
+            && a.extents.is_empty();
+        #[cfg(windows)]
+        let default_storage_hint = windows_alias_paths_preserved
+            && default_storage_hint_normalization
+            && crate::ntfs_storage_class::recognized_default(a);
+        #[cfg(not(windows))]
+        let default_storage_hint = {
+            let _ = default_storage_hint_normalization;
+            false
+        };
+        let ea = ea_supported && matches!(a.type_code, 0xd0 | 0xe0) && a.name_utf16.is_empty();
+        let point = reparse.is_some() && a.type_code == 0xc0 && a.name_utf16.is_empty();
+        let sparse_data = ordinary
+            && data
+            && !a.resident
+            && a.flags == 0x8000
+            && crate::ntfs_inspect::sparse_unit_supported(
+                a.compression_unit,
+                geometry.cluster_size,
+            );
+        let compressed_data = ordinary
+            && data
+            && a.flags == 1
+            && crate::ntfs_compression::supported(a, geometry).is_ok();
+        // Resident I30 compression is an inheritance policy marker; the
+        // index value still passes the complete raw namespace parser.
+        let compressed_directory_policy = ordinary
+            && index
+            && a.type_code == 0x90
+            && a.resident
+            && a.flags == 1
+            && a.compression_unit == 0
+            && a.extents.is_empty()
+            && f.standard_information
+                .as_ref()
+                .is_some_and(|si| si.file_attributes & 0x800 != 0);
+        !(plain
+            || data
+            || index
+            || root_txf
+            || windows_txf
+            || windows_object_id
+            || ea
+            || point
+            || default_storage_hint)
+            || ((a.flags != 0 || a.compression_unit != 0)
+                && !sparse_data
+                && !compressed_data
+                && !compressed_directory_policy)
+            || a.lowest_vcn != 0
+    });
+    if f.base_file_reference != 0 {
+        issues.push("unsupported or unassembled attribute semantics: an extension record".into());
+    } else if let Some(a) = unsupported_attribute {
+        issues.push(format!(
+            "unsupported or unassembled attribute semantics: attribute type {:#x} {:?}, {}, flags {:#x}, compression unit {}, lowest VCN {}",
+            a.type_code,
+            String::from_utf16_lossy(&a.name_utf16),
+            if a.resident { "resident" } else { "nonresident" },
+            a.flags,
+            a.compression_unit,
+            a.lowest_vcn
+        ));
     }
     if f.record_number == 5
         && f.attributes

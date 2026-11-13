@@ -58,12 +58,22 @@ fn node(entries: &[(&Link, Option<u64>)], last: Option<u64>) -> Vec<u8> {
     b
 }
 pub fn root(entries: &[(&Link, Option<u64>)], last: Option<u64>) -> Vec<u8> {
+    root_sized(entries, last, 4096, 1)
+}
+/// An index root that states its record size and how many address units
+/// (clusters, or 512-byte units) one record spans.
+fn root_sized(
+    entries: &[(&Link, Option<u64>)],
+    last: Option<u64>,
+    record: usize,
+    units: u8,
+) -> Vec<u8> {
     let entries = node(entries, last);
     let mut b = vec![0; 32 + entries.len()];
     put32(&mut b, 0, 0x30);
     put32(&mut b, 4, 1);
-    put32(&mut b, 8, 4096);
-    b[12] = 1;
+    put32(&mut b, 8, record as u32);
+    b[12] = units;
     put32(&mut b, 16, 16);
     put32(&mut b, 20, (16 + entries.len()) as u32);
     put32(&mut b, 24, (16 + entries.len()) as u32);
@@ -72,19 +82,32 @@ pub fn root(entries: &[(&Link, Option<u64>)], last: Option<u64>) -> Vec<u8> {
     b
 }
 fn block(slot: u64, entries: &[(&Link, Option<u64>)], last: Option<u64>) -> Vec<u8> {
+    block_sized(slot, entries, last, 4096)
+}
+/// An INDX record of `record` bytes at index address `address`, with its
+/// update-sequence array applied: one word per 512 bytes of the record.
+fn block_sized(
+    address: u64,
+    entries: &[(&Link, Option<u64>)],
+    last: Option<u64>,
+    record: usize,
+) -> Vec<u8> {
     let entries = node(entries, last);
-    let mut b = vec![0; 4096];
+    let strides = record / 512;
+    // The entries start after the update-sequence array, on an 8-byte boundary.
+    let start = (40 + 2 * (strides + 1)).next_multiple_of(8).max(64);
+    let mut b = vec![0; record];
     b[..4].copy_from_slice(b"INDX");
     put16(&mut b, 4, 40);
-    put16(&mut b, 6, 9);
-    put64(&mut b, 16, slot);
-    put32(&mut b, 24, 40);
-    put32(&mut b, 28, (40 + entries.len()) as u32);
-    put32(&mut b, 32, 4096 - 24);
+    put16(&mut b, 6, (strides + 1) as u16);
+    put64(&mut b, 16, address);
+    put32(&mut b, 24, (start - 24) as u32);
+    put32(&mut b, 28, (start - 24 + entries.len()) as u32);
+    put32(&mut b, 32, (record - 24) as u32);
     b[36] = u8::from(last.is_some());
-    b[64..64 + entries.len()].copy_from_slice(&entries);
+    b[start..start + entries.len()].copy_from_slice(&entries);
     put16(&mut b, 40, 0xabcd);
-    for i in 1..9 {
+    for i in 1..=strides {
         let old = [b[i * 512 - 2], b[i * 512 - 1]];
         b[40 + 2 * i..42 + 2 * i].copy_from_slice(&old);
         put16(&mut b, i * 512 - 2, 0xabcd);
@@ -97,7 +120,8 @@ fn object(number: u64, directory: bool, names: Vec<Link>) -> FileInventory {
         reparse: None,
         record_number: number,
         sequence_number: 1,
-        hard_link_count: names.iter().filter(|n| n.namespace != 2).count() as u16,
+        // The FILE header counts every $FILE_NAME attribute, DOS aliases included.
+        hard_link_count: names.len() as u16,
         is_directory: directory,
         is_metadata: number < 16,
         metadata_role: MetadataRole::NotClassified,
@@ -170,6 +194,115 @@ fn walks_internal_keys_in_order_and_all_allocated_blocks() {
     assert_eq!(d.entries, vec![a, m, z]);
     assert_eq!(d.index_blocks, 2);
 }
+/// Windows formats 4 KiB index records on every volume; the boot sector can
+/// state any power of two from 512 bytes to 64 KiB. A record is addressed in
+/// clusters when it is a whole number of clusters, and in 512-byte units when
+/// a cluster is larger than a record.
+#[test]
+fn walks_index_records_of_every_size_the_boot_sector_can_state() {
+    let a = link("Alpha", 16);
+    let m = link("Middle", 17);
+    let z = link("Omega", 18);
+    for (cluster, record, units) in [
+        (512u32, 1024usize, 2u8), // two 512-byte clusters
+        (4096, 1024, 2),          // smaller than a cluster: two 512-byte units
+        (512, 2048, 4),
+        (4096, 2048, 4),
+        (4096, 4096, 1),
+        (65536, 4096, 8),
+        (4096, 8192, 2),
+        (2 * 1024 * 1024, 8192, 16),
+        (4096, 65536, 16),
+        (65536, 65536, 1),
+    ] {
+        assert_eq!(
+            ntfs2refs::ntfs_index::units_per_index_record(cluster, record as u32).unwrap(),
+            u32::from(units),
+            "{cluster}/{record}"
+        );
+        let step = u64::from(units);
+        let allocation = [
+            block_sized(0, &[(&a, None)], None, record),
+            block_sized(step, &[(&z, None)], None, record),
+        ]
+        .concat();
+        let root = root_sized(&[(&m, Some(0))], Some(step), record, units);
+        let d = ns::parse_directory_with_geometry(
+            ROOT,
+            &root,
+            &allocation,
+            2 * record as u64,
+            &[3],
+            cluster,
+            record as u32,
+        )
+        .unwrap_or_else(|error| panic!("{cluster}/{record}: {error:#}"));
+        assert_eq!(
+            d.entries,
+            vec![a.clone(), m.clone(), z.clone()],
+            "{cluster}/{record}"
+        );
+        assert_eq!(d.index_blocks, 2);
+
+        // The same bytes read as records of another size, a child address
+        // that is not a record's, and a record at the wrong address are refused.
+        let other = if record == 4096 { 2048 } else { 4096 };
+        assert!(
+            ns::parse_directory_with_geometry(
+                ROOT,
+                &root,
+                &allocation,
+                2 * record as u64,
+                &[3],
+                cluster,
+                other
+            )
+            .is_err(),
+            "{cluster}/{record} read as {other}"
+        );
+        if units > 1 {
+            let skewed = root_sized(&[(&m, Some(0))], Some(step - 1), record, units);
+            assert!(
+                ns::parse_directory_with_geometry(
+                    ROOT,
+                    &skewed,
+                    &allocation,
+                    2 * record as u64,
+                    &[3],
+                    cluster,
+                    record as u32
+                )
+                .is_err()
+            );
+        }
+        let misplaced = [
+            block_sized(0, &[(&a, None)], None, record),
+            block_sized(step + 1, &[(&z, None)], None, record),
+        ]
+        .concat();
+        assert!(
+            ns::parse_directory_with_geometry(
+                ROOT,
+                &root,
+                &misplaced,
+                2 * record as u64,
+                &[3],
+                cluster,
+                record as u32
+            )
+            .is_err()
+        );
+    }
+    for (cluster, record) in [
+        (4096u32, 256u32),
+        (4096, 3000),
+        (4096, 131072),
+        (3000, 4096),
+    ] {
+        assert!(ntfs2refs::ntfs_index::units_per_index_record(cluster, record).is_err());
+    }
+}
+
 #[test]
 fn rejects_allocated_unreachable_nodes() {
     let a = link("A", 16);
@@ -283,7 +416,6 @@ fn preserves_raw_utf16_without_lossy_identity() {
     assert!(ns::reconcile(&files, &[d], &upcase()).is_ok());
 }
 #[test]
-#[ignore = "stale: not maintained while tests were disabled; needs triage"]
 fn accepts_hardlinks_and_dos_alias_as_distinct_index_links() {
     let a = link("Alpha", 16);
     let b = link("Beta", 16);
@@ -292,8 +424,16 @@ fn accepts_hardlinks_and_dos_alias_as_distinct_index_links() {
     let mut a = link("ALT", 16);
     a.namespace = 2;
     let b = link("longfilename", 16);
-    let files = vec![root_object(), object(16, false, vec![a.clone(), b.clone()])];
-    assert!(ns::reconcile(&files, &[directory(&[a, b])], &upcase()).is_ok());
+    let mut files = vec![root_object(), object(16, false, vec![a.clone(), b.clone()])];
+    assert!(ns::reconcile(&files, &[directory(&[a.clone(), b.clone()])], &upcase()).is_ok());
+    // A header that leaves the DOS alias out of its count is not the record
+    // NTFS writes for these two names.
+    files[1].hard_link_count = 1;
+    let error = ns::reconcile(&files, &[directory(&[a, b])], &upcase()).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("header/name count differs"),
+        "{error:#}"
+    );
 }
 #[test]
 fn rejects_missing_or_fabricated_index_entries() {

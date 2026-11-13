@@ -421,8 +421,13 @@ fn verify_observations(
     let before = &before.observation;
     let after = &after.observation;
     ensure!(
-        before.windows_version == [10, 0, 26300]
-            && after.windows_version == before.windows_version
+        n2r_win32::windows_build::supported(before.windows_version),
+        "Windows {} is older than build {}, the first from which this converter accepts its observations of a source",
+        n2r_win32::windows_build::describe(before.windows_version),
+        n2r_win32::windows_build::MINIMUM_BUILD
+    );
+    ensure!(
+        after.windows_version == before.windows_version
             && before.rm_handle_profile == "volume-root-directory-access-time-suppressed"
             && before.native_volume_state_stably_clear
             && after.native_volume_state_stably_clear
@@ -598,8 +603,13 @@ pub(crate) fn verify_partition_domain(
     );
     let before = before.observation();
     ensure!(
-        before.windows_version == [10, 0, 26300]
-            && after.windows_version == before.windows_version
+        n2r_win32::windows_build::supported(before.windows_version),
+        "Windows {} is older than build {}, the first from which this converter accepts its observations of a source",
+        n2r_win32::windows_build::describe(before.windows_version),
+        n2r_win32::windows_build::MINIMUM_BUILD
+    );
+    ensure!(
+        after.windows_version == before.windows_version
             && before.rm_handle_profile == "volume-root-directory-access-time-suppressed"
             && before.native_volume_state_stably_clear
             && after.native_volume_state_stably_clear

@@ -373,12 +373,12 @@ impl ExtentIdentityStream {
         if self.identity.record_number < 16
             || self.identity.record_number >= 1 << 48
             || self.identity.sequence_number == 0
-            || !(4096..=2 * 1024 * 1024).contains(&self.cluster_bytes)
+            || !(512..=2 * 1024 * 1024).contains(&self.cluster_bytes)
             || !self.cluster_bytes.is_power_of_two()
             // Source maps still cover all allocation through rounded EOF.
             // A partial logical tail is bound by exact EOF, not rounded away;
             // its target materialization is a separate semantic contract.
-            || self.logical_size < 4096
+            || self.logical_size < crate::target_cluster::bytes()
             || self.logical_size > self.allocated_size
             || !self.allocated_size.is_multiple_of(cluster)
             || self.name_utf16.len() > 255

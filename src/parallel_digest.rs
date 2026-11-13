@@ -96,7 +96,12 @@ fn digest_chunks_lanes<R: Read + Seek, L: Read + Seek + Send>(
     let mut found = std::thread::scope(|scope| -> Result<Vec<(usize, [u8; 16])>> {
         let others: Vec<_> = lanes
             .iter_mut()
-            .map(|reader| scope.spawn(|| lane(reader, chunks, largest, &next, &failed)))
+            .map(|reader| {
+                scope.spawn(|| {
+                    let _sampled = n2r_win32::stack_sampler::helper();
+                    lane(reader, chunks, largest, &next, &failed)
+                })
+            })
             .collect();
         let mut found = lane(image, chunks, largest, &next, &failed)?;
         for other in others {
@@ -149,6 +154,7 @@ pub(crate) fn digest_chunks<R: Read + Seek>(
             let recycle = recycle.clone();
             let done = done.clone();
             hashers.push(scope.spawn(move || -> Result<()> {
+                let _sampled = n2r_win32::stack_sampler::helper();
                 loop {
                     let job = queue
                         .lock()

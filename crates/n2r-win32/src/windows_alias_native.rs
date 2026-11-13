@@ -37,6 +37,16 @@ struct Snapshot {
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
+
+/// A link check involves three held objects: the directory the link is in,
+/// the object it points at, and the link itself. This says which one a
+/// failure belongs to.
+fn of(role: &'static str, error: io::Error) -> io::Error {
+    io::Error::new(error.kind(), format!("{role}: {error}"))
+}
+const PARENT: &str = "the link's parent directory";
+const CANONICAL: &str = "the object the link points at";
+const ALIAS: &str = "the link itself";
 fn information<const N: usize>(file: &File, class: i32) -> io::Result<[u8; N]> {
     if N > 24 {
         return Err(invalid("alias native information exceeds fixed buffer"));
@@ -189,9 +199,9 @@ pub fn install_fresh_owned(
     relative_target_component: &[u16],
 ) -> io::Result<Observation> {
     let expected = Point::relative_component_alias(relative_target_component)?;
-    let parent_before = snapshot(parent, true)?;
-    let canonical_before = snapshot(canonical, directory)?;
-    let alias_before = snapshot(alias, directory)?;
+    let parent_before = snapshot(parent, true).map_err(|e| of(PARENT, e))?;
+    let canonical_before = snapshot(canonical, directory).map_err(|e| of(CANONICAL, e))?;
+    let alias_before = snapshot(alias, directory).map_err(|e| of(ALIAS, e))?;
     validate_pair(
         &parent_before,
         &canonical_before,
@@ -256,9 +266,9 @@ pub fn verify_owned(
     relative_target_component: &[u16],
 ) -> io::Result<Observation> {
     let expected = Point::relative_component_alias(relative_target_component)?;
-    let parent_before = snapshot(parent, true)?;
-    let canonical_before = snapshot(canonical, directory)?;
-    let alias_before = snapshot(alias, directory)?;
+    let parent_before = snapshot(parent, true).map_err(|e| of(PARENT, e))?;
+    let canonical_before = snapshot(canonical, directory).map_err(|e| of(CANONICAL, e))?;
+    let alias_before = snapshot(alias, directory).map_err(|e| of(ALIAS, e))?;
     let alias_component = validate_pair(
         &parent_before,
         &canonical_before,
@@ -301,4 +311,21 @@ pub fn verify_owned(
         canonical_identity_and_shape_unchanged: true,
         grants_admission_or_source_authority: false,
     })
+}
+
+#[cfg(test)]
+mod role_tests {
+    use super::*;
+
+    #[test]
+    fn a_link_check_failure_says_which_of_its_three_objects_failed() {
+        let reason = "alias native identity/delete/type/link information is invalid";
+        for role in [PARENT, CANONICAL, ALIAS] {
+            let error = of(role, invalid(reason));
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert_eq!(error.to_string(), format!("{role}: {reason}"));
+        }
+        assert_ne!(PARENT, CANONICAL);
+        assert_ne!(CANONICAL, ALIAS);
+    }
 }

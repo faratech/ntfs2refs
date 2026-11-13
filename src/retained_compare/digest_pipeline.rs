@@ -52,6 +52,7 @@ impl Pipeline {
         let worker = thread::Builder::new()
             .name("n2r-shadow-digest".into())
             .spawn(move || {
+                let _sampled = n2r_win32::stack_sampler::helper();
                 // Construct CNG handles on this worker; none crosses threads.
                 let mut hash = StreamDigest::new(native)?;
                 if let Some(prefix) = prefix {

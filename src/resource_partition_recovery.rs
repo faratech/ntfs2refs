@@ -361,6 +361,7 @@ pub fn run_recovery(
             &output.join("arena/open-journal.index"),
             budget.scratch_bytes,
             &mut events,
+            true,
         )?;
         observer.checkpoint(
             "partition-recovery-authenticated-original-artifacts",

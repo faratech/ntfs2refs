@@ -33,6 +33,15 @@ pub struct TreeFootprint {
     pub own_record_attribute_tables: usize,
     pub external_attribute_pages: u32,
     pub external_extent_pages: u32,
+    /// DATA allocation records of this tree in a form the walk does not
+    /// interpret: their extents were not followed and are in no range list.
+    pub uninterpreted_data_records: u64,
+    /// Whether this tree's leaf rows were read as file records. Only object
+    /// trees of schema 0x130 are; the rows of any other tree are counted and
+    /// nothing in them is followed.
+    pub file_records_interpreted: bool,
+    /// False when a DATA record of this tree was left uninterpreted: its
+    /// extent tree is a descendant that was not walked.
     pub index_descendants_complete: bool,
     pub leaf_external_references_followed: bool,
 }
@@ -50,10 +59,46 @@ pub struct MetadataFootprint {
     pub physical_ranges: Vec<crate::refs_write_set::ByteRange>,
     pub page_transcript_sha256: String,
     pub trees: Vec<TreeFootprint>,
+    /// Object trees whose root page was authenticated but is not in a form
+    /// this reader decodes. The page is in `physical_ranges`; nothing below
+    /// it was followed.
+    pub rejected_trees: Vec<TreeRejection>,
+    pub object_trees_complete: bool,
     pub data_storage: DataStorageFootprint,
     pub log_storage: LogStorageFootprint,
     pub complete_allocation_graph_verified: bool,
     pub selective_capture_executable: bool,
+}
+
+/// An object tree that was set aside instead of ending the walk.
+#[derive(Debug, Serialize)]
+pub struct TreeRejection {
+    pub object_id: u64,
+    pub table_id: u64,
+    pub pages_read: u32,
+    pub reason: String,
+}
+
+/// Whether an object tree whose root cannot be decoded may be recorded and
+/// passed over. The root directory and the two log tables may not: the
+/// footprint depends on them. A system root never may.
+fn object_root_may_be_set_aside(object_id: Option<u64>) -> bool {
+    matches!(object_id, Some(id) if !matches!(id, 9 | 10 | 0x600))
+}
+
+#[cfg(test)]
+mod rejection_tests {
+    use super::object_root_may_be_set_aside;
+
+    #[test]
+    fn only_an_ordinary_object_tree_may_be_set_aside() {
+        assert!(object_root_may_be_set_aside(Some(5)));
+        assert!(object_root_may_be_set_aside(Some(0x701)));
+        for required in [9, 10, 0x600] {
+            assert!(!object_root_may_be_set_aside(Some(required)));
+        }
+        assert!(!object_root_may_be_set_aside(None));
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -62,6 +107,9 @@ pub struct LogStorageFootprint {
     pub data_range: crate::refs_write_set::ByteRange,
     pub control_ranges: Vec<crate::refs_write_set::ByteRange>,
     pub controls: Vec<crate::refs_mlog_refs::ControlObservation>,
+    /// Sequence numbers and oldest LSNs of the two controls, compared. The
+    /// two are only required to belong to the same log instance.
+    pub control_agreement: crate::refs_mlog_refs::ControlAgreement,
     pub unparsed_information_value_bytes: usize,
     pub log_data_bytes_read: u64,
     pub log_transactions_verified: bool,
@@ -137,7 +185,117 @@ pub struct DataStorageFootprint {
     pub sparse_clusters: u64,
     pub physical_ranges: Vec<crate::refs_write_set::ByteRange>,
     pub external_payload_bytes_read: u64,
+    /// DATA allocation records met in a form the walk does not interpret.
+    /// Their clusters are missing from `physical_ranges`.
+    pub uninterpreted_data_records: u64,
+    /// Cluster references beyond the first to the same physical cluster:
+    /// `allocated_cluster_references - distinct_physical_clusters`. Sharing
+    /// is legitimate on ReFS (block cloning), so it is reported, not refused;
+    /// `physical_ranges` is the union and would otherwise hide it.
+    pub multiply_referenced_clusters: u64,
+    pub data_ranges_disjoint: bool,
+    /// Extent records whose file VCN starts before the end of the record
+    /// before it in the same leaf.
+    pub vcn_order_violations: u64,
     pub complete_stream_inventory: bool,
+}
+
+/// How many records start before the end of the one before them. Each is
+/// (file VCN, clusters), in the order a leaf stores them.
+fn vcn_order_violations(records: impl IntoIterator<Item = (u32, u32)>) -> u64 {
+    let mut next = 0u64;
+    let mut violations = 0u64;
+    for (vcn, clusters) in records {
+        if u64::from(vcn) < next {
+            violations += 1;
+        }
+        next = next.max(u64::from(vcn) + u64::from(clusters));
+    }
+    violations
+}
+
+/// Turns the extents collected by the walk into their union, and records
+/// how much of what was referenced the union does not show.
+fn finish_data_storage(storage: &mut DataStorageFootprint) -> Result<()> {
+    storage
+        .physical_ranges
+        .sort_unstable_by_key(|range| range.offset);
+    let mut union: Vec<crate::refs_write_set::ByteRange> = Vec::new();
+    for range in storage.physical_ranges.drain(..) {
+        if let Some(last) = union
+            .last_mut()
+            .filter(|last| last.offset + last.length >= range.offset)
+        {
+            last.length =
+                (last.offset + last.length).max(range.offset + range.length) - last.offset;
+        } else {
+            union.push(range);
+        }
+    }
+    storage.physical_ranges = union;
+    storage.distinct_physical_clusters =
+        storage
+            .physical_ranges
+            .iter()
+            .try_fold(0u64, |count, range| {
+                count
+                    .checked_add(range.length / CLUSTER)
+                    .context("distinct data cluster count overflow")
+            })?;
+    storage.multiply_referenced_clusters = storage
+        .allocated_cluster_references
+        .checked_sub(storage.distinct_physical_clusters)
+        .context("data extents cover more clusters than they reference")?;
+    storage.data_ranges_disjoint = storage.multiply_referenced_clusters == 0;
+    Ok(())
+}
+
+#[cfg(test)]
+mod data_storage_tests {
+    use super::*;
+
+    fn range(first_cluster: u64, clusters: u64) -> crate::refs_write_set::ByteRange {
+        crate::refs_write_set::ByteRange {
+            offset: first_cluster * CLUSTER,
+            length: clusters * CLUSTER,
+        }
+    }
+
+    #[test]
+    fn shared_clusters_are_counted_where_the_union_would_hide_them() {
+        // Two four-cluster extents that share three clusters.
+        let mut storage = DataStorageFootprint {
+            physical_ranges: vec![range(0x1_0006, 4), range(0x1_0005, 4)],
+            allocated_cluster_references: 8,
+            ..DataStorageFootprint::default()
+        };
+        finish_data_storage(&mut storage).unwrap();
+        assert_eq!(storage.physical_ranges.len(), 1);
+        assert_eq!(storage.distinct_physical_clusters, 5);
+        assert_eq!(storage.multiply_referenced_clusters, 3);
+        assert!(!storage.data_ranges_disjoint);
+
+        // Adjacent but separate extents are not shared.
+        let mut storage = DataStorageFootprint {
+            physical_ranges: vec![range(10, 4), range(14, 4), range(40, 1)],
+            allocated_cluster_references: 9,
+            ..DataStorageFootprint::default()
+        };
+        finish_data_storage(&mut storage).unwrap();
+        assert_eq!(storage.physical_ranges.len(), 2);
+        assert_eq!(storage.multiply_referenced_clusters, 0);
+        assert!(storage.data_ranges_disjoint);
+    }
+
+    #[test]
+    fn a_record_that_starts_inside_the_one_before_it_is_out_of_order() {
+        assert_eq!(vcn_order_violations([(0, 4), (4, 4), (8, 1)]), 0);
+        // A gap is a hole, not a violation.
+        assert_eq!(vcn_order_violations([(0, 4), (16, 4)]), 0);
+        assert_eq!(vcn_order_violations([(0, 4), (2, 4)]), 1);
+        assert_eq!(vcn_order_violations([(8, 4), (0, 4), (4, 4)]), 2);
+        assert_eq!(vcn_order_violations([]), 0);
+    }
 }
 
 fn consume_extent_node(
@@ -154,6 +312,14 @@ fn consume_extent_node(
     use crate::refs_extent_refs::{ExtentKind, ExtentNodeRows};
     match node.rows {
         ExtentNodeRows::Leaf(records) => {
+            storage.vcn_order_violations = storage
+                .vcn_order_violations
+                .checked_add(vcn_order_violations(
+                    records
+                        .iter()
+                        .map(|record| (record.file_vcn, record.clusters)),
+                ))
+                .context("extent order violation count overflow")?;
             for record in records {
                 storage.extent_records = storage
                     .extent_records
@@ -238,9 +404,17 @@ fn consume_attribute_rows(
     total_pages: u32,
     limits: WalkLimits,
     reserved_roots: usize,
-) -> Result<()> {
+) -> Result<u64> {
+    // How many DATA records here were in the form that is not interpreted.
+    let mut uninterpreted = 0u64;
     for row in rows {
-        if let Some(data) = crate::refs_record_refs::inspect_data_extent_node(row)? {
+        if crate::refs_record_refs::is_uninterpreted_data_record(row)? {
+            uninterpreted += 1;
+            storage.uninterpreted_data_records = storage
+                .uninterpreted_data_records
+                .checked_add(1)
+                .context("uninterpreted DATA record count overflow")?;
+        } else if let Some(data) = crate::refs_record_refs::inspect_data_extent_node(row)? {
             storage.streams_observed = storage
                 .streams_observed
                 .checked_add(1)
@@ -258,7 +432,7 @@ fn consume_attribute_rows(
             )?;
         }
     }
-    Ok(())
+    Ok(uninterpreted)
 }
 
 /// Call only with bootstrap/container observations collected from this same
@@ -335,7 +509,8 @@ pub fn inspect<R: Read + Seek>(
     let mut primary_objects = BTreeMap::new();
     let mut duplicate_objects = BTreeMap::new();
     let mut log_references = BTreeMap::new();
-    while let Some(request) = requests.pop_front() {
+    let mut rejected_trees = Vec::new();
+    'trees: while let Some(request) = requests.pop_front() {
         let TreeRequest {
             root_index,
             object_id,
@@ -365,6 +540,7 @@ pub fn inspect<R: Read + Seek>(
         let mut extent_pages = 0u32;
         let mut embedded_tables = 0usize;
         let mut own_tables = 0usize;
+        let mut tree_uninterpreted = 0u64;
         while let Some(item) = pending.pop() {
             ensure!(
                 total_pages < limits.max_pages,
@@ -449,8 +625,31 @@ pub fn inspect<R: Read + Seek>(
                     refs_node::inspect_object_root_node(&bytes, table_id)
                 } else {
                     refs_node::inspect_system_root_node(&bytes, table_id)
-                }
-                .with_context(|| format!("metadata root {root_index:?} table {table_id}"))?;
+                };
+                let root = match root {
+                    Ok(root) => root,
+                    // The page is authenticated and already counted; only its
+                    // contents are not understood. One such object must not
+                    // cost the footprint of every other tree.
+                    Err(error) if object_root_may_be_set_aside(object_id) => {
+                        ensure!(
+                            rejected_trees.len() < 65_536,
+                            "rejected object tree count exceeds bounded profile"
+                        );
+                        rejected_trees.push(TreeRejection {
+                            object_id: object_id.unwrap_or_default(),
+                            table_id,
+                            pages_read: total_pages - start_pages,
+                            reason: format!("{error:#}"),
+                        });
+                        continue 'trees;
+                    }
+                    Err(error) => {
+                        return Err(
+                            error.context(format!("metadata root {root_index:?} table {table_id}"))
+                        );
+                    }
+                };
                 expected_rows = Some(root.whole_table_row_count);
                 schema_id = Some(root.schema_id);
                 (root.node_level, root.index_node, root.rows)
@@ -525,7 +724,7 @@ pub fn inspect<R: Read + Seek>(
                     *count = count
                         .checked_add(rows.len() as u64)
                         .context("attribute row count overflow")?;
-                    consume_attribute_rows(
+                    tree_uninterpreted += consume_attribute_rows(
                         &rows,
                         &map,
                         clusters,
@@ -593,7 +792,7 @@ pub fn inspect<R: Read + Seek>(
                                         });
                                     }
                                 } else {
-                                    consume_attribute_rows(
+                                    tree_uninterpreted += consume_attribute_rows(
                                         &record.node.rows,
                                         &map,
                                         clusters,
@@ -632,7 +831,9 @@ pub fn inspect<R: Read + Seek>(
             own_record_attribute_tables: own_tables,
             external_attribute_pages: attribute_pages,
             external_extent_pages: extent_pages,
-            index_descendants_complete: true,
+            uninterpreted_data_records: tree_uninterpreted,
+            file_records_interpreted: object_id.is_some() && schema_id == Some(0x130),
+            index_descendants_complete: tree_uninterpreted == 0,
             leaf_external_references_followed: false,
         });
         if root_index == Some(5) {
@@ -708,8 +909,10 @@ pub fn inspect<R: Read + Seek>(
             && controls[0].log_uuid == controls[1].log_uuid,
         "log controls belong to different log instances"
     );
+    let control_agreement = crate::refs_mlog_refs::compare_controls(&controls[0], &controls[1]);
     let log_storage = LogStorageFootprint {
         information_copies_agree: true,
+        control_agreement,
         data_range: crate::refs_write_set::ByteRange {
             offset: log.data_offset,
             length: log.data_length,
@@ -739,31 +942,7 @@ pub fn inspect<R: Read + Seek>(
             "observed data extent overlaps log controls"
         );
     }
-    data_storage
-        .physical_ranges
-        .sort_unstable_by_key(|range| range.offset);
-    let mut data_ranges: Vec<crate::refs_write_set::ByteRange> = Vec::new();
-    for range in data_storage.physical_ranges.drain(..) {
-        if let Some(last) = data_ranges
-            .last_mut()
-            .filter(|last| last.offset + last.length >= range.offset)
-        {
-            last.length =
-                (last.offset + last.length).max(range.offset + range.length) - last.offset;
-        } else {
-            data_ranges.push(range);
-        }
-    }
-    data_storage.physical_ranges = data_ranges;
-    data_storage.distinct_physical_clusters =
-        data_storage
-            .physical_ranges
-            .iter()
-            .try_fold(0u64, |count, range| {
-                count
-                    .checked_add(range.length / CLUSTER)
-                    .context("distinct data cluster count overflow")
-            })?;
+    finish_data_storage(&mut data_storage)?;
     for lcn in visited {
         let offset = lcn * CLUSTER;
         if let Some(last) = ranges
@@ -796,6 +975,8 @@ pub fn inspect<R: Read + Seek>(
         physical_ranges: ranges,
         page_transcript_sha256: hex::encode(transcript.finalize()),
         trees,
+        object_trees_complete: rejected_trees.is_empty(),
+        rejected_trees,
         data_storage,
         log_storage,
         complete_allocation_graph_verified: false,

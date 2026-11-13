@@ -369,29 +369,46 @@ impl LiveNtfsObservation {
         &self.after.binding
     }
 }
+/// A disk made online and read-only for an observation. It is put back
+/// offline and read-only by `finish`, whose result the caller reports.
 struct ReadonlyObservationLease<'a> {
     file: &'a File,
     events: &'a mut Vec<NativeEvent>,
-    restoration_attempted: bool,
+    /// True only once the disk is offline and read-only again.
+    restored: bool,
 }
 impl ReadonlyObservationLease<'_> {
     fn finish(&mut self) -> io::Result<()> {
-        self.restoration_attempted = true;
-        set_attributes(self.file, OFFLINE | READ_ONLY, self.events)?;
+        Self::restore(self.file, self.events)?;
+        self.restored = true;
+        Ok(())
+    }
+    fn restore(file: &File, events: &mut Vec<NativeEvent>) -> io::Result<()> {
+        set_attributes(file, OFFLINE | READ_ONLY, events)?;
         control(
-            self.file,
+            file,
             "refresh-excluded-source-properties",
             UPDATE_PROPERTIES,
             &[],
             0,
-            self.events,
+            events,
         )?;
         Ok(())
     }
 }
 impl Drop for ReadonlyObservationLease<'_> {
     fn drop(&mut self) {
-        if !self.restoration_attempted {
+        if self.restored {
+            return;
+        }
+        // Either `finish` was never reached or it failed. The lease opened
+        // this exposure, so it tries once more to close it; the caller has
+        // already taken the first failure and reports that one. A full event
+        // batch must not defeat the attempt: the control wrapper issues
+        // nothing once the batch is full, so it then gets a batch of its own.
+        if self.events.len() + 8 >= crate::MAX_BATCH_EVENTS {
+            self.restored = Self::restore(self.file, &mut Vec::new()).is_ok();
+        } else {
             let _ = self.finish();
         }
     }
@@ -740,14 +757,43 @@ fn attributes(file: &File, events: &mut Vec<NativeEvent>) -> io::Result<u64> {
     Ok(attributes)
 }
 
+/// Set once by a diagnose run, which never changes a source. From then on no
+/// disk can be moved to offline-and-writable, the state every raw write to a
+/// held disk starts from, whichever route asks for it. This is a backstop:
+/// the routes themselves already refuse.
+static RAW_WRITE_ACTIVATION_FORBIDDEN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Forbids, for the rest of this process, moving any disk to
+/// offline-and-writable. There is no way to permit it again.
+pub fn forbid_raw_write_activation() {
+    RAW_WRITE_ACTIVATION_FORBIDDEN.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+fn admit_attribute_transition(value: u64, raw_write_forbidden: bool) -> io::Result<()> {
+    if value & !(OFFLINE | READ_ONLY) != 0 {
+        return Err(invalid("unknown requested attributes"));
+    }
+    // Offline with read-only (a freeze), read-only alone and fully online
+    // never open a disk to raw writes. Offline alone does.
+    if value == OFFLINE && raw_write_forbidden {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "diagnose mode never makes a disk writable for raw access; the transition to offline and writable was refused",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn set_attributes(
     file: &File,
     value: u64,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<()> {
-    if value & !(OFFLINE | READ_ONLY) != 0 {
-        return Err(invalid("unknown requested attributes"));
-    }
+    admit_attribute_transition(
+        value,
+        RAW_WRITE_ACTIVATION_FORBIDDEN.load(std::sync::atomic::Ordering::SeqCst),
+    )?;
     let mut bytes = [0_u8; 40];
     bytes[..4].copy_from_slice(&40_u32.to_le_bytes());
     bytes[4] = 1; // Persist: the exclusion must survive a restart.
@@ -1901,8 +1947,10 @@ fn capture_allocation_with_resource_profile(
         .map(crate::attestation::ResourceProfile::resource_admission)
         .transpose()?
         .flatten();
-    let limits =
-        crate::attestation::source_bitmap_limits(resource_profile, partition_bytes / 4096)?;
+    let limits = crate::attestation::source_bitmap_limits(
+        resource_profile,
+        partition_bytes / crate::target_cluster::bytes(),
+    )?;
     let mut observe = |name: &str, input: &[u8]| {
         let result = if resource_admission.is_some() {
             crate::bitmap_observation::Observation::capture_with_limits(
@@ -2291,13 +2339,13 @@ impl GeneralFrozenPartition {
             .transpose()?
             .flatten();
         if resource_profile.is_none()
-            && 16 + (binding.identity.partition_bytes / 4096).div_ceil(8)
+            && 16 + (binding.identity.partition_bytes / crate::target_cluster::bytes()).div_ceil(8)
                 > crate::bitmap_paging::MAX_COMPLETE_BYTES as u64
         {
             return Err(invalid("allocation capture exceeds complete bitmap budget"));
         }
         if resource_profile.is_some() {
-            let clusters = binding.identity.partition_bytes / 4096;
+            let clusters = binding.identity.partition_bytes / crate::target_cluster::bytes();
             crate::bitmap_streaming::Collector::new(
                 clusters,
                 crate::attestation::source_bitmap_limits(resource_profile, clusters)?,
@@ -3170,7 +3218,7 @@ impl GeneralFrozenPartition {
         let mut lease = ReadonlyObservationLease {
             file: &management,
             events,
-            restoration_attempted: false,
+            restored: false,
         };
         set_attributes(lease.file, READ_ONLY, lease.events)?;
         control(
@@ -3297,14 +3345,15 @@ impl GeneralFrozenPartition {
             return Err(invalid("protected allocation exceeds resource profile"));
         }
         if resource_profile.is_none()
-            && 16 + (length / 4096).div_ceil(8) > crate::bitmap_paging::MAX_COMPLETE_BYTES as u64
+            && 16 + (length / crate::target_cluster::bytes()).div_ceil(8)
+                > crate::bitmap_paging::MAX_COMPLETE_BYTES as u64
         {
             return Err(invalid(
                 "protected allocation exceeds complete bitmap budget",
             ));
         }
         if resource_profile.is_some() {
-            let clusters = length / 4096;
+            let clusters = length / crate::target_cluster::bytes();
             crate::bitmap_streaming::Collector::new(
                 clusters,
                 crate::attestation::source_bitmap_limits(resource_profile, clusters)?,
@@ -3837,7 +3886,7 @@ impl GeneralFrozenPartition {
         let mut lease = ReadonlyObservationLease {
             file: &management,
             events,
-            restoration_attempted: false,
+            restored: false,
         };
         let collected = (|| {
             set_attributes(lease.file, READ_ONLY, lease.events)?;
@@ -4644,6 +4693,7 @@ impl Read for GeneralFrozenPartition {
                 output[..wanted].copy_from_slice(&window.bytes_mut()[at..at + wanted]);
                 self.position += wanted as u64;
                 self.ahead.last_end = self.ahead.last_end.max(self.position);
+                crate::perf::add_bytes(crate::perf::Point::DeviceReadServed, wanted as u64);
                 return Ok(wanted);
             }
         }
@@ -4694,9 +4744,13 @@ impl Read for GeneralFrozenPartition {
             let wanted = wanted.min(count - prefix);
             output[..wanted].copy_from_slice(&window.bytes_mut()[prefix..prefix + wanted]);
             self.position += wanted as u64;
+            crate::perf::add_bytes(crate::perf::Point::DeviceReadServed, wanted as u64);
             return Ok(wanted);
         }
-        crate::perf::add_bytes(crate::perf::Point::DeviceRead, output.len() as u64);
+        // What the device is asked for, as in the read-ahead branch above:
+        // whole granules, not the caller's length.
+        crate::perf::add_bytes(crate::perf::Point::DeviceRead, count as u64);
+        crate::perf::add_bytes(crate::perf::Point::DeviceReadServed, wanted as u64);
         // One positional read: no separate call to move the file pointer.
         let read = self.file.seek_read(
             &mut self.buffer.bytes_mut()[..count],
@@ -5003,7 +5057,7 @@ impl OfflinePartition {
         let mut lease = ReadonlyObservationLease {
             file: &management,
             events,
-            restoration_attempted: false,
+            restored: false,
         };
         set_attributes(lease.file, READ_ONLY, lease.events)?;
         control(
@@ -5257,6 +5311,73 @@ impl Seek for OfflinePartition {
 mod tests {
     use super::*;
     use crate::layout::PartitionIdentity;
+
+    #[test]
+    fn a_lease_whose_restoration_failed_tries_once_more_when_dropped() {
+        // An ordinary file refuses the disk-attribute control, which stands
+        // in for a restoration that fails.
+        let file = tempfile::tempfile().unwrap();
+        let mut events = Vec::new();
+        let after_finish;
+        {
+            let mut lease = ReadonlyObservationLease {
+                file: &file,
+                events: &mut events,
+                restored: false,
+            };
+            assert!(lease.finish().is_err());
+            assert!(!lease.restored, "a failed restoration is not a restoration");
+            after_finish = lease.events.len();
+            assert!(after_finish > 0, "the failed control is on record");
+        }
+        assert_eq!(
+            events.len(),
+            after_finish * 2,
+            "dropping the lease made exactly one more attempt"
+        );
+
+        // A lease that restored (or one marked so) is left alone.
+        let mut events = Vec::new();
+        drop(ReadonlyObservationLease {
+            file: &file,
+            events: &mut events,
+            restored: true,
+        });
+        assert!(events.is_empty());
+
+        // With the batch full the retry still runs, on a batch of its own.
+        let mut events: Vec<NativeEvent> = (0..crate::MAX_BATCH_EVENTS)
+            .map(|_| NativeEvent {
+                operation: "filler".into(),
+                control_code: 0,
+                input: Vec::new(),
+                succeeded: true,
+                native_error: None,
+                output: Vec::new(),
+            })
+            .collect();
+        drop(ReadonlyObservationLease {
+            file: &file,
+            events: &mut events,
+            restored: false,
+        });
+        assert_eq!(events.len(), crate::MAX_BATCH_EVENTS);
+    }
+
+    #[test]
+    fn a_diagnose_run_cannot_make_a_disk_writable_for_raw_access() {
+        // A freeze, a read-only publication and a return to online are what
+        // a diagnose run needs, and stay available.
+        for value in [0, READ_ONLY, OFFLINE | READ_ONLY] {
+            assert!(admit_attribute_transition(value, true).is_ok());
+            assert!(admit_attribute_transition(value, false).is_ok());
+        }
+        assert!(admit_attribute_transition(OFFLINE, false).is_ok());
+        let refused = admit_attribute_transition(OFFLINE, true).unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::PermissionDenied);
+        assert!(refused.to_string().contains("diagnose mode"), "{refused}");
+        assert!(admit_attribute_transition(4, false).is_err());
+    }
 
     fn allocation_test_bitmap(bits: u16) -> Vec<u8> {
         let mut bytes = vec![0; 18];

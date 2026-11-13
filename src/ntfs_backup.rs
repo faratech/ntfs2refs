@@ -113,29 +113,31 @@ fn verify_parts<R: Read + Seek>(
     fingerprint: impl FnOnce() -> Result<String>,
 ) -> Result<VerifiedBackups> {
     ensure!(
-        g.bytes_per_sector == 512
+        matches!(g.bytes_per_sector, 512 | 4096)
             && crate::ntfs_index::supports_cluster_size(g.cluster_size)
-            && g.file_record_size == 1024,
-        "backup checks require supported clusters, 512-byte sectors and 1 KiB MFT records"
+            && matches!(g.file_record_size, 1024 | 4096),
+        "backup checks require supported clusters, 512- or 4096-byte sectors and 1 or 4 KiB MFT records"
     );
+    // NTFS leaves the partition's last sector to the backup boot sector.
+    let sector = u64::from(g.bytes_per_sector);
     ensure!(
         length == g.volume_size
             || length
                 == g.volume_size
-                    .checked_add(512)
+                    .checked_add(sector)
                     .context("backup length overflow")?,
         "backup partition length differs"
     );
-    let mut boot = vec![0; 512];
+    let mut boot = vec![0; sector as usize];
     reader.seek(SeekFrom::Start(0))?;
     reader.read_exact(&mut boot)?;
-    let observed = ntfs::inspect_boot_sector(&boot, length)?;
+    let observed = ntfs::inspect_boot_sector(&boot[..512], length)?;
     ensure!(
         serde_json::to_vec(&observed)? == serde_json::to_vec(g)?,
         "source boot geometry differs from inventory"
     );
-    let mut backup = vec![0; 512];
-    reader.seek(SeekFrom::Start(length - 512))?;
+    let mut backup = vec![0; sector as usize];
+    reader.seek(SeekFrom::Start(length - sector))?;
     reader.read_exact(&mut backup)?;
     ensure!(boot == backup, "primary and backup boot sectors differ");
     for (attribute, lcn) in [(mft, g.mft_lcn), (mirror, g.mftmirr_lcn)] {
@@ -158,8 +160,8 @@ fn verify_parts<R: Read + Seek>(
         "MFT mirror length differs from the source cluster/record geometry"
     );
     let declared_slots = u32::try_from(mirror_bytes / u64::from(g.file_record_size))?;
-    let mut primary = [0; 1024];
-    let mut mirrored = [0; 1024];
+    let mut primary = vec![0; g.file_record_size as usize];
+    let mut mirrored = vec![0; g.file_record_size as usize];
     let mut hashes = vec![];
     let mut equal_extra_slots = Vec::new();
     let mut padding_slots = Vec::new();
@@ -173,14 +175,14 @@ fn verify_parts<R: Read + Seek>(
             .with_context(|| format!("primary MFT record {i}"))?;
         ntfs::validate_file_record(&mirrored, g)
             .with_context(|| format!("mirror MFT record {i}"))?;
-        primary_hash.update(primary);
-        mirror_hash.update(mirrored);
+        primary_hash.update(&primary);
+        mirror_hash.update(&mirrored);
         if i < 4 {
             ensure!(
                 primary == mirrored,
                 "primary and mirror MFT record {i} differ"
             );
-            hashes.push(hex::encode(Sha256::digest(primary)));
+            hashes.push(hex::encode(Sha256::digest(&primary)));
         } else if primary == mirrored {
             equal_extra_slots.push(i);
         } else {

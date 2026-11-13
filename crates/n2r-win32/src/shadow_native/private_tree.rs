@@ -188,7 +188,7 @@ impl PrivateTree {
         bytes: &[u8],
         native_file_id: Vec<u8>,
     ) -> io::Result<()> {
-        let prefix = logical_length / 4096 * 4096;
+        let prefix = crate::target_cluster::floor(logical_length);
         if prefix == 0 || prefix == logical_length || offset > prefix {
             return Ok(());
         }
@@ -227,7 +227,7 @@ impl PrivateTree {
         item: &Input<'_>,
     ) -> io::Result<Option<MaterializedTail>> {
         let length = item.logical_length();
-        let prefix = length / 4096 * 4096;
+        let prefix = crate::target_cluster::floor(length);
         if item.expected_sha256.is_some() || length == prefix {
             return Ok(None);
         }
@@ -292,7 +292,7 @@ impl PrivateTree {
         let mut result = BTreeMap::new();
         let mut tails = Vec::new();
         for (key, target) in std::mem::take(&mut self.sparse_targets) {
-            self.before_backing_mutation(4096)?;
+            self.before_backing_mutation(crate::target_cluster::bytes())?;
             let (file, tail) = target.finish(self.files.remove(&key))?;
             if let Some(tail) = tail {
                 tails.push((key.clone(), tail));
@@ -370,7 +370,7 @@ impl PrivateTree {
         guard: impl FnMut(&unwritten::DestinationWindows) -> io::Result<()>,
     ) -> io::Result<unwritten::ResourceMoveValue> {
         self.require_source_excluded()?;
-        self.before_backing_mutation(u64::from(clusters) * 4096)?;
+        self.before_backing_mutation(u64::from(clusters) * crate::target_cluster::bytes())?;
         if self.metadata_resource_admission.is_none() || self.memory.is_none() {
             return Err(invalid("actual resource construction owner absent"));
         }
@@ -504,7 +504,7 @@ impl PrivateTree {
         }
         let backing_guard = self.backing_guard.clone();
         for file in self.files.values_mut() {
-            let prefix = file.logical_length() / 4096 * 4096;
+            let prefix = crate::target_cluster::floor(file.logical_length());
             if prefix > 0 && !file.revalidate_recovered_prefix(prefix)? {
                 if let Some(guard) = &backing_guard {
                     guard.check_before_operation(0)?;
@@ -785,7 +785,7 @@ impl PrivateTree {
         guard: impl FnMut(&unwritten::DestinationWindows) -> io::Result<()>,
     ) -> io::Result<serde_json::Value> {
         self.require_source_excluded()?;
-        self.before_backing_mutation(u64::from(clusters) * 4096)?;
+        self.before_backing_mutation(u64::from(clusters) * crate::target_cluster::bytes())?;
         self.placement_complete = false;
         self.original_coordinates.clear();
         let file = self
@@ -829,7 +829,7 @@ impl PrivateTree {
         guard: impl FnMut(&unwritten::DestinationWindows) -> io::Result<()>,
     ) -> io::Result<serde_json::Value> {
         self.require_source_excluded()?;
-        self.before_backing_mutation(u64::from(clusters) * 4096)?;
+        self.before_backing_mutation(u64::from(clusters) * crate::target_cluster::bytes())?;
         self.placement_complete = false;
         self.original_coordinates.clear();
         let file = self
@@ -963,10 +963,12 @@ impl PrivateTree {
                 .memory
                 .as_ref()
                 .map(|m| {
-                    let count = target
-                        .islands
-                        .len()
-                        .min(bytes.len().div_ceil(4096).saturating_add(2));
+                    let count = target.islands.len().min(
+                        bytes
+                            .len()
+                            .div_ceil(crate::target_cluster::bytes_usize())
+                            .saturating_add(2),
+                    );
                     m.working(
                         (count as u64)
                             .checked_mul(1024)
@@ -1257,7 +1259,8 @@ fn file_observation(
     }
     // Empty and subcluster allocations have no promised nonresident retrieval
     // map. They will be materialized, rather than admitted as retained runs.
-    let capture = if logical == 0 || (logical < 4096 && allocated < 4096) {
+    let cluster = crate::target_cluster::bytes();
+    let capture = if logical == 0 || (logical < cluster && allocated < cluster) {
         None
     } else {
         Some(
@@ -1560,7 +1563,7 @@ pub fn preflight_resource_input_domain(
 ) -> io::Result<ConstructorInputPreflight> {
     admission.validate()?;
     if partition_bytes == 0
-        || !partition_bytes.is_multiple_of(4096)
+        || !crate::target_cluster::aligned(partition_bytes)
         || partition_bytes > i64::MAX as u64
         || !volume_root.starts_with("\\\\?\\Volume{")
         || !volume_root.ends_with("}\\")
@@ -1876,10 +1879,12 @@ fn allocate_domain_with_memory(
     {
         return Err(io::Error::last_os_error());
     }
-    if u64::from(sectors) * u64::from(sector_bytes) != 4096 {
-        return Err(invalid(
-            "private tree requires a 4-KiB ReFS allocation unit",
-        ));
+    let allocation_unit = u64::from(sectors) * u64::from(sector_bytes);
+    if allocation_unit != crate::target_cluster::bytes() {
+        return Err(invalid(&format!(
+            "private tree requires a {}-byte ReFS allocation unit, and {root} has {allocation_unit}",
+            crate::target_cluster::bytes()
+        )));
     }
     let (privileges, root_handle, enrolled_volume, construction_enrollment, partition_source) =
         if let Some(mut owned) = enrollment {
@@ -1971,7 +1976,7 @@ fn allocate_domain_with_memory(
     let needs_carriers = input.any(|item| {
         item.sparse.is_some_and(|s| !s.allocated.is_empty())
             || item.named_streams.iter().any(|s| {
-                (s.sparse.is_none() && s.expected_length >= 4096)
+                (s.sparse.is_none() && s.expected_length >= crate::target_cluster::bytes())
                     || s.sparse.is_some_and(|v| !v.allocated.is_empty())
             })
     })?;
@@ -2282,7 +2287,7 @@ fn allocate_domain_with_memory(
                             &mut sparse_targets,
                             pair.shadow.identity.partition_bytes,
                         )?;
-                    } else if named.expected_length >= 4096 {
+                    } else if named.expected_length >= crate::target_cluster::bytes() {
                         // ReFS may report success for MOVE_FILE on an ADS without
                         // moving its extents. Place an ordinary owned carrier and
                         // clone its validated extents into the exact named stream.

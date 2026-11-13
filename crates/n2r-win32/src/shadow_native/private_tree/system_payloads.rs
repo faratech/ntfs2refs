@@ -225,7 +225,7 @@ pub(super) fn revalidate_completed_domain(
                 "recovered system payload native identity or shape differs",
             ));
         }
-        let raw = info(handle, 7, stream_layout::MAX_STREAM_BUFFER)?;
+        let raw = stream_info(handle)?;
         let (streams, _) = stream_layout::parse_streams(&raw)?;
         if streams.len() != 1 || !streams[0].name.is_empty() {
             return Err(invalid("recovered system stream set differs"));
@@ -338,7 +338,7 @@ pub(super) fn run_domain(
             {
                 return Err(invalid("existing system stream identity/shape differs"));
             }
-            let stream_bytes = info(&file, 7, stream_layout::MAX_STREAM_BUFFER)?;
+            let stream_bytes = stream_info(&file)?;
             let (streams, _) = stream_layout::parse_streams(&stream_bytes)?;
             if streams.len() != 1 || !streams[0].name.is_empty() {
                 return Err(invalid("system ADS unsupported"));

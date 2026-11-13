@@ -274,9 +274,12 @@ pub(super) fn convert(
     args: &DriveArgs,
     selected: PartitionSelection,
     before: VolumeDiscovery,
+    // This route has no diagnose stop: it changes the GPT entry and the boot
+    // configuration, then restarts into the conversion.
+    authority: &crate::execution_mode::SourceChangeAuthority,
 ) -> Result<u8> {
     if args.offline_recovery_media.is_some() {
-        return offline::convert(args, selected, before);
+        return offline::convert(args, selected, before, authority);
     }
     require_shared_conversion_backend()?;
     ensure!(
@@ -434,9 +437,11 @@ pub(super) fn convert(
             ),
             None => resource_partition_alpha::run(request, &output, true),
         })?;
-    worker.join().map_err(|_| {
-        anyhow::anyhow!(
-            "partition conversion worker panicked; preserve the printed run and actual source state"
+    worker.join().map_err(|panic| {
+        crate::panic_report::worker_error(
+            "public-partition-conversion",
+            panic,
+            "preserve the printed run and actual source state",
         )
     })??;
     Ok(0)
@@ -462,6 +467,10 @@ struct PublicationRoute {
     source: GeneralDiskBinding,
     shadow: GeneralDiskBinding,
     locator: FileRoute,
+    #[serde(default)]
+    target_cluster_bytes: Option<u64>,
+    #[serde(default)]
+    target_refs_version: Option<(u32, u32)>,
     serialized_publication_grants_authority: bool,
 }
 #[derive(Deserialize)]
@@ -591,6 +600,17 @@ pub(super) fn try_recover(directory: &Path, checksum: &str, rollback: bool) -> R
         !route.serialized_publication_grants_authority && source_binding.storage == route.source,
         "foreign partition recovery publication route"
     );
+    n2r_win32::target_cluster::choose(
+        route
+            .target_cluster_bytes
+            .unwrap_or(n2r_win32::target_cluster::DEFAULT_BYTES),
+    )
+    .context("the recovery publication's ReFS allocation unit")?;
+    let (major, minor) = route
+        .target_refs_version
+        .unwrap_or(n2r_win32::target_refs_version::DEFAULT);
+    n2r_win32::target_refs_version::choose(major, minor)
+        .context("the recovery publication's ReFS version")?;
     route.source.validate()?;
     route.shadow.validate()?;
     let mut locator = Pinned::open(&route.locator.path, digest(&route.locator.sha256)?, maximum)?;
@@ -674,9 +694,11 @@ pub(super) fn try_recover(directory: &Path, checksum: &str, rollback: bool) -> R
         .name("public-partition-recovery".into())
         .stack_size(resource_partition_alpha::PARTITION_RECOVERY_WORKER_STACK_BYTES)
         .spawn(move || resource_partition_alpha::run_recovery(request, &output, true))?;
-    worker.join().map_err(|_| {
-        anyhow::anyhow!(
-            "partition recovery worker panicked; preserve actual source and original artifacts"
+    worker.join().map_err(|panic| {
+        crate::panic_report::worker_error(
+            "public-partition-recovery",
+            panic,
+            "preserve actual source and original artifacts",
         )
     })??;
     drop(locator);

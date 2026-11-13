@@ -2,6 +2,7 @@
 //!
 //!   lab-volume-manifest capture --root D:\ --output before.jsonl
 //!   lab-volume-manifest compare --before before.jsonl --after after.jsonl --report report.json
+//!   lab-volume-manifest compare --exact --before before.jsonl --after after.jsonl --report report.json
 //!
 //! The lab harness lists the NTFS source before a conversion and the same
 //! volume once it mounts as ReFS, then compares the two. Capturing is read
@@ -41,6 +42,12 @@ enum Command {
         after: PathBuf,
         #[arg(long)]
         report: PathBuf,
+        /// Require the two listings to be equal in every recorded field, with
+        /// nothing accepted as an expected difference: for a volume that
+        /// must not have changed, such as the NTFS source before and after a
+        /// diagnose run or a rollback.
+        #[arg(long)]
+        exact: bool,
     },
 }
 
@@ -103,8 +110,14 @@ fn main() -> Result<ExitCode> {
             before,
             after,
             report,
+            exact,
         } => {
-            let comparison = volume_manifest::compare(&read(&before)?, &read(&after)?);
+            let (before, after) = (read(&before)?, read(&after)?);
+            let comparison = if exact {
+                volume_manifest::compare_exact(&before, &after)
+            } else {
+                volume_manifest::compare(&before, &after)
+            };
             let mut out = BufWriter::new(
                 File::create(&report).with_context(|| format!("creating {}", report.display()))?,
             );

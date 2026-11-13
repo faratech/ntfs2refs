@@ -11,6 +11,130 @@ fn announce_recovery_phase(operation: ExperimentalCompactOperation, message: &st
     let _ = writeln!(std::io::stderr(), "Recovery {operation:?}: {message}");
 }
 
+/// Whether a recovery finishes on the mounted volume instead of on the
+/// offline disk: only for a committed handoff or rollback, and only when the
+/// source disk is fully online (no offline or read-only attribute). That is
+/// the state a run leaves when it stops, or its verification fails, after it
+/// has brought the disk back; before, recovery required the disk offline and
+/// could not be entered again.
+fn finishes_on_mounted_volume(
+    operation: ExperimentalCompactOperation,
+    source_disk_attributes: u64,
+) -> bool {
+    matches!(
+        operation,
+        ExperimentalCompactOperation::FinalizeAfterMarker
+            | ExperimentalCompactOperation::FinalizeRollback
+    ) && source_disk_attributes == 0
+}
+
+#[cfg(test)]
+mod online_terminal_tests {
+    use super::ExperimentalCompactOperation::{
+        Finalize, FinalizeAfterMarker, FinalizeRollback, Resume, Rollback,
+    };
+    use super::finishes_on_mounted_volume as online;
+
+    #[test]
+    fn only_a_committed_run_with_its_source_online_finishes_on_the_mounted_volume() {
+        assert!(online(FinalizeAfterMarker, 0));
+        assert!(online(FinalizeRollback, 0));
+        // Offline (1), read-only (2) or both (3): the offline path, as before.
+        for attributes in [1, 2, 3] {
+            assert!(!online(FinalizeAfterMarker, attributes));
+            assert!(!online(FinalizeRollback, attributes));
+        }
+        // Anything that may still write from the journal never does.
+        for operation in [Resume, Rollback, Finalize] {
+            for attributes in [0, 1, 2, 3] {
+                assert!(!online(operation, attributes), "{operation:?} {attributes}");
+            }
+        }
+    }
+}
+
+/// What a recovery run from a saved directory does, given what its journal
+/// durably records and which direction was asked for.
+///
+/// The compact engine itself can change direction until a handoff, and its
+/// laboratory uses that. A recovery started from a directory is held to
+/// more: it never begins an apply that the conversion had not durably
+/// begun, and it never turns a recorded rollback back into a conversion.
+fn select_recovery_operation(
+    lifecycle: crate::lab_reconstruct::JournalLifecycle,
+    requested: ExperimentalCompactOperation,
+) -> Result<ExperimentalCompactOperation> {
+    use crate::lab_reconstruct::JournalLifecycle;
+    Ok(match lifecycle {
+        JournalLifecycle::PreparedClear => {
+            // Nothing has been written from this journal. Writing now would
+            // be a first apply, begun by a recovery instead of by the
+            // conversion that prepared and checked the journal.
+            ensure!(
+                requested == ExperimentalCompactOperation::Rollback,
+                "the conversion stopped before it recorded an apply intent: nothing was written, \
+                 and a resume would start the conversion anew; use --rollback to return the NTFS volume"
+            );
+            requested
+        }
+        JournalLifecycle::RollbackIntent => {
+            ensure!(
+                requested == ExperimentalCompactOperation::Rollback,
+                "a rollback is recorded in the journal; ReFS resume is closed; use --rollback to finish it"
+            );
+            requested
+        }
+        JournalLifecycle::ApplyIntent => requested,
+        JournalLifecycle::RefsHandoff => {
+            ensure!(
+                requested == ExperimentalCompactOperation::Resume,
+                "ReFS handoff is committed; raw replay, rollback and a new handoff are closed"
+            );
+            ExperimentalCompactOperation::FinalizeAfterMarker
+        }
+        JournalLifecycle::NtfsRollback => {
+            ensure!(
+                requested == ExperimentalCompactOperation::Rollback,
+                "NTFS rollback is committed; ReFS resume is closed; use --rollback to finalize NTFS"
+            );
+            ExperimentalCompactOperation::FinalizeRollback
+        }
+    })
+}
+
+#[cfg(test)]
+mod recovery_selection_tests {
+    use super::ExperimentalCompactOperation::{
+        Finalize, FinalizeAfterMarker, FinalizeRollback, Resume, Rollback,
+    };
+    use super::select_recovery_operation as select;
+    use crate::lab_reconstruct::JournalLifecycle::{
+        ApplyIntent, NtfsRollback, PreparedClear, RefsHandoff, RollbackIntent,
+    };
+
+    #[test]
+    fn a_recovery_never_starts_an_apply_or_reverses_a_recorded_rollback() {
+        // Nothing written yet: only the way back is offered.
+        assert_eq!(select(PreparedClear, Rollback).unwrap(), Rollback);
+        for refused in [Resume, Finalize] {
+            let error = select(PreparedClear, refused).unwrap_err().to_string();
+            assert!(error.contains("use --rollback"), "{error}");
+        }
+        // A recorded rollback is finished, not reversed.
+        assert_eq!(select(RollbackIntent, Rollback).unwrap(), Rollback);
+        let error = select(RollbackIntent, Resume).unwrap_err().to_string();
+        assert!(error.contains("resume is closed"), "{error}");
+        // A durably begun apply may go either way, as before.
+        assert_eq!(select(ApplyIntent, Resume).unwrap(), Resume);
+        assert_eq!(select(ApplyIntent, Rollback).unwrap(), Rollback);
+        // Terminal states are unchanged.
+        assert_eq!(select(RefsHandoff, Resume).unwrap(), FinalizeAfterMarker);
+        assert!(select(RefsHandoff, Rollback).is_err());
+        assert_eq!(select(NtfsRollback, Rollback).unwrap(), FinalizeRollback);
+        assert!(select(NtfsRollback, Resume).is_err());
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExperimentalCompactOperation {
@@ -305,6 +429,53 @@ fn recover_compact_impl(
             "opened compact journal length differs from pinned ticket"
         );
         artifacts::save(output, "journal-identity.json", &observed)?;
+        // A marker write that was cut short is settled before the lifecycle
+        // is read (see `interrupted_marker`), on the journal held exclusively
+        // here. This route writes every marker while the source disk is
+        // offline and writable.
+        if crate::lab_reconstruct::may_hold_interrupted_marker(&mut journal)? {
+            phase = "compact-journal-interrupted-marker";
+            let bound =
+                protocol::compact_binding(&request, &observed.identity, &artifact_identity)?;
+            let found =
+                crate::lab_reconstruct::find_interrupted_marker(&mut journal, &ticket, &bound)
+                    .with_context(|| {
+                        format!(
+                            "looking for a partly written lifecycle marker in the recovery \
+                             journal {}",
+                            inputs.journal.display()
+                        )
+                    })?;
+            if let Some(found) = found {
+                let mut disk_events = Vec::<NativeEvent>::new();
+                let state = n2r_win32::observe_general_disk_state_readonly(
+                    request.pair.source.clone(),
+                    &mut disk_events,
+                )?;
+                crate::interrupted_marker::require_source_state(
+                    found,
+                    &inputs.journal,
+                    request.pair.source.disk_number,
+                    state.disk_attributes,
+                    &[1],
+                )?;
+                let settled = crate::lab_reconstruct::settle_interrupted_marker(
+                    &mut journal,
+                    &ticket,
+                    &bound,
+                )
+                .with_context(|| {
+                    format!(
+                        "settling the partly written {} marker of the recovery journal {}",
+                        found.name,
+                        inputs.journal.display()
+                    )
+                })?
+                .context("the partly written journal marker changed while it was being settled")?;
+                crate::interrupted_marker::announce(&settled, &inputs.journal);
+                artifacts::save(output, "interrupted-marker.json", &settled)?;
+            }
+        }
         // Public automatic routing observes the same journal held exclusively
         // below. Explicit experimental operations keep their existing path.
         let operation = if select_lifecycle {
@@ -322,25 +493,7 @@ fn recover_compact_impl(
                 .map(|p| (p.offset, p.length))
                 .collect();
             artifact.layout().require_exact_write_ranges(&ranges)?;
-            let selected = match lifecycle {
-                JournalLifecycle::PreparedClear
-                | JournalLifecycle::ApplyIntent
-                | JournalLifecycle::RollbackIntent => operation,
-                JournalLifecycle::RefsHandoff => {
-                    ensure!(
-                        operation == ExperimentalCompactOperation::Resume,
-                        "ReFS handoff is committed; raw replay, rollback and a new handoff are closed"
-                    );
-                    ExperimentalCompactOperation::FinalizeAfterMarker
-                }
-                JournalLifecycle::NtfsRollback => {
-                    ensure!(
-                        operation == ExperimentalCompactOperation::Rollback,
-                        "NTFS rollback is committed; ReFS resume is closed; use --rollback to finalize NTFS"
-                    );
-                    ExperimentalCompactOperation::FinalizeRollback
-                }
-            };
+            let selected = select_recovery_operation(lifecycle, operation)?;
             artifacts::save(
                 output,
                 "lifecycle-selection.json",
@@ -352,9 +505,97 @@ fn recover_compact_impl(
             )?;
             selected
         } else {
+            // An explicit operation keeps its own dispatch, but a resume is
+            // held to the journal all the same.
+            if operation == ExperimentalCompactOperation::Resume {
+                phase = "compact-journal-lifecycle";
+                let bound =
+                    protocol::compact_binding(&request, &observed.identity, &artifact_identity)?;
+                crate::lab_reconstruct::require_durable_apply_intent(
+                    &mut journal,
+                    &ticket,
+                    &bound,
+                    &request.comparison,
+                )?;
+            }
             operation
         };
         effective_operation = operation;
+        if matches!(
+            operation,
+            ExperimentalCompactOperation::FinalizeAfterMarker
+                | ExperimentalCompactOperation::FinalizeRollback
+        ) {
+            phase = "compact-online-terminal";
+            let mut events = Vec::<NativeEvent>::new();
+            let state = n2r_win32::observe_general_disk_state_readonly(
+                request.pair.source.clone(),
+                &mut events,
+            )?;
+            if finishes_on_mounted_volume(operation, state.disk_attributes) {
+                announce_recovery_phase(
+                    operation,
+                    "the source is already online; checking the journal marker and the mounted volume",
+                );
+                request_input.revalidate()?;
+                ticket_input.revalidate()?;
+                expectation_input.revalidate()?;
+                if operation == ExperimentalCompactOperation::FinalizeAfterMarker {
+                    let completed = protocol::compact_finalize::finalize_online_after_marker(
+                        &request,
+                        &mut artifact,
+                        &mut journal,
+                        &ticket,
+                        &expectation_input.bytes,
+                        events,
+                    )?;
+                    artifacts::save(output, "completion.json", &completed)?;
+                    ensure!(
+                        completed.success
+                            && completed.rollback_closed
+                            && completed.native.is_some(),
+                        "compact ReFS handoff is committed and the source is online, but the mounted volume \
+                         did not verify; rollback stays closed: {:?}",
+                        completed.error
+                    );
+                } else {
+                    let completed = protocol::compact_finalize::finalize_online_rollback(
+                        &request,
+                        &mut artifact,
+                        &mut journal,
+                        &ticket,
+                        events,
+                    )?;
+                    artifacts::save(output, "completion.json", &completed)?;
+                    ensure!(
+                        completed.success
+                            && completed.replay_closed
+                            && completed.mounted_filesystem.as_deref() == Some("NTFS"),
+                        "compact NTFS rollback is committed and the source is online, but it did not \
+                         mount as NTFS: {:?}",
+                        completed.error
+                    );
+                }
+                request_input.revalidate()?;
+                ticket_input.revalidate()?;
+                expectation_input.revalidate()?;
+                artifact.revalidate()?;
+                artifacts::save(
+                    output,
+                    "result.json",
+                    &serde_json::json!({
+                        "schema_version":1,"kind":"experimental-compact-recovery","success":true,
+                        "operation":operation,"fresh_apply_authorized":false,"source_admitted":false,
+                        "source_was_already_online":true,"offline_image_proof_repeated":false,
+                        "raw_replay_performed":false,"target_remains_offline":false,
+                        "rollback_closed":operation==ExperimentalCompactOperation::FinalizeAfterMarker,
+                        "ntfs_rollback_completed":operation==ExperimentalCompactOperation::FinalizeRollback,
+                        "artifact_identity_sha256":artifact_identity,"general_conversion_qualified":false,
+                    }),
+                )?;
+                return Ok(());
+            }
+        }
         phase = "reopen-activated-compact-disks";
         let mut events = Vec::<NativeEvent>::new();
         let mut target =

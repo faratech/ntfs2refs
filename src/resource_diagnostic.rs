@@ -559,10 +559,14 @@ fn run_with_fixture_job(
         },
     };
     let mut observer = FixturePreparationObserver { job, parent };
+    // The laboratory fixture diagnostic chooses its own operation below.
+    let authority = crate::execution_mode::ExecutionMode::Convert
+        .source_change_authority("the laboratory fixture diagnostic")?;
     let publication = crate::resource_preparation::prepare_with(
         generic,
         output,
         &mut observer,
+        &authority,
         |prepared, events, observer| {
             if operation != ResourceDiagnosticOperation::PrepareOnly {
                 observer.job.verify()?;

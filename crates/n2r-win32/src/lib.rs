@@ -38,6 +38,7 @@ pub mod io_profile;
 pub mod journal_file;
 #[cfg(windows)]
 pub mod lab_compression_fixture;
+pub mod lab_hold;
 #[cfg(windows)]
 pub mod lab_job;
 #[cfg(windows)]
@@ -100,6 +101,8 @@ pub mod sparse_layout;
 pub mod stream_layout;
 #[cfg(windows)]
 mod stream_native;
+pub mod target_cluster;
+pub mod target_refs_version;
 pub mod tree_resources;
 #[cfg(windows)]
 pub mod txf_native;
@@ -120,6 +123,7 @@ pub mod volume_manifest;
 pub mod volume_policy;
 #[cfg(windows)]
 pub mod vss_observation;
+pub mod windows_build;
 #[cfg(windows)]
 pub use attestation_native::collect_file_metadata;
 #[cfg(windows)]
@@ -130,6 +134,8 @@ pub use native::BootStorageHintNormalization;
 pub use native::PartitionMixedReplayGate;
 #[cfg(windows)]
 pub use native::PartitionTerminalNativeObservation;
+#[cfg(windows)]
+pub use native::forbid_raw_write_activation;
 #[cfg(windows)]
 pub use native::offline_environment;
 #[cfg(windows)]

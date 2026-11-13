@@ -22,6 +22,78 @@ pub struct ControlObservation {
     pub control_verified: bool,
     pub transactions_replayed: bool,
 }
+/// What the two control pages of one log say when set side by side. Each
+/// page is validated on its own by [`inspect_control`]; this is the part
+/// that needs both.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ControlAgreement {
+    pub sequences_equal: bool,
+    pub oldest_lsn_equal: bool,
+    /// The control with the higher sequence number; none when they are equal.
+    pub newer_control_index: Option<usize>,
+    /// Always false. This reader knows no expected value for the format
+    /// magic, so the two pages are only required to carry the same one.
+    pub format_magic_validated: bool,
+}
+
+/// Compares the two controls of one log. Unequal sequence numbers or LSNs
+/// are reported, not refused: whether the two pages may lag one another is
+/// not established here, and the log's transactions are not replayed.
+pub fn compare_controls(
+    first: &ControlObservation,
+    second: &ControlObservation,
+) -> ControlAgreement {
+    ControlAgreement {
+        sequences_equal: first.sequence == second.sequence,
+        oldest_lsn_equal: first.oldest_lsn == second.oldest_lsn,
+        newer_control_index: match first.sequence.cmp(&second.sequence) {
+            std::cmp::Ordering::Greater => Some(0),
+            std::cmp::Ordering::Less => Some(1),
+            std::cmp::Ordering::Equal => None,
+        },
+        format_magic_validated: false,
+    }
+}
+
+#[cfg(test)]
+mod control_agreement_tests {
+    use super::*;
+
+    fn control(sequence: u64, oldest_lsn: u64) -> ControlObservation {
+        ControlObservation {
+            physical_offset: 0,
+            page_sha256: String::new(),
+            format_magic: 0x1234,
+            log_uuid: [7; 16],
+            sequence,
+            oldest_lsn,
+            stored_integrity: 0,
+            computed_integrity: 0,
+            data_offset: 0,
+            data_length: 0,
+            control_verified: true,
+            transactions_replayed: false,
+        }
+    }
+
+    #[test]
+    fn two_controls_that_differ_in_sequence_or_lsn_are_reported_as_differing() {
+        let same = compare_controls(&control(5, 100), &control(5, 100));
+        assert!(same.sequences_equal && same.oldest_lsn_equal);
+        assert_eq!(same.newer_control_index, None);
+
+        let lagging = compare_controls(&control(5, 100), &control(9, 200));
+        assert!(!lagging.sequences_equal && !lagging.oldest_lsn_equal);
+        assert_eq!(lagging.newer_control_index, Some(1));
+        assert_eq!(
+            compare_controls(&control(9, 200), &control(5, 200)).newer_control_index,
+            Some(0)
+        );
+        // Equal magic on both pages is all that is known about the magic.
+        assert!(!same.format_magic_validated && !lagging.format_magic_validated);
+    }
+}
+
 fn u32le(bytes: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(bytes[at..at + 4].try_into().expect("bounded field"))
 }

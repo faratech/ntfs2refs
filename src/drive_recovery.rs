@@ -16,6 +16,58 @@ pub fn run(directory: &Path, recovery_sha256: &str, rollback: bool) -> Result<u8
     }
 }
 
+/// What to say when recovery cannot re-attach a run's shadow. Recovery holds
+/// the shadow's file against writers and attaches it read-only itself. While
+/// the attachment the stopped run made is still there (Windows has not been
+/// restarted since), that file is open for writing and Windows answers with a
+/// sharing violation, which by itself tells the owner nothing.
+fn shadow_reattach_refusal(os_error: Option<i32>, shadow: &Path) -> String {
+    let what = format!(
+        "cannot reattach the exact original protected shadow {}",
+        shadow.display()
+    );
+    if matches!(os_error, Some(32 | 33)) {
+        format!(
+            "{what}: it is still attached from the run that stopped. Detach it (Disk \
+             Management, or `detach vdisk` in diskpart) or restart Windows, then run this \
+             command again; nothing was changed"
+        )
+    } else {
+        what
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shadow_reattach_refusal as refusal;
+    use std::path::Path;
+
+    #[test]
+    fn a_shadow_still_attached_from_the_stopped_run_is_named_with_the_way_on() {
+        let shadow = Path::new("C:\\runs\\x\\shadow.vhdx");
+        for sharing_violation in [32, 33] {
+            let said = refusal(Some(sharing_violation), shadow);
+            for part in [
+                "shadow.vhdx",
+                "still attached",
+                "detach vdisk",
+                "restart Windows",
+                "nothing was changed",
+            ] {
+                assert!(said.contains(part), "{part}: {said}");
+            }
+        }
+        // Any other failure is reported as it was, with the shadow named.
+        for other in [None, Some(5), Some(2)] {
+            let said = refusal(other, shadow);
+            assert!(
+                said.contains("shadow.vhdx") && !said.contains("still attached"),
+                "{said}"
+            );
+        }
+    }
+}
+
 #[cfg(windows)]
 mod windows {
     use super::*;
@@ -194,8 +246,10 @@ mod windows {
         // original provider/GPT/route binding; it cannot create another shadow.
         let managed_owner = match managed {
             Some((path, provider, binding)) => Some(
-                managed_shadow::reattach_existing(&path, &provider, &binding)
-                    .context("cannot reattach the exact original protected shadow")?,
+                managed_shadow::reattach_existing(&path, &provider, &binding).map_err(|error| {
+                    let said = super::shadow_reattach_refusal(error.raw_os_error(), &path);
+                    anyhow::Error::from(error).context(said)
+                })?,
             ),
             None => None,
         };

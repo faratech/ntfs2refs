@@ -245,13 +245,13 @@ impl<'observation> PagedPayloadRoutes<'observation> {
                         == object.additional_names.len().checked_add(1)
                     && route.native_file_id.len() == 16
                     && route.length > 0
-                    && route.target_physical_offset.is_multiple_of(4096)
-                    && route.length.is_multiple_of(4096)
-                    && route.logical_offset.is_multiple_of(4096)
+                    && n2r_win32::target_cluster::aligned(route.target_physical_offset)
+                    && n2r_win32::target_cluster::aligned(route.length)
+                    && n2r_win32::target_cluster::aligned(route.logical_offset)
                     && route
                         .logical_offset
                         .checked_add(route.length)
-                        .is_some_and(|n| n <= stream.length / 4096 * 4096)
+                        .is_some_and(|n| n <= n2r_win32::target_cluster::floor(stream.length))
                     && route.target_physical_offset >= end
                     && next <= observation.report().pair().shadow.identity.partition_bytes
                     && store.key(ordinal)?[..8] == route.target_physical_offset.to_be_bytes(),

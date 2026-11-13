@@ -427,11 +427,113 @@ fn run() -> Result<u8> {
             let registry = ntfs2refs::capability_evidence::Registry::embedded()?;
             let large =
                 ntfs2refs::ntfs_admission::ResourceProfile::ExperimentalLargeTreeV1.limits();
+            let diagnose_refuses: Vec<_> = ntfs2refs::drive_cli::DriveArgs::DIAGNOSE_REFUSES
+                .iter()
+                .map(|(option, reason)| serde_json::json!({"option": option, "reason": reason}))
+                .collect();
             output(
-                &serde_json::json!({"schema_version":1,"raw_image_inspection":true,"ntfs_inventory_complete":false,"refs_header_inspection":true,"retained_range_comparison":true,"conversion_planning":"image feasibility reports remain non-executable","native_refs_writer":false,"conversion_writes":cfg!(windows),"journal_recovery":cfg!(windows),"native_workflow":"experimental nonboot data volumes; live qualification and external journal required","experimental_large_tree":{"available":cfg!(windows),"maximum_files":large.maximum_files,"maximum_directories":large.maximum_directories,"maximum_logical_bytes":large.maximum_logical_bytes,"native_qualified":false},"qualified_boot_builds":[],
-                    "qualification_registry_scope":registry.scope,
-                    "recorded_qualification":registry.matrix()?,
-                    "recorded_evidence_grants_runtime_authority":false}),
+                &serde_json::json!({
+                    "schema_version": 3,
+                    "raw_image_inspection": true,
+                    "ntfs_inventory_complete": false,
+                    "refs_header_inspection": true,
+                    "retained_range_comparison": true,
+                    "conversion_planning": "image feasibility reports remain non-executable",
+                    "conversion_writes": cfg!(windows),
+                    "journal_recovery": cfg!(windows),
+                    // Windows builds the ReFS metadata on a temporary shadow;
+                    // this executable writes ReFS structures raw in one place.
+                    "refs_metadata_builder": "windows",
+                    "raw_refs_writes": ["trust-label patch on the temporary shadow"],
+                    "conversion_routes": [
+                        {"route": "windows-boot-volume", "option": "--windows-boot-volume",
+                         "status": "qualified for the listed boot profiles only"},
+                        {"route": "dedicated-data-volume", "option": "--drive",
+                         "status": "experimental; not qualified by a release"},
+                        {"route": "whole-image", "option": "--whole-image-verification",
+                         "status": "experimental; data volumes only",
+                         "fixed_limits": {"files": 1024, "directories": 256, "placed_ntfs_runs": 4096},
+                         "limits_note": "refused before anything is written; the other routes are bounded by the machine's memory and working storage, not by fixed counts"},
+                        {"route": "shared-disk", "option": "--offline-media",
+                         "status": "experimental; native qualification in progress"},
+                    ],
+                    // The rows the boot-volume admission gate enforces.
+                    "qualified_boot_profiles": ntfs2refs::boot_profile::QUALIFIED,
+                    // What the default data-volume route admits. A Windows
+                    // boot volume is one of the profiles above.
+                    "source_geometry": {
+                        "sector_bytes": [512, 4096],
+                        "cluster_bytes": {"minimum": 512, "maximum": 2 * 1024 * 1024},
+                        "file_record_bytes": [1024, 4096],
+                        "index_record_bytes": {"minimum": 512, "maximum": 65536,
+                            "note": "Windows formats 4096; other sizes are checked by constructed indexes only"},
+                        "partition_length": "any; one that is not a multiple of 64 MiB is first shrunk to one",
+                    },
+                    "target": {
+                        "option": "--target-cluster-bytes",
+                        "refs_cluster_bytes": n2r_win32::target_cluster::SUPPORTED_BYTES,
+                        "default_refs_cluster_bytes": n2r_win32::target_cluster::DEFAULT_BYTES,
+                        "windows_boot_volume_refs_cluster_bytes": [n2r_win32::target_cluster::DEFAULT_BYTES],
+                        "refs_version": "the version Windows formats the shadow with: 3.14 or a later 3.x (only 3.14 has been converted)",
+                        "data_stays_in_place": "only where it lies on target-cluster boundaries; the rest is copied through the working storage",
+                    },
+                    "windows_builds": {
+                        "minimum_build": n2r_win32::windows_build::MINIMUM_BUILD,
+                        "confirmed_builds": [26100, 26300],
+                    },
+                    "source_changes_before_apply": [
+                        {"when": "the partition length is not a multiple of 64 MiB (ReFS covers a volume in whole units of that size)",
+                         "change": "the Windows NTFS driver shrinks the partition to one",
+                         "undone_if_the_run_stops": false},
+                        {"when": "--minimize-scratch",
+                         "change": "files are moved through NTFS before the source is frozen",
+                         "undone_if_the_run_stops": false},
+                    ],
+                    "list": {
+                        "option": "--list",
+                        "exit_codes": {
+                            "0": "every disk and volume was queried",
+                            (ntfs2refs::drive_cli::EXIT_LIST_INCOMPLETE.to_string()):
+                                "some device could not be queried; the list is partial",
+                        },
+                    },
+                    "diagnose": {
+                        "option": "--diagnose",
+                        "ntfs2refs_writes_to_source": false,
+                        "exit_codes": {
+                            "0": "every object was examined and none failed",
+                            (ntfs2refs::drive_cli::EXIT_DIAGNOSE_FAILURES.to_string()):
+                                "failures were reported, or the run stopped at its failure limit",
+                            "1": "the diagnosis could not finish",
+                        },
+                        "refuses": diagnose_refuses,
+                        "also_refuses": "a partition that a conversion would first shrink",
+                        "failure_limit": {"option": "--diagnose-limit", "default": 500, "zero_means": "no limit"},
+                    },
+                    "verification_modes": [
+                        {"option": null, "name": "extent identity (default)",
+                         "changes": "data that stays in place is proven by the identity of its extents; everything else is read and checksummed"},
+                        {"option": "--verify-full-content", "name": "full content",
+                         "changes": "what is checked: every stream's complete contents are read and hashed"},
+                        {"option": "--recheck-everything", "name": "repeated re-reads",
+                         "changes": "how often, not what: full re-reads at every checkpoint instead of once before the first source write"},
+                    ],
+                    "listing_comparison": {
+                        "tool": "lab-volume-manifest",
+                        "accepted_differences": n2r_win32::volume_manifest::ALLOWED_DIFFERENCES,
+                        "short_names": "each NTFS 8.3 name must be a same-directory link to its long name",
+                    },
+                    "experimental_large_tree": {
+                        "available": cfg!(windows),
+                        "maximum_files": large.maximum_files,
+                        "maximum_directories": large.maximum_directories,
+                        "maximum_logical_bytes": large.maximum_logical_bytes,
+                        "native_qualified": false,
+                    },
+                    "qualification_registry_scope": registry.scope,
+                    "recorded_qualification": registry.matrix()?,
+                    "recorded_evidence_grants_runtime_authority": false,
+                }),
                 None,
             )?;
         }

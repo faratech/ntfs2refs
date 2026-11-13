@@ -478,6 +478,11 @@ fn paged_stream_report() -> (NtfsInspection, Report) {
     let bitmap = bitmap_queries(&data, raw.geometry.total_clusters, data.len());
     let mut report = bitmap_report(&raw, &bitmap, &bitmap);
     report.schema_version = 7;
+    // Every observation answers a row of the request that asked for it.
+    report.request.files = vec![n2r_win32::attestation::FileIdentity {
+        record_number: file.record_number,
+        sequence_number: file.sequence_number,
+    }];
     report.files = vec![n2r_win32::attestation::Observation {
         case_only_fallback: None,
         identity: n2r_win32::attestation::FileIdentity {
@@ -494,7 +499,6 @@ fn paged_stream_report() -> (NtfsInspection, Report) {
 }
 
 #[test]
-#[ignore = "stale: not maintained while tests were disabled; needs triage"]
 fn legacy_stream_schemas_refuse_paged_retrieval_and_keep_empty_field_serialization() {
     let (raw, mut report) = paged_stream_report();
     for schema in 3..=6 {
@@ -514,7 +518,6 @@ fn legacy_stream_schemas_refuse_paged_retrieval_and_keep_empty_field_serializati
 }
 
 #[test]
-#[ignore = "stale: not maintained while tests were disabled; needs triage"]
 fn schema_7_keeps_exact_before_and_after_retrieval_transcripts() {
     let (raw, mut report) = paged_stream_report();
     let good = reconcile(&raw, &report).unwrap();

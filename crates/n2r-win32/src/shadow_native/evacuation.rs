@@ -122,7 +122,7 @@ fn prepare(
                 index,
                 0,
                 offset,
-                object.logical_length() / 4096 * 4096,
+                crate::target_cluster::floor(object.logical_length()),
             )?;
         }
         for run in &object.source_runs {
@@ -132,7 +132,7 @@ fn prepare(
                     index,
                     run.logical_offset,
                     offset,
-                    run.length / 4096 * 4096,
+                    crate::target_cluster::floor(run.length),
                 )?;
             }
         }
@@ -154,7 +154,8 @@ fn prepare(
                 "evacuation requires unique ordinary shadow file identities",
             ));
         }
-        if layout::u64_at(&standard, 0)? >= 4096 {
+        let cluster = crate::target_cluster::bytes();
+        if layout::u64_at(&standard, 0)? >= cluster {
             let capture = crate::stream_native::retrieval_capture(&file)?;
             for run in stream_layout::parse_complete_retrieval(&capture.canonical)? {
                 let lcn = run
@@ -164,12 +165,12 @@ fn prepare(
                     &mut owned,
                     index,
                     run.vcn
-                        .checked_mul(4096)
+                        .checked_mul(cluster)
                         .ok_or_else(|| invalid("evacuation VCN overflow"))?,
-                    lcn.checked_mul(4096)
+                    lcn.checked_mul(cluster)
                         .ok_or_else(|| invalid("evacuation LCN overflow"))?,
                     run.clusters
-                        .checked_mul(4096)
+                        .checked_mul(cluster)
                         .ok_or_else(|| invalid("evacuation run overflow"))?,
                 )?;
             }
@@ -276,7 +277,7 @@ pub(super) fn run(
         if !mapping_matches_run(
             &stream_layout::parse_complete_retrieval(&before.canonical)?,
             movement.starting_vcn,
-            movement.source_offset / 4096,
+            movement.source_offset / crate::target_cluster::bytes(),
             movement.clusters,
         )? {
             return Err(invalid("shadow evacuation source ownership changed"));

@@ -431,6 +431,9 @@ impl Write for BorrowedPagedWriter<'_> {
             .partition_offset
             .checked_add(self.source.position)
             .ok_or_else(|| invalid("fresh paged disk offset overflow"))?;
+        // The device write itself, apart from the policy check above.
+        let _timed = crate::perf::scope(crate::perf::Point::DeviceWrite);
+        crate::perf::add_bytes(crate::perf::Point::DeviceWrite, input.len() as u64);
         self.source.file.seek(SeekFrom::Start(offset))?;
         self.source.buffer.bytes_mut()[..input.len()].copy_from_slice(input);
         self.requested = attempted;
@@ -838,6 +841,7 @@ impl GeneralFrozenPartition {
             .ok_or_else(|| invalid("protected converted observer requires V4 admission"))?;
         let (report, before, observed_readonly, after) = self
             .with_readonly_refs_binding_observation(events, |protected| {
+                crate::lab_hold::reached("finalize-source-readonly");
                 let actual_label = protected_refs_label(protected.volume())?;
                 let enrollment_label = crate::volume_label::VolumeLabel::from_text("n2r-retained-shadow")?;
                 let effective_label = match expected_label {
@@ -904,6 +908,7 @@ impl GeneralFrozenPartition {
             aliases.plan_digest(),
         )?;
         let ((report,observed_aliases),before,observed_readonly,after)=self.with_readonly_refs_binding_observation(events,|protected|{
+            crate::lab_hold::reached("finalize-source-readonly");
             let actual_label=protected_refs_label(protected.volume())?;
             let enrollment_label=crate::volume_label::VolumeLabel::from_text("n2r-retained-shadow")?;
             let effective_label=match expected_label{
@@ -981,6 +986,7 @@ impl GeneralFrozenPartition {
         let plan_digest = expectations.semantic_sha256()?;
         let ((report, observed_aliases), before, observed_readonly, after) = self
             .with_readonly_refs_binding_observation(events, |protected| {
+                crate::lab_hold::reached("finalize-source-readonly");
                 let actual_label = protected_refs_label(protected.volume())?;
                 let enrollment_label =
                     crate::volume_label::VolumeLabel::from_text("n2r-retained-shadow")?;
@@ -1317,6 +1323,7 @@ impl GeneralFrozenPartition {
             let journal = &mut *journal;
             std::thread::scope(|scope| {
                 let body = scope.spawn(move || {
+                    let _sampled = crate::stack_sampler::helper();
                     crate::sha256_native::journal_body(journal, BODY, length, &expected)
                 });
                 let old_bytes = self.with_read_ahead(|source| {

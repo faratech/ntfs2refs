@@ -98,7 +98,29 @@ struct Publication {
     ticket_sha256: String,
     expected_mount_paths: Vec<String>,
     expected_source_label: VolumeLabel,
+    /// The ReFS allocation unit of the run, written only when it is not the
+    /// 4 KiB every earlier run used, so those runs' records are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target_cluster_bytes: Option<u64>,
+    /// The ReFS version of the run's shadow, written only when it is not the
+    /// 3.14 every earlier run had.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target_refs_version: Option<(u32, u32)>,
     serialized_publication_grants_authority: bool,
+}
+
+/// Everything read back from a run is counted in the unit the run recorded.
+/// This process takes that unit, or refuses if it already works in another.
+fn adopt_target_cluster(recorded: Option<u64>) -> Result<()> {
+    n2r_win32::target_cluster::choose(recorded.unwrap_or(n2r_win32::target_cluster::DEFAULT_BYTES))
+        .context("the recovery publication's ReFS allocation unit")
+}
+
+/// The same for the ReFS version the run's shadow was formatted with.
+fn adopt_target_refs_version(recorded: Option<(u32, u32)>) -> Result<()> {
+    let (major, minor) = recorded.unwrap_or(n2r_win32::target_refs_version::DEFAULT);
+    n2r_win32::target_refs_version::choose(major, minor)
+        .context("the recovery publication's ReFS version")
 }
 
 fn digest(text: &str) -> Result<[u8; 32]> {
@@ -431,6 +453,168 @@ impl HeldFile {
     }
 }
 
+/// Disk attributes of a source that is online and read-only: what
+/// finalization sets while Windows mounts the converted volume for its
+/// verification, and what a process that dies during that verification
+/// leaves behind.
+const ONLINE_READ_ONLY: u64 = 2;
+
+/// Whether a recovery has to seal the source again before it can reopen it.
+///
+/// Only after a durable handoff: nothing remains to be written from the
+/// journal, and a read-only disk has had nothing written to it, so sealing
+/// it is exactly what the interrupted verification would have done on its
+/// way out. In every other lifecycle an online disk is not a state this
+/// recovery left, and the reopen below refuses it.
+fn interrupted_verification_left_source_online(
+    lifecycle: SelectedLifecycle,
+    disk_attributes: u64,
+) -> bool {
+    lifecycle == SelectedLifecycle::Handoff && disk_attributes == ONLINE_READ_ONLY
+}
+
+/// Dismounts and seals a converted source that an interrupted verification
+/// left online and read-only. Returns whether it did anything.
+fn reseal_after_interrupted_verification(
+    source: &GeneralDiskBinding,
+    lifecycle: SelectedLifecycle,
+    events: &mut Vec<NativeEvent>,
+) -> Result<bool> {
+    // Nothing is asked of the disk in any other lifecycle: those reopen
+    // exactly as they did before.
+    if lifecycle != SelectedLifecycle::Handoff {
+        return Ok(false);
+    }
+    let state = n2r_win32::observe_general_disk_state_readonly(source.clone(), events)
+        .context("observing the converted source disk before reopening it")?;
+    if !interrupted_verification_left_source_online(lifecycle, state.disk_attributes) {
+        return Ok(false);
+    }
+    // Locks and dismounts the read-only volume, then sets the disk offline
+    // and read-only again; refuses if the volume is in use or the disk is
+    // not the one this recovery is bound to.
+    let (sealed, changed) = GeneralFrozenPartition::restore_exclusion(source.clone(), events)
+        .with_context(|| {
+            format!(
+                "disk {} was left online and read-only by a verification that did not finish; \
+                 sealing it again failed (close anything that has its volume open and retry)",
+                source.disk_number
+            )
+        })?;
+    drop(sealed);
+    eprintln!(
+        "Disk {} was online and read-only, as an interrupted verification leaves it; \
+         it is sealed again and recovery continues.",
+        source.disk_number
+    );
+    Ok(changed)
+}
+
+/// The state of the source disk in which the whole-disk resource route
+/// writes each lifecycle marker. The apply intent is written while the disk
+/// is still offline and read-only (3), before it is made writable; the
+/// rollback intent, the handoff and a rollback's abort are written while it
+/// is offline and writable (1); an abandoned run's abort is written in
+/// whichever of the two the run was left in.
+fn marker_source_attributes(marker: crate::interrupted_marker::Marker) -> &'static [u64] {
+    use crate::interrupted_marker::Marker;
+    match marker {
+        Marker::ApplyIntent => &[3],
+        Marker::RollbackIntent | Marker::Handoff | Marker::AbortAfterRollback => &[1],
+        Marker::AbortAfterAbandon => &[1, 3],
+    }
+}
+
+#[cfg(test)]
+mod marker_source_state_tests {
+    use super::marker_source_attributes as written_in;
+    use crate::interrupted_marker::Marker;
+
+    #[test]
+    fn each_marker_is_settled_only_in_the_disk_state_it_is_written_in() {
+        // The apply intent precedes the writable transition.
+        assert_eq!(written_in(Marker::ApplyIntent), &[3]);
+        for marker in [
+            Marker::RollbackIntent,
+            Marker::Handoff,
+            Marker::AbortAfterRollback,
+        ] {
+            assert_eq!(written_in(marker), &[1], "{marker:?}");
+        }
+        assert_eq!(written_in(Marker::AbortAfterAbandon), &[1, 3]);
+        // Never beside an online disk, read-only or not.
+        for marker in [
+            Marker::ApplyIntent,
+            Marker::RollbackIntent,
+            Marker::Handoff,
+            Marker::AbortAfterRollback,
+            Marker::AbortAfterAbandon,
+        ] {
+            assert!(!written_in(marker).contains(&0), "{marker:?}");
+            assert!(!written_in(marker).contains(&2), "{marker:?}");
+        }
+    }
+}
+
+/// Settles a lifecycle marker whose write was cut short, before a recovery
+/// reads the journal's lifecycle (see `interrupted_marker`). Only recovery
+/// commands call this: an inspection or a finalizer refuses such a journal
+/// as before.
+///
+/// `whole_disk_source` is the source disk of a whole-disk conversion. The
+/// marker is settled only if that disk is in the state the marker is written
+/// in; otherwise it is reported, nothing is changed, and recovery stops. A
+/// partition-scoped recovery holds its partition through its owner, which
+/// its caller has authenticated, and passes `None`.
+fn settle_interrupted_marker(
+    journal: &mut BoundNativeRecoveryJournal,
+    ticket: &super::sj::SelectedTicket,
+    path: &Path,
+    whole_disk_source: Option<&GeneralDiskBinding>,
+    events: &mut Vec<NativeEvent>,
+) -> Result<()> {
+    let (journal, _) = journal.split_for_observation()?;
+    let Some(found) = super::sj::find_interrupted_marker(journal, ticket).with_context(|| {
+        format!(
+            "looking for a partly written lifecycle marker in the recovery journal {}",
+            path.display()
+        )
+    })?
+    else {
+        return Ok(());
+    };
+    if let Some(source) = whole_disk_source {
+        let state = n2r_win32::observe_general_disk_state_readonly(source.clone(), events)
+            .context("observing the source disk before settling a partly written journal marker")?;
+        crate::interrupted_marker::require_source_state(
+            found,
+            path,
+            source.disk_number,
+            state.disk_attributes,
+            marker_source_attributes(found.marker),
+        )?;
+    }
+    let settled = super::sj::settle_interrupted_marker(journal, ticket)
+        .with_context(|| {
+            format!(
+                "settling the partly written {} marker of the recovery journal {}",
+                found.name,
+                path.display()
+            )
+        })?
+        .context("the partly written journal marker changed while it was being settled")?;
+    crate::interrupted_marker::announce(&settled, path);
+    events.push(NativeEvent {
+        operation: "interrupted-journal-marker-settled".into(),
+        control_code: 0,
+        input: vec![],
+        succeeded: true,
+        native_error: None,
+        output: serde_json::to_vec(&settled)?,
+    });
+    Ok(())
+}
+
 enum ObservedTarget {
     Frozen(GeneralFrozenPartition),
     Activated(GeneralExclusiveRecoveryTarget),
@@ -622,6 +806,8 @@ impl ReopenedPartitionResourceRecovery {
         )?;
         publication_file.file.seek(SeekFrom::Start(0))?;
         let publication: Publication = serde_json::from_reader(&mut publication_file.file)?;
+        adopt_target_cluster(publication.target_cluster_bytes)?;
+        adopt_target_refs_version(publication.target_refs_version)?;
         let mut canonical = HashSink {
             bytes: 0,
             maximum: size,
@@ -850,6 +1036,7 @@ impl ReopenedPartitionResourceRecovery {
             index_path,
             maximum_index_bytes,
             events,
+            false,
         )? {
             ReopenedPartitionRestart::Closed(value) if value.kind() == kind => Ok(value),
             _ => anyhow::bail!(
@@ -887,6 +1074,7 @@ impl ReopenedPartitionResourceRecovery {
             index_path,
             maximum_index_bytes,
             events,
+            false,
         )? {
             ReopenedPartitionRestart::Replay(value) => Ok(value),
             ReopenedPartitionRestart::Closed(_) => {
@@ -909,6 +1097,9 @@ impl ReopenedPartitionResourceRecovery {
         index_path: &Path,
         maximum_index_bytes: u64,
         events: &mut Vec<NativeEvent>,
+        // The recovery command settles a marker write that was cut short;
+        // terminal-only callers refuse such a journal as before.
+        settle_interrupted: bool,
     ) -> Result<ReopenedPartitionRestart> {
         ensure!(
             group.group() == ArtifactGroup::RecoveryCopy
@@ -947,6 +1138,8 @@ impl ReopenedPartitionResourceRecovery {
         )?;
         publication_file.file.seek(SeekFrom::Start(0))?;
         let publication: Publication = serde_json::from_reader(&mut publication_file.file)?;
+        adopt_target_cluster(publication.target_cluster_bytes)?;
+        adopt_target_refs_version(publication.target_refs_version)?;
         let mut canonical = HashSink {
             bytes: 0,
             maximum: size,
@@ -1167,6 +1360,17 @@ impl ReopenedPartitionResourceRecovery {
             &artifacts,
             events,
         )?;
+        if settle_interrupted {
+            // The partition's owner, the restart origin and the artifact
+            // volume were authenticated above.
+            settle_interrupted_marker(
+                &mut journal,
+                locator.ticket(),
+                locator.journal_path(),
+                None,
+                events,
+            )?;
+        }
         let mut observation = BoundJournalObservation::open(
             &mut journal,
             locator.ticket(),
@@ -1819,6 +2023,8 @@ impl ReopenedResourceRecovery {
         )?;
         publication_file.file.seek(SeekFrom::Start(0))?;
         let publication: Publication = serde_json::from_reader(&mut publication_file.file)?;
+        adopt_target_cluster(publication.target_cluster_bytes)?;
+        adopt_target_refs_version(publication.target_refs_version)?;
         let mut canonical = HashSink {
             bytes: 0,
             maximum: size,
@@ -1982,6 +2188,17 @@ impl ReopenedResourceRecovery {
                 "native journal owner and published locator differ"
             );
         }
+        if allow_online_terminal {
+            // Set by the recovery command alone. The inspection and the
+            // finalizer, which share this function, refuse such a journal.
+            settle_interrupted_marker(
+                &mut journal,
+                locator.ticket(),
+                locator.journal_path(),
+                Some(&publication.source),
+                events,
+            )?;
+        }
         let _index_parent = hold_index_parent(index_path, &volume)
             .with_context(|| format!("holding the directory of {}", index_path.display()))?;
         n2r_win32::perf::step("scan journal");
@@ -1993,8 +2210,20 @@ impl ReopenedResourceRecovery {
             index_path,
             maximum_index_bytes,
         )
-        .context("observing the reopened recovery journal")?;
-        let initial_lifecycle = observation.lifecycle()?;
+        .with_context(|| {
+            format!(
+                "observing the reopened recovery journal {}",
+                locator.journal_path().display()
+            )
+        })?;
+        // A marker that is neither clear nor exact is refused here; say which
+        // journal holds it.
+        let initial_lifecycle = observation.lifecycle().with_context(|| {
+            format!(
+                "reading the lifecycle markers of the recovery journal {}",
+                locator.journal_path().display()
+            )
+        })?;
         n2r_win32::perf::step("retire journal index");
         observation.retire()?;
         n2r_win32::perf::step("reopen converted source");
@@ -2036,6 +2265,11 @@ impl ReopenedResourceRecovery {
         let (target, initial_state, mounted) = match online {
             Some((mounted, state)) => (None, state, Some(mounted)),
             None => {
+                reseal_after_interrupted_verification(
+                    &publication.source,
+                    initial_lifecycle,
+                    events,
+                )?;
                 let target = ObservedTarget::reopen(publication.source.clone(), events)
                     .context("reopening the converted source partition")?;
                 let state = target.state(events)?;
@@ -3189,5 +3423,43 @@ impl ReopenedPartitionResourceRecovery {
             "extent_only_streams":extent_streams,"recovery_files_retired":false,
             "native_terminal_verified_before_writable":true,"stable_release_qualification":false}),
         )
+    }
+}
+
+#[cfg(test)]
+mod interrupted_verification_tests {
+    use super::*;
+
+    #[test]
+    fn only_a_read_only_online_source_after_handoff_is_sealed_again() {
+        // What a verification that did not finish leaves: handoff durable,
+        // disk online and read-only.
+        assert!(interrupted_verification_left_source_online(
+            SelectedLifecycle::Handoff,
+            ONLINE_READ_ONLY
+        ));
+        // Online and writable (0) is the terminal state, reconciled
+        // elsewhere; offline (1) and offline read-only (3) reopen as they are.
+        for attributes in [0, 1, 3] {
+            assert!(!interrupted_verification_left_source_online(
+                SelectedLifecycle::Handoff,
+                attributes
+            ));
+        }
+        // Before a handoff an online disk is never something to repair here:
+        // the journal may still have bytes to write or to restore.
+        for lifecycle in [
+            SelectedLifecycle::PreparedClear,
+            SelectedLifecycle::ApplyIntent,
+            SelectedLifecycle::RollbackIntent,
+            SelectedLifecycle::Aborted,
+        ] {
+            for attributes in [0, 1, 2, 3] {
+                assert!(
+                    !interrupted_verification_left_source_online(lifecycle, attributes),
+                    "{lifecycle:?} with attributes {attributes}"
+                );
+            }
+        }
     }
 }

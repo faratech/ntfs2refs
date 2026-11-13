@@ -71,6 +71,10 @@ fn is_zero(value: &u32) -> bool {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Difference {
     pub path: String,
+    /// One of a fixed set of labels, so differences can be counted by kind
+    /// whatever names and values `what` goes on to quote.
+    #[serde(default)]
+    pub kind: String,
     pub what: String,
 }
 
@@ -83,7 +87,7 @@ pub struct Comparison {
     /// Expected differences, counted by kind.
     pub allowed: BTreeMap<String, usize>,
     pub difference_count: usize,
-    /// Every difference, counted by kind (numbers replaced by N).
+    /// Every difference, counted by its fixed kind.
     pub difference_kinds: BTreeMap<String, usize>,
     /// The first differences, in path order.
     pub differences: Vec<Difference>,
@@ -95,6 +99,19 @@ impl Comparison {
 }
 
 const DIFFERENCE_LIMIT: usize = 500;
+/// Every difference the comparison accepts, by the name it is counted
+/// under in `Comparison::allowed`. Anything else is reported. Short names that
+/// became same-directory links are counted apart, in `short_names_as_links`.
+pub const ALLOWED_DIFFERENCES: &[&str] = &[
+    ALLOWED_SYSTEM_VOLUME_INFORMATION,
+    ALLOWED_COMPRESSION_FLAG,
+    ALLOWED_EMPTY_SYSTEM_ACL,
+    ALLOWED_KERNEL_CACHE,
+];
+const ALLOWED_SYSTEM_VOLUME_INFORMATION: &str = "System Volume Information content";
+const ALLOWED_COMPRESSION_FLAG: &str = "NTFS compression flag removed";
+const ALLOWED_EMPTY_SYSTEM_ACL: &str = "empty system ACL versus none";
+const ALLOWED_KERNEL_CACHE: &str = "kernel cache attributes dropped";
 // ReFS reports these on its own files; NTFS never does.
 const REFS_ONLY_ATTRIBUTES: u32 = 0x8000 | 0x2_0000;
 // NTFS compression is decoded during conversion; ReFS stores the plain data.
@@ -117,9 +134,13 @@ fn join(parent: &str, leaf: &str) -> String {
     }
 }
 fn inside_system_volume_information(path: &str) -> bool {
-    path.len() > SYSTEM_VOLUME_INFORMATION.len()
-        && path[..SYSTEM_VOLUME_INFORMATION.len()].eq_ignore_ascii_case(SYSTEM_VOLUME_INFORMATION)
-        && path.as_bytes()[SYSTEM_VOLUME_INFORMATION.len()] == b'\\'
+    // Compared as bytes. A path is arbitrary UTF-8, so the prefix length need
+    // not fall on one of its character boundaries, and slicing the string
+    // there would panic.
+    let (bytes, prefix) = (path.as_bytes(), SYSTEM_VOLUME_INFORMATION.as_bytes());
+    bytes.len() > prefix.len()
+        && bytes[..prefix.len()].eq_ignore_ascii_case(prefix)
+        && bytes[prefix.len()] == b'\\'
 }
 fn attributes_for_comparison(attributes: u32) -> u32 {
     attributes & !REFS_ONLY_ATTRIBUTES & !NORMAL
@@ -154,19 +175,25 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
     let mut explained_after: BTreeSet<String> = BTreeSet::new();
 
     for record in before {
-        let mut differ = |what: String| {
+        let mut differ = |kind: &str, what: String| {
             differences.push(Difference {
                 path: record.path.clone(),
+                kind: kind.to_owned(),
                 what,
             })
         };
         for error in &record.errors {
-            differ(format!("could not be read before conversion: {error}"));
+            differ(
+                "unreadable before conversion",
+                format!("could not be read before conversion: {error}"),
+            );
         }
         // An 8.3 name must survive as a same-directory link to the long name.
+        // The converter links every separately stored short name whose text
+        // is not exactly the long name, so the same test decides it here.
         if let Some(short) = &record.short_name {
             let (parent, leaf) = parent_and_leaf(&record.path);
-            if !short.eq_ignore_ascii_case(leaf) {
+            if short != leaf {
                 let alias = join(parent, short);
                 match after_by_path.get(alias.as_str()) {
                     Some(link)
@@ -180,30 +207,40 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
                     Some(_) if before_paths.contains(alias.as_str()) => {
                         // A real object of that name exists; it is compared on its own.
                     }
-                    Some(_) => differ(format!(
-                        "short name {short} exists but is not a link to {leaf}"
-                    )),
-                    None => differ(format!("short name {short} was lost")),
+                    Some(_) => differ(
+                        "short name is not a link to its long name",
+                        format!("short name {short} exists but is not a link to {leaf}"),
+                    ),
+                    None => differ("short name lost", format!("short name {short} was lost")),
                 }
             }
         }
         let Some(now) = after_by_path.get(record.path.as_str()) else {
             if inside_system_volume_information(&record.path) {
-                allow("System Volume Information content", &mut result.allowed);
+                allow(ALLOWED_SYSTEM_VOLUME_INFORMATION, &mut result.allowed);
             } else {
-                differ("missing after conversion".to_owned());
+                differ(
+                    "missing after conversion",
+                    "missing after conversion".to_owned(),
+                );
             }
             continue;
         };
         if inside_system_volume_information(&record.path) {
-            allow("System Volume Information content", &mut result.allowed);
+            allow(ALLOWED_SYSTEM_VOLUME_INFORMATION, &mut result.allowed);
             continue;
         }
         for error in &now.errors {
-            differ(format!("could not be read after conversion: {error}"));
+            differ(
+                "unreadable after conversion",
+                format!("could not be read after conversion: {error}"),
+            );
         }
         if now.directory != record.directory {
-            differ("file/directory kind changed".to_owned());
+            differ(
+                "file/directory kind changed",
+                "file/directory kind changed".to_owned(),
+            );
             continue;
         }
         let (was, is) = (
@@ -212,12 +249,15 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
         );
         if was != is {
             if was & !COMPRESSED == is {
-                allow("NTFS compression flag removed", &mut result.allowed);
+                allow(ALLOWED_COMPRESSION_FLAG, &mut result.allowed);
             } else {
-                differ(format!(
-                    "attributes {:#x} became {:#x}",
-                    record.attributes, now.attributes
-                ));
+                differ(
+                    "attributes changed",
+                    format!(
+                        "attributes {:#x} became {:#x}",
+                        record.attributes, now.attributes
+                    ),
+                );
             }
         }
         for (name, was, is) in [
@@ -226,17 +266,23 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
             ("change time", record.changed, now.changed),
         ] {
             if was != is {
-                differ(format!("{name} {was} became {is}"));
+                differ(
+                    &format!("{name} changed"),
+                    format!("{name} {was} became {is}"),
+                );
             }
         }
         if !record.directory && record.bytes != now.bytes {
-            differ(format!("size {} became {}", record.bytes, now.bytes));
+            differ(
+                "size changed",
+                format!("size {} became {}", record.bytes, now.bytes),
+            );
         }
         if record.sha256 != now.sha256 {
-            differ("content differs".to_owned());
+            differ("content differs", "content differs".to_owned());
         }
         if record.streams != now.streams {
-            differ("named streams differ".to_owned());
+            differ("named streams differ", "named streams differ".to_owned());
         }
         match (&record.security, &now.security) {
             (Some(was), Some(is)) if was == is => (),
@@ -244,30 +290,39 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
                 let (was_base, _) = security_for_comparison(was);
                 let (is_base, _) = security_for_comparison(is);
                 if was_base == is_base {
-                    allow("empty system ACL versus none", &mut result.allowed);
+                    allow(ALLOWED_EMPTY_SYSTEM_ACL, &mut result.allowed);
                 } else {
-                    differ(format!("security {was} became {is}"));
+                    differ("security changed", format!("security {was} became {is}"));
                 }
             }
             (None, None) => (),
-            _ => differ("security could not be read on one side".to_owned()),
+            _ => differ(
+                "security unreadable on one side",
+                "security could not be read on one side".to_owned(),
+            ),
         }
         if record.reparse_tag != now.reparse_tag || record.reparse_sha256 != now.reparse_sha256 {
-            differ("reparse point differs".to_owned());
+            differ("reparse point differs", "reparse point differs".to_owned());
         }
         if record.extended_attributes != now.extended_attributes {
-            differ("extended attributes differ".to_owned());
+            differ(
+                "extended attributes differ",
+                "extended attributes differ".to_owned(),
+            );
         }
         if now.kernel_cache_attributes > record.kernel_cache_attributes {
-            differ("kernel cache attributes appeared".to_owned());
+            differ(
+                "kernel cache attributes appeared",
+                "kernel cache attributes appeared".to_owned(),
+            );
         } else if now.kernel_cache_attributes < record.kernel_cache_attributes {
-            allow("kernel cache attributes dropped", &mut result.allowed);
+            allow(ALLOWED_KERNEL_CACHE, &mut result.allowed);
         }
         if record.links != now.links {
-            differ(format!(
-                "hard-link count {} became {}",
-                record.links, now.links
-            ));
+            differ(
+                "hard-link count changed",
+                format!("hard-link count {} became {}", record.links, now.links),
+            );
         }
     }
 
@@ -293,6 +348,7 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
     for names in before_groups.difference(&after_groups) {
         differences.push(Difference {
             path: names.iter().next().cloned().unwrap_or_default(),
+            kind: "hard-link set not preserved".to_owned(),
             what: format!("hard-link set of {} names is not preserved", names.len()),
         });
     }
@@ -302,10 +358,11 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
             continue;
         }
         if inside_system_volume_information(&record.path) {
-            allow("System Volume Information content", &mut result.allowed);
+            allow(ALLOWED_SYSTEM_VOLUME_INFORMATION, &mut result.allowed);
         } else {
             differences.push(Difference {
                 path: record.path.clone(),
+                kind: "appeared after conversion".to_owned(),
                 what: "appeared after conversion".to_owned(),
             });
         }
@@ -314,24 +371,303 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
     differences.sort_by(|a, b| a.path.cmp(&b.path).then_with(|| a.what.cmp(&b.what)));
     result.difference_count = differences.len();
     for difference in &differences {
-        let mut kind = String::new();
-        let mut in_number = false;
-        for character in difference.what.chars().take(60) {
-            if character.is_ascii_digit() {
-                if !in_number {
-                    kind.push('N');
-                }
-                in_number = true;
-            } else {
-                in_number = false;
-                kind.push(character);
-            }
-        }
-        *result.difference_kinds.entry(kind).or_default() += 1;
+        *result
+            .difference_kinds
+            .entry(difference.kind.clone())
+            .or_default() += 1;
     }
     differences.truncate(DIFFERENCE_LIMIT);
     result.differences = differences;
     result
+}
+
+/// Compares two listings of a volume that must not have changed at all: the
+/// NTFS source before and after a diagnose run, or before a conversion and
+/// after its rollback. Every recorded field of every object must be equal,
+/// short names included, and nothing is accepted as an expected difference.
+pub fn compare_exact(before: &[Record], after: &[Record]) -> Comparison {
+    let mut result = Comparison {
+        before_objects: before.len(),
+        after_objects: after.len(),
+        ..Comparison::default()
+    };
+    let mut differences: Vec<Difference> = Vec::new();
+    let after_by_path: BTreeMap<&str, &Record> = after
+        .iter()
+        .map(|record| (record.path.as_str(), record))
+        .collect();
+    let before_paths: BTreeSet<&str> = before.iter().map(|record| record.path.as_str()).collect();
+
+    for record in before {
+        let mut differ = |kind: &str, what: String| {
+            differences.push(Difference {
+                path: record.path.clone(),
+                kind: kind.to_owned(),
+                what,
+            })
+        };
+        for error in &record.errors {
+            differ(
+                "unreadable before",
+                format!("could not be read before: {error}"),
+            );
+        }
+        let Some(now) = after_by_path.get(record.path.as_str()) else {
+            differ("missing afterwards", "missing afterwards".to_owned());
+            continue;
+        };
+        for error in &now.errors {
+            differ(
+                "unreadable afterwards",
+                format!("could not be read afterwards: {error}"),
+            );
+        }
+        if now.directory != record.directory {
+            differ(
+                "file/directory kind changed",
+                "file/directory kind changed".to_owned(),
+            );
+            continue;
+        }
+        if record.attributes != now.attributes {
+            differ(
+                "attributes changed",
+                format!(
+                    "attributes {:#x} became {:#x}",
+                    record.attributes, now.attributes
+                ),
+            );
+        }
+        for (name, was, is) in [
+            ("creation time", record.created, now.created),
+            ("last write time", record.written, now.written),
+            ("change time", record.changed, now.changed),
+        ] {
+            if was != is {
+                differ(
+                    &format!("{name} changed"),
+                    format!("{name} {was} became {is}"),
+                );
+            }
+        }
+        if record.bytes != now.bytes {
+            differ(
+                "size changed",
+                format!("size {} became {}", record.bytes, now.bytes),
+            );
+        }
+        if record.short_name != now.short_name {
+            differ(
+                "short name changed",
+                format!(
+                    "short name {:?} became {:?}",
+                    record.short_name, now.short_name
+                ),
+            );
+        }
+        if record.sha256 != now.sha256 {
+            differ("content differs", "content differs".to_owned());
+        }
+        if record.streams != now.streams {
+            differ("named streams differ", "named streams differ".to_owned());
+        }
+        if record.security != now.security {
+            differ(
+                "security changed",
+                format!("security {:?} became {:?}", record.security, now.security),
+            );
+        }
+        if record.reparse_tag != now.reparse_tag
+            || record.reparse_sha256 != now.reparse_sha256
+            || record.relative_link_target != now.relative_link_target
+        {
+            differ("reparse point differs", "reparse point differs".to_owned());
+        }
+        if record.extended_attributes != now.extended_attributes {
+            differ(
+                "extended attributes differ",
+                "extended attributes differ".to_owned(),
+            );
+        }
+        if record.kernel_cache_attributes != now.kernel_cache_attributes {
+            differ(
+                "kernel cache attributes changed",
+                format!(
+                    "kernel cache attributes {} became {}",
+                    record.kernel_cache_attributes, now.kernel_cache_attributes
+                ),
+            );
+        }
+        if record.links != now.links {
+            differ(
+                "hard-link count changed",
+                format!("hard-link count {} became {}", record.links, now.links),
+            );
+        }
+    }
+
+    // The same names must share one file before and afterwards. A group's
+    // identifier means something only within its own listing.
+    let groups = |records: &[Record]| -> BTreeSet<BTreeSet<String>> {
+        let mut by_group: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
+        for record in records {
+            if let Some(group) = &record.link_group {
+                by_group
+                    .entry(group)
+                    .or_default()
+                    .insert(record.path.clone());
+            }
+        }
+        by_group
+            .into_values()
+            .filter(|names| names.len() > 1)
+            .collect()
+    };
+    let (before_groups, after_groups) = (groups(before), groups(after));
+    for names in before_groups.symmetric_difference(&after_groups) {
+        differences.push(Difference {
+            path: names.iter().next().cloned().unwrap_or_default(),
+            kind: "hard-link set changed".to_owned(),
+            what: format!("hard-link set of {} names is not the same", names.len()),
+        });
+    }
+
+    for record in after {
+        if !before_paths.contains(record.path.as_str()) {
+            differences.push(Difference {
+                path: record.path.clone(),
+                kind: "appeared afterwards".to_owned(),
+                what: "appeared afterwards".to_owned(),
+            });
+        }
+    }
+
+    differences.sort_by(|a, b| a.path.cmp(&b.path).then_with(|| a.what.cmp(&b.what)));
+    result.difference_count = differences.len();
+    for difference in &differences {
+        *result
+            .difference_kinds
+            .entry(difference.kind.clone())
+            .or_default() += 1;
+    }
+    differences.truncate(DIFFERENCE_LIMIT);
+    result.differences = differences;
+    result
+}
+
+/// Runs `work` over every item on up to `threads` threads, each with its own
+/// `state`, and returns one output per item in no particular order.
+///
+/// A panic in `work` fails the whole run and names the item. Dropping what a
+/// panicked thread had finished would leave a listing that looks complete and
+/// later compares as if objects had gone missing or appeared.
+#[cfg(any(windows, test))]
+fn run_all<T: Send, S, R: Send>(
+    items: Vec<T>,
+    threads: usize,
+    state: impl Fn() -> S + Sync,
+    label: impl Fn(&T) -> String + Sync,
+    work: impl Fn(&mut S, T) -> R + Sync,
+) -> std::io::Result<Vec<R>> {
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+    let total = items.len();
+    let slots: Vec<Mutex<Option<T>>> = items
+        .into_iter()
+        .map(|item| Mutex::new(Some(item)))
+        .collect();
+    let cursor = AtomicUsize::new(0);
+    let stop = AtomicBool::new(false);
+    let finished: Vec<Result<Vec<R>, String>> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..threads.clamp(1, 64).min(total.max(1)))
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut own = state();
+                    let mut done = Vec::new();
+                    while !stop.load(Ordering::Acquire) {
+                        let index = cursor.fetch_add(1, Ordering::Relaxed);
+                        let Some(slot) = slots.get(index) else {
+                            break;
+                        };
+                        let item = slot
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .take();
+                        let Some(item) = item else {
+                            continue;
+                        };
+                        let name = label(&item);
+                        let observed =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                work(&mut own, item)
+                            }));
+                        match observed {
+                            Ok(output) => done.push(output),
+                            Err(payload) => {
+                                stop.store(true, Ordering::Release);
+                                let message = payload
+                                    .downcast_ref::<&str>()
+                                    .map(|text| (*text).to_owned())
+                                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                                    .unwrap_or_else(|| "no message".to_owned());
+                                return Err(format!(
+                                    "capture worker panicked while observing {name}: {message}"
+                                ));
+                            }
+                        }
+                    }
+                    Ok(done)
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .map(|worker| {
+                worker.join().unwrap_or_else(|_| {
+                    Err("capture worker panicked outside an observation".to_owned())
+                })
+            })
+            .collect()
+    });
+    let mut outputs = Vec::with_capacity(total);
+    for result in finished {
+        outputs.extend(result.map_err(std::io::Error::other)?);
+    }
+    if outputs.len() != total {
+        return Err(std::io::Error::other(format!(
+            "capture observed {} of {total} listed objects",
+            outputs.len()
+        )));
+    }
+    Ok(outputs)
+}
+
+/// Calls `query` with `buffer`, doubling the buffer while Windows reports that
+/// the answer needs more room, up to `limit_bytes`.
+#[cfg(any(windows, test))]
+fn query_growing(
+    buffer: &mut Vec<u64>,
+    limit_bytes: usize,
+    what: &str,
+    mut query: impl FnMut(&mut [u64]) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    loop {
+        match query(buffer) {
+            // ERROR_MORE_DATA, ERROR_BAD_LENGTH: the answer did not fit.
+            Err(error) if matches!(error.raw_os_error(), Some(234 | 24)) => {
+                let bytes = buffer.len() * 8;
+                if bytes >= limit_bytes {
+                    return Err(std::io::Error::other(format!(
+                        "{what} does not fit in {limit_bytes} bytes: {error}"
+                    )));
+                }
+                buffer.resize((bytes * 2).clamp(8, limit_bytes).div_ceil(8), 0);
+            }
+            other => return other,
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -347,7 +683,6 @@ mod capture {
         os::windows::{ffi::OsStrExt, fs::OpenOptionsExt, io::AsRawHandle},
         path::Path,
         ptr,
-        sync::atomic::{AtomicUsize, Ordering},
     };
     use windows_sys::Win32::{
         Foundation::LocalFree,
@@ -408,36 +743,61 @@ mod capture {
     fn i64_at(bytes: &[u8], at: usize) -> i64 {
         i64::from_le_bytes(bytes[at..at + 8].try_into().expect("eight bytes"))
     }
-    fn utf16(bytes: &[u8]) -> String {
+    /// The text of little-endian UTF-16 bytes, or their code units when they
+    /// are not valid UTF-16. NTFS permits unpaired surrogates in names; a
+    /// lossy conversion would record a different name.
+    pub(super) fn utf16(bytes: &[u8]) -> Result<String, Vec<u16>> {
         let units: Vec<u16> = bytes
             .chunks_exact(2)
             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
             .collect();
-        String::from_utf16_lossy(&units)
+        String::from_utf16(&units).map_err(|_| units)
+    }
+
+    /// A name the listing cannot hold exactly. Its object could not be
+    /// reopened by the recorded path, and two such names could share one.
+    #[derive(Debug)]
+    struct InvalidName(String);
+    impl std::fmt::Display for InvalidName {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(&self.0)
+        }
+    }
+    impl std::error::Error for InvalidName {}
+    fn invalid_name(directory: &str, what: &str, units: &[u16]) -> io::Error {
+        io::Error::other(InvalidName(format!(
+            "directory {directory} holds a {what} that is not valid UTF-16 and cannot be listed exactly: {units:04x?}"
+        )))
     }
 
     /// One directory's entries, with the short names NTFS keeps beside them.
-    fn list(prefix: &str, path: &str, out: &mut Vec<Pending>) -> io::Result<()> {
+    fn list(
+        prefix: &str,
+        path: &str,
+        buffer: &mut [u64],
+        out: &mut Vec<Pending>,
+    ) -> io::Result<()> {
         let directory = open(prefix, path)?;
-        let mut buffer = vec![0u64; 32 * 1024];
         loop {
             // FileIdBothDirectoryInfo
-            match information(&directory, 10, &mut buffer) {
+            match information(&directory, 10, buffer) {
                 Ok(()) => (),
                 // ERROR_NO_MORE_FILES
                 Err(error) if error.raw_os_error() == Some(18) => return Ok(()),
                 Err(error) => return Err(error),
             }
-            let bytes = bytes_of(&buffer);
+            let bytes = bytes_of(buffer);
             let mut at = 0usize;
             loop {
                 let entry = &bytes[at..];
                 let next = u32_at(entry, 0) as usize;
                 let name_bytes = u32_at(entry, 60) as usize;
-                let name = utf16(&entry[104..104 + name_bytes]);
+                let name = utf16(&entry[104..104 + name_bytes])
+                    .map_err(|units| invalid_name(path, "name", &units))?;
                 if name != "." && name != ".." {
                     let short_bytes = entry[68] as usize;
-                    let short = utf16(&entry[70..70 + short_bytes]);
+                    let short = utf16(&entry[70..70 + short_bytes])
+                        .map_err(|units| invalid_name(path, "short name", &units))?;
                     out.push(Pending {
                         path: if path == "\\" {
                             format!("\\{name}")
@@ -521,10 +881,11 @@ mod capture {
                 .iter()
                 .position(|unit| *unit == 0)
                 .unwrap_or(units.len());
-            let value = String::from_utf16_lossy(&units[..end]);
+            let value = String::from_utf16(&units[..end]);
             // SAFETY: allocated by the conversion call above.
             unsafe { LocalFree(text.cast()) };
-            return Ok(value);
+            return value
+                .map_err(|_| io::Error::other("security descriptor text is not valid UTF-16"));
         }
         Err(last.unwrap_or_else(|| io::Error::other("security descriptor unavailable")))
     }
@@ -543,28 +904,51 @@ mod capture {
         }
     }
 
+    /// One worker's reusable buffers: the file content being hashed, and the
+    /// stream list of the object being observed.
+    struct Workspace {
+        content: Vec<u8>,
+        streams: Vec<u64>,
+    }
+    impl Workspace {
+        fn new() -> Self {
+            Self {
+                content: vec![0u8; 1024 * 1024],
+                streams: vec![0u64; 8192],
+            }
+        }
+    }
+    // A stream list larger than this is not one this tool holds in memory.
+    const STREAM_LIST_LIMIT: usize = 64 * 1024 * 1024;
+
     fn named_streams(
         prefix: &str,
         path: &str,
         file: &File,
         buffer: &mut [u8],
+        listing: &mut Vec<u64>,
     ) -> io::Result<Vec<Stream>> {
-        let mut listing = vec![0u64; 8192];
-        // FileStreamInfo
-        match information(file, 7, &mut listing) {
+        // FileStreamInfo. Many or long-named streams need more than the
+        // starting 64 KiB, so the list grows until the answer fits.
+        let listed = super::query_growing(listing, STREAM_LIST_LIMIT, "the stream list", |room| {
+            information(file, 7, room)
+        });
+        match listed {
             Ok(()) => (),
             // ERROR_HANDLE_EOF: no streams at all (a directory without any).
             Err(error) if error.raw_os_error() == Some(38) => return Ok(Vec::new()),
             Err(error) => return Err(error),
         }
-        let bytes = bytes_of(&listing);
+        let bytes = bytes_of(listing);
         let mut streams = Vec::new();
         let mut at = 0usize;
         loop {
             let entry = &bytes[at..];
             let next = u32_at(entry, 0) as usize;
             let name_bytes = u32_at(entry, 4) as usize;
-            let name = utf16(&entry[24..24 + name_bytes]);
+            let name = utf16(&entry[24..24 + name_bytes]).map_err(|units| {
+                io::Error::other(format!("a stream name is not valid UTF-16: {units:04x?}"))
+            })?;
             if name != "::$DATA" {
                 let stream_name = name.strip_suffix(":$DATA").unwrap_or(&name);
                 let mut stream = File::options()
@@ -595,10 +979,16 @@ mod capture {
         }
         let offset = u16::from_le_bytes([buffer[8], buffer[9]]) as usize;
         let length = u16::from_le_bytes([buffer[10], buffer[11]]) as usize;
-        buffer.get(20 + offset..20 + offset + length).map(utf16)
+        buffer
+            .get(20 + offset..20 + offset + length)
+            .and_then(|name| utf16(name).ok())
     }
 
-    fn observe(prefix: &str, pending: Pending, buffer: &mut [u8]) -> Record {
+    fn observe(prefix: &str, pending: Pending, workspace: &mut Workspace) -> Record {
+        let Workspace {
+            content: buffer,
+            streams,
+        } = workspace;
         let directory = pending.attributes & DIRECTORY != 0;
         let mut record = Record {
             path: pending.path,
@@ -702,7 +1092,7 @@ mod capture {
                 Err(error) => note(&mut record, "extended attributes", &format!("{error:?}")),
             }
         }
-        match named_streams(prefix, &record.path, &file, buffer) {
+        match named_streams(prefix, &record.path, &file, buffer, streams) {
             Ok(streams) => record.streams = streams,
             Err(error) => note(&mut record, "named streams", &error),
         }
@@ -750,6 +1140,7 @@ mod capture {
             short_name: None,
         }];
         let mut listing_errors = Vec::new();
+        let mut entries = vec![0u64; 32 * 1024];
         let mut next = 0usize;
         while next < pending.len() {
             let entry = &pending[next];
@@ -759,44 +1150,26 @@ mod capture {
                 continue;
             }
             let path = entry.path.clone();
-            if let Err(error) = list(&prefix, &path, &mut pending) {
+            if let Err(error) = list(&prefix, &path, &mut entries, &mut pending) {
+                // Not an unreadable object to note and carry on from: the
+                // listing itself would misname what the volume holds.
+                if error
+                    .get_ref()
+                    .is_some_and(|inner| inner.is::<InvalidName>())
+                {
+                    return Err(error);
+                }
                 listing_errors.push((path, error.to_string()));
             }
         }
 
-        let total = pending.len();
-        let slots: Vec<std::sync::Mutex<Option<Pending>>> = pending
-            .into_iter()
-            .map(|entry| std::sync::Mutex::new(Some(entry)))
-            .collect();
-        let cursor = AtomicUsize::new(0);
-        let mut records: Vec<Record> = std::thread::scope(|scope| {
-            let workers: Vec<_> = (0..threads.clamp(1, 64))
-                .map(|_| {
-                    scope.spawn(|| {
-                        let mut buffer = vec![0u8; 1024 * 1024];
-                        let mut done = Vec::new();
-                        loop {
-                            let index = cursor.fetch_add(1, Ordering::Relaxed);
-                            if index >= total {
-                                return done;
-                            }
-                            let entry = slots[index]
-                                .lock()
-                                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                                .take();
-                            if let Some(entry) = entry {
-                                done.push(observe(&prefix, entry, &mut buffer));
-                            }
-                        }
-                    })
-                })
-                .collect();
-            workers
-                .into_iter()
-                .flat_map(|worker| worker.join().unwrap_or_default())
-                .collect()
-        });
+        let mut records: Vec<Record> = super::run_all(
+            pending,
+            threads,
+            Workspace::new,
+            |entry: &Pending| entry.path.clone(),
+            |workspace, entry| observe(&prefix, entry, workspace),
+        )?;
         for (path, error) in listing_errors {
             if let Some(record) = records.iter_mut().find(|record| record.path == path) {
                 record.errors.push(format!("directory listing: {error}"));
@@ -870,6 +1243,26 @@ mod tests {
     }
 
     #[test]
+    fn a_short_name_differing_only_by_case_still_needs_its_link() {
+        let mut long = file("\\readme.txt", "11");
+        long.short_name = Some("README.TXT".to_owned());
+        let mut converted = long.clone();
+        converted.short_name = None;
+        let comparison = compare(&[directory("\\"), long], &[directory("\\"), converted]);
+        assert_eq!(comparison.difference_count, 1, "{comparison:?}");
+        assert_eq!(comparison.difference_kinds["short name lost"], 1);
+
+        // A short name with exactly the long name's text is not a second name.
+        let mut same = file("\\README.TXT", "11");
+        same.short_name = Some("README.TXT".to_owned());
+        let mut after = same.clone();
+        after.short_name = None;
+        let comparison = compare(&[directory("\\"), same], &[directory("\\"), after]);
+        assert!(comparison.identical(), "{comparison:?}");
+        assert_eq!(comparison.short_names_as_links, 0);
+    }
+
+    #[test]
     fn changed_content_missing_and_extra_objects_are_reported() {
         let before = vec![directory("\\"), file("\\a", "11"), file("\\b", "22")];
         let after = vec![directory("\\"), file("\\a", "ff"), file("\\c", "33")];
@@ -927,6 +1320,101 @@ mod tests {
     }
 
     #[test]
+    fn an_exact_comparison_accepts_nothing_a_conversion_comparison_accepts() {
+        let mut compressed = file("\\z", "11");
+        compressed.attributes = 0x820;
+        let mut cached = file("\\k", "22");
+        cached.kernel_cache_attributes = 2;
+        let mut named = file("\\Program Files", "33");
+        named.short_name = Some("PROGRA~1".to_owned());
+        let before = vec![
+            directory("\\"),
+            compressed,
+            cached,
+            named,
+            file("\\System Volume Information\\x", "44"),
+        ];
+        // An unchanged NTFS volume, short names and all, is identical.
+        let unchanged = compare_exact(&before, &before);
+        assert!(unchanged.identical(), "{unchanged:?}");
+        assert!(unchanged.allowed.is_empty());
+        assert_eq!(unchanged.short_names_as_links, 0);
+
+        // Each of the things a conversion may leave is a difference here.
+        let mut after = before.clone();
+        after[1].attributes = 0x20;
+        after[2].kernel_cache_attributes = 0;
+        after[3].short_name = None;
+        after[4].sha256 = Some("55".to_owned());
+        let comparison = compare_exact(&before, &after);
+        assert_eq!(comparison.difference_count, 4, "{comparison:?}");
+        assert!(comparison.allowed.is_empty());
+        for kind in [
+            "attributes changed",
+            "kernel cache attributes changed",
+            "short name changed",
+            "content differs",
+        ] {
+            assert_eq!(comparison.difference_kinds[kind], 1, "{kind}");
+        }
+    }
+
+    #[test]
+    fn an_exact_comparison_reports_missing_added_and_relinked_objects() {
+        let linked = |path: &str, group: &str| {
+            let mut record = file(path, "11");
+            record.links = 2;
+            record.link_group = Some(group.to_owned());
+            record
+        };
+        let before = vec![
+            directory("\\"),
+            linked("\\a", "x"),
+            linked("\\b", "x"),
+            file("\\c", "33"),
+        ];
+        // Group identifiers differ between listings; the sets of names do not.
+        let same = vec![
+            directory("\\"),
+            linked("\\a", "q"),
+            linked("\\b", "q"),
+            file("\\c", "33"),
+        ];
+        assert!(compare_exact(&before, &same).identical());
+
+        let changed = vec![
+            directory("\\"),
+            linked("\\a", "q"),
+            linked("\\b", "r"),
+            file("\\d", "33"),
+        ];
+        let comparison = compare_exact(&before, &changed);
+        assert_eq!(comparison.difference_count, 3, "{comparison:?}");
+        for kind in [
+            "hard-link set changed",
+            "missing afterwards",
+            "appeared afterwards",
+        ] {
+            assert_eq!(comparison.difference_kinds[kind], 1, "{kind}");
+        }
+    }
+
+    #[test]
+    fn the_accepted_differences_are_exactly_the_four_documented_ones() {
+        // Widening this list is a decision about what a conversion may
+        // change, not a way to make a comparison pass.
+        assert_eq!(
+            ALLOWED_DIFFERENCES,
+            [
+                "System Volume Information content",
+                "NTFS compression flag removed",
+                "empty system ACL versus none",
+                "kernel cache attributes dropped",
+            ]
+        );
+    }
+
+    #[test]
     fn only_kernel_cache_attributes_may_disappear() {
         let mut cached = file("\\a", "11");
         cached.kernel_cache_attributes = 2;
@@ -955,7 +1443,39 @@ mod tests {
         let mut b = file("\\b", "22");
         b.changed = 77;
         let comparison = compare(&before, &[directory("\\"), a, b]);
-        assert_eq!(comparison.difference_kinds["change time N became N"], 2);
+        assert_eq!(comparison.difference_kinds["change time changed"], 2);
+    }
+
+    #[test]
+    fn kinds_do_not_depend_on_the_names_and_values_a_difference_quotes() {
+        let named = |path: &str, short: &str, sddl: &str| {
+            let mut record = file(path, "11");
+            record.short_name = Some(short.to_owned());
+            record.security = Some(sddl.to_owned());
+            record
+        };
+        let before = vec![
+            directory("\\"),
+            named("\\Program Files", "PROGRA~1", "O:SYG:SYD:(A;;FA;;;SY)"),
+            named("\\Common Files", "COMMON~1", "O:BAG:BAD:(A;;FA;;;BA)"),
+        ];
+        let mut after = before.clone();
+        for record in &mut after[1..] {
+            record.short_name = None;
+            record.security = Some("O:WDG:WDD:(A;;FA;;;WD)".to_owned());
+        }
+        let comparison = compare(&before, &after);
+        assert_eq!(comparison.difference_count, 4, "{comparison:?}");
+        assert_eq!(comparison.difference_kinds.len(), 2, "{comparison:?}");
+        assert_eq!(comparison.difference_kinds["short name lost"], 2);
+        assert_eq!(comparison.difference_kinds["security changed"], 2);
+        // The detail still names what differed.
+        assert!(
+            comparison
+                .differences
+                .iter()
+                .any(|difference| difference.what == "short name PROGRA~1 was lost")
+        );
     }
 
     #[test]
@@ -973,5 +1493,184 @@ mod tests {
         let comparison = compare(&before, &split);
         assert_eq!(comparison.difference_count, 1);
         assert!(comparison.differences[0].what.contains("hard-link set"));
+    }
+
+    #[test]
+    fn a_query_buffer_grows_until_the_answer_fits_or_the_limit_is_reached() {
+        let more_data = || std::io::Error::from_raw_os_error(234);
+        let mut buffer = vec![0u64; 4];
+        let mut calls = 0;
+        query_growing(&mut buffer, 1024, "test", |room| {
+            calls += 1;
+            if room.len() < 32 {
+                Err(more_data())
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap();
+        assert_eq!((buffer.len(), calls), (32, 4));
+
+        // 256 bytes held; one doubling reaches the 512-byte limit, then it stops.
+        let error =
+            query_growing(&mut buffer, 512, "the stream list", |_| Err(more_data())).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("the stream list does not fit in 512 bytes"),
+            "{error}"
+        );
+        assert_eq!(buffer.len(), 64);
+
+        // Any other failure is returned as it is, without growing.
+        let denied = query_growing(&mut buffer, 4096, "test", |_| {
+            Err(std::io::Error::from_raw_os_error(5))
+        })
+        .unwrap_err();
+        assert_eq!(denied.raw_os_error(), Some(5));
+        assert_eq!(buffer.len(), 64);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn names_that_are_not_valid_utf16_are_rejected_not_altered() {
+        let bytes = |units: &[u16]| -> Vec<u8> {
+            units.iter().flat_map(|unit| unit.to_le_bytes()).collect()
+        };
+        assert_eq!(
+            capture::utf16(&bytes(&[0x41, 0x65e5])).unwrap(),
+            "A\u{65e5}"
+        );
+        // A surrogate pair is one character; a lone surrogate is not text.
+        assert_eq!(
+            capture::utf16(&bytes(&[0xd83d, 0xde00])).unwrap(),
+            "\u{1f600}"
+        );
+        assert_eq!(
+            capture::utf16(&bytes(&[0xd800, 0x41])).unwrap_err(),
+            [0xd800, 0x41]
+        );
+    }
+
+    #[test]
+    fn every_item_is_observed_once_and_a_panic_fails_the_run_naming_the_item() {
+        let mut outputs = run_all(
+            (0..1000u32).collect(),
+            8,
+            || 0u32,
+            |number| number.to_string(),
+            |seen, number| {
+                *seen += 1;
+                number * 2
+            },
+        )
+        .unwrap();
+        outputs.sort_unstable();
+        assert_eq!(outputs, (0..1000u32).map(|n| n * 2).collect::<Vec<_>>());
+
+        let error = run_all(
+            (0..1000u32).collect(),
+            8,
+            || (),
+            |number| format!("\\object-{number}"),
+            |(), number| {
+                assert_ne!(number, 617, "boom");
+                number
+            },
+        )
+        .unwrap_err();
+        let text = error.to_string();
+        assert!(
+            text.contains("\\object-617") && text.contains("boom"),
+            "{text}"
+        );
+
+        let none = run_all(Vec::<u32>::new(), 8, || (), |n| n.to_string(), |(), n| n).unwrap();
+        assert!(none.is_empty());
+    }
+
+    /// A backslash and nine three-byte characters (U+65E5): 28 bytes, in which
+    /// byte 26, the length of "\System Volume Information", is not a
+    /// character boundary.
+    fn boundary_path() -> String {
+        format!("\\{}", "\u{65e5}".repeat(9))
+    }
+
+    #[test]
+    fn a_path_that_the_exempt_prefix_length_splits_mid_character_is_compared() {
+        let path = boundary_path();
+        assert_eq!(path.len(), 28);
+        assert!(!path.is_char_boundary(SYSTEM_VOLUME_INFORMATION.len()));
+        assert!(!inside_system_volume_information(&path));
+
+        let listing = vec![directory("\\"), file(&path, "aa")];
+        let comparison = compare(&listing, &listing);
+        assert!(comparison.identical(), "{comparison:?}");
+
+        let missing = compare(&listing, &[directory("\\")]);
+        assert_eq!(missing.difference_count, 1, "{missing:?}");
+        assert_eq!(missing.differences[0].path, path);
+        assert_eq!(missing.differences[0].what, "missing after conversion");
+
+        let appeared = compare(&[directory("\\")], &listing);
+        assert_eq!(appeared.difference_count, 1, "{appeared:?}");
+        assert_eq!(appeared.differences[0].what, "appeared after conversion");
+    }
+
+    #[test]
+    fn supplementary_plane_and_long_mixed_script_paths_are_compared() {
+        // U+1D4B3 and U+1F600 take four bytes each in UTF-8 and two units in UTF-16.
+        let astral = "\\\u{1d4b3}\u{1f600}\\a\u{1f600}b.txt";
+        // Han, Cyrillic, an emoji and ASCII in every component.
+        let component =
+            "\u{6570}\u{636e}-\u{434}\u{430}\u{43d}\u{43d}\u{44b}\u{435}-\u{1f600}-data";
+        let long = format!("\\{}", vec![component; 24].join("\\"));
+        assert!(long.chars().count() > 400);
+        let inside = format!("{SYSTEM_VOLUME_INFORMATION}{long}");
+        let listing = vec![
+            directory("\\"),
+            file(astral, "11"),
+            file(&long, "22"),
+            file(&inside, "33"),
+        ];
+        let comparison = compare(&listing, &listing);
+        assert!(comparison.identical(), "{comparison:?}");
+        assert_eq!(comparison.allowed["System Volume Information content"], 1);
+
+        let mut changed = listing.clone();
+        changed[1].sha256 = Some("ee".to_owned());
+        changed[2].sha256 = Some("ff".to_owned());
+        let comparison = compare(&listing, &changed);
+        assert_eq!(comparison.difference_count, 2, "{comparison:?}");
+        assert!(
+            comparison
+                .differences
+                .iter()
+                .all(|difference| difference.what == "content differs")
+        );
+    }
+
+    #[test]
+    fn only_the_system_volume_information_directory_itself_is_exempt() {
+        assert!(inside_system_volume_information(
+            "\\System Volume Information\\x"
+        ));
+        assert!(inside_system_volume_information(
+            "\\SYSTEM VOLUME INFORMATION\\x"
+        ));
+        // The directory's own entry, and names that merely begin the same way.
+        assert!(!inside_system_volume_information(SYSTEM_VOLUME_INFORMATION));
+        assert!(!inside_system_volume_information(
+            "\\System Volume Informationx\\y"
+        ));
+        let lookalike = "\\System Volume Information\u{65e5}\\x";
+        assert!(!inside_system_volume_information(lookalike));
+
+        let comparison = compare(
+            &[directory("\\"), file(lookalike, "11")],
+            &[directory("\\")],
+        );
+        assert_eq!(comparison.difference_count, 1, "{comparison:?}");
+        assert!(comparison.allowed.is_empty(), "{comparison:?}");
     }
 }

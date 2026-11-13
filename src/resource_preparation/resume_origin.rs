@@ -789,7 +789,7 @@ impl LegacyResumeOrigin {
             number(
                 &closed_ledger.placement_refusal["counters"],
                 "move_submissions_limit"
-            )? == old_work_upper_bytes / 4096,
+            )? == old_work_upper_bytes / n2r_win32::target_cluster::bytes(),
             "legacy placement counter limit differs from original partition allowance"
         );
         let uncertain_operation_upper_bytes = pair.source.identity.partition_bytes;
@@ -799,7 +799,7 @@ impl LegacyResumeOrigin {
             total_prior_upper_bytes: old_work_upper_bytes
                 .checked_add(uncertain_operation_upper_bytes)
                 .context("legacy prior spend overflow")?,
-            old_submission_upper: old_work_upper_bytes / 4096,
+            old_submission_upper: old_work_upper_bytes / n2r_win32::target_cluster::bytes(),
             actual_prior_bytes_known: false,
         };
         let result_expected = expected.pin.clone();

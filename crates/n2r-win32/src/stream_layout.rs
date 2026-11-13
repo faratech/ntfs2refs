@@ -1,12 +1,42 @@
 //! Bounded decoders for native stream lists and retrieval pointers.
 use std::{collections::BTreeSet, io};
+/// The stream count of the older fixed profiles.
 pub const MAX_STREAMS: usize = 64;
+/// The buffer a stream list is first asked for with; nearly every file fits.
 pub const MAX_STREAM_BUFFER: usize = 65_536;
+/// What one NTFS file can have. Its streams beyond the first few are named
+/// in an attribute list of at most 256 KiB, whose entries are at least 32
+/// bytes: 8,192 attributes. Their stream-list entries are a little larger
+/// than their attribute-list entries, which keeps the list under 1 MiB.
+pub const MAX_FILE_STREAMS: usize = 8192;
+pub const MAX_STREAM_LIST_BYTES: usize = 1 << 20;
 pub const MAX_EXTENTS: usize = 1024;
 pub const RETRIEVAL_CAPACITY: usize = 16 + 16 * MAX_EXTENTS;
-/// Aggregate mapping bound, separate from one native response's extent limit.
+/// Aggregate mapping bound, separate from one native response's extent
+/// limit: what the older fixed profiles allow, and the least any process
+/// allows.
 pub const MAX_COMPLETE_EXTENTS: usize = 65_536;
 pub const COMPLETE_RETRIEVAL_CAPACITY: usize = 16 + 16 * MAX_COMPLETE_EXTENTS;
+
+static COMPLETE_EXTENT_LIMIT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(MAX_COMPLETE_EXTENTS);
+
+/// A route that sizes itself from the machine says how many extents one
+/// stream's complete mapping may have, from its memory budget. The limit only
+/// rises within a process: a mapping admitted earlier stays readable.
+pub fn raise_complete_extent_limit(extents: usize) {
+    COMPLETE_EXTENT_LIMIT.fetch_max(extents, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// The most extents one stream's complete mapping may have in this process.
+pub fn complete_extent_limit() -> usize {
+    COMPLETE_EXTENT_LIMIT.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Bytes of the assembled representation of a mapping of that many extents.
+pub fn complete_retrieval_capacity() -> usize {
+    16 + 16 * complete_extent_limit()
+}
 /// Per-call bitmap payload; complete assembled maps have a separate bound.
 pub const MAX_BITMAP_BYTES: usize = 2 * 1024 * 1024;
 pub const GET_RETRIEVAL: u32 = 0x00090073;
@@ -41,7 +71,7 @@ pub struct Entry {
 /// Returns the meaningful byte end; native GetFileInformationByHandleEx has
 /// no returned-length field, so initialized unused buffer bytes are excluded.
 pub fn parse_streams(b: &[u8]) -> io::Result<(Vec<Entry>, usize)> {
-    parse_streams_with_limits(b, MAX_STREAM_BUFFER, MAX_STREAMS)
+    parse_streams_with_limits(b, MAX_STREAM_LIST_BYTES, MAX_FILE_STREAMS)
 }
 pub fn parse_streams_with_limits(
     b: &[u8],
@@ -120,7 +150,7 @@ pub fn parse_retrieval(b: &[u8]) -> io::Result<Vec<Run>> {
 /// Decode the explicitly assembled complete-map representation, never an
 /// unchecked individual native continuation response.
 pub fn parse_complete_retrieval(b: &[u8]) -> io::Result<Vec<Run>> {
-    parse_zero_vcn_retrieval(b, MAX_COMPLETE_EXTENTS, COMPLETE_RETRIEVAL_CAPACITY)
+    parse_zero_vcn_retrieval(b, complete_extent_limit(), complete_retrieval_capacity())
 }
 pub fn parse_complete_retrieval_with_budget(
     b: &[u8],

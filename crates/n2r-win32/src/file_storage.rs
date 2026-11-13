@@ -210,6 +210,76 @@ pub fn final_path_device(file: &std::fs::File) -> io::Result<String> {
     }
     Ok(path)
 }
+/// The volume part of a GUID path, `\\?\Volume{...}\`, and what follows it.
+fn split_guid_path(path: &str) -> io::Result<(&str, &str)> {
+    // Compared without regard to ASCII case, as these paths always were.
+    const PREFIX: &[u8] = b"\\\\?\\Volume{";
+    let end = path
+        .find("}\\")
+        .filter(|_| {
+            path.len() >= PREFIX.len()
+                && path.as_bytes()[..PREFIX.len()].eq_ignore_ascii_case(PREFIX)
+        })
+        .ok_or_else(|| io::Error::other("path does not begin with a GUID volume root"))?;
+    Ok(path.split_at(end + 2))
+}
+
+/// The device object of the volume a GUID root names, with its trailing
+/// separator: `\Device\HarddiskVolume7\`. Opening the root by its GUID name
+/// follows an object-manager link; nothing is asked of the mount manager.
+/// The answer holds while the returned handle is open, and is used at once.
+fn volume_device_root(volume_root: &str) -> io::Result<(std::fs::File, String)> {
+    use std::os::windows::fs::OpenOptionsExt;
+    let root = std::fs::OpenOptions::new()
+        .access_mode(0x80)
+        .share_mode(7)
+        .custom_flags(0x0200_0000)
+        .open(volume_root)?;
+    let device = final_path_device(&root)?;
+    if !device.ends_with('\\') {
+        return Err(io::Error::other(
+            "volume root has no device path of its own",
+        ));
+    }
+    Ok((root, device))
+}
+
+/// The path of a held object beneath its volume's device, after checking
+/// that the device is the one `volume_root` (a GUID root) names. It answers
+/// what a GUID-form path query answers, a path on a known volume, without
+/// the mount-manager round trip that query makes for every call.
+pub fn device_path_on_volume(file: &std::fs::File, volume_root: &str) -> io::Result<String> {
+    let (root, rest) = split_guid_path(volume_root)?;
+    if !rest.is_empty() {
+        return Err(io::Error::other(
+            "a volume root is expected, not a path on it",
+        ));
+    }
+    // The root handle stays open across the comparison: a device name can
+    // only be given to another volume once every handle on it is closed.
+    let (_held_root, device) = volume_device_root(root)?;
+    let path = final_path_device(file)?;
+    if path.len() < device.len()
+        || !path.as_bytes()[..device.len()].eq_ignore_ascii_case(device.as_bytes())
+    {
+        return Err(io::Error::other("held object is outside the pinned volume"));
+    }
+    Ok(path)
+}
+
+/// Whether the held object is the one `guid_path` names: the same volume and
+/// the same path on it, compared without regard to ASCII case as the GUID
+/// form was. Decided from the two device paths.
+pub fn held_at_guid_path(file: &std::fs::File, guid_path: &str) -> io::Result<bool> {
+    let (root, on_volume) = split_guid_path(guid_path)?;
+    let (_held_root, device) = volume_device_root(root)?;
+    let actual = final_path_device(file)?;
+    let actual = actual.as_bytes();
+    Ok(actual.len() == device.len() + on_volume.len()
+        && actual[..device.len()].eq_ignore_ascii_case(device.as_bytes())
+        && actual[device.len()..].eq_ignore_ascii_case(on_volume.as_bytes()))
+}
+
 fn final_path(file: &std::fs::File, form: u32, name: &str) -> io::Result<String> {
     use windows_sys::Win32::Storage::FileSystem::GetFinalPathNameByHandleW;
     let mut path = vec![0u16; 256];
@@ -499,6 +569,51 @@ mod tests {
             .custom_flags(0x0200_0000)
             .open(path)
             .unwrap()
+    }
+
+    #[test]
+    fn a_held_object_is_matched_to_a_guid_path_without_the_guid_query() {
+        let directory = tempfile::tempdir().unwrap();
+        let child = directory.path().join("Report 2026.txt");
+        std::fs::write(&child, b"x").unwrap();
+        let (parent, file) = (held(directory.path()), held(&child));
+        // What the GUID-form query answers for each, for comparison.
+        let parent_guid = final_path_guid(&parent).unwrap();
+        let file_guid = final_path_guid(&file).unwrap();
+        let (root, _) = split_guid_path(&file_guid).unwrap();
+        assert!(
+            root.starts_with(r"\\?\Volume{") && root.ends_with(r"}\"),
+            "{root}"
+        );
+
+        assert!(held_at_guid_path(&file, &file_guid).unwrap());
+        assert!(held_at_guid_path(&parent, &parent_guid).unwrap());
+        // ASCII case does not matter, as it did not for the GUID comparison.
+        assert!(held_at_guid_path(&file, &file_guid.to_uppercase()).unwrap());
+        // Another object on the same volume is not it, and a prefix is not it.
+        assert!(!held_at_guid_path(&file, &parent_guid).unwrap());
+        assert!(!held_at_guid_path(&parent, &file_guid).unwrap());
+        assert!(!held_at_guid_path(&file, &file_guid[..file_guid.len() - 1]).unwrap());
+        // A volume that does not exist, or a path that is not a GUID path, is an error.
+        let elsewhere = file_guid.replacen(
+            root,
+            r"\\?\Volume{00000000-0000-0000-0000-000000000000}\",
+            1,
+        );
+        assert!(held_at_guid_path(&file, &elsewhere).is_err());
+        assert!(held_at_guid_path(&file, r"C:\Report 2026.txt").is_err());
+
+        // The device path is the volume's device followed by the same path.
+        let device_path = device_path_on_volume(&file, root).unwrap();
+        assert!(device_path.starts_with(r"\Device\"), "{device_path}");
+        assert!(
+            device_path.ends_with(&file_guid[root.len()..]),
+            "{device_path}"
+        );
+        assert!(
+            device_path_on_volume(&file, &file_guid).is_err(),
+            "a root is required"
+        );
     }
 
     #[test]

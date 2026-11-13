@@ -47,7 +47,8 @@ impl ResourcePlacement {
         admission.validate()?;
         let slots = usize::try_from(admission.budget.retained_index_bytes / 8192)
             .map_err(io::Error::other)?;
-        let byte_moves = usize::try_from(max_move_bytes / 4096).map_err(io::Error::other)?;
+        let byte_moves = usize::try_from(max_move_bytes / crate::target_cluster::bytes())
+            .map_err(io::Error::other)?;
         if slots == 0
             || max_tracked_slots == 0
             || max_tracked_slots > slots
@@ -86,7 +87,8 @@ impl ResourcePlacement {
     }
 
     pub(super) fn tracking_workspace(&self, file_bytes: u64) -> io::Result<Lease> {
-        let clusters = usize::try_from(file_bytes / 4096).map_err(io::Error::other)?;
+        let clusters = usize::try_from(file_bytes / crate::target_cluster::bytes())
+            .map_err(io::Error::other)?;
         let slots = self.max_tracked_slots.min(clusters);
         let bytes = (self.retrieval_bytes as u64)
             .checked_mul(8)

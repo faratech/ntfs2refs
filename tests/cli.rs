@@ -214,15 +214,119 @@ fn retained_comparison_pins_inputs_and_never_enables_writes() {
     assert!(!cli(&args[..7]).status.success());
     let capabilities: Value = serde_json::from_slice(&cli(&["capabilities"]).stdout).unwrap();
     assert_eq!(capabilities["retained_range_comparison"], true);
-    assert_eq!(capabilities["native_refs_writer"], false);
     assert_eq!(capabilities["conversion_writes"], cfg!(windows));
     assert_eq!(capabilities["journal_recovery"], cfg!(windows));
-    assert!(
-        capabilities["qualified_boot_builds"]
-            .as_array()
-            .unwrap()
-            .is_empty()
+}
+
+#[test]
+fn capabilities_report_what_the_executable_enforces() {
+    let capabilities: Value = serde_json::from_slice(&cli(&["capabilities"]).stdout).unwrap();
+    assert_eq!(capabilities["schema_version"], 3);
+    assert_eq!(capabilities["refs_metadata_builder"], "windows");
+
+    // The geometry announced is the geometry the admission gate accepts.
+    let geometry = |sector: u16, cluster: u32, file_record: u32, index_record: u32| {
+        ntfs2refs::ntfs_inspect::NtfsGeometry {
+            bytes_per_sector: sector,
+            sectors_per_cluster: cluster / u32::from(sector),
+            cluster_size: cluster,
+            total_sectors: 1 << 24,
+            volume_size: (1 << 24) * u64::from(sector),
+            total_clusters: (1 << 24) * u64::from(sector) / u64::from(cluster),
+            mft_lcn: 4,
+            mftmirr_lcn: 8,
+            file_record_size: file_record,
+            index_record_size: index_record,
+            serial_number: 1,
+        }
+    };
+    let profile = ntfs2refs::ntfs_admission::ResourceProfile::ResourceBoundedV4(None);
+    let source = &capabilities["source_geometry"];
+    let (low, high) = (
+        source["cluster_bytes"]["minimum"].as_u64().unwrap() as u32,
+        source["cluster_bytes"]["maximum"].as_u64().unwrap() as u32,
     );
+    assert_eq!((low, high), (512, 2 * 1024 * 1024));
+    for sector in source["sector_bytes"].as_array().unwrap() {
+        let sector = sector.as_u64().unwrap() as u16;
+        for record in source["file_record_bytes"].as_array().unwrap() {
+            let record = record.as_u64().unwrap() as u32;
+            let mut cluster = low.max(u32::from(sector));
+            while cluster <= high {
+                assert!(
+                    profile.supports_source_geometry(&geometry(sector, cluster, record, 4096)),
+                    "{sector}/{cluster}/{record}"
+                );
+                cluster *= 2;
+            }
+        }
+    }
+    for index_record in [512u32, 2048, 4096, 65536] {
+        assert!(profile.supports_source_geometry(&geometry(512, 4096, 1024, index_record)));
+    }
+    assert!(!profile.supports_source_geometry(&geometry(512, 4096, 2048, 4096)));
+    assert!(!profile.supports_source_geometry(&geometry(512, 4096, 1024, 256)));
+    assert!(!profile.supports_source_geometry(&geometry(512, 4 * 1024 * 1024, 1024, 4096)));
+    assert_eq!(
+        capabilities["target"]["refs_cluster_bytes"],
+        serde_json::json!([4096, 65536])
+    );
+    assert_eq!(
+        capabilities["windows_builds"]["minimum_build"],
+        n2r_win32::windows_build::MINIMUM_BUILD
+    );
+
+    // The announced boot profiles are the rows the admission gate reads.
+    let announced = capabilities["qualified_boot_profiles"].as_array().unwrap();
+    let enforced = ntfs2refs::boot_profile::QUALIFIED;
+    assert!(!enforced.is_empty());
+    assert_eq!(announced.len(), enforced.len());
+    for (announced, enforced) in announced.iter().zip(enforced) {
+        assert_eq!(announced["id"], enforced.id);
+        assert_eq!(announced["winload_efi_sha256"], enforced.winload_efi_sha256);
+        assert_eq!(announced["refs_sys_sha256"], enforced.refs_sys_sha256);
+    }
+
+    // The one route that keeps fixed limits says what they are.
+    let routes = capabilities["conversion_routes"].as_array().unwrap();
+    let whole_image = routes
+        .iter()
+        .find(|route| route["route"] == "whole-image")
+        .unwrap();
+    let legacy = ntfs2refs::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2.limits();
+    assert_eq!(whole_image["fixed_limits"]["files"], legacy.maximum_files);
+    assert_eq!(
+        whole_image["fixed_limits"]["directories"],
+        legacy.maximum_directories
+    );
+    for route in routes
+        .iter()
+        .filter(|route| route["route"] != "whole-image")
+    {
+        assert!(route.get("fixed_limits").is_none(), "{route}");
+    }
+
+    // So are the diagnose refusals and its exit code for reported failures.
+    let refuses = capabilities["diagnose"]["refuses"].as_array().unwrap();
+    let table = ntfs2refs::drive_cli::DriveArgs::DIAGNOSE_REFUSES;
+    assert_eq!(refuses.len(), table.len());
+    for (announced, (option, _)) in refuses.iter().zip(table) {
+        assert_eq!(announced["option"], *option);
+    }
+    assert!(
+        capabilities["diagnose"]["exit_codes"]
+            [ntfs2refs::drive_cli::EXIT_DIAGNOSE_FAILURES.to_string()]
+        .is_string()
+    );
+
+    // And the differences the listing comparison accepts.
+    let accepted: Vec<&str> = capabilities["listing_comparison"]["accepted_differences"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|name| name.as_str().unwrap())
+        .collect();
+    assert_eq!(accepted, n2r_win32::volume_manifest::ALLOWED_DIFFERENCES);
 }
 
 #[test]
@@ -314,6 +418,24 @@ fn conversion_request_refuses_hash_size_and_forged_flags_before_device_io() {
 }
 
 #[test]
+fn diagnose_is_refused_at_parse_time_with_options_that_would_change_the_source() {
+    let cases: [&[&str]; 3] = [
+        &["--whole-image-verification"],
+        &["--minimize-scratch"],
+        &["--offline-media", "E:\\"],
+    ];
+    for extra in cases {
+        let mut arguments = vec!["--drive", "D", "--diagnose"];
+        arguments.extend_from_slice(extra);
+        let result = cli(&arguments);
+        // The parser's own exit code: nothing has been opened or listed yet.
+        assert_eq!(result.status.code(), Some(2), "{arguments:?}");
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(stderr.contains("cannot be used with"), "{stderr}");
+    }
+}
+
+#[test]
 fn recovery_requires_all_pinned_inputs_when_request_is_supplied() {
     for command in ["resume", "rollback", "finalize"] {
         let result = cli(&[
@@ -332,6 +454,54 @@ fn recovery_requires_all_pinned_inputs_when_request_is_supplied() {
                 .contains("--ticket-sha256")
         );
     }
+}
+
+#[test]
+fn operation_state_creates_nothing_when_its_pinned_inputs_do_not_validate() {
+    let temp = tempfile::tempdir().unwrap();
+    let run = temp.path().join("run");
+    std::fs::create_dir(&run).unwrap();
+    std::fs::write(run.join("conversion-intent.json"), "{}").unwrap();
+    let output = temp.path().join("never-created");
+    // A well-formed pin that is not the digest of that file.
+    let pin = "0".repeat(64);
+    let result = cli(&[
+        "operation-state",
+        "--run-directory",
+        run.to_str().unwrap(),
+        "--intent-sha256",
+        &pin,
+        "--output",
+        output.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        result.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("nothing was created"),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(
+        !output.exists(),
+        "a refused inspection left its output directory"
+    );
+
+    // The same with no run directory at all.
+    let absent = cli(&[
+        "operation-state",
+        "--run-directory",
+        temp.path().join("no-such-run").to_str().unwrap(),
+        "--intent-sha256",
+        &pin,
+        "--output",
+        output.to_str().unwrap(),
+    ]);
+    assert_eq!(absent.status.code(), Some(1));
+    assert!(!output.exists());
 }
 
 #[test]

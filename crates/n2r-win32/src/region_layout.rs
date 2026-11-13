@@ -39,7 +39,7 @@ fn validate_coverage(bytes: &[u8], length: u64, usage: u32, tail: bool) -> io::R
         end = end.checked_add(count as u64).ok_or_else(bad)?;
         if end
             > if tail {
-                length.next_multiple_of(4096)
+                length.next_multiple_of(crate::target_cluster::bytes())
             } else {
                 length
             }

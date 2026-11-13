@@ -128,10 +128,7 @@ fn probe_alias_unnamed(
         return Err(invalid(differs));
     }
     if !probe.directory {
-        super::streams::exact_list(
-            &info(&alias, 7, stream_layout::MAX_STREAM_BUFFER)?,
-            &expected,
-        )?;
+        super::streams::exact_list(&stream_info(&alias)?, &expected)?;
     }
     Ok(AliasNative { observed, snapshot })
 }
@@ -794,6 +791,16 @@ pub(super) fn validate_row(
     })
 }
 /// Names the alias a per-alias pass failed on.
+/// The handle held for the object an alias points at, or for the directory
+/// it lives in. A missing one is reported by role and index, not by a panic.
+fn held<'a>(handles: &'a BTreeMap<usize, File>, index: usize, role: &str) -> io::Result<&'a File> {
+    handles.get(&index).ok_or_else(|| {
+        io::Error::other(format!(
+            "no handle is held for the alias's {role}, object {index}"
+        ))
+    })
+}
+
 fn at_alias(pass: &str, components: &[String], error: io::Error) -> io::Error {
     io::Error::new(
         error.kind(),
@@ -972,7 +979,7 @@ impl StagedWindowsAliases {
                     .as_mut()
                     .and_then(|held| held.remove(row.components))
                 {
-                    if !crate::file_storage::final_path_guid(&file)?.eq_ignore_ascii_case(&path)
+                    if !crate::file_storage::held_at_guid_path(&file, &path)?
                         || crate::reparse_native::capture(&file)?
                             .as_ref()
                             .is_some_and(|actual| actual != &point)
@@ -997,15 +1004,19 @@ impl StagedWindowsAliases {
                     attributes: 0,
                     file_id_info: id,
                     canonical_file_id_info: super::info(
-                        &handles[&row.canonical_object_index],
+                        held(handles, row.canonical_object_index, "canonical object")?,
                         18,
                         24,
                     )?
                     .try_into()
                     .map_err(|_| invalid("canonical native ID width differs"))?,
-                    parent_file_id_info: super::info(&handles[&row.parent_object_index], 18, 24)?
-                        .try_into()
-                        .map_err(|_| invalid("parent native ID width differs"))?,
+                    parent_file_id_info: super::info(
+                        held(handles, row.parent_object_index, "parent directory")?,
+                        18,
+                        24,
+                    )?
+                    .try_into()
+                    .map_err(|_| invalid("parent native ID width differs"))?,
                     point,
                 };
                 if rows
@@ -1111,18 +1122,18 @@ impl StagedWindowsAliases {
             super::suppress_access(&target)?;
             super::validate_bound_type(&target, &canonical)?;
             if super::info(&target, 18, 24)?
-                != super::info(&handles[&entry.canonical_object_index], 18, 24)?
+                != super::info(held(handles, entry.canonical_object_index, "canonical object")?, 18, 24)?
             {
                 return Err(invalid("derived alias canonical link identity changed"));
             }
             let relative:Vec<u16>=entry.canonical_components.last().unwrap().encode_utf16().collect();
             if recovering&&crate::reparse_native::capture(&staged.file)?.is_some(){
-                crate::windows_alias_native::verify_owned(&handles[&entry.parent_object_index],&target,
+                crate::windows_alias_native::verify_owned(held(handles, entry.parent_object_index, "parent directory")?,&target,
                     &staged.file,entry.directory,&relative)?;
             }else{
                 input.before_mutation(0)?;
                 crate::windows_alias_native::install_fresh_owned(
-                &handles[&entry.parent_object_index],
+                held(handles, entry.parent_object_index, "parent directory")?,
                 &target,
                 &staged.file,
                 entry.directory,

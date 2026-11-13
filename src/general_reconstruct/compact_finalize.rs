@@ -246,6 +246,74 @@ pub(crate) fn finalize_after_marker(
     Ok(result)
 }
 
+/// A committed ReFS handoff whose source is already online: the run stopped,
+/// or its verification failed, after it had brought the disk back. Raw replay
+/// is closed and the offline image can no longer be read, so the image proofs
+/// of `finalize_after_marker` cannot be repeated; they were made before the
+/// marker was written. What that function does after bring-online can be,
+/// and this does exactly that and nothing else: the exact marker in the
+/// complete journal, then the mounted volume against the expected tree.
+/// Nothing is written to the disk from the journal and no disk attribute is
+/// changed.
+pub(crate) fn finalize_online_after_marker(
+    request: &Request,
+    artifact: &mut VerifiedDeltaArtifact,
+    journal: &mut File,
+    ticket: &JournalTicket,
+    expected_tree_bytes: &[u8],
+    events: Vec<NativeEvent>,
+) -> Result<Finalization> {
+    request.validate()?;
+    let expected = expectation(request, expected_tree_bytes)?;
+    artifact.revalidate()?;
+    let (bound, _) = checked_binding(request, artifact, journal, ticket, true)?;
+    lab_reconstruct::verify_refs_handoff_receipt(journal, ticket, &bound).map_err(|error| {
+        error.context("the journal does not hold the exact completed ReFS handoff marker")
+    })?;
+    artifact.revalidate()?;
+    let mut result = report(events, true);
+    let restored_label = if let Some(desired) = &request.expected_source_label {
+        match rediscover_general_volume_wait(request.pair.source.clone(), &mut result.events)
+            .and_then(|binding| n2r_win32::volume_label::observe_label(binding, "ReFS"))
+        {
+            Ok(observed) => observed.label == *desired,
+            Err(error) => {
+                result.error = Some(error.to_string());
+                return Ok(result);
+            }
+        }
+    } else {
+        false
+    };
+    verify_native(request, &expected, &mut result, restored_label);
+    Ok(result)
+}
+
+/// The same for a committed NTFS rollback whose source is already online:
+/// the exact abort marker in the complete journal, then the mounted volume,
+/// which must be NTFS again.
+pub(crate) fn finalize_online_rollback(
+    request: &Request,
+    artifact: &mut VerifiedDeltaArtifact,
+    journal: &mut File,
+    ticket: &JournalTicket,
+    events: Vec<NativeEvent>,
+) -> Result<RollbackFinalization> {
+    request.validate()?;
+    artifact.revalidate()?;
+    let (bound, _) = checked_binding(request, artifact, journal, ticket, true)?;
+    let (lifecycle, _) =
+        lab_reconstruct::inspect_journal_lifecycle(journal, ticket, &bound, &request.comparison)?;
+    ensure!(
+        lifecycle == lab_reconstruct::JournalLifecycle::NtfsRollback,
+        "the journal does not hold the exact completed NTFS rollback marker"
+    );
+    artifact.revalidate()?;
+    let mut report = rollback_report(events);
+    verify_native_ntfs(request, &mut report);
+    Ok(report)
+}
+
 fn inspect_restored_ntfs(request: &Request, target: &mut GeneralJournaledPartition) -> Result<()> {
     let length = target.byte_len();
     let raw = ntfs_inspect::inspect_with_limits(

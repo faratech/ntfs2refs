@@ -343,12 +343,13 @@ pub fn reconcile_paged(
     files.revalidate()?;
     capture.revalidate()?;
     ensure!(
-        files.header().geometry.bytes_per_sector == 512
-            && files.header().geometry.index_record_size == 4096
+        matches!(files.header().geometry.bytes_per_sector, 512 | 4096)
+            && ntfs_index::supports_index_record_size(files.header().geometry.index_record_size)
             && ntfs_index::supports_cluster_size(files.header().geometry.cluster_size),
         "paged security indexes require supported NTFS index geometry"
     );
     let cluster = files.header().geometry.cluster_size;
+    let index_record = files.header().geometry.index_record_size;
     let mut central_writer =
         SortedRecordWriter::new(&base.join("security-central"), *b"N2RSCEN1", scratch)?;
     let mut previous: Option<Header> = None;
@@ -358,6 +359,7 @@ pub fn reconcile_paged(
         capture.index(IndexKind::Id)?,
         Profile::SECURITY_ID,
         cluster,
+        index_record,
         scratch,
         &base.join("security-sii.visited"),
         |_entry, key, value| {
@@ -393,6 +395,7 @@ pub fn reconcile_paged(
         capture.index(IndexKind::Hash)?,
         Profile::SECURITY_HASH,
         cluster,
+        index_record,
         scratch,
         &base.join("security-sdh.visited"),
         |_entry, key, value| {
@@ -967,6 +970,11 @@ fn acl(bytes: &[u8], offset: usize, present: bool) -> Result<Acl> {
         });
         at += n;
     }
+    // `at` may stop short of `length`. That is not a malformed ACL: Windows
+    // defines AclSize as covering "the ACL structure, all the ACEs, and the
+    // potential unused memory" and reports the remainder as AclBytesFree
+    // (ACL_SIZE_INFORMATION). The whole declared length is kept and hashed
+    // with the descriptor, so no byte of it is hidden from any comparison.
     Ok(Acl {
         state: AclState::Present,
         offset,

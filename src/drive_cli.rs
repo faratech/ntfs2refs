@@ -34,13 +34,22 @@ pub struct DriveArgs {
     #[arg(long = "offline-media", requires = "drive")]
     pub offline_recovery_media: Option<PathBuf>,
     /// Convert an offline Windows installation from a different physical
-    /// Windows boot disk. The running Windows volume remains excluded.
+    /// Windows boot disk. The running Windows volume remains excluded. A
+    /// partition whose length is not a multiple of 64 MiB is first shrunk to
+    /// one by the Windows NTFS driver; that is announced before the prompt and
+    /// is not undone if the run stops later.
     #[arg(long, requires="drive", conflicts_with_all=["offline_recovery_media","whole_image_verification","experimental_thin_shadow"])]
     pub windows_boot_volume: bool,
     /// Native target format: dev-drive (experimental default) or standard ReFS.
     /// Standard formatting must be supported by Windows; no fallback is used.
     #[arg(long, requires = "drive", value_parser = ["dev-drive", "standard"])]
     pub target_format: Option<String>,
+    /// Allocation unit of the ReFS target in bytes: 4096 (default) or 65536.
+    /// Data stays where it is only if it lies on boundaries of this size, so
+    /// 65536 suits a source with clusters of 64 KiB or larger; from smaller
+    /// clusters most data is copied through the working storage instead.
+    #[arg(long, requires = "drive", value_parser = ["4096", "65536"])]
+    pub target_cluster_bytes: Option<String>,
     /// Recover an interrupted run using its original saved conversion directory.
     #[arg(long, requires = "recovery_sha256", conflicts_with_all = ["list", "drive", "partition", "scratch_directory"])]
     pub recover: Option<PathBuf>,
@@ -59,7 +68,9 @@ pub struct DriveArgs {
     pub experimental_allocation_bounded: bool,
     /// Compare and journal the complete source and ReFS images instead of only
     /// the ranges the new ReFS allocates. Much slower; also proves that free
-    /// space is unchanged.
+    /// space is unchanged. This older route keeps fixed limits the default
+    /// route does not have: at most 1,024 files, 256 directories and 4,096
+    /// placed NTFS runs. A larger volume is refused before anything is written.
     #[arg(
         long,
         requires = "drive",
@@ -68,20 +79,36 @@ pub struct DriveArgs {
     pub whole_image_verification: bool,
     /// Verify complete logical contents of every stream. Extent-identity fast
     /// verification is the allocation-bounded default; full mode stays available.
+    /// This changes what is checked.
     #[arg(long, requires = "drive")]
     pub verify_full_content: bool,
     /// Experimental: reduce recovery storage by leaving unused NTFS space unrestored on
     /// rollback. Requires fast verification and no VSS snapshots/diff areas.
+    /// It first moves files on the source through NTFS; those moves are not
+    /// undone if the run stops later.
     #[arg(long, requires = "drive", conflicts_with_all = ["whole_image_verification", "verify_full_content"])]
     pub minimize_scratch: bool,
-    /// Build the complete ReFS shadow, report every per-object failure instead
-    /// of stopping at the first, then stop before anything is published or
-    /// written to the source. The source volume is left as NTFS.
-    #[arg(long, requires = "drive", conflicts_with_all = ["list", "recover", "rollback"])]
+    /// Check without converting: build the ReFS shadow, report every
+    /// per-object failure instead of stopping at the first, then stop before
+    /// anything is published. ntfs2refs writes nothing to the source. Exit 0:
+    /// no failures; 3: failures reported. Refused when a conversion would
+    /// first shrink the partition, and with --minimize-scratch,
+    /// --whole-image-verification or --offline-media.
+    #[arg(long, requires = "drive", conflicts_with_all = [
+        "list", "recover", "rollback", "whole_image_verification", "minimize_scratch",
+        "offline_recovery_media", "controlled_post_flush_pause_nonce",
+        "acknowledge_controlled_post_flush_pause", "experimental_thin_shadow",
+        "experimental_thin_backing_bytes",
+    ])]
     pub diagnose: bool,
+    /// How many failures --diagnose lists before it stops (default 500);
+    /// 0 lists every failure on the volume.
+    #[arg(long, requires = "diagnose")]
+    pub diagnose_limit: Option<usize>,
     /// Re-read every working file and the whole source at every checkpoint
     /// instead of once, immediately before the first write to the source.
-    /// Much slower; the result is the same.
+    /// Much slower; the result is the same. This changes how often things
+    /// are checked, not what.
     #[arg(long, requires = "drive", conflicts_with_all = ["list", "recover", "rollback"])]
     pub recheck_everything: bool,
     /// Laboratory: sample the worker's call stack a hundred times a second
@@ -109,6 +136,15 @@ pub struct DriveArgs {
         requires_all = ["drive", "controlled_post_flush_pause_nonce"],
         conflicts_with_all = ["list", "recover", "recovery_sha256", "rollback", "whole_image_verification", "experimental_thin_shadow", "experimental_thin_backing_bytes"])]
     pub acknowledge_controlled_post_flush_pause: bool,
+    /// Laboratory: stop for ever at a named point of apply or handoff, so
+    /// that recovery can be exercised from there. The run never completes.
+    #[arg(long, hide = true, value_name = "POINT",
+        requires_all = ["drive", "acknowledge_lab_hold_never_completes"],
+        conflicts_with_all = ["list", "recover", "recovery_sha256", "rollback", "diagnose"])]
+    pub lab_hold_at: Option<String>,
+    /// Laboratory: separate acknowledgement that a held run never completes.
+    #[arg(long, hide = true, requires = "lab_hold_at")]
+    pub acknowledge_lab_hold_never_completes: bool,
 }
 fn parse_controlled_pause_nonce(value: &str) -> std::result::Result<String, String> {
     if value.len() == 64
@@ -121,9 +157,106 @@ fn parse_controlled_pause_nonce(value: &str) -> std::result::Result<String, Stri
         Err("controlled pause requires an independently chosen64-character lowercase hexadecimal nonce".into())
     }
 }
+/// Exit code of a diagnose run that completed and reported failures.
+pub const EXIT_DIAGNOSE_FAILURES: u8 = 3;
+/// Exit code of `--list` when some disk or volume could not be queried: what
+/// was printed is a partial list and must not be read as the whole machine.
+pub const EXIT_LIST_INCOMPLETE: u8 = 4;
+
+/// What `--list` exits with, from whether the inventory covered every device.
+pub(crate) fn list_exit_code(enumeration_complete: bool) -> u8 {
+    if enumeration_complete {
+        0
+    } else {
+        EXIT_LIST_INCOMPLETE
+    }
+}
+
+/// The question asked before anything is started. A diagnose run is not a
+/// conversion and is not confirmed as one.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn confirmation_prompt(mode: crate::execution_mode::ExecutionMode) -> &'static str {
+    match mode {
+        crate::execution_mode::ExecutionMode::Convert => {
+            "Convert this partition to ReFS in place, preserving supported files? [y/N]"
+        }
+        crate::execution_mode::ExecutionMode::Diagnose => {
+            "Diagnose this partition without converting it? It is taken offline and read-only meanwhile, is not written to by ntfs2refs, and is returned as NTFS. [y/N]"
+        }
+    }
+}
+
 impl DriveArgs {
     pub fn requested(&self) -> bool {
         self.list || self.drive.is_some() || self.recover.is_some()
+    }
+
+    /// What `--diagnose` cannot be combined with, and why. Diagnose never
+    /// changes the source; each of these would, or has no diagnose stop.
+    pub const DIAGNOSE_REFUSES: &'static [(&'static str, &'static str)] = &[
+        (
+            "--whole-image-verification",
+            "that route has no diagnose stop and would apply the conversion",
+        ),
+        (
+            "--minimize-scratch",
+            "it moves files on the source before preparation starts",
+        ),
+        (
+            "--offline-media",
+            "that route arms a restart into the conversion",
+        ),
+        (
+            "--controlled-post-flush-pause-nonce",
+            "it controls a run that writes to the source",
+        ),
+        (
+            "--acknowledge-controlled-post-flush-pause",
+            "it controls a run that writes to the source",
+        ),
+        (
+            "--experimental-thin-shadow",
+            "diagnose builds and removes only the ordinary shadow",
+        ),
+        (
+            "--experimental-thin-backing-bytes",
+            "diagnose builds and removes only the ordinary shadow",
+        ),
+        ("--lab-hold-at", "it stops a run that writes to the source"),
+    ];
+
+    /// Decides once, before anything is opened, whether this run converts or
+    /// only diagnoses, and refuses a diagnose it could not honour. The parser
+    /// rejects the same combinations; this holds whatever built the arguments.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(crate) fn execution_mode(&self) -> Result<crate::execution_mode::ExecutionMode> {
+        use crate::execution_mode::ExecutionMode;
+        if !self.diagnose {
+            return Ok(ExecutionMode::Convert);
+        }
+        ensure!(
+            self.drive.is_some() && !self.list && self.recover.is_none() && !self.rollback,
+            "--diagnose applies only to a --drive selection"
+        );
+        // In the order of DIAGNOSE_REFUSES; a test sets each field in turn
+        // and checks that the refusal names its flag.
+        let requested = [
+            self.whole_image_verification,
+            self.minimize_scratch,
+            self.offline_recovery_media.is_some(),
+            self.controlled_post_flush_pause_nonce.is_some(),
+            self.acknowledge_controlled_post_flush_pause,
+            self.experimental_thin_shadow,
+            self.experimental_thin_backing_bytes.is_some(),
+            self.lab_hold_at.is_some(),
+        ];
+        for ((flag, reason), requested) in Self::DIAGNOSE_REFUSES.iter().zip(requested) {
+            ensure!(
+                !requested,
+                "--diagnose cannot be combined with {flag}: {reason}. Nothing was changed."
+            );
+        }
+        Ok(ExecutionMode::Diagnose)
     }
 }
 pub fn run(args: DriveArgs) -> Result<u8> {
@@ -136,6 +269,7 @@ pub fn run(args: DriveArgs) -> Result<u8> {
         if let Some(output) = &args.sample_stacks {
             n2r_win32::stack_sampler::start(output.clone());
         }
+        crate::panic_report::install();
         std::thread::Builder::new()
             .name("ntfs2refs-drive".to_owned())
             .stack_size(16 * 1024 * 1024)
@@ -146,7 +280,13 @@ pub fn run(args: DriveArgs) -> Result<u8> {
             })
             .context("could not create the drive worker stack")?
             .join()
-            .map_err(|_| anyhow::anyhow!("drive worker panicked; preserve its recovery records"))?
+            .map_err(|panic| {
+                crate::panic_report::worker_error(
+                    "ntfs2refs-drive",
+                    panic,
+                    "preserve its recovery records",
+                )
+            })?
     }
     #[cfg(not(windows))]
     {
@@ -278,7 +418,11 @@ mod windows {
             }
         }
         if !inventory.enumeration_complete {
-            eprintln!("Some devices could not be queried; see the inventory errors above.");
+            eprintln!(
+                "Some devices could not be queried; see the inventory errors above. \
+                 This list is incomplete (exit code {}).",
+                super::EXIT_LIST_INCOMPLETE
+            );
         }
     }
     fn save_new(path: &std::path::Path, value: &impl serde::Serialize) -> Result<()> {
@@ -340,11 +484,47 @@ mod windows {
         }
     }
 
+    /// What to tell the owner of a whole-image run that froze its source and
+    /// stopped before it published a recovery bundle. That route leaves the
+    /// disk offline and read-only on purpose; `ntfs2refs cancel` returns it
+    /// once it has proved the whole image unchanged, and needs the digests of
+    /// three of the run's records. `None` when the run froze nothing, or got
+    /// as far as a bundle (whose "To recover:" line is then the way back).
+    pub(super) fn frozen_source_way_back(conversion: &std::path::Path) -> Option<String> {
+        if [
+            "compact-recovery-bundle.json",
+            "allocation-recovery-bundle.json",
+        ]
+        .iter()
+        .any(|bundle| conversion.join(bundle).exists())
+        {
+            return None;
+        }
+        let digest = |record: &str| {
+            fs::read(conversion.join(record))
+                .ok()
+                .map(|bytes| hex::encode(Sha256::digest(bytes)))
+        };
+        let intent = digest("conversion-intent.json")?;
+        let frozen = digest("qualification/source-frozen.json")?;
+        let mounts = digest("qualification/source-mount-paths.json")?;
+        Some(format!(
+            "The source disk was left offline and read-only. Nothing was written to it. To \
+             return the NTFS volume, run this; it proves the whole volume unchanged first:\n  \
+             ntfs2refs cancel --run-directory \"{}\" --intent-sha256 {intent} \
+             --frozen-source-sha256 {frozen} --mount-paths-sha256 {mounts} --output \"{}\"",
+            conversion.display(),
+            conversion.with_file_name("cancel").display()
+        ))
+    }
+
     fn convert_with_progress(
         request: crate::general_conversion::Request,
         budget: crate::general_qualification::CompactConstructionBudget,
         output: PathBuf,
         allocation_bounded: bool,
+        // This backend has no diagnose stop: it activates the source and applies.
+        _authority: &crate::execution_mode::SourceChangeAuthority,
     ) -> Result<()> {
         let worker_output = output.clone();
         std::thread::scope(|scope| {
@@ -414,6 +594,52 @@ mod windows {
             result
         })
     }
+    /// One machine-readable line and a saved report. Exit 0 only when every
+    /// object was examined and none failed.
+    fn report_diagnosis(
+        run: &std::path::Path,
+        outcome: &crate::resource_preparation::DiagnoseOutcome,
+        shadow_removed: bool,
+    ) -> Result<u8> {
+        let clean = outcome.failures.is_empty() && !outcome.stopped_at_limit;
+        if let Err(error) = save_new(&run.join("diagnose-result.json"), outcome) {
+            eprintln!("The diagnose report could not be saved: {error}");
+        }
+        println!(
+            "{}",
+            serde_json::json!({
+                "kind": "diagnose-result-v1",
+                "failures": outcome.failures.len(),
+                "examined_all_objects": !outcome.stopped_at_limit,
+                "source_disk": outcome.restored_disk_number,
+                "ntfs2refs_wrote_to_source": false,
+                "shadow_removed": shadow_removed,
+            })
+        );
+        if clean {
+            println!(
+                "Diagnose complete: no per-object failures. The source is unchanged NTFS on disk {}.",
+                outcome.restored_disk_number
+            );
+        } else {
+            println!(
+                "Diagnose complete: {} per-object failure(s) reported above{}. The source is unchanged NTFS on disk {}.",
+                outcome.failures.len(),
+                if outcome.stopped_at_limit {
+                    "; it stopped at the failure limit before examining every object"
+                } else {
+                    ""
+                },
+                outcome.restored_disk_number
+            );
+        }
+        println!("Working files: {}", run.display());
+        Ok(if clean {
+            0
+        } else {
+            super::EXIT_DIAGNOSE_FAILURES
+        })
+    }
     // Same bounded affirmative confirmation for both actual source scopes.
     pub(super) fn confirm(prompt: &str) -> Result<bool> {
         println!("{prompt}");
@@ -427,6 +653,20 @@ mod windows {
         Ok(answer.len() < 65 && matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
     }
     pub(super) fn run(args: DriveArgs) -> Result<u8> {
+        let mode = args.execution_mode()?;
+        if mode == crate::execution_mode::ExecutionMode::Diagnose {
+            // A backstop beneath the routes: nothing in this process may now
+            // open a disk to raw writes.
+            n2r_win32::forbid_raw_write_activation();
+        }
+        if let Some(point) = &args.lab_hold_at {
+            ensure!(
+                args.acknowledge_lab_hold_never_completes,
+                "a laboratory hold needs --acknowledge-lab-hold-never-completes"
+            );
+            // An unknown point is refused here, before anything is opened.
+            n2r_win32::lab_hold::arm(point)?;
+        }
         if let Some(directory) = args.recover {
             let checksum = args
                 .recovery_sha256
@@ -478,10 +718,27 @@ mod windows {
         let inventory = drive_inventory::inventory_drives_readonly()?;
         if args.list {
             list(&inventory);
-            return Ok(0);
+            return Ok(super::list_exit_code(inventory.enumeration_complete));
         }
         let values = args.drive.as_ref().context("drive selection required")?;
         let drive = values.first().context("drive value required")?;
+        // Chosen before anything is planned: every count of target clusters
+        // in this process uses it.
+        let target_cluster: u64 = args
+            .target_cluster_bytes
+            .as_deref()
+            .unwrap_or("4096")
+            .parse()
+            .context("target cluster size")?;
+        ensure!(
+            target_cluster == n2r_win32::target_cluster::DEFAULT_BYTES
+                || !(args.windows_boot_volume
+                    || args.whole_image_verification
+                    || args.offline_recovery_media.is_some()
+                    || args.experimental_thin_shadow),
+            "a {target_cluster}-byte ReFS allocation unit is for a data volume on the default route; a Windows boot volume, whole-image verification, offline media and the thin shadow use 4096"
+        );
+        n2r_win32::target_cluster::choose(target_cluster)?;
         let partition = match values.as_slice() {
             [_] => args.partition,
             [_, marker, number] => {
@@ -516,13 +773,24 @@ mod windows {
                     && disk.contains_running_windows == Some(true)
             })
         {
+            ensure!(
+                args.lab_hold_at.is_none(),
+                "laboratory holds apply only to a dedicated or Windows boot source"
+            );
+            ensure!(
+                target_cluster == n2r_win32::target_cluster::DEFAULT_BYTES,
+                "a {target_cluster}-byte ReFS allocation unit is for a volume on a disk of its own; a partition on the running Windows disk uses 4096"
+            );
+            // This route has no diagnose stop; refuse before discovering anything.
+            let authority = mode
+                .source_change_authority("conversion of a partition on the running Windows disk")?;
             let before = discovery::discover(
                 &selected.volume_guid_path,
                 Role::Journal {
                     allow_additional_partitions: true,
                 },
             )?;
-            return super::partition::convert(&args, selected, before);
+            return super::partition::convert(&args, selected, before, &authority);
         }
         ensure!(
             args.controlled_post_flush_pause_nonce.is_none()
@@ -548,9 +816,19 @@ mod windows {
             before.filesystem == "NTFS",
             "selected partition must currently be NTFS"
         );
-        if args.windows_boot_volume {
-            super::boot::validate(&before.binding)?;
-        }
+        // Decided from the partition length before anything is asked, so a
+        // diagnose that could not be honoured stops here.
+        // ReFS covers a volume in whole 64 MiB units, whatever the source
+        // is: a partition that is not a multiple is first shrunk to one.
+        let boot_geometry = {
+            let partition_bytes = before.binding.identity.partition_bytes;
+            let decision = super::boot::geometry_decision(partition_bytes)?;
+            super::boot::admit_geometry(decision, partition_bytes, mode)?;
+            if args.windows_boot_volume {
+                super::boot::validate(&before.binding)?;
+            }
+            Some(decision)
+        };
         let resources = if !args.whole_image_verification {
             crate::ntfs_admission::ResourceProfile::ResourceBoundedV4(None)
         } else {
@@ -585,12 +863,13 @@ mod windows {
             .unwrap_or("dev-drive")
             .parse()?;
         println!(
-            "Requested target: {} (ReFS, 4 KiB clusters).",
+            "Requested target: {} (ReFS, {} KiB clusters).",
             if target_format.is_dev_drive() {
                 "Dev Drive; experimental default"
             } else {
                 "standard ReFS; Windows formatter support required"
-            }
+            },
+            n2r_win32::target_cluster::bytes() / 1024
         );
         println!(
             "Windows will report the converted volume's actual developer designation and trust state."
@@ -617,19 +896,24 @@ mod windows {
                 "Reduced scratch: rollback restores allocated NTFS data and metadata; unused-space contents may change. Volumes with VSS snapshots or hosted diff areas are refused."
             );
         }
-        if args.windows_boot_volume {
-            super::boot::describe_geometry(&before.binding);
+        if let Some(decision) = boot_geometry {
+            super::boot::describe_geometry(decision);
         }
-        if args.diagnose {
-            crate::resource_preparation::set_diagnose();
+        if mode == crate::execution_mode::ExecutionMode::Diagnose {
             println!(
-                "Diagnose mode: every per-object failure is reported and nothing is written to the source."
+                "Diagnose mode: the ReFS shadow is built in the working directory and every per-object failure is reported. ntfs2refs writes nothing to the source."
             );
         }
         if args.recheck_everything {
             crate::resource_preparation::set_recheck_everything();
         }
-        if !confirm("Convert this partition to ReFS in place, preserving supported files? [y/N]")? {
+        if let Some(limit) = args.diagnose_limit {
+            crate::general_shadow::set_diagnose_limit(limit);
+        }
+        if let Some(point) = n2r_win32::lab_hold::armed() {
+            println!("Laboratory hold armed at {point}: this run stops there and never completes.");
+        }
+        if !confirm(confirmation_prompt(mode))? {
             println!("Cancelled. No conversion started.");
             return Ok(0);
         }
@@ -649,6 +933,8 @@ mod windows {
             target_format,
             args.experimental_thin_shadow,
             args.experimental_thin_backing_bytes,
+            mode,
+            boot_geometry,
         )
     }
     fn convert_selected(
@@ -662,6 +948,8 @@ mod windows {
         target_format: n2r_win32::managed_shadow::TargetFormatProfile,
         thin_shadow: bool,
         thin_backing_bytes: Option<u64>,
+        mode: crate::execution_mode::ExecutionMode,
+        boot_geometry: Option<super::boot::GeometryDecision>,
     ) -> Result<u8> {
         let system = n2r_win32::current_windows_directory()?
             .to_str()
@@ -755,7 +1043,7 @@ mod windows {
         fs::create_dir(&run)?;
         save_new(
             &run.join("drive-selection.json"),
-            &serde_json::json!({"selected":selected,"source":before,"confirmation":"interactive affirmative","journal_budget_bytes":journal_bytes,"requested_target_format":target_format,"explicit_trust_or_filter_configuration_requested":false,"source_write_authority":false}),
+            &serde_json::json!({"selected":selected,"source":before,"confirmation":"interactive affirmative","journal_budget_bytes":journal_bytes,"requested_target_format":target_format,"explicit_trust_or_filter_configuration_requested":false,"source_write_authority":false,"lab_hold_point":n2r_win32::lab_hold::armed()}),
         )?;
         let native_creation_admission = if thin_shadow {
             None
@@ -768,10 +1056,15 @@ mod windows {
             )?;
             Some(admitted)
         };
-        let before = if before.binding.layout_profile
-            == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows
-        {
-            super::boot::normalize_geometry(before, &run)?
+        ensure!(
+            boot_geometry.is_some(),
+            "the partition's ReFS geometry was not decided"
+        );
+        let before = if let Some(super::boot::GeometryDecision::Shrink { .. }) = boot_geometry {
+            let authority = mode.source_change_authority(
+                "the Windows NTFS driver shrink that prepares ReFS geometry",
+            )?;
+            super::boot::normalize_geometry(before, &run, &authority)?
         } else {
             before
         };
@@ -873,8 +1166,10 @@ mod windows {
                 provider_commitment,
                 if thin_shadow { reserve } else { 0 },
                 staged.staging_allocation_meter(),
+                mode,
             )
         } else {
+            let authority = mode.source_change_authority("whole-image conversion")?;
             if minimize_scratch {
                 println!("Preparing NTFS file placement to reduce recovery storage.");
                 let preparation = crate::ntfs_preparation::prepare(
@@ -935,11 +1230,44 @@ mod windows {
             };
             // Keep the native attachment owner on this thread until the conversion
             // worker has returned, including error/panic handling.
-            convert_with_progress(request, budget, output.clone(), allocation_bounded)
+            convert_with_progress(
+                request,
+                budget,
+                output.clone(),
+                allocation_bounded,
+                &authority,
+            )
+            .map(|()| super::resource::ConversionOutcome::Converted)
         };
         let output = run.join("conversion");
         match result {
-            Ok(()) => {
+            Ok(super::resource::ConversionOutcome::Diagnosed(outcome)) => {
+                // The shadow was built only to be examined; nothing was
+                // published from it, so it is detached and removed.
+                let shadow_removed = match staged.retire_after_diagnose() {
+                    Some(retirement) => {
+                        if !retirement.success() {
+                            eprintln!(
+                                "Diagnose finished, but its temporary shadow could not be removed (stopped at {}: {}). It remains in {}.",
+                                retirement.phase(),
+                                retirement.error().unwrap_or("cleanup incomplete"),
+                                run.display()
+                            );
+                        }
+                        if let Err(error) =
+                            save_new(&run.join("shadow-retirement.json"), &retirement)
+                        {
+                            eprintln!(
+                                "The temporary-shadow cleanup receipt could not be saved: {error}"
+                            );
+                        }
+                        retirement.success()
+                    }
+                    None => false,
+                };
+                report_diagnosis(&run, &outcome, shadow_removed)
+            }
+            Ok(super::resource::ConversionOutcome::Converted) => {
                 if allocation_bounded {
                     // This live Ok comes only after V4 HND/native finalization
                     // returned and all construction/raw owners were released.
@@ -1028,12 +1356,208 @@ mod windows {
                     );
                     return Err(e);
                 }
-                eprintln!(
-                    "Conversion stopped. Preserve all recovery files at {}",
-                    run.display()
-                );
+                if mode == crate::execution_mode::ExecutionMode::Diagnose {
+                    eprintln!(
+                        "Diagnose could not finish. Its working files are at {}",
+                        run.display()
+                    );
+                } else {
+                    eprintln!(
+                        "Conversion stopped. Preserve all recovery files at {}",
+                        run.display()
+                    );
+                    if let Some(way_back) = frozen_source_way_back(&output) {
+                        eprintln!("{way_back}");
+                    }
+                }
                 Err(e)
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::execution_mode::ExecutionMode;
+
+    #[cfg(windows)]
+    #[test]
+    fn a_run_that_left_its_source_frozen_is_told_how_to_return_it() {
+        use sha2::{Digest, Sha256};
+        let run = tempfile::tempdir().unwrap();
+        let conversion = run.path().join("conversion");
+        std::fs::create_dir_all(conversion.join("qualification")).unwrap();
+        // A run that froze nothing has nothing to return.
+        assert_eq!(windows::frozen_source_way_back(&conversion), None);
+        std::fs::write(conversion.join("conversion-intent.json"), b"intent").unwrap();
+        std::fs::write(
+            conversion.join("qualification/source-frozen.json"),
+            b"frozen",
+        )
+        .unwrap();
+        assert_eq!(windows::frozen_source_way_back(&conversion), None);
+        std::fs::write(
+            conversion.join("qualification/source-mount-paths.json"),
+            b"mounts",
+        )
+        .unwrap();
+        let said = windows::frozen_source_way_back(&conversion).unwrap();
+        assert!(said.contains("left offline and read-only"), "{said}");
+        assert!(said.contains("ntfs2refs cancel --run-directory"), "{said}");
+        for (flag, record) in [
+            ("--intent-sha256", &b"intent"[..]),
+            ("--frozen-source-sha256", b"frozen"),
+            ("--mount-paths-sha256", b"mounts"),
+        ] {
+            let pin = format!("{flag} {}", hex::encode(Sha256::digest(record)));
+            assert!(said.contains(&pin), "{said}");
+        }
+        let fresh = format!("--output \"{}\"", run.path().join("cancel").display());
+        assert!(said.contains(&fresh), "{said}");
+        // Once a recovery bundle is published, its recovery command is the way.
+        std::fs::write(conversion.join("compact-recovery-bundle.json"), b"{}").unwrap();
+        assert_eq!(windows::frozen_source_way_back(&conversion), None);
+    }
+    use clap::{Parser, error::ErrorKind};
+
+    #[derive(Parser, Debug)]
+    struct Cli {
+        #[command(flatten)]
+        drive: DriveArgs,
+    }
+    #[test]
+    fn a_partial_drive_list_does_not_exit_as_a_complete_one() {
+        assert_eq!(list_exit_code(true), 0);
+        assert_eq!(list_exit_code(false), EXIT_LIST_INCOMPLETE);
+        // Distinct from success, a failure, a usage error and diagnose failures.
+        for taken in [0, 1, 2, EXIT_DIAGNOSE_FAILURES] {
+            assert_ne!(EXIT_LIST_INCOMPLETE, taken);
+        }
+    }
+
+    fn parse(extra: &[&str]) -> std::result::Result<DriveArgs, clap::Error> {
+        let mut arguments = vec!["ntfs2refs", "--drive", "D"];
+        arguments.extend_from_slice(extra);
+        Cli::try_parse_from(arguments).map(|cli| cli.drive)
+    }
+    const NONCE: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+
+    #[test]
+    fn a_laboratory_hold_needs_its_own_acknowledgement() {
+        assert!(parse(&["--lab-hold-at", "handoff-sealed"]).is_err());
+        assert!(parse(&["--acknowledge-lab-hold-never-completes"]).is_err());
+        let held = parse(&[
+            "--lab-hold-at",
+            "handoff-sealed",
+            "--acknowledge-lab-hold-never-completes",
+        ])
+        .unwrap();
+        assert_eq!(held.lab_hold_at.as_deref(), Some("handoff-sealed"));
+        assert_eq!(held.execution_mode().unwrap(), ExecutionMode::Convert);
+    }
+
+    #[test]
+    fn a_diagnose_run_is_not_confirmed_as_a_conversion() {
+        assert!(
+            confirmation_prompt(ExecutionMode::Convert)
+                .starts_with("Convert this partition to ReFS in place")
+        );
+        let diagnose = confirmation_prompt(ExecutionMode::Diagnose);
+        assert!(
+            diagnose.starts_with("Diagnose this partition without converting it")
+                && !diagnose.contains("Convert this partition"),
+            "{diagnose}"
+        );
+    }
+
+    #[test]
+    fn a_conversion_and_a_plain_diagnose_are_admitted() {
+        let mode = |extra: &[&str]| parse(extra).unwrap().execution_mode().unwrap();
+        assert_eq!(mode(&[]), ExecutionMode::Convert);
+        assert_eq!(mode(&["--diagnose"]), ExecutionMode::Diagnose);
+        assert_eq!(
+            mode(&[
+                "--diagnose",
+                "--windows-boot-volume",
+                "--verify-full-content",
+                "--recheck-everything",
+            ]),
+            ExecutionMode::Diagnose
+        );
+        // Without --diagnose these are ordinary conversion requests.
+        assert_eq!(mode(&["--minimize-scratch"]), ExecutionMode::Convert);
+        assert_eq!(
+            mode(&["--whole-image-verification"]),
+            ExecutionMode::Convert
+        );
+    }
+
+    #[test]
+    fn the_parser_rejects_diagnose_with_every_option_it_cannot_honour() {
+        let cases: [&[&str]; 7] = [
+            &[
+                "--lab-hold-at",
+                "handoff-sealed",
+                "--acknowledge-lab-hold-never-completes",
+            ],
+            &["--whole-image-verification"],
+            &["--minimize-scratch"],
+            &["--offline-media", "E:\\"],
+            &["--experimental-thin-shadow"],
+            &[
+                "--experimental-thin-shadow",
+                "--experimental-thin-backing-bytes",
+                "1073741824",
+            ],
+            &[
+                "--controlled-post-flush-pause-nonce",
+                NONCE,
+                "--acknowledge-controlled-post-flush-pause",
+            ],
+        ];
+        for extra in cases {
+            // Each is accepted by the parser on its own.
+            assert!(parse(extra).is_ok(), "{extra:?}");
+            let mut arguments = vec!["--diagnose"];
+            arguments.extend_from_slice(extra);
+            let error = parse(&arguments).unwrap_err();
+            assert_eq!(
+                error.kind(),
+                ErrorKind::ArgumentConflict,
+                "{arguments:?}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn admission_refuses_each_combination_whatever_built_the_arguments() {
+        type Set = fn(&mut DriveArgs);
+        let cases: [Set; 8] = [
+            |a| a.whole_image_verification = true,
+            |a| a.minimize_scratch = true,
+            |a| a.offline_recovery_media = Some(PathBuf::from("E:\\")),
+            |a| a.controlled_post_flush_pause_nonce = Some(NONCE.to_owned()),
+            |a| a.acknowledge_controlled_post_flush_pause = true,
+            |a| a.experimental_thin_shadow = true,
+            |a| a.experimental_thin_backing_bytes = Some(1 << 30),
+            |a| a.lab_hold_at = Some("handoff-sealed".to_owned()),
+        ];
+        assert_eq!(cases.len(), DriveArgs::DIAGNOSE_REFUSES.len());
+        for (set, (flag, reason)) in cases.iter().zip(DriveArgs::DIAGNOSE_REFUSES) {
+            let mut arguments = parse(&["--diagnose"]).unwrap();
+            set(&mut arguments);
+            let refusal = arguments.execution_mode().unwrap_err().to_string();
+            assert!(
+                refusal.contains(flag) && refusal.contains(reason),
+                "{flag}: {refusal}"
+            );
+            arguments.diagnose = false;
+            assert_eq!(
+                arguments.execution_mode().unwrap(),
+                ExecutionMode::Convert,
+                "{flag}"
+            );
         }
     }
 }

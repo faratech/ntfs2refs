@@ -136,7 +136,21 @@ struct Publication<'a> {
     ticket_sha256: String,
     expected_mount_paths: &'a [String],
     expected_source_label: &'a n2r_win32::volume_label::VolumeLabel,
+    /// The ReFS allocation unit of the run, written only when it is not the
+    /// 4 KiB every earlier run used, so those runs' records are unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_cluster_bytes: Option<u64>,
+    /// The ReFS version of the run's shadow, written only when it is not the
+    /// 3.14 every earlier run had.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_refs_version: Option<(u32, u32)>,
     serialized_publication_grants_authority: bool,
+}
+
+/// The allocation unit to record in a publication: nothing for 4 KiB.
+fn recorded_target_cluster() -> Option<u64> {
+    let bytes = n2r_win32::target_cluster::bytes();
+    (bytes != n2r_win32::target_cluster::DEFAULT_BYTES).then_some(bytes)
 }
 
 /// Actual arena-owned partition metadata only. No source certificate, apply
@@ -302,6 +316,8 @@ pub(crate) fn persist_partition_metadata(
             ticket_sha256: hex::encode(serialization_pin(journal.diagnostic_ticket(), 4096)?.1),
             expected_mount_paths: &mount_paths,
             expected_source_label: &label,
+            target_cluster_bytes: recorded_target_cluster(),
+            target_refs_version: n2r_win32::target_refs_version::recorded(),
             serialized_publication_grants_authority: false,
         };
         source_scope
@@ -1079,6 +1095,8 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
                             ),
                             expected_mount_paths: &context.mount_paths().paths,
                             expected_source_label: context.expected_label(),
+                            target_cluster_bytes: recorded_target_cluster(),
+                            target_refs_version: n2r_win32::target_refs_version::recorded(),
                             serialized_publication_grants_authority: false,
                         };
                         let artifacts = save_publication(

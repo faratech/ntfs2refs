@@ -110,7 +110,7 @@ fn capture(
         || standard[21] != 0
         || id[8..24] == [0; 16]
         || attrs & (0x10 | 0x200 | 0x400 | 0x800 | 0x4000) != 0
-        || !crate::file_storage::final_path_guid(file)?.eq_ignore_ascii_case(path)
+        || !crate::file_storage::held_at_guid_path(file, path)?
     {
         return Err(bad(
             "private routed prefix native identity/EOF/type differs",
@@ -131,10 +131,11 @@ fn capture(
     digest.update((sd.len() as u64).to_le_bytes());
     digest.update(&sd);
     let mut covered = 0u64;
+    let cluster = crate::target_cluster::bytes();
     for run in &mapping.runs {
         let offset = run
             .vcn
-            .checked_mul(4096)
+            .checked_mul(cluster)
             .ok_or_else(|| bad("routed prefix VCN overflow"))?;
         // The complete retrieval transcript can include an unallocated final
         // partial-cluster suffix. It is not part of this initialized-prefix
@@ -145,7 +146,7 @@ fn capture(
         }
         let length = run
             .clusters
-            .checked_mul(4096)
+            .checked_mul(cluster)
             .ok_or_else(|| bad("routed prefix mapping overflow"))?;
         if length == 0 || offset != covered {
             return Err(bad("private routed prefix logical coverage differs"));
@@ -157,7 +158,7 @@ fn capture(
             ))
         })?;
         let physical = lcn
-            .checked_mul(4096)
+            .checked_mul(cluster)
             .ok_or_else(|| bad("routed prefix physical mapping overflow"))?;
         if physical.checked_add(length).is_none_or(|n| n > partition) {
             return Err(bad(
@@ -185,7 +186,9 @@ fn capture(
         )
     })?;
     let integrity = ctl(file, 0x9027c, &[], 16)?;
-    if integrity.len() != 16 || integrity[..8] != [0; 8] || layout::u32_at(&integrity, 12)? != 4096
+    if integrity.len() != 16
+        || integrity[..8] != [0; 8]
+        || layout::u32_at(&integrity, 12)? != crate::target_cluster::bytes_u32()
     {
         return Err(bad("routed prefix integrity must remain disabled"));
     }
@@ -208,7 +211,7 @@ fn capture(
         || sd != after_sd
         || mapping.canonical != after_mapping.canonical
         || !storage.same_transcript(&after_storage)
-        || !crate::file_storage::final_path_guid(file)?.eq_ignore_ascii_case(path)
+        || !crate::file_storage::held_at_guid_path(file, path)?
     {
         return Err(bad(
             "private routed prefix metadata/security/mapping/validity changed during observation",
@@ -307,7 +310,10 @@ pub(super) fn observe(
     let row = usize::try_from(admission.budget.max_row_bytes).map_err(io::Error::other)?;
     let payer = memory.payer();
     let mut work = payer.reserve(peak(row, 32768)?)?;
-    if prefix == 0 || !prefix.is_multiple_of(4096) || prefix != logical / 4096 * 4096 {
+    if prefix == 0
+        || !crate::target_cluster::aligned(prefix)
+        || prefix != crate::target_cluster::floor(logical)
+    {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "routed prefix requires the complete ordinary full-cluster prefix",

@@ -197,6 +197,34 @@ enum Action {
     VerifyAborted,
 }
 
+/// Whether a recovery finishes on the mounted volume instead of on the
+/// offline disk: only when the journal's terminal marker is already
+/// committed and the source disk is fully online. Any action that may still
+/// write from the journal requires the offline disk, as before.
+fn finishes_on_mounted_volume(action: Action, source_disk_attributes: u64) -> bool {
+    matches!(action, Action::VerifyHandoff | Action::VerifyAborted) && source_disk_attributes == 0
+}
+
+#[cfg(test)]
+mod online_terminal_tests {
+    use super::{Action, finishes_on_mounted_volume as online};
+
+    #[test]
+    fn only_a_committed_run_with_its_source_online_finishes_on_the_mounted_volume() {
+        assert!(online(Action::VerifyHandoff, 0));
+        assert!(online(Action::VerifyAborted, 0));
+        for attributes in [1, 2, 3] {
+            assert!(!online(Action::VerifyHandoff, attributes));
+            assert!(!online(Action::VerifyAborted, attributes));
+        }
+        for action in [Action::Resume, Action::Rollback, Action::Abandon] {
+            for attributes in [0, 1, 2, 3] {
+                assert!(!online(action, attributes), "{action:?} {attributes}");
+            }
+        }
+    }
+}
+
 fn ordinary_absolute(path: &Path) -> bool {
     path.is_absolute()
         && !path
@@ -657,6 +685,43 @@ fn recover_allocation_inner(
             lab_fault,
         )?;
         artifacts::save(output, "journal-identity.json", &observed)?;
+        // A marker write that was cut short is settled before the lifecycle
+        // is read (see `interrupted_marker`), on the journal held exclusively
+        // here. This route writes every marker while the source disk is
+        // offline and writable.
+        if let Some(found) =
+            sj::find_interrupted_marker(&mut journal, &ticket).with_context(|| {
+                format!(
+                    "looking for a partly written lifecycle marker in the recovery journal {}",
+                    bundle.journal.display()
+                )
+            })?
+        {
+            phase = "selected-journal-interrupted-marker";
+            let mut disk_events = Vec::<NativeEvent>::new();
+            let state = n2r_win32::observe_general_disk_state_readonly(
+                request.pair.source.clone(),
+                &mut disk_events,
+            )?;
+            crate::interrupted_marker::require_source_state(
+                found,
+                &bundle.journal,
+                request.pair.source.disk_number,
+                state.disk_attributes,
+                &[1],
+            )?;
+            let settled = sj::settle_interrupted_marker(&mut journal, &ticket)
+                .with_context(|| {
+                    format!(
+                        "settling the partly written {} marker of the recovery journal {}",
+                        found.name,
+                        bundle.journal.display()
+                    )
+                })?
+                .context("the partly written journal marker changed while it was being settled")?;
+            crate::interrupted_marker::announce(&settled, &bundle.journal);
+            artifacts::save(output, "interrupted-marker.json", &settled)?;
+        }
         phase = "selected-journal-lifecycle";
         // Authenticate the actual share-zero journal once before reopening the
         // target. The opaque owner keeps this exact mutable journal borrow
@@ -693,6 +758,118 @@ fn recover_allocation_inner(
                 "serialized_selection_grants_authority":false,
             }),
         )?;
+        // A committed handoff or rollback whose source is already online:
+        // the run stopped, or its verification failed, after it had brought
+        // the disk back. The exact terminal marker was authenticated above
+        // and nothing remains to be replayed; the offline checks below cannot
+        // be repeated on a mounted disk, and were made before the marker was
+        // written. What this function does after bring-online can be, and is
+        // all that is done here. Nothing is written from the journal and no
+        // disk attribute is changed.
+        if finishes_on_mounted_volume(action, {
+            let mut observed = Vec::<NativeEvent>::new();
+            n2r_win32::observe_general_disk_state_readonly(
+                request.pair.source.clone(),
+                &mut observed,
+            )?
+            .disk_attributes
+        }) {
+            phase = "online-terminal";
+            drop(recovery_journal);
+            for held in [
+                &mut bundle_input,
+                &mut request_input,
+                &mut plan_input,
+                &mut ticket_input,
+                &mut verification_input,
+            ]
+            .into_iter()
+            .chain(recovery_payload_input.iter_mut())
+            {
+                held.revalidate()?;
+            }
+            expectation_input.revalidate()?;
+            expectation.revalidate_domain()?;
+            journal.require_native_mount_barriers(&ticket)?;
+            let outcome = if matches!(action, Action::VerifyHandoff) {
+                let mut finalization = protocol::Finalization {
+                    success: false,
+                    rollback_closed: true,
+                    handoff: None,
+                    completed_marker_proof: None,
+                    native: None,
+                    label_restoration: None,
+                    mount_paths_after: None,
+                    mount_paths_preserved: None,
+                    mount_paths_error: None,
+                    error: None,
+                    events: Vec::new(),
+                    general_conversion_qualified: false,
+                };
+                // A previous process may have restored the label after its
+                // own handoff; verify against the label it left.
+                let restored_label = rediscover_general_volume_wait(
+                    request.pair.source.clone(),
+                    &mut finalization.events,
+                )
+                .and_then(|binding| n2r_win32::volume_label::observe_label(binding, "ReFS"))
+                .is_ok_and(|observed| observed.label == verification.expected_source_label);
+                let scope = protocol::NativeVerificationScope {
+                    pair: &request.pair,
+                    source_resource_profile: request.source_resource_profile,
+                    expected_mount_paths: Some(verification.expected_mount_paths.as_slice()),
+                    expected_source_label: Some(&verification.expected_source_label),
+                };
+                // The whole mounted tree, not the extent shortcut: that one
+                // needs a closed-journal proof taken from the offline disk.
+                protocol::verify_native_scoped(
+                    &scope,
+                    &expectation,
+                    &mut finalization,
+                    restored_label,
+                );
+                artifacts::save(output, "completion.json", &finalization)?;
+                ensure!(
+                    finalization.success,
+                    "the ReFS handoff is committed and the source is online, but the mounted volume \
+                     did not verify; rollback stays closed: {:?}",
+                    finalization.error
+                );
+                AllocationRecoveryOutcome::RefsCompleted
+            } else {
+                let mut mount_events = Vec::new();
+                let mounted =
+                    rediscover_general_volume_wait(request.pair.source.clone(), &mut mount_events)
+                        .and_then(|binding| mounted_filesystem_general(binding, &mut mount_events));
+                artifacts::save(
+                    output,
+                    "completion.json",
+                    &serde_json::json!({
+                        "mounted_filesystem":mounted.as_ref().ok(),
+                        "error":mounted.as_ref().err().map(|error| error.to_string()),
+                        "events":mount_events,
+                    }),
+                )?;
+                ensure!(
+                    matches!(&mounted, Ok(name) if name == "NTFS"),
+                    "the NTFS rollback is committed and the source is online, but it did not mount as NTFS: {mounted:?}"
+                );
+                AllocationRecoveryOutcome::NtfsRestored
+            };
+            artifacts::save(
+                output,
+                "result.json",
+                &serde_json::json!({
+                    "schema_version":1,"kind":"allocation-bounded-recovery","success":true,
+                    "observed_lifecycle":state,"action":action,"outcome":outcome,
+                    "source_was_already_online":true,"offline_checks_repeated":false,
+                    "raw_replay_performed":false,
+                    "fresh_apply_authorized":false,"source_admitted":false,
+                    "general_conversion_qualified":false,
+                }),
+            )?;
+            return Ok(outcome);
+        }
         phase = "reopen-activated-source";
         let mut events = Vec::<NativeEvent>::new();
         let mut target =

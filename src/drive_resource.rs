@@ -57,6 +57,12 @@ fn budget(
     };
     result.validate()?;
     available.validate_budget(result)?;
+    // One stream's complete mapping may have as many extents as leave the
+    // largest reservation made for it (32 copies of its pages) within a
+    // sixty-fourth of the memory budget; never fewer than the fixed 65,536.
+    n2r_win32::stream_layout::raise_complete_extent_limit(
+        usize::try_from(ram / 65_536).unwrap_or(usize::MAX),
+    );
     Ok(result)
 }
 
@@ -83,6 +89,13 @@ fn save(path: &Path, value: &impl Serialize) -> Result<()> {
     Ok(())
 }
 
+/// How a confirmed run on the default route ended.
+pub(crate) enum ConversionOutcome {
+    Converted,
+    /// A diagnose run: the shadow was built and examined; nothing was applied.
+    Diagnosed(crate::resource_preparation::DiagnoseOutcome),
+}
+
 pub(crate) fn convert_owned(
     pair: GeneralSourceShadowBinding,
     journal: GeneralJournalStorageBinding,
@@ -99,7 +112,9 @@ pub(crate) fn convert_owned(
         0,
         0,
         Ok(None),
+        crate::execution_mode::ExecutionMode::Convert,
     )
+    .map(|_| ())
 }
 
 /// Preserve the remaining maximum provider growth outside capture/journal
@@ -113,7 +128,8 @@ pub(crate) fn convert_owned_with_provider_commitment(
     provider_commitment: u64,
     provider_minimum_free_bytes: u64,
     staging_meter: std::io::Result<Option<n2r_win32::managed_shadow::StagingAllocationMeter>>,
-) -> Result<()> {
+    mode: crate::execution_mode::ExecutionMode,
+) -> Result<ConversionOutcome> {
     let first = n2r_win32::resource_native::observe_available_resources(run)?;
     let staging_meter = staging_meter.context("observe actual staging backing owner")?;
     let backing_guard = staging_meter
@@ -189,6 +205,8 @@ pub(crate) fn convert_owned_with_provider_commitment(
     // The public CLI selects this policy for --minimize-scratch. Prealignment
     // runs on live NTFS before the final frozen source certificate exists.
     if selected_capacity_policy == SelectedCapacityPolicy::SourceFreeActualBytesV1 {
+        // These moves happen on the live source, before any diagnose stop.
+        let authority = mode.source_change_authority("NTFS prealignment (--minimize-scratch)")?;
         println!("Preparing NTFS file placement to reduce recovery storage.");
         let prepass = (|| -> Result<()> {
             let available = n2r_win32::resource_native::observe_available_resources(run)?;
@@ -209,6 +227,7 @@ pub(crate) fn convert_owned_with_provider_commitment(
                 keep,
                 evidence_remaining,
                 &mut observer,
+                &authority,
             )
         })();
         if let Err(error) = prepass {
@@ -267,8 +286,11 @@ pub(crate) fn convert_owned_with_provider_commitment(
         verification_policy,
         selected_capacity_policy,
         maximum_placement_bytes,
-        maximum_placement_submissions: usize::try_from(maximum_placement_bytes / 4096)
-            .context("placement operation format overflow")?,
+        // One submission moves at least one target cluster.
+        maximum_placement_submissions: usize::try_from(
+            maximum_placement_bytes / n2r_win32::target_cluster::bytes(),
+        )
+        .context("placement operation format overflow")?,
         maximum_materialized_bytes: capture,
         maximum_source_read_bytes: None,
         capture_arena_bytes: capture,
@@ -288,11 +310,19 @@ pub(crate) fn convert_owned_with_provider_commitment(
     if !crate::resource_preparation::recheck_everything() {
         n2r_win32::verify_policy::check_once();
     }
-    let result = (|| -> Result<()> {
+    let result = (|| -> Result<ConversionOutcome> {
+        if mode == crate::execution_mode::ExecutionMode::Diagnose {
+            // No apply closure exists on this path: the shadow is built, every
+            // per-object failure is reported and the source is returned as NTFS.
+            return crate::resource_preparation::diagnose(request, &prepared_output, &mut observer)
+                .map(ConversionOutcome::Diagnosed);
+        }
+        let authority = mode.source_change_authority("the journal apply")?;
         let (publication, sha) = crate::resource_preparation::prepare_with(
             request,
             &prepared_output,
             &mut observer,
+            &authority,
             |prepared, events, observer| {
                 let path = prepared.publication_path().to_path_buf();
                 let sha = parse_sha(prepared.publication_sha256())?;
@@ -328,6 +358,7 @@ pub(crate) fn convert_owned_with_provider_commitment(
                 // released too; the finalizer rebuilds it from the published
                 // records, exactly as a restarted `--recover` does.
                 drop(applied);
+                n2r_win32::lab_hold::reached("handoff-sealed");
                 Ok((path, sha))
             },
         )?;
@@ -361,7 +392,7 @@ pub(crate) fn convert_owned_with_provider_commitment(
         if let Err(error) = save(&run.join("resource-completion.json"), &finalized) {
             eprintln!("Conversion completed; the completion report could not be saved: {error}");
         }
-        Ok(())
+        Ok(ConversionOutcome::Converted)
     })();
     // Evidence closing is observational after a successful native finalizer;
     // it cannot reopen replay or change an already completed handoff.
@@ -401,7 +432,8 @@ pub(super) fn preparation_intent_matches(directory: &Path, sha: &str) -> Result<
     let resumed = directory.join("resume-intent.json");
     ensure!(
         !(old.exists() && resumed.exists()),
-        "ambiguous preparation recovery protocol"
+        "ambiguous preparation recovery protocol: {} holds both preparation-intent.json and resume-intent.json",
+        directory.display()
     );
     let path = if resumed.exists() { resumed } else { old };
     ensure!(
@@ -416,18 +448,24 @@ pub(super) fn preparation_intent_matches(directory: &Path, sha: &str) -> Result<
         .read(true)
         .share_mode(1)
         .custom_flags(0x0020_0000)
-        .open(&path)?;
+        .open(&path)
+        .with_context(|| format!("opening the preparation intent {}", path.display()))?;
     let before =
-        n2r_win32::reference_file::observe_reference_file_handle_with_limit(&file, maximum)?;
+        n2r_win32::reference_file::observe_reference_file_handle_with_limit(&file, maximum)
+            .with_context(|| format!("observing the preparation intent {}", path.display()))?;
     ensure!(
         before.file_bytes > 0 && before.number_of_links == 1,
-        "bounded ordinary preparation intent required"
+        "bounded ordinary preparation intent required: {} is {} bytes with {} links",
+        path.display(),
+        before.file_bytes,
+        before.number_of_links
     );
     let actual = n2r_win32::sha256_native::hash_range(&mut file, 0, before.file_bytes)?;
     ensure!(
         n2r_win32::reference_file::observe_reference_file_handle_with_limit(&file, maximum)?
             == before,
-        "preparation route changed during protocol selection"
+        "preparation route changed during protocol selection: {}",
+        path.display()
     );
     Ok(actual == expected)
 }
@@ -602,6 +640,10 @@ struct PublicationRoutes {
     source: GeneralDiskBinding,
     shadow: GeneralDiskBinding,
     locator: RouteFile,
+    #[serde(default)]
+    target_cluster_bytes: Option<u64>,
+    #[serde(default)]
+    target_refs_version: Option<(u32, u32)>,
     serialized_publication_grants_authority: bool,
 }
 #[derive(Deserialize)]
@@ -655,6 +697,19 @@ fn route_inputs(
             && !route.serialized_publication_grants_authority,
         "not a resource recovery envelope"
     );
+    // The run's ReFS allocation unit, before anything of it is read back:
+    // 4 KiB unless the run recorded another.
+    n2r_win32::target_cluster::choose(
+        route
+            .target_cluster_bytes
+            .unwrap_or(n2r_win32::target_cluster::DEFAULT_BYTES),
+    )
+    .context("the recovery envelope's ReFS allocation unit")?;
+    let (major, minor) = route
+        .target_refs_version
+        .unwrap_or(n2r_win32::target_refs_version::DEFAULT);
+    n2r_win32::target_refs_version::choose(major, minor)
+        .context("the recovery envelope's ReFS version")?;
     let mut locator = pin(
         &route.locator.path,
         parse_sha(&route.locator.sha256)?,

@@ -59,9 +59,8 @@ pub fn observe_clean(
     binding: &GeneralDiskBinding,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<CleanNtfsGeometry> {
-    if binding.layout_profile != GeneralDiskLayoutProfile::OfflineWindows {
-        return Err(bad("offline Windows geometry profile required"));
-    }
+    // Either source layout: an offline Windows disk, or a data disk of its
+    // own. What is observed is the same clean, mounted NTFS volume.
     let before = crate::probe_general(binding.clone(), events)?;
     let volume = OpenOptions::new()
         .read(true)

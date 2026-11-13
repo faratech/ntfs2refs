@@ -818,14 +818,16 @@ mod windows {
         );
         // Decided from the partition length before anything is asked, so a
         // diagnose that could not be honoured stops here.
-        let boot_geometry = if args.windows_boot_volume {
+        // ReFS covers a volume in whole 64 MiB units, whatever the source
+        // is: a partition that is not a multiple is first shrunk to one.
+        let boot_geometry = {
             let partition_bytes = before.binding.identity.partition_bytes;
             let decision = super::boot::geometry_decision(partition_bytes)?;
             super::boot::admit_geometry(decision, partition_bytes, mode)?;
-            super::boot::validate(&before.binding)?;
+            if args.windows_boot_volume {
+                super::boot::validate(&before.binding)?;
+            }
             Some(decision)
-        } else {
-            None
         };
         let resources = if !args.whole_image_verification {
             crate::ntfs_admission::ResourceProfile::ResourceBoundedV4(None)
@@ -1055,10 +1057,8 @@ mod windows {
             Some(admitted)
         };
         ensure!(
-            boot_geometry.is_some()
-                == (before.binding.layout_profile
-                    == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows),
-            "boot geometry was not decided for the selected source layout"
+            boot_geometry.is_some(),
+            "the partition's ReFS geometry was not decided"
         );
         let before = if let Some(super::boot::GeometryDecision::Shrink { .. }) = boot_geometry {
             let authority = mode.source_change_authority(

@@ -67,7 +67,7 @@ pub(super) fn admit_geometry(
     ) = (decision, mode)
     {
         bail!(
-            "--diagnose cannot run on this partition: a conversion would first have the Windows NTFS driver shrink it by {shrink_bytes} bytes, from {partition_bytes} to {target_bytes} (a multiple of 64 MiB), and diagnose never changes the source. Nothing was changed."
+            "--diagnose cannot run on this partition: a conversion would first have the Windows NTFS driver shrink it by {shrink_bytes} bytes, from {partition_bytes} to {target_bytes} (ReFS covers a volume in whole units of 64 MiB), and diagnose never changes the source. Nothing was changed."
         );
     }
     Ok(())
@@ -80,7 +80,7 @@ pub(super) fn describe_geometry(decision: GeometryDecision) {
     } = decision
     {
         println!(
-            "Windows boot preparation must shrink this NTFS partition by {remainder} bytes using the Windows NTFS driver before creating ReFS metadata."
+            "ReFS covers a volume in whole units of 64 MiB. Before creating ReFS metadata, the Windows NTFS driver must shrink this NTFS partition by {remainder} bytes."
         );
         println!(
             "Its GUID and start remain unchanged. The recovery baseline begins after that resize; a later cancellation can leave a healthy, slightly smaller NTFS partition."
@@ -97,10 +97,16 @@ pub(super) fn normalize_geometry(
     _authority: &SourceChangeAuthority,
 ) -> Result<n2r_win32::discovery::VolumeDiscovery> {
     use n2r_win32::discovery::{self, Role};
-    ensure!(
-        before.binding.layout_profile == GeneralDiskLayoutProfile::OfflineWindows,
-        "explicit offline Windows maintenance required"
-    );
+    // The role the source was selected in: an offline Windows installation,
+    // or a volume on a data disk of its own.
+    let windows = before.binding.layout_profile == GeneralDiskLayoutProfile::OfflineWindows;
+    let role = || {
+        if windows {
+            Role::OfflineWindowsSource
+        } else {
+            Role::Source
+        }
+    };
     let old = before.binding.identity.partition_bytes;
     let GeometryDecision::Shrink {
         target_bytes: target,
@@ -110,12 +116,12 @@ pub(super) fn normalize_geometry(
         return Ok(before);
     };
     let mut events = Vec::new();
-    let fresh = discovery::discover(&before.volume_guid_path, Role::OfflineWindowsSource)?;
+    let fresh = discovery::discover(&before.volume_guid_path, role())?;
     ensure!(
         fresh.binding == before.binding
             && fresh.filesystem == "NTFS"
             && fresh.volume_serial_low32 == before.volume_serial_low32,
-        "confirmed source changed before boot geometry maintenance"
+        "confirmed source changed before geometry maintenance"
     );
     let clean = n2r_win32::windows_boot_geometry::observe_clean(&before.binding, &mut events)?;
     ensure!(
@@ -167,11 +173,21 @@ pub(super) fn normalize_geometry(
         journal.binding.disk_number,
         before.binding.disk_number
     );
-    let intent = serde_json::json!({"kind":"confirmed-offline-Windows-NTFS-geometry-maintenance-v1",
+    // The partitions of the source disk, as its GPT lists them: the resize
+    // must leave every one but the source exactly as it is.
+    let partitions = clean
+        .probe
+        .gpt_layout
+        .get(48..)
+        .context("source GPT header absent")?
+        .chunks_exact(144)
+        .count();
+    let intent = serde_json::json!({"kind": if windows { "confirmed-offline-Windows-NTFS-geometry-maintenance-v1" } else { "confirmed-data-volume-NTFS-geometry-maintenance-v1" },
         "source_before":before,"clean_native_before":clean,"native_events_before":events,
         "requested_partition_bytes":target,"shrink_bytes":remainder,"formatter_geometry_unit_bytes":REFS_GEOMETRY_UNIT,
         "native_ntfs_driver_resize_authorized":true,"raw_source_writes_authorized":false,
-        "preserve_efi_msr_winre":true,"conversion_recovery_baseline":"after successful clean NTFS resize",
+        "preserve_sibling_partitions":true,"source_disk_partitions":partitions,
+        "conversion_recovery_baseline":"after successful clean NTFS resize",
         "later_cancellation_may_leave_smaller_healthy_ntfs":true});
     let _intent = write_new(
         &run.join("boot-geometry-intent.json"),
@@ -182,7 +198,7 @@ pub(super) fn normalize_geometry(
     let _request_owner = write_new(
         &request,
         &serde_json::to_vec(
-            &serde_json::json!({"source":before.binding,"volume_guid_path":before.volume_guid_path,"target_bytes":target}),
+            &serde_json::json!({"source":before.binding,"volume_guid_path":before.volume_guid_path,"target_bytes":target,"partitions":partitions}),
         )?,
     )?;
     let script = run.join("boot-geometry-resize.ps1");
@@ -217,7 +233,7 @@ pub(super) fn normalize_geometry(
     )?;
     // Always rediscover after an actual child exit, including refusal: a driver
     // resize can have completed before a later provider observation failed.
-    let after = match discovery::discover(&before.volume_guid_path, Role::OfflineWindowsSource) {
+    let after = match discovery::discover(&before.volume_guid_path, role()) {
         Ok(value) => value,
         Err(error) => {
             write_new(
@@ -289,7 +305,9 @@ pub(super) fn normalize_geometry(
             && clean.probe.alignment == after_clean.probe.alignment,
         "source disk, sibling partitions or selected GPT metadata changed beyond the admitted length"
     );
-    validate(&after.binding)?;
+    if windows {
+        validate(&after.binding)?;
+    }
     write_new(
         &run.join("boot-geometry-complete.json"),
         &serde_json::to_vec_pretty(&serde_json::json!({
@@ -299,7 +317,7 @@ pub(super) fn normalize_geometry(
         "raw_source_writes":false,"ntfs_driver_resize":true,"recovery_baseline_begins_after_resize":true}))?,
     )?;
     println!(
-        "NTFS geometry adjustment completed; EFI, MSR, WinRE, partition GUID/start and NTFS serial are unchanged."
+        "NTFS geometry adjustment completed; the disk's other partitions, this partition's GUID and start, and the NTFS serial are unchanged."
     );
     Ok(after)
 }
@@ -359,7 +377,7 @@ function Guard($state,[long]$bytes){
  # ReadOnly is inapplicable/null on EFI, MSR and WinRE in the native storage
  # provider. Preserve that raw observation; these siblings are never resized.
  # The actual source partition and physical disk must be positively writable.
- if($state.parts.Count-ne4-or@($state.parts|Where-Object{$_.is_boot-ne$false-or$_.is_system-ne$false-or$_.is_offline-ne$false}).Count){throw 'Source sibling or critical partition roles changed'}
+ if($state.parts.Count-ne[int]$request.partitions-or@($state.parts|Where-Object{$_.is_boot-ne$false-or$_.is_system-ne$false-or$_.is_offline-ne$false}).Count){throw 'Source sibling or critical partition roles changed'}
  $selected=@($state.parts|Where-Object{$_.number-eq$s.identity.partition_number})
  if($selected.Count-ne1-or$selected[0].is_readonly-ne$false){throw 'Selected NTFS partition is not positively writable'}
  if([guid]$p.guid-ne[guid]$s.identity.partition_guid-or$p.offset-ne$s.identity.partition_offset-or$p.size-ne$bytes-or$p.filesystem-cne'NTFS'-or$p.health-cne'Healthy'-or$p.paths-notcontains$request.volume_guid_path){throw 'Healthy mounted source NTFS binding changed'}
@@ -367,7 +385,9 @@ function Guard($state,[long]$bytes){
 try{
  $request=Get-Content -LiteralPath $InputPath -Encoding UTF8 -Raw|ConvertFrom-Json
  $old=[long]$request.source.identity.partition_bytes;$target=[long]$request.target_bytes
- if($request.source.layout_profile-cne'offline_windows'-or$target-le0-or$target-ge$old-or($old-$target)-ge67108864-or$target%67108864-ne0-or$target-ne($old-$old%67108864)){throw 'Only the necessary sub64MiB Windows geometry shrink is admitted'}
+ # A data disk's binding is written without its layout, which is the default.
+ $profile=$request.source.PSObject.Properties['layout_profile'];$layout=if($profile){[string]$profile.Value}else{'dedicated_data'};$count=[int]$request.partitions
+ if(($layout-cne'offline_windows'-and$layout-cne'dedicated_data')-or($layout-ceq'offline_windows'-and$count-ne4)-or($layout-ceq'dedicated_data'-and($count-lt1-or$count-gt2))-or$target-le0-or$target-ge$old-or($old-$target)-ge67108864-or$target%67108864-ne0-or$target-ne($old-$old%67108864)){throw 'Only the necessary sub64MiB geometry shrink of a Windows or data source is admitted'}
  $before=State;Guard $before $old
  $support=Get-PartitionSupportedSize -DiskNumber $request.source.disk_number -PartitionNumber $request.source.identity.partition_number
  if($target-lt[long]$support.SizeMin-or$target-gt[long]$support.SizeMax){throw 'NTFS driver cannot shrink to the exact required ReFS geometry'}

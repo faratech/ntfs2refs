@@ -181,6 +181,7 @@ fn build_object(
     file: &ntfs::FileInventory,
     admission: SourceResourceAdmission,
     aliases: Option<&crate::boot_alias::WindowsAliasDomain>,
+    object_ids: Option<&crate::object_id_disposition::DataObjectIds>,
 ) -> Result<(
     Object,
     Option<crate::ntfs_extended_attributes::WindowsKernelPurgeEaNormalization>,
@@ -235,7 +236,7 @@ fn build_object(
         let issues = if let Some(aliases) = aliases {
             ntfs_admission::paged::ordinary_user_issues_windows(source, file, admission, aliases)?
         } else {
-            ntfs_admission::paged::ordinary_user_issues(source, file, admission)?
+            ntfs_admission::paged::ordinary_user_issues_data(source, file, admission, object_ids)?
         };
         ensure!(
             issues.is_empty(),
@@ -471,8 +472,15 @@ impl SourceExpectedDomain {
                 roles.push(role);
                 continue;
             }
-            let (object, _) =
-                build_object(source, native, ordinal, &file, admission, Some(aliases))?;
+            let (object, _) = build_object(
+                source,
+                native,
+                ordinal,
+                &file,
+                admission,
+                Some(aliases),
+                None,
+            )?;
             let hash: [u8; 32] = Sha256::digest(serde_json::to_vec(&object)?).into();
             ensure!(
                 hashes.remove(&object.record_number) == Some(hash),
@@ -511,7 +519,19 @@ impl SourceExpectedDomain {
         output: &Path,
         scratch: &SourceScratch,
     ) -> Result<Self> {
-        Self::derive_scoped(source, native, admission, output, scratch, None)
+        Self::derive_scoped(source, native, admission, output, scratch, None, None)
+    }
+    /// The tree of a data volume whose object IDs, if it has any, have been
+    /// matched and archived and are not carried over.
+    pub fn derive_data(
+        source: &PagedInspection,
+        native: &impl NativeObservationDomain,
+        admission: SourceResourceAdmission,
+        output: &Path,
+        scratch: &SourceScratch,
+        object_ids: Option<&crate::object_id_disposition::DataObjectIds>,
+    ) -> Result<Self> {
+        Self::derive_scoped(source, native, admission, output, scratch, None, object_ids)
     }
     pub fn derive_windows(
         source: &PagedInspection,
@@ -522,7 +542,15 @@ impl SourceExpectedDomain {
         aliases: &crate::boot_alias::WindowsAliasDomain,
     ) -> Result<Self> {
         aliases.require_source(source)?;
-        Self::derive_scoped(source, native, admission, output, scratch, Some(aliases))
+        Self::derive_scoped(
+            source,
+            native,
+            admission,
+            output,
+            scratch,
+            Some(aliases),
+            None,
+        )
     }
     fn derive_scoped(
         source: &PagedInspection,
@@ -531,6 +559,7 @@ impl SourceExpectedDomain {
         output: &Path,
         scratch: &SourceScratch,
         aliases: Option<&crate::boot_alias::WindowsAliasDomain>,
+        object_ids: Option<&crate::object_id_disposition::DataObjectIds>,
     ) -> Result<Self> {
         admission.validate()?;
         ensure!(
@@ -635,8 +664,9 @@ impl SourceExpectedDomain {
                 add_role(&mut roles, &mut role_ram, role, scratch)?;
                 continue;
             }
-            let (object, ea_normalization) =
-                build_object(source, native, ordinal, &file, admission, aliases)?;
+            let (object, ea_normalization) = build_object(
+                source, native, ordinal, &file, admission, aliases, object_ids,
+            )?;
             if aliases
                 .map(|owner| owner.windows_txf_accounted(source, &file))
                 .transpose()?

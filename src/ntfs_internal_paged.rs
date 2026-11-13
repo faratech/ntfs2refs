@@ -51,6 +51,9 @@ pub struct PagedVerifiedIndexes {
     ranges: Vec<HeldIndexStorage>,
     #[serde(skip)]
     windows_object_ids: Option<std::sync::Arc<crate::boot_alias::WindowsObjectIdDomain>>,
+    /// A data volume's object IDs, matched against the index and archived.
+    #[serde(skip)]
+    data_object_ids: Option<std::sync::Arc<crate::object_id_disposition::DataObjectIds>>,
 }
 impl PagedVerifiedIndexes {
     pub fn binds_domain(&self, source: &PagedInspection) -> bool {
@@ -65,6 +68,13 @@ impl PagedVerifiedIndexes {
         &self,
     ) -> Option<std::sync::Arc<crate::boot_alias::WindowsObjectIdDomain>> {
         self.windows_object_ids.clone()
+    }
+    /// The object IDs of a data volume's files and directories that this
+    /// verification matched and archived, and that are not carried over.
+    pub(crate) fn data_object_ids_owned(
+        &self,
+    ) -> Option<std::sync::Arc<crate::object_id_disposition::DataObjectIds>> {
+        self.data_object_ids.clone()
     }
     pub fn covers_volume_object_id_domain(&self, source: &PagedInspection, record: u64) -> bool {
         record == 3
@@ -195,6 +205,9 @@ impl PagedVerifiedIndexes {
         if let Some(domain) = &self.windows_object_ids {
             domain.revalidate()?;
         }
+        if let Some(domain) = &self.data_object_ids {
+            domain.revalidate()?;
+        }
         for store in &self.stores {
             store.revalidate()?;
         }
@@ -290,7 +303,11 @@ fn storage<R: Read + Seek>(
     let units: Vec<_> = name.encode_utf16().collect();
     let mut attrs = file.attributes.iter().filter(|a| a.name_utf16 == units);
     let named: Vec<_> = attrs.by_ref().collect();
-    let (index_root, allocation, bitmap) = if role == "$Extend\\$Reparse" {
+    // The reparse index holds an entry per reparse point, and the object-ID
+    // index one per file that a shortcut was ever made to: both may have
+    // outgrown their root. The quota indexes are their root.
+    let may_have_grown = role == "$Extend\\$Reparse" || role == "$Extend\\$ObjId";
+    let (index_root, allocation, bitmap) = if may_have_grown {
         let mut index_root = None;
         let mut allocation = None;
         let mut bitmap = None;
@@ -301,14 +318,17 @@ fn storage<R: Read + Seek>(
                         && a.flags == 0
                         && a.lowest_vcn == 0
                         && a.compression_unit == 0,
-                    "reparse index contains unknown, encoded or continued index"
+                    "{role} contains an unknown, encoded or continued index"
                 );
                 let slot = match a.type_code {
                     0x90 => &mut index_root,
                     0xa0 => &mut allocation,
                     _ => &mut bitmap,
                 };
-                ensure!(slot.replace(a).is_none(), "duplicate reparse index stream");
+                ensure!(
+                    slot.replace(a).is_none(),
+                    "{role} has a duplicate index stream"
+                );
             } else {
                 let metadata = matches!(a.type_code, 0x10 | 0x30 | 0x50)
                     && a.resident
@@ -321,11 +341,15 @@ fn storage<R: Read + Seek>(
                     && a.initialized_size == 0
                     && a.allocated_size == 0
                     && a.extents.is_empty();
-                ensure!(metadata || empty, "unexplained reparse-index file metadata");
+                ensure!(
+                    metadata || empty,
+                    "{role} has an attribute of type {:#x} that an index file does not have",
+                    a.type_code
+                );
             }
         }
         (
-            index_root.context("reparse index root absent")?,
+            index_root.with_context(|| format!("{role} has no index root"))?,
             allocation,
             bitmap,
         )
@@ -402,6 +426,12 @@ fn storage<R: Read + Seek>(
             .transpose()?,
         initialized: allocation.map_or(0, |a| a.initialized_size),
     })
+}
+/// An index entry as the walk stored it, read back.
+#[derive(serde::Deserialize)]
+struct StoredIndexEntry {
+    key_hex: String,
+    value_hex: String,
 }
 #[derive(Serialize, serde::Deserialize, PartialEq, Eq)]
 struct ReparseBinding {
@@ -534,6 +564,7 @@ fn verify_domain_with_windows<R: Read + Seek>(
     let mut quota_ids = Vec::new();
     let mut internal_volume_object_id = None;
     let mut windows_object_ids = None;
+    let mut data_object_ids = None;
     for (ordinal, (role, name, profile, slot)) in [
         ("$Extend\\$ObjId", "$O", Profile::OBJECT_ID, 0),
         ("$Extend\\$Reparse", "$R", Profile::REPARSE, 1),
@@ -620,9 +651,12 @@ fn verify_domain_with_windows<R: Read + Seek>(
                         record_key(reference & 0x0000_ffff_ffff_ffff),
                         &ReparseBinding { reference, tag },
                     )?;
-                } else {
-                    // These three indexes deliberately retain the same resident-
-                    // root-only profile, so this is one <=4KiB node, not an N table.
+                } else if slot != 0 || entries.len() < 2 {
+                    // The quota profiles are resident-root-only, so this is
+                    // one <=4KiB node, not an N table. The object-ID index
+                    // can be of any size: its entries are read back from
+                    // the entry store, and only enough are kept here to
+                    // tell one entry from several.
                     entries.push((key.to_vec(), value.to_vec()));
                 }
                 Ok(())
@@ -633,23 +667,22 @@ fn verify_domain_with_windows<R: Read + Seek>(
         let supported = if slot == 0 {
             if let Some((binding, proof)) = windows.as_ref() {
                 let object_index_name: Vec<_> = "$O".encode_utf16().collect();
+                // (The index was once required to be its root alone: a
+                // Windows on which shortcuts had been made to more than a
+                // few dozen files was refused.)
                 ensure!(
-                    storage.root.len() <= 4096
-                        && storage.allocation.is_none()
-                        && storage.bitmap.is_none()
-                        && file.base_file_reference == 0
+                    file.base_file_reference == 0
                         && file.sequence_number != 0
                         && file.metadata_role_issue.is_none()
-                        && !file.attributes.iter().any(|a| matches!(
-                            a.type_code,
-                            0x20 | 0xa0 | 0xb0
-                        ) || (a.type_code == 0x90
-                            && a.name_utf16 != object_index_name)),
-                    "Windows object-ID index exceeds complete resident-root profile"
+                        && !file.attributes.iter().any(|a| a.type_code == 0x20
+                            || (matches!(a.type_code, 0x90 | 0xa0 | 0xb0)
+                                && a.name_utf16 != object_index_name)),
+                    "Windows object-ID index file is not in the form the converter reads"
                 );
                 ensure!(
-                    object_id_count == u64::try_from(entries.len())?,
-                    "Windows object-ID raw/index coverage differs"
+                    object_id_count == entry_store.len(),
+                    "Windows has {object_id_count} object-ID attributes and its $Extend\\$ObjId index has {} entries",
+                    entry_store.len()
                 );
                 let inspection: [u8; 32] = hex::decode(source.canonical_sha256()?)?
                     .try_into()
@@ -663,7 +696,12 @@ fn verify_domain_with_windows<R: Read + Seek>(
                 )?;
                 let mut ordinary = 0u64;
                 let mut volume_entries = 0u64;
-                for (key, indexed) in &entries {
+                for ordinal in 0..entry_store.len() {
+                    let stored: StoredIndexEntry = entry_store.get(ordinal)?;
+                    let (key, indexed) = (
+                        &hex::decode(&stored.key_hex)?,
+                        &hex::decode(&stored.value_hex)?,
+                    );
                     ensure!(
                         key.len() == 16 && key.iter().any(|b| *b != 0) && indexed.len() == 56,
                         "Windows object-ID index entry shape differs"
@@ -706,6 +744,7 @@ fn verify_domain_with_windows<R: Read + Seek>(
                             file,
                             &storage.root,
                             &(key.clone(), indexed.clone()),
+                            false,
                         )?;
                         ensure!(
                             internal_volume_object_id.is_some(),
@@ -777,10 +816,34 @@ fn verify_domain_with_windows<R: Read + Seek>(
                             file,
                             &storage.root,
                             &entries[0],
+                            true,
                         )?;
                     }
                 }
-                internal_volume_object_id.is_some() || (object_id_count == 0 && entries.is_empty())
+                if internal_volume_object_id.is_some()
+                    || (object_id_count == 0 && entries.is_empty())
+                {
+                    true
+                } else if source.is_windows_conversion() {
+                    false
+                } else {
+                    // A data volume that has been used: files and directories
+                    // with object IDs of their own.
+                    let (domain, volume) = data_object_ids_of(
+                        reader,
+                        source,
+                        &mapping,
+                        file,
+                        &storage.root,
+                        &entry_store,
+                        object_id_count,
+                        root,
+                        &scratch,
+                    )?;
+                    internal_volume_object_id = volume;
+                    data_object_ids = Some(std::sync::Arc::new(domain));
+                    true
+                }
             }
         } else if slot == 1 {
             let pin = actual_reparse
@@ -821,7 +884,9 @@ fn verify_domain_with_windows<R: Read + Seek>(
             entries: entry_count,
             entry_evidence: entry_pin,
             replacement_supported: supported,
-            detail: if supported {
+            detail: if slot == 0 && data_object_ids.is_some() {
+                "every object ID matched with its attribute and archived; not carried over"
+            } else if supported {
                 "complete supported index state cross-matched"
             } else {
                 "nondefault or unexplained internal state requires preservation/native policy"
@@ -852,7 +917,125 @@ fn verify_domain_with_windows<R: Read + Seek>(
         stores,
         ranges,
         windows_object_ids,
+        data_object_ids,
     })
+}
+
+/// Matches every entry of a data volume's `$Extend\$ObjId` index with the
+/// `$OBJECT_ID` attribute of the file it names, and the other way round by
+/// count, and archives them. The volume's own entry, if it has one, is the
+/// internal identity it always was.
+fn data_object_ids_of<R: Read + Seek>(
+    reader: &mut R,
+    source: &PagedInspection,
+    mapping: &CheckedMftDomain,
+    index_file: &ntfs_inspect::FileInventory,
+    index_root: &[u8],
+    entry_store: &SortedRecordStore,
+    object_id_count: u64,
+    root: &Path,
+    scratch: &SourceScratch,
+) -> Result<(
+    crate::object_id_disposition::DataObjectIds,
+    Option<InternalVolumeObjectId>,
+)> {
+    ensure!(
+        object_id_count == entry_store.len(),
+        "the volume has {object_id_count} object-ID attributes and its $Extend\\$ObjId index has {} entries",
+        entry_store.len()
+    );
+    let mut archive = ExternalSort::new(
+        &root.join("object-ids-not-carried-over"),
+        crate::object_id_disposition::PURPOSE,
+        scratch,
+    )?;
+    let mut volume = None;
+    let mut ordinary = 0u64;
+    for ordinal in 0..entry_store.len() {
+        let stored: StoredIndexEntry = entry_store.get(ordinal)?;
+        let key = hex::decode(&stored.key_hex)?;
+        let indexed = hex::decode(&stored.value_hex)?;
+        ensure!(
+            key.len() == 16 && key.iter().any(|b| *b != 0) && indexed.len() == 56,
+            "object-ID index entry {ordinal} is not a 16-byte ID with a 56-byte value"
+        );
+        let reference = u64::from_le_bytes(indexed[..8].try_into()?);
+        let number = reference & 0x0000_ffff_ffff_ffff;
+        let sequence = (reference >> 48) as u16;
+        ensure!(
+            sequence != 0,
+            "object-ID index entry {ordinal} names MFT record {number} with sequence zero"
+        );
+        let owner = source
+            .find_record(number, Some(sequence))?
+            .with_context(|| {
+                format!(
+                    "object-ID index entry {ordinal} names MFT record {number}, which is not in use"
+                )
+            })?;
+        let mut attributes = owner.attributes.iter().filter(|a| a.type_code == 0x40);
+        let attribute = attributes.next().with_context(|| {
+            format!("MFT record {number} is in the object-ID index and has no object-ID attribute")
+        })?;
+        ensure!(
+            attributes.next().is_none(),
+            "MFT record {number} has more than one object-ID attribute"
+        );
+        let raw = crate::boot_alias::windows_object_id_bytes(attribute)
+            .with_context(|| format!("object ID of MFT record {number}"))?;
+        let actual = mapping.resident_attribute(reader, source, &owner, attribute)?;
+        ensure!(
+            raw.as_slice() == key.as_slice() && actual.as_ref() == raw,
+            "the object ID of MFT record {number} differs between its attribute and the index"
+        );
+        if number == 3 {
+            ensure!(volume.is_none(), "the volume has two object IDs of its own");
+            volume = volume_identity(
+                reader,
+                source,
+                mapping,
+                &owner,
+                attribute,
+                index_file,
+                index_root,
+                &(key.clone(), indexed.clone()),
+                false,
+            )?;
+            ensure!(
+                volume.is_some(),
+                "the volume's own object ID is not in the form the converter replaces"
+            );
+        } else {
+            ensure!(
+                crate::object_id_disposition::ordinary(&owner),
+                "MFT record {number} has an object ID and is not an ordinary file or directory"
+            );
+            archive.push(
+                crate::object_id_disposition::key(number),
+                &crate::object_id_disposition::ObjectIdNotCarried {
+                    record_number: number,
+                    sequence_number: sequence,
+                    source_attribute: attribute.clone(),
+                    index_key_hex: stored.key_hex,
+                    index_value_hex: stored.value_hex,
+                },
+            )?;
+            ordinary = ordinary
+                .checked_add(1)
+                .context("object-ID count overflow")?;
+        }
+    }
+    ensure!(
+        ordinary.checked_add(u64::from(volume.is_some())) == Some(object_id_count),
+        "object-ID attributes and index entries do not pair up"
+    );
+    let domain = crate::object_id_disposition::DataObjectIds::from_verified_archive(
+        source,
+        &archive.finish()?,
+        scratch,
+    )?;
+    ensure!(domain.len() == ordinary, "object-ID archive is incomplete");
+    Ok((domain, volume))
 }
 
 fn volume_identity<R: Read + Seek>(
@@ -864,6 +1047,9 @@ fn volume_identity<R: Read + Seek>(
     index_file: &ntfs_inspect::FileInventory,
     index_root: &[u8],
     entry: &(Vec<u8>, Vec<u8>),
+    // Whether the index has to be its root alone. It is where the volume's
+    // is the only object ID; a data volume's index may have grown.
+    root_only: bool,
 ) -> Result<Option<InternalVolumeObjectId>> {
     let name: Vec<_> = "$O".encode_utf16().collect();
     if volume.record_number != 3
@@ -887,8 +1073,9 @@ fn volume_identity<R: Read + Seek>(
         || index_file.sequence_number == 0
         || index_file.metadata_role_issue.is_some()
         || index_file.attributes.iter().any(|a| {
-            matches!(a.type_code, 0x20 | 0xa0 | 0xb0)
-                || (a.type_code == 0x90 && a.name_utf16 != name)
+            a.type_code == 0x20
+                || (root_only && matches!(a.type_code, 0xa0 | 0xb0))
+                || (matches!(a.type_code, 0x90 | 0xa0 | 0xb0) && a.name_utf16 != name)
         })
     {
         return Ok(None);

@@ -1421,6 +1421,13 @@ impl ResourceSourceContext {
                 ntfs_internal::verify_domain(&mut source, &raw, &output.join("internal-indexes"))?
             };
             indexes.bind_native_quota(&native);
+            let data_object_ids = indexes.data_object_ids_owned();
+            if let Some(object_ids) = &data_object_ids {
+                println!(
+                    "{} file(s) and directories have an object ID (Windows gives one to the target of a shortcut). ReFS has no object IDs: they are kept in this run's records and not carried over.",
+                    object_ids.len()
+                );
+            }
             if let (Some(aliases), Some(proof)) =
                 (windows_aliases.as_mut(), indexes.windows_object_ids_owned())
             {
@@ -1558,7 +1565,12 @@ impl ResourceSourceContext {
                                 &raw, &file, admission, aliases,
                             )?
                         } else {
-                            ntfs_admission::paged::ordinary_user_issues(&raw, &file, admission)?
+                            ntfs_admission::paged::ordinary_user_issues_data(
+                                &raw,
+                                &file,
+                                admission,
+                                data_object_ids.as_deref(),
+                            )?
                         }
                     };
                     policy_rejections = policy_rejections
@@ -2568,12 +2580,13 @@ impl ResourceSourceContext {
                 aliases,
             )
         } else {
-            crate::shadow_tree::source_pages::SourceExpectedDomain::derive(
+            crate::shadow_tree::source_pages::SourceExpectedDomain::derive_data(
                 &self.raw,
                 self.native.domain(),
                 admission,
                 output,
                 scratch,
+                self.indexes.data_object_ids_owned().as_deref(),
             )
         }
     }

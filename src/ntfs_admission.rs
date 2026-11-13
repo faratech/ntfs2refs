@@ -1462,8 +1462,10 @@ pub(crate) fn user_issues_with_context_alias_scope(
         let windows_txf = windows_alias_paths_preserved
             && verified_windows_txf_metadata
             && recognized_root_txf(a);
-        let windows_object_id = windows_alias_paths_preserved
-            && verified_windows_object_id_disposition
+        // An object ID that its route has accounted for and does not carry
+        // over: a Windows volume's by what Windows answered for it, a data
+        // volume's by its own index.
+        let windows_object_id = verified_windows_object_id_disposition
             && a.type_code == 0x40
             && a.name_utf16.is_empty()
             && a.resident

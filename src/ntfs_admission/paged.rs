@@ -235,6 +235,17 @@ pub(crate) fn blocker_is_unresolved(
             }
         }
     }
+    if blocker.code == "object_id" && !source.is_windows_conversion() {
+        if let (Some(number), Some(domain)) =
+            (blocker.file_record_number, indexes.data_object_ids_owned())
+        {
+            if let Some(file) = source.find_record(number, None)? {
+                if domain.accounted(source, &file)? {
+                    return Ok(false);
+                }
+            }
+        }
+    }
     if blocker.code == "unsupported_attribute"
         && blocker.message == "Attribute type 0x100 needs a preservation policy"
         && transactions.binds_domain(source)
@@ -325,7 +336,18 @@ pub(crate) fn ordinary_user_issues(
     file: &FileInventory,
     resources: n2r_win32::tree_resources::SourceResourceAdmission,
 ) -> Result<Vec<String>> {
-    ordinary_user_issues_scoped(source, file, resources, None)
+    ordinary_user_issues_scoped(source, file, resources, None, None)
+}
+
+/// The policy for a data volume whose object IDs have been matched and
+/// archived: such an ID is not a reason to refuse its file.
+pub(crate) fn ordinary_user_issues_data(
+    source: &crate::ntfs_inspect::PagedInspection,
+    file: &FileInventory,
+    resources: n2r_win32::tree_resources::SourceResourceAdmission,
+    object_ids: Option<&crate::object_id_disposition::DataObjectIds>,
+) -> Result<Vec<String>> {
+    ordinary_user_issues_scoped(source, file, resources, None, object_ids)
 }
 
 pub(crate) fn ordinary_user_issues_windows(
@@ -334,7 +356,7 @@ pub(crate) fn ordinary_user_issues_windows(
     resources: n2r_win32::tree_resources::SourceResourceAdmission,
     aliases: &crate::boot_alias::WindowsAliasDomain,
 ) -> Result<Vec<String>> {
-    ordinary_user_issues_scoped(source, file, resources, Some(aliases))
+    ordinary_user_issues_scoped(source, file, resources, Some(aliases), None)
 }
 
 fn ordinary_user_issues_scoped(
@@ -342,6 +364,7 @@ fn ordinary_user_issues_scoped(
     file: &FileInventory,
     resources: n2r_win32::tree_resources::SourceResourceAdmission,
     aliases: Option<&crate::boot_alias::WindowsAliasDomain>,
+    object_ids: Option<&crate::object_id_disposition::DataObjectIds>,
 ) -> Result<Vec<String>> {
     resources.validate()?;
     let budget = source.budget();
@@ -440,6 +463,8 @@ fn ordinary_user_issues_scoped(
         },
         if let Some(aliases) = aliases {
             aliases.windows_object_id_accounted(source, file)?
+        } else if let Some(object_ids) = object_ids {
+            object_ids.accounted(source, file)?
         } else {
             false
         },

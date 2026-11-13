@@ -683,15 +683,40 @@ pub(crate) fn source_refusal<'a>(route: &str, failed: impl Iterator<Item = &'a G
     let failed: Vec<&Gate> = failed.collect();
     let codes: Vec<&str> = failed.iter().map(|gate| gate.code.as_str()).collect();
     let mut text = format!("{route} source evidence refused: {codes:?}");
-    for gate in failed {
+    for gate in failed
+        .iter()
+        .filter(|gate| !only_a_consequence(&gate.code, &codes))
+    {
         text.push_str(&format!("\n  {}: {}", gate.code, gate.detail));
     }
     text
 }
 
+/// Whether a failed gate is failed only because another one is. The
+/// replacement of NTFS's internal files is admitted when every other
+/// obligation has closed, and the directories' case flags are admitted with
+/// it: beside a real cause, the two sentences only obscure it.
+fn only_a_consequence(code: &str, failed: &[&str]) -> bool {
+    const DEPENDENT: [&str; 2] = [
+        "internal_replacement_state",
+        "native_directory_case_sensitivity",
+    ];
+    DEPENDENT.contains(&code) && failed.iter().any(|other| !DEPENDENT.contains(other))
+}
+
 #[cfg(test)]
 mod refusal_tests {
     use super::*;
+
+    #[test]
+    fn refused_file_attributes_are_named() {
+        assert_eq!(file_attribute_names(0x100), "TEMPORARY");
+        assert_eq!(file_attribute_names(0x1100), "TEMPORARY, OFFLINE");
+        assert!(file_attribute_names(0x4000).starts_with("ENCRYPTED (decrypt"));
+        // A bit without a name is still shown.
+        assert_eq!(file_attribute_names(0x1000_0100), "TEMPORARY, 0x10000000");
+        assert!(SHORT_NAME_REMEDY.contains("fsutil 8dot3name strip"));
+    }
 
     #[test]
     fn a_refusal_names_the_refused_objects_and_their_reasons() {
@@ -757,6 +782,12 @@ mod refusal_tests {
                 "  objects: 1 object is outside what this converter preserves: MFT record 5 \\x: reason"
             )
         );
+        // The dependent gate is named in the list and not explained: it
+        // failed because the other did.
+        assert_eq!(lines.next(), None);
+        let alone = source_refusal("resource", gates[1..].iter());
+        let mut lines = alone.lines();
+        lines.next();
         assert_eq!(
             lines.next(),
             Some(
@@ -1400,6 +1431,56 @@ pub(crate) fn user_issues_with_context(
     )
 }
 
+/// What to do about 8.3 short names on a data volume. ReFS has none, and
+/// Windows has the tool that removes them.
+pub const SHORT_NAME_REMEDY: &str = "remove the volume's short names with `fsutil 8dot3name strip /s /f <drive>:\\` and turn their creation off with `fsutil 8dot3name set <drive>: 1`, then convert (a program that stored a path in its short form will no longer find it)";
+
+/// The names of Win32 file-attribute bits, for a refusal.
+pub fn file_attribute_names(bits: u32) -> String {
+    const NAMES: [(u32, &str); 14] = [
+        (0x40, "DEVICE"),
+        (0x80, "NORMAL"),
+        (0x100, "TEMPORARY"),
+        (0x200, "SPARSE_FILE"),
+        (0x400, "REPARSE_POINT"),
+        (0x800, "COMPRESSED"),
+        (0x1000, "OFFLINE"),
+        (0x4000, "ENCRYPTED (decrypt the file with `cipher /d`)"),
+        (0x8000, "INTEGRITY_STREAM"),
+        (0x2_0000, "NO_SCRUB_DATA"),
+        (0x4_0000, "RECALL_ON_OPEN"),
+        (0x8_0000, "PINNED"),
+        (0x10_0000, "UNPINNED"),
+        (0x40_0000, "RECALL_ON_DATA_ACCESS"),
+    ];
+    let mut names: Vec<String> = NAMES
+        .iter()
+        .filter(|(bit, _)| bits & bit != 0)
+        .map(|(_, name)| (*name).to_owned())
+        .collect();
+    let unnamed = NAMES.iter().fold(bits, |rest, (bit, _)| rest & !bit);
+    if unnamed != 0 {
+        names.push(format!("{unnamed:#x}"));
+    }
+    names.join(", ")
+}
+
+/// What an attribute the converter refuses is, where that says more than
+/// its type number.
+fn attribute_meaning(file: &FileInventory, attribute: &ntfs::AttributeInventory) -> &'static str {
+    if attribute.flags & 0x4000 != 0 {
+        " (the data is encrypted with EFS: decrypt the file with `cipher /d`, or move it off the volume)"
+    } else if attribute.type_code == 0x40 {
+        " (an object ID that the volume's object-ID index does not account for)"
+    } else if attribute.type_code == 0x100 {
+        " (a logged utility stream: EFS keys or transaction data)"
+    } else if attribute.type_code == 0x80 && file.is_directory {
+        " (a named data stream on a directory)"
+    } else {
+        ""
+    }
+}
+
 /// The true alias scope is supplied only after a held WindowsAliasDomain has
 /// conserved this record's DOS paths. Ordinary data callers use the wrapper.
 pub(crate) fn user_issues_with_context_alias_scope(
@@ -1425,7 +1506,9 @@ pub(crate) fn user_issues_with_context_alias_scope(
         )
         || (f.record_number < 16 && f.record_number != 5)
     {
-        issues.push("source object role is unresolved or unsupported".into());
+        issues.push(
+            "it is an NTFS-internal object in a state the converter does not take over".into(),
+        );
     }
     let ea_supported = ordinary && crate::ntfs_extended_attributes::file_set(f).is_ok();
     let reparse = if ordinary {
@@ -1439,15 +1522,22 @@ pub(crate) fn user_issues_with_context_alias_scope(
             || crate::ntfs_extended_attributes::file_set(f).is_ok_and(|ea| !ea.is_empty())
         {
             issues.push(
-                "reparse point payload/type/EA combination exceeds preservation profile".into(),
+                "its reparse point is of a kind the converter does not recreate, or comes with data or extended attributes".into(),
             );
         }
     }
-    if !names_supported
-        || (!windows_alias_paths_preserved && f.names.iter().any(|n| n.namespace == 2))
-    {
-        issues
-            .push("names, depth, short-name aliases or directory links exceed the profile".into());
+    let short_name = f.names.iter().find(|n| n.namespace == 2);
+    if let (false, Some(name)) = (windows_alias_paths_preserved, short_name) {
+        issues.push(format!(
+            "it has an 8.3 short name ({}), which ReFS does not have: {}",
+            String::from_utf16_lossy(&name.name_utf16),
+            SHORT_NAME_REMEDY
+        ));
+    } else if !names_supported {
+        issues.push(
+            "its name, or the set of names it has, is one the converter does not recreate (a name that is not valid UTF-16, or a directory with more than one name)"
+                .into(),
+        );
     }
     let unsupported_attribute = f.attributes.iter().find(|a| {
         let plain =
@@ -1530,13 +1620,14 @@ pub(crate) fn user_issues_with_context_alias_scope(
         issues.push("unsupported or unassembled attribute semantics: an extension record".into());
     } else if let Some(a) = unsupported_attribute {
         issues.push(format!(
-            "unsupported or unassembled attribute semantics: attribute type {:#x} {:?}, {}, flags {:#x}, compression unit {}, lowest VCN {}",
+            "unsupported or unassembled attribute semantics: attribute type {:#x} {:?}, {}, flags {:#x}, compression unit {}, lowest VCN {}{}",
             a.type_code,
             String::from_utf16_lossy(&a.name_utf16),
             if a.resident { "resident" } else { "nonresident" },
             a.flags,
             a.compression_unit,
-            a.lowest_vcn
+            a.lowest_vcn,
+            attribute_meaning(f, a)
         ));
     }
     if f.record_number == 5
@@ -1553,20 +1644,24 @@ pub(crate) fn user_issues_with_context_alias_scope(
     }
     let has_sparse = f.streams.iter().any(|s| s.flags == 0x8000);
     let has_verified_eas = ordinary && crate::ntfs_attestation::has_verified_nonempty_eas(f);
-    if crate::ntfs_file_attributes::project_user(f).map_or(true, |attributes| {
-        attributes.source_attributes
-            & !(0x2027
-                | if reparse.is_some() { 0x400 } else { 0 }
-                | if has_sparse && !f.is_directory {
-                    0x200
-                } else {
-                    0
-                }
-                | if has_verified_eas { 0x40000 } else { 0 }
-                | if ordinary { 0x800 } else { 0 })
-            != 0
-    }) {
-        issues.push("unsupported attributes or missing standard information".into());
+    let carried_attributes = 0x2027
+        | if reparse.is_some() { 0x400 } else { 0 }
+        | if has_sparse && !f.is_directory {
+            0x200
+        } else {
+            0
+        }
+        | if has_verified_eas { 0x40000 } else { 0 }
+        | if ordinary { 0x800 } else { 0 };
+    match crate::ntfs_file_attributes::project_user(f) {
+        Ok(attributes) if attributes.source_attributes & !carried_attributes == 0 => {}
+        Ok(attributes) => issues.push(format!(
+            "it has file attributes the converter does not carry over: {}",
+            file_attribute_names(attributes.source_attributes & !carried_attributes)
+        )),
+        Err(error) => issues.push(format!(
+            "its standard information is not in a form the converter reads: {error:#}"
+        )),
     }
     match descriptor {
         Some(record) if ordinary => {
@@ -1580,7 +1675,10 @@ pub(crate) fn user_issues_with_context_alias_scope(
                     }
                 });
             if validated.is_none() {
-                issues.push("security descriptor exceeds native preservation layout".into());
+                issues.push(
+                    "its security descriptor cannot be set on the target as it is (larger than one object's working memory, or with an entry type Windows does not take back)"
+                        .into(),
+                );
             }
         }
         Some(record) if record.descriptor.sacl.state == ntfs_security::AclState::Absent => (),
@@ -1599,7 +1697,10 @@ pub(crate) fn user_issues_with_context_alias_scope(
     }
     if f.is_directory {
         if !f.streams.is_empty() {
-            issues.push("directory data streams exceed the profile".into());
+            issues.push(
+                "it is a directory with a named data stream, which the converter does not carry over: remove the stream before converting"
+                    .into(),
+            );
         }
     } else {
         let mut exact_names = BTreeSet::new();
@@ -1635,7 +1736,7 @@ pub(crate) fn user_issues_with_context_alias_scope(
             })
         {
             issues.push(
-                "stream requires a later resident, sparse, fragmented, tail or encoded profile"
+                "one of its data streams is stored in a form the converter does not read (encrypted, or compressed, sparse or named outside what it handles)"
                     .into(),
             );
         }

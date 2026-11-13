@@ -670,6 +670,49 @@ fn short_names(
             })
 }
 
+/// 8.3 short names on a data volume, refused with how many there are, one
+/// of them and what removes them. Left to the evidence pipeline, the first
+/// one stopped it with "source name/link domain is unsupported or
+/// incomplete". (A Windows boot volume's become links beside the long names.)
+fn refuse_short_names(raw: &PagedInspection) -> Result<()> {
+    let mut count = 0u64;
+    let mut first = None;
+    for ordinal in 0..raw.blocker_count() {
+        let blocker = raw.blocker(ordinal)?;
+        if blocker.code == "dos_short_name" {
+            count = count.checked_add(1).context("short-name count overflow")?;
+            if first.is_none() {
+                first = blocker.file_record_number;
+            }
+        }
+    }
+    if count == 0 {
+        return Ok(());
+    }
+    let mut example = String::new();
+    if let Some(file) = first
+        .map(|number| raw.find_record(number, None))
+        .transpose()?
+        .flatten()
+    {
+        let short = file
+            .names
+            .iter()
+            .find(|name| name.namespace == 2)
+            .map(|name| String::from_utf16_lossy(&name.name_utf16));
+        if let (Some(path), Some(short)) = (
+            ntfs_admission::paged::refused_object_path(raw, &file),
+            short,
+        ) {
+            example = format!(" (for example \\{}, also named {short})", path.join("\\"));
+        }
+    }
+    anyhow::bail!(
+        "{count} file(s) and directories on this volume have an 8.3 short name{example}. ReFS has no short names: {}",
+        ntfs_admission::SHORT_NAME_REMEDY
+    )
+}
+
 fn guarded_collection_failure(
     source: GeneralFrozenPartition,
     workspace: Option<&SourceRamLease>,
@@ -1089,6 +1132,11 @@ impl ResourceSourceContext {
                 raw.header().geometry == geometry,
                 "frozen source geometry differs from online capture"
             );
+            if binding.layout_profile
+                != n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+            {
+                refuse_short_names(&raw)?;
+            }
             let inspection_sha = raw.canonical_sha256()?;
             let storage_hint_ram = if binding.layout_profile
                 == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows
@@ -1646,6 +1694,7 @@ impl ResourceSourceContext {
                 &scratch,
             )?;
             let mut unresolved_count = 0u64;
+            let mut unresolved_examples: Vec<String> = Vec::new();
             for ordinal in 0..raw.blocker_count() {
                 let blocker = raw.blocker(ordinal)?;
                 let windows_alias_covered = if blocker.code == "dos_short_name" {
@@ -1715,6 +1764,17 @@ impl ResourceSourceContext {
                     short_policy,
                 )? {
                     unresolved_writer.push(key(unresolved_count), &blocker)?;
+                    if unresolved_examples.len() < 6 {
+                        unresolved_examples.push(match blocker.file_record_number {
+                            Some(number) => {
+                                format!(
+                                    "{}: {} (MFT record {number})",
+                                    blocker.code, blocker.message
+                                )
+                            }
+                            None => format!("{}: {}", blocker.code, blocker.message),
+                        });
+                    }
                     unresolved_count = unresolved_count
                         .checked_add(1)
                         .context("blocker count overflow")?;
@@ -1759,30 +1819,68 @@ impl ResourceSourceContext {
             let source_objects =
                 comparison.all_supported_user_views_compatible && policy_rejections == 0;
             let objects_detail = refused.detail(
-                "every transferred user object passes shared preservation policy and actual native views",
+                "every file and directory has to be one the converter carries over, and Windows has to see it as the raw volume does",
+            );
+            let unresolved_detail = format!(
+                "{unresolved_count} condition(s) found on the volume that the converter does not take over: {}{}",
+                unresolved_examples.join(" | "),
+                if unresolved_count > unresolved_examples.len() as u64 {
+                    " | ..."
+                } else {
+                    ""
+                }
+            );
+            let indexes_detail = {
+                let mut causes = Vec::new();
+                for index in indexes
+                    .indexes
+                    .iter()
+                    .filter(|index| !index.replacement_supported)
+                {
+                    let cause = if index.role.ends_with("$Quota") {
+                        "disk quotas are in use on the volume (enabled, or with entries for users): turn quota management off (`fsutil quota disable <drive>:`) and delete the quota entries, then convert"
+                    } else if index.role.ends_with("$ObjId") {
+                        "the volume's object-ID index is not in a form the converter takes over"
+                    } else {
+                        "the volume's reparse-point index does not match its reparse points: run `chkdsk <drive>: /f`"
+                    };
+                    if !causes.contains(&cause) {
+                        causes.push(cause);
+                    }
+                }
+                if causes.is_empty() {
+                    "the quota, object-ID and reparse-point indexes were not all verified against this inspection".to_owned()
+                } else {
+                    causes.join("; ")
+                }
+            };
+            let case_detail = format!(
+                "{} of {} directories are case-sensitive, which the converter does not carry over: find them with `fsutil file queryCaseSensitiveInfo <directory>` and turn it off with `fsutil file setCaseSensitiveInfo <directory> disable`",
+                directories.saturating_sub(user_case_matched),
+                directories
             );
             for (code, satisfied, detail) in [
                 (
                     "geometry",
                     ntfs_admission::ResourceProfile::ResourceBoundedV4(Some(admission))
                         .supports_source_geometry(&raw.header().geometry),
-                    "actual source geometry matches the implemented profile",
+                    "the volume's sector, cluster, file-record or index-record size is not one the converter handles",
                 ),
                 (
                     "clean_volume",
                     clean,
-                    "NTFS3.1 and clear persisted dirty state required",
+                    "the volume is marked dirty, or is not NTFS version 3.1: run `chkdsk <drive>: /f`, let it finish, and convert then",
                 ),
                 (
                     "volume_policy_flags",
                     policy_flags,
-                    "only zero flags or exact live disabled-short-name interpretation accepted",
+                    "the volume carries state flags the converter does not take over (a pending chkdsk or upgrade), or 8.3 short-name creation is enabled on it: run `chkdsk <drive>: /f`, and turn short-name creation off with `fsutil 8dot3name set <drive>: 1`",
                 ),
                 (
                     "raw_allocation",
                     raw.allocation().status
                         == ntfs_inspect::AllocationReconciliationStatus::ConsistentRawModel,
-                    "complete physical ownership and bitmap closure",
+                    "the volume's allocation bitmap and what its files occupy disagree: run `chkdsk <drive>: /f`",
                 ),
                 (
                     "raw_mft_record_coverage",
@@ -1807,7 +1905,7 @@ impl ResourceSourceContext {
                 (
                     "native_identity_coverage",
                     row_count == raw.file_count(),
-                    "every raw identity has one actual native row",
+                    "Windows did not answer for every file record the raw volume has",
                 ),
                 (
                     "native_volume_allocation",
@@ -1818,37 +1916,37 @@ impl ResourceSourceContext {
                 (
                     "resource_limits",
                     resource_counts,
-                    "exact source counts and logical total match pinned resources",
+                    "the volume holds no file at all (an empty volume is formatted, not converted), or its counts of files, directories and streams do not fit what was reserved for this run",
                 ),
                 (
                     "source_backups",
                     backups.binds_domain(&raw),
-                    "actual boot and MFT mirror reads bind this source",
+                    "the backup boot sector or the MFT mirror does not match the volume: run `chkdsk <drive>: /f`",
                 ),
                 (
                     "log_restart_pages",
                     log.binds_domain(&raw) && log.restart.candidate_clean_dismount,
-                    "actual complete LogFile and agreeing clean restart copies",
+                    "the NTFS log was not closed cleanly: dismount the volume properly (or restart Windows), or run `chkdsk <drive>: /f`",
                 ),
                 (
                     "remaining_inspection_refusals",
                     unresolved_count == 0,
-                    "every other source blocker remains unresolved and is retained in pages",
+                    unresolved_detail.as_str(),
                 ),
                 (
                     "frozen_device_basis",
                     before == after && source_sha == after_hash,
-                    "same observed frozen device and complete scoped fingerprint bracket native reads",
+                    "the volume changed while it was being examined, although it was held offline and read-only",
                 ),
                 (
                     "internal_indexes",
                     indexes.binds_domain(&raw) && indexes.replacement_supported,
-                    "actual object-ID/reparse/default-quota indexes plus native disabled quota policy",
+                    indexes_detail.as_str(),
                 ),
                 (
                     "transaction_freeze",
                     transactions.binds_domain(&raw),
-                    "actual prefreeze RM, lock/dismount, clean restart and empty deferred namespaces",
+                    "a transaction (TxF) was open on the volume, or its transaction log did not close: restart Windows, or dismount and remount the volume, and convert then",
                 ),
                 (
                     "native_resource_profile_support",
@@ -1880,7 +1978,7 @@ impl ResourceSourceContext {
                     && user_case_matched == directories
                     && (internal_directories == 0 || replacement_ready)
                     && raw_directories == directories + internal_directories,
-                "every transferred directory needs actual stable zero case flags; only exact proof-bound internals are excluded",
+                case_detail.as_str(),
             );
             gate(
                 &mut gates,

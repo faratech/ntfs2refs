@@ -15,6 +15,31 @@ const HEADER_BYTES: usize = 8;
 pub struct Point {
     pub buffer: Vec<u8>,
 }
+/// What a reparse tag the converter does not carry over belongs to, and
+/// what to do about it, for a refusal.
+pub fn unsupported_tag_meaning(tag: u32) -> &'static str {
+    match tag {
+        0x8000_0013 => {
+            " (Data Deduplication: turn deduplication off for the volume and let it rehydrate the files)"
+        }
+        0x8000_0017 => {
+            " (a file compressed with `compact /exe` or by CompactOS: expand it with `compact /u /exe <file>`)"
+        }
+        0xa000_001d | 0x8000_0023 | 0x8000_0024 | 0x8000_0025 | 0x8000_0026 => {
+            " (a Windows Subsystem for Linux file: move the Linux files off the volume)"
+        }
+        0x9000_001c | 0xa000_0022 => {
+            " (a projected file system, such as a virtualized Git repository)"
+        }
+        // The cloud-files tags differ in their fourth hex digit only.
+        tag if tag & 0xffff_0fff == 0x9000_001a => {
+            " (a cloud placeholder, such as OneDrive Files On-Demand: make the files always available on this device, or move the folder off the volume)"
+        }
+        0xc000_0004 | 0x8000_0006 | 0x8000_0007 => " (Remote Storage or Single Instance Storage)",
+        _ => "",
+    }
+}
+
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
@@ -170,7 +195,15 @@ impl Point {
                 12
             }
             IO_REPARSE_TAG_MOUNT_POINT => 8,
-            _ => return Err(invalid("unsupported Microsoft/provider/cloud reparse tag")),
+            tag => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "a reparse point of tag {tag:#010x}{} is not one the converter recreates (it carries over symbolic links, junctions and app execution aliases)",
+                        unsupported_tag_meaning(tag)
+                    ),
+                ));
+            }
         };
         let paths = bytes
             .get(HEADER_BYTES + fixed..)
@@ -195,4 +228,31 @@ pub fn parse(buffer: &[u8]) -> io::Result<Point> {
     };
     point.validate()?;
     Ok(point)
+}
+
+#[cfg(test)]
+mod refusal_tests {
+    use super::*;
+
+    #[test]
+    fn a_reparse_point_that_is_not_carried_over_is_refused_by_what_it_is() {
+        // A file compressed by `compact /exe`: a WOF reparse point.
+        let mut wof = vec![0u8; 24];
+        wof[..4].copy_from_slice(&0x8000_0017u32.to_le_bytes());
+        wof[4..6].copy_from_slice(&16u16.to_le_bytes());
+        let refusal = parse(&wof).unwrap_err().to_string();
+        assert!(
+            refusal.contains("0x80000017") && refusal.contains("compact /u /exe"),
+            "{refusal}"
+        );
+        // Every cloud-files tag, whatever its fourth digit.
+        for tag in [0x9000_001au32, 0x9000_301a, 0x9000_f01a] {
+            assert!(
+                unsupported_tag_meaning(tag).contains("cloud placeholder"),
+                "{tag:#x}"
+            );
+        }
+        assert!(unsupported_tag_meaning(0x8000_0013).contains("Deduplication"));
+        assert_eq!(unsupported_tag_meaning(0x1234_5678), "");
+    }
 }

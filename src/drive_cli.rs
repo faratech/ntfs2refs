@@ -445,7 +445,8 @@ mod windows {
         parents.reverse();
         for p in parents {
             if !p.exists() {
-                fs::create_dir(p)?;
+                fs::create_dir(p)
+                    .with_context(|| format!("creating the working directory {}", p.display()))?;
             }
             let m = fs::symlink_metadata(p)?;
             ensure!(
@@ -1077,7 +1078,8 @@ mod windows {
         );
         ordinary_parents(&parent)?;
         let run = parent.join(&id);
-        fs::create_dir(&run)?;
+        fs::create_dir(&run)
+            .with_context(|| format!("creating this run's directory {}", run.display()))?;
         save_new(
             &run.join("drive-selection.json"),
             &serde_json::json!({"selected":selected,"source":before,"confirmation":"interactive affirmative","journal_budget_bytes":journal_bytes,"requested_target_format":target_format,"explicit_trust_or_filter_configuration_requested":false,"source_write_authority":false,"lab_hold_point":n2r_win32::lab_hold::armed()}),

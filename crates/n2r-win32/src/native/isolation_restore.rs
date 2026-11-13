@@ -203,14 +203,39 @@ impl GeneralFrozenPartition {
         let mut locked = false;
         let mut original_boot = None;
         let result = (|| -> io::Result<(File, GeneralDiskState)> {
-            control(
-                volume.as_ref().expect("volume owner"),
-                "general-lock-volume",
-                LOCK,
-                &[],
-                0,
-                events,
-            )?;
+            // Windows refuses the lock while anything has a file or directory
+            // of the volume open. A handle that is just being closed (the
+            // indexer's, a scanner's) is waited for; one that stays is the
+            // user's to close, and the bare "Access is denied" did not say so.
+            let mut attempts = 0;
+            loop {
+                match control(
+                    volume.as_ref().expect("volume owner"),
+                    "general-lock-volume",
+                    LOCK,
+                    &[],
+                    0,
+                    events,
+                ) {
+                    Ok(_) => break,
+                    Err(error)
+                        if attempts < 40 && matches!(error.raw_os_error(), Some(5) | Some(32)) =>
+                    {
+                        attempts += 1;
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                    }
+                    Err(error) => {
+                        return Err(io::Error::new(
+                            error.kind(),
+                            format!(
+                                "the volume on disk {} could not be locked to take it offline, after waiting {} s: something has a file or folder on it open. Close the programs and Explorer windows that use it (and any command prompt whose current folder is on it), then run the conversion again. Nothing was changed: {error}",
+                                binding.disk_number,
+                                attempts / 2
+                            ),
+                        ));
+                    }
+                }
+            }
             locked = true;
             // FSCTL_LOCK_VOLUME flushed cached NTFS writes before this pin.
             original_boot = Some(boot(&mut management, &binding, &mut buffer)?);

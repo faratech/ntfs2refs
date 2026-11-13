@@ -388,7 +388,7 @@ fn unsupported_attributes_and_streams_have_explicit_object_refusals() {
         result.objects[1]
             .issues
             .iter()
-            .any(|s| s.contains("stream requires"))
+            .any(|s| s.contains("one of its data streams is stored in a form"))
     );
 }
 
@@ -408,13 +408,13 @@ fn ordinary_profile_classifies_partial_plain_stream_without_granting_writes() {
         strict.objects[1]
             .issues
             .iter()
-            .any(|issue| issue.contains("stream requires"))
+            .any(|issue| issue.contains("one of its data streams is stored in a form"))
     );
     assert!(
         !ordinary.objects[1]
             .issues
             .iter()
-            .any(|issue| issue.contains("stream requires")),
+            .any(|issue| issue.contains("one of its data streams is stored in a form")),
         "{:?} {:?}",
         ordinary.objects[1].issues,
         r.files[1].streams

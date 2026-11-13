@@ -85,9 +85,14 @@ impl ResourceBudget {
             || self.handle_slots < 8
             || self.handle_slots > self.ram_bytes / 256
         {
-            return Err(io::Error::other(
-                "invalid observed metadata resource budget",
-            ));
+            return Err(io::Error::other(format!(
+                "the memory and working storage available do not make a workable budget: {} MiB of memory, {} MiB of working storage, {}-byte pages, {} file handles, rows of up to {} bytes. A conversion needs a few GiB of each",
+                self.ram_bytes >> 20,
+                self.scratch_bytes >> 20,
+                self.page_bytes,
+                self.handle_slots,
+                self.max_row_bytes
+            )));
         }
         Ok(())
     }

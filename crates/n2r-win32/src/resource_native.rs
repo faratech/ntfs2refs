@@ -65,9 +65,13 @@ impl AvailableResources {
         if budget.ram_bytes > self.available_physical_bytes
             || budget.scratch_bytes > self.scratch_available_bytes
         {
-            return Err(io::Error::other(
-                "metadata budget exceeds actual available hardware/scratch",
-            ));
+            return Err(io::Error::other(format!(
+                "this run was sized for {} MiB of memory and {} MiB of working storage, and {} MiB of memory and {} MiB of working storage are free now: close other programs or free working storage, and run it again",
+                budget.ram_bytes >> 20,
+                budget.scratch_bytes >> 20,
+                self.available_physical_bytes >> 20,
+                self.scratch_available_bytes >> 20
+            )));
         }
         Ok(())
     }

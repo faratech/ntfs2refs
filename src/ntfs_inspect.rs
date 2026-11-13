@@ -3774,8 +3774,14 @@ fn inventory_record<R: Read + Seek>(
             capture_extended_attributes(reader, &record, geometry)
                 .with_context(|| format!("capturing EAs for MFT record {number}"))?,
         ),
-        reparse: capture_reparse(reader, &record, geometry)
-            .with_context(|| format!("capturing reparse point for MFT record {number}"))?,
+        reparse: capture_reparse(reader, &record, geometry).with_context(|| {
+            // The record's names have not been read yet; Windows resolves
+            // the path from the file ID while the volume is mounted.
+            format!(
+                "MFT record {number} (its path: `fsutil file queryFileNameById <drive>: {:#x}`)",
+                number | (u64::from(record.sequence) << 48)
+            )
+        })?,
     };
     if record.base != 0 {
         blocker(

@@ -44,7 +44,13 @@ fn budget(
     let total_ram = available.available_physical_bytes - available.available_physical_bytes / 3;
     let ram = total_ram
         .checked_sub(evidence_ram)
-        .context("memory cannot cover the event ledger and metadata")?;
+        .with_context(|| {
+            format!(
+                "too little memory is free for a conversion: {} MiB are available, of which two thirds are used, and the run's own records need {} MiB of that. Close other programs and run it again",
+                available.available_physical_bytes >> 20,
+                evidence_ram >> 20
+            )
+        })?;
     let page = (ram / 512).clamp(256, n2r_win32::tree_resources::METADATA_PAGE_BYTES as u64) as u32;
     let result = ResourceBudget {
         schema_version: 1,

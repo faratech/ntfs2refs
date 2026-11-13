@@ -18,6 +18,25 @@ pub fn supported(version: [u32; 3]) -> bool {
     version[0] == 10 && version[1] == 0 && version[2] >= MINIMUM_BUILD
 }
 
+/// The builds a conversion has actually been run on in the lab. A later one
+/// is accepted on the strength of the structures being documented; a run on
+/// it says that it is the first.
+pub const LAB_BUILDS: [u32; 2] = [26100, 26300];
+
+/// Whether `version` is a build a conversion was run on in the lab.
+pub fn shown_in_lab(version: [u32; 3]) -> bool {
+    version[0] == 10 && version[1] == 0 && LAB_BUILDS.contains(&version[2])
+}
+
+/// The lab's builds, for a notice: "26100 and 26300".
+pub fn lab_builds() -> String {
+    LAB_BUILDS
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(" and ")
+}
+
 /// `version` as Windows writes it, for a refusal.
 pub fn describe(version: [u32; 3]) -> String {
     format!("{}.{}.{}", version[0], version[1], version[2])
@@ -43,5 +62,19 @@ mod tests {
             assert!(!supported(version), "{version:?}");
         }
         assert_eq!(describe([10, 0, 26300]), "10.0.26300");
+    }
+
+    #[test]
+    fn only_the_builds_the_lab_ran_count_as_shown() {
+        assert!(shown_in_lab([10, 0, 26100]) && shown_in_lab([10, 0, 26300]));
+        for version in [
+            [10, 0, 26200],
+            [10, 0, 27000],
+            [10, 0, 22631],
+            [11, 0, 26300],
+        ] {
+            assert!(!shown_in_lab(version), "{version:?}");
+        }
+        assert_eq!(lab_builds(), "26100 and 26300");
     }
 }

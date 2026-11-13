@@ -652,6 +652,28 @@ mod windows {
         drop(bounded);
         Ok(answer.len() < 65 && matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
     }
+    /// Administrator rights, asked before a disk is opened. Without them the
+    /// first device open failed, with an OS error and no advice.
+    fn require_elevation(action: &str) -> Result<()> {
+        ensure!(
+            n2r_win32::run_environment::is_elevated()?,
+            "{action} needs administrator rights: run ntfs2refs from an elevated terminal (\"Run as administrator\"). Nothing was changed."
+        );
+        Ok(())
+    }
+    /// The running Windows build, refused here when it is too old. It used to
+    /// be found out when the frozen source's observations were checked,
+    /// minutes into a run and with the disk offline.
+    fn require_windows_build(action: &str) -> Result<[u32; 3]> {
+        let version = n2r_win32::run_environment::windows_version()?;
+        ensure!(
+            n2r_win32::windows_build::supported(version),
+            "this is Windows {}; {action} needs build {} or later (Windows 11 24H2, Windows Server 2025), the first whose formatter makes the ReFS it builds on. Nothing was changed.",
+            n2r_win32::windows_build::describe(version),
+            n2r_win32::windows_build::MINIMUM_BUILD
+        );
+        Ok(version)
+    }
     pub(super) fn run(args: DriveArgs) -> Result<u8> {
         let mode = args.execution_mode()?;
         if mode == crate::execution_mode::ExecutionMode::Diagnose {
@@ -668,6 +690,8 @@ mod windows {
             n2r_win32::lab_hold::arm(point)?;
         }
         if let Some(directory) = args.recover {
+            // (Not the build: a recovery must run wherever its conversion did.)
+            require_elevation("recovery")?;
             let checksum = args
                 .recovery_sha256
                 .context("original recovery checksum required")?;
@@ -720,6 +744,12 @@ mod windows {
             list(&inventory);
             return Ok(super::list_exit_code(inventory.enumeration_complete));
         }
+        let action = match mode {
+            crate::execution_mode::ExecutionMode::Convert => "a conversion",
+            crate::execution_mode::ExecutionMode::Diagnose => "a diagnose run",
+        };
+        require_elevation(action)?;
+        let windows = require_windows_build(action)?;
         let values = args.drive.as_ref().context("drive selection required")?;
         let drive = values.first().context("drive value required")?;
         // Chosen before anything is planned: every count of target clusters
@@ -898,6 +928,13 @@ mod windows {
         }
         if let Some(decision) = boot_geometry {
             super::boot::describe_geometry(decision);
+        }
+        if !n2r_win32::windows_build::shown_in_lab(windows) {
+            println!(
+                "Note: this is Windows {}. Conversions have been run in the lab on builds {} only; this build is accepted and has not been tried.",
+                n2r_win32::windows_build::describe(windows),
+                n2r_win32::windows_build::lab_builds()
+            );
         }
         if mode == crate::execution_mode::ExecutionMode::Diagnose {
             println!(
@@ -1124,6 +1161,18 @@ mod windows {
         };
         if let Some(admitted) = &native_creation_admission {
             admitted.check()?;
+        }
+        // The version is whatever this Windows formatted. One the lab never
+        // converted is accepted, and the run says that it is the first.
+        let refs_version = n2r_win32::target_refs_version::get();
+        if refs_version != n2r_win32::target_refs_version::DEFAULT {
+            println!(
+                "Note: Windows formatted the working ReFS as version {}.{}. Conversions have been run in the lab to ReFS {}.{} only; this version is accepted and has not been tried.",
+                refs_version.0,
+                refs_version.1,
+                n2r_win32::target_refs_version::DEFAULT.0,
+                n2r_win32::target_refs_version::DEFAULT.1
+            );
         }
         let provider_commitment = staged.initial_host_backing_commitment()?;
         // Record the provider identity as well as the disk identity: a guest

@@ -106,12 +106,30 @@ fn rejects_out_of_volume_mft_and_non_ntfs() {
     b[48..56].copy_from_slice(&512u64.to_le_bytes());
     assert!(inspect_boot_sector(&b, 2 * 1024 * 1024).is_err());
     b = support::boot();
-    b[3..11].copy_from_slice(b"-FVE-FS-");
+    b[3..11].copy_from_slice(b"MSDOS5.0");
+    let refusal = inspect_boot_sector(&b, 2 * 1024 * 1024)
+        .unwrap_err()
+        .to_string();
     assert!(
-        inspect_boot_sector(&b, 2 * 1024 * 1024)
-            .unwrap_err()
-            .to_string()
-            .contains("not an NTFS")
+        refusal.contains("not an NTFS") && refusal.contains("MSDOS5.0"),
+        "{refusal}"
+    );
+}
+
+#[test]
+fn a_bitlocker_volume_is_refused_by_name_with_what_to_do() {
+    // What the disk holds under an unlocked BitLocker volume that Windows
+    // shows as NTFS.
+    let mut b = support::boot();
+    b[3..11].copy_from_slice(b"-FVE-FS-");
+    let refusal = inspect_boot_sector(&b, 2 * 1024 * 1024)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refusal.contains("BitLocker")
+            && refusal.contains("manage-bde -off")
+            && !refusal.contains("not an NTFS"),
+        "{refusal}"
     );
 }
 

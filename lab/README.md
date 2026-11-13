@@ -73,10 +73,25 @@ lab\Invoke-DataVolumeAttempt.ps1 -Name d-4kn-01 -VmId <vm> -SectorBytes 4096 -Cl
 `-ClusterBytes` is the NTFS allocation unit, 512 bytes to 2 MiB.
 `-SectorBytes 4096` puts the volume on a 4Kn disk, which the host makes in the
 attempt's folder and attaches to the VM for the attempt. `-LargeRecords` formats
-4096-byte file records (`format /L`). `-TargetClusterBytes` passes the ReFS
-allocation unit to the converter. `-RunAs`, `-ConverterArgs`, `-Binary` and
-`-ManifestBinary` mean what they mean to the boot harness. `-ExpectRefusal
-<pattern>` is for a volume the converter must refuse.
+4096-byte file records (`format /L`). `-PartitionMB` sets the partition's size;
+one that is not a multiple of 64 makes the converter shrink it first.
+`-TargetClusterBytes 65536` converts to 64 KiB ReFS clusters. `-RunAs`,
+`-ConverterArgs`, `-Binary`, `-ManifestBinary` and `-SampleStacks` mean what
+they mean to the boot harness. `-ExpectRefusal <pattern>` is for a volume the
+converter must refuse.
+
+`-InterruptAt <point>` (for example `apply-mid-ranges` or `handoff-sealed`)
+ends the converter when it reports that it is held at that point, then runs the
+recovery command the run printed: `-RecoverMode resume` (the default) must end
+with ReFS and an identical listing (`resumed`), `-RecoverMode rollback` with the
+NTFS volume listing exactly as before (`rolled-back`). `-Diagnose` runs the
+converter with `--diagnose`; whatever it reports, the volume must list exactly
+as before (`diagnose-clean`, `diagnose-found-failures`).
+
+`-Content many` replaces the mixed content with two files that are past numbers
+which used to be fixed: one with 200 named streams, and a sparse file with
+`-Islands` separately allocated islands (70,000 by default), whose mapping
+needs many file records.
 
 The volume gets a fixed set of content: files around every size boundary, a
 nested tree with non-ASCII and long names, named streams, hard links, a sparse
@@ -85,8 +100,10 @@ fragmented files, and attributes and times that are not the defaults. It is
 listed with `lab-volume-manifest`, converted, listed again and compared.
 Outcomes: `converted` (ReFS, listing identical), `converted-but-listing-differs`,
 `refused-source-unchanged` (the NTFS volume lists exactly as before, compared
-with `--exact`), `refused-as-expected`, and named failures. The volume and the
-run's working files are removed afterwards unless `-KeepVolume` is given.
+with `--exact`), `refused-as-expected`, and named failures. The verdict records
+the geometry NTFS reported, the ReFS version and cluster size afterwards, and
+the partition's length before and after. The volume and the run's working files
+are removed afterwards unless `-KeepVolume` is given.
 
 Before the first listing the volume is remounted once and listed when Windows
 has written its own files into `System Volume Information`. A volume made a

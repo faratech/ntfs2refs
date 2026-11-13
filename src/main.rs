@@ -433,7 +433,7 @@ fn run() -> Result<u8> {
                 .collect();
             output(
                 &serde_json::json!({
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "raw_image_inspection": true,
                     "ntfs_inventory_complete": false,
                     "refs_header_inspection": true,
@@ -459,8 +459,30 @@ fn run() -> Result<u8> {
                     ],
                     // The rows the boot-volume admission gate enforces.
                     "qualified_boot_profiles": ntfs2refs::boot_profile::QUALIFIED,
+                    // What the default data-volume route admits. A Windows
+                    // boot volume is one of the profiles above.
+                    "source_geometry": {
+                        "sector_bytes": [512, 4096],
+                        "cluster_bytes": {"minimum": 512, "maximum": 2 * 1024 * 1024},
+                        "file_record_bytes": [1024, 4096],
+                        "index_record_bytes": {"minimum": 512, "maximum": 65536,
+                            "note": "Windows formats 4096; other sizes are checked by constructed indexes only"},
+                        "partition_length": "any; one that is not a multiple of 64 MiB is first shrunk to one",
+                    },
+                    "target": {
+                        "option": "--target-cluster-bytes",
+                        "refs_cluster_bytes": n2r_win32::target_cluster::SUPPORTED_BYTES,
+                        "default_refs_cluster_bytes": n2r_win32::target_cluster::DEFAULT_BYTES,
+                        "windows_boot_volume_refs_cluster_bytes": [n2r_win32::target_cluster::DEFAULT_BYTES],
+                        "refs_version": "the version Windows formats the shadow with: 3.14 or a later 3.x (only 3.14 has been converted)",
+                        "data_stays_in_place": "only where it lies on target-cluster boundaries; the rest is copied through the working storage",
+                    },
+                    "windows_builds": {
+                        "minimum_build": n2r_win32::windows_build::MINIMUM_BUILD,
+                        "confirmed_builds": [26100, 26300],
+                    },
                     "source_changes_before_apply": [
-                        {"when": "--windows-boot-volume and the partition length is not a multiple of 64 MiB",
+                        {"when": "the partition length is not a multiple of 64 MiB (ReFS covers a volume in whole units of that size)",
                          "change": "the Windows NTFS driver shrinks the partition to one",
                          "undone_if_the_run_stops": false},
                         {"when": "--minimize-scratch",
@@ -485,7 +507,8 @@ fn run() -> Result<u8> {
                             "1": "the diagnosis could not finish",
                         },
                         "refuses": diagnose_refuses,
-                        "also_refuses": "a Windows boot partition that a conversion would first shrink",
+                        "also_refuses": "a partition that a conversion would first shrink",
+                        "failure_limit": {"option": "--diagnose-limit", "default": 500, "zero_means": "no limit"},
                     },
                     "verification_modes": [
                         {"option": null, "name": "extent identity (default)",

@@ -21,7 +21,9 @@ unless -KeepVolume is given.
 Outcomes: converted (ReFS, listing identical), converted-but-listing-differs,
 refused-source-unchanged (the converter stopped and the NTFS volume lists
 exactly as before), refused-as-expected (the same, and -ExpectRefusal matched),
-and named failures. Records land in .lab\hyperv\attempts\<Name>\.
+and named failures. With -InterruptAt: resumed (recovered to ReFS, listing
+identical) or rolled-back (recovered to NTFS, listing exactly as before).
+Records land in .lab\hyperv\attempts\<Name>\.
 #>
 [CmdletBinding()]
 param(
@@ -40,11 +42,24 @@ param(
     [int]$TargetClusterBytes = 0,
     [ValidateSet('system', 'administrator')][string]$RunAs = 'system',
     # What to put on the volume: the fixed mixed set, or nothing but one file.
-    [ValidateSet('mixed', 'minimal')][string]$Content = 'mixed',
+    [ValidateSet('mixed', 'minimal', 'many')][string]$Content = 'mixed',
     # Further converter arguments, for example '--diagnose'.
     [string[]]$ConverterArgs = @(),
     # A pattern the converter's error must match for a refusal to count as expected.
     [string]$ExpectRefusal,
+    # A laboratory hold point (for example apply-mid-ranges or handoff-sealed):
+    # the converter is ended when it reports that it is held there, and the
+    # run is then recovered with the command it printed.
+    [string]$InterruptAt,
+    [ValidateSet('resume', 'rollback')][string]$RecoverMode = 'resume',
+    # Run the converter with --diagnose: nothing is written, and the volume
+    # must list exactly as before whatever it reports.
+    [switch]$Diagnose,
+    # Sample the converter's stacks while it runs (needs ntfs2refs.pdb beside
+    # the binary); the profile lands in stacks.txt.
+    [switch]$SampleStacks,
+    # Islands of the sparse file that -Content many makes.
+    [int]$Islands = 70000,
     [string]$Binary,
     [string]$ManifestBinary,
     [int]$TimeoutMinutes = 60,
@@ -99,6 +114,11 @@ try {
         (Get-Disk).Number
     }
     Copy-Item -ToSession $session -LiteralPath $Binary -Destination "$guestRoot\ntfs2refs.exe" -Force
+    if ($SampleStacks) {
+        $symbols = [IO.Path]::ChangeExtension($Binary, '.pdb')
+        if (-not (Test-Path -LiteralPath $symbols)) { throw "-SampleStacks needs the symbols beside the binary: $symbols" }
+        Copy-Item -ToSession $session -LiteralPath $symbols -Destination "$guestRoot\ntfs2refs.pdb" -Force
+    }
     Copy-Item -ToSession $session -LiteralPath $ManifestBinary -Destination "$guestRoot\lab-volume-manifest.exe" -Force
     Copy-Item -ToSession $session -LiteralPath (Join-Path $PSScriptRoot 'guest\Invoke-ConverterRun.ps1') -Destination "$guestRoot\worker.ps1" -Force
 
@@ -146,11 +166,27 @@ try {
     Say "source V: disk $($made.disk) partition $($made.partition), $($made.bytes) bytes; NTFS reports $($verdict.source.observed.bytes_per_sector)-byte sectors, $($verdict.source.observed.bytes_per_cluster)-byte clusters, $($verdict.source.observed.bytes_per_file_record)-byte file records"
     if ($verdict.source.observed.bytes_per_cluster -ne $ClusterBytes) { throw "the volume has $($verdict.source.observed.bytes_per_cluster)-byte clusters, not the $ClusterBytes asked for" }
 
-    $filled = Invoke-Command -Session $session -ArgumentList $Content, $ClusterBytes -ScriptBlock {
-        param($content, $cluster)
+    $filled = Invoke-Command -Session $session -ArgumentList $Content, $ClusterBytes, $Islands -ScriptBlock {
+        param($content, $cluster, $islands)
         $random = [Random]::new(20261112)
         $bytes = { param([int]$n) $b = New-Object byte[] $n; $random.NextBytes($b); , $b }
         if ($content -eq 'minimal') { [IO.File]::WriteAllBytes('V:\one.bin', (& $bytes 100000)); return 'one file' }
+        if ($content -eq 'many') {
+            # Counts past the numbers that used to be fixed: named streams on
+            # one file (64), and separately allocated runs of one stream
+            # (65,536), which a sparse file with that many islands has.
+            [IO.File]::WriteAllBytes('V:\many-streams.bin', (& $bytes 5000))
+            foreach ($n in 0..199) { Set-Content -LiteralPath 'V:\many-streams.bin' -Stream ('stream{0:d3}' -f $n) -Value ("stream $n " * (1 + $n % 7)) -Encoding ASCII }
+            $null = New-Item -ItemType File -Path 'V:\many-islands.bin' -Force
+            $null = & fsutil.exe sparse setflag 'V:\many-islands.bin'
+            # One island in every second allocation granule of a sparse stream.
+            $granule = if ($cluster -le 4096) { 16 * $cluster } else { [Math]::Max(65536, $cluster) }
+            $one = & $bytes 512
+            $file = [IO.File]::Open('V:\many-islands.bin', 'Open', 'Write'); $file.SetLength([long]$islands * 2 * $granule)
+            for ($i = 0; $i -lt $islands; $i++) { $file.Position = [long]$i * 2 * $granule; $file.Write($one, 0, $one.Length) }
+            $file.Dispose()
+            return "a file with 200 named streams; a sparse file with $islands islands"
+        }
         $made = New-Object System.Collections.Generic.List[string]
         # Files around every boundary that matters: resident, one cluster of
         # each side's size more or less a byte, several clusters, megabytes.
@@ -224,16 +260,17 @@ try {
         # volume arrives (the search indexer's IndexerVolumeGuid among them).
         # A volume in use has them already; one made a moment ago gets them
         # when it next mounts, which would be after it was converted. So the
-        # volume is remounted once and listed when the file is there.
-        $deadline = (Get-Date).AddSeconds(45); $remounted = $false; $settled = $false
+        # volume is remounted (again every 20 s: a guest that has just
+        # started has no indexer yet) and listed when the file is there.
+        $deadline = (Get-Date).AddSeconds(150); $remount = Get-Date; $settled = $false
         do {
             Start-Sleep -Seconds 2
             $text = & "$root\lab-volume-manifest.exe" capture --root 'V:\' --output "$root\manifest-before.jsonl" 2>&1
             if ($LASTEXITCODE -ne 0) { break }
             $settled = [bool](Select-String -LiteralPath "$root\manifest-before.jsonl" -Pattern 'IndexerVolumeGuid' -SimpleMatch -Quiet)
-            if (-not $settled -and -not $remounted) {
+            if (-not $settled -and (Get-Date) -ge $remount) {
                 $number = (Get-Partition -DriveLetter V).DiskNumber
-                Set-Disk -Number $number -IsOffline $true; Set-Disk -Number $number -IsOffline $false; $remounted = $true
+                Set-Disk -Number $number -IsOffline $true; Set-Disk -Number $number -IsOffline $false; $remount = (Get-Date).AddSeconds(20)
             }
         } until ($settled -or (Get-Date) -gt $deadline)
         [pscustomobject]@{ exit = $LASTEXITCODE; text = ($text -join ' '); settled = $settled }
@@ -241,38 +278,87 @@ try {
     if ($listed.exit -ne 0) { throw "listing before the run failed (exit $($listed.exit)): $($listed.text)" }
     Copy-Item -FromSession $session -LiteralPath "$guestRoot\manifest-before.jsonl" -Destination $records
     $verdict.source.windows_files_settled = $listed.settled
-    Say "listing before the run: $($listed.text)$(if (-not $listed.settled) { ' (Windows had not written its own files to the volume within 45 s)' })"
+    Say "listing before the run: $($listed.text)$(if (-not $listed.settled) { ' (Windows had not written its own files to the volume within 150 s)' })"
 
-    # The converter, through the same guest worker the boot harness uses.
+    # Starts the guest worker (the one the boot harness uses) in a guest
+    # folder with these converter arguments: as SYSTEM from a scheduled task,
+    # or as the elevated administrator in a session of its own.
+    function Start-Worker([string]$Root, [string[]]$Arguments, [string]$Task) {
+        Invoke-Command -Session $session -ArgumentList $Root, ($Arguments -join "`t") -ScriptBlock {
+            param($root, $joined) [IO.File]::WriteAllText("$root\run.json", (@{ arguments = @([string[]]$joined.Split("`t")) } | ConvertTo-Json), [Text.UTF8Encoding]::new($false)) }
+        if ($RunAs -eq 'administrator') {
+            if ($script:worker) { Remove-PSSession $script:worker -ErrorAction SilentlyContinue }
+            $script:worker = New-PSSession -VMId $VmId -Credential $credential
+            $null = Invoke-Command -Session $script:worker -ArgumentList $Root -AsJob -ScriptBlock {
+                param($root) $null = & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$root\worker.ps1" -Root $root 2>&1 }
+        } else {
+            Invoke-Command -Session $session -ArgumentList $Root, $Task -ScriptBlock {
+                param($root, $task)
+                Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue
+                $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File $root\worker.ps1 -Root $root"
+                $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+                $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+                $null = Register-ScheduledTask -TaskName $task -Action $action -Principal $principal -Settings $settings
+                Start-ScheduledTask -TaskName $task
+            }
+        }
+    }
+    # Waits for the worker to end. With a hold point, the converter is ended
+    # once it reports that it is held there. Answers whether the worker ended
+    # and whether the hold was reached.
+    function Wait-Worker([string]$Root, [string]$HoldAt) {
+        $deadline = (Get-Date).AddMinutes($TimeoutMinutes); $held = $false
+        do {
+            Start-Sleep -Seconds 2
+            $state = Invoke-Command -Session $session -ArgumentList $Root, ([bool]$HoldAt -and -not $held) -ScriptBlock {
+                param($root, $watchHold)
+                $ended = (Test-Path "$root\native-terminal.json") -or (Test-Path "$root\worker-error.txt")
+                $atHold = $false
+                if ($watchHold -and -not $ended -and (Test-Path "$root\stdout.log")) {
+                    $atHold = [bool](Select-String -LiteralPath "$root\stdout.log" -SimpleMatch -Pattern '"kind":"lab-hold-v1"' -Quiet)
+                    # The lab ends a process; it cannot cut power to the storage.
+                    if ($atHold) { Get-Process -Name ntfs2refs -ErrorAction SilentlyContinue | Stop-Process -Force }
+                }
+                [pscustomobject]@{ ended = $ended; at_hold = $atHold }
+            }
+            if ($state.at_hold) { $held = $true; Say "the converter reported its hold at '$HoldAt' and was ended" }
+        } until ($state.ended -or (Get-Date) -gt $deadline)
+        [pscustomobject]@{ ended = [bool]$state.ended; held = $held }
+    }
     $arguments = @('--drive', 'V', '--scratch-directory', 'S:\datalab\runs', '--target-format', $TargetFormat)
     if ($TargetClusterBytes) { $arguments += @('--target-cluster-bytes', "$TargetClusterBytes") }
+    if ($InterruptAt) { $arguments += @('--lab-hold-at', $InterruptAt, '--acknowledge-lab-hold-never-completes') }
+    if ($SampleStacks) { $arguments += @('--sample-stacks', "$guestRoot\stacks.txt") }
+    if ($Diagnose) { $arguments += '--diagnose' }
     $arguments += $ConverterArgs
     $verdict.converter_arguments = $arguments
     $task = "N2R-DataLab-$Name"
-    Invoke-Command -Session $session -ArgumentList $guestRoot, ($arguments -join "`t") -ScriptBlock {
-        param($root, $joined) [IO.File]::WriteAllText("$root\run.json", (@{ arguments = @([string[]]$joined.Split("`t")) } | ConvertTo-Json), [Text.UTF8Encoding]::new($false)) }
-    if ($RunAs -eq 'administrator') {
-        # An elevated administrator's session of its own, as the boot harness does.
-        $worker = New-PSSession -VMId $VmId -Credential $credential
-        $job = Invoke-Command -Session $worker -ArgumentList $guestRoot -AsJob -ScriptBlock {
-            param($root) $null = & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$root\worker.ps1" -Root $root 2>&1 }
-    } else {
-        Invoke-Command -Session $session -ArgumentList $guestRoot, $task -ScriptBlock {
-            param($root, $task)
-            Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue
-            $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File $root\worker.ps1 -Root $root"
-            $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
-            $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
-            $null = Register-ScheduledTask -TaskName $task -Action $action -Principal $principal -Settings $settings
-            Start-ScheduledTask -TaskName $task
-        }
-    }
+    Start-Worker $guestRoot $arguments $task
     Say "converter started: ntfs2refs $($arguments -join ' ')"
-    $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
-    do {
-        Start-Sleep -Seconds 2
-        $ended = Invoke-Command -Session $session -ArgumentList $guestRoot -ScriptBlock { param($root) (Test-Path "$root\native-terminal.json") -or (Test-Path "$root\worker-error.txt") }
-    } until ($ended -or (Get-Date) -gt $deadline)
+    $waited = Wait-Worker $guestRoot $InterruptAt
+    $ended = $waited.ended
+    if ($InterruptAt) {
+        # The interrupted run's own output, then the recovery it printed.
+        foreach ($leaf in 'stdout.log', 'stderr.log') {
+            try { Copy-Item -FromSession $session -LiteralPath "$guestRoot\$leaf" -Destination (Join-Path $records "interrupted-$leaf") } catch { }
+        }
+        if (-not $waited.held) { $verdict.outcome = 'hold-not-reached'; throw "the converter ended without reporting its hold at '$InterruptAt'" }
+        $printed = Select-String -LiteralPath (Join-Path $records 'interrupted-stdout.log') -Pattern '^To recover: ntfs2refs --recover "(.+)" --recovery-sha256 ([0-9a-f]{64})' | Select-Object -Last 1
+        if (-not $printed) { $verdict.outcome = 'interrupted-without-recovery-command'; throw 'the interrupted run printed no "To recover:" line' }
+        $recover = @('--recover', $printed.Matches[0].Groups[1].Value, '--recovery-sha256', $printed.Matches[0].Groups[2].Value)
+        if ($RecoverMode -eq 'rollback') { $recover += '--rollback' }
+        $verdict.interrupted_at = $InterruptAt; $verdict.recover_mode = $RecoverMode; $verdict.recovery_arguments = $recover
+        # A folder of its own, so the interrupted run's records stay as they are.
+        $guestRoot = "$guestRoot\recover"
+        Invoke-Command -Session $session -ArgumentList $guestRoot -ScriptBlock {
+            param($root)
+            $null = New-Item -ItemType Directory -Path $root -Force
+            foreach ($leaf in 'ntfs2refs.exe', 'lab-volume-manifest.exe', 'worker.ps1', 'manifest-before.jsonl') { Copy-Item -LiteralPath (Join-Path (Split-Path $root) $leaf) -Destination $root }
+        }
+        Start-Worker $guestRoot $recover $task
+        Say "recovery started: ntfs2refs $($recover -join ' ')"
+        $ended = (Wait-Worker $guestRoot '').ended
+    }
     $run = Invoke-Command -Session $session -ArgumentList $guestRoot, $task -ScriptBlock {
         param($root, $task)
         Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue
@@ -285,10 +371,14 @@ try {
             worker_error = if (Test-Path "$root\worker-error.txt") { Get-Content "$root\worker-error.txt" -Raw } else { $null }
             filesystem = if ($volume) { $volume.FileSystem } else { $null }; label = if ($volume) { $volume.FileSystemLabel } else { $null }
             health = if ($volume) { "$($volume.HealthStatus)" } else { $null }; mounted = [bool]$partition
-            offline = if ($disk) { $disk.IsOffline } else { $null }; read_only = if ($disk) { $disk.IsReadOnly } else { $null }; refsinfo = $refs }
+            offline = if ($disk) { $disk.IsOffline } else { $null }; read_only = if ($disk) { $disk.IsReadOnly } else { $null }; refsinfo = $refs
+            partition_bytes = if ($partition) { $partition.Size } else { $null } }
     }
     foreach ($leaf in 'stdout.log', 'stderr.log') {
         try { Copy-Item -FromSession $session -LiteralPath "$guestRoot\$leaf" -Destination $records } catch { Say "could not collect ${leaf}: $($_.Exception.Message)" }
+    }
+    if ($SampleStacks) {
+        try { Copy-Item -FromSession $session -LiteralPath "$guestRoot\stacks.txt" -Destination $records } catch { Say "could not collect stacks.txt: $($_.Exception.Message)" }
     }
     if (-not $ended) { $verdict.outcome = 'converter-timed-out'; throw "the converter did not end within $TimeoutMinutes minutes" }
     if ($run.worker_error) { throw "guest worker failed: $($run.worker_error)" }
@@ -298,6 +388,7 @@ try {
     $refsField = { param($label) if ($run.refsinfo -match "(?m)^\s*$label\s*:\s*(\S+)") { $Matches[1] } else { $null } }
     $verdict.converter = [ordered]@{ exit = $run.exit; seconds = $run.seconds; error = $errorLine }
     $verdict.volume_after = [ordered]@{ filesystem = $run.filesystem; label = $run.label; health = $run.health; mounted = $run.mounted; disk_offline = $run.offline; disk_read_only = $run.read_only
+        partition_bytes = $run.partition_bytes
         refs_version = & $refsField 'REFS Volume Version'; refs_bytes_per_cluster = & $refsField 'Bytes Per Cluster'; refs_bytes_per_sector = & $refsField 'Bytes Per Sector' }
     Say "converter exit $($run.exit) after $($run.seconds) s; V: is $($run.filesystem) '$($run.label)' $($run.health)$(if ($run.filesystem -eq 'ReFS') { ", ReFS $($verdict.volume_after.refs_version), $($verdict.volume_after.refs_bytes_per_cluster)-byte clusters" })"
     if ($errorLine) { Say $errorLine }
@@ -328,7 +419,20 @@ try {
         Say "listing after the run: $($compared.listed)"
         Say "before/after comparison$(if (-not $converted) { ', exact' }): $listing ($($compared.stage) exit $($compared.exit)): $($compared.summary)"
     }
-    $verdict.outcome = if ($converted) {
+    $verdict.outcome = if ($InterruptAt -and $RecoverMode -eq 'rollback') {
+        # A rollback returns the NTFS volume, which must list exactly as before.
+        if ($run.exit -eq 0 -and $returned -and $listing -eq 'identical') { 'rolled-back' }
+        elseif ($run.exit -eq 0 -and $returned) { "rolled-back-but-listing-$listing" }
+        else { 'rollback-failed' }
+    } elseif ($InterruptAt) {
+        if ($converted -and $listing -eq 'identical') { 'resumed' }
+        elseif ($converted) { "resumed-but-listing-$listing" }
+        else { 'resume-failed' }
+    } elseif ($Diagnose -and $run.exit -in 0, 3) {
+        # 0: every object examined, none failed. 3: failures were reported.
+        if (-not $returned -or $listing -ne 'identical') { 'diagnose-changed-the-source' }
+        elseif ($run.exit -eq 0) { 'diagnose-clean' } else { 'diagnose-found-failures' }
+    } elseif ($converted) {
         switch ($listing) { 'identical' { 'converted' } 'differs' { 'converted-but-listing-differs' } default { 'converted-listing-tool-failed' } }
     } elseif ($run.exit -eq 0) { 'exit-0-but-not-refs' }
     elseif ($returned -and $listing -eq 'identical') { if ($ExpectRefusal -and $errorLine -match $ExpectRefusal) { 'refused-as-expected' } else { 'refused-source-unchanged' } }

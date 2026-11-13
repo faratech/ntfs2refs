@@ -40,10 +40,45 @@ The drive interface also accepts explicit selection such as `--drive D --partiti
 That syntax is not a claim that every data-volume layout or feature is qualified.
 The program refuses unsupported conditions instead of silently omitting them.
 
-If the Windows partition's length is not a multiple of 64 MiB, the converter
-first asks the Windows NTFS driver to shrink it to one (by less than 64 MiB).
-It says so before the confirmation prompt. The shrink is not undone if the run
-stops later.
+If the partition's length is not a multiple of 64 MiB, the converter first
+asks the Windows NTFS driver to shrink it to one (by less than 64 MiB): ReFS
+covers a volume in whole units of that size. It says so before the
+confirmation prompt. The shrink is not undone if the run stops later. This
+applies to a Windows partition and to a data volume alike.
+
+## Data volumes
+
+Without `--windows-boot-volume`, `--drive` converts a data volume on a disk of
+its own (the disk may hold that partition and a Microsoft reserved partition,
+nothing else). This route is newer than the alpha release and is not part of
+its qualification.
+
+```powershell
+.\ntfs2refs.exe --drive E --scratch-directory S:\runs
+.\ntfs2refs.exe --drive E --scratch-directory S:\runs --target-cluster-bytes 65536
+```
+
+- **Source geometry.** Any that Windows formats NTFS with: clusters from 512
+  bytes to 2 MiB, 512-byte or 4096-byte (4Kn) sectors, 1 KiB or 4 KiB file
+  records.
+- **Target.** ReFS with 4 KiB clusters by default, or 64 KiB with
+  `--target-cluster-bytes 65536`. A Windows boot volume is converted to 4 KiB
+  only. The ReFS version is whatever Windows formats (3.14 on every build this
+  was run on); the run records it and requires the volume to stay that version.
+- **What stays in place.** Data that lies on boundaries of the target's cluster
+  size. Everything else is copied through the working storage: from clusters
+  smaller than the target's that is most of the volume, and the working
+  storage needs room for it.
+- **Windows.** Build 26100 or later. An older build is refused by name.
+- **Recovery.** The recovery command is the same as for a boot volume. It
+  takes the ReFS cluster size and version from the run's own records.
+
+The source's size is bounded by the machine: memory and working storage decide
+how many objects, streams and extents a run can hold, and a volume beyond them
+is refused before anything is written. A file may have as many named streams
+as NTFS allows and a sparse file as many islands as it has; one stream may be
+in as many separate extents as a sixty-fourth of the memory budget can
+describe (about 200,000 with 13 GB available), and never fewer than 65,536.
 
 The converter takes the source offline and read-only during preparation. It
 builds ReFS metadata through Windows and preserves eligible payload extents.
@@ -138,6 +173,10 @@ read-only meanwhile and is returned as NTFS.
 | 3 | Failures were reported, or the run stopped at its failure limit |
 | 1 | The diagnosis itself could not finish |
 
+The run stops after 500 failures, when it is rarely learning anything new.
+`--diagnose-limit N` changes that number, and `--diagnose-limit 0` lists every
+failure on the volume.
+
 Diagnose is refused, before anything is started, where it could not keep that
 promise: when a conversion would first shrink the partition (see above), and
 with `--minimize-scratch`, `--whole-image-verification` or `--offline-media`.
@@ -158,6 +197,7 @@ It does not exercise the recovery journal, the apply step or the boot.
   volumes that compares and journals the whole image. Unlike the default
   route, which is bounded only by the machine's memory and working storage,
   it keeps fixed limits: 1,024 files, 256 directories and 4,096 placed NTFS
-  runs. A larger volume is refused before anything is written.
+  runs. A larger volume is refused before anything is written. It converts to
+  4 KiB clusters only.
 
 None of these establishes hardware compatibility by itself.

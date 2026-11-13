@@ -221,8 +221,60 @@ fn retained_comparison_pins_inputs_and_never_enables_writes() {
 #[test]
 fn capabilities_report_what_the_executable_enforces() {
     let capabilities: Value = serde_json::from_slice(&cli(&["capabilities"]).stdout).unwrap();
-    assert_eq!(capabilities["schema_version"], 2);
+    assert_eq!(capabilities["schema_version"], 3);
     assert_eq!(capabilities["refs_metadata_builder"], "windows");
+
+    // The geometry announced is the geometry the admission gate accepts.
+    let geometry = |sector: u16, cluster: u32, file_record: u32, index_record: u32| {
+        ntfs2refs::ntfs_inspect::NtfsGeometry {
+            bytes_per_sector: sector,
+            sectors_per_cluster: cluster / u32::from(sector),
+            cluster_size: cluster,
+            total_sectors: 1 << 24,
+            volume_size: (1 << 24) * u64::from(sector),
+            total_clusters: (1 << 24) * u64::from(sector) / u64::from(cluster),
+            mft_lcn: 4,
+            mftmirr_lcn: 8,
+            file_record_size: file_record,
+            index_record_size: index_record,
+            serial_number: 1,
+        }
+    };
+    let profile = ntfs2refs::ntfs_admission::ResourceProfile::ResourceBoundedV4(None);
+    let source = &capabilities["source_geometry"];
+    let (low, high) = (
+        source["cluster_bytes"]["minimum"].as_u64().unwrap() as u32,
+        source["cluster_bytes"]["maximum"].as_u64().unwrap() as u32,
+    );
+    assert_eq!((low, high), (512, 2 * 1024 * 1024));
+    for sector in source["sector_bytes"].as_array().unwrap() {
+        let sector = sector.as_u64().unwrap() as u16;
+        for record in source["file_record_bytes"].as_array().unwrap() {
+            let record = record.as_u64().unwrap() as u32;
+            let mut cluster = low.max(u32::from(sector));
+            while cluster <= high {
+                assert!(
+                    profile.supports_source_geometry(&geometry(sector, cluster, record, 4096)),
+                    "{sector}/{cluster}/{record}"
+                );
+                cluster *= 2;
+            }
+        }
+    }
+    for index_record in [512u32, 2048, 4096, 65536] {
+        assert!(profile.supports_source_geometry(&geometry(512, 4096, 1024, index_record)));
+    }
+    assert!(!profile.supports_source_geometry(&geometry(512, 4096, 2048, 4096)));
+    assert!(!profile.supports_source_geometry(&geometry(512, 4096, 1024, 256)));
+    assert!(!profile.supports_source_geometry(&geometry(512, 4 * 1024 * 1024, 1024, 4096)));
+    assert_eq!(
+        capabilities["target"]["refs_cluster_bytes"],
+        serde_json::json!([4096, 65536])
+    );
+    assert_eq!(
+        capabilities["windows_builds"]["minimum_build"],
+        n2r_win32::windows_build::MINIMUM_BUILD
+    );
 
     // The announced boot profiles are the rows the admission gate reads.
     let announced = capabilities["qualified_boot_profiles"].as_array().unwrap();

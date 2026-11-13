@@ -34,9 +34,9 @@ it lies on target-cluster boundaries; the rest goes through the working storage.
   finalize (`src/resource_finalize.rs`).
 - The converter's own writes to the source start at the journal apply step.
   Everything earlier is safe to abandon, except two steps that change the
-  source through the NTFS driver: a Windows partition whose length is not a
-  multiple of 64 MiB is first shrunk to one (`drive_boot::normalize_geometry`;
-  announced before the prompt, not reverted; the lab partition needs none),
+  source through the NTFS driver: a partition whose length is not a multiple
+  of 64 MiB is first shrunk to one (`drive_boot::normalize_geometry`; announced
+  before the prompt, not reverted; the lab's Windows partition needs none),
   and `--minimize-scratch` moves files before the freeze. `--diagnose` refuses
   both: every entry that changes the source takes a `SourceChangeAuthority`
   (`src/execution_mode.rs`) that only a conversion can mint.
@@ -101,7 +101,8 @@ it lies on target-cluster boundaries; the rest goes through the working storage.
   attempt and 65 GB for a full one (57 GB at peak).
 - Data volumes: with a control OS up (`-NoConvert -KeepScratch`),
   `lab\Invoke-DataVolumeAttempt.ps1 -Name <n> -ClusterBytes <b> [-SectorBytes
-  4096] [-LargeRecords]` makes, converts and compares one in under a minute.
+  4096] [-LargeRecords] [-TargetClusterBytes 65536]` makes, converts and
+  compares one in under a minute; `lab/README.md` lists the other switches.
 - Second VM `ntfs2refs-reference-b`, Id `7c687062-37b5-4309-b28a-486a44305202`,
   made by `lab/New-LabVmClone.ps1`: same shape, disks are differencing children
   of the reference VM's baseline disks under `.lab/hyperv/ntfs2refs-reference-b/`.
@@ -123,7 +124,9 @@ it lies on target-cluster boundaries; the rest goes through the working storage.
 The first goal is met: `lab\Invoke-BootConversionAttempt.ps1 -VmId <a lab VM>`
 converts the full Windows volume (143,580 objects, 112,609 short-name links) in
 under 30 minutes with an identical listing and boots it alone, Secure Boot on:
-`BOOTED-ON-REFS`. What the second still lacks is in the issue tracker.
+`BOOTED-ON-REFS`. The second is met for every geometry Windows formats, to both
+target units. Not shown in the lab, because nothing there makes them: index
+records other than 4 KiB, a ReFS after 3.14, a build besides 26100 and 26300.
 
 Keep it that way. Before a change is committed:
 
@@ -136,7 +139,7 @@ Keep it that way. Before a change is committed:
    `-InterruptAt handoff-sealed` (before finalization). A change to a
    per-object path also passes a full run (several defects only showed at
    full size), and one to source inspection or stream planning also converts
-   data volumes of 512-byte clusters and on a 4Kn disk.
+   data volumes of 512-byte clusters and on a 4Kn disk, to both target units.
 
 Open, most useful first:
 

@@ -138,6 +138,20 @@ original source disk; the temporary shadow is working storage.
 .\ntfs2refs.exe --recover <printed-directory> --recovery-sha256 <printed-checksum>
 ```
 
+If the machine lost power and the printed command with it: the directory is
+the `conversion` folder of the run under the working directory you gave
+(`<working directory>\<run>\conversion`), and the checksum is the SHA-256 of
+the `recovery-envelope.json` in it:
+
+```powershell
+Get-FileHash -Algorithm SHA256 S:\runs\<run>\conversion\recovery-envelope.json
+```
+
+The checksum exists so that recovery does not start from an envelope that
+changed after it was printed. Taking it from the file means trusting the file
+as it is now; recovery still checks the journal and every journaled range of
+the source before it writes.
+
 The CLI also exposes `--rollback` before handoff. Do not infer a qualified
 Windows boot-volume rollback matrix from older data-volume experiments. Once
 ordinary writable ReFS use has begun, restoring old NTFS metadata is unsafe.

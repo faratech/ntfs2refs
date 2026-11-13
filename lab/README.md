@@ -49,8 +49,15 @@ before in every field (`compare --exact`: nothing allowed).
 instead, and `-RecoverFrom <attempt>` recovers it later from that attempt's own
 records. `-TearMarker handoff`, with `-InterruptAt apply-handoff-durable`, leaves
 the journal's handoff marker as a write that stopped part-way leaves it, so that
-recovery has to settle it first. The lab ends a process; it cannot cut power to
-the storage, and every verdict says so.
+recovery has to settle it first.
+
+`-InterruptKind vm` turns the VM off at the hold instead of ending the
+converter's process, as if the machine's power had gone: whatever the guest had
+not flushed is lost, the control OS starts again, and recovery runs in that
+fresh Windows. The verdict records the kind (`vm-turned-off`). The virtual
+disks are the host's files, so this is a machine that loses power with storage
+that keeps what reached it; the lab cannot cut power to the storage itself, and
+every verdict says so.
 
 The converter runs in the control OS as SYSTEM unless `-RunAs administrator` is
 given, which runs it as the guest's elevated administrator, the way an owner

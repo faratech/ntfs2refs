@@ -606,14 +606,20 @@ try {
     # own disks by about as much before the scratch disk is removed; one that
     # started with 70 GB free was down to 12 GB at its end.
     if (-not $Fixture -and -not $Recover -and -not $NoConvert -and $MinHostFreeGB -lt 65) { $MinHostFreeGB = 65 }
-    # Hyper-V frees the disks a restore discards after it returns: within
-    # seconds for a small attempt, more than half a minute for a larger one.
-    $hostFreeDisk = Get-HostFreeBytes
-    for ($waited = 0; $hostFreeDisk -lt [long]$MinHostFreeGB * 1GB -and $waited -lt 180; $waited += 2) {
-        Start-Sleep -Seconds 2; $hostFreeDisk = Get-HostFreeBytes
+    # Hyper-V frees the disks a restore discards after it returns, and the
+    # host's ReFS reports the space later still: within seconds for a small
+    # attempt, five minutes after a full-volume attempt that booted and was
+    # used (41.6 GB free three minutes after one, 73.6 GB two minutes later).
+    # So the wait goes on for as long as the free space is still growing.
+    $hostFreeDisk = Get-HostFreeBytes; $grownAt = 0
+    for ($waited = 0; $hostFreeDisk -lt [long]$MinHostFreeGB * 1GB -and $waited -lt 900 -and $waited - $grownAt -lt 180; $waited += 2) {
+        Start-Sleep -Seconds 2; $now = Get-HostFreeBytes
+        if ($now -gt $hostFreeDisk + 256MB) { $grownAt = $waited }
+        $hostFreeDisk = $now
     }
+    if ($waited -ge 30) { Say ("waited {0} s for the host to report the space the restore freed: {1:N1} GB free" -f $waited, ($hostFreeDisk / 1GB)) }
     if ($hostFreeDisk -lt [long]$MinHostFreeGB * 1GB) {
-        throw ("Host volume has {0:N1} GB free with checkpoint '{2}' restored; an attempt needs {1} GB. Free space first (old attempts' scratch.vhdx files, or the other lab VM's last attempt)." -f ($hostFreeDisk / 1GB), $MinHostFreeGB, $snapshots[0].Name)
+        throw ("Host volume has {0:N1} GB free with checkpoint '{2}' restored, and that stopped growing {3} s ago; an attempt needs {1} GB. Free space first (old attempts' scratch.vhdx files, or the other lab VM's last attempt)." -f ($hostFreeDisk / 1GB), $MinHostFreeGB, $snapshots[0].Name, ($waited - $grownAt))
     }
     $hostFree = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory * 1KB
     $memory = [Math]::Min([long]$MemoryGB * 1GB, [long]($hostFree * 0.8 / 1GB) * 1GB)

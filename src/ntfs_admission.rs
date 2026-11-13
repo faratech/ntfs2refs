@@ -564,7 +564,7 @@ pub(crate) fn bind_short_name_policy(
             .iter()
             .any(|file| file.names.iter().any(|name| name.namespace == 2))
         || policy.schema_version != 2
-        || policy.windows_version != [10, 0, 26300]
+        || !n2r_win32::windows_build::supported(policy.windows_version)
         || !policy.short_name_state_stable
         || !policy
             .persistent_state_before

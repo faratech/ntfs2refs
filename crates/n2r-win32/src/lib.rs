@@ -123,6 +123,7 @@ pub mod volume_manifest;
 pub mod volume_policy;
 #[cfg(windows)]
 pub mod vss_observation;
+pub mod windows_build;
 #[cfg(windows)]
 pub use attestation_native::collect_file_metadata;
 #[cfg(windows)]

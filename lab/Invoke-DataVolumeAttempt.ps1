@@ -828,6 +828,9 @@ public static class SiblingRaw {
     $waited = Wait-Worker $guestRoot $InterruptAt $StopDuringPreparation
     $verdict.resources = [ordered]@{ peak_working_set_bytes = $usage.peak_working_set; peak_private_bytes = $usage.private_bytes
         peak_working_storage_bytes = $usage.working_bytes; samples = $usage.samples; sampled_every_seconds = 2 }
+    # What the run's own memory ledger reached, which is what refuses a volume for memory.
+    $ledger = Invoke-Command -Session $session -ArgumentList $guestRoot -ScriptBlock { param($root) if (Test-Path "$root\stderr.log") { [string](Get-Content -LiteralPath "$root\stderr.log" -Encoding UTF8 | Where-Object { $_ -match '^memory: the run''s reservations peaked at' } | Select-Object -Last 1) } }
+    if ("$ledger" -match 'peaked at (\d+) MiB of the (\d+) MiB') { $verdict.resources.reserved_peak_mib = [int]$Matches[1]; $verdict.resources.reserved_limit_mib = [int]$Matches[2]; Say "its reservations peaked at $($Matches[1]) MiB of the $($Matches[2]) MiB it may hold" }
     Say "the converter took at most $([Math]::Round($usage.peak_working_set / 1MB)) MiB of memory and $([Math]::Round($usage.working_bytes / 1MB)) MiB of working storage ($($usage.samples) samples)"
     $ended = $waited.ended
     if ($StopDuringPreparation) {

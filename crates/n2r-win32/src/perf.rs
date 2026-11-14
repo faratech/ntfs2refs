@@ -212,6 +212,17 @@ pub fn phase(name: &str) {
     });
 }
 
+static LEDGER_PEAK: AtomicU64 = AtomicU64::new(0);
+static LEDGER_LIMIT: AtomicU64 = AtomicU64::new(0);
+
+/// What a run's memory ledger holds after a reservation, and what it may
+/// hold: the highest level is printed with the totals, so that what a
+/// volume takes of the ledger can be read off a run.
+pub fn note_ledger(held: u64, limit: u64) {
+    LEDGER_PEAK.fetch_max(held, Relaxed);
+    LEDGER_LIMIT.store(limit, Relaxed);
+}
+
 /// Prints the last phase and the totals. Safe to call more than once.
 pub fn finish() {
     crate::stack_sampler::finish();
@@ -246,6 +257,14 @@ pub fn finish() {
                 &now
             )
         );
+        let peak = LEDGER_PEAK.load(Relaxed);
+        if peak != 0 {
+            eprintln!(
+                "memory: the run's reservations peaked at {} MiB of the {} MiB it may hold",
+                peak >> 20,
+                LEDGER_LIMIT.load(Relaxed) >> 20
+            );
+        }
     }
 }
 

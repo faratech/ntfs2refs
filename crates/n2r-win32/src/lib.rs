@@ -22,6 +22,8 @@ pub mod bitmap_window;
 pub mod bitmap_window_native;
 pub mod bitmap_window_transport;
 pub mod content_digest;
+#[cfg(windows)]
+pub mod directory_case;
 pub mod discovery;
 pub mod drive_inventory;
 pub mod extended_attributes;
@@ -137,6 +139,7 @@ pub use native::PartitionMixedReplayGate;
 #[cfg(windows)]
 pub use native::PartitionTerminalNativeObservation;
 #[cfg(windows)]
+pub use native::forbid_disk_state_changes;
 pub use native::forbid_raw_write_activation;
 #[cfg(windows)]
 pub use native::offline_environment;

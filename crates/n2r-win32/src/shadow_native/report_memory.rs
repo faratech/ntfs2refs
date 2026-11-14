@@ -9,10 +9,14 @@ pub trait ReportMemoryLease: Send + Sync {
 }
 pub trait ReportMemoryAccountant: Send + Sync {
     /// Must reserve the complete request before returning a live lease.
+    /// (The caller's place in the code is passed on, so that a payer whose
+    /// ledger runs out can say where its memory is held.)
+    #[track_caller]
     fn reserve(&self, bytes: u64) -> io::Result<Box<dyn ReportMemoryLease>>;
     /// Memory for a cache the caller can do without. A payer with a shared
     /// budget should refuse it sooner than [`Self::reserve`], leaving room
     /// for what cannot be done without; by default the two are the same.
+    #[track_caller]
     fn reserve_optional(&self, bytes: u64) -> io::Result<Box<dyn ReportMemoryLease>> {
         self.reserve(bytes)
     }

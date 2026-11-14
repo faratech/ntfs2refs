@@ -828,6 +828,9 @@ public static class SiblingRaw {
     $waited = Wait-Worker $guestRoot $InterruptAt $StopDuringPreparation
     $verdict.resources = [ordered]@{ peak_working_set_bytes = $usage.peak_working_set; peak_private_bytes = $usage.private_bytes
         peak_working_storage_bytes = $usage.working_bytes; samples = $usage.samples; sampled_every_seconds = 2 }
+    # What the run's own memory ledger reached, which is what refuses a volume for memory.
+    $ledger = Invoke-Command -Session $session -ArgumentList $guestRoot -ScriptBlock { param($root) if (Test-Path "$root\stderr.log") { [string](Get-Content -LiteralPath "$root\stderr.log" -Encoding UTF8 | Where-Object { $_ -match '^memory: the run''s reservations peaked at' } | Select-Object -Last 1) } }
+    if ("$ledger" -match 'peaked at (\d+) MiB of the (\d+) MiB') { $verdict.resources.reserved_peak_mib = [int]$Matches[1]; $verdict.resources.reserved_limit_mib = [int]$Matches[2]; Say "its reservations peaked at $($Matches[1]) MiB of the $($Matches[2]) MiB it may hold" }
     Say "the converter took at most $([Math]::Round($usage.peak_working_set / 1MB)) MiB of memory and $([Math]::Round($usage.working_bytes / 1MB)) MiB of working storage ($($usage.samples) samples)"
     $ended = $waited.ended
     if ($StopDuringPreparation) {
@@ -1031,6 +1034,14 @@ public static class SiblingRaw {
     # as it was. (A conversion of a partition that is not a multiple of
     # 64 MiB shortens it, and a run recovered to NTFS after that keeps the
     # shorter length; both say so.)
+    if ($StopDuringPreparation) {
+        # The cancellation has to say what the run that was cut off left in
+        # the working directory, and how large it is.
+        $left = [string](Get-Content -LiteralPath $stdout -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_ -match '^The run that was cut off left its working files' } | Select-Object -Last 1)
+        $verdict.cancellation_said_of_what_is_left = $left
+        if ($left) { Say "the cancellation said: $left" }
+        elseif ($verdict.outcome -in 'preparation-cancelled', 'restart-refused-then-cancelled') { $verdict.outcome = "$($verdict.outcome)-without-naming-what-is-left" }
+    }
     $lengthBefore = $verdict.source.observed.partition_bytes; $lengthAfter = $verdict.volume_after.partition_bytes
     if ($lengthBefore -and $lengthAfter -and $lengthAfter -ne $lengthBefore) {
         $verdict.source.partition_bytes_changed_by = $lengthAfter - $lengthBefore

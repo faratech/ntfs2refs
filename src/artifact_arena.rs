@@ -84,6 +84,8 @@ struct State {
     overhead: u64,
     index_bytes: u64,
     leased_ram_bytes: u64,
+    // The same bytes by the place in the code that holds them.
+    ram_by_site: BTreeMap<RamSite, u64>,
     // The part of `leased_ram_bytes` held by optional caches.
     optional_ram_bytes: u64,
     ram_poisoned: bool,
@@ -134,6 +136,40 @@ pub struct ArenaRamLease {
     bytes: u64,
     // Taken by `reserve_optional_ram`: counted in the optional total as well.
     optional: bool,
+    // Where in the code it was taken: what the ledger names when it runs out.
+    site: RamSite,
+}
+
+/// The place in the code a reservation was made at: file and line.
+type RamSite = (&'static str, u32);
+
+/// What `site` holds less `bytes` (a lease returned, or shrunk).
+fn release_site(held: &mut BTreeMap<RamSite, u64>, site: RamSite, bytes: u64) {
+    if let Some(total) = held.get_mut(&site) {
+        *total = total.saturating_sub(bytes);
+        if *total == 0 {
+            held.remove(&site);
+        }
+    }
+}
+
+/// The largest reservations, for the message of a ledger that ran out:
+/// without them it says how much is held and not by what.
+fn largest_sites(held: &BTreeMap<RamSite, u64>) -> String {
+    let mut sites: Vec<(&RamSite, &u64)> = held.iter().collect();
+    sites.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+    sites
+        .iter()
+        .take(6)
+        .map(|((file, line), bytes)| {
+            format!(
+                "{} MiB at {}:{line}",
+                **bytes / (1024 * 1024),
+                file.rsplit(['/', '\\']).next().unwrap_or(file)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 impl ArenaRamLease {
     /// Return unused capacity while retaining the remainder of this lease.
@@ -159,6 +195,7 @@ impl ArenaRamLease {
                 .checked_sub(self.bytes - bytes)
                 .context("arena optional RAM lease shrink underflow")?;
         }
+        release_site(&mut state.ram_by_site, self.site, self.bytes - bytes);
         self.bytes = bytes;
         Ok(())
     }
@@ -920,6 +957,7 @@ impl ArtifactArena {
                 overhead: 0,
                 index_bytes: config_registry_bytes,
                 leased_ram_bytes: 0,
+                ram_by_site: BTreeMap::new(),
                 optional_ram_bytes: 0,
                 ram_poisoned: false,
                 prepared_closed: false,
@@ -1330,7 +1368,10 @@ impl ArtifactArena {
         artifact.pin.revalidate_identity()?;
         Ok(artifact)
     }
+    #[track_caller]
     pub fn reserve_ram(&self, bytes: u64) -> Result<ArenaRamLease> {
+        let caller = std::panic::Location::caller();
+        let site = (caller.file(), caller.line());
         let mut state = self
             .0
             .state
@@ -1339,19 +1380,25 @@ impl ArtifactArena {
         let leased = add(state.leased_ram_bytes, bytes)?;
         ensure!(
             !state.ram_poisoned && add(leased, state.index_bytes)? <= self.0.budget.ram_bytes,
-            "aggregate artifact arena RAM exhausted or poisoned: leased={} (of which optional caches {}), registry={}, requested={}, limit={}, poisoned={}",
+            "aggregate artifact arena RAM exhausted or poisoned: leased={} (of which optional caches {}), registry={}, requested={} at {}:{}, limit={}, poisoned={}; the largest reservations: {}",
             state.leased_ram_bytes,
             state.optional_ram_bytes,
             state.index_bytes,
             bytes,
+            site.0.rsplit(['/', '\\']).next().unwrap_or(site.0),
+            site.1,
             self.0.budget.ram_bytes,
-            state.ram_poisoned
+            state.ram_poisoned,
+            largest_sites(&state.ram_by_site)
         );
         state.leased_ram_bytes = leased;
+        *state.ram_by_site.entry(site).or_default() += bytes;
+        n2r_win32::perf::note_ledger(leased + state.index_bytes, self.0.budget.ram_bytes);
         Ok(ArenaRamLease {
             arena: self.clone(),
             bytes,
             optional: false,
+            site,
         })
     }
     /// Memory for a cache the conversion can do without (a store held in
@@ -1360,7 +1407,10 @@ impl ArtifactArena {
     /// arena as a whole stays under half full, so that the reservations the
     /// conversion cannot do without always find room. A refusal is not a
     /// failure: the caller keeps reading from disk.
+    #[track_caller]
     pub fn reserve_optional_ram(&self, bytes: u64) -> Result<ArenaRamLease> {
+        let caller = std::panic::Location::caller();
+        let site = (caller.file(), caller.line());
         let mut state = self
             .0
             .state
@@ -1380,10 +1430,13 @@ impl ArtifactArena {
         );
         state.leased_ram_bytes = leased;
         state.optional_ram_bytes = optional;
+        *state.ram_by_site.entry(site).or_default() += bytes;
+        n2r_win32::perf::note_ledger(leased + state.index_bytes, self.0.budget.ram_bytes);
         Ok(ArenaRamLease {
             arena: self.clone(),
             bytes,
             optional: true,
+            site,
         })
     }
     pub fn reserve_group(&self, group: ArtifactGroup, maximum: u64) -> Result<ArtifactGroupPermit> {
@@ -1966,6 +2019,7 @@ impl Drop for ArenaRamLease {
             if self.optional {
                 state.optional_ram_bytes = state.optional_ram_bytes.saturating_sub(self.bytes);
             }
+            release_site(&mut state.ram_by_site, self.site, self.bytes);
         }
     }
 }
@@ -2512,5 +2566,39 @@ impl ArtifactGroupSeal {
     }
     pub fn permit(&self) -> &ArtifactGroupPermit {
         &self.permit
+    }
+}
+
+#[cfg(test)]
+mod ram_site_tests {
+    use super::*;
+
+    #[test]
+    fn a_ledger_that_runs_out_names_what_holds_the_most() {
+        let mut held: BTreeMap<RamSite, u64> = BTreeMap::new();
+        held.insert(("src/first.rs", 10), 3 << 30);
+        held.insert(("src/second.rs", 20), 5 << 30);
+        held.insert(("src/third.rs", 30), 1 << 20);
+        assert_eq!(
+            largest_sites(&held),
+            "5120 MiB at second.rs:20, 3072 MiB at first.rs:10, 1 MiB at third.rs:30"
+        );
+        // A lease that is returned or shrunk is no longer held there.
+        release_site(&mut held, ("src/second.rs", 20), 5 << 30);
+        release_site(&mut held, ("src/first.rs", 10), 1 << 30);
+        assert_eq!(
+            largest_sites(&held),
+            "2048 MiB at first.rs:10, 1 MiB at third.rs:30"
+        );
+        // Six at most are named, the largest first.
+        for line in 1..=9u32 {
+            held.insert(("src/many.rs", line), u64::from(line) << 24);
+        }
+        let said = largest_sites(&held);
+        assert_eq!(said.matches(" MiB at ").count(), 6, "{said}");
+        assert!(
+            said.starts_with("2048 MiB at first.rs:10, 144 MiB at many.rs:9"),
+            "{said}"
+        );
     }
 }

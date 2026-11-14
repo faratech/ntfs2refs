@@ -396,9 +396,21 @@ impl ReadonlyObservationLease<'_> {
             0,
             events,
         )?;
-        await_volume_removal(&leaving);
+        // Waited for when a disk next comes online, which is the only
+        // moment at which it matters: most leases are followed by work
+        // that takes longer than the removal.
+        leaving_volumes().extend(leaving);
         Ok(())
     }
+}
+
+/// The devices of the volumes that disks had when a lease took them
+/// offline, until `set_attributes` has waited for them to be gone.
+fn leaving_volumes() -> std::sync::MutexGuard<'static, Vec<String>> {
+    static LEAVING: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    LEAVING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// How long a disk that was taken offline is given to have its volumes
@@ -946,6 +958,12 @@ pub(crate) fn set_attributes(
         RAW_WRITE_ACTIVATION_FORBIDDEN.load(std::sync::atomic::Ordering::SeqCst),
         DISK_STATE_CHANGES_FORBIDDEN.load(std::sync::atomic::Ordering::SeqCst),
     )?;
+    if value & OFFLINE == 0 {
+        // A disk is about to come online: the volumes a disk had when it
+        // last went offline have to be gone first.
+        let leaving = std::mem::take(&mut *leaving_volumes());
+        await_volume_removal(&leaving);
+    }
     let mut bytes = [0_u8; 40];
     bytes[..4].copy_from_slice(&40_u32.to_le_bytes());
     bytes[4] = 1; // Persist: the exclusion must survive a restart.
@@ -5588,8 +5606,14 @@ mod tests {
         // Nothing to wait for, and a device that is gone already, cost no time.
         let clock = std::time::Instant::now();
         await_volume_removal(&[]);
-        await_volume_removal(&[gone]);
+        await_volume_removal(&[gone.clone()]);
         assert!(clock.elapsed() < std::time::Duration::from_secs(2));
+        // What a lease leaves is waited for once, when a disk next comes
+        // online, and is then forgotten.
+        leaving_volumes().push(gone);
+        let noted = std::mem::take(&mut *leaving_volumes());
+        assert_eq!(noted.len(), 1);
+        assert!(leaving_volumes().is_empty());
     }
 
     fn allocation_test_bitmap(bits: u16) -> Vec<u8> {

@@ -117,7 +117,9 @@ NTFS volume must be back and list exactly as before (`preparation-cancelled`).
 With `-AfterStop restart` it first starts the same conversion again, as
 someone does who did not see the run stop: that run has to be refused with
 words that name the offline disk and `--recover`, and the cancellation is
-run then (`restart-refused-then-cancelled`).
+run then (`restart-refused-then-cancelled`). Either way the cancellation has
+to say what the run that was cut off left in the working directory, or the
+outcome gets `-without-naming-what-is-left`.
 
 Every attempt records what `ntfs2refs --list` says of the volume beforehand
 (`list.txt`; the verdict has the volume's row). `-Unattended` runs the

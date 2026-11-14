@@ -322,8 +322,18 @@ in as many separate extents as a sixty-fourth of the memory budget can
 describe (about 200,000 with 13 GB available), and never fewer than 65,536.
 
 The largest volume converted in the lab was the Windows volume: 23 GB in
-about 190,000 files and directories. The largest data volume held 23,000
-files and directories.
+about 190,000 files and directories. The largest data volume held 100,000
+small files, and took 9 to 10 minutes: about 6 ms a file, as a volume of
+20,000 does.
+
+**Memory is what limits the number of files today.** A run keeps a ledger of
+the memory it may use, two thirds of what is free when it starts, and
+reserves in it more than it uses: with 15.6 GiB free, a volume of 500,000
+small files was returned unchanged after 21 minutes because the ledger was
+full, although the run had used 3.2 GiB. On the lab's volumes a run needs
+about 34 KiB of free memory for every file (3.2 GiB for 100,000 files, 16
+GiB for 500,000). When a run stops for this it says which reservations were
+the largest, and every run prints how high its reservations went.
 
 ## Convert an installed Windows
 
@@ -417,7 +427,10 @@ If this run is cut off while it prepares (before any "To recover:" line), the vo
 ```
 
 That command cancels the unfinished preparation and gives the volume back as
-NTFS, as it was. Then start again. If the screen is gone: the directory is
+NTFS, as it was. Then start again. The run that was cut off leaves its
+working files behind, the volume it was building among them; the
+cancellation says where they are, how large they are, and how to detach that
+volume so that the folder can be deleted. If the screen is gone: the directory is
 the `conversion` folder of the run under the working directory, and the
 checksum is the SHA-256 of the `preparation-intent.json` in it
 (`Get-FileHash -Algorithm SHA256`).

@@ -1170,13 +1170,12 @@ mod windows {
             boot_geometry.is_some(),
             "the partition's ReFS geometry was not decided"
         );
-        let before = if let Some(super::boot::GeometryDecision::Shrink { .. }) = boot_geometry {
-            let authority = mode.source_change_authority(
-                "the Windows NTFS driver shrink that prepares ReFS geometry",
-            )?;
-            super::boot::normalize_geometry(before, &run, &authority)?
-        } else {
-            before
+        // The length the partition has when it is converted. The working
+        // volume is formatted at that length first: Windows refusing to
+        // format it is found out while the partition is still as it was.
+        let converted_partition_bytes = match boot_geometry {
+            Some(super::boot::GeometryDecision::Shrink { target_bytes, .. }) => target_bytes,
+            _ => before.binding.identity.partition_bytes,
         };
         println!(
             "Preparing temporary ReFS metadata storage. Recovery files: {}",
@@ -1199,10 +1198,7 @@ mod windows {
                 .min(planned_carrier)
                 / (2 << 20)
                 * (2 << 20);
-            let provider_bytes = before
-                .binding
-                .identity
-                .partition_bytes
+            let provider_bytes = converted_partition_bytes
                 .checked_add(64 << 20)
                 .context("thin provider geometry overflow")?;
             let owner = n2r_win32::managed_shadow::thin_pool::create_bounded_with_carrier(
@@ -1217,7 +1213,7 @@ mod windows {
                 },
             )?;
             super::staging::StageOwner::Thin(
-                owner.format(before.binding.identity.partition_bytes, target_format)?,
+                owner.format(converted_partition_bytes, target_format)?,
             )
         } else {
             native_creation_admission
@@ -1226,7 +1222,7 @@ mod windows {
                 .check()?;
             super::staging::StageOwner::Vhdx(n2r_win32::managed_shadow::create_with_profile(
                 &run.join("shadow.vhdx"),
-                before.binding.identity.partition_bytes,
+                converted_partition_bytes,
                 before.binding.identity.logical_sector_bytes,
                 before.binding.identity.physical_sector_bytes,
                 target_format,
@@ -1247,6 +1243,22 @@ mod windows {
                 n2r_win32::target_refs_version::DEFAULT.1
             );
         }
+        // Only now, with a working volume that Windows did format, is the
+        // partition shrunk to the length that volume has.
+        let before = if let Some(super::boot::GeometryDecision::Shrink { .. }) = boot_geometry {
+            let authority = mode.source_change_authority(
+                "the Windows NTFS driver shrink that prepares ReFS geometry",
+            )?;
+            let shrunk = super::boot::normalize_geometry(before, &run, &authority)?;
+            ensure!(
+                shrunk.binding.identity.partition_bytes == converted_partition_bytes,
+                "the Windows NTFS driver left the partition {} bytes long, not the {converted_partition_bytes} the working volume was formatted for",
+                shrunk.binding.identity.partition_bytes
+            );
+            shrunk
+        } else {
+            before
+        };
         let provider_commitment = staged.initial_host_backing_commitment()?;
         // Record the provider identity as well as the disk identity: a guest
         // reboot can remove the attachment while leaving the recovery backing

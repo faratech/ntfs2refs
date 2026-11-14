@@ -31,6 +31,7 @@ converter prints.
 | All of these on one volume, to 4 KiB and to 64 KiB ReFS clusters, from 512-byte NTFS clusters, as an administrator, and interrupted and then resumed or rolled back | `lived-in` and its variants |
 | Every NTFS cluster size from 512 bytes to 2 MiB; 4Kn disks; 4096-byte file records | the geometry cases (`512-to-4k`, `4kn-4k`, ...) |
 | A Windows boot volume with its short names, 25 nested directories and 320 object IDs | `used-windows-fixture40` (boot harness, `-ShapeSource Add-UsedWindowsObjects.ps1`) |
+| On Windows Server 2025 (build 26100), to standard ReFS: the `mixed` set from 512-byte and 4 KiB clusters and on a 4Kn disk, to 4 KiB and 64 KiB ReFS clusters, as an administrator, unattended, and interrupted and then resumed or rolled back; a `lived-in` volume, then used. The `mixed` set there to a Dev Drive as well | the `s6-std-*` cases (`-TargetFormat standard`) and `s6-devdrive`, on the VM that `lab\New-ServerLabVm.ps1` makes |
 
 ## Carried over with a stated difference
 
@@ -78,8 +79,12 @@ These take the same paths as rows above, or are checked by tests only.
 - Index records other than 4 KiB, a ReFS later than 3.14, and a Windows build
   other than 26100 and 26300: nothing in the lab makes them. A run on such a
   build or ReFS version says that it is the first.
-- A conversion to standard ReFS (`--target-format standard`): the lab's
-  Windows 11 does not format one, and the run stops there with what Windows
-  said, before the volume is touched.
+- A conversion to standard ReFS (`--target-format standard`) on Windows 11:
+  the lab's Windows 11 does not format one, and the run stops there with what
+  Windows said, before the volume is touched. Windows Server formats one; see
+  the row for it above.
+- A Windows boot volume of Windows Server, and Windows 11 on build 26100:
+  the lab's Windows 11 is build 26300 and its Windows Server is the control
+  OS of data-volume attempts only.
 - `--minimize-scratch`, and the routes and commands of earlier designs that
   `--help` no longer lists.

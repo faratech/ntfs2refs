@@ -305,6 +305,21 @@ fn capabilities_report_what_the_executable_enforces() {
         capabilities["target"]["refs_cluster_bytes"],
         serde_json::json!([4096, 65536])
     );
+    // Both target formats, with where each is the default.
+    let formats = &capabilities["target"]["formats"];
+    assert_eq!(formats["option"], "--target-format");
+    assert!(
+        formats["standard"]
+            .as_str()
+            .unwrap()
+            .contains("Windows Server")
+    );
+    assert!(
+        formats["dev-drive"]
+            .as_str()
+            .unwrap()
+            .contains("Windows boot volume")
+    );
     assert_eq!(
         capabilities["windows_builds"]["minimum_build"],
         n2r_win32::windows_build::MINIMUM_BUILD

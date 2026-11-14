@@ -11,8 +11,9 @@ and the [recovery matrix](recovery-matrix.md).
    it has converted was a virtual disk.
 2. **Windows build 26100 or later** (Windows 11 24H2, Windows Server 2025),
    and an **elevated terminal**. Both are checked before a disk is opened; an
-   older build is refused by name. Conversions were run on builds 26100 and
-   26300. On another build, or when Windows formats a ReFS other than 3.14,
+   older build is refused by name. Conversions were run on builds 26100
+   (Windows Server 2025) and 26300 (Windows 11). On another build, or when
+   Windows formats a ReFS other than 3.14,
    the run says before it starts that the lab has not tried that.
 3. **Working storage on another disk**, given with `--scratch-directory`.
    The run builds the new file system there, on a virtual disk as large as the
@@ -123,9 +124,13 @@ the run stops later.
 - **ReFS version.** Whatever the running Windows formats: 3.14 on every build
   this was run on. The run records it and requires the volume to stay that
   version.
-- **Dev Drive or standard.** By default Windows formats the new file system
-  as a Dev Drive (`format /DevDrv`), which Microsoft documents for every
-  edition of Windows 11. The converted volume is then a ReFS volume that
+- **Dev Drive or standard.** `--target-format dev-drive|standard` says how
+  Windows formats the new file system. A run that names neither gets a Dev
+  Drive, and on Windows Server an ordinary ("standard") ReFS volume; a
+  Windows boot volume is converted as a Dev Drive only. The run prints which
+  it is before it asks.
+- **A Dev Drive** is what `format /DevDrv` makes, which Microsoft documents
+  for every edition of Windows 11. The converted volume is then a ReFS volume that
   Windows reports as a Dev Drive. Whether this machine *trusts* it is kept by
   Windows per machine and is not part of the conversion: the run ends by
   saying what Windows reports, and in the lab that was a Dev Drive not marked
@@ -134,12 +139,13 @@ the run stops later.
   shows the state and `fsutil devdrv trust E:` trusts the volume;
   [Microsoft's Dev Drive documentation](https://learn.microsoft.com/windows/dev-drive/)
   says what trust changes and when to give it.
-- **`--target-format standard`** asks Windows for an ordinary ReFS volume
-  instead. It works only where Windows itself formats one; where it does not
-  (the lab's Windows 11 answered "ReFS file system is not supported on this
-  device"), the run stops before the volume is touched and says so. There is
-  no fallback from one to the other, and no conversion to standard ReFS has
-  been run in the lab.
+- **A standard volume** is an ordinary ReFS volume. A conversion to one
+  works only where Windows itself formats one. Windows Server does: in the
+  lab, Windows Server 2025 (build 26100) converted data volumes of every
+  geometry in the matrix to standard ReFS, and to a Dev Drive when asked.
+  The lab's Windows 11 answered "ReFS file system is not supported on this
+  device"; there the run stops before the volume is touched and says so.
+  There is no fallback from one to the other.
 
 ### What a volume that has been in use meets
 
@@ -340,7 +346,7 @@ differences it accepts.
 | `--scratch-directory <dir>` | Working storage, on another disk |
 | `--diagnose` `[--diagnose-limit N]` | Checks without converting |
 | `--target-cluster-bytes 4096\|65536` | ReFS cluster size |
-| `--target-format dev-drive\|standard` | How Windows formats the new file system |
+| `--target-format dev-drive\|standard` | How Windows formats the new file system; standard is the default on Windows Server, dev-drive elsewhere |
 | `--windows-boot-volume` | The volume is an installed Windows that is not running |
 | `--recover <dir> --recovery-sha256 <sum>` `[--rollback]` | Finishes, or undoes, an interrupted run |
 | `--yes` `--volume-serial XXXX-XXXX` | Runs without asking; see below |

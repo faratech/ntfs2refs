@@ -55,9 +55,10 @@ pub struct DriveArgs {
     /// Admitted for the boot profiles `ntfs2refs capabilities` lists.
     #[arg(long, requires="drive", conflicts_with_all=["offline_recovery_media","whole_image_verification","experimental_thin_shadow"])]
     pub windows_boot_volume: bool,
-    /// How Windows formats the new file system: dev-drive (the default) or
-    /// standard. Standard works only where Windows itself formats ordinary
-    /// ReFS volumes; there is no fallback from one to the other.
+    /// How Windows formats the new file system: dev-drive or standard. The
+    /// default is standard on Windows Server and dev-drive elsewhere.
+    /// Standard works only where Windows itself formats ordinary ReFS
+    /// volumes; there is no fallback from one to the other.
     #[arg(long, requires = "drive", value_parser = ["dev-drive", "standard"])]
     pub target_format: Option<String>,
     /// Allocation unit of the ReFS target in bytes: 4096 (default) or 65536.
@@ -896,9 +897,17 @@ mod windows {
         } else {
             Role::Source
         };
+        let default_format = n2r_win32::managed_shadow::TargetFormatProfile::default_for(
+            n2r_win32::run_environment::is_windows_server()?,
+            args.windows_boot_volume,
+        );
+        let target_format = match args.target_format.as_deref() {
+            Some(named) => named.parse()?,
+            None => default_format,
+        };
         if args.windows_boot_volume {
             ensure!(
-                args.target_format.as_deref().unwrap_or("dev-drive") == "dev-drive",
+                target_format.is_dev_drive(),
                 "the demonstrated Windows boot profile uses the native Dev Drive target format"
             );
         }
@@ -951,17 +960,16 @@ mod windows {
             size(Some(before.binding.identity.partition_bytes)),
             clean(&before.label)
         );
-        let target_format: n2r_win32::managed_shadow::TargetFormatProfile = args
-            .target_format
-            .as_deref()
-            .unwrap_or("dev-drive")
-            .parse()?;
         println!(
             "Requested target: {} (ReFS, {} KiB clusters).",
-            if target_format.is_dev_drive() {
-                "Dev Drive, the default"
-            } else {
-                "standard ReFS, if this Windows formats it"
+            match (
+                target_format.is_dev_drive(),
+                target_format == default_format
+            ) {
+                (true, true) => "Dev Drive, the default",
+                (true, false) => "Dev Drive",
+                (false, true) => "standard ReFS, the default on Windows Server",
+                (false, false) => "standard ReFS, if this Windows formats it",
             },
             n2r_win32::target_cluster::bytes() / 1024
         );

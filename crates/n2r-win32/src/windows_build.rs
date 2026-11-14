@@ -4,7 +4,8 @@
 //! The observations (the transaction manager's state, the quota defaults,
 //! the persistent short-name state) are read through documented structures
 //! that have not changed across Windows 10 and 11. They were confirmed in
-//! the lab on builds 26100 and 26300. 26100 (Windows 11 24H2, Windows Server
+//! the lab on builds 26100 (Windows Server 2025, and the installation
+//! media's environment) and 26300 (Windows 11). 26100 (Windows 11 24H2, Windows Server
 //! 2025) is also the first build whose formatter makes the ReFS version the
 //! converter builds on, so nothing older can convert in any case; an older
 //! build is refused by name here rather than by a format failure later.

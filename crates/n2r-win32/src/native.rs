@@ -21,7 +21,7 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Storage::FileSystem::{
     FindFirstVolumeW, FindNextVolumeW, FindVolumeClose, GetVolumeInformationByHandleW,
     GetVolumeInformationW, GetVolumeNameForVolumeMountPointW, GetVolumePathNamesForVolumeNameW,
-    SetVolumeMountPointW,
+    QueryDosDeviceW, SetVolumeMountPointW,
 };
 use windows_sys::Win32::System::{IO::DeviceIoControl, SystemInformation::GetWindowsDirectoryW};
 
@@ -384,6 +384,9 @@ impl ReadonlyObservationLease<'_> {
         Ok(())
     }
     fn restore(file: &File, events: &mut Vec<NativeEvent>) -> io::Result<()> {
+        // The volumes the disk has while it is online, by the names the
+        // kernel gives their devices: what has to be gone again below.
+        let leaving = published_volume_devices(file);
         set_attributes(file, OFFLINE | READ_ONLY, events)?;
         control(
             file,
@@ -393,7 +396,133 @@ impl ReadonlyObservationLease<'_> {
             0,
             events,
         )?;
+        await_volume_removal(&leaving);
         Ok(())
+    }
+}
+
+/// How long a disk that was taken offline is given to have its volumes
+/// removed.
+const VOLUME_REMOVAL_SECONDS: u64 = 30;
+
+/// The kernel's device names (`\Device\HarddiskVolume3021`) of the volumes
+/// Windows has published on the disk behind `disk`. Asked for the wait
+/// below, which does without them if they cannot be had: nothing here fails.
+fn published_volume_devices(disk: &File) -> Vec<String> {
+    let mut scratch = Vec::new();
+    let Ok(device) = control(disk, "leaving-disk-number", DEVICE, &[], 12, &mut scratch) else {
+        return Vec::new();
+    };
+    let Ok(disk_number) = layout::u32_at(&device, 4) else {
+        return Vec::new();
+    };
+    let mut buffer = [0u16; 1024];
+    // SAFETY: initialized writable UTF-16 buffer of the declared length.
+    let handle = unsafe { FindFirstVolumeW(buffer.as_mut_ptr(), buffer.len() as u32) };
+    if handle == INVALID_HANDLE_VALUE {
+        return Vec::new();
+    }
+    let _search = VolumeEnumeration(handle);
+    let mut found = Vec::new();
+    for _ in 0..1024 {
+        let end = buffer.iter().position(|unit| *unit == 0).unwrap_or(0);
+        if let Ok(name) = String::from_utf16(&buffer[..end])
+            && let Some(device) = volume_device_on_disk(&name, disk_number)
+        {
+            found.push(device);
+        }
+        buffer.fill(0);
+        // SAFETY: the search handle and writable buffer remain live for this
+        // synchronous enumeration call.
+        if unsafe { FindNextVolumeW(handle, buffer.as_mut_ptr(), buffer.len() as u32) } == 0 {
+            break;
+        }
+    }
+    found
+}
+
+/// The kernel's device name of the volume `name` (`\\?\Volume{...}\`) if
+/// the volume lies on disk `disk_number`.
+fn volume_device_on_disk(name: &str, disk_number: u32) -> Option<String> {
+    let path = name.trim_end_matches('\\');
+    let volume = device_file(path, false, false).ok()?;
+    let extents = control(
+        &volume,
+        "leaving-volume-extents",
+        VOLUME_EXTENTS,
+        &[],
+        1024,
+        &mut Vec::new(),
+    )
+    .ok()?;
+    let count = layout::u32_at(&extents, 0).ok()? as usize;
+    let on_disk = (0..count).any(|index| {
+        layout::u32_at(&extents, 8 + index * 24).is_ok_and(|number| number == disk_number)
+    });
+    if !on_disk {
+        return None;
+    }
+    // "Volume{...}", as the object manager's DosDevices directory has it.
+    let link: Vec<u16> = path
+        .strip_prefix("\\\\?\\")?
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let mut target = [0u16; 512];
+    // SAFETY: NUL-terminated name and an initialized output buffer of the
+    // declared length.
+    let written =
+        unsafe { QueryDosDeviceW(link.as_ptr(), target.as_mut_ptr(), target.len() as u32) };
+    if written == 0 {
+        return None;
+    }
+    let end = target.iter().position(|unit| *unit == 0)?;
+    let device = String::from_utf16(&target[..end]).ok()?;
+    device.starts_with("\\Device\\").then_some(device)
+}
+
+/// Whether the kernel still has a device of this name. One that is being
+/// removed refuses to be opened, but is still there; one that is gone has
+/// no name left to open.
+fn volume_device_remains(device: &str) -> bool {
+    use std::os::windows::fs::OpenOptionsExt;
+    match OpenOptions::new()
+        .access_mode(0)
+        .share_mode(7)
+        .open(format!("\\\\?\\GLOBALROOT{device}"))
+    {
+        Ok(_) => true,
+        Err(error) => !matches!(error.raw_os_error(), Some(2 | 3)),
+    }
+}
+
+/// Waits until Windows has removed the volume devices a disk had before it
+/// was taken offline.
+///
+/// Taking a disk offline returns at once; Windows dismounts its file
+/// systems and removes its volume devices afterwards, and a file system
+/// with many files open in its cache takes a while over it. A disk that is
+/// brought online again before that has finished comes online without the
+/// volume and stays so: the partition is there, no volume is published for
+/// it, and only taking the disk offline and online once more brings it
+/// back. A conversion of a volume of 20,000 small files ended that way in
+/// more than half of the lab's runs, the disk having gone offline after
+/// the verification of the converted volume and online a third of a second
+/// later.
+///
+/// A device that does not go within the bound is left to the caller's own
+/// wait for the volume: this is a wait, not a check.
+fn await_volume_removal(devices: &[String]) {
+    if devices.is_empty() {
+        return;
+    }
+    let _timed = crate::perf::scope(crate::perf::Point::VolumeRemoval);
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_secs(VOLUME_REMOVAL_SECONDS);
+    while devices.iter().any(|device| volume_device_remains(device))
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(20));
     }
 }
 impl Drop for ReadonlyObservationLease<'_> {
@@ -1513,8 +1642,17 @@ pub fn rediscover_general_volume_wait(
 ) -> io::Result<GeneralDiskBinding> {
     let _timed = crate::perf::scope(crate::perf::Point::VolumeWait);
     for attempt in 0..60 {
-        match rediscover_general_volume(binding.clone(), events) {
-            Ok(found) => return Ok(found),
+        // A try looks at every volume of the machine and records each
+        // query. Only the try that finds the volume leaves its record in
+        // the caller's batch: sixty tries would otherwise fill the batch on
+        // a machine with many volumes, and a full batch refuses every
+        // further query, so that no later try could find anything.
+        let mut tried = Vec::new();
+        match rediscover_general_volume(binding.clone(), &mut tried) {
+            Ok(found) => {
+                events.append(&mut tried);
+                return Ok(found);
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound && attempt < 59 => {
                 std::thread::sleep(std::time::Duration::from_millis(250));
             }
@@ -5439,6 +5577,19 @@ mod tests {
                 assert!(refused.to_string().contains("a check never"), "{refused}");
             }
         }
+    }
+
+    #[test]
+    fn a_device_the_kernel_no_longer_names_is_gone_and_one_it_names_remains() {
+        // A device every Windows has, and a volume number none reaches.
+        assert!(volume_device_remains("\\Device\\Null"));
+        let gone = "\\Device\\HarddiskVolume4000000000".to_owned();
+        assert!(!volume_device_remains(&gone));
+        // Nothing to wait for, and a device that is gone already, cost no time.
+        let clock = std::time::Instant::now();
+        await_volume_removal(&[]);
+        await_volume_removal(&[gone]);
+        assert!(clock.elapsed() < std::time::Duration::from_secs(2));
     }
 
     fn allocation_test_bitmap(bits: u16) -> Vec<u8> {

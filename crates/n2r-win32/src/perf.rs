@@ -47,6 +47,7 @@ points! {
     TargetCheck => "changed-range check",
     ContentRead => "file content read",
     VolumeWait => "wait for volume",
+    VolumeRemoval => "wait for volume removal",
     RecoveryFileOpen => "recovery file reopen",
 }
 const COUNT: usize = LABELS.len();

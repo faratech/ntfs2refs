@@ -674,7 +674,7 @@ fn short_names(
 /// of them and what removes them. Left to the evidence pipeline, the first
 /// one stopped it with "source name/link domain is unsupported or
 /// incomplete". (A Windows boot volume's become links beside the long names.)
-fn refuse_short_names(raw: &PagedInspection) -> Result<()> {
+pub(crate) fn refuse_short_names(raw: &PagedInspection) -> Result<()> {
     let mut count = 0u64;
     let mut first = None;
     for ordinal in 0..raw.blocker_count() {
@@ -1849,13 +1849,7 @@ impl ResourceSourceContext {
                     .iter()
                     .filter(|index| !index.replacement_supported)
                 {
-                    let cause = if index.role.ends_with("$Quota") {
-                        "disk quotas are in use on the volume (enabled, or with entries for users): turn quota management off (`fsutil quota disable <drive>:`) and delete the quota entries, then convert"
-                    } else if index.role.ends_with("$ObjId") {
-                        "the volume's object-ID index is not in a form the converter takes over"
-                    } else {
-                        "the volume's reparse-point index does not match its reparse points: run `chkdsk <drive>: /f`"
-                    };
+                    let cause = ntfs_admission::index_refusal_cause(&index.role);
                     if !causes.contains(&cause) {
                         causes.push(cause);
                     }
@@ -1866,10 +1860,9 @@ impl ResourceSourceContext {
                     causes.join("; ")
                 }
             };
-            let case_detail = format!(
-                "{} of {} directories are case-sensitive, which the converter does not carry over: find them with `fsutil file queryCaseSensitiveInfo <directory>` and turn it off with `fsutil file setCaseSensitiveInfo <directory> disable`",
+            let case_detail = ntfs_admission::case_sensitive_refusal(
                 directories.saturating_sub(user_case_matched),
-                directories
+                directories,
             );
             for (code, satisfied, detail) in [
                 (
@@ -1881,12 +1874,12 @@ impl ResourceSourceContext {
                 (
                     "clean_volume",
                     clean,
-                    "the volume is marked dirty, or is not NTFS version 3.1: run `chkdsk <drive>: /f`, let it finish, and convert then",
+                    ntfs_admission::CLEAN_VOLUME_REQUIREMENT,
                 ),
                 (
                     "volume_policy_flags",
                     policy_flags,
-                    "the volume carries state flags the converter does not take over (a pending chkdsk or upgrade), or 8.3 short-name creation is enabled on it: run `chkdsk <drive>: /f`, and turn short-name creation off with `fsutil 8dot3name set <drive>: 1`",
+                    ntfs_admission::VOLUME_FLAGS_REQUIREMENT,
                 ),
                 (
                     "raw_allocation",

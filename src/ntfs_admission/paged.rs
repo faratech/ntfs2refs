@@ -342,7 +342,7 @@ pub(crate) fn ordinary_user_issues(
     file: &FileInventory,
     resources: n2r_win32::tree_resources::SourceResourceAdmission,
 ) -> Result<Vec<String>> {
-    ordinary_user_issues_scoped(source, file, resources, None, None)
+    ordinary_user_issues_scoped(source, file, resources, None, None, false)
 }
 
 /// The policy for a data volume whose object IDs have been matched and
@@ -353,7 +353,26 @@ pub(crate) fn ordinary_user_issues_data(
     resources: n2r_win32::tree_resources::SourceResourceAdmission,
     object_ids: Option<&crate::object_id_disposition::DataObjectIds>,
 ) -> Result<Vec<String>> {
-    ordinary_user_issues_scoped(source, file, resources, None, object_ids)
+    ordinary_user_issues_scoped(source, file, resources, None, object_ids, false)
+}
+
+/// The data-volume policy applied to the inspection of a volume that is
+/// still in use, for a check made before anything is frozen. Nothing has
+/// been read of any stream's contents then, and that alone is not held
+/// against a stream: one that the inspection found in a form the converter
+/// does not read carries a status that says so, and is refused as it will
+/// be. Everything else is the policy a conversion applies.
+pub(crate) fn ordinary_user_issues_before_freeze(
+    source: &crate::ntfs_inspect::PagedInspection,
+    file: &FileInventory,
+    resources: n2r_win32::tree_resources::SourceResourceAdmission,
+    object_ids: Option<&crate::object_id_disposition::DataObjectIds>,
+) -> Result<Vec<String>> {
+    ensure!(
+        source.is_preparation_only(),
+        "the policy before the freeze applies to the inspection of a volume in use"
+    );
+    ordinary_user_issues_scoped(source, file, resources, None, object_ids, true)
 }
 
 pub(crate) fn ordinary_user_issues_windows(
@@ -362,7 +381,7 @@ pub(crate) fn ordinary_user_issues_windows(
     resources: n2r_win32::tree_resources::SourceResourceAdmission,
     aliases: &crate::boot_alias::WindowsAliasDomain,
 ) -> Result<Vec<String>> {
-    ordinary_user_issues_scoped(source, file, resources, Some(aliases), None)
+    ordinary_user_issues_scoped(source, file, resources, Some(aliases), None, false)
 }
 
 fn ordinary_user_issues_scoped(
@@ -371,6 +390,8 @@ fn ordinary_user_issues_scoped(
     resources: n2r_win32::tree_resources::SourceResourceAdmission,
     aliases: Option<&crate::boot_alias::WindowsAliasDomain>,
     object_ids: Option<&crate::object_id_disposition::DataObjectIds>,
+    // The inspection was made before the freeze: no stream has been read yet.
+    before_freeze: bool,
 ) -> Result<Vec<String>> {
     resources.validate()?;
     let budget = source.budget();
@@ -442,6 +463,11 @@ fn ordinary_user_issues_scoped(
                         )?
                     })
                     .is_some()
+            }
+            // Still to be read. (A stream the inspection could not read has
+            // one of the other statuses, and stays refused.)
+            crate::ntfs_inspect::LogicalHashStatus::NotComputed => {
+                before_freeze && source.is_preparation_only() && stream.logical_sha256.is_none()
             }
             _ => false,
         };

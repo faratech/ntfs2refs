@@ -628,6 +628,31 @@ pub struct Gate {
     pub detail: String,
 }
 
+/// What the `clean_volume` gate requires, as a refusal says it.
+pub(crate) const CLEAN_VOLUME_REQUIREMENT: &str = "the volume is marked dirty, or is not NTFS version 3.1: run `chkdsk <drive>: /f`, let it finish, and convert then";
+
+/// What the `volume_policy_flags` gate requires, as a refusal says it.
+pub(crate) const VOLUME_FLAGS_REQUIREMENT: &str = "the volume carries state flags the converter does not take over (a pending chkdsk or upgrade), or 8.3 short-name creation is enabled on it: run `chkdsk <drive>: /f`, and turn short-name creation off with `fsutil 8dot3name set <drive>: 1`";
+
+/// What a refusal says of directories that are marked case-sensitive.
+pub(crate) fn case_sensitive_refusal(case_sensitive: u64, directories: u64) -> String {
+    format!(
+        "{case_sensitive} of {directories} directories are case-sensitive, which the converter does not carry over: find them with `fsutil file queryCaseSensitiveInfo <directory>` and turn it off with `fsutil file setCaseSensitiveInfo <directory> disable`"
+    )
+}
+
+/// Why one of NTFS's own indexes (`$Extend\$Quota`, `$ObjId`, `$Reparse`)
+/// cannot be replaced by what ReFS keeps, as a refusal says it.
+pub(crate) fn index_refusal_cause(role: &str) -> &'static str {
+    if role.ends_with("$Quota") {
+        "disk quotas are in use on the volume (enabled, or with entries for users): turn quota management off (`fsutil quota disable <drive>:`) and delete the quota entries, then convert"
+    } else if role.ends_with("$ObjId") {
+        "the volume's object-ID index is not in a form the converter takes over"
+    } else {
+        "the volume's reparse-point index does not match its reparse points: run `chkdsk <drive>: /f`"
+    }
+}
+
 /// The objects the objects gate fails for: those the preservation policy does
 /// not admit, and those that Windows does not show as the raw volume holds
 /// them. Every one is written to the comparison pages with its reasons; the
@@ -675,22 +700,34 @@ impl RefusedObjects {
         }
     }
 
+    /// The objects the preservation policy does not admit, as a sentence of
+    /// its own: `None` when there are none. `rest` says where the ones that
+    /// are not spelled out can be found.
+    pub(crate) fn outside_policy(&self, rest: &str) -> Option<String> {
+        if self.count == 0 {
+            return None;
+        }
+        let mut text = format!(
+            "{} object{} outside what this converter preserves: {}",
+            self.count,
+            if self.count == 1 { " is" } else { "s are" },
+            self.first.join(" | ")
+        );
+        let unnamed = self.count - self.first.len() as u64;
+        if unnamed > 0 {
+            text.push_str(&format!(" | and {unnamed} more{rest}"));
+        }
+        Some(text)
+    }
+
     /// The detail of the objects gate: what it requires and, when objects
     /// were refused, which and why.
     pub(crate) fn detail(&self, requirement: &str) -> String {
         const RECORDED: &str = "each recorded with its reasons in source-comparison.data.pages";
         let mut text = requirement.to_owned();
-        if self.count != 0 {
-            text.push_str(&format!(
-                "; {} object{} outside what this converter preserves: {}",
-                self.count,
-                if self.count == 1 { " is" } else { "s are" },
-                self.first.join(" | ")
-            ));
-            let unnamed = self.count - self.first.len() as u64;
-            if unnamed > 0 {
-                text.push_str(&format!(" | and {unnamed} more, {RECORDED}"));
-            }
+        if let Some(outside) = self.outside_policy(&format!(", {RECORDED}")) {
+            text.push_str("; ");
+            text.push_str(&outside);
         }
         if self.differing != 0 {
             text.push_str(&format!(

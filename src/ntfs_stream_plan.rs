@@ -497,6 +497,48 @@ pub fn classify_stream_domain(
     classify_stream_domain_scoped(source, file, stream, admission, None)
 }
 
+/// How many of a stream's bytes a conversion would leave where they are and
+/// how many it would write anew: `(stays, copied)`. For an estimate made
+/// before the source is frozen. It is the decision of
+/// `classify_stream_domain` without the evidence of the stream's contents,
+/// which does not exist yet; a stream that decision would reject counts as
+/// copied in full.
+#[cfg(windows)]
+pub(crate) fn estimate_stream_bytes(
+    source: &crate::ntfs_inspect::PagedInspection,
+    file: &FileInventory,
+    stream: &StreamInventory,
+    admission: n2r_win32::tree_resources::SourceResourceAdmission,
+) -> Result<(u64, u64)> {
+    use crate::ntfs_inspect::RootFileDomain;
+    let maximum_extents =
+        usize::try_from(admission.budget.max_row_bytes / std::mem::size_of::<Extent>() as u64)?;
+    let candidate = candidate_source(
+        &source.header().geometry,
+        file,
+        stream,
+        ResourceProfile::ResourceBoundedV4(Some(admission)),
+        true,
+        crate::ntfs_admission::compressed_stream_supported_with_geometry(
+            &source.header().geometry,
+            file,
+            stream,
+        ),
+        file.streams.len() as u64 <= admission.data_streams,
+        maximum_extents,
+    );
+    let logical = stream.logical_size;
+    Ok(match (candidate.disposition, &candidate.sparse) {
+        (Disposition::Reject | Disposition::MaterializeCandidate, _) => (0, logical),
+        (_, Some(sparse)) => (sparse.retained, sparse.materialized),
+        (Disposition::RetainCandidate, None) => (logical, 0),
+        (_, None) => (
+            candidate.full_prefix.min(logical),
+            logical - candidate.full_prefix.min(logical),
+        ),
+    })
+}
+
 #[cfg(windows)]
 pub(crate) fn classify_stream_windows_domain(
     source: &crate::ntfs_inspect::PagedInspection,

@@ -35,28 +35,49 @@ fn strings(v: &Vec<String>) -> io::Result<u64> {
 fn key(k: &StreamKey) -> io::Result<u64> {
     vec_bytes(&k.name_utf16)
 }
-// BTreeMap does not expose node capacity. Prepay one complete oversized node
-// per inserted entry, rather than charging a hypothetical maximum row per file.
-fn node<K, V>() -> io::Result<u64> {
+// BTreeMap does not expose node capacity. `complete_node` is more than one
+// of its nodes takes: eleven slots, twelve edges if it is an inner node, its
+// header and the allocator's.
+fn complete_node<K, V>() -> io::Result<u64> {
     add(
         mul((mem::size_of::<K>() + mem::size_of::<V>()) as u64, 16)?,
         256,
     )
+}
+// What one entry of a large map is charged. Every node but the root holds
+// five entries at least, so N entries fill at most N/5 leaves and fewer
+// than N/25 inner nodes: under a quarter of a node an entry. A third is
+// charged. (A complete node an entry was charged before; the maps these
+// entries go into hold one for every stream of the volume.) The root of a
+// map that is still small is in the constructor's base reservation.
+fn node<K, V>() -> io::Result<u64> {
+    Ok(complete_node::<K, V>()?.div_ceil(3))
+}
+// What the nodes of a map of its own with `entries` entries take: one node
+// up to eleven entries, and at most a leaf for every five and an inner node
+// for every twenty-five beyond.
+fn tree<K, V>(entries: usize) -> io::Result<u64> {
+    let nodes = if entries <= 11 {
+        1
+    } else {
+        entries as u64 / 4 + 2
+    };
+    mul(complete_node::<K, V>()?, nodes)
 }
 fn json(v: &serde_json::Value) -> io::Result<u64> {
     use serde_json::Value;
     match v {
         Value::String(s) => Ok(s.capacity() as u64),
         Value::Array(a) => a.iter().try_fold(vec_bytes(a)?, |n, v| add(n, json(v)?)),
-        Value::Object(m) => m.iter().try_fold(0, |n, (k, v)| {
-            add(
-                n,
-                add(
-                    node::<String, Value>()?,
-                    add(k.capacity() as u64, json(v)?)?,
-                )?,
-            )
-        }),
+        // An object is a map of its own: its nodes once, then what each
+        // key and value holds on the heap. (A complete node was charged
+        // for every field: 13 KiB for the receipt of one small file, which
+        // refused a volume of 500,000 files for memory it did not use.)
+        Value::Object(m) => m
+            .iter()
+            .try_fold(tree::<String, Value>(m.len())?, |n, (k, v)| {
+                add(n, add(k.capacity() as u64, json(v)?)?)
+            }),
         _ => Ok(0),
     }
 }
@@ -377,4 +398,53 @@ pub(super) fn value_bytes(value: &serde_json::Value) -> io::Result<u64> {
 }
 pub(super) fn slot_bytes(k: &StreamKey) -> io::Result<u64> {
     add(node::<usize, StreamKey>()?, key(k)?)
+}
+
+#[cfg(test)]
+mod charge_tests {
+    use super::*;
+    use serde_json::Value;
+
+    #[test]
+    fn a_receipt_is_charged_its_nodes_once_and_what_its_fields_hold() {
+        let receipt = serde_json::json!({
+            "object_index": 7, "components": ["feature-manyfiles", "00", "00000", "file-0000007.dat"],
+            "disposition": "created", "file_id": "0x0001000000000123", "streams": 1,
+            "logical_bytes": 412, "placement": {"kind": "resident", "bytes": 412}
+        });
+        let charged = json(&receipt).unwrap();
+        let node = complete_node::<String, Value>().unwrap();
+        // Two maps (the receipt and its placement), each of one node.
+        let Value::Object(fields) = &receipt else {
+            unreachable!()
+        };
+        let held: u64 = fields.keys().map(|key| key.capacity() as u64).sum();
+        assert!(charged >= 2 * node + held, "{charged}");
+        // Not a node for every field, as it was.
+        assert!(charged < 4 * node, "{charged} for {} fields", fields.len());
+        // A node is at least what eleven slots, twelve edges and the
+        // headers take.
+        let slots =
+            (11 * (mem::size_of::<String>() + mem::size_of::<Value>()) + 12 * 8 + 32) as u64;
+        assert!(node >= slots, "{node} < {slots}");
+    }
+
+    #[test]
+    fn a_map_is_charged_at_least_the_nodes_it_can_have() {
+        let whole = complete_node::<String, Value>().unwrap();
+        assert_eq!(tree::<String, Value>(0).unwrap(), whole);
+        assert_eq!(tree::<String, Value>(11).unwrap(), whole);
+        // Beyond one node: a leaf for every five entries and an inner node
+        // for every twenty-five are the most a tree has.
+        for entries in [12usize, 60, 1000, 100_000] {
+            let most = (entries / 5 + entries / 25 + 2) as u64;
+            assert!(
+                tree::<String, Value>(entries).unwrap() >= most * whole,
+                "{entries}"
+            );
+        }
+        // And an entry of a large shared map is charged more than its share.
+        let entry = node::<usize, File>().unwrap();
+        assert!(entry * 100 >= complete_node::<usize, File>().unwrap() * 24);
+    }
 }

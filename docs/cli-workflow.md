@@ -422,6 +422,7 @@ differences it accepts.
 | `--drive <letter or disk>` `[--partition N]` | Selects the volume |
 | `--scratch-directory <dir>` | Working storage, on another disk |
 | `--check` | Reads the volume while it stays online: what would refuse it, and what a conversion takes |
+| `--compare-listing` | Lists the volume before and after the conversion and compares the two |
 | `--diagnose` `[--diagnose-limit N]` | Goes through the whole preparation without converting |
 | `--target-cluster-bytes 4096\|65536` | ReFS cluster size |
 | `--target-format dev-drive\|standard` | How Windows formats the new file system; standard is the default on Windows Server, dev-drive elsewhere |
@@ -457,6 +458,37 @@ it to its run.
   complete contents are read and hashed.
 - **`--recheck-everything`** changes *how often*, not what: the full re-reads
   happen at every checkpoint instead of once at the gate. Much slower.
+
+### Your own before-and-after comparison
+
+```powershell
+.\ntfs2refs.exe --drive E --scratch-directory S:\runs --compare-listing
+```
+
+The lab judges every conversion by listing the volume before and after and
+comparing the two: every file's name, size and contents, its streams, hard
+links, times, attributes, security, reparse points and extended attributes.
+`--compare-listing` does that for your volume, with the same code. The run
+lists the volume after you confirm and before it touches anything, converts,
+lists it again and compares. It prints the result, keeps both listings and the
+report in the run's directory (`listing-before.jsonl`, `listing-after.jsonl`,
+`listing-report.json`), and exits 6 if they differ. The conversion stands
+either way.
+
+It costs two full reads of the volume. What a conversion is meant to change
+is accepted and counted (the NTFS compression flag, what Windows keeps in
+`System Volume Information`, and on a Windows volume each 8.3 name as a link).
+A program that writes to the volume between the first listing and the start
+of the conversion shows as a difference, so close what uses the volume first.
+
+The same by hand, with `lab-volume-manifest.exe` from the release, before and
+after any run:
+
+```powershell
+.\lab-volume-manifest.exe capture --root E:\ --output before.jsonl
+.\lab-volume-manifest.exe capture --root E:\ --output after.jsonl
+.\lab-volume-manifest.exe compare --before before.jsonl --after after.jsonl --report report.json
+```
 
 ### Experimental and older options
 

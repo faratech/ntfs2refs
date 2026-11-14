@@ -57,7 +57,9 @@ preparation, with the volume offline meanwhile, reports everything that would
 stop a conversion, and writes nothing to the volume. The conversion itself
 makes the check first, asks for confirmation, prints a recovery command before
 its first write to the volume, and ends with the volume online as ReFS under
-the same drive letter.
+the same drive letter. With `--compare-listing` it also lists the volume
+before and after, every file read in full, and compares the two, as the lab
+does for every conversion it runs.
 
 The [operating and recovery guide](docs/cli-workflow.md) has the details: the
 options, what each refusal means, and what to do if a run stops.

@@ -139,6 +139,12 @@ param(
     # the while it is read. The check may find the volume at rest or not; it
     # must never report a refusal that is not there.
     [switch]$WriteLoad,
+    # Run the converter with --compare-listing: it lists the volume itself
+    # before and after and compares. The harness's own listings are made as
+    # always, and the two comparisons have to agree: a run whose own
+    # comparison says other than the harness's ends
+    # "...-but-own-listing-disagreed".
+    [switch]$CompareListing,
     [switch]$KeepVolume
 )
 $ErrorActionPreference = 'Stop'; Set-StrictMode -Version Latest
@@ -482,6 +488,7 @@ try {
     if ($InterruptAt) { $arguments += @('--lab-hold-at', $InterruptAt, '--acknowledge-lab-hold-never-completes') }
     if ($SampleStacks) { $arguments += @('--sample-stacks', "$guestRoot\stacks.txt") }
     if ($Diagnose) { $arguments += '--diagnose' }
+    if ($CompareListing) { $arguments += '--compare-listing' }
     # What --list says of the volume, as an elevated user sees it: whether a
     # conversion would take it, its serial number, and BitLocker.
     $listed = Invoke-Command -Session $session -ArgumentList $guestRoot -ScriptBlock {
@@ -693,7 +700,8 @@ try {
 
     # A converted volume is compared with the listing's allowances; a source
     # that the converter refused must list exactly as it did.
-    $converted = $run.exit -eq 0 -and $run.filesystem -eq 'ReFS'
+    # (Exit 6: converted, and the run's own listings differ.)
+    $converted = $run.exit -in $(if ($CompareListing) { 0, 6 } else { 0 }) -and $run.filesystem -eq 'ReFS'
     $returned = $run.filesystem -eq 'NTFS' -and $run.mounted -and -not $run.offline -and -not $run.read_only
     $listing = 'not-compared'
     if ($converted -or $returned) {
@@ -786,6 +794,14 @@ try {
         Say "check and run: $(if ($null -eq $verdict.check.agrees) { 'the check was inconclusive' } elseif ($verdict.check.agrees) { 'agree' } else { 'DISAGREE' })$(if ($null -ne $verdict.check.named_the_same_refusal) { "; the same refusal: $($verdict.check.named_the_same_refusal)" })"
         if ($verdict.check.agrees -eq $false) { $verdict.outcome = "$($verdict.outcome)-but-check-disagreed" }
         elseif ($verdict.check.named_the_same_refusal -eq $false) { $verdict.outcome = "$($verdict.outcome)-but-check-named-another-refusal" }
+    }
+    if ($CompareListing) {
+        $own = & $said '^(The volume (?:lists as it did before the conversion|does NOT list as it did before the conversion).*)$'
+        $ownSame = "$own" -match '^The volume lists as it did'
+        $verdict.own_listing = [ordered]@{ exit = $run.exit; identical = $ownSame; said = "$own" }
+        Say "the run's own comparison: $(if ($own) { $own.Substring(0, [Math]::Min(260, $own.Length)) } else { 'not printed' })"
+
+        if ($converted -and ($ownSame -ne ($listing -eq 'identical') -or ($run.exit -eq 0) -ne $ownSame)) { $verdict.outcome = "$($verdict.outcome)-but-own-listing-disagreed" }
     }
     if ($verdict.target.requested) { Say "target: the run asked for '$($verdict.target.requested)'; Windows reports '$($verdict.target.windows_reports)'" }
     if ($ExpectTarget -and $verdict.outcome -eq 'converted' -and "$($verdict.target.windows_reports)" -notmatch $ExpectTarget) { $verdict.outcome = 'converted-but-target-differs' }

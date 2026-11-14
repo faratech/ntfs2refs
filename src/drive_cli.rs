@@ -7,6 +7,9 @@ use std::path::PathBuf;
 #[path = "drive_boot.rs"]
 mod boot;
 #[cfg(windows)]
+#[path = "drive_listing.rs"]
+mod listing;
+#[cfg(windows)]
 #[path = "drive_partition.rs"]
 mod partition;
 #[cfg(windows)]
@@ -147,6 +150,13 @@ pub struct DriveArgs {
     /// 0 lists every failure on the volume.
     #[arg(long, requires = "diagnose")]
     pub diagnose_limit: Option<usize>,
+    /// List the volume before the conversion and after it, compare the two
+    /// and keep both with the run's records: every file's contents, streams,
+    /// links, times, attributes, security, reparse points and extended
+    /// attributes, as the lab compares every conversion it runs. Two full
+    /// reads of the volume. Exit 6 when the listings differ.
+    #[arg(long, requires = "drive", conflicts_with_all = ["list", "recover", "rollback", "check", "diagnose"])]
+    pub compare_listing: bool,
     /// Re-read every working file and the whole source at every checkpoint
     /// instead of once, immediately before the first write to the source.
     /// Much slower; the result is the same. This changes how often things
@@ -209,6 +219,9 @@ pub const EXIT_CHECK_REFUSALS: u8 = 3;
 /// Exit code of `--check` when the volume changed during every reading:
 /// nothing is known of it, and nothing is refused.
 pub const EXIT_CHECK_INCONCLUSIVE: u8 = 5;
+/// Exit code of a conversion with `--compare-listing` that completed and
+/// whose volume does not list afterwards as it did before.
+pub const EXIT_LISTING_DIFFERS: u8 = 6;
 /// Exit code of `--list` when some disk or volume could not be queried: what
 /// was printed is a partial list and must not be read as the whole machine.
 pub const EXIT_LIST_INCOMPLETE: u8 = 4;
@@ -900,6 +913,27 @@ mod windows {
             selected.partition.filesystem.as_deref() != Some("ReFS"),
             "selected partition is already ReFS"
         );
+        // The listing reads the volume as its files are opened, through a
+        // drive letter, which the volume has again when it is converted.
+        let listing_root = if args.compare_listing {
+            Some(
+                selected
+                    .partition
+                    .mount_paths
+                    .iter()
+                    .find(|path| {
+                        path.len() == 3
+                            && path.as_bytes()[0].is_ascii_alphabetic()
+                            && path.ends_with(":\\")
+                    })
+                    .cloned()
+                    .context(
+                        "--compare-listing lists the volume through its drive letter, and this volume has none: give it one, or compare by hand with lab-volume-manifest. Nothing was changed.",
+                    )?,
+            )
+        } else {
+            None
+        };
         ensure!(
             selected.partition.contains_running_windows != Some(true),
             "the running Windows partition is not supported for conversion"
@@ -1158,6 +1192,7 @@ mod windows {
             args.experimental_thin_backing_bytes,
             mode,
             boot_geometry,
+            listing_root,
         )
     }
     /// The volume that holds the working directory, with the root of the
@@ -1420,6 +1455,8 @@ mod windows {
         thin_backing_bytes: Option<u64>,
         mode: crate::execution_mode::ExecutionMode,
         boot_geometry: Option<super::boot::GeometryDecision>,
+        // The drive root to list before and after, for --compare-listing.
+        compare_listing: Option<String>,
     ) -> Result<u8> {
         let (os_root, work_root, journal) = working_volume(scratch.as_deref(), &before)?;
         let space = discovery::observe_volume_space(&journal.volume_guid_path)?;
@@ -1457,6 +1494,10 @@ mod windows {
             &run.join("drive-selection.json"),
             &serde_json::json!({"selected":selected,"source":before,"confirmation":"interactive affirmative","journal_budget_bytes":journal_bytes,"requested_target_format":target_format,"explicit_trust_or_filter_configuration_requested":false,"source_write_authority":false,"lab_hold_point":n2r_win32::lab_hold::armed()}),
         )?;
+        if let Some(root) = &compare_listing {
+            // Before anything of this run touches the volume.
+            super::listing::before(root, &run)?;
+        }
         let native_creation_admission = if thin_shadow {
             None
         } else {
@@ -1776,6 +1817,20 @@ mod windows {
                     "Conversion completed. Recovery records: {}",
                     output.display()
                 );
+                if let Some(root) = &compare_listing {
+                    // The conversion stands whatever this finds or fails at.
+                    match super::listing::after(root, &run) {
+                        Ok(true) => {}
+                        Ok(false) => return Ok(EXIT_LISTING_DIFFERS),
+                        Err(error) => {
+                            eprintln!(
+                                "The conversion completed. The listing after it could not be made or compared: {error:#}. The listing taken before is in {}; `lab-volume-manifest` makes and compares listings by hand.",
+                                run.display()
+                            );
+                            return Ok(EXIT_LISTING_DIFFERS);
+                        }
+                    }
+                }
                 Ok(0)
             }
             Err(e) => {
@@ -1934,6 +1989,19 @@ mod tests {
                 "{refused:?}"
             );
         }
+        // A check converts nothing, so there is nothing to list twice.
+        assert_eq!(
+            parse(&["--check", "--compare-listing"]).unwrap_err().kind(),
+            ErrorKind::ArgumentConflict
+        );
+        assert_eq!(
+            parse(&["--diagnose", "--compare-listing"])
+                .unwrap_err()
+                .kind(),
+            ErrorKind::ArgumentConflict
+        );
+        assert!(parse(&["--compare-listing"]).unwrap().compare_listing);
+        assert_eq!(EXIT_LISTING_DIFFERS, 6);
         // The codes a script reads are three different ones.
         assert_eq!(EXIT_CHECK_REFUSALS, 3);
         assert_eq!(EXIT_CHECK_INCONCLUSIVE, 5);

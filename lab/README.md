@@ -141,6 +141,10 @@ the volume and deletes them all the while the check reads it; the check may
 find the volume at rest or not, and must not report a refusal that is not
 there. A check must leave no working directory behind.
 
+`-CompareListing` runs the converter with `--compare-listing`. The harness
+makes its own listings as always, and the run's comparison has to say what
+the harness's says, or the outcome gets `-but-own-listing-disagreed`.
+
 Every attempt compares the partition's length before and after. A refused run
 that left it shorter is `refused-after-shrinking-the-partition`.
 

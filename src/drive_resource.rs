@@ -28,15 +28,15 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-fn aligned(bytes: u64) -> u64 {
+pub(super) fn aligned(bytes: u64) -> u64 {
     bytes / 4096 * 4096
 }
-fn reserve(bytes: u64) -> u64 {
+pub(super) fn reserve(bytes: u64) -> u64 {
     (bytes / 4).min(16 * 1024 * 1024 * 1024)
 }
 
 /// These are current hardware shares, not file/stream/volume-count limits.
-fn budget(
+pub(super) fn budget(
     available: AvailableResources,
     scratch: u64,
     evidence_ram: u64,

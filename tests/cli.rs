@@ -305,6 +305,17 @@ fn capabilities_report_what_the_executable_enforces() {
         capabilities["target"]["refs_cluster_bytes"],
         serde_json::json!([4096, 65536])
     );
+    // The check: what it leaves alone, what it cannot say, how it exits.
+    let check = &capabilities["check"];
+    assert_eq!(check["option"], "--check");
+    assert_eq!(check["changes_the_volume"], false);
+    assert_eq!(
+        check["decided_only_when_frozen"],
+        ntfs2refs::drive_cli::CHECK_DECIDED_WHEN_FROZEN
+    );
+    for code in ["0", "1", "3", "5"] {
+        assert!(check["exit_codes"][code].is_string(), "exit code {code}");
+    }
     // Both target formats, with where each is the default.
     let formats = &capabilities["target"]["formats"];
     assert_eq!(formats["option"], "--target-format");

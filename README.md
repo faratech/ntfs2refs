@@ -45,11 +45,15 @@ standard works only where Windows itself formats ordinary ReFS volumes. See
 
 ```powershell
 .\ntfs2refs.exe --list
+.\ntfs2refs.exe --drive E --scratch-directory S:\runs --check
 .\ntfs2refs.exe --drive E --scratch-directory S:\runs --diagnose
 .\ntfs2refs.exe --drive E --scratch-directory S:\runs
 ```
 
-`--diagnose` goes through the whole preparation, reports everything that would
+`--check` reads the volume while it stays online and in use, and changes
+nothing: it says what would stop a conversion and what one would take in
+working storage, memory and time. `--diagnose` goes through the whole
+preparation, with the volume offline meanwhile, reports everything that would
 stop a conversion, and writes nothing to the volume. The conversion itself
 asks for confirmation, prints a recovery command before its first write to the
 volume, and ends with the volume online as ReFS under the same drive letter.

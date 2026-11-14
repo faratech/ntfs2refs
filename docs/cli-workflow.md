@@ -48,7 +48,68 @@ either way, in its first second.
 `--list` exits 0 when every disk and volume answered, and 4 when some device
 could not be queried: the list it printed is then partial.
 
-## Check first: `--diagnose`
+## Check first: `--check`
+
+```powershell
+.\ntfs2refs.exe --drive E --scratch-directory S:\runs --check
+```
+
+A check reads a data volume while it stays online and in use. Nothing on it
+is frozen, formatted, shrunk or written; the check keeps its own pages in the
+working directory while it runs and removes them. It reads the volume's NTFS
+structures, asks Windows about shadow copies and about each directory, and
+reads no file's contents: half a second on the lab's small volumes, 11
+seconds on one of 23,000 files. It prints:
+
+- **Every reason a conversion would refuse the volume** that those decide,
+  each as the conversion would give it, with the file and what to do: 8.3
+  short names; encrypted, temporary, offline or `compact /exe` files; reparse
+  points, streams and names the converter does not carry over; quotas in use;
+  case-sensitive directories; shadow copies, and a shadow-copy provider the
+  converter does not know; a volume marked dirty.
+- **What is decided only when the volume is frozen** for a conversion: that
+  the NTFS log closes cleanly, the backup boot sector and the MFT mirror, an
+  open transaction, whether quota management is switched on, and that Windows
+  shows every file as the raw volume holds it.
+- **What a conversion would take:** the number of files, directories and
+  streams; how much data stays where it is and how much is copied, for the
+  cluster size asked for (`--target-cluster-bytes`); the working storage and
+  the free memory it needs at least; and a range for the time, from the lab's
+  runs on virtual disks.
+
+A lab volume that had been in use (the conversion that followed took 2 min
+16 s):
+
+```text
+Nothing was found that a conversion refuses.
+The reading took 11.0 s (shadow copies 0.0 s, file records 9.8 s, NTFS's own indexes 0.6 s, counting, and asking each directory 0.2 s, each file and directory 0.5 s, the volume's conditions 0.0 s).
+Note: 3 file(s) and directories have an object ID (Windows gives one to the target of a shortcut). ReFS has no object IDs: a conversion keeps them in its records and does not carry them over.
+Decided only when the volume is frozen for a conversion: that the NTFS log closes cleanly, ...
+What a conversion would take:
+  20732 file(s), 2403 directories, 20735 data stream(s); 432 MiB of data.
+  To 4 KiB ReFS clusters: 366 MiB stay where they are, 3 MiB are copied, 63 MiB are holes of sparse files and stay holes.
+  Working storage: at least 4102 MiB (4 GiB and what is copied, twice); 117.1 GiB are free there.
+  Memory: at least 95 MiB free; 15.3 GiB are free now.
+  Time: roughly 2 min to 4 min, from the lab's runs on virtual disks; a slower disk takes longer.
+```
+
+| Exit code | Meaning |
+| ---: | --- |
+| 0 | Nothing was found that a conversion refuses |
+| 3 | A conversion would refuse the volume; each reason is printed |
+| 5 | The volume changed during every reading: nothing is known, and nothing is refused |
+| 1 | The check could not be made |
+
+A volume that is being written to can change between two of the structures a
+check joins. The check then reads it again, up to three times. If the volume
+never held still it says so and exits 5; it does not report a refusal it
+could not confirm. Something found twice in a row is reported, because a
+conversion would find it too.
+
+The working-storage figure is a floor, not a forecast: the lab's Windows
+volume, with 22.9 GB in use, used about 30 GB.
+
+## Rehearse: `--diagnose`
 
 ```powershell
 .\ntfs2refs.exe --drive E --scratch-directory S:\runs --diagnose
@@ -344,7 +405,8 @@ differences it accepts.
 | `--list` | Lists disks and partitions, and whether each NTFS partition can be converted |
 | `--drive <letter or disk>` `[--partition N]` | Selects the volume |
 | `--scratch-directory <dir>` | Working storage, on another disk |
-| `--diagnose` `[--diagnose-limit N]` | Checks without converting |
+| `--check` | Reads the volume while it stays online: what would refuse it, and what a conversion takes |
+| `--diagnose` `[--diagnose-limit N]` | Goes through the whole preparation without converting |
 | `--target-cluster-bytes 4096\|65536` | ReFS cluster size |
 | `--target-format dev-drive\|standard` | How Windows formats the new file system; standard is the default on Windows Server, dev-drive elsewhere |
 | `--windows-boot-volume` | The volume is an installed Windows that is not running |

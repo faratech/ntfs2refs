@@ -10,6 +10,9 @@ mod boot;
 #[path = "drive_partition.rs"]
 mod partition;
 #[cfg(windows)]
+#[path = "drive_precheck.rs"]
+mod precheck;
+#[cfg(windows)]
 #[path = "drive_resource.rs"]
 mod resource;
 #[cfg(windows)]
@@ -112,6 +115,20 @@ pub struct DriveArgs {
     /// with shadow copies.
     #[arg(long, requires = "drive", conflicts_with_all = ["whole_image_verification", "verify_full_content"])]
     pub minimize_scratch: bool,
+    /// Check the volume while it stays online: nothing is frozen, formatted
+    /// or written. Prints every refusal a conversion would give that the
+    /// volume's NTFS structures and shadow copies decide, and what a
+    /// conversion would take in working storage, memory and time. For a
+    /// data volume. Exit 0: nothing found; 3: a conversion would refuse;
+    /// 5: the volume kept changing while it was read, so nothing is known.
+    #[arg(long, requires = "drive", conflicts_with_all = [
+        "list", "recover", "rollback", "diagnose", "yes",
+        "windows_boot_volume", "whole_image_verification", "minimize_scratch",
+        "offline_recovery_media", "controlled_post_flush_pause_nonce",
+        "acknowledge_controlled_post_flush_pause", "experimental_thin_shadow",
+        "experimental_thin_backing_bytes", "lab_hold_at",
+    ])]
+    pub check: bool,
     /// Check without converting: build the ReFS shadow, report every
     /// per-object failure instead of stopping at the first, then stop before
     /// anything is published. ntfs2refs writes nothing to the source. Exit 0:
@@ -182,6 +199,14 @@ fn parse_controlled_pause_nonce(value: &str) -> std::result::Result<String, Stri
 }
 /// Exit code of a diagnose run that completed and reported failures.
 pub const EXIT_DIAGNOSE_FAILURES: u8 = 3;
+/// What a check cannot say, because only the frozen source shows it: in the
+/// words of its report.
+pub const CHECK_DECIDED_WHEN_FROZEN: &str = "that the NTFS log closes cleanly, the backup boot sector and the MFT mirror, an open transaction, whether quota management is switched on, and that Windows shows every file as the raw volume holds it";
+/// Exit code of `--check` when it found something a conversion would refuse.
+pub const EXIT_CHECK_REFUSALS: u8 = 3;
+/// Exit code of `--check` when the volume changed during every reading:
+/// nothing is known of it, and nothing is refused.
+pub const EXIT_CHECK_INCONCLUSIVE: u8 = 5;
 /// Exit code of `--list` when some disk or volume could not be queried: what
 /// was printed is a partial list and must not be read as the whole machine.
 pub const EXIT_LIST_INCOMPLETE: u8 = 4;
@@ -724,6 +749,12 @@ mod windows {
             // open a disk to raw writes.
             n2r_win32::forbid_raw_write_activation();
         }
+        if args.check {
+            // And beneath a check: no disk is opened to raw writes, and no
+            // disk's offline or read-only state is changed at all.
+            n2r_win32::forbid_raw_write_activation();
+            n2r_win32::forbid_disk_state_changes();
+        }
         if let Some(point) = &args.lab_hold_at {
             ensure!(
                 args.acknowledge_lab_hold_never_completes,
@@ -793,6 +824,7 @@ mod windows {
             return Ok(super::list_exit_code(inventory.enumeration_complete));
         }
         let action = match mode {
+            _ if args.check => "a check",
             crate::execution_mode::ExecutionMode::Convert => "a conversion",
             crate::execution_mode::ExecutionMode::Diagnose => "a diagnose run",
         };
@@ -850,6 +882,16 @@ mod windows {
                     ),
                     None => "Windows gave no serial number for it".into(),
                 }
+            );
+        }
+        if args.check {
+            return check(
+                &args,
+                &mut inventory,
+                &selected,
+                drive,
+                target_cluster,
+                windows,
             );
         }
         ensure!(
@@ -1046,20 +1088,15 @@ mod windows {
             boot_geometry,
         )
     }
-    fn convert_selected(
-        scratch: Option<PathBuf>,
-        before: discovery::VolumeDiscovery,
-        selected: drive_inventory::PartitionSelection,
-        resources: crate::ntfs_admission::ResourceProfile,
-        allocation_bounded: bool,
-        verification_policy: crate::verification_policy::VerificationPolicy,
-        minimize_scratch: bool,
-        target_format: n2r_win32::managed_shadow::TargetFormatProfile,
-        thin_shadow: bool,
-        thin_backing_bytes: Option<u64>,
-        mode: crate::execution_mode::ExecutionMode,
-        boot_geometry: Option<super::boot::GeometryDecision>,
-    ) -> Result<u8> {
+    /// The volume that holds the working directory, with the root of the
+    /// running Windows and its own. Working storage (run records, shadow
+    /// VHDX, journal) lives there. It defaults to the Windows volume but may
+    /// be any local volume on a disk other than the source, so a large
+    /// shadow cannot fill the running operating system's disk.
+    fn working_volume(
+        scratch: Option<&std::path::Path>,
+        source: &discovery::VolumeDiscovery,
+    ) -> Result<(String, String, discovery::VolumeDiscovery)> {
         let system = n2r_win32::current_windows_directory()?
             .to_str()
             .context("Unicode native Windows directory required")?
@@ -1070,11 +1107,7 @@ mod windows {
                 .get(..2)
                 .context("Windows system drive unavailable")?
         );
-        // Working storage (run records, shadow VHDX, journal) lives on the
-        // volume that holds the scratch directory. It defaults to the Windows
-        // volume but may be any local volume on a disk other than the source,
-        // so a large shadow cannot fill the running operating system's disk.
-        let work_root = match &scratch {
+        let work_root = match scratch {
             Some(path) => {
                 let root = path
                     .to_str()
@@ -1095,9 +1128,228 @@ mod windows {
             },
         )?;
         ensure!(
-            journal.binding.disk_number != before.binding.disk_number,
+            journal.binding.disk_number != source.binding.disk_number,
             "working storage must be independent of the source disk"
         );
+        Ok((os_root, work_root, journal))
+    }
+
+    /// The working directory itself, made if it is not there: an ordinary
+    /// path on the working volume.
+    fn working_directory(
+        scratch: Option<PathBuf>,
+        os_root: &str,
+        work_root: &str,
+    ) -> Result<PathBuf> {
+        let parent = scratch
+            .unwrap_or_else(|| PathBuf::from(format!("{}ProgramData\\ntfs2refs\\runs", os_root)));
+        let text = parent.to_str().context("Unicode scratch path required")?;
+        ensure!(
+            parent.is_absolute()
+                && text
+                    .get(..3)
+                    .is_some_and(|s| s.eq_ignore_ascii_case(work_root))
+                && !text[3..].contains(':')
+                && !parent
+                    .components()
+                    .any(|p| matches!(p, std::path::Component::ParentDir)),
+            "scratch directory must be an ordinary path on its working volume"
+        );
+        ordinary_parents(&parent)?;
+        Ok(parent)
+    }
+
+    /// A name for this run's directory that no other run has.
+    fn new_run_id() -> Result<String> {
+        let mut hash = Sha256::new();
+        hash.update(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)?
+                .as_nanos()
+                .to_le_bytes(),
+        );
+        hash.update(std::process::id().to_le_bytes());
+        Ok(hex::encode(hash.finalize())[..32].to_owned())
+    }
+
+    /// The working volume as the run's records enrol it.
+    fn journal_storage(
+        journal: &discovery::VolumeDiscovery,
+    ) -> n2r_win32::journal_file::GeneralJournalStorageBinding {
+        n2r_win32::journal_file::GeneralJournalStorageBinding {
+            disk: journal.binding.clone(),
+            externally_enrolled_disk_unique_id: format!(
+                "gpt-{}",
+                journal.binding.identity.disk_guid.trim_matches(['{', '}'])
+            ),
+            allow_additional_partitions: true,
+        }
+    }
+
+    /// `--check`: reads the volume while it stays online and in use, and
+    /// says what a conversion would refuse and what it would take.
+    fn check(
+        args: &DriveArgs,
+        inventory: &mut DriveInventory,
+        selected: &drive_inventory::PartitionSelection,
+        drive: &str,
+        target_cluster: u64,
+        windows: [u32; 3],
+    ) -> Result<u8> {
+        println!(
+            "Checking {} — disk {}, partition {}. A check changes nothing on it: the volume stays online and is only read.",
+            clean(drive),
+            selected.disk_number,
+            selected.partition_number
+        );
+        // What stops a conversion before the volume's contents matter.
+        let stopped = |reason: &str| -> Result<u8> {
+            println!("A conversion would refuse this volume: {reason}");
+            println!("Its contents were not read: this has to change first.");
+            Ok(EXIT_CHECK_REFUSALS)
+        };
+        drive_inventory::annotate_bitlocker(inventory);
+        let disk = inventory
+            .disks
+            .iter()
+            .find(|disk| disk.disk_number == selected.disk_number)
+            .context("the selected disk is no longer listed")?;
+        let partition = disk
+            .partitions
+            .iter()
+            .find(|partition| partition.partition_number == selected.partition_number)
+            .context("the selected partition is no longer listed")?;
+        match drive_inventory::conversion_note(disk, partition) {
+            None => {
+                return stopped(&format!(
+                    "it is {}, not NTFS",
+                    partition
+                        .filesystem
+                        .as_deref()
+                        .unwrap_or("a volume Windows does not name")
+                ));
+            }
+            Some(note) if note.starts_with("convertible as a data volume") => {}
+            Some(note) if note.starts_with("convertible as a Windows boot volume") => {
+                println!(
+                    "This is the layout of a Windows installation. A check reads data volumes only; for this volume, run `--windows-boot-volume --diagnose` from another Windows installation."
+                );
+                return Ok(EXIT_CHECK_INCONCLUSIVE);
+            }
+            // An unlocked BitLocker volume is refused below from its first
+            // sector, in the words a run uses.
+            Some(_) if partition.bitlocker == Some(true) => {}
+            Some(note) => return stopped(note.trim_start_matches("not convertible: ")),
+        }
+        let before = match discovery::discover(&selected.volume_guid_path, Role::Source) {
+            Ok(found) if found.filesystem == "NTFS" => found,
+            Ok(found) => return stopped(&format!("it is {}, not NTFS", found.filesystem)),
+            Err(_) if partition.bitlocker == Some(true) => {
+                return stopped(
+                    "it is encrypted with BitLocker; decrypt it first (manage-bde -off <drive>), suspending is not enough",
+                );
+            }
+            Err(error) => {
+                return stopped(&format!(
+                    "it is not a data volume on a disk of its own: {error}"
+                ));
+            }
+        };
+        let mut events = Vec::new();
+        let mut reader =
+            n2r_win32::GeneralPartitionReader::open(before.binding.clone(), &mut events)?;
+        let mut boot = [0u8; 512];
+        reader.read_exact(&mut boot)?;
+        let geometry = match crate::ntfs_inspect::inspect_boot_sector(&boot, reader.byte_len()) {
+            Ok(geometry) => geometry,
+            Err(error) => return stopped(&format!("{error:#}")),
+        };
+        drop(reader);
+        if !crate::ntfs_admission::ResourceProfile::ResourceBoundedV4(None)
+            .supports_source_geometry(&geometry)
+        {
+            return stopped(
+                "its sector, cluster, file-record or index-record size is not one the converter handles",
+            );
+        }
+        let partition_bytes = before.binding.identity.partition_bytes;
+        println!(
+            "Filesystem: NTFS   Size: {}   Label: {}   Serial: {}",
+            size(Some(partition_bytes)),
+            clean(&before.label),
+            crate::confirmation::format_volume_serial(before.volume_serial_low32)
+        );
+        let default_format = n2r_win32::managed_shadow::TargetFormatProfile::default_for(
+            n2r_win32::run_environment::is_windows_server()?,
+            false,
+        );
+        let target_format = match args.target_format.as_deref() {
+            Some(named) => named.parse()?,
+            None => default_format,
+        };
+        println!(
+            "A conversion would ask Windows for {} (ReFS, {} KiB clusters); whether this Windows formats it is found out when the run starts, before the volume is touched.",
+            match (
+                target_format.is_dev_drive(),
+                target_format == default_format
+            ) {
+                (true, true) => "a Dev Drive, the default",
+                (true, false) => "a Dev Drive",
+                (false, true) => "standard ReFS, the default on Windows Server",
+                (false, false) => "standard ReFS",
+            },
+            target_cluster / 1024
+        );
+        if let super::boot::GeometryDecision::Shrink {
+            target_bytes,
+            shrink_bytes,
+        } = super::boot::geometry_decision(partition_bytes)?
+        {
+            println!(
+                "The partition's length is not a multiple of 64 MiB, the unit ReFS covers a volume in: a conversion first has the Windows NTFS driver shrink it by {shrink_bytes} bytes, to {target_bytes}."
+            );
+        }
+        if !n2r_win32::windows_build::shown_in_lab(windows) {
+            println!(
+                "Note: this is Windows {}. Conversions have been run in the lab on builds {} only; this build is accepted and has not been tried.",
+                n2r_win32::windows_build::describe(windows),
+                n2r_win32::windows_build::lab_builds()
+            );
+        }
+        let (os_root, work_root, journal) =
+            working_volume(args.scratch_directory.as_deref(), &before)?;
+        let parent = working_directory(args.scratch_directory.clone(), &os_root, &work_root)?;
+        println!(
+            "Reading the volume's NTFS structures (the check keeps its own pages under {} meanwhile, and removes them).",
+            parent.display()
+        );
+        let outcome =
+            super::precheck::examine(&before, &journal_storage(&journal), &parent, &new_run_id()?)?;
+        for line in super::precheck::lines(&outcome, target_cluster) {
+            println!("{line}");
+        }
+        Ok(match outcome {
+            super::precheck::Outcome::Changing { .. } => EXIT_CHECK_INCONCLUSIVE,
+            super::precheck::Outcome::Read(report) if report.refusals.is_empty() => 0,
+            super::precheck::Outcome::Read(_) => EXIT_CHECK_REFUSALS,
+        })
+    }
+
+    fn convert_selected(
+        scratch: Option<PathBuf>,
+        before: discovery::VolumeDiscovery,
+        selected: drive_inventory::PartitionSelection,
+        resources: crate::ntfs_admission::ResourceProfile,
+        allocation_bounded: bool,
+        verification_policy: crate::verification_policy::VerificationPolicy,
+        minimize_scratch: bool,
+        target_format: n2r_win32::managed_shadow::TargetFormatProfile,
+        thin_shadow: bool,
+        thin_backing_bytes: Option<u64>,
+        mode: crate::execution_mode::ExecutionMode,
+        boot_geometry: Option<super::boot::GeometryDecision>,
+    ) -> Result<u8> {
+        let (os_root, work_root, journal) = working_volume(scratch.as_deref(), &before)?;
         let space = discovery::observe_volume_space(&journal.volume_guid_path)?;
         ensure!(
             space.available_bytes_to_caller >= 4 * 1024 * 1024 * 1024,
@@ -1124,30 +1376,8 @@ mod windows {
         let literal_backing_bytes = allocation_bounded.then(|| {
             (usable / 3).min(n2r_win32::reference_file::MAX_REFERENCE_FILE_BYTES) / 4096 * 4096
         });
-        let mut hash = Sha256::new();
-        hash.update(
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)?
-                .as_nanos()
-                .to_le_bytes(),
-        );
-        hash.update(std::process::id().to_le_bytes());
-        let id = hex::encode(hash.finalize())[..32].to_owned();
-        let parent = scratch
-            .unwrap_or_else(|| PathBuf::from(format!("{}ProgramData\\ntfs2refs\\runs", os_root)));
-        let text = parent.to_str().context("Unicode scratch path required")?;
-        ensure!(
-            parent.is_absolute()
-                && text
-                    .get(..3)
-                    .is_some_and(|s| s.eq_ignore_ascii_case(&work_root))
-                && !text[3..].contains(':')
-                && !parent
-                    .components()
-                    .any(|p| matches!(p, std::path::Component::ParentDir)),
-            "scratch directory must be an ordinary path on its working volume"
-        );
-        ordinary_parents(&parent)?;
+        let id = new_run_id()?;
+        let parent = working_directory(scratch, &os_root, &work_root)?;
         let run = parent.join(&id);
         fs::create_dir(&run)
             .with_context(|| format!("creating this run's directory {}", run.display()))?;
@@ -1589,6 +1819,53 @@ mod tests {
         .unwrap();
         assert_eq!(held.lab_hold_at.as_deref(), Some("handoff-sealed"));
         assert_eq!(held.execution_mode().unwrap(), ExecutionMode::Convert);
+    }
+
+    #[test]
+    fn a_check_takes_nothing_that_would_change_a_volume() {
+        let check = parse(&["--check"]).unwrap();
+        assert!(check.check && !check.diagnose && !check.yes);
+        // What a conversion would be asked for may be named, so that the
+        // estimate is the one for it; and the volume may be named twice.
+        for accepted in [
+            &["--check", "--target-cluster-bytes", "65536"][..],
+            &["--check", "--target-format", "standard"],
+            &["--check", "--scratch-directory", "S:\\runs"],
+            &["--check", "--volume-serial", "1A2B-3C4D"],
+        ] {
+            assert!(parse(accepted).is_ok(), "{accepted:?}");
+        }
+        for refused in [
+            &["--check", "--diagnose"][..],
+            &["--check", "--yes", "--volume-serial", "1A2B-3C4D"],
+            &["--check", "--windows-boot-volume"],
+            &["--check", "--minimize-scratch"],
+            &["--check", "--whole-image-verification"],
+            &["--check", "--experimental-thin-shadow"],
+            &[
+                "--check",
+                "--lab-hold-at",
+                "handoff-sealed",
+                "--acknowledge-lab-hold-never-completes",
+            ],
+        ] {
+            let error = parse(refused).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::ArgumentConflict, "{refused:?}");
+        }
+        // Not without a volume, and not with the list or a recovery.
+        for refused in [
+            &["ntfs2refs", "--check"][..],
+            &["ntfs2refs", "--list", "--check"],
+        ] {
+            assert!(
+                Cli::try_parse_from(refused.iter().copied()).is_err(),
+                "{refused:?}"
+            );
+        }
+        // The codes a script reads are three different ones.
+        assert_eq!(EXIT_CHECK_REFUSALS, 3);
+        assert_eq!(EXIT_CHECK_INCONCLUSIVE, 5);
+        assert_ne!(EXIT_CHECK_INCONCLUSIVE, EXIT_LIST_INCOMPLETE);
     }
 
     #[test]

@@ -590,6 +590,25 @@ fn run() -> Result<u8> {
                                 "some device could not be queried; the list is partial",
                         },
                     },
+                    "check": {
+                        "option": "--check",
+                        "for": "a data volume",
+                        "changes_the_volume": false,
+                        "reads": "the volume while it stays online and in use: its NTFS structures and the shadow-copy catalog. Nothing is frozen, formatted or shrunk; its own pages are kept in the working directory meanwhile and removed",
+                        "reports": [
+                            "every refusal a conversion would give that those decide",
+                            "what a conversion would take: files, directories and streams; bytes that stay in place and bytes that are copied; working storage and memory at least; time, from the lab's runs",
+                        ],
+                        "decided_only_when_frozen": ntfs2refs::drive_cli::CHECK_DECIDED_WHEN_FROZEN,
+                        "exit_codes": {
+                            "0": "nothing was found that a conversion refuses",
+                            (ntfs2refs::drive_cli::EXIT_CHECK_REFUSALS.to_string()):
+                                "a conversion would refuse the volume; each reason is printed",
+                            (ntfs2refs::drive_cli::EXIT_CHECK_INCONCLUSIVE.to_string()):
+                                "the volume changed during every reading: nothing is known and nothing is refused",
+                            "1": "the check could not be made",
+                        },
+                    },
                     "diagnose": {
                         "option": "--diagnose",
                         "ntfs2refs_writes_to_source": false,

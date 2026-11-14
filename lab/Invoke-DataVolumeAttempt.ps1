@@ -23,6 +23,7 @@ converted-but-target-differs (with -ExpectTarget: Windows reports another
 kind of ReFS volume than the one expected),
 refused-source-unchanged (the converter stopped and the NTFS volume lists
 exactly as before), refused-as-expected (the same, and -ExpectRefusal matched),
+refused-after-shrinking-the-partition (it lists as before, and is shorter),
 and named failures. With -InterruptAt: resumed (recovered to ReFS, listing
 identical) or rolled-back (recovered to NTFS, listing exactly as before).
 With -StopDuringPreparation: preparation-cancelled (the command the run
@@ -681,6 +682,17 @@ try {
     elseif ($returned) { "refused-source-listing-$listing" }
     elseif ($run.filesystem -eq 'ReFS') { 'failed-after-conversion' }
     else { 'failed-source-not-returned' }
+    # A run that refuses or only diagnoses has to leave the partition as long
+    # as it was. (A conversion of a partition that is not a multiple of
+    # 64 MiB shortens it, and a run recovered to NTFS after that keeps the
+    # shorter length; both say so.)
+    $lengthBefore = $verdict.source.observed.partition_bytes; $lengthAfter = $verdict.volume_after.partition_bytes
+    if ($lengthBefore -and $lengthAfter -and $lengthAfter -ne $lengthBefore) {
+        $verdict.source.partition_bytes_changed_by = $lengthAfter - $lengthBefore
+        Say "the partition's length changed by $($lengthAfter - $lengthBefore) bytes ($lengthBefore -> $lengthAfter)"
+        if ($verdict.outcome -in 'refused-source-unchanged', 'refused-as-expected') { $verdict.outcome = 'refused-after-shrinking-the-partition' }
+        elseif ($verdict.outcome -in 'diagnose-clean', 'diagnose-found-failures') { $verdict.outcome = 'diagnose-changed-the-source' }
+    }
     if ($verdict.target.requested) { Say "target: the run asked for '$($verdict.target.requested)'; Windows reports '$($verdict.target.windows_reports)'" }
     if ($ExpectTarget -and $verdict.outcome -eq 'converted' -and "$($verdict.target.windows_reports)" -notmatch $ExpectTarget) { $verdict.outcome = 'converted-but-target-differs' }
     if ($Acceptance -and $verdict.outcome -in 'converted', 'resumed') {

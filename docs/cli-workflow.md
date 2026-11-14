@@ -131,9 +131,15 @@ The run stops after 500 failures, when it is rarely learning anything new.
 `--diagnose-limit N` changes that number, and `--diagnose-limit 0` lists every
 failure on the volume.
 
-Diagnose is refused, before anything is started, where it could not keep that
-promise: when a conversion would first shrink the partition (see below), and
-with `--minimize-scratch`. It does not exercise the journal, the writes to the
+A diagnose run of a data volume makes the check of `--check` first, as a
+conversion does, and stops there if that refuses the volume.
+
+A diagnosis never shrinks a partition, and the ReFS file system has to be
+built at the length the partition has when it is converted. So where a
+conversion would first shrink the partition (see below), a diagnose run of a
+data volume makes the check of `--check` alone and says so; of a Windows boot
+volume it is refused before anything is started. It is also refused with
+`--minimize-scratch`. It does not exercise the journal, the writes to the
 volume or a boot.
 
 ## Convert a data volume
@@ -145,12 +151,15 @@ volume or a boot.
 
 `--drive` takes a drive letter, or a disk number with `--partition`. The run
 shows the disk, the partition, its size and label and what it is about to do,
-and asks for confirmation. Then:
+checks the volume as `--check` does, and asks for confirmation. A volume the
+check refuses is refused there, online and untouched. Then:
 
-1. Windows formats a ReFS volume of the same size on a virtual disk in the
-   working directory.
-2. The volume is taken offline and read-only, and inspected. Anything that
-   cannot be converted is refused here, with the volume returned as NTFS.
+1. Windows formats a ReFS volume of the size the partition will have on a
+   virtual disk in the working directory. If Windows will not format it, the
+   run stops with the volume untouched.
+2. The volume is taken offline and read-only, and inspected again. Anything
+   that only the frozen volume shows is refused here, with the volume
+   returned as NTFS.
 3. Every file and directory is created on the new ReFS volume through
    Windows. File data that can stay where it lies on the disk is not copied.
 4. The run works out which sectors of the volume the new file system needs,
@@ -164,8 +173,10 @@ Until step 5 the volume is NTFS and unchanged, with one exception:
 **A partition whose length is not a multiple of 64 MiB is shrunk first.** ReFS
 covers a volume in whole units of that size, so the converter asks the Windows
 NTFS driver to shrink the partition to one, by less than 64 MiB. It says so,
-with the sizes, before the confirmation prompt. The shrink is not undone if
-the run stops later.
+with the sizes, before the confirmation prompt, and does it only after the
+check has found nothing that refuses the volume and Windows has formatted the
+working volume (between steps 1 and 2). The shrink is not undone if the run
+stops later.
 
 - **Source geometry.** Any that Windows formats NTFS with: clusters from 512
   bytes to 2 MiB, 512-byte or 4096-byte (4Kn) sectors, 1 KiB or 4 KiB file

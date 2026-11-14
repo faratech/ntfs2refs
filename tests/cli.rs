@@ -367,6 +367,12 @@ fn capabilities_report_what_the_executable_enforces() {
     }
 
     // So are the diagnose refusals and its exit code for reported failures.
+    assert!(
+        capabilities["diagnose"]["on_a_data_volume_to_shrink"]
+            .as_str()
+            .unwrap()
+            .contains("--check")
+    );
     let refuses = capabilities["diagnose"]["refuses"].as_array().unwrap();
     let table = ntfs2refs::drive_cli::DriveArgs::DIAGNOSE_REFUSES;
     assert_eq!(refuses.len(), table.len());

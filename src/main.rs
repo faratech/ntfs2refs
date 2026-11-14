@@ -600,6 +600,7 @@ fn run() -> Result<u8> {
                             "what a conversion would take: files, directories and streams; bytes that stay in place and bytes that are copied; working storage and memory at least; time, from the lab's runs",
                         ],
                         "decided_only_when_frozen": ntfs2refs::drive_cli::CHECK_DECIDED_WHEN_FROZEN,
+                        "also_made_by": "every conversion and diagnose run of a data volume, before it asks, before the partition is shrunk and before the disk is taken offline",
                         "exit_codes": {
                             "0": "nothing was found that a conversion refuses",
                             (ntfs2refs::drive_cli::EXIT_CHECK_REFUSALS.to_string()):
@@ -619,7 +620,8 @@ fn run() -> Result<u8> {
                             "1": "the diagnosis could not finish",
                         },
                         "refuses": diagnose_refuses,
-                        "also_refuses": "a partition that a conversion would first shrink",
+                        "also_refuses": "a Windows boot volume that a conversion would first shrink",
+                        "on_a_data_volume_to_shrink": "makes the read-only check of --check alone, and says so: a diagnosis never shrinks",
                         "failure_limit": {"option": "--diagnose-limit", "default": 500, "zero_means": "no limit"},
                     },
                     "verification_modes": [

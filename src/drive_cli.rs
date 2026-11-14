@@ -132,8 +132,10 @@ pub struct DriveArgs {
     /// Check without converting: build the ReFS shadow, report every
     /// per-object failure instead of stopping at the first, then stop before
     /// anything is published. ntfs2refs writes nothing to the source. Exit 0:
-    /// no failures; 3: failures reported. Refused when a conversion would
-    /// first shrink the partition, and with --minimize-scratch.
+    /// no failures; 3: failures reported. Where a conversion would first
+    /// shrink the partition, a data volume gets the read-only check of
+    /// --check alone and a Windows boot volume is refused. Not with
+    /// --minimize-scratch.
     #[arg(long, requires = "drive", conflicts_with_all = [
         "list", "recover", "rollback", "whole_image_verification", "minimize_scratch",
         "offline_recovery_media", "controlled_post_flush_pause_nonce",
@@ -961,15 +963,16 @@ mod windows {
             before.filesystem == "NTFS",
             "selected partition must currently be NTFS"
         );
-        // Decided from the partition length before anything is asked, so a
-        // diagnose that could not be honoured stops here.
+        // Decided from the partition length before anything is asked.
         // ReFS covers a volume in whole 64 MiB units, whatever the source
-        // is: a partition that is not a multiple is first shrunk to one.
+        // is: a partition that is not a multiple is first shrunk to one. A
+        // diagnosis never shrinks: of a Windows boot volume it is refused
+        // here, and of a data volume it is the read-only check below alone.
         let boot_geometry = {
             let partition_bytes = before.binding.identity.partition_bytes;
             let decision = super::boot::geometry_decision(partition_bytes)?;
-            super::boot::admit_geometry(decision, partition_bytes, mode)?;
             if args.windows_boot_volume {
+                super::boot::admit_geometry(decision, partition_bytes, mode)?;
                 super::boot::validate(&before.binding)?;
             }
             Some(decision)
@@ -1063,6 +1066,71 @@ mod windows {
         }
         if let Some(point) = n2r_win32::lab_hold::armed() {
             println!("Laboratory hold armed at {point}: this run stops there and never completes.");
+        }
+        // Before anything is asked or changed: what the volume's own
+        // structures decide is found out while it is online and as it was.
+        // A partition is not shrunk, and a disk not taken offline, for a
+        // volume that would be refused. (A Windows boot volume and the
+        // whole-image route are examined when they are frozen, as before.)
+        let shrink = match boot_geometry {
+            Some(super::boot::GeometryDecision::Shrink { shrink_bytes, .. }) => Some(shrink_bytes),
+            _ => None,
+        };
+        if allocation_bounded && !args.windows_boot_volume {
+            println!("Checking the volume first: it stays online and is only read.");
+            let (os_root, work_root, journal) =
+                working_volume(args.scratch_directory.as_deref(), &before)?;
+            let parent = working_directory(args.scratch_directory.clone(), &os_root, &work_root)?;
+            let checked = super::precheck::examine(
+                &before,
+                &journal_storage(&journal),
+                &parent,
+                &new_run_id()?,
+            )?;
+            match &checked {
+                super::precheck::Outcome::Read(report) if !report.refusals.is_empty() => {
+                    if mode == crate::execution_mode::ExecutionMode::Diagnose {
+                        for line in super::precheck::lines(&checked, target_cluster) {
+                            println!("{line}");
+                        }
+                        println!(
+                            "The diagnosis stops here: a conversion would stop for this before it built anything. Nothing was changed."
+                        );
+                        return Ok(EXIT_DIAGNOSE_FAILURES);
+                    }
+                    anyhow::bail!(
+                        "this volume is refused, and nothing on it was changed (it stayed online and was only read): {}",
+                        report.refusals.join(" | ")
+                    );
+                }
+                super::precheck::Outcome::Read(report) => {
+                    if let Some(estimate) = &report.estimate {
+                        println!("Nothing was found that refuses it. What this run takes:");
+                        for line in super::precheck::describe(estimate, target_cluster) {
+                            println!("  {line}");
+                        }
+                    }
+                }
+                super::precheck::Outcome::Changing { last } => println!(
+                    "The volume changed while it was read, so this check says nothing of it (the last reading stopped at: {last}). The run examines the volume again once it is frozen{}.",
+                    if shrink.is_some() {
+                        ", after the partition has been shrunk; to have the check first, start again when nothing writes to the volume"
+                    } else {
+                        ""
+                    }
+                ),
+            }
+            if let (Some(shrink_bytes), crate::execution_mode::ExecutionMode::Diagnose) =
+                (shrink, mode)
+            {
+                println!(
+                    "A full diagnosis builds the working ReFS volume at the length the partition has when it is converted. This partition would first be shrunk by {shrink_bytes} bytes, which a diagnosis never does, so the check above is all that was done. Nothing was changed."
+                );
+                return Ok(match checked {
+                    super::precheck::Outcome::Changing { .. } => EXIT_CHECK_INCONCLUSIVE,
+                    super::precheck::Outcome::Read(_) => 0,
+                });
+            }
         }
         if !confirm(confirmation_prompt(mode))? {
             println!("Cancelled. No conversion started.");

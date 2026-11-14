@@ -55,8 +55,9 @@ nothing: it says what would stop a conversion and what one would take in
 working storage, memory and time. `--diagnose` goes through the whole
 preparation, with the volume offline meanwhile, reports everything that would
 stop a conversion, and writes nothing to the volume. The conversion itself
-asks for confirmation, prints a recovery command before its first write to the
-volume, and ends with the volume online as ReFS under the same drive letter.
+makes the check first, asks for confirmation, prints a recovery command before
+its first write to the volume, and ends with the volume online as ReFS under
+the same drive letter.
 
 The [operating and recovery guide](docs/cli-workflow.md) has the details: the
 options, what each refusal means, and what to do if a run stops.

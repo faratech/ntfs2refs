@@ -52,7 +52,8 @@ pub(super) fn geometry_decision(partition_bytes: u64) -> Result<GeometryDecision
 }
 
 /// Diagnose never changes the source, so it cannot run where a conversion
-/// would first have to shrink the partition.
+/// would first have to shrink the partition. Asked for a Windows boot
+/// volume; a data volume gets the read-only check instead.
 pub(super) fn admit_geometry(
     decision: GeometryDecision,
     partition_bytes: u64,

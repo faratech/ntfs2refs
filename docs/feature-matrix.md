@@ -46,6 +46,10 @@ converter prints.
 ## Refused before anything is written
 
 Each is refused with the source unchanged: the volume lists exactly as before.
+Each is found before the volume is taken offline: BitLocker from the volume's
+first sector, the others by the check a run makes before it asks. `--check`
+reports them without a run; in the lab each case is run with `-Check`, and the
+check and the run have to give the same refusal.
 
 | Found | What the refusal says to do | Lab case |
 |---|---|---|
@@ -66,7 +70,7 @@ These take the same paths as rows above, or are checked by tests only.
 | Found | Why it is not a lab case |
 |---|---|
 | Cloud placeholders, Data Deduplication, Windows Subsystem for Linux files | Refused by their reparse tag, like `compact /exe`; the lab has no sync provider, deduplication or WSL. The words for each tag are covered by a test |
-| A shadow-copy provider other than Windows' own and Hyper-V's | The lab has no backup product. The message is covered by a test |
+| A shadow-copy provider other than Windows' own, Hyper-V's and Windows Server's for remote file shares | The lab has no backup product. The message is covered by a test |
 | A dirty volume, an NTFS log that was not closed, an open transaction | The lab dismounts its volumes cleanly |
 | A program holding a file on the volume open | Not arranged in the lab; the lock is retried for 20 seconds and then refused by name |
 | A volume with no file on it | An empty volume is formatted, not converted |

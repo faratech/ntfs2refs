@@ -492,12 +492,22 @@ fn directory_case_flags_with_serial(
     Ok(u32::from_le_bytes(case.bytes[..].try_into()?))
 }
 
+/// What Windows says of a directory's case sensitivity, asked twice:
+/// whether the directory is marked case-sensitive. The converter does not
+/// set the mark on the target, and says so. (ReFS 3.14 takes the mark in
+/// the lab's controls, on builds 26100 and 26300; on 26300 Windows then
+/// stopped with a bugcheck when the volume was taken offline.) What a
+/// conversion cannot do without the mark is keep two names that differ
+/// only by case apart, and such a pair is refused where the directory's
+/// names are reconciled, whether the mark is set or not.
+/// Flags other than 0 and 1, and an answer that differs between the two
+/// queries, are refused here.
 #[cfg(windows)]
 pub(crate) fn check_directory_case_observation(
     file: &FileInventory,
     serial: u64,
     observed: &n2r_win32::attestation::Observation,
-) -> Result<()> {
+) -> Result<bool> {
     ensure!(
         file.is_directory
             && observed.identity.record_number == file.record_number
@@ -551,12 +561,41 @@ pub(crate) fn check_directory_case_observation(
             b.directory_case_sensitivity.as_ref(),
         )
     };
+    case_sensitive_mark(
+        directory_case_flags_with_serial(serial, file, before, before_case)?,
+        directory_case_flags_with_serial(serial, file, after, after_case)?,
+    )
+}
+
+/// Whether a directory is marked case-sensitive, from the flags Windows
+/// gave for it in two queries. FILE_CASE_SENSITIVE_INFO has one flag, 1.
+pub(crate) fn case_sensitive_mark(first: u32, second: u32) -> Result<bool> {
     ensure!(
-        directory_case_flags_with_serial(serial, file, before, before_case)? == 0
-            && directory_case_flags_with_serial(serial, file, after, after_case)? == 0,
-        "directory has unsupported nonzero case-sensitivity flags"
+        first == second && first <= 1,
+        "Windows reports case-sensitivity flags {first:#x} and then {second:#x} for the directory, where 0 (an ordinary directory) or 1 (one marked case-sensitive), twice the same, is what the converter knows"
     );
-    Ok(())
+    Ok(first == 1)
+}
+
+#[cfg(test)]
+mod case_mark_tests {
+    use super::case_sensitive_mark;
+
+    #[test]
+    fn a_directory_is_ordinary_or_marked_and_anything_else_is_refused() {
+        assert!(!case_sensitive_mark(0, 0).unwrap());
+        assert!(case_sensitive_mark(1, 1).unwrap());
+        // An answer that changed between the two queries.
+        assert!(case_sensitive_mark(0, 1).is_err());
+        assert!(case_sensitive_mark(1, 0).is_err());
+        // Flags the converter does not know, even twice the same.
+        let unknown = case_sensitive_mark(3, 3).unwrap_err().to_string();
+        assert!(
+            unknown.contains("0x3") && unknown.contains("what the converter knows"),
+            "{unknown}"
+        );
+        assert!(case_sensitive_mark(2, 2).is_err());
+    }
 }
 
 fn compare_directory_cases(raw: &NtfsInspection, native: &Report) -> DirectoryCaseAssessment {

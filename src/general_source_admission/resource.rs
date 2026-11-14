@@ -62,6 +62,13 @@ struct MetadataPin {
     #[serde(skip)]
     arena_lease: Option<ArtifactLease>,
 }
+/// A directory whose case-sensitive mark is not set on the target.
+#[derive(Serialize)]
+struct CaseSensitiveDirectory {
+    record_number: u64,
+    sequence_number: u16,
+    path: Option<String>,
+}
 #[derive(Serialize)]
 struct ObjectRow {
     native: PagedFileComparison,
@@ -1517,6 +1524,13 @@ impl ResourceSourceContext {
                 (0u64, 0u64, 0u64, 0u64);
             let (mut raw_directories, mut user_case_matched, mut internal_directories) =
                 (0u64, 0u64, 0u64);
+            // Directories marked case-sensitive: counted, one named, all archived.
+            let (mut case_marks, mut case_mark_example) = (0u64, None::<String>);
+            let mut case_marks_writer = SortedRecordWriter::new(
+                &output.join("case-sensitive-directories"),
+                *b"N2RCASE1",
+                &scratch,
+            )?;
             let internal_bound = indexes.binds_domain(&raw)
                 && indexes.replacement_supported
                 && transactions.binds_domain(&raw)
@@ -1653,6 +1667,24 @@ impl ResourceSourceContext {
                             user_case_matched = user_case_matched
                                 .checked_add(1)
                                 .context("case-match count overflow")?;
+                            if row.case_sensitive_mark {
+                                let path = ntfs_admission::paged::refused_object_path(&raw, &file)
+                                    .map(|path| format!("\\{}", path.join("\\")));
+                                case_marks_writer.push(
+                                    key(file.record_number),
+                                    &CaseSensitiveDirectory {
+                                        record_number: file.record_number,
+                                        sequence_number: file.sequence_number,
+                                        path: path.clone(),
+                                    },
+                                )?;
+                                case_marks = case_marks
+                                    .checked_add(1)
+                                    .context("case-mark count overflow")?;
+                                if case_mark_example.is_none() {
+                                    case_mark_example = path;
+                                }
+                            }
                         }
                     }
                     rows_writer.push(
@@ -1671,6 +1703,28 @@ impl ResourceSourceContext {
                 })?;
             let rows_pin = rows_writer.finish()?;
             let replacements_pin = replacements_writer.finish()?;
+            let case_marks_pin = case_marks_writer.finish()?;
+            if case_marks != 0 {
+                println!(
+                    "{}",
+                    ntfs_admission::case_mark_note(case_marks, case_mark_example.as_deref())
+                );
+                save(
+                    output,
+                    "source-case-sensitive-directories.json",
+                    &serde_json::json!({
+                        "kind":"case-sensitive-directory-marks-not-carried-over-v1",
+                        "source_inspection_sha256":inspection_sha,
+                        "directories":case_marks, "records":&case_marks_pin,
+                        "names_that_differ_only_by_case":0,
+                        "target_has_the_mark":false,
+                        "policy":"the mark is not set on the target; a directory that holds two names differing only by case is refused when its names are reconciled",
+                    }),
+                    &scratch,
+                    &mut metadata,
+                    &mut reservations,
+                )?;
+            }
             let storage_hint_pin = storage_hint_writer
                 .map(SortedRecordWriter::finish)
                 .transpose()?;
@@ -1860,7 +1914,7 @@ impl ResourceSourceContext {
                     causes.join("; ")
                 }
             };
-            let case_detail = ntfs_admission::case_sensitive_refusal(
+            let case_detail = ntfs_admission::case_answer_requirement(
                 directories.saturating_sub(user_case_matched),
                 directories,
             );

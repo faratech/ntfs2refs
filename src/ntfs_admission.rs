@@ -634,10 +634,24 @@ pub(crate) const CLEAN_VOLUME_REQUIREMENT: &str = "the volume is marked dirty, o
 /// What the `volume_policy_flags` gate requires, as a refusal says it.
 pub(crate) const VOLUME_FLAGS_REQUIREMENT: &str = "the volume carries state flags the converter does not take over (a pending chkdsk or upgrade), or 8.3 short-name creation is enabled on it: run `chkdsk <drive>: /f`, and turn short-name creation off with `fsutil 8dot3name set <drive>: 1`";
 
-/// What a refusal says of directories that are marked case-sensitive.
-pub(crate) fn case_sensitive_refusal(case_sensitive: u64, directories: u64) -> String {
+/// What a run says of directories that are marked case-sensitive and hold
+/// no two names that differ only by case. `example` is one of them.
+pub(crate) fn case_mark_note(marked: u64, example: Option<&str>) -> String {
     format!(
-        "{case_sensitive} of {directories} directories are case-sensitive, which the converter does not carry over: find them with `fsutil file queryCaseSensitiveInfo <directory>` and turn it off with `fsutil file setCaseSensitiveInfo <directory> disable`"
+        "{marked} director{} marked case-sensitive{} (WSL and Git mark the directories they make). None holds two names that differ only by case, so every name stays reachable. The converter does not set the mark on the new volume; the directories are listed in the run's records.",
+        if marked == 1 { "y is" } else { "ies are" },
+        example
+            .map(|path| format!(", for example {path}"))
+            .unwrap_or_default()
+    )
+}
+
+/// What the `native_directory_case_sensitivity` gate requires, as a refusal
+/// says it: Windows has to answer for every directory, with flags the
+/// converter knows.
+pub(crate) fn case_answer_requirement(unanswered: u64, directories: u64) -> String {
+    format!(
+        "Windows did not say whether {unanswered} of {directories} directories are case-sensitive, or gave flags for them that the converter does not know (it knows 0, an ordinary directory, and 1, one marked case-sensitive)"
     )
 }
 
@@ -821,6 +835,32 @@ mod refusal_tests {
         assert!(detail.contains("22 objects are outside"), "{detail}");
         assert!(detail.contains("and 10 more"), "{detail}");
         assert!(!detail.contains("MFT record 119"), "{detail}");
+    }
+
+    #[test]
+    fn the_case_mark_is_announced_and_an_unanswered_directory_is_refused() {
+        let one = case_mark_note(1, Some("\\src\\linux"));
+        assert!(
+            one.starts_with("1 directory is marked case-sensitive, for example \\src\\linux (WSL"),
+            "{one}"
+        );
+        assert!(
+            one.contains("does not set the mark")
+                && one.contains("two names that differ only by case")
+                && one.contains("listed in the run's records")
+                // Not something to send a user to: see docs/feature-matrix.md.
+                && !one.contains("fsutil"),
+            "{one}"
+        );
+        let many = case_mark_note(2412, None);
+        assert!(
+            many.starts_with("2412 directories are marked case-sensitive (WSL"),
+            "{many}"
+        );
+
+        let unanswered = case_answer_requirement(3, 40);
+        assert!(unanswered.contains("3 of 40 directories"), "{unanswered}");
+        assert!(!unanswered.contains("setCaseSensitiveInfo"), "{unanswered}");
     }
 
     #[test]

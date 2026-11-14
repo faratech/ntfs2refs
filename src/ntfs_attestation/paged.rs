@@ -330,6 +330,9 @@ pub struct PagedFileComparison {
     pub logical_data: crate::ntfs_stream_attestation::Check,
     pub namespace: Option<crate::ntfs_stream_attestation::Check>,
     pub directory_case: Option<crate::ntfs_stream_attestation::Check>,
+    /// The directory is marked case-sensitive. The mark is not set on the
+    /// target; the directory is recorded.
+    pub case_sensitive_mark: bool,
     pub timestamps: Option<crate::ntfs_source_view::TimestampView>,
     pub security: Option<crate::ntfs_source_view::SecurityView>,
     pub complete_logical_bytes: u64,
@@ -630,6 +633,7 @@ fn compare_domain_with_header(
             directory.identity == selector.identity,
             "native namespace row coverage/order differs"
         );
+        let mut case_sensitive_mark = false;
         let (namespace, directory_case) = if file.is_directory {
             ensure!(
                 directory.identity == selector.identity,
@@ -646,11 +650,14 @@ fn compare_domain_with_header(
                     )
                     .map(|_| ()),
                 )),
-                Some(Check::from(super::check_directory_case_observation(
-                    &file,
-                    source.header().geometry.serial_number,
-                    &observation,
-                ))),
+                Some(Check::from(
+                    super::check_directory_case_observation(
+                        &file,
+                        source.header().geometry.serial_number,
+                        &observation,
+                    )
+                    .map(|marked| case_sensitive_mark = marked),
+                )),
             )
         } else {
             ensure!(
@@ -679,6 +686,7 @@ fn compare_domain_with_header(
             logical_data,
             namespace,
             directory_case,
+            case_sensitive_mark,
             timestamps,
             security: security_view,
             complete_logical_bytes: logical_bytes.0,

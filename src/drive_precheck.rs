@@ -475,7 +475,7 @@ fn read(
     // whether it is case-sensitive, which is not in the structures read
     // above; one that does not answer is left to the frozen source.
     let case = n2r_win32::directory_case::DirectoryCaseProbe::open(&root)?;
-    let (mut case_sensitive, mut case_example) = (0u64, None);
+    let (mut case_sensitive, mut case_unknown, mut case_example) = (0u64, 0u64, None);
     let (mut files, mut directories, mut streams, mut logical_bytes) = (0u64, 0u64, 0u64, 0u64);
     for ordinal in 0..raw.file_count() {
         let file = raw.file(ordinal)?;
@@ -485,12 +485,18 @@ fn read(
         if file.is_directory {
             directories += 1;
             let reference = file.record_number | (u64::from(file.sequence_number) << 48);
-            if case.flags(reference).is_ok_and(|flags| flags != 0) {
-                case_sensitive += 1;
-                if case_example.is_none() {
-                    case_example = ntfs_admission::paged::refused_object_path(&raw, &file)
-                        .map(|path| format!(" (for example \\{})", path.join("\\")));
+            match case.flags(reference) {
+                Ok(0) => {}
+                Ok(1) => {
+                    case_sensitive += 1;
+                    if case_example.is_none() {
+                        case_example = ntfs_admission::paged::refused_object_path(&raw, &file)
+                            .map(|path| format!("\\{}", path.join("\\")));
+                    }
                 }
+                Ok(_) => case_unknown += 1,
+                // Left to the frozen source, which asks again.
+                Err(_) => {}
             }
         } else {
             files += 1;
@@ -500,12 +506,21 @@ fn read(
             }
         }
     }
+    // Two names that differ only by case would have stopped the reading;
+    // the mark alone is not carried over, and a conversion says so.
     if case_sensitive != 0 {
-        report.refusals.push(format!(
-            "{}{}",
-            ntfs_admission::case_sensitive_refusal(case_sensitive, directories),
-            case_example.unwrap_or_default()
+        report.notes.push(ntfs_admission::case_mark_note(
+            case_sensitive,
+            case_example.as_deref(),
         ));
+    }
+    if case_unknown != 0 {
+        report
+            .refusals
+            .push(ntfs_admission::case_answer_requirement(
+                case_unknown,
+                directories,
+            ));
     }
     let object_ids = indexes.data_object_ids_owned();
     let mut estimate = Estimate {

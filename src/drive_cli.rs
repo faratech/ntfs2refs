@@ -1104,6 +1104,10 @@ mod windows {
                     );
                 }
                 super::precheck::Outcome::Read(report) => {
+                    // What is not carried over is said before the question.
+                    for note in &report.notes {
+                        println!("Note: {note}");
+                    }
                     if let Some(estimate) = &report.estimate {
                         println!("Nothing was found that refuses it. What this run takes:");
                         for line in super::precheck::describe(estimate, target_cluster) {

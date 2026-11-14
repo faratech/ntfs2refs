@@ -151,6 +151,7 @@ pub mod selected_ownership;
 #[cfg(windows)]
 pub mod shadow_freeze;
 pub mod shadow_tree;
+pub mod short_name_disposition;
 #[cfg(windows)]
 pub mod source_fingerprint;
 pub mod source_volume_label;

@@ -146,6 +146,15 @@ file on the volume a moment before the check and waits for nothing: with
 `-Features shortnames` the check has to count as many short names as Windows
 lists, or the outcome is `check-missed-what-was-just-written`.
 
+`-DropShortNames` runs the converter, and the check before it, with
+`--short-names drop`. The listings are then compared with
+`lab-volume-manifest compare --short-names-dropped`, which counts a short
+name that is gone and allows nothing else that the ordinary comparison does
+not; the converted volume must list no short name, and as many must have
+been counted as were listed before. `-Features shortnames-wide` puts short
+names on nested directories, a hard-linked file, a file with a named stream
+and a name outside ASCII, beside a name that is its own short name.
+
 `-CompareListing` runs the converter with `--compare-listing`. The harness
 makes its own listings as always, and the run's comparison has to say what
 the harness's says, or the outcome gets `-but-own-listing-disagreed`.

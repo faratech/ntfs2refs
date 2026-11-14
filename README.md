@@ -84,7 +84,8 @@ carried over. Four things are not, and the run says so:
   the new volume and lists the directories in the run's records.
 
 A data volume is refused, before anything is written and with what to do about
-it, if it has 8.3 short names, is encrypted with BitLocker, has shadow copies,
+it, if it has 8.3 short names (unless you ask for them to be left behind with
+`--short-names drop`), is encrypted with BitLocker, has shadow copies,
 or holds EFS-encrypted files, cloud placeholders, `compact /exe` files, Data
 Deduplication, disk quotas in use or two names in one directory that differ
 only by case, or was not dismounted cleanly. The guide lists each with its remedy, and

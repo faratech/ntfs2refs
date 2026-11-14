@@ -4,7 +4,9 @@ use crate::ntfs_inspect::{FileInventory, RootFileDomain};
 use anyhow::{Context, Result, ensure};
 
 fn directory_path(files: &impl RootFileDomain, current: u64) -> Result<Vec<String>> {
-    directory_path_for_alias_preparation(files, current, false)
+    // A run that leaves short names behind walks up through directories
+    // that have one; otherwise a directory with a second name ends the walk.
+    directory_path_for_alias_preparation(files, current, crate::short_name_disposition::dropped())
 }
 
 fn directory_path_for_alias_preparation(
@@ -130,6 +132,18 @@ pub(crate) fn user_paths(
     files: &impl RootFileDomain,
     file: &FileInventory,
 ) -> Result<Vec<Vec<String>>> {
+    // `--short-names drop`: an object's long names are what is transferred.
+    // Its 8.3 names are listed in the run's records and left behind, so
+    // they are not names to carry. NTFS counts a short name among the
+    // file record's links, so the record's count is still that of all its
+    // names.
+    if crate::short_name_disposition::dropped() && file.names.iter().any(|n| n.namespace == 2) {
+        ensure!(
+            usize::from(file.hard_link_count) == file.names.len(),
+            "the file record's link count is not the number of its names"
+        );
+        return canonical_paths_for_alias_preparation(files, file);
+    }
     ensure!(
         !file.names.is_empty()
             && usize::from(file.hard_link_count) == file.names.len()

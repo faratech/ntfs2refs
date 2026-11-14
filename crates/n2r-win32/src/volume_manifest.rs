@@ -84,6 +84,10 @@ pub struct Comparison {
     pub after_objects: usize,
     /// 8.3 names that became same-directory links, as intended.
     pub short_names_as_links: usize,
+    /// 8.3 names that are gone because the run was asked to leave them
+    /// behind (`compare_without_short_names`): never counted otherwise.
+    #[serde(default, skip_serializing_if = "none_dropped")]
+    pub short_names_dropped: usize,
     /// Expected differences, counted by kind.
     pub allowed: BTreeMap<String, usize>,
     pub difference_count: usize,
@@ -156,8 +160,25 @@ fn security_for_comparison(sddl: &str) -> (&str, bool) {
     (sddl, false)
 }
 
+fn none_dropped(count: &usize) -> bool {
+    *count == 0
+}
+
 /// Compares the listing taken before conversion with the one taken after.
 pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
+    compare_short_names(before, after, false)
+}
+
+/// The same comparison for a run that was asked to leave 8.3 short names
+/// behind (`--short-names drop`): a short name that is simply gone is
+/// counted in `short_names_dropped` instead of being a difference. Nothing
+/// else is allowed that `compare` does not allow, and a listing after the
+/// run that still shows a short name is a difference.
+pub fn compare_without_short_names(before: &[Record], after: &[Record]) -> Comparison {
+    compare_short_names(before, after, true)
+}
+
+fn compare_short_names(before: &[Record], after: &[Record], dropped: bool) -> Comparison {
     let mut result = Comparison {
         before_objects: before.len(),
         after_objects: after.len(),
@@ -211,6 +232,7 @@ pub fn compare(before: &[Record], after: &[Record]) -> Comparison {
                         "short name is not a link to its long name",
                         format!("short name {short} exists but is not a link to {leaf}"),
                     ),
+                    None if dropped => result.short_names_dropped += 1,
                     None => differ("short name lost", format!("short name {short} was lost")),
                 }
             }
@@ -1240,6 +1262,37 @@ mod tests {
         let lost = compare(&before, &[directory("\\"), converted]);
         assert_eq!(lost.difference_count, 1);
         assert_eq!(lost.differences[0].what, "short name PROGRA~1 was lost");
+    }
+
+    #[test]
+    fn a_dropped_short_name_is_counted_only_by_the_comparison_made_for_it() {
+        let mut long = file("\\Annual Report.docx", "aa");
+        long.short_name = Some("ANNUAL~1.DOC".to_owned());
+        let before = vec![long.clone()];
+        let mut converted = long.clone();
+        converted.short_name = None;
+        let after = vec![converted];
+        // The ordinary comparison calls it lost.
+        let ordinary = compare(&before, &after);
+        assert!(!ordinary.identical());
+        assert_eq!(ordinary.difference_kinds["short name lost"], 1);
+        assert_eq!(ordinary.short_names_dropped, 0);
+        // The one for a run that was asked to drop them counts it.
+        let asked = compare_without_short_names(&before, &after);
+        assert!(asked.identical(), "{asked:?}");
+        assert_eq!(asked.short_names_dropped, 1);
+        assert!(asked.allowed.is_empty());
+        // Nothing else is let through: changed contents are a difference still.
+        let changed = vec![file("\\Annual Report.docx", "bb")];
+        assert!(!compare_without_short_names(&before, &changed).identical());
+        // And the count is only written where there is one.
+        let text = serde_json::to_string(&ordinary).unwrap();
+        assert!(!text.contains("short_names_dropped"), "{text}");
+        assert!(
+            serde_json::to_string(&asked)
+                .unwrap()
+                .contains("\"short_names_dropped\":1")
+        );
     }
 
     #[test]

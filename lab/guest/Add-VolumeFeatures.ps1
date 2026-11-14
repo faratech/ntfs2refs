@@ -240,6 +240,27 @@ public static class ManyFiles {
             if ($listed -notmatch 'ADIREC~1') { throw "no 8.3 name was made: $listed" }
             $made[$feature] = 'a directory and six files with 8.3 names'
         }
+        'shortnames-wide' {
+            # 8.3 names on more than plain files, for a run that leaves them
+            # behind (--short-names drop): on every directory of a deep
+            # chain, on a file with a second hard link, on one with a named
+            # stream, on names outside ASCII; and a name that is its own
+            # short name, which has none to leave.
+            $null = Run 'fsutil.exe' @('8dot3name', 'set', $drive, '0')
+            $deep = "$dir\first directory with a long name\second directory with a long name\third directory with a long name"
+            $null = New-Item -ItemType Directory -Path $deep -Force
+            foreach ($i in 1..4) { [IO.File]::WriteAllBytes("$deep\a file with a long name $i.txt", (Bytes (700 * $i))) }
+            [IO.File]::WriteAllBytes("$dir\a linked file with a long name.bin", (Bytes 5000))
+            $null = New-Item -ItemType Directory -Path "$dir\another directory for the link" -Force
+            $null = Run 'fsutil.exe' @('hardlink', 'create', "$dir\another directory for the link\the second name of the linked file.bin", "$dir\a linked file with a long name.bin")
+            [IO.File]::WriteAllBytes("$dir\a file with a named stream and a long name.dat", (Bytes 3000))
+            Set-Content -LiteralPath "$dir\a file with a named stream and a long name.dat" -Stream 'a stream' -Value 'in the stream' -Encoding ASCII
+            [IO.File]::WriteAllBytes("$dir\$([char]0x00fc)ber einen langen Namen $([char]0x4e2d)$([char]0x6587).txt", (Bytes 1200))
+            [IO.File]::WriteAllBytes("$dir\SHORT.TXT", (Bytes 800))
+            $listed = (& cmd.exe /c dir /x /s "$dir" 2>&1 | Out-String)
+            foreach ($short in 'FIRSTD~1', 'THIRDD~1', 'ALINKE~1.BIN', 'AFILEW~1.DAT') { if ($listed -notmatch [regex]::Escape($short)) { throw "no 8.3 name $short was made: $listed" } }
+            $made[$feature] = 'three nested directories, four files, a hard-linked file, a file with a named stream and a name outside ASCII, all with 8.3 names, and one name that is its own'
+        }
         'shortnames-stripped' {
             # The remedy the refusal of 'shortnames' gives: Windows' own tool
             # removes the 8.3 names and their creation is turned off.

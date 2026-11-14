@@ -20,9 +20,9 @@ and the [recovery matrix](recovery-matrix.md).
    volume that takes only the space its contents need, and keeps there the
    old content of every sector it changes. Leave it alone until the
    conversion has finished and you have looked at the result.
-4. **The volume's layout.** A data volume has to be the only partition on a
-   GPT disk, apart from a Microsoft reserved partition, and not on the disk of
-   the running Windows.
+4. **The volume's layout.** A data volume has to be on a GPT disk that is not
+   the disk of the running Windows. The disk may hold other partitions; they
+   [go offline with it](#a-disk-with-other-partitions) while the run lasts.
 
 The lab's Windows volume, with 22.9 GB in use in 191,000 files and
 directories, took 28 minutes, about 30 GB of working storage and 2.1 GB of
@@ -37,8 +37,9 @@ bounds: see [how large a volume can be](#how-large-a-volume-can-be).
 
 It lists every disk and partition and says for each NTFS partition whether a
 conversion would take it and, if not, why: it is the running Windows, shares
-its disk with it, has other partitions beside it, or is on a disk that is not
-GPT. Each volume is shown with its serial number.
+its disk with it, or is on a disk that is not GPT. For a volume on a disk
+with other partitions it says how many go offline with it. Each volume is
+shown with its serial number.
 
 Windows reports a volume encrypted with BitLocker as NTFS. From an elevated
 terminal `--list` reads each partition's first sector and says where that is
@@ -56,7 +57,9 @@ could not be queried: the list it printed is then partial.
 
 A check reads a data volume while it stays online and in use. Nothing on it
 is frozen, formatted, shrunk or written; the check keeps its own pages in the
-working directory while it runs and removes them. It reads the volume's NTFS
+working directory while it runs and removes them. It first asks Windows to
+write out what it still holds in memory for the volume, so that a file saved
+a moment ago is read too. It reads the volume's NTFS
 structures, asks Windows about shadow copies and about each directory, and
 reads no file's contents: half a second on the lab's small volumes, 11
 seconds on one of 23,000 files. It prints:
@@ -67,7 +70,10 @@ seconds on one of 23,000 files. It prints:
   points, streams and names the converter does not carry over; quotas in use;
   two names in a directory that differ only by case; shadow copies, and a
   shadow-copy provider the
-  converter does not know; a volume marked dirty.
+  converter does not know; a volume marked dirty. On a disk with other
+  partitions also what keeps the disk from going offline: a page file or
+  the crash-dump file of the running Windows on it, and shadow copies of a
+  volume beside this one.
 - **What is decided only when the volume is frozen** for a conversion: that
   the NTFS log closes cleanly, the backup boot sector and the MFT mirror, an
   open transaction, whether quota management is switched on, and that Windows
@@ -102,8 +108,7 @@ What a conversion would take:
 | 1 | The check could not be made |
 
 A volume that is being written to can change between two of the structures a
-check joins, and what Windows has just changed reaches the disk a few seconds
-later. The check then waits and reads the volume again: up to four readings,
+check joins. The check then waits and reads the volume again: up to four readings,
 2, 5 and 10 seconds apart. If the volume never held still it says so and
 exits 5; it does not report a refusal it could not confirm. What the
 inspection itself decides against (a reparse point it does not recreate, two
@@ -191,6 +196,59 @@ stops later.
   working storage needs room for it. From clusters of 4 KiB or more to a
   4 KiB target, and of 64 KiB or more to a 64 KiB target, file data stays
   where it is.
+
+### A disk with other partitions
+
+A data volume may share its GPT disk with other partitions: more data
+volumes, an EFI system partition and a recovery partition left from the time
+the disk was a computer's own, a partition of another operating system. The
+run still takes the **whole disk** offline, because that is the only way
+Windows keeps everything else from writing to the volume. For the volumes on
+the other partitions this means:
+
+- They are dismounted before the disk goes offline, and are not available
+  until the run ends. For part of the run Windows shows them, read-only.
+- Nothing is written to them. The lab compares them before and after every
+  run on such a disk: the listing of an NTFS volume beside the source, and
+  the bytes of a write-protected volume, an EFI system partition and a
+  partition of another system.
+- If the run is cut off, they stay offline with the disk until the run is
+  finished or undone with `--recover`.
+- A BitLocker volume among them is locked when the disk returns, as it is
+  after a restart; unlock it as usual. (Not a lab case.)
+
+The run names those partitions and says this before it asks, and so does
+`--check`. On the lab's disk:
+
+```text
+This volume shares disk 5 with 4 other partition(s): partition 2 (FAT32, 0.10 GiB, SIBLING-E); W:\ (NTFS, 2.00 GiB, SIBLING-A); X:\ (NTFS, 1.00 GiB, SIBLING-B); partition 6 (no file system Windows knows, 0.50 GiB).
+A conversion takes the whole disk offline. The volumes on those partitions are dismounted first and are not available until the run ends; for part of it Windows shows them read-only. Nothing is written to them. Close what uses them before you go on.
+If the run is cut off, they stay offline with the disk until the run is finished or undone with --recover.
+```
+
+It refuses the disk, with the volume and everything beside it untouched,
+when:
+
+- the running Windows has a **page file** or its **crash-dump file** on any
+  volume of the disk, or the disk holds its boot or system partition. Move
+  the file (System Properties, Advanced) and restart. The same holds when
+  the converter cannot tell where this Windows writes its dumps: a
+  crash-dump filter driver other than BitLocker's is installed, or a
+  crash-control setting it does not know is not a number (it is named);
+- a volume beside this one **has shadow copies**, or stores those of another
+  volume: Windows may discard them when the disk goes offline. Delete them
+  (`vssadmin delete shadows /for=<drive>:`) or wait until they are no longer
+  needed. A volume Windows cannot write to, or one without a file system
+  Windows knows, has none;
+- a **program has a file open** on one of those volumes. The run waits 20
+  seconds for it and then names the volume: close what uses it, and start
+  again. This is the one thing `--check` cannot see;
+- the volume to convert holds an **installed Windows** and the disk has an EFI
+  system partition: as a data volume it would no longer start. That is what
+  [`--windows-boot-volume`](#convert-an-installed-windows) is for.
+
+`--whole-image-verification` and `--experimental-thin-shadow` take a volume
+on a disk of its own.
 
 ### The target
 
@@ -307,7 +365,9 @@ What is different on a converted Windows volume:
   was shrunk, it keeps its slightly smaller size. A run that is cut off here
   is a case of its own, [below](#a-run-that-is-cut-off-while-it-prepares).
 - **After it:** keep the working storage, and run the command that was
-  printed. Do not start a new conversion over the unfinished one.
+  printed. Do not start a new conversion over the unfinished one. The disk is
+  offline meanwhile, and with it every other volume on it; do not bring it
+  online by hand to reach them. Recovery returns them with the volume.
 
 ```powershell
 .\ntfs2refs.exe --recover <printed-directory> --recovery-sha256 <printed-checksum>

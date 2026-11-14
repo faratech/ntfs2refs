@@ -113,7 +113,8 @@ it lies on target-cluster boundaries; the rest goes through the working storage.
   a used volume has (object IDs, security, links, deep and long paths) or
   must be refused for; `-Acceptance` then uses the converted volume, and
   `-NativeRefsControl` is its control. `-Check` runs `--check` first and
-  holds it to what the run then does; `-CheckOnly` runs it alone.
+  holds it to what the run then does; `-CheckOnly` runs it alone. `-Siblings`
+  puts four other partitions on the disk and holds them to what they were.
   `lab/README.md` lists the rest, and `docs/feature-matrix.md` what each case
   shows.
 - Second VM `ntfs2refs-reference-b`, Id `7c687062-37b5-4309-b28a-486a44305202`,

@@ -165,9 +165,10 @@ pub use native::{
     PartitionSnapshot, SourceCacheContinuity, SourceCacheFingerprintDomain,
     SourceCacheFingerprintMismatch, SourceCacheRefreshDomain, SourceCacheRefreshRow, WritePolicy,
     capture_mount_paths_for_journal, capture_mount_paths_general, current_windows_directory,
-    mounted_filesystem_general, note_selected_new_bytes_verified,
+    examine_shared_disk, mounted_filesystem_general, note_selected_new_bytes_verified,
     observe_general_disk_state_readonly, probe_general, rediscover_general_volume,
     rediscover_general_volume_wait, restore_drive_letter_general, selected_new_bytes_verified,
+    write_out_volume_cache,
 };
 #[cfg(windows)]
 pub use native::{

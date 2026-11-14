@@ -135,10 +135,29 @@ param(
     # when -ExpectRefusal matches one of them), check-inconclusive,
     # check-changed-the-source.
     [switch]$CheckOnly,
+    # With -Check or -CheckOnly: a file is created on the volume a moment
+    # before the check and nothing waits for Windows to write it out, as
+    # when someone saves a file and starts the converter. The check has to
+    # read it: on a volume with short names its refusal counts the file.
+    [switch]$FreshFile,
     # With -CheckOnly: files are written to and deleted from the volume all
     # the while it is read. The check may find the volume at rest or not; it
     # must never report a refusal that is not there.
     [switch]$WriteLoad,
+    # Put the source on a disk it shares with four other partitions: an EFI
+    # system partition (FAT32, no letter), W: (an ordinary NTFS volume), and
+    # behind the source X: (NTFS, write-protected in the partition table)
+    # and a partition of another operating system, with no file system
+    # Windows knows. Before the run and after it W: is listed and compared
+    # exactly, and the other three, which nothing writes to, are hashed
+    # through the disk; W: and X: have to be back under their letters.
+    # Anything else adds "-but-siblings-changed" to the outcome.
+    [switch]$Siblings,
+    # With -Siblings, something about W: for which a run has to refuse the
+    # disk: 'busy' keeps a file on it open, 'snapshot' gives it a shadow
+    # copy, 'dump' names it as the place Windows writes its crash dump to.
+    # Each is undone when the attempt ends.
+    [ValidateSet('', 'busy', 'snapshot', 'dump')][string]$SiblingState = '',
     # Run the converter with --compare-listing: it lists the volume itself
     # before and after and compares. The harness's own listings are made as
     # always, and the two comparisons have to agree: a run whose own
@@ -223,7 +242,9 @@ try {
     Copy-Item -ToSession $session -LiteralPath (Join-Path $PSScriptRoot 'guest\Add-VolumeFeatures.ps1') -Destination "$guestRoot\features.ps1" -Force
 
     # The source disk: a VHDX in the guest, or for 4Kn one the host attaches.
-    $sizeMB = $PartitionMB + 2048
+    if ($Siblings -and ($SectorBytes -eq 4096 -or $NativeRefsControl)) { throw '-Siblings is for a converted volume on a 512-byte-sector disk' }
+    if ($SiblingState -and -not $Siblings) { throw '-SiblingState is something about the volume W: that -Siblings makes' }
+    $sizeMB = $PartitionMB + 2048 + $(if ($Siblings) { 3840 } else { 0 })
     if ($SectorBytes -eq 4096) {
         $hostDisk = Join-Path $records 'source-4kn.vhdx'
         $null = New-VHD -Path $hostDisk -SizeBytes ($sizeMB * 1MB) -Dynamic -LogicalSectorSizeBytes 4096 -PhysicalSectorSizeBytes 4096
@@ -235,8 +256,8 @@ try {
     $container = if ($ClusterBytes -lt 4096) { 'vhd' } else { 'vhdx' }
     if ($NativeRefsControl -and $TargetFormat -eq 'default') { throw '-NativeRefsControl formats the volume itself: name -TargetFormat dev-drive or standard' }
     if ($NativeRefsControl -and $Content -ne 'minimal') { throw '-NativeRefsControl takes -Content minimal: the mixed content uses what only NTFS has' }
-    $made = Invoke-Command -Session $session -ArgumentList $guestRoot, $Name, $sizeMB, $PartitionMB, $SectorBytes, $unit, ([bool]$LargeRecords), @($ready), $container, ([bool]$NativeRefsControl), $TargetFormat -ScriptBlock {
-        param($root, $name, $sizeMB, $partitionMB, $sectorBytes, $unit, $largeRecords, $known, $container, $native, $targetFormat)
+    $made = Invoke-Command -Session $session -ArgumentList $guestRoot, $Name, $sizeMB, $PartitionMB, $SectorBytes, $unit, ([bool]$LargeRecords), @($ready), $container, ([bool]$NativeRefsControl), $TargetFormat, ([bool]$Siblings) -ScriptBlock {
+        param($root, $name, $sizeMB, $partitionMB, $sectorBytes, $unit, $largeRecords, $known, $container, $native, $targetFormat, $siblings)
         if ($sectorBytes -eq 4096) {
             $deadline = (Get-Date).AddSeconds(60)
             do { Start-Sleep -Milliseconds 500; $new = @(Get-Disk | Where-Object { $_.Number -notin $known -and $_.LogicalSectorSize -eq 4096 }) } until ($new.Count -eq 1 -or (Get-Date) -gt $deadline)
@@ -248,6 +269,13 @@ try {
         } else {
             $file = "S:\datalab\$name.$container"
             $script = "create vdisk file=`"$file`" maximum=$sizeMB type=expandable`r`nattach vdisk`r`nconvert gpt`r`ncreate partition primary size=$partitionMB`r`nassign letter=V"
+            if ($siblings) {
+                # An EFI system partition (FAT32, no letter), W:, the source,
+                # X:, and a partition of another operating system (no file
+                # system Windows knows): what a disk that was once a
+                # computer's own, or is shared with another system, holds.
+                $script = "create vdisk file=`"$file`" maximum=$sizeMB type=expandable`r`nattach vdisk`r`nconvert gpt`r`ncreate partition efi size=100`r`nformat fs=fat32 quick label=SIBLING-E`r`ncreate partition primary size=2048`r`nformat fs=ntfs quick label=SIBLING-A`r`nassign letter=W`r`ncreate partition primary size=$partitionMB`r`nassign letter=V`r`ncreate partition primary size=1024`r`nformat fs=ntfs quick label=SIBLING-B`r`nassign letter=X`r`ncreate partition primary size=512 id=0fc63daf-8483-4772-8e79-3d69d8477de4"
+            }
         }
         Set-Content -LiteralPath "$root\make.txt" -Value $script -Encoding ASCII
         $diskpart = & diskpart.exe /s "$root\make.txt" 2>&1 | Out-String
@@ -255,6 +283,20 @@ try {
         $arguments = @('V:', '/FS:NTFS', "/A:$unit", '/Q', '/Y', '/V:DATALAB'); if ($largeRecords) { $arguments += '/L' }
         if ($native) { $arguments = @('V:', '/FS:ReFS', '/Q', '/Y', '/V:DATALAB'); if ($targetFormat -eq 'dev-drive') { $arguments += '/DevDrv' } }
         $format = & "$env:SystemRoot\System32\format.com" $arguments 2>&1 | Out-String
+        if ($siblings) {
+            $content = New-Object byte[] 300000; (New-Object Random 7).NextBytes($content)
+            foreach ($letter in 'W', 'X') {
+                $null = New-Item -ItemType Directory -Path "${letter}:\kept\inner" -Force
+                [IO.File]::WriteAllBytes("${letter}:\kept\a.bin", $content); [IO.File]::WriteAllBytes("${letter}:\kept\inner\b.bin", $content[0..99999])
+                Set-Content -LiteralPath "${letter}:\kept\note.txt" -Value "sibling $letter" -Encoding ASCII
+            }
+            # (Written out first: what is still in the cache when the
+            # partition becomes write-protected never reaches it.)
+            Write-VolumeCache -DriveLetter W; Write-VolumeCache -DriveLetter X
+            Set-Content -LiteralPath "$root\protect.txt" -Value "select volume X`r`ngpt attributes=0x1000000000000000" -Encoding ASCII
+            $protect = & diskpart.exe /s "$root\protect.txt" 2>&1 | Out-String
+            if ($LASTEXITCODE -ne 0) { throw "diskpart could not write-protect X:`n$protect" }
+        }
         $volume = Get-Volume -DriveLetter V
         $wanted = if ($native) { 'ReFS' } else { 'NTFS' }
         if ($volume.FileSystem -ne $wanted) { throw "format.com $($arguments -join ' ') left V: as '$($volume.FileSystem)':`n$format" }
@@ -420,6 +462,178 @@ try {
     }
     if ($listed.exit -ne 0) { throw "listing before the run failed (exit $($listed.exit)): $($listed.text)" }
     Copy-Item -FromSession $session -LiteralPath "$guestRoot\manifest-before.jsonl" -Destination $records
+    # The volumes beside the source, as they are before the run and after.
+    # (Their listings are kept in the attempt's first folder: a recovery works in one of its own.)
+    $siblingRoot = $guestRoot
+    $observeSiblings = {
+        param($root, $tag)
+        if (-not ('SiblingRaw' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System; using System.IO; using System.Runtime.InteropServices; using System.Security.Cryptography; using Microsoft.Win32.SafeHandles;
+public static class SiblingRaw {
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr sa, uint disposition, uint flags, IntPtr template);
+    public static string Sha256(string device, long offset, long bytes) {
+        using (var handle = CreateFileW(device, 0x80000000, 7, IntPtr.Zero, 3, 0, IntPtr.Zero)) {
+            if (handle.IsInvalid) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            using (var stream = new FileStream(handle, FileAccess.Read, 1 << 20))
+            using (var sha = SHA256.Create()) {
+                stream.Seek(offset, SeekOrigin.Begin);
+                var buffer = new byte[1 << 20]; long left = bytes;
+                while (left > 0) {
+                    int read = stream.Read(buffer, 0, (int)Math.Min(buffer.Length, left));
+                    if (read <= 0) throw new IOException("short read of " + device + " with " + left + " bytes left");
+                    sha.TransformBlock(buffer, 0, read, null, 0); left -= read;
+                }
+                sha.TransformFinalBlock(buffer, 0, 0);
+                return BitConverter.ToString(sha.Hash).Replace("-", "").ToLowerInvariant();
+            }
+        }
+    }
+    public static void Fill(string device, long offset, int bytes, int seed) {
+        using (var handle = CreateFileW(device, 0xC0000000, 3, IntPtr.Zero, 3, 0, IntPtr.Zero)) {
+            if (handle.IsInvalid) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            using (var stream = new FileStream(handle, FileAccess.ReadWrite, 1 << 20)) {
+                var buffer = new byte[bytes]; new Random(seed).NextBytes(buffer);
+                stream.Seek(offset, SeekOrigin.Begin); stream.Write(buffer, 0, bytes); stream.Flush();
+            }
+        }
+    }
+}
+'@
+        }
+        # (Back under their letters a moment after the disk comes online.)
+        $deadline = (Get-Date).AddSeconds(30)
+        do { $w = Get-Volume -DriveLetter W -ErrorAction SilentlyContinue; $x = Get-Volume -DriveLetter X -ErrorAction SilentlyContinue; if (-not ($w -and $x)) { Start-Sleep -Milliseconds 500 } } until (($w -and $x) -or (Get-Date) -gt $deadline)
+        # W: is an ordinary volume, and Windows writes its own files to it
+        # when it arrives, as it does to the source: before the run it is
+        # listed when they are there and two listings in a row agree.
+        $indexer = [bool](Get-Service -Name WSearch -ErrorAction SilentlyContinue | Where-Object { "$($_.StartType)" -ne 'Disabled' })
+        $listed = 'no W:'; $listedOk = $false; $settled = $tag -ne 'before'; $previous = -1; $deadline = (Get-Date).AddSeconds(90)
+        if ($w) {
+            do {
+                $listed = & "$root\lab-volume-manifest.exe" capture --root 'W:\' --output "$root\sibling-a-$tag.jsonl" 2>&1 | Out-String
+                $listedOk = $LASTEXITCODE -eq 0
+                if (-not $listedOk -or $settled) { break }
+                $own = @(Select-String -LiteralPath "$root\sibling-a-$tag.jsonl" -Pattern 'System Volume Information' -SimpleMatch)
+                $has = { param($leaf) [bool]($own | Where-Object { $_.Line -like "*$leaf*" }) }
+                $settled = (& $has 'WPSettings.dat') -and (-not $indexer -or (& $has 'IndexerVolumeGuid')) -and $own.Count -eq $previous
+                $previous = $own.Count
+                if (-not $settled) { Start-Sleep -Seconds 2 }
+            } until ($settled -or (Get-Date) -gt $deadline)
+        }
+        # X: is write-protected in the partition table, the EFI system
+        # partition has no letter, and the partition of another system has
+        # no file system Windows knows: nothing writes to them, so their
+        # bytes, read through the disk, stay as they are. (The last gets
+        # content of its own first: a run of zeros would not show a part
+        # that was zeroed.)
+        $protected = $null
+        if ($x) { try { [IO.File]::WriteAllText('X:\kept\written.txt', 'x'); $protected = $false; Remove-Item -LiteralPath 'X:\kept\written.txt' -Force } catch { $protected = $true } }
+        $raw = [ordered]@{}; $rawErrors = @()
+        $number = if ($w) { (Get-Partition -DriveLetter W).DiskNumber } elseif ($x) { (Get-Partition -DriveLetter X).DiskNumber } else { $null }
+        if ($null -ne $number) {
+            $device = "\\.\PhysicalDrive$number"
+            $parts = @(Get-Partition -DiskNumber $number)
+            $named = [ordered]@{
+                efi = @($parts | Where-Object { "$($_.GptType)" -eq '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' })
+                x = @($parts | Where-Object { "$($_.DriveLetter)" -eq 'X' })
+                other = @($parts | Where-Object { "$($_.GptType)" -eq '{0fc63daf-8483-4772-8e79-3d69d8477de4}' })
+            }
+            foreach ($name in $named.Keys) {
+                $part = $named[$name]
+                if ($part.Count -ne 1) { $rawErrors += "${name}: $($part.Count) such partition(s) on disk $number"; continue }
+                try {
+                    if ($name -eq 'other' -and $tag -eq 'before') { [SiblingRaw]::Fill($device, $part[0].Offset, 4MB, 11); [SiblingRaw]::Fill($device, $part[0].Offset + $part[0].Size - 1MB, 1MB, 12) }
+                    $raw[$name] = [SiblingRaw]::Sha256($device, $part[0].Offset, $part[0].Size)
+                } catch { $rawErrors += "${name}: $($_.Exception.Message)" }
+            }
+        } else { $rawErrors += 'neither W: nor X: is there to find the disk by' }
+        [pscustomobject]@{ a = [bool]$w; a_filesystem = "$($w.FileSystem)"; a_health = "$($w.HealthStatus)"; a_listed = [bool]$listedOk; a_settled = [bool]$settled; a_listing = "$listed".Trim()
+            b = [bool]$x; b_filesystem = "$($x.FileSystem)"; b_write_protected = $protected
+            raw_sha256 = [pscustomobject]$raw; raw_errors = @($rawErrors)
+            b_note = $(if (Test-Path -LiteralPath 'X:\kept\note.txt') { (Get-Content -LiteralPath 'X:\kept\note.txt' -Raw).Trim() } else { $null })
+            a_note = $(if (Test-Path -LiteralPath 'W:\kept\note.txt') { (Get-Content -LiteralPath 'W:\kept\note.txt' -Raw).Trim() } else { $null }) }
+    }
+    # Whatever the run did, the volumes beside the source are what they
+    # were, and are back under their letters.
+    $holdSiblings = {
+        param($saidOfThem)
+        $siblingsAfter = Invoke-Command -Session $session -ArgumentList $siblingRoot, 'after' -ScriptBlock $observeSiblings
+        $sameListing = $false; $listingSummary = ''
+        if ($siblingsAfter.a_listed) {
+            $compared = Invoke-Command -Session $session -ArgumentList $siblingRoot -ScriptBlock {
+                param($root)
+                $summary = & "$root\lab-volume-manifest.exe" compare --exact --before "$root\sibling-a-before.jsonl" --after "$root\sibling-a-after.jsonl" --report "$root\sibling-a-report.json" 2>&1
+                [pscustomobject]@{ exit = $LASTEXITCODE; summary = ($summary -join ' ') }
+            }
+            $sameListing = $compared.exit -eq 0; $listingSummary = $compared.summary
+        }
+        if ($SiblingState -eq 'snapshot') {
+            # A shadow copy of W: keeps its storage in files on W: that
+            # nothing else can read: they are listed as unreadable, before
+            # and after alike, and everything else has to be identical. The
+            # shadow copy itself has to be there still.
+            $kinds = try { ($listingSummary | ConvertFrom-Json).kinds } catch { $null }
+            $names = @(if ($kinds) { $kinds.PSObject.Properties.Name })
+            $onlyStorage = $kinds -and $names.Count -eq 2 -and ($names -contains 'unreadable before') -and ($names -contains 'unreadable afterwards') -and $kinds.'unreadable before' -eq $kinds.'unreadable afterwards'
+            $shadows = Invoke-Command -Session $session -ScriptBlock { $w = (Get-Volume -DriveLetter W -ErrorAction SilentlyContinue).Path; @(Get-CimInstance Win32_ShadowCopy | Where-Object { $w -and $_.VolumeName -eq $w }).Count }
+            $verdict.siblings.shadow_copies_after = $shadows
+            if ($onlyStorage -and $shadows -ge 1) { $sameListing = $true; $listingSummary = "identical apart from the shadow copy's storage, which cannot be read; the shadow copy is still there: $listingSummary" }
+        }
+        foreach ($leaf in 'sibling-a-before.jsonl', 'sibling-a-after.jsonl', 'sibling-a-report.json') { try { Copy-Item -FromSession $session -LiteralPath "$siblingRoot\$leaf" -Destination $records } catch { } }
+        # (A partition that could not be read, on a disk that is still offline, has no hash.)
+        $shaOf = { param($state, $name) $entry = $state.raw_sha256.PSObject.Properties[$name]; if ($entry) { $entry.Value } }
+        $differing = @('efi', 'x', 'other' | Where-Object { $now = & $shaOf $siblingsAfter $_; -not $now -or $now -ne (& $shaOf $verdict.siblings.before $_) })
+        $verdict.siblings.after = $siblingsAfter
+        $verdict.siblings.a_listing_identical = $sameListing
+        $verdict.siblings.a_listing_summary = $listingSummary
+        $verdict.siblings.raw_bytes_identical = $differing.Count -eq 0
+        $verdict.siblings.raw_bytes_differ = $differing
+        $verdict.siblings.said = $saidOfThem
+        $siblingsKept = $sameListing -and $differing.Count -eq 0 -and $siblingsAfter.a_filesystem -eq 'NTFS' -and $siblingsAfter.b_filesystem -eq 'NTFS' -and $siblingsAfter.a_note -eq 'sibling W' -and $siblingsAfter.b_note -eq 'sibling X' -and $siblingsAfter.b_write_protected
+        $verdict.siblings.kept = [bool]$siblingsKept
+        Say "siblings after the run: W: $(if ($siblingsAfter.a) { "$($siblingsAfter.a_filesystem), listing $(if ($sameListing) { 'identical' } else { "DIFFERS: $listingSummary" })" } else { 'NOT BACK' }); X: $(if ($siblingsAfter.b) { "$($siblingsAfter.b_filesystem)" } else { 'NOT BACK' }); bytes of the EFI system partition, X: and the other system's partition: $(if ($differing.Count -eq 0) { 'identical' } else { "DIFFER in $($differing -join ', ') $($siblingsAfter.raw_errors -join '; ')" })"
+        if ($saidOfThem) { Say "the converter said: $saidOfThem" }
+        if (-not $siblingsKept) { $verdict.outcome = "$($verdict.outcome)-but-siblings-changed" }
+    }
+    if ($Siblings) {
+        if ($SiblingState) {
+            $made = Invoke-Command -Session $session -ArgumentList $siblingRoot, $SiblingState -ScriptBlock {
+                param($root, $state)
+                switch ($state) {
+                    'busy' {
+                        # A program that keeps a file on W: open, as an editor or a player does.
+                        $holder = Start-Process -FilePath powershell.exe -WindowStyle Hidden -PassThru -ArgumentList '-NoProfile', '-Command', "`$f = [IO.File]::Open('W:\kept\a.bin', 'Open', 'Read', 'ReadWrite'); Start-Sleep -Seconds 3600"
+                        Set-Content -LiteralPath "$root\sibling-holder.txt" -Value $holder.Id -Encoding ASCII
+                        Start-Sleep -Seconds 4
+                        if ($holder.HasExited) { throw 'the process that was to hold W:\kept\a.bin open has ended' }
+                        "process $($holder.Id) holds W:\kept\a.bin open"
+                    }
+                    'snapshot' {
+                        $result = ([wmiclass]'Win32_ShadowCopy').Create('W:\', 'ClientAccessible')
+                        if ($result.ReturnValue -ne 0) { throw "Win32_ShadowCopy.Create for W: returned $($result.ReturnValue)" }
+                        "a shadow copy of W: ($($result.ShadowID))"
+                    }
+                    'dump' {
+                        $key = 'HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl'
+                        $was = (Get-Item -LiteralPath $key).GetValue('DumpFile', '', 'DoNotExpandEnvironmentNames')
+                        Set-Content -LiteralPath "$root\sibling-dumpfile.txt" -Value "$was" -Encoding ASCII
+                        Set-ItemProperty -LiteralPath $key -Name DumpFile -Value 'W:\MEMORY.DMP' -Type ExpandString
+                        "the crash dump file is W:\MEMORY.DMP (it was '$was')"
+                    }
+                }
+            }
+            $verdict.sibling_state = [ordered]@{ kind = $SiblingState; made = "$made" }
+            Say "sibling state '$SiblingState': $made"
+        }
+        $siblingsBefore = Invoke-Command -Session $session -ArgumentList $siblingRoot, 'before' -ScriptBlock $observeSiblings
+        if (-not ($siblingsBefore.a_listed -and $siblingsBefore.a_settled -and $siblingsBefore.b_write_protected -and $siblingsBefore.a_note -eq 'sibling W' -and $siblingsBefore.b_note -eq 'sibling X' -and $siblingsBefore.raw_sha256.efi -and $siblingsBefore.raw_sha256.x -and $siblingsBefore.raw_sha256.other)) {
+            $verdict.outcome = 'siblings-not-made'; throw "the volumes beside the source could not be recorded: $($siblingsBefore | ConvertTo-Json -Compress -Depth 4)"
+        }
+        $verdict.siblings = [ordered]@{ before = $siblingsBefore }
+        Say "siblings before the run: W: $($siblingsBefore.a_filesystem), listed; X: $($siblingsBefore.b_filesystem), write-protected; SHA-256 of the EFI system partition $($siblingsBefore.raw_sha256.efi.Substring(0, 12)), of X: $($siblingsBefore.raw_sha256.x.Substring(0, 12)), of the other system's partition $($siblingsBefore.raw_sha256.other.Substring(0, 12))"
+    }
     $verdict.source.windows_files_settled = $listed.settled; $verdict.source.search_indexer = $listed.indexer
     Say "listing before the run: $($listed.text)$(if (-not $listed.settled) { ' (Windows had not written its own files to the volume within 150 s)' })$(if (-not $listed.indexer) { ' (this Windows has no search indexer)' })"
 
@@ -501,6 +715,19 @@ try {
     try { Copy-Item -FromSession $session -LiteralPath "$guestRoot\list.txt" -Destination $records } catch { }
     $verdict.list = [ordered]@{ exit = $listed.exit; row = $listed.row; serial = $listed.serial }
     Say "--list: $($listed.row)"
+    if ($FreshFile) {
+        if (-not ($Check -or $CheckOnly)) { throw '-FreshFile is a file made just before a check: with -Check or -CheckOnly' }
+        $fresh = Invoke-Command -Session $session -ArgumentList $guestRoot -ScriptBlock {
+            param($root)
+            [IO.File]::WriteAllText('V:\a file made a moment before the check.txt', 'fresh')
+            $text = & "$root\lab-volume-manifest.exe" capture --root 'V:\' --output "$root\manifest-before.jsonl" 2>&1
+            [pscustomobject]@{ exit = $LASTEXITCODE; text = ($text -join ' ') }
+        }
+        if ($fresh.exit -ne 0) { throw "listing the volume with its fresh file failed (exit $($fresh.exit)): $($fresh.text)" }
+        Copy-Item -FromSession $session -LiteralPath "$guestRoot\manifest-before.jsonl" -Destination $records -Force
+        $verdict.source.fresh_file = 'V:\a file made a moment before the check.txt'
+        Say "a file was created on the volume a moment before the check; listing with it: $($fresh.text)"
+    }
     if ($Check -or $CheckOnly) {
         $checkArguments = @('--drive', 'V', '--scratch-directory', 'S:\datalab\runs', '--check')
         if ($TargetFormat -ne 'default') { $checkArguments += @('--target-format', $TargetFormat) }
@@ -540,6 +767,16 @@ try {
         foreach ($refusal in $checkRefusals) { Say ("check refusal: " + $refusal.Substring(0, [Math]::Min(400, $refusal.Length))) }
         foreach ($line in $verdict.check.takes) { Say "check: $($line.Trim())" }
         if ($checked.exit -notin 0, 3, 5) { $verdict.outcome = 'check-failed'; throw "the check ended with exit $($checked.exit): $(($checked.text | Select-Object -Last 3) -join ' / ')" }
+        if ($FreshFile) {
+            # The check's count of short names against Windows' own: the
+            # listing made a moment before it, which has the fresh file.
+            $counted = @($checkRefusals | ForEach-Object { if ($_ -match '^(\d+) file\(s\) and directories on this volume have an 8\.3 short name') { [int]$Matches[1] } })
+            $listedShort = @(Get-Content -LiteralPath (Join-Path $records 'manifest-before.jsonl') -Encoding UTF8 | Where-Object { $_ -match '"short_name":"' }).Count
+            if ($counted.Count -ne 1) { $verdict.outcome = 'fresh-file-not-countable'; throw '-FreshFile needs a volume whose refusal counts its short names (-Features shortnames)' }
+            $verdict.check.short_names_counted = $counted[0]; $verdict.check.short_names_listed = $listedShort
+            Say "check counted $($counted[0]) short name(s); Windows lists $listedShort"
+            if ($counted[0] -ne $listedShort) { $verdict.outcome = 'check-missed-what-was-just-written'; throw "the check counted $($counted[0]) short names where Windows lists $($listedShort): it did not read what was written a moment before" }
+        }
         if ($checked.left) { $verdict.outcome = 'check-left-working-files'; throw 'the check left a working directory behind' }
         if ($CheckOnly) {
             $after = Invoke-Command -Session $session -ArgumentList $guestRoot -ScriptBlock {
@@ -557,6 +794,7 @@ try {
                 elseif ($checked.exit -eq 5) { 'check-inconclusive' }
                 elseif ($ExpectRefusal -and ($checkRefusals -join "`n") -match $ExpectRefusal) { 'check-refused-as-expected' }
                 else { 'check-found-refusals' }
+            if ($Siblings) { & $holdSiblings ([string]($checked.text | Where-Object { $_ -match '^This volume shares disk ' } | Select-Object -Last 1)) }
             return
         }
         if (-not $verdict.check.source_as_before) { $verdict.outcome = 'check-changed-the-source'; throw 'the check left the volume other than it found it' }
@@ -783,6 +1021,7 @@ try {
         if ($verdict.outcome -in 'refused-source-unchanged', 'refused-as-expected') { $verdict.outcome = 'refused-after-shrinking-the-partition' }
         elseif ($verdict.outcome -in 'diagnose-clean', 'diagnose-found-failures') { $verdict.outcome = 'diagnose-changed-the-source' }
     }
+    if ($Siblings) { & $holdSiblings (& $said '^(This volume shares disk .*)$') }
     if ($Check) {
         # The check and the conversion have to agree: on whether the volume
         # is refused, and, when it is, on why.
@@ -817,6 +1056,22 @@ try {
 } finally {
     if ($worker) { Remove-PSSession $worker -ErrorAction SilentlyContinue }
     try {
+        if ($SiblingState) {
+            # What -SiblingState set up outside the disk (a shadow copy goes
+            # with it), noted in the attempt's first folder.
+            Invoke-Command -Session $session -ArgumentList "C:\n2r\datalab\$Name" -ErrorAction Stop -ScriptBlock {
+                param($root)
+                if (Test-Path -LiteralPath "$root\sibling-holder.txt") {
+                    Stop-Process -Id ([int](Get-Content -LiteralPath "$root\sibling-holder.txt" -Raw)) -Force -ErrorAction SilentlyContinue
+                    Remove-Item -LiteralPath "$root\sibling-holder.txt" -Force
+                }
+                if (Test-Path -LiteralPath "$root\sibling-dumpfile.txt") {
+                    $key = 'HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl'; $was = "$(Get-Content -LiteralPath "$root\sibling-dumpfile.txt" -Raw)".Trim()
+                    if ($was) { Set-ItemProperty -LiteralPath $key -Name DumpFile -Value $was -Type ExpandString } else { Remove-ItemProperty -LiteralPath $key -Name DumpFile -ErrorAction SilentlyContinue }
+                    Remove-Item -LiteralPath "$root\sibling-dumpfile.txt" -Force
+                }
+            }
+        }
         if (-not $KeepVolume) {
             Invoke-Command -Session $session -ArgumentList $guestRoot, $Name -ErrorAction Stop -ScriptBlock {
                 param($root, $name)

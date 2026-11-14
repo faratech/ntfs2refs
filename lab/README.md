@@ -139,11 +139,26 @@ long, online and writable as before (`check-clean`, `check-found-refusals`,
 `check-changed-the-source`). `-WriteLoad`, with `-CheckOnly`, writes files to
 the volume and deletes them all the while the check reads it; the check may
 find the volume at rest or not, and must not report a refusal that is not
-there. A check must leave no working directory behind.
+there. A check must leave no working directory behind. `-FreshFile` creates a
+file on the volume a moment before the check and waits for nothing: with
+`-Features shortnames` the check has to count as many short names as Windows
+lists, or the outcome is `check-missed-what-was-just-written`.
 
 `-CompareListing` runs the converter with `--compare-listing`. The harness
 makes its own listings as always, and the run's comparison has to say what
 the harness's says, or the outcome gets `-but-own-listing-disagreed`.
+
+`-Siblings` puts the source on a disk it shares with four other partitions:
+an EFI system partition (FAT32, no letter), `W:` (NTFS), `X:` (NTFS,
+write-protected in the partition table) and a partition of another operating
+system (no file system Windows knows). Before the run and after it, or after
+its recovery, `W:` is listed and compared exactly, the other three are hashed
+through the disk, and `W:` and `X:` have to be back under their letters;
+anything else adds `-but-siblings-changed` to the outcome. `-SiblingState`
+arranges something about `W:` for which the disk has to be refused: `busy` (a
+process keeps a file on it open), `snapshot` (a shadow copy of it, which has
+to be there still afterwards) and `dump` (the running Windows' crash-dump file
+is set to be on it, and set back when the attempt ends).
 
 Every attempt compares the partition's length before and after. A refused run
 that left it shorter is `refused-after-shrinking-the-partition`.

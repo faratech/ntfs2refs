@@ -134,7 +134,22 @@ fn windows_and_additional_partition_roles_require_explicit_journal_permission() 
     let mut with_efi = e;
     with_efi.gpt_layout[80..96]
         .copy_from_slice(&guid_bytes("c12a7328-f81f-11d2-ba4b-00a0c93ec93b").unwrap());
-    assert!(discovery::binding_from_evidence(VOLUME, &with_efi, Role::Source, 0).is_err());
+    // A data volume beside another partition is bound as a shared data
+    // disk, unless the disk is the running Windows disk. A shadow never is.
+    let shared = discovery::binding_from_evidence(VOLUME, &with_efi, Role::Source, 0).unwrap();
+    assert_eq!(
+        shared.layout_profile,
+        n2r_win32::general_layout::GeneralDiskLayoutProfile::SharedData
+    );
+    assert!(discovery::binding_from_evidence(VOLUME, &with_efi, Role::Source, 7).is_err());
+    assert!(discovery::binding_from_evidence(VOLUME, &with_efi, Role::Shadow, 0).is_err());
+    // With nothing beside it but the reserved partition, a dedicated one.
+    assert_eq!(
+        discovery::binding_from_evidence(VOLUME, &fixture(), Role::Source, 0)
+            .unwrap()
+            .layout_profile,
+        n2r_win32::general_layout::GeneralDiskLayoutProfile::DedicatedData
+    );
     assert!(
         discovery::binding_from_evidence(
             VOLUME,

@@ -268,11 +268,7 @@ pub(in crate::native) fn observe(
             | "enablelogfile" => {
                 let _ = dword(&crash, &item.name)?;
             }
-            _ => {
-                return Err(invalid(
-                    "Unknown CrashControl setting requires an explicit dump-location policy",
-                ));
-            }
+            _ => pass_unknown_setting(item)?,
         }
     }
     for item in &live.values {

@@ -161,6 +161,13 @@ fn main() -> anyhow::Result<()> {
         );
     }
     let source = discovery::discover(&args.source, Role::Source)?;
+    // This route binds a pair of dedicated disks and knows nothing of
+    // volumes beside the source.
+    ensure!(
+        source.binding.layout_profile
+            == n2r_win32::general_layout::GeneralDiskLayoutProfile::DedicatedData,
+        "ntfs2refs-bind takes a source that has its disk to itself; `ntfs2refs --drive` converts a volume that shares its disk"
+    );
     ensure!(
         !args.read_only_shadow || args.experimental_streaming_payload,
         "read-only shadow binding requires the explicit streaming profile"

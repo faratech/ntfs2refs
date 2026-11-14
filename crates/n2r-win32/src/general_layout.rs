@@ -21,10 +21,22 @@ pub enum GeneralDiskLayoutProfile {
     #[default]
     DedicatedData,
     OfflineWindows,
+    /// A data volume on a GPT disk that it shares with other partitions,
+    /// and that is not the disk of the running Windows. The whole disk is
+    /// excluded as for a dedicated data disk; every other volume on it is
+    /// locked and dismounted first, and the disk has to be outside the
+    /// current boot, system, paging and dump roles.
+    SharedData,
 }
 impl GeneralDiskLayoutProfile {
     fn is_dedicated_data(&self) -> bool {
         matches!(self, Self::DedicatedData)
+    }
+
+    /// Whether the disk holds volumes beside the source, which have to be
+    /// dismounted before the disk is excluded.
+    pub fn has_sibling_volumes(self) -> bool {
+        !matches!(self, Self::DedicatedData)
     }
 }
 
@@ -221,10 +233,11 @@ impl GeneralDiskBinding {
         let efi = guid_bytes("c12a7328-f81f-11d2-ba4b-00a0c93ec93b")?;
         let recovery = guid_bytes("de94bba4-06d1-4d40-a16a-bfd50179d6ac")?;
         let windows = self.layout_profile == GeneralDiskLayoutProfile::OfflineWindows;
+        let shared = self.layout_profile == GeneralDiskLayoutProfile::SharedData;
         let mut seen = Vec::<(u32, u64, u64)>::new();
         let mut seen_guids = Vec::<[u8; 16]>::new();
         let (mut target, mut msr_count) = (0, 0);
-        let (mut efi_count, mut recovery_count) = (0, 0);
+        let (mut efi_count, mut recovery_count, mut other_count) = (0, 0, 0);
         for index in 0..count {
             let at = 48 + index * 144;
             let number = layout::u32_at(bytes, at + 24)?;
@@ -252,11 +265,11 @@ impl GeneralDiskBinding {
                 "duplicate, overlapping or malformed GPT partition",
             )?;
             seen.push((number, offset, end));
-            if windows {
+            if windows || shared {
                 let id: [u8; 16] = bytes[at + 48..at + 64].try_into().unwrap();
                 require(
                     !seen_guids.contains(&id),
-                    "Windows GPT partition GUID is duplicated",
+                    "a GPT partition GUID is duplicated on the source disk",
                 )?;
                 seen_guids.push(id);
             }
@@ -275,22 +288,30 @@ impl GeneralDiskBinding {
                     // An MSR has no independently mounted user filesystem.
                     // Its historical 16/128 MiB size and ordering do not
                     // change this owner's whole-disk exclusion contract.
-                    kind == msr || windows && (kind == efi || kind == recovery),
+                    // A shared data disk may hold partitions of any kind:
+                    // none of them is written to, and each one that
+                    // carries a volume is dismounted before the exclusion.
+                    kind == msr || windows && (kind == efi || kind == recovery) || shared,
                     "other data, EFI or system partitions exclude whole-disk isolation",
                 )?;
                 if kind == msr {
                     msr_count += 1;
                 } else if kind == efi {
                     efi_count += 1;
-                } else {
+                } else if kind == recovery {
                     recovery_count += 1;
+                } else {
+                    other_count += 1;
                 }
             }
         }
         require(
             target == 1
                 && msr_count <= 1
-                && (!windows || msr_count == 1 && efi_count == 1 && recovery_count == 1),
+                && (!windows || msr_count == 1 && efi_count == 1 && recovery_count == 1)
+                // With nothing beside it but a reserved partition the disk
+                // is a dedicated one, and is bound as that.
+                && (!shared || efi_count + recovery_count + other_count >= 1),
             "dedicated data-disk partition set differs",
         )
     }

@@ -237,6 +237,23 @@ fn capabilities_report_what_the_executable_enforces() {
     assert!(capabilities.get("recorded_qualification").is_none());
     // What is announced as not carried over or refused is what the code says.
     let data_volume = &capabilities["data_volume"];
+    // A disk with other partitions is taken, and what that means for them
+    // and what refuses it is said.
+    let beside = &data_volume["other_partitions_on_the_disk"];
+    assert_eq!(beside["allowed"], true);
+    assert!(
+        beside["during_the_run"]
+            .as_str()
+            .unwrap()
+            .contains("not written to")
+    );
+    assert_eq!(beside["refused_when"].as_array().unwrap().len(), 4);
+    assert!(
+        !data_volume["disk_layout"]
+            .as_str()
+            .unwrap()
+            .contains("only partition")
+    );
     assert!(
         data_volume["not_carried_over"][0]["what"]
             .as_str()

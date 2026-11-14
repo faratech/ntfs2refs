@@ -1,5 +1,5 @@
 use n2r_win32::{
-    general_layout::GeneralDiskBinding,
+    general_layout::{GeneralDiskBinding, GeneralDiskLayoutProfile},
     layout::{PartitionIdentity, guid_bytes},
 };
 
@@ -82,6 +82,49 @@ fn dedicated_data_disk_accepts_new_geometry_but_refuses_other_volume_classes() {
     let mut overlap = bytes.clone();
     put64(&mut overlap, 48 + 144 + 8, 8 << 20);
     assert!(binding.validate_layout(&overlap).is_err());
+}
+
+#[test]
+fn a_shared_data_disk_takes_any_partition_beside_the_volume_and_needs_one() {
+    let mut shared = binding();
+    shared.layout_profile = GeneralDiskLayoutProfile::SharedData;
+    shared.validate().unwrap();
+    assert!(shared.layout_profile.has_sibling_volumes());
+    assert!(!binding().layout_profile.has_sibling_volumes());
+
+    // Nothing beside the volume but the reserved partition: a dedicated disk.
+    let bytes = layout(&shared);
+    assert!(shared.validate_layout(&bytes).is_err());
+    binding().validate_layout(&bytes).unwrap();
+
+    // Another data volume, an EFI or recovery partition, or one of a kind
+    // Windows does not know, in the first entry.
+    for kind in [
+        "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7",
+        "c12a7328-f81f-11d2-ba4b-00a0c93ec93b",
+        "de94bba4-06d1-4d40-a16a-bfd50179d6ac",
+        "0fc63daf-8483-4772-8e79-3d69d8477de4",
+    ] {
+        let mut beside = bytes.clone();
+        beside[80..96].copy_from_slice(&guid_bytes(kind).unwrap());
+        shared.validate_layout(&beside).unwrap();
+        // The same disk is not a dedicated one.
+        assert!(binding().validate_layout(&beside).is_err(), "{kind}");
+    }
+
+    // What makes a partition table unusable still does.
+    let mut beside = bytes.clone();
+    beside[80..96].copy_from_slice(&guid_bytes("ebd0a0a2-b9e5-4433-87c0-68b6b72699c7").unwrap());
+    let mut overlap = beside.clone();
+    put64(&mut overlap, 48 + 144 + 8, 8 << 20);
+    assert!(shared.validate_layout(&overlap).is_err());
+    let mut same_guid = beside.clone();
+    same_guid[96..112].copy_from_slice(&guid_bytes(&shared.identity.partition_guid).unwrap());
+    assert!(shared.validate_layout(&same_guid).is_err());
+    // And the volume's own entry has to be the one that was bound.
+    let mut moved = beside;
+    put64(&mut moved, 48 + 144 + 16, PARTITION - (1 << 20));
+    assert!(shared.validate_layout(&moved).is_err());
 }
 
 #[test]

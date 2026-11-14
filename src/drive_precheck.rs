@@ -397,9 +397,25 @@ fn read(
         if let Err(error) = asked {
             report.refusals.push(error.to_string());
         }
+        // On a disk the volume shares, the volumes beside it go offline
+        // with it: what a run asks of them before it locks the first.
+        if let Err(error) = n2r_win32::examine_shared_disk(binding.clone(), &mut events) {
+            report.refusals.push(error.to_string());
+        }
     }
 
     laps.end("shadow copies");
+    // What programs wrote a moment ago may be in Windows' cache only, and
+    // the reading is of the disk: Windows is asked to write it out first.
+    // A volume that cannot be written to has nothing waiting.
+    if let Err(error) = n2r_win32::write_out_volume_cache(&binding) {
+        if error.raw_os_error() != Some(19) {
+            report.notes.push(format!(
+                "Windows did not write out what it holds in memory for the volume ({error}); what was written to it in the last seconds may not have been read."
+            ));
+        }
+    }
+    laps.end("Windows writing out its cache");
     let budget = SourceMetadataBudget::from_resource_budget(resources)?;
     let group = arena.reserve_group(ArtifactGroup::Source, budget.scratch_bytes)?;
     let scratch = SourceScratch::new_in_arena(budget, group)?;

@@ -30,7 +30,11 @@ if (-not $Attempts) { $Attempts = Join-Path $workspace '.lab\hyperv\attempts' }
 if (-not $Output) { $Output = Join-Path $workspace 'docs\recovery-matrix.md' }
 
 $Explained = @{
-    'q-finalize-readonly-resume-01' = 'reproduced issue #43 before its fix; t-finalize-readonly-resume-01 is the same row after it'
+    'd5-shared-apply-resume' = 'a fault of the harness: the recovery finished and the volumes beside the source were back with identical bytes, but the harness looked for its earlier listing of one of them in the recovery''s working folder; d6-shared-apply-resume is the same row without it'
+    'd5-shared-apply-rollback' = 'the same fault of the harness; d6-shared-apply-rollback is the same row without it'
+    'd5-shared-handoff-resume' = 'the same fault of the harness; d6-shared-handoff-resume is the same row without it'
+    'd5-shared-handoff-rollback' = 'asked for what recovery refuses by design: after the handoff a rollback is closed, and the run said so ("Run the recovery command without --rollback to finish the conversion")'
+    'q-finalize-readonly-resume-01' ='reproduced issue #43 before its fix; t-finalize-readonly-resume-01 is the same row after it'
     'y-torn-handoff-older-build-01' = 'ran the build from before the fix of issue #1 on purpose, to show that the fix is what recovers a torn marker'
     'r1-stop-supply-cancel' = 'a fault of the harness, which put the cancel command together on the host; r2-stop-supply-cancel is the same row with the command the run prints'
     'r1-stop-journal-cancel' = 'the same fault of the harness; r2-stop-journal-cancel is the same row without it'
@@ -71,13 +75,18 @@ $rows = foreach ($directory in Get-ChildItem -LiteralPath $Attempts -Directory) 
                 left = if (-not $left) { 'not recorded' } elseif ($held) { 'offline or read-only' } else { 'online and writable' }
                 started = (Get-Item -LiteralPath $file).LastWriteTimeUtc.ToString('o') })
     } elseif ($names -contains 'interrupted_at' -and $verdict.interrupted_at) {
-        [pscustomobject]@{ point = "$($verdict.interrupted_at)"; kind = 'process-termination'; mode = "$($verdict.recover_mode)"; volume = 'data volume'
+        # A volume that shares its disk is a row of its own: recovery returns
+        # the volumes beside it too, and the attempt compares them.
+        $shared = $names -contains 'siblings' -and $verdict.siblings
+        [pscustomobject]@{ point = "$($verdict.interrupted_at)"; kind = 'process-termination'; mode = "$($verdict.recover_mode)"; volume = $(if ($shared) { 'data volume on a shared disk' } else { 'data volume' })
             outcome = "$($verdict.outcome)"; name = "$($verdict.name)"; started = (Get-Item -LiteralPath $file).LastWriteTimeUtc.ToString('o') }
     }
 }
 # An attempt that was interrupted and left for a later -RecoverFrom is not a recovery.
 $rows = @($rows | Where-Object { $_.mode -in 'resume', 'rollback' })
-$passed = { param($row) $row.outcome -match '^(RESUMED|ROLLED-BACK)-' -or $row.outcome -in 'resumed', 'rolled-back' }
+# (Case matters: a data-volume attempt that recovered but failed one of its
+# other checks ends as 'resumed-but-...', and is not a recovery that passed.)
+$passed = { param($row) $row.outcome -cmatch '^(RESUMED|ROLLED-BACK)-' -or $row.outcome -cin 'resumed', 'rolled-back' }
 
 function Cell($point, $mode) {
     $all = @($rows | Where-Object { $_.point -eq $point -and $_.mode -eq $mode })

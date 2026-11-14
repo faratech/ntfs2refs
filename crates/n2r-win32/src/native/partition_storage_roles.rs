@@ -824,12 +824,44 @@ fn observe_partition_storage_roles_impl(
         }
         let session = cached.as_ref().unwrap();
         let deadline = Instant::now() + Duration::from_secs(15);
-        let before = query(session, &disks, maximum, deadline)?;
+        let mut before = query(session, &disks, maximum, deadline)?;
         let target_guid = layout::guid_bytes(&binding.storage.identity.partition_guid)?;
-        let selected = before
-            .iter()
-            .find(|r| r.disk_number == binding.storage.disk_number && r.guid == target_guid)
-            .cloned();
+        let listed = |rows: &[StoragePartitionRole]| {
+            rows.iter()
+                .find(|r| r.disk_number == binding.storage.disk_number && r.guid == target_guid)
+                .cloned()
+        };
+        let mut selected = listed(&before);
+        // A disk that came online a moment ago says so in its attributes at
+        // once, and has its partitions in the storage catalog a little
+        // later. A detached source the catalog does not list although its
+        // disk is online is asked for again, for up to ten seconds: a run
+        // that had just returned its source met this gap and reported the
+        // partition as missing.
+        if detached_windows && let Some(disk) = held_selected_disk {
+            let mut arriving = false;
+            while selected.is_none()
+                && super::attributes(disk, &mut Vec::new())? & 1 == 0
+                && Instant::now() + Duration::from_secs(5) < deadline
+            {
+                arriving = true;
+                std::thread::sleep(Duration::from_millis(250));
+                before = query(session, &disks, maximum, deadline)?;
+                selected = listed(&before);
+            }
+            // The catalog was caught while the disk arrived. It is read
+            // until two readings in a row agree, so that everything below
+            // is of one state of it.
+            while arriving && Instant::now() + Duration::from_secs(5) < deadline {
+                std::thread::sleep(Duration::from_millis(250));
+                let again = query(session, &disks, maximum, deadline)?;
+                if again == before {
+                    break;
+                }
+                before = again;
+                selected = listed(&before);
+            }
+        }
         need(
             !before.iter().any(|row| {
                 row.disk_number == binding.storage.disk_number

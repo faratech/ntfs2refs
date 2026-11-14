@@ -120,6 +120,24 @@ param(
     # With -Unattended: give a serial number that is not the volume's. The run
     # has to refuse before it opens anything.
     [switch]$WrongSerial,
+    # Run `ntfs2refs --check` on the volume first and record what it says
+    # (check.txt, and `check` in the verdict). The attempt then goes on as
+    # usual and the two are compared: a check that found nothing before a
+    # conversion that was refused, or the other way round, adds
+    # "-but-check-disagreed" to the outcome, and a check that named a
+    # refusal other than the one the conversion gave adds
+    # "-but-check-named-another-refusal".
+    [switch]$Check,
+    # Only the check: nothing is converted, and the volume has to list
+    # exactly as before and be as long, online and writable as before.
+    # Outcomes: check-clean, check-found-refusals (check-refused-as-expected
+    # when -ExpectRefusal matches one of them), check-inconclusive,
+    # check-changed-the-source.
+    [switch]$CheckOnly,
+    # With -CheckOnly: files are written to and deleted from the volume all
+    # the while it is read. The check may find the volume at rest or not; it
+    # must never report a refusal that is not there.
+    [switch]$WriteLoad,
     [switch]$KeepVolume
 )
 $ErrorActionPreference = 'Stop'; Set-StrictMode -Version Latest
@@ -472,6 +490,66 @@ try {
     try { Copy-Item -FromSession $session -LiteralPath "$guestRoot\list.txt" -Destination $records } catch { }
     $verdict.list = [ordered]@{ exit = $listed.exit; row = $listed.row; serial = $listed.serial }
     Say "--list: $($listed.row)"
+    if ($Check -or $CheckOnly) {
+        $checkArguments = @('--drive', 'V', '--scratch-directory', 'S:\datalab\runs', '--check')
+        if ($TargetFormat -ne 'default') { $checkArguments += @('--target-format', $TargetFormat) }
+        if ($TargetClusterBytes) { $checkArguments += @('--target-cluster-bytes', "$TargetClusterBytes") }
+        $checked = Invoke-Command -Session $session -ArgumentList $guestRoot, $checkArguments, ([bool]$WriteLoad) -ScriptBlock {
+            param($root, $arguments, $load)
+            $writer = $null
+            if ($load) {
+                $writer = Start-Job -ScriptBlock {
+                    $i = 0
+                    while ($true) {
+                        $i++
+                        [IO.File]::WriteAllBytes("V:\load-$($i % 300).bin", (New-Object byte[] (4096 * (1 + $i % 60))))
+                        if ($i % 5 -eq 0) { Remove-Item "V:\load-$(($i * 7) % 300).bin" -Force -ErrorAction SilentlyContinue }
+                    }
+                }
+                Start-Sleep -Seconds 3
+            }
+            $clock = [Diagnostics.Stopwatch]::StartNew()
+            $text = @(& "$root\ntfs2refs.exe" @arguments 2>&1 | ForEach-Object { "$_" })
+            $exit = $LASTEXITCODE
+            $seconds = [Math]::Round($clock.Elapsed.TotalSeconds, 1)
+            if ($writer) { Stop-Job $writer; Remove-Job $writer -Force; Remove-Item 'V:\load-*.bin' -Force -ErrorAction SilentlyContinue }
+            [IO.File]::WriteAllLines("$root\check.txt", [string[]]$text, [Text.UTF8Encoding]::new($false))
+            $left = @(Get-ChildItem 'S:\datalab\runs' -Directory -Filter 'check-*' -ErrorAction SilentlyContinue).Count
+            $partition = Get-Partition -DriveLetter V; $disk = Get-Disk -Number $partition.DiskNumber
+            [pscustomobject]@{ exit = $exit; seconds = $seconds; text = $text; left = $left
+                bytes = $partition.Size; offline = [bool]$disk.IsOffline; read_only = [bool]$disk.IsReadOnly; filesystem = (Get-Volume -DriveLetter V).FileSystem }
+        }
+        try { Copy-Item -FromSession $session -LiteralPath "$guestRoot\check.txt" -Destination $records } catch { }
+        $checkRefusals = @($checked.text | Where-Object { $_ -match '^\s+\d+\.\s' -or $_ -match '^A conversion would refuse this volume: ' } | ForEach-Object { ($_ -replace '^\s+\d+\.\s+', '') -replace '^A conversion would refuse this volume: ', '' })
+        $verdict.check = [ordered]@{ exit = $checked.exit; seconds = $checked.seconds; refusals = $checkRefusals
+            takes = @($checked.text | Where-Object { $_ -match '^  \S' -and $_ -notmatch '^\s+\d+\.\s' })
+            working_directories_left = $checked.left; write_load = [bool]$WriteLoad
+            source_as_before = ($checked.bytes -eq $verdict.source.observed.partition_bytes -and -not $checked.offline -and -not $checked.read_only -and $checked.filesystem -eq 'NTFS') }
+        Say "check: exit $($checked.exit) after $($checked.seconds) s; $($checkRefusals.Count) refusal(s)$(if ($checked.left) { "; $($checked.left) working director(ies) left behind" })"
+        foreach ($refusal in $checkRefusals) { Say ("check refusal: " + $refusal.Substring(0, [Math]::Min(400, $refusal.Length))) }
+        foreach ($line in $verdict.check.takes) { Say "check: $($line.Trim())" }
+        if ($checked.exit -notin 0, 3, 5) { $verdict.outcome = 'check-failed'; throw "the check ended with exit $($checked.exit): $(($checked.text | Select-Object -Last 3) -join ' / ')" }
+        if ($checked.left) { $verdict.outcome = 'check-left-working-files'; throw 'the check left a working directory behind' }
+        if ($CheckOnly) {
+            $after = Invoke-Command -Session $session -ArgumentList $guestRoot -ScriptBlock {
+                param($root)
+                $listed = & "$root\lab-volume-manifest.exe" capture --root 'V:\' --output "$root\manifest-after.jsonl" 2>&1
+                if ($LASTEXITCODE -ne 0) { return [pscustomobject]@{ identical = $false; summary = "listing failed ($LASTEXITCODE): $($listed -join ' ')" } }
+                $summary = & "$root\lab-volume-manifest.exe" compare --exact --before "$root\manifest-before.jsonl" --after "$root\manifest-after.jsonl" --report "$root\manifest-report.json" 2>&1
+                [pscustomobject]@{ identical = ($LASTEXITCODE -eq 0); summary = ($summary -join ' ') }
+            }
+            foreach ($leaf in 'manifest-after.jsonl', 'manifest-report.json') { try { Copy-Item -FromSession $session -LiteralPath "$guestRoot\$leaf" -Destination $records } catch { } }
+            $verdict.manifest = [ordered]@{ result = $(if ($after.identical) { 'identical' } else { 'differs' }); exact = $true; summary = $after.summary }
+            Say "before/after comparison, exact: $($verdict.manifest.result): $($after.summary)"
+            $verdict.outcome = if (-not $verdict.check.source_as_before -or (-not $WriteLoad -and -not $after.identical)) { 'check-changed-the-source' }
+                elseif ($checked.exit -eq 0) { 'check-clean' }
+                elseif ($checked.exit -eq 5) { 'check-inconclusive' }
+                elseif ($ExpectRefusal -and ($checkRefusals -join "`n") -match $ExpectRefusal) { 'check-refused-as-expected' }
+                else { 'check-found-refusals' }
+            return
+        }
+        if (-not $verdict.check.source_as_before) { $verdict.outcome = 'check-changed-the-source'; throw 'the check left the volume other than it found it' }
+    }
     if ('bitlocker' -in $wanted -and $listed.row -notmatch 'encrypted with BitLocker') {
         $verdict.outcome = 'list-did-not-show-bitlocker'; throw "--list does not say that V: is encrypted with BitLocker: $($listed.row)"
     }
@@ -692,6 +770,18 @@ try {
         Say "the partition's length changed by $($lengthAfter - $lengthBefore) bytes ($lengthBefore -> $lengthAfter)"
         if ($verdict.outcome -in 'refused-source-unchanged', 'refused-as-expected') { $verdict.outcome = 'refused-after-shrinking-the-partition' }
         elseif ($verdict.outcome -in 'diagnose-clean', 'diagnose-found-failures') { $verdict.outcome = 'diagnose-changed-the-source' }
+    }
+    if ($Check) {
+        # The check and the conversion have to agree: on whether the volume
+        # is refused, and, when it is, on why.
+        $refusedNow = $verdict.outcome -match '^refused'
+        $wholeError = if (Test-Path -LiteralPath $stderr) { (Get-Content -LiteralPath $stderr -Encoding UTF8) -join "`n" } else { '' }
+        $same = @($verdict.check.refusals | Where-Object { $_ -and $wholeError.Contains($_.Substring(0, [Math]::Min(60, $_.Length))) }).Count -gt 0
+        $verdict.check.agrees = switch ($verdict.check.exit) { 0 { -not $refusedNow } 3 { $refusedNow } default { $null } }
+        $verdict.check.named_the_same_refusal = if ($verdict.check.exit -eq 3 -and $refusedNow) { $same } else { $null }
+        Say "check and run: $(if ($null -eq $verdict.check.agrees) { 'the check was inconclusive' } elseif ($verdict.check.agrees) { 'agree' } else { 'DISAGREE' })$(if ($null -ne $verdict.check.named_the_same_refusal) { "; the same refusal: $($verdict.check.named_the_same_refusal)" })"
+        if ($verdict.check.agrees -eq $false) { $verdict.outcome = "$($verdict.outcome)-but-check-disagreed" }
+        elseif ($verdict.check.named_the_same_refusal -eq $false) { $verdict.outcome = "$($verdict.outcome)-but-check-named-another-refusal" }
     }
     if ($verdict.target.requested) { Say "target: the run asked for '$($verdict.target.requested)'; Windows reports '$($verdict.target.windows_reports)'" }
     if ($ExpectTarget -and $verdict.outcome -eq 'converted' -and "$($verdict.target.windows_reports)" -notmatch $ExpectTarget) { $verdict.outcome = 'converted-but-target-differs' }

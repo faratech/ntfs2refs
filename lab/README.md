@@ -127,6 +127,23 @@ converter as a script would, with `--yes --volume-serial <the serial number
 be refused before anything is opened (`-ExpectRefusal volume-serial`). The
 `bitlocker` case also requires `--list` to say that the volume is encrypted.
 
+`-Check` runs `ntfs2refs --check` on the volume before the attempt and keeps
+what it printed (`check.txt`; the verdict has its exit code, its refusals and
+its estimate). The attempt then goes on, and the two have to agree: a check
+that found nothing before a conversion that is refused, or the reverse, adds
+`-but-check-disagreed` to the outcome, and a check that named another refusal
+than the conversion gave adds `-but-check-named-another-refusal`. `-CheckOnly`
+runs the check alone: the volume has to list exactly as before and be as
+long, online and writable as before (`check-clean`, `check-found-refusals`,
+`check-refused-as-expected` with `-ExpectRefusal`, `check-inconclusive`,
+`check-changed-the-source`). `-WriteLoad`, with `-CheckOnly`, writes files to
+the volume and deletes them all the while the check reads it; the check may
+find the volume at rest or not, and must not report a refusal that is not
+there. A check must leave no working directory behind.
+
+Every attempt compares the partition's length before and after. A refused run
+that left it shorter is `refused-after-shrinking-the-partition`.
+
 `-Content many` replaces the mixed content with two files that are past numbers
 which used to be fixed: one with 200 named streams, and a sparse file with
 `-Islands` separately allocated islands (70,000 by default), whose mapping

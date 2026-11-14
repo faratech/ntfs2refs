@@ -332,8 +332,10 @@ reserves in it more than it uses: with 15.6 GiB free, a volume of 500,000
 small files was returned unchanged after 21 minutes because the ledger was
 full, although the run had used 3.2 GiB. On the lab's volumes a run needs
 about 34 KiB of free memory for every file (3.2 GiB for 100,000 files, 16
-GiB for 500,000). When a run stops for this it says which reservations were
-the largest, and every run prints how high its reservations went.
+GiB for 500,000). `--check`, and the reading a run makes before it asks,
+give that figure and refuse a volume the free memory is not enough for
+before anything is built. A run that stops for memory all the same says which reservations
+were the largest, and every run prints how high its reservations went.
 
 ## Convert an installed Windows
 

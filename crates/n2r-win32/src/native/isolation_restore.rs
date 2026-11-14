@@ -192,9 +192,7 @@ impl GeneralFrozenPartition {
             events,
         )?;
         binding.validate_volume_extent(&extents)?;
-        let mut sibling_locks = if binding.layout_profile
-            == crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows
-        {
+        let mut sibling_locks = if binding.layout_profile.has_sibling_volumes() {
             super::offline_windows::lock_sibling_volumes(&binding, &pre_lock.gpt_layout, events)?
         } else {
             Vec::new()

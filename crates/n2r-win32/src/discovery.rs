@@ -191,7 +191,10 @@ pub fn binding_from_evidence(
     )?;
     let mut seen = Vec::<(u32, u64, u64, [u8; 16])>::new();
     let mut target = None;
+    // Partitions beside the volume's own, a reserved one not counted.
+    let mut beside = 0usize;
     let basic = guid_bytes("ebd0a0a2-b9e5-4433-87c0-68b6b72699c7")?;
+    let reserved = guid_bytes("e3c9e316-0b5c-4db8-817d-f92df00215ae")?;
     for index in 0..count {
         let at = 48 + index * 144;
         let part_number = u32_at(raw, at + 24)?;
@@ -235,16 +238,24 @@ pub fn binding_from_evidence(
                 "ambiguous or unsupported target partition",
             )?;
             target = Some((part_number, guid_text(&id)?));
+        } else if kind != reserved {
+            beside += 1;
         }
     }
     let (partition_number, partition_guid) = target.ok_or_else(|| {
         invalid("single volume extent does not identify a GPT basic-data partition")
     })?;
     let binding = GeneralDiskBinding {
-        layout_profile: if role == Role::OfflineWindowsSource {
-            crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows
-        } else {
-            Default::default()
+        // A data volume's disk is a dedicated one, or one it shares with
+        // other partitions: the layout says which, not the caller.
+        layout_profile: match role {
+            Role::OfflineWindowsSource => {
+                crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+            }
+            Role::Source if beside > 0 => {
+                crate::general_layout::GeneralDiskLayoutProfile::SharedData
+            }
+            _ => Default::default(),
         },
         disk_number: number,
         volume_guid: guid.to_ascii_lowercase(),

@@ -384,8 +384,10 @@ pub fn conversion_note(disk: &DiskInventory, partition: &PartitionInventory) -> 
             "convertible as a Windows boot volume (--windows-boot-volume), if it is a qualified Windows build{unchecked}"
         ));
     }
+    // A data disk with other partitions: the whole disk still goes offline,
+    // and the volumes beside this one with it.
     Some(format!(
-        "not convertible: the disk holds {} other partition(s); a data volume has to be the only one on its disk, apart from a Microsoft reserved partition",
+        "convertible as a data volume; the disk's {} other partition(s) go offline with it for the length of the run{unchecked}",
         others
             .iter()
             .filter(|kind| kind.as_str() != TYPE_MSR)
@@ -557,10 +559,11 @@ mod tests {
                 partition(3, BASIC, Some("NTFS")),
             ],
         );
-        assert!(
-            note(&shared, 2).unwrap().contains("1 other partition"),
-            "{:?}",
-            note(&shared, 2)
+        assert_eq!(
+            note(&shared, 2).as_deref(),
+            Some(
+                "convertible as a data volume; the disk's 1 other partition(s) go offline with it for the length of the run"
+            )
         );
         // An offline Windows disk.
         let windows = disk(

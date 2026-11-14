@@ -388,7 +388,7 @@ try{
  $old=[long]$request.source.identity.partition_bytes;$target=[long]$request.target_bytes
  # A data disk's binding is written without its layout, which is the default.
  $profile=$request.source.PSObject.Properties['layout_profile'];$layout=if($profile){[string]$profile.Value}else{'dedicated_data'};$count=[int]$request.partitions
- if(($layout-cne'offline_windows'-and$layout-cne'dedicated_data')-or($layout-ceq'offline_windows'-and$count-ne4)-or($layout-ceq'dedicated_data'-and($count-lt1-or$count-gt2))-or$target-le0-or$target-ge$old-or($old-$target)-ge67108864-or$target%67108864-ne0-or$target-ne($old-$old%67108864)){throw 'Only the necessary sub64MiB geometry shrink of a Windows or data source is admitted'}
+ if(($layout-cne'offline_windows'-and$layout-cne'dedicated_data'-and$layout-cne'shared_data')-or($layout-ceq'offline_windows'-and$count-ne4)-or($layout-ceq'dedicated_data'-and($count-lt1-or$count-gt2))-or($layout-ceq'shared_data'-and$count-lt2)-or$target-le0-or$target-ge$old-or($old-$target)-ge67108864-or$target%67108864-ne0-or$target-ne($old-$old%67108864)){throw 'Only the necessary sub64MiB geometry shrink of a Windows or data source is admitted'}
  $before=State;Guard $before $old
  $support=Get-PartitionSupportedSize -DiskNumber $request.source.disk_number -PartitionNumber $request.source.identity.partition_number
  if($target-lt[long]$support.SizeMin-or$target-gt[long]$support.SizeMax){throw 'NTFS driver cannot shrink to the exact required ReFS geometry'}

@@ -397,6 +397,11 @@ fn read(
         if let Err(error) = asked {
             report.refusals.push(error.to_string());
         }
+        // On a disk the volume shares, the volumes beside it go offline
+        // with it: what a run asks of them before it locks the first.
+        if let Err(error) = n2r_win32::examine_shared_disk(binding.clone(), &mut events) {
+            report.refusals.push(error.to_string());
+        }
     }
 
     laps.end("shadow copies");

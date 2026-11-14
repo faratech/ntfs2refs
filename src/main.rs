@@ -541,7 +541,17 @@ fn run() -> Result<u8> {
                     },
                     // What a data volume that has been in use meets.
                     "data_volume": {
-                        "disk_layout": "a GPT disk on which the volume is the only partition apart from a Microsoft reserved partition; --list says for each NTFS partition whether it qualifies",
+                        "disk_layout": "a GPT disk other than the running Windows'; --list says for each NTFS partition whether it qualifies",
+                        "other_partitions_on_the_disk": {
+                            "allowed": true,
+                            "during_the_run": "the whole disk is offline: their volumes are dismounted first, are unavailable until the run ends, and are not written to",
+                            "after_an_interruption": "they stay offline with the disk until --recover finishes or undoes the run",
+                            "refused_when": ["the running Windows has a page file or its crash-dump file on the disk, or its boot or system partition",
+                                             "a volume beside the source has shadow copies or stores those of another volume",
+                                             "a program has a file open on a volume beside the source (found when the run locks it, not by --check)",
+                                             "the source holds an installed Windows and the disk has an EFI system partition: --windows-boot-volume is for that"],
+                            "not_with": ["--whole-image-verification", "--experimental-thin-shadow"],
+                        },
                         "requires": ["administrator rights, checked before a disk is opened",
                                      "the Windows build, checked before a disk is opened"],
                         "not_carried_over": [

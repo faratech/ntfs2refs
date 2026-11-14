@@ -214,6 +214,12 @@ pub const EXIT_DIAGNOSE_FAILURES: u8 = 3;
 /// What a check cannot say, because only the frozen source shows it: in the
 /// words of its report.
 pub const CHECK_DECIDED_WHEN_FROZEN: &str = "that the NTFS log closes cleanly, the backup boot sector and the MFT mirror, an open transaction, whether quota management is switched on, and that Windows shows every file as the raw volume holds it";
+/// GPT partition types a run names: an EFI system partition, and the
+/// reserved partition that holds no volume.
+#[cfg_attr(not(windows), allow(dead_code))]
+const EFI_SYSTEM_PARTITION: &str = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b";
+#[cfg_attr(not(windows), allow(dead_code))]
+const RESERVED_PARTITION: &str = "e3c9e316-0b5c-4db8-817d-f92df00215ae";
 /// Exit code of `--check` when it found something a conversion would refuse.
 pub const EXIT_CHECK_REFUSALS: u8 = 3;
 /// Exit code of `--check` when the volume changed during every reading:
@@ -992,11 +998,52 @@ mod windows {
         let before = discovery::discover(&selected.volume_guid_path, source_role)
             .map_err(|error| if error.raw_os_error() == Some(5) {
                 anyhow::anyhow!("administrator access is required for conversion; run from an elevated Windows terminal: {error}")
-            } else { anyhow::anyhow!("selected volume is not an eligible dedicated data volume: {error}") })?;
+            } else { anyhow::anyhow!("the selected volume's disk is not one a data volume is converted on: {error}") })?;
         ensure!(
             before.filesystem == "NTFS",
             "selected partition must currently be NTFS"
         );
+        // A disk the volume shares with other partitions: what else is on
+        // it, for the lines before the prompt. Refused here where the
+        // route has no way of dismounting those volumes, or where the
+        // volume is an installed Windows that would be left unable to start.
+        let beside = if before.binding.layout_profile
+            == n2r_win32::general_layout::GeneralDiskLayoutProfile::SharedData
+        {
+            ensure!(
+                !args.whole_image_verification && !args.experimental_thin_shadow,
+                "--whole-image-verification and --experimental-thin-shadow take a volume on a disk of its own; this one shares disk {} with other partitions. Nothing was changed.",
+                selected.disk_number
+            );
+            let disk = inventory
+                .disks
+                .iter()
+                .find(|disk| disk.disk_number == selected.disk_number)
+                .context("the selected disk is no longer listed")?;
+            let others: Vec<&drive_inventory::PartitionInventory> = disk
+                .partitions
+                .iter()
+                .filter(|other| other.partition_number != selected.partition_number)
+                .collect();
+            let efi = others.iter().any(|other| {
+                other
+                    .partition_type_guid
+                    .as_deref()
+                    .is_some_and(|kind| kind.eq_ignore_ascii_case(EFI_SYSTEM_PARTITION))
+            });
+            let installed = selected.partition.mount_paths.iter().any(|root| {
+                std::path::Path::new(root)
+                    .join("Windows\\System32\\ntoskrnl.exe")
+                    .exists()
+            });
+            ensure!(
+                !(efi && installed),
+                "this volume holds an installed Windows (Windows\\System32\\ntoskrnl.exe) on a disk with an EFI system partition. Converted as a data volume it would no longer start. Convert it with --windows-boot-volume, which is admitted for the boot profiles `ntfs2refs capabilities` lists. Nothing was changed."
+            );
+            Some(shared_disk_lines(selected.disk_number, &others))
+        } else {
+            None
+        };
         // Decided from the partition length before anything is asked.
         // ReFS covers a volume in whole 64 MiB units, whatever the source
         // is: a partition that is not a multiple is first shrunk to one. A
@@ -1017,8 +1064,20 @@ mod windows {
             crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2
         };
         let mut events = Vec::new();
+        // What the running Windows keeps on the volume's disk (a page file,
+        // its crash dumps) refuses the disk before anything else is asked.
         let mut reader =
-            n2r_win32::GeneralPartitionReader::open(before.binding.clone(), &mut events)?;
+            n2r_win32::GeneralPartitionReader::open(before.binding.clone(), &mut events).map_err(
+                |error| {
+                    if n2r_win32::refusal::is_refusal(&error) {
+                        anyhow::anyhow!(
+                            "this volume is refused, and nothing on it was changed (it stayed online and was only read): {error}"
+                        )
+                    } else {
+                        error.into()
+                    }
+                },
+            )?;
         let mut boot = [0u8; 512];
         reader.read_exact(&mut boot)?;
         let geometry = crate::ntfs_inspect::inspect_boot_sector(&boot, reader.byte_len())?;
@@ -1079,6 +1138,9 @@ mod windows {
         }
         if let Some(decision) = boot_geometry {
             super::boot::describe_geometry(decision);
+        }
+        for line in beside.iter().flatten() {
+            println!("{line}");
         }
         if !n2r_win32::windows_build::shown_in_lab(windows) {
             println!(
@@ -1195,6 +1257,53 @@ mod windows {
             listing_root,
         )
     }
+    /// What a run says, before it asks, of the partitions that share the
+    /// source's disk: which they are, and what happens to their volumes.
+    pub(super) fn shared_disk_lines(
+        disk_number: u32,
+        others: &[&drive_inventory::PartitionInventory],
+    ) -> Vec<String> {
+        let named: Vec<String> = others
+            .iter()
+            .filter(|other| {
+                !other
+                    .partition_type_guid
+                    .as_deref()
+                    .is_some_and(|kind| kind.eq_ignore_ascii_case(RESERVED_PARTITION))
+            })
+            .map(|other| {
+                format!(
+                    "{} ({}, {}{})",
+                    if other.mount_paths.is_empty() {
+                        format!("partition {}", other.partition_number)
+                    } else {
+                        other.mount_paths.join(", ")
+                    },
+                    other
+                        .filesystem
+                        .as_deref()
+                        .unwrap_or("no file system Windows knows"),
+                    size(other.size_bytes),
+                    other
+                        .label
+                        .as_deref()
+                        .filter(|label| !label.is_empty())
+                        .map(|label| format!(", {}", clean(label)))
+                        .unwrap_or_default()
+                )
+            })
+            .collect();
+        vec![
+            format!(
+                "This volume shares disk {disk_number} with {} other partition(s): {}.",
+                named.len(),
+                named.join("; ")
+            ),
+            "A conversion takes the whole disk offline. The volumes on those partitions are dismounted first and are not available until the run ends; for part of it Windows shows them read-only. Nothing is written to them. Close what uses them before you go on.".to_owned(),
+            "If the run is cut off, they stay offline with the disk until the run is finished or undone with --recover.".to_owned(),
+        ]
+    }
+
     /// The volume that holds the working directory, with the root of the
     /// running Windows and its own. Working storage (run records, shadow
     /// VHDX, journal) lives there. It defaults to the Windows volume but may
@@ -1358,13 +1467,22 @@ mod windows {
             }
             Err(error) => {
                 return stopped(&format!(
-                    "it is not a data volume on a disk of its own: {error}"
+                    "its disk is not one a data volume is converted on: {error}"
                 ));
             }
         };
         let mut events = Vec::new();
         let mut reader =
-            n2r_win32::GeneralPartitionReader::open(before.binding.clone(), &mut events)?;
+            match n2r_win32::GeneralPartitionReader::open(before.binding.clone(), &mut events) {
+                Ok(reader) => reader,
+                // What the running Windows keeps on the volume's disk (a page
+                // file, its crash dumps) is the converter's own decision
+                // about the disk, not a read that failed.
+                Err(error) if n2r_win32::refusal::is_refusal(&error) => {
+                    return stopped(&error.to_string());
+                }
+                Err(error) => return Err(error.into()),
+            };
         let mut boot = [0u8; 512];
         reader.read_exact(&mut boot)?;
         let geometry = match crate::ntfs_inspect::inspect_boot_sector(&boot, reader.byte_len()) {
@@ -1386,6 +1504,34 @@ mod windows {
             clean(&before.label),
             crate::confirmation::format_volume_serial(before.volume_serial_low32)
         );
+        if before.binding.layout_profile
+            == n2r_win32::general_layout::GeneralDiskLayoutProfile::SharedData
+        {
+            let others: Vec<&drive_inventory::PartitionInventory> = disk
+                .partitions
+                .iter()
+                .filter(|other| other.partition_number != selected.partition_number)
+                .collect();
+            let efi = others.iter().any(|other| {
+                other
+                    .partition_type_guid
+                    .as_deref()
+                    .is_some_and(|kind| kind.eq_ignore_ascii_case(EFI_SYSTEM_PARTITION))
+            });
+            let installed = partition.mount_paths.iter().any(|root| {
+                std::path::Path::new(root)
+                    .join("Windows\\System32\\ntoskrnl.exe")
+                    .exists()
+            });
+            if efi && installed {
+                return stopped(
+                    "it holds an installed Windows (Windows\\System32\\ntoskrnl.exe) on a disk with an EFI system partition; converted as a data volume it would no longer start. Such a volume is converted with --windows-boot-volume",
+                );
+            }
+            for line in shared_disk_lines(selected.disk_number, &others) {
+                println!("{line}");
+            }
+        }
         let default_format = n2r_win32::managed_shadow::TargetFormatProfile::default_for(
             n2r_win32::run_environment::is_windows_server()?,
             false,
@@ -1909,6 +2055,61 @@ mod tests {
         // Once a recovery bundle is published, its recovery command is the way.
         std::fs::write(conversion.join("compact-recovery-bundle.json"), b"{}").unwrap();
         assert_eq!(windows::frozen_source_way_back(&conversion), None);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn a_run_names_the_partitions_that_go_offline_with_the_volume() {
+        use n2r_win32::drive_inventory::PartitionInventory;
+        let partition = |number: u32, kind: &str, letter: Option<&str>, label: Option<&str>| {
+            PartitionInventory {
+                disk_number: 3,
+                partition_number: number,
+                partition_style: "GPT".into(),
+                offset_bytes: Some(0),
+                size_bytes: Some(2 * 1024 * 1024 * 1024),
+                partition_guid: None,
+                partition_type_guid: Some(kind.into()),
+                gpt_name: None,
+                mbr_type: None,
+                mbr_active: None,
+                service_partition: None,
+                volume_guid_paths: Vec::new(),
+                mount_paths: letter.iter().map(|letter| (*letter).to_owned()).collect(),
+                filesystem: letter.map(|_| "NTFS".to_owned()),
+                label: label.map(str::to_owned),
+                volume_serial: None,
+                bitlocker: None,
+                read_only: None,
+                offline: None,
+                contains_running_windows: Some(false),
+                is_system: None,
+                unsupported_reason: None,
+            }
+        };
+        let basic = "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7";
+        let reserved = partition(1, &RESERVED_PARTITION.to_ascii_uppercase(), None, None);
+        let lettered = partition(2, basic, Some("W:\\"), Some("Photos"));
+        let bare = partition(4, "0fc63daf-8483-4772-8e79-3d69d8477de4", None, None);
+        let said = windows::shared_disk_lines(3, &[&reserved, &lettered, &bare]);
+        // The reserved partition holds no volume and is not counted; a
+        // partition without a letter is named by its number.
+        assert_eq!(
+            said[0],
+            "This volume shares disk 3 with 2 other partition(s): W:\\ (NTFS, 2.00 GiB, Photos); partition 4 (no file system Windows knows, 2.00 GiB)."
+        );
+        // What happens to them, and what a run that is cut off leaves.
+        assert!(said[1].contains("takes the whole disk offline"), "{said:?}");
+        assert!(said[1].contains("Nothing is written to them"), "{said:?}");
+        assert!(said[2].contains("--recover"), "{said:?}");
+        assert_eq!(said.len(), 3);
+        // The guide quotes the two lines that are the same for every disk.
+        let guide = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/docs/cli-workflow.md"));
+        for line in &said[1..] {
+            assert!(
+                guide.contains(line.as_str()),
+                "the guide does not quote {line:?}"
+            );
+        }
     }
     use clap::{Parser, error::ErrorKind};
 

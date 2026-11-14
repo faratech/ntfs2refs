@@ -962,9 +962,10 @@ pub(crate) fn general_disk_state(
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<GeneralDiskState> {
     binding.validate()?;
-    if binding.layout_profile == crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows {
+    if binding.layout_profile.has_sibling_volumes() {
         // Whether the running Windows keeps a page file, dump file or boot
-        // role on this disk. The disk is offline, so none can be added; the
+        // role on this disk, on the source or on a volume beside it. The
+        // disk is offline, so none can be added; the
         // answer (four WMI queries) is refreshed every two seconds rather
         // than on every state query.
         static PACED: crate::verify_policy::Paced = crate::verify_policy::Paced::new();
@@ -1014,6 +1015,24 @@ fn general_disk_state_held_geometry(
         gpt_layout,
         disk_attributes,
     })
+}
+
+/// What stands against taking the disk of `binding` offline when the source
+/// shares it with other volumes: a role of the running Windows on the disk,
+/// a volume Windows does not describe, shadow copies of a volume beside the
+/// source or shadow storage on one. Nothing is changed and no volume is
+/// locked; whether something has a file open on one of those volumes is
+/// found out only when a run locks it. A disk the source has to itself is
+/// not asked anything.
+pub fn examine_shared_disk(
+    binding: GeneralDiskBinding,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<()> {
+    if !binding.layout_profile.has_sibling_volumes() {
+        return Ok(());
+    }
+    let probe = probe_general(binding.clone(), events)?;
+    offline_windows::examine(&binding, &probe.gpt_layout, events)
 }
 
 /// Observe stable GPT identity, geometry and attributes through one read-only
@@ -2286,9 +2305,7 @@ impl GeneralFrozenPartition {
     /// The Windows-source profile also pays the bounded native role workspace.
     pub fn read_buffer_memory_bytes_for(binding: &GeneralDiskBinding) -> u64 {
         Self::read_buffer_memory_bytes()
-            + if binding.layout_profile
-                == crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows
-            {
+            + if binding.layout_profile.has_sibling_volumes() {
                 8 * 1024 * 1024
             } else {
                 0
@@ -2588,9 +2605,7 @@ impl GeneralFrozenPartition {
         {
             return Err(invalid("general disk changed before lock"));
         }
-        let mut sibling_locks = if binding.layout_profile
-            == crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows
-        {
+        let mut sibling_locks = if binding.layout_profile.has_sibling_volumes() {
             offline_windows::lock_all_volumes(&binding, &pre_lock.gpt_layout, events)?
         } else {
             Vec::new()

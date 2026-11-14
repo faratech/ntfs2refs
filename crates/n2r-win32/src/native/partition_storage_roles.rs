@@ -784,7 +784,7 @@ pub(super) fn observe_detached_windows_storage_roles(
                 .critical_partitions
                 .iter()
                 .all(|p| p.role.disk_number != binding.storage.disk_number),
-        "offline Windows source disk contains a current boot/system role or the system role is unknown",
+        "the source's disk holds a boot or system partition of the running Windows, or the system partition is unknown",
     )?;
     Ok(facts)
 }
@@ -907,8 +907,7 @@ fn observe_partition_storage_roles_impl(
             need(
                 target[32..48] == layout::guid_bytes("b627aadb-a893-48b6-aa0b-71e5f30ee370")?
                     || detached_offline
-                        && binding.storage.layout_profile
-                            == crate::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+                        && binding.storage.layout_profile.has_sibling_volumes()
                         && target[32..48]
                             == layout::guid_bytes("ebd0a0a2-b9e5-4433-87c0-68b6b72699c7")?,
                 "Selected Basic partition missing from complete live catalog",

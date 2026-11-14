@@ -66,7 +66,7 @@ options, what each refusal means, and what to do if a run stops.
 
 Files, directories, named streams, hard links, sparse files, security,
 timestamps, attributes, extended attributes, junctions and symbolic links are
-carried over. Three things are not, and the run says so:
+carried over. Four things are not, and the run says so:
 
 - **Object IDs.** Windows gives a file one when a shortcut to it is made. ReFS
   has none. Each is checked against the volume's own index and kept in the
@@ -74,12 +74,16 @@ carried over. Three things are not, and the run says so:
 - **NTFS compression.** Compressed data becomes ordinary data and needs the
   room for it.
 - **The change journal.** The converted volume starts a new one.
+- **The case-sensitive mark of a directory.** WSL and Git mark the
+  directories they make. Where no two names in the directory differ only by
+  case, every name stays reachable; the converter does not set the mark on
+  the new volume and lists the directories in the run's records.
 
 A data volume is refused, before anything is written and with what to do about
 it, if it has 8.3 short names, is encrypted with BitLocker, has shadow copies,
 or holds EFS-encrypted files, cloud placeholders, `compact /exe` files, Data
-Deduplication, disk quotas in use or case-sensitive directories, or was not
-dismounted cleanly. The guide lists each with its remedy, and
+Deduplication, disk quotas in use or two names in one directory that differ
+only by case, or was not dismounted cleanly. The guide lists each with its remedy, and
 [the feature matrix](docs/feature-matrix.md) has one row per NTFS feature.
 
 On a converted Windows volume each 8.3 short name becomes a link beside the

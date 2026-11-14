@@ -65,7 +65,8 @@ seconds on one of 23,000 files. It prints:
   each as the conversion would give it, with the file and what to do: 8.3
   short names; encrypted, temporary, offline or `compact /exe` files; reparse
   points, streams and names the converter does not carry over; quotas in use;
-  case-sensitive directories; shadow copies, and a shadow-copy provider the
+  two names in a directory that differ only by case; shadow copies, and a
+  shadow-copy provider the
   converter does not know; a volume marked dirty.
 - **What is decided only when the volume is frozen** for a conversion: that
   the NTFS log closes cleanly, the backup boot sector and the MFT mirror, an
@@ -101,9 +102,12 @@ What a conversion would take:
 | 1 | The check could not be made |
 
 A volume that is being written to can change between two of the structures a
-check joins. The check then reads it again, up to three times. If the volume
-never held still it says so and exits 5; it does not report a refusal it
-could not confirm. Something found twice in a row is reported, because a
+check joins, and what Windows has just changed reaches the disk a few seconds
+later. The check then waits and reads the volume again: up to four readings,
+2, 5 and 10 seconds apart. If the volume never held still it says so and
+exits 5; it does not report a refusal it could not confirm. What the
+inspection itself decides against (a reparse point it does not recreate, two
+names that differ only by case) is read twice and then reported, because a
 conversion would find it too.
 
 The working-storage figure is a floor, not a forecast: the lab's Windows
@@ -228,6 +232,7 @@ Not carried over, and said so by the run:
 | Object IDs of files and directories | Windows gives one to the target of a shortcut; ReFS has none | Each is matched with the volume's object-ID index and kept in the run's records (`internal-indexes\object-ids-not-carried-over`); the run prints their number. A shortcut still finds its target by path |
 | NTFS compression | ReFS stores the data uncompressed | The data is the same; the volume needs room for it |
 | The change journal | It describes the NTFS volume | The converted volume starts a new one |
+| The case-sensitive mark of a directory | WSL and Git set it on the directories they make; the converter does not set it on the new volume | Where no two names in the directory differ only by case, every name stays reachable. The directories are listed in the run's records (`case-sensitive-directories`) and their number is printed before the prompt. Windows lets a directory on ReFS be marked again with `fsutil file setCaseSensitiveInfo`; the lab's Windows 11 (an Insider build) stopped with a bugcheck both times a ReFS volume with such a directory was taken offline, so try it where a restart costs nothing |
 
 Refused before anything is written, each with what was found and what to do:
 
@@ -236,13 +241,13 @@ Refused before anything is written, each with what was found and what to do:
 | 8.3 short names (their number and one of them are given) | `fsutil 8dot3name strip /s /f E:\`, then `fsutil 8dot3name set E: 1` |
 | BitLocker | Decrypt the volume: `manage-bde -off E:`; suspending is not enough |
 | Shadow copies of the volume, or snapshot storage kept on it | `vssadmin delete shadows /for=E:` |
-| A shadow-copy provider other than Windows' own and Hyper-V's (backup software) | The provider is named. No volume is converted while it is installed |
+| A shadow-copy provider other than Windows' own, Hyper-V's and Windows Server's for remote file shares (backup software) | The provider is named. No volume is converted while it is installed |
 | EFS-encrypted files | `cipher /d` |
 | Files with the TEMPORARY or OFFLINE attribute | Clear the attribute, or move the files |
 | Cloud placeholders, `compact /exe` files, Data Deduplication, WSL files | The kind is named, with the record number to find the file by |
 | A named data stream on a directory | Remove the stream |
 | Disk quotas in use | `fsutil quota disable E:` and delete the entries |
-| Case-sensitive directories | `fsutil file setCaseSensitiveInfo <directory> disable` |
+| Two names in one directory that differ only by case (both are given) | Rename one of them, then `fsutil file setCaseSensitiveInfo <directory> disable` |
 | A dirty volume, an NTFS log that was not closed, an open transaction | `chkdsk E: /f`, or dismount cleanly |
 | A program holding a file on the volume open | Close it; the converter waits 20 seconds first |
 | No file at all on the volume | Format it as ReFS |

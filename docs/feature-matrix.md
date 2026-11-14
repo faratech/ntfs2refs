@@ -42,6 +42,7 @@ converter prints.
 | The change journal | The converted volume starts a new one | nothing | `usn` |
 | A partition whose length is not a multiple of 64 MiB | The NTFS driver shrinks it to one first, by less than 64 MiB; not undone if the run stops | the sizes, before the prompt | `odd-size` |
 | 8.3 short names on a Windows boot volume | Each becomes a link beside its long name | the boot profile line | the Windows fixtures |
+| The case-sensitive mark of a directory in which no two names differ only by case (WSL and Git set it) | Not set on the new volume. Every name stays reachable, and the directories are kept in the run's records. Windows' own ReFS takes the mark on both lab systems (`casemark-control`); on Windows 11 build 26300 that control stopped Windows with a bugcheck both times it was run, when the volume was taken offline (#120) | "N directories are marked case-sensitive ... The converter does not set the mark on the new volume", before the prompt | `casemark` |
 
 ## Refused before anything is written
 
@@ -61,7 +62,7 @@ check and the run have to give the same refusal.
 | A file compressed with `compact /exe` | `compact /u /exe <file>` | `wof` |
 | A named data stream on a directory | remove the stream | `dirstream` |
 | Disk quotas in use | `fsutil quota disable <drive>:` | `quota` |
-| A case-sensitive directory | `fsutil file setCaseSensitiveInfo <directory> disable` | `casesensitive` |
+| Two names in one directory that differ only by case | rename one of them, then `fsutil file setCaseSensitiveInfo <directory> disable` | `casesensitive` |
 
 ## Refused, and not made in the lab
 

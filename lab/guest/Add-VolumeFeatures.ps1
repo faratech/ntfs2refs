@@ -249,6 +249,36 @@ public static class N2RLabEa {
             $null = Run 'fsutil.exe' @('quota', 'modify', $drive, '100000000', '200000000', "$env:COMPUTERNAME\$env:USERNAME")
             $made[$feature] = 'quotas enforced, with an entry for one user'
         }
+        'casemark' {
+            # The mark alone, as WSL and Git leave it: no two names that differ
+            # only by case. A directory made inside a marked one inherits it.
+            $null = New-Item -ItemType Directory -Path $dir -Force
+            $null = Run 'fsutil.exe' @('file', 'setCaseSensitiveInfo', $dir, 'enable')
+            $null = New-Item -ItemType Directory -Path "$dir\Inner" -Force
+            [IO.File]::WriteAllBytes("$dir\Readme.txt", (Bytes 100)); [IO.File]::WriteAllBytes("$dir\Inner\Makefile", (Bytes 300)); [IO.File]::WriteAllBytes("$dir\Inner\data.bin", (Bytes 20000))
+            $marked = @($dir, "$dir\Inner" | Where-Object { "$(& fsutil.exe file queryCaseSensitiveInfo $_)" -match 'is enabled' }).Count
+            if ($marked -lt 1) { throw "no directory is marked case-sensitive after fsutil file setCaseSensitiveInfo" }
+            $made[$feature] = "$marked directories marked case-sensitive, none holding two names that differ only by case"
+        }
+        'casemark-control' {
+            # The control for 'casemark', for a volume Windows formatted as
+            # ReFS itself (-NativeRefsControl): what Windows does with the
+            # mark there. Recorded, whatever it is; on the lab's build ReFS
+            # takes the mark and then keeps two such names apart.
+            $null = New-Item -ItemType Directory -Path $dir -Force
+            $said = "$(& fsutil.exe file setCaseSensitiveInfo $dir enable 2>&1)".Trim(); $code = $LASTEXITCODE
+            $state = "$(& fsutil.exe file queryCaseSensitiveInfo $dir 2>&1)".Trim()
+            [IO.File]::WriteAllBytes("$dir\Readme.txt", (Bytes 100))
+            $apart = $false
+            if ($state -match 'is enabled') {
+                [IO.File]::WriteAllText("$dir\name.txt", 'lower'); [IO.File]::WriteAllText("$dir\NAME.txt", 'UPPER')
+                $apart = [IO.File]::ReadAllText("$dir\name.txt") -eq 'lower' -and [IO.File]::ReadAllText("$dir\NAME.txt") -eq 'UPPER'
+                # The use test that follows keeps its notes by name without
+                # regard to case, and would take the two for one file.
+                [IO.File]::Delete("$dir\name.txt"); [IO.File]::Delete("$dir\NAME.txt")
+            }
+            $made[$feature] = "fsutil file setCaseSensitiveInfo exited $code and said: $said. The directory then: $state. Two names that differ only by case kept apart: $apart"
+        }
         'casesensitive' {
             $null = New-Item -ItemType Directory -Path $dir -Force
             $null = Run 'fsutil.exe' @('file', 'setCaseSensitiveInfo', $dir, 'enable')

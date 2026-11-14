@@ -160,12 +160,14 @@ entry), `ea` (extended attributes), `links` (junction and symbolic links),
 `bigdir` (`-DirectoryEntries` entries in one directory), `bigfile` (a dense
 file of `-BigFileGB` GiB), `full` (a nearly full, fragmented volume), `copy`
 (a directory of the control OS, copied with its security), `usn` (a change
-journal) and `shortnames-stripped` (8.3 names removed with `fsutil`, the remedy
-the refusal gives). `-Content lived-in` is the mixed content with `copy`,
+journal), `casemark` (directories marked case-sensitive, none holding two
+names that differ only by case) and `shortnames-stripped` (8.3 names removed
+with `fsutil`, the remedy the refusal gives). `-Content lived-in` is the mixed content with `copy`,
 `objectids`, `security`, `ea`, `links`, `longpath`, `deep`, `bigdir` and `usn`.
 
 These are refused, each by name: `shortnames`, `temporary`, `offline`, `efs`,
-`wof` (a `compact /exe` file), `quota`, `casesensitive`, `snapshot`,
+`wof` (a `compact /exe` file), `quota`, `casesensitive` (two names in one
+directory that differ only by case), `snapshot`,
 `bitlocker` and `dirstream`. A feature that cannot be made ends the attempt as
 `feature-not-made`: it is never skipped silently. A volume with shadow copies
 or BitLocker holds files of Windows' own that nothing may open; when those are

@@ -65,9 +65,10 @@ param(
     [ValidateSet('mixed', 'minimal', 'many', 'lived-in')][string]$Content = 'mixed',
     # NTFS features to add after the content, made by guest\Add-VolumeFeatures.ps1:
     # objectids, security, ea, links, longpath, deep, bigdir, bigfile, full,
-    # copy, usn (all of which convert; -Content lived-in adds them except
-    # bigfile and full), and shortnames, temporary, offline, efs, wof, quota,
-    # casesensitive, snapshot, bitlocker, dirstream (which are refused).
+    # copy, usn, casemark (all of which convert; -Content lived-in adds them
+    # except bigfile, full and casemark), and shortnames, temporary, offline,
+    # efs, wof, quota, casesensitive, snapshot, bitlocker, dirstream (which
+    # are refused).
     [string[]]$Features = @(),
     [int]$DirectoryEntries = 20000,
     [int]$BigFileGB = 6,

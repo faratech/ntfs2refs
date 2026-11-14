@@ -627,7 +627,81 @@ pub(super) fn recover_preparation_in_workspace(
         "Preparation cancellation completed. Records: {}",
         output.display()
     );
+    // The run that was cut off built a volume in its working directory,
+    // and nothing uses it any more.
+    if let Some(run) = directory.parent() {
+        let (files, bytes, disks) = left_behind(run);
+        for line in left_behind_lines(run, files, bytes, &disks) {
+            println!("{line}");
+        }
+    }
     Ok(0)
+}
+
+/// What a run left in its working directory: the number of its files, their
+/// size, and the virtual disks among them, which Windows may still have
+/// attached. Links and mount points are not followed, and what cannot be
+/// read is not counted: this is said to the user, not relied on.
+fn left_behind(run: &Path) -> (u64, u64, Vec<PathBuf>) {
+    let (mut files, mut bytes, mut disks) = (0u64, 0u64, Vec::new());
+    let mut pending = vec![run.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(metadata) = fs::symlink_metadata(entry.path()) else {
+                continue;
+            };
+            if metadata.file_attributes() & 0x400 != 0 {
+                continue;
+            }
+            if metadata.is_dir() {
+                pending.push(entry.path());
+            } else {
+                files += 1;
+                bytes += metadata.len();
+                if entry
+                    .path()
+                    .extension()
+                    .is_some_and(|kind| kind.eq_ignore_ascii_case("vhdx"))
+                {
+                    disks.push(entry.path());
+                }
+            }
+        }
+    }
+    disks.sort();
+    (files, bytes, disks)
+}
+
+/// What a cancellation says of them.
+fn left_behind_lines(run: &Path, files: u64, bytes: u64, disks: &[PathBuf]) -> Vec<String> {
+    if files == 0 {
+        return Vec::new();
+    }
+    let mut lines = vec![format!(
+        "The run that was cut off left its working files, which nothing needs any more: {} ({files} file(s), {:.1} GiB).",
+        run.display(),
+        bytes as f64 / 1_073_741_824.0
+    )];
+    match disks {
+        [] => lines.push("The folder can be deleted.".to_owned()),
+        disks => {
+            lines.push(format!(
+                "Windows may still have the volume the run built attached. Detach it, then delete the folder: in diskpart, {}.",
+                disks
+                    .iter()
+                    .map(|disk| format!(
+                        "`select vdisk file=\"{}\"` and `detach vdisk`",
+                        disk.display()
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", then ")
+            ));
+        }
+    }
+    lines
 }
 
 #[derive(Deserialize)]
@@ -901,4 +975,51 @@ pub(crate) fn recover(directory: &Path, sha: &str, rollback: bool) -> Result<u8>
     }
     println!("Recovery completed. Records: {}", output.display());
     Ok(0)
+}
+
+#[cfg(test)]
+mod left_behind_tests {
+    use super::*;
+
+    #[test]
+    fn a_cancellation_says_what_the_run_left_and_how_to_remove_it() {
+        let work = tempfile::tempdir().unwrap();
+        let run = work.path().join("0123456789abcdef");
+        fs::create_dir_all(run.join("conversion").join("pages")).unwrap();
+        fs::write(run.join("shadow.vhdx"), vec![0u8; 3 << 20]).unwrap();
+        fs::write(
+            run.join("conversion").join("preparation-intent.json"),
+            b"{}",
+        )
+        .unwrap();
+        fs::write(
+            run.join("conversion").join("pages").join("a.bin"),
+            vec![1u8; 1 << 20],
+        )
+        .unwrap();
+        let (files, bytes, disks) = left_behind(&run);
+        assert_eq!((files, bytes), (3, (4 << 20) + 2));
+        assert_eq!(disks, vec![run.join("shadow.vhdx")]);
+        let said = left_behind_lines(&run, files, bytes, &disks);
+        assert_eq!(said.len(), 2, "{said:?}");
+        assert!(said[0].contains(&run.display().to_string()), "{said:?}");
+        assert!(said[0].contains("3 file(s), 0.0 GiB"), "{said:?}");
+        // The working volume has to be detached before the folder can go.
+        assert!(
+            said[1].contains(&format!(
+                "`select vdisk file=\"{}\"` and `detach vdisk`",
+                run.join("shadow.vhdx").display()
+            )),
+            "{said:?}"
+        );
+        // A run that left no virtual disk needs no detaching, and one that
+        // left nothing is not spoken of.
+        fs::remove_file(run.join("shadow.vhdx")).unwrap();
+        let (files, bytes, disks) = left_behind(&run);
+        assert_eq!(
+            left_behind_lines(&run, files, bytes, &disks)[1],
+            "The folder can be deleted."
+        );
+        assert!(left_behind_lines(&run, 0, 0, &[]).is_empty());
+    }
 }

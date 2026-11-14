@@ -417,7 +417,10 @@ If this run is cut off while it prepares (before any "To recover:" line), the vo
 ```
 
 That command cancels the unfinished preparation and gives the volume back as
-NTFS, as it was. Then start again. If the screen is gone: the directory is
+NTFS, as it was. Then start again. The run that was cut off leaves its
+working files behind, the volume it was building among them; the
+cancellation says where they are, how large they are, and how to detach that
+volume so that the folder can be deleted. If the screen is gone: the directory is
 the `conversion` folder of the run under the working directory, and the
 checksum is the SHA-256 of the `preparation-intent.json` in it
 (`Get-FileHash -Algorithm SHA256`).

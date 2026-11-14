@@ -1031,6 +1031,14 @@ public static class SiblingRaw {
     # as it was. (A conversion of a partition that is not a multiple of
     # 64 MiB shortens it, and a run recovered to NTFS after that keeps the
     # shorter length; both say so.)
+    if ($StopDuringPreparation) {
+        # The cancellation has to say what the run that was cut off left in
+        # the working directory, and how large it is.
+        $left = [string](Get-Content -LiteralPath $stdout -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_ -match '^The run that was cut off left its working files' } | Select-Object -Last 1)
+        $verdict.cancellation_said_of_what_is_left = $left
+        if ($left) { Say "the cancellation said: $left" }
+        elseif ($verdict.outcome -in 'preparation-cancelled', 'restart-refused-then-cancelled') { $verdict.outcome = "$($verdict.outcome)-without-naming-what-is-left" }
+    }
     $lengthBefore = $verdict.source.observed.partition_bytes; $lengthAfter = $verdict.volume_after.partition_bytes
     if ($lengthBefore -and $lengthAfter -and $lengthAfter -ne $lengthBefore) {
         $verdict.source.partition_bytes_changed_by = $lengthAfter - $lengthBefore

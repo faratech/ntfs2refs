@@ -517,6 +517,20 @@ fn require_known_dump_filters(value: &DumpRegistryValue) -> io::Result<()> {
     )
 }
 
+/// A CrashControl setting the list in the collectors does not have. A
+/// number names no place a dump is written to and is passed over: Windows
+/// Server has `DisableEmoticon`, the face on the stop screen. Anything else
+/// could name one, and is refused by its name.
+fn pass_unknown_setting(value: &DumpRegistryValue) -> io::Result<()> {
+    if value.registry_type == REG_DWORD && value.data.len() == 4 {
+        return Ok(());
+    }
+    Err(crate::refusal::io_error(format!(
+        "the crash-dump setting {:?} under HKLM\\SYSTEM\\CurrentControlSet\\Control\\CrashControl is one the converter does not know, and it is not a number: it could name a place this Windows writes a dump to, so the disk is not taken offline",
+        value.name
+    )))
+}
+
 pub(super) fn observe_configured_dump_locations(
     binding: &PartitionSourceBinding,
     budget: PartitionObservationBudget,
@@ -556,11 +570,7 @@ pub(super) fn observe_configured_dump_locations(
             | "enablelogfile" => {
                 let _ = dword(&crash, &item.name)?;
             }
-            _ => {
-                return Err(invalid(
-                    "Unknown CrashControl setting requires an explicit dump-location policy",
-                ));
-            }
+            _ => pass_unknown_setting(item)?,
         }
     }
     for item in &live.values {
@@ -649,4 +659,43 @@ pub(super) fn observe_configured_dump_locations(
         current_windows_and_pagefiles_require_separate_live_observation: true,
         serialized_observation_grants_authority: false,
     })
+}
+
+#[cfg(test)]
+mod unknown_setting_tests {
+    use super::*;
+
+    fn setting(name: &str, registry_type: u32, data: &[u8]) -> DumpRegistryValue {
+        DumpRegistryValue {
+            name: name.into(),
+            registry_type,
+            data: data.to_vec(),
+        }
+    }
+
+    #[test]
+    fn a_number_the_converter_does_not_know_names_no_dump_location() {
+        // Windows Server 2025 has this one: the face on the stop screen.
+        pass_unknown_setting(&setting("DisableEmoticon", REG_DWORD, &1u32.to_le_bytes())).unwrap();
+    }
+
+    #[test]
+    fn text_the_converter_does_not_know_is_refused_by_its_name() {
+        let path: Vec<u8> = "D:\\dumps\0"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        for value in [
+            setting("SecondaryDumpFile", REG_SZ, &path),
+            setting("SecondaryDumpFile", REG_EXPAND_SZ, &path),
+            // Not a number of four bytes, whatever its type says.
+            setting("Wide", REG_DWORD, &[0; 8]),
+        ] {
+            let refused = pass_unknown_setting(&value).unwrap_err();
+            assert!(crate::refusal::is_refusal(&refused));
+            let said = refused.to_string();
+            assert!(said.contains(&format!("{:?}", value.name)), "{said}");
+            assert!(said.contains("CrashControl"), "{said}");
+        }
+    }
 }

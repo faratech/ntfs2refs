@@ -329,6 +329,12 @@ impl PagedInspection {
     pub(crate) fn release_inventory_resident_cache(&mut self) {
         self.files.release_inventory_resident_cache();
     }
+    /// Whether this is the inspection made of a volume that is still in
+    /// use: complete in its metadata, with nothing read of any stream's
+    /// contents, and never a source a conversion is admitted from.
+    pub(crate) fn is_preparation_only(&self) -> bool {
+        self.pin.preparation_only
+    }
     pub(crate) fn is_windows_conversion(&self) -> bool {
         self.purpose == InspectionPurpose::WindowsConversion
     }

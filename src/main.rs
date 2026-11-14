@@ -525,6 +525,12 @@ fn run() -> Result<u8> {
                         "refs_cluster_bytes": n2r_win32::target_cluster::SUPPORTED_BYTES,
                         "default_refs_cluster_bytes": n2r_win32::target_cluster::DEFAULT_BYTES,
                         "windows_boot_volume_refs_cluster_bytes": [n2r_win32::target_cluster::DEFAULT_BYTES],
+                        "formats": {
+                            "option": "--target-format",
+                            "dev-drive": "the default on Windows 11 and other workstation editions, and the only format of a Windows boot volume",
+                            "standard": "the default for a data volume on Windows Server; works only where Windows itself formats an ordinary ReFS volume",
+                            "shown": "both on Windows Server 2025 (build 26100); dev-drive on Windows 11 (build 26300), which does not format a standard volume",
+                        },
                         "refs_version": "the version Windows formats the shadow with: 3.14 or a later 3.x (only 3.14 has been converted)",
                         "data_stays_in_place": "only where it lies on target-cluster boundaries; the rest is copied through the working storage",
                     },
@@ -569,12 +575,39 @@ fn run() -> Result<u8> {
                          "change": "files are moved through NTFS before the source is frozen",
                          "undone_if_the_run_stops": false},
                     ],
+                    "unattended": {
+                        "option": "--yes",
+                        "answers": "every question of the run",
+                        "requires": "--volume-serial for a conversion or a diagnose run (the serial number --list prints); a recovery is bound to its run by its checksum",
+                    },
                     "list": {
                         "option": "--list",
+                        "shows": "for each NTFS partition whether a conversion would take it, and its volume serial number",
+                        "bitlocker": "shown when --list runs elevated (it reads each partition's first sector); otherwise it says that BitLocker was not checked",
                         "exit_codes": {
                             "0": "every disk and volume was queried",
                             (ntfs2refs::drive_cli::EXIT_LIST_INCOMPLETE.to_string()):
                                 "some device could not be queried; the list is partial",
+                        },
+                    },
+                    "check": {
+                        "option": "--check",
+                        "for": "a data volume",
+                        "changes_the_volume": false,
+                        "reads": "the volume while it stays online and in use: its NTFS structures and the shadow-copy catalog. Nothing is frozen, formatted or shrunk; its own pages are kept in the working directory meanwhile and removed",
+                        "reports": [
+                            "every refusal a conversion would give that those decide",
+                            "what a conversion would take: files, directories and streams; bytes that stay in place and bytes that are copied; working storage and memory at least; time, from the lab's runs",
+                        ],
+                        "decided_only_when_frozen": ntfs2refs::drive_cli::CHECK_DECIDED_WHEN_FROZEN,
+                        "also_made_by": "every conversion and diagnose run of a data volume, before it asks, before the partition is shrunk and before the disk is taken offline",
+                        "exit_codes": {
+                            "0": "nothing was found that a conversion refuses",
+                            (ntfs2refs::drive_cli::EXIT_CHECK_REFUSALS.to_string()):
+                                "a conversion would refuse the volume; each reason is printed",
+                            (ntfs2refs::drive_cli::EXIT_CHECK_INCONCLUSIVE.to_string()):
+                                "the volume changed during every reading: nothing is known and nothing is refused",
+                            "1": "the check could not be made",
                         },
                     },
                     "diagnose": {
@@ -587,7 +620,8 @@ fn run() -> Result<u8> {
                             "1": "the diagnosis could not finish",
                         },
                         "refuses": diagnose_refuses,
-                        "also_refuses": "a partition that a conversion would first shrink",
+                        "also_refuses": "a Windows boot volume that a conversion would first shrink",
+                        "on_a_data_volume_to_shrink": "makes the read-only check of --check alone, and says so: a diagnosis never shrinks",
                         "failure_limit": {"option": "--diagnose-limit", "default": 500, "zero_means": "no limit"},
                     },
                     "verification_modes": [
@@ -621,7 +655,7 @@ fn run() -> Result<u8> {
                             "a volume holding more than 23 GB",
                             "a power cut to the storage itself: the lab ends the converter's process or turns the virtual machine off",
                             "a Windows build other than those in windows_builds.confirmed_builds, and a ReFS version other than 3.14",
-                            "a conversion to standard ReFS (--target-format standard)",
+                            "a conversion to standard ReFS on Windows 11 (the lab's does not format one), a Windows boot volume of Windows Server, and Windows 11 on build 26100",
                             "--minimize-scratch, and the routes and commands that --help does not list",
                         ],
                     },

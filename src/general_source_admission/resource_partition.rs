@@ -312,6 +312,14 @@ impl ResourceSourceContext {
                 let path = ntfs_admission::paged::refused_object_path(&raw, &file);
                 refused.note(file.record_number, path.as_deref(), &issues);
             }
+            if role.is_none() {
+                // Likewise: which object Windows shows differently, and how.
+                let differences = row.differences();
+                if !differences.is_empty() {
+                    let path = ntfs_admission::paged::refused_object_path(&raw, &file);
+                    refused.note_difference(file.record_number, path.as_deref(), &differences);
+                }
+            }
             if file.is_directory {
                 raw_directories = raw_directories
                     .checked_add(1)

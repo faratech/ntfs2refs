@@ -76,6 +76,20 @@ impl TargetFormatProfile {
     pub const fn is_dev_drive(self) -> bool {
         matches!(self, Self::DevDrive)
     }
+
+    /// The format of a run that names none. On Windows Server it is the
+    /// ordinary ReFS volume that a server's data volume is; on a workstation
+    /// edition it is the Dev Drive, the ReFS volume that every edition of
+    /// Windows 11 formats (the lab's Windows 11 refuses to format an
+    /// ordinary one). A Windows boot volume is admitted as a Dev Drive only,
+    /// whatever the edition.
+    pub const fn default_for(windows_server: bool, windows_boot_volume: bool) -> Self {
+        if windows_server && !windows_boot_volume {
+            Self::StandardReFs
+        } else {
+            Self::DevDrive
+        }
+    }
 }
 
 impl std::fmt::Display for TargetFormatProfile {
@@ -993,6 +1007,26 @@ fn format_new_owned(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_run_that_names_no_format_gets_the_one_its_windows_makes_for_data() {
+        use TargetFormatProfile::{DevDrive, StandardReFs};
+        // (Windows Server, a Windows boot volume)
+        assert_eq!(TargetFormatProfile::default_for(false, false), DevDrive);
+        assert_eq!(TargetFormatProfile::default_for(true, false), StandardReFs);
+        // A boot volume is a Dev Drive whatever the edition.
+        assert_eq!(TargetFormatProfile::default_for(false, true), DevDrive);
+        assert_eq!(TargetFormatProfile::default_for(true, true), DevDrive);
+        // The names a run is given parse to the same two.
+        assert_eq!(
+            "dev-drive".parse::<TargetFormatProfile>().unwrap(),
+            DevDrive
+        );
+        assert_eq!(
+            "standard".parse::<TargetFormatProfile>().unwrap(),
+            StandardReFs
+        );
+    }
 
     #[test]
     fn a_format_refusal_says_what_was_asked_what_windows_said_and_what_to_do() {

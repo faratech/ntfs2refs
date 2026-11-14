@@ -102,13 +102,8 @@ mod windows {
 
     fn confirm() -> Result<bool> {
         print!("Proceed with this experimental data-volume recovery? [y/N] ");
-        io::stdout().flush()?;
-        let input = io::stdin();
         // An overlong response cannot become an affirmative answer.
-        let mut bounded = input.lock().take(65);
-        let mut answer = String::new();
-        bounded.read_line(&mut answer)?;
-        Ok(answer.len() < 65 && matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
+        Ok(crate::confirmation::answer()?)
     }
 
     fn output_location() -> Result<(String, PathBuf)> {

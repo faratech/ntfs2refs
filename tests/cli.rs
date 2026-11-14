@@ -305,6 +305,32 @@ fn capabilities_report_what_the_executable_enforces() {
         capabilities["target"]["refs_cluster_bytes"],
         serde_json::json!([4096, 65536])
     );
+    // The check: what it leaves alone, what it cannot say, how it exits.
+    let check = &capabilities["check"];
+    assert_eq!(check["option"], "--check");
+    assert_eq!(check["changes_the_volume"], false);
+    assert_eq!(
+        check["decided_only_when_frozen"],
+        ntfs2refs::drive_cli::CHECK_DECIDED_WHEN_FROZEN
+    );
+    for code in ["0", "1", "3", "5"] {
+        assert!(check["exit_codes"][code].is_string(), "exit code {code}");
+    }
+    // Both target formats, with where each is the default.
+    let formats = &capabilities["target"]["formats"];
+    assert_eq!(formats["option"], "--target-format");
+    assert!(
+        formats["standard"]
+            .as_str()
+            .unwrap()
+            .contains("Windows Server")
+    );
+    assert!(
+        formats["dev-drive"]
+            .as_str()
+            .unwrap()
+            .contains("Windows boot volume")
+    );
     assert_eq!(
         capabilities["windows_builds"]["minimum_build"],
         n2r_win32::windows_build::MINIMUM_BUILD
@@ -341,6 +367,12 @@ fn capabilities_report_what_the_executable_enforces() {
     }
 
     // So are the diagnose refusals and its exit code for reported failures.
+    assert!(
+        capabilities["diagnose"]["on_a_data_volume_to_shrink"]
+            .as_str()
+            .unwrap()
+            .contains("--check")
+    );
     let refuses = capabilities["diagnose"]["refuses"].as_array().unwrap();
     let table = ntfs2refs::drive_cli::DriveArgs::DIAGNOSE_REFUSES;
     assert_eq!(refuses.len(), table.len());
@@ -502,6 +534,41 @@ fn conversion_request_refuses_hash_size_and_forged_flags_before_device_io() {
     let result = invoke(&"0".repeat(64));
     assert!(String::from_utf8_lossy(&result.stderr).contains("exceeds 16 KiB"));
     assert!(!output.exists());
+}
+
+#[test]
+fn an_unattended_run_has_to_name_its_volume() {
+    // --yes answers the question that shows the volume, so it needs the
+    // volume's serial number. Refused before anything is listed or opened.
+    for arguments in [
+        vec!["--drive", "D", "--yes"],
+        vec!["--drive", "D", "--diagnose", "--yes"],
+    ] {
+        let result = cli(&arguments);
+        assert!(!result.status.success(), "{arguments:?}");
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        #[cfg(windows)]
+        assert!(
+            stderr.contains("--yes needs --volume-serial")
+                && stderr.contains("Nothing was changed"),
+            "{stderr}"
+        );
+        #[cfg(not(windows))]
+        assert!(stderr.contains("Windows"), "{stderr}");
+    }
+    // A serial number that is not one is the parser's to refuse.
+    for bad in ["E:", "1A2B-3C4", "not-a-serial"] {
+        let result = cli(&["--drive", "D", "--yes", "--volume-serial", bad]);
+        assert_eq!(result.status.code(), Some(2), "{bad}");
+        assert!(
+            String::from_utf8_lossy(&result.stderr).contains("eight hexadecimal digits"),
+            "{bad}"
+        );
+    }
+    // Listing asks nothing.
+    assert_eq!(cli(&["--list", "--yes"]).status.code(), Some(2));
+    let help = String::from_utf8(cli(&["--help"]).stdout).unwrap();
+    assert!(help.contains("--yes") && help.contains("--volume-serial"));
 }
 
 #[test]

@@ -126,10 +126,7 @@ pub(super) fn resume_preparation_in_workspace(
         origin.pair.source.disk_number, origin.pair.source.identity.partition_number
     );
     print!("Resume this conversion? [y/N] ");
-    io::stdout().flush()?;
-    let mut answer = String::new();
-    io::stdin().lock().take(65).read_line(&mut answer)?;
-    if answer.len() >= 65 || !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+    if !crate::confirmation::answer()? {
         println!("Cancelled.");
         return Ok(0);
     }
@@ -535,10 +532,7 @@ fn resume_session(directory: &Path, intent_sha: [u8; 32], workspace: Option<&Pat
         );
     }
     print!("Resume this conversion? [y/N] ");
-    io::stdout().flush()?;
-    let mut answer = String::new();
-    io::stdin().lock().take(65).read_line(&mut answer)?;
-    if answer.len() >= 65 || !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+    if !crate::confirmation::answer()? {
         println!("Cancelled.");
         return Ok(0);
     }

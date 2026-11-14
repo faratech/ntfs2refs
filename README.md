@@ -25,8 +25,9 @@ NTFS partition whether it can be converted and, if not, why.
 ## What you need
 
 - Windows 11 24H2, Windows Server 2025 or later (build 26100 or later), x64.
-  Conversions were run on builds 26100 and 26300; on another build the run says
-  before it starts that it is the first.
+  Conversions were run on builds 26100 (Windows Server 2025) and 26300
+  (Windows 11); on another build the run says before it starts that it is the
+  first.
 - An elevated terminal.
 - Working storage on a different disk (`--scratch-directory`). The run builds
   the new file system there and keeps there what it needs to undo its changes.
@@ -35,22 +36,28 @@ NTFS partition whether it can be converted and, if not, why.
   for most of its data.
 - A backup. A beta that rewrites a file system is not a substitute for one.
 
-The result is a ReFS volume formatted as a Dev Drive unless
-`--target-format standard` is given, which works only where Windows itself
-formats ordinary ReFS volumes. See [the target](docs/cli-workflow.md#the-target).
+The result is a ReFS volume formatted as a Dev Drive, or on Windows Server as
+an ordinary ReFS volume; `--target-format dev-drive|standard` chooses, and
+standard works only where Windows itself formats ordinary ReFS volumes. See
+[the target](docs/cli-workflow.md#the-target).
 
 ## Use
 
 ```powershell
 .\ntfs2refs.exe --list
+.\ntfs2refs.exe --drive E --scratch-directory S:\runs --check
 .\ntfs2refs.exe --drive E --scratch-directory S:\runs --diagnose
 .\ntfs2refs.exe --drive E --scratch-directory S:\runs
 ```
 
-`--diagnose` goes through the whole preparation, reports everything that would
+`--check` reads the volume while it stays online and in use, and changes
+nothing: it says what would stop a conversion and what one would take in
+working storage, memory and time. `--diagnose` goes through the whole
+preparation, with the volume offline meanwhile, reports everything that would
 stop a conversion, and writes nothing to the volume. The conversion itself
-asks for confirmation, prints a recovery command before its first write to the
-volume, and ends with the volume online as ReFS under the same drive letter.
+makes the check first, asks for confirmation, prints a recovery command before
+its first write to the volume, and ends with the volume online as ReFS under
+the same drive letter.
 
 The [operating and recovery guide](docs/cli-workflow.md) has the details: the
 options, what each refusal means, and what to do if a run stops.

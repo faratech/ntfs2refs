@@ -620,7 +620,7 @@ fn record_size(encoded: u8, cluster_size: u32, label: &str) -> Result<u32> {
 /// Whether a partition's first sector is BitLocker's: it carries this name
 /// where a file system's own would be.
 pub fn is_bitlocker_boot_sector(bytes: &[u8]) -> bool {
-    bytes.get(3..11) == Some(b"-FVE-FS-")
+    n2r_win32::drive_inventory::is_bitlocker_boot_sector(bytes)
 }
 
 /// Validate a partition boot sector before allowing any dependent allocation.

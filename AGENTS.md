@@ -112,15 +112,22 @@ it lies on target-cluster boundaries; the rest goes through the working storage.
   compares one in under a minute. `-Content lived-in` and `-Features` add what
   a used volume has (object IDs, security, links, deep and long paths) or
   must be refused for; `-Acceptance` then uses the converted volume, and
-  `-NativeRefsControl` is its control. `lab/README.md` lists the rest, and
-  `docs/feature-matrix.md` what each case shows.
+  `-NativeRefsControl` is its control. `-Check` runs `--check` first and
+  holds it to what the run then does; `-CheckOnly` runs it alone.
+  `lab/README.md` lists the rest, and `docs/feature-matrix.md` what each case
+  shows.
 - Second VM `ntfs2refs-reference-b`, Id `7c687062-37b5-4309-b28a-486a44305202`,
   made by `lab/New-LabVmClone.ps1`: same shape, disks are differencing children
   of the reference VM's baseline disks under `.lab/hyperv/ntfs2refs-reference-b/`.
-  It also holds `N2R-Full-Converted-08`, a saved converted state. `-VmId` runs
-  a full-volume attempt on it while fixtures run on the reference VM (give the
-  two VMs no more than about 48 GB between them). Never delete the reference
-  VM's baseline checkpoint: that merges into the shared parents and breaks it.
+  `-VmId` runs a full-volume attempt on it while fixtures run on the reference
+  VM (give the two VMs no more than about 48 GB between them). Never delete
+  the reference VM's baseline checkpoint: that merges into the shared parents
+  and breaks it.
+- Third VM `ntfs2refs-server2025`, Id `b1e3cb6c-7204-4941-975e-8ccdfc89b8f1`,
+  made by `lab/New-ServerLabVm.ps1`: Windows Server 2025 (build 26100), which
+  formats standard ReFS; for data-volume attempts, with `-CredentialPath
+  .lab/hyperv/ntfs2refs-server2025/secrets/guest-credential.xml`. Off unless
+  an attempt needs it.
 - Disks (SCSI 0), under `.lab/hyperv/isolated-reference-20261026-review/disks/`:
   0 disk0, the original NTFS Windows and the source (`os.vhdx` chain); 1 the
   control OS, natively ReFS, which runs the converter (`target.vhdx` chain);

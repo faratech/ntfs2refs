@@ -10,7 +10,7 @@ use windows_sys::Win32::{
     Foundation::{CloseHandle, HANDLE},
     Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation},
     System::{
-        SystemInformation::OSVERSIONINFOW,
+        SystemInformation::{OSVERSIONINFOEXW, OSVERSIONINFOW},
         Threading::{GetCurrentProcess, OpenProcessToken},
     },
 };
@@ -40,6 +40,29 @@ pub fn windows_version() -> io::Result<[u32; 3]> {
         version.dwMinorVersion,
         version.dwBuildNumber,
     ])
+}
+
+/// `wProductType` of a workstation edition (VER_NT_WORKSTATION); a domain
+/// controller is 2 and any other server 3.
+const WORKSTATION: u8 = 1;
+
+/// Whether the running Windows is a server edition (Windows Server, a
+/// domain controller included) and not a workstation one such as Windows 11.
+pub fn is_windows_server() -> io::Result<bool> {
+    let mut version = OSVERSIONINFOEXW {
+        dwOSVersionInfoSize: mem::size_of::<OSVERSIONINFOEXW>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: RtlGetVersion fills the extended structure when the size it is
+    // given is that structure's; the structure is initialized, carries that
+    // size and lives for the synchronous query.
+    let status = unsafe { RtlGetVersion((&mut version as *mut OSVERSIONINFOEXW).cast()) };
+    if status != 0 {
+        return Err(io::Error::other(format!(
+            "asking Windows whether it is a server edition: RtlGetVersion failed with status {status:#x}"
+        )));
+    }
+    Ok(version.wProductType != WORKSTATION)
 }
 
 /// Whether this process holds an administrator's full token: an elevated

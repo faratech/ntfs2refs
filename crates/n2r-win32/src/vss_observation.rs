@@ -80,6 +80,52 @@ const HYPERV_CLASS: Guid = Guid {
     c: 0x44f3,
     d: [0xb1, 0x54, 0x24, 0x73, 0x64, 0x6e, 0x4c, 0xb8],
 };
+// The Microsoft File Share Shadow Copy provider, which every Windows Server
+// has (observed on Server 2025, build 26100). It relays a shadow-copy request
+// for a remote SMB share to the file server that holds the share; the copy and
+// its storage are on that server. It makes no shadow copy of a local volume
+// and keeps nothing on one, so it is not a place where storage the converter
+// cannot see could be: its interface takes UNC paths only. VSS_PROV_FILESHARE
+// is 4.
+// https://learn.microsoft.com/windows/win32/api/vsprov/nn-vsprov-ivssfilesharesnapshotprovider
+const FILESHARE_PROVIDER: Guid = Guid {
+    a: 0x89300202,
+    b: 0x3cec,
+    c: 0x4981,
+    d: [0x91, 0x71, 0x19, 0xf5, 0x95, 0x59, 0xe0, 0xf2],
+};
+const FILESHARE_CLASS: Guid = Guid {
+    a: 0xfce59da7,
+    b: 0x7bac,
+    c: 0x40da,
+    d: [0x8d, 0x21, 0x3e, 0x73, 0x11, 0xba, 0x51, 0xcd],
+};
+/// Windows' own, Hyper-V's and the file-share provider: no machine has more
+/// known providers than these.
+const MAX_KNOWN_PROVIDERS: usize = 3;
+
+/// What a provider the converter knows keeps, and where: `None` for any
+/// other. A provider is known by its identity, its class and its kind
+/// together, as they were observed.
+fn known_storage_role(id: Guid, class: Guid, kind: i32) -> Option<&'static str> {
+    if id == SOFTWARE_PROVIDER && kind == 1 {
+        Some("guest_local_differential_storage")
+    } else if id == HYPERV_PROVIDER && class == HYPERV_CLASS && kind == 2 {
+        Some("hyperv_host_vm_image")
+    } else if id == FILESHARE_PROVIDER && class == FILESHARE_CLASS && kind == 4 {
+        Some("remote_file_share_no_local_storage")
+    } else {
+        None
+    }
+}
+
+/// What a run says of a provider it does not know. Asked before the volume's
+/// own shadow copies are, so it says nothing of them.
+fn unknown_provider(name: &str, version: &str, id: &str, class: &str, kind: i32) -> String {
+    format!(
+        "a shadow-copy (VSS) provider that the converter does not know is installed: \"{name}\" version {version} ({{{id}}}, class {{{class}}}, kind {kind}). Such a provider, usually part of backup software, may keep snapshot storage the converter cannot see, so no volume is converted while it is installed"
+    )
+}
 
 #[link(name = "ole32")]
 unsafe extern "system" {
@@ -498,20 +544,30 @@ impl Observation {
         let known = |p: &Provider| {
             if p.id == guid(SOFTWARE_PROVIDER) {
                 p.kind == 1 && p.storage_role == "guest_local_differential_storage"
-            } else {
-                p.id == guid(HYPERV_PROVIDER)
-                    && p.class_id == guid(HYPERV_CLASS)
+            } else if p.id == guid(HYPERV_PROVIDER) {
+                p.class_id == guid(HYPERV_CLASS)
                     && p.kind == 2
                     && p.storage_role == "hyperv_host_vm_image"
+            } else {
+                p.id == guid(FILESHARE_PROVIDER)
+                    && p.class_id == guid(FILESHARE_CLASS)
+                    && p.kind == 4
+                    && p.storage_role == "remote_file_share_no_local_storage"
             }
         };
         if let Some(provider) = self.providers.iter().find(|p| !known(p)) {
             return Err(invalid(format!(
-                "a shadow-copy (VSS) provider that the converter does not know is installed: \"{}\" version {} ({{{}}}). Such a provider, usually part of backup software, may keep snapshot storage the converter cannot see, so no volume is converted while it is installed. The volume itself has no shadow copies",
-                provider.name, provider.version, provider.id
+                "{}. The volume itself has no shadow copies",
+                unknown_provider(
+                    &provider.name,
+                    &provider.version,
+                    &provider.id,
+                    &provider.class_id,
+                    provider.kind
+                )
             )));
         }
-        if !(1..=2).contains(&self.providers.len())
+        if !(1..=MAX_KNOWN_PROVIDERS).contains(&self.providers.len())
             || self
                 .providers
                 .iter()
@@ -545,7 +601,8 @@ impl Observation {
 
 /// Query source snapshot presence and hosted storage without mutation. Only a
 /// fully enumerated Microsoft system provider, optionally accompanied by the
-/// known Hyper-V host-integration provider, is supported. Other providers refuse.
+/// known Hyper-V host-integration provider and by Windows Server's provider
+/// for remote file shares, is supported. Other providers refuse.
 /// No aggregate snapshot Query S_FALSE is translated to absence. All enumerators
 /// must terminate with the exact SDK S_FALSE/zero-fetched completion result.
 pub fn observe_catalog(source_volume_guid: &str) -> io::Result<Observation> {
@@ -602,18 +659,22 @@ fn observe(source_volume_guid: &str, include_storage: bool) -> io::Result<Observ
         let provider_id = guid(provider.id);
         let name = wide_string(provider.name)?;
         let version = wide_string(provider.version)?;
-        let system = provider.id == SOFTWARE_PROVIDER && provider.kind == 1;
-        let hyperv =
-            provider.id == HYPERV_PROVIDER && provider.class == HYPERV_CLASS && provider.kind == 2;
-        if !(system || hyperv)
-            || provider.class == NULL_GUID
+        let Some(storage_role) = known_storage_role(provider.id, provider.class, provider.kind)
+        else {
+            return Err(invalid(unknown_provider(
+                &name,
+                &version,
+                &provider_id,
+                &guid(provider.class),
+                provider.kind,
+            )));
+        };
+        if provider.class == NULL_GUID
             || providers.iter().any(|p: &Provider| p.id == provider_id)
-            || providers.len() >= 2
+            || providers.len() >= MAX_KNOWN_PROVIDERS
         {
             return Err(invalid(format!(
-                "unsupported VSS provider inventory: provider={provider_id}, class={}, kind={}; unknown provider coverage is refused",
-                guid(provider.class),
-                provider.kind,
+                "the list of shadow-copy (VSS) providers is not one the converter can read: \"{name}\" ({{{provider_id}}}) is listed twice, has no class, or is one provider too many; the volume is not converted"
             )));
         }
         providers.push(Provider {
@@ -623,11 +684,7 @@ fn observe(source_volume_guid: &str, include_storage: bool) -> io::Result<Observ
             kind: provider.kind,
             version,
             hosted_diff_areas_query_completed: false,
-            storage_role: if system {
-                "guest_local_differential_storage"
-            } else {
-                "hyperv_host_vm_image"
-            },
+            storage_role,
         });
     }
     if providers
@@ -967,6 +1024,47 @@ mod refusal_tests {
                 && refusal.contains("11111111-2222-3333-4444-555555555555")
                 && refusal.contains("The volume itself has no shadow copies"),
             "{refusal}"
+        );
+
+        // What every Windows Server has beside Windows' own: the provider for
+        // remote file shares, which keeps nothing on a local volume.
+        let mut server = clear();
+        server.providers.push(Provider {
+            id: guid(FILESHARE_PROVIDER),
+            class_id: guid(FILESHARE_CLASS),
+            name: "Microsoft File Share Shadow Copy provider".into(),
+            kind: 4,
+            version: "1.0.0.1".into(),
+            hosted_diff_areas_query_completed: false,
+            storage_role: "remote_file_share_no_local_storage",
+        });
+        server.require_observed_catalog_clear().unwrap();
+        // Known by identity, class and kind together.
+        assert_eq!(
+            known_storage_role(FILESHARE_PROVIDER, FILESHARE_CLASS, 4),
+            Some("remote_file_share_no_local_storage")
+        );
+        assert_eq!(
+            guid(FILESHARE_PROVIDER),
+            "89300202-3cec-4981-9171-19f59559e0f2"
+        );
+        assert_eq!(
+            known_storage_role(FILESHARE_PROVIDER, FILESHARE_CLASS, 2),
+            None
+        );
+        assert_eq!(
+            known_storage_role(FILESHARE_PROVIDER, HYPERV_CLASS, 4),
+            None
+        );
+        assert_eq!(known_storage_role(NULL_GUID, FILESHARE_CLASS, 4), None);
+        // The refusal a run gives before it has asked about the volume
+        // names the provider and does not speak of the volume.
+        let early = unknown_provider("Some Backup VSS Provider", "9.1", "1111", "2222", 2);
+        assert!(
+            early.contains("Some Backup VSS Provider")
+                && early.contains("backup software")
+                && !early.contains("has no shadow copies"),
+            "{early}"
         );
 
         // Snapshot storage of another volume kept on this one.

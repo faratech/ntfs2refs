@@ -11,8 +11,9 @@ and the [recovery matrix](recovery-matrix.md).
    it has converted was a virtual disk.
 2. **Windows build 26100 or later** (Windows 11 24H2, Windows Server 2025),
    and an **elevated terminal**. Both are checked before a disk is opened; an
-   older build is refused by name. Conversions were run on builds 26100 and
-   26300. On another build, or when Windows formats a ReFS other than 3.14,
+   older build is refused by name. Conversions were run on builds 26100
+   (Windows Server 2025) and 26300 (Windows 11). On another build, or when
+   Windows formats a ReFS other than 3.14,
    the run says before it starts that the lab has not tried that.
 3. **Working storage on another disk**, given with `--scratch-directory`.
    The run builds the new file system there, on a virtual disk as large as the
@@ -37,12 +38,78 @@ bounds: see [how large a volume can be](#how-large-a-volume-can-be).
 It lists every disk and partition and says for each NTFS partition whether a
 conversion would take it and, if not, why: it is the running Windows, shares
 its disk with it, has other partitions beside it, or is on a disk that is not
-GPT. BitLocker is not shown there; it is found when a run starts.
+GPT. Each volume is shown with its serial number.
+
+Windows reports a volume encrypted with BitLocker as NTFS. From an elevated
+terminal `--list` reads each partition's first sector and says where that is
+so; without elevation it says that BitLocker was not checked. A run finds it
+either way, in its first second.
 
 `--list` exits 0 when every disk and volume answered, and 4 when some device
 could not be queried: the list it printed is then partial.
 
-## Check first: `--diagnose`
+## Check first: `--check`
+
+```powershell
+.\ntfs2refs.exe --drive E --scratch-directory S:\runs --check
+```
+
+A check reads a data volume while it stays online and in use. Nothing on it
+is frozen, formatted, shrunk or written; the check keeps its own pages in the
+working directory while it runs and removes them. It reads the volume's NTFS
+structures, asks Windows about shadow copies and about each directory, and
+reads no file's contents: half a second on the lab's small volumes, 11
+seconds on one of 23,000 files. It prints:
+
+- **Every reason a conversion would refuse the volume** that those decide,
+  each as the conversion would give it, with the file and what to do: 8.3
+  short names; encrypted, temporary, offline or `compact /exe` files; reparse
+  points, streams and names the converter does not carry over; quotas in use;
+  case-sensitive directories; shadow copies, and a shadow-copy provider the
+  converter does not know; a volume marked dirty.
+- **What is decided only when the volume is frozen** for a conversion: that
+  the NTFS log closes cleanly, the backup boot sector and the MFT mirror, an
+  open transaction, whether quota management is switched on, and that Windows
+  shows every file as the raw volume holds it.
+- **What a conversion would take:** the number of files, directories and
+  streams; how much data stays where it is and how much is copied, for the
+  cluster size asked for (`--target-cluster-bytes`); the working storage and
+  the free memory it needs at least; and a range for the time, from the lab's
+  runs on virtual disks.
+
+A lab volume that had been in use (the conversion that followed took 2 min
+16 s):
+
+```text
+Nothing was found that a conversion refuses.
+The reading took 11.0 s (shadow copies 0.0 s, file records 9.8 s, NTFS's own indexes 0.6 s, counting, and asking each directory 0.2 s, each file and directory 0.5 s, the volume's conditions 0.0 s).
+Note: 3 file(s) and directories have an object ID (Windows gives one to the target of a shortcut). ReFS has no object IDs: a conversion keeps them in its records and does not carry them over.
+Decided only when the volume is frozen for a conversion: that the NTFS log closes cleanly, ...
+What a conversion would take:
+  20732 file(s), 2403 directories, 20735 data stream(s); 432 MiB of data.
+  To 4 KiB ReFS clusters: 366 MiB stay where they are, 3 MiB are copied, 63 MiB are holes of sparse files and stay holes.
+  Working storage: at least 4102 MiB (4 GiB and what is copied, twice); 117.1 GiB are free there.
+  Memory: at least 95 MiB free; 15.3 GiB are free now.
+  Time: roughly 2 min to 4 min, from the lab's runs on virtual disks; a slower disk takes longer.
+```
+
+| Exit code | Meaning |
+| ---: | --- |
+| 0 | Nothing was found that a conversion refuses |
+| 3 | A conversion would refuse the volume; each reason is printed |
+| 5 | The volume changed during every reading: nothing is known, and nothing is refused |
+| 1 | The check could not be made |
+
+A volume that is being written to can change between two of the structures a
+check joins. The check then reads it again, up to three times. If the volume
+never held still it says so and exits 5; it does not report a refusal it
+could not confirm. Something found twice in a row is reported, because a
+conversion would find it too.
+
+The working-storage figure is a floor, not a forecast: the lab's Windows
+volume, with 22.9 GB in use, used about 30 GB.
+
+## Rehearse: `--diagnose`
 
 ```powershell
 .\ntfs2refs.exe --drive E --scratch-directory S:\runs --diagnose
@@ -64,9 +131,15 @@ The run stops after 500 failures, when it is rarely learning anything new.
 `--diagnose-limit N` changes that number, and `--diagnose-limit 0` lists every
 failure on the volume.
 
-Diagnose is refused, before anything is started, where it could not keep that
-promise: when a conversion would first shrink the partition (see below), and
-with `--minimize-scratch`. It does not exercise the journal, the writes to the
+A diagnose run of a data volume makes the check of `--check` first, as a
+conversion does, and stops there if that refuses the volume.
+
+A diagnosis never shrinks a partition, and the ReFS file system has to be
+built at the length the partition has when it is converted. So where a
+conversion would first shrink the partition (see below), a diagnose run of a
+data volume makes the check of `--check` alone and says so; of a Windows boot
+volume it is refused before anything is started. It is also refused with
+`--minimize-scratch`. It does not exercise the journal, the writes to the
 volume or a boot.
 
 ## Convert a data volume
@@ -78,12 +151,15 @@ volume or a boot.
 
 `--drive` takes a drive letter, or a disk number with `--partition`. The run
 shows the disk, the partition, its size and label and what it is about to do,
-and asks for confirmation. Then:
+checks the volume as `--check` does, and asks for confirmation. A volume the
+check refuses is refused there, online and untouched. Then:
 
-1. Windows formats a ReFS volume of the same size on a virtual disk in the
-   working directory.
-2. The volume is taken offline and read-only, and inspected. Anything that
-   cannot be converted is refused here, with the volume returned as NTFS.
+1. Windows formats a ReFS volume of the size the partition will have on a
+   virtual disk in the working directory. If Windows will not format it, the
+   run stops with the volume untouched.
+2. The volume is taken offline and read-only, and inspected again. Anything
+   that only the frozen volume shows is refused here, with the volume
+   returned as NTFS.
 3. Every file and directory is created on the new ReFS volume through
    Windows. File data that can stay where it lies on the disk is not copied.
 4. The run works out which sectors of the volume the new file system needs,
@@ -97,8 +173,10 @@ Until step 5 the volume is NTFS and unchanged, with one exception:
 **A partition whose length is not a multiple of 64 MiB is shrunk first.** ReFS
 covers a volume in whole units of that size, so the converter asks the Windows
 NTFS driver to shrink the partition to one, by less than 64 MiB. It says so,
-with the sizes, before the confirmation prompt. The shrink is not undone if
-the run stops later.
+with the sizes, before the confirmation prompt, and does it only after the
+check has found nothing that refuses the volume and Windows has formatted the
+working volume (between steps 1 and 2). The shrink is not undone if the run
+stops later.
 
 - **Source geometry.** Any that Windows formats NTFS with: clusters from 512
   bytes to 2 MiB, 512-byte or 4096-byte (4Kn) sectors, 1 KiB or 4 KiB file
@@ -118,9 +196,13 @@ the run stops later.
 - **ReFS version.** Whatever the running Windows formats: 3.14 on every build
   this was run on. The run records it and requires the volume to stay that
   version.
-- **Dev Drive or standard.** By default Windows formats the new file system
-  as a Dev Drive (`format /DevDrv`), which Microsoft documents for every
-  edition of Windows 11. The converted volume is then a ReFS volume that
+- **Dev Drive or standard.** `--target-format dev-drive|standard` says how
+  Windows formats the new file system. A run that names neither gets a Dev
+  Drive, and on Windows Server an ordinary ("standard") ReFS volume; a
+  Windows boot volume is converted as a Dev Drive only. The run prints which
+  it is before it asks.
+- **A Dev Drive** is what `format /DevDrv` makes, which Microsoft documents
+  for every edition of Windows 11. The converted volume is then a ReFS volume that
   Windows reports as a Dev Drive. Whether this machine *trusts* it is kept by
   Windows per machine and is not part of the conversion: the run ends by
   saying what Windows reports, and in the lab that was a Dev Drive not marked
@@ -129,12 +211,13 @@ the run stops later.
   shows the state and `fsutil devdrv trust E:` trusts the volume;
   [Microsoft's Dev Drive documentation](https://learn.microsoft.com/windows/dev-drive/)
   says what trust changes and when to give it.
-- **`--target-format standard`** asks Windows for an ordinary ReFS volume
-  instead. It works only where Windows itself formats one; where it does not
-  (the lab's Windows 11 answered "ReFS file system is not supported on this
-  device"), the run stops before the volume is touched and says so. There is
-  no fallback from one to the other, and no conversion to standard ReFS has
-  been run in the lab.
+- **A standard volume** is an ordinary ReFS volume. A conversion to one
+  works only where Windows itself formats one. Windows Server does: in the
+  lab, Windows Server 2025 (build 26100) converted data volumes of every
+  geometry in the matrix to standard ReFS, and to a Dev Drive when asked.
+  The lab's Windows 11 answered "ReFS file system is not supported on this
+  device"; there the run stops before the volume is touched and says so.
+  There is no fallback from one to the other.
 
 ### What a volume that has been in use meets
 
@@ -333,14 +416,30 @@ differences it accepts.
 | `--list` | Lists disks and partitions, and whether each NTFS partition can be converted |
 | `--drive <letter or disk>` `[--partition N]` | Selects the volume |
 | `--scratch-directory <dir>` | Working storage, on another disk |
-| `--diagnose` `[--diagnose-limit N]` | Checks without converting |
+| `--check` | Reads the volume while it stays online: what would refuse it, and what a conversion takes |
+| `--diagnose` `[--diagnose-limit N]` | Goes through the whole preparation without converting |
 | `--target-cluster-bytes 4096\|65536` | ReFS cluster size |
-| `--target-format dev-drive\|standard` | How Windows formats the new file system |
+| `--target-format dev-drive\|standard` | How Windows formats the new file system; standard is the default on Windows Server, dev-drive elsewhere |
 | `--windows-boot-volume` | The volume is an installed Windows that is not running |
 | `--recover <dir> --recovery-sha256 <sum>` `[--rollback]` | Finishes, or undoes, an interrupted run |
+| `--yes` `--volume-serial XXXX-XXXX` | Runs without asking; see below |
 | `--verify-full-content` | Reads and hashes the complete contents of every stream |
 | `--recheck-everything` | Repeats the full re-reads at every checkpoint |
 | `--minimize-scratch` | Experimental: less working storage; see below |
+
+### Without the prompt
+
+A script passes `--yes`, which answers every question of the run. Because the
+question it answers is the one that shows which volume is about to be
+converted, a conversion or a diagnose run then also needs
+`--volume-serial XXXX-XXXX`, the volume's serial number as `--list` and `vol`
+print it. A run whose drive letter leads to another volume is refused before
+anything is opened. A recovery needs only `--yes`: its checksum already binds
+it to its run.
+
+```powershell
+.\ntfs2refs.exe --drive E --scratch-directory S:\runs --yes --volume-serial 1A2B-3C4D
+```
 
 ### Verification
 

@@ -52,7 +52,8 @@ pub(super) fn geometry_decision(partition_bytes: u64) -> Result<GeometryDecision
 }
 
 /// Diagnose never changes the source, so it cannot run where a conversion
-/// would first have to shrink the partition.
+/// would first have to shrink the partition. Asked for a Windows boot
+/// volume; a data volume gets the read-only check instead.
 pub(super) fn admit_geometry(
     decision: GeometryDecision,
     partition_bytes: u64,
@@ -80,7 +81,7 @@ pub(super) fn describe_geometry(decision: GeometryDecision) {
     } = decision
     {
         println!(
-            "ReFS covers a volume in whole units of 64 MiB. Before creating ReFS metadata, the Windows NTFS driver must shrink this NTFS partition by {remainder} bytes."
+            "ReFS covers a volume in whole units of 64 MiB. Once Windows has formatted the run's working volume, and before anything else is done, the Windows NTFS driver shrinks this NTFS partition by {remainder} bytes."
         );
         println!(
             "Its GUID and start remain unchanged. The recovery baseline begins after that resize; a later cancellation can leave a healthy, slightly smaller NTFS partition."

@@ -19,8 +19,11 @@ to the VM for the length of the attempt. It is removed when the attempt ends
 unless -KeepVolume is given.
 
 Outcomes: converted (ReFS, listing identical), converted-but-listing-differs,
+converted-but-target-differs (with -ExpectTarget: Windows reports another
+kind of ReFS volume than the one expected),
 refused-source-unchanged (the converter stopped and the NTFS volume lists
 exactly as before), refused-as-expected (the same, and -ExpectRefusal matched),
+refused-after-shrinking-the-partition (it lists as before, and is shorter),
 and named failures. With -InterruptAt: resumed (recovered to ReFS, listing
 identical) or rolled-back (recovered to NTFS, listing exactly as before).
 With -StopDuringPreparation: preparation-cancelled (the command the run
@@ -33,6 +36,9 @@ Records land in .lab\hyperv\attempts\<Name>\.
 param(
     [Parameter(Mandatory)][string]$Name,
     [string]$VmId = '8f7fc646-8c9f-41d0-b65a-ecfadccfc36a',
+    # The guest account's saved credential. The reference VMs share one; a VM
+    # made by New-ServerLabVm.ps1 has its own and prints where it is.
+    [string]$CredentialPath,
     # NTFS allocation unit of the source, in bytes: 512 through 2097152.
     [int]$ClusterBytes = 4096,
     # Logical sector size of the source disk. 4096 is a 4Kn disk.
@@ -41,7 +47,15 @@ param(
     [switch]$LargeRecords,
     # Size of the source partition. ReFS covers whole 64 MiB units.
     [int]$PartitionMB = 51200,
-    [ValidateSet('dev-drive', 'standard')][string]$TargetFormat = 'dev-drive',
+    # 'default' gives the converter no --target-format, as someone does who
+    # does not know the option: what it then asks Windows for, and what
+    # Windows says the volume is, are in the verdict (target.requested,
+    # target.windows_reports). -ExpectTarget holds the run to one of them.
+    [ValidateSet('dev-drive', 'standard', 'default')][string]$TargetFormat = 'dev-drive',
+    # A pattern for what Windows has to report the converted volume as, for
+    # example '^standard' or '^Dev Drive'; a volume it reports as anything
+    # else makes the outcome converted-but-target-differs.
+    [string]$ExpectTarget,
     # ReFS allocation unit of the target, passed as --target-cluster-bytes; 0 leaves the converter's default.
     [int]$TargetClusterBytes = 0,
     [ValidateSet('system', 'administrator')][string]$RunAs = 'system',
@@ -100,6 +114,30 @@ param(
     # -Content minimal and features that ReFS can hold (copy, security, ea,
     # links, longpath, deep, bigdir).
     [switch]$NativeRefsControl,
+    # Run the converter as a script would: `--yes --volume-serial <the volume's
+    # serial number>`, with nothing typed at its prompt. A recovery gets --yes.
+    [switch]$Unattended,
+    # With -Unattended: give a serial number that is not the volume's. The run
+    # has to refuse before it opens anything.
+    [switch]$WrongSerial,
+    # Run `ntfs2refs --check` on the volume first and record what it says
+    # (check.txt, and `check` in the verdict). The attempt then goes on as
+    # usual and the two are compared: a check that found nothing before a
+    # conversion that was refused, or the other way round, adds
+    # "-but-check-disagreed" to the outcome, and a check that named a
+    # refusal other than the one the conversion gave adds
+    # "-but-check-named-another-refusal".
+    [switch]$Check,
+    # Only the check: nothing is converted, and the volume has to list
+    # exactly as before and be as long, online and writable as before.
+    # Outcomes: check-clean, check-found-refusals (check-refused-as-expected
+    # when -ExpectRefusal matches one of them), check-inconclusive,
+    # check-changed-the-source.
+    [switch]$CheckOnly,
+    # With -CheckOnly: files are written to and deleted from the volume all
+    # the while it is read. The check may find the volume at rest or not; it
+    # must never report a refusal that is not there.
+    [switch]$WriteLoad,
     [switch]$KeepVolume
 )
 $ErrorActionPreference = 'Stop'; Set-StrictMode -Version Latest
@@ -142,7 +180,8 @@ function Invoke-UseTest([string]$Root) {
 
 $vm = Get-VM -Id $VmId
 if ($vm.State -ne 'Running') { throw "VM $($vm.Name) is $($vm.State). Start its control OS first: Invoke-BootConversionAttempt.ps1 -Name <n> -NoConvert -KeepScratch -VmId $VmId" }
-$saved = Import-Clixml -LiteralPath (Join-Path $workspace '.lab\hyperv\win11\secrets\guest-credential.xml')
+if (-not $CredentialPath) { $CredentialPath = Join-Path $workspace '.lab\hyperv\win11\secrets\guest-credential.xml' }
+$saved = Import-Clixml -LiteralPath $CredentialPath
 $credential = [pscredential]::new('LabAdmin', $saved.Password)
 $session = New-PSSession -VMId $VmId -Credential $credential
 $hostDisk = $null; $worker = $null
@@ -187,6 +226,7 @@ try {
     # A VHDX reports 4096-byte physical sectors, and NTFS will not format a
     # cluster smaller than the physical sector; a VHD reports 512.
     $container = if ($ClusterBytes -lt 4096) { 'vhd' } else { 'vhdx' }
+    if ($NativeRefsControl -and $TargetFormat -eq 'default') { throw '-NativeRefsControl formats the volume itself: name -TargetFormat dev-drive or standard' }
     if ($NativeRefsControl -and $Content -ne 'minimal') { throw '-NativeRefsControl takes -Content minimal: the mixed content uses what only NTFS has' }
     $made = Invoke-Command -Session $session -ArgumentList $guestRoot, $Name, $sizeMB, $PartitionMB, $SectorBytes, $unit, ([bool]$LargeRecords), @($ready), $container, ([bool]$NativeRefsControl), $TargetFormat -ScriptBlock {
         param($root, $name, $sizeMB, $partitionMB, $sectorBytes, $unit, $largeRecords, $known, $container, $native, $targetFormat)
@@ -348,7 +388,13 @@ try {
         # changed times would show as a difference. So the volume is mounted
         # afresh first (again every 20 s: a guest that has just started has
         # no indexer yet), and listed when those files are there and two
-        # listings in a row find as many entries in that directory.
+        # listings in a row find as many entries in that directory. A Windows
+        # without the search service (Windows Server, unless the feature was
+        # added) never writes the indexer's file, and is not waited for. What
+        # every Windows writes is the storage service's WPSettings.dat, a
+        # few seconds after the volume arrives: an attempt on Windows Server
+        # that did not wait for it had it written under a check.
+        $indexer = [bool](Get-Service -Name WSearch -ErrorAction SilentlyContinue | Where-Object { "$($_.StartType)" -ne 'Disabled' })
         $deadline = (Get-Date).AddSeconds(150); $settled = $false; $previous = -1
         $mountAfresh = { $number = (Get-Partition -DriveLetter V).DiskNumber; Set-Disk -Number $number -IsOffline $true; Set-Disk -Number $number -IsOffline $false }
         & $mountAfresh; $remount = (Get-Date).AddSeconds(20)
@@ -359,23 +405,23 @@ try {
             if ($LASTEXITCODE -ne 0) { break }
             $own = @(Select-String -LiteralPath "$root\manifest-before.jsonl" -Pattern 'System Volume Information' -SimpleMatch)
             $has = { param($leaf) [bool]($own | Where-Object { $_.Line -like "*$leaf*" }) }
-            $settled = (& $has 'IndexerVolumeGuid') -and (-not $junctions -or (& $has 'MountPointManagerRemoteDatabase')) -and $own.Count -eq $previous
+            $settled = (& $has 'WPSettings.dat') -and (-not $indexer -or (& $has 'IndexerVolumeGuid')) -and (-not $junctions -or (& $has 'MountPointManagerRemoteDatabase')) -and $own.Count -eq $previous
             $previous = $own.Count
             if (-not $settled -and (Get-Date) -ge $remount) { & $mountAfresh; $remount = (Get-Date).AddSeconds(20); $previous = -1 }
         } until ($settled -or (Get-Date) -gt $deadline)
-        [pscustomobject]@{ exit = $LASTEXITCODE; text = ($text -join ' '); settled = $settled }
+        [pscustomobject]@{ exit = $LASTEXITCODE; text = ($text -join ' '); settled = $settled; indexer = $indexer }
     }
     if ($listed.exit -ne 0) { throw "listing before the run failed (exit $($listed.exit)): $($listed.text)" }
     Copy-Item -FromSession $session -LiteralPath "$guestRoot\manifest-before.jsonl" -Destination $records
-    $verdict.source.windows_files_settled = $listed.settled
-    Say "listing before the run: $($listed.text)$(if (-not $listed.settled) { ' (Windows had not written its own files to the volume within 150 s)' })"
+    $verdict.source.windows_files_settled = $listed.settled; $verdict.source.search_indexer = $listed.indexer
+    Say "listing before the run: $($listed.text)$(if (-not $listed.settled) { ' (Windows had not written its own files to the volume within 150 s)' })$(if (-not $listed.indexer) { ' (this Windows has no search indexer)' })"
 
     # Starts the guest worker (the one the boot harness uses) in a guest
     # folder with these converter arguments: as SYSTEM from a scheduled task,
     # or as the elevated administrator in a session of its own.
     function Start-Worker([string]$Root, [string[]]$Arguments, [string]$Task) {
-        Invoke-Command -Session $session -ArgumentList $Root, ($Arguments -join "`t") -ScriptBlock {
-            param($root, $joined) [IO.File]::WriteAllText("$root\run.json", (@{ arguments = @([string[]]$joined.Split("`t")) } | ConvertTo-Json), [Text.UTF8Encoding]::new($false)) }
+        Invoke-Command -Session $session -ArgumentList $Root, ($Arguments -join "`t"), (-not $Unattended) -ScriptBlock {
+            param($root, $joined, $answer) [IO.File]::WriteAllText("$root\run.json", (@{ arguments = @([string[]]$joined.Split("`t")); answer = [bool]$answer } | ConvertTo-Json), [Text.UTF8Encoding]::new($false)) }
         if ($RunAs -eq 'administrator') {
             if ($script:worker) { Remove-PSSession $script:worker -ErrorAction SilentlyContinue }
             $script:worker = New-PSSession -VMId $VmId -Credential $credential
@@ -429,11 +475,91 @@ try {
         } until ($state.ended -or (Get-Date) -gt $deadline)
         [pscustomobject]@{ ended = [bool]$state.ended; held = $held; stopped = $stopped }
     }
-    $arguments = @('--drive', 'V', '--scratch-directory', 'S:\datalab\runs', '--target-format', $TargetFormat)
+    $arguments = @('--drive', 'V', '--scratch-directory', 'S:\datalab\runs')
+    if ($TargetFormat -ne 'default') { $arguments += @('--target-format', $TargetFormat) }
     if ($TargetClusterBytes) { $arguments += @('--target-cluster-bytes', "$TargetClusterBytes") }
     if ($InterruptAt) { $arguments += @('--lab-hold-at', $InterruptAt, '--acknowledge-lab-hold-never-completes') }
     if ($SampleStacks) { $arguments += @('--sample-stacks', "$guestRoot\stacks.txt") }
     if ($Diagnose) { $arguments += '--diagnose' }
+    # What --list says of the volume, as an elevated user sees it: whether a
+    # conversion would take it, its serial number, and BitLocker.
+    $listed = Invoke-Command -Session $session -ArgumentList $guestRoot -ScriptBlock {
+        param($root)
+        $text = @(& "$root\ntfs2refs.exe" --list 2>&1 | ForEach-Object { "$_" })
+        [IO.File]::WriteAllLines("$root\list.txt", [string[]]$text, [Text.UTF8Encoding]::new($false))
+        $row = [string]($text | Where-Object { $_ -match '\sV:\\' } | Select-Object -First 1)
+        [pscustomobject]@{ exit = $LASTEXITCODE; row = $row.Trim(); serial = if ($row -match 'serial ([0-9A-F]{4}-[0-9A-F]{4})') { $Matches[1] } else { $null } }
+    }
+    try { Copy-Item -FromSession $session -LiteralPath "$guestRoot\list.txt" -Destination $records } catch { }
+    $verdict.list = [ordered]@{ exit = $listed.exit; row = $listed.row; serial = $listed.serial }
+    Say "--list: $($listed.row)"
+    if ($Check -or $CheckOnly) {
+        $checkArguments = @('--drive', 'V', '--scratch-directory', 'S:\datalab\runs', '--check')
+        if ($TargetFormat -ne 'default') { $checkArguments += @('--target-format', $TargetFormat) }
+        if ($TargetClusterBytes) { $checkArguments += @('--target-cluster-bytes', "$TargetClusterBytes") }
+        $checked = Invoke-Command -Session $session -ArgumentList $guestRoot, $checkArguments, ([bool]$WriteLoad) -ScriptBlock {
+            param($root, $arguments, $load)
+            $writer = $null
+            if ($load) {
+                $writer = Start-Job -ScriptBlock {
+                    $i = 0
+                    while ($true) {
+                        $i++
+                        [IO.File]::WriteAllBytes("V:\load-$($i % 300).bin", (New-Object byte[] (4096 * (1 + $i % 60))))
+                        if ($i % 5 -eq 0) { Remove-Item "V:\load-$(($i * 7) % 300).bin" -Force -ErrorAction SilentlyContinue }
+                    }
+                }
+                Start-Sleep -Seconds 3
+            }
+            $clock = [Diagnostics.Stopwatch]::StartNew()
+            $text = @(& "$root\ntfs2refs.exe" @arguments 2>&1 | ForEach-Object { "$_" })
+            $exit = $LASTEXITCODE
+            $seconds = [Math]::Round($clock.Elapsed.TotalSeconds, 1)
+            if ($writer) { Stop-Job $writer; Remove-Job $writer -Force; Remove-Item 'V:\load-*.bin' -Force -ErrorAction SilentlyContinue }
+            [IO.File]::WriteAllLines("$root\check.txt", [string[]]$text, [Text.UTF8Encoding]::new($false))
+            $left = @(Get-ChildItem 'S:\datalab\runs' -Directory -Filter 'check-*' -ErrorAction SilentlyContinue).Count
+            $partition = Get-Partition -DriveLetter V; $disk = Get-Disk -Number $partition.DiskNumber
+            [pscustomobject]@{ exit = $exit; seconds = $seconds; text = $text; left = $left
+                bytes = $partition.Size; offline = [bool]$disk.IsOffline; read_only = [bool]$disk.IsReadOnly; filesystem = (Get-Volume -DriveLetter V).FileSystem }
+        }
+        try { Copy-Item -FromSession $session -LiteralPath "$guestRoot\check.txt" -Destination $records } catch { }
+        $checkRefusals = @($checked.text | Where-Object { $_ -match '^\s+\d+\.\s' -or $_ -match '^A conversion would refuse this volume: ' } | ForEach-Object { ($_ -replace '^\s+\d+\.\s+', '') -replace '^A conversion would refuse this volume: ', '' })
+        $verdict.check = [ordered]@{ exit = $checked.exit; seconds = $checked.seconds; refusals = $checkRefusals
+            takes = @($checked.text | Where-Object { $_ -match '^  \S' -and $_ -notmatch '^\s+\d+\.\s' })
+            working_directories_left = $checked.left; write_load = [bool]$WriteLoad
+            source_as_before = ($checked.bytes -eq $verdict.source.observed.partition_bytes -and -not $checked.offline -and -not $checked.read_only -and $checked.filesystem -eq 'NTFS') }
+        Say "check: exit $($checked.exit) after $($checked.seconds) s; $($checkRefusals.Count) refusal(s)$(if ($checked.left) { "; $($checked.left) working director(ies) left behind" })"
+        foreach ($refusal in $checkRefusals) { Say ("check refusal: " + $refusal.Substring(0, [Math]::Min(400, $refusal.Length))) }
+        foreach ($line in $verdict.check.takes) { Say "check: $($line.Trim())" }
+        if ($checked.exit -notin 0, 3, 5) { $verdict.outcome = 'check-failed'; throw "the check ended with exit $($checked.exit): $(($checked.text | Select-Object -Last 3) -join ' / ')" }
+        if ($checked.left) { $verdict.outcome = 'check-left-working-files'; throw 'the check left a working directory behind' }
+        if ($CheckOnly) {
+            $after = Invoke-Command -Session $session -ArgumentList $guestRoot -ScriptBlock {
+                param($root)
+                $listed = & "$root\lab-volume-manifest.exe" capture --root 'V:\' --output "$root\manifest-after.jsonl" 2>&1
+                if ($LASTEXITCODE -ne 0) { return [pscustomobject]@{ identical = $false; summary = "listing failed ($LASTEXITCODE): $($listed -join ' ')" } }
+                $summary = & "$root\lab-volume-manifest.exe" compare --exact --before "$root\manifest-before.jsonl" --after "$root\manifest-after.jsonl" --report "$root\manifest-report.json" 2>&1
+                [pscustomobject]@{ identical = ($LASTEXITCODE -eq 0); summary = ($summary -join ' ') }
+            }
+            foreach ($leaf in 'manifest-after.jsonl', 'manifest-report.json') { try { Copy-Item -FromSession $session -LiteralPath "$guestRoot\$leaf" -Destination $records } catch { } }
+            $verdict.manifest = [ordered]@{ result = $(if ($after.identical) { 'identical' } else { 'differs' }); exact = $true; summary = $after.summary }
+            Say "before/after comparison, exact: $($verdict.manifest.result): $($after.summary)"
+            $verdict.outcome = if (-not $verdict.check.source_as_before -or (-not $WriteLoad -and -not $after.identical)) { 'check-changed-the-source' }
+                elseif ($checked.exit -eq 0) { 'check-clean' }
+                elseif ($checked.exit -eq 5) { 'check-inconclusive' }
+                elseif ($ExpectRefusal -and ($checkRefusals -join "`n") -match $ExpectRefusal) { 'check-refused-as-expected' }
+                else { 'check-found-refusals' }
+            return
+        }
+        if (-not $verdict.check.source_as_before) { $verdict.outcome = 'check-changed-the-source'; throw 'the check left the volume other than it found it' }
+    }
+    if ('bitlocker' -in $wanted -and $listed.row -notmatch 'encrypted with BitLocker') {
+        $verdict.outcome = 'list-did-not-show-bitlocker'; throw "--list does not say that V: is encrypted with BitLocker: $($listed.row)"
+    }
+    if ($Unattended) {
+        if (-not $listed.serial) { $verdict.outcome = 'list-did-not-show-serial'; throw "--list shows no serial number for V:: $($listed.row)" }
+        $arguments += @('--yes', '--volume-serial', $(if ($WrongSerial) { '0000-0000' } else { $listed.serial }))
+    }
     $arguments += $ConverterArgs
     $verdict.converter_arguments = $arguments
     $task = "N2R-DataLab-$Name"
@@ -463,6 +589,7 @@ try {
         $printed = Select-String -LiteralPath $shown -Pattern 'To get it back as NTFS: ntfs2refs --recover "(.+)" --recovery-sha256 ([0-9a-f]{64}) --rollback' | Select-Object -First 1
         if (-not $printed) { $verdict.outcome = 'stopped-without-cancel-command'; throw 'the stopped run had not printed the command that cancels its preparation' }
         $cancel = @('--recover', $printed.Matches[0].Groups[1].Value, '--recovery-sha256', $printed.Matches[0].Groups[2].Value, '--rollback')
+        if ($Unattended) { $cancel += '--yes' }
         $verdict.cancel_arguments = $cancel
         $stoppedRoot = $guestRoot
         $stage = {
@@ -510,6 +637,7 @@ try {
         if (-not $printed) { $verdict.outcome = 'interrupted-without-recovery-command'; throw 'the interrupted run printed no "To recover:" line' }
         $recover = @('--recover', $printed.Matches[0].Groups[1].Value, '--recovery-sha256', $printed.Matches[0].Groups[2].Value)
         if ($RecoverMode -eq 'rollback') { $recover += '--rollback' }
+        if ($Unattended) { $recover += '--yes' }
         $verdict.interrupted_at = $InterruptAt; $verdict.recover_mode = $RecoverMode; $verdict.recovery_arguments = $recover
         # A folder of its own, so the interrupted run's records stay as they are.
         $guestRoot = "$guestRoot\recover"
@@ -551,6 +679,11 @@ try {
     if (Test-Path -LiteralPath $stderr) { $errorLine = [string](Get-Content -LiteralPath $stderr -Encoding UTF8 | Where-Object { $_ -match '^error:' } | Select-Object -Last 1) }
     $refsField = { param($label) if ($run.refsinfo -match "(?m)^\s*$label\s*:\s*(\S+)") { $Matches[1] } else { $null } }
     $verdict.converter = [ordered]@{ exit = $run.exit; seconds = $run.seconds; error = $errorLine }
+    # What the run said it would ask Windows for, and what Windows then calls the volume.
+    $stdout = Join-Path $records 'stdout.log'
+    $said = { param($pattern) if (Test-Path -LiteralPath $stdout) { $line = [string](Get-Content -LiteralPath $stdout -Encoding UTF8 | Where-Object { $_ -match $pattern } | Select-Object -Last 1); if ($line -match $pattern) { $Matches[1].Trim() } } }
+    $verdict.target.requested = & $said '^Requested target: (.+?)\s*\(ReFS,'
+    $verdict.target.windows_reports = & $said '^Windows reports the converted source: (.+?);'
     $verdict.volume_after = [ordered]@{ filesystem = $run.filesystem; label = $run.label; health = $run.health; mounted = $run.mounted; disk_offline = $run.offline; disk_read_only = $run.read_only
         partition_bytes = $run.partition_bytes
         refs_version = & $refsField 'REFS Volume Version'; refs_bytes_per_cluster = & $refsField 'Bytes Per Cluster'; refs_bytes_per_sector = & $refsField 'Bytes Per Sector' }
@@ -630,6 +763,31 @@ try {
     elseif ($returned) { "refused-source-listing-$listing" }
     elseif ($run.filesystem -eq 'ReFS') { 'failed-after-conversion' }
     else { 'failed-source-not-returned' }
+    # A run that refuses or only diagnoses has to leave the partition as long
+    # as it was. (A conversion of a partition that is not a multiple of
+    # 64 MiB shortens it, and a run recovered to NTFS after that keeps the
+    # shorter length; both say so.)
+    $lengthBefore = $verdict.source.observed.partition_bytes; $lengthAfter = $verdict.volume_after.partition_bytes
+    if ($lengthBefore -and $lengthAfter -and $lengthAfter -ne $lengthBefore) {
+        $verdict.source.partition_bytes_changed_by = $lengthAfter - $lengthBefore
+        Say "the partition's length changed by $($lengthAfter - $lengthBefore) bytes ($lengthBefore -> $lengthAfter)"
+        if ($verdict.outcome -in 'refused-source-unchanged', 'refused-as-expected') { $verdict.outcome = 'refused-after-shrinking-the-partition' }
+        elseif ($verdict.outcome -in 'diagnose-clean', 'diagnose-found-failures') { $verdict.outcome = 'diagnose-changed-the-source' }
+    }
+    if ($Check) {
+        # The check and the conversion have to agree: on whether the volume
+        # is refused, and, when it is, on why.
+        $refusedNow = $verdict.outcome -match '^refused'
+        $wholeError = if (Test-Path -LiteralPath $stderr) { (Get-Content -LiteralPath $stderr -Encoding UTF8) -join "`n" } else { '' }
+        $same = @($verdict.check.refusals | Where-Object { $_ -and $wholeError.Contains($_.Substring(0, [Math]::Min(60, $_.Length))) }).Count -gt 0
+        $verdict.check.agrees = switch ($verdict.check.exit) { 0 { -not $refusedNow } 3 { $refusedNow } default { $null } }
+        $verdict.check.named_the_same_refusal = if ($verdict.check.exit -eq 3 -and $refusedNow) { $same } else { $null }
+        Say "check and run: $(if ($null -eq $verdict.check.agrees) { 'the check was inconclusive' } elseif ($verdict.check.agrees) { 'agree' } else { 'DISAGREE' })$(if ($null -ne $verdict.check.named_the_same_refusal) { "; the same refusal: $($verdict.check.named_the_same_refusal)" })"
+        if ($verdict.check.agrees -eq $false) { $verdict.outcome = "$($verdict.outcome)-but-check-disagreed" }
+        elseif ($verdict.check.named_the_same_refusal -eq $false) { $verdict.outcome = "$($verdict.outcome)-but-check-named-another-refusal" }
+    }
+    if ($verdict.target.requested) { Say "target: the run asked for '$($verdict.target.requested)'; Windows reports '$($verdict.target.windows_reports)'" }
+    if ($ExpectTarget -and $verdict.outcome -eq 'converted' -and "$($verdict.target.windows_reports)" -notmatch $ExpectTarget) { $verdict.outcome = 'converted-but-target-differs' }
     if ($Acceptance -and $verdict.outcome -in 'converted', 'resumed') {
         # The listing shows what was carried over; this shows that the result
         # is a volume one can go on working with.

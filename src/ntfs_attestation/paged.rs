@@ -336,6 +336,28 @@ pub struct PagedFileComparison {
     pub extent_identity_streams: u64,
     pub extent_identity_logical_bytes: u64,
 }
+impl PagedFileComparison {
+    /// The views of this object that Windows does not show as the raw volume
+    /// holds them, each with what was found: empty when all of them match.
+    pub(crate) fn differences(&self) -> Vec<String> {
+        let mut found = Vec::new();
+        let mut add = |view: &str, check: &crate::ntfs_stream_attestation::Check| {
+            if !check.matched {
+                found.push(format!("{view}: {}", check.detail));
+            }
+        };
+        add("attributes, times and security", &self.metadata);
+        add("streams", &self.streams);
+        add("contents", &self.logical_data);
+        if let Some(check) = &self.namespace {
+            add("directory listing", check);
+        }
+        if let Some(check) = &self.directory_case {
+            add("case sensitivity", check);
+        }
+        found
+    }
+}
 #[derive(Serialize)]
 pub struct PagedComparisonSummary {
     pub schema_version: u32,

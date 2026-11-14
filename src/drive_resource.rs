@@ -28,15 +28,15 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-fn aligned(bytes: u64) -> u64 {
+pub(super) fn aligned(bytes: u64) -> u64 {
     bytes / 4096 * 4096
 }
-fn reserve(bytes: u64) -> u64 {
+pub(super) fn reserve(bytes: u64) -> u64 {
     (bytes / 4).min(16 * 1024 * 1024 * 1024)
 }
 
 /// These are current hardware shares, not file/stream/volume-count limits.
-fn budget(
+pub(super) fn budget(
     available: AvailableResources,
     scratch: u64,
     evidence_ram: u64,
@@ -535,10 +535,7 @@ pub(super) fn recover_preparation_in_workspace(
         routes.phase
     );
     print!("Proceed with cancellation of this preparation? [y/N] ");
-    io::stdout().flush()?;
-    let mut answer = String::new();
-    io::stdin().lock().take(65).read_line(&mut answer)?;
-    if answer.len() >= 65 || !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+    if !crate::confirmation::answer()? {
         println!("Cancelled.");
         return Ok(0);
     }
@@ -772,10 +769,7 @@ pub(crate) fn recover(directory: &Path, sha: &str, rollback: bool) -> Result<u8>
         }
     );
     print!("Proceed with this resource-profile recovery? [y/N] ");
-    io::stdout().flush()?;
-    let mut answer = String::new();
-    io::stdin().lock().take(65).read_line(&mut answer)?;
-    if answer.len() >= 65 || !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+    if !crate::confirmation::answer()? {
         println!("Cancelled.");
         return Ok(0);
     }

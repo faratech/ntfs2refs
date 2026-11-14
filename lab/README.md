@@ -78,6 +78,16 @@ lab\Invoke-DataVolumeAttempt.ps1 -Name d-512-01 -VmId <vm> -ClusterBytes 512
 lab\Invoke-DataVolumeAttempt.ps1 -Name d-4kn-01 -VmId <vm> -SectorBytes 4096 -ClusterBytes 65536
 ```
 
+A VM with Windows Server, which formats ordinary ReFS as well as Dev Drives,
+is made by `lab\New-ServerLabVm.ps1 -Iso <Windows Server ISO>`: Windows Setup
+runs inside the new VM from a generated answer file, a scratch volume `S:` is
+added, and a baseline checkpoint is taken. Start that VM and give the harness
+its id with `-VmId` and its credential file with `-CredentialPath`;
+`-TargetFormat standard` then converts to ordinary ReFS. `-TargetFormat
+default` gives the converter no `--target-format`, and `-ExpectTarget
+<pattern>` holds the attempt to what Windows then reports the volume as
+(`^standard` on Windows Server, `^Dev Drive` on Windows 11).
+
 `-ClusterBytes` is the NTFS allocation unit, 512 bytes to 2 MiB.
 `-SectorBytes 4096` puts the volume on a 4Kn disk, which the host makes in the
 attempt's folder and attaches to the VM for the attempt. `-LargeRecords` formats
@@ -108,6 +118,31 @@ With `-AfterStop restart` it first starts the same conversion again, as
 someone does who did not see the run stop: that run has to be refused with
 words that name the offline disk and `--recover`, and the cancellation is
 run then (`restart-refused-then-cancelled`).
+
+Every attempt records what `ntfs2refs --list` says of the volume beforehand
+(`list.txt`; the verdict has the volume's row). `-Unattended` runs the
+converter as a script would, with `--yes --volume-serial <the serial number
+--list printed>` and nothing typed at its prompt; a recovery gets `--yes`.
+`-WrongSerial` gives it a serial number that is not the volume's, which has to
+be refused before anything is opened (`-ExpectRefusal volume-serial`). The
+`bitlocker` case also requires `--list` to say that the volume is encrypted.
+
+`-Check` runs `ntfs2refs --check` on the volume before the attempt and keeps
+what it printed (`check.txt`; the verdict has its exit code, its refusals and
+its estimate). The attempt then goes on, and the two have to agree: a check
+that found nothing before a conversion that is refused, or the reverse, adds
+`-but-check-disagreed` to the outcome, and a check that named another refusal
+than the conversion gave adds `-but-check-named-another-refusal`. `-CheckOnly`
+runs the check alone: the volume has to list exactly as before and be as
+long, online and writable as before (`check-clean`, `check-found-refusals`,
+`check-refused-as-expected` with `-ExpectRefusal`, `check-inconclusive`,
+`check-changed-the-source`). `-WriteLoad`, with `-CheckOnly`, writes files to
+the volume and deletes them all the while the check reads it; the check may
+find the volume at rest or not, and must not report a refusal that is not
+there. A check must leave no working directory behind.
+
+Every attempt compares the partition's length before and after. A refused run
+that left it shorter is `refused-after-shrinking-the-partition`.
 
 `-Content many` replaces the mixed content with two files that are past numbers
 which used to be fixed: one with 200 named streams, and a sparse file with

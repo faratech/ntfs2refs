@@ -628,50 +628,119 @@ pub struct Gate {
     pub detail: String,
 }
 
-/// The objects the preservation policy does not admit. Every one is written
-/// to the comparison pages with its reasons; the first few are also kept
-/// here, so that the refusal itself can say which objects it is about.
+/// What the `clean_volume` gate requires, as a refusal says it.
+pub(crate) const CLEAN_VOLUME_REQUIREMENT: &str = "the volume is marked dirty, or is not NTFS version 3.1: run `chkdsk <drive>: /f`, let it finish, and convert then";
+
+/// What the `volume_policy_flags` gate requires, as a refusal says it.
+pub(crate) const VOLUME_FLAGS_REQUIREMENT: &str = "the volume carries state flags the converter does not take over (a pending chkdsk or upgrade), or 8.3 short-name creation is enabled on it: run `chkdsk <drive>: /f`, and turn short-name creation off with `fsutil 8dot3name set <drive>: 1`";
+
+/// What a refusal says of directories that are marked case-sensitive.
+pub(crate) fn case_sensitive_refusal(case_sensitive: u64, directories: u64) -> String {
+    format!(
+        "{case_sensitive} of {directories} directories are case-sensitive, which the converter does not carry over: find them with `fsutil file queryCaseSensitiveInfo <directory>` and turn it off with `fsutil file setCaseSensitiveInfo <directory> disable`"
+    )
+}
+
+/// Why one of NTFS's own indexes (`$Extend\$Quota`, `$ObjId`, `$Reparse`)
+/// cannot be replaced by what ReFS keeps, as a refusal says it.
+pub(crate) fn index_refusal_cause(role: &str) -> &'static str {
+    if role.ends_with("$Quota") {
+        "disk quotas are in use on the volume (enabled, or with entries for users): turn quota management off (`fsutil quota disable <drive>:`) and delete the quota entries, then convert"
+    } else if role.ends_with("$ObjId") {
+        "the volume's object-ID index is not in a form the converter takes over"
+    } else {
+        "the volume's reparse-point index does not match its reparse points: run `chkdsk <drive>: /f`"
+    }
+}
+
+/// The objects the objects gate fails for: those the preservation policy does
+/// not admit, and those that Windows does not show as the raw volume holds
+/// them. Every one is written to the comparison pages with its reasons; the
+/// first few of each kind are also kept here, so that the refusal itself can
+/// say which objects it is about.
 #[derive(Debug, Default)]
 pub(crate) struct RefusedObjects {
     count: u64,
     first: Vec<String>,
+    differing: u64,
+    differing_first: Vec<String>,
 }
 
 impl RefusedObjects {
-    /// How many refused objects a message spells out.
+    /// How many objects of each kind a message spells out.
     const NAMED: usize = 12;
+
+    fn named(record_number: u64, path: Option<&[String]>, reasons: &[String]) -> String {
+        let place = match path {
+            Some(components) => format!("\\{}", components.join("\\")),
+            None => "(path not resolved)".to_owned(),
+        };
+        format!("MFT record {record_number} {place}: {}", reasons.join("; "))
+    }
 
     pub(crate) fn note(&mut self, record_number: u64, path: Option<&[String]>, issues: &[String]) {
         self.count = self.count.saturating_add(1);
         if self.first.len() < Self::NAMED {
-            let place = match path {
-                Some(components) => format!("\\{}", components.join("\\")),
-                None => "(path not resolved)".to_owned(),
-            };
-            self.first.push(format!(
-                "MFT record {record_number} {place}: {}",
-                issues.join("; ")
-            ));
+            self.first.push(Self::named(record_number, path, issues));
         }
     }
 
-    /// The detail of the objects gate: what it requires and, when objects
-    /// were refused, which and why.
-    pub(crate) fn detail(&self, requirement: &str) -> String {
+    /// An object that Windows does not show as the raw volume holds it:
+    /// `differences` names each view that differs and what was found.
+    pub(crate) fn note_difference(
+        &mut self,
+        record_number: u64,
+        path: Option<&[String]>,
+        differences: &[String],
+    ) {
+        self.differing = self.differing.saturating_add(1);
+        if self.differing_first.len() < Self::NAMED {
+            self.differing_first
+                .push(Self::named(record_number, path, differences));
+        }
+    }
+
+    /// The objects the preservation policy does not admit, as a sentence of
+    /// its own: `None` when there are none. `rest` says where the ones that
+    /// are not spelled out can be found.
+    pub(crate) fn outside_policy(&self, rest: &str) -> Option<String> {
         if self.count == 0 {
-            return requirement.to_owned();
+            return None;
         }
         let mut text = format!(
-            "{requirement}; {} object{} outside what this converter preserves: {}",
+            "{} object{} outside what this converter preserves: {}",
             self.count,
             if self.count == 1 { " is" } else { "s are" },
             self.first.join(" | ")
         );
         let unnamed = self.count - self.first.len() as u64;
         if unnamed > 0 {
+            text.push_str(&format!(" | and {unnamed} more{rest}"));
+        }
+        Some(text)
+    }
+
+    /// The detail of the objects gate: what it requires and, when objects
+    /// were refused, which and why.
+    pub(crate) fn detail(&self, requirement: &str) -> String {
+        const RECORDED: &str = "each recorded with its reasons in source-comparison.data.pages";
+        let mut text = requirement.to_owned();
+        if let Some(outside) = self.outside_policy(&format!(", {RECORDED}")) {
+            text.push_str("; ");
+            text.push_str(&outside);
+        }
+        if self.differing != 0 {
             text.push_str(&format!(
-                " | and {unnamed} more, each recorded with its reasons in source-comparison.data.pages"
+                "; Windows does not show {} object{} as the raw volume holds {}: {}",
+                self.differing,
+                if self.differing == 1 { "" } else { "s" },
+                if self.differing == 1 { "it" } else { "them" },
+                self.differing_first.join(" | ")
             ));
+            let unnamed = self.differing - self.differing_first.len() as u64;
+            if unnamed > 0 {
+                text.push_str(&format!(" | and {unnamed} more, {RECORDED}"));
+            }
         }
         text
     }
@@ -752,6 +821,36 @@ mod refusal_tests {
         assert!(detail.contains("22 objects are outside"), "{detail}");
         assert!(detail.contains("and 10 more"), "{detail}");
         assert!(!detail.contains("MFT record 119"), "{detail}");
+    }
+
+    #[test]
+    fn a_refusal_names_the_objects_windows_shows_differently() {
+        let requirement = "Windows has to see it as the raw volume does";
+        let mut refused = RefusedObjects::default();
+        refused.note_difference(
+            41,
+            Some(&["tree".to_owned(), "sparse.bin".to_owned()]),
+            &["contents: native allocated ranges differ".to_owned()],
+        );
+        let detail = refused.detail(requirement);
+        assert_eq!(
+            detail,
+            "Windows has to see it as the raw volume does; Windows does not show 1 object as the raw volume holds it: MFT record 41 \\tree\\sparse.bin: contents: native allocated ranges differ"
+        );
+
+        // Both kinds are given, each with its own count.
+        refused.note(7, None, &["reason".to_owned()]);
+        for record in 100..114 {
+            refused.note_difference(record, None, &["streams: differ".to_owned()]);
+        }
+        let detail = refused.detail(requirement);
+        assert!(detail.contains("1 object is outside"), "{detail}");
+        assert!(
+            detail.contains("Windows does not show 15 objects as the raw volume holds them"),
+            "{detail}"
+        );
+        assert!(detail.contains("and 3 more"), "{detail}");
+        assert!(!detail.contains("MFT record 113"), "{detail}");
     }
 
     #[test]

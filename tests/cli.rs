@@ -385,6 +385,10 @@ fn capabilities_report_what_the_executable_enforces() {
         .is_string()
     );
 
+    // The run's own before-and-after listing, and how it exits.
+    let own = &capabilities["listing_comparison"]["by_the_run"];
+    assert_eq!(own["option"], "--compare-listing");
+    assert!(own["exit_codes"][ntfs2refs::drive_cli::EXIT_LISTING_DIFFERS.to_string()].is_string());
     // And the differences the listing comparison accepts.
     let accepted: Vec<&str> = capabilities["listing_comparison"]["accepted_differences"]
         .as_array()

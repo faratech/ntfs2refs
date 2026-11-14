@@ -637,6 +637,16 @@ fn run() -> Result<u8> {
                     ],
                     "listing_comparison": {
                         "tool": "lab-volume-manifest",
+                        "by_the_run": {
+                            "option": "--compare-listing",
+                            "does": "lists the volume before the conversion and after it with the tool's own code, compares the two, prints the result and keeps both listings and the report in the run's records",
+                            "costs": "two full reads of the volume",
+                            "exit_codes": {
+                                "0": "the volume lists as it did before",
+                                (ntfs2refs::drive_cli::EXIT_LISTING_DIFFERS.to_string()):
+                                    "the conversion completed and the listings differ, or the second listing could not be made",
+                            },
+                        },
                         "accepted_differences": n2r_win32::volume_manifest::ALLOWED_DIFFERENCES,
                         "short_names": "each NTFS 8.3 name must be a same-directory link to its long name",
                     },

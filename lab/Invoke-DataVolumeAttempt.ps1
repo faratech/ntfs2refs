@@ -19,6 +19,8 @@ to the VM for the length of the attempt. It is removed when the attempt ends
 unless -KeepVolume is given.
 
 Outcomes: converted (ReFS, listing identical), converted-but-listing-differs,
+converted-but-target-differs (with -ExpectTarget: Windows reports another
+kind of ReFS volume than the one expected),
 refused-source-unchanged (the converter stopped and the NTFS volume lists
 exactly as before), refused-as-expected (the same, and -ExpectRefusal matched),
 and named failures. With -InterruptAt: resumed (recovered to ReFS, listing
@@ -44,7 +46,15 @@ param(
     [switch]$LargeRecords,
     # Size of the source partition. ReFS covers whole 64 MiB units.
     [int]$PartitionMB = 51200,
-    [ValidateSet('dev-drive', 'standard')][string]$TargetFormat = 'dev-drive',
+    # 'default' gives the converter no --target-format, as someone does who
+    # does not know the option: what it then asks Windows for, and what
+    # Windows says the volume is, are in the verdict (target.requested,
+    # target.windows_reports). -ExpectTarget holds the run to one of them.
+    [ValidateSet('dev-drive', 'standard', 'default')][string]$TargetFormat = 'dev-drive',
+    # A pattern for what Windows has to report the converted volume as, for
+    # example '^standard' or '^Dev Drive'; a volume it reports as anything
+    # else makes the outcome converted-but-target-differs.
+    [string]$ExpectTarget,
     # ReFS allocation unit of the target, passed as --target-cluster-bytes; 0 leaves the converter's default.
     [int]$TargetClusterBytes = 0,
     [ValidateSet('system', 'administrator')][string]$RunAs = 'system',
@@ -197,6 +207,7 @@ try {
     # A VHDX reports 4096-byte physical sectors, and NTFS will not format a
     # cluster smaller than the physical sector; a VHD reports 512.
     $container = if ($ClusterBytes -lt 4096) { 'vhd' } else { 'vhdx' }
+    if ($NativeRefsControl -and $TargetFormat -eq 'default') { throw '-NativeRefsControl formats the volume itself: name -TargetFormat dev-drive or standard' }
     if ($NativeRefsControl -and $Content -ne 'minimal') { throw '-NativeRefsControl takes -Content minimal: the mixed content uses what only NTFS has' }
     $made = Invoke-Command -Session $session -ArgumentList $guestRoot, $Name, $sizeMB, $PartitionMB, $SectorBytes, $unit, ([bool]$LargeRecords), @($ready), $container, ([bool]$NativeRefsControl), $TargetFormat -ScriptBlock {
         param($root, $name, $sizeMB, $partitionMB, $sectorBytes, $unit, $largeRecords, $known, $container, $native, $targetFormat)
@@ -442,7 +453,8 @@ try {
         } until ($state.ended -or (Get-Date) -gt $deadline)
         [pscustomobject]@{ ended = [bool]$state.ended; held = $held; stopped = $stopped }
     }
-    $arguments = @('--drive', 'V', '--scratch-directory', 'S:\datalab\runs', '--target-format', $TargetFormat)
+    $arguments = @('--drive', 'V', '--scratch-directory', 'S:\datalab\runs')
+    if ($TargetFormat -ne 'default') { $arguments += @('--target-format', $TargetFormat) }
     if ($TargetClusterBytes) { $arguments += @('--target-cluster-bytes', "$TargetClusterBytes") }
     if ($InterruptAt) { $arguments += @('--lab-hold-at', $InterruptAt, '--acknowledge-lab-hold-never-completes') }
     if ($SampleStacks) { $arguments += @('--sample-stacks', "$guestRoot\stacks.txt") }
@@ -585,6 +597,11 @@ try {
     if (Test-Path -LiteralPath $stderr) { $errorLine = [string](Get-Content -LiteralPath $stderr -Encoding UTF8 | Where-Object { $_ -match '^error:' } | Select-Object -Last 1) }
     $refsField = { param($label) if ($run.refsinfo -match "(?m)^\s*$label\s*:\s*(\S+)") { $Matches[1] } else { $null } }
     $verdict.converter = [ordered]@{ exit = $run.exit; seconds = $run.seconds; error = $errorLine }
+    # What the run said it would ask Windows for, and what Windows then calls the volume.
+    $stdout = Join-Path $records 'stdout.log'
+    $said = { param($pattern) if (Test-Path -LiteralPath $stdout) { $line = [string](Get-Content -LiteralPath $stdout -Encoding UTF8 | Where-Object { $_ -match $pattern } | Select-Object -Last 1); if ($line -match $pattern) { $Matches[1].Trim() } } }
+    $verdict.target.requested = & $said '^Requested target: (.+?)\s*\(ReFS,'
+    $verdict.target.windows_reports = & $said '^Windows reports the converted source: (.+?);'
     $verdict.volume_after = [ordered]@{ filesystem = $run.filesystem; label = $run.label; health = $run.health; mounted = $run.mounted; disk_offline = $run.offline; disk_read_only = $run.read_only
         partition_bytes = $run.partition_bytes
         refs_version = & $refsField 'REFS Volume Version'; refs_bytes_per_cluster = & $refsField 'Bytes Per Cluster'; refs_bytes_per_sector = & $refsField 'Bytes Per Sector' }
@@ -664,6 +681,8 @@ try {
     elseif ($returned) { "refused-source-listing-$listing" }
     elseif ($run.filesystem -eq 'ReFS') { 'failed-after-conversion' }
     else { 'failed-source-not-returned' }
+    if ($verdict.target.requested) { Say "target: the run asked for '$($verdict.target.requested)'; Windows reports '$($verdict.target.windows_reports)'" }
+    if ($ExpectTarget -and $verdict.outcome -eq 'converted' -and "$($verdict.target.windows_reports)" -notmatch $ExpectTarget) { $verdict.outcome = 'converted-but-target-differs' }
     if ($Acceptance -and $verdict.outcome -in 'converted', 'resumed') {
         # The listing shows what was carried over; this shows that the result
         # is a volume one can go on working with.

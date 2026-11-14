@@ -220,6 +220,43 @@ fn check_directory_view(
     check_directory_entries(raw.geometry.serial_number, f, n, optional, &expected, None)
 }
 
+/// The attributes Windows gives a ".." entry that names no parent.
+const UNNAMED_PARENT_ATTRIBUTES: u32 = 0x80;
+
+/// Checks one of the two entries Windows adds to a listing: "." is the
+/// directory itself and ".." its parent, each a directory with the file ID
+/// the raw volume gives it.
+///
+/// One other form of ".." is taken. A directory is opened here by its file
+/// ID, and some builds of Windows then list ".." without the parent when
+/// they do not have the directory's link to it in memory: file ID 0 and no
+/// attribute but NORMAL. Windows Server 2025, build 26100.1742, does so on a
+/// volume mounted a moment ago, for every directory; build 26300.9457 names
+/// the parent. Such an entry says nothing of the parent, so nothing is
+/// checked against it. That the directory is in its parent does not rest on
+/// it: the parent's own listing has to name this directory with its file ID.
+fn check_dot_entry(
+    is_parent: bool,
+    id: u64,
+    attributes: u32,
+    owner: u64,
+    parent: u64,
+) -> Result<()> {
+    if is_parent && id == 0 && attributes == UNNAMED_PARENT_ATTRIBUTES {
+        return Ok(());
+    }
+    let (entry, expected) = if is_parent {
+        ("..", parent)
+    } else {
+        (".", owner)
+    };
+    ensure!(
+        id == expected && attributes & 16 != 0,
+        "Windows lists the entry \"{entry}\" with file ID {id:#018x} and attributes {attributes:#x}, where a directory with file ID {expected:#018x} is expected"
+    );
+    Ok(())
+}
+
 fn check_directory_entries(
     serial: u64,
     f: &FileInventory,
@@ -286,10 +323,12 @@ fn check_directory_entries(
             );
             let id = u64::from_le_bytes(e.file_id[..8].try_into().unwrap());
             if e.name_utf16 == [46] || e.name_utf16 == [46, 46] {
-                let expected_id = if e.name_utf16 == [46] { owner } else { parent };
+                let is_parent = e.name_utf16 == [46, 46];
+                check_dot_entry(is_parent, id, e.attributes, owner, parent)?;
                 ensure!(
-                    id == expected_id && e.attributes & 16 != 0 && special.insert(e.name_utf16),
-                    "invalid or duplicate dot directory entry"
+                    special.insert(e.name_utf16),
+                    "Windows lists the entry \"{}\" twice",
+                    if is_parent { ".." } else { "." }
                 );
                 continue;
             }
@@ -393,4 +432,47 @@ pub fn reconcile(raw: &NtfsInspection, native: &Report) -> Result<Reconciliation
         directories,
         conversion_qualified: false,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const OWNER: u64 = 0x0001_0000_0000_0027;
+    const PARENT: u64 = 0x0001_0000_0000_0026;
+
+    #[test]
+    fn the_dot_entries_are_the_directory_and_its_parent() {
+        check_dot_entry(false, OWNER, 0x10, OWNER, PARENT).unwrap();
+        check_dot_entry(true, PARENT, 0x10, OWNER, PARENT).unwrap();
+        // Other attributes beside DIRECTORY, as the root has them.
+        check_dot_entry(true, PARENT, 0x16, OWNER, PARENT).unwrap();
+
+        // Another object, or one that is not a directory.
+        let wrong = check_dot_entry(true, OWNER, 0x10, OWNER, PARENT).unwrap_err();
+        let text = format!("{wrong:#}");
+        assert!(
+            text.contains("\"..\"")
+                && text.contains("0x0001000000000027")
+                && text.contains("0x0001000000000026"),
+            "{text}"
+        );
+        assert!(check_dot_entry(false, PARENT, 0x10, OWNER, PARENT).is_err());
+        assert!(check_dot_entry(false, OWNER, 0x20, OWNER, PARENT).is_err());
+        assert!(check_dot_entry(true, PARENT, 0x80, OWNER, PARENT).is_err());
+    }
+
+    #[test]
+    fn a_parent_entry_that_names_no_parent_is_taken_and_nothing_else() {
+        // What Windows Server 2025 (26100.1742) lists for a directory opened
+        // by file ID on a volume mounted a moment ago.
+        check_dot_entry(true, 0, 0x80, OWNER, PARENT).unwrap();
+
+        // Only that exact form, and only for "..".
+        assert!(check_dot_entry(false, 0, 0x80, OWNER, PARENT).is_err());
+        assert!(check_dot_entry(true, 0, 0x10, OWNER, PARENT).is_err());
+        assert!(check_dot_entry(true, 0, 0x90, OWNER, PARENT).is_err());
+        assert!(check_dot_entry(true, 0, 0, OWNER, PARENT).is_err());
+        assert!(check_dot_entry(true, 1, 0x80, OWNER, PARENT).is_err());
+    }
 }

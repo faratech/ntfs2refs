@@ -139,7 +139,10 @@ long, online and writable as before (`check-clean`, `check-found-refusals`,
 `check-changed-the-source`). `-WriteLoad`, with `-CheckOnly`, writes files to
 the volume and deletes them all the while the check reads it; the check may
 find the volume at rest or not, and must not report a refusal that is not
-there. A check must leave no working directory behind.
+there. A check must leave no working directory behind. `-FreshFile` creates a
+file on the volume a moment before the check and waits for nothing: with
+`-Features shortnames` the check has to count as many short names as Windows
+lists, or the outcome is `check-missed-what-was-just-written`.
 
 `-CompareListing` runs the converter with `--compare-listing`. The harness
 makes its own listings as always, and the run's comparison has to say what

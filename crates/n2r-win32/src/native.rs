@@ -1045,6 +1045,16 @@ pub fn observe_general_disk_state_readonly(
     Ok(after)
 }
 
+/// Asks Windows to write out what it holds in memory for the volume: file
+/// data and NTFS's own structures that programs have changed and that are
+/// not on the disk yet. A reading of the disk made afterwards sees what was
+/// written up to this moment. Windows finishes its own pending writes; the
+/// converter writes nothing.
+pub fn write_out_volume_cache(binding: &GeneralDiskBinding) -> io::Result<()> {
+    binding.validate()?;
+    device_file(&binding.volume_path()?, true, false)?.sync_all()
+}
+
 /// Probe one dedicated non-system basic data disk without locking, dismounting,
 /// setting attributes or issuing raw writes. This is not a conversion lease.
 pub fn probe_general(

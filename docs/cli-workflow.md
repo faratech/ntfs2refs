@@ -56,7 +56,9 @@ could not be queried: the list it printed is then partial.
 
 A check reads a data volume while it stays online and in use. Nothing on it
 is frozen, formatted, shrunk or written; the check keeps its own pages in the
-working directory while it runs and removes them. It reads the volume's NTFS
+working directory while it runs and removes them. It first asks Windows to
+write out what it still holds in memory for the volume, so that a file saved
+a moment ago is read too. It reads the volume's NTFS
 structures, asks Windows about shadow copies and about each directory, and
 reads no file's contents: half a second on the lab's small volumes, 11
 seconds on one of 23,000 files. It prints:
@@ -102,8 +104,7 @@ What a conversion would take:
 | 1 | The check could not be made |
 
 A volume that is being written to can change between two of the structures a
-check joins, and what Windows has just changed reaches the disk a few seconds
-later. The check then waits and reads the volume again: up to four readings,
+check joins. The check then waits and reads the volume again: up to four readings,
 2, 5 and 10 seconds apart. If the volume never held still it says so and
 exits 5; it does not report a refusal it could not confirm. What the
 inspection itself decides against (a reparse point it does not recreate, two

@@ -135,6 +135,11 @@ param(
     # when -ExpectRefusal matches one of them), check-inconclusive,
     # check-changed-the-source.
     [switch]$CheckOnly,
+    # With -Check or -CheckOnly: a file is created on the volume a moment
+    # before the check and nothing waits for Windows to write it out, as
+    # when someone saves a file and starts the converter. The check has to
+    # read it: on a volume with short names its refusal counts the file.
+    [switch]$FreshFile,
     # With -CheckOnly: files are written to and deleted from the volume all
     # the while it is read. The check may find the volume at rest or not; it
     # must never report a refusal that is not there.
@@ -501,6 +506,19 @@ try {
     try { Copy-Item -FromSession $session -LiteralPath "$guestRoot\list.txt" -Destination $records } catch { }
     $verdict.list = [ordered]@{ exit = $listed.exit; row = $listed.row; serial = $listed.serial }
     Say "--list: $($listed.row)"
+    if ($FreshFile) {
+        if (-not ($Check -or $CheckOnly)) { throw '-FreshFile is a file made just before a check: with -Check or -CheckOnly' }
+        $fresh = Invoke-Command -Session $session -ArgumentList $guestRoot -ScriptBlock {
+            param($root)
+            [IO.File]::WriteAllText('V:\a file made a moment before the check.txt', 'fresh')
+            $text = & "$root\lab-volume-manifest.exe" capture --root 'V:\' --output "$root\manifest-before.jsonl" 2>&1
+            [pscustomobject]@{ exit = $LASTEXITCODE; text = ($text -join ' ') }
+        }
+        if ($fresh.exit -ne 0) { throw "listing the volume with its fresh file failed (exit $($fresh.exit)): $($fresh.text)" }
+        Copy-Item -FromSession $session -LiteralPath "$guestRoot\manifest-before.jsonl" -Destination $records -Force
+        $verdict.source.fresh_file = 'V:\a file made a moment before the check.txt'
+        Say "a file was created on the volume a moment before the check; listing with it: $($fresh.text)"
+    }
     if ($Check -or $CheckOnly) {
         $checkArguments = @('--drive', 'V', '--scratch-directory', 'S:\datalab\runs', '--check')
         if ($TargetFormat -ne 'default') { $checkArguments += @('--target-format', $TargetFormat) }
@@ -540,6 +558,16 @@ try {
         foreach ($refusal in $checkRefusals) { Say ("check refusal: " + $refusal.Substring(0, [Math]::Min(400, $refusal.Length))) }
         foreach ($line in $verdict.check.takes) { Say "check: $($line.Trim())" }
         if ($checked.exit -notin 0, 3, 5) { $verdict.outcome = 'check-failed'; throw "the check ended with exit $($checked.exit): $(($checked.text | Select-Object -Last 3) -join ' / ')" }
+        if ($FreshFile) {
+            # The check's count of short names against Windows' own: the
+            # listing made a moment before it, which has the fresh file.
+            $counted = @($checkRefusals | ForEach-Object { if ($_ -match '^(\d+) file\(s\) and directories on this volume have an 8\.3 short name') { [int]$Matches[1] } })
+            $listedShort = @(Get-Content -LiteralPath (Join-Path $records 'manifest-before.jsonl') -Encoding UTF8 | Where-Object { $_ -match '"short_name":"' }).Count
+            if ($counted.Count -ne 1) { $verdict.outcome = 'fresh-file-not-countable'; throw '-FreshFile needs a volume whose refusal counts its short names (-Features shortnames)' }
+            $verdict.check.short_names_counted = $counted[0]; $verdict.check.short_names_listed = $listedShort
+            Say "check counted $($counted[0]) short name(s); Windows lists $listedShort"
+            if ($counted[0] -ne $listedShort) { $verdict.outcome = 'check-missed-what-was-just-written'; throw "the check counted $($counted[0]) short names where Windows lists $($listedShort): it did not read what was written a moment before" }
+        }
         if ($checked.left) { $verdict.outcome = 'check-left-working-files'; throw 'the check left a working directory behind' }
         if ($CheckOnly) {
             $after = Invoke-Command -Session $session -ArgumentList $guestRoot -ScriptBlock {

@@ -196,13 +196,12 @@ impl Point {
             }
             IO_REPARSE_TAG_MOUNT_POINT => 8,
             tag => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "a reparse point of tag {tag:#010x}{} is not one the converter recreates (it carries over symbolic links, junctions and app execution aliases)",
-                        unsupported_tag_meaning(tag)
-                    ),
-                ));
+                // A decision about a reparse point that was read in full,
+                // not a structure that could not be read.
+                return Err(crate::refusal::io_error(format!(
+                    "a reparse point of tag {tag:#010x}{} is not one the converter recreates (it carries over symbolic links, junctions and app execution aliases)",
+                    unsupported_tag_meaning(tag)
+                )));
             }
         };
         let paths = bytes

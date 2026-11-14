@@ -526,13 +526,16 @@ fn reconcile_domains_with_link_counter_hint(
                     Ordering::Equal => {
                         // Two names of one directory that are equal once case
                         // is folded: the directory is case-sensitive.
-                        ensure!(
-                            entry.name == name.name_utf16 || entry.child == id,
-                            "the directory at MFT record {} holds two names that differ only by case, {:?} and {:?}: it is case-sensitive, which the converter does not carry over. Rename one of them and turn case sensitivity off with `fsutil file setCaseSensitiveInfo <directory> disable`",
-                            parent & 0x0000_ffff_ffff_ffff,
-                            String::from_utf16_lossy(&entry.name),
-                            String::from_utf16_lossy(&name.name_utf16)
-                        );
+                        if entry.name != name.name_utf16 && entry.child != id {
+                            // A decision about names that were read in
+                            // full, not a structure that could not be read.
+                            return Err(anyhow::Error::new(n2r_win32::refusal::Refusal(format!(
+                                "the directory at MFT record {} holds two names that differ only by case, {:?} and {:?}: it is case-sensitive, which the converter does not carry over. Rename one of them and turn case sensitivity off with `fsutil file setCaseSensitiveInfo <directory> disable`",
+                                parent & 0x0000_ffff_ffff_ffff,
+                                String::from_utf16_lossy(&entry.name),
+                                String::from_utf16_lossy(&name.name_utf16)
+                            ))));
+                        }
                         ensure!(
                             entry.parent == parent
                                 && entry.child == id

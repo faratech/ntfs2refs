@@ -81,6 +81,7 @@ pub mod reference_file;
 #[cfg(windows)]
 pub mod reference_import;
 pub mod refs_security_descriptor;
+pub mod refusal;
 pub mod region_layout;
 pub mod reparse_layout;
 #[cfg(windows)]

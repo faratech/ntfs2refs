@@ -134,9 +134,19 @@ fn free_memory_for(ram: u64) -> u64 {
     ram.saturating_add(ram / 2)
 }
 
-/// The memory a run needs for a volume of this many objects: its indexes,
-/// which are held in memory, may take a quarter of the run's memory, and
-/// its handles a 1024th (`SourceResourceAdmission::validate`).
+/// The memory a run needs for a volume of this many objects.
+///
+/// Two things decide it. What a run is admitted with: its indexes, which
+/// are held in memory, may take a quarter of the run's memory, and its
+/// handles a 1024th (`SourceResourceAdmission::validate`). And what its
+/// ledger of reservations then takes while it builds the new volume, which
+/// is the larger for every volume the lab has run: 8192 bytes for every
+/// stream's row of the placement index, and about 5 KiB for every file and
+/// directory (its receipt, its pages), measured on volumes of 100,000 and
+/// 500,000 files; the reservations that are fractions of the ledger itself
+/// take 0.42 of it besides. A run of 500,000 files that an earlier figure
+/// called a matter of 2.2 GiB ran for 21 minutes and stopped for memory
+/// with 15.6 GiB free.
 fn memory_needed(raw_identities: u64, files: u64, directories: u64, streams: u64) -> u64 {
     let objects = files.saturating_add(directories);
     let indexes = raw_identities
@@ -146,8 +156,20 @@ fn memory_needed(raw_identities: u64, files: u64, directories: u64, streams: u64
         .saturating_mul(2)
         .saturating_add(objects)
         .saturating_add(8);
-    free_memory_for(indexes.saturating_mul(4).max(handles.saturating_mul(1024)))
+    let admitted = indexes.saturating_mul(4).max(handles.saturating_mul(1024));
+    let ledger = streams
+        .saturating_mul(LEDGER_BYTES_A_STREAM)
+        .saturating_add(objects.saturating_mul(LEDGER_BYTES_AN_OBJECT))
+        / (100 - LEDGER_FIXED_PERCENT)
+        * 100;
+    free_memory_for(admitted.max(ledger))
 }
+/// The placement index's prepayment for one row (`private_tree::placement`).
+const LEDGER_BYTES_A_STREAM: u64 = 8192;
+/// What else the ledger held for a file or directory in the lab's runs.
+const LEDGER_BYTES_AN_OBJECT: u64 = 5120;
+/// The share of the ledger its fixed reservations took in those runs.
+const LEDGER_FIXED_PERCENT: u64 = 42;
 
 /// The working storage a run needs at least: the 4 GiB it refuses to start
 /// below, and room for what is copied twice over, once in the working
@@ -835,11 +857,18 @@ mod tests {
 
     #[test]
     fn memory_and_working_storage_grow_with_the_volume() {
-        // Two million files: 6.1 million handle slots of 1024 bytes are more
-        // than four times the indexes, and a run has two thirds of what is free.
-        let needed = memory_needed(2_000_030, 2_000_000, 100_000, 2_000_000);
-        assert_eq!(needed, 6_100_008 * 1024 * 3 / 2);
-        assert!(needed > 8 << 30 && needed < 10 << 30, "{needed}");
+        // What the lab measured: a volume of 500,000 small files needs 16
+        // GiB free (15.6 GiB were not enough, by 0.15 GiB of ledger), one
+        // of 100,000 a fifth of that, and two million take a large machine.
+        let gib = |bytes: u64| bytes as f64 / (1u64 << 30) as f64;
+        let half_million = gib(memory_needed(500_511, 500_003, 508, 500_003));
+        assert!((15.7..17.0).contains(&half_million), "{half_million}");
+        let hundred_thousand = gib(memory_needed(100_107, 100_003, 104, 100_003));
+        assert!((3.0..3.5).contains(&hundred_thousand), "{hundred_thousand}");
+        let two_million = gib(memory_needed(2_000_030, 2_000_000, 100_000, 2_000_000));
+        assert!((60.0..75.0).contains(&two_million), "{two_million}");
+        // The ledger is the larger need: handles and indexes alone are 8.7 GiB there.
+        assert!(two_million > gib(6_100_008 * 1024 * 3 / 2));
         assert!(memory_needed(130, 100, 10, 100) < 64 << 20);
         // A run never starts with less than 4 GiB, and keeps what it copies twice.
         assert_eq!(working_needed(0), 4 << 30);

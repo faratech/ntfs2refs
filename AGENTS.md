@@ -175,3 +175,7 @@ Open, most useful first:
    at its start and started again (`-StopDuringPreparation` shows it);
    resuming a preparation after a power cut is still out of scope.
 4. Not shown: a physical disk, and more than 23 GB of data (#86).
+5. The number of files is limited by the run's memory ledger, not by the
+   machine: about 34 KiB of free memory a file (#129). The placement index's
+   prepayment of 8192 bytes a row is the largest term left; a ledger that
+   runs out names its largest reservations.

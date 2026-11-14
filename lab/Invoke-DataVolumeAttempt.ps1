@@ -390,7 +390,10 @@ try {
         # no indexer yet), and listed when those files are there and two
         # listings in a row find as many entries in that directory. A Windows
         # without the search service (Windows Server, unless the feature was
-        # added) never writes the indexer's file, and is not waited for.
+        # added) never writes the indexer's file, and is not waited for. What
+        # every Windows writes is the storage service's WPSettings.dat, a
+        # few seconds after the volume arrives: an attempt on Windows Server
+        # that did not wait for it had it written under a check.
         $indexer = [bool](Get-Service -Name WSearch -ErrorAction SilentlyContinue | Where-Object { "$($_.StartType)" -ne 'Disabled' })
         $deadline = (Get-Date).AddSeconds(150); $settled = $false; $previous = -1
         $mountAfresh = { $number = (Get-Partition -DriveLetter V).DiskNumber; Set-Disk -Number $number -IsOffline $true; Set-Disk -Number $number -IsOffline $false }
@@ -402,7 +405,7 @@ try {
             if ($LASTEXITCODE -ne 0) { break }
             $own = @(Select-String -LiteralPath "$root\manifest-before.jsonl" -Pattern 'System Volume Information' -SimpleMatch)
             $has = { param($leaf) [bool]($own | Where-Object { $_.Line -like "*$leaf*" }) }
-            $settled = (-not $indexer -or (& $has 'IndexerVolumeGuid')) -and (-not $junctions -or (& $has 'MountPointManagerRemoteDatabase')) -and $own.Count -eq $previous
+            $settled = (& $has 'WPSettings.dat') -and (-not $indexer -or (& $has 'IndexerVolumeGuid')) -and (-not $junctions -or (& $has 'MountPointManagerRemoteDatabase')) -and $own.Count -eq $previous
             $previous = $own.Count
             if (-not $settled -and (Get-Date) -ge $remount) { & $mountAfresh; $remount = (Get-Date).AddSeconds(20); $previous = -1 }
         } until ($settled -or (Get-Date) -gt $deadline)

@@ -23,10 +23,28 @@ use n2r_win32::{
 };
 use std::{fs, path::Path};
 
+/// How long the check waits before each further reading of a volume that
+/// did not hold still, in seconds. A reading takes the volume's structures
+/// from the disk, and what Windows has changed reaches the disk a few
+/// seconds after the change: a volume that was written to a moment ago
+/// reads as torn until then, and reading it again at once only finds the
+/// same. The lab's volumes, read seconds after files were put on them,
+/// failed three readings within a second.
+const PAUSES_SECONDS: [u64; 3] = [2, 5, 10];
+
 /// How often the volume is read before the check gives up on a consistent
-/// reading. A volume in use can change between two of the structures a
-/// reading joins; another reading a moment later usually finds it at rest.
-const READINGS: u32 = 3;
+/// reading: once, and once more after each pause.
+const READINGS: u32 = PAUSES_SECONDS.len() as u32 + 1;
+
+/// The pause before the `reading`th reading, counted from 1: none before
+/// the first.
+fn pause_before(reading: u32) -> u64 {
+    (reading as usize)
+        .checked_sub(2)
+        .and_then(|index| PAUSES_SECONDS.get(index))
+        .copied()
+        .unwrap_or(0)
+}
 
 /// How many unresolved conditions a refusal spells out.
 const NAMED_CONDITIONS: usize = 6;
@@ -241,6 +259,16 @@ pub(super) fn examine(
 ) -> Result<Outcome> {
     let mut failures: Vec<Failure> = Vec::new();
     for reading in 1..=READINGS {
+        // What the inspection decided is read again at once, to see it
+        // twice; a volume that did not hold still is given time.
+        if let Some(failure) = failures.last().filter(|failure| !failure.decided) {
+            let seconds = pause_before(reading);
+            println!(
+                "The volume did not read as one that is at rest ({}); reading it again in {seconds} s.",
+                failure.text
+            );
+            std::thread::sleep(std::time::Duration::from_secs(seconds));
+        }
         let directory = parent.join(format!("check-{run_id}-{reading}"));
         let result = read_in(source, journal, &directory);
         // The pages are the check's own and say nothing afterwards.
@@ -689,7 +717,8 @@ pub(super) fn lines(outcome: &Outcome, target_cluster_bytes: u64) -> Vec<String>
     match outcome {
         Outcome::Changing { last } => {
             text.push(format!(
-                "The volume changed while it was read, {READINGS} times running, so nothing can be said of it and nothing is refused. Run the check again when the volume is at rest; if nothing writes to it, `chkdsk <drive>:` (which only reads) says whether its structures are damaged. The last reading stopped at: {last}"
+                "The volume changed while it was read, {READINGS} times running over {} s, so nothing can be said of it and nothing is refused. Run the check again when the volume is at rest; if nothing writes to it, `chkdsk <drive>:` (which only reads) says whether its structures are damaged. The last reading stopped at: {last}",
+                PAUSES_SECONDS.iter().sum::<u64>()
             ));
         }
         Outcome::Read(report) => {
@@ -818,6 +847,18 @@ mod tests {
         ] {
             assert_eq!(settled_without_the_file(code), None, "{code}");
         }
+    }
+
+    #[test]
+    fn a_volume_that_did_not_hold_still_is_given_time_before_each_further_reading() {
+        assert_eq!(READINGS, 4);
+        assert_eq!(
+            (1..=READINGS).map(pause_before).collect::<Vec<_>>(),
+            [0, 2, 5, 10]
+        );
+        // Nothing beyond the readings there are.
+        assert_eq!(pause_before(0), 0);
+        assert_eq!(pause_before(READINGS + 1), 0);
     }
 
     #[test]

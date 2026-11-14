@@ -101,9 +101,12 @@ What a conversion would take:
 | 1 | The check could not be made |
 
 A volume that is being written to can change between two of the structures a
-check joins. The check then reads it again, up to three times. If the volume
-never held still it says so and exits 5; it does not report a refusal it
-could not confirm. Something found twice in a row is reported, because a
+check joins, and what Windows has just changed reaches the disk a few seconds
+later. The check then waits and reads the volume again: up to four readings,
+2, 5 and 10 seconds apart. If the volume never held still it says so and
+exits 5; it does not report a refusal it could not confirm. What the
+inspection itself decides against (a reparse point it does not recreate, two
+names that differ only by case) is read twice and then reported, because a
 conversion would find it too.
 
 The working-storage figure is a floor, not a forecast: the lab's Windows

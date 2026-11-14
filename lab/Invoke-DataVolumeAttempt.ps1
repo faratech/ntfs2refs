@@ -358,7 +358,10 @@ try {
         # changed times would show as a difference. So the volume is mounted
         # afresh first (again every 20 s: a guest that has just started has
         # no indexer yet), and listed when those files are there and two
-        # listings in a row find as many entries in that directory.
+        # listings in a row find as many entries in that directory. A Windows
+        # without the search service (Windows Server, unless the feature was
+        # added) never writes the indexer's file, and is not waited for.
+        $indexer = [bool](Get-Service -Name WSearch -ErrorAction SilentlyContinue | Where-Object { "$($_.StartType)" -ne 'Disabled' })
         $deadline = (Get-Date).AddSeconds(150); $settled = $false; $previous = -1
         $mountAfresh = { $number = (Get-Partition -DriveLetter V).DiskNumber; Set-Disk -Number $number -IsOffline $true; Set-Disk -Number $number -IsOffline $false }
         & $mountAfresh; $remount = (Get-Date).AddSeconds(20)
@@ -369,16 +372,16 @@ try {
             if ($LASTEXITCODE -ne 0) { break }
             $own = @(Select-String -LiteralPath "$root\manifest-before.jsonl" -Pattern 'System Volume Information' -SimpleMatch)
             $has = { param($leaf) [bool]($own | Where-Object { $_.Line -like "*$leaf*" }) }
-            $settled = (& $has 'IndexerVolumeGuid') -and (-not $junctions -or (& $has 'MountPointManagerRemoteDatabase')) -and $own.Count -eq $previous
+            $settled = (-not $indexer -or (& $has 'IndexerVolumeGuid')) -and (-not $junctions -or (& $has 'MountPointManagerRemoteDatabase')) -and $own.Count -eq $previous
             $previous = $own.Count
             if (-not $settled -and (Get-Date) -ge $remount) { & $mountAfresh; $remount = (Get-Date).AddSeconds(20); $previous = -1 }
         } until ($settled -or (Get-Date) -gt $deadline)
-        [pscustomobject]@{ exit = $LASTEXITCODE; text = ($text -join ' '); settled = $settled }
+        [pscustomobject]@{ exit = $LASTEXITCODE; text = ($text -join ' '); settled = $settled; indexer = $indexer }
     }
     if ($listed.exit -ne 0) { throw "listing before the run failed (exit $($listed.exit)): $($listed.text)" }
     Copy-Item -FromSession $session -LiteralPath "$guestRoot\manifest-before.jsonl" -Destination $records
-    $verdict.source.windows_files_settled = $listed.settled
-    Say "listing before the run: $($listed.text)$(if (-not $listed.settled) { ' (Windows had not written its own files to the volume within 150 s)' })"
+    $verdict.source.windows_files_settled = $listed.settled; $verdict.source.search_indexer = $listed.indexer
+    Say "listing before the run: $($listed.text)$(if (-not $listed.settled) { ' (Windows had not written its own files to the volume within 150 s)' })$(if (-not $listed.indexer) { ' (this Windows has no search indexer)' })"
 
     # Starts the guest worker (the one the boot harness uses) in a guest
     # folder with these converter arguments: as SYSTEM from a scheduled task,

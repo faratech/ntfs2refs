@@ -18,6 +18,8 @@ param(
     [int]$DirectoryEntries = 20000,
     # Size of the dense file, in GiB.
     [int]$BigFileGB = 6,
+    # Files of the 'manyfiles' feature.
+    [int]$FileCount = 500000,
     # A directory of the control OS to copy onto the volume with its security.
     [string]$CopyFrom = 'C:\Program Files'
 )
@@ -158,6 +160,41 @@ public static class N2RLabEa {
             $small = Bytes 40
             foreach ($i in 0..($DirectoryEntries - 1)) { [IO.File]::WriteAllBytes(('{0}\entry-{1:d7}-{2}.dat' -f $dir, $i, ($i * 2654435761 % 1000003)), $small) }
             $made[$feature] = "a directory of $DirectoryEntries entries"
+        }
+        'manyfiles' {
+            # A volume of very many files, for measuring how a run grows
+            # with their number: directories of 1,000 files under
+            # directories of 100; nine files in ten small enough to live in
+            # their file record, the tenth of 4 to 36 KiB.
+            if (-not ('ManyFiles' -as [type])) {
+                Add-Type -TypeDefinition @'
+using System; using System.IO;
+public static class ManyFiles {
+    public static long Make(string root, int count) {
+        var small = new byte[700]; var large = new byte[36 * 1024];
+        new Random(7).NextBytes(small); new Random(8).NextBytes(large);
+        long bytes = 0;
+        for (int i = 0; i < count; i++) {
+            string directory = Path.Combine(root, (i / 100000).ToString("d2"), (i / 1000).ToString("d5"));
+            if (i % 1000 == 0) Directory.CreateDirectory(directory);
+            uint mixed = unchecked((uint)i * 2654435761u);
+            bool big = i % 10 == 9;
+            int length = big ? 4096 + (int)(mixed % (32 * 1024)) : (int)(mixed % 700);
+            var source = big ? large : small;
+            source[0] = (byte)i; source[1] = (byte)(i >> 8); source[2] = (byte)(i >> 16);
+            using (var file = new FileStream(Path.Combine(directory, "file-" + i.ToString("d7") + ".dat"), FileMode.CreateNew, FileAccess.Write, FileShare.None, 1))
+                file.Write(source, 0, length);
+            bytes += length;
+        }
+        return bytes;
+    }
+}
+'@
+            }
+            $null = New-Item -ItemType Directory -Path $dir -Force
+            $clock = [Diagnostics.Stopwatch]::StartNew()
+            $bytes = [ManyFiles]::Make($dir, $FileCount)
+            $made[$feature] = "$FileCount files in $([int][Math]::Ceiling($FileCount / 1000)) directories, $([Math]::Round($bytes / 1MB)) MiB, made in $([int]$clock.Elapsed.TotalSeconds) s"
         }
         'bigfile' {
             # A dense file past 4 GiB, written in 64 MiB pieces.

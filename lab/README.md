@@ -184,6 +184,13 @@ names that differ only by case) and `shortnames-stripped` (8.3 names removed
 with `fsutil`, the remedy the refusal gives). `-Content lived-in` is the mixed content with `copy`,
 `objectids`, `security`, `ea`, `links`, `longpath`, `deep`, `bigdir` and `usn`.
 
+`manyfiles` makes a volume for measuring how a run grows with the number of
+files: `-FileCount` of them (500,000 by default) in directories of 1,000, nine
+in ten small enough to live in their file record, the tenth of 4 to 36 KiB.
+Every attempt records what its run took, sampled every two seconds: the
+converter's peak memory and the working storage at its largest (`resources`
+in the verdict).
+
 These are refused, each by name: `shortnames`, `temporary`, `offline`, `efs`,
 `wof` (a `compact /exe` file), `quota`, `casesensitive` (two names in one
 directory that differ only by case), `snapshot`,

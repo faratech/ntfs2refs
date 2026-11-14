@@ -65,13 +65,18 @@ param(
     [ValidateSet('mixed', 'minimal', 'many', 'lived-in')][string]$Content = 'mixed',
     # NTFS features to add after the content, made by guest\Add-VolumeFeatures.ps1:
     # objectids, security, ea, links, longpath, deep, bigdir, bigfile, full,
-    # copy, usn, casemark (all of which convert; -Content lived-in adds them
-    # except bigfile, full and casemark), and shortnames, temporary, offline,
+    # copy, usn, casemark, manyfiles (all of which convert; -Content lived-in
+    # adds them except bigfile, full, casemark and manyfiles), and shortnames, temporary, offline,
     # efs, wof, quota, casesensitive, snapshot, bitlocker, dirstream (which
     # are refused).
     [string[]]$Features = @(),
     [int]$DirectoryEntries = 20000,
     [int]$BigFileGB = 6,
+    # Files of the 'manyfiles' feature: a volume for measuring how a run
+    # grows with their number. The verdict's "resources" has what the run
+    # took: the converter's peak memory and the working storage at its
+    # largest, sampled every two seconds.
+    [int]$FileCount = 500000,
     # Further converter arguments, for example '--diagnose'.
     [string[]]$ConverterArgs = @(),
     # A pattern the converter's error must match for a refusal to count as expected.
@@ -405,10 +410,10 @@ try {
     if ($wanted) {
         try {
             # (As a script block: the guest's execution policy does not run files.)
-            $featureJson = Invoke-Command -Session $session -ArgumentList $guestRoot, $wanted, $DirectoryEntries, $BigFileGB -ScriptBlock {
-                param($root, $features, $entries, $bigGB)
+            $featureJson = Invoke-Command -Session $session -ArgumentList $guestRoot, $wanted, $DirectoryEntries, $BigFileGB, $FileCount -ScriptBlock {
+                param($root, $features, $entries, $bigGB, $files)
                 $block = [scriptblock]::Create((Get-Content -LiteralPath "$root\features.ps1" -Raw))
-                & $block -Root 'V:\' -Features $features -DirectoryEntries $entries -BigFileGB $bigGB
+                & $block -Root 'V:\' -Features $features -DirectoryEntries $entries -BigFileGB $bigGB -FileCount $files
             }
         } catch { $verdict.outcome = 'feature-not-made'; throw "a feature could not be put on the volume: $($_.Exception.Message)" }
         $verdict.source.features = ($featureJson | Select-Object -Last 1) | ConvertFrom-Json
@@ -664,6 +669,9 @@ public static class SiblingRaw {
     # once it reports that it is held there; with a phase of preparation, as
     # soon as its progress names that phase. Answers whether the worker ended,
     # whether the hold was reached and whether it was stopped in the phase.
+    # What the converter took, at its largest over the attempt: sampled each
+    # time the wait below looks whether it has ended.
+    $usage = @{ peak_working_set = 0L; private_bytes = 0L; working_bytes = 0L; samples = 0 }
     function Wait-Worker([string]$Root, [string]$HoldAt, [string]$StopInPhase) {
         $deadline = (Get-Date).AddMinutes($TimeoutMinutes); $held = $false; $stopped = $false
         do {
@@ -689,8 +697,14 @@ public static class SiblingRaw {
                     # The lab ends a process; it cannot cut power to the storage.
                     if ($atHold) { Get-Process -Name ntfs2refs -ErrorAction SilentlyContinue | Stop-Process -Force }
                 }
-                [pscustomobject]@{ ended = $ended; at_hold = $atHold; in_phase = $inPhase }
+                $running = @(Get-Process -Name ntfs2refs -ErrorAction SilentlyContinue)
+                [pscustomobject]@{ ended = $ended; at_hold = $atHold; in_phase = $inPhase
+                    peak_working_set = [long]($running | Measure-Object PeakWorkingSet64 -Maximum).Maximum
+                    private_bytes = [long]($running | Measure-Object PrivateMemorySize64 -Maximum).Maximum
+                    working_bytes = [long](Get-ChildItem -LiteralPath 'S:\datalab\runs' -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum }
             }
+            foreach ($measure in 'peak_working_set', 'private_bytes', 'working_bytes') { if ($state.$measure -gt $usage[$measure]) { $usage[$measure] = $state.$measure } }
+            $usage.samples++
             if ($state.at_hold) { $held = $true; Say "the converter reported its hold at '$HoldAt' and was ended" }
             if ($state.in_phase) { $stopped = $true; Say "the converter reported the phase '$StopInPhase' and was ended" }
         } until ($state.ended -or (Get-Date) -gt $deadline)
@@ -812,6 +826,9 @@ public static class SiblingRaw {
     Start-Worker $guestRoot $arguments $task
     Say "converter started: ntfs2refs $($arguments -join ' ')"
     $waited = Wait-Worker $guestRoot $InterruptAt $StopDuringPreparation
+    $verdict.resources = [ordered]@{ peak_working_set_bytes = $usage.peak_working_set; peak_private_bytes = $usage.private_bytes
+        peak_working_storage_bytes = $usage.working_bytes; samples = $usage.samples; sampled_every_seconds = 2 }
+    Say "the converter took at most $([Math]::Round($usage.peak_working_set / 1MB)) MiB of memory and $([Math]::Round($usage.working_bytes / 1MB)) MiB of working storage ($($usage.samples) samples)"
     $ended = $waited.ended
     if ($StopDuringPreparation) {
         # The converter was ended while it prepared: it had not printed a

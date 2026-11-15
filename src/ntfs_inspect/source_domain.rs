@@ -103,6 +103,19 @@ pub trait RootFileDomain {
     fn header(&self) -> &SourceHeader;
     fn file_count(&self) -> u64;
     fn file(&self, ordinal: u64) -> Result<FileInventory>;
+    /// What `read` makes of the row at `ordinal`. A domain that holds the
+    /// row lends it; a caller that reads a few of its fields is not handed
+    /// a row of its own for that.
+    fn with_file<T>(
+        &self,
+        ordinal: u64,
+        read: impl FnOnce(&FileInventory) -> Result<T>,
+    ) -> Result<T>
+    where
+        Self: Sized,
+    {
+        read(&self.file(ordinal)?)
+    }
     fn find_record(&self, number: u64, sequence: Option<u16>) -> Result<Option<FileInventory>>;
     /// What `read` makes of the record that [`find_record`](Self::find_record)
     /// finds, or `None` where it finds none. A domain that holds the row

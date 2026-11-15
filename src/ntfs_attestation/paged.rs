@@ -135,11 +135,17 @@ impl NativeRequestDomain for PagedObservationRequest<'_> {
         if index >= self.length {
             return Err(io::Error::other("source selector ordinal absent"));
         }
-        let file = self.source.file(index as u64).map_err(io::Error::other)?;
-        Ok(FileIdentity {
-            record_number: file.record_number,
-            sequence_number: file.sequence_number,
-        })
+        // The four questions below are asked of one object after another,
+        // each of them about the same row: it is read where the source
+        // holds it, not handed out as a copy for each.
+        self.source
+            .with_file(index as u64, |file| {
+                Ok(FileIdentity {
+                    record_number: file.record_number,
+                    sequence_number: file.sequence_number,
+                })
+            })
+            .map_err(io::Error::other)
     }
     fn windows_txf_metadata_identity(&self, index: usize) -> io::Result<Option<FileIdentity>> {
         (|| -> Result<_> {
@@ -150,35 +156,36 @@ impl NativeRequestDomain for PagedObservationRequest<'_> {
                 self.source.is_windows_conversion() && index < self.length,
                 "Windows TxF selector does not belong to the retained Windows source"
             );
-            let file = self.source.file(index as u64)?;
-            if file.record_number != 5
-                && (file.record_number < 16
-                    || file.metadata_role
-                        != crate::ntfs_inspect::MetadataRole::OutsideExtendCandidate)
-            {
-                return Ok(None);
-            }
-            let mut attributes = file.attributes.iter().filter(|attribute| {
-                attribute.type_code == 0x100
-                    && attribute.name_utf16 == [36, 84, 88, 70, 95, 68, 65, 84, 65]
-            });
-            let Some(attribute) = attributes.next() else {
-                return Ok(None);
-            };
-            ensure!(
-                attributes.next().is_none()
-                    && crate::ntfs_admission::recognized_root_txf(attribute)
-                    && attribute
-                        .resident_metadata_hex
-                        .as_ref()
-                        .is_some_and(|bytes| bytes.len() == 112),
-                "Windows TxF selector requires exact bounded resident marker bytes at FILE {}",
-                file.record_number
-            );
-            Ok(Some(FileIdentity {
-                record_number: file.record_number,
-                sequence_number: file.sequence_number,
-            }))
+            self.source.with_file(index as u64, |file| {
+                if file.record_number != 5
+                    && (file.record_number < 16
+                        || file.metadata_role
+                            != crate::ntfs_inspect::MetadataRole::OutsideExtendCandidate)
+                {
+                    return Ok(None);
+                }
+                let mut attributes = file.attributes.iter().filter(|attribute| {
+                    attribute.type_code == 0x100
+                        && attribute.name_utf16 == [36, 84, 88, 70, 95, 68, 65, 84, 65]
+                });
+                let Some(attribute) = attributes.next() else {
+                    return Ok(None);
+                };
+                ensure!(
+                    attributes.next().is_none()
+                        && crate::ntfs_admission::recognized_root_txf(attribute)
+                        && attribute
+                            .resident_metadata_hex
+                            .as_ref()
+                            .is_some_and(|bytes| bytes.len() == 112),
+                    "Windows TxF selector requires exact bounded resident marker bytes at FILE {}",
+                    file.record_number
+                );
+                Ok(Some(FileIdentity {
+                    record_number: file.record_number,
+                    sequence_number: file.sequence_number,
+                }))
+            })
         })()
         .map_err(io::Error::other)
     }
@@ -191,78 +198,81 @@ impl NativeRequestDomain for PagedObservationRequest<'_> {
                 self.source.is_windows_conversion() && index < self.length,
                 "Windows object-ID selector does not belong to the retained Windows source"
             );
-            let file = self.source.file(index as u64)?;
-            if file.record_number < 16 {
-                return Ok(None);
-            }
-            let mut attributes = file
-                .attributes
-                .iter()
-                .filter(|attribute| attribute.type_code == 0x40);
-            let Some(attribute) = attributes.next() else {
-                return Ok(None);
-            };
-            ensure!(
-                file.base_file_reference == 0
-                    && file.metadata_role
-                        == crate::ntfs_inspect::MetadataRole::OutsideExtendCandidate
-                    && attributes.next().is_none()
-                    && attribute.resident
-                    && attribute.name_utf16.is_empty()
-                    && attribute.flags == 0
-                    && attribute.logical_size == 16
-                    && attribute.initialized_size == 16
-                    && attribute.allocated_size == 16
-                    && attribute.lowest_vcn == 0
-                    && attribute.compression_unit == 0
-                    && attribute.extents.is_empty()
-                    && attribute
-                        .resident_metadata_hex
-                        .as_ref()
-                        .is_some_and(|bytes| bytes.len() == 32),
-                "Windows object-ID selector requires exact resident16 bytes at FILE {}",
-                file.record_number
-            );
-            Ok(Some(FileIdentity {
-                record_number: file.record_number,
-                sequence_number: file.sequence_number,
-            }))
+            self.source.with_file(index as u64, |file| {
+                if file.record_number < 16 {
+                    return Ok(None);
+                }
+                let mut attributes = file
+                    .attributes
+                    .iter()
+                    .filter(|attribute| attribute.type_code == 0x40);
+                let Some(attribute) = attributes.next() else {
+                    return Ok(None);
+                };
+                ensure!(
+                    file.base_file_reference == 0
+                        && file.metadata_role
+                            == crate::ntfs_inspect::MetadataRole::OutsideExtendCandidate
+                        && attributes.next().is_none()
+                        && attribute.resident
+                        && attribute.name_utf16.is_empty()
+                        && attribute.flags == 0
+                        && attribute.logical_size == 16
+                        && attribute.initialized_size == 16
+                        && attribute.allocated_size == 16
+                        && attribute.lowest_vcn == 0
+                        && attribute.compression_unit == 0
+                        && attribute.extents.is_empty()
+                        && attribute
+                            .resident_metadata_hex
+                            .as_ref()
+                            .is_some_and(|bytes| bytes.len() == 32),
+                    "Windows object-ID selector requires exact resident16 bytes at FILE {}",
+                    file.record_number
+                );
+                Ok(Some(FileIdentity {
+                    record_number: file.record_number,
+                    sequence_number: file.sequence_number,
+                }))
+            })
         })()
         .map_err(io::Error::other)
     }
     fn row(&self, index: usize) -> io::Result<Cow<'_, NativeRequestRow>> {
         (|| -> Result<_> {
             ensure!(index < self.length, "source selector ordinal absent");
-            let file = self.source.file(index as u64)?;
-            let mut row = NativeRequestRow {
-                identity: FileIdentity {
-                    record_number: file.record_number,
-                    sequence_number: file.sequence_number,
-                },
-                extent_identity_streams: Vec::new(),
-            };
-            if self.policy.is_fast() {
-                for stream in &file.streams {
-                    let selector = if self.windows_paths {
-                        super::extent_identity_stream_request_windows_domain(
-                            self.source,
-                            &file,
-                            stream,
-                        )?
-                    } else {
-                        super::extent_identity_stream_request_domain(
-                            self.source,
-                            &file,
-                            stream,
-                            true,
-                            true,
-                        )?
-                    };
-                    if let Some(selector) = selector {
-                        row.extent_identity_streams.push(selector);
+            let row = self.source.with_file(index as u64, |file| {
+                let mut row = NativeRequestRow {
+                    identity: FileIdentity {
+                        record_number: file.record_number,
+                        sequence_number: file.sequence_number,
+                    },
+                    extent_identity_streams: Vec::new(),
+                };
+                if self.policy.is_fast() {
+                    for stream in &file.streams {
+                        let selector = if self.windows_paths {
+                            super::extent_identity_stream_request_windows_domain(
+                                self.source,
+                                file,
+                                stream,
+                            )?
+                        } else {
+                            super::extent_identity_stream_request_domain(
+                                self.source,
+                                file,
+                                stream,
+                                true,
+                                true,
+                            )?
+                        };
+                        if let Some(selector) = selector {
+                            row.extent_identity_streams.push(selector);
+                        }
                     }
                 }
-            }
+                Ok(row)
+            })?;
             // Enforce the row budget while serializing without allocating a
             // second JSON buffer. The raw owner bounds its decoded input row.
             struct Counter {

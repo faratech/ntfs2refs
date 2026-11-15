@@ -52,6 +52,22 @@ impl DirectoryRowCache {
     }
 }
 
+/// The row that was decoded last, of whatever kind.
+///
+/// The steps that go through a volume object by object ask for one object's
+/// row several times over: for its identity, then for its transaction
+/// marker, then for its object id, then for its streams; a stream's reader
+/// asks for the row of the file it reads. Every one of those was a decode of
+/// the whole row from its JSON, and together they were 106 s of a full
+/// Windows conversion. The row decoded last is held, and whoever asks for
+/// the same one next is given that.
+struct LastRow {
+    ordinal: u64,
+    file: Arc<FileInventory>,
+    // The retained row is dropped before its memory credit.
+    _ram: SourceRamLease,
+}
+
 pub(super) fn file_key(number: u64) -> [u8; 16] {
     let mut key = [0; 16];
     key[..8].copy_from_slice(&number.to_be_bytes());
@@ -66,6 +82,7 @@ pub struct PagedRawFiles {
     extension_pin: SourcePagePin,
     scratch: SourceScratch,
     directory_rows: RefCell<DirectoryRowCache>,
+    last_row: RefCell<Option<LastRow>>,
 }
 impl PagedRawFiles {
     pub(super) fn from_live_bitmap(
@@ -90,6 +107,7 @@ impl PagedRawFiles {
             extension_pin: extensions.clone(),
             scratch: scratch.clone(),
             directory_rows: RefCell::new(DirectoryRowCache::default()),
+            last_row: RefCell::new(None),
         };
         value.validate_complete_files()?;
         Ok(value)
@@ -111,6 +129,7 @@ impl PagedRawFiles {
         if self.files.pin().data.logical_bytes > self.scratch.budget().ram_bytes / 8 {
             self.files.clear_resident_cache();
         }
+        self.last_row.get_mut().take();
     }
     pub(super) fn set_header(&mut self, header: SourceHeader) -> Result<()> {
         ensure!(
@@ -131,6 +150,7 @@ impl PagedRawFiles {
         // Replacement changes roles or hash evidence. Never serve an old row,
         // and return optional cache credit before opening replacement pages.
         self.directory_rows.get_mut().clear();
+        self.last_row.get_mut().take();
         self.files.clear_resident_cache();
         let replacement = SortedRecordStore::open(pin, &self.scratch)?;
         for ordinal in 0..replacement.len() {
@@ -167,7 +187,115 @@ impl PagedRawFiles {
     pub(super) fn ordinal_wire_bytes(&self, ordinal: u64) -> Result<u64> {
         self.files.record_bytes(ordinal)
     }
-    fn retain_directory(&self, ordinal: u64, file: &FileInventory) -> Result<()> {
+    /// The row at `ordinal` if it is held, as one of the directories or as
+    /// the row decoded last, and the key that the row at `ordinal` must have.
+    fn held_row(&self, ordinal: u64) -> Result<(Option<Arc<FileInventory>>, [u8; 16])> {
+        // Ordinal callers (notably ancestry DFS parent visits) must share the
+        // same bounded directory cache as record-number callers. The complete
+        // held ordinal index still establishes the identity on every hit.
+        let key = self.files.key(ordinal)?;
+        let number = u64::from_be_bytes(key[..8].try_into()?);
+        ensure!(
+            key == file_key(number),
+            "canonical ordinal key is not a file identity"
+        );
+        {
+            let mut cache = self.directory_rows.borrow_mut();
+            cache.clock = cache.clock.saturating_add(1);
+            let last_used = cache.clock;
+            if let Some(row) = cache.rows.get_mut(&number) {
+                ensure!(
+                    row.file.record_number == number,
+                    "cached directory differs from its canonical ordinal"
+                );
+                row.last_used = last_used;
+                return Ok((Some(Arc::clone(&row.file)), key));
+            }
+        }
+        if let Some(last) = self
+            .last_row
+            .borrow()
+            .as_ref()
+            .filter(|last| last.ordinal == ordinal)
+        {
+            ensure!(
+                last.file.record_number == number,
+                "held row differs from its canonical ordinal"
+            );
+            return Ok((Some(Arc::clone(&last.file)), key));
+        }
+        Ok((None, key))
+    }
+    /// Decodes the row at `ordinal`, which must carry `key`.
+    fn decode_row(&self, ordinal: u64, key: [u8; 16]) -> Result<FileInventory> {
+        let file: FileInventory = self.files.get(ordinal)?;
+        ensure!(
+            file_key(file.record_number) == key,
+            "canonical ordinal row identity differs"
+        );
+        Ok(file)
+    }
+    /// The row at `ordinal`, shared: a held one, or the row decoded now,
+    /// which is then held in its turn. For callers that are lent the row and
+    /// for those that look a record up by its number: both come back to the
+    /// same row. A caller that goes through every row once and wants each for
+    /// itself uses [`RootFileDomain::file`], which holds nothing for it.
+    fn row(&self, ordinal: u64) -> Result<Arc<FileInventory>> {
+        let (held, key) = self.held_row(ordinal)?;
+        if let Some(row) = held {
+            return Ok(row);
+        }
+        let file = Arc::new(self.decode_row(ordinal, key)?);
+        self.retain_directory(ordinal, &file)?;
+        self.retain_last(ordinal, &file)?;
+        Ok(file)
+    }
+    /// The ordinal of the row decoded last, if it is the record `number`:
+    /// asking for that record again needs no search for its place.
+    fn last_ordinal_of(&self, number: u64) -> Option<u64> {
+        self.last_row
+            .borrow()
+            .as_ref()
+            .filter(|last| last.file.record_number == number)
+            .map(|last| last.ordinal)
+    }
+    /// Holds `file` as the row decoded last, in place of the one before. A
+    /// directory is held with the directories and not here as well.
+    fn retain_last(&self, ordinal: u64, file: &Arc<FileInventory>) -> Result<()> {
+        if file.is_directory {
+            return Ok(());
+        }
+        // The row before returns its credit before this one asks for its own.
+        self.last_row.borrow_mut().take();
+        let wire = self.files.record_bytes(ordinal)?;
+        let slot = std::mem::size_of::<LastRow>() as u64 + 4096;
+        let Some(charge) = wire
+            .checked_mul(32)
+            .and_then(|bytes| bytes.checked_add(slot))
+        else {
+            return Ok(());
+        };
+        if charge > self.budget().ram_bytes / 32 {
+            return Ok(());
+        }
+        let actual =
+            file_heap_bytes(file)?.checked_add(std::mem::size_of::<FileInventory>() as u64);
+        if actual.is_none_or(|bytes| bytes > charge - slot) {
+            return Ok(());
+        }
+        // Holding a row is a saving, never a requirement of its own: a
+        // refusal leaves the row to its caller as before.
+        let Ok(ram) = self.scratch.lease_ram(charge) else {
+            return Ok(());
+        };
+        *self.last_row.borrow_mut() = Some(LastRow {
+            ordinal,
+            file: Arc::clone(file),
+            _ram: ram,
+        });
+        Ok(())
+    }
+    fn retain_directory(&self, ordinal: u64, file: &Arc<FileInventory>) -> Result<()> {
         if !file.is_directory {
             return Ok(());
         }
@@ -204,7 +332,7 @@ impl PagedRawFiles {
         let Ok(ram) = self.scratch.lease_ram(charge) else {
             return Ok(());
         };
-        let retained = Arc::new(file.clone());
+        let retained = Arc::clone(file);
         cache.clock = cache.clock.saturating_add(1);
         let last_used = cache.clock;
         cache.rows.insert(
@@ -314,35 +442,27 @@ impl RootFileDomain for PagedRawFiles {
         self.files.len()
     }
     fn file(&self, ordinal: u64) -> Result<FileInventory> {
-        // Ordinal callers (notably ancestry DFS parent visits) must share the
-        // same bounded directory cache as record-number callers. The complete
-        // held ordinal index still establishes the identity on every hit.
-        let key = self.files.key(ordinal)?;
-        let number = u64::from_be_bytes(key[..8].try_into()?);
-        ensure!(
-            key == file_key(number),
-            "canonical ordinal key is not a file identity"
-        );
-        {
-            let mut cache = self.directory_rows.borrow_mut();
-            cache.clock = cache.clock.saturating_add(1);
-            let last_used = cache.clock;
-            if let Some(row) = cache.rows.get_mut(&number) {
-                ensure!(
-                    row.file.record_number == number,
-                    "cached directory differs from its canonical ordinal"
-                );
-                row.last_used = last_used;
-                return Ok(FileInventory::clone(&row.file));
-            }
+        // A held row is copied for a caller that wants one of its own. A row
+        // that is not held is decoded and handed over as it is: only a
+        // directory is kept, with the directories.
+        let (held, key) = self.held_row(ordinal)?;
+        if let Some(row) = held {
+            return Ok(FileInventory::clone(&row));
         }
-        let file: FileInventory = self.files.get(ordinal)?;
-        ensure!(
-            file_key(file.record_number) == key,
-            "canonical ordinal row identity differs"
-        );
+        let file = self.decode_row(ordinal, key)?;
+        if !file.is_directory {
+            return Ok(file);
+        }
+        let file = Arc::new(file);
         self.retain_directory(ordinal, &file)?;
-        Ok(file)
+        Ok(Arc::unwrap_or_clone(file))
+    }
+    fn with_file<T>(
+        &self,
+        ordinal: u64,
+        read: impl FnOnce(&FileInventory) -> Result<T>,
+    ) -> Result<T> {
+        read(&*self.row(ordinal)?)
     }
     fn find_record(&self, number: u64, sequence: Option<u16>) -> Result<Option<FileInventory>> {
         {
@@ -360,12 +480,16 @@ impl RootFileDomain for PagedRawFiles {
                 );
             }
         }
-        let Some(ordinal) = self.ordinal(number)? else {
-            return Ok(None);
+        let ordinal = match self.last_ordinal_of(number) {
+            Some(ordinal) => ordinal,
+            None => match self.ordinal(number)? {
+                Some(ordinal) => ordinal,
+                None => return Ok(None),
+            },
         };
-        let file = self.file(ordinal)?;
+        let file = self.row(ordinal)?;
         Ok(if sequence.is_none_or(|s| s == file.sequence_number) {
-            Some(file)
+            Some(Arc::unwrap_or_clone(file))
         } else {
             None
         })
@@ -389,15 +513,23 @@ impl RootFileDomain for PagedRawFiles {
                 Arc::clone(&row.file)
             })
         };
-        match held {
-            Some(file) if sequence.is_none_or(|wanted| wanted == file.sequence_number) => {
-                read(&file).map(Some)
+        let file = match held {
+            Some(file) => file,
+            None => {
+                let ordinal = match self.last_ordinal_of(number) {
+                    Some(ordinal) => ordinal,
+                    None => match self.ordinal(number)? {
+                        Some(ordinal) => ordinal,
+                        None => return Ok(None),
+                    },
+                };
+                self.row(ordinal)?
             }
-            Some(_) => Ok(None),
-            None => self
-                .find_record(number, sequence)?
-                .map(|file| read(&file))
-                .transpose(),
+        };
+        if sequence.is_none_or(|wanted| wanted == file.sequence_number) {
+            read(&file).map(Some)
+        } else {
+            Ok(None)
         }
     }
     fn allocated_record(&self, number: u64) -> Result<bool> {

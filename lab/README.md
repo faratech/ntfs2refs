@@ -66,6 +66,18 @@ second counts as one sample of a hundredth), and it slows the steps that are
 mostly such calls: rank steps by the `timing-steps:` lines, which are wall
 clock, and compare two builds with runs that have the host to themselves.
 
+`lab\perf` reads those records (Python 3, nothing to install):
+
+| Script | What it prints |
+|---|---|
+| `attempts.py <repo> <prefix>` | the outcome of every attempt whose name starts with the prefix, oldest first |
+| `steps_compare.py <repo> <before> <after> [seconds]` | the steps of two attempts side by side, largest differences first |
+| `stacks_cover.py <repo> <attempt>` | each step's wall clock beside what the profile has for it: what the sampler did not see |
+| `stacks_busy.py <stacks.txt>` | for every step, the seconds a thread waited and worked, and where it worked |
+| `stacks_under.py <stacks.txt> <function>` | everything under one function: by step, leaf, callee and caller |
+| `stacks_leaf.py <stacks.txt> <leaf>` | the samples that end in one leaf (a hash, a system call): by step and caller |
+| `stacks_split.py`, `stacks_levels.py`, `stacks_near.py` | one step by worker and helper threads, by call chain from a depth, by the frames nearest a leaf |
+
 Both harnesses switch the control OS's scheduled drive optimisation off for
 the run. Windows starts its automatic maintenance some eleven minutes after
 the control OS boots, in every run, because a restored checkpoint is always

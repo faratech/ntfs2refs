@@ -575,7 +575,7 @@ fn unexpected_compression_unit_including_high_byte_has_no_logical_digest() {
 
 #[test]
 fn an_empty_attribute_list_is_refused_rather_than_hashed_around() {
-    // Attribute lists are assembled now (tests/ntfs_attribute_list.rs), so a
+    // Attribute lists are assembled now (tests/it/ntfs_attribute_list.rs), so a
     // record that carries one is no longer merely left unhashed. A list with
     // no entries cannot describe the record's attributes: the inspection
     // stops, naming the record, before any DATA is read.

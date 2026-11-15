@@ -28,6 +28,12 @@ The round starts with every lab VM off and leaves them off, with the scratch
 disks it made deleted. It ends with a table of every case, what it was
 expected to end as and what it ended as, and exits 1 if any differs.
 
+The VMs' memory comes from what the host has free at the moment. Where that
+is not enough for the reference VM's 24 GB beside the data VMs, the fixtures
+run with less; where it is not enough for every data VM, fewer are used; and
+where it is not enough for one, the data-volume cases wait for the fixtures.
+The full Windows run always has the host to itself.
+
 .EXAMPLE
 lab\Invoke-GateRound.ps1 -Build D:\builds\candidate -Prefix g7
 
@@ -186,8 +192,9 @@ $bootChain = {
 function Stop-RoundVm([string]$name) {
     $vm = Get-VM -Name $name
     if ($vm.State -ne 'Off') { $vm | Stop-VM -Force -Confirm:$false }
-    # The scratch disk of a control OS that was kept up for the data set.
-    foreach ($drive in @(Get-VMHardDiskDrive -VMName $name | Where-Object { $_.Path -like (Join-Path $attempts "$Prefix-control-*\scratch.vhdx") })) {
+    # The scratch disk of a control OS that was kept up for the data set, or
+    # of an attempt of this round that was cut off.
+    foreach ($drive in @(Get-VMHardDiskDrive -VMName $name | Where-Object { $_.Path -like (Join-Path $attempts "$Prefix-*\scratch.vhdx") })) {
         $path = $drive.Path
         Remove-VMHardDiskDrive -VMHardDiskDrive $drive
         Remove-Item -LiteralPath $path -Force
@@ -195,10 +202,30 @@ function Stop-RoundVm([string]$name) {
     }
 }
 
+# Memory is sized from what the host has free, which other programs change
+# from one minute to the next. The harness gives a VM no more than eight
+# tenths of what is free when it starts and refuses to start one with less
+# than 8 GB: a data VM therefore needs 10 GB free at its start, with a
+# gigabyte to spare for what changes meanwhile, and each one before it
+# takes its 8 GB and half a gigabyte more.
+function Get-FreeGB { (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB }
+function Get-DataVmCount([double]$freeGB) { [math]::Max(0, [math]::Min($DataVm.Count, [math]::Floor(($freeGB - 2.5) / 8.5))) }
+
 $fixtureJob = $null
 try {
     if ($Sets -contains 'fixtures') {
-        Say "fixtures and interrupted runs on $ReferenceVm"
+        $free = Get-FreeGB
+        if ($Sets -contains 'data') {
+            # The fixtures leave the data VMs their memory where the host has
+            # it: the reference VM does not need its 24 GB for them.
+            # (A running VM costs the host a gigabyte or two beyond what it
+            # is given.)
+            $beside = 5 + 8 * $DataVm.Count
+            $referenceGB = [math]::Floor([math]::Min(24, $free - $beside))
+            if ($referenceGB -lt 16) { $referenceGB = [math]::Floor([math]::Min(24, $free * 0.8)) }
+            foreach ($run in $fixtureRuns) { $run.Arguments = $run.Arguments + @{ MemoryGB = [int]$referenceGB } }
+        }
+        Say ('fixtures and interrupted runs on {0} ({1:N1} GB of host memory free)' -f $ReferenceVm, $free)
         $fixtureJob = Start-Job -ScriptBlock $bootChain -ArgumentList $boot, $fixtureRuns, $Prefix, $vms[$ReferenceVm].Id.Guid, $binary, $manifest, $logs
         if ($Sets -contains 'data') {
             # The reference VM takes its memory when it starts; what the data
@@ -209,25 +236,34 @@ try {
         }
     }
     if ($Sets -contains 'data') {
-        # Each data VM gets an equal share of the memory that is free now,
-        # with 6 GB left to the host; 12 GB is all a data-volume case uses.
-        $freeGB = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB
-        $each = [math]::Floor([math]::Min(12, ($freeGB - 6) / $DataVm.Count))
-        if ($each -lt 6) { throw ('{0:N1} GB of host memory are free: not enough to give {1} data VMs 6 GB each beside the reference VM' -f $freeGB, $DataVm.Count) }
+        $count = Get-DataVmCount (Get-FreeGB)
+        if ($count -eq 0 -and $fixtureJob) {
+            Say ('{0:N1} GB of host memory are free beside the reference VM: the data-volume cases wait for the fixtures' -f (Get-FreeGB))
+            $fixtureJob | Wait-Job | Receive-Job | Out-File -LiteralPath (Join-Path $logs 'fixtures-job.log')
+            $fixtureJob = $null
+            Stop-RoundVm $ReferenceVm
+            $count = Get-DataVmCount (Get-FreeGB)
+        }
+        if ($count -eq 0) { throw ('{0:N1} GB of host memory are free: a data VM needs 10' -f (Get-FreeGB)) }
+        $used = @($DataVm | Select-Object -First $count)
         $number = 0
-        foreach ($name in $DataVm) {
+        foreach ($name in $used) {
             $number++
-            Say "control OS up on $name with $each GB"
+            # 8 GB is enough for every data-volume case; a VM that has the
+            # memory to itself gets up to 12.
+            $free = Get-FreeGB
+            $give = if ($count -eq 1) { [math]::Floor([math]::Max(8, [math]::Min(12, $free * 0.8))) } else { 8 }
+            Say ('control OS up on {0} with {1} GB ({2:N1} GB free)' -f $name, $give, $free)
             $control = "$Prefix-control-$number"
-            & $boot -Name $control -NoConvert -KeepScratch -MemoryGB $each -VmId $vms[$name].Id.Guid -Binary $binary -ManifestBinary $manifest *> (Join-Path $logs "$control.log")
+            & $boot -Name $control -NoConvert -KeepScratch -MemoryGB $give -VmId $vms[$name].Id.Guid -Binary $binary -ManifestBinary $manifest *> (Join-Path $logs "$control.log")
             $verdict = Join-Path $attempts "$control\verdict.json"
             if (-not (Test-Path -LiteralPath $verdict) -or (Get-Content -LiteralPath $verdict -Raw | ConvertFrom-Json).outcome -ne 'prepared-only') {
                 throw "The control OS of $name did not come up: see $(Join-Path $logs "$control.log")"
             }
         }
-        Say "$($dataCases.Count) data-volume cases on $($DataVm -join ', ')"
-        & $matrix -Prefix $Prefix -Cases $dataCases -VmId @($DataVm | ForEach-Object { $vms[$_].Id.Guid }) -Binary $binary -ManifestBinary $manifest -LogDirectory $logs *> (Join-Path $logs 'matrix-data.log')
-        foreach ($name in $DataVm) { Stop-RoundVm $name }
+        Say "$($dataCases.Count) data-volume cases on $($used -join ', ')"
+        & $matrix -Prefix $Prefix -Cases $dataCases -VmId @($used | ForEach-Object { $vms[$_].Id.Guid }) -Binary $binary -ManifestBinary $manifest -LogDirectory $logs *> (Join-Path $logs 'matrix-data.log')
+        foreach ($name in $used) { Stop-RoundVm $name }
     }
     if ($fixtureJob) {
         Say 'waiting for the fixtures and interrupted runs'

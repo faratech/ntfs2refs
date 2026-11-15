@@ -93,6 +93,13 @@ param(
     # volume after, and require the two listings to match.
     [string]$ManifestBinary,
     [switch]$NoManifest,
+    # Leave the control OS's scheduled drive optimisation on. Windows starts
+    # its automatic maintenance some eleven minutes after the control OS
+    # boots, in every run, because a restored checkpoint is always overdue;
+    # the optimisation it runs (defrag.exe -c -h -o) holds up writes to the
+    # control OS's ReFS volumes for minutes, and a run then measures that and
+    # not the converter (issue 132). It is switched off for a run by default.
+    [switch]$WithDriveOptimization,
     [int]$MinHostFreeGB = 40,
     [int]$ConvertTimeoutMinutes = 720,
     [int]$BootTimeoutMinutes = 25,
@@ -659,6 +666,20 @@ try {
     Start-VM -VM $vm
     $session = Wait-Guest 15 $null
     if (-not $session) { throw 'Control OS did not accept a PowerShell Direct session within 15 minutes' }
+    # The same build took 25 s and 243 s for one step, and once stood still
+    # for 15 minutes with every processor busy in the kernel and "An IO took
+    # more than 30000 ms" logged for the shadow's file, while this task ran.
+    $verdict.drive_optimization = if ($WithDriveOptimization) { 'left on' } else {
+        try {
+            Invoke-Command -Session $session -ErrorAction Stop -ScriptBlock {
+                $ErrorActionPreference = 'Stop'
+                $null = Disable-ScheduledTask -TaskPath '\Microsoft\Windows\Defrag\' -TaskName 'ScheduledDefrag'
+                Stop-ScheduledTask -TaskPath '\Microsoft\Windows\Defrag\' -TaskName 'ScheduledDefrag' -ErrorAction SilentlyContinue
+            }
+            'switched off for this run'
+        } catch { "not switched off: $($_.Exception.Message)" }
+    }
+    Say "the control OS's scheduled drive optimisation: $($verdict.drive_optimization)"
     $guest = if ($Recover) {
         # The saved state already holds the original run's scratch volume and
         # its records; the source disk is offline and holds the ReFS image.

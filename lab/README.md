@@ -33,6 +33,20 @@ otherwise the harness uses `target/release`. `-VmId` selects the second lab VM.
 `stacks.txt`: phase, step and stack per line, a hundred samples a second, helper
 and digest threads included. Use it to find where unnamed time goes before
 changing anything for speed, not merely to claim an unmeasured speed change.
+The sampler does not see inside a file-system call (a call of a tenth of a
+second counts as one sample of a hundredth), and it slows the steps that are
+mostly such calls: rank steps by the `timing-steps:` lines, which are wall
+clock, and compare two builds with runs that have the host to themselves.
+
+Both harnesses switch the control OS's scheduled drive optimisation off for
+the run. Windows starts its automatic maintenance some eleven minutes after
+the control OS boots, in every run, because a restored checkpoint is always
+overdue, and the optimisation it runs (`defrag.exe -c -h -o`) holds up writes
+to the control OS's ReFS volumes for minutes at a time with every processor
+busy in the kernel: the same build took 25 s and 243 s for one step, and one
+run stood still for fifteen minutes (issue 132). `-WithDriveOptimization`
+leaves the task on, for a run that is meant to meet it; the verdict's
+`drive_optimization` says which it was.
 
 Recovery is checked by stopping the converter at a named point of apply,
 handoff or finalization (`crates/n2r-win32/src/lab_hold.rs` lists them), ending

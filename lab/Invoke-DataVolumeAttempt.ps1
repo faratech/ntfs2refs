@@ -133,6 +133,9 @@ param(
     # "-but-check-disagreed" to the outcome, and a check that named a
     # refusal other than the one the conversion gave adds
     # "-but-check-named-another-refusal".
+    # Leave the control OS's scheduled drive optimisation on (see the note
+    # where it is switched off, and issue 132).
+    [switch]$WithDriveOptimization,
     [switch]$Check,
     # Only the check: nothing is converted, and the volume has to list
     # exactly as before and be as long, online and writable as before.
@@ -239,6 +242,20 @@ if (-not $CredentialPath) { $CredentialPath = Join-Path $workspace '.lab\hyperv\
 $saved = Import-Clixml -LiteralPath $CredentialPath
 $credential = [pscredential]::new('LabAdmin', $saved.Password)
 $session = New-PSSession -VMId $VmId -Credential $credential
+# The control OS's scheduled drive optimisation holds up writes to its ReFS
+# volumes for minutes when Windows' automatic maintenance starts it (issue
+# 132); an attempt then measures that. It is switched off unless asked for.
+$verdict.drive_optimization = if ($WithDriveOptimization) { 'left on' } else {
+    try {
+        Invoke-Command -Session $session -ErrorAction Stop -ScriptBlock {
+            $ErrorActionPreference = 'Stop'
+            $null = Disable-ScheduledTask -TaskPath '\Microsoft\Windows\Defrag\' -TaskName 'ScheduledDefrag'
+            Stop-ScheduledTask -TaskPath '\Microsoft\Windows\Defrag\' -TaskName 'ScheduledDefrag' -ErrorAction SilentlyContinue
+        }
+        'switched off for this attempt'
+    } catch { "not switched off: $($_.Exception.Message)" }
+}
+Say "the control OS's scheduled drive optimisation: $($verdict.drive_optimization)"
 $hostDisk = $null; $worker = $null
 $guestRoot = "C:\n2r\datalab\$Name"
 # format.com spells an allocation unit as bytes up to 8192 and as K or M above.

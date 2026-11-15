@@ -269,6 +269,35 @@ fn condition(
     })
 }
 
+/// The directory NTFS moves a file into when it is deleted while a program
+/// still has it open; the file goes when the last handle closes.
+const DELETED_ROLE: &str = "$Extend\\$Deleted";
+
+/// A file or directory that was deleted while a program still had it open:
+/// every name it has left is in NTFS's directory for those. A volume that
+/// is in use can hold some at any moment. A conversion does not meet them,
+/// because the volume is taken offline first, which closes every handle;
+/// the frozen source is held to that directory being empty.
+fn is_deleted_while_open(
+    file: &crate::ntfs_inspect::FileInventory,
+    deleted_directory: Option<u64>,
+) -> bool {
+    deleted_directory.is_some_and(|directory| {
+        !file.names.is_empty()
+            && file
+                .names
+                .iter()
+                .all(|name| name.parent_record_number == directory)
+    })
+}
+
+/// What a check says of them: they are no refusal and are not counted.
+fn deleted_while_open_note(count: u64) -> String {
+    format!(
+        "{count} file(s) or directories were deleted while a program still had them open. Windows removes each when the program closes it, and a conversion, which takes the volume offline first, does not meet them: they are not counted here."
+    )
+}
+
 /// Reads the volume, up to `READINGS` times, and reports what a conversion
 /// would refuse and what it would take. `parent` is the working directory
 /// the check may keep its pages in while it runs, on another disk than the
@@ -526,9 +555,23 @@ fn read(
     let case = n2r_win32::directory_case::DirectoryCaseProbe::open(&root)?;
     let (mut case_sensitive, mut case_unknown, mut case_example) = (0u64, 0u64, None);
     let (mut files, mut directories, mut streams, mut logical_bytes) = (0u64, 0u64, 0u64, 0u64);
+    // Where NTFS keeps what was deleted while a program still had it open.
+    let mut deleted_directory = None;
+    for ordinal in 0..raw.file_count() {
+        let file = raw.file(ordinal)?;
+        if ntfs_admission::paged::internal_role(&raw, &file)?.as_deref() == Some(DELETED_ROLE) {
+            deleted_directory = Some(file.record_number);
+            break;
+        }
+    }
+    let mut deleted_while_open = 0u64;
     for ordinal in 0..raw.file_count() {
         let file = raw.file(ordinal)?;
         if ntfs_admission::paged::internal_role(&raw, &file)?.is_some() {
+            continue;
+        }
+        if is_deleted_while_open(&file, deleted_directory) {
+            deleted_while_open += 1;
             continue;
         }
         if file.is_directory {
@@ -570,6 +613,11 @@ fn read(
                 case_unknown,
                 directories,
             ));
+    }
+    if deleted_while_open != 0 {
+        report
+            .notes
+            .push(deleted_while_open_note(deleted_while_open));
     }
     let object_ids = indexes.data_object_ids_owned();
     let mut estimate = Estimate {
@@ -618,7 +666,9 @@ fn read(
             let (mut stays, mut copied) = (0u64, 0u64);
             for ordinal in 0..raw.file_count() {
                 let file = raw.file(ordinal)?;
-                if ntfs_admission::paged::internal_role(&raw, &file)?.is_some() {
+                if ntfs_admission::paged::internal_role(&raw, &file)?.is_some()
+                    || is_deleted_while_open(&file, deleted_directory)
+                {
                     continue;
                 }
                 let mut issues = ntfs_admission::paged::ordinary_user_issues_before_freeze(
@@ -918,6 +968,36 @@ mod tests {
         ] {
             assert_eq!(settled_without_the_file(code), None, "{code}");
         }
+    }
+
+    #[test]
+    fn a_file_deleted_while_a_program_has_it_open_is_no_refusal_and_is_said() {
+        let file = |parents: &[u64]| -> crate::ntfs_inspect::FileInventory {
+            serde_json::from_value(serde_json::json!({
+                "record_number": 5098, "sequence_number": 1,
+                "hard_link_count": parents.len(), "is_directory": false,
+                "is_metadata": false, "base_file_reference": 0,
+                "names": parents.iter().map(|parent| serde_json::json!({
+                    "name": "00010000000013EA158BE98E", "name_utf16": [], "namespace": 1,
+                    "parent_record_number": parent, "parent_sequence_number": 1
+                })).collect::<Vec<_>>(),
+                "standard_information": null, "streams": [], "attributes": []
+            }))
+            .unwrap()
+        };
+        // Its only name is in NTFS's directory for what was deleted while open.
+        assert!(is_deleted_while_open(&file(&[40]), Some(40)));
+        // A name anywhere else keeps it a file of the volume.
+        assert!(!is_deleted_while_open(&file(&[40, 5]), Some(40)));
+        assert!(!is_deleted_while_open(&file(&[5]), Some(40)));
+        // A volume without that directory has none; a record without a name is not one.
+        assert!(!is_deleted_while_open(&file(&[40]), None));
+        assert!(!is_deleted_while_open(&file(&[]), Some(40)));
+        let note = deleted_while_open_note(2);
+        assert!(
+            note.starts_with("2 file(s)") && note.contains("does not meet them"),
+            "{note}"
+        );
     }
 
     #[test]

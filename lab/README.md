@@ -145,6 +145,11 @@ there. A check must leave no working directory behind. `-FreshFile` creates a
 file on the volume a moment before the check and waits for nothing: with
 `-Features shortnames` the check has to count as many short names as Windows
 lists, or the outcome is `check-missed-what-was-just-written`.
+`-DeletedWhileOpen` has a program hold a file open that it has deleted while
+the check reads: NTFS keeps such a file in a directory of its own until the
+handle closes. The check has to say that it saw one and must not refuse the
+volume for it (`check-refused-a-file-deleted-while-open` otherwise); the
+handle is closed before the run.
 
 `-DropShortNames` runs the converter, and the check before it, with
 `--short-names drop`. The listings are then compared with

@@ -145,6 +145,12 @@ param(
     # when someone saves a file and starts the converter. The check has to
     # read it: on a volume with short names its refusal counts the file.
     [switch]$FreshFile,
+    # With -Check or -CheckOnly: while the check reads, a program holds a
+    # file open that it has deleted. NTFS keeps such a file in a directory
+    # of its own until the handle closes, and a volume in use can have some
+    # at any moment. The check must not refuse the volume for it and has to
+    # say in a note that it saw one; the handle is closed before the run.
+    [switch]$DeletedWhileOpen,
     # With -CheckOnly: files are written to and deleted from the volume all
     # the while it is read. The check may find the volume at rest or not; it
     # must never report a refusal that is not there.
@@ -791,6 +797,34 @@ public static class SiblingRaw {
         $verdict.source.fresh_file = 'V:\a file made a moment before the check.txt'
         Say "a file was created on the volume a moment before the check; listing with it: $($fresh.text)"
     }
+    if ($DeletedWhileOpen) {
+        if (-not ($Check -or $CheckOnly)) { throw '-DeletedWhileOpen is a file held open during a check: with -Check or -CheckOnly' }
+        $holding = Invoke-Command -Session $session -ArgumentList $guestRoot -ScriptBlock {
+            param($root)
+            # A process of its own holds the handle: it outlives this call and
+            # ends when it is told to, or by itself after three minutes.
+            $holder = @"
+`$path = 'V:\deleted while a program has it open.bin'
+[IO.File]::WriteAllBytes(`$path, (New-Object byte[] 8192))
+`$handle = [IO.File]::Open(`$path, 'Open', 'Read', 'ReadWrite, Delete')
+[IO.File]::Delete(`$path)
+Set-Content -LiteralPath '$root\deleted-held.txt' -Value `$PID
+`$until = (Get-Date).AddMinutes(3)
+while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date) -lt `$until) { Start-Sleep -Milliseconds 200 }
+`$handle.Dispose()
+"@
+            Set-Content -LiteralPath "$root\deleted-holder.ps1" -Value $holder -Encoding UTF8
+            $null = Start-Process -FilePath powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "$root\deleted-holder.ps1"
+            foreach ($try in 1..100) { if (Test-Path -LiteralPath "$root\deleted-held.txt") { break }; Start-Sleep -Milliseconds 100 }
+            $held = Test-Path -LiteralPath "$root\deleted-held.txt"
+            $text = & "$root\lab-volume-manifest.exe" capture --root 'V:\' --output "$root\manifest-before.jsonl" 2>&1
+            [pscustomobject]@{ held = $held; exit = $LASTEXITCODE; text = ($text -join ' '); named = (Test-Path -LiteralPath 'V:\deleted while a program has it open.bin') }
+        }
+        if (-not $holding.held -or $holding.named) { $verdict.outcome = 'deleted-file-not-held'; throw "no program holds a deleted file open on the volume (held: $($holding.held), still under its name: $($holding.named))" }
+        if ($holding.exit -ne 0) { throw "listing the volume failed (exit $($holding.exit)): $($holding.text)" }
+        Copy-Item -FromSession $session -LiteralPath "$guestRoot\manifest-before.jsonl" -Destination $records -Force
+        Say "a program holds a file open that it has deleted; listing without it: $($holding.text)"
+    }
     if ($Check -or $CheckOnly) {
         $checkArguments = @('--drive', 'V', '--scratch-directory', 'S:\datalab\runs', '--check')
         if ($TargetFormat -ne 'default') { $checkArguments += @('--target-format', $TargetFormat) }
@@ -840,6 +874,21 @@ public static class SiblingRaw {
             $verdict.check.short_names_counted = $counted[0]; $verdict.check.short_names_listed = $listedShort
             Say "check counted $($counted[0]) short name(s); Windows lists $listedShort"
             if ($counted[0] -ne $listedShort) { $verdict.outcome = 'check-missed-what-was-just-written'; throw "the check counted $($counted[0]) short names where Windows lists $($listedShort): it did not read what was written a moment before" }
+        }
+        if ($DeletedWhileOpen) {
+            # The handle is closed now: a run could not lock the volume otherwise.
+            $closed = Invoke-Command -Session $session -ArgumentList $guestRoot -ScriptBlock {
+                param($root)
+                $id = [int]"$(Get-Content -LiteralPath "$root\deleted-held.txt" -Raw)".Trim()
+                Set-Content -LiteralPath "$root\deleted-release.txt" -Value 'release'
+                foreach ($try in 1..100) { if (-not (Get-Process -Id $id -ErrorAction SilentlyContinue)) { break }; Start-Sleep -Milliseconds 100 }
+                -not (Get-Process -Id $id -ErrorAction SilentlyContinue)
+            }
+            $said = [bool]($checked.text | Where-Object { $_ -match '^Note: 1 file\(s\) or directories were deleted while a program still had them open' } | Select-Object -First 1)
+            $verdict.check.deleted_while_open = [ordered]@{ said = $said; refusals = $checkRefusals.Count; handle_closed = [bool]$closed }
+            Say "the file deleted while open: the check said so: $said; it refused for $($checkRefusals.Count) reason(s); the handle is closed: $closed"
+            if (-not $said -or $checkRefusals.Count) { $verdict.outcome = 'check-refused-a-file-deleted-while-open'; throw "the check $(if ($checkRefusals.Count) { "refused the volume: $($checkRefusals -join ' | ')" } else { 'did not say that a file was deleted while open' })" }
+            if (-not $closed) { $verdict.outcome = 'deleted-file-still-held'; throw 'the program holding the deleted file did not end' }
         }
         if ($checked.left) { $verdict.outcome = 'check-left-working-files'; throw 'the check left a working directory behind' }
         if ($CheckOnly) {
@@ -1176,6 +1225,17 @@ public static class SiblingRaw {
                     if ($was) { Set-ItemProperty -LiteralPath $key -Name DumpFile -Value $was -Type ExpandString } else { Remove-ItemProperty -LiteralPath $key -Name DumpFile -ErrorAction SilentlyContinue }
                     Remove-Item -LiteralPath "$root\sibling-dumpfile.txt" -Force
                 }
+            }
+        }
+        if ($DeletedWhileOpen) {
+            # Whatever happened, nothing holds the volume when it is taken away.
+            Invoke-Command -Session $session -ArgumentList $guestRoot -ErrorAction Stop -ScriptBlock {
+                param($root)
+                if (-not (Test-Path -LiteralPath "$root\deleted-held.txt")) { return }
+                Set-Content -LiteralPath "$root\deleted-release.txt" -Value 'release'
+                $id = [int]"$(Get-Content -LiteralPath "$root\deleted-held.txt" -Raw)".Trim()
+                foreach ($try in 1..50) { if (-not (Get-Process -Id $id -ErrorAction SilentlyContinue)) { break }; Start-Sleep -Milliseconds 100 }
+                Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
             }
         }
         if ($VssProvider) {

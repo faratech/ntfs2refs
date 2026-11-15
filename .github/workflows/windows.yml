@@ -13,19 +13,24 @@ concurrency:
   group: windows-msvc-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  RUSTUP_TOOLCHAIN: 1.98.1-x86_64-pc-windows-msvc
+  CARGO_BUILD_TARGET: x86_64-pc-windows-msvc
+  CARGO_TERM_COLOR: always
+
+# Three jobs side by side instead of one after the other. As one job the lane
+# took 42 minutes, 29 of them building every laboratory executable in release
+# mode. Every executable is still compiled: in the test job as it is built and
+# linked for the tests, in the checks job under the release profile. What is
+# built and linked in release mode is what a release ships.
 jobs:
-  windows-msvc:
-    name: Rust 1.98.1 / x64 MSVC
+  checks:
+    name: Rust 1.98.1 / x64 MSVC / checks
     runs-on: windows-2022
-    # Preserve the complete check/build sequence; cold builds exceeded 45 minutes.
-    timeout-minutes: 90
+    timeout-minutes: 60
     defaults:
       run:
         shell: pwsh
-    env:
-      RUSTUP_TOOLCHAIN: 1.98.1-x86_64-pc-windows-msvc
-      CARGO_BUILD_TARGET: x86_64-pc-windows-msvc
-      CARGO_TERM_COLOR: always
     steps:
       # Official actions/checkout v5 tag verified through the GitHub API.
       - name: Check out source
@@ -59,12 +64,75 @@ jobs:
           cargo clippy --locked --workspace --all-targets
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      # Every executable of the workspace compiles under the release profile;
+      # none is linked here.
+      - name: Check every executable under the release profile
+        run: |
+          cargo check --locked --workspace --bins --release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  tests:
+    name: Rust 1.98.1 / x64 MSVC / tests
+    runs-on: windows-2022
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
+      - name: Install and verify the pinned toolchain
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $channels = @(Select-String -LiteralPath rust-toolchain.toml -Pattern '^channel\s*=\s*"1\.98\.1"\s*$')
+          if ($channels.Count -ne 1) { throw 'Update CI together with the pinned Rust toolchain.' }
+          rustup toolchain install $env:RUSTUP_TOOLCHAIN --profile minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $compiler = @(rustc -vV)
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $compiler
+          if ($compiler -notcontains 'host: x86_64-pc-windows-msvc') { throw 'Windows MSVC host required.' }
+
+      # Builds and links every target of the workspace, the laboratory
+      # executables among them, and runs the tests.
       - name: Run workspace tests
         run: |
           cargo test --locked --workspace --all-targets
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Build release executables
+  release:
+    name: Rust 1.98.1 / x64 MSVC / release
+    runs-on: windows-2022
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
+      - name: Install and verify the pinned toolchain
         run: |
-          cargo build --locked --workspace --bins --release
+          $ErrorActionPreference = 'Stop'
+          $channels = @(Select-String -LiteralPath rust-toolchain.toml -Pattern '^channel\s*=\s*"1\.98\.1"\s*$')
+          if ($channels.Count -ne 1) { throw 'Update CI together with the pinned Rust toolchain.' }
+          rustup toolchain install $env:RUSTUP_TOOLCHAIN --profile minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $compiler = @(rustc -vV)
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $compiler
+          if ($compiler -notcontains 'host: x86_64-pc-windows-msvc') { throw 'Windows MSVC host required.' }
+
+      # The two executables a release ships, by the command AGENTS.md and
+      # lab\New-Release.ps1 use.
+      - name: Build the release executables
+        run: |
+          cargo build --locked --release --bin ntfs2refs --bin lab-volume-manifest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "target\$env:CARGO_BUILD_TARGET\release\ntfs2refs.exe" --version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

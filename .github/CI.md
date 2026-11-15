@@ -6,12 +6,23 @@ and Clippy, verifies the x86-64 MSVC host and targets
 `x86_64-pc-windows-msvc`. This compiles the `cfg(windows)` modules and uses the
 repository's static CRT configuration.
 
-The job allows 90 minutes for a complete cold build. The earlier 45-minute
-limit cancelled release compilation after the preceding checks had passed.
-The lane checks formatting, runs Clippy, executes the workspace's ordinary
-tests and builds all workspace release executables. Cargo dependency-consuming
-commands use `--locked`; the toolchain check refuses silent drift from
-`rust-toolchain.toml`.
+The lane is three jobs that run side by side, each with its own checkout and
+toolchain and a limit of 60 minutes:
+
+- `checks`: formatting, Clippy, and every executable of the workspace
+  compiled under the release profile (`cargo check --bins --release`).
+- `tests`: the workspace's ordinary tests, which builds and links every
+  target, the laboratory executables among them.
+- `release`: the two executables a release ships, built and linked in
+  release mode by the command `AGENTS.md` and `lab\New-Release.ps1` use, and
+  started once.
+
+As one job in sequence the lane took 42 minutes, 29 of them building all 113
+executables in release mode. No laboratory executable is linked in release
+mode by CI any more; each is still compiled under that profile and linked for
+the tests. A change is integrated only when all three jobs have passed for its
+revision. Cargo dependency-consuming commands use `--locked`; the toolchain
+check refuses silent drift from `rust-toolchain.toml`.
 
 Clippy uses the repository's current lint severities. Existing and new warnings
 are printed and remain advisory; compiler errors and denied lint failures fail

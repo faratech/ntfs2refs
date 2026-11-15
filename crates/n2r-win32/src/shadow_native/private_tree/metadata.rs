@@ -474,7 +474,7 @@ fn complete_domain_body(
             &tree.pair,
             &tree.metadata_targets,
             admission,
-            memory.payer().as_ref(),
+            &memory.payer(),
         )?)
     } else {
         None

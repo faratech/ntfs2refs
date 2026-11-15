@@ -1285,7 +1285,7 @@ impl VerifiedMetadataRecovery {
             &state.pair,
             &state.handles,
             state.admission,
-            state.payer.as_ref(),
+            &state.payer,
             std::mem::take(&mut state.alias_handles),
         )?;
         let mut report =

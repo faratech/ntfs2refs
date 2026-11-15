@@ -9,7 +9,6 @@ use crate::ntfs_inspect::{
 use anyhow::{Context, Result, ensure};
 use n2r_win32::shadow_native::private_tree::PlacementEvidenceSink;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::{
     io::{self, BufReader, Read, Write},
     path::Path,
@@ -85,7 +84,9 @@ struct ProofWriter<'a> {
     output: &'a mut SourceRangeWriter,
     maximum: u64,
     bytes: u64,
-    hash: Sha256,
+    // Windows' SHA-256 where there is one: the proofs of a full Windows
+    // volume are gigabytes, written in blocks of 64 KiB.
+    hash: crate::retained_compare::stream_digest::StreamDigest,
 }
 impl Write for ProofWriter<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -97,7 +98,7 @@ impl Write for ProofWriter<'_> {
                 io::Error::other("native placement proof exceeded its prepaid complete bound")
             })?;
         self.output.write_all(bytes)?;
-        self.hash.update(bytes);
+        self.hash.update(bytes).map_err(io::Error::other)?;
         self.bytes = next;
         Ok(bytes.len())
     }
@@ -110,7 +111,7 @@ struct ProofReader<'a> {
     offset: u64,
     length: u64,
     position: u64,
-    hash: Sha256,
+    hash: crate::retained_compare::stream_digest::StreamDigest,
 }
 impl Read for ProofReader<'_> {
     fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
@@ -131,7 +132,9 @@ impl Read for ProofReader<'_> {
         self.payload
             .read_exact_at(at, &mut output[..count])
             .map_err(io::Error::other)?;
-        self.hash.update(&output[..count]);
+        self.hash
+            .update(&output[..count])
+            .map_err(io::Error::other)?;
         self.position += count as u64;
         Ok(count)
     }
@@ -263,7 +266,7 @@ impl PagedPlacementEvidence {
             output: payload,
             maximum,
             bytes: 0,
-            hash: Sha256::new(),
+            hash: crate::retained_compare::stream_digest::StreamDigest::new(cfg!(windows))?,
         };
         // Preserve EXACTLY the original compact JSON stream. SourceRangeWriter
         // already frames/base64-encodes bytes; no inner encoding is necessary.
@@ -276,20 +279,21 @@ impl PagedPlacementEvidence {
         }
         let bytes = writer.bytes;
         ensure!(bytes > 0, "empty placement proof");
+        let ProofWriter { output, hash, .. } = writer;
         let record = ProofRecord {
             ordinal: self.proofs,
             kind,
             offset: self.logical_bytes,
             bytes,
             maximum_json_bytes: maximum,
-            sha256: hex::encode(writer.hash.finalize()),
+            sha256: hex::encode(hash.finish()?),
         };
         let end = self
             .logical_bytes
             .checked_add(bytes)
             .context("placement payload size overflow")?;
         ensure!(
-            writer.output.byte_len() == end,
+            output.byte_len() == end,
             "placement payload append length differs"
         );
         self.index
@@ -359,7 +363,7 @@ impl PagedPlacementEvidence {
                     offset: row.offset,
                     length: row.bytes,
                     position: 0,
-                    hash: Sha256::new(),
+                    hash: crate::retained_compare::stream_digest::StreamDigest::new(cfg!(windows))?,
                 };
                 let mut reader = BufReader::with_capacity(65536, reader);
                 let mut parser = serde_json::Deserializer::from_reader(&mut reader);
@@ -368,7 +372,7 @@ impl PagedPlacementEvidence {
                 let reader = reader.into_inner();
                 ensure!(
                     reader.position == row.bytes
-                        && hex::encode(reader.hash.finalize()) == row.sha256,
+                        && hex::encode(reader.hash.finish()?) == row.sha256,
                     "complete placement proof byte count or digest differs"
                 );
             }

@@ -4,8 +4,8 @@
 use super::*;
 use crate::selected_journal::{
     self, BUFFER, PinHash, RecordHashes, RowDigest, SelectedRange, SelectedTicket, ZeroDigests,
-    aggregate_pin_hash, at, capture_free_selected, copy_selected_with, finish, frame, get_u32,
-    get_u64, pin_hash, put_u32, put_u64, verify_zero_selected_with,
+    aggregate_pin_hash, at, burst_pin_hash, capture_free_selected, copy_selected_with, finish,
+    frame, get_u32, get_u64, pin_hash, put_u32, put_u64, verify_zero_selected_with,
 };
 use crate::{
     general_reconstruct::selected_native_journal::{
@@ -247,9 +247,7 @@ pub(crate) fn prepare_native_partition_from_protected_capture<
             && candidate.byte_len()? == f.image_length,
         "partition source/shadow/candidate length or marker profile differs"
     );
-    let memory = domain
-        .scratch
-        .lease_ram(PREPARATION_BUFFERS * BUFFER as u64)?;
+    let (memory, read_back_buffers) = lease_preparation(domain)?;
     let (journal, facts) = creation.split_for_partition_preparation(context, events)?;
     let capture_group = domain
         .scratch
@@ -290,7 +288,15 @@ pub(crate) fn prepare_native_partition_from_protected_capture<
         admission.revalidate_publication_handoff(source, facts.guard_pin, events)?;
         // Unchanged core performs complete source/capture descriptors, payload,
         // COPY, canonical-zero/source-free framing and independent readback.
-        let result = prepare_inner(domain, source, candidate, journal, true, None);
+        let result = prepare_inner(
+            domain,
+            source,
+            candidate,
+            journal,
+            true,
+            None,
+            read_back_buffers,
+        );
         let closing = admission.revalidate_publication_handoff(source, facts.guard_pin, events);
         match (result, closing) {
             (Ok(value), Ok(())) => Ok(value),
@@ -652,7 +658,40 @@ struct OwedRow {
 /// their descriptors: the workers that hash the payloads are never more than
 /// this far behind, and the rows are read back while they are still near.
 const MOST_OWED_ROWS: usize = 256;
-const MOST_OWED_BYTES: u64 = 64 * 1024 * 1024;
+const MOST_OWED_BYTES: u64 = READ_BACK_BUFFERS as u64 * BUFFER as u64;
+
+/// How many megabytes the two digests of the file's own bytes take in a
+/// burst. Rows are read back a burst at a time, after their descriptors are
+/// written, and the writing thread then turns to the next rows' payloads:
+/// with room for a burst, those two workers hash it meanwhile. With the two
+/// buffers of an ordinary pipeline the writing thread waited for them
+/// megabyte by megabyte, 34 s of the full Windows volume's journal.
+const READ_BACK_BUFFERS: usize = 16;
+
+/// The preparation's workspace with room for the read-back bursts.
+const PREPARATION_BUFFERS_WITH_BURSTS: u64 =
+    PREPARATION_BUFFERS + 2 * (READ_BACK_BUFFERS as u64 - 2);
+
+/// Leases the workspace of a journal's preparation: with room for the
+/// read-back bursts where that can be paid, and otherwise as it was, with
+/// the file's digests taking two megabytes at a time. Returns the lease and
+/// how many buffers each of those two digests may have.
+fn lease_preparation(
+    domain: &ResourceJournalDomain<'_>,
+) -> Result<(crate::ntfs_inspect::paged_storage::SourceRamLease, usize)> {
+    match domain
+        .scratch
+        .lease_ram(PREPARATION_BUFFERS_WITH_BURSTS * BUFFER as u64)
+    {
+        Ok(lease) => Ok((lease, READ_BACK_BUFFERS)),
+        Err(_) => Ok((
+            domain
+                .scratch
+                .lease_ram(PREPARATION_BUFFERS * BUFFER as u64)?,
+            2,
+        )),
+    }
+}
 
 /// Completes the rows whose payloads are written, in their order: each row's
 /// two digests are taken from the workers, its descriptor is written in its
@@ -725,9 +764,7 @@ pub(crate) fn prepare_diagnostic<'domain, 'capture, R: ReadSeek, S: ReadSeek>(
         source.byte_len()? == f.image_length && candidate.byte_len()? == f.image_length,
         "diagnostic source/candidate length differs"
     );
-    let memory = domain
-        .scratch
-        .lease_ram(PREPARATION_BUFFERS * BUFFER as u64)?;
+    let (memory, read_back_buffers) = lease_preparation(domain)?;
     let permit = group.reserve_file(path, f.journal_length)?;
     let mut file = OpenOptions::new()
         .read(true)
@@ -740,7 +777,15 @@ pub(crate) fn prepare_diagnostic<'domain, 'capture, R: ReadSeek, S: ReadSeek>(
         file.metadata()?.len() == 0,
         "diagnostic journal is not fresh"
     );
-    let (ticket, whole) = prepare_inner(domain, source, candidate, &mut file, false, None)?;
+    let (ticket, whole) = prepare_inner(
+        domain,
+        source,
+        candidate,
+        &mut file,
+        false,
+        None,
+        read_back_buffers,
+    )?;
     let readonly = n2r_win32::file_storage::duplicate_readonly(&file)?;
     drop(file);
     let lease = permit.verify_closed_handle(&readonly, &hex::encode(whole))?;
@@ -866,9 +911,7 @@ fn prepare_native_inner<'journal, 'domain, 'capture, S: ReadSeek>(
             && candidate.byte_len()? == f.image_length,
         "native journal source, shadow or candidate length differs"
     );
-    let memory = domain
-        .scratch
-        .lease_ram(PREPARATION_BUFFERS * BUFFER as u64)?;
+    let (memory, read_back_buffers) = lease_preparation(domain)?;
     let (journal, facts) = creation.split_for_preparation()?;
     let capture_group = domain
         .scratch
@@ -907,6 +950,7 @@ fn prepare_native_inner<'journal, 'domain, 'capture, S: ReadSeek>(
             journal,
             same_captured_source,
             capture_witness,
+            read_back_buffers,
         )
     })?;
     if ticket.marker_profile.is_some() {
@@ -956,6 +1000,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     mut file: &mut J,
     same_captured_source: bool,
     capture_witness: Option<&CaptureRevalidation<'_>>,
+    read_back_buffers: usize,
 ) -> Result<(SelectedTicket, [u8; 32])> {
     let f = domain.facts;
     ensure!(file.byte_len()? == 0, "new native journal is not empty");
@@ -979,8 +1024,8 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     // the whole body again. A journal with source-free rows rewrites its
     // header at the end and keeps the read-back.
     let mut written = if n2r_win32::verify_policy::checks_once() && f.source_free_bytes == 0 {
-        let mut whole = aggregate_pin_hash()?;
-        let mut immutable = aggregate_pin_hash()?;
+        let mut whole = burst_pin_hash(read_back_buffers)?;
+        let mut immutable = burst_pin_hash(read_back_buffers)?;
         whole.update(&vec![0u8; usize::try_from(f.body_offset)?])?;
         whole.update(&header)?;
         immutable.update(&header)?;

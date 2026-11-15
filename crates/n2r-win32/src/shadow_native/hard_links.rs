@@ -150,7 +150,8 @@ pub(super) fn observe(
     let mut result = Vec::with_capacity(item.additional_names.len());
     for path in item.additional_names {
         let name = format!("{root}{}", path.join("\\"));
-        let file = open_input(&name, item, protected)?;
+        // Only the name's metadata is read through this handle.
+        let file = open_input_metadata(&name, item, protected)?;
         let before = repeat_snapshot(&file, canonical);
         let after = repeat_snapshot(&file, canonical);
         let same_file_id = query_bytes(&before, 18, 24)? == canonical_id

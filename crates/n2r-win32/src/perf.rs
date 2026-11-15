@@ -49,6 +49,12 @@ points! {
     VolumeWait => "wait for volume",
     VolumeRemoval => "wait for volume removal",
     RecoveryFileOpen => "recovery file reopen",
+    // What the passes that work on every core did there, and what they did
+    // one object after another because a batch's workspace could not be paid
+    // for (or the machine has one core). The first is the threads' time added
+    // up, not wall clock.
+    AtOnce => "objects at once (thread time)",
+    InTurn => "objects in turn",
 }
 const COUNT: usize = LABELS.len();
 
@@ -218,9 +224,16 @@ static LEDGER_LIMIT: AtomicU64 = AtomicU64::new(0);
 /// What a run's memory ledger holds after a reservation, and what it may
 /// hold: the highest level is printed with the totals, so that what a
 /// volume takes of the ledger can be read off a run.
+///
+/// A run has more than one ledger, one after another (the preparation's,
+/// then the finalization's), each with the limit the free memory gave it
+/// when it was made. The limit printed is the one of the ledger that
+/// reached the peak: printed with the last ledger's limit, a peak in the
+/// preparation read as more than the run may hold (#149).
 pub fn note_ledger(held: u64, limit: u64) {
-    LEDGER_PEAK.fetch_max(held, Relaxed);
-    LEDGER_LIMIT.store(limit, Relaxed);
+    if LEDGER_PEAK.fetch_max(held, Relaxed) < held {
+        LEDGER_LIMIT.store(limit, Relaxed);
+    }
 }
 
 /// Prints the last phase and the totals. Safe to call more than once.

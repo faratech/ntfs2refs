@@ -585,9 +585,9 @@ impl PrivatePlaceholder {
         }
         self.verify_placements()?;
         self.poisoned = false;
-        use sha2::Digest;
+        let sha256 = hex::encode(crate::content_digest::sha256(data)?);
         Ok(serde_json::json!({"offset":offset,"bytes":data.len(),
-            "sha256":hex::encode(sha2::Sha256::digest(data)),"readback_verified":true,
+            "sha256":sha256,"readback_verified":true,
             "valid_prefix_bytes":self.valid_prefix,"conversion_qualified":false}))
     }
 
@@ -695,7 +695,22 @@ impl PrivatePlaceholder {
                 self.move_submissions
             )));
         }
-        if let Err(error) = self.verify_placements_prepaid(self.resource.is_some()) {
+        // Before a move the file's whole mapping is read and every tracked
+        // piece compared with it. From a file's second move on, that repeats
+        // what its previous move ended with: a move reads the whole mapping
+        // when the system call returns, compares every tracked piece, and
+        // leaves the file poisoned (refused above) unless all of them match.
+        // Nothing but this owner's moves changes the mapping of a file of
+        // the shadow, which is attached to this process alone, and the move
+        // about to be made ends with the same comparison. A file in
+        // thousands of pieces was read twice for every piece moved: 25 s of
+        // placing the full Windows volume's extents. A route that checks
+        // once makes this comparison before a file's first move only.
+        let compared_by_last_move =
+            self.move_submissions > 0 && crate::verify_policy::checks_once();
+        if !compared_by_last_move
+            && let Err(error) = self.verify_placements_prepaid(self.resource.is_some())
+        {
             self.poisoned = true;
             return Err(error);
         }

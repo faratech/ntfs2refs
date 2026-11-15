@@ -76,9 +76,11 @@ fn alias_error(components: &[String], error: io::Error) -> io::Error {
     )
 }
 /// Read-only and never following a link: how a probe opens what it checks.
+/// A probe reads no data: a link has none, and of what it names and of their
+/// directory only the identity and the metadata are asked for.
 fn open_readonly(root: &str, components: &[String]) -> io::Result<File> {
     File::options()
-        .access_mode(super::PROTECTED_READ_ACCESS)
+        .access_mode(super::PROTECTED_METADATA_ACCESS)
         .share_mode(3)
         .custom_flags(0x02200000)
         .open(format!("{root}{}", components.join("\\")))
@@ -196,7 +198,7 @@ struct RecoveredRow {
 /// some twenty queries, and a Windows volume has one link for most of its
 /// names: one at a time on one thread, the 112,609 links of the full volume
 /// took a minute and a half each time they were checked.
-const ALIAS_BATCH: usize = 64;
+const ALIAS_BATCH: usize = super::PARALLEL_BATCH;
 /// [`probe_alias`] for every probe, in order. The probes run on the walk's
 /// threads when the batch's query workspace can be paid for, and one after
 /// another under the caller's own workspace when it cannot.
@@ -207,23 +209,30 @@ fn probe_aliases(
     payer: &dyn report_memory::ReportMemoryAccountant,
     differs: &'static str,
 ) -> io::Result<Vec<AliasNative>> {
-    let prepaid = report_memory::alias_peak(maximum_row_bytes)?
-        .checked_mul(probes.len() as u64)
-        .and_then(|bytes| payer.reserve(bytes).ok());
+    // As many of the batch's probes as their query workspace can be paid
+    // for run at once; the rest one after another. The workspaces are
+    // spare memory: a probe in turn needs none of the ledger.
+    let peak = report_memory::alias_peak(maximum_row_bytes)?;
+    let mut workspaces = Vec::new();
+    for _ in probes {
+        match payer.reserve_spare(peak) {
+            Ok(workspace) => workspaces.push(workspace),
+            Err(_) => break,
+        }
+    }
     // Held for this batch and closed with it, whichever way it is probed.
     let parents = HeldParents::open(root, probes);
     let numbered: Vec<(usize, &AliasProbe<'_>)> = probes.iter().enumerate().collect();
     let probe_one = |(index, probe): &(usize, &AliasProbe<'_>)| {
         probe_alias(root, probe, parents.of(*index), maximum_row_bytes, differs)
     };
-    match prepaid {
-        Some(workspace) => {
-            let natives = super::observe_in_parallel(&numbered, probe_one);
-            drop(workspace);
-            natives
-        }
-        None => numbered.iter().map(probe_one).collect(),
+    let (at_once, in_turn) = numbered.split_at(workspaces.len());
+    let mut natives = super::observe_in_parallel(at_once, &probe_one)?;
+    drop(workspaces);
+    for native in super::observe_in_turn(in_turn, &probe_one) {
+        natives.push(native?);
     }
+    Ok(natives)
 }
 
 pub(super) struct NoWindowsAliases;
@@ -872,9 +881,64 @@ pub(super) struct StagedWindowsAliases {
     plan_digest: [u8; 32],
     maximum_row_bytes: u64,
     recovering: bool,
+    // Pays for the workspace of the links whose metadata is restored at once.
+    payer: Arc<dyn report_memory::ReportMemoryAccountant>,
     _memory: Box<dyn report_memory::ReportMemoryLease>,
     _working: Box<dyn report_memory::ReportMemoryLease>,
 }
+
+/// A link as its restored metadata is checked: the times and security of
+/// the object it names (or the provisional security that stands in for it),
+/// its own attributes and reparse point, and no data.
+fn restored_link<'a>(
+    entry: &'a VerifiedAlias,
+    canonical: &Input<'a>,
+    temporary: Option<&'a crate::refs_security_descriptor::ConstructorSecurityViews>,
+) -> Input<'a> {
+    Input {
+        components: &entry.components,
+        additional_names: &[],
+        directory: entry.directory,
+        times: canonical.times,
+        attributes: entry.attributes,
+        security: temporary.map_or(canonical.security, |view| view.stored.as_slice()),
+        expected_api_security: temporary
+            .map_or(canonical.expected_api_security, |view| view.api.as_deref()),
+        extended_attributes: None,
+        reparse: Some(&entry.point),
+        payload: &[],
+        expected_length: Some(0),
+        expected_sha256: None,
+        source_offset: None,
+        source_runs: Vec::new(),
+        named_streams: Vec::new(),
+        sparse: None,
+    }
+}
+
+/// Whether a link's metadata, read back, is what was restored.
+fn verify_restored_link(
+    expected: &Input<'_>,
+    actual: &Snapshot,
+    entry: &VerifiedAlias,
+    same: &impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+) -> io::Result<()> {
+    let identity_same = super::query_bytes(actual, 18, 24)? == entry.file_id_info;
+    let basic_same = super::basic_matches(expected, super::query_bytes(actual, 0, 40)?);
+    let security_same = super::security_matches(expected, actual, same)?;
+    let reparse_same = super::reparse_matches(expected, actual)?;
+    if !(identity_same && basic_same && security_same && reparse_same) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "derived alias metadata verification differs: identity_same={identity_same} \
+                 basic_same={basic_same} security_same={security_same} reparse_same={reparse_same}"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 impl StagedWindowsAliases {
     pub(super) fn summary(&self) -> serde_json::Value {
         serde_json::json!({"kind":"constructor-owned-derived-Windows-aliases-v1","derived_aliases":self.rows.len(),
@@ -887,7 +951,7 @@ impl StagedWindowsAliases {
         pair: &GeneralSourceShadowBinding,
         handles: &BTreeMap<usize, File>,
         admission: SourceResourceAdmission,
-        payer: &dyn report_memory::ReportMemoryAccountant,
+        payer: &Arc<dyn report_memory::ReportMemoryAccountant>,
     ) -> io::Result<Self> {
         Self::create_inner(input, aliases, pair, handles, admission, payer, None)
     }
@@ -899,7 +963,7 @@ impl StagedWindowsAliases {
         pair: &GeneralSourceShadowBinding,
         handles: &BTreeMap<usize, File>,
         admission: SourceResourceAdmission,
-        payer: &dyn report_memory::ReportMemoryAccountant,
+        payer: &Arc<dyn report_memory::ReportMemoryAccountant>,
         existing: BTreeMap<Vec<String>, File>,
     ) -> io::Result<Self> {
         Self::create_inner(
@@ -918,7 +982,7 @@ impl StagedWindowsAliases {
         pair: &GeneralSourceShadowBinding,
         handles: &BTreeMap<usize, File>,
         admission: SourceResourceAdmission,
-        payer: &dyn report_memory::ReportMemoryAccountant,
+        payer: &Arc<dyn report_memory::ReportMemoryAccountant>,
         mut existing: Option<BTreeMap<Vec<String>, File>>,
     ) -> io::Result<Self> {
         let recovering = existing.is_some();
@@ -1108,6 +1172,7 @@ impl StagedWindowsAliases {
             plan_digest,
             maximum_row_bytes: admission.budget.max_row_bytes,
             recovering,
+            payer: Arc::clone(payer),
             _memory: memory,
             _working: working,
         })
@@ -1162,6 +1227,9 @@ impl StagedWindowsAliases {
         ));
         let recovering = self.recovering;
         let maximum_row_bytes = self.maximum_row_bytes;
+        if !recovering {
+            return self.restore_fresh(input, handles, same, security_placeholders, &root);
+        }
         for (ordinal, staged) in self.rows.values_mut().enumerate() {
             (|| -> io::Result<()> {
             let entry = &mut staged.entry;
@@ -1273,6 +1341,207 @@ impl StagedWindowsAliases {
                 Phase::MetadataRestoration,
                 Unit::Aliases,
                 ordinal as u64 + 1,
+                Some(total),
+            ));
+        }
+        Ok(provisional_aliases)
+    }
+    /// The metadata of links that this run created, none of them taken over
+    /// from an interrupted one.
+    ///
+    /// For each link its target is opened and checked to be the object that
+    /// is held, the reparse point is installed, security, times and
+    /// attributes are set and everything is read back: some thirty
+    /// file-system calls, which one thread made for one link after another,
+    /// 112,609 times on the full Windows volume. The links of a batch are
+    /// now restored on the available cores. What stays on this thread, in the
+    /// order of the links: decoding the object a link names, the capacity
+    /// check before each of its four mutations, and the comparison of what
+    /// was read back with what was restored. A link whose restoration fails
+    /// is reported as it was, with its name; the other links of its batch
+    /// have then been restored already, on a shadow that is discarded.
+    fn restore_fresh(
+        &mut self,
+        input: &impl InputDomain,
+        handles: &BTreeMap<usize, File>,
+        same: &impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+        security_placeholders: bool,
+        root: &str,
+    ) -> io::Result<usize> {
+        use crate::refs_security_descriptor::ConstructorSecurityViews;
+        struct Link<'a> {
+            staged: &'a StagedAlias,
+            canonical: Input<'a>,
+            temporary: Option<&'a ConstructorSecurityViews>,
+        }
+        const RESTORE_BATCH: usize = super::PARALLEL_BATCH;
+        let maximum_row_bytes = self.maximum_row_bytes;
+        let total = self.rows.len() as u64;
+        let restore_one = |link: &Link<'_>| -> io::Result<Snapshot> {
+            let entry = &link.staged.entry;
+            let file = &link.staged.file;
+            let target = File::options()
+                .access_mode(0x01020189)
+                .share_mode(3)
+                .custom_flags(0x02200000)
+                .open(format!("{root}{}", entry.canonical_components.join("\\")))?;
+            super::suppress_access(&target)?;
+            super::validate_bound_type(&target, &link.canonical)?;
+            if super::info(&target, 18, 24)?
+                != super::info(
+                    held(handles, entry.canonical_object_index, "canonical object")?,
+                    18,
+                    24,
+                )?
+            {
+                return Err(invalid("derived alias canonical link identity changed"));
+            }
+            let relative: Vec<u16> = entry
+                .canonical_components
+                .last()
+                .ok_or_else(|| invalid("derived alias names no object"))?
+                .encode_utf16()
+                .collect();
+            crate::windows_alias_native::install_fresh_owned(
+                held(handles, entry.parent_object_index, "parent directory")?,
+                &target,
+                file,
+                entry.directory,
+                &relative,
+            )?;
+            let expected = restored_link(entry, &link.canonical, link.temporary);
+            super::cache_refresh::restore_acl_protection_with_limit(
+                file,
+                &expected,
+                Some(maximum_row_bytes),
+            )?;
+            super::backup_security_with_limit(file, expected.security, Some(maximum_row_bytes))?;
+            super::basic(file, &expected)?;
+            if !entry.directory {
+                crate::verify_policy::flush_working_file(file)?;
+            }
+            Ok(super::metadata_snapshot_with_limit(
+                file,
+                &expected,
+                Some(maximum_row_bytes),
+            ))
+        };
+        // A link's snapshot, and the workspace of installing its point.
+        let workspace_of_one = report_memory::alias_peak(maximum_row_bytes)?
+            .checked_add(crate::windows_alias_native::WORKSPACE_BYTES)
+            .ok_or_else(|| invalid("alias restoration workspace overflow"))?;
+        let payer = Arc::clone(&self.payer);
+        let mut provisional_aliases = 0usize;
+        let mut done = 0u64;
+        let mut rows = self.rows.values_mut();
+        loop {
+            let mut batch: Vec<&mut StagedAlias> = rows.by_ref().take(RESTORE_BATCH).collect();
+            if batch.is_empty() {
+                break;
+            }
+            // In order, on this thread: the object each link names, its
+            // attributes, and the capacity checks before its mutations.
+            let mut prepared = Vec::with_capacity(batch.len());
+            for staged in batch.iter_mut() {
+                let entry = &mut staged.entry;
+                let ready = (|| -> io::Result<_> {
+                    let owner = input.object(entry.canonical_object_index)?;
+                    let (attributes, temporary, security_bytes) = {
+                        let canonical = owner.input();
+                        let temporary = if security_placeholders {
+                            ConstructorSecurityViews::prepare(
+                                canonical.security,
+                                canonical.expected_api_security,
+                                maximum_row_bytes,
+                            )?
+                        } else {
+                            None
+                        };
+                        let security_bytes = temporary
+                            .as_ref()
+                            .map_or(canonical.security.len(), |view| view.stored.len())
+                            as u64;
+                        (
+                            (canonical.attributes & 0x2027)
+                                | 0x400
+                                | if entry.directory { 16 } else { 0 },
+                            temporary,
+                            security_bytes,
+                        )
+                    };
+                    // The reparse point, the two security operations and
+                    // the times and attributes.
+                    input.before_mutation(0)?;
+                    input.before_mutation(security_bytes)?;
+                    input.before_mutation(security_bytes)?;
+                    input.before_mutation(0)?;
+                    Ok((owner, temporary, attributes))
+                })();
+                match ready {
+                    Ok((owner, temporary, attributes)) => {
+                        entry.attributes = attributes;
+                        if temporary.is_some() {
+                            provisional_aliases += 1;
+                        }
+                        prepared.push(Some((owner, temporary)));
+                    }
+                    Err(error) => {
+                        input.defer_failure(at_alias(
+                            "alias metadata restoration",
+                            &entry.components,
+                            error,
+                        ))?;
+                        prepared.push(None);
+                    }
+                }
+            }
+            let links: Vec<Link<'_>> = batch
+                .iter()
+                .zip(&prepared)
+                .filter_map(|(staged, ready)| {
+                    ready.as_ref().map(|(owner, temporary)| Link {
+                        staged: &**staged,
+                        canonical: owner.input(),
+                        temporary: temporary.as_ref(),
+                    })
+                })
+                .collect();
+            // As many of the batch's links as their workspace can be paid
+            // for are restored on the available cores; the rest one after
+            // another, under this owner's own workspace. The workspaces
+            // are spare memory, which leaves the ledger room.
+            let mut workspaces = Vec::new();
+            for _ in &links {
+                match payer.reserve_spare(workspace_of_one) {
+                    Ok(workspace) => workspaces.push(workspace),
+                    Err(_) => break,
+                }
+            }
+            let (at_once, in_turn) = links.split_at(workspaces.len());
+            let mut restored: Vec<io::Result<Snapshot>> =
+                super::observe_in_parallel(at_once, |link| Ok(restore_one(link)))?;
+            drop(workspaces);
+            restored.extend(super::observe_in_turn(in_turn, &restore_one));
+            for (link, restored) in links.iter().zip(restored) {
+                let entry = &link.staged.entry;
+                restored
+                    .and_then(|actual| {
+                        let expected = restored_link(entry, &link.canonical, link.temporary);
+                        verify_restored_link(&expected, &actual, entry, same)
+                    })
+                    .or_else(|error| {
+                        input.defer_failure(at_alias(
+                            "alias metadata restoration",
+                            &entry.components,
+                            error,
+                        ))
+                    })?;
+            }
+            done += batch.len() as u64;
+            input.progress(Update::new(
+                Phase::MetadataRestoration,
+                Unit::Aliases,
+                done,
                 Some(total),
             ));
         }

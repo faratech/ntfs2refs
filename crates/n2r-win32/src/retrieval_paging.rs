@@ -5,7 +5,6 @@ use crate::{
     stream_layout::{self, Run},
 };
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::io;
 pub use stream_layout::MAX_COMPLETE_EXTENTS;
 pub const PAGE_CAPACITY: usize = stream_layout::RETRIEVAL_CAPACITY;
@@ -310,7 +309,7 @@ impl Assembler {
             response_header: query.bytes[..16].try_into().unwrap(),
             response_bytes: query.bytes.len(),
             native_error: query.native_error,
-            response_sha256: hex::encode(Sha256::digest(&query.bytes)),
+            response_sha256: hex::encode(crate::content_digest::sha256(&query.bytes)?),
         });
         Ok(self.complete)
     }
@@ -337,7 +336,7 @@ impl Assembler {
         }
         let proof = Proof {
             encoding: ENCODING.into(),
-            canonical_sha256: hex::encode(Sha256::digest(&canonical)),
+            canonical_sha256: hex::encode(crate::content_digest::sha256(&canonical)?),
             extent_count: self.runs.len(),
             virtual_clusters: self.covered,
             pages: self.pages,

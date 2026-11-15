@@ -20,6 +20,18 @@ pub trait ReportMemoryAccountant: Send + Sync {
     fn reserve_optional(&self, bytes: u64) -> io::Result<Box<dyn ReportMemoryLease>> {
         self.reserve(bytes)
     }
+    /// The workspace of one more object of a batch that helper threads work
+    /// through: memory for doing more at once, which the pass can do without
+    /// (the object then waits its turn). A payer with a shared budget grants
+    /// it only while room stays for what the pass cannot do without, so that
+    /// a batch never makes a reservation fail that would have been granted
+    /// with one object at a time. A refusal is the ordinary end of a batch.
+    /// What is granted is ordinary memory and may be kept, shrunk, for what
+    /// the pass retains. By default it is [`Self::reserve`].
+    #[track_caller]
+    fn reserve_spare(&self, bytes: u64) -> io::Result<Box<dyn ReportMemoryLease>> {
+        self.reserve(bytes)
+    }
     /// Actual adapter allocation, excluding the Box pointer stored by the SDK.
     fn lease_heap_bytes(&self) -> u64;
 }

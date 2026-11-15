@@ -12,17 +12,19 @@ toolchain and a limit of 60 minutes:
 - `checks`: formatting, Clippy, and every executable of the workspace
   compiled under the release profile (`cargo check --bins --release`).
 - `tests`: the workspace's ordinary tests, which builds and links every
-  target, the laboratory executables among them.
+  target.
 - `release`: the two executables a release ships, built and linked in
   release mode by the command `AGENTS.md` and `lab\New-Release.ps1` use, and
   started once.
 
-As one job in sequence the lane took 42 minutes, 29 of them building all 113
-executables in release mode. No laboratory executable is linked in release
-mode by CI any more; each is still compiled under that profile and linked for
-the tests. A change is integrated only when all three jobs have passed for its
-revision. Cargo dependency-consuming commands use `--locked`; the toolchain
-check refuses silent drift from `rust-toolchain.toml`.
+As one job in sequence the lane took 42 minutes, 29 of them building 113
+executables in release mode, nearly all of them for lab stages that were
+retired. Those executables have left the tree (`lab/RETIRED.md` names the tag
+that has them); the workspace now builds the converter, the listing tool and
+the executable of the restart route. A change is integrated only when all
+three jobs have passed for its revision. Cargo dependency-consuming commands
+use `--locked`; the toolchain check refuses silent drift from
+`rust-toolchain.toml`.
 
 Clippy uses the repository's current lint severities. Existing and new warnings
 are printed and remain advisory; compiler errors and denied lint failures fail

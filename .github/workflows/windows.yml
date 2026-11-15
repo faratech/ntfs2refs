@@ -18,11 +18,10 @@ env:
   CARGO_BUILD_TARGET: x86_64-pc-windows-msvc
   CARGO_TERM_COLOR: always
 
-# Three jobs side by side instead of one after the other. As one job the lane
-# took 42 minutes, 29 of them building every laboratory executable in release
-# mode. Every executable is still compiled: in the test job as it is built and
-# linked for the tests, in the checks job under the release profile. What is
-# built and linked in release mode is what a release ships.
+# Three jobs side by side instead of one after the other. Every executable is
+# compiled: in the test job as it is built and linked for the tests, in the
+# checks job under the release profile. What is built and linked in release
+# mode is what a release ships.
 jobs:
   checks:
     name: Rust 1.98.1 / x64 MSVC / checks
@@ -96,8 +95,7 @@ jobs:
           $compiler
           if ($compiler -notcontains 'host: x86_64-pc-windows-msvc') { throw 'Windows MSVC host required.' }
 
-      # Builds and links every target of the workspace, the laboratory
-      # executables among them, and runs the tests.
+      # Builds and links every target of the workspace and runs the tests.
       - name: Run workspace tests
         run: |
           cargo test --locked --workspace --all-targets

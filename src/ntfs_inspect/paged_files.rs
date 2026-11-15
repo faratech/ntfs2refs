@@ -4,10 +4,12 @@ use super::{
     paged_storage::{PagedMetadataRange, SourcePagePin, SourceRamLease, SourceScratch},
     record_store::{RecordStorePin, SortedRecordStore},
 };
-use std::{cell::RefCell, collections::BTreeMap};
+use std::{cell::RefCell, collections::BTreeMap, sync::Arc};
 
 struct CachedDirectory {
-    file: FileInventory,
+    // Shared, so that a caller can be lent the row after the cache's borrow
+    // has ended and may ask this domain for other rows meanwhile.
+    file: Arc<FileInventory>,
     charged: u64,
     last_used: u64,
     // The retained row is dropped before its memory credit.
@@ -202,7 +204,7 @@ impl PagedRawFiles {
         let Ok(ram) = self.scratch.lease_ram(charge) else {
             return Ok(());
         };
-        let retained = file.clone();
+        let retained = Arc::new(file.clone());
         cache.clock = cache.clock.saturating_add(1);
         let last_used = cache.clock;
         cache.rows.insert(
@@ -331,7 +333,7 @@ impl RootFileDomain for PagedRawFiles {
                     "cached directory differs from its canonical ordinal"
                 );
                 row.last_used = last_used;
-                return Ok(row.file.clone());
+                return Ok(FileInventory::clone(&row.file));
             }
         }
         let file: FileInventory = self.files.get(ordinal)?;
@@ -351,7 +353,7 @@ impl RootFileDomain for PagedRawFiles {
                 row.last_used = last_used;
                 return Ok(
                     if sequence.is_none_or(|wanted| wanted == row.file.sequence_number) {
-                        Some(row.file.clone())
+                        Some(FileInventory::clone(&row.file))
                     } else {
                         None
                     },
@@ -367,6 +369,36 @@ impl RootFileDomain for PagedRawFiles {
         } else {
             None
         })
+    }
+    /// A directory row that is held is lent, not copied. Building one path
+    /// asks for every directory above the object, and a copy of a row is a
+    /// heap allocation for each of its names, streams and attributes: on the
+    /// full Windows volume those copies were 28 s of the run.
+    fn with_record<T>(
+        &self,
+        number: u64,
+        sequence: Option<u16>,
+        read: impl FnOnce(&FileInventory) -> Result<T>,
+    ) -> Result<Option<T>> {
+        let held = {
+            let mut cache = self.directory_rows.borrow_mut();
+            cache.clock = cache.clock.saturating_add(1);
+            let last_used = cache.clock;
+            cache.rows.get_mut(&number).map(|row| {
+                row.last_used = last_used;
+                Arc::clone(&row.file)
+            })
+        };
+        match held {
+            Some(file) if sequence.is_none_or(|wanted| wanted == file.sequence_number) => {
+                read(&file).map(Some)
+            }
+            Some(_) => Ok(None),
+            None => self
+                .find_record(number, sequence)?
+                .map(|file| read(&file))
+                .transpose(),
+        }
     }
     fn allocated_record(&self, number: u64) -> Result<bool> {
         self.bit(self.allocated.as_ref(), number)

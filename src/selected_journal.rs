@@ -202,6 +202,114 @@ fn finish(hash: PinHash) -> Result<[u8; 32]> {
     hash.finish()
 }
 
+/// The digest of one row's payload: known, or owed by the worker that is
+/// still hashing it.
+#[must_use]
+enum RowDigest {
+    Known([u8; 32]),
+    /// The next digest the worker gives that an earlier row is not owed.
+    /// `zero_length` is the payload's length where every byte of it was
+    /// checked to be zero.
+    Owed {
+        zero_length: Option<u64>,
+    },
+}
+
+/// Where the digests of the rows' payloads are computed: on this thread,
+/// between one read and the next, or on a worker while this thread reads on.
+/// Either way a payload's digest is the SHA-256 of exactly the bytes that
+/// were read for it, in order.
+struct RecordHashes {
+    worker: Option<crate::retained_compare::digest_pipeline::RecordDigests>,
+}
+
+impl RecordHashes {
+    /// Every digest is computed on the calling thread and known at once.
+    fn here() -> Self {
+        Self { worker: None }
+    }
+
+    /// A worker of its own where the machine has a core for it beside the
+    /// reading thread and the workers of the file-wide digests.
+    fn overlapped() -> Result<Self> {
+        if std::thread::available_parallelism().is_ok_and(|cores| cores.get() >= 4) {
+            Self::on_a_worker()
+        } else {
+            Ok(Self::here())
+        }
+    }
+
+    fn on_a_worker() -> Result<Self> {
+        Ok(Self {
+            worker: Some(
+                crate::retained_compare::digest_pipeline::RecordDigests::with_native_backend(
+                    BUFFER,
+                    cfg!(windows),
+                )?,
+            ),
+        })
+    }
+
+    fn begin(&mut self) -> Result<RecordHash<'_>> {
+        Ok(match self.worker.as_mut() {
+            Some(worker) => RecordHash::There(worker),
+            None => RecordHash::Here(pin_hash()?),
+        })
+    }
+
+    /// The digest itself. Digests that are owed must be settled in the order
+    /// their payloads were read. A payload that was checked to be zero is
+    /// remembered here, as it is when its digest is known at once.
+    fn settle(&mut self, digest: RowDigest, zero_digests: &mut ZeroDigests) -> Result<[u8; 32]> {
+        match digest {
+            RowDigest::Known(digest) => Ok(digest),
+            RowDigest::Owed { zero_length } => {
+                let digest = self
+                    .worker
+                    .as_mut()
+                    .context("a row's digest is owed and there is no worker")?
+                    .take()?;
+                if let Some(length) = zero_length {
+                    zero_digests.remember_verified(length, digest);
+                }
+                Ok(digest)
+            }
+        }
+    }
+
+    /// Ends the worker; an error if it failed or a digest was left with it.
+    fn finish(self) -> Result<()> {
+        match self.worker {
+            Some(worker) => worker.finish(),
+            None => Ok(()),
+        }
+    }
+}
+
+enum RecordHash<'a> {
+    Here(PinHash),
+    There(&'a mut crate::retained_compare::digest_pipeline::RecordDigests),
+}
+
+impl RecordHash<'_> {
+    fn update(&mut self, bytes: &[u8]) -> Result<()> {
+        match self {
+            Self::Here(hash) => hash.update(bytes),
+            Self::There(worker) => worker.update(bytes),
+        }
+    }
+
+    fn finish(self, zero_length: Option<u64>) -> Result<RowDigest> {
+        match self {
+            Self::Here(hash) => Ok(RowDigest::Known(finish(hash)?)),
+            Self::There(worker) => {
+                worker.end_record()?;
+                Ok(RowDigest::Owed { zero_length })
+            }
+        }
+    }
+}
+
 /// Operation-local SHA256(0^length) values. Only actual fully checked zero
 /// candidates or freshly generated canonical zeros may populate this cache.
 /// Keep the largest lengths: they also recur across the descriptor/resolved
@@ -792,14 +900,31 @@ fn copy_selected<R: Read + Seek, J: Write>(
     journal: &mut J,
     selected: &mut PinHash,
     buffer: &mut [u8],
-    mut restored: Option<&mut PinHash>,
+    restored: Option<&mut PinHash>,
 ) -> Result<[u8; 32]> {
+    let mut here = RecordHashes::here();
+    let digest = copy_selected_with(input, range, journal, selected, buffer, restored, &mut here)?;
+    here.settle(digest, &mut ZeroDigests::new())
+}
+
+/// [`copy_selected`] with the payload's own digest computed where `records`
+/// computes it. The bytes read, written and given to the aggregates are the
+/// same, in the same order.
+fn copy_selected_with<R: Read + Seek, J: Write>(
+    input: &mut R,
+    range: &SelectedRange,
+    journal: &mut J,
+    selected: &mut PinHash,
+    buffer: &mut [u8],
+    mut restored: Option<&mut PinHash>,
+    records: &mut RecordHashes,
+) -> Result<RowDigest> {
     input.seek(SeekFrom::Start(range.offset))?;
     frame(selected, range)?;
     if let Some(restored) = restored.as_deref_mut() {
         frame(restored, range)?;
     }
-    let mut hash = pin_hash()?;
+    let mut hash = records.begin()?;
     let mut remaining = range.length;
     while remaining > 0 {
         let count = usize::try_from(remaining.min(BUFFER as u64))?;
@@ -812,7 +937,7 @@ fn copy_selected<R: Read + Seek, J: Write>(
         hash.update(&buffer[..count])?;
         remaining -= count as u64;
     }
-    finish(hash)
+    hash.finish(None)
 }
 
 fn verify_zero_selected<R: Read + Seek>(
@@ -822,8 +947,36 @@ fn verify_zero_selected<R: Read + Seek>(
     buffer: &mut [u8],
     zero_digests: &mut ZeroDigests,
     mismatch: &'static str,
-    mut restored: Option<&mut PinHash>,
+    restored: Option<&mut PinHash>,
 ) -> Result<[u8; 32]> {
+    let mut here = RecordHashes::here();
+    let digest = verify_zero_selected_with(
+        input,
+        range,
+        selected,
+        buffer,
+        zero_digests,
+        mismatch,
+        restored,
+        &mut here,
+    )?;
+    here.settle(digest, zero_digests)
+}
+
+/// [`verify_zero_selected`] with the payload's own digest computed where
+/// `records` computes it. Every byte is still read, checked to be zero and
+/// given to the aggregates on this thread; a digest that is owed is
+/// remembered for its length when it is settled, not before.
+fn verify_zero_selected_with<R: Read + Seek>(
+    input: &mut R,
+    range: &SelectedRange,
+    selected: &mut PinHash,
+    buffer: &mut [u8],
+    zero_digests: &mut ZeroDigests,
+    mismatch: &'static str,
+    mut restored: Option<&mut PinHash>,
+    records: &mut RecordHashes,
+) -> Result<RowDigest> {
     input.seek(SeekFrom::Start(range.offset))?;
     frame(selected, range)?;
     if let Some(restored) = restored.as_deref_mut() {
@@ -833,7 +986,7 @@ fn verify_zero_selected<R: Read + Seek>(
     let mut hash = if cached.is_some() {
         None
     } else {
-        Some(pin_hash()?)
+        Some(records.begin()?)
     };
     let mut remaining = range.length;
     while remaining > 0 {
@@ -850,11 +1003,13 @@ fn verify_zero_selected<R: Read + Seek>(
         remaining -= count as u64;
     }
     let digest = match hash {
-        Some(hash) => finish(hash)?,
-        None => cached.context("verified zero digest absent")?,
+        Some(hash) => hash.finish(Some(range.length))?,
+        None => RowDigest::Known(cached.context("verified zero digest absent")?),
     };
     // No hit can bypass even one actual input byte or its aggregate update.
-    zero_digests.remember_verified(range.length, digest);
+    if let RowDigest::Known(digest) = &digest {
+        zero_digests.remember_verified(range.length, *digest);
+    }
     Ok(digest)
 }
 
@@ -3550,4 +3705,246 @@ fn handoff_loaded<T: DurableIo, J: DurableIo>(
         conversion_qualified: false,
         old_restoration_bytes: None,
     })
+}
+
+#[cfg(test)]
+mod record_hash_tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+    use std::io::Cursor;
+
+    fn sha(bytes: &[u8]) -> [u8; 32] {
+        Sha256::digest(bytes).into()
+    }
+
+    fn image(length: usize) -> Vec<u8> {
+        (0..length).map(|index| (index % 251) as u8 | 1).collect()
+    }
+
+    /// The rows of a journal: copied, checked to be zero, short and several
+    /// buffers long.
+    fn rows() -> Vec<(SelectedRange, bool)> {
+        let granule = GRANULE;
+        let buffer = BUFFER as u64;
+        vec![
+            (
+                SelectedRange {
+                    offset: 0,
+                    length: granule,
+                },
+                false,
+            ),
+            (
+                SelectedRange {
+                    offset: granule,
+                    length: 3 * granule,
+                },
+                true,
+            ),
+            (
+                SelectedRange {
+                    offset: 8 * granule,
+                    length: 2 * buffer + granule,
+                },
+                false,
+            ),
+            (
+                SelectedRange {
+                    offset: 8 * granule + 3 * buffer,
+                    length: buffer + granule,
+                },
+                true,
+            ),
+            (
+                SelectedRange {
+                    offset: 8 * granule + 5 * buffer,
+                    length: 3 * granule,
+                },
+                true,
+            ),
+            (
+                SelectedRange {
+                    offset: 8 * granule + 6 * buffer,
+                    length: granule,
+                },
+                false,
+            ),
+        ]
+    }
+
+    /// Runs the rows with `records`, settling every row's digest only after
+    /// `late` more rows were read. Returns the digests, the journal's bytes
+    /// and the aggregate's digest.
+    fn run(mut records: RecordHashes, late: usize) -> (Vec<[u8; 32]>, Vec<u8>, [u8; 32]) {
+        let rows = rows();
+        let end = rows
+            .iter()
+            .map(|(range, _)| range.offset + range.length)
+            .max()
+            .unwrap();
+        let mut source = image(end as usize);
+        for (range, zero) in &rows {
+            if *zero {
+                source[range.offset as usize..(range.offset + range.length) as usize].fill(0);
+            }
+        }
+        let mut input = Cursor::new(source);
+        let mut journal = Vec::new();
+        let mut selected = pin_hash().unwrap();
+        let mut buffer = vec![0u8; BUFFER];
+        let mut zeros = ZeroDigests::new();
+        let mut owed = std::collections::VecDeque::new();
+        let mut digests = Vec::new();
+        for (range, zero) in &rows {
+            let digest = if *zero {
+                verify_zero_selected_with(
+                    &mut input,
+                    range,
+                    &mut selected,
+                    &mut buffer,
+                    &mut zeros,
+                    "row is not zero",
+                    None,
+                    &mut records,
+                )
+                .unwrap()
+            } else {
+                copy_selected_with(
+                    &mut input,
+                    range,
+                    &mut journal,
+                    &mut selected,
+                    &mut buffer,
+                    None,
+                    &mut records,
+                )
+                .unwrap()
+            };
+            owed.push_back(digest);
+            while owed.len() > late {
+                let digest = owed.pop_front().unwrap();
+                digests.push(records.settle(digest, &mut zeros).unwrap());
+            }
+        }
+        for digest in owed {
+            digests.push(records.settle(digest, &mut zeros).unwrap());
+        }
+        records.finish().unwrap();
+        // Every zero row's digest is remembered for its length by the end.
+        for (range, zero) in &rows {
+            if *zero {
+                assert_eq!(
+                    zeros.get(range.length),
+                    Some(sha(&vec![0u8; range.length as usize]))
+                );
+            }
+        }
+        (digests, journal, finish(selected).unwrap())
+    }
+
+    #[test]
+    fn a_worker_gives_every_row_the_digest_this_thread_would_have_given() {
+        let source = {
+            let rows = rows();
+            let end = rows
+                .iter()
+                .map(|(range, _)| range.offset + range.length)
+                .max()
+                .unwrap();
+            let mut source = image(end as usize);
+            for (range, zero) in &rows {
+                if *zero {
+                    source[range.offset as usize..(range.offset + range.length) as usize].fill(0);
+                }
+            }
+            source
+        };
+        let expected: Vec<[u8; 32]> = rows()
+            .iter()
+            .map(|(range, _)| {
+                sha(&source[range.offset as usize..(range.offset + range.length) as usize])
+            })
+            .collect();
+        let here = run(RecordHashes::here(), 0);
+        assert_eq!(here.0, expected);
+        // Settled at once, a row late, and only when every row was read.
+        for late in [0usize, 1, 64] {
+            let there = run(RecordHashes::on_a_worker().unwrap(), late);
+            assert_eq!(there.0, expected, "settled {late} rows late");
+            assert_eq!(
+                there.1, here.1,
+                "the journal's bytes, settled {late} rows late"
+            );
+            assert_eq!(there.2, here.2, "the aggregate, settled {late} rows late");
+        }
+    }
+
+    #[test]
+    fn a_zero_row_is_remembered_when_its_digest_is_settled_and_not_before() {
+        let length = 3 * GRANULE;
+        let range = SelectedRange { offset: 0, length };
+        let mut input = Cursor::new(vec![0u8; length as usize]);
+        let mut records = RecordHashes::on_a_worker().unwrap();
+        let mut zeros = ZeroDigests::new();
+        let mut buffer = vec![0u8; BUFFER];
+        let mut selected = pin_hash().unwrap();
+        let mut zero = |zeros: &mut ZeroDigests, records: &mut RecordHashes| {
+            verify_zero_selected_with(
+                &mut input,
+                &range,
+                &mut selected,
+                &mut buffer,
+                zeros,
+                "row is not zero",
+                None,
+                records,
+            )
+            .unwrap()
+        };
+        let first = zero(&mut zeros, &mut records);
+        assert!(matches!(first, RowDigest::Owed { zero_length: Some(l) } if l == length));
+        assert_eq!(zeros.get(length), None, "not remembered while it is owed");
+        // A second row of that length before the first is settled is hashed
+        // as well; both give the digest of that many zero bytes.
+        let second = zero(&mut zeros, &mut records);
+        assert!(matches!(second, RowDigest::Owed { .. }));
+        let expected = sha(&vec![0u8; length as usize]);
+        assert_eq!(records.settle(first, &mut zeros).unwrap(), expected);
+        assert_eq!(zeros.get(length), Some(expected));
+        assert_eq!(records.settle(second, &mut zeros).unwrap(), expected);
+        // Once remembered, a row of that length is known at once.
+        let third = zero(&mut zeros, &mut records);
+        assert!(matches!(third, RowDigest::Known(digest) if digest == expected));
+        records.finish().unwrap();
+    }
+
+    #[test]
+    fn a_row_that_is_not_zero_fails_on_a_worker_as_it_does_here() {
+        for worker in [false, true] {
+            let range = SelectedRange {
+                offset: 0,
+                length: 2 * GRANULE,
+            };
+            let mut bytes = vec![0u8; 2 * GRANULE as usize];
+            bytes[GRANULE as usize + 7] = 1;
+            let mut records = if worker {
+                RecordHashes::on_a_worker().unwrap()
+            } else {
+                RecordHashes::here()
+            };
+            let error = verify_zero_selected_with(
+                &mut Cursor::new(bytes),
+                &range,
+                &mut pin_hash().unwrap(),
+                &mut vec![0u8; BUFFER],
+                &mut ZeroDigests::new(),
+                "row is not zero",
+                None,
+                &mut records,
+            )
+            .err()
+            .expect("a nonzero byte is refused");
+            assert!(format!("{error:#}").contains("row is not zero"));
+        }
+    }
 }

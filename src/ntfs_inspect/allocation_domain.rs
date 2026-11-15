@@ -112,6 +112,50 @@ fn interval_bytes(
         .context("allocation byte end escapes bitmap domain")?;
     Ok((start, end))
 }
+/// The first interval that ends after `offset`: where a count of the bytes
+/// owned from `offset` on begins.
+///
+/// The intervals are in the order of their first cluster, which is the first
+/// half of each one's key, and no two of them overlap: the reconciliation
+/// that `query_domain` requires walked every one of them and found each to
+/// carry its key and to begin at or after the end of the one before. So the
+/// interval looked for is the last that begins at or before `offset`, if it
+/// ends after it, and otherwise the one that follows. The keys are in the
+/// store's directory; one interval is decoded. Decoding an interval at every
+/// step of the search was seventeen JSON records for a question about one
+/// range, and 18 s of comparing the full Windows volume's shadow with its
+/// source.
+fn first_ending_after(
+    store: &SortedRecordStore,
+    offset: u64,
+    cluster: u64,
+    domain: u64,
+) -> Result<(u64, Option<(u64, u64)>)> {
+    let (mut low, mut high) = (0, store.len());
+    while low < high {
+        let mid = low + (high - low) / 2;
+        let first_cluster = u64::from_be_bytes(store.key(mid)?[..8].try_into()?);
+        // A beginning that does not fit sixty-four bits is after any offset.
+        if first_cluster
+            .checked_mul(cluster)
+            .is_some_and(|start| start <= offset)
+        {
+            low = mid + 1
+        } else {
+            high = mid
+        }
+    }
+    // `low` is the first interval that begins after `offset`. The one before
+    // it comes with its bytes, which the caller would decode again.
+    if low > 0 {
+        let before = interval_bytes(store, low - 1, cluster, domain)?;
+        if before.1 > offset {
+            return Ok((low - 1, Some(before)));
+        }
+    }
+    Ok((low, None))
+}
+
 /// Count true NTFS-owned bytes. Reserved bootstrap/tail bytes are deliberately
 /// not invented as bitmap allocation; is_free_granule protects them separately.
 pub fn allocated_bytes_in(
@@ -127,19 +171,14 @@ pub fn allocated_bytes_in(
         return Ok(0);
     }
     let cluster = u64::from(geometry.cluster_size);
-    let (mut low, mut high) = (0, store.len());
-    while low < high {
-        let mid = low + (high - low) / 2;
-        if interval_bytes(store, mid, cluster, domain)?.1 <= offset {
-            low = mid + 1
-        } else {
-            high = mid
-        }
-    }
+    let (low, mut decoded) = first_ending_after(store, offset, cluster, domain)?;
     let mut bytes = 0u64;
     let mut prior_end = None;
     for ordinal in low..store.len() {
-        let (start, finish) = interval_bytes(store, ordinal, cluster, domain)?;
+        let (start, finish) = match decoded.take() {
+            Some(first) => first,
+            None => interval_bytes(store, ordinal, cluster, domain)?,
+        };
         if start >= end {
             break;
         }
@@ -735,4 +774,184 @@ pub fn reconcile_allocation_domain<R: Read + Seek>(
         distinct_attributes:owners,allocated_clusters:allocated,free_clusters:domain-allocated,
         padding_bits_set:padding,physical_ownership:physical_pin,logical_ownership:logical_pin,
         detail:"Complete raw allocation graph reconciles; native and semantic admission remain separate".into()})
+}
+
+#[cfg(test)]
+mod interval_search_tests {
+    use super::*;
+    use crate::ntfs_inspect::{
+        NtfsGeometry, record_store::SortedRecordWriter, source_domain::SourceMetadataBudget,
+    };
+
+    const CLUSTER: u64 = 4096;
+
+    /// A reconciled ownership store of `intervals` (first cluster, clusters)
+    /// on a volume of `clusters` clusters.
+    fn reconciled(
+        directory: &Path,
+        clusters: u64,
+        intervals: &[(u64, u64)],
+    ) -> (
+        SortedRecordStore,
+        NtfsGeometry,
+        PagedAllocationReconciliation,
+    ) {
+        let scratch = SourceScratch::new(SourceMetadataBudget {
+            ram_bytes: 64 * 1024 * 1024,
+            scratch_bytes: 64 * 1024 * 1024,
+            page_bytes: 4096,
+            record_bytes: 64 * 1024,
+            merge_fan_in: 8,
+        })
+        .unwrap();
+        let mut writer =
+            SortedRecordWriter::new(&directory.join("physical"), *b"N2RALPH1", &scratch).unwrap();
+        for (ordinal, &(lcn, count)) in intervals.iter().enumerate() {
+            let row = Interval {
+                owner: ordinal as u64,
+                ordinal: ordinal as u64,
+                record_number: 40 + ordinal as u64,
+                sequence_number: 1,
+                type_code: 0x80,
+                name_utf16: vec![],
+                instance: 0,
+                vcn: 0,
+                lcn,
+                clusters: count,
+            };
+            writer.reserve_next_record(4096).unwrap();
+            writer.push(key(lcn, ordinal as u64), &row).unwrap();
+        }
+        let pin = writer.finish().unwrap();
+        let store = SortedRecordStore::open(&pin, &scratch).unwrap();
+        let geometry = NtfsGeometry {
+            bytes_per_sector: 512,
+            sectors_per_cluster: 8,
+            cluster_size: CLUSTER as u32,
+            total_sectors: clusters * 8,
+            volume_size: clusters * CLUSTER,
+            total_clusters: clusters,
+            mft_lcn: 4,
+            mftmirr_lcn: 2,
+            file_record_size: 1024,
+            index_record_size: 4096,
+            serial_number: 1,
+        };
+        let summary = PagedAllocationReconciliation {
+            status: AllocationReconciliationStatus::ConsistentRawModel,
+            bitmap_sha256: String::new(),
+            domain_clusters: clusters,
+            physical_intervals: intervals.len() as u64,
+            distinct_attributes: intervals.len() as u64,
+            allocated_clusters: intervals.iter().map(|interval| interval.1).sum(),
+            free_clusters: 0,
+            padding_bits_set: 0,
+            physical_ownership: pin.clone(),
+            logical_ownership: pin,
+            detail: String::new(),
+        };
+        (store, geometry, summary)
+    }
+
+    /// The bytes of `[offset, offset + length)` that the intervals own,
+    /// counted one interval after another.
+    fn counted(intervals: &[(u64, u64)], offset: u64, length: u64) -> u64 {
+        intervals
+            .iter()
+            .map(|&(lcn, count)| {
+                let (start, end) = (lcn * CLUSTER, (lcn + count) * CLUSTER);
+                end.min(offset + length).saturating_sub(start.max(offset))
+            })
+            .sum()
+    }
+
+    #[test]
+    fn the_bytes_owned_in_a_range_are_those_counted_one_interval_at_a_time() {
+        let work = tempfile::tempdir().unwrap();
+        // Adjacent intervals, gaps of one cluster and of many, a first
+        // cluster that is owned and a last that is not; and enough of them
+        // that the search has several steps.
+        let mut intervals = vec![(0u64, 1u64), (1, 2), (5, 1), (7, 3), (10, 1), (40, 6)];
+        let mut next = 60u64;
+        for index in 0..300u64 {
+            let count = 1 + index % 4;
+            intervals.push((next, count));
+            next += count + index % 3;
+        }
+        let clusters = next + 9;
+        let (store, geometry, summary) = reconciled(work.path(), clusters, &intervals);
+        let partition = clusters * CLUSTER;
+        let ask = |offset: u64, length: u64| {
+            allocated_bytes_in(&store, &geometry, &summary, offset, length, partition).unwrap()
+        };
+        // Every cluster and every pair of neighbours, whole and from the
+        // middle of one to the middle of the next.
+        for cluster in 0..clusters - 2 {
+            for (offset, length) in [
+                (cluster * CLUSTER, CLUSTER),
+                (cluster * CLUSTER, 2 * CLUSTER),
+                (cluster * CLUSTER + 512, CLUSTER),
+                (cluster * CLUSTER + 4095, 2),
+                (cluster * CLUSTER, 1),
+            ] {
+                assert_eq!(
+                    ask(offset, length),
+                    counted(&intervals, offset, length),
+                    "offset {offset}, length {length}"
+                );
+            }
+        }
+        // Ranges over many intervals, to the end and over all of it.
+        for (offset, length) in [
+            (0, partition),
+            (3 * CLUSTER, 50 * CLUSTER),
+            (61 * CLUSTER + 1, 400 * CLUSTER),
+            (partition - CLUSTER, CLUSTER),
+        ] {
+            assert_eq!(ask(offset, length), counted(&intervals, offset, length));
+        }
+        // What is owned through and through is, and what has a gap is not.
+        require_allocated_range(
+            &store,
+            &geometry,
+            &summary,
+            7 * CLUSTER,
+            4 * CLUSTER,
+            partition,
+        )
+        .unwrap();
+        assert!(
+            require_allocated_range(
+                &store,
+                &geometry,
+                &summary,
+                5 * CLUSTER,
+                3 * CLUSTER,
+                partition
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_volume_that_owns_nothing_or_one_interval_is_counted() {
+        let work = tempfile::tempdir().unwrap();
+        let (store, geometry, summary) = reconciled(work.path(), 32, &[(9, 2)]);
+        let partition = 32 * CLUSTER;
+        for (offset, length, expected) in [
+            (0, CLUSTER, 0),
+            (8 * CLUSTER, CLUSTER, 0),
+            (8 * CLUSTER, 2 * CLUSTER, CLUSTER),
+            (9 * CLUSTER, 2 * CLUSTER, 2 * CLUSTER),
+            (10 * CLUSTER + 1, 9 * CLUSTER, CLUSTER - 1),
+            (11 * CLUSTER, CLUSTER, 0),
+            (0, partition, 2 * CLUSTER),
+        ] {
+            assert_eq!(
+                allocated_bytes_in(&store, &geometry, &summary, offset, length, partition).unwrap(),
+                expected,
+                "offset {offset}, length {length}"
+            );
+        }
+    }
 }

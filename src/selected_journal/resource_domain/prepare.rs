@@ -3,9 +3,9 @@
 //! cannot publish a ticket, activate a target, or open a source for writes.
 use super::*;
 use crate::selected_journal::{
-    self, BUFFER, PinHash, SelectedRange, SelectedTicket, ZeroDigests, aggregate_pin_hash, at,
-    capture_free_selected, copy_selected, finish, frame, get_u32, get_u64, pin_hash, put_u32,
-    put_u64, verify_zero_selected,
+    self, BUFFER, PinHash, RecordHashes, RowDigest, SelectedRange, SelectedTicket, ZeroDigests,
+    aggregate_pin_hash, at, capture_free_selected, copy_selected_with, finish, frame, get_u32,
+    get_u64, pin_hash, put_u32, put_u64, verify_zero_selected_with,
 };
 use crate::{
     general_reconstruct::selected_native_journal::{
@@ -247,7 +247,9 @@ pub(crate) fn prepare_native_partition_from_protected_capture<
             && candidate.byte_len()? == f.image_length,
         "partition source/shadow/candidate length or marker profile differs"
     );
-    let memory = domain.scratch.lease_ram(12 * BUFFER as u64)?;
+    let memory = domain
+        .scratch
+        .lease_ram(PREPARATION_BUFFERS * BUFFER as u64)?;
     let (journal, facts) = creation.split_for_partition_preparation(context, events)?;
     let capture_group = domain
         .scratch
@@ -588,13 +590,14 @@ fn copy_candidate_checked<S: ReadSeek, R: ReadSeek, J: Write>(
     candidate_buffer: &mut [u8],
     compare_buffer: &mut [u8],
     same_captured_source: bool,
-) -> Result<[u8; 32]> {
+    records: &mut RecordHashes,
+) -> Result<RowDigest> {
     let range = SelectedRange {
         offset: row.capture.offset,
         length: row.capture.length,
     };
     frame(aggregate, &range)?;
-    let mut hash = pin_hash()?;
+    let mut hash = records.begin()?;
     let mut done = 0u64;
     while done < range.length {
         let count = usize::try_from((range.length - done).min(BUFFER as u64))?;
@@ -628,7 +631,79 @@ fn copy_candidate_checked<S: ReadSeek, R: ReadSeek, J: Write>(
         aggregate.update(&candidate_buffer[..count])?;
         done = add(done, count as u64)?;
     }
-    finish(hash)
+    hash.finish(None)
+}
+
+/// The workspace of a journal's preparation, in buffers of [`BUFFER`] bytes:
+/// the read and compare buffers, two for each of the five file-wide digests'
+/// workers, two for each of the two workers of the rows' own digests, and one
+/// for those workers' lists and the rows whose digests are owed.
+pub(super) const PREPARATION_BUFFERS: u64 = 17;
+
+/// A row whose payloads are in the journal and whose descriptor waits for
+/// their digests.
+struct OwedRow {
+    row: JournalLayoutRow,
+    old: RowDigest,
+    new: RowDigest,
+}
+
+/// The most rows, and about the most bytes of them, that are written before
+/// their descriptors: the workers that hash the payloads are never more than
+/// this far behind, and the rows are read back while they are still near.
+const MOST_OWED_ROWS: usize = 256;
+const MOST_OWED_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Completes the rows whose payloads are written, in their order: each row's
+/// two digests are taken from the workers, its descriptor is written in its
+/// place and, where the file's hashes are computed as it is written, the row
+/// is read back from the file and hashed in file order. Leaves the file at
+/// the end of the last of them.
+fn complete_rows<J: DurableIo>(
+    f: JournalLayoutFacts,
+    file: &mut J,
+    owed: &mut Vec<OwedRow>,
+    old_records: &mut RecordHashes,
+    new_records: &mut RecordHashes,
+    zeros: &mut ZeroDigests,
+    mut written: Option<&mut (PinHash, PinHash)>,
+    buffer: &mut [u8],
+) -> Result<()> {
+    let Some(end) = owed.last().map(|last| last.row.next_offset) else {
+        return Ok(());
+    };
+    for OwedRow { row, old, new } in owed.drain(..) {
+        let old = old_records.settle(old, zeros)?;
+        let new = new_records.settle(new, zeros)?;
+        let record = encode_record(row, f, old, new);
+        file.seek(SeekFrom::Start(row.descriptor_offset))?;
+        file.write_all(&record[..f.record_size])?;
+        if let Some((whole, immutable)) = written.as_deref_mut() {
+            file.seek(SeekFrom::Start(row.descriptor_offset))?;
+            let mut stored = [0u8; OLD_ZERO_RECORD];
+            file.read_exact(&mut stored[..f.record_size])?;
+            ensure!(
+                stored[..f.record_size] == record[..f.record_size],
+                "journal descriptor read back differs from the one written"
+            );
+            whole.update(&stored[..f.record_size])?;
+            immutable.update(&stored[..f.record_size])?;
+            let mut left = row
+                .next_offset
+                .checked_sub(row.descriptor_offset)
+                .and_then(|n| n.checked_sub(f.record_size as u64))
+                .context("journal row layout underflow")?;
+            while left != 0 {
+                let count = usize::try_from(left.min(buffer.len() as u64))?;
+                file.read_exact(&mut buffer[..count])?;
+                whole.update(&buffer[..count])?;
+                immutable.update(&buffer[..count])?;
+                left -= count as u64;
+            }
+        }
+    }
+    file.seek(SeekFrom::Start(end))?;
+    Ok(())
 }
 
 /// Write and independently validate one diagnostic journal. Space is reserved
@@ -650,7 +725,9 @@ pub(crate) fn prepare_diagnostic<'domain, 'capture, R: ReadSeek, S: ReadSeek>(
         source.byte_len()? == f.image_length && candidate.byte_len()? == f.image_length,
         "diagnostic source/candidate length differs"
     );
-    let memory = domain.scratch.lease_ram(12 * BUFFER as u64)?;
+    let memory = domain
+        .scratch
+        .lease_ram(PREPARATION_BUFFERS * BUFFER as u64)?;
     let permit = group.reserve_file(path, f.journal_length)?;
     let mut file = OpenOptions::new()
         .read(true)
@@ -789,7 +866,9 @@ fn prepare_native_inner<'journal, 'domain, 'capture, S: ReadSeek>(
             && candidate.byte_len()? == f.image_length,
         "native journal source, shadow or candidate length differs"
     );
-    let memory = domain.scratch.lease_ram(12 * BUFFER as u64)?;
+    let memory = domain
+        .scratch
+        .lease_ram(PREPARATION_BUFFERS * BUFFER as u64)?;
     let (journal, facts) = creation.split_for_preparation()?;
     let capture_group = domain
         .scratch
@@ -919,6 +998,14 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     let mut buffer = vec![0u8; BUFFER];
     let mut compare = vec![0u8; BUFFER];
     let mut zeros = ZeroDigests::new();
+    // A row's descriptor holds the digests of its two payloads. They are
+    // computed on two workers, one for the old payloads and one for the new,
+    // while this thread reads on: the payloads of a few rows are written
+    // first, and then their descriptors, in the same places as before.
+    let mut old_records = RecordHashes::overlapped()?;
+    let mut new_records = RecordHashes::overlapped()?;
+    let mut owed: Vec<OwedRow> = Vec::with_capacity(MOST_OWED_ROWS);
+    let mut owed_bytes = 0u64;
     for ordinal in 0..u64::from(f.range_count) {
         let row = domain.row(ordinal)?;
         ensure!(
@@ -931,9 +1018,15 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
             length: row.capture.length,
         };
         let old = if row.capture.old_is_source_free {
-            capture_free_selected(source, &range, &mut file, &mut old_selected, &mut buffer)?
+            RowDigest::Known(capture_free_selected(
+                source,
+                &range,
+                &mut file,
+                &mut old_selected,
+                &mut buffer,
+            )?)
         } else if row.capture.old_is_zero {
-            verify_zero_selected(
+            verify_zero_selected_with(
                 source,
                 &range,
                 &mut old_selected,
@@ -941,15 +1034,17 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
                 &mut zeros,
                 "source OLD-zero row is nonzero",
                 old_restored.as_mut(),
+                &mut old_records,
             )?
         } else {
-            copy_selected(
+            copy_selected_with(
                 source,
                 &range,
                 &mut file,
                 &mut old_selected,
                 &mut buffer,
                 old_restored.as_mut(),
+                &mut old_records,
             )?
         };
         ensure!(
@@ -957,7 +1052,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
             "diagnostic old payload length differs"
         );
         let new = if row.capture.new_is_zero {
-            verify_zero_selected(
+            verify_zero_selected_with(
                 candidate,
                 &range,
                 &mut new_selected,
@@ -965,6 +1060,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
                 &mut zeros,
                 "candidate zero row is nonzero",
                 None,
+                &mut new_records,
             )?
         } else {
             copy_candidate_checked(
@@ -977,40 +1073,45 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
                 &mut buffer,
                 &mut compare,
                 same_captured_source,
+                &mut new_records,
             )?
         };
         ensure!(
             file.stream_position()? == row.next_offset,
             "diagnostic new payload length differs"
         );
-        let record = encode_record(row, f, old, new);
-        file.seek(SeekFrom::Start(row.descriptor_offset))?;
-        file.write_all(&record[..f.record_size])?;
-        if let Some((whole, immutable)) = written.as_mut() {
-            file.seek(SeekFrom::Start(row.descriptor_offset))?;
-            let mut stored = [0u8; OLD_ZERO_RECORD];
-            file.read_exact(&mut stored[..f.record_size])?;
-            ensure!(
-                stored[..f.record_size] == record[..f.record_size],
-                "journal descriptor read back differs from the one written"
-            );
-            whole.update(&stored[..f.record_size])?;
-            immutable.update(&stored[..f.record_size])?;
-            let mut left = row
-                .next_offset
+        owed_bytes = owed_bytes.saturating_add(
+            row.next_offset
                 .checked_sub(row.descriptor_offset)
-                .and_then(|n| n.checked_sub(f.record_size as u64))
-                .context("journal row layout underflow")?;
-            while left != 0 {
-                let count = usize::try_from(left.min(buffer.len() as u64))?;
-                file.read_exact(&mut buffer[..count])?;
-                whole.update(&buffer[..count])?;
-                immutable.update(&buffer[..count])?;
-                left -= count as u64;
-            }
+                .context("journal row layout underflow")?,
+        );
+        owed.push(OwedRow { row, old, new });
+        if owed.len() == MOST_OWED_ROWS || owed_bytes >= MOST_OWED_BYTES {
+            complete_rows(
+                f,
+                file,
+                &mut owed,
+                &mut old_records,
+                &mut new_records,
+                &mut zeros,
+                written.as_mut(),
+                &mut buffer,
+            )?;
+            owed_bytes = 0;
         }
-        file.seek(SeekFrom::Start(row.next_offset))?;
     }
+    complete_rows(
+        f,
+        file,
+        &mut owed,
+        &mut old_records,
+        &mut new_records,
+        &mut zeros,
+        written.as_mut(),
+        &mut buffer,
+    )?;
+    old_records.finish()?;
+    new_records.finish()?;
     let old_sha = finish(old_selected)?;
     let restored_sha = old_restored.map(finish).transpose()?;
     let new_sha = finish(new_selected)?;

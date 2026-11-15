@@ -104,6 +104,23 @@ pub trait RootFileDomain {
     fn file_count(&self) -> u64;
     fn file(&self, ordinal: u64) -> Result<FileInventory>;
     fn find_record(&self, number: u64, sequence: Option<u16>) -> Result<Option<FileInventory>>;
+    /// What `read` makes of the record that [`find_record`](Self::find_record)
+    /// finds, or `None` where it finds none. A domain that holds the row
+    /// lends it: a caller that wants one name of a directory, or its parent,
+    /// is not handed a copy of the whole row for it.
+    fn with_record<T>(
+        &self,
+        number: u64,
+        sequence: Option<u16>,
+        read: impl FnOnce(&FileInventory) -> Result<T>,
+    ) -> Result<Option<T>>
+    where
+        Self: Sized,
+    {
+        self.find_record(number, sequence)?
+            .map(|file| read(&file))
+            .transpose()
+    }
     fn allocated_record(&self, number: u64) -> Result<bool>;
     fn extension_record(&self, number: u64) -> Result<bool>;
     fn revalidate(&self) -> Result<()>;

@@ -76,9 +76,11 @@ fn alias_error(components: &[String], error: io::Error) -> io::Error {
     )
 }
 /// Read-only and never following a link: how a probe opens what it checks.
+/// A probe reads no data: a link has none, and of what it names and of their
+/// directory only the identity and the metadata are asked for.
 fn open_readonly(root: &str, components: &[String]) -> io::Result<File> {
     File::options()
-        .access_mode(super::PROTECTED_READ_ACCESS)
+        .access_mode(super::PROTECTED_METADATA_ACCESS)
         .share_mode(3)
         .custom_flags(0x02200000)
         .open(format!("{root}{}", components.join("\\")))

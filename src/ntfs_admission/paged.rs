@@ -14,6 +14,15 @@ fn directory_path_for_alias_preparation(
     mut current: u64,
     alias_preparation: bool,
 ) -> Result<Vec<String>> {
+    /// What one directory of the chain adds to the path.
+    enum Step {
+        Root,
+        Up {
+            name: String,
+            units: usize,
+            parent: u64,
+        },
+    }
     let mut components = Vec::new();
     let mut units = 0usize;
     // A canonical parent chain cannot contain more identities than the source.
@@ -21,45 +30,67 @@ fn directory_path_for_alias_preparation(
     for _ in 0..files.file_count() {
         let number = current & 0x0000_ffff_ffff_ffff;
         let sequence = (current >> 48) as u16;
-        let directory = files
-            .find_record(number, Some(sequence))?
+        // The directory's row is read where the domain holds it. Every
+        // object's path asks for each directory above it; a copy of the row
+        // for each of them was most of what building the paths cost.
+        let step = files
+            .with_record(number, Some(sequence), |directory| {
+                let names: Vec<_> = directory
+                    .names
+                    .iter()
+                    .filter(|n| !alias_preparation || n.namespace != 2)
+                    .collect();
+                ensure!(
+                    directory.is_directory
+                        && (alias_preparation || directory.hard_link_count == 1)
+                        && names.len() == 1
+                        && directory.base_file_reference == 0,
+                    "source parent is not a canonical single-name directory"
+                );
+                let name = names[0];
+                ensure!(
+                    matches!(name.namespace, 0 | 1 | 3),
+                    "source namespace is unsupported"
+                );
+                let parent =
+                    name.parent_record_number | (u64::from(name.parent_sequence_number) << 48);
+                if directory.record_number == 5 {
+                    ensure!(
+                        name.name_utf16 == [u16::from(b'.')] && parent == current,
+                        "source root self-reference differs"
+                    );
+                    return Ok(Step::Root);
+                }
+                let units = units
+                    .checked_add(name.name_utf16.len())
+                    .and_then(|n| n.checked_add(1))
+                    .context("source native path length overflow")?;
+                ensure!(
+                    units < u16::MAX as usize / 2,
+                    "source path exceeds native UTF-16 representation"
+                );
+                Ok(Step::Up {
+                    name: String::from_utf16(&name.name_utf16)?,
+                    units,
+                    parent,
+                })
+            })?
             .context("source parent identity is missing or stale")?;
-        let names: Vec<_> = directory
-            .names
-            .iter()
-            .filter(|n| !alias_preparation || n.namespace != 2)
-            .collect();
-        ensure!(
-            directory.is_directory
-                && (alias_preparation || directory.hard_link_count == 1)
-                && names.len() == 1
-                && directory.base_file_reference == 0,
-            "source parent is not a canonical single-name directory"
-        );
-        let name = names[0];
-        ensure!(
-            matches!(name.namespace, 0 | 1 | 3),
-            "source namespace is unsupported"
-        );
-        let parent = name.parent_record_number | (u64::from(name.parent_sequence_number) << 48);
-        if directory.record_number == 5 {
-            ensure!(
-                name.name_utf16 == [u16::from(b'.')] && parent == current,
-                "source root self-reference differs"
-            );
-            components.reverse();
-            return Ok(components);
+        match step {
+            Step::Root => {
+                components.reverse();
+                return Ok(components);
+            }
+            Step::Up {
+                name,
+                units: longer,
+                parent,
+            } => {
+                units = longer;
+                components.push(name);
+                current = parent;
+            }
         }
-        units = units
-            .checked_add(name.name_utf16.len())
-            .and_then(|n| n.checked_add(1))
-            .context("source native path length overflow")?;
-        ensure!(
-            units < u16::MAX as usize / 2,
-            "source path exceeds native UTF-16 representation"
-        );
-        components.push(String::from_utf16(&name.name_utf16)?);
-        current = parent;
     }
     anyhow::bail!("source parent chain cycles or does not reach the root")
 }

@@ -519,6 +519,14 @@ impl RootFileDomain for PagedInspection {
     fn find_record(&self, number: u64, sequence: Option<u16>) -> Result<Option<FileInventory>> {
         self.files.find_record(number, sequence)
     }
+    fn with_record<T>(
+        &self,
+        number: u64,
+        sequence: Option<u16>,
+        read: impl FnOnce(&FileInventory) -> Result<T>,
+    ) -> Result<Option<T>> {
+        self.files.with_record(number, sequence, read)
+    }
     fn allocated_record(&self, number: u64) -> Result<bool> {
         self.files.allocated_record(number)
     }

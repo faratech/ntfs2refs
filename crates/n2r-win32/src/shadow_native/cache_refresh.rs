@@ -1203,7 +1203,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         let mut read: Vec<io::Result<(Snapshot, io::Result<()>)>> =
             super::observe_in_parallel(at_once, |item| Ok(read_one(item)))?;
         drop(workspaces);
-        read.extend(in_turn.iter().map(&read_one));
+        read.extend(super::observe_in_turn(in_turn, &read_one));
         for ((index, item), read) in items.iter().zip(read) {
             read.and_then(|(actual, rest)| {
                 compare(item, *index, &actual)?;

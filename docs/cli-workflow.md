@@ -1,6 +1,6 @@
 # Operating and recovery guide
 
-For ntfs2refs 0.2.0-beta.1. [The README](../README.md) says what the tool is;
+For ntfs2refs 0.3.0-beta.1. [The README](../README.md) says what the tool is;
 this guide says how to run it, what it refuses and why, and what to do if a
 run stops. What the lab has shown is in the [feature matrix](feature-matrix.md)
 and the [recovery matrix](recovery-matrix.md).
@@ -83,6 +83,11 @@ seconds on one of 23,000 files. It prints:
   cluster size asked for (`--target-cluster-bytes`); the working storage and
   the free memory it needs at least; and a range for the time, from the lab's
   runs on virtual disks.
+
+On a volume in use a program may have deleted a file that it still holds
+open. Windows keeps such a file until the program closes it. The check does
+not count it and does not refuse the volume for it: a conversion takes the
+volume offline first and never meets it. A note says how many there were.
 
 A lab volume that had been in use (the conversion that followed took 2 min
 16 s):

@@ -39,6 +39,9 @@ $Explained = @{
     'r1-stop-supply-cancel' = 'a fault of the harness, which put the cancel command together on the host; r2-stop-supply-cancel is the same row with the command the run prints'
     'r1-stop-journal-cancel' = 'the same fault of the harness; r2-stop-journal-cancel is the same row without it'
     'r1-stop-supply-restart' = 'the build before the fix of issue #95: the new run was refused with "letter has absent/ambiguous/unsupported volume mapping" and nothing named the way back; r2-stop-supply-restart is the same row after it'
+    'v3s-vss-answering-apply-resume' = 'a fault of the harness: the recovery finished and the volume listed identical, but the harness looked for the shadow-copy provider''s note in the recovery''s output instead of the stopped run''s; v4s-vss-answering-apply-resume is the same row without it'
+    'v3s-vss-answering-apply-rollback' = 'the same fault of the harness; v4s-vss-answering-apply-rollback is the same row without it'
+    'v3s-vss-answering-handoff-resume' = 'the same fault of the harness; v4s-vss-answering-handoff-resume is the same row without it'
 }
 
 # The hold points and what state each one is, from the source that defines them.

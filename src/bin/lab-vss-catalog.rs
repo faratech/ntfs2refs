@@ -111,6 +111,7 @@ fn main() -> anyhow::Result<()> {
         "observation":observation,
         "observed_catalog_clear":!args.snapshot_presence_only && failure.is_none(),
         "observed_snapshot_presence_clear":failure.is_none(),
+        "provider_notes":observation.as_ref().map(|o| o.provider_notes()),
         "hosted_storage_requested":!args.snapshot_presence_only,
         "refusal_or_error":failure,
         "inflight_snapshot_operations_excluded":false,

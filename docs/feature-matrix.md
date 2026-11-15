@@ -45,6 +45,7 @@ converter prints.
 | 8.3 short names on a Windows boot volume | Each becomes a link beside its long name | the boot profile line | the Windows fixtures |
 | With `--short-names drop`: the 8.3 short names of a data volume | Not carried over: every object is created under its long name, and each short name is kept in the run's records. On nested directories, a hard-linked file, a file with a named stream and names outside ASCII; the listing is compared with the comparison made for such a run, which counts a short name that is gone and lets nothing else through | "N file(s) and directories have an 8.3 short name ... not carried over" | `shortnames-drop`, `wide-drop` and its variants (`-DropShortNames`) |
 | The case-sensitive mark of a directory in which no two names differ only by case (WSL and Git set it) | Not set on the new volume. Every name stays reachable, and the directories are kept in the run's records. Windows' own ReFS takes the mark on both lab systems (`casemark-control`); on Windows 11 build 26300 that control stopped Windows with a bugcheck both times it was run, when the volume was taken offline (#120) | "N directories are marked case-sensitive ... The converter does not set the mark on the new volume", before the prompt | `casemark` |
+| On the machine: a shadow-copy provider of backup software that answers Windows and holds no shadow copy | The volume converts. Software that keeps track of what changed on it since its last backup will not recognise it afterwards | "A shadow-copy (VSS) provider that the converter does not know is installed ... make a full backup afterwards" | `vss-answering` (Windows Server's iSCSI target storage provider, on Windows Server) |
 
 ## Refused before anything is written
 
@@ -59,6 +60,7 @@ check and the run have to give the same refusal.
 | 8.3 short names on a data volume | `fsutil 8dot3name strip /s /f <drive>:\`, then `fsutil 8dot3name set <drive>: 1` | `shortnames`; the remedy: `shortnames-stripped`, which converts |
 | A BitLocker-encrypted volume | `manage-bde -off <drive>` | `bitlocker` |
 | Shadow copies of the volume | `vssadmin delete shadows /for=<drive>:` | `snapshot` |
+| A shadow-copy provider of backup software (any but Windows' own, Hyper-V's and Windows Server's for remote file shares) that does not answer when Windows asks it | Repair or remove the provider, which is named: whether it holds shadow copies cannot be known | `vss-silent` (a provider registered without its class) |
 | EFS-encrypted files | `cipher /d` | `efs` |
 | A file with the TEMPORARY or OFFLINE attribute | the attribute is named | `temporary`, `offline` |
 | A file compressed with `compact /exe` | `compact /u /exe <file>` | `wof` |
@@ -76,7 +78,7 @@ These take the same paths as rows above, or are checked by tests only.
 | Found | Why it is not a lab case |
 |---|---|
 | Cloud placeholders, Data Deduplication, Windows Subsystem for Linux files | Refused by their reparse tag, like `compact /exe`; the lab has no sync provider, deduplication or WSL. The words for each tag are covered by a test |
-| A shadow-copy provider other than Windows' own, Hyper-V's and Windows Server's for remote file shares | The lab has no backup product. The message is covered by a test |
+| A shadow-copy provider of backup software that holds a shadow copy on the machine | The lab has no backup product that makes one. The decision and its words are covered by a test |
 | A dirty volume, an NTFS log that was not closed, an open transaction | The lab dismounts its volumes cleanly |
 | A program holding a file on the volume open | Not arranged in the lab; the lock is retried for 20 seconds and then refused by name |
 | A volume with no file on it | An empty volume is formatted, not converted |

@@ -78,6 +78,20 @@ lab\Invoke-DataVolumeAttempt.ps1 -Name d-512-01 -VmId <vm> -ClusterBytes 512
 lab\Invoke-DataVolumeAttempt.ps1 -Name d-4kn-01 -VmId <vm> -SectorBytes 4096 -ClusterBytes 65536
 ```
 
+A set of cases is run by `Invoke-DataVolumeMatrix.ps1`, on as many VMs as
+are named: each VM takes the next case as soon as it is free, and a line is
+printed as each ends. An attempt mostly waits for its guest, so two VMs take
+about half the time of one (twelve cases: 469 s on two VMs, 905 s one after
+another). `New-LabVmClone.ps1 -Name <new vm>` makes a further VM like the
+reference VM in seconds, from differencing disks; bring each one's control
+OS up with `-MemoryGB 12`, which is enough for data volumes and leaves the
+reference VM its memory for a Windows run at the same time.
+
+```powershell
+lab\Invoke-DataVolumeMatrix.ps1 -Prefix x1 -VmId <vm b>, <vm c> -Binary <frozen>\ntfs2refs.exe -ManifestBinary <frozen>\lab-volume-manifest.exe `
+    -Cases 'plain|-Check', 'lived-in|-Content lived-in -Check -Acceptance', 'shared|-Siblings -Check'
+```
+
 A VM with Windows Server, which formats ordinary ReFS as well as Dev Drives,
 is made by `lab\New-ServerLabVm.ps1 -Iso <Windows Server ISO>`: Windows Setup
 runs inside the new VM from a generated answer file, a scratch volume `S:` is

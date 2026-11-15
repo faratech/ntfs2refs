@@ -1131,7 +1131,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         }
         Ok(())
     };
-    const READ_BACK_BATCH: usize = 64;
+    const READ_BACK_BATCH: usize = super::PARALLEL_BATCH;
     let mut next = 0usize;
     while next < input.len() {
         metadata_progress(8, next as u64);

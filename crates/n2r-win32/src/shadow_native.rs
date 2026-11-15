@@ -200,6 +200,17 @@ fn at_walk_object(item: &Input<'_>, error: io::Error) -> io::Error {
     io::Error::new(error.kind(), format!("object \\{path}: {text}"))
 }
 
+/// How many objects a pass hands to [`observe_in_parallel`] at a time.
+///
+/// Every batch starts its helper threads and waits for them to end, which
+/// costs about a millisecond whatever the batch holds: with 32 objects a
+/// batch, a walk of the full Windows volume started 36,000 threads, two
+/// seconds of the walking thread's time for that alone. A batch's query
+/// workspace is paid for object by object, and a batch is cut short where
+/// the ledger refuses one more, so a larger batch asks for no more memory
+/// than there is.
+const PARALLEL_BATCH: usize = 256;
+
 fn observe_in_parallel<T: Sync, U: Send>(
     items: &[T],
     observe: impl Fn(&T) -> io::Result<U> + Sync,
@@ -3873,7 +3884,7 @@ fn observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_o
         index: usize,
         name: Vec<u16>,
     }
-    const RESIDUAL_BATCH: usize = 64;
+    const RESIDUAL_BATCH: usize = PARALLEL_BATCH;
     let objects = &native.objects;
     let read_one = |residual: &Residual| -> io::Result<([u8; 16], String)> {
         let expected = &residual.expected;
@@ -6218,18 +6229,19 @@ fn run_role_content_domain_accounted(
         // each row's query workspace paid for before its batch starts. If the
         // ledger cannot pay for a whole batch, the batch is cut short; only a
         // refusal for the first object of a batch is a failure, as before.
-        const BATCH: usize = 32;
+        const BATCH: usize = PARALLEL_BATCH;
         let mut next = 0;
         while next < input.len() {
+            // An object is decoded and its workspace paid for before the
+            // next one is decoded: where memory is short and a batch is cut
+            // after a few objects, the rest of it must not have been decoded
+            // for nothing, batch after batch.
             let mut owners = Vec::with_capacity(BATCH);
+            let mut leases = Vec::with_capacity(BATCH);
             for index in next..(next + BATCH).min(input.len()) {
-                owners.push(input.object(index)?);
-            }
-            let mut items: Vec<Input<'_>> = owners.iter().map(|owner| owner.input()).collect();
-            let mut leases = Vec::with_capacity(items.len());
-            for (offset, item) in items.iter().enumerate() {
+                let owner = input.object(index)?;
                 let peak = if memory_accountant.is_some() {
-                    report_memory::row_peak(item, sd_limit.unwrap_or(0))?
+                    report_memory::row_peak(&owner.input(), sd_limit.unwrap_or(0))?
                 } else {
                     0
                 };
@@ -6238,7 +6250,7 @@ fn run_role_content_domain_accounted(
                     .transpose()
                 {
                     Ok(lease) => leases.push((lease, peak)),
-                    Err(_) if offset > 0 => break,
+                    Err(_) if !owners.is_empty() => break,
                     Err(error) => {
                         return Err(io::Error::other(format!(
                             "native object row {}/{} query workspace {peak} bytes refused: {error}",
@@ -6247,8 +6259,9 @@ fn run_role_content_domain_accounted(
                         )));
                     }
                 }
+                owners.push(owner);
             }
-            items.truncate(leases.len());
+            let items: Vec<Input<'_>> = owners.iter().map(|owner| owner.input()).collect();
             let rows = {
                 let _timed = crate::perf::scope(crate::perf::Point::ShadowObject);
                 observe_in_parallel(&items, &observe)?

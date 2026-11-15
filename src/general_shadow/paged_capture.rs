@@ -577,7 +577,11 @@ fn capture_selected_inner(
     let mut previous_free = false;
     let mut source_digest = Sha256::new();
     let mut candidate_digest = Sha256::new();
-    let mut packed_digest = Sha256::new();
+    // SHA-256 of the literal bytes, by Windows' implementation: the same
+    // digest as before, and several times the portable code's speed on a
+    // processor without SHA instructions, where three gigabytes of literal
+    // bytes took ten seconds of this step.
+    let mut packed_digest = n2r_win32::sha256_native::Sha256::new()?;
     let whole = selection.store.len() == 1
         && selection.range(0)?
             == ByteRange {
@@ -838,7 +842,7 @@ fn capture_selected_inner(
                         let local = usize::try_from(planned.range.offset - at)?;
                         let bytes = &chunk.bytes()[local..local + GRANULE];
                         literal.write_all(bytes)?;
-                        packed_digest.update(bytes);
+                        packed_digest.update(bytes)?;
                     }
                     index.append_accepted(pending)?;
                 }
@@ -860,7 +864,7 @@ fn capture_selected_inner(
         "capture comparison/index/backing accounting differs"
     );
     literal.sync_all()?;
-    let literal_hash = hex::encode(packed_digest.finalize());
+    let literal_hash = hex::encode(packed_digest.finish()?);
     // NTFS can keep speculative growth allocation on the writable FILE_OBJECT
     // even after its last writable handle is dropped. Normalize through this
     // exact writer before readonly duplication; EOF and the existing full

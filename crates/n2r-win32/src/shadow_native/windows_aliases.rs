@@ -75,36 +75,88 @@ fn alias_error(components: &[String], error: io::Error) -> io::Error {
         format!("short-name link \\{}: {error}", components.join("\\")),
     )
 }
-/// Opens the link, its parent and its target (read-only, never following the
-/// link), checks the three against one another and the link against `probe`.
+/// Read-only and never following a link: how a probe opens what it checks.
+fn open_readonly(root: &str, components: &[String]) -> io::Result<File> {
+    File::options()
+        .access_mode(super::PROTECTED_READ_ACCESS)
+        .share_mode(3)
+        .custom_flags(0x02200000)
+        .open(format!("{root}{}", components.join("\\")))
+}
+/// The parent directory of some of a batch's links, opened and examined once
+/// and held until the batch is done.
+struct HeldParent {
+    file: File,
+    examined: crate::windows_alias_native::ExaminedParent,
+}
+/// For each probe of a batch, its parent: every directory that the batch's
+/// links lie in is opened and examined once, on this thread, before the links
+/// are probed. A directory that cannot be opened or examined fails each of
+/// its links with that reason, as it did when every link opened it itself.
+struct HeldParents {
+    held: Vec<Result<HeldParent, (io::ErrorKind, String)>>,
+    of_probe: Vec<usize>,
+}
+impl HeldParents {
+    fn open(root: &str, probes: &[AliasProbe<'_>]) -> Self {
+        let mut held: Vec<Result<HeldParent, (io::ErrorKind, String)>> = Vec::new();
+        let mut keys: Vec<&[String]> = Vec::new();
+        let mut of_probe = Vec::with_capacity(probes.len());
+        for probe in probes {
+            let key = &probe.components[..probe.components.len() - 1];
+            // Links come in the order of the tree: the parent is almost
+            // always the one before, and a batch has few of them.
+            let found = keys.iter().rposition(|known| *known == key);
+            let index = found.unwrap_or_else(|| {
+                keys.push(key);
+                held.push(
+                    open_readonly(root, key)
+                        .and_then(|file| {
+                            let examined = crate::windows_alias_native::examine_parent(&file)?;
+                            Ok(HeldParent { file, examined })
+                        })
+                        .map_err(|error| (error.kind(), error.to_string())),
+                );
+                held.len() - 1
+            });
+            of_probe.push(index);
+        }
+        Self { held, of_probe }
+    }
+    fn of(&self, probe: usize) -> io::Result<&HeldParent> {
+        match &self.held[self.of_probe[probe]] {
+            Ok(parent) => Ok(parent),
+            Err((kind, reason)) => Err(io::Error::new(*kind, reason.clone())),
+        }
+    }
+}
+/// Opens the link and its target (read-only, never following the link),
+/// checks them and the held parent against one another and the link against
+/// `probe`.
 fn probe_alias(
     root: &str,
     probe: &AliasProbe<'_>,
+    parent: io::Result<&HeldParent>,
     maximum_row_bytes: u64,
     differs: &'static str,
 ) -> io::Result<AliasNative> {
-    probe_alias_unnamed(root, probe, maximum_row_bytes, differs)
+    parent
+        .and_then(|parent| probe_alias_unnamed(root, probe, parent, maximum_row_bytes, differs))
         .map_err(|error| alias_error(probe.components, error))
 }
 fn probe_alias_unnamed(
     root: &str,
     probe: &AliasProbe<'_>,
+    parent: &HeldParent,
     maximum_row_bytes: u64,
     differs: &'static str,
 ) -> io::Result<AliasNative> {
-    let open_readonly = |components: &[String]| {
-        File::options()
-            .access_mode(super::PROTECTED_READ_ACCESS)
-            .share_mode(3)
-            .custom_flags(0x02200000)
-            .open(format!("{root}{}", components.join("\\")))
-    };
-    let parent = open_readonly(&probe.components[..probe.components.len() - 1])?;
-    let target = open_readonly(probe.canonical_components)?;
+    let target = open_readonly(root, probe.canonical_components)?;
     super::validate_bound_type(&target, probe.canonical)?;
-    let alias = open_readonly(probe.components)?;
-    let observed = crate::windows_alias_native::verify_owned(
-        &parent,
+    let alias = open_readonly(root, probe.components)?;
+    let observed = crate::windows_alias_native::verify_owned_in(
+        &parent.file,
+        &parent.examined,
         &target,
         &alias,
         probe.directory,
@@ -158,18 +210,19 @@ fn probe_aliases(
     let prepaid = report_memory::alias_peak(maximum_row_bytes)?
         .checked_mul(probes.len() as u64)
         .and_then(|bytes| payer.reserve(bytes).ok());
+    // Held for this batch and closed with it, whichever way it is probed.
+    let parents = HeldParents::open(root, probes);
+    let numbered: Vec<(usize, &AliasProbe<'_>)> = probes.iter().enumerate().collect();
+    let probe_one = |(index, probe): &(usize, &AliasProbe<'_>)| {
+        probe_alias(root, probe, parents.of(*index), maximum_row_bytes, differs)
+    };
     match prepaid {
         Some(workspace) => {
-            let natives = super::observe_in_parallel(probes, |probe| {
-                probe_alias(root, probe, maximum_row_bytes, differs)
-            });
+            let natives = super::observe_in_parallel(&numbered, probe_one);
             drop(workspace);
             natives
         }
-        None => probes
-            .iter()
-            .map(|probe| probe_alias(root, probe, maximum_row_bytes, differs))
-            .collect(),
+        None => numbered.iter().map(probe_one).collect(),
     }
 }
 

@@ -1134,7 +1134,9 @@ fn separate_process_recovery_uses_persistent_journal_and_ticket() {
             .args([
                 "--ignored",
                 "--exact",
-                "child_recovery_process",
+                // The child test's name in the one executable that all the
+                // integration tests share: this file is a module of it.
+                "lab_reconstruct::child_recovery_process",
                 "--nocapture",
             ])
             .env("N2R_TEST_JOURNAL_CHILD", fixture.target.parent().unwrap())

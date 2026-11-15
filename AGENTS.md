@@ -135,8 +135,9 @@ it lies on target-cluster boundaries; the rest goes through the working storage.
   2 the journal disk (`journal.vhdx` chain); 3 the DVD, Windows 11 26300.9457
   install media; 4 the oracle disk under `.lab/hyperv/trust-security-raw-…/`.
 - Keep the VM's disk chains, the credential and the install media. Other
-  directories under `.lab/hyperv` are closed run records. `lab/RETIRED.md`
-  lists the scripts written for VMs that are gone; do not start from one.
+  directories under `.lab/hyperv` are closed run records. The scripts and
+  executables of earlier stages are in the tag `archive/retired-lab`, not in
+  the tree (`lab/RETIRED.md`); do not bring one back.
 
 ## Current work
 

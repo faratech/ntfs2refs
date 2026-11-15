@@ -348,13 +348,20 @@ The lab runs a frozen copy of a build, made before the commit exists.
 byte for byte apart from the stamps the linker puts into every link (its
 time, the checksum, the PDB's signature), and the notes then say so.
 
-## Older scripts
+## The reference VM and the fixtures
 
-Most of the other scripts here were written for one VM or checkpoint of an
-earlier stage, and that VM or checkpoint is gone. [RETIRED.md](RETIRED.md) lists
-the 161 that cannot run; do not start from one. They are kept unchanged as the
-record of those stages, and a test fails if a script names a retired VM without
-being listed.
+`Provision-IsolatedReference.ps1` built the reference VM, and
+`Test-IsolatedReferenceReadiness.ps1` checks it (both with `Lab.psm1`,
+`IsolatedBaselineGuards.psm1` and `lab.config.json`).
+`New-ThinnedWindowsFixture.ps1` makes the thinned fixture checkpoints the
+harness restores, with `guest\Thin-WindowsSource.ps1`.
+
+## Earlier stages
+
+The scripts of the earlier stages were written for one VM or checkpoint each,
+and those are gone. They are no longer in the tree: [RETIRED.md](RETIRED.md)
+names the tag that has them and the VMs they were for, and a test fails if a
+script here names one of those VMs.
 
 The earlier lab procedures and budgets are preserved in
 [the historical guide](../docs/history/lab-README-before-boot-alpha-closeout-20261111.md).

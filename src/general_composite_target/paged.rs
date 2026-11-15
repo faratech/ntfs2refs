@@ -581,10 +581,9 @@ fn result_budget(
 // Fixed application headroom for native hash handles/context, not a measured
 // total OS allocation or a hard cap on the provider's private allocations.
 const HASH_CONTEXT_RESERVE: u64 = 2 * 1024;
-// The closing reader's read buffer, the one buffer its digest thread holds
-// (a read and its sixteen-byte frame), and the hash context.
+// The closing reader's read buffer and the hash context.
 const CLOSING_READ_WORKSPACE: u64 =
-    2 * crate::ntfs_inspect::SESSION_READ_BYTES as u64 + 16 + HASH_CONTEXT_RESERVE;
+    crate::ntfs_inspect::SESSION_READ_BYTES as u64 + HASH_CONTEXT_RESERVE;
 
 struct PagedShadowClosing<'a> {
     target_owner: usize,
@@ -595,35 +594,30 @@ struct PagedShadowClosing<'a> {
     loaded_offset: u64,
     loaded_bytes: usize,
     buffer: Vec<u8>,
-    // SHA-256 of every byte read, in order. It runs on a thread of its own:
-    // the worker compares one read with the source while the read before it
-    // is still being hashed, which took a quarter of the comparison's time.
-    hash: n2r_win32::sha256_native::Overlapped,
+    // What tells one pass over these bytes from another in the same run: a
+    // SHA-256 over the intervals and, for every read in order, its place,
+    // its length and the XXH3-128 of its bytes. The reads are cut by the
+    // intervals and the buffer alone, so every pass makes the same ones.
+    // It is change detection between passes over bytes the run holds
+    // frozen, as `parallel_digest` is, not a content hash: nothing outside
+    // the run is compared with it. Every byte through SHA-256 was the
+    // whole of this step on a volume with little on it: 12.6 of 12.8 s for
+    // the 11 GB that a freshly formatted 50 GiB shadow has to account for.
+    hash: Sha256,
     read: u64,
     reused: u64,
 }
 impl<'a> PagedShadowClosing<'a> {
     fn new(target: &n2r_win32::GeneralFrozenPartition, intervals: &'a Intervals) -> Result<Self> {
-        let mut hash = n2r_win32::sha256_native::Overlapped::new(
-            crate::ntfs_inspect::SESSION_READ_BYTES + 16,
-        )?;
-        // The same bytes in the same order as when each field was hashed as
-        // it was produced; they go to the digest thread a block at a time.
-        const HEAD_BLOCK: usize = 64 * 1024;
-        let mut head = Vec::with_capacity(HEAD_BLOCK + 64);
-        head.extend_from_slice(b"n2r-paged-target-consumed-bytes-v1\0");
-        head.extend_from_slice(&intervals.image.to_le_bytes());
-        head.extend_from_slice(&intervals.store.len().to_le_bytes());
+        let mut hash = Sha256::new();
+        hash.update(b"n2r-paged-target-consumed-bytes-v2\0");
+        hash.update(intervals.image.to_le_bytes());
+        hash.update(intervals.store.len().to_le_bytes());
         for ordinal in 0..intervals.store.len() {
             let row = intervals.row(ordinal)?;
-            head.extend_from_slice(&row.offset.to_le_bytes());
-            head.extend_from_slice(&row.length.to_le_bytes());
-            if head.len() >= HEAD_BLOCK {
-                hash.update(&head)?;
-                head.clear();
-            }
+            hash.update(row.offset.to_le_bytes());
+            hash.update(row.length.to_le_bytes());
         }
-        hash.update(&head)?;
         Ok(Self {
             target_owner: std::ptr::from_ref(target) as usize,
             binding: target.binding().clone(),
@@ -658,11 +652,10 @@ impl<'a> PagedShadowClosing<'a> {
         let n = (row.length - self.done).min(self.buffer.len() as u64) as usize;
         target.seek(SeekFrom::Start(at))?;
         target.read_exact(&mut self.buffer[..n])?;
-        self.hash.update_parts(&[
-            &at.to_le_bytes(),
-            &(n as u64).to_le_bytes(),
-            &self.buffer[..n],
-        ])?;
+        self.hash.update(at.to_le_bytes());
+        self.hash.update((n as u64).to_le_bytes());
+        self.hash
+            .update(crate::parallel_digest::xxh3_128(&self.buffer[..n]));
         self.loaded_offset = at;
         self.loaded_bytes = n;
         self.read = self
@@ -685,7 +678,7 @@ impl<'a> PagedShadowClosing<'a> {
             self.read == self.intervals.bytes,
             "closing raw coverage differs"
         );
-        Ok((hex::encode(self.hash.finish()?), self.read, self.reused))
+        Ok((hex::encode(self.hash.finalize()), self.read, self.reused))
     }
 }
 impl crate::general_shadow::source_backed::ClosingShadowBytes for PagedShadowClosing<'_> {

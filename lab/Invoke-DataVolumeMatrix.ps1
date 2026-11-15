@@ -82,6 +82,9 @@ foreach ($case in $Cases) {
     if ($ManifestBinary) { $arguments.ManifestBinary = $ManifestBinary }
     if ($CredentialPath -and -not $arguments.ContainsKey('CredentialPath')) { $arguments.CredentialPath = $CredentialPath }
     if ($names.Contains($arguments.Name)) { throw "Two cases are named '$name'" }
+    # An attempt keeps its records under its name; an earlier one of the same
+    # name would be taken for this one's.
+    if (Test-Path -LiteralPath (Join-Path $attempts $arguments.Name)) { throw "An attempt named '$($arguments.Name)' exists already: choose another prefix" }
     $names.Add($arguments.Name)
     $queue.Enqueue($arguments)
 }
@@ -98,9 +101,10 @@ $worker = {
     $clock = [Diagnostics.Stopwatch]::StartNew()
     $threw = $null
     try { & $attempt @arguments *> (Join-Path $logs "$name.log") } catch { $threw = "$($_.Exception.Message)" }
-    $outcome = 'no verdict'; $detail = $threw
+    $outcome = if ($threw) { 'harness-threw' } else { 'no verdict' }
+    $detail = $threw
     $file = Join-Path $attempts "$name\verdict.json"
-    if (Test-Path -LiteralPath $file) {
+    if (-not $threw -and (Test-Path -LiteralPath $file)) {
         $verdict = Get-Content -LiteralPath $file -Raw | ConvertFrom-Json
         $has = { param($property) [bool]$verdict.PSObject.Properties[$property] }
         $outcome = "$($verdict.outcome)"

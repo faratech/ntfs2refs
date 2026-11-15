@@ -36,5 +36,20 @@ debug = "line-tables-only"
 debug = 1
 incremental = false
 
+# The tests hash megabytes with these crates, and unoptimised they are tens of
+# times slower than they need be: one test took 28 of the 29 seconds the
+# library's tests ran. They are small, build once, and are not what a test
+# is stepping through. The release profile is not affected.
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.xxhash-rust]
+opt-level = 3
+[profile.dev.package.digest]
+opt-level = 3
+[profile.dev.package.block-buffer]
+opt-level = 3
+[profile.dev.package.hex]
+opt-level = 3
+
 [lints.rust]
 unsafe_code = "forbid"

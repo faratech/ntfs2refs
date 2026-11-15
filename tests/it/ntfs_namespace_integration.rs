@@ -2,7 +2,7 @@
     dead_code,
     reason = "Shared synthetic fixture also serves other suites."
 )]
-mod support;
+use crate::support;
 use ntfs2refs::{
     ntfs_inspect::{self, AllocationReconciliationStatus},
     ntfs_namespace::Status,

@@ -101,7 +101,7 @@ it lies on target-cluster boundaries; the rest goes through the working storage.
 - A release is built by `lab\New-Release.ps1` from the commit tagged with the
   version in `Cargo.toml`, which is also what the executable and
   `capabilities` report. `README.md`, `docs/cli-workflow.md` and the two
-  matrices describe the tool as it is; `tests/current_documents.rs` holds
+  matrices describe the tool as it is; `tests/it/current_documents.rs` holds
   them to that. A document of an earlier design goes to `docs/history/`.
 - Records land in `.lab/hyperv/attempts/<n>/`; the scratch disk is deleted
   when the attempt ends. The host volume needs 40 GB free for a fixture

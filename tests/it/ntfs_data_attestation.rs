@@ -1,5 +1,5 @@
 #[allow(dead_code, reason = "Shared synthetic parser fixture")]
-mod support;
+use crate::support;
 use n2r_win32::{
     attestation::{FileIdentity, LogicalFile, Query, StreamHash},
     logical_hash::{Outcome, Status},

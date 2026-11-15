@@ -1,5 +1,5 @@
 #[allow(dead_code, reason = "shared synthetic parser fixtures")]
-mod support;
+use crate::support;
 use n2r_win32::volume_label::VolumeLabel;
 use ntfs2refs::{ntfs_inspect, source_volume_label};
 use std::io::Cursor;

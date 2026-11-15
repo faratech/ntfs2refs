@@ -1,5 +1,5 @@
 #[allow(dead_code, reason = "Shared synthetic parser fixture")]
-mod support;
+use crate::support;
 use ntfs2refs::{
     ntfs_inspect::{self, LogicalHashStatus},
     ntfs_stream_plan::{self, Disposition},

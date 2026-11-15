@@ -19,7 +19,7 @@ digest (`lab/Complete-NativeShadowAlphaRollback.ps1`,
 The current route is `Invoke-BootConversionAttempt.ps1`; see [README.md](README.md).
 To repeat an old stage, carry its steps over to the current harness.
 
-`tests/lab_retired_scripts.rs` holds the scripts in this directory to the
+`tests/it/lab_retired_scripts.rs` holds the scripts in this directory to the
 tables below: a script that names a retired VM must be one of the exceptions
 at the end, and every exception must exist.
 

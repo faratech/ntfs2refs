@@ -3,7 +3,7 @@
     reason = "These vectors enumerate forbidden I/O ranges, not the values inside a range."
 )]
 
-mod support;
+use crate::support;
 
 use ntfs2refs::ntfs_inspect::{
     InspectionLimits, LogicalHashStatus, NtfsInspection, inspect, inspect_boot_sector,

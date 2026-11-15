@@ -1,5 +1,5 @@
 #[allow(dead_code, reason = "shared synthetic NTFS fixtures")]
-mod support;
+use crate::support;
 use ntfs2refs::{ntfs_inspect, ntfs_internal};
 use std::io::Cursor;
 const MFT: usize = 4 * 4096;

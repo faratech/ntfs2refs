@@ -1,5 +1,5 @@
 #[allow(dead_code, reason = "Shared synthetic parser fixture")]
-mod support;
+use crate::support;
 use n2r_win32::content_digest::HEX_LEN;
 use ntfs2refs::{ntfs_inspect as n, ntfs_security as s, shadow_tree};
 use std::io::Cursor;

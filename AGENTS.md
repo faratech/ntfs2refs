@@ -165,6 +165,11 @@ Keep it that way. Before a change is committed:
 `lab\Invoke-GateRound.ps1 -Build <dir> -Prefix <p>` runs all of 2 and 3 for a
 copy of a build, on every lab VM, and ends with one table (`lab/README.md`).
 
+Before a pull request is merged, `lab\Invoke-Checks.ps1 -Commit <its head>`
+passes and its table is in the pull request: formatting, Clippy, the
+release-profile check, all tests and the release build, on that exact
+commit. GitHub Actions is not used (owner, 2026-11-15; `.github/CI.md`).
+
 Open, most useful first:
 
 1. Short names are visible: each 8.3 name is a link beside its long name, so

@@ -35,6 +35,12 @@ the first two sets, half an hour each for the other two.
 The sections below describe the attempts the round is made of; run one by
 itself to look into a failure.
 
+The gate round is about what the converter does to a volume. What a commit
+has to pass as source code (formatting, Clippy, the tests, the release build)
+is `lab\Invoke-Checks.ps1 -Commit <commit> -Report checks.md`: it checks the
+commit in a worktree of its own and writes the table that goes into the pull
+request. No hosted CI runs.
+
 ## Existing checks
 
 Build the converter and independent listing tool using one shared build directory:

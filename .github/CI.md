@@ -1,7 +1,21 @@
-# Windows CI
+# Checks
 
-`workflows/windows.yml` runs on pushes to `main`, pull requests and manual
-dispatch. The hosted `windows-2022` runner installs Rust 1.98.1 with rustfmt
+**The checks run locally.** `lab\Invoke-Checks.ps1 -Commit <commit>` checks
+one exact commit in a worktree of its own with the pinned toolchain: the
+formatting, Clippy, every executable under the release profile, all tests,
+and the two executables a release ships built and started once. It prints a
+table, writes it as Markdown with `-Report`, and exits 1 if a check failed.
+A change is integrated only when that table, for the commit being merged, is
+in its pull request with every check passed. GitHub Actions is not used for
+this (the owner's decision of 15 November 2026, when the account's Actions
+jobs stopped starting): nothing runs on a push or a pull request.
+
+The workflow below is the same checks on a hosted runner. It is kept for
+whoever wants them there and starts only by manual dispatch.
+
+## The workflow
+
+`workflows/windows.yml` runs on manual dispatch only. The hosted `windows-2022` runner installs Rust 1.98.1 with rustfmt
 and Clippy, verifies the x86-64 MSVC host and targets
 `x86_64-pc-windows-msvc`. This compiles the `cfg(windows)` modules and uses the
 repository's static CRT configuration.
@@ -21,8 +35,7 @@ As one job in sequence the lane took 42 minutes, 29 of them building 113
 executables in release mode, nearly all of them for lab stages that were
 retired. Those executables have left the tree (`lab/RETIRED.md` names the tag
 that has them); the workspace now builds the converter, the listing tool and
-the executable of the restart route. A change is integrated only when all
-three jobs have passed for its revision. Cargo dependency-consuming commands
+the executable of the restart route. Cargo dependency-consuming commands
 use `--locked`; the toolchain check refuses silent drift from
 `rust-toolchain.toml`.
 
@@ -54,7 +67,7 @@ and the official
 The CI host is a build/test environment, not the native conversion qualification
 target. The frozen Windows 11 release and its native evidence remain unchanged.
 
-A passing result must be observed for the revision being integrated; the
-workflow file or a green run for an earlier revision is not sufficient.
+A passing result must be observed for the revision being integrated; a
+table for an earlier revision is not sufficient.
 Formatting and documentation closeout does not replace the independently
 qualified release executable or transfer its native evidence to another binary.

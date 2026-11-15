@@ -319,12 +319,23 @@ fn encode(range: CaptureIndexRange, ordinal: u64, image: u64) -> [u8; ROW as usi
     out[48..].copy_from_slice(&digest);
     out
 }
+/// A row as it was read from the file: its hash, ordinal and flags are checked.
 fn decode(bytes: &[u8; ROW as usize], ordinal: u64, image: u64) -> Result<CaptureIndexRange> {
+    ensure!(
+        bytes[48..] == row_digest(image, &bytes[..48]),
+        "capture index row hash/ordinal/flags differ"
+    );
+    decode_held(bytes, ordinal, image)
+}
+/// A row this object encoded and still holds in memory. The row's hash
+/// guards it in the file: it is checked when a row is read from there, and
+/// the file as a whole when it is closed. Hashing a held row again on every
+/// step of every binary search over the rows was 22 s of a full Windows
+/// conversion. The ordinal and the flags are checked here as there.
+fn decode_held(bytes: &[u8; ROW as usize], ordinal: u64, image: u64) -> Result<CaptureIndexRange> {
     let flags = u64_at(bytes, 24);
     ensure!(
-        flags & !15 == 0
-            && u64_at(bytes, 40) == ordinal
-            && bytes[48..] == row_digest(image, &bytes[..48]),
+        flags & !15 == 0 && u64_at(bytes, 40) == ordinal,
         "capture index row hash/ordinal/flags differ"
     );
     ensure!(
@@ -376,7 +387,7 @@ impl ResidentRows {
             .get(start..start.checked_add(ROW as usize)?)?
             .try_into()
             .ok()?;
-        Some(decode(row, ordinal, image))
+        Some(decode_held(row, ordinal, image))
     }
 }
 

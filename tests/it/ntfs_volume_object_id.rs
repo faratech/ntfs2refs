@@ -1,4 +1,4 @@
-#[path = "support/volume_object_id.rs"]
+#[path = "../support/volume_object_id.rs"]
 mod volume_identity_fixture;
 use ntfs2refs::{ntfs_inspect, ntfs_internal};
 use std::io::Cursor;

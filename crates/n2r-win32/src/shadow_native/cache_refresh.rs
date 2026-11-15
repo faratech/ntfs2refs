@@ -1038,53 +1038,17 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
     crate::perf::flush(crate::perf::Point::VolumeFlush, &volume)?;
     namespace(true, aliases.as_deref())?;
     crate::perf::step("metadata: read restored metadata back");
-    for index in 0..input.len() {
-        metadata_progress(8, index as u64);
-        (|| -> io::Result<()> {
-        let owned = input.object(index)?;
-        let original_view = owned.input();
-        let temporary = if security_placeholders {
-            crate::refs_security_descriptor::ConstructorSecurityViews::prepare(
-                original_view.security, original_view.expected_api_security,
-                resource_admission.ok_or_else(|| invalid("constructor security row admission absent"))?.budget.max_row_bytes,
-            )?
-        } else { None };
-        let mut view = original_view;
-        if let Some(temporary) = temporary.as_ref() {
-            view.security = &temporary.stored;
-            view.expected_api_security = temporary.api.as_deref();
-        }
-        let item = &view;
+    // Every object's metadata is read back through its held handle and
+    // compared with what was restored, and a file's streams, names and
+    // mapping are looked at once more: queries only, which one thread made
+    // for one object after another (27 s on the full Windows volume). The
+    // objects of a batch are read on the available cores when the batch's
+    // query workspace can be paid for; decoding an object, comparing what
+    // was read and reporting a difference stay on this thread, in order.
+    let read_back_limit = resource_admission.map(|a| a.budget.max_row_bytes);
+    // What is read of a file beside its metadata snapshot.
+    let rest_of = |item: &Input<'_>, index: usize, actual: &Snapshot| -> io::Result<()> {
         let handle = held(handles, index)?;
-        let actual = metadata_snapshot_with_limit(
-            handle,
-            item,
-            resource_admission.map(|a| a.budget.max_row_bytes),
-        );
-        // Report which facet differs; one combined refusal cannot be acted on.
-        let identity_same = query_bytes(&actual, 18, 24)? == identity_of(&identities, index)?.as_slice();
-        let basic_same = basic_matches(item, query_bytes(&actual, 0, 40)?);
-        let security_same = security_matches(item, &actual, &same_security)?;
-        let ea_same = extended_attributes_match(item, &actual)?;
-        let reparse_same = reparse_matches(item, &actual)?;
-        if !(identity_same && basic_same && security_same && ea_same && reparse_same) {
-            let basic_detail = if basic_same { String::new() } else {
-                format!(" expected_basic={} actual_basic={}", hex::encode(basic_bytes(item)), hex::encode(query_bytes(&actual, 0, 40)?))
-            };
-            let detail = if security_same {
-                String::new()
-            } else {
-                format!(" {}", security_difference(item, &actual))
-            };
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "final owned source metadata readback differs: identity_same={identity_same} \
-                     basic_same={basic_same} security_same={security_same} ea_same={ea_same} \
-                     reparse_same={reparse_same}{basic_detail}{detail}"
-                ),
-            ));
-        }
         if let Some(mapping) = mappings.get(&index) {
             let canonical = crate::stream_native::retrieval_capture(handle)?.canonical;
             if canonical.len() != mapping.0 || Sha256::digest(&canonical) != mapping.1 {
@@ -1107,13 +1071,13 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             super::hard_links::observe(
                 &format!("{}\\", pair.shadow.volume_path()?),
                 item,
-                &actual,
+                actual,
                 false,
             )?;
             super::streams::observe(
                 &format!("{}\\", pair.shadow.volume_path()?),
                 item,
-                &actual,
+                actual,
                 false,
                 false,
                 pair.shadow.identity.partition_bytes / crate::target_cluster::bytes(),
@@ -1126,8 +1090,129 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             }
         }
         Ok(())
-        })()
-        .or_else(|error| input.defer_failure(at_object(input, "final metadata readback", index, error)))?;
+    };
+    let read_one = |(index, item): &(usize, Input<'_>)| -> io::Result<(Snapshot, io::Result<()>)> {
+        let handle = held(handles, *index)?;
+        let actual = metadata_snapshot_with_limit(handle, item, read_back_limit);
+        let rest = rest_of(item, *index, &actual);
+        Ok((actual, rest))
+    };
+    // Report which facet differs; one combined refusal cannot be acted on.
+    let compare = |item: &Input<'_>, index: usize, actual: &Snapshot| -> io::Result<()> {
+        let identity_same =
+            query_bytes(actual, 18, 24)? == identity_of(&identities, index)?.as_slice();
+        let basic_same = basic_matches(item, query_bytes(actual, 0, 40)?);
+        let security_same = security_matches(item, actual, &same_security)?;
+        let ea_same = extended_attributes_match(item, actual)?;
+        let reparse_same = reparse_matches(item, actual)?;
+        if !(identity_same && basic_same && security_same && ea_same && reparse_same) {
+            let basic_detail = if basic_same {
+                String::new()
+            } else {
+                format!(
+                    " expected_basic={} actual_basic={}",
+                    hex::encode(basic_bytes(item)),
+                    hex::encode(query_bytes(actual, 0, 40)?)
+                )
+            };
+            let detail = if security_same {
+                String::new()
+            } else {
+                format!(" {}", security_difference(item, actual))
+            };
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "final owned source metadata readback differs: identity_same={identity_same} \
+                     basic_same={basic_same} security_same={security_same} ea_same={ea_same} \
+                     reparse_same={reparse_same}{basic_detail}{detail}"
+                ),
+            ));
+        }
+        Ok(())
+    };
+    const READ_BACK_BATCH: usize = 64;
+    let mut next = 0usize;
+    while next < input.len() {
+        metadata_progress(8, next as u64);
+        let end = (next + READ_BACK_BATCH).min(input.len());
+        let mut decoded = Vec::with_capacity(end - next);
+        for index in next..end {
+            let ready = (|| -> io::Result<_> {
+                let owned = input.object(index)?;
+                let temporary = if security_placeholders {
+                    let view = owned.input();
+                    crate::refs_security_descriptor::ConstructorSecurityViews::prepare(
+                        view.security,
+                        view.expected_api_security,
+                        resource_admission
+                            .ok_or_else(|| invalid("constructor security row admission absent"))?
+                            .budget
+                            .max_row_bytes,
+                    )?
+                } else {
+                    None
+                };
+                Ok((owned, temporary))
+            })();
+            match ready {
+                Ok(ready) => decoded.push(Some(ready)),
+                Err(error) => {
+                    input.defer_failure(at_object(
+                        input,
+                        "final metadata readback",
+                        index,
+                        error,
+                    ))?;
+                    decoded.push(None);
+                }
+            }
+        }
+        let items: Vec<(usize, Input<'_>)> = decoded
+            .iter()
+            .enumerate()
+            .filter_map(|(offset, ready)| {
+                ready.as_ref().map(|(owned, temporary)| {
+                    let mut view = owned.input();
+                    if let Some(temporary) = temporary.as_ref() {
+                        view.security = &temporary.stored;
+                        view.expected_api_security = temporary.api.as_deref();
+                    }
+                    (next + offset, view)
+                })
+            })
+            .collect();
+        // Each object's query workspace is paid for before it is read
+        // beside others. As many of the batch as can be paid for are read
+        // at once; the rest, and all of them where no payer is held, are
+        // read one after another as before.
+        let mut workspaces = Vec::new();
+        if let Some((payer, limit)) = enumeration_payer.zip(read_back_limit) {
+            for (_, item) in &items {
+                let paid = report_memory::row_peak(item, limit)
+                    .ok()
+                    .and_then(|peak| payer.reserve(peak).ok());
+                match paid {
+                    Some(workspace) => workspaces.push(workspace),
+                    None => break,
+                }
+            }
+        }
+        let (at_once, in_turn) = items.split_at(workspaces.len());
+        let mut read: Vec<io::Result<(Snapshot, io::Result<()>)>> =
+            super::observe_in_parallel(at_once, |item| Ok(read_one(item)))?;
+        drop(workspaces);
+        read.extend(in_turn.iter().map(&read_one));
+        for ((index, item), read) in items.iter().zip(read) {
+            read.and_then(|(actual, rest)| {
+                compare(item, *index, &actual)?;
+                rest
+            })
+            .or_else(|error| {
+                input.defer_failure(at_object(input, "final metadata readback", *index, error))
+            })?;
+        }
+        next = end;
     }
     metadata_progress(8, input.len() as u64);
     target.revalidate_route(&mut events)?;

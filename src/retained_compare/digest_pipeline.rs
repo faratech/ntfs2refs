@@ -20,8 +20,9 @@ pub(crate) struct Pipeline {
     recycled: Option<Receiver<Vec<u8>>>,
     // Bytes accepted and not yet handed to the worker.
     filling: Option<Vec<u8>>,
-    // Whether the second of the two buffers exists yet.
-    second: bool,
+    // How many more buffers may be made: all but the first exist only once
+    // the worker has fallen that far behind.
+    spare: usize,
     worker: Option<JoinHandle<Result<[u8; 32]>>>,
     chunk_bytes: usize,
 }
@@ -41,14 +42,35 @@ impl Pipeline {
         native: bool,
         prefix: Option<[u8; 16]>,
     ) -> Result<Self> {
-        // Two recycled buffers bound the worker's memory; 4 MiB matches the
+        Self::with_buffers(chunk_bytes, native, prefix, 2)
+    }
+
+    /// A pipeline that lets its caller get `buffers` chunks ahead of the
+    /// worker before it has to wait. Two is enough where the caller's reads
+    /// and the worker's hashing take turns; a caller that hands over a burst
+    /// and then turns to something else gives the burst's size, and pays for
+    /// that many chunks.
+    pub(crate) fn with_buffers(
+        chunk_bytes: usize,
+        native: bool,
+        prefix: Option<[u8; 16]>,
+        buffers: usize,
+    ) -> Result<Self> {
+        // The recycled buffers bound the worker's memory; 4 MiB matches the
         // largest native device request.
         anyhow::ensure!(
             (1..=4 * 1024 * 1024).contains(&chunk_bytes),
             "digest buffer must be between one byte and 4MiB"
         );
-        let (input, chunks) = sync_channel::<Vec<u8>>(1);
-        let (buffers, recycled) = sync_channel(1);
+        anyhow::ensure!(
+            (2..=64).contains(&buffers),
+            "a digest pipeline has between two and sixty-four buffers"
+        );
+        let spare = buffers - 1;
+        // One chunk is with the worker and the others can queue behind it;
+        // every chunk can be on its way back at once.
+        let (input, chunks) = sync_channel::<Vec<u8>>(buffers - 1);
+        let (buffers, recycled) = sync_channel(buffers);
         let worker = thread::Builder::new()
             .name("n2r-shadow-digest".into())
             .spawn(move || {
@@ -59,8 +81,8 @@ impl Pipeline {
                     hash.update(&prefix)?;
                 }
                 // Every chunk handed over is hashed, also after the caller
-                // has stopped taking buffers back: with two buffers, one can
-                // still be queued here when the caller finishes.
+                // has stopped taking buffers back: chunks can still be queued
+                // here when the caller finishes.
                 while let Ok(buffer) = chunks.recv() {
                     hash.update(&buffer)?;
                     let _ = buffers.send(buffer);
@@ -72,7 +94,7 @@ impl Pipeline {
             input: Some(input),
             recycled: Some(recycled),
             filling: Some(Vec::with_capacity(chunk_bytes)),
-            second: false,
+            spare,
             worker: Some(worker),
             chunk_bytes,
         })
@@ -103,8 +125,8 @@ impl Pipeline {
         Ok(())
     }
 
-    /// A buffer to fill: one the worker has returned, else the second buffer
-    /// the first time none has come back, else the next the worker returns.
+    /// A buffer to fill: one the worker has returned, else a new one while
+    /// there are buffers still to be made, else the next the worker returns.
     fn empty_buffer(&mut self) -> Result<Vec<u8>> {
         use std::sync::mpsc::TryRecvError;
         let recycled = self
@@ -113,8 +135,8 @@ impl Pipeline {
             .context("closed digest buffer channel")?;
         let mut buffer = match recycled.try_recv() {
             Ok(buffer) => buffer,
-            Err(TryRecvError::Empty) if !self.second => {
-                self.second = true;
+            Err(TryRecvError::Empty) if self.spare > 0 => {
+                self.spare -= 1;
                 Vec::with_capacity(self.chunk_bytes)
             }
             Err(TryRecvError::Empty) => match recycled.recv() {
@@ -538,6 +560,42 @@ mod tests {
             let expected: [u8; 32] = serial.finalize().into();
             assert_eq!(pipeline.finish().unwrap(), expected, "native {native}");
         }
+    }
+
+    #[test]
+    fn a_pipeline_with_many_buffers_hashes_the_same_bytes_in_order() {
+        for native in [false, cfg!(windows)] {
+            for buffers in [2usize, 3, 16, 64] {
+                let chunk = 64 * 1024;
+                let mut pipeline = Pipeline::with_buffers(chunk, native, None, buffers).unwrap();
+                let mut serial = Sha256::new();
+                // A burst several times the buffers, then small updates,
+                // then another burst, finished while chunks are queued.
+                for round in 0..3 * buffers {
+                    let part = bytes(chunk, round as u8);
+                    pipeline.update(&part).unwrap();
+                    serial.update(&part);
+                }
+                for round in 0..200usize {
+                    let part = bytes(1 + round % 300, round as u8);
+                    pipeline.update(&part).unwrap();
+                    serial.update(&part);
+                }
+                for round in 0..buffers {
+                    let part = bytes(chunk - round, 7);
+                    pipeline.update(&part).unwrap();
+                    serial.update(&part);
+                }
+                let expected: [u8; 32] = serial.finalize().into();
+                assert_eq!(
+                    pipeline.finish().unwrap(),
+                    expected,
+                    "native {native}, {buffers} buffers"
+                );
+            }
+        }
+        assert!(Pipeline::with_buffers(4096, false, None, 1).is_err());
+        assert!(Pipeline::with_buffers(4096, false, None, 65).is_err());
     }
 
     #[test]

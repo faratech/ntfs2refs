@@ -198,6 +198,10 @@ fn pin_hash() -> Result<PinHash> {
 fn aggregate_pin_hash() -> Result<PinHash> {
     PinHash::alongside_record_hash(BUFFER, cfg!(windows))
 }
+/// A file-wide digest whose caller hands it `buffers` megabytes in a burst.
+fn burst_pin_hash(buffers: usize) -> Result<PinHash> {
+    PinHash::alongside_a_burst(BUFFER, cfg!(windows), buffers)
+}
 fn finish(hash: PinHash) -> Result<[u8; 32]> {
     hash.finish()
 }

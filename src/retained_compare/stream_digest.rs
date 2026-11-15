@@ -33,6 +33,22 @@ impl StreamDigest {
             Self::new(native)
         }
     }
+    /// [`Self::alongside_record_hash`] for a caller that hands over a burst
+    /// of `buffers` chunks and then turns to something else while the worker
+    /// hashes them: a journal's rows, read back a few megabytes at a time.
+    pub(crate) fn alongside_a_burst(
+        chunk_bytes: usize,
+        native: bool,
+        buffers: usize,
+    ) -> Result<Self> {
+        if std::thread::available_parallelism().is_ok_and(|cores| cores.get() >= 3) {
+            Ok(Self::Worker(
+                super::digest_pipeline::Pipeline::with_buffers(chunk_bytes, native, None, buffers)?,
+            ))
+        } else {
+            Self::new(native)
+        }
+    }
     pub(crate) fn update(&mut self, bytes: &[u8]) -> Result<()> {
         match self {
             Self::Rust(hash) => hash.update(bytes),

@@ -63,7 +63,8 @@ foreach ($id in $VmId) {
 }
 
 # '<name>|-Switch -Name value ...' as a table of arguments. A value is
-# whatever follows a parameter and does not start with a dash.
+# whatever follows a parameter and does not start with a dash, or starts with
+# two: '-ConverterArgs --recheck-everything' passes the converter an option.
 $queue = New-Object System.Collections.Generic.Queue[hashtable]
 $names = New-Object System.Collections.Generic.List[string]
 foreach ($case in $Cases) {
@@ -72,9 +73,9 @@ foreach ($case in $Cases) {
     $arguments = @{}
     $tokens = @("$rest".Trim() -split '\s+' | Where-Object { $_ })
     for ($i = 0; $i -lt $tokens.Count; $i++) {
-        if (-not $tokens[$i].StartsWith('-')) { throw "Case '$name': '$($tokens[$i])' follows no parameter" }
+        if (-not $tokens[$i].StartsWith('-') -or $tokens[$i].StartsWith('--')) { throw "Case '$name': '$($tokens[$i])' follows no parameter" }
         $key = $tokens[$i].TrimStart('-')
-        if ($i + 1 -lt $tokens.Count -and -not $tokens[$i + 1].StartsWith('-')) { $arguments[$key] = $tokens[$i + 1]; $i++ }
+        if ($i + 1 -lt $tokens.Count -and (-not $tokens[$i + 1].StartsWith('-') -or $tokens[$i + 1].StartsWith('--'))) { $arguments[$key] = $tokens[$i + 1]; $i++ }
         else { $arguments[$key] = $true }
     }
     $arguments.Name = "$Prefix-$name"

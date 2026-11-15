@@ -198,7 +198,7 @@ struct RecoveredRow {
 /// some twenty queries, and a Windows volume has one link for most of its
 /// names: one at a time on one thread, the 112,609 links of the full volume
 /// took a minute and a half each time they were checked.
-const ALIAS_BATCH: usize = 64;
+const ALIAS_BATCH: usize = super::PARALLEL_BATCH;
 /// [`probe_alias`] for every probe, in order. The probes run on the walk's
 /// threads when the batch's query workspace can be paid for, and one after
 /// another under the caller's own workspace when it cannot.
@@ -209,23 +209,30 @@ fn probe_aliases(
     payer: &dyn report_memory::ReportMemoryAccountant,
     differs: &'static str,
 ) -> io::Result<Vec<AliasNative>> {
-    let prepaid = report_memory::alias_peak(maximum_row_bytes)?
-        .checked_mul(probes.len() as u64)
-        .and_then(|bytes| payer.reserve(bytes).ok());
+    // As many of the batch's probes as their query workspace can be paid
+    // for run at once; the rest one after another. The workspaces are
+    // spare memory: a probe in turn needs none of the ledger.
+    let peak = report_memory::alias_peak(maximum_row_bytes)?;
+    let mut workspaces = Vec::new();
+    for _ in probes {
+        match payer.reserve_spare(peak) {
+            Ok(workspace) => workspaces.push(workspace),
+            Err(_) => break,
+        }
+    }
     // Held for this batch and closed with it, whichever way it is probed.
     let parents = HeldParents::open(root, probes);
     let numbered: Vec<(usize, &AliasProbe<'_>)> = probes.iter().enumerate().collect();
     let probe_one = |(index, probe): &(usize, &AliasProbe<'_>)| {
         probe_alias(root, probe, parents.of(*index), maximum_row_bytes, differs)
     };
-    match prepaid {
-        Some(workspace) => {
-            let natives = super::observe_in_parallel(&numbered, probe_one);
-            drop(workspace);
-            natives
-        }
-        None => numbered.iter().map(probe_one).collect(),
+    let (at_once, in_turn) = numbered.split_at(workspaces.len());
+    let mut natives = super::observe_in_parallel(at_once, &probe_one)?;
+    drop(workspaces);
+    for probe in in_turn {
+        natives.push(probe_one(probe)?);
     }
+    Ok(natives)
 }
 
 pub(super) struct NoWindowsAliases;
@@ -1367,7 +1374,7 @@ impl StagedWindowsAliases {
             canonical: Input<'a>,
             temporary: Option<&'a ConstructorSecurityViews>,
         }
-        const RESTORE_BATCH: usize = 64;
+        const RESTORE_BATCH: usize = super::PARALLEL_BATCH;
         let maximum_row_bytes = self.maximum_row_bytes;
         let total = self.rows.len() as u64;
         let restore_one = |link: &Link<'_>| -> io::Result<Snapshot> {
@@ -1501,10 +1508,11 @@ impl StagedWindowsAliases {
                 .collect();
             // As many of the batch's links as their workspace can be paid
             // for are restored on the available cores; the rest one after
-            // another, under this owner's own workspace.
+            // another, under this owner's own workspace. The workspaces
+            // are spare memory, which leaves the ledger room.
             let mut workspaces = Vec::new();
             for _ in &links {
-                match payer.reserve(workspace_of_one) {
+                match payer.reserve_spare(workspace_of_one) {
                     Ok(workspace) => workspaces.push(workspace),
                     Err(_) => break,
                 }

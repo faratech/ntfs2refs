@@ -1131,7 +1131,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         }
         Ok(())
     };
-    const READ_BACK_BATCH: usize = 64;
+    const READ_BACK_BATCH: usize = super::PARALLEL_BATCH;
     let mut next = 0usize;
     while next < input.len() {
         metadata_progress(8, next as u64);
@@ -1185,13 +1185,14 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         // Each object's query workspace is paid for before it is read
         // beside others. As many of the batch as can be paid for are read
         // at once; the rest, and all of them where no payer is held, are
-        // read one after another as before.
+        // read one after another as before. The workspaces are spare
+        // memory, which leaves the ledger room.
         let mut workspaces = Vec::new();
         if let Some((payer, limit)) = enumeration_payer.zip(read_back_limit) {
             for (_, item) in &items {
                 let paid = report_memory::row_peak(item, limit)
                     .ok()
-                    .and_then(|peak| payer.reserve(peak).ok());
+                    .and_then(|peak| payer.reserve_spare(peak).ok());
                 match paid {
                     Some(workspace) => workspaces.push(workspace),
                     None => break,

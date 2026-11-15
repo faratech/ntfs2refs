@@ -88,6 +88,8 @@ struct State {
     ram_by_site: BTreeMap<RamSite, u64>,
     // The part of `leased_ram_bytes` held by optional caches.
     optional_ram_bytes: u64,
+    // What spare reservations hold and what they have to leave room for.
+    spare: SpareMemory,
     ram_poisoned: bool,
     prepared_closed: bool,
 }
@@ -136,6 +138,9 @@ pub struct ArenaRamLease {
     bytes: u64,
     // Taken by `reserve_optional_ram`: counted in the optional total as well.
     optional: bool,
+    // Taken by `reserve_spare_ram` and not kept yet: counted in the spare
+    // total as well.
+    spare: bool,
     // Where in the code it was taken: what the ledger names when it runs out.
     site: RamSite,
 }
@@ -194,6 +199,12 @@ impl ArenaRamLease {
                 .optional_ram_bytes
                 .checked_sub(self.bytes - bytes)
                 .context("arena optional RAM lease shrink underflow")?;
+        }
+        if self.spare {
+            // What a pass keeps of a workspace, shrunk to what it retains,
+            // is no longer memory it can do without.
+            state.spare.returned(self.bytes);
+            self.spare = false;
         }
         release_site(&mut state.ram_by_site, self.site, self.bytes - bytes);
         self.bytes = bytes;
@@ -959,6 +970,7 @@ impl ArtifactArena {
                 leased_ram_bytes: 0,
                 ram_by_site: BTreeMap::new(),
                 optional_ram_bytes: 0,
+                spare: SpareMemory::default(),
                 ram_poisoned: false,
                 prepared_closed: false,
             }),
@@ -1378,6 +1390,7 @@ impl ArtifactArena {
             .lock()
             .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
         let leased = add(state.leased_ram_bytes, bytes)?;
+        state.spare.needed(bytes);
         ensure!(
             !state.ram_poisoned && add(leased, state.index_bytes)? <= self.0.budget.ram_bytes,
             "aggregate artifact arena RAM exhausted or poisoned: leased={} (of which optional caches {}), registry={}, requested={} at {}:{}, limit={}, poisoned={}; the largest reservations: {}",
@@ -1398,6 +1411,40 @@ impl ArtifactArena {
             arena: self.clone(),
             bytes,
             optional: false,
+            spare: false,
+            site,
+        })
+    }
+    /// Memory for doing more at once: the workspace of one more object of a
+    /// batch that helper threads work through. The pass can do without it
+    /// (the object then waits its turn), so it must never be what leaves a
+    /// reservation the conversion cannot do without short. See
+    /// [`spare_fits`] for when it is granted. A refusal is the ordinary end
+    /// of a batch, not a failure, and says no more than that.
+    ///
+    /// A pass may keep what it is granted for what it retains: shrunk to
+    /// that, it is ordinary leased memory.
+    #[track_caller]
+    pub fn reserve_spare_ram(&self, bytes: u64) -> Result<ArenaRamLease> {
+        let caller = std::panic::Location::caller();
+        let site = (caller.file(), caller.line());
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
+        let held = add(state.leased_ram_bytes, state.index_bytes)?;
+        let granted = state.spare.asked(self.0.budget.ram_bytes, held, bytes);
+        ensure!(!state.ram_poisoned && granted, "spare memory refused");
+        let leased = add(state.leased_ram_bytes, bytes)?;
+        state.leased_ram_bytes = leased;
+        *state.ram_by_site.entry(site).or_default() += bytes;
+        n2r_win32::perf::note_ledger(leased + state.index_bytes, self.0.budget.ram_bytes);
+        Ok(ArenaRamLease {
+            arena: self.clone(),
+            bytes,
+            optional: false,
+            spare: true,
             site,
         })
     }
@@ -1436,6 +1483,7 @@ impl ArtifactArena {
             arena: self.clone(),
             bytes,
             optional: true,
+            spare: false,
             site,
         })
     }
@@ -2019,6 +2067,9 @@ impl Drop for ArenaRamLease {
             if self.optional {
                 state.optional_ram_bytes = state.optional_ram_bytes.saturating_sub(self.bytes);
             }
+            if self.spare {
+                state.spare.returned(self.bytes);
+            }
             release_site(&mut state.ram_by_site, self.site, self.bytes);
         }
     }
@@ -2569,9 +2620,161 @@ impl ArtifactGroupSeal {
     }
 }
 
+/// What a ledger's spare reservations hold, and the largest single
+/// reservations the conversion could not do without that the ledger was
+/// asked for beside them, granted or not. See [`spare_fits`].
+#[derive(Default)]
+struct SpareMemory {
+    held: u64,
+    // The largest while spare memory was held, at any time.
+    largest_beside: u64,
+    // The largest since spare memory was last asked for.
+    largest_since: u64,
+}
+impl SpareMemory {
+    /// The ledger was asked for `bytes` the conversion cannot do without.
+    fn needed(&mut self, bytes: u64) {
+        self.largest_since = self.largest_since.max(bytes);
+        if self.held != 0 {
+            self.largest_beside = self.largest_beside.max(bytes);
+        }
+    }
+    /// The ledger, of `budget` bytes and holding `held`, was asked for
+    /// `bytes` of spare memory: whether it grants them, counted if it does.
+    fn asked(&mut self, budget: u64, held: u64, bytes: u64) -> bool {
+        let beside = self.largest_beside.max(self.largest_since);
+        self.largest_since = 0;
+        let granted = spare_fits(budget, held, bytes, beside);
+        if granted {
+            self.held = self.held.saturating_add(bytes);
+        }
+        granted
+    }
+    /// Spare memory was returned, or kept and is spare no longer.
+    fn returned(&mut self, bytes: u64) {
+        self.held = self.held.saturating_sub(bytes);
+    }
+}
+
+/// Whether a spare reservation of `bytes` may be granted by a ledger of
+/// `budget` bytes that holds `held`.
+///
+/// A pass that works through a batch on helper threads reserves a workspace
+/// for every object of the batch, and with batches of 256 those workspaces
+/// took all a small ledger had left. The next reservation the pass could not
+/// do without (566 MB to decode an object, on a machine with 9 GB) was then
+/// refused, and a volume that converts with one object at a time was refused
+/// for memory. A spare reservation therefore leaves free twice the largest
+/// single reservation that the conversion could not do without and that the
+/// ledger was asked for beside spare memory, whether it granted it or not,
+/// and never less than a sixteenth of the budget: room for what the pass
+/// itself reserves while the batch is held, and for one more beside it.
+///
+/// "Beside spare memory" is while some was held, at any time, or since
+/// spare memory was last asked for. Those are the reservations of the
+/// passes that work in batches, the ones a batch can starve; what a run
+/// asks for once, elsewhere, does not count against its batches. (Counting
+/// every reservation of the run left the batches of a machine with 24 GB
+/// nothing: a decoding there reserves 1.8 GB, an earlier step far more.)
+fn spare_fits(budget: u64, held: u64, bytes: u64, largest_beside: u64) -> bool {
+    let headroom = largest_beside.saturating_mul(2).max(budget / 16);
+    held.checked_add(bytes)
+        .and_then(|taken| taken.checked_add(headroom))
+        .is_some_and(|needed| needed <= budget)
+}
+
 #[cfg(test)]
 mod ram_site_tests {
     use super::*;
+
+    /// The figures of the run that was refused: a ledger of 4,430,898,032
+    /// bytes, object workspaces of 13.5 MB, and a decoding that reserves
+    /// 566,445,160.
+    #[test]
+    fn a_spare_reservation_leaves_room_for_the_largest_one_asked_for() {
+        const BUDGET: u64 = 4_430_898_032;
+        const DECODING: u64 = 566_445_160;
+        const WORKSPACE: u64 = 13_500_000;
+        // Workspaces are granted one after another until twice a decoding
+        // would no longer fit beside them.
+        let mut held = 500_000_000;
+        let mut granted = 0;
+        while spare_fits(BUDGET, held, WORKSPACE, DECODING) {
+            held += WORKSPACE;
+            granted += 1;
+        }
+        assert!(granted > 100, "a batch still runs at once: {granted}");
+        assert!(
+            held + 2 * DECODING <= BUDGET,
+            "two decodings fit beside the batch's workspaces"
+        );
+        assert!(
+            held + 2 * DECODING + WORKSPACE > BUDGET,
+            "and no more was kept free"
+        );
+        // Before anything large was asked for, a sixteenth of the budget
+        // stays free.
+        assert!(spare_fits(BUDGET, 0, BUDGET - BUDGET / 16, 0));
+        assert!(!spare_fits(BUDGET, 0, BUDGET - BUDGET / 16 + 1, 0));
+        // A ledger whose largest request is half of it grants nothing spare,
+        // and sums that overflow are a refusal.
+        assert!(!spare_fits(BUDGET, 0, 1, BUDGET / 2 + 1));
+        assert!(!spare_fits(u64::MAX, u64::MAX, 1, 0));
+    }
+
+    /// A walk on a machine with 24 GB: a decoding reserves an eighth of the
+    /// ledger, and an earlier step asked for far more, once.
+    #[test]
+    fn what_a_run_asked_for_once_does_not_count_against_its_batches() {
+        const BUDGET: u64 = 14_500_000_000;
+        const DECODING: u64 = BUDGET / 8;
+        const WORKSPACE: u64 = 40_000_000;
+        let mut spare = SpareMemory::default();
+        let base = 6_000_000_000;
+        // Long before the walk, a step reserved nine gigabytes at once.
+        spare.needed(9_000_000_000);
+        // The walk's first object is decoded and paid for as before; its
+        // second is decoded, and its workspace is the first spare request.
+        // That one still sees the nine gigabytes and is refused.
+        spare.needed(DECODING);
+        spare.needed(WORKSPACE);
+        spare.needed(DECODING);
+        assert!(!spare.asked(BUDGET, base, WORKSPACE));
+        // From the next object on, what counts is what the walk itself
+        // reserves between its spare requests: a decoding.
+        let mut held = base;
+        let mut at_once = 0;
+        for _ in 0..255 {
+            spare.needed(DECODING);
+            if !spare.asked(BUDGET, held, WORKSPACE) {
+                break;
+            }
+            held += WORKSPACE;
+            at_once += 1;
+        }
+        assert!(at_once > 100, "{at_once} objects of a batch run at once");
+        assert_eq!(spare.held, at_once * WORKSPACE);
+        assert_eq!(
+            spare.largest_beside, DECODING,
+            "the decodings beside the batch"
+        );
+        assert!(held + 2 * DECODING <= BUDGET);
+        // The walk keeps each workspace, shrunk, for its row: none of it is
+        // spare after that, and a large reservation made then, with no
+        // spare memory held, does not count.
+        spare.returned(at_once * WORKSPACE);
+        assert_eq!(spare.held, 0);
+        spare.needed(9_000_000_000);
+        assert_eq!(spare.largest_beside, DECODING);
+        // The next spare request sees it once, as the walk's first did.
+        assert!(!spare.asked(BUDGET, base, WORKSPACE));
+        // One made while spare memory is held counts from then on.
+        spare.needed(DECODING);
+        assert!(spare.asked(BUDGET, base, WORKSPACE));
+        spare.needed(5_000_000_000);
+        assert!(!spare.asked(BUDGET, base + WORKSPACE, WORKSPACE));
+        assert_eq!(spare.largest_beside, 5_000_000_000);
+    }
 
     #[test]
     fn a_ledger_that_runs_out_names_what_holds_the_most() {

@@ -200,6 +200,59 @@ fn at_walk_object(item: &Input<'_>, error: io::Error) -> io::Error {
     io::Error::new(error.kind(), format!("object \\{path}: {text}"))
 }
 
+/// The next batch of a pass that takes its objects from a paged domain:
+/// each object is decoded and its workspace paid for before the next is
+/// decoded, so that a batch which memory cuts short after a few objects has
+/// not decoded the rest of it for nothing, batch after batch.
+///
+/// Decoding reserves a workspace of its own, and by then the batch's
+/// workspaces may hold all that the ledger has left. Whatever fails behind
+/// at least one gathered object therefore ends the batch and not the pass.
+/// The caller takes that object again as the first of its next batch, with
+/// this batch's workspaces returned, and what it fails with then is the
+/// pass's error. (With batches of 256 a lived-in data volume was refused for
+/// memory in its walk on a machine with 9 GB: the ledger had 550 MB left for
+/// a decoding that reserves 566.) A batch is never empty.
+///
+/// `pay` is told whether the object is the batch's first: that one is paid
+/// for as an object taken by itself was, the others from spare memory.
+fn gather_batch<O, L>(
+    indexes: std::ops::Range<usize>,
+    mut decode: impl FnMut(usize) -> io::Result<O>,
+    mut pay: impl FnMut(&O, bool) -> io::Result<L>,
+) -> io::Result<(Vec<O>, Vec<L>)> {
+    let mut objects = Vec::with_capacity(indexes.len());
+    let mut leases = Vec::with_capacity(indexes.len());
+    for index in indexes {
+        let first = objects.is_empty();
+        let gathered =
+            decode(index).and_then(|object| pay(&object, first).map(|lease| (object, lease)));
+        match gathered {
+            Ok((object, lease)) => {
+                objects.push(object);
+                leases.push(lease);
+            }
+            Err(_) if !objects.is_empty() => break,
+            Err(error) => return Err(error),
+        }
+    }
+    if objects.is_empty() {
+        return Err(invalid("a batch of objects was asked for an empty range"));
+    }
+    Ok((objects, leases))
+}
+
+/// How many objects a pass hands to [`observe_in_parallel`] at a time.
+///
+/// Every batch starts its helper threads and waits for them to end, which
+/// costs about a millisecond whatever the batch holds: with 32 objects a
+/// batch, a walk of the full Windows volume started 36,000 threads, two
+/// seconds of the walking thread's time for that alone. A batch's query
+/// workspace is paid for object by object, and a batch is cut short where
+/// the ledger refuses one more, so a larger batch asks for no more memory
+/// than there is.
+const PARALLEL_BATCH: usize = 256;
+
 fn observe_in_parallel<T: Sync, U: Send>(
     items: &[T],
     observe: impl Fn(&T) -> io::Result<U> + Sync,
@@ -3873,7 +3926,7 @@ fn observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_o
         index: usize,
         name: Vec<u16>,
     }
-    const RESIDUAL_BATCH: usize = 64;
+    const RESIDUAL_BATCH: usize = PARALLEL_BATCH;
     let objects = &native.objects;
     let read_one = |residual: &Residual| -> io::Result<([u8; 16], String)> {
         let expected = &residual.expected;
@@ -3940,13 +3993,22 @@ fn observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_o
     };
     let mut batch: Vec<Residual> = Vec::with_capacity(RESIDUAL_BATCH);
     let mut leases = Vec::with_capacity(RESIDUAL_BATCH);
-    let query_memory = || {
+    // The first residual of a batch is paid for as one read by itself was;
+    // the others from spare memory, which leaves the ledger room for what
+    // going through the objects reserves meanwhile.
+    let query_memory = |first: bool| {
         memory
             .map(|payer| {
                 report_memory::residual_query_peak(admission.budget.max_row_bytes)?
                     .checked_add(payer.lease_heap_bytes())
                     .ok_or_else(|| invalid("residual query adapter RAM overflow"))
-                    .and_then(|bytes| payer.reserve(bytes))
+                    .and_then(|bytes| {
+                        if first {
+                            payer.reserve(bytes)
+                        } else {
+                            payer.reserve_spare(bytes)
+                        }
+                    })
             })
             .transpose()
     };
@@ -3955,11 +4017,11 @@ fn observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_o
         // the ledger cannot pay for one more beside those gathered, they
         // are read first; a refusal for a residual by itself is a failure,
         // as before.
-        let lease = match query_memory() {
+        let lease = match query_memory(batch.is_empty()) {
             Ok(lease) => lease,
             Err(_) if !batch.is_empty() => {
                 read_batch(&mut batch, &mut leases)?;
-                query_memory()?
+                query_memory(true)?
             }
             Err(error) => return Err(error),
         };
@@ -6218,37 +6280,38 @@ fn run_role_content_domain_accounted(
         // each row's query workspace paid for before its batch starts. If the
         // ledger cannot pay for a whole batch, the batch is cut short; only a
         // refusal for the first object of a batch is a failure, as before.
-        const BATCH: usize = 32;
+        const BATCH: usize = PARALLEL_BATCH;
         let mut next = 0;
         while next < input.len() {
-            let mut owners = Vec::with_capacity(BATCH);
-            for index in next..(next + BATCH).min(input.len()) {
-                owners.push(input.object(index)?);
-            }
-            let mut items: Vec<Input<'_>> = owners.iter().map(|owner| owner.input()).collect();
-            let mut leases = Vec::with_capacity(items.len());
-            for (offset, item) in items.iter().enumerate() {
-                let peak = if memory_accountant.is_some() {
-                    report_memory::row_peak(item, sd_limit.unwrap_or(0))?
-                } else {
-                    0
-                };
-                match memory_accountant
-                    .map(|payer| payer.reserve(peak))
-                    .transpose()
-                {
-                    Ok(lease) => leases.push((lease, peak)),
-                    Err(_) if offset > 0 => break,
-                    Err(error) => {
-                        return Err(io::Error::other(format!(
-                            "native object row {}/{} query workspace {peak} bytes refused: {error}",
-                            next,
-                            input.len()
-                        )));
-                    }
-                }
-            }
-            items.truncate(leases.len());
+            let (owners, leases) = gather_batch(
+                next..(next + BATCH).min(input.len()),
+                |index| input.object(index),
+                |owner, first| {
+                    let peak = if memory_accountant.is_some() {
+                        report_memory::row_peak(&owner.input(), sd_limit.unwrap_or(0))?
+                    } else {
+                        0
+                    };
+                    memory_accountant
+                        .map(|payer| {
+                            if first {
+                                payer.reserve(peak)
+                            } else {
+                                payer.reserve_spare(peak)
+                            }
+                        })
+                        .transpose()
+                        .map(|lease| (lease, peak))
+                        .map_err(|error| {
+                            io::Error::other(format!(
+                                "native object row {}/{} query workspace {peak} bytes refused: {error}",
+                                next,
+                                input.len()
+                            ))
+                        })
+                },
+            )?;
+            let items: Vec<Input<'_>> = owners.iter().map(|owner| owner.input()).collect();
             let rows = {
                 let _timed = crate::perf::scope(crate::perf::Point::ShadowObject);
                 observe_in_parallel(&items, &observe)?
@@ -6316,6 +6379,95 @@ fn run_role_content_domain_accounted(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A ledger of ten units for the three tests below: decoding an object
+    /// needs four of them free while it runs, and a workspace holds two.
+    fn gather_from_a_ledger_of_ten(
+        indexes: std::ops::Range<usize>,
+        held: &std::cell::Cell<u32>,
+        decodings: &std::cell::Cell<u32>,
+    ) -> io::Result<(Vec<usize>, Vec<u32>)> {
+        gather_batch(
+            indexes,
+            |index| {
+                if held.get() + 4 > 10 {
+                    return Err(invalid("no room to decode"));
+                }
+                decodings.set(decodings.get() + 1);
+                Ok(index)
+            },
+            |_, _| {
+                if held.get() + 2 > 10 {
+                    return Err(invalid("no room for a workspace"));
+                }
+                held.set(held.get() + 2);
+                Ok(2)
+            },
+        )
+    }
+
+    /// What the walk of a lived-in volume met on a machine with little
+    /// memory: the workspaces of a batch leave no room to decode its next
+    /// object. That ends the batch; it does not fail the walk, and nothing is
+    /// decoded twice.
+    #[test]
+    fn a_batch_ends_where_its_own_workspaces_leave_no_room_to_decode() {
+        let held = std::cell::Cell::new(0);
+        let decodings = std::cell::Cell::new(0);
+        let (objects, leases) = gather_from_a_ledger_of_ten(0..8, &held, &decodings).unwrap();
+        // Four workspaces hold eight units; the fifth decoding finds two.
+        assert_eq!(objects, [0, 1, 2, 3]);
+        assert_eq!(leases.len(), 4);
+        // The caller observes the batch, returns its workspaces and goes on
+        // from the object that did not fit.
+        held.set(0);
+        let (objects, _) = gather_from_a_ledger_of_ten(4..8, &held, &decodings).unwrap();
+        assert_eq!(objects, [4, 5, 6, 7]);
+        assert_eq!(
+            decodings.get(),
+            8,
+            "every object is decoded once: a refused decoding does no work"
+        );
+    }
+
+    #[test]
+    fn a_batch_is_whole_where_memory_allows() {
+        let held = std::cell::Cell::new(0);
+        let decodings = std::cell::Cell::new(0);
+        let (objects, leases) = gather_from_a_ledger_of_ten(5..8, &held, &decodings).unwrap();
+        assert_eq!(objects, [5, 6, 7]);
+        assert_eq!(leases, [2, 2, 2]);
+    }
+
+    /// The first object of a batch has no workspace of the batch before it:
+    /// what it fails with is the pass's error, as it was when objects were
+    /// taken one at a time.
+    #[test]
+    fn what_fails_for_the_first_object_of_a_batch_fails_the_pass() {
+        let decodings = std::cell::Cell::new(0);
+        // Seven units are held by something else: no room to decode at all.
+        let held = std::cell::Cell::new(7);
+        let error = gather_from_a_ledger_of_ten(0..8, &held, &decodings).unwrap_err();
+        assert!(error.to_string().contains("no room to decode"), "{error}");
+        // The first object decodes and its workspace is refused.
+        let refused_workspace = gather_batch(
+            0..8,
+            |index| Ok(index),
+            |_: &usize, _| Err::<u32, _>(invalid("no room for a workspace")),
+        )
+        .unwrap_err();
+        assert!(
+            refused_workspace
+                .to_string()
+                .contains("no room for a workspace"),
+            "{refused_workspace}"
+        );
+        assert!(gather_batch(3..3, |index| Ok(index), |_: &usize, _| Ok(0u32)).is_err());
+        // The first object of a batch is told that it is.
+        let (_, firsts) =
+            gather_batch(0..3, |index| Ok(index), |_: &usize, first| Ok(first)).unwrap();
+        assert_eq!(firsts, [true, false, false]);
+    }
 
     /// The root of a volume on which Windows made "System Volume Information"
     /// after it mounted: its later times moved, and nothing else may have.

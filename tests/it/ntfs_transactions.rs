@@ -1,5 +1,5 @@
 #[allow(dead_code, reason = "shared synthetic parser fixtures")]
-mod support;
+use crate::support;
 use ntfs2refs::{
     ntfs_inspect::{self as n, AttributeInventory, MetadataRole, NameInventory},
     ntfs_transactions,

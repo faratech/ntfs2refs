@@ -2,7 +2,7 @@
     dead_code,
     reason = "Shared fixture module also supports other integration suites."
 )]
-mod support;
+use crate::support;
 
 use ntfs2refs::ntfs_inspect::{
     FileInventory, MetadataRole as Role, MetadataRoleIssue as Issue, NtfsInspection, inspect,

@@ -1,4 +1,4 @@
-mod support;
+use crate::support;
 use serde_json::Value;
 use std::{fs, process::Command};
 fn cli(args: &[&str]) -> std::process::Output {

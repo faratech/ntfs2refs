@@ -1,5 +1,5 @@
 #[allow(dead_code, reason = "Shared synthetic NTFS fixture")]
-mod support;
+use crate::support;
 
 use ntfs2refs::ntfs_inspect::{self, Extent, StreamTransferBudget};
 use sha2::{Digest, Sha256};

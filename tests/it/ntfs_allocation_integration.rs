@@ -1,4 +1,4 @@
-mod support;
+use crate::support;
 
 use ntfs2refs::ntfs_inspect::{self, AllocationReconciliationStatus};
 use std::io::Cursor;

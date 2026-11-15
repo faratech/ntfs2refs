@@ -27,7 +27,11 @@ if ($snapshots.Count -ne 1) { throw "Expected one checkpoint like '$Checkpoint',
 $snapshot = $snapshots[0]
 $parents = @(Get-VMHardDiskDrive -VMSnapshot $snapshot | Sort-Object ControllerLocation)
 if (-not $parents.Count) { throw 'The checkpoint has no disks' }
-$firmware = Get-VMFirmware -VM $source
+# The checkpoint's own firmware settings, not the VM's of the moment: an
+# attempt that booted the converted disk leaves the VM set to boot that one,
+# and a clone made then would start the Windows to convert instead of the
+# control OS.
+$firmware = Get-VMFirmware -VMSnapshot $snapshot
 
 $null = New-Item -ItemType Directory -Path (Join-Path $root 'disks') -Force
 $vm = New-VM -Name $Name -Generation 2 -NoVHD -Path (Join-Path $root 'vm') -MemoryStartupBytes $source.MemoryStartup

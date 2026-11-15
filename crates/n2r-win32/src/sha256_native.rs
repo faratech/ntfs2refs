@@ -172,6 +172,33 @@ impl Sha256Reusable {
     }
 }
 
+/// The SHA-256 of `bytes`, on one reusable hash object a thread.
+///
+/// For the many digests of evidence that a conversion takes of things it
+/// has in memory: a page of a file's extents, a window of the volume's
+/// bitmap, a placement proof. On a processor without SHA instructions
+/// Windows' implementation is three and a half times as fast as the one
+/// compiled in, and the digest is the same.
+pub fn digest(bytes: &[u8]) -> io::Result<[u8; 32]> {
+    thread_local! {
+        static HASH: std::cell::RefCell<Option<Sha256Reusable>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    HASH.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let hash = match slot.as_mut() {
+            Some(hash) => hash,
+            None => slot.insert(Sha256Reusable::new()?),
+        };
+        let digest = hash.digest(bytes);
+        if digest.is_err() {
+            // A hash object that failed part-way is not used again.
+            *slot = None;
+        }
+        digest
+    })
+}
+
 impl Drop for Sha256Reusable {
     fn drop(&mut self) {
         // SAFETY: the hash object is uniquely owned here; the provider it

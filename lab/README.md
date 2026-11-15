@@ -155,6 +155,19 @@ been counted as were listed before. `-Features shortnames-wide` puts short
 names on nested directories, a hard-linked file, a file with a named stream
 and a name outside ASCII, beside a name that is its own short name.
 
+`-VssProvider` gives the machine a shadow-copy provider the converter does
+not know, as backup software does. `answering` is one of Windows Server's
+own, the iSCSI target storage provider (the feature `iSCSITarget-VSS-VDS`,
+so the VM has to run Windows Server): it answers and holds no shadow copy,
+the volume converts, and the check and the run each have to name it in a
+note. The harness installs the feature if it is missing and leaves it:
+Windows wants a restart to finish removing it, so remove it when the cases
+are done (`Uninstall-WindowsFeature iSCSITarget-VSS-VDS`, then restart the
+VM). `silent` registers, for the length of the attempt, a provider whose
+class does not exist: it cannot answer, and the volume has to be refused by
+its name (`-ExpectRefusal`). The shadow-copy service reads its providers
+when it starts, so the harness stops it after each change.
+
 `-CompareListing` runs the converter with `--compare-listing`. The harness
 makes its own listings as always, and the run's comparison has to say what
 the harness's says, or the outcome gets `-but-own-listing-disagreed`.

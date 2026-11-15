@@ -169,6 +169,18 @@ param(
     # gone is counted, nothing else is let through, and the converted
     # volume must list no short name at all.
     [switch]$DropShortNames,
+    # A shadow-copy (VSS) provider that the converter does not know.
+    # 'answering' is one of Windows Server's own, the iSCSI target storage
+    # provider (the Windows feature iSCSITarget-VSS-VDS, so the VM has to run
+    # Windows Server): it answers when asked and holds no shadow copy, so the
+    # volume converts, and the check and the run each have to say so in a
+    # note that names it. The feature is installed if it is missing and
+    # stays: Windows wants a restart to finish removing it, so it is removed
+    # by hand when the cases are done. 'silent' registers a provider whose
+    # class does not exist, for as long as the attempt lasts: it cannot
+    # answer, and the volume has to be refused with words that name it
+    # (-ExpectRefusal).
+    [ValidateSet('', 'answering', 'silent')][string]$VssProvider = '',
     # Run the converter with --compare-listing: it lists the volume itself
     # before and after and compares. The harness's own listings are made as
     # always, and the two comparisons have to agree: a run whose own
@@ -716,6 +728,36 @@ public static class SiblingRaw {
         } until ($state.ended -or (Get-Date) -gt $deadline)
         [pscustomobject]@{ ended = [bool]$state.ended; held = $held; stopped = $stopped }
     }
+    if ($VssProvider) {
+        $provider = Invoke-Command -Session $session -ArgumentList $guestRoot, $VssProvider -ScriptBlock {
+            param($root, $kind)
+            if ($kind -eq 'silent') {
+                $name = 'N2R Lab Silent Provider'
+                $key = 'HKLM:\SYSTEM\CurrentControlSet\Services\VSS\Providers\{4e325253-494c-454e-5450-524f56494452}'
+                # Noted first: whatever happens next, the attempt's end removes it.
+                Set-Content -LiteralPath "$root\vss-provider.txt" -Value "key $key" -Encoding ASCII
+                $null = New-Item -Path $key -Force; Set-Item -Path $key -Value $name
+                Set-ItemProperty -Path $key -Name Type -Value 2 -Type DWord
+                Set-ItemProperty -Path $key -Name Version -Value '1.0' -Type String
+                Set-ItemProperty -Path $key -Name VersionId -Value '{4e325253-494c-454e-5450-524f56494453}' -Type String
+                $null = New-Item -Path "$key\CLSID" -Force; Set-Item -Path "$key\CLSID" -Value '{4e325253-494c-454e-5450-524f56494454}'
+            } else {
+                $name = 'Microsoft iSCSI Target VSS Hardware Provider'
+                if (-not (Get-Command Get-WindowsFeature -ErrorAction SilentlyContinue)) { throw "-VssProvider answering installs a Windows Server feature, and this is $((Get-CimInstance Win32_OperatingSystem).Caption)" }
+                if ((Get-WindowsFeature -Name iSCSITarget-VSS-VDS).InstallState -ne 'Installed') {
+                    $installed = Install-WindowsFeature -Name iSCSITarget-VSS-VDS
+                    if (-not $installed.Success -or "$($installed.RestartNeeded)" -ne 'No') { throw "the feature iSCSITarget-VSS-VDS wants a restart before it can be used ($($installed.ExitCode)): restart the VM and run the case again" }
+                }
+            }
+            # The shadow-copy service reads its providers when it starts.
+            Stop-Service -Name VSS -Force -ErrorAction SilentlyContinue
+            $listed = @(& vssadmin.exe list providers 2>&1 | Where-Object { "$_" -like "*'$name'*" }).Count
+            [pscustomobject]@{ name = $name; listed = [bool]$listed }
+        }
+        $verdict.vss_provider = [ordered]@{ kind = $VssProvider; name = $provider.name }
+        if (-not $provider.listed) { $verdict.outcome = 'provider-not-made'; throw "Windows does not list the shadow-copy provider '$($provider.name)'" }
+        Say "shadow-copy provider for this attempt, one the converter does not know: '$($provider.name)' ($VssProvider)"
+    }
     $arguments = @('--drive', 'V', '--scratch-directory', 'S:\datalab\runs')
     if ($TargetFormat -ne 'default') { $arguments += @('--target-format', $TargetFormat) }
     if ($TargetClusterBytes) { $arguments += @('--target-cluster-bytes', "$TargetClusterBytes") }
@@ -816,6 +858,13 @@ public static class SiblingRaw {
                 elseif ($checked.exit -eq 5) { 'check-inconclusive' }
                 elseif ($ExpectRefusal -and ($checkRefusals -join "`n") -match $ExpectRefusal) { 'check-refused-as-expected' }
                 else { 'check-found-refusals' }
+            if ($VssProvider -eq 'answering') {
+                # The provider is passed over, and the check says so by its name.
+                $named = '^Note: A shadow-copy \(VSS\) provider .*' + [regex]::Escape("`"$($verdict.vss_provider.name)`"") + '.*full backup'
+                $verdict.vss_provider.note_in_check = [bool]($checked.text | Where-Object { $_ -match $named } | Select-Object -First 1)
+                Say "provider note: in the check's output $($verdict.vss_provider.note_in_check)"
+                if ($verdict.outcome -eq 'check-clean' -and -not $verdict.vss_provider.note_in_check) { $verdict.outcome = 'check-clean-without-the-provider-note' }
+            }
             if ($Siblings) { & $holdSiblings ([string]($checked.text | Where-Object { $_ -match '^This volume shares disk ' } | Select-Object -Last 1)) }
             return
         }
@@ -1089,6 +1138,18 @@ public static class SiblingRaw {
     }
     if ($verdict.target.requested) { Say "target: the run asked for '$($verdict.target.requested)'; Windows reports '$($verdict.target.windows_reports)'" }
     if ($ExpectTarget -and $verdict.outcome -eq 'converted' -and "$($verdict.target.windows_reports)" -notmatch $ExpectTarget) { $verdict.outcome = 'converted-but-target-differs' }
+    if ($VssProvider -eq 'answering') {
+        # The provider is passed over, and the check and the run each say so by its name.
+        $named = '^Note: A shadow-copy \(VSS\) provider .*' + [regex]::Escape("`"$($verdict.vss_provider.name)`"") + '.*full backup'
+        # A run that was stopped said it before it was stopped; its recovery asks nothing of the kind.
+        $spoken = @($stdout, (Join-Path $records 'interrupted-stdout.log')) | Where-Object { Test-Path -LiteralPath $_ }
+        $verdict.vss_provider.note_in_run = [bool]($spoken | ForEach-Object { Get-Content -LiteralPath $_ -Encoding UTF8 } | Where-Object { $_ -match $named } | Select-Object -First 1)
+        if ($Check) { $verdict.vss_provider.note_in_check = [bool]($checked.text | Where-Object { $_ -match $named } | Select-Object -First 1) }
+        Say "provider note: in the run's output $($verdict.vss_provider.note_in_run)$(if ($Check) { ", in the check's $($verdict.vss_provider.note_in_check)" })"
+        if ($verdict.outcome -in 'converted', 'resumed', 'rolled-back', 'diagnose-clean' -and (-not $verdict.vss_provider.note_in_run -or ($Check -and -not $verdict.vss_provider.note_in_check))) {
+            $verdict.outcome = "$($verdict.outcome)-without-the-provider-note"
+        }
+    }
     if ($Acceptance -and $verdict.outcome -in 'converted', 'resumed') {
         # The listing shows what was carried over; this shows that the result
         # is a volume one can go on working with.
@@ -1116,6 +1177,21 @@ public static class SiblingRaw {
                     Remove-Item -LiteralPath "$root\sibling-dumpfile.txt" -Force
                 }
             }
+        }
+        if ($VssProvider) {
+            # The provider this attempt brought, as it noted it.
+            $removed = Invoke-Command -Session $session -ArgumentList $guestRoot -ErrorAction Stop -ScriptBlock {
+                param($root)
+                $note = "$root\vss-provider.txt"
+                if (-not (Test-Path -LiteralPath $note)) { return 'nothing of this attempt to remove' }
+                $kind, $what = "$(Get-Content -LiteralPath $note -Raw)".Trim() -split ' ', 2
+                Remove-Item -Path $what -Recurse -Force -ErrorAction SilentlyContinue
+                $said = "registration removed: $(-not (Test-Path -Path $what))"
+                Stop-Service -Name VSS -Force -ErrorAction SilentlyContinue
+                Remove-Item -LiteralPath $note -Force
+                "$said; providers now: $(@(& vssadmin.exe list providers 2>&1 | Where-Object { "$_" -match 'Provider name' }).Count)"
+            }
+            Say "shadow-copy provider: $removed"
         }
         if (-not $KeepVolume) {
             Invoke-Command -Session $session -ArgumentList $guestRoot, $Name -ErrorAction Stop -ScriptBlock {

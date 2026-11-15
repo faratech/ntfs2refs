@@ -1006,6 +1006,10 @@ impl ResourceSourceContext {
             &mut reservations,
         )?;
         vss_before.require_observed_catalog_clear()?;
+        // A provider the converter does not know and passes over is named.
+        for note in vss_before.provider_notes() {
+            println!("Note: {note}");
+        }
         ensure!(
             vss_before.source_volume_guid.eq_ignore_ascii_case(&volume),
             "VSS source route differs"

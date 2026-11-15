@@ -2,14 +2,18 @@
 //! snapshot operations, freeze a volume, or authorize conversion/recovery.
 //!
 //! ABI declarations follow Windows SDK 10.0.26100.0 `vsbackup.h`, `vss.h`, and
-//! `vsmgmt.h`. A complete VSS_CTX_ALL provider inventory must contain only the
-//! Microsoft system provider and optional known Hyper-V host integration. The
-//! supported requester IsVolumeSnapshotted API
+//! `vsmgmt.h`. The VSS_CTX_ALL provider inventory is read completely. Windows'
+//! own providers are known by identity. Any other, usually part of backup
+//! software, is asked whether it can make shadow copies of a volume, once
+//! before and once after the machine's shadow copies are listed: it is passed
+//! over only if it answered both times and none of those copies is its own.
+//! The supported requester IsVolumeSnapshotted API
 //! checks the source, and management enumerates differential storage hosted on it.
 //! No services, COM process security defaults, snapshots, or disk flags change.
 //! COM calls are synchronous: enumeration/storage bounds are not a wall timeout.
 //!
 //! Contracts: https://learn.microsoft.com/windows/win32/api/vsbackup/nf-vsbackup-ivssbackupcomponents-query
+//! https://learn.microsoft.com/windows/win32/api/vsbackup/nf-vsbackup-ivssbackupcomponents-isvolumesupported
 //! https://learn.microsoft.com/windows/win32/api/vsbackup/nf-vsbackup-isvolumesnapshotted
 //! https://learn.microsoft.com/windows/win32/api/vsmgmt/nf-vsmgmt-ivssdifferentialsoftwaresnapshotmgmt-querydiffareasonvolume
 use serde::Serialize;
@@ -22,6 +26,7 @@ const MAX_OBJECTS: usize = 1 << 20;
 const MAX_STRING_UNITS: usize = 1024;
 const S_OK: i32 = 0;
 const S_FALSE: i32 = 1;
+const E_UNEXPECTED: i32 = 0x8000_ffffu32 as i32;
 const SNAPSHOT: i32 = 3;
 const PROVIDER: i32 = 4;
 const DIFF_AREA: i32 = 3;
@@ -119,11 +124,14 @@ fn known_storage_role(id: Guid, class: Guid, kind: i32) -> Option<&'static str> 
     }
 }
 
-/// What a run says of a provider it does not know. Asked before the volume's
-/// own shadow copies are, so it says nothing of them.
-fn unknown_provider(name: &str, version: &str, id: &str, class: &str, kind: i32) -> String {
+/// The role recorded for a provider the converter does not know.
+const UNKNOWN_ROLE: &str = "unknown";
+
+/// A provider the converter does not know, as a refusal or a note names it.
+fn unknown_provider(provider: &Provider) -> String {
     format!(
-        "a shadow-copy (VSS) provider that the converter does not know is installed: \"{name}\" version {version} ({{{id}}}, class {{{class}}}, kind {kind}). Such a provider, usually part of backup software, may keep snapshot storage the converter cannot see, so no volume is converted while it is installed"
+        "a shadow-copy (VSS) provider that the converter does not know is installed, usually part of backup software: \"{}\" version {} ({{{}}}, class {{{}}}, kind {})",
+        provider.name, provider.version, provider.id, provider.class_id, provider.kind
     )
 }
 
@@ -258,6 +266,7 @@ struct BackupVtable {
     set_context: unsafe extern "system" fn(*mut Backup, i32) -> i32,
     unused_before_query: [usize; 7],
     query: unsafe extern "system" fn(*mut Backup, Guid, i32, i32, *mut *mut ObjectEnum) -> i32,
+    is_volume_supported: unsafe extern "system" fn(*mut Backup, Guid, *const u16, *mut i32) -> i32,
 }
 #[repr(C)]
 struct ObjectEnum {
@@ -305,6 +314,7 @@ const _: () = {
     assert!(mem::offset_of!(BackupVtable, initialize_for_backup) == 5 * pointer);
     assert!(mem::offset_of!(BackupVtable, set_context) == 35 * pointer);
     assert!(mem::offset_of!(BackupVtable, query) == 43 * pointer);
+    assert!(mem::offset_of!(BackupVtable, is_volume_supported) == 44 * pointer);
     assert!(mem::offset_of!(DifferentialVtable, query_on_volume) == 7 * pointer);
     assert!(mem::offset_of!(ObjectEnumVtable, next) == 3 * pointer);
     assert!(mem::offset_of!(ManagementEnumVtable, next) == 3 * pointer);
@@ -457,6 +467,34 @@ pub struct Provider {
     pub version: String,
     pub hosted_diff_areas_query_completed: bool,
     pub storage_role: &'static str,
+    /// What a provider the converter does not know answered when asked;
+    /// nothing for one it knows, which is not asked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asked: Option<ProviderAnswers>,
+}
+/// A provider the converter does not know is asked, through Windows, whether
+/// it can make shadow copies of the volume Windows runs from: once before
+/// the machine's shadow copies are listed and once after. What it says does
+/// not matter; that it answered both times shows it was there to be asked
+/// for its shadow copies in between.
+#[derive(Clone, Debug, Serialize)]
+pub struct ProviderAnswers {
+    pub api: &'static str,
+    pub volume: String,
+    pub before_hresult: i32,
+    pub after_hresult: i32,
+}
+impl ProviderAnswers {
+    fn both(&self) -> bool {
+        self.before_hresult == S_OK && self.after_hresult == S_OK
+    }
+}
+/// A completed shadow copy on the machine, of any provider and any volume.
+#[derive(Clone, Debug, Serialize)]
+pub struct ShadowCopy {
+    pub id: String,
+    pub provider_id: String,
+    pub original_volume: String,
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct SourceSnapshotPresence {
@@ -489,6 +527,13 @@ pub struct Observation {
     pub hosted_storage_enumerated: bool,
     pub completed_catalog_enumeration: bool,
     pub provider_inventory_completed: bool,
+    /// The machine's completed shadow copies and the result of asking for
+    /// them. They are asked for only where a provider is installed that the
+    /// converter does not know: `None` where every provider is known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shadow_copy_query_hresult: Option<i32>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub shadow_copies: Vec<ShadowCopy>,
     pub inflight_snapshot_operations_excluded: bool,
     pub source_exclusion_proven: bool,
     pub execution_authorized: bool,
@@ -541,39 +586,33 @@ impl Observation {
                 "the list of installed shadow-copy (VSS) providers could not be read completely; without it the volume is not converted",
             ));
         }
-        let known = |p: &Provider| {
-            if p.id == guid(SOFTWARE_PROVIDER) {
-                p.kind == 1 && p.storage_role == "guest_local_differential_storage"
-            } else if p.id == guid(HYPERV_PROVIDER) {
-                p.class_id == guid(HYPERV_CLASS)
-                    && p.kind == 2
-                    && p.storage_role == "hyperv_host_vm_image"
-            } else {
-                p.id == guid(FILESHARE_PROVIDER)
-                    && p.class_id == guid(FILESHARE_CLASS)
-                    && p.kind == 4
-                    && p.storage_role == "remote_file_share_no_local_storage"
-            }
-        };
-        if let Some(provider) = self.providers.iter().find(|p| !known(p)) {
+        // What Windows said of the volume is held against the machine's own
+        // list, where that was read.
+        if let Some(copy) = self.shadow_copies.iter().find(|copy| {
+            copy.original_volume
+                .eq_ignore_ascii_case(&self.source_volume_guid)
+        }) {
             return Err(invalid(format!(
-                "{}. The volume itself has no shadow copies",
-                unknown_provider(
-                    &provider.name,
-                    &provider.version,
-                    &provider.id,
-                    &provider.class_id,
-                    provider.kind
-                )
+                "the volume has a shadow copy ({{{}}}, of provider {{{}}}) that Windows did not report when asked about the volume. A conversion in place would destroy it: delete it first (`vssadmin delete shadows /for=<drive>:`), then convert",
+                copy.id, copy.provider_id
             )));
         }
-        if !(1..=MAX_KNOWN_PROVIDERS).contains(&self.providers.len())
+        for provider in self.providers.iter().filter(|p| !Self::known(p)) {
+            if let Some(reason) = self.unknown_provider_refusal(provider) {
+                return Err(invalid(format!(
+                    "{}. {reason}. The volume itself has no shadow copies",
+                    unknown_provider(provider)
+                )));
+            }
+        }
+        let known = self.providers.iter().filter(|p| Self::known(p)).count();
+        if !(1..=MAX_KNOWN_PROVIDERS).contains(&known)
             || self
                 .providers
                 .iter()
                 .filter(|p| p.id == guid(SOFTWARE_PROVIDER))
-                .count()
-                != 1
+                .map(Self::known)
+                .ne([true])
         {
             return Err(invalid(format!(
                 "Windows' own shadow-copy provider is missing or listed more than once among the {} installed provider(s); the volume is not converted",
@@ -581,6 +620,86 @@ impl Observation {
             )));
         }
         Ok(())
+    }
+
+    /// Windows' own providers, each by its identity, class, kind and the
+    /// role recorded for it together.
+    fn known(p: &Provider) -> bool {
+        if p.id == guid(SOFTWARE_PROVIDER) {
+            p.kind == 1 && p.storage_role == "guest_local_differential_storage"
+        } else if p.id == guid(HYPERV_PROVIDER) {
+            p.class_id == guid(HYPERV_CLASS)
+                && p.kind == 2
+                && p.storage_role == "hyperv_host_vm_image"
+        } else {
+            p.id == guid(FILESHARE_PROVIDER)
+                && p.class_id == guid(FILESHARE_CLASS)
+                && p.kind == 4
+                && p.storage_role == "remote_file_share_no_local_storage"
+        }
+    }
+
+    /// Why a provider the converter does not know stops the conversion, or
+    /// `None` where it holds nothing a conversion could destroy: it answered
+    /// when asked, before and after the machine's shadow copies were listed,
+    /// and none of those is its own. Whether the volume itself has shadow
+    /// copies is asked of Windows and decided before this.
+    fn unknown_provider_refusal(&self, provider: &Provider) -> Option<String> {
+        const UNSEEN: &str = "Such a provider may keep snapshot storage the converter cannot see, so the volume is not converted";
+        let Some(asked) = provider
+            .asked
+            .as_ref()
+            .filter(|_| provider.storage_role == UNKNOWN_ROLE)
+        else {
+            return Some(format!(
+                "It was not asked whether it holds shadow copies. {UNSEEN}"
+            ));
+        };
+        if !asked.both() {
+            return Some(format!(
+                "It did not answer when Windows asked it about a volume (results {:#010x} and {:#010x}), so whether it holds shadow copies is not known. {UNSEEN} until it answers or is removed",
+                asked.before_hresult as u32, asked.after_hresult as u32
+            ));
+        }
+        if !matches!(self.shadow_copy_query_hresult, Some(S_OK | S_FALSE)) {
+            return Some(format!(
+                "Windows did not list the machine's shadow copies (result {}), so whether this provider holds any is not known. {UNSEEN} without that list",
+                self.shadow_copy_query_hresult
+                    .map_or("none".to_owned(), |hr| format!("{:#010x}", hr as u32))
+            ));
+        }
+        let own: Vec<&ShadowCopy> = self
+            .shadow_copies
+            .iter()
+            .filter(|copy| copy.provider_id == provider.id)
+            .collect();
+        let first = own.first()?;
+        Some(format!(
+            "It holds {} shadow cop{} on this machine (for example {{{}}} of {}), and where it keeps their storage the converter cannot see. Delete them, or let the backup that made them finish, then convert",
+            own.len(),
+            if own.len() == 1 { "y" } else { "ies" },
+            first.id,
+            first.original_volume
+        ))
+    }
+
+    /// What a run says of the providers it does not know and passes over:
+    /// one note each. Nothing where the observation refuses.
+    pub fn provider_notes(&self) -> Vec<String> {
+        if self.require_observed_snapshot_absence().is_err() {
+            return Vec::new();
+        }
+        self.providers
+            .iter()
+            .filter(|p| !Self::known(p))
+            .map(|provider| {
+                let named = unknown_provider(provider);
+                format!(
+                    "A{}. It answered when asked and holds no shadow copy on this machine, so the conversion goes ahead. If that software keeps track of what changed on the volume since its last backup, it will not recognise the converted volume: make a full backup afterwards.",
+                    &named[1..]
+                )
+            })
+            .collect()
     }
 
     pub fn same_source_and_provider_inventory(&self, other: &Self) -> bool {
@@ -599,12 +718,15 @@ impl Observation {
     }
 }
 
-/// Query source snapshot presence and hosted storage without mutation. Only a
-/// fully enumerated Microsoft system provider, optionally accompanied by the
-/// known Hyper-V host-integration provider and by Windows Server's provider
-/// for remote file shares, is supported. Other providers refuse.
-/// No aggregate snapshot Query S_FALSE is translated to absence. All enumerators
-/// must terminate with the exact SDK S_FALSE/zero-fetched completion result.
+/// Query source snapshot presence and hosted storage without mutation. The
+/// Microsoft system provider must be there and fully enumerated; the known
+/// Hyper-V host-integration provider and Windows Server's provider for remote
+/// file shares may accompany it. Any other provider is asked and the
+/// machine's shadow copies are listed (see `ProviderAnswers`); what comes of
+/// that the requirements below decide, naming the provider.
+/// The source's own absence of shadow copies is never read off that list: it
+/// is what IsVolumeSnapshotted says. All enumerators must terminate with the
+/// exact SDK S_FALSE/zero-fetched completion result.
 pub fn observe_catalog(source_volume_guid: &str) -> io::Result<Observation> {
     observe(source_volume_guid, true)
 }
@@ -651,6 +773,8 @@ fn observe(source_volume_guid: &str, include_storage: bool) -> io::Result<Observ
     )?;
     let provider_enum = query(&backup, PROVIDER)?;
     let mut providers = Vec::new();
+    // The providers the converter does not know: position and identity.
+    let mut unknown: Vec<(usize, Guid)> = Vec::new();
     let mut areas = Vec::new();
     while let Some(item) = next_object(&provider_enum, PROVIDER, &api)? {
         count(&mut total)?;
@@ -659,23 +783,15 @@ fn observe(source_volume_guid: &str, include_storage: bool) -> io::Result<Observ
         let provider_id = guid(provider.id);
         let name = wide_string(provider.name)?;
         let version = wide_string(provider.version)?;
-        let Some(storage_role) = known_storage_role(provider.id, provider.class, provider.kind)
-        else {
-            return Err(invalid(unknown_provider(
-                &name,
-                &version,
-                &provider_id,
-                &guid(provider.class),
-                provider.kind,
-            )));
-        };
-        if provider.class == NULL_GUID
-            || providers.iter().any(|p: &Provider| p.id == provider_id)
-            || providers.len() >= MAX_KNOWN_PROVIDERS
-        {
+        let storage_role =
+            known_storage_role(provider.id, provider.class, provider.kind).unwrap_or(UNKNOWN_ROLE);
+        if provider.class == NULL_GUID || providers.iter().any(|p: &Provider| p.id == provider_id) {
             return Err(invalid(format!(
-                "the list of shadow-copy (VSS) providers is not one the converter can read: \"{name}\" ({{{provider_id}}}) is listed twice, has no class, or is one provider too many; the volume is not converted"
+                "the list of shadow-copy (VSS) providers is not one the converter can read: \"{name}\" ({{{provider_id}}}) is listed twice or has no class; the volume is not converted"
             )));
+        }
+        if storage_role == UNKNOWN_ROLE {
+            unknown.push((providers.len(), provider.id));
         }
         providers.push(Provider {
             id: provider_id,
@@ -685,6 +801,7 @@ fn observe(source_volume_guid: &str, include_storage: bool) -> io::Result<Observ
             version,
             hosted_diff_areas_query_completed: false,
             storage_role,
+            asked: None,
         });
     }
     if providers
@@ -697,6 +814,94 @@ fn observe(source_volume_guid: &str, include_storage: bool) -> io::Result<Observ
             "Microsoft software VSS provider was not completely observed",
         ));
     }
+    // A provider the converter does not know is asked about a volume, the
+    // machine's shadow copies are listed, and it is asked again. Nothing
+    // here refuses for what it finds: the requirements do, and name the
+    // provider. Where every provider is known, none of this is done.
+    let mut shadow_copy_query_hresult = None;
+    let mut shadow_copies = Vec::new();
+    if !unknown.is_empty() {
+        let (asked_volume, asked_wide) = windows_volume()?;
+        let ask = |provider: Guid| -> i32 {
+            let mut supported = -1i32;
+            // SAFETY: SDK-typed slot on the live interface, a live
+            // NUL-terminated volume path and an initialized BOOL output.
+            let hr = unsafe {
+                ((*(*backup.raw).vtable).is_volume_supported)(
+                    backup.raw,
+                    provider,
+                    asked_wide.as_ptr(),
+                    &mut supported,
+                )
+            };
+            // An answer that left its output unset is not an answer.
+            if hr == S_OK && !matches!(supported, 0 | 1) {
+                E_UNEXPECTED
+            } else {
+                hr
+            }
+        };
+        let before: Vec<i32> = unknown.iter().map(|(_, id)| ask(*id)).collect();
+        let mut enumeration = ptr::null_mut();
+        // SAFETY: the exact SDK Query signature, as in `query`.
+        let hr = unsafe {
+            ((*(*backup.raw).vtable).query)(backup.raw, NULL_GUID, 1, SNAPSHOT, &mut enumeration)
+        };
+        // Owned whatever the result, so that it is released.
+        let enumeration = (!enumeration.is_null()).then(|| Com {
+            raw: enumeration,
+            not_send: PhantomData,
+        });
+        shadow_copy_query_hresult = Some(hr);
+        match (hr, enumeration) {
+            (S_OK, Some(enumeration)) => {
+                while let Some(item) = next_object(&enumeration, SNAPSHOT, &api)? {
+                    count(&mut total)?;
+                    // SAFETY: next_object checked the union discriminator.
+                    let snapshot = unsafe { item.object.snapshot };
+                    shadow_copies.push(ShadowCopy {
+                        id: guid(snapshot.id),
+                        provider_id: guid(snapshot.provider),
+                        original_volume: optional_wide_string(snapshot.original)?,
+                    });
+                }
+            }
+            // Windows answers a machine without shadow copies with S_FALSE
+            // and no list. A list that then holds something is no answer.
+            (S_FALSE, None) => (),
+            (S_FALSE, Some(enumeration)) => {
+                if next_object(&enumeration, SNAPSHOT, &api)?.is_some() {
+                    return Err(invalid(
+                        "the list of shadow copies was returned as empty and holds one",
+                    ));
+                }
+            }
+            (S_OK, None) => {
+                return Err(invalid(
+                    "IVssBackupComponents::Query returned no list of shadow copies",
+                ));
+            }
+            // Any other result is recorded; the requirement refuses with it.
+            _ => (),
+        }
+        shadow_copies.sort_by(|a, b| {
+            (&a.provider_id, &a.original_volume, &a.id).cmp(&(
+                &b.provider_id,
+                &b.original_volume,
+                &b.id,
+            ))
+        });
+        for ((position, id), before_hresult) in unknown.iter().zip(before) {
+            providers[*position].asked = Some(ProviderAnswers {
+                api: "IVssBackupComponents::IsVolumeSupported",
+                volume: asked_volume.clone(),
+                before_hresult,
+                after_hresult: ask(*id),
+            });
+        }
+    }
+    let completed_snapshot_count_all_volumes =
+        matches!(shadow_copy_query_hresult, Some(S_OK | S_FALSE)).then_some(shadow_copies.len());
     let source_wide: Vec<u16> = source.encode_utf16().chain(Some(0)).collect();
     // Sentinel outputs ensure a provider cannot leave a successful result
     // uninitialized and have that accidentally interpreted as false/zero.
@@ -725,7 +930,7 @@ fn observe(source_volume_guid: &str, include_storage: bool) -> io::Result<Observ
             kind: "vss-source-presence-observation-v4",
             source_volume_guid: source,
             snapshot_context: -1,
-            completed_snapshot_count_all_volumes: None,
+            completed_snapshot_count_all_volumes,
             source_snapshot_presence,
             providers,
             hosted_diff_areas: Vec::new(),
@@ -733,6 +938,8 @@ fn observe(source_volume_guid: &str, include_storage: bool) -> io::Result<Observ
             hosted_storage_enumerated: false,
             completed_catalog_enumeration: false,
             provider_inventory_completed: true,
+            shadow_copy_query_hresult,
+            shadow_copies,
             inflight_snapshot_operations_excluded: false,
             source_exclusion_proven: false,
             execution_authorized: false,
@@ -812,7 +1019,7 @@ fn observe(source_volume_guid: &str, include_storage: bool) -> io::Result<Observ
         kind: "vss-source-presence-and-hosted-storage-observation-v3",
         source_volume_guid: source,
         snapshot_context: -1,
-        completed_snapshot_count_all_volumes: None,
+        completed_snapshot_count_all_volumes,
         source_snapshot_presence,
         providers,
         hosted_diff_areas: areas,
@@ -820,6 +1027,8 @@ fn observe(source_volume_guid: &str, include_storage: bool) -> io::Result<Observ
         hosted_storage_enumerated: true,
         completed_catalog_enumeration: false,
         provider_inventory_completed: true,
+        shadow_copy_query_hresult,
+        shadow_copies,
         inflight_snapshot_operations_excluded: false,
         source_exclusion_proven: false,
         execution_authorized: false,
@@ -903,6 +1112,39 @@ fn wide_string(value: *const u16) -> io::Result<String> {
     }
     Err(invalid("VSS string exceeds the bounded string budget"))
 }
+/// A string VSS may leave out: empty then.
+fn optional_wide_string(value: *const u16) -> io::Result<String> {
+    if value.is_null() {
+        Ok(String::new())
+    } else {
+        wide_string(value)
+    }
+}
+/// The volume Windows runs from, as a root path ("C:\\") and as the
+/// NUL-terminated string VSS takes. It is online and writable for as long
+/// as the run lasts, whatever state the run puts its source in.
+fn windows_volume() -> io::Result<(String, Vec<u16>)> {
+    let mut directory = vec![0u16; 32768];
+    // SAFETY: initialized bounded WCHAR buffer, no environment path input.
+    let length =
+        unsafe { GetSystemDirectoryW(directory.as_mut_ptr(), directory.len() as u32) } as usize;
+    if length == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if length < 3
+        || length >= directory.len()
+        || !u8::try_from(directory[0]).is_ok_and(|unit| unit.is_ascii_alphabetic())
+        || directory[1] != u16::from(b':')
+        || directory[2] != u16::from(b'\\')
+    {
+        return Err(invalid(
+            "Windows' own directory is not on a volume with a drive letter",
+        ));
+    }
+    let root = String::from_utf16_lossy(&directory[..3]);
+    let wide = directory[..3].iter().copied().chain(Some(0)).collect();
+    Ok((root, wide))
+}
 fn volume_guid(value: &str) -> io::Result<String> {
     if value.len() != 49 {
         return Err(invalid(
@@ -955,6 +1197,165 @@ fn invalid(message: impl Into<String>) -> io::Error {
 mod refusal_tests {
     use super::*;
 
+    const BACKUP_PROVIDER: &str = "11111111-2222-3333-4444-555555555555";
+    const OTHER_VOLUME: &str = "\\\\?\\Volume{other}\\";
+
+    /// A provider of a backup product, with what it answered when asked.
+    fn backup_provider(asked: Option<(i32, i32)>) -> Provider {
+        Provider {
+            id: BACKUP_PROVIDER.into(),
+            class_id: "66666666-7777-8888-9999-000000000000".into(),
+            name: "Some Backup VSS Provider".into(),
+            kind: 2,
+            version: "9.1".into(),
+            hosted_diff_areas_query_completed: false,
+            storage_role: UNKNOWN_ROLE,
+            asked: asked.map(|(before_hresult, after_hresult)| ProviderAnswers {
+                api: "IVssBackupComponents::IsVolumeSupported",
+                volume: "C:\\".into(),
+                before_hresult,
+                after_hresult,
+            }),
+        }
+    }
+
+    fn refusal(observation: &Observation) -> String {
+        assert!(observation.provider_notes().is_empty());
+        observation
+            .require_observed_catalog_clear()
+            .unwrap_err()
+            .to_string()
+    }
+
+    #[test]
+    fn a_provider_the_converter_does_not_know_is_passed_over_only_when_it_holds_nothing() {
+        // Where every provider is known there is nothing to say.
+        assert!(clear().provider_notes().is_empty());
+
+        // It answered before and after the list was read, and the machine
+        // has no shadow copy: the volume converts, with a note naming it.
+        let mut admitted = clear();
+        admitted.providers.push(backup_provider(Some((S_OK, S_OK))));
+        admitted.shadow_copy_query_hresult = Some(S_FALSE);
+        admitted.require_observed_catalog_clear().unwrap();
+        let notes = admitted.provider_notes();
+        assert_eq!(notes.len(), 1);
+        assert!(
+            notes[0].starts_with("A shadow-copy (VSS) provider")
+                && notes[0].contains("\"Some Backup VSS Provider\" version 9.1")
+                && notes[0].contains("full backup"),
+            "{}",
+            notes[0]
+        );
+        // Shadow copies of another provider, of another volume, change nothing.
+        admitted.shadow_copy_query_hresult = Some(S_OK);
+        admitted.shadow_copies.push(ShadowCopy {
+            id: "aaaaaaaa".into(),
+            provider_id: guid(SOFTWARE_PROVIDER),
+            original_volume: OTHER_VOLUME.into(),
+        });
+        admitted.require_observed_catalog_clear().unwrap();
+        assert_eq!(admitted.provider_notes().len(), 1);
+        // The inventory is the same one when the provider is there both times.
+        assert!(admitted.same_source_and_provider_inventory(&admitted.clone()));
+        assert!(!admitted.same_source_and_provider_inventory(&clear()));
+
+        // A shadow copy of its own, of whatever volume: refused, and the
+        // refusal names the provider and the copy.
+        let mut holds = admitted.clone();
+        holds.shadow_copies.push(ShadowCopy {
+            id: "bbbbbbbb".into(),
+            provider_id: BACKUP_PROVIDER.into(),
+            original_volume: OTHER_VOLUME.into(),
+        });
+        let said = refusal(&holds);
+        assert!(
+            said.contains("Some Backup VSS Provider")
+                && said.contains("It holds 1 shadow copy on this machine")
+                && said.contains("{bbbbbbbb}")
+                && said.contains(OTHER_VOLUME),
+            "{said}"
+        );
+        holds.shadow_copies.push(ShadowCopy {
+            id: "cccccccc".into(),
+            provider_id: BACKUP_PROVIDER.into(),
+            original_volume: OTHER_VOLUME.into(),
+        });
+        assert!(refusal(&holds).contains("It holds 2 shadow copies"));
+
+        // No answer, the first time or the second.
+        let veto = 0x8004_230fu32 as i32;
+        for answers in [(veto, S_OK), (S_OK, veto), (E_UNEXPECTED, E_UNEXPECTED)] {
+            let mut silent = clear();
+            silent.providers.push(backup_provider(Some(answers)));
+            silent.shadow_copy_query_hresult = Some(S_FALSE);
+            let said = refusal(&silent);
+            assert!(
+                said.contains("Some Backup VSS Provider") && said.contains("did not answer"),
+                "{said}"
+            );
+        }
+        let said = {
+            let mut silent = clear();
+            silent.providers.push(backup_provider(Some((veto, S_OK))));
+            silent.shadow_copy_query_hresult = Some(S_FALSE);
+            refusal(&silent)
+        };
+        assert!(said.contains("0x8004230f and 0x00000000"), "{said}");
+
+        // The machine's shadow copies were not listed, or not asked for.
+        for listed in [Some(0x8004_2302u32 as i32), None] {
+            let mut unlisted = clear();
+            unlisted.providers.push(backup_provider(Some((S_OK, S_OK))));
+            unlisted.shadow_copy_query_hresult = listed;
+            let said = refusal(&unlisted);
+            assert!(
+                said.contains("did not list the machine's shadow copies")
+                    && said.contains(if listed.is_some() {
+                        "0x80042302"
+                    } else {
+                        "none"
+                    }),
+                "{said}"
+            );
+        }
+
+        // A shadow copy of the volume itself on the list, which Windows did
+        // not report when asked about the volume.
+        let mut unreported = admitted.clone();
+        unreported.shadow_copies.push(ShadowCopy {
+            id: "dddddddd".into(),
+            provider_id: BACKUP_PROVIDER.into(),
+            original_volume: "VOLUME".into(),
+        });
+        let said = refusal(&unreported);
+        assert!(
+            said.contains("{dddddddd}") && said.contains("did not report"),
+            "{said}"
+        );
+
+        // Windows' own provider under another kind is not the one known,
+        // and no other may stand in for it.
+        let mut odd = clear();
+        odd.providers[0].kind = 2;
+        odd.providers[0].storage_role = UNKNOWN_ROLE;
+        odd.providers[0].asked = backup_provider(Some((S_OK, S_OK))).asked;
+        odd.shadow_copy_query_hresult = Some(S_FALSE);
+        let said = refusal(&odd);
+        assert!(
+            said.contains("Windows' own shadow-copy provider is missing"),
+            "{said}"
+        );
+        // A role of a known provider on one that is not it does not pass.
+        let mut posing = clear();
+        posing.providers.push(Provider {
+            storage_role: "hyperv_host_vm_image",
+            ..backup_provider(Some((S_OK, S_OK)))
+        });
+        posing.shadow_copy_query_hresult = Some(S_FALSE);
+        assert!(refusal(&posing).contains("was not asked"));
+    }
+
     fn clear() -> Observation {
         Observation {
             schema_version: 1,
@@ -977,12 +1378,15 @@ mod refusal_tests {
                 version: "1.0.0.7".into(),
                 hosted_diff_areas_query_completed: true,
                 storage_role: "guest_local_differential_storage",
+                asked: None,
             }],
             hosted_diff_areas: Vec::new(),
             hosted_diff_area_query_hresult: Some(S_OK),
             hosted_storage_enumerated: true,
             completed_catalog_enumeration: true,
             provider_inventory_completed: true,
+            shadow_copy_query_hresult: None,
+            shadow_copies: Vec::new(),
             inflight_snapshot_operations_excluded: false,
             source_exclusion_proven: false,
             execution_authorized: false,
@@ -1004,17 +1408,10 @@ mod refusal_tests {
             "{refusal}"
         );
 
-        // A provider of a backup product: named, and the volume is said to be clear.
+        // A provider of a backup product that was not asked anything:
+        // named, and the volume is said to be clear.
         let mut provider = clear();
-        provider.providers.push(Provider {
-            id: "11111111-2222-3333-4444-555555555555".into(),
-            class_id: String::new(),
-            name: "Some Backup VSS Provider".into(),
-            kind: 2,
-            version: "9.1".into(),
-            hosted_diff_areas_query_completed: false,
-            storage_role: "unknown",
-        });
+        provider.providers.push(backup_provider(None));
         let refusal = provider
             .require_observed_catalog_clear()
             .unwrap_err()
@@ -1022,6 +1419,7 @@ mod refusal_tests {
         assert!(
             refusal.contains("Some Backup VSS Provider")
                 && refusal.contains("11111111-2222-3333-4444-555555555555")
+                && refusal.contains("was not asked")
                 && refusal.contains("The volume itself has no shadow copies"),
             "{refusal}"
         );
@@ -1037,6 +1435,7 @@ mod refusal_tests {
             version: "1.0.0.1".into(),
             hosted_diff_areas_query_completed: false,
             storage_role: "remote_file_share_no_local_storage",
+            asked: None,
         });
         server.require_observed_catalog_clear().unwrap();
         // Known by identity, class and kind together.
@@ -1057,15 +1456,6 @@ mod refusal_tests {
             None
         );
         assert_eq!(known_storage_role(NULL_GUID, FILESHARE_CLASS, 4), None);
-        // The refusal a run gives before it has asked about the volume
-        // names the provider and does not speak of the volume.
-        let early = unknown_provider("Some Backup VSS Provider", "9.1", "1111", "2222", 2);
-        assert!(
-            early.contains("Some Backup VSS Provider")
-                && early.contains("backup software")
-                && !early.contains("has no shadow copies"),
-            "{early}"
-        );
 
         // Snapshot storage of another volume kept on this one.
         let mut storage = clear();

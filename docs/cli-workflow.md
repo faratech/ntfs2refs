@@ -69,8 +69,8 @@ seconds on one of 23,000 files. It prints:
   short names; encrypted, temporary, offline or `compact /exe` files; reparse
   points, streams and names the converter does not carry over; quotas in use;
   two names in a directory that differ only by case; shadow copies, and a
-  shadow-copy provider the
-  converter does not know; a volume marked dirty. On a disk with other
+  shadow-copy provider of backup software that holds one or does not
+  answer; a volume marked dirty. On a disk with other
   partitions also what keeps the disk from going offline: a page file or
   the crash-dump file of the running Windows on it, and shadow copies of a
   volume beside this one.
@@ -293,6 +293,13 @@ Not carried over, and said so by the run:
 | 8.3 short names, with `--short-names drop` | ReFS has no short names | Every file and directory is created under its long name; each short name is kept in the run's records (`source-short-names-not-carried.json`). A program that stored a path in its short form no longer finds it. Without the option the volume is refused, see below |
 | The case-sensitive mark of a directory | WSL and Git set it on the directories they make; the converter does not set it on the new volume | Where no two names in the directory differ only by case, every name stays reachable. The directories are listed in the run's records (`case-sensitive-directories`) and their number is printed before the prompt. Windows lets a directory on ReFS be marked again with `fsutil file setCaseSensitiveInfo`; the lab's Windows 11 (an Insider build) stopped with a bugcheck both times a ReFS volume with such a directory was taken offline, so try it where a restart costs nothing |
 
+Backup software, and the tools of some hypervisors, install a shadow-copy
+provider of their own. Where such a provider answers Windows and holds no
+shadow copy on the machine, the conversion goes ahead and the run names the
+provider in a note. Software that keeps track of which parts of a volume
+changed since its last backup will not recognise the converted volume: make
+a full backup afterwards.
+
 Refused before anything is written, each with what was found and what to do:
 
 | Found | Do |
@@ -300,7 +307,7 @@ Refused before anything is written, each with what was found and what to do:
 | 8.3 short names (their number and one of them are given) | `fsutil 8dot3name strip /s /f E:\`, then `fsutil 8dot3name set E: 1`; or convert with `--short-names drop`, which leaves them behind and lists them |
 | BitLocker | Decrypt the volume: `manage-bde -off E:`; suspending is not enough |
 | Shadow copies of the volume, or snapshot storage kept on it | `vssadmin delete shadows /for=E:` |
-| A shadow-copy provider other than Windows' own, Hyper-V's and Windows Server's for remote file shares (backup software) | The provider is named. No volume is converted while it is installed |
+| A shadow-copy provider of backup software (any but Windows' own, Hyper-V's and Windows Server's for remote file shares) that holds a shadow copy on the machine, or does not answer when Windows asks it | The provider is named, and the shadow copy. Delete its shadow copies or let the backup that made them finish; a provider that does not answer has to be repaired or removed |
 | EFS-encrypted files | `cipher /d` |
 | Files with the TEMPORARY or OFFLINE attribute | Clear the attribute, or move the files |
 | Cloud placeholders, `compact /exe` files, Data Deduplication, WSL files | The kind is named, with the record number to find the file by |

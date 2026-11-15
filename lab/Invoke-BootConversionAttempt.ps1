@@ -851,6 +851,26 @@ try {
         wall_seconds = if ($state -and $state.terminal) { $state.terminal.wall_seconds } else { $null }
         peak_working_set_bytes = if ($state -and $state.terminal) { $state.terminal.peak_working_set_bytes } else { $null }
         stderr_tail = if ($state) { @($state.stderr) } else { @() }; worker_error = if ($state) { $state.worker_error } else { $null } }
+    # What the control OS's own disks did meanwhile. A full run once stood
+    # still for 16 minutes while each of its disk I/Os took more than 30 s,
+    # three minutes after Windows' automatic maintenance had started there,
+    # and only the control OS's logs said so (issue 132).
+    try {
+        $disks = Invoke-Command -Session $session -ErrorAction Stop -ScriptBlock {
+            $boot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime
+            $slow = @(Get-WinEvent -FilterHashtable @{ LogName = 'Microsoft-Windows-Storage-Storport/Operational'; Id = 557; StartTime = $boot } -ErrorAction SilentlyContinue)
+            $task = Get-ScheduledTask -TaskPath '\Microsoft\Windows\Defrag\' -TaskName 'ScheduledDefrag' -ErrorAction SilentlyContinue | Get-ScheduledTaskInfo -ErrorAction SilentlyContinue
+            [pscustomobject]@{
+                slow = $slow.Count
+                first = if ($slow.Count) { $slow[-1].TimeCreated.ToString('HH:mm:ss') } else { $null }
+                last = if ($slow.Count) { $slow[0].TimeCreated.ToString('HH:mm:ss') } else { $null }
+                maintenance = if ($task -and $task.LastRunTime -ge $boot) { $task.LastRunTime.ToString('HH:mm:ss') } else { $null }
+            }
+        }
+        $verdict.control_os = [ordered]@{ disk_io_over_30_seconds = $disks.slow; first = $disks.first; last = $disks.last; maintenance_started = $disks.maintenance }
+        if ($disks.slow) { Say "the control OS reported $($disks.slow) disk I/O(s) that took more than 30 s, from $($disks.first) to $($disks.last)$(if ($disks.maintenance) { "; its automatic maintenance had started at $($disks.maintenance)" }): the time this run took is not the converter's alone" }
+        elseif ($disks.maintenance) { Say "the control OS started its automatic maintenance at $($disks.maintenance); no disk I/O took more than 30 s" }
+    } catch { Say "the control OS's disk latency was not read: $($_.Exception.Message)" }
     Phase 'convert'
     if ($InterruptAt) {
         # The interruption under test: the converter stopped at the named

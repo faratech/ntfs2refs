@@ -265,19 +265,63 @@ pub fn verify_owned(
     directory: bool,
     relative_target_component: &[u16],
 ) -> io::Result<Observation> {
+    let examined = examine_parent(parent)?;
+    verify_owned_in(
+        parent,
+        &examined,
+        canonical,
+        alias,
+        directory,
+        relative_target_component,
+    )
+}
+
+/// A held parent directory as a link's verification finds it: its identity,
+/// its path on its volume, that it is an ordinary directory and that it has
+/// no reparse point. A directory holds many links, and a caller that verifies
+/// them through one held handle examines the parent once for all of them
+/// ([`verify_owned_in`]) instead of once for each: on the full Windows volume
+/// that was a third of the opens, questions and closes of 112,609 links, in
+/// each of three passes.
+pub struct ExaminedParent {
+    before: Snapshot,
+}
+
+/// Examines `parent` as [`verify_owned`] does first of all. What it finds
+/// holds for as long as the caller holds this handle.
+pub fn examine_parent(parent: &File) -> io::Result<ExaminedParent> {
+    let before = snapshot(parent, true).map_err(|e| of(PARENT, e))?;
+    if reparse_native::capture(parent)?.is_some() {
+        return Err(invalid(
+            "held derived alias has different native reparse bytes or type",
+        ));
+    }
+    Ok(ExaminedParent { before })
+}
+
+/// [`verify_owned`] with a parent that was examined through this same held
+/// handle. Every check is the one `verify_owned` makes; the parent's own are
+/// in `examined`.
+pub fn verify_owned_in(
+    parent: &File,
+    examined: &ExaminedParent,
+    canonical: &File,
+    alias: &File,
+    directory: bool,
+    relative_target_component: &[u16],
+) -> io::Result<Observation> {
     let expected = Point::relative_component_alias(relative_target_component)?;
-    let parent_before = snapshot(parent, true).map_err(|e| of(PARENT, e))?;
+    let parent_before = &examined.before;
     let canonical_before = snapshot(canonical, directory).map_err(|e| of(CANONICAL, e))?;
     let alias_before = snapshot(alias, directory).map_err(|e| of(ALIAS, e))?;
     let alias_component = validate_pair(
-        &parent_before,
+        parent_before,
         &canonical_before,
         &alias_before,
         relative_target_component,
     )?;
     let canonical_point = reparse_native::capture(canonical)?;
-    if reparse_native::capture(parent)?.is_some()
-        || reparse_native::capture(alias)?.as_ref() != Some(&expected)
+    if reparse_native::capture(alias)?.as_ref() != Some(&expected)
         || u32::from_le_bytes(alias_before.tag[..4].try_into().unwrap()) & 0x400 == 0
         || u32::from_le_bytes(alias_before.tag[4..].try_into().unwrap()) != expected.tag()
         || (!directory && u64::from_le_bytes(alias_before.standard[8..16].try_into().unwrap()) != 0)
@@ -293,7 +337,7 @@ pub fn verify_owned(
         && (snapshot(canonical, directory)? != canonical_before
             || reparse_native::capture(canonical)? != canonical_point
             || snapshot(alias, directory)? != alias_before
-            || !same_parent(&parent_before, &snapshot(parent, true)?))
+            || !same_parent(parent_before, &snapshot(parent, true)?))
     {
         return Err(invalid(
             "derived alias verification lost stable actual target/alias/parent identity",

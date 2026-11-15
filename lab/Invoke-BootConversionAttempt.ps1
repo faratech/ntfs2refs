@@ -672,8 +672,9 @@ try {
     $verdict.drive_optimization = if ($WithDriveOptimization) { 'left on' } else {
         try {
             Invoke-Command -Session $session -ErrorAction Stop -ScriptBlock {
-                $ErrorActionPreference = 'Stop'
-                $null = Disable-ScheduledTask -TaskPath '\Microsoft\Windows\Defrag\' -TaskName 'ScheduledDefrag'
+                # -ErrorAction on the call, not the preference variable: a
+                # variable set here stays set in the session.
+                $null = Disable-ScheduledTask -TaskPath '\Microsoft\Windows\Defrag\' -TaskName 'ScheduledDefrag' -ErrorAction Stop
                 Stop-ScheduledTask -TaskPath '\Microsoft\Windows\Defrag\' -TaskName 'ScheduledDefrag' -ErrorAction SilentlyContinue
             }
             'switched off for this run'

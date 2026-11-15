@@ -490,7 +490,14 @@ fn read(
             .refusals
             .push(ntfs_admission::VOLUME_FLAGS_REQUIREMENT.to_owned());
     }
-    if let Err(error) = crate::general_source_admission::resource::refuse_short_names(&raw) {
+    if crate::short_name_disposition::dropped() {
+        let (count, example) = crate::general_source_admission::resource::short_name_census(&raw)?;
+        if count != 0 {
+            report
+                .notes
+                .push(crate::short_name_disposition::note(count, &example));
+        }
+    } else if let Err(error) = crate::general_source_admission::resource::refuse_short_names(&raw) {
         report.refusals.push(error.to_string());
     }
     for index in indexes

@@ -565,7 +565,8 @@ fn run() -> Result<u8> {
                              "record": "the directories are kept in the run's records and their number is printed before the prompt"},
                         ],
                         "refused_by_name": [
-                            {"what": "8.3 short names", "remedy": "fsutil 8dot3name strip, then fsutil 8dot3name set <drive>: 1"},
+                            {"what": "8.3 short names", "remedy": "fsutil 8dot3name strip, then fsutil 8dot3name set <drive>: 1",
+                             "or": "--short-names drop converts without them: every object under its long name, each short name kept in the run's records"},
                             {"what": "a BitLocker-encrypted volume", "remedy": "decrypt it (manage-bde -off)"},
                             {"what": "shadow copies of the volume, snapshot storage kept on it, or a shadow-copy provider other than Windows' own, Hyper-V's and Windows Server's for remote file shares",
                              "remedy": "delete the shadow copies; the provider is named"},

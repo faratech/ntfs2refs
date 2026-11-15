@@ -62,6 +62,14 @@ struct MetadataPin {
     #[serde(skip)]
     arena_lease: Option<ArtifactLease>,
 }
+/// An object whose 8.3 short names are not carried over.
+#[derive(Serialize)]
+struct ShortNamesNotCarried {
+    record_number: u64,
+    sequence_number: u16,
+    path: Option<String>,
+    short_names: Vec<String>,
+}
 /// A directory whose case-sensitive mark is not set on the target.
 #[derive(Serialize)]
 struct CaseSensitiveDirectory {
@@ -682,6 +690,19 @@ fn short_names(
 /// one stopped it with "source name/link domain is unsupported or
 /// incomplete". (A Windows boot volume's become links beside the long names.)
 pub(crate) fn refuse_short_names(raw: &PagedInspection) -> Result<()> {
+    let (count, example) = short_name_census(raw)?;
+    if count == 0 {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "{count} file(s) and directories on this volume have an 8.3 short name{example}. ReFS has no short names: {}",
+        ntfs_admission::SHORT_NAME_REMEDY
+    )
+}
+
+/// How many objects of the volume have an 8.3 short name, and one of them
+/// in words (" (for example \\path, also named SHORT~1)"), or nothing.
+pub(crate) fn short_name_census(raw: &PagedInspection) -> Result<(u64, String)> {
     let mut count = 0u64;
     let mut first = None;
     for ordinal in 0..raw.blocker_count() {
@@ -693,10 +714,10 @@ pub(crate) fn refuse_short_names(raw: &PagedInspection) -> Result<()> {
             }
         }
     }
-    if count == 0 {
-        return Ok(());
-    }
     let mut example = String::new();
+    if count == 0 {
+        return Ok((0, example));
+    }
     if let Some(file) = first
         .map(|number| raw.find_record(number, None))
         .transpose()?
@@ -714,10 +735,7 @@ pub(crate) fn refuse_short_names(raw: &PagedInspection) -> Result<()> {
             example = format!(" (for example \\{}, also named {short})", path.join("\\"));
         }
     }
-    anyhow::bail!(
-        "{count} file(s) and directories on this volume have an 8.3 short name{example}. ReFS has no short names: {}",
-        ntfs_admission::SHORT_NAME_REMEDY
-    )
+    Ok((count, example))
 }
 
 fn guarded_collection_failure(
@@ -1139,8 +1157,15 @@ impl ResourceSourceContext {
                 raw.header().geometry == geometry,
                 "frozen source geometry differs from online capture"
             );
+            // A data volume's short names refuse it, unless the run was
+            // asked to leave them behind: they are then listed below, in
+            // the run's records, and no object gets one on the new volume.
+            let short_names_dropped = binding.layout_profile
+                != n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+                && crate::short_name_disposition::dropped();
             if binding.layout_profile
                 != n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+                && !short_names_dropped
             {
                 refuse_short_names(&raw)?;
             }
@@ -1524,6 +1549,13 @@ impl ResourceSourceContext {
                 (0u64, 0u64, 0u64, 0u64);
             let (mut raw_directories, mut user_case_matched, mut internal_directories) =
                 (0u64, 0u64, 0u64);
+            // Short names that are left behind: counted and all archived.
+            let mut short_names_left = 0u64;
+            let mut short_names_writer = SortedRecordWriter::new(
+                &output.join("short-names-not-carried"),
+                *b"N2RSHORT",
+                &scratch,
+            )?;
             // Directories marked case-sensitive: counted, one named, all archived.
             let (mut case_marks, mut case_mark_example) = (0u64, None::<String>);
             let mut case_marks_writer = SortedRecordWriter::new(
@@ -1572,6 +1604,26 @@ impl ResourceSourceContext {
                         }
                     }
                     no_dos &= file.names.iter().all(|name| name.namespace != 2);
+                    if short_names_dropped && file.names.iter().any(|name| name.namespace == 2) {
+                        short_names_writer.push(
+                            key(file.record_number),
+                            &ShortNamesNotCarried {
+                                record_number: file.record_number,
+                                sequence_number: file.sequence_number,
+                                path: ntfs_admission::paged::refused_object_path(&raw, &file)
+                                    .map(|path| format!("\\{}", path.join("\\"))),
+                                short_names: file
+                                    .names
+                                    .iter()
+                                    .filter(|name| name.namespace == 2)
+                                    .map(|name| String::from_utf16_lossy(&name.name_utf16))
+                                    .collect(),
+                            },
+                        )?;
+                        short_names_left = short_names_left
+                            .checked_add(1)
+                            .context("short-name count overflow")?;
+                    }
                     let role = ntfs_admission::paged::internal_role(&raw, &file)?;
                     ensure!(
                         role == row.internal_replacement_role,
@@ -1704,6 +1756,29 @@ impl ResourceSourceContext {
             let rows_pin = rows_writer.finish()?;
             let replacements_pin = replacements_writer.finish()?;
             let case_marks_pin = case_marks_writer.finish()?;
+            let short_names_pin = short_names_writer.finish()?;
+            if short_names_left != 0 {
+                let (_, example) = short_name_census(&raw)?;
+                println!(
+                    "{}",
+                    crate::short_name_disposition::note(short_names_left, &example)
+                );
+                save(
+                    output,
+                    "source-short-names-not-carried.json",
+                    &serde_json::json!({
+                        "kind":"short-names-not-carried-over-v1",
+                        "source_inspection_sha256":inspection_sha,
+                        "objects":short_names_left, "records":&short_names_pin,
+                        "requested_with":"--short-names drop",
+                        "target_has_short_names":false,
+                        "policy":"every object is created under its long name; its 8.3 short names are listed in the records and not carried over",
+                    }),
+                    &scratch,
+                    &mut metadata,
+                    &mut reservations,
+                )?;
+            }
             if case_marks != 0 {
                 println!(
                     "{}",
@@ -1753,7 +1828,11 @@ impl ResourceSourceContext {
             // Windows owner may account for them in its held, exact derived plan;
             // actual target preservation remains a separate final obligation.
             n2r_win32::perf::step("short names and admission gates");
-            let short_policy = short_names(&raw, &native, no_dos || windows_aliases.is_some());
+            let short_policy = short_names(
+                &raw,
+                &native,
+                no_dos || windows_aliases.is_some() || short_names_dropped,
+            );
             let mut unresolved_writer = SortedRecordWriter::new(
                 &output.join("unresolved-source-blockers"),
                 *b"N2RBLOCK",
@@ -1783,6 +1862,10 @@ impl ResourceSourceContext {
                     false
                 };
                 if windows_alias_covered {
+                    continue;
+                }
+                // Left behind at the user's word, and listed above.
+                if blocker.code == "dos_short_name" && short_names_dropped {
                     continue;
                 }
                 if blocker.code == "unsupported_attribute"

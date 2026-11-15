@@ -48,6 +48,11 @@ enum Command {
         /// diagnose run or a rollback.
         #[arg(long)]
         exact: bool,
+        /// For a run made with `--short-names drop`: a short name that is
+        /// gone is counted (`short_names_dropped`) instead of being a
+        /// difference. Nothing else is allowed that is not allowed anyway.
+        #[arg(long, conflicts_with = "exact")]
+        short_names_dropped: bool,
     },
 }
 
@@ -111,10 +116,13 @@ fn main() -> Result<ExitCode> {
             after,
             report,
             exact,
+            short_names_dropped,
         } => {
             let (before, after) = (read(&before)?, read(&after)?);
             let comparison = if exact {
                 volume_manifest::compare_exact(&before, &after)
+            } else if short_names_dropped {
+                volume_manifest::compare_without_short_names(&before, &after)
             } else {
                 volume_manifest::compare(&before, &after)
             };
@@ -130,6 +138,7 @@ fn main() -> Result<ExitCode> {
                     "before_objects": comparison.before_objects,
                     "after_objects": comparison.after_objects,
                     "short_names_as_links": comparison.short_names_as_links,
+                    "short_names_dropped": comparison.short_names_dropped,
                     "allowed": comparison.allowed,
                     "differences": comparison.difference_count,
                     "kinds": comparison.difference_kinds,

@@ -67,6 +67,13 @@ pub struct DriveArgs {
     /// volumes; there is no fallback from one to the other.
     #[arg(long, requires = "drive", value_parser = ["dev-drive", "standard"])]
     pub target_format: Option<String>,
+    /// What to do with the 8.3 short names of a data volume, which ReFS
+    /// does not have: `refuse` the volume (the default), with the commands
+    /// that remove them; or `drop` them, converting with every object under
+    /// its long name and the short names kept in the run's records. A
+    /// program that stored a path in its short form no longer finds it.
+    #[arg(long, requires = "drive", value_parser = ["refuse", "drop"], conflicts_with_all = ["windows_boot_volume", "recover", "list"])]
+    pub short_names: Option<String>,
     /// Allocation unit of the ReFS target in bytes: 4096 (default) or 65536.
     /// Data stays where it is only if it lies on boundaries of this size, so
     /// 65536 suits a source with clusters of 64 KiB or larger; from smaller
@@ -764,6 +771,10 @@ mod windows {
         let mode = args.execution_mode()?;
         if args.unattended()? {
             crate::confirmation::assume_yes();
+        }
+        if args.short_names.as_deref() == Some("drop") {
+            // Read where the volume is checked and where it is admitted.
+            crate::short_name_disposition::drop_for_this_run();
         }
         if mode == crate::execution_mode::ExecutionMode::Diagnose {
             // A backstop beneath the routes: nothing in this process may now
@@ -2134,6 +2145,32 @@ mod tests {
         Cli::try_parse_from(arguments).map(|cli| cli.drive)
     }
     const NONCE: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+
+    #[test]
+    fn short_names_are_refused_unless_the_run_is_asked_to_drop_them() {
+        // Nothing given: the volume's short names refuse it.
+        assert_eq!(parse(&[]).unwrap().short_names, None);
+        assert_eq!(
+            parse(&["--short-names", "refuse"])
+                .unwrap()
+                .short_names
+                .as_deref(),
+            Some("refuse")
+        );
+        assert_eq!(
+            parse(&["--short-names", "drop"])
+                .unwrap()
+                .short_names
+                .as_deref(),
+            Some("drop")
+        );
+        // It is one of the two, and a matter of data volumes: a Windows
+        // boot volume's short names become links.
+        assert!(parse(&["--short-names", "links"]).is_err());
+        assert!(parse(&["--short-names", "drop", "--windows-boot-volume"]).is_err());
+        // A check takes it, to say what a run with it would do.
+        assert!(parse(&["--short-names", "drop", "--check"]).is_ok());
+    }
 
     #[test]
     fn a_laboratory_hold_needs_its_own_acknowledgement() {

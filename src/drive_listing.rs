@@ -79,6 +79,15 @@ pub(super) fn before(root: &str, run: &Path) -> Result<()> {
 /// What the comparison found, as the lines a run prints.
 fn describe(comparison: &Comparison, report: &Path) -> Vec<String> {
     let mut lines = Vec::new();
+    // Short names the run was asked to leave behind.
+    let dropped = if comparison.short_names_dropped == 0 {
+        String::new()
+    } else {
+        format!(
+            " {} 8.3 short name(s) are gone, as asked with --short-names drop.",
+            comparison.short_names_dropped
+        )
+    };
     let accepted = if comparison.allowed.is_empty() {
         String::new()
     } else {
@@ -94,7 +103,7 @@ fn describe(comparison: &Comparison, report: &Path) -> Vec<String> {
     };
     if comparison.identical() {
         lines.push(format!(
-            "The volume lists as it did before the conversion: {} object(s) then, {} now{}.{accepted} Report: {}",
+            "The volume lists as it did before the conversion: {} object(s) then, {} now{}.{accepted}{dropped} Report: {}",
             comparison.before_objects,
             comparison.after_objects,
             if comparison.short_names_as_links == 0 {
@@ -141,7 +150,13 @@ pub(super) fn after(root: &str, run: &Path) -> Result<bool> {
     println!("Listing the converted volume and comparing it with the listing taken before.");
     let now = list(root, &run.join(AFTER))?;
     let then = read(&run.join(BEFORE))?;
-    let comparison = volume_manifest::compare(&then, &now);
+    // A run that was asked to leave short names behind is held to
+    // exactly that: a short name that is gone is counted, not a difference.
+    let comparison = if crate::short_name_disposition::dropped() {
+        volume_manifest::compare_without_short_names(&then, &now)
+    } else {
+        volume_manifest::compare(&then, &now)
+    };
     let report = run.join(REPORT);
     let mut out = BufWriter::new(
         File::create(&report).with_context(|| format!("creating {}", report.display()))?,

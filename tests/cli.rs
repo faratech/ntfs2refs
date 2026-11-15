@@ -260,6 +260,14 @@ fn capabilities_report_what_the_executable_enforces() {
             .unwrap()
             .starts_with("object IDs")
     );
+    // Short names: refused with the remedy, or left behind when asked.
+    assert!(
+        data_volume["refused_by_name"][0]["or"]
+            .as_str()
+            .unwrap()
+            .starts_with("--short-names drop")
+    );
+    assert!(ntfs2refs::ntfs_admission::SHORT_NAME_REMEDY.contains("--short-names drop"));
     assert!(
         ntfs2refs::ntfs_admission::SHORT_NAME_REMEDY.contains(
             data_volume["refused_by_name"][0]["remedy"]

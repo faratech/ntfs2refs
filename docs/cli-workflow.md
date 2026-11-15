@@ -290,13 +290,14 @@ Not carried over, and said so by the run:
 | Object IDs of files and directories | Windows gives one to the target of a shortcut; ReFS has none | Each is matched with the volume's object-ID index and kept in the run's records (`internal-indexes\object-ids-not-carried-over`); the run prints their number. A shortcut still finds its target by path |
 | NTFS compression | ReFS stores the data uncompressed | The data is the same; the volume needs room for it |
 | The change journal | It describes the NTFS volume | The converted volume starts a new one |
+| 8.3 short names, with `--short-names drop` | ReFS has no short names | Every file and directory is created under its long name; each short name is kept in the run's records (`source-short-names-not-carried.json`). A program that stored a path in its short form no longer finds it. Without the option the volume is refused, see below |
 | The case-sensitive mark of a directory | WSL and Git set it on the directories they make; the converter does not set it on the new volume | Where no two names in the directory differ only by case, every name stays reachable. The directories are listed in the run's records (`case-sensitive-directories`) and their number is printed before the prompt. Windows lets a directory on ReFS be marked again with `fsutil file setCaseSensitiveInfo`; the lab's Windows 11 (an Insider build) stopped with a bugcheck both times a ReFS volume with such a directory was taken offline, so try it where a restart costs nothing |
 
 Refused before anything is written, each with what was found and what to do:
 
 | Found | Do |
 |---|---|
-| 8.3 short names (their number and one of them are given) | `fsutil 8dot3name strip /s /f E:\`, then `fsutil 8dot3name set E: 1` |
+| 8.3 short names (their number and one of them are given) | `fsutil 8dot3name strip /s /f E:\`, then `fsutil 8dot3name set E: 1`; or convert with `--short-names drop`, which leaves them behind and lists them |
 | BitLocker | Decrypt the volume: `manage-bde -off E:`; suspending is not enough |
 | Shadow copies of the volume, or snapshot storage kept on it | `vssadmin delete shadows /for=E:` |
 | A shadow-copy provider other than Windows' own, Hyper-V's and Windows Server's for remote file shares (backup software) | The provider is named. No volume is converted while it is installed |
@@ -501,6 +502,7 @@ differences it accepts.
 | `--diagnose` `[--diagnose-limit N]` | Goes through the whole preparation without converting |
 | `--target-cluster-bytes 4096\|65536` | ReFS cluster size |
 | `--target-format dev-drive\|standard` | How Windows formats the new file system; standard is the default on Windows Server, dev-drive elsewhere |
+| `--short-names refuse\|drop` | What to do with a data volume's 8.3 short names: refuse the volume (the default), or convert without them and keep a list |
 | `--windows-boot-volume` | The volume is an installed Windows that is not running |
 | `--recover <dir> --recovery-sha256 <sum>` `[--rollback]` | Finishes, or undoes, an interrupted run |
 | `--yes` `--volume-serial XXXX-XXXX` | Runs without asking; see below |

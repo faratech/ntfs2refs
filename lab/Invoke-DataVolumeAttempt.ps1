@@ -163,6 +163,12 @@ param(
     # copy, 'dump' names it as the place Windows writes its crash dump to.
     # Each is undone when the attempt ends.
     [ValidateSet('', 'busy', 'snapshot', 'dump')][string]$SiblingState = '',
+    # Run the converter (and the check before it) with --short-names drop:
+    # a volume with 8.3 short names (-Features shortnames) then converts.
+    # The comparison is the one made for such a run: a short name that is
+    # gone is counted, nothing else is let through, and the converted
+    # volume must list no short name at all.
+    [switch]$DropShortNames,
     # Run the converter with --compare-listing: it lists the volume itself
     # before and after and compares. The harness's own listings are made as
     # always, and the two comparisons have to agree: a run whose own
@@ -717,6 +723,7 @@ public static class SiblingRaw {
     if ($SampleStacks) { $arguments += @('--sample-stacks', "$guestRoot\stacks.txt") }
     if ($Diagnose) { $arguments += '--diagnose' }
     if ($CompareListing) { $arguments += '--compare-listing' }
+    if ($DropShortNames) { $arguments += @('--short-names', 'drop') }
     # What --list says of the volume, as an elevated user sees it: whether a
     # conversion would take it, its serial number, and BitLocker.
     $listed = Invoke-Command -Session $session -ArgumentList $guestRoot -ScriptBlock {
@@ -746,6 +753,7 @@ public static class SiblingRaw {
         $checkArguments = @('--drive', 'V', '--scratch-directory', 'S:\datalab\runs', '--check')
         if ($TargetFormat -ne 'default') { $checkArguments += @('--target-format', $TargetFormat) }
         if ($TargetClusterBytes) { $checkArguments += @('--target-cluster-bytes', "$TargetClusterBytes") }
+        if ($DropShortNames) { $checkArguments += @('--short-names', 'drop') }
         $checked = Invoke-Command -Session $session -ArgumentList $guestRoot, $checkArguments, ([bool]$WriteLoad) -ScriptBlock {
             param($root, $arguments, $load)
             $writer = $null
@@ -963,11 +971,11 @@ public static class SiblingRaw {
     $returned = $run.filesystem -eq 'NTFS' -and $run.mounted -and -not $run.offline -and -not $run.read_only
     $listing = 'not-compared'
     if ($converted -or $returned) {
-        $compared = Invoke-Command -Session $session -ArgumentList $guestRoot, (-not $converted) -ScriptBlock {
-            param($root, $exact)
+        $compared = Invoke-Command -Session $session -ArgumentList $guestRoot, (-not $converted), ([bool]$DropShortNames) -ScriptBlock {
+            param($root, $exact, $dropped)
             $listed = & "$root\lab-volume-manifest.exe" capture --root 'V:\' --output "$root\manifest-after.jsonl" 2>&1
             if ($LASTEXITCODE -ne 0) { return [pscustomobject]@{ stage = 'capture-after'; exit = $LASTEXITCODE; differences = $null; listed = ($listed -join ' '); summary = '' } }
-            $arguments = @('compare'); if ($exact) { $arguments += '--exact' }
+            $arguments = @('compare'); if ($exact) { $arguments += '--exact' } elseif ($dropped) { $arguments += '--short-names-dropped' }
             $arguments += @('--before', "$root\manifest-before.jsonl", '--after', "$root\manifest-after.jsonl", '--report', "$root\manifest-report.json")
             $summary = & "$root\lab-volume-manifest.exe" $arguments 2>&1
             $exit = $LASTEXITCODE; $differences = $null; $kinds = @{}
@@ -978,7 +986,10 @@ public static class SiblingRaw {
                     foreach ($kind in $report.difference_kinds.PSObject.Properties) { $kinds[$kind.Name] = [int]$kind.Value }
                 } catch { $differences = $null }
             }
-            [pscustomobject]@{ stage = 'compare'; exit = $exit; differences = $differences; kinds = $kinds; listed = ($listed -join ' '); summary = ($summary -join ' ') }
+            $shortBefore = @(Select-String -LiteralPath "$root\manifest-before.jsonl" -Pattern '"short_name":"' -SimpleMatch).Count
+            $shortAfter = @(Select-String -LiteralPath "$root\manifest-after.jsonl" -Pattern '"short_name":"' -SimpleMatch).Count
+            [pscustomobject]@{ stage = 'compare'; exit = $exit; differences = $differences; kinds = $kinds; listed = ($listed -join ' '); summary = ($summary -join ' ')
+                short_before = $shortBefore; short_after = $shortAfter; short_dropped = $(if ($report -and $report.PSObject.Properties['short_names_dropped']) { [int]$report.short_names_dropped } else { 0 }) }
         }
         foreach ($leaf in 'manifest-after.jsonl', 'manifest-report.json') { try { Copy-Item -FromSession $session -LiteralPath "$guestRoot\$leaf" -Destination $records } catch { } }
         # Exit 0 with nothing counted is identical; exit 2 with a count is a
@@ -993,6 +1004,12 @@ public static class SiblingRaw {
         if ($listing -eq 'differs' -and -not $converted -and @($compared.kinds.Keys).Count -eq 2 -and
             $compared.kinds['unreadable before'] -gt 0 -and $compared.kinds['unreadable before'] -eq $compared.kinds['unreadable afterwards']) {
             $listing = 'unreadable-both-times'
+        }
+        if ($DropShortNames -and $converted) {
+            # A run that drops short names leaves none, and the comparison counted every one that was listed.
+            $verdict.short_names = [ordered]@{ listed_before = $compared.short_before; listed_after = $compared.short_after; counted_as_dropped = $compared.short_dropped }
+            Say "short names: $($compared.short_before) listed before, $($compared.short_after) after; $($compared.short_dropped) counted as dropped"
+            if ($listing -eq 'identical' -and ($compared.short_after -ne 0 -or $compared.short_dropped -ne $compared.short_before)) { $listing = 'differs' }
         }
         $verdict.manifest = [ordered]@{ result = $listing; exact = (-not $converted); stage = $compared.stage; exit = $compared.exit; differences = $compared.differences; listed = $compared.listed; summary = $compared.summary }
         Say "listing after the run: $($compared.listed)"

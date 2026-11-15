@@ -721,11 +721,14 @@ public static class SiblingRaw {
                     # The lab ends a process; it cannot cut power to the storage.
                     if ($atHold) { Get-Process -Name ntfs2refs -ErrorAction SilentlyContinue | Stop-Process -Force }
                 }
+                # A sample that cannot be taken is left out: the process may end, and
+                # the working files come and go, between the look and the reading.
+                $sample = { param($take) try { [long](& $take) } catch { 0L } }
                 $running = @(Get-Process -Name ntfs2refs -ErrorAction SilentlyContinue)
                 [pscustomobject]@{ ended = $ended; at_hold = $atHold; in_phase = $inPhase
-                    peak_working_set = [long]($running | Measure-Object PeakWorkingSet64 -Maximum).Maximum
-                    private_bytes = [long]($running | Measure-Object PrivateMemorySize64 -Maximum).Maximum
-                    working_bytes = [long](Get-ChildItem -LiteralPath 'S:\datalab\runs' -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum }
+                    peak_working_set = & $sample { ($running | Measure-Object PeakWorkingSet64 -Maximum).Maximum }
+                    private_bytes = & $sample { ($running | Measure-Object PrivateMemorySize64 -Maximum).Maximum }
+                    working_bytes = & $sample { (Get-ChildItem -LiteralPath 'S:\datalab\runs' -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum } }
             }
             foreach ($measure in 'peak_working_set', 'private_bytes', 'working_bytes') { if ($state.$measure -gt $usage[$measure]) { $usage[$measure] = $state.$measure } }
             $usage.samples++

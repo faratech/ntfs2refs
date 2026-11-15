@@ -7,6 +7,34 @@ See [AGENTS.md](../AGENTS.md) for the VM identities and standing rules, and the
 [feature matrix](../docs/feature-matrix.md) and the
 [recovery matrix](../docs/recovery-matrix.md) for what the attempts have shown.
 
+## The gate round
+
+Everything AGENTS.md asks for before a change is committed, for one build, on
+every lab VM, as one command:
+
+```powershell
+cargo build --locked --release --bin ntfs2refs --bin lab-volume-manifest
+Copy-Item target\release\ntfs2refs.exe, target\release\ntfs2refs.pdb, target\release\lab-volume-manifest.exe D:\builds\candidate
+.\lab\Invoke-GateRound.ps1 -Build D:\builds\candidate -Prefix g7
+```
+
+The build is a copy, so the tree can be built again while the round runs; the
+gates count for a commit only if its Rust sources are the ones the copy was
+built from. The round runs four sets, the first two at the same time: the
+fixtures and interrupted runs on the reference VM; the data-volume cases on
+the other Windows 11 VMs; then the full Windows volume, converted and booted,
+with the host to itself; then the Windows Server cases. `-Sets` picks among
+`fixtures`, `data`, `full` and `server`. It starts with the lab VMs off and
+leaves them off with its scratch disks deleted, prints one row a case (what it
+was to end as, what it ended as, whether the listing is identical, the
+converter's seconds) and exits 1 if a case ended otherwise. Its own output is
+in `<Build>\gate-<Prefix>`; each case keeps its records under
+`.lab\hyperv\attempts\<Prefix>-<case>` like any attempt. About 45 minutes for
+the first two sets, half an hour each for the other two.
+
+The sections below describe the attempts the round is made of; run one by
+itself to look into a failure.
+
 ## Existing checks
 
 Build the converter and independent listing tool using one shared build directory:

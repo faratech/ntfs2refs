@@ -162,6 +162,9 @@ Keep it that way. Before a change is committed:
    data volumes of 512-byte clusters and on a 4Kn disk, to both target units,
    and a lived-in one (`-Content lived-in -Acceptance`).
 
+`lab\Invoke-GateRound.ps1 -Build <dir> -Prefix <p>` runs all of 2 and 3 for a
+copy of a build, on every lab VM, and ends with one table (`lab/README.md`).
+
 Open, most useful first:
 
 1. Short names are visible: each 8.3 name is a link beside its long name, so

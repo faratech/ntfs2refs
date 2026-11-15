@@ -4,7 +4,7 @@ Converts an NTFS volume to ReFS in place, on the Windows machine that owns the
 disk. File data stays where it is on the disk wherever ReFS can use it there;
 only the file system around it is replaced.
 
-This is version 0.2.0-beta.1, a beta. Everything it has converted was a
+This is version 0.3.0-beta.1, a beta. Everything it has converted was a
 virtual disk in a lab, the largest holding 23 GB. Keep a backup you have
 restored from before, and read [what the lab showed and did not
 show](#what-has-been-shown) before trusting it with a volume.
@@ -31,6 +31,9 @@ NTFS partition whether it can be converted and, if not, why.
   (Windows 11); on another build the run says before it starts that it is the
   first.
 - An elevated terminal.
+- Free memory in proportion to the number of files: about 3 GB for 100,000
+  files and 16 GB for 500,000. `--check` gives the figure for a volume, and
+  a volume the memory is not enough for is refused before anything is built.
 - Working storage on a different disk (`--scratch-directory`). The run builds
   the new file system there and keeps there what it needs to undo its changes.
   The lab's Windows volume, with 22.9 GB in use, needed about 30 GB; a volume
@@ -91,6 +94,11 @@ Deduplication, disk quotas in use or two names in one directory that differ
 only by case, or was not dismounted cleanly. The guide lists each with its remedy, and
 [the feature matrix](docs/feature-matrix.md) has one row per NTFS feature.
 
+Backup software on the machine does not stand in the way unless its
+shadow-copy provider holds a shadow copy or does not answer Windows. The run
+names the provider; software that keeps track of what changed on a volume
+needs a full backup after the conversion.
+
 On a converted Windows volume each 8.3 short name becomes a link beside the
 long name, so `C:\PROGRA~1` still leads to `C:\Program Files`. The links are
 visible in Explorer.
@@ -127,10 +135,10 @@ find either command again when the screen is gone.
   offline and brought back. The converted Windows passed `sfc`, a DISM scan
   and a servicing change, and started again twice.
 
-Not shown: a physical disk; a volume holding more than 23 GB; a power cut to
-the storage itself (the lab turns a virtual machine off, and its disks are
-files of the host); a Windows build other than 26100 and 26300; a ReFS version
-other than 3.14.
+Not shown: a physical disk; a volume holding more than 23 GB or more than
+190,000 files; a power cut to the storage itself (the lab turns a virtual
+machine off, and its disks are files of the host); a Windows build other than
+26100 and 26300; a ReFS version other than 3.14.
 
 `ntfs2refs capabilities` prints what a given executable admits and refuses.
 

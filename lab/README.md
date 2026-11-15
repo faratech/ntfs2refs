@@ -72,7 +72,9 @@ second counts as one sample of a hundredth), and it slows the steps that are
 mostly such calls: rank steps by the `timing-steps:` lines, which are wall
 clock, and compare two builds with runs that have the host to themselves.
 
-`lab\perf` reads those records (Python 3, nothing to install):
+`lab\perf` reads those records (Python 3, nothing to install), and
+[docs/performance.md](../docs/performance.md) has the figures and how they
+are taken:
 
 | Script | What it prints |
 |---|---|

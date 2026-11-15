@@ -143,7 +143,7 @@ it lies on target-cluster boundaries; the rest goes through the working storage.
 
 The first goal is met: `lab\Invoke-BootConversionAttempt.ps1 -VmId <a lab VM>`
 converts the full Windows volume (143,580 objects, 112,609 short-name links) in
-under 30 minutes with an identical listing and boots it alone, Secure Boot on:
+22 minutes with an identical listing and boots it alone, Secure Boot on:
 `BOOTED-ON-REFS`. The second is met for every geometry Windows formats, to both
 target units. Not shown in the lab, because nothing there makes them: index
 records other than 4 KiB, a ReFS after 3.14, a build besides 26100 and 26300.
@@ -170,21 +170,26 @@ passes and its table is in the pull request: formatting, Clippy, all tests
 and every executable built in release mode, on that exact commit. GitHub
 Actions is not used (owner, 2026-11-15; `.github/CI.md`).
 
-Open, most useful first:
+Open, in the order of the owner's plan (#148), which is where to stop or
+reorder the work:
 
-1. Short names are visible: each 8.3 name is a link beside its long name, so
+1. Memory must not grow with the number of files, and a run has to be
+   extremely stable (owner, 2026-11-15). Today it takes about 34 KiB of free
+   memory a file; #129 has the census of what grows, the largest of it
+   reservations sized from the machine's memory and not from the volume. A
+   pass that works in batches takes its workspaces as spare memory
+   (`ArtifactArena::reserve_spare_ram`): never let memory that only buys
+   speed be what a run fails for.
+2. A fast default (`--verify fast|thorough`), with the final verification
+   in front of the handoff marker so that a failure can still be rolled
+   back (#148 phase 2, #110).
+3. Speed (#140, `docs/performance.md`). More threads help where a pass
+   opens and queries, not where it changes ReFS metadata; measure with
+   undisturbed runs and rank steps by `timing-steps:`.
+4. Short names are visible: each 8.3 name is a link beside its long name, so
    Explorer shows `PROGRA~1` in `C:\`. Hiding them (Hidden and System) is the
    owner's product decision; the listing comparison does not depend on it.
-2. Speed. A full run takes 28 to 30 minutes, spread thin: per-object Windows
-   calls on one thread, the three link passes (240 thread-seconds asking for
-   each handle's normalized path; listing each parent once would prove the
-   same), and hashing the 9 GB that move through the journal. Keep the mount
-   manager out of per-object paths. Profile with `-SampleStacks` first.
-3. A run cut off while it prepares is cancelled with the command it printed
+5. A run cut off while it prepares is cancelled with the command it printed
    at its start and started again (`-StopDuringPreparation` shows it);
    resuming a preparation after a power cut is still out of scope.
-4. Not shown: a physical disk, and more than 23 GB of data (#86).
-5. The number of files is limited by the run's memory ledger, not by the
-   machine: about 34 KiB of free memory a file (#129). The placement index's
-   prepayment of 8192 bytes a row is the largest term left; a ledger that
-   runs out names its largest reservations.
+6. Not shown: a physical disk, and more than 23 GB of data (#86).

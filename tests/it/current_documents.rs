@@ -1,6 +1,6 @@
 //! The documents that describe the tool as it is: the README, the guide, the
-//! two matrices, the lab guide and AGENTS.md. Everything else under `docs/`
-//! is history and says so in `docs/history/README.md`.
+//! two matrices, the measurements, the lab guide and AGENTS.md. Everything else
+//! under `docs/` is history and says so in `docs/history/README.md`.
 //!
 //! These checks keep the current ones from pointing at files that are gone
 //! and from naming a version other than the one the executable reports.
@@ -12,6 +12,7 @@ const CURRENT: &[&str] = &[
     "docs/cli-workflow.md",
     "docs/feature-matrix.md",
     "docs/recovery-matrix.md",
+    "docs/performance.md",
     "lab/README.md",
     "docs/history/README.md",
 ];

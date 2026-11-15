@@ -4,10 +4,9 @@ Runs the checks a pull request has to pass, locally, on one exact commit.
 
 .DESCRIPTION
 The checks are the ones the GitHub Actions workflow ran: the formatting, Clippy,
-every executable compiled under the release profile, all tests, and the two
-executables a release ships built and started once. GitHub Actions is not used
-for this repository (the owner's decision of 15 November 2026); this script is
-how a commit is checked before it is merged.
+all tests, and every executable built in release mode, the converter started
+once. GitHub Actions is not used for this repository (the owner's decision of
+15 November 2026); this script is how a commit is checked before it is merged.
 
 The commit is checked out into a worktree of its own, so that what is checked
 is that commit and nothing the working tree happens to hold, and built into
@@ -91,14 +90,15 @@ try {
     $row = Invoke-Check 'checks' 'cargo clippy --locked --workspace --all-targets' $cargo @('clippy', '--locked', '--workspace', '--all-targets')
     $text = @(Get-Content -LiteralPath $row.Log)
     $row.Detail = '{0} errors, {1} warnings (warnings are advisory)' -f @($text -match '^error').Count, @($text -match '^warning').Count
-    $row = Invoke-Check 'checks' 'cargo check --locked --workspace --bins --release' $cargo @('check', '--locked', '--workspace', '--bins', '--release')
     $row = Invoke-Check 'tests' 'cargo test --locked --workspace --all-targets' $cargo @('test', '--locked', '--workspace', '--all-targets')
     $passed = 0; $failures = 0; $ignored = 0
     foreach ($line in @(Get-Content -LiteralPath $row.Log) -match '^test result:') {
         if ($line -match '(\d+) passed; (\d+) failed; (\d+) ignored') { $passed += [int]$Matches[1]; $failures += [int]$Matches[2]; $ignored += [int]$Matches[3] }
     }
     $row.Detail = "$passed passed, $failures failed, $ignored ignored"
-    $row = Invoke-Check 'release' 'cargo build --locked --release --bin ntfs2refs --bin lab-volume-manifest' $cargo @('build', '--locked', '--release', '--bin', 'ntfs2refs', '--bin', 'lab-volume-manifest')
+    # Every executable of the workspace, the two a release ships among
+    # them, built and linked as a release builds them.
+    $row = Invoke-Check 'release' 'cargo build --locked --release --workspace --bins' $cargo @('build', '--locked', '--release', '--workspace', '--bins')
     $built = Join-Path $env:CARGO_TARGET_DIR 'release\ntfs2refs.exe'
     if ($row.Exit -eq 0) {
         $row = Invoke-Check 'release' 'ntfs2refs.exe --version' $built @('--version')

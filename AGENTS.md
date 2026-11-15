@@ -166,9 +166,9 @@ Keep it that way. Before a change is committed:
 copy of a build, on every lab VM, and ends with one table (`lab/README.md`).
 
 Before a pull request is merged, `lab\Invoke-Checks.ps1 -Commit <its head>`
-passes and its table is in the pull request: formatting, Clippy, the
-release-profile check, all tests and the release build, on that exact
-commit. GitHub Actions is not used (owner, 2026-11-15; `.github/CI.md`).
+passes and its table is in the pull request: formatting, Clippy, all tests
+and every executable built in release mode, on that exact commit. GitHub
+Actions is not used (owner, 2026-11-15; `.github/CI.md`).
 
 Open, most useful first:
 

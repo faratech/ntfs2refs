@@ -20,9 +20,8 @@ env:
   CARGO_TERM_COLOR: always
 
 # Three jobs side by side instead of one after the other. Every executable is
-# compiled: in the test job as it is built and linked for the tests, in the
-# checks job under the release profile. What is built and linked in release
-# mode is what a release ships.
+# built twice: in the test job for the tests, in the release job as a release
+# builds it.
 jobs:
   checks:
     name: Rust 1.98.1 / x64 MSVC / checks
@@ -62,13 +61,6 @@ jobs:
       - name: Run Clippy
         run: |
           cargo clippy --locked --workspace --all-targets
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      # Every executable of the workspace compiles under the release profile;
-      # none is linked here.
-      - name: Check every executable under the release profile
-        run: |
-          cargo check --locked --workspace --bins --release
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   tests:
@@ -127,11 +119,11 @@ jobs:
           $compiler
           if ($compiler -notcontains 'host: x86_64-pc-windows-msvc') { throw 'Windows MSVC host required.' }
 
-      # The two executables a release ships, by the command AGENTS.md and
-      # lab\New-Release.ps1 use.
+      # Every executable of the workspace, the two a release ships among
+      # them, as lab\Invoke-Checks.ps1 builds them.
       - name: Build the release executables
         run: |
-          cargo build --locked --release --bin ntfs2refs --bin lab-volume-manifest
+          cargo build --locked --release --workspace --bins
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & "target\$env:CARGO_BUILD_TARGET\release\ntfs2refs.exe" --version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

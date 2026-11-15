@@ -2,8 +2,8 @@
 
 **The checks run locally.** `lab\Invoke-Checks.ps1 -Commit <commit>` checks
 one exact commit in a worktree of its own with the pinned toolchain: the
-formatting, Clippy, every executable under the release profile, all tests,
-and the two executables a release ships built and started once. It prints a
+formatting, Clippy, all tests, and every executable built in release mode,
+the converter started once. It prints a
 table, writes it as Markdown with `-Report`, and exits 1 if a check failed.
 A change is integrated only when that table, for the commit being merged, is
 in its pull request with every check passed. GitHub Actions is not used for
@@ -23,13 +23,11 @@ repository's static CRT configuration.
 The lane is three jobs that run side by side, each with its own checkout and
 toolchain and a limit of 60 minutes:
 
-- `checks`: formatting, Clippy, and every executable of the workspace
-  compiled under the release profile (`cargo check --bins --release`).
+- `checks`: formatting and Clippy.
 - `tests`: the workspace's ordinary tests, which builds and links every
   target.
-- `release`: the two executables a release ships, built and linked in
-  release mode by the command `AGENTS.md` and `lab\New-Release.ps1` use, and
-  started once.
+- `release`: every executable of the workspace built and linked in release
+  mode, the two a release ships among them, and the converter started once.
 
 As one job in sequence the lane took 42 minutes, 29 of them building 113
 executables in release mode, nearly all of them for lab stages that were

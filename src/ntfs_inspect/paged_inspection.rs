@@ -516,6 +516,13 @@ impl RootFileDomain for PagedInspection {
     fn file(&self, ordinal: u64) -> Result<FileInventory> {
         self.files.file(ordinal)
     }
+    fn with_file<T>(
+        &self,
+        ordinal: u64,
+        read: impl FnOnce(&FileInventory) -> Result<T>,
+    ) -> Result<T> {
+        self.files.with_file(ordinal, read)
+    }
     fn find_record(&self, number: u64, sequence: Option<u16>) -> Result<Option<FileInventory>> {
         self.files.find_record(number, sequence)
     }

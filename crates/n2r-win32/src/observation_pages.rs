@@ -883,7 +883,10 @@ fn decode_row<T: serde::de::DeserializeOwned>(
                 bytes.len() as u64 == row.bytes,
                 "single-chunk native row length differs from its authenticated index",
             )?;
-            serde_json::from_slice(&bytes).map_err(io::Error::other)
+            // Checked to be UTF-8 once, as a whole, and parsed as text: as
+            // bytes, every string of the row was checked by itself.
+            let text = std::str::from_utf8(&bytes).map_err(io::Error::other)?;
+            serde_json::from_str(text).map_err(io::Error::other)
         });
     }
     let input = ChunkReader {

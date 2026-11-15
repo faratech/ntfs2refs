@@ -3830,21 +3830,25 @@ fn observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_o
         count,
     )?;
     let mut bytes_read = 0u64;
-    // A residual is shorter than one target cluster.
-    let mut buffer = vec![0u8; crate::target_cluster::bytes_usize()];
-    let observed = required_residuals(input, |ordinal, index, name, length| {
-        let _query_memory = memory
-            .map(|payer| {
-                report_memory::residual_query_peak(admission.budget.max_row_bytes)?
-                    .checked_add(payer.lease_heap_bytes())
-                    .ok_or_else(|| invalid("residual query adapter RAM overflow"))
-                    .and_then(|bytes| payer.reserve(bytes))
-            })
-            .transpose()?;
-        let expected = validate_expected(ordinal, index, name, length)?;
-        let object = native
-            .objects
-            .get(index)
+    // One residual: the tail of a stream beyond its last whole cluster. Each
+    // is opened, compared with what the walk found, read to its end, hashed
+    // and compared again: a few file-system calls for nearly every file of
+    // the volume, which one thread made one after another (17 s of the full
+    // Windows volume's walk). They are gathered a batch at a time and read
+    // on the available cores; the results are written in their order, on
+    // this thread, as before.
+    struct Residual {
+        expected: LayoutResidualExpectation,
+        index: usize,
+        name: Vec<u16>,
+    }
+    const RESIDUAL_BATCH: usize = 64;
+    let objects = &native.objects;
+    let read_one = |residual: &Residual| -> io::Result<([u8; 16], String)> {
+        let expected = &residual.expected;
+        let name = residual.name.as_slice();
+        let object = objects
+            .get(residual.index)
             .ok_or_else(|| invalid("paged residual native object absent"))?;
         let (before_stream, after_stream) = if name.is_empty() {
             (&object.before, &object.after)
@@ -3867,28 +3871,80 @@ fn observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_o
             .try_into()
             .map_err(|_| invalid("paged residual file identity length differs"))?;
         file.seek(SeekFrom::Start(expected.logical_offset))?;
-        let length = expected.length as usize;
-        file.read_exact(&mut buffer[..length])?;
+        // A residual is shorter than one target cluster.
+        let mut buffer = vec![0u8; expected.length as usize];
+        file.read_exact(&mut buffer)?;
         let mut eof_probe = [0u8; 1];
         if file.read(&mut eof_probe)? != 0 {
             return Err(invalid("paged residual expected EOF absent"));
         }
-        let sha = hex::encode(Sha256::digest(&buffer[..length]));
+        let sha = hex::encode(Sha256::digest(&buffer));
         if sha != expected.sha256 || repeat_snapshot(&file, after_stream) != *after_stream {
             return Err(invalid("paged residual content/metadata differs"));
         }
-        writer.push(&crate::layout_residual_pages::LayoutResidualResult {
-            expectation: expected,
-            native_file_id: id,
-            actual_sha256: sha,
-            bytes_read: length as u64,
-            eof_observed: true,
-        })?;
-        bytes_read = bytes_read
-            .checked_add(length as u64)
-            .ok_or_else(|| invalid("paged residual byte count overflow"))?;
+        Ok((id, sha))
+    };
+    // Reads the gathered residuals and writes their results in order. The
+    // query memory of each was paid for when it was gathered and is returned
+    // here, after the last of them was read.
+    let mut read_batch = |batch: &mut Vec<Residual>,
+                          leases: &mut Vec<Option<Box<dyn report_memory::ReportMemoryLease>>>|
+     -> io::Result<()> {
+        let read = observe_in_parallel(batch.as_slice(), &read_one);
+        leases.clear();
+        for (residual, (id, sha)) in batch.drain(..).zip(read?) {
+            let length = residual.expected.length;
+            writer.push(&crate::layout_residual_pages::LayoutResidualResult {
+                expectation: residual.expected,
+                native_file_id: id,
+                actual_sha256: sha,
+                bytes_read: length,
+                eof_observed: true,
+            })?;
+            bytes_read = bytes_read
+                .checked_add(length)
+                .ok_or_else(|| invalid("paged residual byte count overflow"))?;
+        }
+        Ok(())
+    };
+    let mut batch: Vec<Residual> = Vec::with_capacity(RESIDUAL_BATCH);
+    let mut leases = Vec::with_capacity(RESIDUAL_BATCH);
+    let query_memory = || {
+        memory
+            .map(|payer| {
+                report_memory::residual_query_peak(admission.budget.max_row_bytes)?
+                    .checked_add(payer.lease_heap_bytes())
+                    .ok_or_else(|| invalid("residual query adapter RAM overflow"))
+                    .and_then(|bytes| payer.reserve(bytes))
+            })
+            .transpose()
+    };
+    let observed = required_residuals(input, |ordinal, index, name, length| {
+        // Each residual's query memory is paid for before it is read. If
+        // the ledger cannot pay for one more beside those gathered, they
+        // are read first; a refusal for a residual by itself is a failure,
+        // as before.
+        let lease = match query_memory() {
+            Ok(lease) => lease,
+            Err(_) if !batch.is_empty() => {
+                read_batch(&mut batch, &mut leases)?;
+                query_memory()?
+            }
+            Err(error) => return Err(error),
+        };
+        let expected = validate_expected(ordinal, index, name, length)?;
+        leases.push(lease);
+        batch.push(Residual {
+            expected,
+            index,
+            name: name.to_vec(),
+        });
+        if batch.len() == RESIDUAL_BATCH {
+            read_batch(&mut batch, &mut leases)?;
+        }
         Ok(())
     })?;
+    read_batch(&mut batch, &mut leases)?;
     if observed != count || provider.file_sha256() != provider_sha {
         return Err(invalid("paged residual expectation owner/count changed"));
     }

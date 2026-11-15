@@ -373,10 +373,15 @@ impl SortedRecordStore {
     /// Decodes one record. The record is parsed from its bytes in memory: a
     /// reader-based parse took a fresh 64 KiB buffer and went through the
     /// JSON a byte at a time for every record looked up.
+    ///
+    /// The record is checked to be UTF-8 once, as a whole, and parsed as
+    /// text. Parsed as bytes, every string in it, each field's name among
+    /// them, was checked by itself: a tenth of what decoding rows cost.
     pub fn get<T: DeserializeOwned>(&self, ordinal: u64) -> Result<T> {
         let (_, offset, length) = self.entry(ordinal)?;
-        self.data
-            .with_bytes_at(offset, length, |bytes| Ok(serde_json::from_slice(bytes)?))
+        self.data.with_bytes_at(offset, length, |bytes| {
+            Ok(serde_json::from_str(std::str::from_utf8(bytes)?)?)
+        })
     }
     pub fn find_ordinal(&self, key: [u8; 16]) -> Result<Option<u64>> {
         let mut low = 0;

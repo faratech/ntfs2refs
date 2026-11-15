@@ -49,6 +49,12 @@ points! {
     VolumeWait => "wait for volume",
     VolumeRemoval => "wait for volume removal",
     RecoveryFileOpen => "recovery file reopen",
+    // What the passes that work on every core did there, and what they did
+    // one object after another because a batch's workspace could not be paid
+    // for (or the machine has one core). The first is the threads' time added
+    // up, not wall clock.
+    AtOnce => "objects at once (thread time)",
+    InTurn => "objects in turn",
 }
 const COUNT: usize = LABELS.len();
 

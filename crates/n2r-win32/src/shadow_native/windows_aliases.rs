@@ -228,8 +228,8 @@ fn probe_aliases(
     let (at_once, in_turn) = numbered.split_at(workspaces.len());
     let mut natives = super::observe_in_parallel(at_once, &probe_one)?;
     drop(workspaces);
-    for probe in in_turn {
-        natives.push(probe_one(probe)?);
+    for native in super::observe_in_turn(in_turn, &probe_one) {
+        natives.push(native?);
     }
     Ok(natives)
 }
@@ -1519,7 +1519,7 @@ impl StagedWindowsAliases {
             let mut restored: Vec<io::Result<Snapshot>> =
                 super::observe_in_parallel(at_once, |link| Ok(restore_one(link)))?;
             drop(workspaces);
-            restored.extend(in_turn.iter().map(&restore_one));
+            restored.extend(super::observe_in_turn(in_turn, &restore_one));
             for (link, restored) in links.iter().zip(restored) {
                 let entry = &link.staged.entry;
                 restored

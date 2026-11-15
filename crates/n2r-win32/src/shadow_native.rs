@@ -200,6 +200,19 @@ fn at_walk_object(item: &Input<'_>, error: io::Error) -> io::Error {
     io::Error::new(error.kind(), format!("object \\{path}: {text}"))
 }
 
+/// One object after another, on the calling thread: the part of a batch
+/// whose workspace could not be paid for. Counted apart in the run's timing,
+/// so that a pass which ran in turn where it could have run at once shows.
+fn observe_in_turn<T, U>(items: &[T], observe: impl Fn(&T) -> U) -> Vec<U> {
+    items
+        .iter()
+        .map(|item| {
+            let _timed = crate::perf::scope(crate::perf::Point::InTurn);
+            observe(item)
+        })
+        .collect()
+}
+
 /// How many objects a pass hands to [`observe_in_parallel`] at a time.
 ///
 /// Every batch starts its helper threads and waits for them to end, which
@@ -224,7 +237,13 @@ fn observe_in_parallel<T: Sync, U: Send>(
         .clamp(1, 8)
         .min(items.len());
     if workers <= 1 {
-        return items.iter().map(observe).collect();
+        return items
+            .iter()
+            .map(|item| {
+                let _timed = crate::perf::scope(crate::perf::Point::InTurn);
+                observe(item)
+            })
+            .collect();
     }
     let next = AtomicUsize::new(0);
     let failed = AtomicBool::new(false);
@@ -238,7 +257,10 @@ fn observe_in_parallel<T: Sync, U: Send>(
                     let Some(item) = items.get(index) else {
                         break;
                     };
-                    let result = observe(item);
+                    let result = {
+                        let _timed = crate::perf::scope(crate::perf::Point::AtOnce);
+                        observe(item)
+                    };
                     if result.is_err() {
                         failed.store(true, Ordering::Release);
                     }

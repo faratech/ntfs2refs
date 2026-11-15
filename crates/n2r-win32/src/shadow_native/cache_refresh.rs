@@ -571,6 +571,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             .with_pass(pass),
         )
     };
+    crate::perf::step("metadata: check objects and names");
     for index in 0..input.len() {
         metadata_progress(0, index as u64);
         (|| -> io::Result<()> {
@@ -755,7 +756,9 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         metadata_progress(if points_installed { 7 } else { 1 }, input.len() as u64);
         Ok(())
     };
+    crate::perf::step("metadata: check directory listings");
     namespace(false, aliases.as_deref())?;
+    crate::perf::step("metadata: restore security");
     const DIRECTORY: u8 = 1;
     const EXTENDED_ATTRIBUTES: u8 = 2;
     const REPARSE: u8 = 4;
@@ -871,6 +874,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
     // Only actual constructor-owned canonical handles reach this operation.
     // EAs belong to the file identity and are set once, not per DATA stream or
     // hard-link name. Native mutation precedes final timestamp restoration.
+    crate::perf::step("metadata: restore extended attributes and reparse points");
     let mut ea_objects = 0usize;
     let mut ea_entries = 0usize;
     for (ordinal, &(index, _, flags)) in ordered.iter().enumerate() {
@@ -961,6 +965,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         .or_else(|error| input.defer_failure(at_object(input, "reparse installation", index, error)))?;
     }
     metadata_progress(5, ordered.len() as u64);
+    crate::perf::step("metadata: restore the short-name links' metadata");
     let provisional_aliases = if let Some(aliases) = aliases.as_deref_mut() {
         if security_placeholders {
             aliases.restore_metadata_with_security_placeholders(input, handles, &same_security)?
@@ -1004,6 +1009,7 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         })()
         .map_err(|error| at_object(input, "hard-link listing refresh", index, error))?;
     }
+    crate::perf::step("metadata: restore times and attributes");
     // Reverse depth order finalizes root last, using the same held handles.
     for (ordinal, &(index, _, _)) in ordered.iter().rev().enumerate() {
         metadata_progress(6, ordinal as u64);
@@ -1027,9 +1033,11 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
         .map_err(|error| at_object(input, "basic metadata restoration", index, error))?;
     }
     metadata_progress(6, ordered.len() as u64);
+    crate::perf::step("metadata: flush and check directory listings again");
     input.before_mutation(0)?;
     crate::perf::flush(crate::perf::Point::VolumeFlush, &volume)?;
     namespace(true, aliases.as_deref())?;
+    crate::perf::step("metadata: read restored metadata back");
     for index in 0..input.len() {
         metadata_progress(8, index as u64);
         (|| -> io::Result<()> {

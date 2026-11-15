@@ -327,6 +327,10 @@ fn complete_domain_body(
             crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2,
             |a| crate::attestation::ResourceProfile::ResourceBoundedV4(Some(a)),
         )))?;
+    // This is the longest step of a full Windows conversion, and most of
+    // its time is inside single file-system calls, which a stack profile
+    // counts once each however long they take. Its passes are timed apart.
+    crate::perf::step("metadata: check placed streams");
     let mut extent_only_tails = Vec::new();
     let stream_progress = |pass, completed, total| {
         input.progress(
@@ -382,6 +386,7 @@ fn complete_domain_body(
             }
         }
     }
+    crate::perf::step("metadata: take metadata handles");
     let mut guards = BTreeMap::new();
     for (ordinal, (key, file)) in tree.files.iter().enumerate() {
         stream_progress(1, ordinal as u64, tree.files.len() as u64);
@@ -435,6 +440,7 @@ fn complete_domain_body(
     } else {
         None
     };
+    crate::perf::step("metadata: create hard links");
     let links = if let Some(admission) = tree.metadata_resource_admission {
         super::super::hard_links::create_owned_resource_domain(
             input,
@@ -449,6 +455,7 @@ fn complete_domain_body(
         super::super::hard_links::create_owned_domain(input, &tree.metadata_targets)?
     };
     tree.require_source_excluded()?;
+    crate::perf::step("metadata: create short-name links");
     let mut alias_stage = if let Some(aliases) = aliases {
         let admission = tree
             .metadata_resource_admission

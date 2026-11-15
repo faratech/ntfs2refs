@@ -1,7 +1,7 @@
 # Recovery matrix
 
 Written by `lab\Write-RecoveryMatrix.ps1` from the verdicts of the lab's interrupted
-attempts (929 verdicts read, 125 of them interrupted and recovered). Do not edit it by hand:
+attempts (1339 verdicts read, 194 of them interrupted and recovered). Do not edit it by hand:
 run an attempt and write it again.
 
 Each attempt stops the converter at a named point (`--lab-hold-at`), ends it, runs
@@ -14,13 +14,13 @@ ended that way, by what was converted and how it was interrupted.
 | Hold point | State of the source there | Resume | Rollback |
 |---|---|---|---|
 | `apply-activated` | The apply marker is durable and the source is writable; nothing written. | Windows fixture, process-termination: 1 (latest `m1-apply-activated-resume-01`) | Windows fixture, process-termination: 1 (latest `m1-apply-activated-rollback-01`) |
-| `apply-mid-ranges` | Half of the changed ranges are written, none of them flushed. | data volume on a shared disk, process-termination: 4 (latest `d9s-shared-apply-resume`)<br>data volume, process-termination: 17 (latest `c7-casemark-resume`)<br>Windows fixture, process-termination: 17 (latest `d9-apply-mid-resume-01`)<br>Windows fixture, vm-turned-off: 3 (latest `r2-vm-off-apply-mid-resume-01`)<br>Windows, full volume, vm-turned-off: 1 (latest `r2-full-vm-off-apply-mid-resume-02`)<br>did not recover: 1, listed below | data volume on a shared disk, process-termination: 4 (latest `d9s-shared-apply-rollback`)<br>data volume, process-termination: 12 (latest `c7-casemark-rollback`)<br>Windows fixture (shaped), process-termination: 2 (latest `g2-used-windows-rollback-01`)<br>Windows fixture, process-termination: 6 (latest `r2-apply-mid-rollback-01`)<br>Windows fixture, vm-turned-off: 1 (latest `g2-vm-off-apply-mid-rollback-01`)<br>Windows, full volume, vm-turned-off: 1 (latest `g2-full-vm-off-apply-mid-rollback-01`)<br>did not recover: 1, listed below |
+| `apply-mid-ranges` | Half of the changed ranges are written, none of them flushed. | data volume on a shared disk, process-termination: 5 (latest `rel4-shared-apply-resume`)<br>data volume, process-termination: 26 (latest `rel4-wide-drop-apply-resume`)<br>Windows fixture, process-termination: 22 (latest `rel4-apply-mid-resume-01`)<br>Windows fixture, vm-turned-off: 4 (latest `rel4-vm-off-apply-mid-resume-01`)<br>Windows, full volume, vm-turned-off: 2 (latest `rel4-full-vm-off-apply-mid-resume-01`)<br>did not recover: 2, listed below | data volume on a shared disk, process-termination: 9 (latest `rel4-shared-apply-rollback`)<br>data volume, process-termination: 26 (latest `rel4-wide-drop-apply-rollback`)<br>Windows fixture (shaped), process-termination: 2 (latest `g2-used-windows-rollback-01`)<br>Windows fixture, process-termination: 8 (latest `rel4-apply-mid-rollback-01`)<br>Windows fixture, vm-turned-off: 1 (latest `g2-vm-off-apply-mid-rollback-01`)<br>Windows, full volume, vm-turned-off: 1 (latest `g2-full-vm-off-apply-mid-rollback-01`)<br>did not recover: 2, listed below |
 | `apply-ranges-written` | Every range but the boot granule is written, not yet flushed. | Windows fixture, process-termination: 1 (latest `m1-apply-ranges-written-resume-01`) | Windows fixture, process-termination: 1 (latest `m1-apply-ranges-written-rollback-01`) |
 | `apply-before-boot-granule` | Those ranges are flushed; the NTFS boot sector is still in place. | Windows fixture, process-termination: 1 (latest `m1-apply-before-boot-granule-resume-01`) | Windows fixture, process-termination: 1 (latest `m1-apply-before-boot-granule-rollback-01`) |
 | `apply-boot-granule-written` | The boot granule is written, not yet flushed. | Windows fixture, process-termination: 1 (latest `m1-apply-boot-granule-written-resume-01`) | Windows fixture, process-termination: 1 (latest `m1-apply-boot-granule-written-rollback-01`) |
 | `apply-before-handoff` | Every new byte is written, flushed and read back; no handoff marker. | Windows fixture, process-termination: 1 (latest `m1-apply-before-handoff-resume-01`) | Windows fixture, process-termination: 1 (latest `m1-apply-before-handoff-rollback-01`) |
 | `apply-handoff-durable` | The handoff marker is durable; the source is still writable. | Windows fixture, process-termination: 1 (latest `m1-apply-handoff-durable-resume-01`)<br>Windows fixture, process-termination, marker torn: 2 (latest `y-torn-handoff-01`)<br>Windows fixture, vm-turned-off: 1 (latest `g2-vm-off-handoff-durable-resume-01`)<br>did not recover: 1, listed below | Windows fixture, process-termination, marker torn: 1 (latest `y-torn-handoff-rollback-01`) |
-| `handoff-sealed` | The source is sealed read-only again; finalization has not started. | data volume on a shared disk, process-termination: 4 (latest `d9s-shared-handoff-resume`)<br>data volume, process-termination: 12 (latest `c9-plain-handoff-resume`)<br>Windows fixture, process-termination: 15 (latest `d9-handoff-sealed-resume-01`)<br>did not recover: 1, listed below | did not recover: 1, listed below |
+| `handoff-sealed` | The source is sealed read-only again; finalization has not started. | data volume on a shared disk, process-termination: 11 (latest `rel4-shared-handoff-resume`)<br>data volume, process-termination: 28 (latest `rel4-wide-drop-handoff-resume`)<br>Windows fixture, process-termination: 20 (latest `rel4-handoff-sealed-resume-01`)<br>did not recover: 2, listed below | did not recover: 1, listed below |
 | `finalize-authenticated` | Finalization has authenticated the handoff; the source is still sealed. | Windows fixture, process-termination: 1 (latest `q-finalize-authenticated-resume-01`) | not run |
 | `finalize-source-readonly` | The converted source is mounted read-only for its verification. | Windows fixture, process-termination: 1 (latest `t-finalize-readonly-resume-01`)<br>Windows fixture, vm-turned-off: 1 (latest `g2-vm-off-finalize-readonly-resume-01`)<br>did not recover: 1, listed below | not run |
 | `finalize-before-online` | Verification passed and the source is sealed again; not yet online. | Windows fixture, process-termination: 1 (latest `q-finalize-before-online-resume-01`) | not run |
@@ -36,6 +36,7 @@ file system; `NOT-BOOTED` means the attempt was run without its boot step.
 |---|---|---|---|---|
 | `g2-full-vm-off-apply-mid-rollback-01` | `apply-mid-ranges` | vm-turned-off | rollback | ROLLED-BACK-BOOTED-ON-NTFS |
 | `r2-full-vm-off-apply-mid-resume-02` | `apply-mid-ranges` | vm-turned-off | resume | RESUMED-BOOTED-ON-REFS |
+| `rel4-full-vm-off-apply-mid-resume-01` | `apply-mid-ranges` | vm-turned-off | resume | RESUMED-BOOTED-ON-REFS |
 
 ## Stopped during preparation
 
@@ -48,10 +49,10 @@ nothing had happened.
 
 | Phase | The stop left the volume | Then | Ended as | Attempts |
 |---|---|---|---|---|
-| `payload_supply` | offline or read-only | cancel | preparation-cancelled | 10 (latest `d9s-shared-stop-cancel`) |
-| `payload_supply` | offline or read-only | restart | restart-refused-then-cancelled | 3 (latest `p5-stop-supply-restart`) |
-| `recovery_journal` | offline or read-only | cancel | preparation-cancelled | 3 (latest `p5-stop-journal-cancel`) |
-| `recovery_journal` | offline or read-only | restart | restart-refused-then-cancelled | 3 (latest `d9-shared-stop-restart`) |
+| `payload_supply` | offline or read-only | cancel | preparation-cancelled | 21 (latest `rel4-shared-stop-cancel`) |
+| `payload_supply` | offline or read-only | restart | restart-refused-then-cancelled | 4 (latest `rel4-stop-supply-restart`) |
+| `recovery_journal` | offline or read-only | cancel | preparation-cancelled | 4 (latest `rel4-stop-journal-cancel`) |
+| `recovery_journal` | offline or read-only | restart | restart-refused-then-cancelled | 7 (latest `rel4s-std-stop-restart`) |
 
 Attempts that ended otherwise:
 
@@ -71,6 +72,9 @@ Attempts that ended otherwise:
 | `d5-shared-apply-rollback` | `apply-mid-ranges` | rollback | rolled-back-but-siblings-changed | the same fault of the harness; d6-shared-apply-rollback is the same row without it |
 | `d5-shared-handoff-resume` | `handoff-sealed` | resume | resumed-but-siblings-changed | the same fault of the harness; d6-shared-handoff-resume is the same row without it |
 | `d5-shared-handoff-rollback` | `handoff-sealed` | rollback | rollback-failed | asked for what recovery refuses by design: after the handoff a rollback is closed, and the run said so ("Run the recovery command without --rollback to finish the conversion") |
+| `v3s-vss-answering-apply-resume` | `apply-mid-ranges` | resume | resumed-without-the-provider-note | a fault of the harness: the recovery finished and the volume listed identical, but the harness looked for the shadow-copy provider's note in the recovery's output instead of the stopped run's; v4s-vss-answering-apply-resume is the same row without it |
+| `v3s-vss-answering-apply-rollback` | `apply-mid-ranges` | rollback | rolled-back-without-the-provider-note | the same fault of the harness; v4s-vss-answering-apply-rollback is the same row without it |
+| `v3s-vss-answering-handoff-resume` | `handoff-sealed` | resume | resumed-without-the-provider-note | the same fault of the harness; v4s-vss-answering-handoff-resume is the same row without it |
 
 ## What these attempts do not show
 

@@ -614,21 +614,31 @@ fn record(value: &impl Serialize, budget: PageBudget) -> Result<Vec<u8>> {
     Ok(output.bytes)
 }
 
+/// The digest of the expected tree's legacy JSON. The JSON writer hands it
+/// over a token at a time; it is hashed a block at a time, by Windows'
+/// SHA-256 where there is one (the full Windows volume's is 1.5 GB, taken
+/// twice in a conversion).
 struct SemanticHash {
-    sha256: Sha256,
+    sha256: crate::retained_compare::stream_digest::StreamDigest,
+    pending: Vec<u8>,
     bytes: u64,
     maximum: u64,
 }
 impl SemanticHash {
-    fn new(maximum: u64) -> Self {
-        Self {
-            sha256: Sha256::new(),
+    const BLOCK: usize = 64 * 1024;
+    fn new(maximum: u64) -> Result<Self> {
+        let mut pending = Vec::new();
+        pending.try_reserve_exact(Self::BLOCK)?;
+        Ok(Self {
+            sha256: crate::retained_compare::stream_digest::StreamDigest::new(cfg!(windows))?,
+            pending,
             bytes: 0,
             maximum,
-        }
+        })
     }
-    fn finish(self) -> String {
-        hex::encode(self.sha256.finalize())
+    fn finish(mut self) -> Result<String> {
+        self.sha256.update(&self.pending)?;
+        Ok(hex::encode(self.sha256.finish()?))
     }
 }
 impl Write for SemanticHash {
@@ -640,7 +650,19 @@ impl Write for SemanticHash {
             .ok_or_else(|| {
                 io::Error::other("legacy expected-tree JSON exceeds pinned byte budget")
             })?;
-        self.sha256.update(bytes);
+        // The bytes reach the digest in the order they were written: what
+        // is pending first, whenever these do not fit behind it.
+        if self.pending.len() + bytes.len() > Self::BLOCK {
+            self.sha256
+                .update(&self.pending)
+                .map_err(io::Error::other)?;
+            self.pending.clear();
+        }
+        if bytes.len() >= Self::BLOCK {
+            self.sha256.update(bytes).map_err(io::Error::other)?;
+        } else {
+            self.pending.extend_from_slice(bytes);
+        }
         self.bytes = next;
         Ok(bytes.len())
     }
@@ -1047,9 +1069,9 @@ impl PagedExpectedTree {
             records <= budget.max_records,
             "expected-tree object domain exceeds record budget"
         );
-        let mut semantic = SemanticHash::new(semantic_byte_budget);
+        let mut semantic = SemanticHash::new(semantic_byte_budget)?;
         serde_json::to_writer_pretty(&mut semantic, tree)?;
-        let semantic_sha256 = semantic.finish();
+        let semantic_sha256 = semantic.finish()?;
         let header = HeaderRef {
             schema_version: if resource_admission.is_some() { 3 } else { 2 },
             profile: tree.profile(),
@@ -1750,7 +1772,7 @@ impl PagedExpectedTree {
             _header_ram: header_ram,
         };
         let counts = Cell::new(ExpectedTreePageCounts::default());
-        let mut semantic = SemanticHash::new(semantic_byte_budget);
+        let mut semantic = SemanticHash::new(semantic_byte_budget)?;
         serde_json::to_writer_pretty(
             &mut semantic,
             &LegacyView {
@@ -1758,7 +1780,7 @@ impl PagedExpectedTree {
                 counts: Some(&counts),
             },
         )?;
-        let derived_semantic_sha256 = semantic.finish();
+        let derived_semantic_sha256 = semantic.finish()?;
         ensure!(
             legacy_semantic_sha256.is_none_or(|expected| derived_semantic_sha256 == expected),
             "paged objects do not reproduce the pinned legacy expectation JSON"

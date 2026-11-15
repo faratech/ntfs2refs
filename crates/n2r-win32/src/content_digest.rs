@@ -35,6 +35,19 @@ pub fn of(bytes: &[u8]) -> String {
     hex::encode(xxhash_rust::xxh3::xxh3_128(bytes).to_be_bytes())
 }
 
+/// The SHA-256 of a piece of evidence held in memory: Windows' own
+/// implementation where there is one and the piece is long enough for it to
+/// pay, the compiled-in one otherwise. The digest is the same either way.
+pub fn sha256(bytes: &[u8]) -> std::io::Result<[u8; 32]> {
+    // Below this a call into the system costs more than it saves.
+    #[cfg(windows)]
+    if bytes.len() >= 512 {
+        return crate::sha256_native::digest(bytes);
+    }
+    use sha2::Digest;
+    Ok(sha2::Sha256::digest(bytes).into())
+}
+
 /// Whether `value` has the content digest's lowercase hex form.
 pub fn is_hex(value: &str) -> bool {
     value.len() == HEX_LEN
@@ -60,6 +73,20 @@ mod tests {
         streamed.update(b"bc");
         assert_eq!(streamed.finish(), of(b"abc"));
         assert_ne!(of(b"abc"), of(b"abd"));
+    }
+
+    #[test]
+    fn the_evidence_digest_is_sha_256_at_every_length() {
+        use sha2::Digest;
+        // Either side of where the system's implementation takes over, and
+        // several blocks.
+        for length in [0usize, 1, 55, 56, 64, 511, 512, 513, 4096, 70_001] {
+            let bytes: Vec<u8> = (0..length).map(|index| (index * 31 + 7) as u8).collect();
+            let expected: [u8; 32] = sha2::Sha256::digest(&bytes).into();
+            // Twice: the second call reuses the thread's hash object.
+            assert_eq!(sha256(&bytes).unwrap(), expected, "length {length}");
+            assert_eq!(sha256(&bytes).unwrap(), expected, "length {length}, again");
+        }
     }
 
     #[test]

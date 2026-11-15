@@ -3,7 +3,6 @@
 //! any claimed field; neither this transport nor a window digest is a full map.
 use crate::{attestation::IoctlQuery, bitmap_paging::PAGE_BYTES, bitmap_window};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::io;
 
 pub const ENCODING: &str = "native-bitmap-window-compact-v1";
@@ -153,7 +152,7 @@ impl ByteBuffer {
         Ok(Self {
             codec,
             decoded_bytes: bytes.len(),
-            decoded_sha256: hex_encode(&Sha256::digest(bytes))?,
+            decoded_sha256: hex_encode(&crate::content_digest::sha256(bytes)?)?,
             data_hex: hex_encode(stored)?,
         })
     }
@@ -216,7 +215,7 @@ impl ByteBuffer {
                 output
             }
         };
-        if hex_encode(&Sha256::digest(&output))? != self.decoded_sha256 {
+        if hex_encode(&crate::content_digest::sha256(&output)?)? != self.decoded_sha256 {
             return Err(bad("compact buffer decoded SHA-256 differs"));
         }
         Ok(output)

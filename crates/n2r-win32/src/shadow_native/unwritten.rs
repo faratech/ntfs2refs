@@ -585,9 +585,9 @@ impl PrivatePlaceholder {
         }
         self.verify_placements()?;
         self.poisoned = false;
-        use sha2::Digest;
+        let sha256 = hex::encode(crate::content_digest::sha256(data)?);
         Ok(serde_json::json!({"offset":offset,"bytes":data.len(),
-            "sha256":hex::encode(sha2::Sha256::digest(data)),"readback_verified":true,
+            "sha256":sha256,"readback_verified":true,
             "valid_prefix_bytes":self.valid_prefix,"conversion_qualified":false}))
     }
 

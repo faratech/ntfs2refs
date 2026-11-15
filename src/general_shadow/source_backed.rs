@@ -1203,7 +1203,6 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
         offset: u64,
         output: &mut [u8],
     ) -> Result<crate::ntfs_inspect::StreamRangeReadProof> {
-        use sha2::Digest;
         self.validate_protection()?;
         self.read_into(identity, offset, output)?;
         let allocation = if identity.allow_sparse {
@@ -1223,7 +1222,7 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
                 anyhow::bail!("checked full source stream differs from expected content");
             }
         }
-        let sha256 = hex::encode(sha2::Sha256::digest(&*output));
+        let sha256 = hex::encode(n2r_win32::content_digest::sha256(output)?);
         // Closing the stream's session reads its file record again (all of
         // them, for a stream with an attribute list) and checks the mapping.
         // Where everything is re-read at each step that happens after every

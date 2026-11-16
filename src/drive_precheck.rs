@@ -178,6 +178,27 @@ const LEDGER_BYTES_AN_OBJECT: u64 = 8192;
 /// The share of the ledger that reservations sized by the ledger take.
 const LEDGER_FIXED_PERCENT: u64 = 35;
 
+/// What a volume that needs more memory than there is, is refused with:
+/// what it needs free, what is free, and, where the user set a limit that
+/// is the smaller of the two, that it is the limit and what it would have
+/// to be.
+fn memory_refusal(needed: u64, free: u64, limit: Option<u64>) -> String {
+    match limit {
+        // A run uses two thirds of what is free: the limit it needs is two
+        // thirds of the free memory it needs.
+        Some(limit) if free_memory_for(limit) <= free => format!(
+            "a conversion of this volume needs a memory limit of about {} MiB, and --memory-limit gives it {} MiB. Give it more, or leave the limit out",
+            (needed / 3 * 2) >> 20,
+            limit >> 20
+        ),
+        _ => format!(
+            "a conversion of this volume needs about {} MiB of free memory, and {} MiB are free. Close other programs, or convert on a machine with more memory",
+            needed >> 20,
+            free >> 20
+        ),
+    }
+}
+
 /// The working storage a run needs at least: the 4 GiB it refuses to start
 /// below, and room for what is copied twice over, once in the working
 /// volume it is written to first and once as what it replaces on the
@@ -760,10 +781,10 @@ fn read(
             .iter()
             .any(|text| text.contains("free memory"))
     {
-        report.refusals.push(format!(
-            "a conversion of this volume needs about {} MiB of free memory, and {} MiB are free. Close other programs, or convert on a machine with more memory",
-            estimate.memory_needed_bytes >> 20,
-            estimate.memory_free_bytes >> 20
+        report.refusals.push(memory_refusal(
+            estimate.memory_needed_bytes,
+            estimate.memory_free_bytes,
+            n2r_win32::resource_native::memory_limit(),
         ));
     }
     report.estimate = Some(estimate);
@@ -952,6 +973,31 @@ mod tests {
         // A run never starts with less than 4 GiB, and keeps what it copies twice.
         assert_eq!(working_needed(0), 4 << 30);
         assert_eq!(working_needed(10 << 30), 24 << 30);
+    }
+
+    #[test]
+    fn a_volume_refused_for_memory_is_told_whether_the_limit_or_the_machine_is_short() {
+        const MIB: u64 = 1 << 20;
+        // No limit: the machine.
+        let said = memory_refusal(10_150 * MIB, 6_105 * MIB, None);
+        assert!(
+            said.contains("needs about 10150 MiB of free memory, and 6105 MiB are free"),
+            "{said}"
+        );
+        // A limit of 2 GiB counts 3 GiB as free on a machine that has more:
+        // the limit is what is short, and two thirds of the need is what it
+        // has to be.
+        let said = memory_refusal(10_150 * MIB, 3_072 * MIB, Some(2_048 * MIB));
+        assert!(
+            said.contains(
+                "needs a memory limit of about 6766 MiB, and --memory-limit gives it 2048 MiB"
+            ),
+            "{said}"
+        );
+        // A limit above what the machine has free changes nothing: the
+        // machine is what is short.
+        let said = memory_refusal(10_150 * MIB, 6_105 * MIB, Some(8_192 * MIB));
+        assert!(said.contains("6105 MiB are free"), "{said}");
     }
 
     #[test]

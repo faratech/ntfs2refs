@@ -1606,7 +1606,10 @@ impl PagedExpectedTree {
         // slot only when the arena cannot pay for the whole body.
         if let Some(arena) = &arena {
             if reader.page_count() > 1 {
-                if let Ok(lease) = arena.reserve_cache_ram(reader.resident_page_bytes()?) {
+                // Another reader of the same file may hold them already.
+                if !reader.share_resident_pages()
+                    && let Ok(lease) = arena.reserve_cache_ram(reader.resident_page_bytes()?)
+                {
                     // A cache: given up, with its reservation, when the
                     // run's memory is short.
                     reader.install_resident_pages_paid(Box::new(lease))?;

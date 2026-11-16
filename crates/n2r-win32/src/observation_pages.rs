@@ -617,6 +617,9 @@ impl PagedNativeObservation {
         // when the same ledger can pay; a refusal keeps the paged reader.
         if let Some(memory) = &result.memory {
             for reader in [&result.reader, &result.namespace_reader] {
+                if reader.borrow_mut().share_resident_pages() {
+                    continue;
+                }
                 let bytes = reader.borrow().resident_page_bytes()?;
                 if let Ok(lease) = memory.accountant.reserve_optional(bytes) {
                     // Given up together when the run's memory is short.

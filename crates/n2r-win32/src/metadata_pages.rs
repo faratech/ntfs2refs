@@ -768,6 +768,18 @@ struct ResidentPages {
     pages: Vec<ResidentPage>,
     _paid: Option<Box<dyn std::any::Any>>,
 }
+
+thread_local! {
+    // The files whose pages a reader of this thread holds in memory, by the
+    // SHA-256 and length of the complete file: a second reader of the same
+    // file shares them. (The expected tree is opened more than once in a
+    // run; each reader read and held all of it, and where the ledger had no
+    // room for the second copy that reader re-read a page for nearly every
+    // lookup: 280 s of one step on a volume of 500,000 files.)
+    static RESIDENT: std::cell::RefCell<
+        std::collections::HashMap<([u8; 32], u64), crate::evict::WeakEvictable<ResidentPages>>,
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
+}
 impl Reader {
     /// Pre-allocation body bound for an actual held ordinary file length.
     /// This is sizing only; open still authenticates the exact file, format,
@@ -967,6 +979,36 @@ impl Reader {
     pub fn install_resident_pages(&mut self) -> io::Result<()> {
         self.install_resident(None)
     }
+    /// Use the pages another reader of this thread already holds in memory
+    /// for the same file (the same SHA-256 and length, which both readers
+    /// authenticated), if there is one. Nothing is read and nothing more is
+    /// reserved; the pages are given up for both readers at once. Returns
+    /// whether the pages are in memory now. Never under the policy that
+    /// reads everything again.
+    pub fn share_resident_pages(&mut self) -> bool {
+        if self.pages_resident() {
+            return true;
+        }
+        if crate::verify_policy::full_unremembered() {
+            return false;
+        }
+        let key = (self.sha256, self.snapshot.bytes);
+        let shared = RESIDENT.with(|resident| {
+            let mut resident = resident.borrow_mut();
+            let shared = resident.get(&key).and_then(|held| held.upgrade());
+            if shared.is_none() {
+                resident.remove(&key);
+            }
+            shared
+        });
+        match shared {
+            Some(shared) => {
+                self.resident = Some(shared);
+                true
+            }
+            None => false,
+        }
+    }
     /// As [`Self::install_resident_pages`], with the reservation that pays
     /// for the pages. They are a cache: when the run's memory is short they
     /// are given up, `paid` with them ([`crate::evict`]), and the reader
@@ -1019,10 +1061,16 @@ impl Reader {
             Snapshot::observe(&self.file)? == self.snapshot,
             "metadata file changed while its pages became resident",
         )?;
-        self.resident = Some(crate::evict::Evictable::new(ResidentPages {
-            pages,
-            _paid: paid,
-        }));
+        let resident = crate::evict::Evictable::new(ResidentPages { pages, _paid: paid });
+        RESIDENT.with(|shared| {
+            let mut shared = shared.borrow_mut();
+            // Entries whose pages are gone are dropped as the map doubles.
+            if shared.len() >= 16 && shared.len().is_power_of_two() {
+                shared.retain(|_, held| held.upgrade().is_some());
+            }
+            shared.insert((self.sha256, self.snapshot.bytes), resident.downgrade());
+        });
+        self.resident = Some(resident);
         Ok(())
     }
     /// Whether this reader accepted the file as one this process wrote
@@ -1157,6 +1205,9 @@ impl Reader {
                 && self.statistics.misses > self.pages.saturating_mul(2).max(8)
                 && self.statistics.misses >= self.resident_asked_again_after
             {
+                if self.share_resident_pages() {
+                    return self.with_record(ordinal, callback);
+                }
                 // The run's ledger pays for it, and gets it back when memory
                 // is short. A ledger with no room is asked again only after
                 // as many misses again.

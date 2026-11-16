@@ -85,6 +85,10 @@ fn resident_pages_answer_scattered_lookups_without_further_page_loads() {
     assert_eq!(after.hits - installed.hits, RECORDS);
     assert!(resident.get(RECORDS).is_err());
     assert!(resident.install_resident_pages().is_err());
+    // Under the policy that reads everything again (the default of this
+    // test binary) a second reader shares nothing, and reads for itself.
+    let mut second = Reader::open(&path, &sha, PURPOSE, budget()).unwrap();
+    assert!(!second.share_resident_pages() && !second.pages_resident());
 }
 
 /// Pages held in memory are a cache of the run: when its memory is short

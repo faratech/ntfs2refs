@@ -90,6 +90,52 @@ fn the_sha_a_writer_reports_is_the_sha_of_the_file() {
     assert_eq!(sha, hex::encode(actual));
 }
 
+/// A second reader of the same file uses the pages the first one holds.
+#[test]
+fn a_second_reader_of_a_file_shares_the_pages_the_first_holds() {
+    let _turn = GATE_TURN.lock().unwrap();
+    verify_policy::check_once();
+    let directory = tempfile::tempdir().unwrap();
+    let path = fixture(&directory, "pages.bin");
+    let sha = write(&path);
+    let mut first = Reader::open(&path, &sha, PURPOSE, budget()).unwrap();
+    // Nothing to share before a reader holds the pages.
+    assert!(!first.share_resident_pages());
+    first.install_resident_pages().unwrap();
+    assert!(first.share_resident_pages(), "it holds them itself");
+
+    let mut second = Reader::open(&path, &sha, PURPOSE, budget()).unwrap();
+    let opened = second.page_cache_statistics().page_loads;
+    assert!(second.share_resident_pages());
+    assert!(second.pages_resident());
+    for ordinal in (0..RECORDS).map(|step| (step * 211) % RECORDS) {
+        let record = second.get(ordinal).unwrap();
+        assert_eq!(
+            (record.key, record.payload),
+            (key(ordinal), payload(ordinal))
+        );
+    }
+    assert_eq!(
+        second.page_cache_statistics().page_loads,
+        opened,
+        "no page was read for the second reader"
+    );
+    // They are given up for both at once, and each reads its file again.
+    assert!(n2r_win32::evict::evict_all());
+    assert!(!first.pages_resident() && !second.pages_resident());
+    assert!(!second.share_resident_pages());
+    assert_eq!(first.get(7).unwrap().payload, payload(7));
+    assert_eq!(second.get(7).unwrap().payload, payload(7));
+    // A reader of another file shares nothing.
+    let other_path = path.with_file_name("other.bin");
+    let mut writer = Writer::new(&other_path, PURPOSE, budget()).unwrap();
+    writer.push(&key(0), &payload(0)).unwrap();
+    let other_sha = writer.finish().unwrap().sha256;
+    first.install_resident_pages().unwrap();
+    let mut other = Reader::open(&other_path, &other_sha, PURPOSE, budget()).unwrap();
+    assert!(!other.share_resident_pages());
+}
+
 #[test]
 fn inside_the_gate_a_file_written_here_is_read_in_full() {
     let _turn = GATE_TURN.lock().unwrap();

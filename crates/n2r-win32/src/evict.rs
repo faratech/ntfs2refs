@@ -141,7 +141,29 @@ impl<T> Evict for Slot<T> {
     }
 }
 
+/// One more owner of the same value: it is given up for all of them at
+/// once.
+impl<T: 'static> Clone for Evictable<T> {
+    fn clone(&self) -> Self {
+        Self(Rc::clone(&self.0))
+    }
+}
+
+/// A way back to a value that does not keep it alive.
+pub struct WeakEvictable<T: 'static>(Weak<Slot<T>>);
+impl<T: 'static> WeakEvictable<T> {
+    /// The value's slot, while an owner still has it and it has not been
+    /// given up.
+    pub fn upgrade(&self) -> Option<Evictable<T>> {
+        let shared = Evictable(self.0.upgrade()?);
+        shared.is_held().then_some(shared)
+    }
+}
+
 impl<T: 'static> Evictable<T> {
+    pub fn downgrade(&self) -> WeakEvictable<T> {
+        WeakEvictable(Rc::downgrade(&self.0))
+    }
     pub fn new(value: T) -> Self {
         let slot = Rc::new(Slot(RefCell::new(Some(value))));
         register(&slot);
@@ -229,6 +251,30 @@ mod tests {
         assert_eq!((small.get(), large.get()), (50, 500));
         first.limit.set(None);
         assert!(matches!(pay_for_cache(50), CachePayment::NoLedger));
+    }
+
+    #[test]
+    fn a_shared_cache_is_given_up_for_every_owner_at_once() {
+        let dropped = Rc::new(Cell::new(0));
+        let first = Evictable::new(Counts(Rc::clone(&dropped)));
+        let way_back = first.downgrade();
+        let second = way_back.upgrade().expect("held");
+        assert!(first.is_held() && second.is_held());
+        // Both may read it at once.
+        {
+            let (_a, _b) = (first.get().unwrap(), second.get().unwrap());
+            assert!(!evict_all());
+        }
+        assert!(evict_all());
+        assert_eq!(dropped.get(), 1);
+        assert!(!first.is_held() && !second.is_held());
+        // What was given up is not found again, nor what has no owner left.
+        assert!(way_back.upgrade().is_none());
+        let other = Evictable::new(Counts(Rc::clone(&dropped)));
+        let way_back = other.downgrade();
+        drop(other);
+        assert!(way_back.upgrade().is_none());
+        assert_eq!(dropped.get(), 2);
     }
 
     #[test]

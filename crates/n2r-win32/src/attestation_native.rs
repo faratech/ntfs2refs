@@ -598,6 +598,7 @@ pub(crate) fn collect_file_metadata_paged_domain_with_memory(
     validate_native_request_domain(selectors)?;
     let profile = selectors.header().resource_profile.unwrap();
     let mut sink = crate::observation_pages::NativePageWriter::new(path, budget, profile)?;
+    sink.pay_beyond_window(memory.accountant.clone(), memory.window_row());
     let header = collect_file_metadata_with_passes(
         selectors.header(),
         selectors,

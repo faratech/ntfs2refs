@@ -124,6 +124,12 @@ pub(crate) struct NativePageWriter {
     namespace: u64,
     poisoned: bool,
     resources: ResourceAudit,
+    // Who pays for a row longer than the collection's window was made for,
+    // and the row that window was made for.
+    beyond_window: Option<(
+        std::sync::Arc<dyn crate::shadow_native::report_memory::ReportMemoryAccountant>,
+        u64,
+    )>,
 }
 impl NativePageWriter {
     pub(crate) fn new(
@@ -146,7 +152,18 @@ impl NativePageWriter {
                 bitmap_evidence_bytes: 0,
                 namespace_evidence_bytes: 0,
             },
+            beyond_window: None,
         })
+    }
+    /// A collection whose memory is accounted has a window made for rows of
+    /// `window_row` bytes; a longer row pays `accountant` for the rest while
+    /// it is written.
+    pub(crate) fn pay_beyond_window(
+        &mut self,
+        accountant: std::sync::Arc<dyn crate::shadow_native::report_memory::ReportMemoryAccountant>,
+        window_row: u64,
+    ) {
+        self.beyond_window = Some((accountant, window_row));
     }
     fn row(&mut self, phase: u8, ordinal: u64, value: &impl Serialize) -> io::Result<()> {
         require(!self.poisoned, "native page writer is incomplete")?;
@@ -159,6 +176,12 @@ impl NativePageWriter {
             chunk: 0,
             bytes: 0,
             buffer: Vec::new(),
+            payer: self.beyond_window.as_ref().map(|(payer, _)| &**payer),
+            paid: self
+                .beyond_window
+                .as_ref()
+                .map_or(u64::MAX, |(_, window_row)| *window_row),
+            beyond: Vec::new(),
         };
         serde_json::to_writer(&mut sink, value).map_err(io::Error::other)?;
         sink.emit()?; // Always a short final chunk, including exact multiples.
@@ -251,6 +274,12 @@ struct ChunkSink<'a> {
     chunk: u64,
     bytes: u64,
     buffer: Vec<u8>,
+    // A row longer than the collection's window was made for pays for the
+    // rest as it grows, in steps that double: who is paid, the length paid
+    // for so far, and what was paid, returned when the row is written.
+    payer: Option<&'a dyn crate::shadow_native::report_memory::ReportMemoryAccountant>,
+    paid: u64,
+    beyond: Vec<Box<dyn crate::shadow_native::report_memory::ReportMemoryLease>>,
 }
 impl ChunkSink<'_> {
     fn emit(&mut self) -> io::Result<()> {
@@ -270,6 +299,29 @@ impl Write for ChunkSink<'_> {
             self.bytes <= self.budget.max_row_bytes,
             "native observation row budget exhausted",
         )?;
+        if let Some(payer) = self.payer {
+            while self.bytes > self.paid {
+                let next = self.paid.saturating_mul(2).clamp(
+                    self.bytes.min(self.budget.max_row_bytes),
+                    self.budget.max_row_bytes,
+                );
+                let more = payer
+                    .reserve((next - self.paid).checked_mul(32).ok_or_else(|| {
+                        io::Error::other("native observation long row memory overflow")
+                    })?)
+                    .map_err(|error| {
+                        io::Error::new(
+                            error.kind(),
+                            format!(
+                                "row {} of the observation of the source through Windows is longer than {} bytes, and the memory to hold it was refused: {error}",
+                                self.ordinal, self.paid
+                            ),
+                        )
+                    })?;
+                self.beyond.push(more);
+                self.paid = next;
+            }
+        }
         while !bytes.is_empty() {
             let n = bytes
                 .len()

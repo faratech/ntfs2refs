@@ -548,7 +548,11 @@ pub(super) fn capture(tree: &PrivateTree, input: &[Input<'_>]) -> io::Result<Sou
     for (key, file) in &tree.files {
         let index = key.object_index;
         let item = streams::view(input, key)?;
-        let initial = &tree.initial_objects[index];
+        let initial = tree
+            .initial_objects
+            .kept()
+            .and_then(|receipts| receipts.get(index))
+            .ok_or_else(|| invalid("this route keeps no receipt of the object"))?;
         let expected = item.expected_sha256;
         if expected.is_none() {
             streams::validate_extent_only(

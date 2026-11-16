@@ -88,6 +88,12 @@ struct State {
     ram_by_site: BTreeMap<RamSite, u64>,
     // The part of `leased_ram_bytes` held by optional caches.
     optional_ram_bytes: u64,
+    // Of the optional total, what `reserve_cache_ram` granted: caches that
+    // are held while the ledger has room and are outside the caches' quota.
+    cache_ram_bytes: u64,
+    // Caches were given up for a reservation the run needed: memory is short
+    // in this run, and caches come back only while the ledger is half empty.
+    caches_given_up: bool,
     // What spare reservations hold and what they have to leave room for.
     spare: SpareMemory,
     ram_poisoned: bool,
@@ -141,7 +147,7 @@ impl n2r_win32::evict::CachePayer for ArenaCachePayer {
     }
     fn pay(&self, bytes: u64) -> Option<Box<dyn std::any::Any>> {
         let arena = ArtifactArena(self.0.upgrade()?);
-        let lease = arena.reserve_optional_ram(bytes).ok()?;
+        let lease = arena.reserve_cache_ram(bytes).ok()?;
         Some(Box::new(lease))
     }
 }
@@ -149,8 +155,11 @@ impl n2r_win32::evict::CachePayer for ArenaCachePayer {
 pub struct ArenaRamLease {
     arena: ArtifactArena,
     bytes: u64,
-    // Taken by `reserve_optional_ram`: counted in the optional total as well.
+    // Taken by `reserve_optional_ram` or `reserve_cache_ram`: counted in the
+    // optional total as well.
     optional: bool,
+    // Taken by `reserve_cache_ram`: counted outside the caches' quota too.
+    cache: bool,
     // Taken by `reserve_spare_ram` and not kept yet: counted in the spare
     // total as well.
     spare: bool,
@@ -228,6 +237,12 @@ impl ArenaRamLease {
                 .optional_ram_bytes
                 .checked_sub(self.bytes - bytes)
                 .context("arena optional RAM lease shrink underflow")?;
+        }
+        if self.cache {
+            state.cache_ram_bytes = state
+                .cache_ram_bytes
+                .checked_sub(self.bytes - bytes)
+                .context("arena cache RAM lease shrink underflow")?;
         }
         if self.spare {
             // What a pass keeps of a workspace, shrunk to what it retains,
@@ -999,6 +1014,8 @@ impl ArtifactArena {
                 leased_ram_bytes: 0,
                 ram_by_site: BTreeMap::new(),
                 optional_ram_bytes: 0,
+                cache_ram_bytes: 0,
+                caches_given_up: false,
                 spare: SpareMemory::default(),
                 ram_poisoned: false,
                 prepared_closed: false,
@@ -1430,6 +1447,9 @@ impl ArtifactArena {
                 if self.ram_is_poisoned() || !n2r_win32::evict::evict_all() {
                     return Err(refused);
                 }
+                if let Ok(mut state) = self.0.state.lock() {
+                    state.caches_given_up = true;
+                }
                 self.reserve_ram_at(bytes, site)
             }
             granted => granted,
@@ -1466,6 +1486,7 @@ impl ArtifactArena {
             arena: self.clone(),
             bytes,
             optional: false,
+            cache: false,
             spare: false,
             site,
         })
@@ -1499,14 +1520,25 @@ impl ArtifactArena {
             arena: self.clone(),
             bytes,
             optional: false,
+            cache: false,
             spare: true,
             site,
         })
     }
-    /// Memory for a cache that was always granted while the ledger had room
-    /// (the expected tree's pages, which completion looks up in every
-    /// order). It is counted with the caches, is given up like them when
-    /// memory is short, and no other cache is given up to make room for it.
+    /// Memory for a cache that is held whenever the ledger has room: the
+    /// expected tree's pages, which completion looks up in every order, and
+    /// the file of a page reader that finds itself read at random. Without
+    /// them a lookup re-reads and re-hashes a page of 4 MiB: a volume of
+    /// 100,000 files took 255 s longer when such caches fell under the quota
+    /// below. They are counted as memory the run can do without and are
+    /// given up like every cache when memory is short, but stand outside
+    /// the quota, and no other cache is given up to make room for one.
+    ///
+    /// One is granted while an eighth of the ledger stays free, so that the
+    /// small reservations a pass makes for every object do not each find
+    /// the ledger full of caches; and once caches have been given up in a
+    /// run, only while the ledger is half empty, so that a cache is not
+    /// read in again to be given up again.
     #[track_caller]
     pub fn reserve_cache_ram(&self, bytes: u64) -> Result<ArenaRamLease> {
         let caller = std::panic::Location::caller();
@@ -1518,8 +1550,13 @@ impl ArtifactArena {
             .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
         let leased = add(state.leased_ram_bytes, bytes)?;
         let optional = add(state.optional_ram_bytes, bytes)?;
+        let ceiling = if state.caches_given_up {
+            self.0.budget.ram_bytes / 2
+        } else {
+            self.0.budget.ram_bytes - self.0.budget.ram_bytes / 8
+        };
         ensure!(
-            !state.ram_poisoned && add(leased, state.index_bytes)? <= self.0.budget.ram_bytes,
+            !state.ram_poisoned && add(leased, state.index_bytes)? <= ceiling,
             "cache memory refused: leased={}, requested={}, limit={}",
             state.leased_ram_bytes,
             bytes,
@@ -1527,12 +1564,14 @@ impl ArtifactArena {
         );
         state.leased_ram_bytes = leased;
         state.optional_ram_bytes = optional;
+        state.cache_ram_bytes = add(state.cache_ram_bytes, bytes)?;
         *state.ram_by_site.entry(site).or_default() += bytes;
         note_ledger(&state, self.0.budget.ram_bytes);
         Ok(ArenaRamLease {
             arena: self.clone(),
             bytes,
             optional: true,
+            cache: true,
             spare: false,
             site,
         })
@@ -1541,8 +1580,9 @@ impl ArtifactArena {
     /// memory instead of read page by page). All such caches together may
     /// hold a third of the RAM budget, and one is granted only while the
     /// arena as a whole stays under half full, so that the reservations the
-    /// conversion cannot do without always find room. A refusal is not a
-    /// failure: the caller keeps reading from disk.
+    /// conversion cannot do without find room without a cache being given
+    /// up. A refusal is not a failure: the caller keeps reading from disk.
+    /// (What [`Self::reserve_cache_ram`] granted counts for neither.)
     #[track_caller]
     pub fn reserve_optional_ram(&self, bytes: u64) -> Result<ArenaRamLease> {
         let caller = std::panic::Location::caller();
@@ -1556,8 +1596,10 @@ impl ArtifactArena {
         let optional = add(state.optional_ram_bytes, bytes)?;
         ensure!(
             !state.ram_poisoned
-                && optional <= self.0.budget.ram_bytes / 3
-                && add(leased, state.index_bytes)? <= self.0.budget.ram_bytes / 2,
+                && optional - state.cache_ram_bytes <= self.0.budget.ram_bytes / 3
+                && add(leased, state.index_bytes)? <= self.0.budget.ram_bytes
+                && add(leased, state.index_bytes)? - state.cache_ram_bytes
+                    <= self.0.budget.ram_bytes / 2,
             "optional cache memory refused: leased={}, optional={}, requested={}, limit={}",
             state.leased_ram_bytes,
             state.optional_ram_bytes,
@@ -1572,6 +1614,7 @@ impl ArtifactArena {
             arena: self.clone(),
             bytes,
             optional: true,
+            cache: false,
             spare: false,
             site,
         })
@@ -2155,6 +2198,9 @@ impl Drop for ArenaRamLease {
             }
             if self.optional {
                 state.optional_ram_bytes = state.optional_ram_bytes.saturating_sub(self.bytes);
+            }
+            if self.cache {
+                state.cache_ram_bytes = state.cache_ram_bytes.saturating_sub(self.bytes);
             }
             if self.spare {
                 state.spare.returned(self.bytes);
@@ -2941,6 +2987,16 @@ mod cache_tests {
         assert!(!cache.is_held() && cache.get().is_none());
         assert_eq!(held(&arena), (LIMIT * 7 / 8, 0));
         assert!(n2r_win32::evict::times_given_up() >= 1);
+        // Memory proved short: a cache comes back only once the ledger is
+        // half empty again.
+        drop(more);
+        assert_eq!(held(&arena), (LIMIT / 2, 0));
+        assert!(arena.reserve_cache_ram(LIMIT / 64).is_err());
+        drop(needed);
+        let again = arena.reserve_cache_ram(LIMIT / 4).unwrap();
+        let needed = arena.reserve_ram(LIMIT / 2).unwrap();
+        drop(again);
+        let more = arena.reserve_ram(LIMIT * 3 / 8).unwrap();
         // With no cache left, a request beyond the limit is refused as ever.
         let refused = arena.reserve_ram(LIMIT / 4).err().unwrap().to_string();
         assert!(
@@ -2980,10 +3036,21 @@ mod cache_tests {
         assert!(arena.reserve_spare_ram(LIMIT * 3 / 8).is_err());
         assert!(cache.is_held());
         // A cache that is granted while there is room is counted with the
-        // caches, above the half at which the others are refused.
-        let pages = arena.reserve_cache_ram(LIMIT / 8).unwrap();
-        assert_eq!(held(&arena), (LIMIT * 7 / 8, LIMIT * 3 / 8));
+        // caches, above the half at which the others are refused, and does
+        // not count against their quota of a third.
+        let pages = arena.reserve_cache_ram(LIMIT / 16).unwrap();
+        assert_eq!(held(&arena), (LIMIT * 13 / 16, LIMIT * 5 / 16));
+        // But not into the last eighth of the ledger.
+        assert!(arena.reserve_cache_ram(LIMIT / 16).is_err());
         drop(pages);
+        drop(_needed);
+        let pages = arena.reserve_cache_ram(LIMIT / 2).unwrap();
+        let store = arena.reserve_optional_ram(LIMIT / 16).unwrap();
+        assert_eq!(held(&arena), (LIMIT * 13 / 16, LIMIT * 13 / 16));
+        assert_eq!(arena.0.state.lock().unwrap().cache_ram_bytes, LIMIT / 2);
+        drop((pages, store));
+        assert_eq!(arena.0.state.lock().unwrap().cache_ram_bytes, 0);
+        let _needed = arena.reserve_ram(LIMIT / 2).unwrap();
         // A request on another thread gives up nothing here: the caches are
         // this thread's.
         let other = arena.clone();
@@ -3001,10 +3068,14 @@ mod cache_tests {
             panic!("a ledger with room pays for a cache");
         };
         assert_eq!(held(&arena), (LIMIT / 8, LIMIT / 8));
-        // It is paid as a cache: not once the ledger is half full.
+        // It is paid while the ledger has room, also above half, and not
+        // beyond its limit.
         let _needed = arena.reserve_ram(LIMIT / 2).unwrap();
-        assert!(matches!(pay_for_cache(LIMIT / 8), CachePayment::Refused));
-        drop(paid);
+        let CachePayment::Paid(second) = pay_for_cache(LIMIT / 8) else {
+            panic!("a ledger with room pays for a cache");
+        };
+        assert!(matches!(pay_for_cache(LIMIT / 4), CachePayment::Refused));
+        drop((paid, second));
         assert_eq!(held(&arena), (LIMIT / 2, 0));
         // A ledger that is gone pays for nothing more.
         drop(_needed);

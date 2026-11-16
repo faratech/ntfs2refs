@@ -369,7 +369,6 @@ pub struct PagedNativeObservation {
     sha256: String,
     _refreshed_header_memory:
         Option<Box<dyn crate::shadow_native::report_memory::ReportMemoryLease>>,
-    // Paid for the pages each reader keeps in memory; released after them.
     // Drop decoded/header/index/cache storage before returning shared RAM.
     memory: Option<memory::Memory>,
 }

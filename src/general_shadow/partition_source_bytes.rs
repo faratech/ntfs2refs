@@ -165,14 +165,7 @@ impl<'a> PagedSourceByteAdapter<'a> {
                         == Some(owner.byte_len())),
             "actual partition source differs from complete raw/native resource owner"
         );
-        let session_ram = raw.lease_working_ram(
-            admission
-                .budget
-                .max_row_bytes
-                .checked_mul(8)
-                .and_then(|n| n.checked_add(2 * 16 * 4096))
-                .context("paged DATA session RAM overflow")?,
-        )?;
+        let session_ram = raw.lease_working_ram(super::SESSION_WORKSPACE)?;
         Ok(Self {
             source: BorrowedPagedSource::Partition {
                 owner,

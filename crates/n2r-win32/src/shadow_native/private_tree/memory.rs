@@ -146,16 +146,35 @@ impl Owner {
     pub(super) fn working(&self, bytes: u64) -> io::Result<Box<dyn ReportMemoryLease>> {
         self.payer.reserve(bytes)
     }
+    /// The workspace for allocating one object.
+    ///
+    /// It follows the object, as the walk's does
+    /// ([`crate::shadow_native::report_memory`]): its snapshot, which holds
+    /// no more than the largest security descriptor Windows can produce, and
+    /// the mapping queries of its longest stream, which cannot return more
+    /// extents than a stream of that length has clusters. It used to be
+    /// eight of the largest row the budget admits and thirty-two of the
+    /// largest mapping reply there is: an eighth and a sixty-fourth of the
+    /// run's memory for every object in turn, 1.4 GB on a machine with
+    /// 16 GB, and what a volume of 500,000 files was refused for (#129).
     pub(super) fn row_peak(&self, item: &Input<'_>) -> io::Result<u64> {
         let path = item
             .components
             .iter()
             .try_fold(0u64, |n, s| add(n, s.len() as u64))?;
         let streams = add(item.named_streams.len() as u64, 1)?;
+        let longest = item
+            .named_streams
+            .iter()
+            .map(|stream| stream.expected_length)
+            .fold(item.logical_length(), u64::max);
         let mut n = add(
             add(
-                mul(self.row_bytes, 8)?,
-                mul(crate::retrieval_paging::max_returned_bytes() as u64, 32)?,
+                crate::shadow_native::report_memory::snapshot_peak(self.row_bytes)?,
+                mul(
+                    crate::retrieval_paging::returned_bytes_for_stream(longest) as u64,
+                    32,
+                )?,
             )?,
             mul(add(path, 4096)?, mul(streams, 16)?)?,
         )?;
@@ -174,7 +193,12 @@ impl Owner {
         mut guard: Box<dyn ReportMemoryLease>,
         bytes: u64,
     ) -> io::Result<()> {
-        guard.shrink_to(bytes)?;
+        if guard.shrink_to(bytes).is_err() {
+            // What the object keeps is more than its workspace was: the
+            // workspace follows the object's streams, and what is kept is
+            // measured. A reservation of what is kept takes its place.
+            guard = self.payer.reserve(bytes)?;
+        }
         let mut guards = self.guards.borrow_mut();
         if guards.len() == guards.capacity() {
             return Err(invalid("private constructor guard registry exhausted"));
@@ -446,5 +470,104 @@ mod charge_tests {
         // And an entry of a large shared map is charged more than its share.
         let entry = node::<usize, File>().unwrap();
         assert!(entry * 100 >= complete_node::<usize, File>().unwrap() * 24);
+    }
+}
+#[cfg(test)]
+mod workspace_tests {
+    use super::*;
+    use crate::shadow_native::report_memory::test_payer::Counted;
+
+    const MIB: u64 = 1024 * 1024;
+
+    fn item<'a>(
+        components: &'a [String],
+        length: u64,
+        named_streams: Vec<NamedStreamInput<'a>>,
+    ) -> Input<'a> {
+        Input {
+            components,
+            additional_names: &[],
+            directory: false,
+            times: [0; 4],
+            attributes: 32,
+            security: &[],
+            expected_api_security: None,
+            extended_attributes: None,
+            reparse: None,
+            payload: &[],
+            expected_length: Some(length),
+            expected_sha256: None,
+            source_offset: None,
+            source_runs: Vec::new(),
+            named_streams,
+            sparse: None,
+        }
+    }
+
+    #[test]
+    fn the_workspace_of_an_object_follows_its_streams_not_the_machine() {
+        let components = vec![
+            "feature-manyfiles".to_owned(),
+            "file-0000007.dat".to_owned(),
+        ];
+        let small = item(&components, 412, Vec::new());
+        let peak_with = |row_bytes: u64, item: &Input<'_>| {
+            let payer = Arc::new(Counted::with_limit(u64::MAX));
+            Owner::new(payer, 16, 16, row_bytes)
+                .unwrap()
+                .row_peak(item)
+                .unwrap()
+        };
+        // A machine with 16 GB free admits rows of 141 MiB, one with 64 GB
+        // rows of 600 MiB: a small file's workspace is the same on both,
+        // and a few megabytes. (It was eight of those rows and thirty-two
+        // of the largest mapping reply there is: 1.4 GB on the first.)
+        let on_16 = peak_with(141 * MIB, &small);
+        assert_eq!(on_16, peak_with(600 * MIB, &small));
+        assert!(on_16 < 8 * MIB, "{on_16}");
+        // A long file's is larger by what its mapping can take, and a named
+        // stream longer than the file decides it.
+        let long = item(&components, 64 << 30, Vec::new());
+        let long_peak = peak_with(141 * MIB, &long);
+        assert!(long_peak > on_16, "{long_peak}");
+        let name: Vec<u16> = "payload".encode_utf16().collect();
+        let stream = |expected_length| NamedStreamInput {
+            name_utf16: &name,
+            expected_length,
+            expected_sha256: None,
+            source_offset: None,
+            source_runs: Vec::new(),
+            sparse: None,
+        };
+        let with_stream = item(&components, 412, vec![stream(64 << 30)]);
+        assert!(peak_with(141 * MIB, &with_stream) >= long_peak);
+        let with_short = item(&components, 412, vec![stream(100)]);
+        assert!(peak_with(141 * MIB, &with_short) < long_peak);
+    }
+
+    #[test]
+    fn what_an_object_keeps_is_reserved_even_beyond_its_workspace() {
+        let payer = Arc::new(Counted::with_limit(u64::MAX));
+        let owner = Owner::new(payer.clone(), 16, 16, MIB).unwrap();
+        let before = payer.held();
+        // The usual case: what is kept is less than the workspace.
+        let workspace = owner.working(4 * MIB).unwrap();
+        owner.retain(workspace, 6000).unwrap();
+        assert_eq!(payer.held(), before + 6000);
+        // What is kept is measured; when it is more than the workspace was,
+        // it is reserved as what it is and the workspace is returned.
+        let workspace = owner.working(4096).unwrap();
+        owner.retain(workspace, 3 * MIB).unwrap();
+        assert_eq!(payer.held(), before + 6000 + 3 * MIB);
+        // And with no room for it the object is refused.
+        let tight = Arc::new(Counted::with_limit(u64::MAX));
+        let owner = Owner::new(tight.clone(), 16, 16, MIB).unwrap();
+        let workspace = owner.working(4096).unwrap();
+        let none = Arc::new(Counted::with_limit(0));
+        let refusing = Owner {
+            payer: none,
+            ..owner
+        };
+        assert!(refusing.retain(workspace, 3 * MIB).is_err());
     }
 }

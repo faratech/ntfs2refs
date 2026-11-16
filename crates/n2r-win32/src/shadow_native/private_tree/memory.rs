@@ -215,10 +215,14 @@ impl Owner {
         if guards.len() == guards.capacity() {
             return Err(invalid("private constructor guard registry exhausted"));
         }
-        guard
+        let held = guard
             .as_mut()
-            .ok_or_else(|| invalid("actual retained state guard absent"))?
-            .shrink_to(bytes)?;
+            .ok_or_else(|| invalid("actual retained state guard absent"))?;
+        if held.shrink_to(bytes).is_err() {
+            // What is kept is measured, and is more than was reserved for
+            // it: a reservation of what it is takes the other's place.
+            *held = self.payer.reserve(bytes)?;
+        }
         guards.push(guard.take().expect("validated actual retained state guard"));
         Ok(())
     }
@@ -417,6 +421,107 @@ pub(super) fn coordinate_map_bytes(
             )
         })
 }
+/// What the placement step's own indexes take while it runs.
+///
+/// They were prepaid at 8,192 bytes for every stream, run and island: 4.5 GB
+/// for a volume of 500,000 small files, nine tenths of which hold their data
+/// in the file record and have nothing to place; that request is what
+/// stopped it on a machine with 16 GB (#129). What is charged now is what
+/// the structures are: a map entry and a slot for a stream, 96 bytes for a
+/// run, a JSON object for a row of the two coordinate maps written before
+/// the first move.
+pub(super) struct PlacementIndex {
+    /// Streams with a placeholder: an entry of `desired`, a slot of `indexes`.
+    pub streams: usize,
+    /// The source runs wanted between them.
+    pub ranges: usize,
+    /// Rows of the sparse-carrier and named-stream maps.
+    pub map_rows: usize,
+    /// UTF-16 units of the stream names in those maps.
+    pub map_name_units: usize,
+}
+pub(super) fn placement_index_bytes(counts: &PlacementIndex) -> io::Result<u64> {
+    use crate::shadow_native::SourceRun;
+    let streams = add(
+        tree::<usize, Vec<SourceRun>>(counts.streams)?,
+        mul(counts.streams as u64, 2 * mem::size_of::<usize>() as u64)?,
+    )?;
+    // A run in `desired`, and its pair in `avoid`: a Vec that doubles (the
+    // old and the new buffer exist together while it grows) and is then
+    // sorted with a buffer of its own length.
+    let range = (mem::size_of::<SourceRun>() + 4 * mem::size_of::<(u64, u64)>()) as u64;
+    // A row of a coordinate map is a JSON object of a few fields: one node,
+    // its keys, its slot, and its text while the map is written.
+    let map_row = add(complete_node::<String, serde_json::Value>()?, 1024)?;
+    // A unit of a name in one: a JSON number in a Vec that doubles, and its
+    // digits in the text.
+    let unit = 3 * mem::size_of::<serde_json::Value>() as u64 + 8;
+    add(
+        add(streams, mul(counts.ranges as u64, range)?)?,
+        add(
+            add(
+                mul(counts.map_rows as u64, map_row)?,
+                mul(counts.map_name_units as u64, unit)?,
+            )?,
+            1024 * 1024,
+        )?,
+    )
+}
+/// The sweeps over what the shadow owns before blockers are moved away:
+/// `owned`, an extent for every tracked mapping, and `eligible`, one for
+/// every run wanted or, in a resumed placement, for every piece of one that
+/// is not in place yet (no more pieces than runs and mappings together, and
+/// the pieces of one run are first collected by themselves). Vecs that
+/// double, all of them. (8,192 bytes a mapping and a run were prepaid.)
+pub(super) fn placement_ownership_bytes(tracked: usize, ranges: usize) -> io::Result<u64> {
+    let extent = 3 * mem::size_of::<crate::shadow_evacuation::Extent>() as u64;
+    add(
+        add(
+            mul(tracked as u64, 3 * extent)?,
+            mul(ranges as u64, extent)?,
+        )?,
+        1024 * 1024,
+    )
+}
+/// The record of the evacuation plan while it is written: a JSON object of
+/// one node for every owned extent and every planned move, its keys and its
+/// text. (8,192 bytes a row were prepaid.)
+pub(super) fn placement_plan_record_bytes(rows: usize) -> io::Result<u64> {
+    add(
+        mul(
+            rows as u64,
+            add(complete_node::<String, serde_json::Value>()?, 512)?,
+        )?,
+        65536,
+    )
+}
+/// The coordinates kept from a placement: by slot while they are derived and
+/// by stream once they are kept, an entry in each map for a stream, its
+/// name, and a triple for every piece in a Vec that doubles. Never less
+/// than [`coordinate_map_bytes`] finds in what is kept.
+pub(super) fn placement_coordinates_bytes(
+    streams: usize,
+    name_units: usize,
+    pieces: usize,
+) -> io::Result<u64> {
+    let piece = mem::size_of::<(u64, u64, u64)>() as u64;
+    // A Vec that holds anything holds four at least.
+    let stream = add(
+        add(
+            node::<usize, Vec<(u64, u64, u64)>>()?,
+            node::<StreamKey, Vec<(u64, u64, u64)>>()?,
+        )?,
+        4 * piece,
+    )?;
+    let piece = 3 * piece;
+    add(
+        add(
+            mul(streams as u64, stream)?,
+            mul(name_units as u64, 2 * mem::size_of::<u16>() as u64)?,
+        )?,
+        add(mul(pieces as u64, piece)?, 2 * 65536)?,
+    )
+}
 pub(super) fn value_bytes(value: &serde_json::Value) -> io::Result<u64> {
     json(value)
 }
@@ -543,6 +648,81 @@ mod workspace_tests {
         assert!(peak_with(141 * MIB, &with_stream) >= long_peak);
         let with_short = item(&components, 412, vec![stream(100)]);
         assert!(peak_with(141 * MIB, &with_short) < long_peak);
+    }
+
+    #[test]
+    fn the_placement_indexes_are_charged_for_what_they_hold() {
+        // 500,000 small files, a tenth of them with data outside their file
+        // record: 4.5 GB were prepaid for the index, 8,192 bytes a row.
+        let counts = PlacementIndex {
+            streams: 500_003,
+            ranges: 50_004,
+            map_rows: 0,
+            map_name_units: 0,
+        };
+        let index = placement_index_bytes(&counts).unwrap();
+        assert!(index < 128 * MIB, "{index}");
+        // Never less than the structures: for a stream an entry of the map
+        // of runs (a slot number and a Vec) and its slot in the order of
+        // work, for a run the run and its pair.
+        assert!(
+            index > 500_003 * (8 + 24 + 8) + 50_004 * (32 + 16),
+            "{index}"
+        );
+        // A row of a coordinate map is a JSON object, and a unit of a name
+        // a JSON number.
+        let with_maps = placement_index_bytes(&PlacementIndex {
+            map_rows: 1000,
+            map_name_units: 8000,
+            ..counts
+        })
+        .unwrap();
+        assert!(with_maps >= index + 1000 * (11 * 56 + 64) + 8000 * 64);
+        // The sweeps: an extent of 32 bytes for a mapping and for a run, in
+        // Vecs that double.
+        let sweeps = placement_ownership_bytes(60_000, 50_004).unwrap();
+        assert!(
+            sweeps >= (60_000 + 50_004) * 3 * 32 && sweeps < 64 * MIB,
+            "{sweeps}"
+        );
+        // The plan's record: an object for an extent or a move.
+        let record = placement_plan_record_bytes(60_000).unwrap();
+        assert!(
+            record >= 60_000 * (11 * 56 + 64) && record < 128 * MIB,
+            "{record}"
+        );
+    }
+
+    #[test]
+    fn what_a_placement_keeps_fits_what_was_reserved_for_it() {
+        // Streams of no piece, of one (a Vec then holds four), of several;
+        // some of them named.
+        let mut kept = BTreeMap::new();
+        for slot in 0..2000usize {
+            let mut ranges = Vec::new();
+            for piece in 0..(slot % 11) as u64 {
+                ranges.push((piece * 4096, (slot as u64) << 20, 4096));
+            }
+            let name_utf16 = if slot % 5 == 0 {
+                "a named stream".encode_utf16().collect()
+            } else {
+                Vec::new()
+            };
+            kept.insert(
+                StreamKey {
+                    object_index: slot,
+                    name_utf16,
+                },
+                ranges,
+            );
+        }
+        let pieces: usize = kept.values().map(Vec::len).sum();
+        let units: usize = kept.keys().map(|key| key.name_utf16.len()).sum();
+        let reserved = placement_coordinates_bytes(kept.len(), units, pieces).unwrap();
+        let held = coordinate_map_bytes(&kept).unwrap();
+        assert!(reserved >= held, "{reserved} < {held}");
+        // And not many times it.
+        assert!(reserved < 3 * held, "{reserved} against {held}");
     }
 
     #[test]

@@ -1455,6 +1455,14 @@ impl ArtifactArena {
             granted => granted,
         }
     }
+    /// As [`Self::reserve_ram`], for memory the caller does without when
+    /// there is no room (a row kept for the next lookup, a small table held
+    /// instead of a working file): no cache is given up for it.
+    #[track_caller]
+    pub fn reserve_ram_if_room(&self, bytes: u64) -> Result<ArenaRamLease> {
+        let caller = std::panic::Location::caller();
+        self.reserve_ram_at(bytes, (caller.file(), caller.line()))
+    }
     fn ram_is_poisoned(&self) -> bool {
         self.0.state.lock().map_or(true, |state| state.ram_poisoned)
     }
@@ -3051,6 +3059,9 @@ mod cache_tests {
         drop((pages, store));
         assert_eq!(arena.0.state.lock().unwrap().cache_ram_bytes, 0);
         let _needed = arena.reserve_ram(LIMIT / 2).unwrap();
+        // Nor for memory the caller can do without.
+        assert!(arena.reserve_ram_if_room(LIMIT * 3 / 8).is_err());
+        assert!(cache.is_held());
         // A request on another thread gives up nothing here: the caches are
         // this thread's.
         let other = arena.clone();

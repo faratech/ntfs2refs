@@ -48,7 +48,16 @@ it lies on target-cluster boundaries; the rest goes through the working storage.
   the journal is hashed as it is written. `--recheck-everything` restores the
   old behaviour everywhere.
 - In-memory copies of stores and decoded objects lease through
-  `reserve_optional_ram` (a third of the RAM budget, arena under half full).
+  `reserve_optional_ram` (a third of the RAM budget, arena under half full);
+  the pages a reader holds lease through `reserve_cache_ram` (while the
+  ledger has room). Each is an `n2r_win32::evict::Evictable`: a reservation
+  the run needs that finds no room gives the thread's caches up and is
+  tried again. A new cache follows that pattern; it never holds memory
+  without a lease, and nothing may depend on its being there.
+- A reservation follows what it is for (the object's bytes, the file's
+  clusters, the counts of a step), not the largest row the budget admits.
+  Every run prints what each step could not do without and what held it
+  (`memory-steps:`); read that before adding one and after.
 - `--recover` settles a lifecycle marker whose write was cut short
   (`src/interrupted_marker.rs`); any other unexpected byte still stops it.
 - A per-object Windows query answers into its thread's buffer
@@ -174,12 +183,13 @@ Open, in the order of the owner's plan (#148), which is where to stop or
 reorder the work:
 
 1. Memory must not grow with the number of files, and a run has to be
-   extremely stable (owner, 2026-11-15). Today it takes about 34 KiB of free
-   memory a file; #129 has the census of what grows, the largest of it
-   reservations sized from the machine's memory and not from the volume. A
-   pass that works in batches takes its workspaces as spare memory
-   (`ArtifactArena::reserve_spare_ram`): never let memory that only buys
-   speed be what a run fails for.
+   extremely stable (owner, 2026-11-15). Today it takes about 21 KiB of free
+   memory a file (it was 34): what is held for every object until the end
+   is the new volume's record of it with its open handle (3.4 KiB) and the
+   walks' row for it (3.1 KiB), and those move to working storage next;
+   #129 has the census. A pass that works in batches takes its workspaces
+   as spare memory (`ArtifactArena::reserve_spare_ram`): never let memory
+   that only buys speed be what a run fails for.
 2. A fast default (`--verify fast|thorough`), with the final verification
    in front of the handoff marker so that a failure can still be rolled
    back (#148 phase 2, #110).

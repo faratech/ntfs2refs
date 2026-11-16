@@ -285,7 +285,7 @@ impl PagedRawFiles {
         }
         // Holding a row is a saving, never a requirement of its own: a
         // refusal leaves the row to its caller as before.
-        let Ok(ram) = self.scratch.lease_ram(charge) else {
+        let Ok(ram) = self.scratch.lease_ram_if_room(charge) else {
             return Ok(());
         };
         *self.last_row.borrow_mut() = Some(LastRow {
@@ -329,7 +329,7 @@ impl PagedRawFiles {
         }
         // Optional cache pressure must not become a source admission limit.
         // The ordinary read below already belongs to the caller's row budget.
-        let Ok(ram) = self.scratch.lease_ram(charge) else {
+        let Ok(ram) = self.scratch.lease_ram_if_room(charge) else {
             return Ok(());
         };
         let retained = Arc::clone(file);

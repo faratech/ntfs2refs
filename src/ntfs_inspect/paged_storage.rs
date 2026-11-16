@@ -458,6 +458,34 @@ impl SourceScratch {
             _arena_ram: arena_ram,
         })
     }
+    /// As [`Self::lease_ram`], for memory the caller does without when
+    /// there is no room for it: no cache is given up to make room.
+    #[track_caller]
+    pub fn lease_ram_if_room(&self, bytes: u64) -> Result<SourceRamLease> {
+        ensure!(
+            self.has_room_for(bytes)?,
+            "no room in the source metadata working RAM"
+        );
+        let permit = {
+            let ledger = self.0.borrow();
+            ensure!(!ledger.poisoned, "source scratch is poisoned");
+            ledger.arena.clone()
+        };
+        let arena_ram = match permit {
+            Some(permit) => Some(permit.arena().reserve_ram_if_room(bytes)?),
+            None => None,
+        };
+        let mut ledger = self.0.borrow_mut();
+        ledger.ram = ledger
+            .ram
+            .checked_add(bytes)
+            .context("metadata RAM overflow")?;
+        Ok(SourceRamLease {
+            scratch: self.clone(),
+            bytes,
+            _arena_ram: arena_ram,
+        })
+    }
     fn has_room_for(&self, bytes: u64) -> Result<bool> {
         let ledger = self.0.borrow();
         Ok(ledger
@@ -1632,6 +1660,10 @@ mod cache_tests {
             })
             .unwrap();
         assert!(store.resident.as_ref().unwrap().is_held());
+        // Memory a caller can do without takes no cache's place.
+        assert!(scratch.lease_ram_if_room(RAM - before + 100_000).is_err());
+        assert!(store.resident.as_ref().unwrap().is_held());
+        assert!(scratch.lease_ram_if_room(4096).is_ok());
         assert!(scratch.lease_ram(RAM - before + 100_000).is_ok());
         assert!(!store.resident.as_ref().unwrap().is_held());
     }

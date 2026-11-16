@@ -135,7 +135,7 @@ impl Seen {
         }
         let bytes = slots.div_ceil(8);
         if bytes <= SEEN_MEMORY_BYTES {
-            if let Ok(ram) = scratch.lease_ram(bytes + 4096) {
+            if let Ok(ram) = scratch.lease_ram_if_room(bytes + 4096) {
                 let mut bits = Vec::new();
                 bits.try_reserve_exact(bytes as usize)?;
                 bits.resize(bytes as usize, 0);

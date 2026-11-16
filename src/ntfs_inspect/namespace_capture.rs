@@ -196,7 +196,7 @@ fn hold_attribute<R: Read + Seek>(
     if length > HELD_ATTRIBUTE_BYTES {
         return Ok(None);
     }
-    let Ok(ram) = scratch.lease_ram(length + 4096) else {
+    let Ok(ram) = scratch.lease_ram_if_room(length + 4096) else {
         return Ok(None);
     };
     let mut input = attribute_input(reader, attribute, geometry, evidence)?;
@@ -386,7 +386,7 @@ impl PagedNamespaceCapture {
         // the same bytes are read in the same order into the same evidence.
         let scratch = self.scratch.clone();
         let held_root = scratch
-            .lease_ram(root_bytes.len() as u64 + 4096)
+            .lease_ram_if_room(root_bytes.len() as u64 + 4096)
             .ok()
             .map(|ram| HeldAttribute {
                 bytes: root_bytes.to_vec(),

@@ -170,6 +170,13 @@ pub struct DriveArgs {
     /// are checked, not what.
     #[arg(long, requires = "drive", conflicts_with_all = ["list", "recover", "rollback"])]
     pub recheck_everything: bool,
+    /// The most memory the run may use, in MiB. Without it a run uses up
+    /// to two thirds of the memory that is free when it starts. With less it
+    /// holds less in memory and takes longer; --check says what a volume
+    /// needs at least, and a limit below that is refused before anything is
+    /// built. Give a recovery the limit too if it should keep to one.
+    #[arg(long, value_name = "MIB", conflicts_with = "list", value_parser = clap::value_parser!(u64).range(256..=16_777_216))]
+    pub memory_limit: Option<u64>,
     /// Laboratory: sample the worker's call stack a hundred times a second
     /// and write the profile to this file. Needs the .pdb beside the executable.
     #[arg(long, hide = true, value_name = "FILE")]
@@ -775,6 +782,10 @@ mod windows {
         if args.short_names.as_deref() == Some("drop") {
             // Read where the volume is checked and where it is admitted.
             crate::short_name_disposition::drop_for_this_run();
+        }
+        if let Some(mib) = args.memory_limit {
+            // Before anything reads how much memory is free.
+            n2r_win32::resource_native::limit_memory(mib << 20)?;
         }
         if mode == crate::execution_mode::ExecutionMode::Diagnose {
             // A backstop beneath the routes: nothing in this process may now

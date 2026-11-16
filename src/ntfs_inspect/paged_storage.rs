@@ -213,6 +213,12 @@ impl SourceScratch {
             })
             .and_then(|n| n.checked_add(256))
             .context("scratch registry memory overflow")?;
+        // Reserved before this ledger is borrowed: a reservation that finds
+        // no room gives up caches, and those return what they hold here.
+        let arena_ram = match self.artifact_group() {
+            Some(permit) => Some(permit.arena().reserve_ram(ram)?),
+            None => None,
+        };
         let mut ledger = self.0.borrow_mut();
         ensure!(
             !ledger.poisoned && !ledger.created.contains_key(&pin.path),
@@ -226,11 +232,6 @@ impl SourceScratch {
             total <= ledger.budget.ram_bytes,
             "created scratch identity registry RAM exhausted"
         );
-        let arena_ram = ledger
-            .arena
-            .as_ref()
-            .map(|permit| permit.arena().reserve_ram(ram))
-            .transpose()?;
         ledger.ram = total;
         ledger.created.insert(
             pin.path.clone(),
@@ -420,29 +421,50 @@ impl SourceScratch {
     /// which names the places that hold its memory.)
     #[track_caller]
     pub fn lease_ram(&self, bytes: u64) -> Result<SourceRamLease> {
-        let mut ledger = self.0.borrow_mut();
+        // Neither ledger is borrowed while caches are given up: they return
+        // what they hold to both. This one is asked first; when it has no
+        // room, the caches go and it is asked once more.
+        if !self.has_room_for(bytes)? {
+            n2r_win32::evict::evict_all();
+        }
+        let ledger = self.0.borrow();
         ensure!(!ledger.poisoned, "source scratch is poisoned");
-        let used = ledger
-            .ram
-            .checked_add(bytes)
-            .context("metadata RAM overflow")?;
         ensure!(
-            used <= ledger.budget.ram_bytes,
+            ledger
+                .ram
+                .checked_add(bytes)
+                .context("metadata RAM overflow")?
+                <= ledger.budget.ram_bytes,
             "source metadata working RAM exhausted: active={}, requested={}, limit={}",
             ledger.ram,
             bytes,
             ledger.budget.ram_bytes
         );
-        let arena_ram = match ledger.arena.as_ref() {
+        let permit = ledger.arena.clone();
+        drop(ledger);
+        let arena_ram = match permit {
             Some(permit) => Some(permit.arena().reserve_ram(bytes)?),
             None => None,
         };
-        ledger.ram = used;
+        // What the caches returned in between only made room.
+        let mut ledger = self.0.borrow_mut();
+        ledger.ram = ledger
+            .ram
+            .checked_add(bytes)
+            .context("metadata RAM overflow")?;
         Ok(SourceRamLease {
             scratch: self.clone(),
             bytes,
             _arena_ram: arena_ram,
         })
+    }
+    fn has_room_for(&self, bytes: u64) -> Result<bool> {
+        let ledger = self.0.borrow();
+        Ok(ledger
+            .ram
+            .checked_add(bytes)
+            .context("metadata RAM overflow")?
+            <= ledger.budget.ram_bytes)
     }
     /// As [`Self::lease_ram`], for a cache the caller can do without. With
     /// an arena, see `ArtifactArena::reserve_optional_ram`; without one, the
@@ -1052,7 +1074,9 @@ impl Drop for SourceRangeWriter {
 pub struct PagedMetadataRange {
     reader: RefCell<Reader>,
     decoded: RefCell<DecodedChunks>,
-    resident: Option<ResidentMetadataCache>,
+    // A cache: given up, with its reservation, when the run's memory is
+    // short, and the store is read through its pages from then on.
+    resident: Option<n2r_win32::evict::Evictable<ResidentMetadataCache>>,
     // Accepted as a store this process wrote, without a full decode and hash.
     written_here: bool,
     pin: SourcePagePin,
@@ -1307,7 +1331,7 @@ impl PagedMetadataRange {
         Ok(Self {
             reader: RefCell::new(reader),
             decoded: RefCell::new(DecodedChunks::default()),
-            resident,
+            resident: resident.map(n2r_win32::evict::Evictable::new),
             written_here,
             pin: pin.clone(),
             _ram: ram,
@@ -1339,7 +1363,7 @@ impl PagedMetadataRange {
             "source range read escapes metadata"
         );
         let size = usize::try_from(bytes).context("source record exceeds address space")?;
-        if let Some(cache) = &self.resident {
+        if let Some(cache) = self.resident.as_ref().and_then(|cache| cache.get()) {
             let start =
                 usize::try_from(offset).context("resident source address exceeds address space")?;
             let end = start
@@ -1383,7 +1407,7 @@ impl SourceMetadataRange for PagedMetadataRange {
                 .is_some_and(|n| n <= self.pin.logical_bytes),
             "source range read escapes metadata"
         );
-        if let Some(cache) = &self.resident {
+        if let Some(cache) = self.resident.as_ref().and_then(|cache| cache.get()) {
             let start =
                 usize::try_from(offset).context("resident source address exceeds address space")?;
             let end = start
@@ -1523,5 +1547,92 @@ mod base64_tests {
             decode(b"\"QUJD\"", 2).is_err(),
             "longer than the working window"
         );
+    }
+}
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    fn scratch(ram_bytes: u64) -> SourceScratch {
+        SourceScratch::new(SourceMetadataBudget {
+            ram_bytes,
+            scratch_bytes: 64 * 1024 * 1024,
+            page_bytes: 4096,
+            record_bytes: 64 * 1024,
+            merge_fan_in: 8,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn a_store_held_in_memory_is_given_up_and_read_through_its_pages() {
+        let directory = tempfile::tempdir().unwrap();
+        const RAM: u64 = 8 * 1024 * 1024;
+        let scratch = scratch(RAM);
+        let bytes: Vec<u8> = (0..600_000u32).map(|n| (n * 31 + 7) as u8).collect();
+        let pin = PagedMetadataRange::capture(
+            &directory.path().join("store"),
+            *b"N2RTEST1",
+            &mut bytes.as_slice(),
+            bytes.len() as u64,
+            &scratch,
+        )
+        .unwrap();
+        let store = PagedMetadataRange::open(&pin, &scratch).unwrap();
+        assert!(
+            store.resident.as_ref().is_some_and(|cache| cache.is_held()),
+            "a store of 600 KB is held in memory by a ledger of 8 MiB"
+        );
+        let read = |offset: u64, length: usize| {
+            let mut out = vec![0u8; length];
+            store.read_exact_at(offset, &mut out).unwrap();
+            out
+        };
+        assert_eq!(read(123_456, 5000), bytes[123_456..128_456]);
+        // What the pass needs has no room beside the store: the store goes.
+        let before = scratch.0.borrow().ram;
+        let needed = scratch.lease_ram(RAM - before + 300_000).unwrap();
+        assert!(!store.resident.as_ref().unwrap().is_held());
+        // And is read as before, through its pages.
+        assert_eq!(read(123_456, 5000), bytes[123_456..128_456]);
+        assert_eq!(read(0, 600_000), bytes);
+        store
+            .with_bytes_at(599_000, 1000, |tail| {
+                assert_eq!(tail, &bytes[599_000..]);
+                Ok(())
+            })
+            .unwrap();
+        drop(needed);
+    }
+
+    #[test]
+    fn a_store_being_read_is_not_given_up_under_the_reader() {
+        let directory = tempfile::tempdir().unwrap();
+        const RAM: u64 = 8 * 1024 * 1024;
+        let scratch = scratch(RAM);
+        let bytes = vec![0x5a_u8; 400_000];
+        let pin = PagedMetadataRange::capture(
+            &directory.path().join("store"),
+            *b"N2RTEST1",
+            &mut bytes.as_slice(),
+            bytes.len() as u64,
+            &scratch,
+        )
+        .unwrap();
+        let store = PagedMetadataRange::open(&pin, &scratch).unwrap();
+        assert!(store.resident.as_ref().is_some_and(|cache| cache.is_held()));
+        let before = scratch.0.borrow().ram;
+        store
+            .with_bytes_at(0, 400_000, |held| {
+                // A request made while the bytes are borrowed cannot take
+                // them away: it is refused, and they are still there.
+                assert!(scratch.lease_ram(RAM - before + 100_000).is_err());
+                assert!(held.iter().all(|byte| *byte == 0x5a));
+                Ok(())
+            })
+            .unwrap();
+        assert!(store.resident.as_ref().unwrap().is_held());
+        assert!(scratch.lease_ram(RAM - before + 100_000).is_ok());
+        assert!(!store.resident.as_ref().unwrap().is_held());
     }
 }

@@ -322,6 +322,12 @@ pub fn finish() {
                     holders.1
                 );
             }
+            let given_up = crate::evict::times_given_up();
+            if given_up != 0 {
+                eprintln!(
+                    "memory-caches: memory was short {given_up} time(s), and the run gave up what it held in memory only to go faster"
+                );
+            }
         }
     }
 }

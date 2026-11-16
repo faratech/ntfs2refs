@@ -215,7 +215,9 @@ impl SortedRecordWriter {
 pub struct SortedRecordStore {
     data: PagedMetadataRange,
     directory: PagedMetadataRange,
-    directory_cache: Option<DirectoryCache>,
+    // A cache: given up, with its reservation, when the run's memory is
+    // short.
+    directory_cache: Option<n2r_win32::evict::Evictable<DirectoryCache>>,
     pin: RecordStorePin,
     maximum_record_bytes: u64,
 }
@@ -268,7 +270,8 @@ impl SortedRecordStore {
         );
         let data = PagedMetadataRange::open(&pin.data, scratch)?;
         let directory = PagedMetadataRange::open(&pin.directory, scratch)?;
-        let directory_cache = DirectoryCache::try_load(&directory, scratch)?;
+        let directory_cache =
+            DirectoryCache::try_load(&directory, scratch)?.map(n2r_win32::evict::Evictable::new);
         let store = Self {
             data,
             directory,
@@ -327,7 +330,7 @@ impl SortedRecordStore {
         let at = ordinal
             .checked_mul(DIRECTORY_BYTES)
             .context("record index overflow")?;
-        if let Some(cache) = &self.directory_cache {
+        if let Some(cache) = self.directory_cache.as_ref().and_then(|cache| cache.get()) {
             let start =
                 usize::try_from(at).context("resident record index exceeds address space")?;
             let end = start

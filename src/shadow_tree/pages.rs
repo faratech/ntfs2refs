@@ -160,7 +160,7 @@ pub struct PagedExpectedTree {
     // The digest of every object's native input; this tree never changes.
     input_digest: n2r_win32::shadow_native::input_domain::InputDigestMemo,
     // Objects already decoded from it, while the arena can spare the memory.
-    decoded: RefCell<DecodedObjects>,
+    decoded: std::rc::Rc<DecodedCache>,
     header: ExpectedTreePageHeader,
     counts: ExpectedTreePageCounts,
     file_sha256: String,
@@ -213,6 +213,29 @@ struct DecodedObjects {
     unspent: u64,
     // Objects still to pass by before the arena is asked again.
     refused_for: u32,
+}
+/// The decoded objects as a cache of the run: given up, with the blocks
+/// that pay for them, when memory is short ([`n2r_win32::evict`]).
+struct DecodedCache(RefCell<DecodedObjects>);
+impl n2r_win32::evict::Evict for DecodedCache {
+    fn evict(&self) -> bool {
+        // Borrowed means in use at this moment: left alone. What is taken
+        // is dropped after the borrow has ended, the objects before the
+        // blocks that paid for them.
+        let taken = match self.0.try_borrow_mut() {
+            Ok(mut decoded) if !decoded.leases.is_empty() => {
+                decoded.unspent = 0;
+                // Memory was short: not asked for again at once.
+                decoded.refused_for = DECODED_RETRY_OBJECTS;
+                Some((
+                    std::mem::take(&mut decoded.rows),
+                    std::mem::take(&mut decoded.leases),
+                ))
+            }
+            _ => None,
+        };
+        taken.is_some()
+    }
 }
 const DECODED_BLOCK_BYTES: u64 = 16 * 1024 * 1024;
 const DECODED_RETRY_OBJECTS: u32 = 4096;
@@ -1583,9 +1606,10 @@ impl PagedExpectedTree {
         // slot only when the arena cannot pay for the whole body.
         if let Some(arena) = &arena {
             if reader.page_count() > 1 {
-                if let Ok(lease) = arena.reserve_ram(reader.resident_page_bytes()?) {
-                    reader.install_resident_pages()?;
-                    second_page_ram = Some(lease);
+                if let Ok(lease) = arena.reserve_cache_ram(reader.resident_page_bytes()?) {
+                    // A cache: given up, with its reservation, when the
+                    // run's memory is short.
+                    reader.install_resident_pages_paid(Box::new(lease))?;
                 }
             }
         }
@@ -1754,7 +1778,12 @@ impl PagedExpectedTree {
             alias_projection: RefCell::new(None),
             alias_projection_lookups: Cell::new(0),
             input_digest: n2r_win32::shadow_native::input_domain::InputDigestMemo::new(),
-            decoded: RefCell::new(DecodedObjects::default()),
+            decoded: {
+                let decoded =
+                    std::rc::Rc::new(DecodedCache(RefCell::new(DecodedObjects::default())));
+                n2r_win32::evict::register(&decoded);
+                decoded
+            },
             header,
             counts: ExpectedTreePageCounts::default(),
             file_sha256: file_sha256.into(),
@@ -2089,7 +2118,7 @@ impl PagedExpectedTree {
         let (Some(arena), Some(admission)) = (&self.arena, self.resource_admission) else {
             return;
         };
-        let mut decoded = self.decoded.borrow_mut();
+        let mut decoded = self.decoded.0.borrow_mut();
         if decoded.rows.get(index).is_some_and(Option::is_some) {
             return;
         }
@@ -2137,6 +2166,7 @@ impl PagedExpectedTree {
         if keeps
             && let Some(object) = self
                 .decoded
+                .0
                 .borrow()
                 .rows
                 .get(index)

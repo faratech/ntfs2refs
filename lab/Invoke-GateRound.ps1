@@ -13,7 +13,8 @@ it: four sets, the first two at the same time.
             rolled back; ended before finalization and resumed)
   data      on the other Windows 11 VMs: data volumes of every geometry,
             lived-in and many-file volumes, a shared disk, stops, recoveries,
-            one volume with --recheck-everything
+            one volume with --recheck-everything, one held to the memory
+            the estimate asks for it
   full      on the reference VM, with the host to itself: the full Windows
             volume, converted and booted on ReFS
   server    on the Windows Server VM: standard ReFS and the Dev Drive
@@ -133,6 +134,9 @@ $dataCases = @(
     'small-8g|-PartitionMB 8192 -Check'
     'many-20k|-Content many -Islands 20000 -Check'
     'files-20k|-Content minimal -Features manyfiles -FileCount 20000 -Check'
+    # Held to the memory the estimate asks for it: what the run holds only
+    # to go faster is given up on the way.
+    'files-20k-limit|-Content minimal -Features manyfiles -FileCount 20000 -ConverterArgs --memory-limit=480'
     '4k-admin|-RunAs administrator -Check'
     'shared|-Siblings -Check -Acceptance'
     "shared-lived-in|-Siblings $lived -Check"

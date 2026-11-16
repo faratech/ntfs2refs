@@ -146,9 +146,20 @@ fn free_memory_for(ram: u64) -> u64 {
 /// with its open handle, 3.4 KiB; the walks' row for it, 3.1 KiB; never
 /// both in full at once, and 8 KiB are counted. A stream counts 1 KiB
 /// more: its slot and runs in the placement indexes and the coordinates
-/// kept from them. The reservations that are fractions of the ledger
-/// itself (sort batches, one object's largest workspace) took up to 0.32 of
-/// it beside those; 0.35 is counted.
+/// kept from them. A tenth is counted beside those for what a step holds
+/// of its own. (It was 0.35 while workspaces were sized by the largest row
+/// the ledger admits; those follow the object now, and the sorts' batches
+/// are fractions of the ledger that shrink with it.) Runs of 100,000 files
+/// held to a limit bear it out: the estimate asks a limit of 977 MiB; the
+/// run converts with 1,000 and with 850, where it could not do without 737,
+/// and with 700 it stops with the source unchanged, at the walk of the new
+/// volume, whose rows are what is held for every file today.
+///
+/// And 256 MiB whatever the volume holds: the observation of the source
+/// through Windows keeps a window of 117 MiB and pays thirty-two times its
+/// longest row (a directory of 20,000 entries is a row of 4 MiB), so a
+/// volume of 20,000 files converts held to 506 MiB, where it could not do
+/// without 283, and stops in that observation held to 256.
 ///
 /// (Until reservations followed the volume the figure was four times this:
 /// the placement index alone prepaid 8 KiB a stream, and a volume of
@@ -168,7 +179,7 @@ fn memory_needed(raw_identities: u64, files: u64, directories: u64, streams: u64
         .saturating_add(objects.saturating_mul(LEDGER_BYTES_AN_OBJECT))
         / (100 - LEDGER_FIXED_PERCENT)
         * 100;
-    free_memory_for(admitted.max(ledger))
+    free_memory_for(admitted.max(ledger).saturating_add(LEDGER_FIXED_BYTES))
 }
 /// What the ledger holds for a stream beside its file: the placement
 /// indexes and the coordinates kept from them.
@@ -176,7 +187,9 @@ const LEDGER_BYTES_A_STREAM: u64 = 1024;
 /// What the ledger holds for a file or directory, at the most.
 const LEDGER_BYTES_AN_OBJECT: u64 = 8192;
 /// The share of the ledger that reservations sized by the ledger take.
-const LEDGER_FIXED_PERCENT: u64 = 35;
+const LEDGER_FIXED_PERCENT: u64 = 10;
+/// What a run holds whatever the volume holds.
+const LEDGER_FIXED_BYTES: u64 = 256 << 20;
 
 /// What a volume that needs more memory than there is, is refused with:
 /// what it needs free, what is free, and, where the user set a limit that
@@ -948,28 +961,35 @@ mod tests {
     fn memory_and_working_storage_grow_with_the_volume() {
         // What the lab ran: a volume of 500,000 small files converted with
         // 13.7 GiB free and one of 100,000 with 6 GiB, each holding less
-        // than the estimate allows it. The estimate is about 21 KiB of free
-        // memory a file: 10 GiB for the first, 2 GiB for the second, and
-        // two million files still take a large machine.
+        // than the estimate allows it. The estimate is 384 MiB of free
+        // memory and about 15 KiB a file: 7.5 GiB for the first, 1.8 GiB
+        // for the second, and two million files still take a large machine.
         let gib = |bytes: u64| bytes as f64 / (1u64 << 30) as f64;
         let half_million = gib(memory_needed(500_511, 500_003, 508, 500_003));
-        assert!((9.5..10.5).contains(&half_million), "{half_million}");
+        assert!((7.4..7.7).contains(&half_million), "{half_million}");
         let hundred_thousand = gib(memory_needed(100_107, 100_003, 104, 100_003));
-        assert!((1.9..2.1).contains(&hundred_thousand), "{hundred_thousand}");
+        assert!(
+            (1.75..1.85).contains(&hundred_thousand),
+            "{hundred_thousand}"
+        );
         let two_million = gib(memory_needed(2_000_030, 2_000_000, 100_000, 2_000_000));
-        assert!((38.0..44.0).contains(&two_million), "{two_million}");
+        assert!((28.0..32.0).contains(&two_million), "{two_million}");
         // The ledger is the larger need: handles and indexes alone are 8.7 GiB there.
         assert!(two_million > gib(6_100_008 * 1024 * 3 / 2));
         // What the ledger was seen to hold fits the estimate: 6,194 MiB of
         // a ledger of 9,136 for the 500,000 files (with a cache of 730 MiB
         // that is given up now), 1,911 MiB of 4,045 for the 100,000.
+        // And what a run of 100,000 files held to 850 MiB could not do
+        // without, 737 MiB, is under the limit the estimate asks.
         let ledger = |free: f64| free * 1024.0 * 2.0 / 3.0;
-        assert!(ledger(half_million) > 6194.0 - 730.0, "{half_million}");
+        assert!(ledger(half_million) > 4669.0, "{half_million}");
         assert!(
-            ledger(hundred_thousand) > 1911.0 * 0.6,
+            ledger(hundred_thousand) > 737.0 * 1.25,
             "{hundred_thousand}"
         );
-        assert!(memory_needed(130, 100, 10, 100) < 64 << 20);
+        // A volume of a hundred files: what a run holds whatever it converts.
+        let small = memory_needed(130, 100, 10, 100);
+        assert!((384 << 20..400 << 20).contains(&small), "{small}");
         // A run never starts with less than 4 GiB, and keeps what it copies twice.
         assert_eq!(working_needed(0), 4 << 30);
         assert_eq!(working_needed(10 << 30), 24 << 30);

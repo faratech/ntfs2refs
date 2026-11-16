@@ -342,8 +342,8 @@ and of 20,000 do.
 **Memory is what limits the number of files today.** A run keeps a ledger of
 the memory it may use, two thirds of what is free when it starts. What it
 holds there for every file and directory until the conversion is complete
-sets the limit: about 21 KiB of free memory for every file (2 GiB for
-100,000 files, 10 GiB for 500,000). `--check`, and the reading a run makes
+sets the limit: 400 MiB of free memory and about 15 KiB for every file
+(1.8 GiB for 100,000 files, 7.5 GiB for 500,000). `--check`, and the reading a run makes
 before it asks, give that figure and refuse a volume the free memory is not
 enough for before anything is built.
 

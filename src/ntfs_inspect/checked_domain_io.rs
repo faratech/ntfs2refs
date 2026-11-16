@@ -46,14 +46,7 @@ impl AsRef<[u8]> for LeasedResidentBytes {
     }
 }
 fn row_workspace(source: &PagedInspection, number: u64) -> Result<u64> {
-    let (file, assembly) = source.checked_record_wire_sizes(number)?;
-    file.checked_mul(32)
-        .and_then(|n| n.checked_add(assembly.unwrap_or(0).checked_mul(32)?))
-        .and_then(|n| {
-            n.checked_add(u64::from(source.header().geometry.file_record_size).checked_mul(32)?)
-        })
-        .and_then(|n| n.checked_add(1024 * 1024))
-        .with_context(|| format!("FILE {number} checked-row workspace overflow"))
+    source.record_workspace(number)
 }
 fn clone_record(record: &Record) -> Record {
     Record {

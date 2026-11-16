@@ -419,6 +419,22 @@ impl PagedInspection {
             .transpose()?;
         Ok((file, assembly))
     }
+    /// The workspace for one decoded FILE record and what is made from it:
+    /// thirty-two times the bytes its row, its attribute-list assembly and
+    /// one file record take in the stores, and a megabyte. A caller that
+    /// looks a record up (`find_record` hands it back decoded and pays for
+    /// nothing) leases this for as long as it holds the record, instead of
+    /// a workspace for the largest row the budget admits.
+    pub(crate) fn record_workspace(&self, number: u64) -> Result<u64> {
+        let (file, assembly) = self.checked_record_wire_sizes(number)?;
+        file.checked_mul(32)
+            .and_then(|n| n.checked_add(assembly.unwrap_or(0).checked_mul(32)?))
+            .and_then(|n| {
+                n.checked_add(u64::from(self.header().geometry.file_record_size).checked_mul(32)?)
+            })
+            .and_then(|n| n.checked_add(1024 * 1024))
+            .with_context(|| format!("FILE {number} checked-row workspace overflow"))
+    }
     #[track_caller]
     pub(crate) fn lease_working_ram(
         &self,

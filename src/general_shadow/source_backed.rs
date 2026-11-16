@@ -803,6 +803,16 @@ use partition_source_bytes::BorrowedPagedSource;
 // Preserve the established one-lifetime dedicated/partition interface.
 pub type PagedSourceByteAdapter<'a> = PagedSourceByteAdapterWithScope<'a, 'a>;
 
+/// What the adapter holds beside its stream session: the two 64 KiB unit
+/// buffers of a compressed stream's decoder, and as much again for its own
+/// state. The session pays for the record it holds
+/// (`PlainStreamRangeSession::open_domain_policy`), and a record looked up
+/// to open one is paid for while it is held (`prepare`). This used to be
+/// eight of the largest row the budget admits, an eighth of the ledger for
+/// as long as the adapter lived: 1.1 GB on a machine with 16 GB, through
+/// supply, verification and capture.
+pub(super) const SESSION_WORKSPACE: u64 = 4 * 16 * 4096;
+
 pub struct PagedSourceByteAdapterWithScope<'a, 'scope> {
     source: BorrowedPagedSource<'a, 'scope>,
     raw: &'a crate::ntfs_inspect::PagedInspection,
@@ -849,16 +859,7 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
             before.disk_attributes == 3,
             "original source must remain excluded read-only"
         );
-        // One retained attribute/map plus the existing two intrinsic64KiB
-        // LZNT1 unit buffers; the legacy session representation stays unchanged.
-        let session_ram = raw.lease_working_ram(
-            admission
-                .budget
-                .max_row_bytes
-                .checked_mul(8)
-                .and_then(|bytes| bytes.checked_add(2 * 16 * 4096))
-                .context("paged DATA session working RAM overflow")?,
-        )?;
+        let session_ram = raw.lease_working_ram(SESSION_WORKSPACE)?;
         Ok(Self {
             source: BorrowedPagedSource::Dedicated(source),
             raw,
@@ -912,16 +913,7 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
             before.disk_attributes == 3,
             "original source must remain excluded read-only"
         );
-        // One retained attribute/map plus the existing two intrinsic64KiB
-        // LZNT1 unit buffers; the legacy session representation stays unchanged.
-        let session_ram = raw.lease_working_ram(
-            admission
-                .budget
-                .max_row_bytes
-                .checked_mul(8)
-                .and_then(|bytes| bytes.checked_add(2 * 16 * 4096))
-                .context("paged DATA session working RAM overflow")?,
-        )?;
+        let session_ram = raw.lease_working_ram(SESSION_WORKSPACE)?;
         Ok(Self {
             source: BorrowedPagedSource::DedicatedScoped(source),
             raw,
@@ -957,6 +949,10 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
             if let Some(session) = self.session.take() {
                 session.finish_domain(&mut self.source, self.raw)?;
             }
+            // The record is held, decoded, until the session is open.
+            let _record_ram = self
+                .raw
+                .lease_working_ram(self.raw.record_workspace(identity.record_number)?)?;
             let file = self
                 .raw
                 .find_record(identity.record_number, Some(identity.sequence_number))?

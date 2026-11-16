@@ -31,6 +31,13 @@ fn add(a: u64, b: u64) -> io::Result<u64> {
     a.checked_add(b)
         .ok_or_else(|| bad("routed prefix RAM overflow"))
 }
+/// Of the row a file's queries are limited to, what a file of `logical`
+/// bytes can take: its mapping and its validity regions have no more
+/// entries than it has clusters. The observation's workspace was four of
+/// the row itself, a sixteenth of the run's memory for every prefix.
+fn row_for(row: usize, logical: u64) -> usize {
+    row.min(crate::retrieval_paging::returned_bytes_for_stream(logical).saturating_mul(4))
+}
 fn peak(row: usize, path: usize) -> io::Result<u64> {
     add(
         add(
@@ -271,9 +278,10 @@ impl RoutedPrefixReady {
         &self.evidence.digest
     }
     pub fn revalidate(&self) -> io::Result<()> {
-        let _work = self
-            .payer
-            .reserve(peak(self.row_bytes, self.expected_path.len())?)?;
+        let _work = self.payer.reserve(peak(
+            row_for(self.row_bytes, self.logical_length),
+            self.expected_path.len(),
+        )?)?;
         let current = capture(
             &self.file,
             &self.expected_path,
@@ -309,7 +317,7 @@ pub(super) fn observe(
         .ok_or_else(|| bad("routed prefix resource admission absent"))?;
     let row = usize::try_from(admission.budget.max_row_bytes).map_err(io::Error::other)?;
     let payer = memory.payer();
-    let mut work = payer.reserve(peak(row, 32768)?)?;
+    let mut work = payer.reserve(peak(row_for(row, logical), 32768)?)?;
     if prefix == 0
         || !crate::target_cluster::aligned(prefix)
         || prefix != crate::target_cluster::floor(logical)
@@ -361,4 +369,24 @@ pub(super) fn observe(
         payer,
         _memory: work,
     })
+}
+
+#[cfg(test)]
+mod workspace_tests {
+    use super::*;
+
+    #[test]
+    fn a_prefixs_observation_reserves_for_the_file_not_for_the_largest_row() {
+        const MIB: u64 = 1024 * 1024;
+        // A machine with 16 GB free limits a row to 141 MiB: four of those
+        // were reserved to observe the prefix of any file. A file of a
+        // megabyte takes under 5 MiB, the same on every machine,
+        let small = peak(row_for(141 << 20, 1 << 20), 32768).unwrap();
+        assert!(small < 5 * MIB + MIB / 2, "{small}");
+        assert_eq!(small, peak(row_for(600 << 20, 1 << 20), 32768).unwrap());
+        // a longer file more, and none more than the row allowed before.
+        let long = peak(row_for(141 << 20, 1 << 40), 32768).unwrap();
+        assert!(long > small && long <= peak(141 << 20, 32768).unwrap());
+        assert_eq!(row_for(4096, 1 << 40), 4096);
+    }
 }

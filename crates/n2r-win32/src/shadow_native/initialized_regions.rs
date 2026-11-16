@@ -3,7 +3,7 @@
 //! Callers hold their actual row/query workspace through capture and transfer
 //! retained pages to their existing paid report owner before releasing it.
 use crate::attestation::IoctlQuery;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{fs::File, io, mem};
 
@@ -17,6 +17,9 @@ fn add(a: usize, b: usize) -> io::Result<usize> {
         .ok_or_else(|| bad("initialized-region memory overflow"))
 }
 
+/// The one value of a proof's `kind`.
+const KIND: &str = "native-initialized-region-pages-v1";
+
 #[derive(Debug, Serialize, PartialEq, Eq)]
 pub struct Proof {
     kind: &'static str,
@@ -26,7 +29,50 @@ pub struct Proof {
     pages: Vec<IoctlQuery>,
     transcript_sha256: String,
 }
+/// Read back from a row this process saved, for the walk's own rows file.
+/// The kind is the constant it was written from: any other text is refused.
+/// Nothing here checks the pages: `validate` does, as for a captured proof.
+impl<'de> Deserialize<'de> for Proof {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Wire {
+            kind: String,
+            length: u64,
+            usage: u32,
+            allow_final_cluster_tail: bool,
+            pages: Vec<IoctlQuery>,
+            transcript_sha256: String,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        if wire.kind != KIND {
+            return Err(serde::de::Error::custom(
+                "initialized-region pages have an unknown kind",
+            ));
+        }
+        Ok(Self {
+            kind: KIND,
+            length: wire.length,
+            usage: wire.usage,
+            allow_final_cluster_tail: wire.allow_final_cluster_tail,
+            pages: wire.pages,
+            transcript_sha256: wire.transcript_sha256,
+        })
+    }
+}
 impl Proof {
+    /// A proof with these pages and no transcript check, for tests of what
+    /// carries a row: nothing but `capture` makes one outside tests.
+    #[cfg(test)]
+    pub(super) fn for_test(length: u64, usage: u32, pages: Vec<IoctlQuery>) -> Self {
+        Self {
+            kind: KIND,
+            length,
+            usage,
+            allow_final_cluster_tail: usage == 2,
+            pages,
+            transcript_sha256: "c".repeat(64),
+        }
+    }
     pub fn pages(&self) -> &[IoctlQuery] {
         &self.pages
     }
@@ -61,7 +107,7 @@ impl Proof {
         self.validate_scope(length, usage, true)
     }
     fn validate_scope(&self, length: u64, usage: u32, tail: bool) -> io::Result<()> {
-        if self.kind != "native-initialized-region-pages-v1"
+        if self.kind != KIND
             || self.length != length
             || self.usage != usage
             || (self.allow_final_cluster_tail && !tail)
@@ -235,7 +281,7 @@ fn capture(
         ));
     }
     let mut proof = Proof {
-        kind: "native-initialized-region-pages-v1",
+        kind: KIND,
         length,
         usage,
         allow_final_cluster_tail: tail,

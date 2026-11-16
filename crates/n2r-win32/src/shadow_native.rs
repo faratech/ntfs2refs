@@ -375,21 +375,21 @@ pub enum Mode {
     /// read-only lease. It never reads or verifies placeholder payload bytes.
     ObserveLayout,
 }
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CandidateReport {
     pub legacy: crate::bitmap_layout::Candidate,
     pub metadata_inclusive: crate::bitmap_layout::Candidate,
     pub legacy_page_proof: crate::bitmap_paging::Proof,
     pub metadata_page_proof: crate::bitmap_paging::Proof,
 }
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ObjectReport {
     pub components: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub additional_names: Vec<HardLinkObservation>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub named_streams: Vec<NamedStreamReport>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sparse: Option<sparse_stream::Observation>,
     pub before: Snapshot,
     pub after: Snapshot,
@@ -403,9 +403,9 @@ pub struct ObjectReport {
     pub cached_validity: Vec<u8>,
     pub storage_validity: Vec<u8>,
     /// Actual paginated native replies, used instead of the single raw reply.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cached_validity_pages: Option<InitializedRegionPages>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub storage_validity_pages: Option<InitializedRegionPages>,
     pub integrity: Vec<u8>,
     pub namespace: Vec<namespace_layout::Entry>,

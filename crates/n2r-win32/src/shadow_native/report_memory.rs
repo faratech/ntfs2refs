@@ -2,6 +2,7 @@
 //! lease; the SDK cannot deserialize or manufacture an accounting capability.
 use super::*;
 use std::fmt;
+use std::path::Path;
 
 pub trait ReportMemoryLease: Send + Sync {
     /// Downward only. Query workspace remains charged until collection closes.
@@ -32,8 +33,41 @@ pub trait ReportMemoryAccountant: Send + Sync {
     fn reserve_spare(&self, bytes: u64) -> io::Result<Box<dyn ReportMemoryLease>> {
         self.reserve(bytes)
     }
+    /// Memory for something the caller can make again from working storage,
+    /// which the payer may ask back at any time: the caller is told through
+    /// [`crate::evict`] on the thread that drives the run. A payer that
+    /// keeps no such memory refuses, which is the default.
+    #[track_caller]
+    fn reserve_cache(&self, bytes: u64) -> io::Result<Box<dyn ReportMemoryLease>> {
+        let _ = bytes;
+        Err(io::Error::other(
+            "this payer lends no memory it can ask back",
+        ))
+    }
+    /// A new file in the run's working storage for what has no room in
+    /// memory, accounted for like the run's other working files. `None`
+    /// where the payer has no working storage to offer: the caller then
+    /// keeps in memory what it would have written.
+    fn spill_file(&self) -> io::Result<Option<Box<dyn SpillFile>>> {
+        Ok(None)
+    }
     /// Actual adapter allocation, excluding the Box pointer stored by the SDK.
     fn lease_heap_bytes(&self) -> u64;
+}
+/// A working file being written for a payer's caller
+/// ([`ReportMemoryAccountant::spill_file`]). It has to be closed: a file
+/// that is dropped unfinished leaves the payer's storage accounting broken,
+/// and the run ends for it.
+pub trait SpillFile: Send + Sync {
+    fn path(&self) -> &Path;
+    /// The page budget the file is written and read with.
+    fn page_budget(&self) -> crate::metadata_pages::PageBudget;
+    /// Before `bytes` more are written to the file.
+    fn extend(&mut self, bytes: u64) -> io::Result<()>;
+    /// The file is complete and closed for writing; `sha256` is what its
+    /// writer returned. The payer keeps the file for as long as its other
+    /// working files.
+    fn close(self: Box<Self>, sha256: &str) -> io::Result<()>;
 }
 pub(super) struct LayoutRetained {
     _lease: Box<dyn ReportMemoryLease>,

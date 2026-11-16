@@ -7,6 +7,11 @@ use crate::layout::invalid;
 use serde::{Serialize, Serializer};
 use std::io;
 
+// The file a block of rows is written to when memory is short. `Rows` does
+// not use it yet: it is wired in next, and the allowance goes then.
+#[allow(dead_code)]
+mod file;
+
 #[derive(Debug)]
 pub struct Rows {
     rows: Vec<ObjectReport>,

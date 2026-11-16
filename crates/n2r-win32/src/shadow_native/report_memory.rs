@@ -588,6 +588,22 @@ impl Retained {
         self.root = Some(lease);
         Ok(())
     }
+    /// A row's query reservation shrunk to the row, for rows kept in
+    /// blocks: the blocks hold it, not this owner.
+    pub(super) fn shrink_to_row(
+        mut lease: Box<dyn ReportMemoryLease>,
+        row: &ObjectReport,
+        maximum: u64,
+    ) -> io::Result<Box<dyn ReportMemoryLease>> {
+        let actual = row_bytes(row)?;
+        if actual > maximum {
+            return Err(invalid(
+                "native retained row exceeded its prepaid query/decode reservation",
+            ));
+        }
+        lease.shrink_to(actual)?;
+        Ok(lease)
+    }
     pub(super) fn retain(
         &mut self,
         mut lease: Box<dyn ReportMemoryLease>,

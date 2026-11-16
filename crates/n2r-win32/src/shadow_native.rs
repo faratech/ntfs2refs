@@ -3979,20 +3979,20 @@ fn observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_o
     // Windows volume's walk). They are gathered a batch at a time and read
     // on the available cores; the results are written in their order, on
     // this thread, as before.
-    struct Residual {
+    struct Residual<'a> {
         expected: LayoutResidualExpectation,
-        index: usize,
+        // The object's row, taken on this thread when the residual was
+        // gathered: the helper threads read it and never ask for rows.
+        row: rows::Pinned<'a>,
         name: Vec<u16>,
     }
     const RESIDUAL_BATCH: usize = PARALLEL_BATCH;
     let objects = &native.objects;
-    let read_one = |residual: &Residual| -> io::Result<([u8; 16], String)> {
+    let read_one = |residual: &Residual<'_>| -> io::Result<([u8; 16], String)> {
         let expected = &residual.expected;
         let name = residual.name.as_slice();
-        if residual.index >= objects.len() {
-            return Err(invalid("paged residual native object absent"));
-        }
-        objects.with(residual.index, |object| {
+        {
+            let object = residual.row.row();
             let (before_stream, after_stream) = if name.is_empty() {
                 (&object.before, &object.after)
             } else {
@@ -4026,12 +4026,12 @@ fn observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_o
                 return Err(invalid("paged residual content/metadata differs"));
             }
             Ok((id, sha))
-        })
+        }
     };
     // Reads the gathered residuals and writes their results in order. The
     // query memory of each was paid for when it was gathered and is returned
     // here, after the last of them was read.
-    let mut read_batch = |batch: &mut Vec<Residual>,
+    let mut read_batch = |batch: &mut Vec<Residual<'_>>,
                           leases: &mut Vec<Option<Box<dyn report_memory::ReportMemoryLease>>>|
      -> io::Result<()> {
         let read = observe_in_parallel(batch.as_slice(), &read_one);
@@ -4051,7 +4051,7 @@ fn observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_o
         }
         Ok(())
     };
-    let mut batch: Vec<Residual> = Vec::with_capacity(RESIDUAL_BATCH);
+    let mut batch: Vec<Residual<'_>> = Vec::with_capacity(RESIDUAL_BATCH);
     let mut leases = Vec::with_capacity(RESIDUAL_BATCH);
     // The first residual of a batch is paid for as one read by itself was;
     // the others from spare memory, which leaves the ledger room for what
@@ -4086,10 +4086,35 @@ fn observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_o
             Err(error) => return Err(error),
         };
         let expected = validate_expected(ordinal, index, name, length)?;
+        if index >= objects.len() {
+            return Err(invalid("paged residual native object absent"));
+        }
+        // Rows kept in blocks stay at hand for a batch from no more than
+        // two blocks, which is what they reserved for blocks read back: a
+        // residual of a third block starts the next batch.
+        let mut row = objects.pin(index)?;
+        if let Some(block) = row.block() {
+            let mut blocks = [None, None];
+            let mut third = false;
+            for held in batch.iter().filter_map(|residual| residual.row.block()) {
+                if blocks.contains(&Some(held)) {
+                    continue;
+                }
+                match blocks.iter_mut().find(|slot| slot.is_none()) {
+                    Some(slot) => *slot = Some(held),
+                    None => third = true,
+                }
+            }
+            if third || (!blocks.contains(&Some(block)) && blocks.iter().all(Option::is_some)) {
+                drop(row);
+                read_batch(&mut batch, &mut leases)?;
+                row = objects.pin(index)?;
+            }
+        }
         leases.push(lease);
         batch.push(Residual {
             expected,
-            index,
+            row,
             name: name.to_vec(),
         });
         if batch.len() == RESIDUAL_BATCH {
@@ -5143,8 +5168,20 @@ fn run_role_content_domain_accounted(
             "accounted report collection requires protected or converted-metadata V4 domain route",
         ));
     }
+    // Where the payer has working storage to offer, the rows are kept in
+    // blocks that can go to a file, and nothing is prepaid for each of them.
+    let mut rows_spill = match (memory_accountant, legacy_input) {
+        (Some(payer), None) => payer.spill_file()?,
+        _ => None,
+    };
     let mut retained_memory = memory_accountant
-        .map(|payer| report_memory::Retained::new(payer, input.len(), sd_limit.unwrap_or(0)))
+        .map(|payer| {
+            report_memory::Retained::new(
+                payer,
+                if rows_spill.is_some() { 0 } else { input.len() },
+                sd_limit.unwrap_or(0),
+            )
+        })
         .transpose()?;
     let capture_snapshot = |file: &File| {
         if let Some(maximum) = sd_limit {
@@ -6344,7 +6381,11 @@ fn run_role_content_domain_accounted(
     let objects = if let Some(legacy) = legacy_input {
         Rows::from_observed(observe_in_parallel(legacy, observe)?)
     } else {
-        let mut result = Rows::with_exact_capacity(input.len())?;
+        let mut result = match (memory_accountant, rows_spill.take()) {
+            (Some(payer), Some(spill)) => Rows::paged(payer, spill)?,
+            _ => Rows::with_exact_capacity(input.len())?,
+        };
+        let in_blocks = result.in_blocks();
         if let Some(memory) = &mut retained_memory {
             memory.observe_object_capacity(result.capacity())?;
         }
@@ -6392,14 +6433,26 @@ fn run_role_content_domain_accounted(
                 observe_in_parallel(&items, &observe)?
             };
             for (mut row, (lease, peak)) in rows.into_iter().zip(leases) {
-                if let (Some(memory), Some(lease)) = (&mut retained_memory, lease) {
-                    report_memory::compact_row(&mut row);
-                    memory.retain(lease, &row, peak)?;
+                match (memory_accountant, lease) {
+                    (Some(payer), Some(lease)) if in_blocks => {
+                        report_memory::compact_row(&mut row);
+                        let lease = report_memory::Retained::shrink_to_row(lease, &row, peak)?;
+                        result.push_paid(payer, row, lease)?;
+                        continue;
+                    }
+                    (_, Some(lease)) => {
+                        if let Some(memory) = &mut retained_memory {
+                            report_memory::compact_row(&mut row);
+                            memory.retain(lease, &row, peak)?;
+                        }
+                    }
+                    _ => {}
                 }
                 result.push(row)?;
             }
             next += items.len();
         }
+        result.finish(memory_accountant)?;
         result
     };
     let post_mount_indexer_cache =

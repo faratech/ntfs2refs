@@ -255,7 +255,9 @@ pub fn note_ledger(held: u64, needed: u64, limit: u64) -> bool {
 }
 
 fn holders_due(needed: u64, described: u64, limit: u64) -> bool {
-    needed >= described.saturating_add((limit / 64).max(1))
+    described
+        .checked_add((limit / 64).max(1))
+        .is_some_and(|due| needed >= due)
 }
 
 /// What held a ledger's memory when what the run could not do without stood

@@ -335,20 +335,24 @@ in as many separate extents as a sixty-fourth of the memory budget can
 describe (about 200,000 with 13 GB available), and never fewer than 65,536.
 
 The largest volume converted in the lab was the Windows volume: 23 GB in
-about 190,000 files and directories. The largest data volume held 100,000
-small files, and took 9 to 10 minutes: about 6 ms a file, as a volume of
-20,000 does.
+about 190,000 files and directories. The largest data volume held 500,000
+small files, and took 45 minutes: about 5 ms a file, as volumes of 100,000
+and of 20,000 do.
 
 **Memory is what limits the number of files today.** A run keeps a ledger of
-the memory it may use, two thirds of what is free when it starts, and
-reserves in it more than it uses: with 15.6 GiB free, a volume of 500,000
-small files was returned unchanged after 21 minutes because the ledger was
-full, although the run had used 3.2 GiB. On the lab's volumes a run needs
-about 34 KiB of free memory for every file (3.2 GiB for 100,000 files, 16
-GiB for 500,000). `--check`, and the reading a run makes before it asks,
-give that figure and refuse a volume the free memory is not enough for
-before anything is built. A run that stops for memory all the same says which reservations
-were the largest, and every run prints how high its reservations went.
+the memory it may use, two thirds of what is free when it starts. What it
+holds there for every file and directory until the conversion is complete
+sets the limit: about 21 KiB of free memory for every file (2 GiB for
+100,000 files, 10 GiB for 500,000). `--check`, and the reading a run makes
+before it asks, give that figure and refuse a volume the free memory is not
+enough for before anything is built.
+
+What a run holds in memory only to go faster (stores it looks things up in,
+objects it has decoded) it gives back when the memory is needed for
+something it cannot do without, what it used longest ago first. It is
+slower for that, and its last lines say that this happened. A run that stops for memory all the same says
+which reservations were the largest, and every run prints how high its
+reservations went and, step by step, what held them (`memory-steps:`).
 
 ## Convert an installed Windows
 

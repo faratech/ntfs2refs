@@ -2,7 +2,7 @@
 use crate::artifact_arena::{ArenaRamLease, ArtifactArena};
 use crate::artifact_arena::{ArtifactGroupPermit, ArtifactLease, ArtifactPathPermit};
 use n2r_win32::shadow_native::report_memory::{
-    ReportMemoryAccountant, ReportMemoryLease, SpillFile,
+    ReportMemoryAccountant, ReportMemoryLease, SpillFile, SpillSource,
 };
 use std::io;
 use std::path::{Path, PathBuf};
@@ -52,7 +52,7 @@ pub(crate) struct ArenaReportStorage {
     memory: ArenaReportMemory,
     group: ArtifactGroupPermit,
     directory: PathBuf,
-    made: AtomicU32,
+    made: Arc<AtomicU32>,
     files: SpilledFiles,
 }
 /// The closed working files a payer's callers wrote.
@@ -71,7 +71,7 @@ impl ArenaReportStorage {
             memory,
             group,
             directory: directory.to_owned(),
-            made: AtomicU32::new(0),
+            made: Arc::new(AtomicU32::new(0)),
             files,
         }
     }
@@ -89,12 +89,32 @@ impl ReportMemoryAccountant for ArenaReportStorage {
     fn reserve_cache(&self, bytes: u64) -> io::Result<Box<dyn ReportMemoryLease>> {
         self.memory.reserve_cache(bytes)
     }
-    fn spill_file(&self) -> io::Result<Option<Box<dyn SpillFile>>> {
+    fn spill_source(&self) -> Option<Box<dyn SpillSource>> {
+        Some(Box::new(ArenaSpillSource {
+            arena: self.memory.0.clone(),
+            group: self.group.clone(),
+            directory: self.directory.clone(),
+            made: Arc::clone(&self.made),
+            files: Arc::clone(&self.files),
+        }))
+    }
+    fn lease_heap_bytes(&self) -> u64 {
+        self.memory.lease_heap_bytes()
+    }
+}
+struct ArenaSpillSource {
+    arena: crate::artifact_arena::ArtifactArena,
+    group: ArtifactGroupPermit,
+    directory: PathBuf,
+    made: Arc<AtomicU32>,
+    files: SpilledFiles,
+}
+impl SpillSource for ArenaSpillSource {
+    fn create(&self) -> io::Result<Box<dyn SpillFile>> {
         let ordinal = self.made.fetch_add(1, Ordering::SeqCst);
         let path = self.directory.join(format!("rows-{ordinal}.pages"));
         let budget = self
-            .memory
-            .0
+            .arena
             .native_page_budget()
             .map_err(io::Error::other)?
             .native()?;
@@ -102,16 +122,13 @@ impl ReportMemoryAccountant for ArenaReportStorage {
             .group
             .reserve_file(&path, FIRST_RESERVATION)
             .map_err(io::Error::other)?;
-        Ok(Some(Box::new(ArenaSpillFile {
+        Ok(Box::new(ArenaSpillFile {
             permit,
             reserved: FIRST_RESERVATION,
             written: 0,
             budget,
             files: Arc::clone(&self.files),
-        })))
-    }
-    fn lease_heap_bytes(&self) -> u64 {
-        self.memory.lease_heap_bytes()
+        }))
     }
 }
 /// What a spill file reserves of its group before anything is written, and

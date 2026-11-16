@@ -44,18 +44,25 @@ pub trait ReportMemoryAccountant: Send + Sync {
             "this payer lends no memory it can ask back",
         ))
     }
-    /// A new file in the run's working storage for what has no room in
-    /// memory, accounted for like the run's other working files. `None`
-    /// where the payer has no working storage to offer: the caller then
-    /// keeps in memory what it would have written.
-    fn spill_file(&self) -> io::Result<Option<Box<dyn SpillFile>>> {
-        Ok(None)
+    /// Where the caller may make files in the run's working storage for
+    /// what has no room in memory, accounted for like the run's other
+    /// working files; it is kept and may be used after this payer is out
+    /// of reach. `None` where the payer has no working storage to offer:
+    /// the caller then keeps in memory what it would have written.
+    fn spill_source(&self) -> Option<Box<dyn SpillSource>> {
+        None
     }
     /// Actual adapter allocation, excluding the Box pointer stored by the SDK.
     fn lease_heap_bytes(&self) -> u64;
 }
+/// Working storage a payer offers ([`ReportMemoryAccountant::spill_source`]).
+pub trait SpillSource: Send + Sync {
+    /// A new, empty working file. Refused once the storage is closed to new
+    /// files: the caller then keeps what it holds.
+    fn create(&self) -> io::Result<Box<dyn SpillFile>>;
+}
 /// A working file being written for a payer's caller
-/// ([`ReportMemoryAccountant::spill_file`]). It has to be closed: a file
+/// ([`SpillSource::create`]). It has to be closed: a file
 /// that is dropped unfinished leaves the payer's storage accounting broken,
 /// and the run ends for it.
 pub trait SpillFile: Send + Sync {

@@ -4,13 +4,15 @@
 //!
 //! Where the walk's payer offers working storage, the rows are kept in
 //! blocks. A block stays in memory while the payer lends memory for it, as
-//! memory it may ask back; when it does, or has none to lend, the block is
-//! written to the rows file and read back from there, two blocks at a time.
-//! A run with memory to spare writes nothing and reads nothing back. Where
+//! memory it may ask back; when it does, during the walk or later, or has
+//! none to lend, the blocks go to a rows file and are read back from
+//! there, two at a time. A run with memory to spare makes no file. Where
 //! the payer has no working storage the rows are one vector, each row paid
 //! for until the report is dropped, as they always were.
 use super::ObjectReport;
-use super::report_memory::{ReportMemoryAccountant, ReportMemoryLease, SpillFile, row_bytes};
+use super::report_memory::{
+    ReportMemoryAccountant, ReportMemoryLease, SpillFile, SpillSource, row_bytes,
+};
 use crate::layout::invalid;
 use serde::ser::SerializeSeq;
 use serde::{Serialize, Serializer};
@@ -69,10 +71,12 @@ struct State {
     window: Vec<(usize, BlockRows)>,
     // The largest block's bytes the window's reservation covers twice.
     window_block_bytes: u64,
+    // Where the rows file is made, when the first block has to go to it.
+    source: Box<dyn SpillSource>,
     file: OwnerOnly<FileState>,
-    // The file is still being written, and whether a block is in it.
+    // The file is being written, and a file was made at all.
     writing: bool,
-    any_written: bool,
+    made: bool,
     // A row was changed in place: the rows stay in memory from then on.
     pinned: bool,
     // Writing or reading the file failed: every later use says so.
@@ -90,6 +94,7 @@ struct Block {
     written: bool,
 }
 enum FileState {
+    None,
     Writing {
         writer: Box<file::RowsFileWriter>,
         spill: Box<dyn SpillFile>,
@@ -172,12 +177,7 @@ impl State {
     /// Writes every closed block that is in memory and not in the file, in
     /// order. A failure is kept: the rows cannot be used after it.
     fn write_held(&mut self) -> io::Result<()> {
-        let State {
-            file,
-            blocks,
-            any_written,
-            ..
-        } = self;
+        let State { file, blocks, .. } = self;
         let result = (|| {
             let FileState::Writing { writer, spill, .. } = file.get()? else {
                 return Err(io::Error::other("the file is not being written"));
@@ -194,7 +194,6 @@ impl State {
                 spill.extend(block.bytes.saturating_mul(8).saturating_add(65536))?;
                 writer.write_block(number as u64, rows)?;
                 block.written = true;
-                *any_written = true;
             }
             Ok(())
         })();
@@ -202,6 +201,29 @@ impl State {
             self.failed = Some(error.to_string());
         }
         result
+    }
+    /// Makes the rows file, if there is none yet. A refusal is not kept as
+    /// a failure: the rows are where they were.
+    fn make_file(&mut self) -> io::Result<()> {
+        if self.made {
+            return Ok(());
+        }
+        let file = self.file.get()?;
+        let spill = self.source.create()?;
+        let path = spill.path().to_owned();
+        let budget = spill.page_budget();
+        // A file that was reserved has to be closed: if its writer cannot
+        // be made, the storage it is in is told so by the file left open.
+        let writer = Box::new(file::RowsFileWriter::new(&path, budget)?);
+        *file = FileState::Writing {
+            writer,
+            spill,
+            path,
+            budget,
+        };
+        self.writing = true;
+        self.made = true;
+        Ok(())
     }
     /// Closes the file and opens it for reading. Every block is in it.
     fn finish_file(&mut self) -> io::Result<()> {
@@ -304,12 +326,12 @@ impl Paged {
         };
         if state.pinned
             || state.failed.is_some()
-            || !state.writing
+            || (state.made && !state.writing)
             || !state.blocks.iter().any(|block| block.held.is_some())
         {
             return false;
         }
-        if state.write_held().is_err() {
+        if state.make_file().is_err() || state.write_held().is_err() {
             return false;
         }
         // The rows first, then what paid for them.
@@ -318,8 +340,13 @@ impl Paged {
             .iter_mut()
             .filter_map(|block| block.held.take())
             .collect();
-        drop(state);
         drop(held);
+        // After the walk every row is in the file now: it is closed here,
+        // with the memory just returned at hand for the hashing of it, so
+        // that no file is left open when its storage is sealed.
+        if state.complete {
+            let _ = state.finish_file();
+        }
         true
     }
     fn block(&self, number: usize) -> io::Result<BlockRows> {
@@ -370,6 +397,7 @@ impl Paged {
                 // No memory to lend: into the file, behind every block
                 // before it, with the rows' own reservations held until it
                 // is there.
+                state.make_file()?;
                 state.write_held()?;
                 state.blocks.push(Block {
                     first,
@@ -429,16 +457,13 @@ impl Rows {
         }
     }
 
-    /// Rows kept in blocks, with `spill` for the blocks that have no room
-    /// in memory. Made on the thread that drives the run.
+    /// Rows kept in blocks, with `source` for a file for the blocks that
+    /// have no room in memory. Made on the thread that drives the run.
     pub(super) fn paged(
         payer: &dyn ReportMemoryAccountant,
-        spill: Box<dyn SpillFile>,
+        source: Box<dyn SpillSource>,
     ) -> io::Result<Self> {
         let own = payer.reserve(STORE_BYTES)?;
-        let path = spill.path().to_owned();
-        let budget = spill.page_budget();
-        let writer = Box::new(file::RowsFileWriter::new(&path, budget)?);
         let paged = Arc::new(Paged {
             state: Mutex::new(State {
                 count: 0,
@@ -449,14 +474,10 @@ impl Rows {
                 complete: false,
                 window: Vec::new(),
                 window_block_bytes: BLOCK_BYTES,
-                file: OwnerOnly::new(FileState::Writing {
-                    writer,
-                    spill,
-                    path,
-                    budget,
-                }),
-                writing: true,
-                any_written: false,
+                source,
+                file: OwnerOnly::new(FileState::None),
+                writing: false,
+                made: false,
                 pinned: false,
                 failed: None,
                 _leases: vec![own],
@@ -552,25 +573,19 @@ impl Rows {
         paged.close_block(payer, rows, leases, bytes)?;
         let mut state = paged.lock()?;
         state.complete = true;
-        // The file is closed here, while its payer is at hand and before
-        // the storage it is in is sealed. Once part of the rows is in it,
-        // all of them go there. If none is, the rows stay in memory from
-        // here on: there is no file left to give them up to.
+        // Once part of the rows is in the file all of them go there, and
+        // the file is closed here, before the storage it is in is sealed.
+        // If no file was made the rows stay in memory, and go to one only
+        // if their memory is asked back later.
         if state.writing {
-            let any = state.any_written;
-            if any {
-                state.write_held()?;
-            }
+            state.write_held()?;
+            let held: Vec<_> = state
+                .blocks
+                .iter_mut()
+                .filter_map(|block| block.held.take())
+                .collect();
+            drop(held);
             state.finish_file()?;
-            if any {
-                let held: Vec<_> = state
-                    .blocks
-                    .iter_mut()
-                    .filter_map(|block| block.held.take())
-                    .collect();
-                drop(state);
-                drop(held);
-            }
         }
         Ok(())
     }
@@ -969,14 +984,27 @@ mod tests {
             }
             Ok(self.lease(bytes))
         }
-        fn spill_file(&self) -> io::Result<Option<Box<dyn SpillFile>>> {
-            Ok(Some(Box::new(File {
+        fn spill_source(&self) -> Option<Box<dyn SpillSource>> {
+            Some(Box::new(Source {
                 path: self.directory.join("rows.pages"),
                 closed: Arc::clone(&self.closed),
-            })))
+            }))
         }
         fn lease_heap_bytes(&self) -> u64 {
             16
+        }
+    }
+    struct Source {
+        path: std::path::PathBuf,
+        closed: Arc<AtomicBool>,
+    }
+    impl SpillSource for Source {
+        fn create(&self) -> io::Result<Box<dyn SpillFile>> {
+            assert!(!self.path.exists(), "one file for the rows");
+            Ok(Box::new(File {
+                path: self.path.clone(),
+                closed: Arc::clone(&self.closed),
+            }))
         }
     }
     struct File {
@@ -1026,7 +1054,7 @@ mod tests {
             directory: directory.path().to_owned(),
             closed: Arc::new(AtomicBool::new(false)),
         };
-        let mut rows = Rows::paged(&payer, payer.spill_file().unwrap().unwrap()).unwrap();
+        let mut rows = Rows::paged(&payer, payer.spill_source().unwrap()).unwrap();
         assert!(rows.in_blocks());
         let mut expected = Vec::new();
         for number in 0..700 {
@@ -1049,14 +1077,20 @@ mod tests {
             "object-699"
         );
         assert!(rows.with(700, |_| Ok(())).is_err());
-        // The file was made and holds no block; it was closed when the
-        // last row was in, and the rows stay in memory.
-        assert!(payer.closed.load(Ordering::SeqCst));
+        // No file was made.
+        assert!(!payer.directory.join("rows.pages").exists());
         let Store::Paged(inner) = &rows.store else {
             panic!("rows in blocks")
         };
-        assert!(!inner.lock().unwrap().any_written);
-        assert!(!inner.give_up(), "no file is left to give the rows up to");
+        assert!(!inner.lock().unwrap().made);
+        // Their memory is asked back after the walk: they go to a file,
+        // which is closed at once, and read as before.
+        let before = payer.held.load(Ordering::SeqCst);
+        assert!(before > STORE_BYTES);
+        assert!(inner.give_up());
+        assert!(payer.closed.load(Ordering::SeqCst));
+        assert_eq!(payer.held.load(Ordering::SeqCst), STORE_BYTES);
+        assert!(!inner.give_up(), "nothing is left to give up");
         assert_eq!(text(&rows), expected);
         drop(rows);
         assert_eq!(payer.held.load(Ordering::SeqCst), 0);
@@ -1103,7 +1137,7 @@ mod tests {
             directory: directory.path().to_owned(),
             closed: Arc::new(AtomicBool::new(false)),
         };
-        let mut rows = Rows::paged(&payer, payer.spill_file().unwrap().unwrap()).unwrap();
+        let mut rows = Rows::paged(&payer, payer.spill_source().unwrap()).unwrap();
         let mut expected = Vec::new();
         let mut add = |rows: &mut Rows, from: usize, to: usize| {
             for number in from..to {

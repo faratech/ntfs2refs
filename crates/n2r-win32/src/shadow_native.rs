@@ -5171,7 +5171,7 @@ fn run_role_content_domain_accounted(
     // Where the payer has working storage to offer, the rows are kept in
     // blocks that can go to a file, and nothing is prepaid for each of them.
     let mut rows_spill = match (memory_accountant, legacy_input) {
-        (Some(payer), None) => payer.spill_file()?,
+        (Some(payer), None) => payer.spill_source(),
         _ => None,
     };
     let mut retained_memory = memory_accountant

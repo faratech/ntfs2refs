@@ -4,10 +4,17 @@
 //! kept decoded) is paid for from the run's ledger like everything else. It
 //! makes a run faster and nothing depends on it, so it is the first thing
 //! given back when the ledger cannot pay for something the run does need:
-//! the ledger then asks every cache of the thread that made the request to
-//! give itself up, and tries once more. Without this a cache that was
-//! granted early held its memory to the end of the run, and a volume of
-//! 500,000 files was refused a reservation with 2.5 GB of caches beside it.
+//! the ledger then asks the caches of the thread that made the request to
+//! give themselves up, the one used longest ago first and one at a time,
+//! until there is room. Without this a cache that was granted early held
+//! its memory to the end of the run, and a volume of 500,000 files was
+//! refused a reservation with 2.5 GB of caches beside it.
+//!
+//! Because a cache can be taken back, it can be granted whenever there is
+//! room. That matters most where memory is short: a store that was refused
+//! a place in memory is read through pages of megabytes, and a lookup in it
+//! then costs milliseconds; a volume of 200,000 files spent 50 minutes of
+//! one phase that way on a machine with 8 GB.
 //!
 //! The caches of a run are owned by the thread that drives it and are not
 //! shared between threads, so the registry is the thread's own. A request
@@ -20,7 +27,7 @@ use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 /// How often caches were given up in this process, for the run's report.
 static GIVEN_UP: AtomicU64 = AtomicU64::new(0);
 
-/// How often [`evict_all`] gave something up.
+/// How many caches were given up.
 pub fn times_given_up() -> u64 {
     GIVEN_UP.load(Relaxed)
 }
@@ -31,9 +38,23 @@ pub trait Evict {
     /// anything was given up. Must not fail, and must leave a cache that is
     /// in use at this moment alone.
     fn evict(&self) -> bool;
+    /// When the cache was last used, on the thread's clock ([`now`]): the
+    /// one used longest ago is given up first.
+    fn last_used(&self) -> u64;
+}
+
+/// The thread's clock of cache uses: a number that only grows. A cache
+/// notes it at every use.
+pub fn now() -> u64 {
+    CLOCK.with(|clock| {
+        let next = clock.get() + 1;
+        clock.set(next);
+        next
+    })
 }
 
 thread_local! {
+    static CLOCK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static CACHES: RefCell<Vec<Weak<dyn Evict>>> = const { RefCell::new(Vec::new()) };
     static PAYERS: RefCell<Vec<Rc<dyn CachePayer>>> = const { RefCell::new(Vec::new()) };
 }
@@ -102,22 +123,41 @@ pub fn register<C: Evict + 'static>(cache: &Rc<C>) {
     });
 }
 
-/// Give up every cache of this thread that is not in use at this moment.
-/// Returns whether any of them gave something up.
-pub fn evict_all() -> bool {
-    // The caches are called outside the registry's borrow: giving one up
-    // drops what it owns, which may register or drop others.
-    let caches: Vec<Rc<dyn Evict>> = CACHES.with(|caches| {
+/// The caches of this thread that are alive, the one used longest ago
+/// first. They are called outside the registry's borrow: giving one up
+/// drops what it owns, which may register or drop others.
+fn by_last_use() -> Vec<Rc<dyn Evict>> {
+    let mut caches: Vec<Rc<dyn Evict>> = CACHES.with(|caches| {
         let mut caches = caches.borrow_mut();
         caches.retain(|cache| cache.strong_count() != 0);
         caches.iter().filter_map(Weak::upgrade).collect()
     });
-    let mut any = false;
-    for cache in caches {
-        any |= cache.evict();
+    caches.sort_by_key(|cache| cache.last_used());
+    caches
+}
+
+/// Give up the cache of this thread that was used longest ago, among those
+/// that hold something and are not in use at this moment. Returns whether
+/// one was given up.
+pub fn evict_oldest() -> bool {
+    for cache in by_last_use() {
+        if cache.evict() {
+            GIVEN_UP.fetch_add(1, Relaxed);
+            return true;
+        }
     }
-    if any {
-        GIVEN_UP.fetch_add(1, Relaxed);
+    false
+}
+
+/// Give up every cache of this thread that is not in use at this moment.
+/// Returns whether any of them gave something up.
+pub fn evict_all() -> bool {
+    let mut any = false;
+    for cache in by_last_use() {
+        if cache.evict() {
+            GIVEN_UP.fetch_add(1, Relaxed);
+            any = true;
+        }
     }
     any
 }
@@ -126,18 +166,24 @@ pub fn evict_all() -> bool {
 /// reservation that pays for it, together. Every use asks for it again and
 /// does without when it is gone.
 pub struct Evictable<T: 'static>(Rc<Slot<T>>);
-struct Slot<T>(RefCell<Option<T>>);
+struct Slot<T> {
+    value: RefCell<Option<T>>,
+    used: std::cell::Cell<u64>,
+}
 
 impl<T> Evict for Slot<T> {
     fn evict(&self) -> bool {
         // A value that is borrowed is in use and stays. The value is
         // dropped after the borrow has ended: its reservation is returned
         // then, and whatever that touches is free to borrow this slot.
-        let taken = match self.0.try_borrow_mut() {
+        let taken = match self.value.try_borrow_mut() {
             Ok(mut slot) => slot.take(),
             Err(_) => None,
         };
         taken.is_some()
+    }
+    fn last_used(&self) -> u64 {
+        self.used.get()
     }
 }
 
@@ -165,22 +211,27 @@ impl<T: 'static> Evictable<T> {
         WeakEvictable(Rc::downgrade(&self.0))
     }
     pub fn new(value: T) -> Self {
-        let slot = Rc::new(Slot(RefCell::new(Some(value))));
+        let slot = Rc::new(Slot {
+            value: RefCell::new(Some(value)),
+            used: std::cell::Cell::new(now()),
+        });
         register(&slot);
         Self(slot)
     }
     /// The value, unless it was given up. It cannot be given up while the
-    /// borrow lives.
+    /// borrow lives. This is a use of the cache.
     pub fn get(&self) -> Option<Ref<'_, T>> {
-        Ref::filter_map(self.0.0.borrow(), Option::as_ref).ok()
+        self.0.used.set(now());
+        Ref::filter_map(self.0.value.borrow(), Option::as_ref).ok()
     }
     /// As [`Self::get`], to change it.
     pub fn get_mut(&self) -> Option<RefMut<'_, T>> {
-        RefMut::filter_map(self.0.0.borrow_mut(), Option::as_mut).ok()
+        self.0.used.set(now());
+        RefMut::filter_map(self.0.value.borrow_mut(), Option::as_mut).ok()
     }
     /// Whether the value is still held.
     pub fn is_held(&self) -> bool {
-        self.0.0.try_borrow().is_ok_and(|slot| slot.is_some())
+        self.0.value.try_borrow().is_ok_and(|slot| slot.is_some())
     }
     /// Give the value up now.
     pub fn clear(&self) {
@@ -211,6 +262,36 @@ mod tests {
         // Nothing is left to give up.
         assert!(!evict_all());
         assert_eq!(dropped.get(), 1);
+    }
+
+    #[test]
+    fn the_cache_used_longest_ago_goes_first_and_one_at_a_time() {
+        let dropped = Rc::new(Cell::new(0));
+        let caches: Vec<Evictable<Counts>> = (0..4)
+            .map(|_| Evictable::new(Counts(Rc::clone(&dropped))))
+            .collect();
+        // Used in the order 2, 0, 3; the second was never used after it
+        // was made, but was made after the first.
+        for index in [2, 0, 3] {
+            assert!(caches[index].get().is_some());
+        }
+        let held = |caches: &[Evictable<Counts>]| -> Vec<bool> {
+            caches.iter().map(Evictable::is_held).collect()
+        };
+        assert!(evict_oldest());
+        assert_eq!(held(&caches), [true, false, true, true]);
+        assert!(evict_oldest());
+        assert_eq!(held(&caches), [true, false, false, true]);
+        // One in use is passed over for the next, although it is the older.
+        {
+            let _in_use = caches[0].get().unwrap();
+            assert!(caches[3].get().is_some());
+            assert!(evict_oldest());
+        }
+        assert_eq!(held(&caches), [true, false, false, false]);
+        assert!(evict_oldest());
+        assert!(!evict_oldest(), "nothing is left");
+        assert_eq!(dropped.get(), 4);
     }
 
     #[test]

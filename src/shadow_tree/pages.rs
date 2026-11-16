@@ -216,8 +216,11 @@ struct DecodedObjects {
 }
 /// The decoded objects as a cache of the run: given up, with the blocks
 /// that pay for them, when memory is short ([`n2r_win32::evict`]).
-struct DecodedCache(RefCell<DecodedObjects>);
+struct DecodedCache(RefCell<DecodedObjects>, std::cell::Cell<u64>);
 impl n2r_win32::evict::Evict for DecodedCache {
+    fn last_used(&self) -> u64 {
+        self.1.get()
+    }
     fn evict(&self) -> bool {
         // Borrowed means in use at this moment: left alone. What is taken
         // is dropped after the borrow has ended, the objects before the
@@ -1782,8 +1785,10 @@ impl PagedExpectedTree {
             alias_projection_lookups: Cell::new(0),
             input_digest: n2r_win32::shadow_native::input_domain::InputDigestMemo::new(),
             decoded: {
-                let decoded =
-                    std::rc::Rc::new(DecodedCache(RefCell::new(DecodedObjects::default())));
+                let decoded = std::rc::Rc::new(DecodedCache(
+                    RefCell::new(DecodedObjects::default()),
+                    std::cell::Cell::new(n2r_win32::evict::now()),
+                ));
                 n2r_win32::evict::register(&decoded);
                 decoded
             },
@@ -2121,6 +2126,7 @@ impl PagedExpectedTree {
         let (Some(arena), Some(admission)) = (&self.arena, self.resource_admission) else {
             return;
         };
+        self.decoded.1.set(n2r_win32::evict::now());
         let mut decoded = self.decoded.0.borrow_mut();
         if decoded.rows.get(index).is_some_and(Option::is_some) {
             return;

@@ -223,11 +223,17 @@ struct ExpectedMemoryOwner {
     reopened: Option<File>,
 }
 
+/// Beside eight times an object's compact bytes: what the decoded structure
+/// of the smallest object takes, three times over (see `object_leased`).
+const DECODED_OBJECT_ALLOWANCE: u64 = 64 * 1024;
+
 /// One decoded object keeps its actual shared-memory lease through all native
 /// views/caches. It has no Clone or Deserialize implementation.
 pub struct LeasedExpectedObject {
     object: Object,
     _ram: crate::artifact_arena::ArenaRamLease,
+    // What the object holds beyond what was reserved to decode it.
+    _more: Option<crate::artifact_arena::ArenaRamLease>,
 }
 impl std::ops::Deref for LeasedExpectedObject {
     type Target = Object;
@@ -1849,30 +1855,51 @@ impl PagedExpectedTree {
     }
 
     pub fn object(&self, index: usize) -> Result<Object> {
-        let _working = self.reserve_decode_ram()?;
+        let _working = self.reserve_decode_ram(index)?;
         self.decode_object(index)
     }
-    fn reserve_decode_ram(&self) -> Result<Option<crate::artifact_arena::ArenaRamLease>> {
+    /// The workspace for decoding object `index`.
+    ///
+    /// Its size follows the object: eight times the compact bytes its
+    /// directory entry states (the compact buffer, the preflight and the
+    /// typed decoder; object_memory_bytes and MemorySeed charge compact bytes
+    /// before they accept a decoded allocation), three pages for the chunks
+    /// it is read through, and a fixed allowance for the decoded object's own
+    /// structure. It used to be eight times the largest row the budget
+    /// admits, which is a sixty-fourth of the run's memory: every decoding
+    /// reserved an eighth of the whole ledger, 566 MB on a machine with 9 GB
+    /// and 1.8 GB on one with 24, for an object of a few hundred bytes. That
+    /// was the reservation a batch's workspaces starved (#150), and the
+    /// largest part of what a run needed whatever its volume held (#129).
+    fn reserve_decode_ram(
+        &self,
+        index: usize,
+    ) -> Result<Option<crate::artifact_arena::ArenaRamLease>> {
         let Some(arena) = &self.arena else {
             return Ok(None);
         };
         let admission = self
             .resource_admission
             .context("expected arena row lacks admission")?;
-        // The row allowance includes its actual compact JSON buffer as well
-        // as the preflight/typed decoder. object_memory_bytes and MemorySeed
-        // both charge compact bytes before accepting decoded allocations.
-        let bytes = admission
-            .budget
-            .max_row_bytes
+        ensure!(
+            index < self.len(),
+            "expected-tree ordinal outside complete object domain"
+        );
+        let compact = self.directory[index].bytes;
+        ensure!(
+            compact <= admission.budget.max_row_bytes,
+            "resource object compact bytes exceed budget"
+        );
+        let bytes = compact
             .checked_mul(8)
             .and_then(|n| n.checked_add(u64::from(self.budget.max_page_bytes) * 3))
+            .and_then(|n| n.checked_add(DECODED_OBJECT_ALLOWANCE))
             .context("expected row decode RAM overflow")?;
         Ok(Some(arena.reserve_ram(bytes)?))
     }
     pub fn object_leased(&self, index: usize) -> Result<LeasedExpectedObject> {
         let mut ram = self
-            .reserve_decode_ram()?
+            .reserve_decode_ram(index)?
             .context("actual shared expected memory owner required")?;
         let object = self.decode_object(index)?;
         let bytes = object_memory_bytes(
@@ -1885,12 +1912,29 @@ impl PagedExpectedTree {
         )?;
         // Keep room for the two native source-run/name views made from this
         // object while its lease is alive, as well as its own exact capacities.
-        ram.shrink_to(
-            bytes
-                .checked_mul(3)
-                .context("expected leased native-view RAM overflow")?,
-        )?;
-        Ok(LeasedExpectedObject { object, _ram: ram })
+        let keep = bytes
+            .checked_mul(3)
+            .context("expected leased native-view RAM overflow")?;
+        // A decoded object can hold more than its compact bytes suggest (a
+        // deep path of one-letter names costs a String a component): what
+        // it holds beyond the decoding workspace is reserved now.
+        let more = match keep.checked_sub(ram.bytes()) {
+            Some(more) if more > 0 => Some(
+                self.arena
+                    .as_ref()
+                    .context("actual shared expected memory owner required")?
+                    .reserve_ram(more)?,
+            ),
+            _ => {
+                ram.shrink_to(keep)?;
+                None
+            }
+        };
+        Ok(LeasedExpectedObject {
+            object,
+            _ram: ram,
+            _more: more,
+        })
     }
     /// Snapshot only: no file reads, allocations or per-record logging. These
     /// counters are diagnostic and never replace authentication/owner checks.

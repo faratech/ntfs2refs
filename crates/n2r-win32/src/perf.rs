@@ -220,6 +220,10 @@ pub fn phase(name: &str) {
 
 static LEDGER_PEAK: AtomicU64 = AtomicU64::new(0);
 static LEDGER_LIMIT: AtomicU64 = AtomicU64::new(0);
+static LEDGER_NEEDED_PEAK: AtomicU64 = AtomicU64::new(0);
+// What held the ledger's memory when the needed peak was last written down,
+// and the level it was written down at.
+static LEDGER_HOLDERS: Mutex<(u64, String)> = Mutex::new((0, String::new()));
 
 /// What a run's memory ledger holds after a reservation, and what it may
 /// hold: the highest level is printed with the totals, so that what a
@@ -230,9 +234,38 @@ static LEDGER_LIMIT: AtomicU64 = AtomicU64::new(0);
 /// when it was made. The limit printed is the one of the ledger that
 /// reached the peak: printed with the last ledger's limit, a peak in the
 /// preparation read as more than the run may hold (#149).
-pub fn note_ledger(held: u64, limit: u64) {
+///
+/// `needed` is the part of `held` that the conversion could not do without:
+/// not the optional caches and not the spare memory of batches, both of
+/// which a ledger grants only while it has room. Its highest level is what
+/// a volume takes of a machine's memory (#129), and it is printed beside
+/// the peak. The answer says whether the caller should now say what holds
+/// the memory ([`note_ledger_holders`]): when the needed peak has grown by a
+/// sixty-fourth of the limit since that was last written down, so that a
+/// run pays for at most sixty-four descriptions a ledger.
+pub fn note_ledger(held: u64, needed: u64, limit: u64) -> bool {
     if LEDGER_PEAK.fetch_max(held, Relaxed) < held {
         LEDGER_LIMIT.store(limit, Relaxed);
+    }
+    if LEDGER_NEEDED_PEAK.fetch_max(needed, Relaxed) >= needed {
+        return false;
+    }
+    let described = LEDGER_HOLDERS.lock().map_or(u64::MAX, |holders| holders.0);
+    holders_due(needed, described, limit)
+}
+
+fn holders_due(needed: u64, described: u64, limit: u64) -> bool {
+    needed >= described.saturating_add((limit / 64).max(1))
+}
+
+/// What held a ledger's memory when what the run could not do without stood
+/// at `needed`: printed with the totals, so that a run says what a volume's
+/// memory went to and not only how much it was.
+pub fn note_ledger_holders(needed: u64, holders: String) {
+    if let Ok(mut described) = LEDGER_HOLDERS.lock()
+        && needed > described.0
+    {
+        *described = (needed, holders);
     }
 }
 
@@ -273,10 +306,20 @@ pub fn finish() {
         let peak = LEDGER_PEAK.load(Relaxed);
         if peak != 0 {
             eprintln!(
-                "memory: the run's reservations peaked at {} MiB of the {} MiB it may hold",
+                "memory: the run's reservations peaked at {} MiB of the {} MiB it may hold; what it could not do without peaked at {} MiB",
                 peak >> 20,
-                LEDGER_LIMIT.load(Relaxed) >> 20
+                LEDGER_LIMIT.load(Relaxed) >> 20,
+                LEDGER_NEEDED_PEAK.load(Relaxed) >> 20
             );
+            if let Ok(holders) = LEDGER_HOLDERS.lock()
+                && !holders.1.is_empty()
+            {
+                eprintln!(
+                    "memory-held: with {} MiB needed, the largest reservations were {}",
+                    holders.0 >> 20,
+                    holders.1
+                );
+            }
         }
     }
 }
@@ -284,6 +327,22 @@ pub fn finish() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What holds a ledger's memory is written down as what the run needs
+    /// grows, a sixty-fourth of the limit at a time, and not at every
+    /// reservation.
+    #[test]
+    fn the_holders_of_a_ledger_are_described_a_sixty_fourth_at_a_time() {
+        const LIMIT: u64 = 64 << 20;
+        assert!(!holders_due((1 << 20) - 1, 0, LIMIT));
+        assert!(holders_due(1 << 20, 0, LIMIT), "the first sixty-fourth");
+        assert!(!holders_due((2 << 20) - 1, 1 << 20, LIMIT));
+        assert!(holders_due(2 << 20, 1 << 20, LIMIT));
+        // A ledger smaller than sixty-four bytes still moves on.
+        assert!(holders_due(1, 0, 10) && !holders_due(1, 1, 10));
+        // Nothing was written down yet and the holders cannot be read.
+        assert!(!holders_due(u64::MAX, u64::MAX, LIMIT));
+    }
 
     #[test]
     fn a_scope_counts_one_call_and_bytes_are_reported_per_point() {

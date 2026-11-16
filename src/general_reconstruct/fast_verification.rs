@@ -1025,7 +1025,6 @@ fn stream_map_ref<'a>(
 }
 
 type StreamKeyRef<'a> = (&'a [String], &'a [u16]);
-type StreamBindingRef<'a> = (StreamKeyRef<'a>, StreamMapRef<'a>);
 
 /// Numeric indexes into the shared immutable observation; paths and variable
 /// map buffers remain owned only by that original native report.
@@ -1036,81 +1035,128 @@ struct StreamLocation {
 }
 
 impl StreamLocation {
-    fn key(self, report: &Report) -> StreamKeyRef<'_> {
-        let object = &report.objects[self.object];
-        let name = self.named.map_or(&[] as &[u16], |index| {
-            object.named_streams[index].name_utf16.as_slice()
-        });
-        (object.components.as_slice(), name)
+    /// The path and stream name of this binding, lent to `read`: a row of
+    /// the report is borrowed only while it is being read.
+    fn with_key<T>(self, report: &Report, read: impl FnOnce(StreamKeyRef<'_>) -> T) -> T {
+        report
+            .objects
+            .with(self.object, |object| {
+                let name = self.named.map_or(&[] as &[u16], |index| {
+                    object.named_streams[index].name_utf16.as_slice()
+                });
+                Ok(read((object.components.as_slice(), name)))
+            })
+            .expect("a stream location names a row of its own report")
     }
 
-    fn view(self, report: &Report) -> Result<StreamBindingRef<'_>> {
-        let object = &report.objects[self.object];
-        let (name, snapshot, retrieval, paged, resident, sparse, integrity) =
-            if let Some(index) = self.named {
-                let stream = &object.named_streams[index];
-                (
-                    stream.name_utf16.as_slice(),
-                    &stream.before,
-                    stream.retrieval.as_slice(),
-                    stream.retrieval_page_proof.is_some(),
-                    stream.resident_data,
-                    stream.sparse.as_ref().map(|sparse| &sparse.expected),
-                    stream.integrity.as_slice(),
-                )
-            } else {
-                (
-                    &[] as &[u16],
-                    &object.before,
-                    object.retrieval.as_slice(),
-                    object.retrieval_page_proof.is_some(),
-                    object.resident_data,
-                    object.sparse.as_ref().map(|sparse| &sparse.expected),
-                    object.integrity.as_slice(),
-                )
-            };
-        Ok((
-            (object.components.as_slice(), name),
-            stream_map_ref(snapshot, retrieval, paged, resident, sparse, integrity)?,
-        ))
+    /// How this binding's key orders against `other`'s, both of `report`.
+    fn cmp_key(self, other: Self, report: &Report) -> std::cmp::Ordering {
+        self.with_key(report, |a| other.with_key(report, |b| a.cmp(&b)))
+    }
+
+    /// The key and the map of this binding, lent to `read`.
+    fn view<T>(
+        self,
+        report: &Report,
+        read: impl FnOnce(StreamKeyRef<'_>, StreamMapRef<'_>) -> Result<T>,
+    ) -> Result<T> {
+        report.objects.try_with(self.object, |object| {
+            let (name, snapshot, retrieval, paged, resident, sparse, integrity) =
+                if let Some(index) = self.named {
+                    let stream = &object.named_streams[index];
+                    (
+                        stream.name_utf16.as_slice(),
+                        &stream.before,
+                        stream.retrieval.as_slice(),
+                        stream.retrieval_page_proof.is_some(),
+                        stream.resident_data,
+                        stream.sparse.as_ref().map(|sparse| &sparse.expected),
+                        stream.integrity.as_slice(),
+                    )
+                } else {
+                    (
+                        &[] as &[u16],
+                        &object.before,
+                        object.retrieval.as_slice(),
+                        object.retrieval_page_proof.is_some(),
+                        object.resident_data,
+                        object.sparse.as_ref().map(|sparse| &sparse.expected),
+                        object.integrity.as_slice(),
+                    )
+                };
+            read(
+                (object.components.as_slice(), name),
+                stream_map_ref(snapshot, retrieval, paged, resident, sparse, integrity)?,
+            )
+        })
     }
 }
 
+/// A binding ordered by its key, which stays in the report: the key is read
+/// from the binding's row whenever two bindings are compared.
+struct KeyOrdered<'a> {
+    location: StreamLocation,
+    report: &'a Report,
+}
+
+impl Ord for KeyOrdered<'_> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.location.cmp_key(other.location, self.report)
+    }
+}
+
+impl PartialOrd for KeyOrdered<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for KeyOrdered<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other).is_eq()
+    }
+}
+
+impl Eq for KeyOrdered<'_> {}
+
 fn maps(report: &Report) -> Result<Vec<StreamLocation>> {
-    // Borrowed slice tuples have the same lexicographic ordering as the old
+    // The keys' slice tuples have the same lexicographic ordering as the old
     // owned Vec tuples, preserving the exact manifest binding sequence.
-    let mut maps = BTreeMap::new();
-    for (object_index, object) in report.objects.iter().enumerate() {
-        ensure!(
-            object.before == object.after,
-            "fast object metadata changed during observation"
-        );
-        let location = StreamLocation {
-            object: object_index,
-            named: None,
-        };
-        let (key, _) = location.view(report)?;
-        ensure!(
-            maps.insert(key, location).is_none(),
-            "duplicate fast canonical object"
-        );
-        for (stream_index, stream) in object.named_streams.iter().enumerate() {
+    let mut maps = BTreeSet::new();
+    report
+        .objects
+        .try_for_each(|object_index, object| -> Result<()> {
             ensure!(
-                stream.before == stream.after,
-                "fast named stream metadata changed"
+                object.before == object.after,
+                "fast object metadata changed during observation"
             );
             let location = StreamLocation {
                 object: object_index,
-                named: Some(stream_index),
+                named: None,
             };
-            let (key, _) = location.view(report)?;
+            location.view(report, |_, _| Ok(()))?;
             ensure!(
-                !stream.name_utf16.is_empty() && maps.insert(key, location).is_none(),
-                "duplicate fast named stream"
+                maps.insert(KeyOrdered { location, report }),
+                "duplicate fast canonical object"
             );
-        }
-    }
-    Ok(maps.into_values().collect())
+            for (stream_index, stream) in object.named_streams.iter().enumerate() {
+                ensure!(
+                    stream.before == stream.after,
+                    "fast named stream metadata changed"
+                );
+                let location = StreamLocation {
+                    object: object_index,
+                    named: Some(stream_index),
+                };
+                location.view(report, |_, _| Ok(()))?;
+                ensure!(
+                    !stream.name_utf16.is_empty() && maps.insert(KeyOrdered { location, report }),
+                    "duplicate fast named stream"
+                );
+            }
+            Ok(())
+        })?;
+    Ok(maps.into_iter().map(|binding| binding.location).collect())
 }
 fn maps_with_resources(
     report: &Report,
@@ -1124,10 +1170,13 @@ fn maps_with_resources(
             )),
         "native map owner resource admission differs"
     );
-    let count = report.objects.iter().try_fold(0usize, |n, o| {
-        n.checked_add(1)
+    let mut count = 0usize;
+    report.objects.try_for_each(|_, o| -> Result<()> {
+        count = count
+            .checked_add(1)
             .and_then(|n| n.checked_add(o.named_streams.len()))
-            .context("native map count overflow")
+            .context("native map count overflow")?;
+        Ok(())
     })?;
     ensure!(
         count as u64
@@ -1155,60 +1204,68 @@ fn maps_with_resources(
             .is_some_and(|n| n <= admission.budget.retained_index_bytes),
         "actual native map index allocation exceeds budget"
     );
-    for (object_index, object) in report.objects.iter().enumerate() {
-        ensure!(
-            object.before == object.after,
-            "fast object metadata changed during observation"
-        );
-        locations.push(StreamLocation {
-            object: object_index,
-            named: None,
-        });
-        for (index, stream) in object.named_streams.iter().enumerate() {
+    report
+        .objects
+        .try_for_each(|object_index, object| -> Result<()> {
             ensure!(
-                stream.before == stream.after && !stream.name_utf16.is_empty(),
-                "fast named stream metadata changed or unnamed"
+                object.before == object.after,
+                "fast object metadata changed during observation"
             );
             locations.push(StreamLocation {
                 object: object_index,
-                named: Some(index),
+                named: None,
             });
-        }
-    }
-    locations.sort_unstable_by(|a, b| a.key(report).cmp(&b.key(report)));
+            for (index, stream) in object.named_streams.iter().enumerate() {
+                ensure!(
+                    stream.before == stream.after && !stream.name_utf16.is_empty(),
+                    "fast named stream metadata changed or unnamed"
+                );
+                locations.push(StreamLocation {
+                    object: object_index,
+                    named: Some(index),
+                });
+            }
+            Ok(())
+        })?;
+    locations.sort_unstable_by(|a, b| a.cmp_key(*b, report));
     ensure!(
         locations
             .windows(2)
-            .all(|v| v[0].key(report) < v[1].key(report)),
+            .all(|v| v[0].cmp_key(v[1], report).is_lt()),
         "duplicate native map binding"
     );
     Ok(locations)
 }
 
 /// Compare every reported binding without constructing another owning map.
-/// The sorted index borrows keys and buffers from the proof; one seen flag per
-/// binding preserves duplicate detection and complete-set equality.
-fn maps_match<'a, T>(
+/// The sorted index reads keys and buffers where they are held; one seen flag
+/// per binding preserves duplicate detection and complete-set equality.
+/// `order` is how an expected binding's key orders against a reported key,
+/// and `same` whether its map is the reported one.
+fn maps_match<T>(
     report: &Report,
     expected: impl IntoIterator<Item = T>,
-    key: impl Fn(&T) -> StreamKeyRef<'a>,
-    map: impl Fn(&T) -> Result<StreamMapRef<'a>>,
+    order: impl Fn(&T, StreamKeyRef<'_>) -> std::cmp::Ordering,
+    same: impl Fn(&T, &StreamMapRef<'_>) -> Result<bool>,
 ) -> Result<bool> {
     let mut bindings: Vec<_> = expected.into_iter().map(|value| (value, false)).collect();
     let mut match_stream = |components: &[String], name: &[u16], value: StreamMapRef<'_>| {
-        let found = bindings.binary_search_by(|(binding, _)| {
-            let key = key(binding);
-            key.0.cmp(components).then_with(|| key.1.cmp(name))
-        });
+        let found = bindings.binary_search_by(|(binding, _)| order(binding, (components, name)));
         let Ok(index) = found else {
             return Ok(false);
         };
         let (expected, seen) = &mut bindings[index];
         ensure!(!*seen, "duplicate fast canonical stream");
         *seen = true;
-        Ok(map(expected)? == value)
+        same(expected, &value)
     };
-    for object in &report.objects {
+    // Once a binding differs the answer is known and the rows after it are
+    // passed by unread, as they were when the walk ended there.
+    let mut matched = true;
+    report.objects.try_for_each(|_, object| -> Result<()> {
+        if !matched {
+            return Ok(());
+        }
         ensure!(
             object.before == object.after,
             "fast object metadata changed during observation"
@@ -1225,7 +1282,8 @@ fn maps_match<'a, T>(
                 &object.integrity,
             )?,
         )? {
-            return Ok(false);
+            matched = false;
+            return Ok(());
         }
         for stream in &object.named_streams {
             ensure!(
@@ -1245,11 +1303,13 @@ fn maps_match<'a, T>(
                     &stream.integrity,
                 )?,
             )? {
-                return Ok(false);
+                matched = false;
+                return Ok(());
             }
         }
-    }
-    Ok(bindings.iter().all(|(_, seen)| *seen))
+        Ok(())
+    })?;
+    Ok(matched && bindings.iter().all(|(_, seen)| *seen))
 }
 
 impl FreshPayloadProof {
@@ -1309,9 +1369,11 @@ impl FreshPayloadProof {
                 "fresh native map set differs from actual expected owner"
             );
             for (key, location) in expected_keys.iter().zip(&native_maps) {
-                let (components, name) = location.key(&native);
+                let encoded = location.with_key(&native, |(components, name)| {
+                    encoded_stream_key(components, name)
+                })?;
                 ensure!(
-                    *key == encoded_stream_key(components, name)?,
+                    *key == encoded,
                     "fresh native map key set differs from actual expected owner"
                 );
             }
@@ -1391,38 +1453,40 @@ impl FreshPayloadProof {
         writer.push(&[], &record_json(&header)?)?;
         let mut total = 0u64;
         for location in &self.maps {
-            let ((components, name_utf16), map) = location.view(&self.native)?;
-            let key = encoded_stream_key(components, name_utf16)?;
-            let entry = MapEntryRef {
-                components,
-                name_utf16,
-                map: if self.resource_admission.is_some() {
-                    PagedStreamMapRef::with_resources(map, self.resource_admission)?
-                } else {
-                    PagedStreamMapRef::new(map)?
-                },
-            };
-            if let Some(admission) = self.resource_admission {
-                let compact = row_size(&entry, admission.budget.max_row_bytes)?;
-                validate_borrowed_row_memory(&entry, compact, admission.budget.max_row_bytes)?;
-                total = total
-                    .checked_add(compact)
-                    .filter(|n| *n <= admission.semantic_byte_budget())
-                    .context("complete map encoding exceeds semantic resource budget")?;
-                let mut chunks = MapChunkWriter {
-                    writer: &mut writer,
-                    key: &key,
-                    maximum: chunk_capacity(self.map_page_budget, key.len())?,
-                    limit: admission.budget.max_row_bytes,
-                    buffer: Vec::new(),
-                    chunks: 0,
-                    bytes: 0,
+            location.view(&self.native, |(components, name_utf16), map| {
+                let key = encoded_stream_key(components, name_utf16)?;
+                let entry = MapEntryRef {
+                    components,
+                    name_utf16,
+                    map: if self.resource_admission.is_some() {
+                        PagedStreamMapRef::with_resources(map, self.resource_admission)?
+                    } else {
+                        PagedStreamMapRef::new(map)?
+                    },
                 };
-                serde_json::to_writer(&mut chunks, &entry)?;
-                chunks.emit()?;
-            } else {
-                writer.push(&key, &record_json(&entry)?)?;
-            }
+                if let Some(admission) = self.resource_admission {
+                    let compact = row_size(&entry, admission.budget.max_row_bytes)?;
+                    validate_borrowed_row_memory(&entry, compact, admission.budget.max_row_bytes)?;
+                    total = total
+                        .checked_add(compact)
+                        .filter(|n| *n <= admission.semantic_byte_budget())
+                        .context("complete map encoding exceeds semantic resource budget")?;
+                    let mut chunks = MapChunkWriter {
+                        writer: &mut writer,
+                        key: &key,
+                        maximum: chunk_capacity(self.map_page_budget, key.len())?,
+                        limit: admission.budget.max_row_bytes,
+                        buffer: Vec::new(),
+                        chunks: 0,
+                        bytes: 0,
+                    };
+                    serde_json::to_writer(&mut chunks, &entry)?;
+                    chunks.emit()?;
+                } else {
+                    writer.push(&key, &record_json(&entry)?)?;
+                }
+                Ok(())
+            })?;
         }
         Ok(writer.finish()?.sha256)
     }
@@ -1468,8 +1532,8 @@ impl FreshPayloadProof {
                 && maps_match(
                     &native.native,
                     &self.maps,
-                    |location| location.key(&self.native),
-                    |location| Ok(location.view(&self.native)?.1),
+                    |location, key| location.with_key(&self.native, |held| held.cmp(&key)),
+                    |location, value| location.view(&self.native, |_, map| Ok(map == *value)),
                 )?,
             "mounted file identities, complete physical maps or storage validity differ from the protected candidate"
         );
@@ -1945,8 +2009,8 @@ impl RecoveryPayloadProof {
             RecoveryMaps::Legacy(expected) => maps_match(
                 report,
                 expected,
-                |(key, _)| (key.0.as_slice(), key.1.as_slice()),
-                |(_, map)| Ok(map.as_ref()),
+                |(held, _), key| (held.0.as_slice(), held.1.as_slice()).cmp(&key),
+                |(_, map), value| Ok(map.as_ref() == *value),
             ),
             RecoveryMaps::Paged {
                 reader,
@@ -1992,16 +2056,20 @@ impl RecoveryPayloadProof {
                 }
                 let mut reader = reader.borrow_mut();
                 for (location, (expected_key, row)) in actual.iter().zip(index) {
-                    let ((components, name), value) = location.view(report)?;
-                    if encoded_stream_key(components, name)? != *expected_key {
-                        return Ok(false);
-                    }
-                    let entry = read_map_row(&mut reader, expected_key, *row, *resource_admission)?;
-                    ensure!(
-                        encoded_stream_key(&entry.components, &entry.name_utf16)? == *expected_key,
-                        "held map key changed"
-                    );
-                    if value != entry.map.as_ref() {
+                    let same = location.view(report, |(components, name), value| {
+                        if encoded_stream_key(components, name)? != *expected_key {
+                            return Ok(false);
+                        }
+                        let entry =
+                            read_map_row(&mut reader, expected_key, *row, *resource_admission)?;
+                        ensure!(
+                            encoded_stream_key(&entry.components, &entry.name_utf16)?
+                                == *expected_key,
+                            "held map key changed"
+                        );
+                        Ok(value == entry.map.as_ref())
+                    })?;
+                    if !same {
                         return Ok(false);
                     }
                 }

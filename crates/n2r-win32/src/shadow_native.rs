@@ -6,10 +6,12 @@ mod hard_links;
 pub mod input_domain;
 mod known_content_memory;
 pub mod report_memory;
+mod rows;
 pub mod windows_aliases;
 pub use known_content_memory::verify_known_contents_in_accounted_report;
 pub(crate) use known_content_memory::verify_known_contents_in_accounted_report_with_lease;
 pub(crate) use known_content_memory::verify_known_contents_in_accounted_report_with_lease_windows_aliases;
+pub use rows::Rows;
 mod sparse_stream;
 mod streams;
 pub use hard_links::Observation as HardLinkObservation;
@@ -417,7 +419,7 @@ pub struct Report {
     pub binding: DiskBinding,
     pub before: crate::PartitionSnapshot,
     pub after: crate::PartitionSnapshot,
-    pub objects: Vec<ObjectReport>,
+    pub objects: Rows,
     /// Complete metadata-inclusive allocation intervals observed through
     /// refs.sys on this mounted shadow. Not a stand-alone ownership proof.
     pub metadata_allocation: Option<crate::bitmap_layout::AllocationMap>,
@@ -1778,7 +1780,7 @@ fn validate_existing_content_domain_with_memory_and_windows_aliases(
     // Set when only the root's later times differ; cleared by the entry that
     // explains them.
     let mut root_times_refusal = None;
-    for (index, o) in report.objects.iter().enumerate() {
+    report.objects.for_each(|index, o| {
         let owner = input.object(index)?;
         let item = owner.input();
         let i = &item;
@@ -1953,28 +1955,35 @@ fn validate_existing_content_domain_with_memory_and_windows_aliases(
                 ));
             }
         }
-    }
+        Ok(())
+    })?;
     if let Some(aliases) = aliases {
-        let root = report
-            .objects
-            .first()
-            .ok_or_else(|| invalid("Windows alias source root absent"))?;
-        let root_identity = query_bytes(&root.before, 18, 24)?;
+        if report.objects.is_empty() {
+            return Err(invalid("Windows alias source root absent"));
+        }
+        // The identity of a row is 24 bytes; it is copied out of the row
+        // because the row is lent only for the length of the reading.
+        let identity = |index: usize| -> io::Result<[u8; 24]> {
+            report.objects.with(index, |row| {
+                query_bytes(&row.before, 18, 24)?
+                    .try_into()
+                    .map_err(|_| invalid("native file identity length differs"))
+            })
+        };
+        let root_identity = identity(0)?;
         for (ordinal, alias) in aliases.entries.iter().enumerate() {
             let parent_owner = input.object(alias.parent_object_index)?;
             let parent = parent_owner.input();
             let canonical_owner = input.object(alias.canonical_object_index)?;
             let canonical = canonical_owner.input();
-            let parent_report = report
-                .objects
-                .get(alias.parent_object_index)
-                .ok_or_else(|| invalid("Windows alias parent report row absent"))?;
-            let canonical_report = report
-                .objects
-                .get(alias.canonical_object_index)
-                .ok_or_else(|| invalid("Windows alias canonical report row absent"))?;
-            if query_bytes(&parent_report.before, 18, 24)? != alias.parent_file_id_info
-                || query_bytes(&canonical_report.before, 18, 24)? != alias.canonical_file_id_info
+            if alias.parent_object_index >= report.objects.len() {
+                return Err(invalid("Windows alias parent report row absent"));
+            }
+            if alias.canonical_object_index >= report.objects.len() {
+                return Err(invalid("Windows alias canonical report row absent"));
+            }
+            if identity(alias.parent_object_index)? != alias.parent_file_id_info
+                || identity(alias.canonical_object_index)? != alias.canonical_file_id_info
             {
                 return Err(invalid(
                     "Windows alias parent or canonical native identity changed",
@@ -2053,11 +2062,11 @@ fn validate_existing_content_domain_with_memory_and_windows_aliases(
             continue;
         }
         let components = path.as_slice();
-        let o = &report.objects[index];
         let empty = BTreeMap::new();
         let expected = expected_children.get(components).unwrap_or(&empty);
         let mut seen = BTreeSet::new();
         let mut cache_seen = false;
+        report.objects.with(index, |o| {
         for entry in &o.namespace {
             if entry.name_utf16 == [46] || entry.name_utf16 == [46, 46] {
                 continue;
@@ -2095,48 +2104,56 @@ fn validate_existing_content_domain_with_memory_and_windows_aliases(
             let &(child_origin, expected_attributes) = expected
                 .get(&entry.name_utf16)
                 .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("unexpected existing shadow directory entry: {:?} in \\{} (attributes 0x{:x}; alias overlay {}; before_restore={before_restore} verify_contents={verify_contents} allow_post_mount_svi={allow_post_mount_svi} accounted={})", String::from_utf16_lossy(&entry.name_utf16), components.join("\\"), entry.attributes, aliases.map_or_else(|| "absent".to_owned(), |a| format!("{} entries", a.entries.len())), memory.is_some())))?;
-            let (child_components, identity_matches) = match NamespaceChild::decode(child_origin) {
+            // The entry is held to the child it names, whose path is read
+            // where the child's row or alias is at hand.
+            let mut admit = |child_components: &[String], identity_matches: bool| {
+                let duplicate = !seen.insert(entry.name_utf16.clone());
+                // A file with no attributes is listed by Windows as NORMAL
+                // (0x80); the NTFS value it was created from is zero.
+                let attributes_match = entry.attributes == expected_attributes
+                    || (expected_attributes == 0 && entry.attributes == 0x80);
+                if duplicate || !attributes_match || !identity_matches {
+                    let context = serde_json::json!({
+                        "path": child_components,
+                        "duplicate": duplicate,
+                        "actual_attributes": entry.attributes,
+                        "expected_attributes": expected_attributes,
+                        "identity_matches": identity_matches,
+                    });
+                    return Err(invalid(&format!(
+                        "existing shadow namespace identity differs: {context}"
+                    )));
+                }
+                Ok(())
+            };
+            match NamespaceChild::decode(child_origin) {
                 NamespaceChild::Source(child_index) => {
-                    let child = report
-                        .objects
-                        .get(child_index)
-                        .ok_or_else(|| invalid("source namespace child index differs"))?;
-                    let path = child.components.as_slice();
-                    (
-                        path,
-                        identities
-                            .get(path)
-                            .is_some_and(|id| id.as_slice() == entry.file_id),
-                    )
+                    if child_index >= report.objects.len() {
+                        return Err(invalid("source namespace child index differs"));
+                    }
+                    report.objects.with(child_index, |child| {
+                        let path = child.components.as_slice();
+                        admit(
+                            path,
+                            identities
+                                .get(path)
+                                .is_some_and(|id| id.as_slice() == entry.file_id),
+                        )
+                    })?;
                 }
                 NamespaceChild::Alias(alias_index) => {
                     let alias = aliases
                         .and_then(|a| a.entries.get(alias_index))
                         .ok_or_else(|| invalid("derived namespace child index differs"))?;
-                    (
+                    admit(
                         alias.components.as_slice(),
                         alias.file_id_info[8..] == entry.file_id,
-                    )
+                    )?;
                 }
-            };
-            let duplicate = !seen.insert(entry.name_utf16.clone());
-            // A file with no attributes is listed by Windows as NORMAL (0x80);
-            // the NTFS value it was created from is zero.
-            let attributes_match = entry.attributes == expected_attributes
-                || (expected_attributes == 0 && entry.attributes == 0x80);
-            if duplicate || !attributes_match || !identity_matches {
-                let context = serde_json::json!({
-                    "path": child_components,
-                    "duplicate": duplicate,
-                    "actual_attributes": entry.attributes,
-                    "expected_attributes": expected_attributes,
-                    "identity_matches": identity_matches,
-                });
-                return Err(invalid(&format!(
-                    "existing shadow namespace identity differs: {context}"
-                )));
             }
         }
+        Ok(())
+        })?;
         if seen.len() != expected.len() {
             return Err(invalid("missing existing shadow directory entry"));
         }
@@ -2221,14 +2238,16 @@ fn repair_security_profile(
     ])?;
     let root = format!("\\\\?\\Volume{{{}}}\\", binding.volume_guid);
     let mut restorations = vec![];
-    for (i, o) in input.iter().zip(&observed.objects).rev() {
+    // From the last object to the first, each with its row.
+    for index in (0..input.len().min(observed.objects.len())).rev() {
+        let i = &input[index];
         let h = open(
             &format!("{}{}", root, i.components.join("\\")),
             i.directory,
             true,
         )?;
         let before = metadata_snapshot(&h, i);
-        if before != o.before {
+        if observed.objects.with(index, |o| Ok(before != o.before))? {
             return Err(invalid("existing shadow changed after repair preflight"));
         }
         if !security_matches(i, &before, &same)? {
@@ -2268,12 +2287,17 @@ fn repair_security_profile(
         None,
     )?;
     validate_existing(&verified, input, &same, false, None)?;
-    if observed
-        .objects
-        .iter()
-        .zip(&verified.objects)
-        .any(|(a, b)| a.retrieval != b.retrieval)
-    {
+    // Each row with the row of the same index, as far as both reports go.
+    let mut allocation_changed = false;
+    observed.objects.for_each(|index, a| {
+        if !allocation_changed && index < verified.objects.len() {
+            allocation_changed = verified
+                .objects
+                .with(index, |b| Ok(a.retrieval != b.retrieval))?;
+        }
+        Ok(())
+    })?;
+    if allocation_changed {
         return Err(invalid(
             "payload allocation changed during security-only restoration",
         ));
@@ -2639,7 +2663,7 @@ fn formatter_cache_name(name: &str) -> bool {
 fn observe_post_mount_indexer_cache(
     root: &str,
     input: &[Input<'_>],
-    objects: &[ObjectReport],
+    objects: &Rows,
 ) -> io::Result<Option<PostMountIndexerCache>> {
     observe_post_mount_indexer_cache_domain(root, &SliceInputs(input), objects)
 }
@@ -2647,7 +2671,7 @@ fn observe_post_mount_indexer_cache(
 fn observe_post_mount_indexer_cache_domain(
     root: &str,
     input: &impl InputDomain,
-    objects: &[ObjectReport],
+    objects: &Rows,
 ) -> io::Result<Option<PostMountIndexerCache>> {
     let system = "System Volume Information";
     let name = "IndexerVolumeGuid";
@@ -2658,96 +2682,106 @@ fn observe_post_mount_indexer_cache_domain(
     })? {
         return Ok(None);
     }
-    let Some(parent_observation) = objects.iter().find(|o| o.components == [system]) else {
+    // The first row of that path, as before; the rows after it are passed by.
+    let mut parent_index = None;
+    objects.for_each(|index, o| {
+        if parent_index.is_none() && o.components == [system] {
+            parent_index = Some(index);
+        }
+        Ok(())
+    })?;
+    let Some(parent_index) = parent_index else {
         return Ok(None);
     };
-    let names: Vec<_> = parent_observation
-        .namespace
-        .iter()
-        .filter(|e| e.name_utf16 == name.encode_utf16().collect::<Vec<_>>())
-        .collect();
-    if names.is_empty() {
-        return Ok(None);
-    }
-    if names.len() != 1 || names[0].attributes & !0x2027 != 0 {
-        return Err(invalid(
-            "post-mount indexer cache namespace or attributes differ",
-        ));
-    }
-    let entry = names[0];
-    let parent = open(&format!("{root}{system}"), true, false)?;
-    if repeat_snapshot(&parent, &parent_observation.after) != parent_observation.after {
-        return Err(invalid(
-            "system directory changed before post-mount cache observation",
-        ));
-    }
-    let mut file = File::options()
-        .access_mode(0x01020181)
-        .share_mode(1)
-        .custom_flags(0x02200000)
-        .open(format!("{root}{system}\\{name}"))?;
-    suppress_access(&file)?;
-    validate_open_type(&file, false)?;
-    let before = snapshot(&file);
-    let standard = query_bytes(&before, 1, 24)?;
-    let basic = query_bytes(&before, 0, 40)?;
-    if query_bytes(&before, 18, 24)?[8..24] != entry.file_id
-        || entry.file_id == [0; 16]
-        || layout::u64_at(standard, 8)? != 76
-        || layout::u64_at(standard, 0)? > 65536
-        || layout::u32_at(standard, 16)? != 1
-        || standard[20] != 0
-        || standard[21] != 0
-        || layout::u32_at(basic, 32)? != entry.attributes
-        || before.security_error.is_some()
-        || before
-            .kernel_security
-            .as_ref()
-            .is_none_or(|s| s.native_error.is_some())
-    {
-        return Err(invalid(
-            "post-mount indexer cache identity, type, size or security query differs",
-        ));
-    }
-    let mut streams = stream_info(&file)?;
-    let (entries, used) = stream_layout::parse_streams(&streams)?;
-    if entries.len() != 1 || !entries[0].name.is_empty() || entries[0].logical_size != 76 {
-        return Err(invalid("post-mount indexer cache has unexpected streams"));
-    }
-    streams.truncate(used);
-    let mut contents = vec![0; 76];
-    file.read_exact(&mut contents)?;
-    let guid: Vec<_> = contents
-        .chunks_exact(2)
-        .map(|b| u16::from_le_bytes([b[0], b[1]]))
-        .collect();
-    if guid.iter().enumerate().any(|(at, &c)| match at {
-        0 => c != u16::from(b'{'),
-        37 => c != u16::from(b'}'),
-        9 | 14 | 19 | 24 => c != u16::from(b'-'),
-        _ => c > 127 || !(c as u8).is_ascii_hexdigit(),
-    }) || file.read(&mut [0u8; 1])? != 0
-    {
-        return Err(invalid("post-mount indexer cache GUID contents differ"));
-    }
-    let after = snapshot(&file);
-    if before != after
-        || repeat_snapshot(&parent, &parent_observation.after) != parent_observation.after
-    {
-        return Err(invalid(
-            "post-mount indexer cache or parent changed during observation",
-        ));
-    }
-    let observed_filetime = filetime_now()?;
-    Ok(Some(PostMountIndexerCache {
-        file_id: entry.file_id,
-        attributes: entry.attributes,
-        contents,
-        streams,
-        before,
-        after,
-        observed_filetime,
-    }))
+    objects.with(parent_index, |parent_observation| {
+        let names: Vec<_> = parent_observation
+            .namespace
+            .iter()
+            .filter(|e| e.name_utf16 == name.encode_utf16().collect::<Vec<_>>())
+            .collect();
+        if names.is_empty() {
+            return Ok(None);
+        }
+        if names.len() != 1 || names[0].attributes & !0x2027 != 0 {
+            return Err(invalid(
+                "post-mount indexer cache namespace or attributes differ",
+            ));
+        }
+        let entry = names[0];
+        let parent = open(&format!("{root}{system}"), true, false)?;
+        if repeat_snapshot(&parent, &parent_observation.after) != parent_observation.after {
+            return Err(invalid(
+                "system directory changed before post-mount cache observation",
+            ));
+        }
+        let mut file = File::options()
+            .access_mode(0x01020181)
+            .share_mode(1)
+            .custom_flags(0x02200000)
+            .open(format!("{root}{system}\\{name}"))?;
+        suppress_access(&file)?;
+        validate_open_type(&file, false)?;
+        let before = snapshot(&file);
+        let standard = query_bytes(&before, 1, 24)?;
+        let basic = query_bytes(&before, 0, 40)?;
+        if query_bytes(&before, 18, 24)?[8..24] != entry.file_id
+            || entry.file_id == [0; 16]
+            || layout::u64_at(standard, 8)? != 76
+            || layout::u64_at(standard, 0)? > 65536
+            || layout::u32_at(standard, 16)? != 1
+            || standard[20] != 0
+            || standard[21] != 0
+            || layout::u32_at(basic, 32)? != entry.attributes
+            || before.security_error.is_some()
+            || before
+                .kernel_security
+                .as_ref()
+                .is_none_or(|s| s.native_error.is_some())
+        {
+            return Err(invalid(
+                "post-mount indexer cache identity, type, size or security query differs",
+            ));
+        }
+        let mut streams = stream_info(&file)?;
+        let (entries, used) = stream_layout::parse_streams(&streams)?;
+        if entries.len() != 1 || !entries[0].name.is_empty() || entries[0].logical_size != 76 {
+            return Err(invalid("post-mount indexer cache has unexpected streams"));
+        }
+        streams.truncate(used);
+        let mut contents = vec![0; 76];
+        file.read_exact(&mut contents)?;
+        let guid: Vec<_> = contents
+            .chunks_exact(2)
+            .map(|b| u16::from_le_bytes([b[0], b[1]]))
+            .collect();
+        if guid.iter().enumerate().any(|(at, &c)| match at {
+            0 => c != u16::from(b'{'),
+            37 => c != u16::from(b'}'),
+            9 | 14 | 19 | 24 => c != u16::from(b'-'),
+            _ => c > 127 || !(c as u8).is_ascii_hexdigit(),
+        }) || file.read(&mut [0u8; 1])? != 0
+        {
+            return Err(invalid("post-mount indexer cache GUID contents differ"));
+        }
+        let after = snapshot(&file);
+        if before != after
+            || repeat_snapshot(&parent, &parent_observation.after) != parent_observation.after
+        {
+            return Err(invalid(
+                "post-mount indexer cache or parent changed during observation",
+            ));
+        }
+        let observed_filetime = filetime_now()?;
+        Ok(Some(PostMountIndexerCache {
+            file_id: entry.file_id,
+            attributes: entry.attributes,
+            contents,
+            streams,
+            before,
+            after,
+            observed_filetime,
+        }))
+    })
 }
 
 fn source_formatter_cache_bounds(input: &[Input<'_>]) -> io::Result<()> {
@@ -3576,38 +3610,40 @@ pub(crate) fn observe_general_layout_residuals_readonly_domain(
     let mut buffer = vec![0u8; crate::target_cluster::bytes_usize()];
     let mut bytes_read = 0u64;
     for expected in residuals {
-        let object = &native.objects[expected.object_index];
-        let path = streams::path(&root, &object.components, &expected.stream_name_utf16)?;
-        let (before_stream, after_stream) = if expected.stream_name_utf16.is_empty() {
-            (&object.before, &object.after)
-        } else {
-            let stream = object
-                .named_streams
-                .iter()
-                .find(|s| s.name_utf16 == expected.stream_name_utf16)
-                .ok_or_else(|| invalid("named residual stream observation absent"))?;
-            (&stream.before, &stream.after)
-        };
-        let mut file = open_protected_readonly(&path, false)?;
-        if repeat_snapshot(&file, before_stream) != *before_stream {
-            return Err(invalid(
-                "composite residual identity or metadata changed before read",
-            ));
-        }
-        file.seek(SeekFrom::Start(expected.logical_offset))?;
-        let count = expected.length as usize;
-        file.read_exact(&mut buffer[..count])?;
-        if file.read(&mut buffer[..1])? != 0
-            || hex::encode(Sha256::digest(&buffer[..count])) != expected.sha256
-            || repeat_snapshot(&file, after_stream) != *after_stream
-        {
-            return Err(invalid(
-                "composite initialized suffix contents, EOF or metadata differ",
-            ));
-        }
-        bytes_read = bytes_read
-            .checked_add(expected.length)
-            .ok_or_else(|| invalid("composite residual byte count overflow"))?;
+        native.objects.with(expected.object_index, |object| {
+            let path = streams::path(&root, &object.components, &expected.stream_name_utf16)?;
+            let (before_stream, after_stream) = if expected.stream_name_utf16.is_empty() {
+                (&object.before, &object.after)
+            } else {
+                let stream = object
+                    .named_streams
+                    .iter()
+                    .find(|s| s.name_utf16 == expected.stream_name_utf16)
+                    .ok_or_else(|| invalid("named residual stream observation absent"))?;
+                (&stream.before, &stream.after)
+            };
+            let mut file = open_protected_readonly(&path, false)?;
+            if repeat_snapshot(&file, before_stream) != *before_stream {
+                return Err(invalid(
+                    "composite residual identity or metadata changed before read",
+                ));
+            }
+            file.seek(SeekFrom::Start(expected.logical_offset))?;
+            let count = expected.length as usize;
+            file.read_exact(&mut buffer[..count])?;
+            if file.read(&mut buffer[..1])? != 0
+                || hex::encode(Sha256::digest(&buffer[..count])) != expected.sha256
+                || repeat_snapshot(&file, after_stream) != *after_stream
+            {
+                return Err(invalid(
+                    "composite initialized suffix contents, EOF or metadata differ",
+                ));
+            }
+            bytes_read = bytes_read
+                .checked_add(expected.length)
+                .ok_or_else(|| invalid("composite residual byte count overflow"))?;
+            Ok(())
+        })?;
     }
     privileges.restore()?;
     native
@@ -3953,42 +3989,44 @@ fn observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_o
     let read_one = |residual: &Residual| -> io::Result<([u8; 16], String)> {
         let expected = &residual.expected;
         let name = residual.name.as_slice();
-        let object = objects
-            .get(residual.index)
-            .ok_or_else(|| invalid("paged residual native object absent"))?;
-        let (before_stream, after_stream) = if name.is_empty() {
-            (&object.before, &object.after)
-        } else {
-            let stream = object
-                .named_streams
-                .iter()
-                .find(|s| s.name_utf16 == name)
-                .ok_or_else(|| invalid("paged residual named stream absent"))?;
-            (&stream.before, &stream.after)
-        };
-        let path = streams::path(&root, &object.components, name)?;
-        let mut file = open_protected_readonly(&path, false)?;
-        if repeat_snapshot(&file, before_stream) != *before_stream {
-            return Err(invalid(
-                "paged residual identity/metadata changed before read",
-            ));
+        if residual.index >= objects.len() {
+            return Err(invalid("paged residual native object absent"));
         }
-        let id: [u8; 16] = query_bytes(before_stream, 18, 24)?[8..24]
-            .try_into()
-            .map_err(|_| invalid("paged residual file identity length differs"))?;
-        file.seek(SeekFrom::Start(expected.logical_offset))?;
-        // A residual is shorter than one target cluster.
-        let mut buffer = vec![0u8; expected.length as usize];
-        file.read_exact(&mut buffer)?;
-        let mut eof_probe = [0u8; 1];
-        if file.read(&mut eof_probe)? != 0 {
-            return Err(invalid("paged residual expected EOF absent"));
-        }
-        let sha = hex::encode(Sha256::digest(&buffer));
-        if sha != expected.sha256 || repeat_snapshot(&file, after_stream) != *after_stream {
-            return Err(invalid("paged residual content/metadata differs"));
-        }
-        Ok((id, sha))
+        objects.with(residual.index, |object| {
+            let (before_stream, after_stream) = if name.is_empty() {
+                (&object.before, &object.after)
+            } else {
+                let stream = object
+                    .named_streams
+                    .iter()
+                    .find(|s| s.name_utf16 == name)
+                    .ok_or_else(|| invalid("paged residual named stream absent"))?;
+                (&stream.before, &stream.after)
+            };
+            let path = streams::path(&root, &object.components, name)?;
+            let mut file = open_protected_readonly(&path, false)?;
+            if repeat_snapshot(&file, before_stream) != *before_stream {
+                return Err(invalid(
+                    "paged residual identity/metadata changed before read",
+                ));
+            }
+            let id: [u8; 16] = query_bytes(before_stream, 18, 24)?[8..24]
+                .try_into()
+                .map_err(|_| invalid("paged residual file identity length differs"))?;
+            file.seek(SeekFrom::Start(expected.logical_offset))?;
+            // A residual is shorter than one target cluster.
+            let mut buffer = vec![0u8; expected.length as usize];
+            file.read_exact(&mut buffer)?;
+            let mut eof_probe = [0u8; 1];
+            if file.read(&mut eof_probe)? != 0 {
+                return Err(invalid("paged residual expected EOF absent"));
+            }
+            let sha = hex::encode(Sha256::digest(&buffer));
+            if sha != expected.sha256 || repeat_snapshot(&file, after_stream) != *after_stream {
+                return Err(invalid("paged residual content/metadata differs"));
+            }
+            Ok((id, sha))
+        })
     };
     // Reads the gathered residuals and writes their results in order. The
     // query memory of each was paid for when it was gathered and is returned
@@ -4405,17 +4443,19 @@ fn observe_general_converted_metadata_domain_accounted_with_alias_overlay(
         memory,
         aliases,
     )?;
-    if native.objects.iter().any(|object| {
-        object.logical_sha256.is_some()
+    native.objects.for_each(|_, object| {
+        if object.logical_sha256.is_some()
             || object
                 .named_streams
                 .iter()
                 .any(|stream| stream.logical_sha256.is_some())
-    }) {
-        return Err(invalid(
-            "metadata observation unexpectedly reports an admitted content hash",
-        ));
-    }
+        {
+            return Err(invalid(
+                "metadata observation unexpectedly reports an admitted content hash",
+            ));
+        }
+        Ok(())
+    })?;
     let mut default_streams_observed = 0usize;
     let mut named_streams_observed = 0usize;
     input.for_each(|_, item| {
@@ -4490,7 +4530,10 @@ pub fn verify_general_converted_known_contents_domain(
     let mut count = 0usize;
     let mut skipped = 0usize;
     let mut bytes = 0u64;
-    for (index, object) in report.native.objects.iter_mut().enumerate() {
+    // A row is read while its stream is hashed and the digest is recorded in
+    // it afterwards, stream by stream in the order the row lists them.
+    let rows = &mut report.native.objects;
+    for index in 0..rows.len() {
         let owner = input.object(index)?;
         let expected = owner.input();
         let item = &expected;
@@ -4500,16 +4543,19 @@ pub fn verify_general_converted_known_contents_domain(
         if let Some(expected) = item.logical_sha256() {
             let path = streams::path(&root, item.components, &[])?;
             let mut file = open_input(&path, item, false)?;
-            if metadata_snapshot(&file, item) != object.before {
-                return Err(invalid(
-                    "recovery known-content file identity or metadata changed",
-                ));
-            }
-            let actual = hash_exact_stream(&mut file, item.logical_length())?;
-            if actual != expected || metadata_snapshot(&file, item) != object.after {
-                return Err(invalid("recovery known-content bytes or metadata differ"));
-            }
-            object.logical_sha256 = Some(actual);
+            let actual = rows.with(index, |object| {
+                if metadata_snapshot(&file, item) != object.before {
+                    return Err(invalid(
+                        "recovery known-content file identity or metadata changed",
+                    ));
+                }
+                let actual = hash_exact_stream(&mut file, item.logical_length())?;
+                if actual != expected || metadata_snapshot(&file, item) != object.after {
+                    return Err(invalid("recovery known-content bytes or metadata differ"));
+                }
+                Ok(actual)
+            })?;
+            rows.set_logical_sha256(index, Some(actual))?;
             count += 1;
             bytes = bytes
                 .checked_add(item.logical_length())
@@ -4517,31 +4563,41 @@ pub fn verify_general_converted_known_contents_domain(
         } else {
             skipped += 1;
         }
-        for named in &mut object.named_streams {
-            let stream = item
-                .named_streams
-                .iter()
-                .find(|s| s.name_utf16 == named.name_utf16)
-                .ok_or_else(|| invalid("recovery named stream absent"))?;
-            let Some(expected) = stream.expected_sha256 else {
+        let named_streams = rows.with(index, |object| Ok(object.named_streams.len()))?;
+        for ordinal in 0..named_streams {
+            // The digest and the length of a stream that has an original
+            // digest; nothing for one that has none.
+            let hashed = rows.with(index, |object| {
+                let named = &object.named_streams[ordinal];
+                let stream = item
+                    .named_streams
+                    .iter()
+                    .find(|s| s.name_utf16 == named.name_utf16)
+                    .ok_or_else(|| invalid("recovery named stream absent"))?;
+                let Some(expected) = stream.expected_sha256 else {
+                    return Ok(None);
+                };
+                let path = streams::path(&root, item.components, stream.name_utf16)?;
+                let mut file = open(&path, false, false)?;
+                if snapshot(&file) != named.before {
+                    return Err(invalid("recovery named stream metadata changed"));
+                }
+                let actual = hash_exact_stream(&mut file, stream.expected_length)?;
+                if actual != expected || snapshot(&file) != named.after {
+                    return Err(invalid(
+                        "recovery known named-stream bytes or metadata differ",
+                    ));
+                }
+                Ok(Some((actual, stream.expected_length)))
+            })?;
+            let Some((actual, length)) = hashed else {
                 skipped += 1;
                 continue;
             };
-            let path = streams::path(&root, item.components, stream.name_utf16)?;
-            let mut file = open(&path, false, false)?;
-            if snapshot(&file) != named.before {
-                return Err(invalid("recovery named stream metadata changed"));
-            }
-            let actual = hash_exact_stream(&mut file, stream.expected_length)?;
-            if actual != expected || snapshot(&file) != named.after {
-                return Err(invalid(
-                    "recovery known named-stream bytes or metadata differ",
-                ));
-            }
-            named.logical_sha256 = Some(actual);
+            rows.set_named_stream_logical_sha256(index, ordinal, Some(actual))?;
             count += 1;
             bytes = bytes
-                .checked_add(stream.expected_length)
+                .checked_add(length)
                 .ok_or_else(|| invalid("recovery read count overflow"))?;
         }
     }
@@ -5617,7 +5673,7 @@ fn run_role_content_domain_accounted(
             binding,
             before,
             after,
-            objects: vec![],
+            objects: Rows::new(),
             metadata_allocation: None,
             metadata_allocation_page_proof: None,
             base_sectors: 0,
@@ -5680,7 +5736,7 @@ fn run_role_content_domain_accounted(
                 binding,
                 before,
                 after,
-                objects: vec![],
+                objects: Rows::new(),
                 metadata_allocation: None,
                 metadata_allocation_page_proof: None,
                 base_sectors: 0,
@@ -6286,12 +6342,9 @@ fn run_role_content_domain_accounted(
         observe_object(i).map_err(|error| at_walk_object(i, error))
     };
     let objects = if let Some(legacy) = legacy_input {
-        observe_in_parallel(legacy, observe)?
+        Rows::from_observed(observe_in_parallel(legacy, observe)?)
     } else {
-        let mut result = Vec::new();
-        result
-            .try_reserve_exact(input.len())
-            .map_err(io::Error::other)?;
+        let mut result = Rows::with_exact_capacity(input.len())?;
         if let Some(memory) = &mut retained_memory {
             memory.observe_object_capacity(result.capacity())?;
         }
@@ -6343,12 +6396,7 @@ fn run_role_content_domain_accounted(
                     report_memory::compact_row(&mut row);
                     memory.retain(lease, &row, peak)?;
                 }
-                if result.len() == result.capacity() {
-                    return Err(invalid(
-                        "native object slots exceeded their initial reservation",
-                    ));
-                }
-                result.push(row);
+                result.push(row)?;
             }
             next += items.len();
         }

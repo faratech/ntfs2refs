@@ -365,7 +365,7 @@ pub(super) fn row_bytes(r: &ObjectReport) -> io::Result<u64> {
 /// SIDs, whatever larger limit the resource profile accepts for a row.
 const LARGEST_DESCRIPTOR_BYTES: u64 = 256 * 1024;
 
-fn snapshot_peak(maximum: u64) -> io::Result<u64> {
+pub(in crate::shadow_native) fn snapshot_peak(maximum: u64) -> io::Result<u64> {
     // `maximum` is the row limit (RAM / 64: 246 MB on a 24 GB machine). Paying
     // eight of those for every snapshot made one file with four hard-link
     // names ask for 15.7 GB and stop the conversion.
@@ -696,4 +696,74 @@ pub(super) fn residual_retained_peak(page: u32, extra_report: u64) -> io::Result
     // Retain the returned result reader/cache and bounded header/current row
     // as well as the native report's newly appended events/privilege records.
     add(add(mul(u64::from(page), 3)?, 256 * 1024)?, extra_report)
+}
+/// A payer for tests: it counts what is held and refuses beyond a limit.
+#[cfg(test)]
+pub(crate) mod test_payer {
+    use super::{ReportMemoryAccountant, ReportMemoryLease};
+    use std::io;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
+
+    pub(crate) struct Counted {
+        held: Arc<AtomicU64>,
+        peak: AtomicU64,
+        limit: u64,
+    }
+    struct Lease {
+        held: Arc<AtomicU64>,
+        bytes: u64,
+    }
+    impl Counted {
+        pub(crate) fn with_limit(limit: u64) -> Self {
+            Self {
+                held: Arc::new(AtomicU64::new(0)),
+                peak: AtomicU64::new(0),
+                limit,
+            }
+        }
+        pub(crate) fn held(&self) -> u64 {
+            self.held.load(SeqCst)
+        }
+        pub(crate) fn peak(&self) -> u64 {
+            self.peak.load(SeqCst)
+        }
+    }
+    impl ReportMemoryLease for Lease {
+        fn shrink_to(&mut self, bytes: u64) -> io::Result<()> {
+            if bytes > self.bytes {
+                return Err(io::Error::other("a lease cannot grow by shrinking"));
+            }
+            self.held.fetch_sub(self.bytes - bytes, SeqCst);
+            self.bytes = bytes;
+            Ok(())
+        }
+    }
+    impl Drop for Lease {
+        fn drop(&mut self) {
+            self.held.fetch_sub(self.bytes, SeqCst);
+        }
+    }
+    impl ReportMemoryAccountant for Counted {
+        fn reserve(&self, bytes: u64) -> io::Result<Box<dyn ReportMemoryLease>> {
+            let held = self.held.load(SeqCst);
+            match held.checked_add(bytes) {
+                Some(taken) if taken <= self.limit => {
+                    self.held.store(taken, SeqCst);
+                    self.peak.fetch_max(taken, SeqCst);
+                    Ok(Box::new(Lease {
+                        held: Arc::clone(&self.held),
+                        bytes,
+                    }))
+                }
+                _ => Err(io::Error::new(
+                    io::ErrorKind::OutOfMemory,
+                    format!("{bytes} bytes were refused with {held} held"),
+                )),
+            }
+        }
+        fn lease_heap_bytes(&self) -> u64 {
+            32
+        }
+    }
 }

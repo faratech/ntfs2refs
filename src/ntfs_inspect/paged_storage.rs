@@ -416,6 +416,9 @@ impl SourceScratch {
         ledger.wire = used;
         Ok(())
     }
+    /// (The caller's place in the code is passed on to the run's ledger,
+    /// which names the places that hold its memory.)
+    #[track_caller]
     pub fn lease_ram(&self, bytes: u64) -> Result<SourceRamLease> {
         let mut ledger = self.0.borrow_mut();
         ensure!(!ledger.poisoned, "source scratch is poisoned");
@@ -430,11 +433,10 @@ impl SourceScratch {
             bytes,
             ledger.budget.ram_bytes
         );
-        let arena_ram = ledger
-            .arena
-            .as_ref()
-            .map(|permit| permit.arena().reserve_ram(bytes))
-            .transpose()?;
+        let arena_ram = match ledger.arena.as_ref() {
+            Some(permit) => Some(permit.arena().reserve_ram(bytes)?),
+            None => None,
+        };
         ledger.ram = used;
         Ok(SourceRamLease {
             scratch: self.clone(),
@@ -445,6 +447,7 @@ impl SourceScratch {
     /// As [`Self::lease_ram`], for a cache the caller can do without. With
     /// an arena, see `ArtifactArena::reserve_optional_ram`; without one, the
     /// cache may not take this ledger past half its budget.
+    #[track_caller]
     pub fn lease_optional_ram(&self, bytes: u64) -> Result<SourceRamLease> {
         let mut ledger = self.0.borrow_mut();
         ensure!(!ledger.poisoned, "source scratch is poisoned");
@@ -460,11 +463,10 @@ impl SourceScratch {
             bytes,
             ledger.budget.ram_bytes
         );
-        let arena_ram = ledger
-            .arena
-            .as_ref()
-            .map(|permit| permit.arena().reserve_optional_ram(bytes))
-            .transpose()?;
+        let arena_ram = match ledger.arena.as_ref() {
+            Some(permit) => Some(permit.arena().reserve_optional_ram(bytes)?),
+            None => None,
+        };
         ledger.ram = used;
         Ok(SourceRamLease {
             scratch: self.clone(),
@@ -472,6 +474,7 @@ impl SourceScratch {
             _arena_ram: arena_ram,
         })
     }
+    #[track_caller]
     fn lease_window(&self) -> Result<SourceRamLease> {
         let bytes = u64::from(self.budget().page_bytes)
             .checked_mul(3)

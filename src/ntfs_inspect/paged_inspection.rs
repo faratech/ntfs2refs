@@ -419,6 +419,7 @@ impl PagedInspection {
             .transpose()?;
         Ok((file, assembly))
     }
+    #[track_caller]
     pub(crate) fn lease_working_ram(
         &self,
         bytes: u64,

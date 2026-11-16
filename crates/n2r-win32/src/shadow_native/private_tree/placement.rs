@@ -862,7 +862,7 @@ pub(super) fn source_runs(item: &Input<'_>, partition: u64) -> io::Result<Vec<So
         item.source_runs.clone()
     };
     let mut logical = 0;
-    for run in &result {
+    for (number, run) in result.iter().enumerate() {
         let physical = run
             .physical_offset
             .ok_or_else(|| invalid("private placement rejects source holes"))?;
@@ -874,7 +874,17 @@ pub(super) fn source_runs(item: &Input<'_>, partition: u64) -> io::Result<Vec<So
                 .checked_add(run.length)
                 .is_none_or(|v| v > partition)
         {
-            return Err(invalid("source placement mapping differs"));
+            // Which run of which object, and what about it: a refusal that
+            // says only that a mapping differs cannot be followed up.
+            return Err(invalid(&format!(
+                "source placement mapping differs for {}: run {number} of {} holds {} bytes at logical offset {} (expected {logical}) and physical offset {physical}, in clusters of {} bytes on a partition of {partition} bytes; the stream is {} bytes long",
+                item.components.join("\\"),
+                result.len(),
+                run.length,
+                run.logical_offset,
+                cluster(),
+                item.logical_length()
+            )));
         }
         logical = logical
             .checked_add(run.length)
@@ -1713,8 +1723,10 @@ fn run_domain_inner(
         return Err(invalid("private placement object count differs"));
     }
     let payer = tree.memory.as_ref().map(|m| m.payer());
-    let mut index_memory = if limits.resource {
+    let _index_memory = if limits.resource {
         let mut ranges = 0usize;
+        let mut named = 0usize;
+        let mut name_units = 0usize;
         for key in tree.stream_slots.values() {
             let owner = input.object(key.object_index)?;
             let object = owner.input();
@@ -1723,19 +1735,29 @@ fn run_domain_inner(
                 .checked_add(item.source_runs.len())
                 .and_then(|n| n.checked_add(usize::from(item.source_offset.is_some())))
                 .ok_or_else(|| invalid("resource desired count overflow"))?;
+            if !key.name_utf16.is_empty() {
+                named += 1;
+                name_units = name_units
+                    .checked_add(key.name_utf16.len())
+                    .ok_or_else(|| invalid("resource stream name count overflow"))?;
+            }
         }
-        let islands = tree.sparse_targets.values().try_fold(0usize, |n, target| {
-            n.checked_add(target.islands.len())
-                .ok_or_else(|| invalid("resource island count overflow"))
+        let mut map_rows = named;
+        for (key, target) in &tree.sparse_targets {
+            map_rows = map_rows
+                .checked_add(target.islands.len())
+                .and_then(|n| n.checked_add(1))
+                .ok_or_else(|| invalid("resource island count overflow"))?;
+            name_units = name_units
+                .checked_add(key.name_utf16.len())
+                .ok_or_else(|| invalid("resource stream name count overflow"))?;
+        }
+        let bytes = memory::placement_index_bytes(&memory::PlacementIndex {
+            streams: tree.stream_slots.len().max(tree.files.len()),
+            ranges,
+            map_rows,
+            map_name_units: name_units,
         })?;
-        let rows = ranges
-            .checked_add(tree.files.len())
-            .and_then(|n| n.checked_add(islands))
-            .ok_or_else(|| invalid("resource placement index count overflow"))?;
-        let bytes = (rows as u64)
-            .checked_mul(8192)
-            .and_then(|n| n.checked_add(1024 * 1024))
-            .ok_or_else(|| invalid("resource placement index RAM overflow"))?;
         Some(
             payer
                 .as_deref()
@@ -2006,19 +2028,11 @@ fn run_domain_inner(
         if tracked > limits.tracked {
             return Err(invalid("resource tracked extent index exhausted"));
         }
-        let count = tracked
-            .checked_add(avoid.len())
-            .ok_or_else(|| invalid("ownership index count overflow"))?;
         Some(
             payer
                 .as_deref()
                 .ok_or_else(|| invalid("ownership payer absent"))?
-                .reserve(
-                    (count as u64)
-                        .checked_mul(8192)
-                        .and_then(|n| n.checked_add(1024 * 1024))
-                        .ok_or_else(|| invalid("ownership index RAM overflow"))?,
-                )?,
+                .reserve(memory::placement_ownership_bytes(tracked, avoid.len())?)?,
         )
     } else {
         None
@@ -2157,12 +2171,7 @@ fn run_domain_inner(
             payer
                 .as_deref()
                 .ok_or_else(|| invalid("evacuation JSON payer absent"))?
-                .reserve(
-                    (rows as u64)
-                        .checked_mul(8192)
-                        .and_then(|n| n.checked_add(65536))
-                        .ok_or_else(|| invalid("evacuation JSON RAM overflow"))?,
-                )?,
+                .reserve(memory::placement_plan_record_bytes(rows)?)?,
         )
     } else {
         None
@@ -2560,6 +2569,36 @@ fn run_domain_inner(
     // Do not build tentative coordinate rows per submitted move: they were
     // discarded here. The complete final live mappings below are the sole
     // source of these unchanged evidence rows, including already-placed data.
+    let mut coordinates_memory = if limits.resource {
+        // A piece is where a tracked mapping and a run wanted meet: a file
+        // has no more of them than it has mappings and runs together.
+        let mut pieces = avoid.len();
+        let mut name_units = 0usize;
+        for &index in &indexes {
+            pieces = pieces
+                .checked_add(tree.file_by_slot(index)?.tracked_mappings().len())
+                .ok_or_else(|| invalid("coordinate piece count overflow"))?;
+            name_units = name_units
+                .checked_add(
+                    tree.stream_slots
+                        .get(&index)
+                        .map_or(0, |key| key.name_utf16.len()),
+                )
+                .ok_or_else(|| invalid("coordinate name count overflow"))?;
+        }
+        Some(
+            payer
+                .as_deref()
+                .ok_or_else(|| invalid("coordinate payer absent"))?
+                .reserve(memory::placement_coordinates_bytes(
+                    indexes.len(),
+                    name_units,
+                    pieces,
+                )?)?,
+        )
+    } else {
+        None
+    };
     let mut retained = Vec::new();
     let mut original_coordinates: BTreeMap<usize, Vec<(u64, u64, u64)>> = BTreeMap::new();
     let mut retained_bytes = 0u64;
@@ -2669,7 +2708,7 @@ fn run_domain_inner(
             "counters":counters,"move_bytes_submitted":move_bytes,"max_move_bytes":max_move_bytes,
             "max_move_submissions":max_moves,"payload_contents_verified":false,"source_payload_writes":0,
             "conversion_qualified":false});
-        actual.retain_from(&mut index_memory, retained)?;
+        actual.retain_from(&mut coordinates_memory, retained)?;
         tree.original_coordinates = retained_streams;
         progress(tree, "complete", move_bytes, &evidence, None, &counters);
         return Ok(result);

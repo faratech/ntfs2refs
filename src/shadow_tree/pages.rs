@@ -160,7 +160,7 @@ pub struct PagedExpectedTree {
     // The digest of every object's native input; this tree never changes.
     input_digest: n2r_win32::shadow_native::input_domain::InputDigestMemo,
     // Objects already decoded from it, while the arena can spare the memory.
-    decoded: RefCell<DecodedObjects>,
+    decoded: std::rc::Rc<DecodedCache>,
     header: ExpectedTreePageHeader,
     counts: ExpectedTreePageCounts,
     file_sha256: String,
@@ -214,6 +214,32 @@ struct DecodedObjects {
     // Objects still to pass by before the arena is asked again.
     refused_for: u32,
 }
+/// The decoded objects as a cache of the run: given up, with the blocks
+/// that pay for them, when memory is short ([`n2r_win32::evict`]).
+struct DecodedCache(RefCell<DecodedObjects>, std::cell::Cell<u64>);
+impl n2r_win32::evict::Evict for DecodedCache {
+    fn last_used(&self) -> u64 {
+        self.1.get()
+    }
+    fn evict(&self) -> bool {
+        // Borrowed means in use at this moment: left alone. What is taken
+        // is dropped after the borrow has ended, the objects before the
+        // blocks that paid for them.
+        let taken = match self.0.try_borrow_mut() {
+            Ok(mut decoded) if !decoded.leases.is_empty() => {
+                decoded.unspent = 0;
+                // Memory was short: not asked for again at once.
+                decoded.refused_for = DECODED_RETRY_OBJECTS;
+                Some((
+                    std::mem::take(&mut decoded.rows),
+                    std::mem::take(&mut decoded.leases),
+                ))
+            }
+            _ => None,
+        };
+        taken.is_some()
+    }
+}
 const DECODED_BLOCK_BYTES: u64 = 16 * 1024 * 1024;
 const DECODED_RETRY_OBJECTS: u32 = 4096;
 
@@ -223,11 +249,17 @@ struct ExpectedMemoryOwner {
     reopened: Option<File>,
 }
 
+/// Beside eight times an object's compact bytes: what the decoded structure
+/// of the smallest object takes, three times over (see `object_leased`).
+const DECODED_OBJECT_ALLOWANCE: u64 = 64 * 1024;
+
 /// One decoded object keeps its actual shared-memory lease through all native
 /// views/caches. It has no Clone or Deserialize implementation.
 pub struct LeasedExpectedObject {
     object: Object,
     _ram: crate::artifact_arena::ArenaRamLease,
+    // What the object holds beyond what was reserved to decode it.
+    _more: Option<crate::artifact_arena::ArenaRamLease>,
 }
 impl std::ops::Deref for LeasedExpectedObject {
     type Target = Object;
@@ -1577,9 +1609,13 @@ impl PagedExpectedTree {
         // slot only when the arena cannot pay for the whole body.
         if let Some(arena) = &arena {
             if reader.page_count() > 1 {
-                if let Ok(lease) = arena.reserve_ram(reader.resident_page_bytes()?) {
-                    reader.install_resident_pages()?;
-                    second_page_ram = Some(lease);
+                // Another reader of the same file may hold them already.
+                if !reader.share_resident_pages()
+                    && let Ok(lease) = arena.reserve_cache_ram(reader.resident_page_bytes()?)
+                {
+                    // A cache: given up, with its reservation, when the
+                    // run's memory is short.
+                    reader.install_resident_pages_paid(Box::new(lease))?;
                 }
             }
         }
@@ -1748,7 +1784,14 @@ impl PagedExpectedTree {
             alias_projection: RefCell::new(None),
             alias_projection_lookups: Cell::new(0),
             input_digest: n2r_win32::shadow_native::input_domain::InputDigestMemo::new(),
-            decoded: RefCell::new(DecodedObjects::default()),
+            decoded: {
+                let decoded = std::rc::Rc::new(DecodedCache(
+                    RefCell::new(DecodedObjects::default()),
+                    std::cell::Cell::new(n2r_win32::evict::now()),
+                ));
+                n2r_win32::evict::register(&decoded);
+                decoded
+            },
             header,
             counts: ExpectedTreePageCounts::default(),
             file_sha256: file_sha256.into(),
@@ -1849,30 +1892,51 @@ impl PagedExpectedTree {
     }
 
     pub fn object(&self, index: usize) -> Result<Object> {
-        let _working = self.reserve_decode_ram()?;
+        let _working = self.reserve_decode_ram(index)?;
         self.decode_object(index)
     }
-    fn reserve_decode_ram(&self) -> Result<Option<crate::artifact_arena::ArenaRamLease>> {
+    /// The workspace for decoding object `index`.
+    ///
+    /// Its size follows the object: eight times the compact bytes its
+    /// directory entry states (the compact buffer, the preflight and the
+    /// typed decoder; object_memory_bytes and MemorySeed charge compact bytes
+    /// before they accept a decoded allocation), three pages for the chunks
+    /// it is read through, and a fixed allowance for the decoded object's own
+    /// structure. It used to be eight times the largest row the budget
+    /// admits, which is a sixty-fourth of the run's memory: every decoding
+    /// reserved an eighth of the whole ledger, 566 MB on a machine with 9 GB
+    /// and 1.8 GB on one with 24, for an object of a few hundred bytes. That
+    /// was the reservation a batch's workspaces starved (#150), and the
+    /// largest part of what a run needed whatever its volume held (#129).
+    fn reserve_decode_ram(
+        &self,
+        index: usize,
+    ) -> Result<Option<crate::artifact_arena::ArenaRamLease>> {
         let Some(arena) = &self.arena else {
             return Ok(None);
         };
         let admission = self
             .resource_admission
             .context("expected arena row lacks admission")?;
-        // The row allowance includes its actual compact JSON buffer as well
-        // as the preflight/typed decoder. object_memory_bytes and MemorySeed
-        // both charge compact bytes before accepting decoded allocations.
-        let bytes = admission
-            .budget
-            .max_row_bytes
+        ensure!(
+            index < self.len(),
+            "expected-tree ordinal outside complete object domain"
+        );
+        let compact = self.directory[index].bytes;
+        ensure!(
+            compact <= admission.budget.max_row_bytes,
+            "resource object compact bytes exceed budget"
+        );
+        let bytes = compact
             .checked_mul(8)
             .and_then(|n| n.checked_add(u64::from(self.budget.max_page_bytes) * 3))
+            .and_then(|n| n.checked_add(DECODED_OBJECT_ALLOWANCE))
             .context("expected row decode RAM overflow")?;
         Ok(Some(arena.reserve_ram(bytes)?))
     }
     pub fn object_leased(&self, index: usize) -> Result<LeasedExpectedObject> {
         let mut ram = self
-            .reserve_decode_ram()?
+            .reserve_decode_ram(index)?
             .context("actual shared expected memory owner required")?;
         let object = self.decode_object(index)?;
         let bytes = object_memory_bytes(
@@ -1885,12 +1949,29 @@ impl PagedExpectedTree {
         )?;
         // Keep room for the two native source-run/name views made from this
         // object while its lease is alive, as well as its own exact capacities.
-        ram.shrink_to(
-            bytes
-                .checked_mul(3)
-                .context("expected leased native-view RAM overflow")?,
-        )?;
-        Ok(LeasedExpectedObject { object, _ram: ram })
+        let keep = bytes
+            .checked_mul(3)
+            .context("expected leased native-view RAM overflow")?;
+        // A decoded object can hold more than its compact bytes suggest (a
+        // deep path of one-letter names costs a String a component): what
+        // it holds beyond the decoding workspace is reserved now.
+        let more = match keep.checked_sub(ram.bytes()) {
+            Some(more) if more > 0 => Some(
+                self.arena
+                    .as_ref()
+                    .context("actual shared expected memory owner required")?
+                    .reserve_ram(more)?,
+            ),
+            _ => {
+                ram.shrink_to(keep)?;
+                None
+            }
+        };
+        Ok(LeasedExpectedObject {
+            object,
+            _ram: ram,
+            _more: more,
+        })
     }
     /// Snapshot only: no file reads, allocations or per-record logging. These
     /// counters are diagnostic and never replace authentication/owner checks.
@@ -2045,7 +2126,8 @@ impl PagedExpectedTree {
         let (Some(arena), Some(admission)) = (&self.arena, self.resource_admission) else {
             return;
         };
-        let mut decoded = self.decoded.borrow_mut();
+        self.decoded.1.set(n2r_win32::evict::now());
+        let mut decoded = self.decoded.0.borrow_mut();
         if decoded.rows.get(index).is_some_and(Option::is_some) {
             return;
         }
@@ -2093,6 +2175,7 @@ impl PagedExpectedTree {
         if keeps
             && let Some(object) = self
                 .decoded
+                .0
                 .borrow()
                 .rows
                 .get(index)

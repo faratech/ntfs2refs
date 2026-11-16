@@ -960,6 +960,8 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
     # What the run's own memory ledger reached, which is what refuses a volume for memory.
     $ledger = Invoke-Command -Session $session -ArgumentList $guestRoot -ScriptBlock { param($root) if (Test-Path "$root\stderr.log") { [string](Get-Content -LiteralPath "$root\stderr.log" -Encoding UTF8 | Where-Object { $_ -match '^memory: the run''s reservations peaked at' } | Select-Object -Last 1) } }
     if ("$ledger" -match 'peaked at (\d+) MiB of the (\d+) MiB') { $verdict.resources.reserved_peak_mib = [int]$Matches[1]; $verdict.resources.reserved_limit_mib = [int]$Matches[2]; Say "its reservations peaked at $($Matches[1]) MiB of the $($Matches[2]) MiB it may hold" }
+    # What the volume itself took of that: without the caches and the batches' spare memory.
+    if ("$ledger" -match 'could not do without peaked at (\d+) MiB') { $verdict.resources.needed_peak_mib = [int]$Matches[1]; Say "of which it could not do without $($Matches[1]) MiB" }
     Say "the converter took at most $([Math]::Round($usage.peak_working_set / 1MB)) MiB of memory and $([Math]::Round($usage.working_bytes / 1MB)) MiB of working storage ($($usage.samples) samples)"
     $ended = $waited.ended
     if ($StopDuringPreparation) {

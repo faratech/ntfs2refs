@@ -213,6 +213,12 @@ impl SourceScratch {
             })
             .and_then(|n| n.checked_add(256))
             .context("scratch registry memory overflow")?;
+        // Reserved before this ledger is borrowed: a reservation that finds
+        // no room gives up caches, and those return what they hold here.
+        let arena_ram = match self.artifact_group() {
+            Some(permit) => Some(permit.arena().reserve_ram(ram)?),
+            None => None,
+        };
         let mut ledger = self.0.borrow_mut();
         ensure!(
             !ledger.poisoned && !ledger.created.contains_key(&pin.path),
@@ -226,11 +232,6 @@ impl SourceScratch {
             total <= ledger.budget.ram_bytes,
             "created scratch identity registry RAM exhausted"
         );
-        let arena_ram = ledger
-            .arena
-            .as_ref()
-            .map(|permit| permit.arena().reserve_ram(ram))
-            .transpose()?;
         ledger.ram = total;
         ledger.created.insert(
             pin.path.clone(),
@@ -416,35 +417,129 @@ impl SourceScratch {
         ledger.wire = used;
         Ok(())
     }
+    /// (The caller's place in the code is passed on to the run's ledger,
+    /// which names the places that hold its memory.)
+    #[track_caller]
     pub fn lease_ram(&self, bytes: u64) -> Result<SourceRamLease> {
-        let mut ledger = self.0.borrow_mut();
+        // Neither ledger is borrowed while caches are given up: they return
+        // what they hold to both. This one is asked first; when it has no
+        // room, the caches go and it is asked once more.
+        while !self.has_room_for(bytes)? {
+            if !n2r_win32::evict::evict_oldest() {
+                break;
+            }
+        }
+        let ledger = self.0.borrow();
         ensure!(!ledger.poisoned, "source scratch is poisoned");
-        let used = ledger
-            .ram
-            .checked_add(bytes)
-            .context("metadata RAM overflow")?;
         ensure!(
-            used <= ledger.budget.ram_bytes,
+            ledger
+                .ram
+                .checked_add(bytes)
+                .context("metadata RAM overflow")?
+                <= ledger.budget.ram_bytes,
             "source metadata working RAM exhausted: active={}, requested={}, limit={}",
             ledger.ram,
             bytes,
             ledger.budget.ram_bytes
         );
-        let arena_ram = ledger
-            .arena
-            .as_ref()
-            .map(|permit| permit.arena().reserve_ram(bytes))
-            .transpose()?;
-        ledger.ram = used;
+        let permit = ledger.arena.clone();
+        drop(ledger);
+        let arena_ram = match permit {
+            Some(permit) => Some(permit.arena().reserve_ram(bytes)?),
+            None => None,
+        };
+        // What the caches returned in between only made room.
+        let mut ledger = self.0.borrow_mut();
+        ledger.ram = ledger
+            .ram
+            .checked_add(bytes)
+            .context("metadata RAM overflow")?;
         Ok(SourceRamLease {
             scratch: self.clone(),
             bytes,
             _arena_ram: arena_ram,
         })
     }
+    /// Memory for a cache that is held while the ledger has room and given
+    /// up when the memory is needed ([`n2r_win32::evict`]): see
+    /// `ArtifactArena::reserve_cache_ram`. Without an arena the cache may
+    /// take this ledger to seven eighths of its budget.
+    #[track_caller]
+    pub fn lease_cache_ram(&self, bytes: u64) -> Result<SourceRamLease> {
+        // Neither ledger is borrowed while the run's is asked: it may give
+        // up older caches for this one, and those return what they hold to
+        // both.
+        let permit = {
+            let ledger = self.0.borrow();
+            ensure!(!ledger.poisoned, "source scratch is poisoned");
+            let budget = ledger.budget.ram_bytes;
+            ensure!(
+                ledger
+                    .ram
+                    .checked_add(bytes)
+                    .is_some_and(|used| used <= budget - budget / 8),
+                "source metadata cache refused: active={}, requested={}, limit={}",
+                ledger.ram,
+                bytes,
+                budget
+            );
+            ledger.arena.clone()
+        };
+        let arena_ram = match permit {
+            Some(permit) => Some(permit.arena().reserve_cache_ram(bytes)?),
+            None => None,
+        };
+        let mut ledger = self.0.borrow_mut();
+        ledger.ram = ledger
+            .ram
+            .checked_add(bytes)
+            .context("metadata RAM overflow")?;
+        Ok(SourceRamLease {
+            scratch: self.clone(),
+            bytes,
+            _arena_ram: arena_ram,
+        })
+    }
+    /// As [`Self::lease_ram`], for memory the caller does without when
+    /// there is no room for it: no cache is given up to make room.
+    #[track_caller]
+    pub fn lease_ram_if_room(&self, bytes: u64) -> Result<SourceRamLease> {
+        ensure!(
+            self.has_room_for(bytes)?,
+            "no room in the source metadata working RAM"
+        );
+        let permit = {
+            let ledger = self.0.borrow();
+            ensure!(!ledger.poisoned, "source scratch is poisoned");
+            ledger.arena.clone()
+        };
+        let arena_ram = match permit {
+            Some(permit) => Some(permit.arena().reserve_ram_if_room(bytes)?),
+            None => None,
+        };
+        let mut ledger = self.0.borrow_mut();
+        ledger.ram = ledger
+            .ram
+            .checked_add(bytes)
+            .context("metadata RAM overflow")?;
+        Ok(SourceRamLease {
+            scratch: self.clone(),
+            bytes,
+            _arena_ram: arena_ram,
+        })
+    }
+    fn has_room_for(&self, bytes: u64) -> Result<bool> {
+        let ledger = self.0.borrow();
+        Ok(ledger
+            .ram
+            .checked_add(bytes)
+            .context("metadata RAM overflow")?
+            <= ledger.budget.ram_bytes)
+    }
     /// As [`Self::lease_ram`], for a cache the caller can do without. With
     /// an arena, see `ArtifactArena::reserve_optional_ram`; without one, the
     /// cache may not take this ledger past half its budget.
+    #[track_caller]
     pub fn lease_optional_ram(&self, bytes: u64) -> Result<SourceRamLease> {
         let mut ledger = self.0.borrow_mut();
         ensure!(!ledger.poisoned, "source scratch is poisoned");
@@ -460,11 +555,10 @@ impl SourceScratch {
             bytes,
             ledger.budget.ram_bytes
         );
-        let arena_ram = ledger
-            .arena
-            .as_ref()
-            .map(|permit| permit.arena().reserve_optional_ram(bytes))
-            .transpose()?;
+        let arena_ram = match ledger.arena.as_ref() {
+            Some(permit) => Some(permit.arena().reserve_optional_ram(bytes)?),
+            None => None,
+        };
         ledger.ram = used;
         Ok(SourceRamLease {
             scratch: self.clone(),
@@ -472,6 +566,7 @@ impl SourceScratch {
             _arena_ram: arena_ram,
         })
     }
+    #[track_caller]
     fn lease_window(&self) -> Result<SourceRamLease> {
         let bytes = u64::from(self.budget().page_bytes)
             .checked_mul(3)
@@ -1049,7 +1144,15 @@ impl Drop for SourceRangeWriter {
 pub struct PagedMetadataRange {
     reader: RefCell<Reader>,
     decoded: RefCell<DecodedChunks>,
-    resident: Option<ResidentMetadataCache>,
+    // A cache: given up, with its reservation, when the run's memory is
+    // short. The store is read through its pages from then on, and held
+    // again once it has been read through them for a while and there is
+    // room.
+    resident: RefCell<Option<n2r_win32::evict::Evictable<ResidentMetadataCache>>>,
+    // Chunks decoded for reads through the pages, and the count at which
+    // the store asks again to be held, once the ledger had no room.
+    decodes: std::cell::Cell<u64>,
+    held_again_after: std::cell::Cell<u64>,
     // Accepted as a store this process wrote, without a full decode and hash.
     written_here: bool,
     pin: SourcePagePin,
@@ -1076,17 +1179,21 @@ impl ResidentMetadataCache {
         // A store that is not held in memory is read through one or two
         // 4 MiB pages, each re-read, re-hashed and re-decoded on every miss.
         // Lookups jump between pages, so that cost more than everything else
-        // in source inspection. Keep any store in memory when the SAME
-        // aggregate ledger can pay for it; a refusal still uses the paged
-        // reader. The file store may take a larger share than the others.
-        let divisor = if purpose == *b"N2RFILE1" { 4 } else { 8 };
+        // in source inspection, and where a store was refused a volume of
+        // 200,000 files spent 50 minutes of one phase decoding chunks. Keep
+        // any store in memory while the SAME aggregate ledger has room for
+        // it: it is a cache, and is given up when the memory is needed. A
+        // refusal still uses the paged reader. (A store had to fit an
+        // eighth of the budget, the file store a quarter, under the quota
+        // of caches that could not be taken back.)
+        let _ = purpose;
         let charge = length.checked_add(std::mem::size_of::<Self>() as u64)?;
-        if length == 0 || charge > scratch.budget().ram_bytes / divisor {
+        if length == 0 || charge > scratch.budget().ram_bytes / 2 {
             return None;
         }
         let size = usize::try_from(length).ok()?;
-        // Optional quota/allocation refusals preserve the ordinary chunk reader.
-        let ram = scratch.lease_optional_ram(charge).ok()?;
+        // A refusal preserves the ordinary chunk reader.
+        let ram = scratch.lease_cache_ram(charge).ok()?;
         let mut bytes = Vec::new();
         if bytes.try_reserve_exact(size).is_err() || bytes.capacity() != size {
             return None;
@@ -1304,7 +1411,9 @@ impl PagedMetadataRange {
         Ok(Self {
             reader: RefCell::new(reader),
             decoded: RefCell::new(DecodedChunks::default()),
-            resident,
+            resident: RefCell::new(resident.map(n2r_win32::evict::Evictable::new)),
+            decodes: std::cell::Cell::new(0),
+            held_again_after: std::cell::Cell::new(0),
             written_here,
             pin: pin.clone(),
             _ram: ram,
@@ -1314,7 +1423,43 @@ impl PagedMetadataRange {
         })
     }
     pub fn clear_resident_cache(&mut self) {
-        self.resident = None;
+        *self.resident.get_mut() = None;
+        // Not to be held again by itself: the caller is done with it.
+        self.held_again_after.set(u64::MAX);
+    }
+    /// The store's bytes in memory, while they are held.
+    fn held(&self) -> Option<n2r_win32::evict::Evictable<ResidentMetadataCache>> {
+        self.resident
+            .borrow()
+            .as_ref()
+            .filter(|cache| cache.is_held())
+            .cloned()
+    }
+    /// Holds the store in memory again when it has been read through its
+    /// pages for a while: as many chunk decodings as twice its chunks, and
+    /// eight at least. One pass over it then, and no decoding after. A
+    /// ledger with no room is asked again after as many decodings again.
+    fn hold_again_if_read_through_pages(&self) -> Result<()> {
+        let decodes = self.decodes.get();
+        let chunks = self
+            .pin
+            .logical_bytes
+            .div_ceil(u64::from(self.pin.chunk_bytes).max(1));
+        if decodes <= chunks.saturating_mul(2).max(8) || decodes < self.held_again_after.get() {
+            return Ok(());
+        }
+        let scratch = self._ram.scratch.clone();
+        let Some(mut cache) =
+            ResidentMetadataCache::try_new(self.pin.purpose, self.pin.logical_bytes, &scratch)
+        else {
+            self.held_again_after.set(decodes.saturating_mul(2));
+            return Ok(());
+        };
+        cache.bytes.resize(cache.bytes.capacity(), 0);
+        self.read_through_pages(0, &mut cache.bytes)?;
+        self.decodes.set(0);
+        *self.resident.borrow_mut() = Some(n2r_win32::evict::Evictable::new(cache));
+        Ok(())
     }
     /// Whether the store was accepted as one this process wrote, without
     /// decoding and hashing all of it again (check-once policy).
@@ -1336,7 +1481,8 @@ impl PagedMetadataRange {
             "source range read escapes metadata"
         );
         let size = usize::try_from(bytes).context("source record exceeds address space")?;
-        if let Some(cache) = &self.resident {
+        let held = self.held();
+        if let Some(cache) = held.as_ref().and_then(|cache| cache.get()) {
             let start =
                 usize::try_from(offset).context("resident source address exceeds address space")?;
             let end = start
@@ -1380,7 +1526,8 @@ impl SourceMetadataRange for PagedMetadataRange {
                 .is_some_and(|n| n <= self.pin.logical_bytes),
             "source range read escapes metadata"
         );
-        if let Some(cache) = &self.resident {
+        let held = self.held();
+        if let Some(cache) = held.as_ref().and_then(|cache| cache.get()) {
             let start =
                 usize::try_from(offset).context("resident source address exceeds address space")?;
             let end = start
@@ -1394,6 +1541,18 @@ impl SourceMetadataRange for PagedMetadataRange {
             );
             return Ok(());
         }
+        drop(held);
+        self.read_through_pages(offset, output)?;
+        self.hold_again_if_read_through_pages()
+    }
+    fn revalidate(&self) -> Result<()> {
+        self.reader.borrow_mut().revalidate()?;
+        Ok(())
+    }
+}
+impl PagedMetadataRange {
+    /// Reads from the store's pages, decoding the chunks the range lies in.
+    fn read_through_pages(&self, offset: u64, mut output: &mut [u8]) -> Result<()> {
         let mut at = offset;
         while !output.is_empty() {
             let ordinal = at / u64::from(self.pin.chunk_bytes);
@@ -1441,6 +1600,7 @@ impl SourceMetadataRange for PagedMetadataRange {
                     "held source range chunk length differs"
                 );
                 self.decoded.borrow_mut().recent = Some((ordinal, chunk));
+                self.decodes.set(self.decodes.get().saturating_add(1));
             }
             let cached = self.decoded.borrow();
             let chunk = &cached
@@ -1453,10 +1613,6 @@ impl SourceMetadataRange for PagedMetadataRange {
             output = &mut output[n..];
             at += n as u64;
         }
-        Ok(())
-    }
-    fn revalidate(&self) -> Result<()> {
-        self.reader.borrow_mut().revalidate()?;
         Ok(())
     }
 }
@@ -1520,5 +1676,115 @@ mod base64_tests {
             decode(b"\"QUJD\"", 2).is_err(),
             "longer than the working window"
         );
+    }
+}
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    fn scratch(ram_bytes: u64) -> SourceScratch {
+        SourceScratch::new(SourceMetadataBudget {
+            ram_bytes,
+            scratch_bytes: 64 * 1024 * 1024,
+            page_bytes: 4096,
+            record_bytes: 64 * 1024,
+            merge_fan_in: 8,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn a_store_held_in_memory_is_given_up_and_read_through_its_pages() {
+        let directory = tempfile::tempdir().unwrap();
+        const RAM: u64 = 8 * 1024 * 1024;
+        let scratch = scratch(RAM);
+        let bytes: Vec<u8> = (0..600_000u32).map(|n| (n * 31 + 7) as u8).collect();
+        let pin = PagedMetadataRange::capture(
+            &directory.path().join("store"),
+            *b"N2RTEST1",
+            &mut bytes.as_slice(),
+            bytes.len() as u64,
+            &scratch,
+        )
+        .unwrap();
+        let store = PagedMetadataRange::open(&pin, &scratch).unwrap();
+        assert!(
+            store.held().is_some(),
+            "a store of 600 KB is held in memory by a ledger of 8 MiB"
+        );
+        let read = |offset: u64, length: usize| {
+            let mut out = vec![0u8; length];
+            store.read_exact_at(offset, &mut out).unwrap();
+            out
+        };
+        assert_eq!(read(123_456, 5000), bytes[123_456..128_456]);
+        // What the pass needs has no room beside the store: the store goes.
+        let before = scratch.0.borrow().ram;
+        let needed = scratch.lease_ram(RAM - before + 300_000).unwrap();
+        assert!(store.held().is_none());
+        // And is read as before, through its pages.
+        assert_eq!(read(123_456, 5000), bytes[123_456..128_456]);
+        assert_eq!(read(0, 600_000), bytes);
+        store
+            .with_bytes_at(599_000, 1000, |tail| {
+                assert_eq!(tail, &bytes[599_000..]);
+                Ok(())
+            })
+            .unwrap();
+        // While the memory is still needed the store stays on its pages,
+        // however often it is read.
+        for _ in 0..4 {
+            assert_eq!(read(0, 600_000), bytes);
+        }
+        assert!(store.held().is_none());
+        // Once there is room again, a store that is read through its pages
+        // for a while is held in memory again, and reads as before. (It
+        // asks again only after as many decodings as it had made when it
+        // was last refused.)
+        drop(needed);
+        for _ in 0..12 {
+            assert_eq!(read(0, 600_000), bytes);
+        }
+        assert!(
+            store.held().is_some(),
+            "held again after being read through its pages"
+        );
+        assert_eq!(read(123_456, 5000), bytes[123_456..128_456]);
+        assert_eq!(scratch.0.borrow().ram, before);
+    }
+
+    #[test]
+    fn a_store_being_read_is_not_given_up_under_the_reader() {
+        let directory = tempfile::tempdir().unwrap();
+        const RAM: u64 = 8 * 1024 * 1024;
+        let scratch = scratch(RAM);
+        let bytes = vec![0x5a_u8; 400_000];
+        let pin = PagedMetadataRange::capture(
+            &directory.path().join("store"),
+            *b"N2RTEST1",
+            &mut bytes.as_slice(),
+            bytes.len() as u64,
+            &scratch,
+        )
+        .unwrap();
+        let store = PagedMetadataRange::open(&pin, &scratch).unwrap();
+        assert!(store.held().is_some());
+        let before = scratch.0.borrow().ram;
+        store
+            .with_bytes_at(0, 400_000, |held| {
+                // A request made while the bytes are borrowed cannot take
+                // them away: it is refused, and they are still there.
+                assert!(scratch.lease_ram(RAM - before + 100_000).is_err());
+                assert!(held.iter().all(|byte| *byte == 0x5a));
+                Ok(())
+            })
+            .unwrap();
+        assert!(store.held().is_some());
+        // Memory a caller can do without takes no cache's place.
+        assert!(scratch.lease_ram_if_room(RAM - before + 100_000).is_err());
+        assert!(store.held().is_some());
+        assert!(scratch.lease_ram_if_room(4096).is_ok());
+        assert!(scratch.lease_ram(RAM - before + 100_000).is_ok());
+        assert!(store.held().is_none());
     }
 }

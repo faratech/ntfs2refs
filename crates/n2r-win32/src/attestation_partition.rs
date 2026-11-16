@@ -258,6 +258,7 @@ pub fn collect_partition_ntfs_paged(
         crate::observation_pages::memory::Memory::new(accountant, budget, selectors.len(), path)?;
     let mut sink =
         NativePageWriter::new(path, budget, selectors.header().resource_profile.unwrap())?;
+    sink.pay_beyond_window(memory.accountant.clone(), memory.window_row());
     let mut routes = PartitionRouteCollector {
         phase,
         events,

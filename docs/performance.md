@@ -9,9 +9,19 @@ will do.
 
 Every run prints, to its error stream, a `timing:` line for each phase and a
 `timing-steps:` line with the wall clock of each step, then the totals and
-`memory: the run's reservations peaked at … of the … it may hold`. Two
-counters in those lines say how much of the per-object work ran on several
-threads: `objects at once (thread time)` and `objects in turn`.
+`memory: the run's reservations peaked at … of the … it may hold; what it
+could not do without peaked at …`. Two counters in those lines say how much
+of the per-object work ran on several threads: `objects at once (thread
+time)` and `objects in turn`.
+
+Memory is read from three more lines. `memory-steps:` follows each phase's
+`timing-steps:` and gives, for every step that held a sixteenth of the
+ledger or more, the most it could not do without and its three largest
+reservations by place in the code. `memory-held:` gives the same for the
+moment the whole run peaked. `memory-caches:` appears when caches were given
+up because a reservation the run needed found no room. A reservation that
+is the same share of the ledger on every volume is sized by the machine;
+one that grows with the volume is what limits the number of files.
 
 Two builds are compared with runs that have the host to themselves
 (`-NoBoot`, one after the other, nothing else building), with the control

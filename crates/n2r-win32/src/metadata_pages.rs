@@ -1216,6 +1216,14 @@ impl Reader {
                         self.resident_asked_again_after = self.statistics.misses.saturating_mul(2);
                     }
                     payment => {
+                        // Held now. If the ledger takes the pages back, the
+                        // file is read page by page again, and holding it
+                        // once more costs a pass over all of it: that is
+                        // asked for only after as many misses again, or a
+                        // reader in a run short of memory reads its whole
+                        // file over and over (a rows file of 100,000
+                        // objects: 800 GB of page loads in one run).
+                        self.resident_asked_again_after = self.statistics.misses.saturating_mul(2);
                         self.install_resident(match payment {
                             crate::evict::CachePayment::Paid(paid) => Some(paid),
                             _ => None,

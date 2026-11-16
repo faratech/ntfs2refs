@@ -296,7 +296,7 @@ impl Paged {
     }
     /// The payer wants memory back: the blocks in memory go to the file.
     /// Nothing is reserved here, and the file is not closed here (closing
-    /// it hashes it under a reservation): the next reader does that.
+    /// it hashes it under a reservation): the end of the walk does that.
     fn give_up(&self) -> bool {
         // Held by this thread: the rows are in use at this moment.
         let Ok(mut state) = self.state.try_lock() else {
@@ -552,18 +552,25 @@ impl Rows {
         paged.close_block(payer, rows, leases, bytes)?;
         let mut state = paged.lock()?;
         state.complete = true;
-        // Once part of the rows is in the file all of them go there, and
-        // the file is closed while its payer is at hand.
-        if state.writing && state.any_written {
-            state.write_held()?;
+        // The file is closed here, while its payer is at hand and before
+        // the storage it is in is sealed. Once part of the rows is in it,
+        // all of them go there. If none is, the rows stay in memory from
+        // here on: there is no file left to give them up to.
+        if state.writing {
+            let any = state.any_written;
+            if any {
+                state.write_held()?;
+            }
             state.finish_file()?;
-            let held: Vec<_> = state
-                .blocks
-                .iter_mut()
-                .filter_map(|block| block.held.take())
-                .collect();
-            drop(state);
-            drop(held);
+            if any {
+                let held: Vec<_> = state
+                    .blocks
+                    .iter_mut()
+                    .filter_map(|block| block.held.take())
+                    .collect();
+                drop(state);
+                drop(held);
+            }
         }
         Ok(())
     }
@@ -1042,14 +1049,16 @@ mod tests {
             "object-699"
         );
         assert!(rows.with(700, |_| Ok(())).is_err());
-        // The file was made and holds no block; it is closed with the rows.
-        assert!(!payer.closed.load(Ordering::SeqCst));
+        // The file was made and holds no block; it was closed when the
+        // last row was in, and the rows stay in memory.
+        assert!(payer.closed.load(Ordering::SeqCst));
         let Store::Paged(inner) = &rows.store else {
             panic!("rows in blocks")
         };
         assert!(!inner.lock().unwrap().any_written);
+        assert!(!inner.give_up(), "no file is left to give the rows up to");
+        assert_eq!(text(&rows), expected);
         drop(rows);
-        assert!(payer.closed.load(Ordering::SeqCst));
         assert_eq!(payer.held.load(Ordering::SeqCst), 0);
         drop(directory);
     }
@@ -1087,31 +1096,53 @@ mod tests {
 
     #[test]
     fn rows_in_blocks_go_to_the_file_when_their_memory_is_asked_back() {
-        let (rows, payer, expected, _directory) = paged(u64::MAX / 2);
-        assert!(payer.held.load(Ordering::SeqCst) > STORE_BYTES);
+        let directory = tempfile::tempdir().unwrap();
+        let payer = Payer {
+            held: Arc::new(AtomicU64::new(0)),
+            cache_limit: u64::MAX / 2,
+            directory: directory.path().to_owned(),
+            closed: Arc::new(AtomicBool::new(false)),
+        };
+        let mut rows = Rows::paged(&payer, payer.spill_file().unwrap().unwrap()).unwrap();
+        let mut expected = Vec::new();
+        let mut add = |rows: &mut Rows, from: usize, to: usize| {
+            for number in from..to {
+                let row = row(&format!("object-{number}"));
+                expected.push(serde_json::to_string(&row).unwrap());
+                let lease = payer.reserve(row_bytes(&row).unwrap()).unwrap();
+                rows.push_paid(&payer, row, lease).unwrap();
+            }
+        };
+        // Two blocks are closed and in memory, with rows of a third.
+        add(&mut rows, 0, 600);
         let Store::Paged(inner) = &rows.store else {
             panic!("rows in blocks")
         };
-        // A row lent out at the moment is in use: nothing is given up.
+        let inner = Arc::clone(inner);
+        let before = payer.held.load(Ordering::SeqCst);
+        // The payer asks for memory back while the walk goes on: the closed
+        // blocks go to the file, and what paid for them is returned.
+        assert!(inner.give_up());
+        let after = payer.held.load(Ordering::SeqCst);
+        assert!(after < before, "{after} of {before}");
+        assert!(!inner.give_up(), "nothing is left to give up");
+        // The walk goes on, and at its end every row is in the file.
+        add(&mut rows, 600, 700);
+        rows.finish(Some(&payer)).unwrap();
+        assert!(payer.closed.load(Ordering::SeqCst));
+        assert_eq!(payer.held.load(Ordering::SeqCst), STORE_BYTES);
+        assert_eq!(text(&rows), expected);
+        // No lock is held while a row is lent.
         rows.with(5, |_| {
-            let held = inner.state.try_lock().is_ok();
-            assert!(held, "no lock is held while a row is lent");
+            assert!(inner.state.try_lock().is_ok());
             Ok(())
         })
         .unwrap();
-        assert!(inner.give_up());
-        assert_eq!(payer.held.load(Ordering::SeqCst), STORE_BYTES);
-        assert!(!inner.give_up(), "nothing is left to give up");
-        // The file is closed by the next reader, and reads as before.
-        assert!(!payer.closed.load(Ordering::SeqCst));
-        assert_eq!(text(&rows), expected);
-        assert!(payer.closed.load(Ordering::SeqCst));
         let pinned = rows.pin(400).unwrap();
         assert_eq!(pinned.row().components[0], "object-400");
         assert!(pinned.block().is_some());
-        // Rows in the file cannot be changed.
         drop(pinned);
-        let mut rows = rows;
+        // Rows in the file cannot be changed.
         assert!(rows.set_logical_sha256(1, None).is_err());
     }
 

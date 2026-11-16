@@ -30,25 +30,13 @@ pub mod extended_attributes;
 #[cfg(windows)]
 pub mod extended_attributes_native;
 #[cfg(windows)]
-pub mod extent_observation;
-#[cfg(windows)]
 pub mod file_storage;
 pub mod general_layout;
 #[cfg(windows)]
 pub mod io_profile;
 #[cfg(windows)]
 pub mod journal_file;
-#[cfg(windows)]
-pub mod lab_compression_fixture;
 pub mod lab_hold;
-#[cfg(windows)]
-pub mod lab_job;
-#[cfg(windows)]
-pub mod lab_ntfs_fragmentation;
-#[cfg(windows)]
-pub mod lab_reparse_fixture;
-#[cfg(windows)]
-pub mod lab_security_fixture;
 pub mod layout;
 #[cfg(windows)]
 pub mod layout_residual_pages;
@@ -78,8 +66,6 @@ pub use native::recovery_boot;
 #[cfg(windows)]
 pub use native::recovery_image;
 pub mod reference_file;
-#[cfg(windows)]
-pub mod reference_import;
 pub mod refs_security_descriptor;
 pub mod refusal;
 pub mod region_layout;

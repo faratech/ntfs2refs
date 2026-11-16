@@ -8,7 +8,7 @@ describes both. "Identical" means that the listing of the volume before and
 after the conversion is the same under `lab-volume-manifest compare`, which
 reads every file and stream in full.
 
-`tests/feature_matrix.rs` keeps the remedies quoted here equal to what the
+`tests/it/feature_matrix.rs` keeps the remedies quoted here equal to what the
 converter prints.
 
 ## Carried over

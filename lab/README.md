@@ -7,6 +7,40 @@ See [AGENTS.md](../AGENTS.md) for the VM identities and standing rules, and the
 [feature matrix](../docs/feature-matrix.md) and the
 [recovery matrix](../docs/recovery-matrix.md) for what the attempts have shown.
 
+## The gate round
+
+Everything AGENTS.md asks for before a change is committed, for one build, on
+every lab VM, as one command:
+
+```powershell
+cargo build --locked --release --bin ntfs2refs --bin lab-volume-manifest
+Copy-Item target\release\ntfs2refs.exe, target\release\ntfs2refs.pdb, target\release\lab-volume-manifest.exe D:\builds\candidate
+.\lab\Invoke-GateRound.ps1 -Build D:\builds\candidate -Prefix g7
+```
+
+The build is a copy, so the tree can be built again while the round runs; the
+gates count for a commit only if its Rust sources are the ones the copy was
+built from. The round runs four sets, the first two at the same time: the
+fixtures and interrupted runs on the reference VM; the data-volume cases on
+the other Windows 11 VMs; then the full Windows volume, converted and booted,
+with the host to itself; then the Windows Server cases. `-Sets` picks among
+`fixtures`, `data`, `full` and `server`. It starts with the lab VMs off and
+leaves them off with its scratch disks deleted, prints one row a case (what it
+was to end as, what it ended as, whether the listing is identical, the
+converter's seconds) and exits 1 if a case ended otherwise. Its own output is
+in `<Build>\gate-<Prefix>`; each case keeps its records under
+`.lab\hyperv\attempts\<Prefix>-<case>` like any attempt. About 45 minutes for
+the first two sets, half an hour each for the other two.
+
+The sections below describe the attempts the round is made of; run one by
+itself to look into a failure.
+
+The gate round is about what the converter does to a volume. What a commit
+has to pass as source code (formatting, Clippy, the tests, the release build)
+is `lab\Invoke-Checks.ps1 -Commit <commit> -Report checks.md`: it checks the
+commit in a worktree of its own and writes the table that goes into the pull
+request. No hosted CI runs.
+
 ## Existing checks
 
 Build the converter and independent listing tool using one shared build directory:
@@ -37,6 +71,20 @@ The sampler does not see inside a file-system call (a call of a tenth of a
 second counts as one sample of a hundredth), and it slows the steps that are
 mostly such calls: rank steps by the `timing-steps:` lines, which are wall
 clock, and compare two builds with runs that have the host to themselves.
+
+`lab\perf` reads those records (Python 3, nothing to install), and
+[docs/performance.md](../docs/performance.md) has the figures and how they
+are taken:
+
+| Script | What it prints |
+|---|---|
+| `attempts.py <repo> <prefix>` | the outcome of every attempt whose name starts with the prefix, oldest first |
+| `steps_compare.py <repo> <before> <after> [seconds]` | the steps of two attempts side by side, largest differences first |
+| `stacks_cover.py <repo> <attempt>` | each step's wall clock beside what the profile has for it: what the sampler did not see |
+| `stacks_busy.py <stacks.txt>` | for every step, the seconds a thread waited and worked, and where it worked |
+| `stacks_under.py <stacks.txt> <function>` | everything under one function: by step, leaf, callee and caller |
+| `stacks_leaf.py <stacks.txt> <leaf>` | the samples that end in one leaf (a hash, a system call): by step and caller |
+| `stacks_split.py`, `stacks_levels.py`, `stacks_near.py` | one step by worker and helper threads, by call chain from a depth, by the frames nearest a leaf |
 
 Both harnesses switch the control OS's scheduled drive optimisation off for
 the run. Windows starts its automatic maintenance some eleven minutes after
@@ -348,13 +396,20 @@ The lab runs a frozen copy of a build, made before the commit exists.
 byte for byte apart from the stamps the linker puts into every link (its
 time, the checksum, the PDB's signature), and the notes then say so.
 
-## Older scripts
+## The reference VM and the fixtures
 
-Most of the other scripts here were written for one VM or checkpoint of an
-earlier stage, and that VM or checkpoint is gone. [RETIRED.md](RETIRED.md) lists
-the 161 that cannot run; do not start from one. They are kept unchanged as the
-record of those stages, and a test fails if a script names a retired VM without
-being listed.
+`Provision-IsolatedReference.ps1` built the reference VM, and
+`Test-IsolatedReferenceReadiness.ps1` checks it (both with `Lab.psm1`,
+`IsolatedBaselineGuards.psm1` and `lab.config.json`).
+`New-ThinnedWindowsFixture.ps1` makes the thinned fixture checkpoints the
+harness restores, with `guest\Thin-WindowsSource.ps1`.
+
+## Earlier stages
+
+The scripts of the earlier stages were written for one VM or checkpoint each,
+and those are gone. They are no longer in the tree: [RETIRED.md](RETIRED.md)
+names the tag that has them and the VMs they were for, and a test fails if a
+script here names one of those VMs.
 
 The earlier lab procedures and budgets are preserved in
 [the historical guide](../docs/history/lab-README-before-boot-alpha-closeout-20261111.md).

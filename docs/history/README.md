@@ -9,7 +9,9 @@ current tool. For that, read the [README](../../README.md), the
 Words such as "current", "pending" and "not qualified" in them are of their date.
 The records under `evidence/` and the retired lab scripts cite these documents by the
 path they had when they were written, `docs/<name>.md`; they are now
-`docs/history/<name>.md`. Those records are evidence and are not edited.
+`docs/history/<name>.md`. Those records are evidence and are not edited. The
+lab scripts and executables these documents name are in the tag
+`archive/retired-lab`, not in the tree.
 
 In the order they were last changed:
 

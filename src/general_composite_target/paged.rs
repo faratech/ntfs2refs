@@ -585,6 +585,14 @@ const HASH_CONTEXT_RESERVE: u64 = 2 * 1024;
 const CLOSING_READ_WORKSPACE: u64 =
     crate::ntfs_inspect::SESSION_READ_BYTES as u64 + HASH_CONTEXT_RESERVE;
 
+/// What the stages between the walks hold of their own: one route as it is
+/// read back, its text for the digest, and the interval being built. The
+/// objects they look up are leased where they are decoded, and the sorts
+/// and the residual pages pay for themselves. (This was eight of the
+/// largest row the budget admits, an eighth of the ledger while the routes
+/// were turned into intervals and the data in place was found.)
+const STAGE_ROUTE_WORKSPACE: u64 = 4 * 1024 * 1024;
+
 struct PagedShadowClosing<'a> {
     target_owner: usize,
     binding: n2r_win32::general_layout::GeneralDiskBinding,
@@ -1355,11 +1363,8 @@ fn observe_and_select_scoped(
     // Source projection and tail capture carry their own row/name/writer
     // leases. Their temporary source adapter has now closed, before the
     // additional workspace needed by the following native target operations.
-    let stage_ram_bytes = admission
-        .budget
-        .max_row_bytes
-        .checked_mul(8)
-        .and_then(|n| n.checked_add(crate::ntfs_inspect::SESSION_READ_BYTES as u64))
+    let stage_ram_bytes = STAGE_ROUTE_WORKSPACE
+        .checked_add(crate::ntfs_inspect::SESSION_READ_BYTES as u64)
         .and_then(|n| n.checked_add(CLOSING_READ_WORKSPACE))
         .context("target stage RAM overflow")?;
     let stage_ram = scratch.lease_ram(stage_ram_bytes)?;

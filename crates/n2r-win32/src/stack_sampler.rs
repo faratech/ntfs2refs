@@ -16,6 +16,9 @@
 //! under the step's label with ` [helper threads]` after it, so a step's
 //! helper samples add up to thread-seconds, not seconds.
 //!
+//! The profile so far is also written every five minutes, so that a run
+//! ended from outside leaves one.
+//!
 //! Names come from the `.pdb` beside the executable. It only observes: nothing
 //! the converter decides depends on it.
 
@@ -91,6 +94,8 @@ mod imp {
     const MAX_FRAMES: usize = 96;
     const MAX_NAME: usize = 512;
     const INTERVAL: Duration = Duration::from_millis(10);
+    /// How often the profile so far is written while the run goes on.
+    const INTERIM: Duration = Duration::from_secs(300);
 
     type Samples = HashMap<(usize, Box<[u64]>), u64>;
 
@@ -218,6 +223,19 @@ mod imp {
         }
     }
 
+    /// Writes the samples taken so far. No thread is stopped at this point.
+    fn write_interim(samples: &Samples) {
+        let known = STATE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .map(|state| (state.labels.clone(), state.output.clone()));
+        if let Some((labels, output)) = known {
+            // `finish` writes the same file again, complete.
+            let _ = write_profile(samples, &labels, &output);
+        }
+    }
+
     // GetThreadContext requires a 16-byte aligned CONTEXT.
     #[repr(C, align(16))]
     struct AlignedContext(CONTEXT);
@@ -226,8 +244,16 @@ mod imp {
         let mut samples = Samples::new();
         let mut handle: HANDLE = std::ptr::null_mut();
         let mut handle_thread = 0u32;
+        let mut written = std::time::Instant::now();
         while !STOP.load(Relaxed) {
             std::thread::sleep(INTERVAL);
+            // A run that is ended from outside never reaches `finish`, and
+            // that is the run whose profile is wanted: one that stopped
+            // making progress. Write what there is every few minutes.
+            if written.elapsed() >= INTERIM {
+                write_interim(&samples);
+                written = std::time::Instant::now();
+            }
             let thread = TARGET_THREAD.load(Relaxed);
             if thread == 0 {
                 continue;

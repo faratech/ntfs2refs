@@ -31,8 +31,8 @@ NTFS partition whether it can be converted and, if not, why.
   (Windows 11); on another build the run says before it starts that it is the
   first.
 - An elevated terminal.
-- Free memory in proportion to the number of files: about 2 GB for 100,000
-  files and 10 GB for 500,000. `--check` gives the figure for a volume, and
+- Free memory in proportion to the number of files: about 1.5 GB for 100,000
+  files and 7.5 GB for 500,000. `--check` gives the figure for a volume, and
   a volume the memory is not enough for is refused before anything is built.
 - Working storage on a different disk (`--scratch-directory`). The run builds
   the new file system there and keeps there what it needs to undo its changes.

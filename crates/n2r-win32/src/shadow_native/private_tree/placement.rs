@@ -862,7 +862,7 @@ pub(super) fn source_runs(item: &Input<'_>, partition: u64) -> io::Result<Vec<So
         item.source_runs.clone()
     };
     let mut logical = 0;
-    for run in &result {
+    for (number, run) in result.iter().enumerate() {
         let physical = run
             .physical_offset
             .ok_or_else(|| invalid("private placement rejects source holes"))?;
@@ -874,7 +874,17 @@ pub(super) fn source_runs(item: &Input<'_>, partition: u64) -> io::Result<Vec<So
                 .checked_add(run.length)
                 .is_none_or(|v| v > partition)
         {
-            return Err(invalid("source placement mapping differs"));
+            // Which run of which object, and what about it: a refusal that
+            // says only that a mapping differs cannot be followed up.
+            return Err(invalid(&format!(
+                "source placement mapping differs for {}: run {number} of {} holds {} bytes at logical offset {} (expected {logical}) and physical offset {physical}, in clusters of {} bytes on a partition of {partition} bytes; the stream is {} bytes long",
+                item.components.join("\\"),
+                result.len(),
+                run.length,
+                run.logical_offset,
+                cluster(),
+                item.logical_length()
+            )));
         }
         logical = logical
             .checked_add(run.length)

@@ -349,8 +349,8 @@ enough for before anything is built.
 
 What a run holds in memory only to go faster (stores it looks things up in,
 objects it has decoded) it gives back when the memory is needed for
-something it cannot do without. It is slower from then on, and its last
-lines say that this happened. A run that stops for memory all the same says
+something it cannot do without, what it used longest ago first. It is
+slower for that, and its last lines say that this happened. A run that stops for memory all the same says
 which reservations were the largest, and every run prints how high its
 reservations went and, step by step, what held them (`memory-steps:`).
 

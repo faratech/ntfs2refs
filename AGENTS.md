@@ -47,13 +47,17 @@ it lies on target-cluster boundaries; the rest goes through the working storage.
   and decoded objects are computed once, the frozen shadow is observed once and
   the journal is hashed as it is written. `--recheck-everything` restores the
   old behaviour everywhere.
-- In-memory copies of stores and decoded objects lease through
-  `reserve_optional_ram` (a third of the RAM budget, arena under half full);
-  the pages a reader holds lease through `reserve_cache_ram` (while the
-  ledger has room). Each is an `n2r_win32::evict::Evictable`: a reservation
-  the run needs that finds no room gives the thread's caches up and is
-  tried again. A new cache follows that pattern; it never holds memory
-  without a lease, and nothing may depend on its being there.
+- In-memory copies of stores and the pages a reader holds lease through
+  `reserve_cache_ram` (while an eighth of the ledger stays free); decoded
+  objects through `reserve_optional_ram` (a third of the RAM budget, arena
+  under half full). Each is an `n2r_win32::evict::Evictable`: a reservation
+  the run needs, or a cache that is asked for now, that finds no room gives
+  up the thread's caches, the one used longest ago first and one at a
+  time. A store or a reader that is read through its pages for a while asks
+  to be held again. A new cache follows that pattern; it never holds memory
+  without a lease, and nothing may depend on its being there. Without its
+  cache a lookup in a store decodes megabytes: a store that cannot be held
+  is the slow case to measure, not an error.
 - A reservation follows what it is for (the object's bytes, the file's
   clusters, the counts of a step), not the largest row the budget admits.
   Every run prints what each step could not do without and what held it

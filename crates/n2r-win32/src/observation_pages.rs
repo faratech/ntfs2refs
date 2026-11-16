@@ -369,8 +369,6 @@ pub struct PagedNativeObservation {
     sha256: String,
     _refreshed_header_memory:
         Option<Box<dyn crate::shadow_native::report_memory::ReportMemoryLease>>,
-    // Paid for the pages each reader keeps in memory; released after them.
-    _resident_memory: Vec<Box<dyn crate::shadow_native::report_memory::ReportMemoryLease>>,
     // Drop decoded/header/index/cache storage before returning shared RAM.
     memory: Option<memory::Memory>,
 }
@@ -611,7 +609,6 @@ impl PagedNativeObservation {
             total_bytes: total,
             sha256: sha256.to_owned(),
             _refreshed_header_memory: None,
-            _resident_memory: Vec::new(),
         };
         // Rows and directory listings are looked up in every order by the
         // stages that follow. With one page per reader, each lookup that
@@ -620,10 +617,15 @@ impl PagedNativeObservation {
         // when the same ledger can pay; a refusal keeps the paged reader.
         if let Some(memory) = &result.memory {
             for reader in [&result.reader, &result.namespace_reader] {
+                if reader.borrow_mut().share_resident_pages() {
+                    continue;
+                }
                 let bytes = reader.borrow().resident_page_bytes()?;
                 if let Ok(lease) = memory.accountant.reserve_optional(bytes) {
-                    reader.borrow_mut().install_resident_pages()?;
-                    result._resident_memory.push(lease);
+                    // Given up together when the run's memory is short.
+                    reader
+                        .borrow_mut()
+                        .install_resident_pages_paid(Box::new(lease))?;
                 }
             }
         }

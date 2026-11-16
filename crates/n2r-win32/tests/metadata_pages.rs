@@ -85,6 +85,55 @@ fn resident_pages_answer_scattered_lookups_without_further_page_loads() {
     assert_eq!(after.hits - installed.hits, RECORDS);
     assert!(resident.get(RECORDS).is_err());
     assert!(resident.install_resident_pages().is_err());
+    // Under the policy that reads everything again (the default of this
+    // test binary) a second reader shares nothing, and reads for itself.
+    let mut second = Reader::open(&path, &sha, PURPOSE, budget()).unwrap();
+    assert!(!second.share_resident_pages() && !second.pages_resident());
+}
+
+/// Pages held in memory are a cache of the run: when its memory is short
+/// they are given up with what paid for them, and the reader reads its file.
+#[test]
+fn resident_pages_are_given_up_with_their_payment_and_the_file_is_read_again() {
+    use std::{cell::Cell, rc::Rc};
+    struct Payment(Rc<Cell<bool>>);
+    impl Drop for Payment {
+        fn drop(&mut self) {
+            self.0.set(true);
+        }
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().canonicalize().unwrap().join("pages.bin");
+    let path = std::path::PathBuf::from(path.to_str().unwrap().trim_start_matches(r"\\?\"));
+    let sha = write(&path);
+    let mut reader = Reader::open(&path, &sha, PURPOSE, budget()).unwrap();
+    let returned = Rc::new(Cell::new(false));
+    reader
+        .install_resident_pages_paid(Box::new(Payment(Rc::clone(&returned))))
+        .unwrap();
+    assert!(reader.pages_resident() && !returned.get());
+    let installed = reader.page_cache_statistics().page_loads;
+    for ordinal in scattered().take(50) {
+        assert_eq!(reader.get(ordinal).unwrap().payload, payload(ordinal));
+    }
+    assert_eq!(reader.page_cache_statistics().page_loads, installed);
+
+    assert!(n2r_win32::evict::evict_all());
+    assert!(!reader.pages_resident() && returned.get());
+    // Every record is read as before, from the file.
+    for ordinal in scattered() {
+        let record = reader.get(ordinal).unwrap();
+        assert_eq!(
+            (record.key, record.payload),
+            (key(ordinal), payload(ordinal))
+        );
+    }
+    assert!(reader.page_cache_statistics().page_loads > installed);
+    assert!(reader.get(RECORDS).is_err());
+    // And may be held again once there is room.
+    reader.install_resident_pages().unwrap();
+    assert!(reader.pages_resident());
+    assert!(reader.install_resident_pages().is_err());
 }
 
 #[test]

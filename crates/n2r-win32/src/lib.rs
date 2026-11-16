@@ -26,6 +26,7 @@ pub mod content_digest;
 pub mod directory_case;
 pub mod discovery;
 pub mod drive_inventory;
+pub mod evict;
 pub mod extended_attributes;
 #[cfg(windows)]
 pub mod extended_attributes_native;

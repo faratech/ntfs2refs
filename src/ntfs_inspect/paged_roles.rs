@@ -29,7 +29,7 @@ impl ResidentStates {
             return None;
         }
         let size = usize::try_from(rows).ok()?;
-        let ram = scratch.lease_ram(charge).ok()?;
+        let ram = scratch.lease_ram_if_room(charge).ok()?;
         let mut bytes = Vec::new();
         if bytes.try_reserve_exact(size).is_err() || bytes.capacity() != size {
             return None;

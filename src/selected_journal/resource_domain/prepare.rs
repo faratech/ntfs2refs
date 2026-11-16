@@ -681,7 +681,7 @@ fn lease_preparation(
 ) -> Result<(crate::ntfs_inspect::paged_storage::SourceRamLease, usize)> {
     match domain
         .scratch
-        .lease_ram(PREPARATION_BUFFERS_WITH_BURSTS * BUFFER as u64)
+        .lease_ram_if_room(PREPARATION_BUFFERS_WITH_BURSTS * BUFFER as u64)
     {
         Ok(lease) => Ok((lease, READ_BACK_BUFFERS)),
         Err(_) => Ok((

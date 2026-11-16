@@ -658,7 +658,7 @@ impl PrivatePlaceholder {
         let resource_memory = self
             .resource
             .as_ref()
-            .map(|r| r.move_workspace(clusters, self.placed.len()))
+            .map(|r| r.move_workspace(self.bytes, clusters, self.placed.len()))
             .transpose()?;
         let max_submissions = self
             .resource

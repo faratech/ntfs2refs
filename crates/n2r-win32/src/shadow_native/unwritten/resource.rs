@@ -22,6 +22,12 @@ pub(super) struct ResourcePlacement {
     _state: Lease,
 }
 
+/// See [`ResourcePlacement::retrieval_bytes_for`]: of a row of `row` bytes,
+/// what the mapping of a file of `file_bytes` can take.
+fn retrieval_bytes_for(row: usize, file_bytes: u64) -> usize {
+    row.min(retrieval_paging::returned_bytes_for_stream(file_bytes).saturating_mul(4))
+}
+
 /// Holes may outlive the placeholder and thus retain their own actual lease.
 pub(crate) struct ResourceTrackedHoles {
     holes: Vec<(u64, u32)>,
@@ -86,11 +92,21 @@ impl ResourcePlacement {
         retrieval_paging::assemble_queries_with_limits(&first, &continuation, limits)
     }
 
+    /// The room a file of `file_bytes` can take of the row that mapping
+    /// queries are limited to: a stream has no more extents than clusters,
+    /// and a query's limits allow a quarter of the row for what it returns.
+    /// The workspaces below were sized by the row itself, a sixty-fourth of
+    /// the run's memory, eight times over: an eighth of the ledger for
+    /// tracking a file of one cluster, and again for every move.
+    fn retrieval_bytes_for(&self, file_bytes: u64) -> usize {
+        retrieval_bytes_for(self.retrieval_bytes, file_bytes)
+    }
+
     pub(super) fn tracking_workspace(&self, file_bytes: u64) -> io::Result<Lease> {
         let clusters = usize::try_from(file_bytes / crate::target_cluster::bytes())
             .map_err(io::Error::other)?;
         let slots = self.max_tracked_slots.min(clusters);
-        let bytes = (self.retrieval_bytes as u64)
+        let bytes = (self.retrieval_bytes_for(file_bytes) as u64)
             .checked_mul(8)
             .and_then(|n| n.checked_add((slots as u64).checked_mul(256)?))
             .and_then(|n| n.checked_add(4 * 1024 * 1024))
@@ -101,12 +117,18 @@ impl ResourcePlacement {
 
     /// Pay bitmap windows, lossless encodings, complete retrieval assembly,
     /// and tracked-map clones before submitting a native move.
-    pub(super) fn move_workspace(&self, clusters: u32, tracked: usize) -> io::Result<Lease> {
+    pub(super) fn move_workspace(
+        &self,
+        file_bytes: u64,
+        clusters: u32,
+        tracked: usize,
+    ) -> io::Result<Lease> {
         if clusters == 0 || tracked > self.max_tracked_slots {
             return Err(invalid("resource move workspace bounds differ"));
         }
         let windows = destination_limits(clusters)?;
-        let bytes = (self.retrieval_bytes as u64)
+        let retrieval_bytes = self.retrieval_bytes_for(file_bytes);
+        let bytes = (retrieval_bytes as u64)
             .checked_mul(8)
             .and_then(|n| n.checked_add((windows.max_returned_bytes as u64).checked_mul(16)?))
             .and_then(|n| n.checked_add((windows.max_window_bytes as u64).checked_mul(8)?))
@@ -115,7 +137,7 @@ impl ResourcePlacement {
             .and_then(|n| n.checked_add(8 * 1024 * 1024))
             .and_then(|n| n.checked_add(self.payer.lease_heap_bytes()))
             .ok_or_else(|| invalid("resource move workspace overflow"))?;
-        let retrieval = Limits::for_resource_bytes(self.retrieval_bytes)?;
+        let retrieval = Limits::for_resource_bytes(retrieval_bytes)?;
         let canonical = (retrieval.max_extents as u64)
             .checked_mul(16)
             .and_then(|n| n.checked_add(16))
@@ -185,5 +207,35 @@ impl ResourcePlacement {
             holes,
             _lease: lease,
         })
+    }
+}
+
+#[cfg(test)]
+mod workspace_tests {
+    use super::*;
+
+    #[test]
+    fn a_files_mapping_workspace_follows_its_clusters_up_to_the_row() {
+        const MIB: usize = 1024 * 1024;
+        // A machine with 16 GB free limits a row to 141 MiB. A file of one
+        // cluster can return one response's worth of extents, and its
+        // workspace is eight times four of that: a megabyte, where it was
+        // 1.1 GB.
+        let small = retrieval_bytes_for(141 * MIB, 4096);
+        assert_eq!(small, 4 * retrieval_paging::returned_bytes_for_stream(4096));
+        assert!(8 * small < 2 * MIB, "{small}");
+        // It grows with the file,
+        let larger = retrieval_bytes_for(141 * MIB, 1 << 30);
+        assert!(larger > small && larger < 141 * MIB, "{larger}");
+        // up to what the longest mapping this process accepts returns, and
+        // never beyond the row.
+        assert_eq!(
+            retrieval_bytes_for(141 * MIB, u64::MAX),
+            (4 * retrieval_paging::max_returned_bytes()).min(141 * MIB)
+        );
+        // A row shorter than the file could need stays the limit.
+        assert_eq!(retrieval_bytes_for(65536, 1 << 30), 65536);
+        // The query limits made from it still hold a complete response.
+        assert!(Limits::for_resource_bytes(small).is_ok());
     }
 }

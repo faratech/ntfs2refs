@@ -190,10 +190,30 @@ fn sparse_candidate(
             // cluster boundary, logically and physically, and then only in
             // whole target clusters; on smaller source clusters it may not,
             // and what cannot stay is copied like the stream's tail.
+            //
+            // And only as a beginning of what the stream allocates. The new
+            // volume holds a sparse stream's islands one after the other in
+            // a file of its own, and data that stays in place is adopted
+            // there as that file's beginning (`placement::source_runs`): an
+            // island that could stay behind one that is copied is copied
+            // too. (It was kept, and the placement then refused the volume:
+            // a lived-in volume on its way to 64 KiB clusters, on the one
+            // layout in fourteen where a later island of a sparse file lay
+            // on 64 KiB boundaries and its first did not.)
             let retained_end = coverage.min(initialized_end) / target * target;
+            // Where this run begins among the stream's allocated bytes.
+            let allocated_before = allocated
+                .iter()
+                .map(|range| range.length)
+                .sum::<u64>()
+                .checked_sub(allocated.last().map_or(0, |range| {
+                    (range.offset + range.length).saturating_sub(extent.logical_offset)
+                }));
             if retained_end > extent.logical_offset
                 && extent.logical_offset.is_multiple_of(target)
                 && offset.is_multiple_of(target)
+                && extent.logical_offset < rounded
+                && allocated_before == Some(retained)
             {
                 let length = retained_end - extent.logical_offset;
                 initialized_extents.push(Extent {
@@ -785,6 +805,38 @@ mod sparse_tests {
         assert_eq!(plan.initialized_extents.len(), 1);
         assert_eq!(plan.initialized_extents[0].physical_offset, Some(40 * 4096));
         assert_eq!(plan.materialized, 8192);
+
+        // The other way round (the first island between 4 KiB boundaries
+        // on disk, the second on them): the second could stay by itself,
+        // but it would not be the beginning of what the stream allocates,
+        // and what stays in place has to be. Both are copied.
+        let (mut swapped_file, mut swapped) = (file.clone(), stream.clone());
+        swapped.extents[0].physical_offset = Some(40 * 4096 + 512);
+        swapped.extents[2].physical_offset = Some(90 * 4096);
+        swapped_file.streams = vec![swapped.clone()];
+        swapped_file.attributes[0].extents = swapped.extents.clone();
+        let plan = sparse_candidate(&geometry, &swapped_file, &swapped).unwrap();
+        assert_eq!(ranges(&plan), [(0, 8192), (73728, 8192)]);
+        assert_eq!(plan.retained, 0);
+        assert!(plan.initialized_extents.is_empty());
+        assert_eq!(plan.materialized, 16384);
+
+        // Two islands that both lie on 4 KiB boundaries stay, the second
+        // behind the first.
+        let (mut both_file, mut both) = (file.clone(), stream.clone());
+        both.extents[2].physical_offset = Some(90 * 4096);
+        both_file.streams = vec![both.clone()];
+        both_file.attributes[0].extents = both.extents.clone();
+        let plan = sparse_candidate(&geometry, &both_file, &both).unwrap();
+        assert_eq!(plan.retained, 16384);
+        assert_eq!(
+            plan.initialized_extents
+                .iter()
+                .map(|extent| (extent.logical_offset, extent.length))
+                .collect::<Vec<_>>(),
+            [(0, 8192), (73728, 8192)]
+        );
+        assert_eq!(plan.materialized, 0);
 
         // A 64 KiB target: an 8 KiB island is part of a target cluster, so
         // each takes the whole of the cluster it lies in (here the two

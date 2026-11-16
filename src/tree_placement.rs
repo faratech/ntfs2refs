@@ -70,11 +70,16 @@ pub fn mappings_from_native(
         tree.objects.len() == native.objects.len(),
         "native tree coverage differs"
     );
-    tree.objects
-        .iter()
-        .zip(&native.objects)
-        .filter(|(object, _)| !object.directory)
-        .map(|(object, measured)| -> Result<_> {
+    // Each object of the tree with the row of the same index; the counts
+    // are equal.
+    let mut mappings = Vec::new();
+    native
+        .objects
+        .try_for_each(|index, measured| -> Result<()> {
+            let object = &tree.objects[index];
+            if object.directory {
+                return Ok(());
+            }
             ensure!(
                 object.path == measured.components,
                 "native stream identity order differs"
@@ -115,7 +120,7 @@ pub fn mappings_from_native(
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
-            Ok(Mapping {
+            mappings.push(Mapping {
                 record_number: object.record_number,
                 sequence_number: object.sequence_number,
                 target_file_id: id.bytes[8..24].try_into()?,
@@ -124,9 +129,10 @@ pub fn mappings_from_native(
                     .clone()
                     .context("missing target logical hash")?,
                 extents,
-            })
-        })
-        .collect()
+            });
+            Ok(())
+        })?;
+    Ok(mappings)
 }
 #[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

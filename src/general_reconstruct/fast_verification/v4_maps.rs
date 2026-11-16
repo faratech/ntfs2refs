@@ -212,7 +212,7 @@ fn visit(
         .resource_admission
         .context("map admission absent")?;
     let mut count = 0u64;
-    for (index, native) in report.objects.iter().enumerate() {
+    report.objects.try_for_each(|index, native| -> Result<()> {
         let object = expected.object_leased(index)?;
         ensure!(
             native.components == object.path
@@ -243,36 +243,39 @@ fn visit(
                 object: index,
                 named,
             };
-            let ((components, name_utf16), map) = location.view(report)?;
-            if let Some(stream) = object.stream(name_utf16)
-                && stream.source_evidence
-                    == Some(SourceStreamEvidence::ExtentIdentityWithMaterializedTailV1)
-            {
-                let residual = proof
-                    .native()
-                    .report()
-                    .residual_for(index, name_utf16)?
-                    .context("V4 extent tail protected observation absent")?;
-                ensure!(
-                    proof.native().report().residual_contents_verified()
-                        && residual.logical_offset
-                            == n2r_win32::target_cluster::floor(stream.length)
-                        && residual.length == stream.length % n2r_win32::target_cluster::bytes()
-                        && residual.sha256.len() == 64,
-                    "V4 extent tail verification differs"
-                );
-            }
-            let entry = MapEntryRef {
-                components,
-                name_utf16,
-                map: PagedStreamMapRef::with_resources(map, Some(admission))?,
-            };
-            let size = row_size(&entry, admission.budget.max_row_bytes)?;
-            validate_borrowed_row_memory(&entry, size, admission.budget.max_row_bytes)?;
-            emit(key(index, ordinal)?, &entry)?;
+            location.view(report, |(components, name_utf16), map| {
+                if let Some(stream) = object.stream(name_utf16)
+                    && stream.source_evidence
+                        == Some(SourceStreamEvidence::ExtentIdentityWithMaterializedTailV1)
+                {
+                    let residual = proof
+                        .native()
+                        .report()
+                        .residual_for(index, name_utf16)?
+                        .context("V4 extent tail protected observation absent")?;
+                    ensure!(
+                        proof.native().report().residual_contents_verified()
+                            && residual.logical_offset
+                                == n2r_win32::target_cluster::floor(stream.length)
+                            && residual.length
+                                == stream.length % n2r_win32::target_cluster::bytes()
+                            && residual.sha256.len() == 64,
+                        "V4 extent tail verification differs"
+                    );
+                }
+                let entry = MapEntryRef {
+                    components,
+                    name_utf16,
+                    map: PagedStreamMapRef::with_resources(map, Some(admission))?,
+                };
+                let size = row_size(&entry, admission.budget.max_row_bytes)?;
+                validate_borrowed_row_memory(&entry, size, admission.budget.max_row_bytes)?;
+                emit(key(index, ordinal)?, &entry)
+            })?;
             count = count.checked_add(1).context("V4 binding count overflow")?;
         }
-    }
+        Ok(())
+    })?;
     Ok(count)
 }
 
@@ -395,17 +398,20 @@ impl V4RecoveryMaps {
         let source_views_sha256 = report.source_views_sha256.to_owned();
         let expected_sha256 = expected.semantic_sha256().to_owned();
         let ticket_sha256 = canonical_json_sha256(ticket)?;
-        let bindings = proof
+        let mut bindings = Some(0u64);
+        proof
             .native()
             .report()
             .native()
             .objects
-            .iter()
-            .try_fold(0u64, |n, object| {
-                n.checked_add(1)?
-                    .checked_add(object.named_streams.len() as u64)
-            })
-            .context("V4 native binding count overflow")?;
+            .for_each(|_, object| {
+                bindings = bindings.and_then(|n| {
+                    n.checked_add(1)?
+                        .checked_add(object.named_streams.len() as u64)
+                });
+                Ok(())
+            })?;
+        let bindings = bindings.context("V4 native binding count overflow")?;
         let header = Header {
             schema_version: 4,
             kind: "protected-v4-ordinal-stream-maps",

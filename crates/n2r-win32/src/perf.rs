@@ -225,14 +225,20 @@ fn finish_steps(phase: &str) {
         text.push_str(&format!(" | {name} {seconds:.1}s"));
     }
     eprintln!("{text}");
-    // What the steps could not do without, for those that held a thirty-
-    // second of the ledger or more: where a volume's memory goes, step by
-    // step, and not only at the one moment the whole run peaked.
-    let floor = LEDGER_LIMIT.load(Relaxed) / 32;
+    // What the steps could not do without, for those that held a sixteenth
+    // of the ledger or more, each with its three largest reservations:
+    // where a volume's memory goes, step by step, and not only at the one
+    // moment the whole run peaked.
+    let floor = LEDGER_LIMIT.load(Relaxed) / 16;
     let mut text = String::new();
     for (name, peak, holders) in steps.memory.drain(..) {
         if peak >= floor.max(1) {
-            text.push_str(&format!(" | {name} {} MiB ({holders})", peak >> 20));
+            let largest: Vec<&str> = holders.split(", ").take(3).collect();
+            text.push_str(&format!(
+                " | {name} {} MiB ({})",
+                peak >> 20,
+                largest.join(", ")
+            ));
         }
     }
     if !text.is_empty() {

@@ -1153,6 +1153,9 @@ pub struct PagedMetadataRange {
     // the store asks again to be held, once the ledger had no room.
     decodes: std::cell::Cell<u64>,
     held_again_after: std::cell::Cell<u64>,
+    // Every chunk of the store is kept by itself: ask once for the store
+    // to be held as a whole in their place.
+    all_chunks_kept: std::cell::Cell<bool>,
     // Accepted as a store this process wrote, without a full decode and hash.
     written_here: bool,
     pin: SourcePagePin,
@@ -1168,6 +1171,18 @@ pub struct PagedMetadataRange {
 struct DecodedChunks {
     recent: Option<(u64, Vec<u8>)>,
     previous: Option<(u64, Vec<u8>)>,
+    // Chunks kept after they were decoded, by their number: each a cache
+    // of its own, given up when the memory is needed, the one used longest
+    // ago first. A store that has no room in memory as a whole is then
+    // held in the parts that are being read, as far as there is room,
+    // where every lookup outside the last one or two chunks decoded a
+    // megabyte of text again.
+    kept: std::collections::BTreeMap<u64, n2r_win32::evict::Evictable<KeptChunk>>,
+}
+struct KeptChunk {
+    bytes: Vec<u8>,
+    // Returned after the bytes are released.
+    _ram: SourceRamLease,
 }
 struct ResidentMetadataCache {
     bytes: Vec<u8>,
@@ -1414,6 +1429,7 @@ impl PagedMetadataRange {
             resident: RefCell::new(resident.map(n2r_win32::evict::Evictable::new)),
             decodes: std::cell::Cell::new(0),
             held_again_after: std::cell::Cell::new(0),
+            all_chunks_kept: std::cell::Cell::new(false),
             written_here,
             pin: pin.clone(),
             _ram: ram,
@@ -1445,7 +1461,12 @@ impl PagedMetadataRange {
             .pin
             .logical_bytes
             .div_ceil(u64::from(self.pin.chunk_bytes).max(1));
-        if decodes <= chunks.saturating_mul(2).max(8) || decodes < self.held_again_after.get() {
+        let all_kept = self.all_chunks_kept.replace(false);
+        if self.held_again_after.get() == u64::MAX
+            || !all_kept
+                && (decodes <= chunks.saturating_mul(2).max(8)
+                    || decodes < self.held_again_after.get())
+        {
             return Ok(());
         }
         let scratch = self._ram.scratch.clone();
@@ -1458,6 +1479,8 @@ impl PagedMetadataRange {
         cache.bytes.resize(cache.bytes.capacity(), 0);
         self.read_through_pages(0, &mut cache.bytes)?;
         self.decodes.set(0);
+        // The whole store is held: its chunks are not needed beside it.
+        self.decoded.borrow_mut().kept.clear();
         *self.resident.borrow_mut() = Some(n2r_win32::evict::Evictable::new(cache));
         Ok(())
     }
@@ -1551,12 +1574,59 @@ impl SourceMetadataRange for PagedMetadataRange {
     }
 }
 impl PagedMetadataRange {
+    /// Keeps a copy of the chunk decoded last, where the ledger has room
+    /// for a cache (it gives up older ones for it). A store of one or two
+    /// chunks has them in its two decoded slots already.
+    fn keep_decoded(&self, ordinal: u64) {
+        if self.pin.logical_bytes <= u64::from(self.pin.chunk_bytes).saturating_mul(2) {
+            return;
+        }
+        let length = match self.decoded.borrow().recent.as_ref() {
+            Some((number, bytes)) if *number == ordinal => bytes.len(),
+            _ => return,
+        };
+        // No borrow of the chunks is held while the ledger is asked: it may
+        // give up chunks kept here.
+        let scratch = self._ram.scratch.clone();
+        let Ok(ram) =
+            scratch.lease_cache_ram(length as u64 + std::mem::size_of::<KeptChunk>() as u64)
+        else {
+            return;
+        };
+        let mut cache = self.decoded.borrow_mut();
+        cache.kept.retain(|_, chunk| chunk.is_held());
+        let mut bytes = Vec::new();
+        if bytes.try_reserve_exact(length).is_err() {
+            return;
+        }
+        if let Some((_, decoded)) = cache.recent.as_ref() {
+            bytes.extend_from_slice(decoded);
+            cache.kept.insert(
+                ordinal,
+                n2r_win32::evict::Evictable::new(KeptChunk { bytes, _ram: ram }),
+            );
+            let chunks = self
+                .pin
+                .logical_bytes
+                .div_ceil(u64::from(self.pin.chunk_bytes).max(1));
+            self.all_chunks_kept.set(cache.kept.len() as u64 == chunks);
+        }
+    }
     /// Reads from the store's pages, decoding the chunks the range lies in.
     fn read_through_pages(&self, offset: u64, mut output: &mut [u8]) -> Result<()> {
         let mut at = offset;
         while !output.is_empty() {
             let ordinal = at / u64::from(self.pin.chunk_bytes);
             let skip = (at % u64::from(self.pin.chunk_bytes)) as usize;
+            let kept = self.decoded.borrow().kept.get(&ordinal).cloned();
+            if let Some(chunk) = kept.as_ref().and_then(|chunk| chunk.get()) {
+                let n = output.len().min(chunk.bytes.len() - skip);
+                output[..n].copy_from_slice(&chunk.bytes[skip..skip + n]);
+                output = &mut output[n..];
+                at += n as u64;
+                continue;
+            }
+            drop(kept);
             {
                 let mut cache = self.decoded.borrow_mut();
                 if !cache.recent.as_ref().is_some_and(|(n, _)| *n == ordinal)
@@ -1601,6 +1671,7 @@ impl PagedMetadataRange {
                 );
                 self.decoded.borrow_mut().recent = Some((ordinal, chunk));
                 self.decodes.set(self.decodes.get().saturating_add(1));
+                self.keep_decoded(ordinal);
             }
             let cached = self.decoded.borrow();
             let chunk = &cached
@@ -1751,6 +1822,60 @@ mod cache_tests {
         );
         assert_eq!(read(123_456, 5000), bytes[123_456..128_456]);
         assert_eq!(scratch.0.borrow().ram, before);
+    }
+
+    #[test]
+    fn a_store_too_large_to_hold_keeps_the_chunks_it_reads_while_there_is_room() {
+        let directory = tempfile::tempdir().unwrap();
+        const RAM: u64 = 8 * 1024 * 1024;
+        let scratch = scratch(RAM);
+        // More than half the ledger: never held as a whole.
+        let bytes: Vec<u8> = (0..5_000_000u32).map(|n| (n * 13 + 5) as u8).collect();
+        let pin = PagedMetadataRange::capture(
+            &directory.path().join("store"),
+            *b"N2RTEST1",
+            &mut bytes.as_slice(),
+            bytes.len() as u64,
+            &scratch,
+        )
+        .unwrap();
+        let without = scratch.0.borrow().ram;
+        let store = PagedMetadataRange::open(&pin, &scratch).unwrap();
+        assert!(store.held().is_none());
+        let read = |offset: u64, length: usize| {
+            let mut out = vec![0u8; length];
+            store.read_exact_at(offset, &mut out).unwrap();
+            out
+        };
+        // Lookups that jump between three places decode each place once.
+        let places = [100_000u64, 2_500_000, 4_900_000];
+        for _ in 0..50 {
+            for place in places {
+                let at = place as usize;
+                assert_eq!(read(place, 300), bytes[at..at + 300]);
+            }
+        }
+        let decoded = store.decodes.get();
+        assert!(
+            decoded <= 6,
+            "{decoded} chunks decoded for three places read fifty times"
+        );
+        // The whole store, twice: the second time nothing is decoded.
+        assert_eq!(read(0, bytes.len()), bytes);
+        let decoded = store.decodes.get();
+        assert_eq!(read(0, bytes.len()), bytes);
+        assert_eq!(store.decodes.get(), decoded);
+        assert!(store.held().is_none(), "too large to be held as a whole");
+        // What the pass needs takes the chunks used longest ago; the store
+        // reads the same.
+        let before = scratch.0.borrow().ram;
+        let needed = scratch.lease_ram(RAM - before + 2_000_000).unwrap();
+        assert!(scratch.0.borrow().ram <= RAM);
+        assert_eq!(read(1_234_567, 4000), bytes[1_234_567..1_238_567]);
+        assert_eq!(read(0, bytes.len()), bytes);
+        drop(needed);
+        drop(store);
+        assert_eq!(scratch.0.borrow().ram, without);
     }
 
     #[test]

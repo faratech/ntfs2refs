@@ -33,10 +33,12 @@ pub trait ReportMemoryAccountant: Send + Sync {
     fn reserve_spare(&self, bytes: u64) -> io::Result<Box<dyn ReportMemoryLease>> {
         self.reserve(bytes)
     }
-    /// Memory for something the caller can make again from working storage,
+    /// Memory for something the caller can as well keep in working storage,
     /// which the payer may ask back at any time: the caller is told through
-    /// [`crate::evict`] on the thread that drives the run. A payer that
-    /// keeps no such memory refuses, which is the default.
+    /// [`crate::evict`] on the thread that drives the run. A payer lends it
+    /// only while it has memory to spare, and refuses rather than take
+    /// memory from anything else; one that keeps no such memory refuses
+    /// always, which is the default.
     #[track_caller]
     fn reserve_cache(&self, bytes: u64) -> io::Result<Box<dyn ReportMemoryLease>> {
         let _ = bytes;

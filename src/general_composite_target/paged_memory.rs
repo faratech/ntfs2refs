@@ -36,7 +36,9 @@ impl ReportMemoryAccountant for ArenaReportMemory {
     }
     fn reserve_cache(&self, bytes: u64) -> io::Result<Box<dyn ReportMemoryLease>> {
         Ok(Box::new(ArenaReportLease(
-            self.0.reserve_cache_ram(bytes).map_err(io::Error::other)?,
+            self.0
+                .reserve_cache_ram_if_room(bytes)
+                .map_err(io::Error::other)?,
         )))
     }
     fn lease_heap_bytes(&self) -> u64 {

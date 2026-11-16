@@ -1578,6 +1578,30 @@ impl ArtifactArena {
         }
         Err(refused)
     }
+    /// Cache memory for what is as well kept in working storage: granted
+    /// only while the ledger stays under half full with it, and no other
+    /// cache is given up for it. The rows of a walk are held this way.
+    /// Held like any cache they took the room of the stores the next steps
+    /// look things up in: a volume of 100,000 files held to 1,240 MiB took
+    /// 918 s where it takes 481 s, the stores read chunk by chunk.
+    #[track_caller]
+    pub fn reserve_cache_ram_if_room(&self, bytes: u64) -> Result<ArenaRamLease> {
+        let caller = std::panic::Location::caller();
+        let site = (caller.file(), caller.line());
+        {
+            let state = self
+                .0
+                .state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
+            ensure!(
+                add(add(state.leased_ram_bytes, bytes)?, state.index_bytes)?
+                    <= self.0.budget.ram_bytes / 2,
+                "cache memory refused: the ledger would be more than half full"
+            );
+        }
+        self.reserve_cache_ram_at(bytes, site)
+    }
     fn cache_ceiling(&self) -> u64 {
         self.0.budget.ram_bytes - self.0.budget.ram_bytes / 8
     }

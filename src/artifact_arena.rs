@@ -158,6 +158,18 @@ fn release_site(held: &mut BTreeMap<RamSite, u64>, site: RamSite, bytes: u64) {
     }
 }
 
+/// Tells the run's timing what the ledger holds after a reservation, and
+/// what holds it when what the run cannot do without has grown.
+fn note_ledger(state: &State, limit: u64) {
+    let held = state.leased_ram_bytes.saturating_add(state.index_bytes);
+    let needed = held
+        .saturating_sub(state.optional_ram_bytes)
+        .saturating_sub(state.spare.held);
+    if n2r_win32::perf::note_ledger(held, needed, limit) {
+        n2r_win32::perf::note_ledger_holders(needed, largest_sites(&state.ram_by_site));
+    }
+}
+
 /// The largest reservations, for the message of a ledger that ran out:
 /// without them it says how much is held and not by what.
 fn largest_sites(held: &BTreeMap<RamSite, u64>) -> String {
@@ -177,6 +189,10 @@ fn largest_sites(held: &BTreeMap<RamSite, u64>) -> String {
         .join(", ")
 }
 impl ArenaRamLease {
+    /// What this lease holds of the ledger.
+    pub fn bytes(&self) -> u64 {
+        self.bytes
+    }
     /// Return unused capacity while retaining the remainder of this lease.
     pub fn shrink_to(&mut self, bytes: u64) -> Result<()> {
         ensure!(
@@ -1406,7 +1422,7 @@ impl ArtifactArena {
         );
         state.leased_ram_bytes = leased;
         *state.ram_by_site.entry(site).or_default() += bytes;
-        n2r_win32::perf::note_ledger(leased + state.index_bytes, self.0.budget.ram_bytes);
+        note_ledger(&state, self.0.budget.ram_bytes);
         Ok(ArenaRamLease {
             arena: self.clone(),
             bytes,
@@ -1439,7 +1455,7 @@ impl ArtifactArena {
         let leased = add(state.leased_ram_bytes, bytes)?;
         state.leased_ram_bytes = leased;
         *state.ram_by_site.entry(site).or_default() += bytes;
-        n2r_win32::perf::note_ledger(leased + state.index_bytes, self.0.budget.ram_bytes);
+        note_ledger(&state, self.0.budget.ram_bytes);
         Ok(ArenaRamLease {
             arena: self.clone(),
             bytes,
@@ -1478,7 +1494,7 @@ impl ArtifactArena {
         state.leased_ram_bytes = leased;
         state.optional_ram_bytes = optional;
         *state.ram_by_site.entry(site).or_default() += bytes;
-        n2r_win32::perf::note_ledger(leased + state.index_bytes, self.0.budget.ram_bytes);
+        note_ledger(&state, self.0.budget.ram_bytes);
         Ok(ArenaRamLease {
             arena: self.clone(),
             bytes,

@@ -394,7 +394,7 @@ pub fn finish() {
             let given_up = crate::evict::times_given_up();
             if given_up != 0 {
                 eprintln!(
-                    "memory-caches: memory was short {given_up} time(s), and the run gave up what it held in memory only to go faster"
+                    "memory-caches: memory was short, and the run gave up {given_up} of the caches it holds only to go faster, those used longest ago first"
                 );
             }
         }

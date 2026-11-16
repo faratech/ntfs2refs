@@ -754,6 +754,8 @@ pub struct Reader {
     // The misses after which the reader asks again to hold its file, once
     // the ledger had no room for it.
     resident_asked_again_after: u64,
+    // Never holds its file by itself: its owner keeps what it reads.
+    page_by_page: bool,
     statistics: PageCacheStatistics,
 }
 
@@ -955,6 +957,7 @@ impl Reader {
             secondary: None,
             resident: None,
             resident_asked_again_after: 0,
+            page_by_page: false,
             statistics,
         })
     }
@@ -1076,6 +1079,17 @@ impl Reader {
     /// Whether this reader accepted the file as one this process wrote
     /// (check-once policy) instead of hashing and parsing all of it. A
     /// caller with a whole-content check of its own may then leave it out.
+    /// This reader does not decide by itself to hold its whole file in
+    /// memory, however it is read. For a file whose owner keeps what it
+    /// reads from it: the walk's rows file, read back a block at a time,
+    /// is several hundred megabytes for 100,000 objects, and held whole it
+    /// took the memory of the stores the next steps look things up in (a
+    /// volume of 100,000 files held to 1,240 MiB: 950 s where it takes
+    /// 480 s) or, given up and held again in turns, was read over and
+    /// over (800 GB of page loads in one run).
+    pub fn read_page_by_page(&mut self) {
+        self.page_by_page = true;
+    }
     pub fn written_by_this_process(&self) -> bool {
         self.written_here
     }
@@ -1201,6 +1215,7 @@ impl Reader {
             // further miss costs a 4 MiB read and hash. Hold the whole file
             // from here on: one more pass over it, then no I/O at all.
             if crate::verify_policy::checks_once()
+                && !self.page_by_page
                 && self.snapshot.bytes <= AUTO_RESIDENT_FILE_BYTES
                 && self.statistics.misses > self.pages.saturating_mul(2).max(8)
                 && self.statistics.misses >= self.resident_asked_again_after
@@ -1216,14 +1231,6 @@ impl Reader {
                         self.resident_asked_again_after = self.statistics.misses.saturating_mul(2);
                     }
                     payment => {
-                        // Held now. If the ledger takes the pages back, the
-                        // file is read page by page again, and holding it
-                        // once more costs a pass over all of it: that is
-                        // asked for only after as many misses again, or a
-                        // reader in a run short of memory reads its whole
-                        // file over and over (a rows file of 100,000
-                        // objects: 800 GB of page loads in one run).
-                        self.resident_asked_again_after = self.statistics.misses.saturating_mul(2);
                         self.install_resident(match payment {
                             crate::evict::CachePayment::Paid(paid) => Some(paid),
                             _ => None,

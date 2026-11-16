@@ -301,7 +301,10 @@ impl RowsFileReader {
         index: RowsFileIndex,
     ) -> io::Result<Self> {
         let chunk_bytes = chunk_bytes(budget)?;
-        let reader = Reader::open(path, sha256, PURPOSE, budget)?;
+        let mut reader = Reader::open(path, sha256, PURPOSE, budget)?;
+        // The rows keep the blocks they read back; the file itself is never
+        // held in memory.
+        reader.read_page_by_page();
         // Every block is one chunk or more and its end, in the writer's
         // order from the first record. Where exactly a block begins is
         // checked by the keys of its records when it is read.

@@ -143,11 +143,48 @@ fn line(name: &str, seconds: f64, from: &[Row; COUNT], to: &[Row; COUNT]) -> Str
 struct Steps {
     current: Option<(&'static str, Instant)>,
     done: Vec<(&'static str, f64)>,
+    // What each step of the phase could not do without at its highest, and
+    // what held it then.
+    memory: Vec<(&'static str, u64, String)>,
 }
 static STEPS: Mutex<Steps> = Mutex::new(Steps {
     current: None,
     done: Vec::new(),
+    memory: Vec::new(),
 });
+// The same for the step that is running: its highest level, and the level
+// its holders were last written down at with what they were.
+static STEP_NEEDED_PEAK: AtomicU64 = AtomicU64::new(0);
+static STEP_HOLDERS: Mutex<(u64, String)> = Mutex::new((0, String::new()));
+
+/// Ends the running step's memory record and files it under its name.
+fn end_step_memory(steps: &mut Steps, name: &'static str) {
+    let peak = STEP_NEEDED_PEAK.swap(0, Relaxed);
+    let holders = STEP_HOLDERS
+        .lock()
+        .map(|mut holders| std::mem::take(&mut *holders).1)
+        .unwrap_or_default();
+    file_step_memory(&mut steps.memory, name, peak, holders);
+}
+
+/// Files what a step could not do without under its name: the highest
+/// level where a step runs more than once, and nothing for a step that
+/// reserved nothing.
+fn file_step_memory(
+    memory: &mut Vec<(&'static str, u64, String)>,
+    name: &'static str,
+    peak: u64,
+    holders: String,
+) {
+    if peak == 0 {
+        return;
+    }
+    match memory.iter_mut().find(|(done, _, _)| *done == name) {
+        Some((_, highest, held)) if *highest < peak => (*highest, *held) = (peak, holders),
+        Some(_) => {}
+        None => memory.push((name, peak, holders)),
+    }
+}
 
 /// Starts a named step inside the current phase; the previous step ends.
 /// For the handful of large steps of a phase, not for anything per object.
@@ -162,6 +199,7 @@ pub fn step(name: &'static str) {
             Some((_, total)) => *total += seconds,
             None => steps.done.push((previous, seconds)),
         }
+        end_step_memory(&mut steps, previous);
     }
     steps.current = Some((name, Instant::now()));
 }
@@ -177,6 +215,7 @@ fn finish_steps(phase: &str) {
             Some((_, total)) => *total += seconds,
             None => steps.done.push((previous, seconds)),
         }
+        end_step_memory(&mut steps, previous);
     }
     if steps.done.is_empty() {
         return;
@@ -186,6 +225,19 @@ fn finish_steps(phase: &str) {
         text.push_str(&format!(" | {name} {seconds:.1}s"));
     }
     eprintln!("{text}");
+    // What the steps could not do without, for those that held a thirty-
+    // second of the ledger or more: where a volume's memory goes, step by
+    // step, and not only at the one moment the whole run peaked.
+    let floor = LEDGER_LIMIT.load(Relaxed) / 32;
+    let mut text = String::new();
+    for (name, peak, holders) in steps.memory.drain(..) {
+        if peak >= floor.max(1) {
+            text.push_str(&format!(" | {name} {} MiB ({holders})", peak >> 20));
+        }
+    }
+    if !text.is_empty() {
+        eprintln!("memory-steps: {phase}{text}");
+    }
 }
 
 /// Starts a named phase and prints what the previous one cost.
@@ -247,11 +299,16 @@ pub fn note_ledger(held: u64, needed: u64, limit: u64) -> bool {
     if LEDGER_PEAK.fetch_max(held, Relaxed) < held {
         LEDGER_LIMIT.store(limit, Relaxed);
     }
+    // The running step's own highest level, and the run's.
+    let step_due = STEP_NEEDED_PEAK.fetch_max(needed, Relaxed) < needed && {
+        let described = STEP_HOLDERS.lock().map_or(u64::MAX, |holders| holders.0);
+        holders_due(needed, described, limit)
+    };
     if LEDGER_NEEDED_PEAK.fetch_max(needed, Relaxed) >= needed {
-        return false;
+        return step_due;
     }
     let described = LEDGER_HOLDERS.lock().map_or(u64::MAX, |holders| holders.0);
-    holders_due(needed, described, limit)
+    step_due || holders_due(needed, described, limit)
 }
 
 fn holders_due(needed: u64, described: u64, limit: u64) -> bool {
@@ -264,8 +321,14 @@ fn holders_due(needed: u64, described: u64, limit: u64) -> bool {
 /// at `needed`: printed with the totals, so that a run says what a volume's
 /// memory went to and not only how much it was.
 pub fn note_ledger_holders(needed: u64, holders: String) {
+    if let Ok(mut described) = STEP_HOLDERS.lock()
+        && needed > described.0
+    {
+        *described = (needed, holders.clone());
+    }
     if let Ok(mut described) = LEDGER_HOLDERS.lock()
         && needed > described.0
+        && needed >= LEDGER_NEEDED_PEAK.load(Relaxed)
     {
         *described = (needed, holders);
     }
@@ -350,6 +413,24 @@ mod tests {
         assert!(holders_due(1, 0, 10) && !holders_due(1, 1, 10));
         // Nothing was written down yet and the holders cannot be read.
         assert!(!holders_due(u64::MAX, u64::MAX, LIMIT));
+    }
+
+    #[test]
+    fn a_step_is_filed_with_the_most_it_could_not_do_without() {
+        let mut memory = Vec::new();
+        file_step_memory(&mut memory, "walk", 300, "300 at a".into());
+        file_step_memory(&mut memory, "place", 0, String::new());
+        file_step_memory(&mut memory, "apply", 100, "100 at b".into());
+        // A step that runs again keeps its highest level and what held it.
+        file_step_memory(&mut memory, "walk", 200, "200 at c".into());
+        file_step_memory(&mut memory, "apply", 500, "500 at d".into());
+        assert_eq!(
+            memory,
+            [
+                ("walk", 300, "300 at a".to_owned()),
+                ("apply", 500, "500 at d".to_owned())
+            ]
+        );
     }
 
     #[test]

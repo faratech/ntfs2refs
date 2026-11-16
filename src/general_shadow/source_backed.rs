@@ -1106,6 +1106,7 @@ impl<'a, 'scope> PagedSourceByteAdapterWithScope<'a, 'scope> {
         self.source.owner_identity()
     }
 
+    #[track_caller]
     pub(crate) fn lease_working_ram(
         &self,
         bytes: u64,

@@ -17,8 +17,11 @@ Two builds are compared with runs that have the host to themselves
 (`-NoBoot`, one after the other, nothing else building), with the control
 OS's scheduled drive optimisation off, which the harness does by itself
 (issue 132: with it on, one build took 1,389, 1,451, 1,720 and 2,410 s). A
-gate round's full run is such a run; its fixtures and data-volume cases share
-the host and are not.
+gate round's fixtures and data-volume cases share the host and are not such
+runs. Its full run has the host to itself and usually is, but it starts the
+moment the other sets end: one took 1,366 s where the same build, run again
+by itself, took 1,306 s. When a total matters, it is taken by a run of its
+own.
 
 A step that changes ReFS metadata varies from run to run by a quarter or
 more, because ReFS takes metadata changes one at a time: the metadata step
@@ -41,6 +44,7 @@ reference VM (8 processors, 24 GB) to a Dev Drive.
 | after #143 | 1,389 | the first undisturbed total |
 | after #145 | 1,373 | |
 | after #152 | 1,312 | |
+| the same converter without the retired lab code | 1,306 | no change to the converter's code; the difference is what two runs of one build differ by |
 
 A volume of 75 objects on 50 GiB takes 19 s.
 

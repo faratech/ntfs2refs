@@ -555,10 +555,7 @@ fn adopt_recovery_domain(
     metadata_targets.insert(0, enrollment.root);
     let mut system_identities = BTreeMap::new();
     let mut system_directory_indices = Vec::new();
-    let mut objects = Vec::new();
-    objects
-        .try_reserve_exact(input.len())
-        .map_err(io::Error::other)?;
+    let mut objects = Receipts::for_objects(input.len(), true)?;
     let tracked =
         usize::try_from(admission.budget.retained_index_bytes / 8192).map_err(io::Error::other)?;
     let partition = enrollment.pair.shadow.identity.partition_bytes;
@@ -567,7 +564,7 @@ fn adopt_recovery_domain(
         let item = owner.input();
         let row = memory.working(memory.row_peak(&item)?)?;
         if item.components.is_empty() {
-            objects.push(serde_json::json!({"object_index":index,"disposition":"fresh-recovered-root-metadata-pending"}));
+            objects.push(|| serde_json::json!({"object_index":index,"disposition":"fresh-recovered-root-metadata-pending"}));
             memory.retain(
                 row,
                 memory::object_bytes(index, &objects, &files, &sparse_targets, &metadata_targets)?,
@@ -623,7 +620,7 @@ fn adopt_recovery_domain(
             if item.directory {
                 system_directory_indices.push(index);
             }
-            objects.push(serde_json::json!({"object_index":index,"disposition":"fresh-recovered-system-metadata-pending"}));
+            objects.push(|| serde_json::json!({"object_index":index,"disposition":"fresh-recovered-system-metadata-pending"}));
         } else if item.directory {
             let handle = open(&format!("{root}{}", item.components.join("\\")), true, true)?;
             require_private_security(&handle, true)?;
@@ -635,7 +632,7 @@ fn adopt_recovery_domain(
                 &root_id[..8],
             )?;
             metadata_targets.insert(index, handle);
-            objects.push(serde_json::json!({"object_index":index,"disposition":"fresh-recovered-private-directory"}));
+            objects.push(|| serde_json::json!({"object_index":index,"disposition":"fresh-recovered-private-directory"}));
         } else {
             for position in 0..=item.named_streams.len() {
                 let (name, length, sparse) = if position == 0 {
@@ -754,7 +751,7 @@ fn adopt_recovery_domain(
                     files.insert(key, file);
                 }
             }
-            objects.push(serde_json::json!({"object_index":index,"disposition":if placed_ready {"fresh-native-placed-prefix-owner"}else{"fresh-native-unwritten-owner"},"historical_creator_claimed":false}));
+            objects.push(|| serde_json::json!({"object_index":index,"disposition":if placed_ready {"fresh-native-placed-prefix-owner"}else{"fresh-native-unwritten-owner"},"historical_creator_claimed":false}));
         }
         memory.retain(
             row,

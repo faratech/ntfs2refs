@@ -41,6 +41,57 @@ pub fn validate_placement_limits(bytes: u64, submissions: usize) -> io::Result<(
     placement::validate_limits(bytes, submissions)
 }
 
+/// What the constructor wrote down for each object as it made it.
+///
+/// The older routes save every object's receipt with their report. The
+/// route that accounts for its memory has no reader for them: every later
+/// step asks only how many there are, to hold its input to the same
+/// objects. A receipt is JSON of about 1.6 KiB (the path, two digests in
+/// hex, a map's node), kept to the end of the run: 800 MB for 500,000
+/// files, half of what the tree held for each. That route counts them.
+pub(super) enum Receipts {
+    Kept(Vec<serde_json::Value>),
+    Counted(usize),
+}
+impl Receipts {
+    /// Receipts for `objects` objects: kept where `accounted` is false.
+    fn for_objects(objects: usize, accounted: bool) -> io::Result<Self> {
+        if accounted {
+            return Ok(Self::Counted(0));
+        }
+        let mut kept = Vec::new();
+        kept.try_reserve_exact(objects).map_err(io::Error::other)?;
+        Ok(Self::Kept(kept))
+    }
+    /// Writes down one object: `receipt` is made only where it is kept.
+    fn push(&mut self, receipt: impl FnOnce() -> serde_json::Value) {
+        match self {
+            Self::Kept(kept) => kept.push(receipt()),
+            Self::Counted(count) => *count += 1,
+        }
+    }
+    pub(super) fn len(&self) -> usize {
+        match self {
+            Self::Kept(kept) => kept.len(),
+            Self::Counted(count) => *count,
+        }
+    }
+    /// The receipt written down last, where receipts are kept.
+    pub(super) fn last(&self) -> Option<&serde_json::Value> {
+        match self {
+            Self::Kept(kept) => kept.last(),
+            Self::Counted(_) => None,
+        }
+    }
+    /// Every receipt, where they are kept.
+    pub(super) fn kept(&self) -> Option<&[serde_json::Value]> {
+        match self {
+            Self::Kept(kept) => Some(kept),
+            Self::Counted(_) => None,
+        }
+    }
+}
+
 pub struct PrivateTree {
     // Files close before the volume and privilege lease on drop. No drop path
     // restores public permissions over uninitialized scratch contents.
@@ -54,7 +105,7 @@ pub struct PrivateTree {
     source_before: source_scope::ConstructionSourceState,
     partition_source: Option<source_scope::PartitionShadowConstructionLease>,
     dedicated_source: Option<source_scope::DedicatedShadowConstructionLease>,
-    initial_objects: Vec<serde_json::Value>,
+    initial_objects: Receipts,
     events: Vec<NativeEvent>,
     privileges: Privileges,
     reparse_privileges: Option<Privileges>,
@@ -1231,7 +1282,8 @@ impl PrivateTree {
         self.require_source_excluded()?;
         Ok(
             serde_json::json!({"schema_version":1,"kind":"native-private-tree-allocation-template",
-            "pair":self.pair,"source_before":self.source_before,"objects":self.initial_objects,
+            "pair":self.pair,"source_before":self.source_before,
+            "objects":self.initial_objects.kept(),"object_count":self.initial_objects.len(),
             "construction_enrollment":self.construction_enrollment,
             "files":files,"events":self.events,"privileges":self.privileges.audit(),
             "user_payload_bytes_read":readback_bytes,
@@ -2062,13 +2114,7 @@ fn allocate_domain_with_memory(
             )
         })
         .transpose()?;
-    let mut objects = Vec::new();
-    objects
-        .try_reserve_exact(input.len())
-        .map_err(io::Error::other)?;
-    if memory.is_some() && objects.capacity() > input.len().saturating_mul(2) {
-        return Err(invalid("private object Vec exceeded prepaid capacity"));
-    }
+    let mut objects = Receipts::for_objects(input.len(), memory.is_some())?;
     // Reuse a private file's atomic descriptor to create private directories.
     // Its descriptor is constant rather than derived from source ACLs.
     let sd = private_descriptor()?;
@@ -2169,10 +2215,10 @@ fn allocate_domain_with_memory(
                 system_directory_indices.push(index);
             }
             if item.components.is_empty() || system {
-                objects.push(
+                objects.push(|| {
                     serde_json::json!({"object_index":index,"components":item.components,
-                "disposition":"pending-system-or-root-metadata"}),
-                );
+                "disposition":"pending-system-or-root-metadata"})
+                });
                 if let (Some(memory), Some(guard)) = (&memory, row_memory) {
                     let mut retained = memory::object_bytes(
                         index,
@@ -2320,13 +2366,13 @@ fn allocate_domain_with_memory(
                     }
                 }
             }
-            objects.push(
+            objects.push(|| {
                 serde_json::json!({"object_index":index,"components":item.components,
             "logical_length":item.logical_length(),"disposition":"private-uninitialized",
             "payload_expected_sha256":item.expected_sha256,
             "source_security_sha256":hex::encode(Sha256::digest(item.security)),
-            "source_metadata_restoration_pending":true,"payload_supply_pending":!item.directory}),
-            );
+            "source_metadata_restoration_pending":true,"payload_supply_pending":!item.directory})
+            });
             if let (Some(memory), Some(guard)) = (&memory, row_memory) {
                 memory.retain(
                     guard,

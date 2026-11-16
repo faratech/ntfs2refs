@@ -116,16 +116,9 @@ impl Owner {
             )?,
             mul(add(count as u64, 2)?, payer.lease_heap_bytes())?,
         )?;
-        let registry = payer.reserve(add(
-            add(
-                registry,
-                mul(
-                    objects as u64,
-                    2 * mem::size_of::<serde_json::Value>() as u64,
-                )?,
-            )?,
-            4096,
-        )?)?;
+        // (No slots for receipts: this owner's route counts them.)
+        let _ = objects;
+        let registry = payer.reserve(add(registry, 4096)?)?;
         let base_bytes = add(mul(row_bytes, 8)?, 64 * 1024 * 1024)?;
         let base = payer.reserve(base_bytes)?;
         let mut guards = Vec::new();
@@ -363,16 +356,16 @@ impl Owner {
 }
 pub(super) fn object_bytes(
     index: usize,
-    objects: &Vec<serde_json::Value>,
+    objects: &Receipts,
     files: &BTreeMap<StreamKey, unwritten::PrivatePlaceholder>,
     targets: &BTreeMap<StreamKey, sparse_stream::Target>,
     metadata: &BTreeMap<usize, File>,
 ) -> io::Result<u64> {
-    let mut n = json(
-        objects
-            .last()
-            .ok_or_else(|| invalid("private object receipt absent"))?,
-    )?;
+    if objects.len() == 0 {
+        return Err(invalid("private object receipt absent"));
+    }
+    // The object's receipt, where receipts are kept.
+    let mut n = objects.last().map_or(Ok(0), json)?;
     if metadata.contains_key(&index) && index != 0 {
         n = add(n, node::<usize, File>()?)?;
     }
@@ -556,6 +549,36 @@ mod charge_tests {
         let slots =
             (11 * (mem::size_of::<String>() + mem::size_of::<Value>()) + 12 * 8 + 32) as u64;
         assert!(node >= slots, "{node} < {slots}");
+    }
+
+    #[test]
+    fn an_object_is_charged_for_its_receipt_only_where_receipts_are_kept() {
+        let receipt = || {
+            serde_json::json!({
+                "object_index": 7, "components": ["feature-manyfiles", "00", "00000", "file-0000007.dat"],
+                "logical_length": 412, "disposition": "private-uninitialized",
+                "payload_expected_sha256": "0".repeat(64),
+                "source_security_sha256": "1".repeat(64),
+                "source_metadata_restoration_pending": true, "payload_supply_pending": true
+            })
+        };
+        let (files, targets, metadata) = (BTreeMap::new(), BTreeMap::new(), BTreeMap::new());
+        let charge = |receipts: &Receipts| object_bytes(7, receipts, &files, &targets, &metadata);
+        // The older routes keep the receipt and are charged for it: more
+        // than a kilobyte for a small file.
+        let mut kept = Receipts::for_objects(8, false).unwrap();
+        assert!(charge(&kept).is_err(), "nothing was written down yet");
+        kept.push(receipt);
+        assert_eq!((kept.len(), kept.kept().map(<[Value]>::len)), (1, Some(1)));
+        assert!(charge(&kept).unwrap() > 1024);
+        // The route that accounts for its memory counts it, never makes it,
+        // and holds nothing for it.
+        let mut counted = Receipts::for_objects(8, true).unwrap();
+        assert!(charge(&counted).is_err());
+        counted.push(|| unreachable!("a receipt nobody reads is not made"));
+        assert_eq!((counted.len(), counted.kept().is_none()), (1, true));
+        assert!(counted.last().is_none());
+        assert_eq!(charge(&counted).unwrap(), 0);
     }
 
     #[test]

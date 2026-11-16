@@ -32,6 +32,9 @@ use std::{
 const CHUNK: usize = crate::ntfs_inspect::SESSION_READ_BYTES;
 const PURPOSE: [u8; 8] = *b"N2RROUT1";
 
+/// The workspace for one route on its way into the sort.
+const ROUTE_WORKSPACE: u64 = 1024 * 1024;
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PagedPayloadRoute {
@@ -199,13 +202,12 @@ impl<'observation> PagedPayloadRoutes<'observation> {
             &memory,
             aliases,
         )?;
-        let ram = scratch.lease_ram(
-            admission
-                .budget
-                .max_row_bytes
-                .checked_mul(8)
-                .context("route row RAM overflow")?,
-        )?;
+        // One route while it is made and handed to the sort: its path twice
+        // (a path has 32,767 UTF-16 units at most), its stream's name and
+        // its text. The sort's batch has a lease of its own. (This was
+        // eight of the largest row the budget admits: an eighth of the
+        // ledger while the routes were captured.)
+        let ram = scratch.lease_ram(ROUTE_WORKSPACE)?;
         // A count is a batch-size hint only; fragmented streams can emit any
         // number of extra routes and spill through the ordinary merge path.
         let mut sort =

@@ -342,17 +342,25 @@ and of 20,000 do.
 **Memory is what limits the number of files today.** A run keeps a ledger of
 the memory it may use, two thirds of what is free when it starts. What it
 holds there for every file and directory until the conversion is complete
-sets the limit: about 21 KiB of free memory for every file (2 GiB for
-100,000 files, 10 GiB for 500,000). `--check`, and the reading a run makes
+sets the limit: 400 MiB of free memory and about 15 KiB for every file
+(1.8 GiB for 100,000 files, 7.5 GiB for 500,000). `--check`, and the reading a run makes
 before it asks, give that figure and refuse a volume the free memory is not
 enough for before anything is built.
 
 What a run holds in memory only to go faster (stores it looks things up in,
 objects it has decoded) it gives back when the memory is needed for
 something it cannot do without, what it used longest ago first. It is
-slower for that, and its last lines say that this happened. A run that stops for memory all the same says
-which reservations were the largest, and every run prints how high its
-reservations went and, step by step, what held them (`memory-steps:`).
+slower for that, and its last lines say that this happened. A run that stops
+for memory all the same says which reservations were the largest, and every
+run prints how high its reservations went and, step by step, what held them
+(`memory-steps:`).
+
+`--memory-limit <MiB>` sets the most memory a run may use, where it would
+otherwise use up to two thirds of what is free: for a machine that has to
+keep memory for something else, or to see how a volume does with little. A
+run with less memory holds less in memory and takes longer. A limit below
+what the volume needs is refused before anything is built, and the refusal
+says what the limit would have to be. A recovery takes the option too.
 
 ## Convert an installed Windows
 
@@ -513,6 +521,7 @@ differences it accepts.
 | `--list` | Lists disks and partitions, and whether each NTFS partition can be converted |
 | `--drive <letter or disk>` `[--partition N]` | Selects the volume |
 | `--scratch-directory <dir>` | Working storage, on another disk |
+| `--memory-limit <MiB>` | The most memory the run may use; without it, up to two thirds of what is free |
 | `--check` | Reads the volume while it stays online: what would refuse it, and what a conversion takes |
 | `--compare-listing` | Lists the volume before and after the conversion and compares the two |
 | `--diagnose` `[--diagnose-limit N]` | Goes through the whole preparation without converting |

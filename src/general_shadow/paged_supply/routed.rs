@@ -364,14 +364,10 @@ pub(crate) fn preflight_source_references(
         raw.canonical_sha256()? == hex::encode(admission.source_inspection_sha256),
         "reference preflight raw/expected source pin differs"
     );
-    let _working = bytes.lease_working_ram(
-        admission
-            .budget
-            .max_row_bytes
-            .checked_mul(8)
-            .and_then(|n| n.checked_add(65536))
-            .context("reference preflight RAM overflow")?,
-    )?;
+    // Each record is paid for while it is held, below; this is for the
+    // loop's own state. (It was eight of the largest row the budget admits
+    // for the whole pass.)
+    let _working = bytes.lease_working_ram(65536)?;
     for index in 0..expected.len() {
         let object = expected.object_leased(index)?;
         if object.directory || system(&object) {
@@ -382,6 +378,8 @@ pub(crate) fn preflight_source_references(
             if prefix == 0 || (stream.source_offset.is_none() && stream.source_extents.is_empty()) {
                 continue;
             }
+            let _record_ram =
+                bytes.lease_working_ram(raw.record_workspace(object.record_number)?)?;
             let file = raw
                 .find_record(object.record_number, Some(object.sequence_number))?
                 .with_context(|| {

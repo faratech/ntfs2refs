@@ -187,7 +187,7 @@ Open, in the order of the owner's plan (#148), which is where to stop or
 reorder the work:
 
 1. Memory must not grow with the number of files, and a run has to be
-   extremely stable (owner, 2026-11-15). Today it takes about 21 KiB of free
+   extremely stable (owner, 2026-11-15). Today it takes about 15 KiB of free
    memory a file (it was 34): what is held for every object until the end
    is the new volume's record of it with its open handle (3.4 KiB) and the
    walks' row for it (3.1 KiB), and those move to working storage next;

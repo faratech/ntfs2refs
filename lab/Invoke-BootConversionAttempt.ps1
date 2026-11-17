@@ -629,7 +629,11 @@ try {
         throw ("Host volume has {0:N1} GB free with checkpoint '{2}' restored, and that stopped growing {3} s ago; an attempt needs {1} GB. Free space first (old attempts' scratch.vhdx files, or the other lab VM's last attempt)." -f ($hostFreeDisk / 1GB), $MinHostFreeGB, $snapshots[0].Name, ($waited - $grownAt))
     }
     $hostFree = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory * 1KB
-    $memory = [Math]::Min([long]$MemoryGB * 1GB, [long]($hostFree * 0.8 / 1GB) * 1GB)
+    # The host keeps 8 GB of what is free. The VM was given four fifths of
+    # it: with 23 GB free that left the host under 5 GB, a run's own
+    # growth took the rest, and the host stopped the round for lack of
+    # memory (17 November, 2.6 GB free of 64).
+    $memory = [Math]::Min([long]$MemoryGB * 1GB, [long](($hostFree - 8GB) / 1GB) * 1GB)
     # A VM is given less than 8 GB only when the caller asked for it (a run
     # on a small machine, -MemoryGB 4), never because the host is short.
     if ($memory -lt [Math]::Min(8GB, [long]$MemoryGB * 1GB)) { throw "Host has too little free memory for the VM: $([Math]::Round($hostFree/1GB,1)) GB free" }

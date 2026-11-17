@@ -251,7 +251,16 @@ pub(crate) fn finalize_resource_handoff_with_windows_aliases_observer<O: Prepara
         shadow: protected.recovery().shadow().clone(),
     };
     let input = PagedInputs(metadata.expected());
-    let payer = ArenaReportMemory(arena.clone());
+    // The walk of the converted volume keeps its rows in blocks, which go
+    // to a file of this group when memory is short. The files are kept
+    // for as long as the group; declared here, they outlive the report.
+    let spilled_rows = crate::general_composite_target::paged_memory::SpilledFiles::default();
+    let payer = crate::general_composite_target::paged_memory::ArenaReportStorage::new(
+        ArenaReportMemory(arena.clone()),
+        group.clone(),
+        output,
+        std::sync::Arc::clone(&spilled_rows),
+    );
     // The old preparation's Arc remains a real owner. Charge its retained
     // ledger in this new arena as well before native queries/union indexes.
     let _external_alias_memory = windows_aliases

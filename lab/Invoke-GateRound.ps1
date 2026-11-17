@@ -14,7 +14,8 @@ it: four sets, the first two at the same time.
   data      on the other Windows 11 VMs: data volumes of every geometry,
             lived-in and many-file volumes, a shared disk, stops, recoveries,
             one volume with --recheck-everything, one held to the memory
-            the estimate asks for it
+            the estimate asks for it, one with middling memory held to a
+            time
   full      on the reference VM, with the host to itself: the full Windows
             volume, converted and booted on ReFS
   server    on the Windows Server VM: standard ReFS and the Dev Drive
@@ -137,6 +138,11 @@ $dataCases = @(
     # Held to the memory the estimate asks for it: what the run holds only
     # to go faster is given up on the way.
     'files-20k-limit|-Content minimal -Features manyfiles -FileCount 20000 -ConverterArgs --memory-limit=480'
+    # Neither short of memory nor with plenty, and held to a time: a change
+    # that made such a run twice as slow (945 s for 481 s, issue 161) passed
+    # every other case, because none has this much memory for its volume.
+    # It takes about nine minutes.
+    'files-100k-mid|-Content minimal -Features manyfiles -FileCount 100000 -ConverterArgs --memory-limit=1240 -TimeoutMinutes 14'
     '4k-admin|-RunAs administrator -Check'
     'shared|-Siblings -Check -Acceptance'
     "shared-lived-in|-Siblings $lived -Check"

@@ -252,6 +252,7 @@ mod imp {
             // making progress. Write what there is every few minutes.
             if written.elapsed() >= INTERIM {
                 write_interim(&samples);
+                crate::perf::interim_memory();
                 written = std::time::Instant::now();
             }
             let thread = TARGET_THREAD.load(Relaxed);

@@ -252,9 +252,6 @@ when:
   system partition: as a data volume it would no longer start. That is what
   [`--windows-boot-volume`](#convert-an-installed-windows) is for.
 
-`--whole-image-verification` and `--experimental-thin-shadow` take a volume
-on a disk of its own.
-
 ### The target
 
 - **Cluster size.** 4 KiB by default, or 64 KiB with
@@ -600,11 +597,12 @@ moves are not undone if the run stops; a rollback then restores files and
 metadata but not what unused space held. It is refused on a volume with shadow
 copies. The lab's matrices do not cover it.
 
-Earlier designs of the converter are still in the executable and are no longer
-listed by `--help`: `--whole-image-verification` (which compares and journals
-every byte of the volume and is limited to 1,024 files, 256 directories and
-4,096 NTFS runs) and `--offline-media`. Nothing in this guide or in the
-matrices is about them. The subcommands that worked from request files and raw
-images (`convert`, `resume`, `rollback`, `finalize`, `plan` and others) were
-removed with 0.4.0; the tag `archive/hidden-routes` keeps them, and
+One earlier design of the converter is still in the executable and is not
+listed by `--help`: `--offline-media`, for a partition on the disk of the
+running Windows. `ntfs2refs capabilities` names it; nothing in this guide or
+in the matrices is about it. The other routes and commands of earlier designs
+were removed with 0.4.0: `--whole-image-verification`, the thin temporary
+storage of `--experimental-thin-shadow`, and the subcommands that worked from
+request files and raw images (`convert`, `resume`, `rollback`, `finalize`,
+`plan` and others). The tag `archive/hidden-routes` keeps them, and
 [docs/history](history/README.md) holds their documents.

@@ -298,14 +298,6 @@ pub(super) fn convert(
             && before.filesystem == "NTFS",
         "actual readonly shared-disk NTFS routing required"
     );
-    ensure!(
-        !args.whole_image_verification,
-        "whole-image verification is not implemented for partition-scoped conversion; use allocation-bounded conversion"
-    );
-    ensure!(
-        !args.experimental_thin_shadow && args.experimental_thin_backing_bytes.is_none(),
-        "thin staging is not implemented for partition-scoped conversion; this route uses owned native VHDX staging"
-    );
     let format: TargetFormatProfile = args
         .target_format
         .as_deref()

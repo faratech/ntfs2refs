@@ -56,10 +56,7 @@ pub(super) fn convert(
         "shared conversion requires the actual readonly NTFS/current-Windows-disk route"
     );
     ensure!(
-        !args.whole_image_verification
-            && !args.experimental_thin_shadow
-            && args.experimental_thin_backing_bytes.is_none()
-            && args.controlled_post_flush_pause_nonce.is_none()
+        args.controlled_post_flush_pause_nonce.is_none()
             && !args.acknowledge_controlled_post_flush_pause,
         "offline shared conversion uses the native allocation-bounded shadow protocol"
     );

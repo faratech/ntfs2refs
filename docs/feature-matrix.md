@@ -104,5 +104,5 @@ These take the same paths as rows above, or are checked by tests only.
 - A Windows boot volume of Windows Server, and Windows 11 on build 26100:
   the lab's Windows 11 is build 26300 and its Windows Server is the control
   OS of data-volume attempts only.
-- `--minimize-scratch`, and the routes and commands of earlier designs that
-  `--help` no longer lists.
+- `--minimize-scratch`, and `--offline-media`, the route of an earlier design
+  that `--help` does not list.

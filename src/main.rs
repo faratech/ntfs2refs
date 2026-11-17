@@ -263,7 +263,7 @@ fn run() -> Result<u8> {
                             "a power cut to the storage itself: the lab ends the converter's process or turns the virtual machine off",
                             "a Windows build other than those in windows_builds.confirmed_builds, and a ReFS version other than 3.14",
                             "a conversion to standard ReFS on Windows 11 (the lab's does not format one), a Windows boot volume of Windows Server, and Windows 11 on build 26100",
-                            "--minimize-scratch, and the routes and commands that --help does not list",
+                            "--minimize-scratch, and --offline-media, the route that --help does not list",
                         ],
                     },
                     // The registry of 2026-10-28 records builds before 0.2.0.

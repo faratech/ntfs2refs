@@ -3728,23 +3728,6 @@ pub fn inspect_with_limits_and_policy<R: Read + Seek>(
     inspect_internal(reader, length, limits, policy, false)
 }
 
-/// Layout suggestions only: never read nonresident DATA merely to hash streams
-/// which preparation may skip. All logical hashes stay explicitly unavailable;
-/// a permanent blocker prevents this report from satisfying source admission.
-pub fn inspect_for_preparation<R: Read + Seek>(
-    reader: &mut R,
-    length: u64,
-    limits: InspectionLimits,
-) -> Result<NtfsInspection> {
-    inspect_internal(
-        reader,
-        length,
-        limits,
-        crate::verification_policy::VerificationPolicy::ExtentIdentityV1,
-        true,
-    )
-}
-
 fn inventory_record<R: Read + Seek>(
     reader: &mut R,
     geometry: &NtfsGeometry,

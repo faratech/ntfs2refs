@@ -1,154 +1,14 @@
 //! Exclusive unchanged-source cancellation. No raw payload writer is exposed.
 pub mod preparation;
-use crate::{
-    attestation_native::Privileges,
-    general_layout::GeneralDiskBinding,
-    layout::invalid,
-    native::{self, GeneralDiskState, NativeEvent},
-};
+use crate::{general_layout::GeneralDiskBinding, layout::invalid, native::NativeEvent};
 use serde::Serialize;
-use sha2::{Digest, Sha256};
-use std::{
-    fs::{File, OpenOptions},
-    io::{self, Read, Seek, SeekFrom},
-    os::windows::fs::{MetadataExt, OpenOptionsExt},
-};
+use std::{io, os::windows::fs::MetadataExt};
 use windows_sys::Win32::Storage::FileSystem::{
     GetVolumeNameForVolumeMountPointW, SetVolumeMountPointW,
 };
 
-pub struct UnchangedSourceLease {
-    file: File,
-    binding: GeneralDiskBinding,
-    before: GeneralDiskState,
-    source_sha256: String,
-    bytes_read: u64,
-    privileges: Privileges,
-}
-#[derive(Debug, Serialize)]
-pub struct Cancellation {
-    pub binding: GeneralDiskBinding,
-    pub before: GeneralDiskState,
-    pub after: GeneralDiskState,
-    pub source_sha256: String,
-    pub native_bytes_read: u64,
-    pub exclusive_source_lease: bool,
-    pub raw_source_writes: u64,
-    pub source_handle_closed: bool,
-}
 fn require(ok: bool, message: &str) -> io::Result<()> {
     if ok { Ok(()) } else { Err(invalid(message)) }
-}
-fn pin(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|v| v.is_ascii_digit() || (b'a'..=b'f').contains(&v))
-}
-impl UnchangedSourceLease {
-    pub fn prove(
-        binding: GeneralDiskBinding,
-        expected: &GeneralDiskState,
-        expected_sha256: &str,
-        events: &mut Vec<NativeEvent>,
-    ) -> io::Result<Self> {
-        binding.validate()?;
-        require(
-            pin(expected_sha256) && expected.disk_attributes == 3,
-            "cancel requires exact frozen attrs3/hash",
-        )?;
-        require(
-            native::current_windows_disk(events)? != binding.disk_number,
-            "Windows disk cannot be cancelled",
-        )?;
-        let privileges = Privileges::enable_for(&["SeManageVolumePrivilege"])?;
-        // Sharing zero excludes every existing or future converter raw handle.
-        // The same RW management handle is retained across proof and restoration;
-        // no payload Write API or second source handle is used.
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .share_mode(0)
-            .custom_flags(0x80000000)
-            .open(format!("\\\\.\\PhysicalDrive{}", binding.disk_number))?;
-        let before = native::general_disk_state(&file, &binding, events)?;
-        require(
-            &before == expected && before.disk_attributes == 3,
-            "actual frozen source identity/state differs",
-        )?;
-        file.seek(SeekFrom::Start(binding.identity.partition_offset))?;
-        let mut hash = Sha256::new();
-        let mut buffer = vec![0u8; 1024 * 1024];
-        let mut left = binding.identity.partition_bytes;
-        let mut first = true;
-        let mut bytes_read = 0;
-        while left > 0 {
-            let count = left.min(buffer.len() as u64) as usize;
-            file.read_exact(&mut buffer[..count])?;
-            if first {
-                require(
-                    count >= 512
-                        && &buffer[3..11] == b"NTFS    "
-                        && buffer[510..512] == [0x55, 0xaa]
-                        && u16::from_le_bytes(buffer[11..13].try_into().unwrap()) == 512
-                        && buffer[13] == 8,
-                    "actual source is not the supported NTFS boot profile",
-                )?;
-                first = false;
-            }
-            hash.update(&buffer[..count]);
-            left -= count as u64;
-            bytes_read += count as u64;
-        }
-        let source_sha256 = hex::encode(hash.finalize());
-        require(
-            source_sha256 == expected_sha256
-                && native::general_disk_state(&file, &binding, events)? == before,
-            "source bytes or identity changed before cancellation",
-        )?;
-        Ok(Self {
-            file,
-            binding,
-            before,
-            source_sha256,
-            bytes_read,
-            privileges,
-        })
-    }
-    pub fn source_sha256(&self) -> &str {
-        &self.source_sha256
-    }
-    pub fn restore_original_online(
-        mut self,
-        events: &mut Vec<NativeEvent>,
-    ) -> io::Result<Cancellation> {
-        require(
-            native::general_disk_state(&self.file, &self.binding, events)? == self.before,
-            "exclusive source changed after proof",
-        )?;
-        native::set_attributes(&self.file, 0, events)?;
-        native::refresh_disk_properties(&self.file, events)?;
-        let after = native::general_disk_state(&self.file, &self.binding, events)?;
-        let mut expected = self.before.clone();
-        expected.disk_attributes = 0;
-        require(
-            after == expected,
-            "cancel source identity/online state differs",
-        )?;
-        let result = Cancellation {
-            binding: self.binding.clone(),
-            before: self.before.clone(),
-            after,
-            source_sha256: self.source_sha256.clone(),
-            native_bytes_read: self.bytes_read,
-            exclusive_source_lease: true,
-            raw_source_writes: 0,
-            source_handle_closed: true,
-        };
-        native::close_file(self.file, "close-exclusive-cancel-source", events)?;
-        self.privileges.restore()?;
-        Ok(result)
-    }
 }
 
 pub fn validate_mount_paths(paths: &[String]) -> io::Result<()> {
@@ -301,40 +161,6 @@ pub fn restore_ntfs_mount_paths(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn exclusive_lease_excludes_live_reader_and_blocks_new_reader_until_closed() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("lease.bin");
-        std::fs::write(&path, b"unchanged source").unwrap();
-        let worker = OpenOptions::new()
-            .read(true)
-            .share_mode(3)
-            .open(&path)
-            .unwrap();
-        let failure = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .share_mode(0)
-            .open(&path)
-            .unwrap_err();
-        assert_eq!(failure.raw_os_error(), Some(32));
-        drop(worker);
-        let lease = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .share_mode(0)
-            .open(&path)
-            .unwrap();
-        assert!(
-            OpenOptions::new()
-                .read(true)
-                .share_mode(3)
-                .open(&path)
-                .is_err()
-        );
-        drop(lease);
-        assert_eq!(std::fs::read(&path).unwrap(), b"unchanged source");
-    }
     #[test]
     fn mount_roots_refuse_aliases_devices_and_duplicates() {
         validate_mount_paths(&["F:\\".into(), "C:\\mount\\data\\".into()]).unwrap();

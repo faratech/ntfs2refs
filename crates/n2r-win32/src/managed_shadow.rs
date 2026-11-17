@@ -60,7 +60,6 @@ pub use retirement::{
 };
 pub mod growth_probe;
 pub mod refs_extent;
-pub mod thin_pool;
 
 /// Requested native formatter profile, not a trust or compatibility claim.
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]

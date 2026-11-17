@@ -556,8 +556,7 @@ fn adopt_recovery_domain(
     let mut system_identities = BTreeMap::new();
     let mut system_directory_indices = Vec::new();
     let mut objects = Receipts::for_objects(input.len(), true)?;
-    let tracked =
-        usize::try_from(admission.budget.retained_index_bytes / 8192).map_err(io::Error::other)?;
+    let tracked = admission.placement_slots()?;
     let partition = enrollment.pair.shadow.identity.partition_bytes;
     for index in 0..input.len() {
         let owner = input.object(index)?;

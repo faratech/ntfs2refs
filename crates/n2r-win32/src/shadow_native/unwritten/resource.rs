@@ -51,8 +51,7 @@ impl ResourcePlacement {
         payer: Arc<dyn ReportMemoryAccountant>,
     ) -> io::Result<Self> {
         admission.validate()?;
-        let slots = usize::try_from(admission.budget.retained_index_bytes / 8192)
-            .map_err(io::Error::other)?;
+        let slots = admission.placement_slots()?;
         let byte_moves = usize::try_from(max_move_bytes / crate::target_cluster::bytes())
             .map_err(io::Error::other)?;
         if slots == 0

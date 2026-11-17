@@ -907,6 +907,51 @@ struct Deferred {
     hole_end: u64,
 }
 
+/// The memory of a plan of deferred steps, paid for as the plan grows.
+///
+/// It was reserved for as many steps as the indexes may ever hold, before
+/// the first was planned: 45 MiB of a run with 1.7 GiB, and eight times
+/// that once a slot was counted at what it takes.
+struct StepMemory<'a> {
+    payer: &'a dyn report_memory::ReportMemoryAccountant,
+    paid: usize,
+    leases: Vec<Box<dyn report_memory::ReportMemoryLease>>,
+}
+impl<'a> StepMemory<'a> {
+    /// A step, its place in `remaining_holes` and in a plan that replaces
+    /// this one while both exist, in Vecs that double.
+    const STEP: u64 =
+        ((mem::size_of::<Deferred>() + 2 * mem::size_of::<(usize, u64, u64)>()) * 8) as u64;
+    const FIRST: usize = 1024;
+
+    fn new(payer: &'a dyn report_memory::ReportMemoryAccountant) -> Self {
+        Self {
+            payer,
+            paid: 0,
+            leases: Vec::new(),
+        }
+    }
+    /// Pay for a plan of `steps` steps before it holds that many.
+    fn admit(&mut self, steps: usize, limit: usize) -> io::Result<()> {
+        while steps > self.paid {
+            let next = self
+                .paid
+                .saturating_mul(2)
+                .clamp(Self::FIRST.min(limit), limit.max(steps));
+            let more = (next - self.paid) as u64;
+            self.leases.push(
+                self.payer.reserve(
+                    more.checked_mul(Self::STEP)
+                        .and_then(|n| n.checked_add(65536))
+                        .ok_or_else(|| invalid("deferred planning RAM overflow"))?,
+                )?,
+            );
+            self.paid = next;
+        }
+        Ok(())
+    }
+}
+
 /// Inputs fixed before the first native move.
 #[derive(Clone, Copy)]
 struct Wanted<'a> {
@@ -946,6 +991,7 @@ fn plan_deferred(
     holes: &[(usize, u64, u64)],
     executed: usize,
     counters: &mut Counters,
+    mut memory: Option<&mut StepMemory<'_>>,
 ) -> io::Result<Result<Vec<Deferred>, String>> {
     let Wanted {
         desired,
@@ -1022,9 +1068,13 @@ fn plan_deferred(
         let mut next_direct = 0;
         while cursor < end {
             if limits.resource && deferred.len() == limits.subruns {
-                return Ok(Err(
-                    "resource deferred-step index exhausted before native IO".into(),
-                ));
+                return Ok(Err(format!(
+                    "resource deferred-step index exhausted before native IO: more than the {} steps this much memory indexes",
+                    limits.subruns
+                )));
+            }
+            if let Some(memory) = memory.as_deref_mut() {
+                memory.admit(deferred.len() + 1, limits.subruns)?;
             }
             if executed + deferred.len() >= max_moves {
                 counters.planned_deferred_submissions = executed + deferred.len();
@@ -1088,30 +1138,27 @@ fn allocate_deferred(
     // ReFS allocates a planned destination after it, the mover refuses that
     // step before submission; the rest of the phase is then planned again
     // from one fresh snapshot, a bounded number of times.
-    let _deferred_memory = if wanted.limits.resource {
-        Some(
+    let mut deferred_memory = if wanted.limits.resource {
+        Some(StepMemory::new(
             wanted
                 .payer
-                .ok_or_else(|| invalid("deferred payer absent"))?
-                .reserve(
-                    (wanted.limits.subruns as u64)
-                        .checked_mul(
-                            (mem::size_of::<Deferred>() + 2 * mem::size_of::<(usize, u64, u64)>())
-                                as u64
-                                * 8,
-                        )
-                        .and_then(|n| n.checked_add(65536))
-                        .ok_or_else(|| invalid("deferred planning RAM overflow"))?,
-                )?,
-        )
+                .ok_or_else(|| invalid("deferred payer absent"))?,
+        ))
     } else {
         None
     };
     let (legacy, metadata) = views(tree, wanted.limits)?;
     counters.phase_bitmap_snapshots += 1;
     let mut base_moves = evidence.len();
-    let mut deferred = match plan_deferred(wanted, &legacy, &metadata, holes, base_moves, counters)?
-    {
+    let mut deferred = match plan_deferred(
+        wanted,
+        &legacy,
+        &metadata,
+        holes,
+        base_moves,
+        counters,
+        deferred_memory.as_mut(),
+    )? {
         Ok(steps) => steps,
         Err(message) => return Err(refuse(tree, counters, message)),
     };
@@ -1176,6 +1223,7 @@ fn allocate_deferred(
                     &remaining,
                     base_moves + next_step,
                     counters,
+                    deferred_memory.as_mut(),
                 )? {
                     Ok(steps) => steps,
                     Err(message) => return Err(refuse(tree, counters, message)),
@@ -2734,6 +2782,40 @@ fn run_domain_inner(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn deferred_steps_are_paid_for_as_the_plan_grows_and_not_by_what_it_may_hold() {
+        use crate::shadow_native::report_memory::test_payer::Counted;
+        let payer = Counted::with_limit(u64::MAX);
+        let mut memory = StepMemory::new(&payer);
+        // A run with 1.7 GiB may index 435,000 steps.
+        let limit = 435_000;
+        memory.admit(1, limit).unwrap();
+        assert_eq!(memory.paid, 1024);
+        assert_eq!(payer.held(), 1024 * StepMemory::STEP + 65536);
+        memory.admit(1024, limit).unwrap();
+        assert_eq!(memory.paid, 1024);
+        // Doubling: a plan of 100,000 steps has paid for 131,072.
+        for steps in 1..=100_000 {
+            memory.admit(steps, limit).unwrap();
+        }
+        assert_eq!(memory.paid, 131_072);
+        assert!(payer.held() < 131_072 * StepMemory::STEP + 9 * 65536);
+        // Never for more than the indexes hold.
+        memory.admit(limit, limit).unwrap();
+        assert_eq!(memory.paid, limit);
+        // A plan that replaces this one is within what was paid.
+        let held = payer.held();
+        memory.admit(90_000, limit).unwrap();
+        assert_eq!(payer.held(), held);
+        // What a step takes is refused where there is no room for it.
+        let small = Counted::with_limit(1024 * StepMemory::STEP + 65536);
+        let mut memory = StepMemory::new(&small);
+        memory.admit(1024, limit).unwrap();
+        assert!(memory.admit(1025, limit).is_err());
+        drop(memory);
+        assert_eq!(small.held(), 0);
+    }
+
     use super::*;
 
     #[test]

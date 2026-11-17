@@ -590,40 +590,6 @@ mod windows {
         }
     }
 
-    /// What to tell the owner of a whole-image run that froze its source and
-    /// stopped before it published a recovery bundle. That route leaves the
-    /// disk offline and read-only on purpose; `ntfs2refs cancel` returns it
-    /// once it has proved the whole image unchanged, and needs the digests of
-    /// three of the run's records. `None` when the run froze nothing, or got
-    /// as far as a bundle (whose "To recover:" line is then the way back).
-    pub(super) fn frozen_source_way_back(conversion: &std::path::Path) -> Option<String> {
-        if [
-            "compact-recovery-bundle.json",
-            "allocation-recovery-bundle.json",
-        ]
-        .iter()
-        .any(|bundle| conversion.join(bundle).exists())
-        {
-            return None;
-        }
-        let digest = |record: &str| {
-            fs::read(conversion.join(record))
-                .ok()
-                .map(|bytes| hex::encode(Sha256::digest(bytes)))
-        };
-        let intent = digest("conversion-intent.json")?;
-        let frozen = digest("qualification/source-frozen.json")?;
-        let mounts = digest("qualification/source-mount-paths.json")?;
-        Some(format!(
-            "The source disk was left offline and read-only. Nothing was written to it. To \
-             return the NTFS volume, run this; it proves the whole volume unchanged first:\n  \
-             ntfs2refs cancel --run-directory \"{}\" --intent-sha256 {intent} \
-             --frozen-source-sha256 {frozen} --mount-paths-sha256 {mounts} --output \"{}\"",
-            conversion.display(),
-            conversion.with_file_name("cancel").display()
-        ))
-    }
-
     fn convert_with_progress(
         request: crate::general_conversion::Request,
         budget: crate::general_qualification::CompactConstructionBudget,
@@ -2025,9 +1991,6 @@ mod windows {
                         "Conversion stopped. Preserve all recovery files at {}",
                         run.display()
                     );
-                    if let Some(way_back) = frozen_source_way_back(&output) {
-                        eprintln!("{way_back}");
-                    }
                 }
                 Err(e)
             }
@@ -2040,44 +2003,6 @@ mod tests {
     use super::*;
     use crate::execution_mode::ExecutionMode;
 
-    #[cfg(windows)]
-    #[test]
-    fn a_run_that_left_its_source_frozen_is_told_how_to_return_it() {
-        use sha2::{Digest, Sha256};
-        let run = tempfile::tempdir().unwrap();
-        let conversion = run.path().join("conversion");
-        std::fs::create_dir_all(conversion.join("qualification")).unwrap();
-        // A run that froze nothing has nothing to return.
-        assert_eq!(windows::frozen_source_way_back(&conversion), None);
-        std::fs::write(conversion.join("conversion-intent.json"), b"intent").unwrap();
-        std::fs::write(
-            conversion.join("qualification/source-frozen.json"),
-            b"frozen",
-        )
-        .unwrap();
-        assert_eq!(windows::frozen_source_way_back(&conversion), None);
-        std::fs::write(
-            conversion.join("qualification/source-mount-paths.json"),
-            b"mounts",
-        )
-        .unwrap();
-        let said = windows::frozen_source_way_back(&conversion).unwrap();
-        assert!(said.contains("left offline and read-only"), "{said}");
-        assert!(said.contains("ntfs2refs cancel --run-directory"), "{said}");
-        for (flag, record) in [
-            ("--intent-sha256", &b"intent"[..]),
-            ("--frozen-source-sha256", b"frozen"),
-            ("--mount-paths-sha256", b"mounts"),
-        ] {
-            let pin = format!("{flag} {}", hex::encode(Sha256::digest(record)));
-            assert!(said.contains(&pin), "{said}");
-        }
-        let fresh = format!("--output \"{}\"", run.path().join("cancel").display());
-        assert!(said.contains(&fresh), "{said}");
-        // Once a recovery bundle is published, its recovery command is the way.
-        std::fs::write(conversion.join("compact-recovery-bundle.json"), b"{}").unwrap();
-        assert_eq!(windows::frozen_source_way_back(&conversion), None);
-    }
     #[cfg(windows)]
     #[test]
     fn a_run_names_the_partitions_that_go_offline_with_the_volume() {

@@ -603,8 +603,8 @@ copies. The lab's matrices do not cover it.
 Earlier designs of the converter are still in the executable and are no longer
 listed by `--help`: `--whole-image-verification` (which compares and journals
 every byte of the volume and is limited to 1,024 files, 256 directories and
-4,096 NTFS runs), `--offline-media`, and the subcommands that work from request
-files (`convert`, `resume`, `rollback`, `finalize`, `plan` and others).
-`ntfs2refs capabilities` names them. They are kept so that the records of
-earlier builds can still be read; nothing in this guide or in the matrices is
-about them. [docs/history](history/README.md) holds their documents.
+4,096 NTFS runs) and `--offline-media`. Nothing in this guide or in the
+matrices is about them. The subcommands that worked from request files and raw
+images (`convert`, `resume`, `rollback`, `finalize`, `plan` and others) were
+removed with 0.4.0; the tag `archive/hidden-routes` keeps them, and
+[docs/history](history/README.md) holds their documents.

@@ -656,6 +656,9 @@ pub(super) struct TailProof {
     pub padding_bytes_readback: u64,
 }
 
+/// The one value of [`Observation::logical_zero_policy`].
+const LOGICAL_ZERO_POLICY: &str = "source_uninitialized_allocated_bytes_are_normalized_from_logical_zero_reads; final_full_stream_digest_required";
+
 #[derive(Debug, Serialize)]
 pub struct Observation {
     /// Source sparse contract. Its initialized_length is the NTFS source VDL,
@@ -672,6 +675,44 @@ pub struct Observation {
     pub cached_regions: Vec<crate::attestation::IoctlQuery>,
     pub storage_regions: Vec<crate::attestation::IoctlQuery>,
     pub data_storage_valid: bool,
+}
+/// Read back from a row this process saved. The policy is the constant it
+/// was written from: any other text is refused, not kept.
+impl<'de> Deserialize<'de> for Observation {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Wire {
+            expected: SparseLayout,
+            source_initialized_length: u64,
+            numeric_vdl_preservation_claimed: bool,
+            logical_zero_policy: String,
+            layout_observation_verifies_logical_zero_bytes: bool,
+            actual_allocated: Vec<LogicalRange>,
+            allocation_matches: bool,
+            cached_regions: Vec<crate::attestation::IoctlQuery>,
+            storage_regions: Vec<crate::attestation::IoctlQuery>,
+            data_storage_valid: bool,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        if wire.logical_zero_policy != LOGICAL_ZERO_POLICY {
+            return Err(serde::de::Error::custom(
+                "sparse observation has an unknown logical-zero policy",
+            ));
+        }
+        Ok(Self {
+            expected: wire.expected,
+            source_initialized_length: wire.source_initialized_length,
+            numeric_vdl_preservation_claimed: wire.numeric_vdl_preservation_claimed,
+            logical_zero_policy: LOGICAL_ZERO_POLICY,
+            layout_observation_verifies_logical_zero_bytes: wire
+                .layout_observation_verifies_logical_zero_bytes,
+            actual_allocated: wire.actual_allocated,
+            allocation_matches: wire.allocation_matches,
+            cached_regions: wire.cached_regions,
+            storage_regions: wire.storage_regions,
+            data_storage_valid: wire.data_storage_valid,
+        })
+    }
 }
 pub(super) fn capture(
     file: &File,
@@ -801,7 +842,7 @@ fn observe_mode(
         expected: expected.clone(),
         source_initialized_length: expected.initialized_length,
         numeric_vdl_preservation_claimed: false,
-        logical_zero_policy: "source_uninitialized_allocated_bytes_are_normalized_from_logical_zero_reads; final_full_stream_digest_required",
+        logical_zero_policy: LOGICAL_ZERO_POLICY,
         layout_observation_verifies_logical_zero_bytes: false,
         actual_allocated: allocated,
         allocation_matches: true,

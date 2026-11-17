@@ -375,21 +375,21 @@ pub enum Mode {
     /// read-only lease. It never reads or verifies placeholder payload bytes.
     ObserveLayout,
 }
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CandidateReport {
     pub legacy: crate::bitmap_layout::Candidate,
     pub metadata_inclusive: crate::bitmap_layout::Candidate,
     pub legacy_page_proof: crate::bitmap_paging::Proof,
     pub metadata_page_proof: crate::bitmap_paging::Proof,
 }
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ObjectReport {
     pub components: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub additional_names: Vec<HardLinkObservation>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub named_streams: Vec<NamedStreamReport>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sparse: Option<sparse_stream::Observation>,
     pub before: Snapshot,
     pub after: Snapshot,
@@ -403,9 +403,9 @@ pub struct ObjectReport {
     pub cached_validity: Vec<u8>,
     pub storage_validity: Vec<u8>,
     /// Actual paginated native replies, used instead of the single raw reply.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cached_validity_pages: Option<InitializedRegionPages>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub storage_validity_pages: Option<InitializedRegionPages>,
     pub integrity: Vec<u8>,
     pub namespace: Vec<namespace_layout::Entry>,
@@ -1961,15 +1961,9 @@ fn validate_existing_content_domain_with_memory_and_windows_aliases(
         if report.objects.is_empty() {
             return Err(invalid("Windows alias source root absent"));
         }
-        // The identity of a row is 24 bytes; it is copied out of the row
-        // because the row is lent only for the length of the reading.
-        let identity = |index: usize| -> io::Result<[u8; 24]> {
-            report.objects.with(index, |row| {
-                query_bytes(&row.before, 18, 24)?
-                    .try_into()
-                    .map_err(|_| invalid("native file identity length differs"))
-            })
-        };
+        // The identity of a row is 24 bytes. The rows keep them at hand:
+        // the links name their parents and targets in no order of rows.
+        let identity = |index: usize| report.objects.identity(index);
         let root_identity = identity(0)?;
         for (ordinal, alias) in aliases.entries.iter().enumerate() {
             let parent_owner = input.object(alias.parent_object_index)?;
@@ -2104,9 +2098,13 @@ fn validate_existing_content_domain_with_memory_and_windows_aliases(
             let &(child_origin, expected_attributes) = expected
                 .get(&entry.name_utf16)
                 .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("unexpected existing shadow directory entry: {:?} in \\{} (attributes 0x{:x}; alias overlay {}; before_restore={before_restore} verify_contents={verify_contents} allow_post_mount_svi={allow_post_mount_svi} accounted={})", String::from_utf16_lossy(&entry.name_utf16), components.join("\\"), entry.attributes, aliases.map_or_else(|| "absent".to_owned(), |a| format!("{} entries", a.entries.len())), memory.is_some())))?;
-            // The entry is held to the child it names, whose path is read
-            // where the child's row or alias is at hand.
-            let mut admit = |child_components: &[String], identity_matches: bool| {
+            // The entry is held to the child it names. The child's path is
+            // read only to say what differs: a directory's children lie
+            // anywhere among the rows, and reading each one's row to look
+            // its identity up by path read a block of rows back for every
+            // entry once the rows were in working storage.
+            let mut admit = |child_components: &dyn Fn() -> io::Result<Vec<String>>,
+                             identity_matches: bool| {
                 let duplicate = !seen.insert(entry.name_utf16.clone());
                 // A file with no attributes is listed by Windows as NORMAL
                 // (0x80); the NTFS value it was created from is zero.
@@ -2114,7 +2112,7 @@ fn validate_existing_content_domain_with_memory_and_windows_aliases(
                     || (expected_attributes == 0 && entry.attributes == 0x80);
                 if duplicate || !attributes_match || !identity_matches {
                     let context = serde_json::json!({
-                        "path": child_components,
+                        "path": child_components()?,
                         "duplicate": duplicate,
                         "actual_attributes": entry.attributes,
                         "expected_attributes": expected_attributes,
@@ -2131,22 +2129,24 @@ fn validate_existing_content_domain_with_memory_and_windows_aliases(
                     if child_index >= report.objects.len() {
                         return Err(invalid("source namespace child index differs"));
                     }
-                    report.objects.with(child_index, |child| {
-                        let path = child.components.as_slice();
-                        admit(
-                            path,
-                            identities
-                                .get(path)
-                                .is_some_and(|id| id.as_slice() == entry.file_id),
-                        )
-                    })?;
+                    // The child's identity as its row has it: what the map
+                    // of identities holds under the child's path.
+                    let identity = report.objects.identity(child_index)?;
+                    admit(
+                        &|| {
+                            report
+                                .objects
+                                .with(child_index, |child| Ok(child.components.clone()))
+                        },
+                        identity[8..] == entry.file_id[..],
+                    )?;
                 }
                 NamespaceChild::Alias(alias_index) => {
                     let alias = aliases
                         .and_then(|a| a.entries.get(alias_index))
                         .ok_or_else(|| invalid("derived namespace child index differs"))?;
                     admit(
-                        alias.components.as_slice(),
+                        &|| Ok(alias.components.clone()),
                         alias.file_id_info[8..] == entry.file_id,
                     )?;
                 }
@@ -3979,20 +3979,20 @@ fn observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_o
     // Windows volume's walk). They are gathered a batch at a time and read
     // on the available cores; the results are written in their order, on
     // this thread, as before.
-    struct Residual {
+    struct Residual<'a> {
         expected: LayoutResidualExpectation,
-        index: usize,
+        // The object's row, taken on this thread when the residual was
+        // gathered: the helper threads read it and never ask for rows.
+        row: rows::Pinned<'a>,
         name: Vec<u16>,
     }
     const RESIDUAL_BATCH: usize = PARALLEL_BATCH;
     let objects = &native.objects;
-    let read_one = |residual: &Residual| -> io::Result<([u8; 16], String)> {
+    let read_one = |residual: &Residual<'_>| -> io::Result<([u8; 16], String)> {
         let expected = &residual.expected;
         let name = residual.name.as_slice();
-        if residual.index >= objects.len() {
-            return Err(invalid("paged residual native object absent"));
-        }
-        objects.with(residual.index, |object| {
+        {
+            let object = residual.row.row();
             let (before_stream, after_stream) = if name.is_empty() {
                 (&object.before, &object.after)
             } else {
@@ -4026,12 +4026,12 @@ fn observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_o
                 return Err(invalid("paged residual content/metadata differs"));
             }
             Ok((id, sha))
-        })
+        }
     };
     // Reads the gathered residuals and writes their results in order. The
     // query memory of each was paid for when it was gathered and is returned
     // here, after the last of them was read.
-    let mut read_batch = |batch: &mut Vec<Residual>,
+    let mut read_batch = |batch: &mut Vec<Residual<'_>>,
                           leases: &mut Vec<Option<Box<dyn report_memory::ReportMemoryLease>>>|
      -> io::Result<()> {
         let read = observe_in_parallel(batch.as_slice(), &read_one);
@@ -4051,7 +4051,7 @@ fn observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_o
         }
         Ok(())
     };
-    let mut batch: Vec<Residual> = Vec::with_capacity(RESIDUAL_BATCH);
+    let mut batch: Vec<Residual<'_>> = Vec::with_capacity(RESIDUAL_BATCH);
     let mut leases = Vec::with_capacity(RESIDUAL_BATCH);
     // The first residual of a batch is paid for as one read by itself was;
     // the others from spare memory, which leaves the ledger room for what
@@ -4086,10 +4086,35 @@ fn observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_o
             Err(error) => return Err(error),
         };
         let expected = validate_expected(ordinal, index, name, length)?;
+        if index >= objects.len() {
+            return Err(invalid("paged residual native object absent"));
+        }
+        // Rows kept in blocks stay at hand for a batch from no more than
+        // two blocks, which is what they reserved for blocks read back: a
+        // residual of a third block starts the next batch.
+        let mut row = objects.pin(index)?;
+        if let Some(block) = row.block() {
+            let mut blocks = [None, None];
+            let mut third = false;
+            for held in batch.iter().filter_map(|residual| residual.row.block()) {
+                if blocks.contains(&Some(held)) {
+                    continue;
+                }
+                match blocks.iter_mut().find(|slot| slot.is_none()) {
+                    Some(slot) => *slot = Some(held),
+                    None => third = true,
+                }
+            }
+            if third || (!blocks.contains(&Some(block)) && blocks.iter().all(Option::is_some)) {
+                drop(row);
+                read_batch(&mut batch, &mut leases)?;
+                row = objects.pin(index)?;
+            }
+        }
         leases.push(lease);
         batch.push(Residual {
             expected,
-            index,
+            row,
             name: name.to_vec(),
         });
         if batch.len() == RESIDUAL_BATCH {
@@ -5143,8 +5168,20 @@ fn run_role_content_domain_accounted(
             "accounted report collection requires protected or converted-metadata V4 domain route",
         ));
     }
+    // Where the payer has working storage to offer, the rows are kept in
+    // blocks that can go to a file, and nothing is prepaid for each of them.
+    let mut rows_spill = match (memory_accountant, legacy_input) {
+        (Some(payer), None) => payer.spill_source(),
+        _ => None,
+    };
     let mut retained_memory = memory_accountant
-        .map(|payer| report_memory::Retained::new(payer, input.len(), sd_limit.unwrap_or(0)))
+        .map(|payer| {
+            report_memory::Retained::new(
+                payer,
+                if rows_spill.is_some() { 0 } else { input.len() },
+                sd_limit.unwrap_or(0),
+            )
+        })
         .transpose()?;
     let capture_snapshot = |file: &File| {
         if let Some(maximum) = sd_limit {
@@ -6344,7 +6381,11 @@ fn run_role_content_domain_accounted(
     let objects = if let Some(legacy) = legacy_input {
         Rows::from_observed(observe_in_parallel(legacy, observe)?)
     } else {
-        let mut result = Rows::with_exact_capacity(input.len())?;
+        let mut result = match (memory_accountant, rows_spill.take()) {
+            (Some(payer), Some(spill)) => Rows::paged(payer, spill)?,
+            _ => Rows::with_exact_capacity(input.len())?,
+        };
+        let in_blocks = result.in_blocks();
         if let Some(memory) = &mut retained_memory {
             memory.observe_object_capacity(result.capacity())?;
         }
@@ -6392,14 +6433,26 @@ fn run_role_content_domain_accounted(
                 observe_in_parallel(&items, &observe)?
             };
             for (mut row, (lease, peak)) in rows.into_iter().zip(leases) {
-                if let (Some(memory), Some(lease)) = (&mut retained_memory, lease) {
-                    report_memory::compact_row(&mut row);
-                    memory.retain(lease, &row, peak)?;
+                match (memory_accountant, lease) {
+                    (Some(payer), Some(lease)) if in_blocks => {
+                        report_memory::compact_row(&mut row);
+                        let lease = report_memory::Retained::shrink_to_row(lease, &row, peak)?;
+                        result.push_paid(payer, row, lease)?;
+                        continue;
+                    }
+                    (_, Some(lease)) => {
+                        if let Some(memory) = &mut retained_memory {
+                            report_memory::compact_row(&mut row);
+                            memory.retain(lease, &row, peak)?;
+                        }
+                    }
+                    _ => {}
                 }
                 result.push(row)?;
             }
             next += items.len();
         }
+        result.finish(memory_accountant)?;
         result
     };
     let post_mount_indexer_cache =

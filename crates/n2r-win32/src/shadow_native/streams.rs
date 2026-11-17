@@ -240,7 +240,7 @@ pub(super) fn exact_list(bytes: &[u8], item: &Input<'_>) -> io::Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Report {
     pub name_utf16: Vec<u16>,
     pub expected_sha256: Option<String>,
@@ -252,12 +252,12 @@ pub struct Report {
     pub resident_data: bool,
     pub cached_validity: Vec<u8>,
     pub storage_validity: Vec<u8>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cached_validity_pages: Option<InitializedRegionPages>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub storage_validity_pages: Option<InitializedRegionPages>,
     pub integrity: Vec<u8>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sparse: Option<sparse_stream::Observation>,
 }
 

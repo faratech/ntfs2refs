@@ -1578,6 +1578,36 @@ impl ArtifactArena {
         }
         Err(refused)
     }
+    /// Cache memory for what is as well kept in working storage (the rows
+    /// of a walk): granted like any cache, but only while what the run
+    /// cannot do without, with it, stays under half the ledger. Beyond
+    /// that the memory is worth more to the stores the next steps look
+    /// things up in, and the caller writes to working storage at once
+    /// instead of holding memory it will be asked back.
+    #[track_caller]
+    pub fn reserve_cache_ram_while_under_half(&self, bytes: u64) -> Result<ArenaRamLease> {
+        {
+            let state = self
+                .0
+                .state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
+            // Not what a batch holds from spare memory at this moment:
+            // the walk closes blocks of rows while the workspaces of the
+            // rest of its batch are still reserved, gigabytes on a machine
+            // with memory to spare, and the rows of a full Windows volume
+            // were written to working storage for that with 10 GB free.
+            let needed = state
+                .leased_ram_bytes
+                .saturating_sub(state.cache_ram_bytes)
+                .saturating_sub(state.spare.held);
+            ensure!(
+                add(add(needed, bytes)?, state.index_bytes)? <= self.0.budget.ram_bytes / 2,
+                "cache memory refused: what the run needs is more than half the ledger"
+            );
+        }
+        self.reserve_cache_ram(bytes)
+    }
     fn cache_ceiling(&self) -> u64 {
         self.0.budget.ram_bytes - self.0.budget.ram_bytes / 8
     }

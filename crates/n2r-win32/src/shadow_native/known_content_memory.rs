@@ -257,8 +257,13 @@ fn verify_known_contents_in_accounted_report_with_aliases(
                     "known-content digest allocation exceeds prepayment",
                 ));
             }
-            retained_bytes = add(retained_bytes, actual.capacity() as u64)?;
-            rows.set_logical_sha256(index, Some(actual))?;
+            // Rows kept in blocks are not changed: nothing reads a digest
+            // from a row after this check, which has just held it to what
+            // was expected, and a row may be in working storage by now.
+            if !rows.in_blocks() {
+                retained_bytes = add(retained_bytes, actual.capacity() as u64)?;
+                rows.set_logical_sha256(index, Some(actual))?;
+            }
             count = count
                 .checked_add(1)
                 .ok_or_else(|| invalid("known-content count overflow"))?;
@@ -315,8 +320,10 @@ fn verify_known_contents_in_accounted_report_with_aliases(
                     "known-content digest allocation exceeds prepayment",
                 ));
             }
-            retained_bytes = add(retained_bytes, actual.capacity() as u64)?;
-            rows.set_named_stream_logical_sha256(index, ordinal, Some(actual))?;
+            if !rows.in_blocks() {
+                retained_bytes = add(retained_bytes, actual.capacity() as u64)?;
+                rows.set_named_stream_logical_sha256(index, ordinal, Some(actual))?;
+            }
             count = count
                 .checked_add(1)
                 .ok_or_else(|| invalid("known-content count overflow"))?;

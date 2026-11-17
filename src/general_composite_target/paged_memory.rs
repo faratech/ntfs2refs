@@ -34,12 +34,8 @@ impl ReportMemoryAccountant for ArenaReportMemory {
             self.0.reserve_spare_ram(bytes).map_err(io::Error::other)?,
         )))
     }
-    fn reserve_cache(&self, bytes: u64) -> io::Result<Box<dyn ReportMemoryLease>> {
-        Ok(Box::new(ArenaReportLease(
-            self.0
-                .reserve_cache_ram_while_under_half(bytes)
-                .map_err(io::Error::other)?,
-        )))
+    fn has_memory_to_spare(&self) -> bool {
+        self.0.needs_under_half()
     }
     fn lease_heap_bytes(&self) -> u64 {
         std::mem::size_of::<ArenaReportLease>() as u64
@@ -88,8 +84,8 @@ impl ReportMemoryAccountant for ArenaReportStorage {
     fn reserve_spare(&self, bytes: u64) -> io::Result<Box<dyn ReportMemoryLease>> {
         self.memory.reserve_spare(bytes)
     }
-    fn reserve_cache(&self, bytes: u64) -> io::Result<Box<dyn ReportMemoryLease>> {
-        self.memory.reserve_cache(bytes)
+    fn has_memory_to_spare(&self) -> bool {
+        self.memory.has_memory_to_spare()
     }
     fn spill_source(&self) -> Option<Box<dyn SpillSource>> {
         Some(Box::new(ArenaSpillSource {

@@ -73,7 +73,6 @@ pub(super) fn input_plan(input: &impl InputDomain) -> io::Result<InputPlan> {
         )?,
     )?;
     let folded_node = node(mem::size_of::<String>(), 0)?;
-    let identity_node = node(mem::size_of::<Vec<String>>(), mem::size_of::<Vec<u8>>())?;
     let parent_node = node(
         mem::size_of::<Vec<String>>(),
         mem::size_of::<std::collections::BTreeMap<Vec<u16>, (usize, u32)>>(),
@@ -93,13 +92,23 @@ pub(super) fn input_plan(input: &impl InputDomain) -> io::Result<InputPlan> {
             // kept in the set of names and in the set of directories.
             let folded = folded_key(joined(path))?;
             preflight = add(preflight, mul(add(folded, folded_node)?, 2)?)?;
-            validation = add(
-                validation,
-                add(
-                    mul(heap, 6)?,
-                    add(identity_node, add(parent_node, child_node)?)?,
-                )?,
-            )?;
+            // Under its parent's expected children: its name in UTF-16
+            // (two bytes a unit, a unit for a byte of UTF-8 at most, in a
+            // Vec that was collected) and its node.
+            let name = path.last().map_or(0, |name| name.len() as u64);
+            validation = add(validation, add(mul(name, 4)?, add(child_node, 32)?)?)?;
+            // A directory's path is held twice: in the list of directories
+            // and as the key of its children. Each in a Vec of Strings made
+            // by `to_vec`, with what the allocator rounds them up by.
+            if item.directory {
+                validation = add(
+                    validation,
+                    add(
+                        mul(add(heap, mul(path.len() as u64 + 1, 32)?)?, 2)?,
+                        parent_node,
+                    )?,
+                )?;
+            }
         }
         validation = add(validation, add(id_node, 128)?)?;
         // Named-stream validation retains only this bounded object's names.

@@ -1584,10 +1584,14 @@ impl SourceMetadataRange for PagedMetadataRange {
 }
 impl PagedMetadataRange {
     /// Keeps a copy of the chunk decoded last, where the ledger has room
-    /// for a cache (it gives up older ones for it). A store of one or two
-    /// chunks has them in its two decoded slots already.
+    /// for a cache (it gives up older ones for it). A store has its chunks
+    /// in its decoded slots already when it has no more chunks than slots:
+    /// one, or two for the stores that have the second slot. (Every store
+    /// of two chunks was taken to have both; one with a single slot
+    /// decoded a chunk again whenever a lookup crossed to the other.)
     fn keep_decoded(&self, ordinal: u64) {
-        if self.pin.logical_bytes <= u64::from(self.pin.chunk_bytes).saturating_mul(2) {
+        let slots = if self.second_chunk_cache { 2 } else { 1 };
+        if self.pin.logical_bytes <= u64::from(self.pin.chunk_bytes).saturating_mul(slots) {
             return;
         }
         let length = match self.decoded.borrow().recent.as_ref() {

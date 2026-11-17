@@ -926,6 +926,12 @@ impl<'a> StepMemory<'a> {
         ((mem::size_of::<Deferred>() + 2 * mem::size_of::<(usize, u64, u64)>()) * 8) as u64;
     /// A hole, in a Vec that doubles and is copied once.
     const HOLE: u64 = (4 * mem::size_of::<(usize, u64, u64)>()) as u64;
+    /// A range of a recovered stream's coordinates with its share of the
+    /// stream's key, and its row of the report while that is written.
+    const RECOVERED_RANGE: u64 = 512;
+    /// A range of the audit of recovered allocations, in a Vec that doubles
+    /// and is sorted.
+    const AUDITED_RANGE: u64 = 128;
     const FIRST: usize = 1024;
 
     fn new(payer: &'a dyn report_memory::ReportMemoryAccountant, entry: u64) -> Self {
@@ -1461,14 +1467,11 @@ pub(super) fn rehydrate_recovered_resource_domain(
         .as_ref()
         .ok_or_else(|| invalid("placed recovery payer absent"))?
         .payer();
-    let mut memory = Some(
-        payer.reserve(
-            (limits.tracked as u64)
-                .checked_mul(512)
-                .and_then(|n| n.checked_add(4 * 1024 * 1024))
-                .ok_or_else(|| invalid("placed recovery index RAM overflow"))?,
-        )?,
-    );
+    // Paid for as the ranges are found. It was reserved for as many as the
+    // index may ever hold before the first was read: 26 MiB of a run with
+    // 1.7 GiB, and 212 MiB once a slot was counted at what it takes.
+    let _fixed_memory = payer.reserve(4 * 1024 * 1024)?;
+    let mut range_memory = StepMemory::new(&*payer, StepMemory::RECOVERED_RANGE);
     let report_memory = payer.reserve(2 * 1024 * 1024)?;
     let mut retained_streams = BTreeMap::new();
     let mut retained_bytes = 0u64;
@@ -1540,6 +1543,7 @@ pub(super) fn rehydrate_recovered_resource_domain(
                 if retained_ranges == limits.tracked {
                     return Err(invalid("placed recovery coordinate index exhausted"));
                 }
+                range_memory.admit(retained_ranges + 1, limits.tracked)?;
                 retained_ranges += 1;
                 let row = (
                     start * cluster(),
@@ -1568,6 +1572,10 @@ pub(super) fn rehydrate_recovered_resource_domain(
     tree.require_dedicated_shadow_boundary()?;
     let receipt = sink.finish()?;
     let retained = memory::coordinate_map_bytes(&retained_streams)?;
+    // What is kept is measured now: its reservation takes the place of
+    // what the ranges paid while they were found.
+    drop(range_memory);
+    let mut memory = Some(payer.reserve(retained)?);
     tree.memory
         .as_ref()
         .ok_or_else(|| invalid("placed recovery memory absent"))?
@@ -1651,12 +1659,9 @@ pub(super) fn audit_recovered_maps(tree: &PrivateTree, bytes: u64, moves: usize)
         .as_ref()
         .ok_or_else(|| invalid("recovered audit payer absent"))?
         .payer();
-    let _memory = payer.reserve(
-        (limits.tracked as u64)
-            .checked_mul(128)
-            .and_then(|n| n.checked_add(65536))
-            .ok_or_else(|| invalid("recovered allocation audit RAM overflow"))?,
-    )?;
+    // Paid for as the ranges are found, not for as many as the index may
+    // ever hold.
+    let mut range_memory = StepMemory::new(&*payer, StepMemory::AUDITED_RANGE);
     let (legacy, metadata) = views(tree, limits)?;
     let partition = tree.pair.shadow.identity.partition_bytes;
     let a = legacy.view(partition)?;
@@ -1699,6 +1704,7 @@ pub(super) fn audit_recovered_maps(tree: &PrivateTree, bytes: u64, moves: usize)
                 if run.clusters == 0 || ranges.len() == limits.tracked {
                     return Err(invalid("recovered allocation range bound exhausted"));
                 }
+                range_memory.admit(ranges.len() + 1, limits.tracked)?;
                 let offset = lcn
                     .checked_mul(cluster())
                     .ok_or_else(|| invalid("recovered target LCN overflow"))?;
@@ -1733,6 +1739,7 @@ pub(super) fn audit_recovered_maps(tree: &PrivateTree, bytes: u64, moves: usize)
             if clusters == 0 || ranges.len() == limits.tracked {
                 return Err(invalid("recovered allocation range bound exhausted"));
             }
+            range_memory.admit(ranges.len() + 1, limits.tracked)?;
             let aa = a.candidate(lcn * cluster(), clusters * cluster())?;
             let bb = b.candidate(lcn * cluster(), clusters * cluster())?;
             if aa.allocated_clusters != clusters || bb.allocated_clusters != clusters {

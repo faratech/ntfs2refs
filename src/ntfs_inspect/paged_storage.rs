@@ -1322,6 +1322,15 @@ impl PagedMetadataRange {
             .context("source reader construction memory overflow")?;
         let mut ram = scratch.lease_ram(initial_cache.max(constructor))?;
         let mut reader = Reader::open_held(file, &pin.file_sha256, pin.purpose, pin.page_budget)?;
+        // A store keeps what it has decoded: all of it while the ledger has
+        // room (`ResidentMetadataCache`), otherwise the chunks read last
+        // (`keep_decoded`). Its reader does not also hold the file's pages
+        // as they are on disk. With little memory the three were given up
+        // for one another in turns: the full Windows volume held to
+        // 1,800 MiB had 644 MiB of pages of the file store in memory, no
+        // room left for its decoded chunks, and spent nine tenths of "plan
+        // and supply payloads" decoding chunks and reading the file again.
+        reader.read_page_by_page();
         ensure!(
             reader.byte_len() == pin.wire_bytes
                 && reader.len() >= 2

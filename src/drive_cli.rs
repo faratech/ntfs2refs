@@ -455,10 +455,18 @@ mod windows {
             eprintln!("Inventory: {}: {}", clean(&e.operation), clean(&e.message));
         }
         for v in &inventory.volumes {
+            // Named by its letter too, where it has one: a volume name is
+            // a GUID nobody can place.
+            let at = if v.mount_paths.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", clean(&v.mount_paths.join(", ")))
+            };
             for e in &v.errors {
                 eprintln!(
-                    "Volume {}: {}",
+                    "Volume {}{at}: {}: {}",
                     clean(&v.volume_guid_path),
+                    clean(&e.operation),
                     clean(&e.message)
                 );
             }
@@ -471,10 +479,15 @@ mod windows {
                 .any(|p| p.mount_paths.iter().any(|m| m.eq_ignore_ascii_case(root)))
             {
                 println!(
-                    "   -     -  {:<16}  {:<10}  {:>12}  [no basic partition mapping]",
+                    "   -     -  {:<16}  {:<10}  {:>12}  [{}]",
                     clean(root),
                     "-",
-                    "-"
+                    "-",
+                    if n2r_win32::drive_inventory::optical_drive(root) {
+                        "optical drive or disc image: not a disk volume"
+                    } else {
+                        "no basic partition mapping"
+                    }
                 );
             }
         }

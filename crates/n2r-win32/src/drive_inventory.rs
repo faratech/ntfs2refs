@@ -311,6 +311,17 @@ pub fn is_bitlocker_boot_sector(bytes: &[u8]) -> bool {
     bytes.get(3..11) == Some(b"-FVE-FS-")
 }
 
+/// Whether a root such as `E:\` is an optical drive: a disc, or a mounted
+/// disc image. Such a volume lies on no disk and is never a source.
+#[cfg(windows)]
+pub fn optical_drive(root: &str) -> bool {
+    native::optical(root)
+}
+#[cfg(not(windows))]
+pub fn optical_drive(_root: &str) -> bool {
+    false
+}
+
 /// Reads the first sector of every partition that could hold an NTFS volume
 /// and records whether it is BitLocker's. Needs administrator rights; a
 /// partition that cannot be read keeps `None`. Reads only.

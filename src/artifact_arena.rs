@@ -144,6 +144,18 @@ impl n2r_win32::evict::CachePayer for ArenaCachePayer {
     }
     fn pay(&self, bytes: u64) -> Option<Box<dyn std::any::Any>> {
         let arena = ArtifactArena(self.0.upgrade()?);
+        // What is paid for here is a whole file of pages held as it is on
+        // disk, so that a store read at random costs no I/O. A store also
+        // keeps the chunks it has decoded, which are what it reads from.
+        // A run that needs more than half of what it may hold has room for
+        // one of the two, and the decoded chunks are the smaller and the
+        // ones used: with both, the full Windows volume held to 1,800 MiB
+        // gave each up for the other in turns and spent nine tenths of
+        // "plan and supply payloads" decoding chunks and reading files
+        // again (36 minutes for a third of it).
+        if !arena.needs_under_half() {
+            return None;
+        }
         let lease = arena.reserve_cache_ram(bytes).ok()?;
         Some(Box::new(lease))
     }
@@ -3149,15 +3161,21 @@ mod cache_tests {
             panic!("a ledger with room pays for a cache");
         };
         assert_eq!(held(&arena), (LIMIT / 8, LIMIT / 8));
-        // It is paid while the ledger has room, also above half, and not
-        // beyond its limit.
-        let _needed = arena.reserve_ram(LIMIT / 2).unwrap();
+        // It is paid while the run needs less than half of what it may
+        // hold, and not beyond the ledger's limit.
+        let _needed = arena.reserve_ram(LIMIT / 4).unwrap();
         let CachePayment::Paid(second) = pay_for_cache(LIMIT / 8) else {
             panic!("a ledger with room pays for a cache");
         };
-        assert!(matches!(pay_for_cache(LIMIT / 4), CachePayment::Refused));
+        assert!(matches!(pay_for_cache(LIMIT / 2), CachePayment::Refused));
+        // A run that needs more than half keeps the room for the chunks
+        // its stores have decoded.
+        let more = arena.reserve_ram(LIMIT / 4 + 4096).unwrap();
+        assert!(matches!(pay_for_cache(4096), CachePayment::Refused));
+        drop(more);
+        assert!(matches!(pay_for_cache(4096), CachePayment::Paid(_)));
         drop((paid, second));
-        assert_eq!(held(&arena), (LIMIT / 2, 0));
+        assert_eq!(held(&arena), (LIMIT / 4, 0));
         // A ledger that is gone pays for nothing more.
         drop(_needed);
         drop(arena);

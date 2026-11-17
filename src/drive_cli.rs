@@ -819,6 +819,12 @@ mod windows {
                     allow_additional_partitions: true,
                 },
             )?;
+            // That role also finds working storage, which may lie on an
+            // MBR disk. A volume to convert may not.
+            ensure!(
+                !n2r_win32::mbr_layout::is_mbr_disk(&before.binding.identity.disk_guid),
+                "the selected volume's disk is MBR, and the converter takes volumes on GPT disks only. Nothing was changed."
+            );
             return super::partition::convert(&args, selected, before, &authority);
         }
         ensure!(
@@ -1224,9 +1230,8 @@ mod windows {
     ) -> n2r_win32::journal_file::GeneralJournalStorageBinding {
         n2r_win32::journal_file::GeneralJournalStorageBinding {
             disk: journal.binding.clone(),
-            externally_enrolled_disk_unique_id: format!(
-                "gpt-{}",
-                journal.binding.identity.disk_guid.trim_matches(['{', '}'])
+            externally_enrolled_disk_unique_id: n2r_win32::journal_file::enrolled_disk_label(
+                &journal.binding.identity.disk_guid,
             ),
             allow_additional_partitions: true,
         }
@@ -1538,9 +1543,8 @@ mod windows {
             },
             n2r_win32::journal_file::GeneralJournalStorageBinding {
                 disk: journal.binding.clone(),
-                externally_enrolled_disk_unique_id: format!(
-                    "gpt-{}",
-                    journal.binding.identity.disk_guid.trim_matches(['{', '}'])
+                externally_enrolled_disk_unique_id: n2r_win32::journal_file::enrolled_disk_label(
+                    &journal.binding.identity.disk_guid,
                 ),
                 allow_additional_partitions: true,
             },

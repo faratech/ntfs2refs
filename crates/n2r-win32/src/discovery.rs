@@ -150,23 +150,16 @@ fn guid_text(bytes: &[u8]) -> io::Result<String> {
     ))
 }
 
-/// Pure decoder shared with tests. Native discovery separately requires two
-/// identical observations and never deserializes this result as authority.
-pub fn binding_from_evidence(
-    guid: &str,
-    e: &StorageEvidence,
+/// The GPT basic-data partition at exactly `offset` and `length`: its
+/// number and GUID, and how many partitions lie beside it, a reserved one
+/// not counted.
+fn gpt_partition(
+    raw: &[u8],
+    disk_bytes: u64,
+    offset: u64,
+    length: u64,
     role: Role,
-    windows_disk: u32,
-) -> io::Result<GeneralDiskBinding> {
-    guid_bytes(guid)?;
-    let (number, offset, length) = single_extent(&e.volume_extents)?;
-    layout::validate_device(&e.device, number)?;
-    require(
-        e.disk_length.len() == 8 && e.alignment.len() == 28,
-        "incomplete native geometry",
-    )?;
-    let disk_bytes = u64_at(&e.disk_length, 0)?;
-    let raw = &e.gpt_layout;
+) -> io::Result<(u32, String, usize)> {
     require(
         (48..=65536).contains(&raw.len()) && u32_at(raw, 0)? == 1,
         "GPT disk required",
@@ -245,6 +238,54 @@ pub fn binding_from_evidence(
     let (partition_number, partition_guid) = target.ok_or_else(|| {
         invalid("single volume extent does not identify a GPT basic-data partition")
     })?;
+    Ok((partition_number, partition_guid, beside))
+}
+
+/// Pure decoder shared with tests. Native discovery separately requires two
+/// identical observations and never deserializes this result as authority.
+pub fn binding_from_evidence(
+    guid: &str,
+    e: &StorageEvidence,
+    role: Role,
+    windows_disk: u32,
+) -> io::Result<GeneralDiskBinding> {
+    guid_bytes(guid)?;
+    let (number, offset, length) = single_extent(&e.volume_extents)?;
+    layout::validate_device(&e.device, number)?;
+    require(
+        e.disk_length.len() == 8 && e.alignment.len() == 28,
+        "incomplete native geometry",
+    )?;
+    let disk_bytes = u64_at(&e.disk_length, 0)?;
+    let raw = &e.gpt_layout;
+    // Working storage may lie on an MBR disk, which has no GUIDs: its
+    // identity is made of the disk's signature and the partition's place
+    // (`mbr_layout`). Every other role takes a GPT disk only.
+    let (partition_number, disk_guid, partition_guid, beside) = if matches!(
+        role,
+        Role::Journal {
+            allow_additional_partitions: true
+        }
+    )
+        && crate::mbr_layout::is_mbr_layout(raw)
+    {
+        let found = crate::mbr_layout::mbr_partition(raw, disk_bytes, offset, length)?;
+        (
+            found.partition_number,
+            found.disk_guid,
+            found.partition_guid,
+            0,
+        )
+    } else {
+        let (partition_number, partition_guid, beside) =
+            gpt_partition(raw, disk_bytes, offset, length, role)?;
+        (
+            partition_number,
+            guid_text(&raw[8..24])?,
+            partition_guid,
+            beside,
+        )
+    };
     let binding = GeneralDiskBinding {
         // A data volume's disk is a dedicated one, or one it shares with
         // other partitions: the layout says which, not the caller.
@@ -260,7 +301,7 @@ pub fn binding_from_evidence(
         disk_number: number,
         volume_guid: guid.to_ascii_lowercase(),
         identity: PartitionIdentity {
-            disk_guid: guid_text(&raw[8..24])?,
+            disk_guid,
             partition_guid,
             partition_number,
             disk_bytes,

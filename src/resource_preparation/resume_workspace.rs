@@ -72,9 +72,8 @@ pub(crate) fn discover(
         "workspace directory changed during discovery"
     );
     let binding = GeneralJournalStorageBinding {
-        externally_enrolled_disk_unique_id: format!(
-            "gpt-{}",
-            current.binding.identity.disk_guid.trim_matches(['{', '}'])
+        externally_enrolled_disk_unique_id: n2r_win32::journal_file::enrolled_disk_label(
+            &current.binding.identity.disk_guid,
         ),
         disk: current.binding,
         allow_additional_partitions: true,

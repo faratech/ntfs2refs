@@ -44,6 +44,7 @@ pub mod layout_residual_pages;
 pub mod logical_hash;
 #[cfg(windows)]
 pub mod managed_shadow;
+pub mod mbr_layout;
 #[cfg(windows)]
 pub mod metadata_pages;
 pub mod namespace_layout;

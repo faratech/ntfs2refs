@@ -1445,9 +1445,26 @@ impl ArtifactArena {
         // them either. The lock is not held while one goes: it returns its
         // own reservation to this ledger.
         if !self.caches_hold_room_for(bytes, self.0.budget.ram_bytes) {
-            return Err(refused);
+            return self.reserve_ram_as_last_resort(bytes, site, refused);
         }
         while n2r_win32::evict::evict_oldest() {
+            match self.reserve_ram_at(bytes, site) {
+                Ok(granted) => return Ok(granted),
+                Err(again) => refused = again,
+            }
+        }
+        self.reserve_ram_as_last_resort(bytes, site, refused)
+    }
+    /// The last thing tried for memory the run cannot do without: what it
+    /// holds in memory and can keep in working storage instead (the rows
+    /// of a walk) is asked to go there.
+    fn reserve_ram_as_last_resort(
+        &self,
+        bytes: u64,
+        site: RamSite,
+        mut refused: anyhow::Error,
+    ) -> Result<ArenaRamLease> {
+        while n2r_win32::evict::give_up_last_resort() {
             match self.reserve_ram_at(bytes, site) {
                 Ok(granted) => return Ok(granted),
                 Err(again) => refused = again,
@@ -1578,35 +1595,20 @@ impl ArtifactArena {
         }
         Err(refused)
     }
-    /// Cache memory for what is as well kept in working storage (the rows
-    /// of a walk): granted like any cache, but only while what the run
-    /// cannot do without, with it, stays under half the ledger. Beyond
-    /// that the memory is worth more to the stores the next steps look
-    /// things up in, and the caller writes to working storage at once
-    /// instead of holding memory it will be asked back.
-    #[track_caller]
-    pub fn reserve_cache_ram_while_under_half(&self, bytes: u64) -> Result<ArenaRamLease> {
-        {
-            let state = self
-                .0
-                .state
-                .lock()
-                .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
-            // Not what a batch holds from spare memory at this moment:
-            // the walk closes blocks of rows while the workspaces of the
-            // rest of its batch are still reserved, gigabytes on a machine
-            // with memory to spare, and the rows of a full Windows volume
-            // were written to working storage for that with 10 GB free.
-            let needed = state
+    /// Whether what the run cannot do without (not its caches, not what a
+    /// batch holds from spare memory at the moment) is under half the
+    /// ledger. The rows of a walk stay in memory while it is; beyond it
+    /// they go to working storage, so that the stores the next steps look
+    /// things up in keep room.
+    pub fn needs_under_half(&self) -> bool {
+        self.0.state.lock().is_ok_and(|state| {
+            state
                 .leased_ram_bytes
-                .saturating_sub(state.cache_ram_bytes)
-                .saturating_sub(state.spare.held);
-            ensure!(
-                add(add(needed, bytes)?, state.index_bytes)? <= self.0.budget.ram_bytes / 2,
-                "cache memory refused: what the run needs is more than half the ledger"
-            );
-        }
-        self.reserve_cache_ram(bytes)
+                .saturating_sub(state.optional_ram_bytes)
+                .saturating_sub(state.spare.held)
+                .saturating_add(state.index_bytes)
+                <= self.0.budget.ram_bytes / 2
+        })
     }
     fn cache_ceiling(&self) -> u64 {
         self.0.budget.ram_bytes - self.0.budget.ram_bytes / 8

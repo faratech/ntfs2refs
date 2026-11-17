@@ -26,6 +26,7 @@ use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
 /// How often caches were given up in this process, for the run's report.
 static GIVEN_UP: AtomicU64 = AtomicU64::new(0);
+static GIVEN_UP_LAST: AtomicU64 = AtomicU64::new(0);
 
 /// How many caches were given up.
 pub fn times_given_up() -> u64 {
@@ -57,6 +58,45 @@ thread_local! {
     static CLOCK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static CACHES: RefCell<Vec<Weak<dyn Evict>>> = const { RefCell::new(Vec::new()) };
     static PAYERS: RefCell<Vec<Rc<dyn CachePayer>>> = const { RefCell::new(Vec::new()) };
+    static LAST_RESORTS: RefCell<Vec<Weak<dyn Evict>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Make `holder` one of those asked by [`give_up_last_resort`]: something
+/// the run needs and holds in memory, which it can also keep in working
+/// storage at a price (the rows of a walk). It is not a cache: no cache's
+/// request takes its memory, and it is asked only when a reservation the
+/// run cannot do without has no room after every cache was given up.
+pub fn register_last_resort<C: Evict + 'static>(holder: &Rc<C>) {
+    let holder: Weak<dyn Evict> = Rc::downgrade(&(Rc::clone(holder) as Rc<dyn Evict>));
+    LAST_RESORTS.with(|holders| {
+        let mut holders = holders.borrow_mut();
+        holders.retain(|holder| holder.strong_count() != 0);
+        holders.push(holder);
+    });
+}
+
+/// Ask what was registered with [`register_last_resort`] on this thread to
+/// move to working storage, the one used longest ago first. Returns whether
+/// one did.
+pub fn give_up_last_resort() -> bool {
+    let mut holders: Vec<Rc<dyn Evict>> = LAST_RESORTS.with(|holders| {
+        let mut holders = holders.borrow_mut();
+        holders.retain(|holder| holder.strong_count() != 0);
+        holders.iter().filter_map(Weak::upgrade).collect()
+    });
+    holders.sort_by_key(|holder| holder.last_used());
+    for holder in holders {
+        if holder.evict() {
+            GIVEN_UP_LAST.fetch_add(1, Relaxed);
+            return true;
+        }
+    }
+    false
+}
+
+/// How often something moved to working storage as a last resort.
+pub fn times_last_resort() -> u64 {
+    GIVEN_UP_LAST.load(Relaxed)
 }
 
 /// A ledger that pays for a cache decided on where no ledger is at hand: a

@@ -33,18 +33,13 @@ pub trait ReportMemoryAccountant: Send + Sync {
     fn reserve_spare(&self, bytes: u64) -> io::Result<Box<dyn ReportMemoryLease>> {
         self.reserve(bytes)
     }
-    /// Memory for something the caller can as well keep in working storage,
-    /// which the payer may ask back at any time: the caller is told through
-    /// [`crate::evict`] on the thread that drives the run. A payer lends it
-    /// only while it has memory to spare, and refuses rather than take
-    /// memory from anything else; one that keeps no such memory refuses
-    /// always, which is the default.
-    #[track_caller]
-    fn reserve_cache(&self, bytes: u64) -> io::Result<Box<dyn ReportMemoryLease>> {
-        let _ = bytes;
-        Err(io::Error::other(
-            "this payer lends no memory it can ask back",
-        ))
+    /// Whether the run has memory to spare: what it cannot do without is
+    /// under half of what it may hold. A caller that can keep something in
+    /// working storage instead of memory does so when this says no, before
+    /// the run's caches are pressed for room. A payer with no such view
+    /// says yes.
+    fn has_memory_to_spare(&self) -> bool {
+        true
     }
     /// Where the caller may make files in the run's working storage for
     /// what has no room in memory, accounted for like the run's other

@@ -192,22 +192,6 @@ impl DeltaLayout {
         self.packed_bytes.unwrap_or(self.changed_bytes)
     }
 
-    pub fn new_zero_ranges(&self) -> Vec<(u64, u64)> {
-        self.ranges
-            .iter()
-            .filter(|range| range.new_is_zero)
-            .map(|range| (range.offset, range.length))
-            .collect()
-    }
-
-    pub fn old_zero_ranges(&self) -> Vec<(u64, u64)> {
-        self.ranges
-            .iter()
-            .filter(|range| range.old_is_zero)
-            .map(|range| (range.offset, range.length))
-            .collect()
-    }
-
     pub fn old_zero_bytes(&self) -> u64 {
         // The checked, disjoint ranges total at most partition_bytes.
         self.ranges
@@ -215,17 +199,6 @@ impl DeltaLayout {
             .filter(|range| range.old_is_zero)
             .map(|range| range.length)
             .sum()
-    }
-
-    pub fn new_copy_ranges(&self) -> Vec<(u64, u64, u64)> {
-        self.ranges
-            .iter()
-            .filter_map(|range| {
-                range
-                    .copy_source_offset
-                    .map(|source| (range.offset, range.length, source))
-            })
-            .collect()
     }
 
     fn requires_original_source(&self) -> bool {
@@ -373,56 +346,6 @@ pub(crate) struct FrozenPairDigests {
 
 #[cfg(windows)]
 impl<S: Read + Seek> DifferenceImage<'_, n2r_win32::GeneralFrozenPartition, S> {
-    /// Prove the journal's COPY declarations use this view's actual raw-source
-    /// read branch. No literal/zero/synthesized view can supply this relation.
-    /// Pairing both real native readers remains a separate mandatory check.
-    pub(crate) fn require_original_copy_ranges(
-        &self,
-        copies: &[crate::selected_journal::SelectedCopyRange],
-    ) -> Result<u64> {
-        let mut total = 0u64;
-        for copy in copies {
-            let end = copy
-                .offset
-                .checked_add(copy.length)
-                .context("paired COPY end overflow")?;
-            let mut cursor = copy.offset;
-            let mut index = self
-                .layout
-                .ranges
-                .partition_point(|r| r.offset + r.length <= cursor);
-            while cursor < end {
-                let range = self
-                    .layout
-                    .ranges
-                    .get(index)
-                    .context("paired COPY leaves delta reference ranges")?;
-                ensure!(
-                    range.offset <= cursor && !range.new_is_zero,
-                    "paired COPY crosses a literal, zero or unchanged gap"
-                );
-                let actual = range
-                    .copy_source_offset
-                    .and_then(|source| source.checked_add(cursor - range.offset))
-                    .context("paired COPY is not an original-source reference")?;
-                let expected = copy
-                    .source_offset
-                    .checked_add(cursor - copy.offset)
-                    .context("paired COPY source overflow")?;
-                ensure!(
-                    actual == expected,
-                    "paired COPY resolves a different physical source"
-                );
-                cursor = end.min(range.offset + range.length);
-                index += 1;
-            }
-            total = total
-                .checked_add(copy.length)
-                .context("paired COPY byte count overflow")?;
-        }
-        Ok(total)
-    }
-
     pub(crate) fn paired_source_state(
         &mut self,
         source: &n2r_win32::GeneralFrozenPartition,

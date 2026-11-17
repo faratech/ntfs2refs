@@ -1,13 +1,13 @@
 //! One owning-machine source/target qualification run. Keeps the actual freeze
 //! witness alive through native reconstruction and certificate issuance.
 use crate::{
-    general_shadow, general_source_admission, general_target_preservation, lab_reconstruct,
-    ntfs_attestation, ntfs_backup, ntfs_inspect, ntfs_log, shadow_tree,
+    general_shadow, general_source_admission, lab_reconstruct, ntfs_attestation, ntfs_backup,
+    ntfs_inspect, ntfs_log, shadow_tree,
 };
 use anyhow::{Context, Result, ensure};
 use n2r_win32::{
     GeneralFrozenPartition, NativeEvent, general_layout::GeneralSourceShadowBinding,
-    journal_file::JournalProfile, shadow_native,
+    journal_file::JournalProfile,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -24,8 +24,8 @@ use std::{
 )]
 mod composite;
 pub(crate) use composite::{
-    QualifiedAllocationTree, QualifiedCompositeTree, prepare_allocation_fresh_selected,
-    prepare_composite_existing, prepare_composite_fresh, prepare_composite_fresh_selected,
+    QualifiedCompositeTree, prepare_composite_existing, prepare_composite_fresh,
+    prepare_composite_fresh_selected,
 };
 mod compact_construction;
 pub use compact_construction::CompactConstructionBudget;
@@ -135,24 +135,6 @@ pub(crate) fn save(root: &Path, name: &str, value: &impl Serialize) -> Result<St
     save_bounded(root, name, value, MAX_ARTIFACT_BYTES)
 }
 
-pub fn qualify(pair: GeneralSourceShadowBinding, output: &Path) -> Result<()> {
-    prepare(pair, output, false).map(drop)
-}
-
-pub fn qualify_existing(pair: GeneralSourceShadowBinding, output: &Path) -> Result<()> {
-    prepare(pair, output, true).map(drop)
-}
-
-pub(crate) struct QualifiedTree {
-    pub source: GeneralFrozenPartition,
-    pub target: GeneralFrozenPartition,
-    pub certificate: general_source_admission::SourceCertificate,
-    pub comparison: crate::retained_compare::RetainedCompareRequest,
-    pub expected: Vec<u8>,
-    pub mount_paths: n2r_win32::MountPathObservation,
-    pub source_label: n2r_win32::volume_label::SourceLabel,
-}
-
 pub(crate) fn create_output(output: &Path) -> Result<()> {
     let path = output
         .to_str()
@@ -185,32 +167,6 @@ pub(crate) fn create_output(output: &Path) -> Result<()> {
     }
     fs::create_dir(output)?;
     Ok(())
-}
-
-pub(crate) fn prepare(
-    pair: GeneralSourceShadowBinding,
-    output: &Path,
-    verify_existing: bool,
-) -> Result<QualifiedTree> {
-    prepare_with_budget(pair, output, verify_existing, 256 * 1024 * 1024)
-}
-
-pub(crate) fn prepare_with_budget(
-    pair: GeneralSourceShadowBinding,
-    output: &Path,
-    verify_existing: bool,
-    max_change_bytes: u64,
-) -> Result<QualifiedTree> {
-    prepare_with_budget_and_source_freeze_hook(
-        pair,
-        output,
-        verify_existing,
-        max_change_bytes,
-        JournalProfile::LegacyV1,
-        crate::ntfs_admission::ResourceProfile::AlphaV1,
-        false,
-        |_, _, _| Ok(()),
-    )
 }
 
 /// One original online-to-frozen source assessment, retained in memory. No
@@ -474,243 +430,6 @@ fn prepare_source_context(
         mount_paths,
         source_label,
     })
-}
-
-/// The laboratory may stop after the real durable source-freeze artifact.
-/// The callback borrows the actual frozen handle and receives only pins from
-/// the current native run; no deserialized completion flag enters this path.
-pub(crate) fn prepare_with_budget_and_source_freeze_hook(
-    pair: GeneralSourceShadowBinding,
-    output: &Path,
-    verify_existing: bool,
-    max_change_bytes: u64,
-    profile: JournalProfile,
-    resources: crate::ntfs_admission::ResourceProfile,
-    cache_sync: bool,
-    after_source_freeze: impl FnOnce(&GeneralFrozenPartition, &str, &str) -> Result<()>,
-) -> Result<QualifiedTree> {
-    ensure!(
-        !resources.is_envelope(),
-        "object envelope is supported only by fresh allocation qualification"
-    );
-    pair.validate_with_resource_profile(resources.native_profile())?;
-    ensure!(
-        (1..=profile.max_changed_bytes()).contains(&max_change_bytes)
-            && max_change_bytes <= pair.source.identity.partition_bytes,
-        "qualification changed-byte budget differs"
-    );
-    // Qualification artifacts stay on the Windows OS volume, which both
-    // dedicated data-disk routes explicitly exclude.
-    create_output(output)?;
-    save(
-        output,
-        "intent.json",
-        &serde_json::json!({"schema_version":1,"kind":"live-general-qualification-intent",
-        "pair":pair,"verify_existing":verify_existing,"max_change_bytes":max_change_bytes,
-        "source_payload_writes_authorized":false,"source_admitted":false}),
-    )?;
-    let mut phase = "source-freeze";
-    let attempted = (|| -> Result<QualifiedTree> {
-        let mut events = Vec::<NativeEvent>::new();
-        let PreparedSourceContext {
-            resources,
-            mut source,
-            raw,
-            mut assessment,
-            tree,
-            expected,
-            expected_sha256,
-            source_hash,
-            mount_paths,
-            source_label,
-        } = prepare_source_context(
-            &pair,
-            output,
-            resources,
-            &mut events,
-            &mut phase,
-            after_source_freeze,
-            SourceDigest::WholeImage,
-            crate::verification_policy::VerificationPolicy::FullContent,
-        )?;
-        let views = assessment
-            .assessment
-            .source_view
-            .as_ref()
-            .context("live source views absent")?;
-        phase = "native-shadow-construction";
-        let input = general_shadow::native_inputs(&tree);
-        if cache_sync {
-            ensure!(
-                verify_existing
-                    && resources
-                        == crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2,
-                "small-cache synchronization requires explicit v2 reuse"
-            );
-            phase = "existing-shadow-small-cache-refresh";
-            let cache = tree
-                .objects
-                .iter()
-                .find(|o| o.path == ["System Volume Information", "IndexerVolumeGuid"])
-                .context("fresh source has no indexer cache to synchronize")?;
-            let mut payload = Vec::new();
-            let copied = ntfs_inspect::copy_plain_stream(
-                &mut source,
-                &raw,
-                cache.record_number,
-                76,
-                &mut payload,
-            )?;
-            ensure!(
-                payload.len() == 76 && Some(&copied.sha256) == cache.sha256.as_ref(),
-                "fresh source cache bytes differ"
-            );
-            let refreshed = shadow_native::cache_refresh::run(&pair, &input, &payload, |a, b| {
-                ntfs_attestation::same_security(a, b)
-                    .map_err(|error| std::io::Error::other(error.to_string()))
-            })?;
-            save(output, "native-shadow-cache-refresh.json", &refreshed)?;
-        }
-        let limits = resources.limits();
-        let mut transfer_budget = ntfs_inspect::StreamTransferBudget::new(
-            limits.maximum_stream_bytes,
-            limits.maximum_logical_bytes,
-        )?;
-        let mut writer = |index: usize, target: &mut fs::File| -> std::io::Result<()> {
-            let object = tree
-                .objects
-                .get(index)
-                .ok_or_else(|| std::io::Error::other("source object index differs"))?;
-            let copied = if resources.native_profile().is_some() {
-                ntfs_inspect::copy_plain_stream_with_budget(
-                    &mut source,
-                    &raw,
-                    object.record_number,
-                    &mut transfer_budget,
-                    target,
-                )
-            } else {
-                ntfs_inspect::copy_plain_stream(
-                    &mut source,
-                    &raw,
-                    object.record_number,
-                    256 * 1024 * 1024,
-                    target,
-                )
-            }
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
-            if copied.logical_bytes != object.length
-                || Some(&copied.sha256) != object.sha256.as_ref()
-            {
-                return Err(std::io::Error::other(
-                    "source stream changed during construction",
-                ));
-            }
-            Ok(())
-        };
-        let same = |a: &[u8], b: &[u8]| {
-            ntfs_attestation::same_security(a, b).map_err(|e| std::io::Error::other(e.to_string()))
-        };
-        let reuse_frozen = verify_existing
-            && resources == crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2
-            && n2r_win32::observe_general_disk_state_readonly(pair.shadow.clone(), &mut events)?
-                .disk_attributes
-                == 3;
-        let native = if reuse_frozen {
-            save(
-                output,
-                "native-shadow-reuse.json",
-                &serde_json::json!({
-                    "kind":"frozen-native-shadow-reuse-intent","payload_bytes_written":0,
-                    "requires_fresh_protected_semantics":true,"execution_authorized":false
-                }),
-            )?;
-            None
-        } else if verify_existing {
-            Some(
-                shadow_native::verify_general_ordinary_with_resource_profile(
-                    pair.clone(),
-                    &input,
-                    same,
-                    resources.native_profile(),
-                )?,
-            )
-        } else {
-            Some(
-                shadow_native::run_general_ordinary_streaming_with_resource_profile(
-                    pair.clone(),
-                    &input,
-                    true,
-                    &mut writer,
-                    |a, b| {
-                        ntfs_attestation::same_security(a, b)
-                            .map_err(|e| std::io::Error::other(e.to_string()))
-                    },
-                    resources.native_profile(),
-                )?,
-            )
-        };
-        if let Some(native) = &native {
-            save(output, "native-shadow.json", native)?;
-        }
-        phase = "target-preservation-freeze";
-        let (target, proof) = general_target_preservation::verify_and_freeze(
-            &mut source,
-            &raw,
-            &source_hash,
-            views,
-            pair.clone(),
-            max_change_bytes,
-            profile,
-            resources,
-            reuse_frozen || cache_sync,
-            &mut events,
-        )?;
-        if reuse_frozen {
-            // This is a new live read-only native report, never an imported
-            // construction report or a serialized admission capability.
-            save(output, "native-shadow.json", proof.native_report())?;
-        }
-        save(output, "target-preservation.json", &proof)?;
-        save(output, "target-events.json", &events)?;
-        // The complete target phase is durable above. Keep the native audit
-        // bound per phase rather than exhausting it on final state queries.
-        events.clear();
-        phase = "source-certificate";
-        let certificate = assessment.qualify_target(&raw, &proof)?;
-        let certificate_sha256 = save(output, "certificate.json", &certificate)?;
-        save(output, "admitted-assessment.json", &assessment)?;
-        save(
-            output,
-            "result.json",
-            &serde_json::json!({"schema_version":1,"kind":"live-general-tree-qualification",
-            "success":true,"source_admitted":true,"execution_authorized":false,"source_payload_writes":0,
-            "source_sha256":source_hash,"expected_tree_sha256":expected_sha256,"certificate_sha256":certificate_sha256,
-            "objects":tree.objects.len(),"comparison":proof.comparison(),"source_after":source.state(&mut events)?,
-            "target_after":target.state(&mut events)?,"events":events}),
-        )?;
-        Ok(QualifiedTree {
-            source,
-            target,
-            certificate,
-            comparison: proof.comparison().clone(),
-            expected: serde_json::to_vec_pretty(&expected)?,
-            mount_paths,
-            source_label,
-        })
-    })();
-    match attempted {
-        Ok(qualified) => Ok(qualified),
-        Err(error) => {
-            save(
-                output,
-                "failed.json",
-                &serde_json::json!({"schema_version":1,"kind":"live-general-qualification-failure",
-            "phase":phase,"error":format!("{error:#}"),"source_payload_writes":0,"execution_authorized":false}),
-            )?;
-            Err(error)
-        }
-    }
 }
 
 /// Successful return from save includes its durable flush. Keeping the next

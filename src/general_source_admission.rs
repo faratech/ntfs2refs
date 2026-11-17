@@ -95,24 +95,7 @@ pub struct AllocationCertificate {
     #[serde(skip_serializing_if = "Option::is_none")]
     source_resource_profile: Option<ntfs_admission::ResourceProfile>,
 }
-impl AllocationCertificate {
-    pub fn binds(
-        &self,
-        target: &crate::general_composite_target::FrozenAllocationTargetPreservation,
-    ) -> bool {
-        self.pair == *target.pair()
-            && self.source_fingerprint_kind == target.source_fingerprint_kind()
-            && self.expected_tree_sha256 == target.expected_tree_sha256()
-            && self.source_sha256 == target.source_sha256()
-            && self.selection_sha256 == target.selection_sha256()
-            && self.source_selected_sha256 == target.capture().source_selected_sha256
-            && self.candidate_selected_sha256 == target.capture().candidate_selected_sha256
-            && self.changed_bytes == target.capture().layout.changed_bytes()
-    }
-    pub fn expected_tree_sha256(&self) -> &str {
-        &self.expected_tree_sha256
-    }
-}
+impl AllocationCertificate {}
 
 impl LiveAssessment {
     /// Allocation-bounded counterpart of `qualify_composite_target`: the same
@@ -253,74 +236,6 @@ impl LiveAssessment {
         ensure!(
             refused.is_empty(),
             "composite source admission remains refused: {refused:?}"
-        );
-        self.source_admitted = true;
-        self.assessment.source_admitted = true;
-        self.assessment.certificate_issued = true;
-        Ok(SourceCertificate {
-            source_sha256: self.source_sha256.clone(),
-            inspection_sha256: self.canonical_inspection_sha256.clone(),
-            pair: target.pair().clone(),
-            comparison: target.comparison().clone(),
-            expected_tree_sha256: target.expected_tree_sha256().into(),
-            assessment_sha256: hex::encode(Sha256::digest(serde_json::to_vec(&self)?)),
-            source_resource_profile: match self.context.resources {
-                ntfs_admission::ResourceProfile::AlphaV1 => None,
-                resource => Some(resource),
-            },
-        })
-    }
-
-    pub fn qualify_target(
-        &mut self,
-        raw: &ntfs_inspect::NtfsInspection,
-        target: &crate::general_target_preservation::FrozenTargetPreservation,
-    ) -> Result<SourceCertificate> {
-        ensure!(
-            self.context.source_fingerprint_kind.is_none(),
-            "extent-scoped source fingerprint cannot certify a whole-image journal"
-        );
-        ensure!(
-            self.context.source_gates_satisfied
-                && target.pair().source == self.context.source_binding
-                && target.native_resource_profile() == self.context.resources.native_profile()
-                && self.source_sha256 == self.context.source_sha256
-                && self.canonical_inspection_sha256 == self.context.inspection_sha256
-                && target.binds(raw, &self.source_sha256)
-                && target.source_views_sha256() == self.context.source_views_sha256
-                && self.canonical_inspection_sha256 == self.assessment.source_inspection_sha256
-                && self.assessment.source_view.as_ref().is_some_and(|view| view
-                    .binds_live_source(&self.canonical_inspection_sha256, &self.source_sha256)
-                    && serde_json::to_vec(view).is_ok_and(|bytes| hex::encode(Sha256::digest(
-                        bytes
-                    )) == self
-                        .context
-                        .source_views_sha256)),
-            "source admission is refused or target preservation differs from the original live device context"
-        );
-        for gate in &mut self.assessment.gates {
-            if gate.code == "security_timestamp_preservation" {
-                gate.satisfied = true;
-                gate.detail = "actual native ReFS tree verified stored times, descriptors, attributes, namespace and contents; the same target was locked/dismounted and its complete image hash bound".into();
-            } else if gate.code == "target_resource_profile_support" {
-                ensure!(
-                    self.context.resources.native_profile().is_some(),
-                    "unexpected expanded target gate on an alpha source"
-                );
-                gate.satisfied = true;
-                gate.detail = "the opaque protected ReFS target observation verified the same expanded resource profile and the exact frozen-source semantic tree".into();
-            }
-        }
-        let refusals: Vec<_> = self
-            .assessment
-            .gates
-            .iter()
-            .filter(|g| !g.satisfied)
-            .map(|g| g.code.as_str())
-            .collect();
-        ensure!(
-            refusals.is_empty(),
-            "source admission remains refused: {refusals:?}"
         );
         self.source_admitted = true;
         self.assessment.source_admitted = true;

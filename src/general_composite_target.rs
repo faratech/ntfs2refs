@@ -519,10 +519,6 @@ pub struct FrozenAllocationTargetPreservation {
     capture: DifferenceCapture,
     #[serde(skip_serializing_if = "Option::is_none")]
     capture_budget: Option<CaptureBudget>,
-    /// Derived from this frozen inspection, not deserialized diagnostics.
-    /// The live source certificate still binds the inspection and this proof.
-    #[serde(skip)]
-    source_allocation: Option<crate::selected_ownership::ReconciledSourceAllocation>,
     /// Non-gating destination split of the captured changed granules; it
     /// binds and authorizes nothing.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -549,9 +545,6 @@ pub struct FrozenAllocationTargetPreservation {
 impl FrozenAllocationTargetPreservation {
     pub fn source_fingerprint_kind(&self) -> Option<&'static str> {
         self.source_fingerprint_kind
-    }
-    pub(crate) fn protected_layout(&self) -> &ProtectedTargetLayout {
-        &self.protected
     }
     pub fn pair(&self) -> &GeneralSourceShadowBinding {
         &self.pair
@@ -590,116 +583,6 @@ impl FrozenAllocationTargetPreservation {
             && self.source_views_bound
             && self.logical_payload_tied_to_frozen_source
             && self.allocation_bounded_selection_compared
-    }
-    /// The differing ranges as a selected-range journal plan.
-    pub fn plan(&self, max_journal_bytes: u64) -> Result<crate::selected_journal::SelectedPlan> {
-        let max_journal_bytes = self.capture_budget.map_or(max_journal_bytes, |budget| {
-            max_journal_bytes.min(budget.max_journal_bytes)
-        });
-        let mut plan = crate::selected_journal::SelectedPlan {
-            image_length: self.capture.layout.partition_bytes(),
-            ranges: self
-                .capture
-                .layout
-                .intervals()
-                .iter()
-                .map(|range| crate::selected_journal::SelectedRange {
-                    offset: range.offset,
-                    length: range.length,
-                })
-                .collect(),
-            max_selected_bytes: self.capture.layout.changed_bytes(),
-            max_journal_bytes,
-            new_zero_ranges: self
-                .capture
-                .layout
-                .new_zero_ranges()
-                .into_iter()
-                .map(|(offset, length)| crate::selected_journal::SelectedRange { offset, length })
-                .collect(),
-            new_copy_ranges: self
-                .capture
-                .layout
-                .new_copy_ranges()
-                .into_iter()
-                .map(
-                    |(offset, length, source_offset)| crate::selected_journal::SelectedCopyRange {
-                        offset,
-                        length,
-                        source_offset,
-                    },
-                )
-                .collect(),
-            old_zero_ranges: self
-                .capture
-                .layout
-                .old_zero_ranges()
-                .into_iter()
-                .map(|(offset, length)| crate::selected_journal::SelectedRange { offset, length })
-                .collect(),
-            source_free_ranges: Vec::new(),
-        };
-        // Format 4 widens every descriptor. Preserve the capture's actual
-        // zero observations, but select compression only when its omitted
-        // payload exceeds that complete metadata cost. Explicit journal plans
-        // remain format contracts; this is a fresh planner optimization.
-        if !plan.old_zero_ranges.is_empty() {
-            let extra_per_record = if !plan.new_copy_ranges.is_empty() {
-                8_u64
-            } else if !plan.new_zero_ranges.is_empty() {
-                16
-            } else {
-                24
-            };
-            let extra_metadata = u64::try_from(plan.ranges.len())?
-                .checked_mul(extra_per_record)
-                .context("old-zero descriptor cost overflow")?;
-            if plan.old_zero_bytes()? <= extra_metadata {
-                plan.old_zero_ranges.clear();
-            }
-        }
-        if self
-            .capture_budget
-            .is_some_and(|budget| budget.selected_capacity_policy.allows_source_free())
-        {
-            plan = self
-                .source_allocation
-                .as_ref()
-                .context("source-free plan lacks its frozen allocation witness")?
-                .refine_selected_plan(&plan)?;
-        }
-        let (changed, _) = plan.validate()?;
-        let conservative_limit = max_journal_bytes
-            .checked_sub(n2r_win32::journal_file::JOURNAL_OVERHEAD_RESERVE)
-            .context("selected journal cannot reserve its metadata")?
-            / 4096
-            * 4096;
-        if changed > conservative_limit {
-            ensure!(
-                self.capture_budget
-                    .is_some_and(|budget| { !budget.selected_capacity_policy.is_conservative() })
-                    && ((plan.old_zero_bytes()? > 0 && plan.encoding_version() == 4)
-                        || (plan.source_free_bytes()? > 0 && plan.encoding_version() == 5)),
-                "expanded captured write set requires actual-byte capacity and explicit old-byte omission"
-            );
-        }
-        Ok(plan)
-    }
-    /// Read-only candidate over the held backing and a frozen source handle.
-    pub fn image<'a>(
-        &'a mut self,
-        source: &'a mut GeneralFrozenPartition,
-    ) -> Result<DifferenceImage<'a, GeneralFrozenPartition, File>> {
-        ensure!(
-            source.binding() == &self.pair.source
-                && source.state(&mut Vec::new())? == self.source_after,
-            "allocation-bounded view source binding or exclusion differs"
-        );
-        self.backing.revalidate()?;
-        DifferenceImage::new(source, &mut self.backing.file, &self.capture.layout)
-    }
-    pub fn revalidate_backing(&mut self) -> Result<()> {
-        self.backing.revalidate()
     }
 }
 
@@ -1205,7 +1088,6 @@ fn verify_and_select_inner(
         selection,
         compared,
         in_place_bytes,
-        source_allocation,
         mut capture,
         source_fingerprint_reuse,
     } = match closing_capture {
@@ -1280,7 +1162,6 @@ fn verify_and_select_inner(
         in_place_payload_bytes_not_compared: in_place_bytes,
         capture,
         capture_budget,
-        source_allocation,
         changed_classes,
         backing,
         source_before,
@@ -1317,7 +1198,6 @@ struct ClosingAllocationCapture {
     selection: Vec<crate::refs_write_set::ByteRange>,
     compared: Vec<crate::refs_write_set::ByteRange>,
     in_place_bytes: u64,
-    source_allocation: Option<crate::selected_ownership::ReconciledSourceAllocation>,
     capture: DifferenceCapture,
     source_fingerprint_reuse: Option<crate::source_fingerprint::ClosingReuseReport>,
 }
@@ -1432,7 +1312,6 @@ fn capture_selected_allocation<'a>(
         selection,
         compared,
         in_place_bytes,
-        source_allocation,
         capture,
         source_fingerprint_reuse,
     })

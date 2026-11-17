@@ -1,34 +1,10 @@
 use serde_json::Value;
-use std::{fs, process::Command};
+use std::process::Command;
 fn cli(args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_ntfs2refs"))
         .args(args)
         .output()
         .unwrap()
-}
-#[test]
-fn corpus_diff_counts_bytes_and_coalesces_blocks() {
-    let temp = tempfile::tempdir().unwrap();
-    let a = temp.path().join("a.raw");
-    let b = temp.path().join("b.raw");
-    let mut bytes = vec![0; 2100];
-    fs::write(&a, &bytes).unwrap();
-    bytes[600] = 1;
-    bytes[1100] = 2;
-    bytes[2099] = 3;
-    fs::write(&b, bytes).unwrap();
-    let report = ntfs2refs::corpus::diff(&a, &b, 512).unwrap();
-    assert_eq!(report.changed_bytes, 3);
-    assert_eq!(report.changed_blocks, 3);
-    assert_eq!(report.ranges.len(), 2);
-    assert_eq!(report.ranges[0].offset, 512);
-    assert_eq!(report.ranges[0].length, 1024);
-    assert_eq!(report.ranges[1].length, 52);
-    assert_eq!(
-        ntfs2refs::corpus::diff(&a, &a, 512).unwrap().changed_bytes,
-        0
-    );
-    assert!(ntfs2refs::corpus::diff(&a, &b, 3).is_err());
 }
 
 #[test]

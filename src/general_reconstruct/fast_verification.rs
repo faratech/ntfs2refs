@@ -3,9 +3,7 @@
 pub(crate) mod v4_maps;
 use super::*;
 use crate::{
-    general_composite_target::FrozenAllocationTargetPreservation,
     general_qualification::{canonical_json_sha256, pretty_json_sha256},
-    general_source_admission::AllocationCertificate,
     selected_journal,
 };
 use anyhow::{Context, ensure};
@@ -21,23 +19,6 @@ use std::{
 
 type StreamKey = (Vec<String>, Vec<u16>);
 type StreamMaps = BTreeMap<StreamKey, StreamMap>;
-
-pub(crate) struct FreshPayloadProof {
-    expected_tree_sha256: String,
-    source: n2r_win32::general_layout::GeneralDiskBinding,
-    native: Arc<Report>,
-    maps: Vec<StreamLocation>,
-    base_sectors: u64,
-    new_selected_sha256: [u8; 32],
-    selected_bytes: u64,
-    range_count: u32,
-    plan_sha256: String,
-    ticket_sha256: String,
-    tail_extent_streams: usize,
-    tail_payload_bytes_verified: u64,
-    map_page_budget: metadata_pages::PageBudget,
-    resource_admission: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
-}
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -278,9 +259,6 @@ struct PagedStreamMapRef<'a> {
     integrity: Base64Bytes<'a>,
 }
 impl<'a> PagedStreamMapRef<'a> {
-    fn new(map: StreamMapRef<'a>) -> Result<Self> {
-        Self::with_resources(map, None)
-    }
     fn with_resources(
         map: StreamMapRef<'a>,
         resources: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
@@ -1312,246 +1290,6 @@ fn maps_match<T>(
     Ok(matched && bindings.iter().all(|(_, seen)| *seen))
 }
 
-impl FreshPayloadProof {
-    pub(crate) fn new(
-        proof: &FrozenAllocationTargetPreservation,
-        certificate: &AllocationCertificate,
-        expected: &impl shadow_tree::ExpectedObjectDomain,
-        plan: &selected_journal::SelectedPlan,
-        ticket: &selected_journal::SelectedTicket,
-        resources: crate::ntfs_admission::ResourceProfile,
-    ) -> Result<Self> {
-        expected.revalidate_domain()?;
-        let expected_tree_sha256 = pretty_json_sha256(expected)?;
-        ensure!(
-            certificate.binds(proof)
-                && proof.data_ties_verified()
-                && proof.expected_tree_sha256() == expected_tree_sha256
-                && certificate.expected_tree_sha256() == expected_tree_sha256
-                && serde_json::to_vec(plan)?
-                    == serde_json::to_vec(&proof.plan(plan.max_journal_bytes)?)?,
-            "fresh payload proof differs from the original live certificate or exact selected plan"
-        );
-        // The explicit ticket profile chooses the exact marker-body length.
-        let (selected_bytes, journal_bytes) =
-            plan.validate_marker_profile(ticket.marker_profile)?;
-        ensure!(
-            ticket.image_length == proof.pair().source.identity.partition_bytes
-                && ticket.selected_bytes == selected_bytes
-                && ticket.journal_length == journal_bytes
-                && ticket.range_count as usize == plan.ranges.len()
-                && !ticket.whole_image_verified
-                && ticket.new_selected_sha256 != ticket.old_selected_sha256,
-            "fresh payload ticket differs from its prepared plan"
-        );
-        let native = proof
-            .protected_layout()
-            .native()
-            .report()
-            .native_observation();
-        let resource_admission = resources.resource_admission()?;
-        if let Some(admission) = resource_admission {
-            expected.require_resource_metadata(admission)?;
-            ensure!(
-                native.resource_profile == resources.native_profile(),
-                "fresh native map resource profile differs from admitted owner"
-            );
-        }
-        let native_maps = if let Some(admission) = resource_admission {
-            maps_with_resources(&native, admission)?
-        } else {
-            maps(&native)?
-        };
-        if let Some(admission) = resource_admission {
-            let expected_keys = resource_expected_keys(expected, admission)?;
-            ensure!(
-                expected_keys.len() == native_maps.len(),
-                "fresh native map set differs from actual expected owner"
-            );
-            for (key, location) in expected_keys.iter().zip(&native_maps) {
-                let encoded = location.with_key(&native, |(components, name)| {
-                    encoded_stream_key(components, name)
-                })?;
-                ensure!(
-                    *key == encoded,
-                    "fresh native map key set differs from actual expected owner"
-                );
-            }
-        }
-        let protected = proof.protected_layout().native().report();
-        let mut tail_extent_streams = 0usize;
-        let mut tail_payload_bytes_verified = 0u64;
-        for object_index in 0..expected.object_count() {
-            let object = expected.object(object_index)?;
-            for stream in object.data_streams().filter(|s| {
-                s.source_evidence
-                    == Some(shadow_tree::SourceStreamEvidence::ExtentIdentityWithMaterializedTailV1)
-            }) {
-                let actual = protected
-                    .residual_for(object_index, stream.name_utf16)?
-                    .context("extent-only partial tail has no retained protected observation")?;
-                ensure!(
-                    protected.residual_contents_verified()
-                        && actual.logical_offset == n2r_win32::target_cluster::floor(stream.length)
-                        && actual.length == stream.length % n2r_win32::target_cluster::bytes()
-                        && actual.sha256.len() == 64,
-                    "extent-only partial tail lacks exact protected source-to-target residual verification"
-                );
-                tail_extent_streams += 1;
-                tail_payload_bytes_verified = tail_payload_bytes_verified
-                    .checked_add(actual.length)
-                    .context("verified extent-tail byte count overflow")?;
-            }
-        }
-        Ok(Self {
-            expected_tree_sha256,
-            source: proof.pair().source.clone(),
-            maps: native_maps,
-            base_sectors: native.base_sectors,
-            native,
-            new_selected_sha256: ticket.new_selected_sha256,
-            selected_bytes,
-            range_count: ticket.range_count,
-            plan_sha256: canonical_json_sha256(plan)?,
-            ticket_sha256: canonical_json_sha256(ticket)?,
-            tail_extent_streams,
-            tail_payload_bytes_verified,
-            map_page_budget: map_page_budget(resources)?,
-            resource_admission,
-        })
-    }
-
-    /// Stream one borrowed native binding at a time. The bundle pins the
-    /// finished immutable page file, never a serialized capability.
-    pub(crate) fn write_recovery_manifest(&self, path: &Path) -> Result<String> {
-        let header = MapManifestHeader {
-            schema_version: if self.resource_admission.is_some() {
-                3
-            } else {
-                2
-            },
-            kind: if self.resource_admission.is_some() {
-                "protected-target-stream-map-pages-v3"
-            } else {
-                "protected-target-stream-map-pages-v2"
-            }
-            .into(),
-            source: self.source.clone(),
-            expected_tree_sha256: self.expected_tree_sha256.clone(),
-            plan_sha256: self.plan_sha256.clone(),
-            ticket_sha256: self.ticket_sha256.clone(),
-            base_sectors: self.base_sectors,
-            new_selected_sha256: self.new_selected_sha256,
-            selected_bytes: self.selected_bytes,
-            range_count: self.range_count,
-            bindings_count: self.maps.len() as u64,
-            grants_write_authority: false,
-            initial_retained_content_digests_available: false,
-            resource_admission: self.resource_admission,
-        };
-        let mut writer = metadata_pages::Writer::new(path, MAP_PAGE_PURPOSE, self.map_page_budget)?;
-        writer.push(&[], &record_json(&header)?)?;
-        let mut total = 0u64;
-        for location in &self.maps {
-            location.view(&self.native, |(components, name_utf16), map| {
-                let key = encoded_stream_key(components, name_utf16)?;
-                let entry = MapEntryRef {
-                    components,
-                    name_utf16,
-                    map: if self.resource_admission.is_some() {
-                        PagedStreamMapRef::with_resources(map, self.resource_admission)?
-                    } else {
-                        PagedStreamMapRef::new(map)?
-                    },
-                };
-                if let Some(admission) = self.resource_admission {
-                    let compact = row_size(&entry, admission.budget.max_row_bytes)?;
-                    validate_borrowed_row_memory(&entry, compact, admission.budget.max_row_bytes)?;
-                    total = total
-                        .checked_add(compact)
-                        .filter(|n| *n <= admission.semantic_byte_budget())
-                        .context("complete map encoding exceeds semantic resource budget")?;
-                    let mut chunks = MapChunkWriter {
-                        writer: &mut writer,
-                        key: &key,
-                        maximum: chunk_capacity(self.map_page_budget, key.len())?,
-                        limit: admission.budget.max_row_bytes,
-                        buffer: Vec::new(),
-                        chunks: 0,
-                        bytes: 0,
-                    };
-                    serde_json::to_writer(&mut chunks, &entry)?;
-                    chunks.emit()?;
-                } else {
-                    writer.push(&key, &record_json(&entry)?)?;
-                }
-                Ok(())
-            })?;
-        }
-        Ok(writer.finish()?.sha256)
-    }
-
-    fn verify(
-        &self,
-        scope: &NativeVerificationScope<'_>,
-        expected: &impl shadow_tree::ExpectedObjectDomain,
-        applied: &selected_journal::SelectedResult,
-        handoff: &selected_journal::SelectedResult,
-        native: &shadow_native::GeneralConvertedReport,
-    ) -> Result<Value> {
-        ensure!(
-            scope.pair.source == self.source
-                && native.pair.source.identity == self.source.identity
-                && pretty_json_sha256(expected)? == self.expected_tree_sha256,
-            "fresh payload source or expected tree changed at handoff"
-        );
-        for result in [applied, handoff] {
-            ensure!(
-                result.selected_sha256 == self.new_selected_sha256
-                    && result.selected_bytes == self.selected_bytes
-                    && result.range_count == self.range_count
-                    && !result.whole_image_verified,
-                "fresh payload apply/handoff checksum differs"
-            );
-        }
-        ensure!(
-            handoff.replay_closed,
-            "extent verification requires a durable closed handoff"
-        );
-        let observation = native
-            .content_observation
-            .as_ref()
-            .context("metadata observation scope absent")?;
-        ensure!(
-            !observation.full_file_hashes
-                && observation.admitted_payload_bytes_read == 0
-                && observation.metadata_and_namespace_verified
-                && observation.complete_stream_mappings_observed
-                && observation.data_storage_validity_checked
-                && native.native.base_sectors == self.base_sectors
-                && maps_match(
-                    &native.native,
-                    &self.maps,
-                    |location, key| location.with_key(&self.native, |held| held.cmp(&key)),
-                    |location, value| location.view(&self.native, |_, map| Ok(map == *value)),
-                )?,
-            "mounted file identities, complete physical maps or storage validity differ from the protected candidate"
-        );
-        Ok(
-            serde_json::json!({"schema_version":1,"scope":"fresh-conversion-extent-identity-v1",
-            "expected_tree_sha256":self.expected_tree_sha256,"stream_and_directory_bindings":self.maps.len(),
-            "selected_bytes_checksummed":self.selected_bytes,"selected_sha256":hex::encode(self.new_selected_sha256),
-            "retained_bytes_proven_by_same_physical_mapping":true,
-            "resident_and_residual_bytes_bound_by_selected_image":true,
-            "all_complete_maps_identical":true,"handoff_replay_closed":true,
-            "extent_only_partial_streams":self.tail_extent_streams,
-            "materialized_extent_tail_bytes_verified":self.tail_payload_bytes_verified,
-            "target_full_file_hashes":false,"target_admitted_payload_bytes_read":0,
-            "saved_receipt_grants_execution_authority":false}),
-        )
-    }
-}
-
 fn expected_map_keys(
     expected: &impl shadow_tree::ExpectedObjectDomain,
 ) -> Result<BTreeSet<Vec<u8>>> {
@@ -1641,30 +1379,6 @@ fn resource_expected_keys(
         "duplicate resource expected map key"
     );
     Ok(keys)
-}
-
-pub(crate) fn extent_stream_counts(
-    expected: &impl shadow_tree::ExpectedObjectDomain,
-) -> Result<(usize, usize)> {
-    let (mut extents, mut partials) = (0usize, 0usize);
-    for index in 0..expected.object_count() {
-        let object = expected.object(index)?;
-        for stream in object.data_streams() {
-            if stream.source_evidence.is_some() {
-                extents = extents
-                    .checked_add(1)
-                    .context("extent stream count overflow")?;
-            }
-            if stream.source_evidence
-                == Some(shadow_tree::SourceStreamEvidence::ExtentIdentityWithMaterializedTailV1)
-            {
-                partials = partials
-                    .checked_add(1)
-                    .context("partial extent stream count overflow")?;
-            }
-        }
-    }
-    Ok((extents, partials))
 }
 
 fn validate_map_entry(
@@ -2238,41 +1952,4 @@ fn observe_native_metadata(
                 .native_profile(),
         )?,
     )
-}
-
-/// Only the fresh allocation route can supply this in-memory proof and its
-/// actual Apply/HND results. Recovery uses its distinct pinned-fact protocol.
-pub(crate) fn verify_native_extents_scoped(
-    scope: &NativeVerificationScope<'_>,
-    expected: &impl shadow_tree::ExpectedObjectDomain,
-    report: &mut Finalization,
-    proof: &FreshPayloadProof,
-    applied: &selected_journal::SelectedResult,
-    handoff: &selected_journal::SelectedResult,
-) -> Result<Value> {
-    let mut pair = scope.pair.clone();
-    pair.source = rediscover_general_volume_wait(pair.source, &mut report.events)?;
-    expected.revalidate_domain()?;
-    let input = crate::general_shadow::ExpectedInputs(expected);
-    let native = shadow_native::observe_general_converted_metadata_domain(
-        pair,
-        &input,
-        None,
-        |a, b| {
-            ntfs_attestation::same_security(a, b)
-                .map_err(|error| io::Error::other(error.to_string()))
-        },
-        scope
-            .source_resource_profile
-            .unwrap_or_default()
-            .native_profile(),
-    )?;
-    let receipt = proof.verify(scope, expected, applied, handoff, &native)?;
-    record_mount_paths_scoped(scope, &native, report);
-    report.native = Some(native);
-    if report.error.is_none() {
-        restore_source_label_scoped(scope, report);
-    }
-    report.success = report.error.is_none();
-    Ok(receipt)
 }

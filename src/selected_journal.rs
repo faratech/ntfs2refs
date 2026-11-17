@@ -569,10 +569,6 @@ impl SelectedPlan {
         self.format()
     }
 
-    pub fn journal_record_bytes(&self) -> usize {
-        self.record_size()
-    }
-
     /// Exact opt-in format-six size, including all eight marker slots. This
     /// changes no source-free admission or selected-byte verification rule.
     pub fn validate_redundant_source_free(&self) -> Result<(u64, u64)> {
@@ -1107,13 +1103,14 @@ fn verify_copy_selected<R: Read + Seek, S: Read + Seek>(
 
 /// Create and durably verify a new external journal. Only selected ranges are
 /// read from the two images. Ticket issuance follows an independent readback.
+#[cfg(test)]
 pub fn prepare<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     source: &mut R,
     candidate: &mut S,
     journal: &mut J,
     plan: &SelectedPlan,
 ) -> Result<SelectedTicket> {
-    Ok(prepare_inner(source, candidate, journal, plan, false, false, None)?.ticket)
+    prepare_inner(source, candidate, journal, plan, false, false, None)
 }
 
 /// Explicit opt-in to N2RFRE02's redundant write-once lifecycle layout. All
@@ -1126,7 +1123,7 @@ pub fn prepare_redundant_source_free<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     journal: &mut J,
     plan: &SelectedPlan,
 ) -> Result<SelectedTicket> {
-    Ok(prepare_inner(
+    prepare_inner(
         source,
         candidate,
         journal,
@@ -1134,8 +1131,7 @@ pub fn prepare_redundant_source_free<R: ReadSeek, S: ReadSeek, J: DurableIo>(
         false,
         false,
         Some(SelectedMarkerProfile::RedundantSourceFreeV1),
-    )?
-    .ticket)
+    )
 }
 
 /// Prepare under continuous exclusive ownership of the new journal. The
@@ -1157,144 +1153,7 @@ pub(crate) fn prepare_exclusive<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     journal: &mut J,
     plan: &SelectedPlan,
 ) -> Result<SelectedTicket> {
-    Ok(prepare_inner(source, candidate, journal, plan, true, false, None)?.ticket)
-}
-
-/// Only complete post-flush validation can produce these operation-local
-/// contents. Legacy ticket-only APIs discard the records; fresh ownership can
-/// retain them without authenticating the same immutable body a second time.
-struct PreparedContents {
-    ticket: SelectedTicket,
-    records: Vec<JournalRecord>,
-}
-
-/// Continuous ownership of the exact newly prepared journal and plan. No
-/// mutable journal accessor, cloning or deserialization can manufacture the
-/// completed preparation readback. The source/candidate borrows end on return;
-/// the same exclusive journal borrow remains held through activation and HND.
-pub(crate) struct PreparedExclusiveJournal<'a, J: DurableIo> {
-    journal: &'a mut J,
-    plan: &'a SelectedPlan,
-    ticket: SelectedTicket,
-    records: Vec<JournalRecord>,
-}
-
-#[allow(
-    dead_code,
-    reason = "retain generic owned preparation with independent byte comparison"
-)]
-pub(crate) fn prepare_exclusive_owned<'a, R: ReadSeek, S: ReadSeek, J: DurableIo>(
-    source: &mut R,
-    candidate: &mut S,
-    journal: &'a mut J,
-    plan: &'a SelectedPlan,
-) -> Result<PreparedExclusiveJournal<'a, J>> {
-    let PreparedContents { ticket, records } =
-        prepare_inner(source, candidate, journal, plan, true, false, None)?;
-    Ok(PreparedExclusiveJournal {
-        journal,
-        plan,
-        ticket,
-        records,
-    })
-}
-
-/// The actual DifferenceImage COPY read is the original raw-source read when
-/// both native readers address the same persistently frozen partition. Retain
-/// that construction proof instead of reading the identical bytes twice.
-/// Generic/legacy readers keep their independent source-byte comparisons.
-#[cfg(windows)]
-pub(crate) fn prepare_exclusive_owned_source_backed<'a, S: Read + Seek, J: DurableIo>(
-    source: &mut n2r_win32::GeneralFrozenPartition,
-    candidate: &mut crate::refs_hybrid::delta::DifferenceImage<
-        '_,
-        n2r_win32::GeneralFrozenPartition,
-        S,
-    >,
-    journal: &'a mut J,
-    plan: &'a SelectedPlan,
-    events: &mut Vec<n2r_win32::NativeEvent>,
-) -> Result<(PreparedExclusiveJournal<'a, J>, u64)> {
-    prepare_exclusive_owned_source_backed_sealed(
-        source,
-        candidate,
-        journal,
-        plan,
-        events,
-        None,
-        |_, _| Ok(()),
-    )
-}
-
-/// Complete the unchanged readback and paired-source checks before a native
-/// construction owner is sealed in place. A failed hook publishes no prepared
-/// owner. The hook is crate-private and never exposes an already-issued owner.
-#[cfg(windows)]
-pub(crate) fn prepare_exclusive_owned_source_backed_sealed<
-    'a,
-    S: Read + Seek,
-    J: DurableIo,
-    F: FnOnce(&mut J, &SelectedTicket) -> Result<()>,
->(
-    source: &mut n2r_win32::GeneralFrozenPartition,
-    candidate: &mut crate::refs_hybrid::delta::DifferenceImage<
-        '_,
-        n2r_win32::GeneralFrozenPartition,
-        S,
-    >,
-    journal: &'a mut J,
-    plan: &'a SelectedPlan,
-    events: &mut Vec<n2r_win32::NativeEvent>,
-    marker_profile: Option<SelectedMarkerProfile>,
-    seal: F,
-) -> Result<(PreparedExclusiveJournal<'a, J>, u64)> {
-    plan.validate_marker_profile(marker_profile)?;
-    let before = candidate.paired_source_state(source, events)?;
-    let copies = candidate.require_original_copy_ranges(&plan.new_copy_ranges)?;
-    ensure!(
-        copies == plan.new_copy_bytes()?,
-        "paired COPY scope differs from the complete plan"
-    );
-    let PreparedContents { ticket, records } =
-        prepare_inner(source, candidate, journal, plan, true, true, marker_profile)?;
-    ensure!(
-        candidate.paired_source_state(source, events)? == before,
-        "paired source/complement changed during journal preparation"
-    );
-    seal(journal, &ticket)?;
-    Ok((
-        PreparedExclusiveJournal {
-            journal,
-            plan,
-            ticket,
-            records,
-        },
-        copies,
-    ))
-}
-
-impl<J: DurableIo> PreparedExclusiveJournal<'_, J> {
-    pub(crate) fn ticket(&self) -> &SelectedTicket {
-        &self.ticket
-    }
-
-    /// Consume the completed preparation exactly once. Journal sharing and
-    /// alias exclusion remain the caller's existing contract. Clear markers,
-    /// the immediate exact-old target gate and every apply/HND barrier remain.
-    pub(crate) fn apply_and_handoff<T: DurableIo, F: FnOnce(&SelectedResult) -> Result<()>>(
-        self,
-        target: &mut T,
-        after_apply: F,
-    ) -> Result<(SelectedResult, SelectedResult)> {
-        let Self {
-            journal,
-            plan,
-            ticket,
-            records,
-        } = self;
-        FreshExclusiveApply::from_authenticated(target, journal, plan, &ticket, records)?
-            .apply_and_handoff(after_apply)
-    }
+    prepare_inner(source, candidate, journal, plan, true, false, None)
 }
 
 fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
@@ -1305,7 +1164,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     exclusive_readback: bool,
     same_native_source: bool,
     marker_profile: Option<SelectedMarkerProfile>,
-) -> Result<PreparedContents> {
+) -> Result<SelectedTicket> {
     ensure!(
         !same_native_source || exclusive_readback,
         "same-source construction proof requires the complete exclusive readback"
@@ -1484,11 +1343,10 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
         new_selected_sha256,
         whole_image_verified: false,
     };
-    let records = if exclusive_readback {
-        let (records, immutable_sha256) =
-            validate_body(journal, plan, &ticket, None, &mut zero_digests)?;
+    // Only this complete post-flush validation lets the ticket out.
+    if exclusive_readback {
+        let (_, immutable_sha256) = validate_body(journal, plan, &ticket, None, &mut zero_digests)?;
         ticket.immutable_sha256 = immutable_sha256;
-        records
     } else {
         ticket.immutable_sha256 = hash_range(journal, body, journal_length - body)?;
         validate_body(
@@ -1497,16 +1355,15 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
             &ticket,
             Some(&ticket.immutable_sha256),
             &mut zero_digests,
-        )?
-        .0
-    };
+        )?;
+    }
     let mut markers = vec![0u8; body as usize];
     at(journal, 0, &mut markers)?;
     ensure!(
         markers.iter().all(|&b| b == 0),
         "selected journal markers are not clear"
     );
-    Ok(PreparedContents { ticket, records })
+    Ok(ticket)
 }
 
 /// Recheck the pinned complete immutable journal and each payload in one
@@ -2637,6 +2494,7 @@ fn execute_loaded<T: DurableIo, J: DurableIo>(
     })
 }
 
+#[cfg(test)]
 pub fn apply<T: DurableIo, J: DurableIo>(
     target: &mut T,
     journal: &mut J,
@@ -2646,188 +2504,6 @@ pub fn apply<T: DurableIo, J: DurableIo>(
     execute(target, journal, plan, ticket, true, true)
 }
 
-/// A one-shot, operation-local owner of a completely authenticated journal and
-/// exact old target. The caller's continuous exclusion contract is mandatory:
-/// mutable Rust borrows do not provide global exclusion of device/admin aliases.
-/// No Boolean, deserialized record or recovery entry can construct this owner.
-struct FreshExclusiveApply<'a, T: DurableIo, J: DurableIo> {
-    target: &'a mut T,
-    journal: &'a mut J,
-    plan: &'a SelectedPlan,
-    ticket: &'a SelectedTicket,
-    records: Vec<JournalRecord>,
-}
-
-impl<'a, T: DurableIo, J: DurableIo> FreshExclusiveApply<'a, T, J> {
-    fn new(
-        target: &'a mut T,
-        journal: &'a mut J,
-        plan: &'a SelectedPlan,
-        ticket: &'a SelectedTicket,
-    ) -> Result<Self> {
-        // load validates geometry, disjoint ranges, every immutable byte,
-        // payload, descriptor, resolved copy, footer and independently held pin.
-        let records = load(journal, plan, ticket)?;
-        Self::from_authenticated(target, journal, plan, ticket, records)
-    }
-
-    /// Records are reachable here only from a complete load in this call or
-    /// the one-shot owner of the same completed preparation readback. Neither
-    /// the ticket nor a serialized record can bypass journal authentication.
-    fn from_authenticated(
-        target: &'a mut T,
-        journal: &'a mut J,
-        plan: &'a SelectedPlan,
-        ticket: &'a SelectedTicket,
-        records: Vec<JournalRecord>,
-    ) -> Result<Self> {
-        let (apply_intent, rollback_intent) = read_markers(journal, ticket)?;
-        ensure!(
-            !apply_intent && !rollback_intent,
-            "fresh exclusive apply requires clear intent"
-        );
-        target.sync_all()?;
-        check_target(
-            target,
-            journal,
-            plan,
-            &records,
-            Some(&ticket.old_selected_sha256),
-            true,
-        )?;
-        Ok(Self {
-            target,
-            journal,
-            plan,
-            ticket,
-            records,
-        })
-    }
-
-    fn write_new_span(
-        &mut self,
-        index: usize,
-        start: u64,
-        length: u64,
-        after: &mut [u8],
-    ) -> Result<()> {
-        let record = &self.records[index];
-        ensure!(
-            start
-                .checked_add(length)
-                .is_some_and(|end| end <= record.range.length),
-            "fresh exclusive span escapes its authenticated record"
-        );
-        let mut done = 0u64;
-        while done < length {
-            let count = usize::try_from((length - done).min(after.len() as u64))?;
-            let within = start + done;
-            // Destinations are disjoint and still old until this sole write.
-            // Copy references resolve saved J payloads, never a changed target.
-            read_after(
-                self.journal,
-                &self.records,
-                record,
-                within,
-                &mut after[..count],
-            )?;
-            self.target
-                .seek(SeekFrom::Start(record.range.offset + within))?;
-            ensure!(
-                self.target.write(&after[..count])? == count,
-                "short fresh exclusive target write"
-            );
-            done += count as u64;
-        }
-        Ok(())
-    }
-
-    fn apply_and_handoff<F: FnOnce(&SelectedResult) -> Result<()>>(
-        mut self,
-        after_apply: F,
-    ) -> Result<(SelectedResult, SelectedResult)> {
-        write_lifecycle_marker(self.journal, self.ticket, MarkerKind::Apply)?;
-        let mut after = vec![0; BUFFER];
-        for index in 0..self.records.len() {
-            let record = &self.records[index];
-            let skip = if record.range.offset == 0 { GRANULE } else { 0 };
-            let length = record.range.length - skip;
-            self.write_new_span(index, skip, length, &mut after)?;
-        }
-        self.target.sync_all()?;
-        if self.records.first().is_some_and(|r| r.range.offset == 0) {
-            self.write_new_span(0, 0, GRANULE, &mut after)?;
-        }
-        drop(after);
-        self.target.sync_all()?;
-        let digest = check_target(
-            self.target,
-            self.journal,
-            self.plan,
-            &self.records,
-            Some(&self.ticket.new_selected_sha256),
-            false,
-        )?;
-        let applied = SelectedResult {
-            selected_sha256: digest,
-            selected_bytes: self.ticket.selected_bytes,
-            range_count: self.ticket.range_count,
-            replay_closed: false,
-            whole_image_verified: false,
-            conversion_qualified: false,
-            old_restoration_bytes: None,
-        };
-        after_apply(&applied)?;
-        // The owner retains both mutable borrows through receipt persistence
-        // and HND. After a completed intent write, data/check/callback errors
-        // leave that intent open. Marker-write failures use their selected
-        // profile's classification; this owner adds no backend durability proof.
-        self.target.sync_all()?;
-        write_lifecycle_marker(self.journal, self.ticket, MarkerKind::Handoff)?;
-        let handed_off = SelectedResult {
-            replay_closed: true,
-            ..applied
-        };
-        Ok((applied, handed_off))
-    }
-}
-
-/// Fresh apply and durable handoff while one process retains exclusive owning
-/// access to both resources. This is not a recovery API or persisted authority.
-///
-/// The caller must keep target/journal exclusively held (Windows share mode
-/// zero where applicable), without clones, hidden mutable aliases, concurrent
-/// workers or callback access that could mutate either resource. The callback
-/// receives only the applied result and must durably save its receipt before
-/// returning success. Exclusive `&mut` borrows span that callback and HND.
-///
-/// Entry validates every immutable byte, payload, descriptor and footer once.
-/// Every selected target byte must match the exact old digest before intent,
-/// then the exact new digest after flushed writes. With disjoint destinations
-/// and no intervening mutable aliases, each unwritten span is still old; this
-/// path reads only desired journal bytes while writing each destination once.
-/// It omits per-span old/current rereads and may write already-equal chunks up
-/// to selected_bytes. It does not detect out-of-contract concurrent writes
-/// before overwriting them or claim global administrative alias exclusion.
-/// Legacy/fault/resume/rollback paths retain all mixed-byte checks. Discovery
-/// granule last, original flushes and durable markers remain.
-/// Under that continuous exclusive ownership the already validated immutable
-/// body and post-target digest remain valid through the callback, so neither is
-/// scanned again before HND. A callback error leaves the durable apply intent
-/// open; all existing full-validation recovery entry points remain available.
-pub fn apply_and_handoff_exclusive<
-    T: DurableIo,
-    J: DurableIo,
-    F: FnOnce(&SelectedResult) -> Result<()>,
->(
-    target: &mut T,
-    journal: &mut J,
-    plan: &SelectedPlan,
-    ticket: &SelectedTicket,
-    after_apply: F,
-) -> Result<(SelectedResult, SelectedResult)> {
-    FreshExclusiveApply::new(target, journal, plan, ticket)?.apply_and_handoff(after_apply)
-}
 pub fn resume<T: DurableIo, J: DurableIo>(
     target: &mut T,
     journal: &mut J,
@@ -3558,6 +3234,7 @@ mod interrupted_marker_tests {
 
 /// Close replay for an apply that never wrote its intent: no target write can
 /// have happened, and the complete selected old digest must still hold.
+#[cfg(test)]
 pub fn abandon<T: DurableIo, J: DurableIo>(
     target: &mut T,
     journal: &mut J,

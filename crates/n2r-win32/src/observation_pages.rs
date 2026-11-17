@@ -42,6 +42,26 @@ impl NativeObservationBudget {
         ((self.pages.max_page_bytes - 91) / 2) as usize
     }
 }
+/// The most a directory's row (phase 1) may take as JSON.
+///
+/// A directory's row is its listing as Windows returned it, twice: pages of
+/// raw entries, which the collection holds to `max_row_bytes` in all
+/// (`namespace_native::collect_rows_domain`). JSON writes those bytes as an
+/// array of numbers, two to four characters a byte. Held to
+/// `max_row_bytes` like every other row, the listing of a directory of
+/// 19,000 entries (5 MiB of entries a pass, 27 MiB of JSON) was refused on
+/// a machine whose rows may be 26 MiB, 1.7 GiB of memory, five minutes
+/// into the run.
+pub(crate) fn directory_row_limit(budget: NativeObservationBudget) -> u64 {
+    budget.max_row_bytes.saturating_mul(4).saturating_add(65536)
+}
+/// What a directory's row takes in memory for each byte of its JSON, at the
+/// most: its bytes are half its JSON or less, in vectors that may have
+/// grown to twice their length. (Sixteen, the factor for every other row,
+/// is for rows of small values, where a few characters become a value of
+/// many bytes.)
+pub(crate) const DIRECTORY_ROW_FACTOR: u64 = 2;
+
 fn require(ok: bool, message: &str) -> io::Result<()> {
     if ok {
         Ok(())
@@ -295,18 +315,27 @@ impl Write for ChunkSink<'_> {
     fn write(&mut self, mut bytes: &[u8]) -> io::Result<usize> {
         let length = bytes.len();
         self.bytes = add(self.bytes, length as u64)?;
-        require(
-            self.bytes <= self.budget.max_row_bytes,
-            "native observation row budget exhausted",
-        )?;
+        // A directory's row is its listing; every other row is held to the
+        // row limit and paid for at the factor of rows of small values.
+        let (limit, factor) = if self.phase == 1 {
+            (directory_row_limit(self.budget), DIRECTORY_ROW_FACTOR)
+        } else {
+            (self.budget.max_row_bytes, 32)
+        };
+        if self.bytes > limit {
+            return Err(io::Error::other(format!(
+                "native observation row budget exhausted: row {} of phase {} is longer than the {limit} bytes a row may take with this much memory",
+                self.ordinal, self.phase
+            )));
+        }
         if let Some(payer) = self.payer {
             while self.bytes > self.paid {
-                let next = self.paid.saturating_mul(2).clamp(
-                    self.bytes.min(self.budget.max_row_bytes),
-                    self.budget.max_row_bytes,
-                );
+                let next = self
+                    .paid
+                    .saturating_mul(2)
+                    .clamp(self.bytes.min(limit), limit);
                 let more = payer
-                    .reserve((next - self.paid).checked_mul(32).ok_or_else(|| {
+                    .reserve((next - self.paid).checked_mul(factor).ok_or_else(|| {
                         io::Error::other("native observation long row memory overflow")
                     })?)
                     .map_err(|error| {
@@ -538,7 +567,12 @@ impl PagedNativeObservation {
                 index.records = add(index.records, 1)?;
                 at = add(at, 1)?;
                 require(
-                    index.bytes <= budget.max_row_bytes,
+                    index.bytes
+                        <= if phase == 1 {
+                            directory_row_limit(budget)
+                        } else {
+                            budget.max_row_bytes
+                        },
                     "native observation row budget exceeded",
                 )?;
                 if length < budget.chunk_bytes() {
@@ -659,7 +693,7 @@ impl PagedNativeObservation {
         let _decode = self
             .memory
             .as_ref()
-            .map(|m| m.decode(self.budget, row.bytes))
+            .map(|m| m.decode(self.budget, row.bytes, 0))
             .transpose()?;
         decode_row(&mut self.reader.borrow_mut(), row, self.budget)
     }
@@ -814,14 +848,13 @@ impl NativeObservationDomain for PagedNativeObservation {
             file_index.bytes > 0
                 && file_index.bytes <= self.budget.max_row_bytes
                 && namespace_index.bytes > 0
-                && namespace_index.bytes <= self.budget.max_row_bytes,
+                && namespace_index.bytes <= directory_row_limit(self.budget),
             "native paired rows exceed their authenticated decode limits",
         )?;
-        let simultaneous_bytes = add(file_index.bytes, namespace_index.bytes)?;
         let memory = self
             .memory
             .as_ref()
-            .map(|m| m.decode(self.budget, simultaneous_bytes))
+            .map(|m| m.decode(self.budget, file_index.bytes, namespace_index.bytes))
             .transpose()?
             .flatten();
         let file: FileRow = decode_row(&mut self.reader.borrow_mut(), file_index, self.budget)?;
@@ -850,13 +883,13 @@ impl NativeObservationDomain for PagedNativeObservation {
             .get(i)
             .ok_or_else(|| io::Error::other("namespace index outside domain"))?;
         require(
-            row.bytes > 0 && row.bytes <= self.budget.max_row_bytes,
+            row.bytes > 0 && row.bytes <= directory_row_limit(self.budget),
             "native namespace row exceeds its authenticated decode limit",
         )?;
         let _decode = self
             .memory
             .as_ref()
-            .map(|m| m.decode(self.budget, row.bytes))
+            .map(|m| m.decode(self.budget, 0, row.bytes))
             .transpose()?;
         Ok(Cow::Owned(decode_row(
             &mut self.namespace_reader.borrow_mut(),

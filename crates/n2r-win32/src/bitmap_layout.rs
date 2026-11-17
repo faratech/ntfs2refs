@@ -123,7 +123,7 @@ fn push_range(ranges: &mut Vec<AllocatedRange>, start: u64, end: u64) -> io::Res
     });
     Ok(())
 }
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Candidate {
     pub start_lcn: u64,
     pub clusters: u64,

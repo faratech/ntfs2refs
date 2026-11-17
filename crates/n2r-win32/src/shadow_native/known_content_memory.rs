@@ -169,9 +169,16 @@ fn verify_known_contents_in_accounted_report_with_aliases(
         || !observation.data_storage_validity_checked
         || observation.admitted_payload_bytes_read != 0
         || observation.known_content.is_some()
-        || report.native.objects.iter().any(|o| {
-            o.logical_sha256.is_some() || o.named_streams.iter().any(|s| s.logical_sha256.is_some())
-        })
+        || {
+            let mut hashed = false;
+            report.native.objects.for_each(|_, o| {
+                hashed = hashed
+                    || o.logical_sha256.is_some()
+                    || o.named_streams.iter().any(|s| s.logical_sha256.is_some());
+                Ok(())
+            })?;
+            hashed
+        }
     {
         return Err(invalid(
             "known-content requires the original unhashed metadata observation",
@@ -217,7 +224,10 @@ fn verify_known_contents_in_accounted_report_with_aliases(
     let mut bytes = 0u64;
     let mut retained_bytes = 0u64;
     let maximum = admission.budget.max_row_bytes;
-    for (index, object) in report.native.objects.iter_mut().enumerate() {
+    // A row is read while its stream is hashed and the digest is recorded in
+    // it afterwards, stream by stream in the order the row lists them.
+    let rows = &mut report.native.objects;
+    for index in 0..rows.len() {
         let owner = input.object(index)?;
         let item = owner.input();
         if item.directory {
@@ -230,22 +240,25 @@ fn verify_known_contents_in_accounted_report_with_aliases(
             )?)?;
             let path = streams::path(&root, item.components, &[])?;
             let mut file = open_input(&path, &item, protected.is_some())?;
-            if metadata_snapshot_with_limit(&file, &item, Some(maximum)) != object.before {
-                return Err(invalid("known-content file identity or metadata changed"));
-            }
-            let actual = hash_exact_stream(&mut file, item.logical_length())?;
-            if actual != expected
-                || metadata_snapshot_with_limit(&file, &item, Some(maximum)) != object.after
-            {
-                return Err(invalid("known-content bytes, metadata or EOF differ"));
-            }
+            let actual = rows.with(index, |object| {
+                if metadata_snapshot_with_limit(&file, &item, Some(maximum)) != object.before {
+                    return Err(invalid("known-content file identity or metadata changed"));
+                }
+                let actual = hash_exact_stream(&mut file, item.logical_length())?;
+                if actual != expected
+                    || metadata_snapshot_with_limit(&file, &item, Some(maximum)) != object.after
+                {
+                    return Err(invalid("known-content bytes, metadata or EOF differ"));
+                }
+                Ok(actual)
+            })?;
             if actual.capacity() > 128 {
                 return Err(invalid(
                     "known-content digest allocation exceeds prepayment",
                 ));
             }
             retained_bytes = add(retained_bytes, actual.capacity() as u64)?;
-            object.logical_sha256 = Some(actual);
+            rows.set_logical_sha256(index, Some(actual))?;
             count = count
                 .checked_add(1)
                 .ok_or_else(|| invalid("known-content count overflow"))?;
@@ -255,46 +268,59 @@ fn verify_known_contents_in_accounted_report_with_aliases(
                 .checked_add(1)
                 .ok_or_else(|| invalid("unknown-content count overflow"))?;
         }
-        for named in &mut object.named_streams {
-            let stream = item
-                .named_streams
-                .iter()
-                .find(|s| s.name_utf16 == named.name_utf16)
-                .ok_or_else(|| invalid("known named stream absent from actual expected row"))?;
-            let Some(expected) = stream.expected_sha256 else {
+        let named_streams = rows.with(index, |object| Ok(object.named_streams.len()))?;
+        for ordinal in 0..named_streams {
+            // The digest and the length of a stream that has an original
+            // digest, with the query memory its reading holds until the
+            // digest is recorded; nothing for a stream that has none.
+            let hashed = rows.with(index, |object| {
+                let named = &object.named_streams[ordinal];
+                let stream = item
+                    .named_streams
+                    .iter()
+                    .find(|s| s.name_utf16 == named.name_utf16)
+                    .ok_or_else(|| invalid("known named stream absent from actual expected row"))?;
+                let Some(expected) = stream.expected_sha256 else {
+                    return Ok(None);
+                };
+                let query = payer.reserve(add(
+                    stream_workspace(&item, &root, stream.name_utf16, maximum)?,
+                    payer.lease_heap_bytes(),
+                )?)?;
+                let path = streams::path(&root, item.components, stream.name_utf16)?;
+                let mut file = if protected.is_some() {
+                    open_protected_readonly(&path, false)?
+                } else {
+                    open(&path, false, false)?
+                };
+                if named_snapshot(&file, &named.before, maximum)? != named.before {
+                    return Err(invalid("known named-stream identity or metadata changed"));
+                }
+                let actual = hash_exact_stream(&mut file, stream.expected_length)?;
+                if actual != expected
+                    || named_snapshot(&file, &named.after, maximum)? != named.after
+                {
+                    return Err(invalid("known named-stream bytes, metadata or EOF differ"));
+                }
+                Ok(Some((query, actual, stream.expected_length)))
+            })?;
+            let Some((_query, actual, length)) = hashed else {
                 skipped = skipped
                     .checked_add(1)
                     .ok_or_else(|| invalid("unknown-content count overflow"))?;
                 continue;
             };
-            let _query = payer.reserve(add(
-                stream_workspace(&item, &root, stream.name_utf16, maximum)?,
-                payer.lease_heap_bytes(),
-            )?)?;
-            let path = streams::path(&root, item.components, stream.name_utf16)?;
-            let mut file = if protected.is_some() {
-                open_protected_readonly(&path, false)?
-            } else {
-                open(&path, false, false)?
-            };
-            if named_snapshot(&file, &named.before, maximum)? != named.before {
-                return Err(invalid("known named-stream identity or metadata changed"));
-            }
-            let actual = hash_exact_stream(&mut file, stream.expected_length)?;
-            if actual != expected || named_snapshot(&file, &named.after, maximum)? != named.after {
-                return Err(invalid("known named-stream bytes, metadata or EOF differ"));
-            }
             if actual.capacity() > 128 {
                 return Err(invalid(
                     "known-content digest allocation exceeds prepayment",
                 ));
             }
             retained_bytes = add(retained_bytes, actual.capacity() as u64)?;
-            named.logical_sha256 = Some(actual);
+            rows.set_named_stream_logical_sha256(index, ordinal, Some(actual))?;
             count = count
                 .checked_add(1)
                 .ok_or_else(|| invalid("known-content count overflow"))?;
-            bytes = add(bytes, stream.expected_length)?;
+            bytes = add(bytes, length)?;
         }
     }
     privileges.restore()?;

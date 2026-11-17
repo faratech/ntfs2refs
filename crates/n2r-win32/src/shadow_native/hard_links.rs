@@ -129,7 +129,7 @@ pub(super) fn find<'a, 'b>(
         .find(|(_, item)| paths(item).any(|p| p == path))
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Observation {
     pub components: Vec<String>,
     pub before: Snapshot,

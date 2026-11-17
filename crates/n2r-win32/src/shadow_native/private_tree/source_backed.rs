@@ -201,10 +201,10 @@ impl SourceBackedRoutes {
         }
         let cluster = crate::target_cluster::bytes();
         let mut payload_bytes = 0u64;
-        for (index, object) in report.objects.iter().enumerate() {
+        report.objects.for_each(|index, object| {
             let standard = query_bytes(&object.before, 1, 24)?;
             if standard[21] != 0 {
-                continue;
+                return Ok(());
             }
             for named in &object.named_streams {
                 let ns = query_bytes(&named.before, 1, 24)?;
@@ -289,7 +289,7 @@ impl SourceBackedRoutes {
             let prefix = length / cluster * cluster;
             let sparse = object.sparse.as_ref();
             if prefix == 0 || (sparse.is_some() && object.retrieval.is_empty()) {
-                continue;
+                return Ok(());
             }
             let needed = sparse.map_or(prefix, |s| {
                 s.expected
@@ -362,7 +362,8 @@ impl SourceBackedRoutes {
             payload_bytes = payload_bytes
                 .checked_add(needed)
                 .ok_or_else(|| invalid("protected payload total overflow"))?;
-        }
+            Ok(())
+        })?;
         Ok(payload_bytes)
     }
 

@@ -132,7 +132,7 @@ pub(super) fn compare_records(
     let budget = admission.map_page_budget()?;
     let mut record = 1u64;
     let mut bindings = 0u64;
-    for (index, native) in report.objects.iter().enumerate() {
+    report.objects.try_for_each(|index, native| -> Result<()> {
         let object = expected.object_leased(index)?;
         ensure!(
             native.components == object.path
@@ -159,59 +159,62 @@ pub(super) fn compare_records(
                     "V4 converted named-stream identity differs"
                 );
             }
-            let ((components, name_utf16), map) = StreamLocation {
+            StreamLocation {
                 object: index,
                 named,
             }
-            .view(report)?;
-            let entry = MapEntryRef {
-                components,
-                name_utf16,
-                map: PagedStreamMapRef::with_resources(map, Some(admission))?,
-            };
-            let size = row_size(&entry, admission.budget.max_row_bytes)?;
-            validate_borrowed_row_memory(&entry, size, admission.budget.max_row_bytes)?;
-            let mut expected_hash = HashSink {
-                hash: Sha256::new(),
-                bytes: 0,
-            };
-            serde_json::to_writer(&mut expected_hash, &entry)?;
-            ensure!(
-                expected_hash.bytes == size && size != 0,
-                "V4 converted row length differs"
-            );
-            let expected_digest = expected_hash.hash.finalize();
-            let key = key(index, ordinal)?;
-            let max_chunk = chunk_capacity(budget, key.len())?;
-            let mut actual_hash = Sha256::new();
-            let mut actual_bytes = 0u64;
-            let mut chunk = 0u64;
-            while actual_bytes < size {
-                let saved = reader.get(record)?;
+            .view(report, |(components, name_utf16), map| {
+                let entry = MapEntryRef {
+                    components,
+                    name_utf16,
+                    map: PagedStreamMapRef::with_resources(map, Some(admission))?,
+                };
+                let size = row_size(&entry, admission.budget.max_row_bytes)?;
+                validate_borrowed_row_memory(&entry, size, admission.budget.max_row_bytes)?;
+                let mut expected_hash = HashSink {
+                    hash: Sha256::new(),
+                    bytes: 0,
+                };
+                serde_json::to_writer(&mut expected_hash, &entry)?;
                 ensure!(
-                    saved.key == chunk_key(&key, chunk),
-                    "V4 map chunk identity/order differs"
+                    expected_hash.bytes == size && size != 0,
+                    "V4 converted row length differs"
                 );
-                let text: &str = serde_json::from_slice(&saved.payload)?;
-                let data = decode_base64(text, max_chunk)?;
-                ensure!(!data.is_empty(), "V4 map has an empty chunk");
-                actual_bytes = actual_bytes
-                    .checked_add(data.len() as u64)
-                    .filter(|n| *n <= size)
-                    .context("V4 converted map row length differs")?;
-                actual_hash.update(&data);
-                record = record.checked_add(1).context("V4 record count overflow")?;
-                chunk = chunk.checked_add(1).context("V4 chunk count overflow")?;
-            }
-            ensure!(
-                actual_hash.finalize() == expected_digest,
-                "V4 converted stream map differs"
-            );
-            bindings = bindings
-                .checked_add(1)
-                .context("V4 binding count overflow")?;
+                let expected_digest = expected_hash.hash.finalize();
+                let key = key(index, ordinal)?;
+                let max_chunk = chunk_capacity(budget, key.len())?;
+                let mut actual_hash = Sha256::new();
+                let mut actual_bytes = 0u64;
+                let mut chunk = 0u64;
+                while actual_bytes < size {
+                    let saved = reader.get(record)?;
+                    ensure!(
+                        saved.key == chunk_key(&key, chunk),
+                        "V4 map chunk identity/order differs"
+                    );
+                    let text: &str = serde_json::from_slice(&saved.payload)?;
+                    let data = decode_base64(text, max_chunk)?;
+                    ensure!(!data.is_empty(), "V4 map has an empty chunk");
+                    actual_bytes = actual_bytes
+                        .checked_add(data.len() as u64)
+                        .filter(|n| *n <= size)
+                        .context("V4 converted map row length differs")?;
+                    actual_hash.update(&data);
+                    record = record.checked_add(1).context("V4 record count overflow")?;
+                    chunk = chunk.checked_add(1).context("V4 chunk count overflow")?;
+                }
+                ensure!(
+                    actual_hash.finalize() == expected_digest,
+                    "V4 converted stream map differs"
+                );
+                bindings = bindings
+                    .checked_add(1)
+                    .context("V4 binding count overflow")?;
+                Ok(())
+            })?;
         }
-    }
+        Ok(())
+    })?;
     ensure!(
         record == reader.len() && bindings == records,
         "V4 converted map comparison is incomplete"

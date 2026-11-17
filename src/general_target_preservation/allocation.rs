@@ -239,9 +239,9 @@ pub(super) fn reconcile(
         Err(error) => (Vec::new(), Some(error)),
     };
     let mut streams = Vec::new();
-    for object in &report.objects {
+    report.objects.try_for_each(|_, object| -> Result<()> {
         if object.retrieval.is_empty() {
-            continue;
+            return Ok(());
         }
         for run in n2r_win32::stream_layout::parse_complete_retrieval(&object.retrieval)? {
             if let Some(lcn) = run.lcn {
@@ -260,7 +260,8 @@ pub(super) fn reconcile(
                 });
             }
         }
-    }
+        Ok(())
+    })?;
     let streams = union(streams, length)?;
     let known = union(anchors.iter().chain(&streams).copied().collect(), length)?;
     let allocated_bytes = total(&allocated)?;

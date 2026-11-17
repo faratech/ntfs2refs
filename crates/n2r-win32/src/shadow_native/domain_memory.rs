@@ -131,7 +131,7 @@ pub(super) fn validation_bytes(report: &Report, input: &impl InputDomain) -> io:
     // Directory membership's seen-name set exists for one directory at a time.
     let seen_node = node(mem::size_of::<Vec<u16>>(), 0)?;
     let mut maximum = 0u64;
-    for object in &report.objects {
+    report.objects.for_each(|_, object| {
         let mut seen = 0u64;
         for entry in &object.namespace {
             seen = add(
@@ -140,7 +140,8 @@ pub(super) fn validation_bytes(report: &Report, input: &impl InputDomain) -> io:
             )?;
         }
         maximum = maximum.max(seen);
-    }
+        Ok(())
+    })?;
     bytes = add(bytes, maximum)?;
     Ok(bytes)
 }

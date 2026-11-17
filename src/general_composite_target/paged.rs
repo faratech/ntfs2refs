@@ -918,6 +918,8 @@ pub(crate) struct ProtectedPagedTargetSelection {
     source_tails: SourceTailProvider,
     // One per observation of the shadow: two, or one under the check-once policy.
     _native_leases: Vec<ArtifactLease>,
+    // The files the walks wrote their rows to, where memory was short.
+    _spilled_rows: super::paged_memory::SpilledFiles,
     _native_result_ram: Vec<crate::artifact_arena::ArenaRamLease>,
     _scratch: SourceScratch,
     opening_sha256: String,
@@ -1308,7 +1310,15 @@ fn observe_and_select_scoped(
     );
     expected.require_resource_owner(admission)?;
     expected.require_shared_memory(&arena)?;
-    let memory = super::paged_memory::ArenaReportMemory(arena);
+    // The walks' rows that have no room in memory go to files of the
+    // capture's group, kept as long as its other files.
+    let spilled = super::paged_memory::SpilledFiles::default();
+    let memory = super::paged_memory::ArenaReportStorage::new(
+        super::paged_memory::ArenaReportMemory(arena),
+        capture_group.clone(),
+        output,
+        std::sync::Arc::clone(&spilled),
+    );
     context.recheck_source(events)?;
     let source_before = context.source_state(&pair, events)?;
     source_before.require_excluded()?;
@@ -1808,6 +1818,7 @@ fn observe_and_select_scoped(
         source_projection,
         source_tails,
         _native_leases: native_leases,
+        _spilled_rows: spilled,
         _native_result_ram: native_result_ram,
         _scratch: scratch,
         opening_sha256: opening_digest.map_or_else(|| closing.0.clone(), |opening| opening.0),

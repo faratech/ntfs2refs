@@ -2,6 +2,7 @@
 //! lease; the SDK cannot deserialize or manufacture an accounting capability.
 use super::*;
 use std::fmt;
+use std::path::Path;
 
 pub trait ReportMemoryLease: Send + Sync {
     /// Downward only. Query workspace remains charged until collection closes.
@@ -32,8 +33,50 @@ pub trait ReportMemoryAccountant: Send + Sync {
     fn reserve_spare(&self, bytes: u64) -> io::Result<Box<dyn ReportMemoryLease>> {
         self.reserve(bytes)
     }
+    /// Memory for something the caller can as well keep in working storage,
+    /// which the payer may ask back at any time: the caller is told through
+    /// [`crate::evict`] on the thread that drives the run. A payer lends it
+    /// only while it has memory to spare, and refuses rather than take
+    /// memory from anything else; one that keeps no such memory refuses
+    /// always, which is the default.
+    #[track_caller]
+    fn reserve_cache(&self, bytes: u64) -> io::Result<Box<dyn ReportMemoryLease>> {
+        let _ = bytes;
+        Err(io::Error::other(
+            "this payer lends no memory it can ask back",
+        ))
+    }
+    /// Where the caller may make files in the run's working storage for
+    /// what has no room in memory, accounted for like the run's other
+    /// working files; it is kept and may be used after this payer is out
+    /// of reach. `None` where the payer has no working storage to offer:
+    /// the caller then keeps in memory what it would have written.
+    fn spill_source(&self) -> Option<Box<dyn SpillSource>> {
+        None
+    }
     /// Actual adapter allocation, excluding the Box pointer stored by the SDK.
     fn lease_heap_bytes(&self) -> u64;
+}
+/// Working storage a payer offers ([`ReportMemoryAccountant::spill_source`]).
+pub trait SpillSource: Send + Sync {
+    /// A new, empty working file. Refused once the storage is closed to new
+    /// files: the caller then keeps what it holds.
+    fn create(&self) -> io::Result<Box<dyn SpillFile>>;
+}
+/// A working file being written for a payer's caller
+/// ([`SpillSource::create`]). It has to be closed: a file
+/// that is dropped unfinished leaves the payer's storage accounting broken,
+/// and the run ends for it.
+pub trait SpillFile: Send + Sync {
+    fn path(&self) -> &Path;
+    /// The page budget the file is written and read with.
+    fn page_budget(&self) -> crate::metadata_pages::PageBudget;
+    /// Before `bytes` more are written to the file.
+    fn extend(&mut self, bytes: u64) -> io::Result<()>;
+    /// The file is complete and closed for writing; `sha256` is what its
+    /// writer returned. The payer keeps the file for as long as its other
+    /// working files.
+    fn close(self: Box<Self>, sha256: &str) -> io::Result<()>;
 }
 pub(super) struct LayoutRetained {
     _lease: Box<dyn ReportMemoryLease>,
@@ -553,6 +596,22 @@ impl Retained {
         self.root_bytes = bytes;
         self.root = Some(lease);
         Ok(())
+    }
+    /// A row's query reservation shrunk to the row, for rows kept in
+    /// blocks: the blocks hold it, not this owner.
+    pub(super) fn shrink_to_row(
+        mut lease: Box<dyn ReportMemoryLease>,
+        row: &ObjectReport,
+        maximum: u64,
+    ) -> io::Result<Box<dyn ReportMemoryLease>> {
+        let actual = row_bytes(row)?;
+        if actual > maximum {
+            return Err(invalid(
+                "native retained row exceeded its prepaid query/decode reservation",
+            ));
+        }
+        lease.shrink_to(actual)?;
+        Ok(lease)
     }
     pub(super) fn retain(
         &mut self,

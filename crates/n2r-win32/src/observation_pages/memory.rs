@@ -199,34 +199,39 @@ impl Memory {
         self.construction = false;
         Ok(())
     }
+    /// The memory to decode an object's file row of `file_bytes` of JSON and
+    /// its directory row of `directory_bytes` (either may be absent, zero).
     pub(super) fn decode(
         &self,
         budget: NativeObservationBudget,
-        row_bytes: u64,
+        file_bytes: u64,
+        directory_bytes: u64,
     ) -> io::Result<Option<Box<dyn ReportMemoryLease>>> {
         require(
-            row_bytes > 0
-                && row_bytes
-                    <= budget
-                        .max_row_bytes
-                        .checked_mul(2)
-                        .ok_or_else(|| io::Error::other("native decode row bound overflow"))?,
+            (file_bytes > 0 || directory_bytes > 0)
+                && file_bytes <= budget.max_row_bytes
+                && directory_bytes <= super::directory_row_limit(budget),
             "native decode rows exceed their authenticated limits",
+        )?;
+        // RowIndex.bytes was authenticated while opening the complete
+        // report. Pay the JSON rows that are decoded together: a file row
+        // at the conservative expansion factor, a directory's listing at
+        // its own.
+        let rows = add(
+            mul(file_bytes, 16)?,
+            mul(directory_bytes, super::DIRECTORY_ROW_FACTOR)?,
         )?;
         if self.construction {
             // The window holds the rows it was made for while they are read
-            // back; longer ones pay for the rest, at the factor below.
-            return Self::beyond_window(&*self.accountant, self.window_row, row_bytes, 16);
+            // back; longer ones pay for the rest.
+            return match rows.checked_sub(mul(self.window_row, 16)?) {
+                Some(more) if more > 0 => self.accountant.reserve(more).map(Some),
+                _ => Ok(None),
+            };
         }
         self.accountant
             .reserve(add(
-                add(
-                    // RowIndex.bytes was authenticated while opening the
-                    // complete report. Pay the actual simultaneously decoded
-                    // JSON rows, retaining the conservative expansion factor.
-                    mul(row_bytes, 16)?,
-                    mul(u64::from(budget.pages.max_page_bytes), 6)?,
-                )?,
+                add(rows, mul(u64::from(budget.pages.max_page_bytes), 6)?)?,
                 65536 + 4096,
             )?)
             .map(Some)
@@ -290,6 +295,43 @@ mod window_tests {
     }
 
     #[test]
+    fn a_directory_s_row_may_be_longer_than_other_rows_and_pays_for_its_listing() {
+        // A machine with 1.7 GiB for a run admits rows of 26 MiB. The
+        // listing of a directory of 19,000 entries is 27 MiB of JSON.
+        let budget = budget(26 * MIB, 4 * 1024 * 1024);
+        let payer = Arc::new(Counted::with_limit(u64::MAX));
+        let mut memory =
+            Memory::new(payer.clone(), budget, 1000, Path::new("native.pages")).unwrap();
+        let window = payer.held();
+        // While the file is being opened the window covers sixteen rows'
+        // worth of a megabyte; the listing pays twice its JSON beyond that.
+        let lease = memory.decode(budget, 0, 27 * MIB).unwrap();
+        assert_eq!(payer.held() - window, 2 * 27 * MIB - 16 * MIB);
+        drop(lease);
+        // With its file row beside it, that row at sixteen times its JSON.
+        let lease = memory.decode(budget, 2 * MIB, 27 * MIB).unwrap();
+        assert_eq!(
+            payer.held() - window,
+            16 * 2 * MIB + 2 * 27 * MIB - 16 * MIB
+        );
+        drop(lease);
+        // A file row is still held to the row limit, a listing to four
+        // times it and no more.
+        assert!(memory.decode(budget, 27 * MIB, 0).is_err());
+        assert!(memory.decode(budget, 0, 4 * 26 * MIB + 65536).is_ok());
+        assert!(memory.decode(budget, 0, 4 * 26 * MIB + 65537).is_err());
+        assert!(memory.decode(budget, 0, 0).is_err());
+        memory.construction = false;
+        let before = payer.held();
+        let lease = memory.decode(budget, 0, 27 * MIB).unwrap();
+        assert_eq!(
+            payer.held() - before,
+            2 * 27 * MIB + 6 * 4 * MIB + 65536 + 4096
+        );
+        drop(lease);
+    }
+
+    #[test]
     fn a_row_longer_than_the_window_pays_for_what_it_is_longer_by() {
         let payer = Counted::with_limit(100 * MIB);
         for ordinary in [1, 4096, MIB] {
@@ -319,13 +361,13 @@ mod window_tests {
         let budget = budget(8 * MIB, 4 * 1024 * 1024);
         let memory = Memory::new(payer.clone(), budget, 10, Path::new("native.pages")).unwrap();
         let window = payer.held();
-        assert!(memory.decode(budget, 2000).unwrap().is_none());
+        assert!(memory.decode(budget, 2000, 0).unwrap().is_none());
         assert_eq!(payer.held(), window);
-        let long = memory.decode(budget, 5 * MIB).unwrap().unwrap();
+        let long = memory.decode(budget, 5 * MIB, 0).unwrap().unwrap();
         assert_eq!(payer.held(), window + 16 * 4 * MIB);
         drop(long);
         // More than two of the largest row is not a row of this collection.
-        assert!(memory.decode(budget, 16 * MIB + 1).is_err());
+        assert!(memory.decode(budget, 16 * MIB + 1, 0).is_err());
     }
 
     #[test]

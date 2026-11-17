@@ -630,7 +630,9 @@ try {
     }
     $hostFree = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory * 1KB
     $memory = [Math]::Min([long]$MemoryGB * 1GB, [long]($hostFree * 0.8 / 1GB) * 1GB)
-    if ($memory -lt 8GB) { throw "Host has too little free memory for the VM: $([Math]::Round($hostFree/1GB,1)) GB free" }
+    # A VM is given less than 8 GB only when the caller asked for it (a run
+    # on a small machine, -MemoryGB 4), never because the host is short.
+    if ($memory -lt [Math]::Min(8GB, [long]$MemoryGB * 1GB)) { throw "Host has too little free memory for the VM: $([Math]::Round($hostFree/1GB,1)) GB free" }
     Set-VM -VM $vm -StaticMemory -MemoryStartupBytes $memory
     Set-VMProcessor -VM $vm -Count ([Math]::Min($Processors, [Environment]::ProcessorCount))
     # The boot step of an earlier attempt detached everything but disk0, and

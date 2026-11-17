@@ -266,17 +266,15 @@ fn exact_children(
 ) -> io::Result<()> {
     let before = info(file, 18, 24)?;
     let count = namespace.children.get(path).copied().unwrap_or(0);
-    // A complete Windows directory can exceed the historical 4096-entry
-    // fixture limit. Pay for response records, UTF-16 names, parsed entries
-    // and the identity set from the actual expected child count instead.
-    let evidence = count
-        .checked_add(2)
-        .and_then(|n| n.checked_mul(4096))
-        .and_then(|n| n.checked_add(namespace_layout::CAPACITY * 4))
+    // Paid by the expected child count, for what a listing is: the records
+    // Windows returns, the names decoded, the parsed entries, and a node of
+    // the identity set for each.
+    let (evidence, listing) = namespace_layout::listing_memory(count)
         .ok_or_else(|| invalid("recovered directory evidence workspace overflow"))?;
     let _memory = payer.reserve(
-        (evidence as u64)
-            .checked_mul(2)
+        (count as u64)
+            .checked_mul(64)
+            .and_then(|n| n.checked_add(listing))
             .ok_or_else(|| invalid("recovered directory memory overflow"))?,
     )?;
     let mut seen = BTreeSet::new();

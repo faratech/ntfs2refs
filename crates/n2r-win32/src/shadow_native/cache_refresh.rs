@@ -693,34 +693,16 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                 continue;
             }
             let handle = held(handles, index)?;
-            // A listing is paid for by what it is. The entries as Windows
-            // returns them are no longer than `LISTED_ENTRY_BYTES` each, and
-            // decoded they are no longer than that and a struct; the paths
-            // seen are paid once the names are known. (Each expected child
-            // paid 8 KiB before the directory was read: 476 MiB for
-            // `Windows\WinSxS` with its short-name links, the most the full
-            // Windows volume needed of a ledger of 1,794 MiB, 1,693.)
+            // A listing is paid for by what it is
+            // (`namespace_layout::listing_memory`); the paths seen are paid
+            // once the names are known.
             let (enumeration_budget, _enumeration_memory) = if let Some(payer) = enumeration_payer {
                 let count = expected_children
                     .get(directory.components)
                     .map_or(0, BTreeSet::len);
-                let evidence = count
-                    .checked_add(2)
-                    .and_then(|n| n.checked_mul(LISTED_ENTRY_BYTES))
-                    .and_then(|n| n.checked_add(namespace_layout::CAPACITY * 4))
+                let (evidence, memory) = namespace_layout::listing_memory(count)
                     .ok_or_else(|| invalid("owned resource directory enumeration overflow"))?;
-                let decoded = count
-                    .checked_add(2)
-                    .and_then(|n| n.checked_mul(2 * std::mem::size_of::<namespace_layout::Entry>()))
-                    .ok_or_else(|| invalid("owned resource directory enumeration overflow"))?;
-                let memory = payer.reserve(
-                    (evidence as u64)
-                        .checked_mul(2)
-                        .and_then(|n| n.checked_add(decoded as u64))
-                        .ok_or_else(|| {
-                            invalid("owned resource directory enumeration RAM overflow")
-                        })?,
-                )?;
+                let memory = payer.reserve(memory)?;
                 (Some(evidence), Some(memory))
             } else {
                 (None, None)
@@ -1638,7 +1620,3 @@ pub fn run(
         "privileges":privileges.audit(),"requires_fresh_conversion_admission":true,"conversion_qualified":false}),
     )
 }
-
-/// The most an entry of a directory listing takes as Windows returns it:
-/// 88 bytes, a name of at most 510, rounded up to eight.
-const LISTED_ENTRY_BYTES: usize = 600;

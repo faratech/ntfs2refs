@@ -884,16 +884,12 @@ impl PendingMetadataRecovery {
                 continue;
             }
             let count = self.child_counts.get(item.components).copied().unwrap_or(0);
-            let bound = count
-                .checked_add(2)
-                .and_then(|n| n.checked_mul(4096))
-                .and_then(|n| n.checked_add(namespace_layout::CAPACITY * 4))
+            // By what the listing is, as where the tree is first checked:
+            // 8 KiB a child was 476 MiB for the longest directory of a
+            // Windows volume, which a recovery on 4 GB of RAM may not have.
+            let (bound, memory) = namespace_layout::listing_memory(count)
                 .ok_or_else(|| invalid("metadata recovery enumeration bound overflow"))?;
-            let _work = self.payer.reserve(
-                (bound as u64)
-                    .checked_mul(2)
-                    .ok_or_else(|| invalid("metadata recovery enumeration RAM overflow"))?,
-            )?;
+            let _work = self.payer.reserve(memory)?;
             for entry in enumerate_with_resource_budget(file, Some(bound))? {
                 if entry.name_utf16 == [46] || entry.name_utf16 == [46, 46] {
                     continue;

@@ -167,6 +167,15 @@ param(
     # through the disk; W: and X: have to be back under their letters.
     # Anything else adds "-but-siblings-changed" to the outcome.
     [switch]$Siblings,
+    # The source disk is MBR instead of GPT: the volume is a primary
+    # partition of type 07. With -MbrBeside a second primary partition (W:,
+    # NTFS, one file) lies beside it, which makes the disk one the volume
+    # shares.
+    [switch]$SourceMbr,
+    [switch]$MbrBeside,
+    # The working directory is on an MBR disk of its own (M:\runs, a virtual
+    # disk made for the attempt) instead of on S:.
+    [switch]$WorkingMbr,
     # With -Siblings, something about W: for which a run has to refuse the
     # disk: 'busy' keeps a file on it open, 'snapshot' gives it a shadow
     # copy, 'dump' names it as the place Windows writes its crash dump to.
@@ -292,8 +301,12 @@ try {
 
     # The source disk: a VHDX in the guest, or for 4Kn one the host attaches.
     if ($Siblings -and ($SectorBytes -eq 4096 -or $NativeRefsControl)) { throw '-Siblings is for a converted volume on a 512-byte-sector disk' }
+    if ($SourceMbr -and $Siblings) { throw '-Siblings makes a GPT disk; a partition beside an MBR source is -MbrBeside' }
+    if ($MbrBeside -and -not $SourceMbr) { throw '-MbrBeside is something about the disk -SourceMbr makes' }
     if ($SiblingState -and -not $Siblings) { throw '-SiblingState is something about the volume W: that -Siblings makes' }
     $sizeMB = $PartitionMB + 2048 + $(if ($Siblings) { 3840 } else { 0 })
+    $style = if ($SourceMbr) { 'mbr' } else { 'gpt' }
+    $working = if ($WorkingMbr) { 'M:\runs' } else { 'S:\datalab\runs' }
     if ($SectorBytes -eq 4096) {
         $hostDisk = Join-Path $records 'source-4kn.vhdx'
         $null = New-VHD -Path $hostDisk -SizeBytes ($sizeMB * 1MB) -Dynamic -LogicalSectorSizeBytes 4096 -PhysicalSectorSizeBytes 4096
@@ -305,8 +318,27 @@ try {
     $container = if ($ClusterBytes -lt 4096) { 'vhd' } else { 'vhdx' }
     if ($NativeRefsControl -and $TargetFormat -eq 'default') { throw '-NativeRefsControl formats the volume itself: name -TargetFormat dev-drive or standard' }
     if ($NativeRefsControl -and $Content -ne 'minimal') { throw '-NativeRefsControl takes -Content minimal: the mixed content uses what only NTFS has' }
-    $made = Invoke-Command -Session $session -ArgumentList $guestRoot, $Name, $sizeMB, $PartitionMB, $SectorBytes, $unit, ([bool]$LargeRecords), @($ready), $container, ([bool]$NativeRefsControl), $TargetFormat, ([bool]$Siblings) -ScriptBlock {
-        param($root, $name, $sizeMB, $partitionMB, $sectorBytes, $unit, $largeRecords, $known, $container, $native, $targetFormat, $siblings)
+    if ($WorkingMbr) {
+        # Working storage on an MBR disk: a virtual disk of its own, so that
+        # the disk a run keeps its shadow and its records on has a signature
+        # and no GUIDs.
+        $work = Invoke-Command -Session $session -ArgumentList $guestRoot, $Name, ($PartitionMB * 2 + 16384) -ScriptBlock {
+            param($root, $name, $sizeMB)
+            $file = "S:\datalab\$name-work.vhdx"
+            $script = "create vdisk file=`"$file`" maximum=$sizeMB type=expandable`r`nattach vdisk`r`nconvert mbr`r`ncreate partition primary`r`nformat fs=ntfs quick label=N2RWORK`r`nassign letter=M"
+            Set-Content -LiteralPath "$root\make-work.txt" -Value $script -Encoding ASCII
+            $diskpart = & diskpart.exe /s "$root\make-work.txt" 2>&1 | Out-String
+            if (-not (Get-Partition -DriveLetter M -ErrorAction SilentlyContinue)) { throw "diskpart made no volume M:`n$diskpart" }
+            $null = New-Item -ItemType Directory -Path 'M:\runs' -Force
+            $disk = Get-Disk -Number (Get-Partition -DriveLetter M).DiskNumber
+            [pscustomobject]@{ style = "$($disk.PartitionStyle)"; signature = ('{0:x8}' -f $disk.Signature); number = $disk.Number }
+        }
+        if ($work.style -ne 'MBR') { throw "the working disk is $($work.style), not MBR" }
+        Say "working storage: M:\runs on MBR disk $($work.number), signature $($work.signature)"
+        $verdict.working_disk = $work
+    }
+    $made = Invoke-Command -Session $session -ArgumentList $guestRoot, $Name, $sizeMB, $PartitionMB, $SectorBytes, $unit, ([bool]$LargeRecords), @($ready), $container, ([bool]$NativeRefsControl), $TargetFormat, ([bool]$Siblings), $style, ([bool]$MbrBeside) -ScriptBlock {
+        param($root, $name, $sizeMB, $partitionMB, $sectorBytes, $unit, $largeRecords, $known, $container, $native, $targetFormat, $siblings, $style, $mbrBeside)
         if ($sectorBytes -eq 4096) {
             $deadline = (Get-Date).AddSeconds(60)
             do { Start-Sleep -Milliseconds 500; $new = @(Get-Disk | Where-Object { $_.Number -notin $known -and $_.LogicalSectorSize -eq 4096 }) } until ($new.Count -eq 1 -or (Get-Date) -gt $deadline)
@@ -314,10 +346,12 @@ try {
             $number = $new[0].Number
             if ($new[0].IsOffline) { Set-Disk -Number $number -IsOffline $false }
             if ($new[0].IsReadOnly) { Set-Disk -Number $number -IsReadOnly $false }
-            $script = "select disk $number`r`nclean`r`nconvert gpt`r`ncreate partition primary size=$partitionMB`r`nassign letter=V"
+            $script = "select disk $number`r`nclean`r`nconvert $style`r`ncreate partition primary size=$partitionMB`r`nassign letter=V"
         } else {
             $file = "S:\datalab\$name.$container"
-            $script = "create vdisk file=`"$file`" maximum=$sizeMB type=expandable`r`nattach vdisk`r`nconvert gpt`r`ncreate partition primary size=$partitionMB`r`nassign letter=V"
+            $script = "create vdisk file=`"$file`" maximum=$sizeMB type=expandable`r`nattach vdisk`r`nconvert $style`r`ncreate partition primary size=$partitionMB`r`nassign letter=V"
+            # A second primary partition beside an MBR source.
+            if ($mbrBeside) { $script += "`r`ncreate partition primary size=1024`r`nformat fs=ntfs quick label=BESIDE`r`nassign letter=W" }
             if ($siblings) {
                 # An EFI system partition (FAT32, no letter), W:, the source,
                 # X:, and a partition of another operating system (no file
@@ -329,6 +363,7 @@ try {
         Set-Content -LiteralPath "$root\make.txt" -Value $script -Encoding ASCII
         $diskpart = & diskpart.exe /s "$root\make.txt" 2>&1 | Out-String
         if (-not (Get-Partition -DriveLetter V -ErrorAction SilentlyContinue)) { throw "diskpart made no volume V:`n$diskpart" }
+        if ($mbrBeside) { Set-Content -LiteralPath 'W:\kept.txt' -Value 'beside an MBR source' -Encoding ASCII }
         $arguments = @('V:', '/FS:NTFS', "/A:$unit", '/Q', '/Y', '/V:DATALAB'); if ($largeRecords) { $arguments += '/L' }
         if ($native) { $arguments = @('V:', '/FS:ReFS', '/Q', '/Y', '/V:DATALAB'); if ($targetFormat -eq 'dev-drive') { $arguments += '/DevDrv' } }
         $format = & "$env:SystemRoot\System32\format.com" $arguments 2>&1 | Out-String
@@ -748,7 +783,7 @@ public static class SiblingRaw {
                 [pscustomobject]@{ ended = $ended; at_hold = $atHold; in_phase = $inPhase
                     peak_working_set = & $sample { ($running | Measure-Object PeakWorkingSet64 -Maximum).Maximum }
                     private_bytes = & $sample { ($running | Measure-Object PrivateMemorySize64 -Maximum).Maximum }
-                    working_bytes = & $sample { (Get-ChildItem -LiteralPath 'S:\datalab\runs' -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum } }
+                    working_bytes = & $sample { (Get-ChildItem -LiteralPath $(if (Test-Path -LiteralPath 'M:\runs') { 'M:\runs' } else { 'S:\datalab\runs' }) -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum } }
             }
             foreach ($measure in 'peak_working_set', 'private_bytes', 'working_bytes') { if ($state.$measure -gt $usage[$measure]) { $usage[$measure] = $state.$measure } }
             $usage.samples++
@@ -787,7 +822,7 @@ public static class SiblingRaw {
         if (-not $provider.listed) { $verdict.outcome = 'provider-not-made'; throw "Windows does not list the shadow-copy provider '$($provider.name)'" }
         Say "shadow-copy provider for this attempt, one the converter does not know: '$($provider.name)' ($VssProvider)"
     }
-    $arguments = @('--drive', 'V', '--scratch-directory', 'S:\datalab\runs')
+    $arguments = @('--drive', 'V', '--scratch-directory', $working)
     if ($TargetFormat -ne 'default') { $arguments += @('--target-format', $TargetFormat) }
     if ($TargetClusterBytes) { $arguments += @('--target-cluster-bytes', "$TargetClusterBytes") }
     if ($InterruptAt) { $arguments += @('--lab-hold-at', $InterruptAt, '--acknowledge-lab-hold-never-completes') }
@@ -849,7 +884,7 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         Say "a program holds a file open that it has deleted; listing without it: $($holding.text)"
     }
     if ($Check -or $CheckOnly) {
-        $checkArguments = @('--drive', 'V', '--scratch-directory', 'S:\datalab\runs', '--check')
+        $checkArguments = @('--drive', 'V', '--scratch-directory', $working, '--check')
         if ($TargetFormat -ne 'default') { $checkArguments += @('--target-format', $TargetFormat) }
         if ($TargetClusterBytes) { $checkArguments += @('--target-cluster-bytes', "$TargetClusterBytes") }
         if ($DropShortNames) { $checkArguments += @('--short-names', 'drop') }
@@ -873,7 +908,7 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
             $seconds = [Math]::Round($clock.Elapsed.TotalSeconds, 1)
             if ($writer) { Stop-Job $writer; Remove-Job $writer -Force; Remove-Item 'V:\load-*.bin' -Force -ErrorAction SilentlyContinue }
             [IO.File]::WriteAllLines("$root\check.txt", [string[]]$text, [Text.UTF8Encoding]::new($false))
-            $left = @(Get-ChildItem 'S:\datalab\runs' -Directory -Filter 'check-*' -ErrorAction SilentlyContinue).Count
+            $left = @(Get-ChildItem $(if (Test-Path -LiteralPath 'M:\runs') { 'M:\runs' } else { 'S:\datalab\runs' }) -Directory -Filter 'check-*' -ErrorAction SilentlyContinue).Count
             $partition = Get-Partition -DriveLetter V; $disk = Get-Disk -Number $partition.DiskNumber
             [pscustomobject]@{ exit = $exit; seconds = $seconds; text = $text; left = $left
                 bytes = $partition.Size; offline = [bool]$disk.IsOffline; read_only = [bool]$disk.IsReadOnly; filesystem = (Get-Volume -DriveLetter V).FileSystem }
@@ -1289,12 +1324,19 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
                     }
                 }
                 # The run's working files: a shadow as large as the volume.
-                Get-ChildItem -LiteralPath 'S:\datalab\runs' -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+                Get-ChildItem -LiteralPath $(if (Test-Path -LiteralPath 'M:\runs') { 'M:\runs' } else { 'S:\datalab\runs' }) -Directory -ErrorAction SilentlyContinue | ForEach-Object {
                     Get-ChildItem -LiteralPath $_.FullName -Recurse -Filter '*.vhdx' -ErrorAction SilentlyContinue | ForEach-Object {
                         Set-Content -LiteralPath "$root\detach.txt" -Value ("select vdisk file=`"$($_.FullName)`"`r`ndetach vdisk") -Encoding ASCII
                         $null = & diskpart.exe /s "$root\detach.txt" 2>&1
                     }
                     Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+                }
+                # The MBR working disk of -WorkingMbr, after what it held.
+                $work = "S:\datalab\$name-work.vhdx"
+                if (Test-Path -LiteralPath $work) {
+                    Set-Content -LiteralPath "$root\detach.txt" -Value ("select vdisk file=`"$work`"`r`ndetach vdisk") -Encoding ASCII
+                    $null = & diskpart.exe /s "$root\detach.txt" 2>&1
+                    Remove-Item -LiteralPath $work -Force -ErrorAction SilentlyContinue
                 }
             }
             if ($hostDisk) {

@@ -678,3 +678,10 @@ pub use super::partition_isolation::offline::{
     OfflineClosedJournalObservation, OfflineJournalReadView, OfflinePagedWriter,
     OfflineSourceApplyGate, OfflineTerminalKind,
 };
+
+/// Whether this process runs in a Windows recovery or preinstallation
+/// environment (WinRE, WinPE): Windows there marks itself with the MiniNT key
+/// and runs from a RAM disk, so no disk partition is the running Windows'.
+pub fn in_recovery_environment() -> bool {
+    mini_nt().present == Some(true)
+}

@@ -323,7 +323,9 @@ pub(super) struct PartitionStorageRoleObservation {
     pub selected_native_partition_info: Vec<u8>,
     pub selected_is_boot: Option<bool>,
     pub selected_is_system: Option<bool>,
-    pub current_windows: NativeStoragePartitionRole,
+    /// The running Windows' own partition; None in a recovery environment,
+    /// whose Windows runs from a RAM disk and has none (#115).
+    pub current_windows: Option<NativeStoragePartitionRole>,
     pub critical_partitions: Vec<NativeStoragePartitionRole>,
     pub catalog_complete: bool,
     pub queried_disks: Vec<u32>,
@@ -778,12 +780,23 @@ pub(super) fn observe_detached_windows_storage_roles(
         Some(held_selected_disk),
     )?;
     need(
-        facts.current_windows.role.disk_number != binding.storage.disk_number
-            && facts.critical_partitions.iter().any(|p| p.role.is_system)
-            && facts
-                .critical_partitions
-                .iter()
-                .all(|p| p.role.disk_number != binding.storage.disk_number),
+        match &facts.current_windows {
+            // A second Windows: its boot and system partitions are on another disk.
+            Some(current) => {
+                current.role.disk_number != binding.storage.disk_number
+                    && facts.critical_partitions.iter().any(|p| p.role.is_system)
+                    && facts
+                        .critical_partitions
+                        .iter()
+                        .all(|p| p.role.disk_number != binding.storage.disk_number)
+            }
+            // A recovery environment runs from RAM: the firmware may have
+            // started it from the source disk's EFI system partition, which
+            // nothing running uses and the conversion leaves alone. Every
+            // boot or system partition is outside the source (checked when
+            // the catalog was read).
+            None => super::offline_environment::in_recovery_environment(),
+        },
         "the source's disk holds a boot or system partition of the running Windows, or the system partition is unknown",
     )?;
     Ok(facts)
@@ -811,8 +824,17 @@ fn observe_partition_storage_roles_impl(
         maximum > 0 && maximum <= 8192,
         "Storage role catalog budget invalid",
     )?;
-    let windows = windows_extent(events)?;
-    let mut disks = vec![binding.storage.disk_number, windows.disk_number];
+    // In a recovery environment Windows runs from a RAM disk that no
+    // partition catalog lists; only the source's disk is asked about.
+    let windows = if super::offline_environment::in_recovery_environment() {
+        None
+    } else {
+        Some(windows_extent(events)?)
+    };
+    let mut disks = vec![binding.storage.disk_number];
+    if let Some(windows) = &windows {
+        disks.push(windows.disk_number);
+    }
     disks.sort_unstable();
     disks.dedup();
     CONNECTION.with(|slot| {
@@ -919,34 +941,46 @@ fn observe_partition_storage_roles_impl(
                 "Selected Basic partition missing from complete live catalog",
             )?;
         }
-        let current = before
-            .iter()
-            .filter(|r| {
-                r.disk_number == windows.disk_number
-                    && r.offset == windows.offset
-                    && r.size == windows.length
-            })
-            .collect::<Vec<_>>();
-        need(
-            current.len() == 1 && current[0].is_boot && outside(current[0], binding),
-            "Actual Windows partition missing/currentBoot role or overlaps target",
-        )?;
-        let current_windows = native(current[0], events)?;
+        let current = match &windows {
+            Some(windows) => {
+                let current = before
+                    .iter()
+                    .filter(|r| {
+                        r.disk_number == windows.disk_number
+                            && r.offset == windows.offset
+                            && r.size == windows.length
+                    })
+                    .collect::<Vec<_>>();
+                need(
+                    current.len() == 1 && current[0].is_boot && outside(current[0], binding),
+                    "Actual Windows partition missing/currentBoot role or overlaps target",
+                )?;
+                Some(current[0])
+            }
+            None => None,
+        };
+        let current_windows = match current {
+            Some(row) => Some(native(row, events)?),
+            None => None,
+        };
         let mut critical = Vec::new();
         for row in before.iter().filter(|r| r.is_boot || r.is_system) {
             need(
                 outside(row, binding),
                 "Boot/system partition overlaps selected target",
             )?;
-            critical.push(if row == current[0] {
-                current_windows.clone()
-            } else {
-                native(row, events)?
+            critical.push(match (&current_windows, current) {
+                (Some(native_row), Some(current_row)) if row == current_row => native_row.clone(),
+                _ => native(row, events)?,
             });
         }
         let after = query(session, &disks, maximum, deadline)?;
+        let windows_after = match &windows {
+            Some(_) => Some(windows_extent(events)?),
+            None => None,
+        };
         need(
-            before == after && windows_extent(events)? == windows,
+            before == after && windows_after == windows,
             "Storage role catalog/Windows binding changed across native queries",
         )?;
         let (closing_target, closing_layout) = match held_selected_disk {

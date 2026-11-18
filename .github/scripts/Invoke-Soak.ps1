@@ -68,6 +68,11 @@ $used = @(Get-Volume | Where-Object DriveLetter | ForEach-Object { [string]$_.Dr
 $letter = @('V', 'W', 'T', 'U', 'R', 'Q') | Where-Object { $_ -notin $used } | Select-Object -First 1
 if (-not $letter) { throw 'no free drive letter among V, W, T, U, R, Q' }
 if ($Seed -eq 0) { $Seed = Get-Random -Minimum 1 -Maximum 1000000000 }
+# Windows mounts new volumes by itself unless told not to (mountvol /N), and
+# the hosted runners are: a disk taken offline and back then comes back
+# without its letter. The soak runs with Windows' default.
+$automountWasOff = [bool]((& mountvol.exe) -match 'automatic mounting of new volumes disabled')
+if ($automountWasOff) { $null = & mountvol.exe /E; "automatic mounting of new volumes was off on this machine; turned on for the soak (mountvol /E)" }
 
 $holdPoints = @('apply-activated', 'apply-mid-ranges', 'apply-ranges-written', 'apply-before-boot-granule', 'apply-boot-granule-written',
     'apply-before-handoff', 'apply-handoff-durable', 'handoff-sealed', 'finalize-authenticated', 'finalize-source-readonly',
@@ -257,7 +262,16 @@ function Capture([string]$path) {
 # row agree. Taking the disk offline also closes what had the new files open.
 function Capture-Settled([string]$path, [int]$diskNumber) {
     $indexer = [bool](Get-Service -Name WSearch -ErrorAction SilentlyContinue | Where-Object { "$($_.StartType)" -ne 'Disabled' })
-    $afresh = { Set-Disk -Number $diskNumber -IsOffline $true; Set-Disk -Number $diskNumber -IsOffline $false; $null = Wait-Volume 'NTFS' }
+    $afresh = {
+        Set-Disk -Number $diskNumber -IsOffline $true; Set-Disk -Number $diskNumber -IsOffline $false
+        # The harness's own remount: if the letter did not come back, it is given back.
+        Start-Sleep -Seconds 2
+        if (-not (Get-Partition -DriveLetter $letter -ErrorAction SilentlyContinue)) {
+            Get-Partition -DiskNumber $diskNumber | Where-Object Type -eq 'Basic' | Select-Object -First 1 | Set-Partition -NewDriveLetter $letter
+            Say "  (the remount before the listing left the volume without ${letter}:; given back)"
+        }
+        $null = Wait-Volume 'NTFS'
+    }
     & $afresh; $remount = (Get-Date).AddSeconds(20); $deadline = (Get-Date).AddSeconds(150); $previous = -1
     do {
         Start-Sleep -Seconds 2

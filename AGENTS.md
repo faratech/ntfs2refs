@@ -178,10 +178,13 @@ Keep it that way. Before a change is committed:
 `lab\Invoke-GateRound.ps1 -Build <dir> -Prefix <p>` runs all of 2 and 3 for a
 copy of a build, on every lab VM, and ends with one table (`lab/README.md`).
 
-Before a pull request is merged, `lab\Invoke-Checks.ps1 -Commit <its head>`
-passes and its table is in the pull request: formatting, Clippy, all tests
-and every executable built in release mode, on that exact commit. GitHub
-Actions is not used (owner, 2026-11-15; `.github/CI.md`).
+Before a pull request is merged, its GitHub Actions checks (`ci.yml`) pass on
+its head: formatting, Clippy, all tests and every executable built in release
+mode (owner, 2026-11-18, when the repository became public; `.github/CI.md`).
+`lab\Invoke-Checks.ps1 -Commit <its head>` runs the same checks locally. The
+nightly soak (`soak.yml`) converts virtual disks on the runners; a failed
+round is a bug, filed with its seed. A pushed version tag on main is built,
+signed and published by `release.yml`.
 
 Open, in the order of the owner's plan (#148), which is where to stop or
 reorder the work:

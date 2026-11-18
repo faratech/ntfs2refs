@@ -37,9 +37,12 @@ itself to look into a failure.
 
 The gate round is about what the converter does to a volume. What a commit
 has to pass as source code (formatting, Clippy, the tests, the release build)
-is `lab\Invoke-Checks.ps1 -Commit <commit> -Report checks.md`: it checks the
-commit in a worktree of its own and writes the table that goes into the pull
-request. No hosted CI runs.
+is GitHub Actions' `ci.yml` on every pull request; `lab\Invoke-Checks.ps1
+-Commit <commit> -Report checks.md` runs the same checks locally, in a
+worktree of its own. The nightly soak (`soak.yml`) converts virtual disks on
+the hosted runners, without VMs; the lab does what it cannot: power cut under
+a run, Windows boot volumes, the restart route, Windows 11
+(`.github/CI.md`).
 
 ## Existing checks
 

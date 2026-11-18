@@ -1,0 +1,183 @@
+name: Release
+
+# A pushed version tag (such as 0.0.1) on a commit of main: the executables
+# built from it, signed with Azure Artifact Signing (Fara Technologies LLC,
+# then Mike Fara), packed by lab/New-Release.ps1, attested, and published as
+# the GitHub release of that tag. The signing credentials are secrets of the
+# `release` environment, which only version tags and main may use.
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'The tag to release: it has to exist and be on main'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build, sign and pack
+    runs-on: windows-2025
+    timeout-minutes: 60
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      tag: ${{ steps.source.outputs.tag }}
+      sha: ${{ steps.source.outputs.sha }}
+      version: ${{ steps.source.outputs.version }}
+      prerelease: ${{ steps.source.outputs.prerelease }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out the tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check the tag
+        id: source
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:TAG -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') { throw "not a version tag: $env:TAG" }
+          $sha = (git rev-parse --verify "refs/tags/$env:TAG^{commit}").Trim()
+          if ($LASTEXITCODE -ne 0) { throw "no tag $env:TAG" }
+          if ((git rev-parse HEAD).Trim() -ne $sha) { throw "the checkout is not the tag's commit $sha" }
+          git merge-base --is-ancestor $sha origin/main
+          if ($LASTEXITCODE -ne 0) { throw "tag $env:TAG ($sha) is not on main" }
+          $version = [regex]::Match((Get-Content -Raw Cargo.toml), '(?m)^version\s*=\s*"([^"]+)"').Groups[1].Value
+          if ($version -ne $env:TAG) { throw "Cargo.toml says $version, the tag $env:TAG" }
+          "tag=$env:TAG", "sha=$sha", "version=$version", "prerelease=$(if ($version.Contains('-')) { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "Release $env:TAG from $sha" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Install the pinned toolchain
+        run: ./.github/scripts/Install-Toolchain.ps1
+
+      - name: Build
+        run: |
+          cargo build --locked --release --bin ntfs2refs --bin ntfs2refs-recovery --bin lab-volume-manifest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $bin = New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\dist\bin"
+          Copy-Item target\release\ntfs2refs.exe, target\release\ntfs2refs-recovery.exe, target\release\lab-volume-manifest.exe -Destination $bin
+
+      - name: Sign with Fara Technologies LLC
+        uses: Azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: 'https://eus.codesigning.azure.net/'
+          trusted-signing-account-name: 'faraCodeSigningBusiness'
+          certificate-profile-name: 'Faratech'
+          files: |
+            ${{ runner.temp }}\dist\bin\ntfs2refs.exe
+            ${{ runner.temp }}\dist\bin\ntfs2refs-recovery.exe
+            ${{ runner.temp }}\dist\bin\lab-volume-manifest.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Add the signature of Mike Fara
+        uses: Azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: 'https://eus.codesigning.azure.net/'
+          trusted-signing-account-name: 'fara-codesigning'
+          certificate-profile-name: 'MikeFara'
+          files: |
+            ${{ runner.temp }}\dist\bin\ntfs2refs.exe
+            ${{ runner.temp }}\dist\bin\ntfs2refs-recovery.exe
+            ${{ runner.temp }}\dist\bin\lab-volume-manifest.exe
+          append-signature: true
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify both signatures
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object { [version]$_.Directory.Parent.Name } -Descending | Select-Object -First 1
+          if (-not $tool) { throw 'signtool.exe not found' }
+          foreach ($file in Get-ChildItem "$env:RUNNER_TEMP\dist\bin\*.exe") {
+            & $tool.FullName verify /pa /all $file.FullName
+            if ($LASTEXITCODE -ne 0) { throw "signature verification failed: $file" }
+            & $tool.FullName verify /pa /ds 1 $file.FullName
+            if ($LASTEXITCODE -ne 0) { throw "the second signature is missing or invalid: $file" }
+          }
+
+      - name: Pack
+        run: ./lab/New-Release.ps1 -Binaries "$env:RUNNER_TEMP\dist\bin" -Output "$env:RUNNER_TEMP\dist\release"
+
+      - name: Attest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            ${{ runner.temp }}/dist/release/*.zip
+            ${{ runner.temp }}/dist/bin/*.exe
+
+      - name: Keep the release
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ steps.source.outputs.tag }}
+          path: ${{ runner.temp }}/dist/release
+          retention-days: 90
+
+  publish:
+    name: publish
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Fetch the release
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-${{ needs.build.outputs.tag }}
+          path: release
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.tag }}
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          cd release
+          {
+            cat RELEASE-NOTES.md
+            echo
+            echo '## Verify the download'
+            echo
+            echo 'The executables are signed by Fara Technologies LLC and by Mike Fara (Azure Artifact Signing), and the ZIP and executables carry a build-provenance attestation of this repository'"'"'s release workflow:'
+            echo
+            echo '```'
+            echo "gh attestation verify ntfs2refs-$TAG-windows-x64.zip --repo $GITHUB_REPOSITORY --signer-workflow $GITHUB_REPOSITORY/.github/workflows/release.yml"
+            echo '```'
+          } > notes.md
+          flags=()
+          if [ "$PRERELEASE" = "true" ]; then flags+=(--prerelease); else flags+=(--latest); fi
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "ntfs2refs $TAG" --notes-file notes.md "${flags[@]}" \
+            "ntfs2refs-$TAG-windows-x64.zip" "ntfs2refs-$TAG-windows-x64.zip.sha256"

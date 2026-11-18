@@ -1,0 +1,116 @@
+name: Soak
+
+# Real conversions, round after round, on hosted Windows Server 2025 runners
+# (build 26100): each profile on a runner of its own, converting virtual disks
+# of that machine with content drawn from a seed, held, ended, resumed and
+# rolled back, every result compared with the listing of the source
+# (.github/scripts/Invoke-Soak.ps1). Every night, and by hand.
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: 'Minutes each profile goes on starting rounds'
+        default: '240'
+        type: string
+      seed:
+        description: 'First seed (0: drawn from the run)'
+        default: '0'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: soak-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  build:
+    name: build
+    runs-on: windows-2025
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned toolchain
+        run: ./.github/scripts/Install-Toolchain.ps1
+
+      - name: Cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: release
+
+      - name: Build the converter and the listing tool
+        run: |
+          cargo build --locked --release --bin ntfs2refs --bin lab-volume-manifest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Keep them for the soak
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: soak-binaries
+          path: |
+            target/release/ntfs2refs.exe
+            target/release/lab-volume-manifest.exe
+          retention-days: 7
+
+  soak:
+    name: soak (${{ matrix.profile }})
+    needs: build
+    runs-on: windows-2025
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { profile: convert, index: 1 }
+          - { profile: many, index: 2 }
+          - { profile: resume, index: 3 }
+          - { profile: rollback, index: 4 }
+          - { profile: cancel, index: 5 }
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Fetch the executables
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: soak-binaries
+          path: ${{ runner.temp }}/bin
+
+      - name: Soak
+        env:
+          MINUTES: ${{ inputs.minutes || '240' }}
+          SEED: ${{ inputs.seed || '0' }}
+          INDEX: ${{ matrix.index }}
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          $seed = [int]$env:SEED
+          if ($seed -eq 0) { $seed = [int](([long]$env:GITHUB_RUN_ID % 100000) * 10000 + [int]$env:INDEX * 1000 + 1) }
+          ./.github/scripts/Invoke-Soak.ps1 -Binaries "$env:RUNNER_TEMP\bin" -Profile $env:PROFILE -Minutes ([int]$env:MINUTES) -Seed $seed -Records "$env:RUNNER_TEMP\soak"
+
+      - name: Keep the records
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: soak-records-${{ matrix.profile }}
+          path: ${{ runner.temp }}/soak
+          retention-days: 30
+          if-no-files-found: ignore

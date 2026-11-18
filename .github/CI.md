@@ -1,71 +1,84 @@
 # Checks
 
-**The checks run locally.** `lab\Invoke-Checks.ps1 -Commit <commit>` checks
-one exact commit in a worktree of its own with the pinned toolchain: the
-formatting, Clippy, all tests, and every executable built in release mode,
-the converter started once. It prints a
-table, writes it as Markdown with `-Report`, and exits 1 if a check failed.
-A change is integrated only when that table, for the commit being merged, is
-in its pull request with every check passed. GitHub Actions is not used for
-this (the owner's decision of 15 November 2026, when the account's Actions
-jobs stopped starting): nothing runs on a push or a pull request.
+**GitHub Actions runs the checks** (the owner's decision of 18 November 2026,
+when the repository became public and hosted runners became free for it). A
+pull request is merged when its checks have passed on its head. Every job
+runs on `windows-2025`, Windows Server 2025 build 26100, a build the converter
+has been shown on, with the toolchain `rust-toolchain.toml` pins (Rust 1.98.1,
+x64 MSVC), installed by `scripts/Install-Toolchain.ps1`.
 
-The workflow below is the same checks on a hosted runner. It is kept for
-whoever wants them there and starts only by manual dispatch.
+`lab\Invoke-Checks.ps1 -Commit <commit>` runs the same checks locally, in a
+worktree of its own, for a machine without the hosted runners.
 
-## The workflow
+## The workflows
 
-`workflows/windows.yml` runs on manual dispatch only. The hosted `windows-2022` runner installs Rust 1.98.1 with rustfmt
-and Clippy, verifies the x86-64 MSVC host and targets
-`x86_64-pc-windows-msvc`. This compiles the `cfg(windows)` modules and uses the
-repository's static CRT configuration.
+| Workflow | When | What |
+|---|---|---|
+| `workflows/ci.yml` | every push to main, every pull request, by hand | three jobs side by side: formatting and Clippy; all tests; every executable built in release mode, the converter started once, the executables kept for 14 days |
+| `workflows/soak.yml` | every night at 03:17 UTC, by hand | real conversions on the runners, round after round (below) |
+| `workflows/release.yml` | a pushed version tag such as `0.0.1`, by hand for an existing tag | the release, built, signed and published (below) |
 
-The lane is three jobs that run side by side, each with its own checkout and
-toolchain and a limit of 60 minutes:
+Clippy uses the repository's lint severities: warnings stay visible, an
+error fails the job. It is not a zero-warning gate.
 
-- `checks`: formatting and Clippy.
-- `tests`: the workspace's ordinary tests, which builds and links every
-  target.
-- `release`: every executable of the workspace built and linked in release
-  mode, the two a release ships among them, and the converter started once.
+## The soak
 
-As one job in sequence the lane took 42 minutes, 29 of them building 113
-executables in release mode, nearly all of them for lab stages that were
-retired. Those executables have left the tree (`lab/RETIRED.md` names the tag
-that has them); the workspace now builds the converter, the listing tool and
-the executable of the restart route. Cargo dependency-consuming commands
-use `--locked`; the toolchain check refuses silent drift from
-`rust-toolchain.toml`.
+`scripts/Invoke-Soak.ps1` converts NTFS volumes on virtual disks (VHDX) of the
+runner itself, round after round, for the minutes it is given (240 at night).
+Each round draws everything from its seed: the NTFS cluster size (512 bytes
+to 64 KiB), the ReFS cluster size (4 or 64 KiB), the disk's size, and the
+content (files of boundary sizes, a random tree or up to 100,000 small files,
+names outside ASCII, named streams, hard links, a sparse file, a compressed
+file, fragmented files, symbolic links and a junction, attributes, times,
+security descriptors and object IDs). The volume is listed with
+`lab-volume-manifest` before and after, and compared: with a conversion's
+allowances when it is ReFS, exactly when it is NTFS again.
 
-Clippy uses the repository's current lint severities. Existing and new warnings
-are printed and remain advisory; compiler errors and denied lint failures fail
-the job. There is no `continue-on-error`, warning suppression or claim that
-`-D warnings` passes. A warning-free gate requires a separate reviewed cleanup
-or explicit baseline policy.
+Five profiles, each on a runner of its own:
 
-CI does not create or run Hyper-V VMs, attach disks, run converters against live
-devices, fetch native disk images, use laboratory credentials or enable the
-ignored native-corpus tests. Ordinary-file recovery tests can still launch
-their private ignored child-test helper. Passing CI is compilation and test
-evidence, not native ReFS acceptance, conversion qualification or crash safety.
-Those results remain separately recorded under the laboratory evidence docs.
+- `convert`: straight through.
+- `many`: straight through, with 20,000 to 100,000 small files.
+- `resume`: held at one of the twelve laboratory hold points, the process
+  ended there, then the recovery command the run printed.
+- `rollback`: held at a point before the handoff marker is durable, ended,
+  then the recovery command with `--rollback`.
+- `cancel`: ended at a random moment within 40 seconds, without a hold, then
+  whatever the run had printed.
 
-The workflow has read-only repository permissions and leaves no checkout
-credentials in Git configuration. No caches or build-artifact uploads are
-configured; images, `.lab`, recovery journals and secrets stay outside CI.
+A failed round stops its runner and keeps its records (the converter's
+output, the listings' comparison) as the run's artifact. It is made again on
+any elevated Windows machine with:
 
-The checkout action is pinned to full commit
-`fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09`, resolved from the official
-`actions/checkout` v5 tag and verified through its GitHub API commit and action
-source on October 25, 2026. See the
-[pinned checkout commit](https://github.com/actions/checkout/commit/fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09)
-and the official
-[Windows 2022 runner image inventory](https://github.com/actions/runner-images/blob/main/images/windows/Windows2022-Readme.md).
+```powershell
+.github\scripts\Invoke-Soak.ps1 -Binaries <dir> -Profile <profile> -Seed <seed> -Rounds 1
+```
 
-The CI host is a build/test environment, not the native conversion qualification
-target. The frozen Windows 11 release and its native evidence remain unchanged.
+The soak complements the lab, which it does not replace: the lab's VMs turn
+power off under a run, convert Windows boot volumes, take the restart route,
+and run on Windows 11.
 
-A passing result must be observed for the revision being integrated; a
-table for an earlier revision is not sufficient.
-Formatting and documentation closeout does not replace the independently
-qualified release executable or transfer its native evidence to another binary.
+## The release
+
+A version tag pushed on a commit of main starts `workflows/release.yml`:
+
+1. It checks that the tag is a version, is on main, and equals the version
+   in `Cargo.toml`.
+2. It builds `ntfs2refs.exe`, `ntfs2refs-recovery.exe` and
+   `lab-volume-manifest.exe` in release mode.
+3. It signs each with Azure Artifact Signing, Fara Technologies LLC first
+   and Mike Fara appended, SHA-256 digests and RFC 3161 time stamps, and
+   verifies both signatures with `signtool`.
+4. It packs them with `lab\New-Release.ps1 -Binaries` (the ZIP, its SHA-256
+   file, the source archive and the generated notes, which name each
+   executable's signer).
+5. It attests the ZIP and the executables (build provenance), and publishes
+   the GitHub release of the tag with the ZIP and its SHA-256 file.
+
+The signing credentials (`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`,
+`AZURE_CLIENT_SECRET`) are secrets of the `release` environment, which only
+version tags and main can deploy to. Workflows started by a pull request do
+not get them.
+
+```bash
+gh attestation verify ntfs2refs-<version>-windows-x64.zip --repo faratech/ntfs2refs --signer-workflow faratech/ntfs2refs/.github/workflows/release.yml
+```

@@ -4,7 +4,7 @@ Converts an NTFS volume to ReFS in place, on the Windows machine that owns the
 disk. File data stays where it is on the disk wherever ReFS can use it there;
 only the file system around it is replaced.
 
-This is version 0.3.0-beta.1, a beta. Everything it has converted was a
+This is version 0.4.0. Everything it has converted was a
 virtual disk in a lab, the largest holding 23 GB. Keep a backup you have
 restored from before, and read [what the lab showed and did not
 show](#what-has-been-shown) before trusting it with a volume.

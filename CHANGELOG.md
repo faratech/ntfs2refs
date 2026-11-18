@@ -3,40 +3,58 @@
 What changed for someone who runs the converter. The measurements behind each
 entry are in the pull request named beside it and in `docs/performance.md`.
 
-## 0.4.0 (not yet released)
-
-This section is a draft: it lists what is merged or on the release's branches
-and is corrected against the final lab runs before the release is built.
-
-### Memory
-
-- A run's memory follows the volume instead of fixed reservations. A volume of
-  500,000 files converts on a machine with 13 GB of RAM free, where it was
-  refused with 15.6 GiB free (#157).
-- `--memory-limit <MiB>` holds a run to a limit. With less memory a run keeps
-  less in memory and takes longer; it no longer falls off a cliff. A limit
-  below what the volume needs is refused before anything is built (#159).
-- When memory is short the rows of the volume's walks go to working storage,
-  and caches a run keeps only to go faster are given back (#157, #160, #162).
-- `--check` says how much memory a volume needs, and the figure is tested
-  against runs held to it (#131, #159, #164).
-- A directory with very many entries no longer needs thirty-two times its
-  listing in memory (#164).
-
-### Speed
-
-- A full Windows volume converts faster than with 0.3.0-beta.1 (the figures
-  are filled in from the final runs): parallel metadata passes where memory
-  is spare, digests computed off the writing thread, records parsed as text,
-  stream tails read in parallel (#141, #142, #143, #145, #152).
+## 0.4.0
 
 ### What it converts
 
+- **A data partition on the disk of the running Windows**, through a restart:
+  `--restart-media <Windows installation media>`. The run prepares in Windows,
+  restarts into a minimal Windows made from the media, converts there and
+  returns. Until the conversion itself has started it can be cancelled, and
+  cancels itself if it cannot go on, with the volume given back as the NTFS
+  it was (#109). Shown on Windows Server 2025; see the guide for what it
+  needs and what the lab has not shown.
+- **MBR disks**: a volume that is the one partition of an MBR disk converts,
+  and the working directory may be on any MBR disk. A volume that shares an
+  MBR disk with other partitions is refused with what to do (#108).
+- **What the Windows Subsystem for Linux leaves on a volume**: owner and mode
+  on files and directories, and its symbolic links, sockets, FIFOs and device
+  files (#104).
+- **Names Win32 does not take and the file systems hold**: `con`, `aux.c`,
+  `nul`, a trailing dot or space, a name of dots only. A name that is refused
+  is named, with why.
 - `--list` says of an optical drive or a mounted disc image what it is,
-  instead of printing "Incorrect function (os error 1)" for it. A volume whose
-  query fails for another reason is named by its drive letter (#147).
-- The working directory may be on an MBR disk. The volume to convert must
-  still be on a GPT disk (#108).
+  instead of printing "Incorrect function (os error 1)" for it, and names a
+  volume whose query fails by its drive letter (#147).
+- A machine turned off while a run prepares: the cancellation afterwards
+  gives the volume back and names the working files left (#112).
+
+### Memory
+
+- **A run fits itself to the memory there is.** Without `--memory-limit` it
+  is no longer refused, and no longer stops, because a volume needs more
+  than its share of the free memory: it goes on with the page file, is
+  slower, and says so. `--check`'s figure is advice.
+- **What a run holds only to go faster follows the machine while it runs**:
+  it uses memory that becomes free and gives its caches back when another
+  program needs the memory. 100,000 files converted as fast with 5 GB taken
+  away half way as without.
+- **A Windows volume converts on a machine with 4 GB of RAM** (143,552
+  files and directories; converted and started in the lab), where it stopped
+  with 1.8 GB for the run (#129, #158).
+- `--memory-limit <MiB>` is a ceiling: a run given one keeps to it, and a
+  limit below what the volume needs is refused before anything is built
+  (#159).
+- A run's memory follows the volume instead of fixed reservations: a volume
+  of 500,000 files converts with 13 GB free, where it was refused with
+  15.6 GiB free (#157, #160, #162, #164).
+
+### Speed
+
+- A full Windows volume converts faster than with 0.3.0-beta.1: parallel
+  metadata passes where memory is spare, digests computed off the writing
+  thread, records parsed as text, stream tails read in parallel (#141, #142,
+  #143, #145, #152). `docs/performance.md` has the figures.
 
 ### Removed
 
@@ -46,7 +64,7 @@ and is corrected against the final lab runs before the release is built.
   and the subcommands `inspect`, `plan`, `verify`, `diff`, `compare-retained`,
   `convert`, `resume`, `rollback`, `finalize`, `complete-label`,
   `operation-state` and `cancel`. `capabilities` is the one subcommand left.
-  The executable is about a fifth smaller. The tag `archive/hidden-routes`
+  The executable is about a sixth smaller (25.8 MB for 31.2 MB). The tag `archive/hidden-routes`
   keeps the removed code. `--recover` and `--recover --rollback` are
   unchanged.
 
@@ -56,6 +74,9 @@ and is corrected against the final lab runs before the release is built.
   `lab\Invoke-GateRound.ps1`; the unit tests run in seconds (#153).
 - The gate round has a case with middling memory: 100,000 files held to
   1,240 MiB, with a time bound (#164).
+- The gate round has cases for MBR disks, WSL files, awkward names, a
+  machine turned off while a run prepares, and memory taken away from a run;
+  lab VMs fit the host's free memory and wait for it (#165).
 
 ## 0.3.0-beta.1 (2026-11-15)
 

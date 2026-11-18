@@ -81,6 +81,19 @@ pub(crate) fn recover_resource_allocation_with_observer<O: PreparationObserver>(
         }));
     }
     let mut replayed = None;
+    // A run cut off after it printed its "To recover:" line but before its
+    // apply intent was durable wrote nothing to the source: the only way it
+    // can end is with the NTFS volume back as it was, which is what the
+    // printed command then does (the soak found the window, #177).
+    let rollback = if !rollback && initial == SelectedLifecycle::PreparedClear {
+        eprintln!(
+            "Note: the conversion stopped before it wrote anything to the volume; there is nothing \
+             to resume, so the NTFS volume is given back as it was."
+        );
+        true
+    } else {
+        rollback
+    };
     match (rollback, initial) {
         (true, SelectedLifecycle::PreparedClear) => {
             events.phase("resource-abandon-clear");

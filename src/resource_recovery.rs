@@ -135,13 +135,44 @@ pub(crate) fn recover_resource_allocation_with_observer<O: PreparationObserver>(
             &mut events,
         )?;
         events.checkpoint()?;
-        let paths = n2r_win32::capture_mount_paths_general(mounted.clone(), &mut events)?;
         let expected: BTreeSet<_> = recovery
             .expected_mount_paths()
             .iter()
             .map(|s| s.to_lowercase())
             .collect();
+        let first = n2r_win32::capture_mount_paths_general(mounted.clone(), &mut events)?;
+        let before: BTreeSet<_> = first.paths.iter().map(|s| s.to_lowercase()).collect();
+        // Windows gives the volume its letters back by itself where automatic
+        // mounting is on; where it is off (`mountvol /N`) the NTFS volume is
+        // back without them. Each original drive letter still missing is
+        // given back, never taken from another volume. The volume is NTFS and
+        // whole either way, so a letter that cannot be given back is reported,
+        // not made the rollback's failure.
+        let mut restored_letters = Vec::new();
+        let mut letter_errors = Vec::new();
+        for missing in expected.difference(&before) {
+            if !crate::resource_finalize::is_drive_letter_root(missing) {
+                continue;
+            }
+            events.checkpoint()?;
+            match n2r_win32::restore_drive_letter_general_on(
+                mounted.clone(),
+                missing,
+                "NTFS",
+                &mut events,
+            ) {
+                Ok(_) => restored_letters.push(missing.clone()),
+                Err(error) => letter_errors.push(format!("{}: {error}", missing.to_uppercase())),
+            }
+        }
+        let paths = n2r_win32::capture_mount_paths_general(mounted.clone(), &mut events)?;
         let actual: BTreeSet<_> = paths.paths.iter().map(|s| s.to_lowercase()).collect();
+        for error in &letter_errors {
+            eprintln!(
+                "Note: the NTFS volume is back, but its drive letter {error}. Give it a letter in \
+                 Disk Management (or with mountvol)."
+            );
+        }
         events.checkpoint()?;
         return Ok(serde_json::json!({
             "kind":"resource-allocation-recovery-v1", "direction":"rollback",
@@ -151,6 +182,8 @@ pub(crate) fn recover_resource_allocation_with_observer<O: PreparationObserver>(
             "free_space_restored_byte_for_byte":false,
             "mount_paths_preserved": expected == actual,
             "expected_mount_paths": expected, "actual_mount_paths": actual,
+            "restored_drive_letters": restored_letters,
+            "drive_letter_restore_errors": letter_errors,
             "journal_aborted":true
         }));
     }

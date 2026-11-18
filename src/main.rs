@@ -155,7 +155,7 @@ fn run() -> Result<u8> {
                              "passed_over": "a provider of backup software that answers and holds no shadow copy, named in a note: make a full backup afterwards"},
                             {"what": "EFS-encrypted files", "remedy": "cipher /d"},
                             {"what": "files with the TEMPORARY or OFFLINE attribute"},
-                            {"what": "reparse points other than symbolic links, junctions and app execution aliases (Data Deduplication, compact /exe, cloud placeholders, WSL)",
+                            {"what": "reparse points other than symbolic links, junctions, app execution aliases and the files of the Windows Subsystem for Linux (Data Deduplication, compact /exe, cloud placeholders)",
                              "remedy": "named per kind"},
                             {"what": "a named data stream on a directory"},
                             {"what": "disk quotas in use", "remedy": "fsutil quota disable"},

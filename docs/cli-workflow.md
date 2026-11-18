@@ -312,7 +312,7 @@ Refused before anything is written, each with what was found and what to do:
 | A shadow-copy provider of backup software (any but Windows' own, Hyper-V's and Windows Server's for remote file shares) that holds a shadow copy on the machine, or does not answer when Windows asks it | The provider is named, and the shadow copy. Delete its shadow copies or let the backup that made them finish; a provider that does not answer has to be repaired or removed |
 | EFS-encrypted files | `cipher /d` |
 | Files with the TEMPORARY or OFFLINE attribute | Clear the attribute, or move the files |
-| Cloud placeholders, `compact /exe` files, Data Deduplication, WSL files | The kind is named, with the record number to find the file by |
+| Cloud placeholders, `compact /exe` files, Data Deduplication | The kind is named, with the record number to find the file by |
 | A named data stream on a directory | Remove the stream |
 | Disk quotas in use | `fsutil quota disable E:` and delete the entries |
 | Two names in one directory that differ only by case (both are given) | Rename one of them, then `fsutil file setCaseSensitiveInfo <directory> disable` |

@@ -75,7 +75,7 @@ fn every_remedy_the_document_quotes_is_one_the_converter_prints() {
         assert!(wof.contains(command), "{command:?} is not in {wof:?}");
     }
     // The tags the document says are refused like it have words of their own.
-    for tag in [0x9000_001au32, 0x8000_0013, 0xa000_001d] {
+    for tag in [0x9000_001au32, 0x8000_0013] {
         assert!(
             !n2r_win32::reparse_layout::unsupported_tag_meaning(tag).is_empty(),
             "{tag:#x}"

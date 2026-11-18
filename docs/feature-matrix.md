@@ -77,7 +77,7 @@ These take the same paths as rows above, or are checked by tests only.
 
 | Found | Why it is not a lab case |
 |---|---|
-| Cloud placeholders, Data Deduplication, Windows Subsystem for Linux files | Refused by their reparse tag, like `compact /exe`; the lab has no sync provider, deduplication or WSL. The words for each tag are covered by a test |
+| Cloud placeholders, Data Deduplication | Refused by their reparse tag, like `compact /exe`; the lab has no sync provider or deduplication. The words for each tag are covered by a test |
 | A shadow-copy provider of backup software that holds a shadow copy on the machine | The lab has no backup product that makes one. The decision and its words are covered by a test |
 | A dirty volume, an NTFS log that was not closed, an open transaction | The lab dismounts its volumes cleanly |
 | A program holding a file on the volume open | Not arranged in the lab; the lock is retried for 20 seconds and then refused by name |

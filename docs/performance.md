@@ -75,6 +75,37 @@ The run reads 127.5 GB and writes 13.2 GB to convert 22.9 GB. Its memory
 ledger peaked at 13,210 MiB of 14,091; 946,996 objects were worked on at
 once and 34,519 in turn.
 
+## 0.4.0: memory
+
+Release 0.4.0 changes how a run uses memory, and these runs show what that
+does. None of them had the host to itself: the host shares its memory with
+other work, the lab VMs were held to 10 or 12 GB for it, and the totals are
+not to be compared with the 24 GB rows above.
+
+| Run | Machine | Seconds | Memory |
+|---|---|---|---|
+| The full Windows volume, converted and started from ReFS (`w12-full-vm4g`) | VM with 4 GB of RAM, no limit | 3,086 | reservations peaked at 1,625 of the 1,725 MiB the run was given; it could not do without 1,195 MiB |
+| The same, held to the limit its estimate asks (`v1-win-1620`) | VM with 10 GB, `--memory-limit 1620` | 2,004 | needed 1,272 of 1,614 MiB |
+| The same, in the final gate round (`rc3-full-system`) | VM with 12 GB, no limit | 1,506 | needed 3,149 MiB; nothing went beyond what the machine had |
+| 100,000 files (`rc3-files-100k-mid`) | VM with 8 GB, `--memory-limit 1240` | 442 | needed 664 MiB; the process peaked at 956 MiB |
+| 100,000 files, 3,000 MiB taken by another process in the middle (`rc3-files-100k-memory-taken`) | VM with 8 GB, no limit | 451 | 1.3 GB was the least the machine had free; converted, listing identical |
+| 100,000 files, 5,000 MiB taken in the middle (`v2-takemem-100k`) and not (`v2-plain-100k`) | VM with 10 GB, no limit | 425 and 438 | the run gave up 67 caches and went 2,512 MiB beyond its budget on the page file, and was not slower for it |
+| 20,000 files (`rc3-files-20k-limit`) | VM with 8 GB, `--memory-limit 480` | 105 | needed 279 MiB; the process peaked at 349 MiB |
+
+Without `--memory-limit` the `memory:` line compares what the run held with
+the share of free memory it set aside when it started; a run that fits itself
+to the machine may hold more than that while the machine has it, so the
+first figure can exceed the second (16,589 of 6,148 MiB in `rc3-full-system`).
+What the process took is the figure the lab's attempts sample.
+
+## A partition on the Windows disk, through a restart
+
+A 6 GiB partition of 505 objects beside C: on Windows Server 2025, working
+storage on an NTFS disk of its own (`wb3-converts`): 451 s of preparation in
+Windows, most of it the minimal Windows made from the installation media,
+then 54 s away (two restarts and the conversion) before Windows was back
+with the partition as ReFS.
+
 ## The cycle: checks and gates
 
 `lab\Invoke-Checks.ps1` is what a commit has to pass as source code, and

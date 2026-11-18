@@ -216,7 +216,9 @@ function New-SoakContent([string]$root, [int]$seed, [int]$cluster, [bool]$many, 
     $null = New-Item -ItemType Junction -Path "$root\links\junction" -Target "$root\sizes"
     $made.Add('symbolic links and a junction')
     # Attributes (not TEMPORARY or OFFLINE, which are refused), times, security, object IDs.
-    $all = @(Get-ChildItem -LiteralPath $root -Recurse -File -Force | Where-Object { -not $_.LinkType } | Select-Object -First 4000)
+    # "V:" alone is the current directory of V:, not its root.
+    $all = @(Get-ChildItem -LiteralPath "$($root.TrimEnd('\'))\" -Recurse -File -Force | Where-Object { -not $_.LinkType } | Select-Object -First 4000)
+    if ($all.Count -lt 50) { throw "the content listing found $($all.Count) files under $root" }
     $epoch = [DateTime]::SpecifyKind([DateTime]::new(1990, 1, 1), [DateTimeKind]::Utc)
     foreach ($file in $all | Get-Random -Count ([Math]::Min(300, $all.Count)) -SetSeed ($seed + 1)) {
         $when = $epoch.AddSeconds($random.NextDouble() * 1.2e9).AddTicks($random.Next(0, 10000000))

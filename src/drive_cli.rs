@@ -673,7 +673,13 @@ mod windows {
             // The folder of a run that restarts the machine, recognised by
             // its admission record. Its ways back are bound to the run by
             // the records in it, not by a checksum.
-            if let Some(run) = crate::resource_partition_alpha::recognise_run(&directory)? {
+            let named = if directory.is_absolute() {
+                directory.clone()
+            } else {
+                std::path::absolute(&directory)
+                    .with_context(|| format!("resolving the folder {}", directory.display()))?
+            };
+            if let Some(run) = crate::resource_partition_alpha::recognise_run(&named)? {
                 ensure!(
                     args.recovery_sha256.is_none() && args.resume_workspace.is_none(),
                     "the run in {} is recovered by its folder alone: give neither --recovery-sha256 nor --resume-workspace. Nothing was changed.",

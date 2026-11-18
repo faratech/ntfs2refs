@@ -1011,7 +1011,7 @@ pub(super) fn verify_cold_options(
     )?;
     require_j_route(one(options, "ramdisksdidevice")?, &intent.journal)
 }
-pub(super) fn verify_cold_loader(
+fn verify_cold_loader(
     fields: &BTreeMap<String, Vec<String>>,
     intent: &BootIntent,
     sha: [u8; 32],

@@ -9,14 +9,17 @@
 //! nothing will be: the store is only read for what it selects and three
 //! elements of the boot manager are put back to the values recorded before
 //! the first change. What is required instead is that the records are this
-//! run's (the installed loader names the SHA-256 of the intent in its load
-//! options; in the recovery environment the running kernel does too), that
-//! each of the three elements holds either the value this run installed or
-//! the recorded original, and that every other element of the boot manager
-//! is the recorded one. Each setter is read back, and every other object of
-//! the store is compared before and after. Private entries stay in the
-//! store, as after a conversion; nothing is imported, deleted or written to
-//! firmware.
+//! run's (in Windows the installed loader names the SHA-256 of the intent in
+//! its load options; in the recovery environment the running kernel, which
+//! was started through that loader, does), that each of the three elements
+//! holds either the value this run installed or the recorded original, and
+//! that every other element of the boot manager is the recorded one (its
+//! device aside, which each start of Windows writes in its own words and
+//! which stays single). Each setter is read back, and every other object of
+//! the store is compared before and after where the store can be listed
+//! whole. Private entries stay in the store, as after a conversion; nothing
+//! is imported, deleted or written to firmware, and the firmware's own boot
+//! entries are not looked at.
 use super::*;
 
 /// What the boot manager selects, of the states an installation passes
@@ -68,7 +71,6 @@ fn plan_selection(
     current: &Fields,
     original: &Selection,
     loader: &str,
-    recovery_environment: bool,
 ) -> io::Result<SelectionPlan> {
     need(
         current.get("identifier") == Some(&vec![BOOTMGR.to_owned()]),
@@ -82,9 +84,11 @@ fn plan_selection(
         if matches!(key.as_str(), "default" | "displayorder" | "timeout") {
             continue;
         }
-        if key == "device" && recovery_environment {
-            // The same device is written differently outside the Windows it
-            // belongs to; it is not one of the elements changed here.
+        if key == "device" {
+            // The same device is written differently by another start of
+            // Windows or by the recovery environment (a volume number, a
+            // drive letter). It is not one of the elements changed here,
+            // and every setter's effect on the store is compared.
             need(
                 value.len() == 1 && current.get(key).is_some_and(|v| v.len() == 1),
                 "the boot manager's device element is not single",
@@ -293,7 +297,7 @@ fn cancel_selection(
             && original.timeout == intent.original.timeout,
         "the recorded original boot selection is inconsistent with itself",
     )?;
-    let plan = plan_selection(&current, &original, &intent.loader, recovery_environment)?;
+    let plan = plan_selection(&current, &original, &intent.loader)?;
     let private = vec![intent.loader.clone(), intent.ramdisk_options.clone()];
     if plan.restore.is_empty() {
         return Ok(receipt(
@@ -306,15 +310,26 @@ fn cancel_selection(
         ));
     }
     // Something selects the recovery entry: it has to be this run's, bound
-    // to this very record by the hash in its load options.
+    // to this very record. In the recovery environment the caller has shown
+    // that from the running kernel, which was started through this entry
+    // with this record's hash in its options. In Windows the entry in the
+    // store is read: it is the one this run derived its identifier for, and
+    // its load options name the hash of this record. (Its device elements
+    // are not compared: they are written with drive letters, which another
+    // start of Windows may have changed, and nothing here depends on them.)
     let guard = records.guard_sha256.ok_or_else(|| {
         bad("the boot manager selects a recovery entry, and this run's records end before the selection was changed")
     })?;
-    let loader = tool.enum_object(store, &intent.loader, directory)?;
-    if recovery_environment {
-        cold::verify_cold_loader(&loader, intent, guard)?;
-    } else {
-        verify_loader(&loader, intent, guard)?;
+    if !recovery_environment {
+        let loader = tool.enum_object(store, &intent.loader, directory)?;
+        need(
+            one(&loader, "identifier")? == intent.loader
+                && one(&loader, "loadoptions")? == load_options(guard, bootstrap_pin(intent)?),
+            &format!(
+                "the recovery entry {} of the boot configuration does not name this run's boot record in its load options: it is not this run's",
+                intent.loader
+            ),
+        )?;
     }
     let before_all = match store {
         Some(store) => tool.enum_all(store, directory),
@@ -338,7 +353,7 @@ fn cancel_selection(
         tool.run(store, &args, directory)?;
         flush(events)?;
         let after = tool.enum_object(store, BOOTMGR, directory)?;
-        let remaining = plan_selection(&after, &original, &intent.loader, recovery_environment)?;
+        let remaining = plan_selection(&after, &original, &intent.loader)?;
         need(
             !remaining.restore.iter().any(|(f, _)| f == field),
             &format!("the boot manager's {field} does not read back as it was set"),
@@ -346,7 +361,7 @@ fn cancel_selection(
         restored.push((*field).to_owned());
     }
     let after = tool.enum_object(store, BOOTMGR, directory)?;
-    let done = plan_selection(&after, &original, &intent.loader, recovery_environment)?;
+    let done = plan_selection(&after, &original, &intent.loader)?;
     need(
         done.state == RecoveryBootSelectionState::Normal && done.restore.is_empty(),
         "the boot manager does not select the recorded original after the restoration",
@@ -436,7 +451,7 @@ pub fn observe_recovery_boot_in_windows(
     let tool = native::Tool::system(budget)?;
     let current = tool.enum_object(None, BOOTMGR, records)?;
     let original = selection_of(&found.intent)?;
-    Ok(plan_selection(&current, &original, &found.intent.loader, false)?.state)
+    Ok(plan_selection(&current, &original, &found.intent.loader)?.state)
 }
 
 fn selection_of(intent: &BootIntent) -> io::Result<Selection> {
@@ -561,8 +576,7 @@ mod tests {
 
     #[test]
     fn an_installed_selection_is_put_back_in_the_order_that_keeps_the_runner_reachable() {
-        let plan =
-            plan_selection(&fields(LOADER, &[LOADER], "0"), &original(), LOADER, false).unwrap();
+        let plan = plan_selection(&fields(LOADER, &[LOADER], "0"), &original(), LOADER).unwrap();
         assert_eq!(plan.state, RecoveryBootSelectionState::Installed);
         // The default goes last: until then a restart reaches the runner.
         assert_eq!(elements(&plan), ["displayorder", "timeout", "default"]);
@@ -577,7 +591,6 @@ mod tests {
             &fields(WINDOWS, &[WINDOWS, OTHER], "30"),
             &original(),
             LOADER,
-            false,
         )
         .unwrap();
         assert_eq!(normal.state, RecoveryBootSelectionState::Normal);
@@ -587,45 +600,46 @@ mod tests {
             &fields(LOADER, &[WINDOWS, OTHER], "30"),
             &original(),
             LOADER,
-            false,
         )
         .unwrap();
         assert_eq!(half.state, RecoveryBootSelectionState::PartlyInstalled);
         assert_eq!(elements(&half), ["default"]);
         // A timeout that was 0 before cannot be told apart and is not set.
         let zero = selection(fields(WINDOWS, &[WINDOWS], "0")).unwrap();
-        let plan = plan_selection(&fields(LOADER, &[LOADER], "0"), &zero, LOADER, false).unwrap();
+        let plan = plan_selection(&fields(LOADER, &[LOADER], "0"), &zero, LOADER).unwrap();
         assert_eq!(plan.state, RecoveryBootSelectionState::Installed);
         assert_eq!(elements(&plan), ["displayorder", "default"]);
     }
 
     #[test]
     fn a_selection_that_is_neither_this_runs_nor_the_original_is_refused_by_name() {
-        let says = |current: Fields, recovery: bool| {
-            plan_selection(&current, &original(), LOADER, recovery)
+        let says = |current: Fields| {
+            plan_selection(&current, &original(), LOADER)
                 .unwrap_err()
                 .to_string()
         };
-        assert!(says(fields(OTHER, &[LOADER], "0"), false).contains("default is"));
-        assert!(says(fields(LOADER, &[OTHER], "0"), false).contains("display order"));
-        assert!(says(fields(LOADER, &[LOADER], "5"), false).contains("timeout is 5"));
+        assert!(says(fields(OTHER, &[LOADER], "0")).contains("default is"));
+        assert!(says(fields(LOADER, &[OTHER], "0")).contains("display order"));
+        assert!(says(fields(LOADER, &[LOADER], "5")).contains("timeout is 5"));
         let mut sequence = fields(LOADER, &[LOADER], "0");
         sequence.insert("bootsequence".into(), vec![OTHER.into()]);
-        assert!(says(sequence, false).contains("one-time boot sequence"));
+        assert!(says(sequence).contains("one-time boot sequence"));
         // Any other element that changed is somebody else's change.
         let mut path = fields(LOADER, &[LOADER], "0");
         path.insert("path".into(), vec!["\\EFI\\other.efi".into()]);
-        assert!(says(path, false).contains("\"path\""));
-        // The device is written differently in the recovery environment,
-        // and only there is that accepted.
+        assert!(says(path).contains("\"path\""));
+        // The device is written differently by another start of Windows
+        // and by the recovery environment; it stays single.
         let mut device = fields(LOADER, &[LOADER], "0");
         device.insert("device".into(), vec!["partition=C:".into()]);
-        assert!(says(device.clone(), false).contains("\"device\""));
         assert_eq!(
-            plan_selection(&device, &original(), LOADER, true)
-                .unwrap()
-                .state,
+            plan_selection(&device, &original(), LOADER).unwrap().state,
             RecoveryBootSelectionState::Installed
         );
+        device.insert(
+            "device".into(),
+            vec!["partition=C:".into(), "partition=D:".into()],
+        );
+        assert!(says(device).contains("device element is not single"));
     }
 }

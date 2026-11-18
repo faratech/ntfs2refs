@@ -419,9 +419,34 @@ struct BundleCore {
     ticket: SelectedTicket,
     publication_path: PathBuf,
     publication_sha256: String,
+    #[serde(default)]
+    artifacts: Vec<BundleArtifact>,
     source_preparation: serde_json::Value,
     source_payload_write_calls: u64,
     source_apply_intent_attempted: bool,
+}
+
+#[derive(Deserialize)]
+struct BundleArtifact {
+    role: String,
+    #[serde(default)]
+    snapshot: Option<serde_json::Value>,
+}
+impl BundleCore {
+    /// Where the publication is. The sealed preparation names it twice: by
+    /// the path the preparing Windows used, and, among its artifacts, by
+    /// its route on the working volume, which is the same in every
+    /// environment and is preferred.
+    fn publication_route(&self) -> PathBuf {
+        self.artifacts
+            .iter()
+            .find(|artifact| artifact.role == "publication")
+            .and_then(|artifact| artifact.snapshot.as_ref())
+            .and_then(|snapshot| snapshot.get("final_path"))
+            .and_then(|path| path.as_str())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.publication_path.clone())
+    }
 }
 
 /// The run's sealed preparation, if it has one. `pin` is the SHA-256 the
@@ -604,23 +629,24 @@ fn require_pinned_origin(
 
 /// The volume's label as the sealed preparation published it.
 fn published_label(core: &BundleCore) -> Result<VolumeLabel> {
-    let bytes = read_record(&core.publication_path)?.with_context(|| {
+    let path = core.publication_route();
+    let bytes = read_record(&path)?.with_context(|| {
         format!(
             "the sealed preparation's publication {} is absent",
-            core.publication_path.display()
+            path.display()
         )
     })?;
     ensure!(
         hex::encode(Sha256::digest(&bytes)) == core.publication_sha256,
         "the publication {} is not the one the sealed preparation names (its SHA-256 differs)",
-        core.publication_path.display()
+        path.display()
     );
     let publication: serde_json::Value = serde_json::from_slice(&bytes)?;
     let label: VolumeLabel = serde_json::from_value(publication["expected_source_label"].clone())
         .with_context(|| {
         format!(
             "the publication {} does not record the volume's label",
-            core.publication_path.display()
+            path.display()
         )
     })?;
     label.validate()?;
@@ -1470,5 +1496,142 @@ mod tests {
             Some(run.clone())
         );
         assert_eq!(recognise_run(&run.join("boot")).unwrap(), None);
+    }
+
+    fn disk(number: u32, disk: &str, partition: &str, volume: &str) -> GeneralDiskBinding {
+        serde_json::from_value(serde_json::json!({
+            "disk_number":number,"volume_guid":volume,
+            "identity":{"disk_guid":disk,"partition_guid":partition,
+                "partition_number":4,"disk_bytes":136365211648u64,
+                "partition_offset":1048576u64,"partition_bytes":6442450944u64,
+                "logical_sector_bytes":512,"physical_sector_bytes":4096}}))
+        .unwrap()
+    }
+    fn source() -> GeneralDiskBinding {
+        disk(
+            0,
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "01234567-89ab-cdef-0123-456789abcdef",
+            "11111111-2222-3333-4444-555555555555",
+        )
+    }
+    fn bundle(work: &Path, source: &GeneralDiskBinding, journal_bytes: u64) -> Vec<u8> {
+        let working = disk(
+            1,
+            "bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "11234567-89ab-cdef-0123-456789abcdef",
+            "21111111-2222-3333-4444-555555555555",
+        );
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version":1,"kind":BUNDLE_KIND,
+            "core":{
+                "source":source,
+                "journal_binding":{"externally_enrolled_disk_unique_id":"partition-alpha-x",
+                    "disk":working,"allow_additional_partitions":true},
+                "journal_path":work.join("selected.journal"),
+                "ticket":{"image_length":6442450944u64,"selected_bytes":4096,"range_count":1,
+                    "journal_length":journal_bytes,"immutable_sha256":vec![1u8;32],
+                    "old_selected_sha256":vec![2u8;32],"new_selected_sha256":vec![3u8;32],
+                    "whole_image_verified":true},
+                "publication_path":"E:\\run\\prepared\\arena\\publication.json",
+                "publication_sha256":"00",
+                "artifacts":[
+                    {"role":"journal","path":"E:\\x","bytes":1,"sha256":"00","snapshot":null},
+                    {"role":"publication","path":"E:\\run\\prepared\\arena\\publication.json",
+                     "bytes":1,"sha256":"00",
+                     "snapshot":{"final_path":"\\\\?\\Volume{21111111-2222-3333-4444-555555555555}\\run\\prepared\\arena\\publication.json"}}],
+                "source_preparation":{"sequence":2},
+                "source_payload_write_calls":0,"source_apply_intent_attempted":false,
+                "something_a_later_version_adds":true
+            }}))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_sealed_preparation_is_read_only_as_the_pinned_one_of_this_source() {
+        let work = tempfile::tempdir().unwrap();
+        let path = work.path().join("bundle.json");
+        assert!(read_bundle(&path, None, &source()).unwrap().is_none());
+        let bytes = bundle(work.path(), &source(), 16384);
+        fs::write(&path, &bytes).unwrap();
+        let pin = hex::encode(Sha256::digest(&bytes));
+        let core = read_bundle(&path, Some(&pin), &source()).unwrap().unwrap();
+        assert_eq!(core.ticket.journal_length, 16384);
+        // Its publication is found by its route on the working volume,
+        // which does not depend on drive letters.
+        assert_eq!(
+            core.publication_route(),
+            Path::new(
+                "\\\\?\\Volume{21111111-2222-3333-4444-555555555555}\\run\\prepared\\arena\\publication.json"
+            )
+        );
+        // Another bundle than the boot request names, another source, a
+        // bundle that says something was written: each is refused.
+        let refused = |pin: Option<&str>, source: &GeneralDiskBinding| {
+            format!(
+                "{:#}",
+                read_bundle(&path, pin, source).err().expect("refused")
+            )
+        };
+        assert!(refused(Some(&"0".repeat(64)), &source()).contains("SHA-256 differs"));
+        let mut other = source();
+        other.identity.partition_number = 5;
+        assert!(refused(None, &other).contains("another source partition"));
+        let mut written: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        written["core"]["source_apply_intent_attempted"] = true.into();
+        fs::write(&path, serde_json::to_vec(&written).unwrap()).unwrap();
+        assert!(refused(None, &source()).contains("nothing was written"));
+        written["kind"] = "another".into();
+        fs::write(&path, serde_json::to_vec(&written).unwrap()).unwrap();
+        assert!(refused(None, &source()).contains("not a sealed preparation"));
+    }
+
+    #[test]
+    fn the_journal_of_a_sealed_run_is_classified_with_its_ticket_by_the_existing_reader() {
+        let work = tempfile::tempdir().unwrap();
+        let path = work.path().join("bundle.json");
+        fs::write(&path, bundle(work.path(), &source(), 16384)).unwrap();
+        let core = read_bundle(&path, None, &source()).unwrap().unwrap();
+        let unsealed = work.path().join("unused.journal");
+        // No journal where the sealed preparation says it is.
+        assert_eq!(
+            journal_evidence(Some(&core), &unsealed).unwrap(),
+            JournalEvidence::Absent
+        );
+        assert!(admit_cancellation(true, JournalEvidence::Absent).is_err());
+        // Prepared and clear: both marker granules are zero.
+        let mut journal = vec![0u8; 16384];
+        journal[8192..8200].copy_from_slice(b"bodybody");
+        fs::write(&core.journal_path, &journal).unwrap();
+        let clear = journal_evidence(Some(&core), &unsealed).unwrap();
+        assert_eq!(
+            clear,
+            JournalEvidence::Lifecycle(SelectedLifecycle::PreparedClear)
+        );
+        assert_eq!(
+            admit_cancellation(true, clear),
+            Ok(UnappliedState::PreparedClear)
+        );
+        // A marker that is not this ticket's, or a torn one, is not read as
+        // clear: the run is refused, not cancelled.
+        for at in [0usize, 4096] {
+            let mut marked = journal.clone();
+            marked[at..at + 8].copy_from_slice(b"N2RSAP01");
+            fs::write(&core.journal_path, &marked).unwrap();
+            let refusal = format!(
+                "{:#}",
+                journal_evidence(Some(&core), &unsealed).unwrap_err()
+            );
+            assert!(
+                refusal.contains("foreign or torn") && refusal.contains("selected.journal"),
+                "{refusal}"
+            );
+        }
+        // Another length than the sealed one is not this run's journal.
+        fs::write(&core.journal_path, &journal[..12288]).unwrap();
+        let refusal = journal_evidence(Some(&core), &unsealed)
+            .unwrap_err()
+            .to_string();
+        assert!(refusal.contains("12288 bytes"), "{refusal}");
     }
 }

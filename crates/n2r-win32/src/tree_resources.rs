@@ -266,6 +266,19 @@ impl SourceResourceAdmission {
     pub fn native_semantic_byte_budget(self) -> u64 {
         self.native_pages.max_file_bytes / 2
     }
+    /// How many streams, runs, extents and planned steps the placement of
+    /// the new volume's data may index.
+    ///
+    /// A slot was counted at 8,192 bytes, the figure every one of them was
+    /// once prepaid at. What is prepaid now is what the structures are, by
+    /// their actual number, a kilobyte for the largest of them. At 8,192 a
+    /// run with 1.7 GiB had 54,000 slots, and the full Windows volume
+    /// (143,552 objects) was refused in allocation with "resource
+    /// deferred-step index exhausted before native IO", with memory to
+    /// spare for every one of its steps.
+    pub fn placement_slots(self) -> io::Result<usize> {
+        usize::try_from(self.budget.retained_index_bytes / 1024).map_err(io::Error::other)
+    }
     pub fn maximum_namespace_names(self) -> io::Result<usize> {
         self.validate()?;
         usize::try_from(self.budget.retained_index_bytes / 128).map_err(io::Error::other)

@@ -1536,7 +1536,11 @@ fn attributes_allowed(i: &Input<'_>) -> bool {
                     || (i.logical_length() == 0
                         && i.named_streams.is_empty()
                         && i.sparse.is_none()))
-                && i.extended_attributes.is_none_or(|ea| ea.is_empty())
+                // Extended attributes beside a reparse point: what the
+                // Windows Subsystem for Linux keeps owner and mode in, and
+                // nothing else's.
+                && (crate::reparse_layout::is_wsl_tag(point.tag())
+                    || i.extended_attributes.is_none_or(|ea| ea.is_empty()))
         })
 }
 /// Exact source-basic metadata predicate shared by constructor preflight and
@@ -1584,61 +1588,6 @@ fn creation_loss_only(
     let mut restored = actual.to_vec();
     restored[2..4].copy_from_slice(&want.to_le_bytes());
     same(expected, &restored)
-}
-fn validate_existing(
-    report: &Report,
-    input: &[Input<'_>],
-    same: &impl Fn(&[u8], &[u8]) -> io::Result<bool>,
-    before_restore: bool,
-    root_basic_after_mutation: Option<&[u8; 40]>,
-) -> io::Result<()> {
-    validate_existing_profile(
-        report,
-        input,
-        same,
-        before_restore,
-        root_basic_after_mutation,
-        true,
-    )
-}
-
-fn validate_existing_profile(
-    report: &Report,
-    input: &[Input<'_>],
-    same: &impl Fn(&[u8], &[u8]) -> io::Result<bool>,
-    before_restore: bool,
-    root_basic_after_mutation: Option<&[u8; 40]>,
-    verify_contents: bool,
-) -> io::Result<()> {
-    validate_existing_content_profile(
-        report,
-        input,
-        same,
-        before_restore,
-        root_basic_after_mutation,
-        verify_contents,
-        verify_contents,
-    )
-}
-
-fn validate_existing_content_profile(
-    report: &Report,
-    input: &[Input<'_>],
-    same: &impl Fn(&[u8], &[u8]) -> io::Result<bool>,
-    before_restore: bool,
-    root_basic_after_mutation: Option<&[u8; 40]>,
-    verify_contents: bool,
-    allow_post_mount_svi: bool,
-) -> io::Result<()> {
-    validate_existing_content_domain(
-        report,
-        &SliceInputs(input),
-        same,
-        before_restore,
-        root_basic_after_mutation,
-        verify_contents,
-        allow_post_mount_svi,
-    )
 }
 
 fn validate_existing_content_domain(
@@ -1772,7 +1721,12 @@ fn validate_existing_content_domain_with_memory_and_windows_aliases(
             )
         })
         .transpose()?;
-    let mut identities = BTreeMap::new();
+    // A path twice is refused where it is entered under its parent's
+    // expected children; the root has no parent, and is counted. (A map
+    // from every object's path to its identity did both, and held every
+    // path of the volume for it: with what was charged for it, 538 MiB of
+    // the full Windows volume's walks.)
+    let mut roots = 0usize;
     let mut unique = BTreeSet::new();
     let mut directories = Vec::new();
     let mut expected_children: BTreeMap<Vec<String>, BTreeMap<Vec<u16>, (usize, u32)>> =
@@ -1890,8 +1844,11 @@ fn validate_existing_content_domain_with_memory_and_windows_aliases(
         }
         let id = query_bytes(&o.before, 18, 24)?[8..24].to_vec();
         if id == [0; 16]
-            || !unique.insert(id.clone())
-            || identities.insert(i.components.to_vec(), id).is_some()
+            || !unique.insert(id)
+            || (i.components.is_empty() && {
+                roots += 1;
+                roots > 1
+            })
         {
             return Err(invalid("duplicate existing shadow identity"));
         }
@@ -2189,123 +2146,6 @@ fn filetime_now() -> io::Result<u64> {
         .map_err(|_| invalid("system clock predates Unix epoch"))?;
     u64::try_from(since_epoch.as_nanos() / 100 + 116_444_736_000_000_000)
         .map_err(|_| invalid("system clock exceeds the FILETIME range"))
-}
-/// Repairs only the documented creation-time loss of AUTO_INHERITED, after a
-/// fresh native read of every admitted shadow byte and namespace identity. The
-/// preflight is a live value; no serialized `success` flag is consumed.
-pub fn repair_security(
-    binding: DiskBinding,
-    source_disk: u32,
-    input: &[Input<'_>],
-    same: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
-) -> io::Result<Report> {
-    repair_security_profile(binding, source_disk, input, same, false)
-}
-pub fn repair_security_ordinary(
-    binding: DiskBinding,
-    source_disk: u32,
-    input: &[Input<'_>],
-    same: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
-) -> io::Result<Report> {
-    repair_security_profile(binding, source_disk, input, same, true)
-}
-fn repair_security_profile(
-    binding: DiskBinding,
-    source_disk: u32,
-    input: &[Input<'_>],
-    same: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
-    ordinary: bool,
-) -> io::Result<Report> {
-    let observed = run_role(
-        binding.clone(),
-        source_disk,
-        input,
-        Mode::Verify,
-        &same,
-        false,
-        ordinary,
-        None,
-        None,
-    )?;
-    validate_existing(&observed, input, &same, true, None)?;
-    let preflight_sha = hex::encode(Sha256::digest(
-        serde_json::to_vec(&observed).map_err(io::Error::other)?,
-    ));
-    let mut privileges = Privileges::enable_for(&[
-        "SeBackupPrivilege",
-        "SeSecurityPrivilege",
-        "SeRestorePrivilege",
-    ])?;
-    let root = format!("\\\\?\\Volume{{{}}}\\", binding.volume_guid);
-    let mut restorations = vec![];
-    // From the last object to the first, each with its row.
-    for index in (0..input.len().min(observed.objects.len())).rev() {
-        let i = &input[index];
-        let h = open(
-            &format!("{}{}", root, i.components.join("\\")),
-            i.directory,
-            true,
-        )?;
-        let before = metadata_snapshot(&h, i);
-        if observed.objects.with(index, |o| Ok(before != o.before))? {
-            return Err(invalid("existing shadow changed after repair preflight"));
-        }
-        if !security_matches(i, &before, &same)? {
-            let backup = backup_security(&h, i.security)?;
-            let after = metadata_snapshot(&h, i);
-            if !security_matches(i, &after, &same)? {
-                return Err(invalid("restored shadow descriptor does not exactly match"));
-            }
-            restorations.push(ObjectSecurityRestore {
-                components: i.components.to_vec(),
-                before,
-                after,
-                backup,
-            });
-        }
-        basic(&h, i)?;
-        if !i.directory {
-            h.sync_all()?;
-        }
-    }
-    let volume = File::options()
-        .read(true)
-        .write(true)
-        .share_mode(3)
-        .open(root.trim_end_matches('\\'))?;
-    volume.sync_all()?;
-    privileges.restore()?;
-    let mut verified = run_role(
-        binding,
-        source_disk,
-        input,
-        Mode::Verify,
-        &same,
-        false,
-        ordinary,
-        None,
-        None,
-    )?;
-    validate_existing(&verified, input, &same, false, None)?;
-    // Each row with the row of the same index, as far as both reports go.
-    let mut allocation_changed = false;
-    observed.objects.for_each(|index, a| {
-        if !allocation_changed && index < verified.objects.len() {
-            allocation_changed = verified
-                .objects
-                .with(index, |b| Ok(a.retrieval != b.retrieval))?;
-        }
-        Ok(())
-    })?;
-    if allocation_changed {
-        return Err(invalid(
-            "payload allocation changed during security-only restoration",
-        ));
-    }
-    verified.security_restorations = restorations;
-    verified.security_repair_preflight_sha256 = Some(preflight_sha);
-    verified.security_repair_privileges = privileges.audit().to_vec();
-    Ok(verified)
 }
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
@@ -3139,193 +2979,6 @@ pub fn run_ordinary_streaming(
     )
 }
 
-/// Construct a Windows-created ReFS shadow on a separately bound dedicated
-/// data disk. The source callback provides checked logical NTFS bytes; this
-/// function never opens or writes the source disk.
-pub fn run_general_ordinary_streaming(
-    pair: GeneralSourceShadowBinding,
-    input: &[Input<'_>],
-    retain_eligible: bool,
-    payload_writer: &mut impl FnMut(usize, &mut File) -> io::Result<()>,
-    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
-) -> io::Result<GeneralReport> {
-    run_general_ordinary_streaming_with_resource_profile(
-        pair,
-        input,
-        retain_eligible,
-        payload_writer,
-        same_security,
-        None,
-    )
-}
-
-/// Construct a separately bound shadow under an explicitly selected resource
-/// profile. This does not admit the source or authorize conversion.
-pub fn run_general_ordinary_streaming_with_resource_profile(
-    pair: GeneralSourceShadowBinding,
-    input: &[Input<'_>],
-    retain_eligible: bool,
-    payload_writer: &mut impl FnMut(usize, &mut File) -> io::Result<()>,
-    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
-    resource_profile: Option<crate::attestation::ResourceProfile>,
-) -> io::Result<GeneralReport> {
-    pair.validate_with_resource_profile(resource_profile)?;
-    let binding = DiskBinding {
-        disk_number: pair.shadow.disk_number,
-        volume_guid: pair.shadow.volume_guid.clone(),
-        identity: pair.shadow.identity.clone(),
-    };
-    let native = run_role_profile(
-        binding,
-        pair.source.disk_number,
-        input,
-        if retain_eligible {
-            Mode::ConstructRetaining
-        } else {
-            Mode::Construct
-        },
-        &same_security,
-        false,
-        true,
-        Some(payload_writer),
-        Some(&pair.shadow),
-        None,
-        None,
-        resource_profile,
-    )?;
-    validate_existing(&native, input, &same_security, false, None)?;
-    Ok(GeneralReport {
-        pair,
-        native,
-        conversion_qualified: false,
-    })
-}
-
-/// Re-observe an existing general shadow without creating files or changing
-/// stored metadata. Security/namespace comparison remains caller-owned.
-pub fn verify_general_ordinary(
-    pair: GeneralSourceShadowBinding,
-    input: &[Input<'_>],
-    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
-) -> io::Result<GeneralReport> {
-    verify_general_ordinary_with_resource_profile(pair, input, same_security, None)
-}
-
-pub fn verify_general_ordinary_with_resource_profile(
-    pair: GeneralSourceShadowBinding,
-    input: &[Input<'_>],
-    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
-    resource_profile: Option<crate::attestation::ResourceProfile>,
-) -> io::Result<GeneralReport> {
-    pair.validate_with_resource_profile(resource_profile)?;
-    let binding = DiskBinding {
-        disk_number: pair.shadow.disk_number,
-        volume_guid: pair.shadow.volume_guid.clone(),
-        identity: pair.shadow.identity.clone(),
-    };
-    let native = run_role_profile(
-        binding,
-        pair.source.disk_number,
-        input,
-        Mode::Verify,
-        &same_security,
-        false,
-        true,
-        None,
-        Some(&pair.shadow),
-        None,
-        None,
-        resource_profile,
-    )?;
-    validate_existing(&native, input, &same_security, false, None)?;
-    Ok(GeneralReport {
-        pair,
-        native,
-        conversion_qualified: false,
-    })
-}
-
-/// This route is callable only with an actual borrowed native read-only
-/// volume capability. The enclosing freeze lease retains persistent READ_ONLY
-/// storage throughout this strict semantic observation.
-pub(crate) fn verify_general_ordinary_readonly_with_resource_profile(
-    pair: GeneralSourceShadowBinding,
-    input: &[Input<'_>],
-    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
-    protected: &native::GeneralReadonlyRefsVolume<'_>,
-    resource_profile: Option<crate::attestation::ResourceProfile>,
-) -> io::Result<GeneralReport> {
-    verify_general_ordinary_readonly_domain(
-        pair,
-        &SliceInputs(input),
-        same_security,
-        protected,
-        resource_profile,
-    )
-}
-
-pub(crate) fn verify_general_ordinary_readonly_domain(
-    pair: GeneralSourceShadowBinding,
-    input: &impl InputDomain,
-    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
-    protected: &native::GeneralReadonlyRefsVolume<'_>,
-    resource_profile: Option<crate::attestation::ResourceProfile>,
-) -> io::Result<GeneralReport> {
-    pair.validate_with_resource_profile(resource_profile)?;
-    if protected.binding() != &pair.shadow {
-        return Err(invalid(
-            "protected ReFS lease does not bind the expected shadow",
-        ));
-    }
-    let binding = DiskBinding {
-        disk_number: pair.shadow.disk_number,
-        volume_guid: pair.shadow.volume_guid.clone(),
-        identity: pair.shadow.identity.clone(),
-    };
-    let native = run_role_content_domain(
-        binding,
-        pair.source.disk_number,
-        input,
-        Mode::Verify,
-        &same_security,
-        false,
-        true,
-        None,
-        Some(&pair.shadow),
-        None,
-        Some(protected),
-        resource_profile,
-        true,
-        None,
-    )?;
-    validate_existing_content_domain(&native, input, &same_security, false, None, true, true)?;
-    Ok(GeneralReport {
-        pair,
-        native,
-        conversion_qualified: false,
-    })
-}
-
-/// Observe exactly the expected namespace and all native stream metadata,
-/// without reading a single byte of file contents. Allocation-only shadow
-/// prefixes may contain unrelated scratch bytes until the composite reader
-/// supplies the admitted NTFS payload. This report is not that payload proof.
-pub(crate) fn observe_general_layout_readonly_with_resource_profile(
-    pair: GeneralSourceShadowBinding,
-    input: &[Input<'_>],
-    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
-    protected: &native::GeneralReadonlyRefsVolume<'_>,
-    resource_profile: Option<crate::attestation::ResourceProfile>,
-) -> io::Result<GeneralLayoutReport> {
-    observe_general_layout_readonly_domain(
-        pair,
-        &SliceInputs(input),
-        same_security,
-        protected,
-        resource_profile,
-    )
-}
-
 pub(crate) fn observe_general_layout_readonly_domain(
     pair: GeneralSourceShadowBinding,
     input: &impl InputDomain,
@@ -3502,27 +3155,6 @@ fn observe_general_layout_readonly_domain_accounted_with_alias_overlay(
         partition_source_state: None,
         partition_source: None,
     })
-}
-
-/// Composite-only extension of the zero-payload layout observer. Reads exactly
-/// the source-hashed initialized suffix of each file, never the placeholder
-/// prefix. The raw-image bracket and source binding remain caller-owned.
-pub(crate) fn observe_general_layout_residuals_readonly_with_resource_profile(
-    pair: GeneralSourceShadowBinding,
-    input: &[Input<'_>],
-    residuals: &[LayoutResidualExpectation],
-    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
-    protected: &native::GeneralReadonlyRefsVolume<'_>,
-    resource_profile: Option<crate::attestation::ResourceProfile>,
-) -> io::Result<GeneralLayoutReport> {
-    observe_general_layout_residuals_readonly_domain(
-        pair,
-        &SliceInputs(input),
-        residuals,
-        same_security,
-        protected,
-        resource_profile,
-    )
 }
 
 pub(crate) fn observe_general_layout_residuals_readonly_domain(
@@ -3740,31 +3372,6 @@ fn residual_input_sha(input: &impl InputDomain, maximum: u64) -> io::Result<Stri
     };
     serde_json::to_writer(&mut hash, &DomainMetadata(input)).map_err(io::Error::other)?;
     Ok(hex::encode(hash.hash.finalize()))
-}
-/// Resource-only initialized suffix observation. Expectations and results are
-/// never materialized as whole collections; every actual protected read and
-/// its complete identity/EOF/hash evidence precede the retained page closure.
-pub(crate) fn observe_general_layout_residuals_paged_readonly_domain(
-    pair: GeneralSourceShadowBinding,
-    input: &impl InputDomain,
-    provider: &impl crate::layout_residual_pages::LayoutResidualProvider,
-    result_path: &std::path::Path,
-    result_budget: crate::metadata_pages::PageBudget,
-    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
-    protected: &native::GeneralReadonlyRefsVolume<'_>,
-    resource_profile: Option<crate::attestation::ResourceProfile>,
-) -> io::Result<GeneralLayoutReport> {
-    observe_general_layout_residuals_paged_readonly_domain_accounted(
-        pair,
-        input,
-        provider,
-        result_path,
-        result_budget,
-        same_security,
-        protected,
-        resource_profile,
-        None,
-    )
 }
 
 pub(crate) fn observe_general_layout_residuals_paged_readonly_domain_with_memory(
@@ -4165,108 +3772,6 @@ fn observe_general_layout_residuals_paged_readonly_domain_accounted_with_alias_o
     report.residual_contents_verified = true;
     report.paged_residuals = Some(results);
     Ok(report)
-}
-
-/// Inspect the original data disk after the journal handoff has been made
-/// durable and it has mounted as ReFS. The caller supplies the pre-cutover
-/// source tree from separately pinned recovery artifacts.
-pub fn verify_general_converted_ordinary(
-    pair: GeneralSourceShadowBinding,
-    input: &[Input<'_>],
-    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
-) -> io::Result<GeneralConvertedReport> {
-    verify_general_converted_ordinary_with_resource_profile(pair, input, same_security, None)
-}
-
-pub fn verify_general_converted_ordinary_with_resource_profile(
-    pair: GeneralSourceShadowBinding,
-    input: &[Input<'_>],
-    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
-    resource_profile: Option<crate::attestation::ResourceProfile>,
-) -> io::Result<GeneralConvertedReport> {
-    let report = observe_general_converted_label_profile(
-        pair,
-        input,
-        None,
-        &same_security,
-        resource_profile,
-    )?;
-    validate_existing(&report.native, input, &same_security, false, None)?;
-    Ok(report)
-}
-
-pub fn verify_general_converted_ordinary_with_label(
-    pair: GeneralSourceShadowBinding,
-    input: &[Input<'_>],
-    expected_label: &crate::volume_label::VolumeLabel,
-    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
-) -> io::Result<GeneralConvertedReport> {
-    verify_general_converted_ordinary_with_label_and_resource_profile(
-        pair,
-        input,
-        expected_label,
-        same_security,
-        None,
-    )
-}
-
-pub fn verify_general_converted_ordinary_with_label_and_resource_profile(
-    pair: GeneralSourceShadowBinding,
-    input: &[Input<'_>],
-    expected_label: &crate::volume_label::VolumeLabel,
-    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
-    resource_profile: Option<crate::attestation::ResourceProfile>,
-) -> io::Result<GeneralConvertedReport> {
-    expected_label.validate()?;
-    let report = observe_general_converted_label_profile(
-        pair,
-        input,
-        Some(expected_label),
-        &same_security,
-        resource_profile,
-    )?;
-    validate_existing(&report.native, input, &same_security, false, None)?;
-    Ok(report)
-}
-
-/// Return the bounded native observation even when a preservation comparison
-/// would fail. This diagnostic does not qualify the converted tree or write to
-/// the volume; callers must keep it separate from verified results.
-pub fn observe_general_converted_ordinary(
-    pair: GeneralSourceShadowBinding,
-    input: &[Input<'_>],
-    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
-) -> io::Result<GeneralConvertedReport> {
-    observe_general_converted_label_profile(pair, input, None, same_security, None)
-}
-
-pub fn observe_general_converted_ordinary_with_label(
-    pair: GeneralSourceShadowBinding,
-    input: &[Input<'_>],
-    expected_label: &crate::volume_label::VolumeLabel,
-    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
-) -> io::Result<GeneralConvertedReport> {
-    expected_label.validate()?;
-    observe_general_converted_label_profile(pair, input, Some(expected_label), same_security, None)
-}
-
-pub fn observe_general_converted_ordinary_with_resource_profile(
-    pair: GeneralSourceShadowBinding,
-    input: &[Input<'_>],
-    expected_label: Option<&crate::volume_label::VolumeLabel>,
-    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
-    resource_profile: Option<crate::attestation::ResourceProfile>,
-) -> io::Result<GeneralConvertedReport> {
-    if let Some(label) = expected_label {
-        label.validate()?;
-    }
-    observe_general_converted_label_profile(
-        pair,
-        input,
-        expected_label,
-        same_security,
-        resource_profile,
-    )
 }
 
 /// Observe the converted source's complete mounted metadata and stream maps
@@ -4686,41 +4191,6 @@ pub fn verify_general_converted_ordinary_domain(
     })
 }
 
-fn observe_general_converted_label_profile(
-    pair: GeneralSourceShadowBinding,
-    input: &[Input<'_>],
-    expected_label: Option<&crate::volume_label::VolumeLabel>,
-    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
-    resource_profile: Option<crate::attestation::ResourceProfile>,
-) -> io::Result<GeneralConvertedReport> {
-    pair.validate_with_resource_profile(resource_profile)?;
-    let binding = DiskBinding {
-        disk_number: pair.source.disk_number,
-        volume_guid: pair.source.volume_guid.clone(),
-        identity: pair.source.identity.clone(),
-    };
-    let native = run_role_profile(
-        binding,
-        pair.source.disk_number,
-        input,
-        Mode::Verify,
-        &same_security,
-        true,
-        true,
-        None,
-        Some(&pair.source),
-        expected_label,
-        None,
-        resource_profile,
-    )?;
-    Ok(GeneralConvertedReport {
-        pair,
-        native,
-        content_observation: None,
-        conversion_qualified: false,
-    })
-}
-
 /// Capture exact FileBasicInfo for the mounted volume root using the same
 /// access-time-suppressed handle policy as native tree verification.
 pub fn observe_general_root_basic(binding: &GeneralDiskBinding) -> io::Result<[u8; 40]> {
@@ -4740,160 +4210,6 @@ pub fn observe_general_root_basic(binding: &GeneralDiskBinding) -> io::Result<[u
         .map_err(|_| invalid("root basic-info size"))?)
 }
 
-/// After a recorded namespace mutation, require the exact root basic-info
-/// bytes captured by that workload. Creation time and attributes must still
-/// match the NTFS source; all other objects retain exact original metadata.
-pub fn verify_general_converted_after_mutation_ordinary(
-    pair: GeneralSourceShadowBinding,
-    input: &[Input<'_>],
-    root_basic_after_mutation: [u8; 40],
-    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
-) -> io::Result<GeneralConvertedReport> {
-    verify_general_mutation_label_profile(
-        pair,
-        input,
-        root_basic_after_mutation,
-        None,
-        same_security,
-        None,
-    )
-}
-
-pub fn verify_general_converted_after_mutation_ordinary_with_label(
-    pair: GeneralSourceShadowBinding,
-    input: &[Input<'_>],
-    root_basic_after_mutation: [u8; 40],
-    expected_label: &crate::volume_label::VolumeLabel,
-    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
-) -> io::Result<GeneralConvertedReport> {
-    expected_label.validate()?;
-    verify_general_mutation_label_profile(
-        pair,
-        input,
-        root_basic_after_mutation,
-        Some(expected_label),
-        same_security,
-        None,
-    )
-}
-
-pub fn verify_general_converted_after_mutation_ordinary_with_resource_profile(
-    pair: GeneralSourceShadowBinding,
-    input: &[Input<'_>],
-    root_basic_after_mutation: [u8; 40],
-    expected_label: Option<&crate::volume_label::VolumeLabel>,
-    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
-    resource_profile: Option<crate::attestation::ResourceProfile>,
-) -> io::Result<GeneralConvertedReport> {
-    if let Some(label) = expected_label {
-        label.validate()?;
-    }
-    verify_general_mutation_label_profile(
-        pair,
-        input,
-        root_basic_after_mutation,
-        expected_label,
-        same_security,
-        resource_profile,
-    )
-}
-
-fn verify_general_mutation_label_profile(
-    pair: GeneralSourceShadowBinding,
-    input: &[Input<'_>],
-    root_basic_after_mutation: [u8; 40],
-    expected_label: Option<&crate::volume_label::VolumeLabel>,
-    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
-    resource_profile: Option<crate::attestation::ResourceProfile>,
-) -> io::Result<GeneralConvertedReport> {
-    let root = input
-        .first()
-        .ok_or_else(|| invalid("missing expected root"))?;
-    if !root.directory || !root.components.is_empty() {
-        return Err(invalid("expected post-mutation root differs"));
-    }
-    let original = basic_bytes(root);
-    if root_basic_after_mutation[..8] != original[..8]
-        || root_basic_after_mutation[32..] != original[32..]
-        || [8usize, 16, 24].into_iter().any(|at| {
-            let before = u64::from_le_bytes(original[at..at + 8].try_into().unwrap());
-            let after =
-                u64::from_le_bytes(root_basic_after_mutation[at..at + 8].try_into().unwrap());
-            after < before || after >= i64::MAX as u64
-        })
-    {
-        return Err(invalid(
-            "post-mutation root creation, attributes or time order differs",
-        ));
-    }
-    let report = observe_general_converted_label_profile(
-        pair,
-        input,
-        expected_label,
-        &same_security,
-        resource_profile,
-    )?;
-    validate_existing(
-        &report.native,
-        input,
-        &same_security,
-        false,
-        Some(&root_basic_after_mutation),
-    )?;
-    Ok(report)
-}
-/// Observe the enrolled converted original after durable journal handoff. All
-/// original shadow creation/repair entry points retain the disk3 restriction.
-pub fn verify_converted(
-    binding: DiskBinding,
-    input: &[Input<'_>],
-    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
-) -> io::Result<Report> {
-    if binding.disk_number != 1
-        || layout::guid_bytes(&binding.identity.disk_guid)?
-            != layout::guid_bytes("a01574d5-2a5c-4136-958a-dcf0d0e0f7aa")?
-        || layout::guid_bytes(&binding.identity.partition_guid)?
-            != layout::guid_bytes("79eaccdf-38d3-4561-97cc-9276af5d223a")?
-    {
-        return Err(invalid("converted natural-tree enrollment differs"));
-    }
-    let report = run_role(
-        binding,
-        1,
-        input,
-        Mode::Verify,
-        &same_security,
-        true,
-        false,
-        None,
-        None,
-    )?;
-    validate_existing(&report, input, &same_security, false, None)?;
-    Ok(report)
-}
-/// Verify an ordinary-file conversion on the owning guest after the durable
-/// handoff. The caller must bind this volume to its frozen source and journal
-/// ticket before bringing it online; this routine independently checks the
-/// complete expected tree through the mounted ReFS driver.
-pub fn verify_converted_ordinary(
-    binding: DiskBinding,
-    input: &[Input<'_>],
-    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
-) -> io::Result<Report> {
-    let report = run_role(
-        binding,
-        1,
-        input,
-        Mode::Verify,
-        &same_security,
-        true,
-        true,
-        None,
-        None,
-    )?;
-    validate_existing(&report, input, &same_security, false, None)?;
-    Ok(report)
-}
 fn run_role(
     binding: DiskBinding,
     source_disk: u32,

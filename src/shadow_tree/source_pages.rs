@@ -197,12 +197,20 @@ fn build_object(
         "missing names or unsupported directory links"
     );
     for name in &names {
+        if let Some(part) = name
+            .iter()
+            .find(|part| !n2r_win32::shadow_names::valid_unicode_component(part))
+        {
+            anyhow::bail!(
+                "\\{} has {}, which the converter does not carry over: rename it",
+                name.join("\\"),
+                n2r_win32::shadow_names::component_refusal(part)
+            );
+        }
         ensure!(
-            expected_path_fits(name, true)
-                && name
-                    .iter()
-                    .all(|part| n2r_win32::shadow_names::valid_unicode_component(part)),
-            "unsupported Windows path"
+            expected_path_fits(name, true),
+            "\\{} is a path too long or too deep for the converter to carry over",
+            name.join("\\")
         );
     }
     ensure!(

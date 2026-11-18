@@ -4,25 +4,30 @@ Converts an NTFS volume to ReFS in place, on the Windows machine that owns the
 disk. File data stays where it is on the disk wherever ReFS can use it there;
 only the file system around it is replaced.
 
-This is version 0.3.0-beta.1, a beta. Everything it has converted was a
+This is version 0.4.0. Everything it has converted was a
 virtual disk in a lab, the largest holding 23 GB. Keep a backup you have
 restored from before, and read [what the lab showed and did not
 show](#what-has-been-shown) before trusting it with a volume.
 
 ## What it converts
 
-- **A data volume** on a GPT disk other than the running Windows':
-  `ntfs2refs --drive E --scratch-directory S:\runs`. The disk may hold other
-  partitions; their volumes go offline with it while the run lasts and are
-  not written to.
+- **A data volume** on a disk other than the running Windows':
+  `ntfs2refs --drive E --scratch-directory S:\runs`. A GPT disk may hold
+  other partitions; their volumes go offline with it while the run lasts and
+  are not written to.
+- **A data partition on the disk of the running Windows**, through a
+  restart: `ntfs2refs --drive D --restart-media E:\ --scratch-directory S:\runs`,
+  with Windows installation media at `E:`. See the
+  [guide](docs/cli-workflow.md#a-partition-on-the-windows-disk).
 - **An installed Windows that is not running**, from a second Windows on
   another disk: `--windows-boot-volume`. One Windows build has been converted
   and booted this way; any other is refused. See the
   [guide](docs/cli-workflow.md#convert-an-installed-windows).
 
-It does not convert the Windows it is running on, a partition that shares its
-disk with it, or a volume on an MBR disk. `ntfs2refs --list` says for each
-NTFS partition whether it can be converted and, if not, why.
+It does not convert the Windows it is running on, or a volume that shares an
+MBR disk with other partitions (a volume that has an MBR disk to itself
+converts). `ntfs2refs --list` says for each NTFS partition whether it can be
+converted, how, and if not, why.
 
 ## What you need
 
@@ -32,8 +37,9 @@ NTFS partition whether it can be converted and, if not, why.
   first.
 - An elevated terminal.
 - Free memory in proportion to the number of files: about 2 GB for 100,000
-  files and 8 GB for 500,000. `--check` gives the figure for a volume, and
-  a volume the memory is not enough for is refused before anything is built.
+  files and 8 GB for 500,000. `--check` gives the figure for a volume. With
+  less than that free a run still goes ahead: it takes the rest from the page
+  file and is slower, and says so before it starts.
 - Working storage on a different disk (`--scratch-directory`). The run builds
   the new file system there and keeps there what it needs to undo its changes.
   The lab's Windows volume, with 22.9 GB in use, needed about 30 GB; a volume

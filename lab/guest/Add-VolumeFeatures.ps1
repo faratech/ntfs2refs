@@ -362,6 +362,148 @@ public static class ManyFiles {
             if ($LASTEXITCODE -ne 0) { throw 'could not write a named stream on a directory' }
             $made[$feature] = 'a directory with a named stream'
         }
+        'wsl' {
+            # What the Windows Subsystem for Linux leaves on a Windows
+            # volume: owner and mode in extended attributes on every file,
+            # and its own reparse tags for symbolic links, sockets, FIFOs and
+            # device files. Made here as WSL makes them, without WSL. Each
+            # is tried by itself: on a file system that does not take one
+            # (a native ReFS control) the others are still made, and the
+            # result says which were.
+            Add-Type -TypeDefinition @'
+using System; using System.IO; using System.Runtime.InteropServices; using System.Text; using Microsoft.Win32.SafeHandles;
+public static class N2RLabWsl {
+    [StructLayout(LayoutKind.Sequential)] struct IoStatusBlock { public IntPtr Status; public IntPtr Information; }
+    [DllImport("ntdll.dll")] static extern int NtSetEaFile(SafeFileHandle handle, out IoStatusBlock io, byte[] buffer, int length);
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool DeviceIoControl(SafeFileHandle handle, uint code, byte[] input, uint inputSize, IntPtr output, uint outputSize, out uint returned, IntPtr overlapped);
+    static byte[] Ea(string name, byte[] value) {
+        byte[] n = Encoding.ASCII.GetBytes(name);
+        byte[] b = new byte[(8 + n.Length + 1 + value.Length + 3) & ~3];
+        b[5] = (byte)n.Length; b[6] = (byte)(value.Length & 0xff); b[7] = (byte)(value.Length >> 8);
+        Buffer.BlockCopy(n, 0, b, 8, n.Length); Buffer.BlockCopy(value, 0, b, 8 + n.Length + 1, value.Length);
+        return b;
+    }
+    // Owner, group and mode as WSL keeps them; a device number for a device file.
+    public static void Metadata(string path, uint uid, uint gid, uint mode, ulong? device) {
+        // GENERIC_WRITE, share all, OPEN_EXISTING, BACKUP_SEMANTICS | OPEN_REPARSE_POINT.
+        using (var handle = CreateFileW(path, 0x40000000, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero)) {
+            if (handle.IsInvalid) throw new IOException("open " + path + ": " + Marshal.GetLastWin32Error());
+            var all = new System.Collections.Generic.List<Tuple<string, byte[]>> {
+                Tuple.Create("$LXUID", BitConverter.GetBytes(uid)), Tuple.Create("$LXGID", BitConverter.GetBytes(gid)), Tuple.Create("$LXMOD", BitConverter.GetBytes(mode)) };
+            if (device.HasValue) all.Add(Tuple.Create("$LXDEV", BitConverter.GetBytes(device.Value)));
+            foreach (var one in all) {
+                byte[] b = Ea(one.Item1, one.Item2); IoStatusBlock io;
+                int status = NtSetEaFile(handle, out io, b, b.Length);
+                if (status != 0) throw new IOException("NtSetEaFile " + one.Item1 + " on " + path + ": 0x" + status.ToString("x8"));
+            }
+        }
+    }
+    // A reparse point with one of WSL's tags and the data WSL puts there.
+    public static void Point(string path, uint tag, byte[] data) {
+        byte[] b = new byte[8 + data.Length];
+        BitConverter.GetBytes(tag).CopyTo(b, 0); BitConverter.GetBytes((ushort)data.Length).CopyTo(b, 4);
+        data.CopyTo(b, 8);
+        using (var handle = CreateFileW(path, 0x40000000, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero)) {
+            if (handle.IsInvalid) throw new IOException("open " + path + ": " + Marshal.GetLastWin32Error());
+            uint returned;
+            // FSCTL_SET_REPARSE_POINT
+            if (!DeviceIoControl(handle, 0x000900A4, b, (uint)b.Length, IntPtr.Zero, 0, out returned, IntPtr.Zero))
+                throw new IOException("FSCTL_SET_REPARSE_POINT 0x" + tag.ToString("x8") + " on " + path + ": " + Marshal.GetLastWin32Error());
+        }
+    }
+}
+'@
+            $null = New-Item -ItemType Directory -Path "$dir\home\user" -Force
+            $done = [Collections.Generic.List[string]]::new(); $failed = [Collections.Generic.List[string]]::new()
+            $try = { param($what, $block) try { & $block; $done.Add($what) } catch { $failed.Add("$what ($($_.Exception.GetBaseException().Message))") } }
+            # An ordinary file and a directory with Linux owner and mode.
+            [IO.File]::WriteAllBytes("$dir\home\user\script.sh", [Text.Encoding]::UTF8.GetBytes("#!/bin/sh`necho made under WSL`n"))
+            & $try 'file with owner and mode' { [N2RLabWsl]::Metadata("$dir\home\user\script.sh", 1000, 1000, 0x81ED, $null) }
+            & $try 'directory with owner and mode' { [N2RLabWsl]::Metadata("$dir\home\user", 1000, 1000, 0x41ED, $null) }
+            # A Linux symbolic link: version 2 and the target in UTF-8.
+            $kinds = @(
+                @{ name = 'link-to-script'; what = 'symbolic link'; tag = [Convert]::ToUInt32('A000001D', 16); mode = 0xA1FF; data = [byte[]](2, 0, 0, 0) + [Text.Encoding]::UTF8.GetBytes('script.sh'); device = $null },
+                @{ name = 'socket'; what = 'socket'; tag = [Convert]::ToUInt32('80000023', 16); mode = 0xC1ED; data = [byte[]]@(); device = $null },
+                @{ name = 'fifo'; what = 'FIFO'; tag = [Convert]::ToUInt32('80000024', 16); mode = 0x11A4; data = [byte[]]@(); device = $null },
+                @{ name = 'null'; what = 'character device'; tag = [Convert]::ToUInt32('80000025', 16); mode = 0x21B6; data = [byte[]]@(); device = [uint64]0x0000000300000001 },
+                @{ name = 'loop0'; what = 'block device'; tag = [Convert]::ToUInt32('80000026', 16); mode = 0x61B0; data = [byte[]]@(); device = [uint64]0x0000000000000007 }
+            )
+            foreach ($kind in $kinds) {
+                $path = "$dir\home\user\$($kind.name)"
+                [IO.File]::WriteAllBytes($path, [byte[]]@())
+                & $try "$($kind.what): owner and mode" { [N2RLabWsl]::Metadata($path, 1000, 1000, [uint32]$kind.mode, $kind.device) }
+                & $try "$($kind.what): reparse tag 0x$('{0:x8}' -f [uint32]$kind.tag)" { [N2RLabWsl]::Point($path, [uint32]$kind.tag, [byte[]]$kind.data) }
+            }
+            $made[$feature] = "made: $($done -join '; ')$(if ($failed.Count) { ". NOT taken by this file system: $($failed -join '; ')" })"
+        }
+        'names' {
+            # Names from other alphabets and the names Windows' own tools
+            # stumble over. NTFS takes any UTF-16 code unit but a few; so
+            # must a conversion, unchanged and in the same order.
+            $long = '\\?\' + $dir
+            $null = New-Item -ItemType Directory -Path $dir -Force
+            $names = [ordered]@{
+                'Chinese'                = "$([char]0x6587)$([char]0x4EF6)$([char]0x5939)-$([char]0x6D4B)$([char]0x8BD5).txt"
+                'Japanese'               = "$([char]0x30C6)$([char]0x30B9)$([char]0x30C8)$([char]0x30D5)$([char]0x30A1)$([char]0x30A4)$([char]0x30EB).txt"
+                'Korean'                 = "$([char]0xD30C)$([char]0xC77C)-$([char]0xC2DC)$([char]0xD5D8).txt"
+                'Arabic (right to left)' = "$([char]0x0645)$([char]0x0644)$([char]0x0641)-$([char]0x0627)$([char]0x062E)$([char]0x062A)$([char]0x0628)$([char]0x0627)$([char]0x0631).txt"
+                'Hebrew (right to left)' = "$([char]0x05E7)$([char]0x05D5)$([char]0x05D1)$([char]0x05E5)-$([char]0x05D1)$([char]0x05D3)$([char]0x05D9)$([char]0x05E7)$([char]0x05D4).txt"
+                'a right-to-left override in the name' = "report-$([char]0x202E)txt.exe"
+                'an emoji (a surrogate pair)' = "party-$([char]::ConvertFromUtf32(0x1F389)).txt"
+                'a rare Han character (a surrogate pair)' = "$([char]::ConvertFromUtf32(0x20BB7))-rare.txt"
+                'combining marks (decomposed)' = "cafe$([char]0x0301)-decomposed.txt"
+                'the same word precomposed' = "caf$([char]0x00E9)-precomposed.txt"
+                'Turkish dotless and dotted i' = "$([char]0x0131)$([char]0x0130)-turkish.txt"
+                'German sharp s and its capital' = "stra$([char]0x00DF)e-$([char]0x1E9E).txt"
+                'a zero-width joiner' = "zero$([char]0x200D)width.txt"
+                'spaces and a leading dot' = '.  leading dot and  double spaces.txt'
+                'characters cmd treats specially' = 'percent%TEMP% caret^ amp& paren(1) bang! semi;comma,equals=.txt'
+            }
+            $done = [Collections.Generic.List[string]]::new(); $failed = [Collections.Generic.List[string]]::new()
+            foreach ($what in $names.Keys) {
+                try { [IO.File]::WriteAllBytes("$long\$($names[$what])", [Text.Encoding]::UTF8.GetBytes($what)); $done.Add($what) }
+                catch { $failed.Add("$what ($($_.Exception.GetBaseException().Message))") }
+            }
+            # Names Win32 refuses and NTFS holds: made through the \\?\ form,
+            # which passes them to the file system as they are.
+            $raw = [ordered]@{
+                'a trailing dot' = 'trailing-dot.'
+                'a trailing space' = 'trailing-space '
+                'only dots' = '...'
+                'a device name' = 'con'
+                'a device name with an extension' = 'aux.txt'
+                'a device name as a directory' = 'nul'
+            }
+            foreach ($what in $raw.Keys) {
+                try {
+                    if ($what -like '*directory*') { $null = [IO.Directory]::CreateDirectory("$long\$($raw[$what])"); [IO.File]::WriteAllBytes("$long\$($raw[$what])\inside.txt", [byte[]](1, 2, 3)) }
+                    else { [IO.File]::WriteAllBytes("$long\$($raw[$what])", [Text.Encoding]::UTF8.GetBytes($what)) }
+                    $done.Add($what)
+                } catch { $failed.Add("$what ($($_.Exception.GetBaseException().Message))") }
+            }
+            # A directory whose own name and whose children's are not ASCII,
+            # and a name of the greatest length, 255 code units, in Cyrillic.
+            try {
+                $deep = "$long\$([char]0x043F)$([char]0x0430)$([char]0x043F)$([char]0x043A)$([char]0x0430)\$([char]0x03B1)$([char]0x03B2)$([char]0x03B3)"
+                $null = [IO.Directory]::CreateDirectory($deep)
+                [IO.File]::WriteAllBytes("$deep\$(([string][char]0x0436) * 251).txt", (Bytes 1000))
+                $done.Add('a 255-unit Cyrillic name in Cyrillic and Greek directories')
+            } catch { $failed.Add("a 255-unit Cyrillic name ($($_.Exception.GetBaseException().Message))") }
+            $made[$feature] = "$($done.Count) names made: $($done -join '; ')$(if ($failed.Count) { ". NOT made: $($failed -join '; ')" })"
+        }
+        'lonesurrogates' {
+            # Names that are not valid UTF-16: half of a surrogate pair by
+            # itself. NTFS holds them; the lab's listing tool does not list
+            # them, so they are a case of their own.
+            $long = '\\?\' + $dir
+            $null = New-Item -ItemType Directory -Path $dir -Force
+            [IO.File]::WriteAllBytes("$long\lone-$([char]0xD83C)-high.txt", [byte[]](1, 2, 3))
+            [IO.File]::WriteAllBytes("$long\lone-$([char]0xDF89)-low.txt", [byte[]](4, 5, 6))
+            $made[$feature] = 'two names with a lone surrogate, high and low'
+        }
         default { throw "unknown feature '$feature'" }
     }
 }

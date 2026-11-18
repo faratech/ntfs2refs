@@ -8,6 +8,21 @@ pub const MAX_REPARSE_BYTES: usize = 16 * 1024;
 pub const IO_REPARSE_TAG_SYMLINK: u32 = 0xa000_000c;
 pub const IO_REPARSE_TAG_MOUNT_POINT: u32 = 0xa000_0003;
 pub const IO_REPARSE_TAG_APPEXECLINK: u32 = 0x8000_001b;
+/// A symbolic link made by the Windows Subsystem for Linux: its target, as
+/// Linux spells it, in the point's data.
+pub const IO_REPARSE_TAG_LX_SYMLINK: u32 = 0xa000_001d;
+/// The other files of the Windows Subsystem for Linux that are no ordinary
+/// files: a socket, a FIFO, a character device and a block device. Their
+/// points have no data; what they are beyond the tag is in the file's
+/// extended attributes.
+pub const LX_SPECIAL_TAGS: [u32; 4] = [0x8000_0023, 0x8000_0024, 0x8000_0025, 0x8000_0026];
+
+/// Whether the tag is one the Windows Subsystem for Linux gives its files.
+/// Such a file keeps owner and mode in extended attributes beside its
+/// reparse point, which no other kind of reparse point may have.
+pub fn is_wsl_tag(tag: u32) -> bool {
+    tag == IO_REPARSE_TAG_LX_SYMLINK || LX_SPECIAL_TAGS.contains(&tag)
+}
 const HEADER_BYTES: usize = 8;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,9 +39,6 @@ pub fn unsupported_tag_meaning(tag: u32) -> &'static str {
         }
         0x8000_0017 => {
             " (a file compressed with `compact /exe` or by CompactOS: expand it with `compact /u /exe <file>`)"
-        }
-        0xa000_001d | 0x8000_0023 | 0x8000_0024 | 0x8000_0025 | 0x8000_0026 => {
-            " (a Windows Subsystem for Linux file: move the Linux files off the volume)"
         }
         0x9000_001c | 0xa000_0022 => {
             " (a projected file system, such as a virtualized Git repository)"
@@ -187,6 +199,33 @@ impl Point {
             }
             return Ok(());
         }
+        // The Windows Subsystem for Linux. ReFS takes these tags and the
+        // extended attributes beside them as NTFS does (a native control on
+        // Windows 11 build 26300). Every byte is kept; nothing is resolved.
+        if self.tag() == IO_REPARSE_TAG_LX_SYMLINK {
+            // A version, 2, and the target in UTF-8, as Linux spells it.
+            let target = bytes
+                .get(HEADER_BYTES + 4..)
+                .ok_or_else(|| invalid("short Linux symbolic link"))?;
+            if dword(bytes, HEADER_BYTES)? != 2
+                || target.is_empty()
+                || target.contains(&0)
+                || std::str::from_utf8(target).is_err()
+            {
+                return Err(invalid(
+                    "a Linux symbolic link of another version, or with a target that is not UTF-8",
+                ));
+            }
+            return Ok(());
+        }
+        if LX_SPECIAL_TAGS.contains(&self.tag()) {
+            if bytes.len() != HEADER_BYTES {
+                return Err(invalid(
+                    "a Linux socket, FIFO or device file whose reparse point carries data",
+                ));
+            }
+            return Ok(());
+        }
         let fixed = match self.tag() {
             IO_REPARSE_TAG_SYMLINK => {
                 if dword(bytes, HEADER_BYTES + 8)? > 1 {
@@ -199,7 +238,7 @@ impl Point {
                 // A decision about a reparse point that was read in full,
                 // not a structure that could not be read.
                 return Err(crate::refusal::io_error(format!(
-                    "a reparse point of tag {tag:#010x}{} is not one the converter recreates (it carries over symbolic links, junctions and app execution aliases)",
+                    "a reparse point of tag {tag:#010x}{} is not one the converter recreates (it carries over symbolic links, junctions, app execution aliases and the files of the Windows Subsystem for Linux)",
                     unsupported_tag_meaning(tag)
                 )));
             }
@@ -252,6 +291,30 @@ mod refusal_tests {
             );
         }
         assert!(unsupported_tag_meaning(0x8000_0013).contains("Deduplication"));
+        // What the Windows Subsystem for Linux makes is carried over.
+        let point = |tag: u32, data: &[u8]| {
+            let mut buffer = tag.to_le_bytes().to_vec();
+            buffer.extend_from_slice(&(data.len() as u16).to_le_bytes());
+            buffer.extend_from_slice(&[0, 0]);
+            buffer.extend_from_slice(data);
+            Point { buffer }
+        };
+        let link = [&2u32.to_le_bytes()[..], b"../etc/hosts"].concat();
+        assert!(point(IO_REPARSE_TAG_LX_SYMLINK, &link).validate().is_ok());
+        for tag in LX_SPECIAL_TAGS {
+            assert!(is_wsl_tag(tag) && point(tag, &[]).validate().is_ok());
+            assert!(point(tag, &[1]).validate().is_err());
+        }
+        assert!(is_wsl_tag(IO_REPARSE_TAG_LX_SYMLINK) && !is_wsl_tag(IO_REPARSE_TAG_SYMLINK));
+        // Another version, no target, a NUL in it, or bytes that are not UTF-8.
+        for data in [
+            [&1u32.to_le_bytes()[..], b"x"].concat(),
+            2u32.to_le_bytes().to_vec(),
+            [&2u32.to_le_bytes()[..], b"a\0b"].concat(),
+            [&2u32.to_le_bytes()[..], &[0xff, 0xfe]].concat(),
+        ] {
+            assert!(point(IO_REPARSE_TAG_LX_SYMLINK, &data).validate().is_err());
+        }
         assert_eq!(unsupported_tag_meaning(0x1234_5678), "");
     }
 }

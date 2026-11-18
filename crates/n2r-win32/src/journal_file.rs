@@ -541,8 +541,38 @@ fn validate_general_evidence(
     validate_general_evidence_for_profile(expected, final_path, evidence, JournalProfile::LegacyV1)
 }
 
+/// The label a run's records keep for the disk of its working storage:
+/// what kind of disk it is and its identity. It is not verified against
+/// anything; it is part of the binding, so every place that makes a binding
+/// of the same disk must make the same label.
+pub fn enrolled_disk_label(disk_guid: &str) -> String {
+    let identity = disk_guid.trim_matches(['{', '}']);
+    if crate::mbr_layout::is_mbr_disk(identity) {
+        format!("mbr-{}", &identity[..8])
+    } else {
+        format!("gpt-{identity}")
+    }
+}
+
 fn validate_external_journal_layout(raw: &[u8], binding: &GeneralDiskBinding) -> io::Result<()> {
     let p = &binding.identity;
+    // Working storage on an MBR disk: the identity made of the disk's
+    // signature and the partition's place is made again from what the disk
+    // says now, and must be the one the binding holds.
+    if crate::mbr_layout::is_mbr_disk(&p.disk_guid) {
+        let found = crate::mbr_layout::mbr_partition(
+            raw,
+            p.disk_bytes,
+            p.partition_offset,
+            p.partition_bytes,
+        )?;
+        return require(
+            found.partition_number == p.partition_number
+                && guid_bytes(&found.disk_guid)? == guid_bytes(&p.disk_guid)?
+                && guid_bytes(&found.partition_guid)? == guid_bytes(&p.partition_guid)?,
+            "external journal MBR disk or partition identity differs",
+        );
+    }
     require(
         (48..=65536).contains(&raw.len())
             && u32_at(raw, 0)? == 1

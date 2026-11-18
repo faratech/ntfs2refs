@@ -8,7 +8,7 @@ use std::{
 use windows_sys::Win32::{
     Foundation::{ERROR_WRITE_PROTECT, HANDLE, INVALID_HANDLE_VALUE},
     Storage::FileSystem::{
-        FindFirstVolumeW, FindNextVolumeW, FindVolumeClose, GetLogicalDriveStringsW,
+        FindFirstVolumeW, FindNextVolumeW, FindVolumeClose, GetDriveTypeW, GetLogicalDriveStringsW,
         GetVolumeInformationW, GetVolumeNameForVolumeMountPointW, GetVolumePathNameW,
         GetVolumePathNamesForVolumeNameW, QueryDosDeviceW,
     },
@@ -540,6 +540,12 @@ fn volume(root: String, windows: Option<&str>) -> VolumeInventory {
             false,
         ));
     }
+    // A disc in an optical drive, or a mounted disc image, is a volume and
+    // has a letter, and lies on no disk: asked for its extents it answers
+    // "Incorrect function", which the list then printed as a failure.
+    if optical(&root) {
+        return result;
+    }
     let extents = open_device(root.trim_end_matches('\\'))
         .and_then(|file| growing_query(&file, 0x0056_0000))
         .and_then(|bytes| {
@@ -574,6 +580,14 @@ fn volume(root: String, windows: Option<&str>) -> VolumeInventory {
             .push(error(&root, "volume disk extents", value, false)),
     }
     result
+}
+
+/// Whether Windows says this root (a drive letter's or a volume's, with its
+/// trailing backslash) is an optical drive: a disc, or a mounted disc image.
+pub(super) fn optical(root: &str) -> bool {
+    const DRIVE_CDROM: u32 = 5;
+    // SAFETY: the root is a NUL-terminated string that outlives the call.
+    unsafe { GetDriveTypeW(wide(root).as_ptr()) == DRIVE_CDROM }
 }
 
 fn windows_volume() -> io::Result<String> {

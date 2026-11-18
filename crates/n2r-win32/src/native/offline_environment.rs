@@ -15,6 +15,9 @@ pub use super::partition_isolation::offline::{
 pub use super::partition_isolation::offline::{
     OfflinePreparedTerminalGuard, OfflinePreparedTerminalReceipt, OfflineTerminalReadonlyVolume,
 };
+pub use super::partition_isolation::offline::{
+    give_back_prepared_source_offline, open_journal_volume_for_cancellation,
+};
 use super::{NativeEvent, control, device_file};
 use crate::general_layout::GeneralDiskBinding;
 use serde::{Deserialize, Serialize};

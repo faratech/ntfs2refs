@@ -50,6 +50,11 @@ param(
     [string]$ReferenceVm = 'ntfs2refs-reference-isolated',
     [string[]]$DataVm = @('ntfs2refs-reference-b', 'ntfs2refs-reference-c'),
     [string]$ServerVm = 'ntfs2refs-server2025',
+    # The most memory a lab VM is given, in GB. 24 is what the full Windows
+    # volume is timed with; a host that shares its memory with other work
+    # runs the round with less (12), slower, so that the other work's swings
+    # do not end it (two rounds were lost to them on 17 and 18 November).
+    [ValidateRange(8, 64)][int]$MaxVmGB = 24,
     [string]$ServerCredentialPath
 )
 $ErrorActionPreference = 'Stop'
@@ -102,6 +107,7 @@ function Get-ExpectedBootOutcome([hashtable]$arguments) {
 }
 function Get-ExpectedDataOutcome([string]$arguments) {
     if ($arguments -match '-ExpectRefusal\b') { return 'refused-as-expected' }
+    if ($arguments -match '-PowerOffDuringPreparation\b') { return 'preparation-cancelled-after-power-off' }
     if ($arguments -match '-StopDuringPreparation\b') { return 'preparation-cancelled' }
     if ($arguments -match '-Diagnose\b') { return 'diagnose-clean' }
     if ($arguments -match '-InterruptAt\b') {
@@ -119,7 +125,7 @@ $fixtureRuns = @(
     @{ Name = 'apply-mid-rollback'; Arguments = $fixture40 + @{ InterruptAt = 'apply-mid-ranges'; RecoverMode = 'rollback' } }
     @{ Name = 'handoff-sealed-resume'; Arguments = $fixture40 + @{ InterruptAt = 'handoff-sealed' } }
 )
-$fullRun = @{ Name = 'full-system'; Arguments = @{} }
+$fullRun = @{ Name = 'full-system'; Arguments = @{ MemoryGB = $MaxVmGB } }
 
 $lived = '-Content lived-in -DirectoryEntries 4000'
 $dataCases = @(
@@ -162,6 +168,23 @@ $dataCases = @(
     'links|-Content minimal -Features links -Check'
     'bigdir|-Content minimal -Features bigdir -Check'
     'casemark|-Content minimal -Features casemark -Check'
+    # What the Windows Subsystem for Linux leaves on a volume, and names
+    # that Win32 does not take and the file systems hold.
+    'wsl|-Content minimal -Features wsl -Check'
+    'names|-Content minimal -Features names -Check'
+    # MBR disks: the volume alone on one, the working directory on one, both
+    # with a run interrupted half way through the writes and resumed; and a
+    # volume that shares an MBR disk, which is refused with what to do.
+    'mbr-src|-SourceMbr -Check'
+    'mbr-work|-WorkingMbr -Check'
+    'mbr-apply-mid-resume|-SourceMbr -WorkingMbr -InterruptAt apply-mid-ranges'
+    'mbr-beside|-SourceMbr -MbrBeside -ExpectRefusal is.MBR.and.holds'
+    # The machine turned off while the converter prepares, then the
+    # cancellation in the Windows that starts again.
+    "power-off-supply-cancel|$lived -StopDuringPreparation payload_supply -PowerOffDuringPreparation"
+    # Memory taken away from a run that fits itself to the machine: it has
+    # to go on and convert.
+    'files-100k-memory-taken|-Content minimal -Features manyfiles -FileCount 100000 -TakeMemoryMB 3000 -TimeoutMinutes 25'
     'shortnames|-Content minimal -Features shortnames -Check -ExpectRefusal short-names.drop'
 )
 $serverCases = @(
@@ -219,7 +242,8 @@ function Stop-RoundVm([string]$name) {
 # gigabyte to spare for what changes meanwhile, and each one before it
 # takes its 8 GB and half a gigabyte more.
 function Get-FreeGB { (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB }
-function Get-DataVmCount([double]$freeGB) { [math]::Max(0, [math]::Min($DataVm.Count, [math]::Floor(($freeGB - 2.5) / 8.5))) }
+# (The host keeps 8 GB, as the attempts themselves hold it to: counting 2.5 GB had a second data VM start its attempt and wait for memory the fixtures held.)
+function Get-DataVmCount([double]$freeGB) { [math]::Max(0, [math]::Min($DataVm.Count, [math]::Floor(($freeGB - 8) / 8.5))) }
 
 $fixtureJob = $null
 try {
@@ -231,9 +255,13 @@ try {
             # (A running VM costs the host a gigabyte or two beyond what it
             # is given.)
             $beside = 5 + 8 * $DataVm.Count
-            $referenceGB = [math]::Floor([math]::Min(24, $free - $beside))
-            if ($referenceGB -lt 16) { $referenceGB = [math]::Floor([math]::Min(24, $free * 0.8)) }
+            $referenceGB = [math]::Floor([math]::Min($MaxVmGB, $free - $beside))
+            # Too little for both at once: the reference VM takes what is
+            # free less the host's 8 GB, and the data cases wait for it.
+            if ($referenceGB -lt [math]::Min(16, $MaxVmGB)) { $referenceGB = [math]::Floor([math]::Max(8, [math]::Min($MaxVmGB, $free - 8))) }
             foreach ($run in $fixtureRuns) { $run.Arguments = $run.Arguments + @{ MemoryGB = [int]$referenceGB } }
+        } else {
+            foreach ($run in $fixtureRuns) { $run.Arguments = $run.Arguments + @{ MemoryGB = $MaxVmGB } }
         }
         Say ('fixtures and interrupted runs on {0} ({1:N1} GB of host memory free)' -f $ReferenceVm, $free)
         $fixtureJob = Start-Job -ScriptBlock $bootChain -ArgumentList $boot, $fixtureRuns, $Prefix, $vms[$ReferenceVm].Id.Guid, $binary, $manifest, $logs
@@ -254,7 +282,13 @@ try {
             Stop-RoundVm $ReferenceVm
             $count = Get-DataVmCount (Get-FreeGB)
         }
-        if ($count -eq 0) { throw ('{0:N1} GB of host memory are free: a data VM needs 10' -f (Get-FreeGB)) }
+        # Too little memory is no failure of the round: it waits for it.
+        for ($waited = 0; $count -eq 0 -and $waited -lt 240 * 60; $waited += 30) {
+            if ($waited % 600 -eq 0) { Say ('{0:N1} GB of host memory are free and a data VM needs 10: waiting' -f (Get-FreeGB)) }
+            Start-Sleep -Seconds 30
+            $count = Get-DataVmCount (Get-FreeGB)
+        }
+        if ($count -eq 0) { throw ('{0:N1} GB of host memory are free after four hours of waiting: a data VM needs 10' -f (Get-FreeGB)) }
         $used = @($DataVm | Select-Object -First $count)
         $number = 0
         foreach ($name in $used) {
@@ -262,7 +296,7 @@ try {
             # 8 GB is enough for every data-volume case; a VM that has the
             # memory to itself gets up to 12.
             $free = Get-FreeGB
-            $give = if ($count -eq 1) { [math]::Floor([math]::Max(8, [math]::Min(12, $free * 0.8))) } else { 8 }
+            $give = if ($count -eq 1) { [math]::Floor([math]::Max(8, [math]::Min(12, $free - 8))) } else { 8 }
             Say ('control OS up on {0} with {1} GB ({2:N1} GB free)' -f $name, $give, $free)
             $control = "$Prefix-control-$number"
             & $boot -Name $control -NoConvert -KeepScratch -MemoryGB $give -VmId $vms[$name].Id.Guid -Binary $binary -ManifestBinary $manifest *> (Join-Path $logs "$control.log")

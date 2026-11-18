@@ -1,6 +1,6 @@
 # Operating and recovery guide
 
-For ntfs2refs 0.3.0-beta.1. [The README](../README.md) says what the tool is;
+For ntfs2refs 0.4.0. [The README](../README.md) says what the tool is;
 this guide says how to run it, what it refuses and why, and what to do if a
 run stops. What the lab has shown is in the [feature matrix](feature-matrix.md)
 and the [recovery matrix](recovery-matrix.md).
@@ -20,9 +20,11 @@ and the [recovery matrix](recovery-matrix.md).
    volume that takes only the space its contents need, and keeps there the
    old content of every sector it changes. Leave it alone until the
    conversion has finished and you have looked at the result.
-4. **The volume's layout.** A data volume has to be on a GPT disk that is not
-   the disk of the running Windows. The disk may hold other partitions; they
+4. **The volume's layout.** A data volume has to be on a disk that is not
+   the disk of the running Windows. A GPT disk may hold other partitions; they
    [go offline with it](#a-disk-with-other-partitions) while the run lasts.
+   On an MBR disk the volume has to be the disk's one partition. The working
+   directory may be on a GPT or an MBR disk.
 
 The lab's Windows volume, with 22.9 GB in use in 191,000 files and
 directories, took 28 minutes, about 30 GB of working storage and 2.1 GB of
@@ -37,8 +39,8 @@ bounds: see [how large a volume can be](#how-large-a-volume-can-be).
 
 It lists every disk and partition and says for each NTFS partition whether a
 conversion would take it and, if not, why: it is the running Windows, shares
-its disk with it, or is on a disk that is not GPT. For a volume on a disk
-with other partitions it says how many go offline with it. Each volume is
+its disk with it, or shares an MBR disk with other partitions. For a volume
+on a GPT disk with other partitions it says how many go offline with it. Each volume is
 shown with its serial number.
 
 Windows reports a volume encrypted with BitLocker as NTFS. From an elevated
@@ -252,9 +254,6 @@ when:
   system partition: as a data volume it would no longer start. That is what
   [`--windows-boot-volume`](#convert-an-installed-windows) is for.
 
-`--whole-image-verification` and `--experimental-thin-shadow` take a volume
-on a disk of its own.
-
 ### The target
 
 - **Cluster size.** 4 KiB by default, or 64 KiB with
@@ -315,7 +314,7 @@ Refused before anything is written, each with what was found and what to do:
 | A shadow-copy provider of backup software (any but Windows' own, Hyper-V's and Windows Server's for remote file shares) that holds a shadow copy on the machine, or does not answer when Windows asks it | The provider is named, and the shadow copy. Delete its shadow copies or let the backup that made them finish; a provider that does not answer has to be repaired or removed |
 | EFS-encrypted files | `cipher /d` |
 | Files with the TEMPORARY or OFFLINE attribute | Clear the attribute, or move the files |
-| Cloud placeholders, `compact /exe` files, Data Deduplication, WSL files | The kind is named, with the record number to find the file by |
+| Cloud placeholders, `compact /exe` files, Data Deduplication | The kind is named, with the record number to find the file by |
 | A named data stream on a directory | Remove the stream |
 | Disk quotas in use | `fsutil quota disable E:` and delete the entries |
 | Two names in one directory that differ only by case (both are given) | Rename one of them, then `fsutil file setCaseSensitiveInfo <directory> disable` |
@@ -344,23 +343,100 @@ the memory it may use, two thirds of what is free when it starts. What it
 holds there for every file and directory until the conversion is complete
 sets the limit: 400 MiB of free memory and about 15 KiB for every file
 (1.8 GiB for 100,000 files, 7.5 GiB for 500,000). `--check`, and the reading a run makes
-before it asks, give that figure and refuse a volume the free memory is not
-enough for before anything is built.
+before it asks, give that figure.
+
+**A run fits itself to the memory there is.** With less free than the figure,
+it goes ahead and says that it will be slower: what it cannot do without and
+cannot hold in its share of the free memory comes from the page file. The
+same happens when other programs take memory while it runs. It does not stop
+for that; it stops for memory only where Windows has no more to give, memory
+and page file together, and then with the volume unchanged or with the
+recovery command it printed. Closing other programs before a run makes it
+faster.
+
+What a run holds only to go faster follows the machine while it runs. A few
+times a second it looks at the memory Windows has available: where more has
+become free it uses it, and where another program has taken memory it gives
+its caches back, those it used longest ago first, so that a tenth of the
+machine's memory (at least 1 GiB) stays free and Windows does not have to
+page for them. A run with `--memory-limit` keeps to its limit instead.
 
 What a run holds in memory only to go faster (stores it looks things up in,
 objects it has decoded) it gives back when the memory is needed for
 something it cannot do without, what it used longest ago first. It is
-slower for that, and its last lines say that this happened. A run that stops
-for memory all the same says which reservations were the largest, and every
-run prints how high its reservations went and, step by step, what held them
-(`memory-steps:`).
+slower for that, and its last lines say that this happened, and how far it
+went beyond the memory it set aside at its start (`memory-beyond:`). A run
+that stops for memory all the same says which reservations were the largest,
+and every run prints how high its reservations went and, step by step, what
+held them (`memory-steps:`).
 
 `--memory-limit <MiB>` sets the most memory a run may use, where it would
 otherwise use up to two thirds of what is free: for a machine that has to
 keep memory for something else, or to see how a volume does with little. A
-run with less memory holds less in memory and takes longer. A limit below
-what the volume needs is refused before anything is built, and the refusal
-says what the limit would have to be. A recovery takes the option too.
+run with less memory holds less in memory and takes longer. A limit is a
+ceiling: a run given one does not go beyond it, so a limit below what the
+volume needs is refused before anything is built, and the refusal says what
+the limit would have to be. A recovery takes the option too.
+
+## A partition on the Windows disk
+
+A data partition that shares its disk with the running Windows (a `D:` beside
+`C:`) cannot be converted while Windows runs: a conversion takes the disk
+offline. It is converted through a restart. `--list` says "convertible
+through a restart" of such a partition.
+
+```
+ntfs2refs --drive D --restart-media E:\ --scratch-directory S:\runs
+```
+
+What it needs beside what every conversion needs:
+
+- **Windows installation media** at `--restart-media`: a mounted ISO, a DVD
+  or a USB stick of this Windows, in English (United States). The run makes a
+  minimal Windows from it that holds the converter, and starts the machine
+  from that once.
+- **`ntfs2refs-recovery.exe`** beside `ntfs2refs.exe`: it is what runs in the
+  minimal Windows. A release holds both.
+- **The working directory on an NTFS volume of another disk**, a USB disk
+  for example. It stays connected until Windows is back.
+- **A GPT disk, UEFI and Secure Boot on.** The run changes no firmware
+  setting; it adds its own entry to Windows' boot configuration and removes
+  the selection again.
+
+What happens:
+
+1. In Windows the run builds the new file system and its recovery records in
+   the working directory, marks the partition read-only so that nothing
+   changes it any more, makes the minimal Windows and selects it for the next
+   start. This is the long part: minutes for a small volume.
+2. It says so, prints how to cancel, and restarts the machine.
+3. The minimal Windows starts, converts the partition (under a minute for a
+   small volume in the lab), puts Windows' own boot selection back and
+   restarts.
+4. Windows starts with the partition as ReFS under its drive letter.
+
+**Ways back.** Until the conversion itself has started, nothing has been
+written to the partition, and it is given back as the NTFS volume it was:
+
+- A run that fails in Windows after it marked the partition read-only gives
+  it back by itself and says so with the error.
+- Before the restart, or if the machine was started into Windows some other
+  way: `ntfs2refs --recover "<the run's folder>" --rollback`, the line the
+  run printed. `--recover` without `--rollback` says what state the run is
+  in.
+- If the minimal Windows cannot start the conversion (the disk is not as it
+  was recorded, for example), it puts the machine back by itself and Windows
+  starts with the partition as NTFS.
+
+Once the conversion has started, the way is forward: if the machine is
+switched off or loses power meanwhile, it returns to the minimal Windows at
+the next start, which asks whether to go on (R) or to put NTFS back (B).
+
+The lab converted such a partition on Windows Server 2025, and cancelled runs
+at each of these points with the volume listing exactly as before. It has
+not run this route on Windows 11, on a physical machine, with BitLocker on
+the Windows volume, or interrupted while it converts; `ntfs2refs
+capabilities` says the same.
 
 ## Convert an installed Windows
 
@@ -393,6 +469,24 @@ What is different on a converted Windows volume:
   `C:\Program Files`. The links are visible in Explorer and in `dir`.
 - **Object IDs, NTFS compression and the change journal**, as for a data
   volume.
+
+What Windows' own recovery and repair tools made of the converted Windows in
+the lab (build 26300, release 0.4.0):
+
+- **The recovery environment (WinRE)** stays where Windows put it, on the
+  recovery partition, which is NTFS and which the conversion does not touch.
+  `reagentc /info` reports it enabled, and the machine started into it
+  (`reagentc /boottore`) and showed its menu.
+- **Windows Setup** from the installation media of the same build found
+  nothing that blocks an upgrade (`setup.exe /Compat ScanOnly`), and an
+  in-place repair upgrade (`setup.exe /Auto Upgrade`) completed: Windows was
+  installed again over itself in a quarter of an hour, on ReFS, and afterwards
+  `sfc` found nothing, no ReFS error was logged, and the short-name links
+  still led where they did.
+
+Microsoft documents starting Windows from ReFS for some builds only, and the
+lab has shown this one build. Keep a backup before a repair upgrade as before
+any.
 
 ## If a run stops
 
@@ -529,6 +623,7 @@ differences it accepts.
 | `--target-format dev-drive\|standard` | How Windows formats the new file system; standard is the default on Windows Server, dev-drive elsewhere |
 | `--short-names refuse\|drop` | What to do with a data volume's 8.3 short names: refuse the volume (the default), or convert without them and keep a list |
 | `--windows-boot-volume` | The volume is an installed Windows that is not running |
+| `--restart-media <dir>` | Windows installation media, for a partition on the disk of the running Windows: it is converted through a restart |
 | `--recover <dir> --recovery-sha256 <sum>` `[--rollback]` | Finishes, or undoes, an interrupted run |
 | `--yes` `--volume-serial XXXX-XXXX` | Runs without asking; see below |
 | `--verify-full-content` | Reads and hashes the complete contents of every stream |
@@ -600,11 +695,9 @@ moves are not undone if the run stops; a rollback then restores files and
 metadata but not what unused space held. It is refused on a volume with shadow
 copies. The lab's matrices do not cover it.
 
-Earlier designs of the converter are still in the executable and are no longer
-listed by `--help`: `--whole-image-verification` (which compares and journals
-every byte of the volume and is limited to 1,024 files, 256 directories and
-4,096 NTFS runs), `--offline-media`, and the subcommands that work from request
-files (`convert`, `resume`, `rollback`, `finalize`, `plan` and others).
-`ntfs2refs capabilities` names them. They are kept so that the records of
-earlier builds can still be read; nothing in this guide or in the matrices is
-about them. [docs/history](history/README.md) holds their documents.
+The routes and commands of earlier designs
+were removed with 0.4.0: `--whole-image-verification`, the thin temporary
+storage of `--experimental-thin-shadow`, and the subcommands that worked from
+request files and raw images (`convert`, `resume`, `rollback`, `finalize`,
+`plan` and others). The tag `archive/hidden-routes` keeps them, and
+[docs/history](history/README.md) holds their documents.

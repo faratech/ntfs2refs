@@ -1,7 +1,6 @@
 //! One byte-size contract for selected conversion and its recovery inputs.
 //! These are metadata resource ceilings, never source or replay authority.
 use anyhow::{Result, ensure};
-use serde::Serialize;
 use std::{fs::OpenOptions, io::Write, os::windows::fs::OpenOptionsExt, path::Path};
 
 #[derive(Clone, Copy)]
@@ -34,17 +33,6 @@ impl Artifact {
             Self::Verification => "verification.json",
             Self::PayloadMap => "recovery-payload-manifest.json",
         }
-    }
-
-    /// The same limit is checked before fresh activation and when reopening
-    /// recovery inputs. Oversize serialization refuses before file creation.
-    pub(crate) fn save(self, root: &Path, value: &impl Serialize) -> Result<String> {
-        crate::general_qualification::save_bounded(
-            root,
-            self.filename(),
-            value,
-            self.maximum_bytes(),
-        )
     }
 
     /// Copy authenticated input bytes without reserializing or changing pins.

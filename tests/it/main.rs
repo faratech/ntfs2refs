@@ -48,7 +48,6 @@ mod refs_inspection;
 mod refs_node;
 mod refs_virtual_roots;
 mod refs_write_set;
-mod retained_compare;
 mod rollback_completion_faults;
 mod shadow_tree;
 mod source_volume_label;

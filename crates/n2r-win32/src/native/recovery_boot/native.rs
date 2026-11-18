@@ -401,8 +401,14 @@ fn verify_option(option: &[u8], efi: &EfiIdentity) -> io::Result<()> {
                     units.last() == Some(&0)
                         && !units[..units.len() - 1].contains(&0)
                         && String::from_utf16(&units[..units.len() - 1])
-                            .map_err(io::Error::other)?
-                            .eq_ignore_ascii_case(r"\EFI\Microsoft\Boot\bootmgfw.efi"),
+                            .map(|path| {
+                                // The boot manager under its own name, or
+                                // under the name every firmware falls back
+                                // to, where Windows' setup put a copy of it.
+                                path.eq_ignore_ascii_case(r"\EFI\Microsoft\Boot\bootmgfw.efi")
+                                    || path.eq_ignore_ascii_case(r"\EFI\BOOT\BOOTX64.EFI")
+                            })
+                            .map_err(io::Error::other)?,
                     "firmware didnotload native source ESP Bootmgfw",
                 )?;
                 file = true;
@@ -415,9 +421,17 @@ fn verify_option(option: &[u8], efi: &EfiIdentity) -> io::Result<()> {
         }
         at += n;
     }
+    // An entry that names a partition has to name the Windows disk's EFI
+    // partition, and one that names a file the boot manager on it: both
+    // were checked above. An entry that names neither is a device the
+    // firmware starts from (a disk as a whole: what a virtual machine has
+    // whose Windows was put on its disk as an image, and a PC whose boot
+    // entries were reset). The running Windows was started through it, it
+    // is first in the boot order and nothing is set for the next start
+    // alone, so the next start takes the same way to the same boot manager.
     need(
-        hd && file && ended,
-        "complete native Windows firmware device/file path absent",
+        ended && (hd || !file),
+        "the firmware's boot entry names a file and no partition to find it on",
     )
 }
 #[derive(Clone)]

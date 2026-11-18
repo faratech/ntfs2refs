@@ -41,6 +41,81 @@ fn input(path: PathBuf, source: &GeneralDiskBinding) -> Result<RecoveryImageInpu
     })
 }
 
+/// The languages a `sources\\lang.ini` of installation media lists as its
+/// setup environment's: the keys of its `[Available UI Languages]` section.
+fn setup_languages(lang_ini: &str) -> Vec<String> {
+    let mut inside = false;
+    let mut languages = Vec::new();
+    for line in lang_ini.lines().map(str::trim) {
+        if line.starts_with('[') {
+            inside = line.eq_ignore_ascii_case("[Available UI Languages]");
+        } else if inside && !line.is_empty() && !line.starts_with(';') {
+            let name = line.split('=').next().unwrap_or(line).trim();
+            if !name.is_empty() {
+                languages.push(name.to_owned());
+            }
+        }
+    }
+    languages
+}
+
+/// What is wrong with media whose setup environment has these languages,
+/// if anything. The recovery environment is built from that environment
+/// and prints its boot configuration (`bcdedit`) in its language; only the
+/// English output is understood, and the conversion ends by reading it to
+/// put the machine's boot selection back. Media that does not say (no
+/// list) is not refused here.
+fn setup_language_refusal(languages: &[String], media: &Path) -> Option<String> {
+    if languages.is_empty()
+        || languages
+            .iter()
+            .any(|language| language.eq_ignore_ascii_case("en-US"))
+    {
+        return None;
+    }
+    Some(format!(
+        "the installation media in {} sets Windows up in {} and not in English (United States) (its sources\\lang.ini): the recovery environment built from it would print the boot configuration in that language, which this conversion cannot read to put the machine's boot selection back. Use en-US installation media. Nothing was changed.",
+        media.display(),
+        languages.join(", ")
+    ))
+}
+
+/// Checked before the question is asked and long before anything changes.
+fn require_english_setup_media(media: &Path, working: &Path) -> Result<()> {
+    let path = media.join("sources").join("lang.ini");
+    let bytes = match fs::metadata(&path) {
+        Err(error) if matches!(error.raw_os_error(), Some(2 | 3)) => return Ok(()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("looking for {}", path.display()));
+        }
+        Ok(metadata) => {
+            let limit = resource_native::observe_available_resources(working)?
+                .available_physical_bytes
+                / 64;
+            ensure!(
+                metadata.len() <= limit,
+                "{} is {} bytes, more than the {limit} bytes this run may hold of it. Nothing was changed.",
+                path.display(),
+                metadata.len()
+            );
+            fs::read(&path).with_context(|| format!("reading {}", path.display()))?
+        }
+    };
+    let text = if bytes.starts_with(&[0xff, 0xfe]) {
+        let units: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        String::from_utf16_lossy(&units)
+    } else {
+        String::from_utf8_lossy(&bytes).into_owned()
+    };
+    match setup_language_refusal(&setup_languages(&text), media) {
+        Some(refusal) => anyhow::bail!(refusal),
+        None => Ok(()),
+    }
+}
+
 pub(super) fn convert(
     args: &DriveArgs,
     selected: PartitionSelection,
@@ -56,10 +131,7 @@ pub(super) fn convert(
         "shared conversion requires the actual readonly NTFS/current-Windows-disk route"
     );
     ensure!(
-        !args.whole_image_verification
-            && !args.experimental_thin_shadow
-            && args.experimental_thin_backing_bytes.is_none()
-            && args.controlled_post_flush_pause_nonce.is_none()
+        args.controlled_post_flush_pause_nonce.is_none()
             && !args.acknowledge_controlled_post_flush_pause,
         "offline shared conversion uses the native allocation-bounded shadow protocol"
     );
@@ -95,6 +167,7 @@ pub(super) fn convert(
         .offline_recovery_media
         .as_ref()
         .context("Windows installation-media directory required")?;
+    require_english_setup_media(media, parent)?;
     let wim_path = media.join("sources/boot.wim");
     let sdi_path = media.join("boot/boot.sdi");
     let runner_path = std::env::current_exe()?
@@ -251,27 +324,95 @@ pub(super) fn convert(
         tool_timeout_milliseconds: 120_000,
     };
     println!("Conversion and recovery records: {}", output.display());
+    let run = output.clone();
     let worker = std::thread::Builder::new()
         .name("public-shared-offline-workflow".into())
         .stack_size(resource_partition_alpha::WORKER_STACK_BYTES)
         .spawn(move || prepare_and_arm_shared_conversion(request, &output, image, boot, true))?;
-    let receipt = worker.join().map_err(|_| {
-        anyhow::anyhow!("shared workflow panicked; preserve its artifacts and actual protection")
-    })??;
+    // A failure of the workflow has already been taken back by it, and its
+    // error says what became of the volume. A workflow that panicked is
+    // taken back here, from the records it left.
+    let receipt = match worker.join() {
+        Ok(result) => result?,
+        Err(_) => {
+            return Err(resource_partition_alpha::after_failure_in_windows(
+                &run,
+                anyhow::anyhow!("the conversion's preparation stopped unexpectedly (a panic)"),
+            ));
+        }
+    };
     println!(
         "Persistent recovery selected; intent SHA256: {}",
         hex::encode(receipt.intent_sha256)
     );
+    for line in resource_partition_alpha::before_restart_lines(&run) {
+        println!("{line}");
+    }
     use std::io::Write;
     std::io::stdout().flush()?;
-    let (windows_root, _) = native_windows_route()?;
-    let exit = std::process::Command::new(windows_root.join("Windows/System32/shutdown.exe"))
-        .args(["/r", "/t", "0"])
-        .creation_flags(0x0800_0000)
-        .status()?;
-    ensure!(
-        exit.success(),
-        "restart request failed; recovery selection remains installed; restart normally to continue"
-    );
+    if n2r_win32::lab_fail::is_armed(n2r_win32::lab_fail::RESTART_SKIP_REBOOT) {
+        // Laboratory only: everything is done and selected; the restart is
+        // left to the harness.
+        println!(
+            "{{\"kind\":\"lab-fail-v1\",\"point\":\"{}\",\"pid\":{}}}",
+            n2r_win32::lab_fail::RESTART_SKIP_REBOOT,
+            std::process::id()
+        );
+        println!(
+            "The restart was not requested (--lab-fail-at restart-skip-reboot). The conversion starts at the next restart."
+        );
+        return Ok(0);
+    }
+    let restart = (|| -> Result<()> {
+        let (windows_root, _) = native_windows_route()?;
+        let exit = std::process::Command::new(windows_root.join("Windows/System32/shutdown.exe"))
+            .args(["/r", "/t", "0"])
+            .creation_flags(0x0800_0000)
+            .status()?;
+        ensure!(
+            exit.success(),
+            "the restart request failed (shutdown.exe ended with {exit})"
+        );
+        Ok(())
+    })();
+    // A restart that was not issued leaves a run that would start at some
+    // later restart nobody asked for: it is taken back like any other
+    // failure before the restart.
+    restart.map_err(|cause| resource_partition_alpha::after_failure_in_windows(&run, cause))?;
     Ok(0)
+}
+
+#[cfg(test)]
+mod setup_media_tests {
+    use super::*;
+
+    #[test]
+    fn media_whose_setup_environment_is_not_english_is_refused_before_anything_changes() {
+        let english = "[Available UI Languages]\r\nen-US = 3\r\n\r\n[Fallback Languages]\r\nen-US = en-us\r\n";
+        assert_eq!(setup_languages(english), ["en-US"]);
+        let media = Path::new("E:\\");
+        assert_eq!(
+            setup_language_refusal(&setup_languages(english), media),
+            None
+        );
+        let german =
+            "; setup\n[Available UI Languages]\nde-DE = 3\n[Fallback Languages]\nde-DE = en-us\n";
+        assert_eq!(setup_languages(german), ["de-DE"]);
+        let refusal = setup_language_refusal(&setup_languages(german), media).unwrap();
+        assert!(
+            refusal.contains("E:\\")
+                && refusal.contains("de-DE")
+                && refusal.contains("lang.ini")
+                && refusal.contains("Nothing was changed"),
+            "{refusal}"
+        );
+        // Media with English among several, and media that does not say.
+        let both = "[available ui languages]\nde-DE = 3\nEN-us = 3\n";
+        assert_eq!(setup_language_refusal(&setup_languages(both), media), None);
+        assert_eq!(
+            setup_language_refusal(&setup_languages("[Other]\nx = 1\n"), media),
+            None
+        );
+        assert_eq!(setup_language_refusal(&[], media), None);
+    }
 }

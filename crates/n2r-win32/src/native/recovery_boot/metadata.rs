@@ -1602,8 +1602,27 @@ pub(super) fn available_efi(
             && state.binding.storage.identity.disk_guid == expected.binding.identity.disk_guid,
         "actual closed-terminal source disk must be available before EFI publication",
     )?;
+    published_efi(
+        expected,
+        &state.actual.gpt.native_layout,
+        memory_bytes,
+        ram_root,
+        ram_backing,
+        events,
+    )
+}
+/// The same resolution from the native layout of the EFI partition's disk
+/// alone. Its callers say why that disk is available: a closed conversion's
+/// source owner above, or the cancellation of one that never started.
+pub(super) fn published_efi(
+    expected: &EfiIdentity,
+    rows: &[u8],
+    memory_bytes: u64,
+    ram_root: &str,
+    ram_backing: &crate::native::offline_environment::kernel_ram_backing::KernelRamBackingFacts,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<EfiIdentity> {
     let id = layout::guid_bytes(&expected.binding.identity.partition_guid)?;
-    let rows = &state.actual.gpt.native_layout;
     need(
         rows.len() >= 48
             && (rows.len() - 48).is_multiple_of(144)

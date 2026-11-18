@@ -509,6 +509,34 @@ fn same_file_copy(from: &Path, to: &Path, max: u64) -> io::Result<()> {
         "mounted-image copy readback differs",
     )
 }
+/// What the runner exits with when it stopped before the conversion started
+/// and put the machine back: normal boot selection, the volume NTFS as it
+/// was. The start script restarts into Windows on it, as it does on zero.
+pub const RUNNER_EXIT_RETURNED_TO_NTFS: u8 = 10;
+// Preserve failure in the recovery console. Exiting winpeshl's only app
+// could otherwise reboot and accidentally retry an unqualified state.
+// Reboot is requested only after the Rust runner actually returns zero, or
+// the one code that says it cancelled an unstarted conversion and restored
+// the normal boot selection itself.
+const STARTUP_TAIL: &str = concat!(
+    "\r\nset \"N2R_EXIT=%ERRORLEVEL%\"\r\n",
+    "if \"%N2R_EXIT%\"==\"10\" goto n2r_returned\r\n",
+    "if not \"%N2R_EXIT%\"==\"0\" goto n2r_failed\r\n",
+    "\"%SystemRoot%\\System32\\wpeutil.exe\" Reboot\r\n",
+    "echo Restart request returned. Restart normally when ready.\r\n",
+    "goto n2r_console\r\n",
+    ":n2r_returned\r\n",
+    "echo The conversion was cancelled before anything was written to the volume. Windows starts again now.\r\n",
+    "\"%SystemRoot%\\System32\\wpeutil.exe\" Reboot\r\n",
+    "echo Restart request returned. Restart normally when ready.\r\n",
+    "goto n2r_console\r\n",
+    ":n2r_failed\r\n",
+    "echo Conversion stopped. Preserve recovery artifacts and review the error above.\r\n",
+    ":n2r_console\r\n",
+    "\"%SystemRoot%\\System32\\cmd.exe\" /d /k\r\n",
+    "exit /b %N2R_EXIT%\r\n"
+);
+const _: () = assert!(RUNNER_EXIT_RETURNED_TO_NTFS == 10);
 fn startup(args: &[String], bundle: [u8; 32]) -> io::Result<Vec<u8>> {
     need(
         args.len() <= 64 && args.iter().map(String::len).sum::<usize>() <= 8192,
@@ -537,10 +565,7 @@ fn startup(args: &[String], bundle: [u8; 32]) -> io::Result<Vec<u8>> {
         cmd.extend(std::iter::repeat_n('\\', trailing));
         cmd.push('"');
     }
-    // Preserve failure in the recovery console. Exiting winpeshl's only app
-    // could otherwise reboot and accidentally retry an unqualified state.
-    // Reboot is requested only after the Rust runner actually returns zero.
-    cmd.push_str("\r\nset \"N2R_EXIT=%ERRORLEVEL%\"\r\nif not \"%N2R_EXIT%\"==\"0\" goto n2r_failed\r\n\"%SystemRoot%\\System32\\wpeutil.exe\" Reboot\r\necho Restart request returned. Restart normally when ready.\r\ngoto n2r_console\r\n:n2r_failed\r\necho Conversion stopped. Preserve recovery artifacts and review the error above.\r\n:n2r_console\r\n\"%SystemRoot%\\System32\\cmd.exe\" /d /k\r\nexit /b %N2R_EXIT%\r\n");
+    cmd.push_str(STARTUP_TAIL);
     Ok(cmd.into_bytes())
 }
 fn write_bytes(p: &Path, b: &[u8]) -> io::Result<()> {
@@ -798,12 +823,10 @@ fn enrollment(
                 != layout::guid_bytes(&journal.disk.identity.disk_guid)?,
         "recovery image J must be different physical disk",
     )?;
-    need(
-        source.storage.identity.partition_bytes == 55834574848
-            && source.storage.identity.logical_sector_bytes == 512
-            && source.storage.identity.physical_sector_bytes == 4096,
-        "fixed shared52GiB source profile required",
-    )?;
+    // Any size: the partition was 52 GiB exactly in the one profile this
+    // route was first shown with, and that size was required here. What the
+    // route needs of the source is what `source.validate()` above holds it
+    // to.
     let os = full_windows(events)?;
     need(
         os == source.storage.disk_number,
@@ -1437,3 +1460,7 @@ pub fn build(
     )?;
     Ok(image)
 }
+
+#[cfg(test)]
+#[path = "recovery_image_start_tests.rs"]
+mod start_tests;

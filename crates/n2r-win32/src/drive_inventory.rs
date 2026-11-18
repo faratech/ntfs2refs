@@ -311,6 +311,17 @@ pub fn is_bitlocker_boot_sector(bytes: &[u8]) -> bool {
     bytes.get(3..11) == Some(b"-FVE-FS-")
 }
 
+/// Whether a root such as `E:\` is an optical drive: a disc, or a mounted
+/// disc image. Such a volume lies on no disk and is never a source.
+#[cfg(windows)]
+pub fn optical_drive(root: &str) -> bool {
+    native::optical(root)
+}
+#[cfg(not(windows))]
+pub fn optical_drive(_root: &str) -> bool {
+    false
+}
+
 /// Reads the first sector of every partition that could hold an NTFS volume
 /// and records whether it is BitLocker's. Needs administrator rights; a
 /// partition that cannot be read keeps `None`. Reads only.
@@ -353,16 +364,51 @@ pub fn conversion_note(disk: &DiskInventory, partition: &PartitionInventory) -> 
     if let Some(reason) = &partition.unsupported_reason {
         return Some(format!("not convertible: {reason}"));
     }
+    if disk.contains_running_windows == Some(true) {
+        // Not while Windows runs: the route that restarts the machine
+        // takes it, on a GPT disk.
+        return Some(if disk.partition_style.as_deref() == Some("GPT") {
+            format!(
+                "convertible through a restart (--restart-media): it shares its disk with the running Windows{unchecked}"
+            )
+        } else {
+            "not convertible: it shares its disk with the running Windows, and that disk is not GPT"
+                .into()
+        });
+    }
+    if disk.partition_style.as_deref() == Some("MBR") {
+        // A primary partition of the type Windows gives NTFS, on a disk
+        // with a signature to know it by. (A logical drive, a dynamic disk
+        // and a protective entry have their own reason above.)
+        if partition.mbr_type != Some(0x07) {
+            return Some(
+                "not convertible: on an MBR disk the converter takes a primary partition of type 07 only"
+                    .into(),
+            );
+        }
+        if disk.mbr_signature.unwrap_or(0) == 0 {
+            return Some("not convertible: the MBR disk has no signature to identify it by".into());
+        }
+        let others = disk
+            .partitions
+            .iter()
+            .filter(|other| other.partition_number != partition.partition_number)
+            .count();
+        return Some(if others == 0 {
+            format!("convertible as a data volume{unchecked}")
+        } else {
+            format!(
+                "not convertible: the disk is MBR and holds {others} other partition(s); on an MBR disk the converter takes a volume that has the disk to itself"
+            )
+        });
+    }
     if disk.partition_style.as_deref() != Some("GPT") {
         return Some(format!(
-            "not convertible: the disk is {}, and the converter takes GPT disks only",
+            "not convertible: the disk is {}, and the converter takes GPT and MBR disks only",
             disk.partition_style
                 .as_deref()
                 .unwrap_or("of an unknown partition style")
         ));
-    }
-    if disk.contains_running_windows == Some(true) {
-        return Some("not convertible: it shares its disk with the running Windows, and a conversion takes the whole disk offline".into());
     }
     let kind = |other: &PartitionInventory| other.partition_type_guid.clone().unwrap_or_default();
     let others: Vec<String> = disk
@@ -581,8 +627,30 @@ mod tests {
                 .starts_with("convertible as a Windows boot volume")
         );
         // MBR, the running Windows and its disk, and a volume that is already ReFS.
-        let mbr = disk("MBR", vec![partition(1, BASIC, Some("NTFS"))]);
-        assert!(note(&mbr, 1).unwrap().contains("the disk is MBR"));
+        // An MBR disk: a primary NTFS partition on a signed disk converts,
+        // alone or with others beside it; other entries and an unsigned
+        // disk do not.
+        let mbr_partition = |number: u32, kind: u8| {
+            let mut entry = partition(number, BASIC, Some("NTFS"));
+            entry.partition_style = "MBR".into();
+            entry.partition_type_guid = None;
+            entry.mbr_type = Some(kind);
+            entry
+        };
+        let mut mbr = disk("MBR", vec![mbr_partition(1, 0x07)]);
+        assert!(note(&mbr, 1).unwrap().contains("no signature"));
+        mbr.mbr_signature = Some(0x1234_abcd);
+        assert_eq!(note(&mbr, 1).unwrap(), "convertible as a data volume");
+        mbr.partitions.push(mbr_partition(2, 0x07));
+        assert!(
+            note(&mbr, 1)
+                .unwrap()
+                .starts_with("not convertible: the disk is MBR and holds 1 other partition(s)")
+        );
+        mbr.partitions[1] = mbr_partition(2, 0x0c);
+        assert!(note(&mbr, 2).unwrap().contains("type 07 only"));
+        let raw = disk("RAW", vec![partition(1, BASIC, Some("NTFS"))]);
+        assert!(note(&raw, 1).unwrap().contains("the disk is RAW"));
         let mut running = disk(
             "GPT",
             vec![

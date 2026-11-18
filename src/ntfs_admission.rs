@@ -1658,7 +1658,11 @@ pub(crate) fn user_issues_with_context_alias_scope(
     if let Some(point) = &reparse {
         if (point.tag() == 0xa0000003 && !f.is_directory)
             || (!f.is_directory && (f.streams.len() != 1 || f.streams[0].logical_size != 0))
-            || crate::ntfs_extended_attributes::file_set(f).is_ok_and(|ea| !ea.is_empty())
+            // Extended attributes beside a reparse point are what the
+            // Windows Subsystem for Linux keeps owner and mode in; with any
+            // other kind of point they are not something Windows makes.
+            || (!n2r_win32::reparse_layout::is_wsl_tag(point.tag())
+                && crate::ntfs_extended_attributes::file_set(f).is_ok_and(|ea| !ea.is_empty()))
         {
             issues.push(
                 "its reparse point is of a kind the converter does not recreate, or comes with data or extended attributes".into(),

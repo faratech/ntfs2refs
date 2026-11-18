@@ -273,6 +273,8 @@ fn arm_prepared_boot_inner(
             )?
         };
         observer.checkpoint("prepared-boot-owned-image-complete", &mut events)?;
+        // Laboratory only; a no-op unless the hidden switch armed it.
+        n2r_win32::lab_fail::reached(n2r_win32::lab_fail::RESTART_AFTER_IMAGE)?;
         bundle.revalidate()?;
         source.revalidate(&mut restoration, &mut events)?;
         let boot = OwnedRecoveryBoot::install(
@@ -296,6 +298,8 @@ fn arm_prepared_boot_inner(
             "prepared-boot-receipt-durable-no-restart-issued",
             &mut events,
         )?;
+        // Laboratory only; a no-op unless the hidden switch armed it.
+        n2r_win32::lab_fail::reached(n2r_win32::lab_fail::RESTART_AFTER_ARM)?;
         Ok(receipt)
     })();
     let drained = observer.checkpoint("prepared-boot-owner-closing", &mut events);
@@ -327,7 +331,7 @@ fn decode_sha(value: &str) -> Result<[u8; 32]> {
 pub fn prepare_and_arm_shared_conversion(
     mut request: PartitionAlphaRequest,
     output: &Path,
-    mut image: RecoveryImageRequest,
+    image: RecoveryImageRequest,
     boot_budget: RecoveryBootBudget,
     acknowledge: bool,
 ) -> Result<RecoveryBootReceipt> {
@@ -409,6 +413,40 @@ pub fn prepare_and_arm_shared_conversion(
         }),
         request.maximum_evidence_bytes,
     )?;
+    // Before anything is changed: the boot configuration can be read the
+    // way the installation of the boot selection, and every way back, will
+    // have to read it. (`bcdedit` answers in the display language of
+    // Windows; the installation found that out only after the long
+    // preparation, with the source already read-only.)
+    n2r_win32::recovery_boot::require_readable_boot_configuration(
+        &output.join("boot-readable"),
+        boot_budget,
+    )?;
+    // From here on the run has a folder and its admission record, and a
+    // failure is not left as it falls: whatever the run did to the source
+    // and to the boot selection is taken back from its own records, and the
+    // error says what became of the volume (`way_back`).
+    prepare_and_arm_admitted(
+        request,
+        output,
+        output_guid,
+        image,
+        boot_budget,
+        additional,
+        acknowledge,
+    )
+    .map_err(|cause| way_back::after_failure_in_windows(output, cause))
+}
+
+fn prepare_and_arm_admitted(
+    request: PartitionAlphaRequest,
+    output: &Path,
+    output_guid: PathBuf,
+    mut image: RecoveryImageRequest,
+    boot_budget: RecoveryBootBudget,
+    additional: u64,
+    acknowledge: bool,
+) -> Result<RecoveryBootReceipt> {
     let source = request.expected_source.clone();
     let total_ram = request.total_ram_bytes;
     let evidence = request.maximum_evidence_bytes;
@@ -450,6 +488,11 @@ pub fn prepare_and_arm_shared_conversion(
         boot_budget,
         action: PreparedOfflineAction::AutoResume,
         controlled_pause_nonce: None,
+        // Present only when the hidden laboratory switch armed the point of
+        // the recovery environment.
+        lab_fail_at: n2r_win32::lab_fail::armed()
+            .filter(|point| *point == n2r_win32::lab_fail::WINPE_BEFORE_APPLY)
+            .map(str::to_owned),
     };
     save(&bootstrap, &offline_request, evidence)?;
     let mut file = OpenOptions::new()

@@ -51,15 +51,25 @@ pub struct DriveArgs {
     /// conversion has finished.
     #[arg(long, requires = "drive")]
     pub scratch_directory: Option<PathBuf>,
-    /// Mounted Windows installation-media directory for offline shared-disk
-    /// conversion. An earlier design: it needs ntfs2refs-recovery.exe, which
-    /// no release ships, and is not listed by --help.
-    #[arg(long = "offline-media", requires = "drive", hide = true)]
+    /// For a data partition on the disk of the running Windows, which cannot
+    /// be converted while Windows runs: Windows installation media of this
+    /// Windows' language (a mounted ISO, a DVD, a USB stick; its drive or
+    /// directory). The run prepares everything in Windows, restarts the
+    /// machine into a minimal Windows made from that media, converts the
+    /// partition there and returns to Windows. --scratch-directory has to be
+    /// on an NTFS volume of another disk, which stays connected until
+    /// Windows is back. Needs ntfs2refs-recovery.exe beside ntfs2refs.exe.
+    #[arg(
+        long = "restart-media",
+        alias = "offline-media",
+        value_name = "DIR",
+        requires = "drive"
+    )]
     pub offline_recovery_media: Option<PathBuf>,
     /// The volume is an installed Windows that is not running; the Windows
     /// that runs the converter is on another disk and is never converted.
     /// Admitted for the boot profiles `ntfs2refs capabilities` lists.
-    #[arg(long, requires="drive", conflicts_with_all=["offline_recovery_media","whole_image_verification","experimental_thin_shadow"])]
+    #[arg(long, requires = "drive", conflicts_with = "offline_recovery_media")]
     pub windows_boot_volume: bool,
     /// How Windows formats the new file system: dev-drive or standard. The
     /// default is standard on Windows Server and dev-drive elsewhere.
@@ -82,7 +92,10 @@ pub struct DriveArgs {
     pub target_cluster_bytes: Option<String>,
     /// Finish an interrupted run from its conversion directory, as printed
     /// in its "To recover:" line. With --rollback, undo it instead.
-    #[arg(long, requires = "recovery_sha256", conflicts_with_all = ["list", "drive", "partition", "scratch_directory"])]
+    // (The checksum is asked for where the directory is read: the folder of
+    // a run that restarts the machine is recognised by its own records and
+    // takes none.)
+    #[arg(long, conflicts_with_all = ["list", "drive", "partition", "scratch_directory"])]
     pub recover: Option<PathBuf>,
     /// The checksum printed with that directory (the SHA-256 of its
     /// recovery-envelope.json), or the preparation SHA-256 printed at the
@@ -97,22 +110,6 @@ pub struct DriveArgs {
     /// preparation that had not finished. Possible until the handoff only.
     #[arg(long, requires = "recover")]
     pub rollback: bool,
-    /// Accepted for compatibility: allocation-bounded conversion is the default.
-    #[arg(long, requires = "drive", hide = true)]
-    pub experimental_allocation_bounded: bool,
-    /// Compare and journal the complete source and ReFS images instead of only
-    /// the ranges the new ReFS allocates. Much slower; also proves that free
-    /// space is unchanged. This older route keeps fixed limits the default
-    /// route does not have: at most 1,024 files, 256 directories and 4,096
-    /// placed NTFS runs. A larger volume is refused before anything is written.
-    /// An earlier design, not listed by --help.
-    #[arg(
-        long,
-        requires = "drive",
-        conflicts_with = "experimental_allocation_bounded",
-        hide = true
-    )]
-    pub whole_image_verification: bool,
     /// Read and hash the complete contents of every stream. By default,
     /// data that stays in place is proven by the identity of its extents and
     /// only the rest is read. Slower. This changes what is checked.
@@ -123,7 +120,7 @@ pub struct DriveArgs {
     /// files on the volume through NTFS; those moves are not undone if the
     /// run stops later. Refused with --verify-full-content and on a volume
     /// with shadow copies.
-    #[arg(long, requires = "drive", conflicts_with_all = ["whole_image_verification", "verify_full_content"])]
+    #[arg(long, requires = "drive", conflicts_with = "verify_full_content")]
     pub minimize_scratch: bool,
     /// Check the volume while it stays online: nothing is frozen, formatted
     /// or written. Prints every refusal a conversion would give that the
@@ -133,10 +130,9 @@ pub struct DriveArgs {
     /// 5: the volume kept changing while it was read, so nothing is known.
     #[arg(long, requires = "drive", conflicts_with_all = [
         "list", "recover", "rollback", "diagnose", "yes",
-        "windows_boot_volume", "whole_image_verification", "minimize_scratch",
+        "windows_boot_volume", "minimize_scratch",
         "offline_recovery_media", "controlled_post_flush_pause_nonce",
-        "acknowledge_controlled_post_flush_pause", "experimental_thin_shadow",
-        "experimental_thin_backing_bytes", "lab_hold_at",
+        "acknowledge_controlled_post_flush_pause", "lab_hold_at",
     ])]
     pub check: bool,
     /// Check without converting: build the ReFS shadow, report every
@@ -147,10 +143,9 @@ pub struct DriveArgs {
     /// --check alone and a Windows boot volume is refused. Not with
     /// --minimize-scratch.
     #[arg(long, requires = "drive", conflicts_with_all = [
-        "list", "recover", "rollback", "whole_image_verification", "minimize_scratch",
+        "list", "recover", "rollback", "minimize_scratch",
         "offline_recovery_media", "controlled_post_flush_pause_nonce",
-        "acknowledge_controlled_post_flush_pause", "experimental_thin_shadow",
-        "experimental_thin_backing_bytes",
+        "acknowledge_controlled_post_flush_pause",
     ])]
     pub diagnose: bool,
     /// How many failures --diagnose lists before it stops (default 500);
@@ -170,37 +165,28 @@ pub struct DriveArgs {
     /// are checked, not what.
     #[arg(long, requires = "drive", conflicts_with_all = ["list", "recover", "rollback"])]
     pub recheck_everything: bool,
-    /// The most memory the run may use, in MiB. Without it a run uses up
-    /// to two thirds of the memory that is free when it starts. With less it
-    /// holds less in memory and takes longer; --check says what a volume
-    /// needs at least, and a limit below that is refused before anything is
-    /// built. Give a recovery the limit too if it should keep to one.
+    /// A ceiling on the memory the run may use, in MiB. Without it a run
+    /// fits itself to the machine: it takes up to two thirds of the memory
+    /// that is free when it starts and, where a volume needs more, goes on
+    /// with the page file and is slower. With a limit it never goes beyond
+    /// it: --check says what a volume needs at least, and a limit below
+    /// that is refused before anything is built. Give a recovery the limit
+    /// too if it should keep to one.
     #[arg(long, value_name = "MIB", conflicts_with = "list", value_parser = clap::value_parser!(u64).range(256..=16_777_216))]
     pub memory_limit: Option<u64>,
     /// Laboratory: sample the worker's call stack a hundred times a second
     /// and write the profile to this file. Needs the .pdb beside the executable.
     #[arg(long, hide = true, value_name = "FILE")]
     pub sample_stacks: Option<PathBuf>,
-    /// Qualification-only: use bounded thin temporary storage on the V4 route.
-    #[arg(
-        long,
-        requires = "drive",
-        conflicts_with = "whole_image_verification",
-        hide = true
-    )]
-    pub experimental_thin_shadow: bool,
-    /// Qualification-only bound on the thin provider's carrier and metadata.
-    #[arg(long, requires = "experimental_thin_shadow", hide = true)]
-    pub experimental_thin_backing_bytes: Option<u64>,
     /// Qualification-only bounded wait after actual source flush/readback.
     #[arg(long, hide = true, value_parser = parse_controlled_pause_nonce,
         requires_all = ["drive", "acknowledge_controlled_post_flush_pause"],
-        conflicts_with_all = ["list", "recover", "recovery_sha256", "rollback", "whole_image_verification", "experimental_thin_shadow", "experimental_thin_backing_bytes"])]
+        conflicts_with_all = ["list", "recover", "recovery_sha256", "rollback"])]
     pub controlled_post_flush_pause_nonce: Option<String>,
     /// Separate acknowledgement for shared-partition qualification control.
     #[arg(long, hide = true,
         requires_all = ["drive", "controlled_post_flush_pause_nonce"],
-        conflicts_with_all = ["list", "recover", "recovery_sha256", "rollback", "whole_image_verification", "experimental_thin_shadow", "experimental_thin_backing_bytes"])]
+        conflicts_with_all = ["list", "recover", "recovery_sha256", "rollback"])]
     pub acknowledge_controlled_post_flush_pause: bool,
     /// Laboratory: stop for ever at a named point of apply or handoff, so
     /// that recovery can be exercised from there. The run never completes.
@@ -211,6 +197,15 @@ pub struct DriveArgs {
     /// Laboratory: separate acknowledgement that a held run never completes.
     #[arg(long, hide = true, requires = "lab_hold_at")]
     pub acknowledge_lab_hold_never_completes: bool,
+    /// Laboratory: make a run that restarts the machine fail at a named
+    /// point, so that each way back from there can be exercised.
+    #[arg(long, hide = true, value_name = "POINT",
+        requires_all = ["drive", "offline_recovery_media", "acknowledge_lab_fail_stops_the_run"],
+        conflicts_with_all = ["list", "recover", "recovery_sha256", "rollback", "diagnose", "check", "lab_hold_at"])]
+    pub lab_fail_at: Option<String>,
+    /// Laboratory: separate acknowledgement that such a run does not convert.
+    #[arg(long, hide = true, requires = "lab_fail_at")]
+    pub acknowledge_lab_fail_stops_the_run: bool,
 }
 fn parse_controlled_pause_nonce(value: &str) -> std::result::Result<String, String> {
     if value.len() == 64
@@ -278,15 +273,11 @@ impl DriveArgs {
     /// changes the source; each of these would, or has no diagnose stop.
     pub const DIAGNOSE_REFUSES: &'static [(&'static str, &'static str)] = &[
         (
-            "--whole-image-verification",
-            "that route has no diagnose stop and would apply the conversion",
-        ),
-        (
             "--minimize-scratch",
             "it moves files on the source before preparation starts",
         ),
         (
-            "--offline-media",
+            "--restart-media",
             "that route arms a restart into the conversion",
         ),
         (
@@ -296,14 +287,6 @@ impl DriveArgs {
         (
             "--acknowledge-controlled-post-flush-pause",
             "it controls a run that writes to the source",
-        ),
-        (
-            "--experimental-thin-shadow",
-            "diagnose builds and removes only the ordinary shadow",
-        ),
-        (
-            "--experimental-thin-backing-bytes",
-            "diagnose builds and removes only the ordinary shadow",
         ),
         ("--lab-hold-at", "it stops a run that writes to the source"),
     ];
@@ -335,13 +318,10 @@ impl DriveArgs {
         // In the order of DIAGNOSE_REFUSES; a test sets each field in turn
         // and checks that the refusal names its flag.
         let requested = [
-            self.whole_image_verification,
             self.minimize_scratch,
             self.offline_recovery_media.is_some(),
             self.controlled_post_flush_pause_nonce.is_some(),
             self.acknowledge_controlled_post_flush_pause,
-            self.experimental_thin_shadow,
-            self.experimental_thin_backing_bytes.is_some(),
             self.lab_hold_at.is_some(),
         ];
         for ((flag, reason), requested) in Self::DIAGNOSE_REFUSES.iter().zip(requested) {
@@ -399,8 +379,8 @@ mod windows {
     use sha2::{Digest, Sha256};
     use std::{
         fs,
-        io::{self, BufRead, IsTerminal, Read, Write},
-        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+        io::{BufRead, Read, Write},
+        time::{SystemTime, UNIX_EPOCH},
     };
     fn clean(value: &str) -> String {
         value
@@ -499,10 +479,18 @@ mod windows {
             eprintln!("Inventory: {}: {}", clean(&e.operation), clean(&e.message));
         }
         for v in &inventory.volumes {
+            // Named by its letter too, where it has one: a volume name is
+            // a GUID nobody can place.
+            let at = if v.mount_paths.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", clean(&v.mount_paths.join(", ")))
+            };
             for e in &v.errors {
                 eprintln!(
-                    "Volume {}: {}",
+                    "Volume {}{at}: {}: {}",
                     clean(&v.volume_guid_path),
+                    clean(&e.operation),
                     clean(&e.message)
                 );
             }
@@ -515,10 +503,15 @@ mod windows {
                 .any(|p| p.mount_paths.iter().any(|m| m.eq_ignore_ascii_case(root)))
             {
                 println!(
-                    "   -     -  {:<16}  {:<10}  {:>12}  [no basic partition mapping]",
+                    "   -     -  {:<16}  {:<10}  {:>12}  [{}]",
                     clean(root),
                     "-",
-                    "-"
+                    "-",
+                    if n2r_win32::drive_inventory::optical_drive(root) {
+                        "optical drive or disc image: not a disk volume"
+                    } else {
+                        "no basic partition mapping"
+                    }
                 );
             }
         }
@@ -562,144 +555,6 @@ mod windows {
         Ok(())
     }
 
-    // These are observations of fixed local artifact names only. They neither
-    // read payload/recovery storage nor grant permission to advance a phase.
-    fn conversion_phase(output: &std::path::Path) -> &'static str {
-        use std::os::windows::fs::MetadataExt;
-        let exists = |name| {
-            fs::symlink_metadata(output.join(name))
-                .is_ok_and(|metadata| metadata.is_file() && metadata.file_attributes() & 0x400 == 0)
-        };
-        if exists("apply.json") {
-            "Verifying files"
-        } else if exists("activation-events.json") {
-            "Applying conversion"
-        } else if exists("journal-progress.json")
-            || exists("journal-location.json")
-            || exists("compact-backing.json")
-        {
-            "Preparing recovery journal"
-        } else if exists("qualification/construction-freeze.json")
-            || exists("qualification/target-freeze-events.json")
-        {
-            "Verifying target"
-        } else if exists("qualification/construction-intent.json") {
-            "Building ReFS metadata"
-        } else {
-            "Inspecting NTFS"
-        }
-    }
-
-    /// What to tell the owner of a whole-image run that froze its source and
-    /// stopped before it published a recovery bundle. That route leaves the
-    /// disk offline and read-only on purpose; `ntfs2refs cancel` returns it
-    /// once it has proved the whole image unchanged, and needs the digests of
-    /// three of the run's records. `None` when the run froze nothing, or got
-    /// as far as a bundle (whose "To recover:" line is then the way back).
-    pub(super) fn frozen_source_way_back(conversion: &std::path::Path) -> Option<String> {
-        if [
-            "compact-recovery-bundle.json",
-            "allocation-recovery-bundle.json",
-        ]
-        .iter()
-        .any(|bundle| conversion.join(bundle).exists())
-        {
-            return None;
-        }
-        let digest = |record: &str| {
-            fs::read(conversion.join(record))
-                .ok()
-                .map(|bytes| hex::encode(Sha256::digest(bytes)))
-        };
-        let intent = digest("conversion-intent.json")?;
-        let frozen = digest("qualification/source-frozen.json")?;
-        let mounts = digest("qualification/source-mount-paths.json")?;
-        Some(format!(
-            "The source disk was left offline and read-only. Nothing was written to it. To \
-             return the NTFS volume, run this; it proves the whole volume unchanged first:\n  \
-             ntfs2refs cancel --run-directory \"{}\" --intent-sha256 {intent} \
-             --frozen-source-sha256 {frozen} --mount-paths-sha256 {mounts} --output \"{}\"",
-            conversion.display(),
-            conversion.with_file_name("cancel").display()
-        ))
-    }
-
-    fn convert_with_progress(
-        request: crate::general_conversion::Request,
-        budget: crate::general_qualification::CompactConstructionBudget,
-        output: PathBuf,
-        allocation_bounded: bool,
-        // This backend has no diagnose stop: it activates the source and applies.
-        _authority: &crate::execution_mode::SourceChangeAuthority,
-    ) -> Result<()> {
-        let worker_output = output.clone();
-        std::thread::scope(|scope| {
-            // All source handles, assessment and SourceCertificate are created
-            // and retained in this same worker. Only routing data crosses in.
-            let worker = scope.spawn(move || {
-                if allocation_bounded {
-                    crate::general_conversion::convert_allocation_experimental(
-                        &request,
-                        budget,
-                        &worker_output,
-                    )
-                } else {
-                    crate::general_conversion::convert_compact_experimental(
-                        &request,
-                        budget,
-                        &worker_output,
-                    )
-                }
-            });
-            let started = Instant::now();
-            let mut previous = "";
-            let interactive = io::stdout().is_terminal();
-            while !worker.is_finished() {
-                let phase = conversion_phase(&output);
-                let mut console = io::stdout().lock();
-                if !interactive {
-                    if phase != previous {
-                        let _ = writeln!(
-                            console,
-                            "{phase} ({}s elapsed)",
-                            started.elapsed().as_secs()
-                        );
-                    }
-                    previous = phase;
-                    drop(console);
-                    std::thread::sleep(Duration::from_secs(2));
-                    continue;
-                }
-                if phase != previous && !previous.is_empty() {
-                    let _ = writeln!(console);
-                }
-                let _ = write!(
-                    console,
-                    "\r{phase} ({}s elapsed)   ",
-                    started.elapsed().as_secs()
-                );
-                let _ = console.flush();
-                previous = phase;
-                drop(console);
-                std::thread::sleep(Duration::from_secs(2));
-            }
-            let _ = writeln!(io::stdout());
-            let result = worker.join().map_err(|panic| {
-                let detail = panic
-                    .downcast_ref::<&str>()
-                    .copied()
-                    .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
-                    .unwrap_or("unexpected worker panic");
-                anyhow::anyhow!("conversion worker panicked: {}", clean(detail))
-            })?;
-            if result.is_ok() {
-                // Completion comes from the actual worker result, never from
-                // a filename or a parsed serialized success flag.
-                let _ = writeln!(io::stdout(), "Complete");
-            }
-            result
-        })
-    }
     /// One machine-readable line and a saved report. Exit 0 only when every
     /// object was examined and none failed.
     fn report_diagnosis(
@@ -786,6 +641,10 @@ mod windows {
         if let Some(mib) = args.memory_limit {
             // Before anything reads how much memory is free.
             n2r_win32::resource_native::limit_memory(mib << 20)?;
+        } else {
+            // Nobody asked for a ceiling: where memory comes short the run
+            // goes on with what Windows can give it, and does not stop.
+            n2r_win32::resource_native::fit_memory_to_the_machine();
         }
         if mode == crate::execution_mode::ExecutionMode::Diagnose {
             // A backstop beneath the routes: nothing in this process may now
@@ -806,12 +665,41 @@ mod windows {
             // An unknown point is refused here, before anything is opened.
             n2r_win32::lab_hold::arm(point)?;
         }
+        if let Some(point) = &args.lab_fail_at {
+            ensure!(
+                args.acknowledge_lab_fail_stops_the_run,
+                "a laboratory failure point needs --acknowledge-lab-fail-stops-the-run"
+            );
+            ensure!(
+                args.offline_recovery_media.is_some(),
+                "laboratory failure points apply only to a run that restarts the machine (--restart-media)"
+            );
+            // An unknown point is refused here, before anything is opened.
+            n2r_win32::lab_fail::arm(point)?;
+        }
         if let Some(directory) = args.recover {
             // (Not the build: a recovery must run wherever its conversion did.)
             require_elevation("recovery")?;
-            let checksum = args
-                .recovery_sha256
-                .context("original recovery checksum required")?;
+            // The folder of a run that restarts the machine, recognised by
+            // its admission record. Its ways back are bound to the run by
+            // the records in it, not by a checksum.
+            let named = if directory.is_absolute() {
+                directory.clone()
+            } else {
+                std::path::absolute(&directory)
+                    .with_context(|| format!("resolving the folder {}", directory.display()))?
+            };
+            if let Some(run) = crate::resource_partition_alpha::recognise_run(&named)? {
+                ensure!(
+                    args.recovery_sha256.is_none() && args.resume_workspace.is_none(),
+                    "the run in {} is recovered by its folder alone: give neither --recovery-sha256 nor --resume-workspace. Nothing was changed.",
+                    run.display()
+                );
+                return super::partition::recover_restart_run(&run, args.rollback);
+            }
+            let checksum = args.recovery_sha256.context(
+                "--recover needs --recovery-sha256, the checksum printed with the conversion directory. Nothing was changed.",
+            )?;
             let has_preparation = directory.join("preparation-intent.json").exists()
                 || directory.join("resume-intent.json").exists();
             // A matching external pin selects the early-cancellation protocol,
@@ -885,11 +773,8 @@ mod windows {
             .context("target cluster size")?;
         ensure!(
             target_cluster == n2r_win32::target_cluster::DEFAULT_BYTES
-                || !(args.windows_boot_volume
-                    || args.whole_image_verification
-                    || args.offline_recovery_media.is_some()
-                    || args.experimental_thin_shadow),
-            "a {target_cluster}-byte ReFS allocation unit is for a data volume on the default route; a Windows boot volume, whole-image verification, offline media and the thin shadow use 4096"
+                || !(args.windows_boot_volume || args.offline_recovery_media.is_some()),
+            "a {target_cluster}-byte ReFS allocation unit is for a data volume on the default route; a Windows boot volume and offline media use 4096"
         );
         n2r_win32::target_cluster::choose(target_cluster)?;
         let partition = match values.as_slice() {
@@ -991,12 +876,22 @@ mod windows {
                     allow_additional_partitions: true,
                 },
             )?;
+            // That role also finds working storage, which may lie on an
+            // MBR disk. A volume to convert may not.
+            ensure!(
+                !n2r_win32::mbr_layout::is_mbr_disk(&before.binding.identity.disk_guid),
+                "the selected volume's disk is MBR, and the converter takes volumes on GPT disks only. Nothing was changed."
+            );
             return super::partition::convert(&args, selected, before, &authority);
         }
         ensure!(
             args.controlled_post_flush_pause_nonce.is_none()
                 && !args.acknowledge_controlled_post_flush_pause,
             "controlled post-flush qualification flags apply only to a data partition sharing the current Windows disk; dedicated conversion does not accept them"
+        );
+        ensure!(
+            args.lab_fail_at.is_none(),
+            "laboratory failure points apply only to a run that restarts the machine: a partition on the running Windows disk"
         );
         let source_role = if args.windows_boot_volume {
             Role::OfflineWindowsSource
@@ -1027,16 +922,10 @@ mod windows {
         );
         // A disk the volume shares with other partitions: what else is on
         // it, for the lines before the prompt. Refused here where the
-        // route has no way of dismounting those volumes, or where the
         // volume is an installed Windows that would be left unable to start.
         let beside = if before.binding.layout_profile
             == n2r_win32::general_layout::GeneralDiskLayoutProfile::SharedData
         {
-            ensure!(
-                !args.whole_image_verification && !args.experimental_thin_shadow,
-                "--whole-image-verification and --experimental-thin-shadow take a volume on a disk of its own; this one shares disk {} with other partitions. Nothing was changed.",
-                selected.disk_number
-            );
             let disk = inventory
                 .disks
                 .iter()
@@ -1080,11 +969,7 @@ mod windows {
             }
             Some(decision)
         };
-        let resources = if !args.whole_image_verification {
-            crate::ntfs_admission::ResourceProfile::ResourceBoundedV4(None)
-        } else {
-            crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2
-        };
+        let resources = crate::ntfs_admission::ResourceProfile::ResourceBoundedV4(None);
         let mut events = Vec::new();
         // What the running Windows keeps on the volume's disk (a page file,
         // its crash dumps) refuses the disk before anything else is asked.
@@ -1136,19 +1021,13 @@ mod windows {
         println!(
             "Windows will report the converted volume's actual developer designation and trust state."
         );
-        let allocation_bounded = !args.whole_image_verification;
-        let verification_policy = if allocation_bounded && !args.verify_full_content {
+        let verification_policy = if !args.verify_full_content {
             crate::verification_policy::VerificationPolicy::ExtentIdentityV1
         } else {
             crate::verification_policy::VerificationPolicy::FullContent
         };
         println!(
-            "Mode: {}",
-            if allocation_bounded {
-                "allocation-bounded (compares and writes only the ranges the new ReFS allocates; free space is not verified)"
-            } else {
-                "whole-image verification (compares and journals every byte; much slower)"
-            }
+            "Mode: allocation-bounded (compares and writes only the ranges the new ReFS allocates; free space is not verified)"
         );
         println!(
             "NTFS-compressed streams, when present, are decoded into ordinary ReFS data and require space for their logical contents."
@@ -1188,13 +1067,13 @@ mod windows {
         // Before anything is asked or changed: what the volume's own
         // structures decide is found out while it is online and as it was.
         // A partition is not shrunk, and a disk not taken offline, for a
-        // volume that would be refused. (A Windows boot volume and the
-        // whole-image route are examined when they are frozen, as before.)
+        // volume that would be refused. (A Windows boot volume is examined
+        // when it is frozen, as before.)
         let shrink = match boot_geometry {
             Some(super::boot::GeometryDecision::Shrink { shrink_bytes, .. }) => Some(shrink_bytes),
             _ => None,
         };
-        if allocation_bounded && !args.windows_boot_volume {
+        if !args.windows_boot_volume {
             println!("Checking the volume first: it stays online and is only read.");
             let (os_root, work_root, journal) =
                 working_volume(args.scratch_directory.as_deref(), &before)?;
@@ -1267,13 +1146,9 @@ mod windows {
             args.scratch_directory,
             before,
             selected,
-            resources,
-            allocation_bounded,
             verification_policy,
             args.minimize_scratch,
             target_format,
-            args.experimental_thin_shadow,
-            args.experimental_thin_backing_bytes,
             mode,
             boot_geometry,
             listing_root,
@@ -1416,9 +1291,8 @@ mod windows {
     ) -> n2r_win32::journal_file::GeneralJournalStorageBinding {
         n2r_win32::journal_file::GeneralJournalStorageBinding {
             disk: journal.binding.clone(),
-            externally_enrolled_disk_unique_id: format!(
-                "gpt-{}",
-                journal.binding.identity.disk_guid.trim_matches(['{', '}'])
+            externally_enrolled_disk_unique_id: n2r_win32::journal_file::enrolled_disk_label(
+                &journal.binding.identity.disk_guid,
             ),
             allow_additional_partitions: true,
         }
@@ -1614,13 +1488,9 @@ mod windows {
         scratch: Option<PathBuf>,
         before: discovery::VolumeDiscovery,
         selected: drive_inventory::PartitionSelection,
-        resources: crate::ntfs_admission::ResourceProfile,
-        allocation_bounded: bool,
         verification_policy: crate::verification_policy::VerificationPolicy,
         minimize_scratch: bool,
         target_format: n2r_win32::managed_shadow::TargetFormatProfile,
-        thin_shadow: bool,
-        thin_backing_bytes: Option<u64>,
         mode: crate::execution_mode::ExecutionMode,
         boot_geometry: Option<super::boot::GeometryDecision>,
         // The drive root to list before and after, for --compare-listing.
@@ -1634,25 +1504,10 @@ mod windows {
             space.available_bytes_to_caller
         );
         let reserve = (space.available_bytes_to_caller / 4).min(16 * 1024 * 1024 * 1024);
-        // Encoded selection stores D old bytes and L literal-new bytes, with
-        // a separate L-byte backing (L <= D). Thus backing <= journal / 2.
-        // Retain the legacy thirds budget for the whole-image route.
+        // Journal and literal backing share one measured pool. Encoded
+        // zeros/copies must not strand an unused fixed backing fraction.
         let usable = space.available_bytes_to_caller - reserve;
-        let journal_share = if allocation_bounded {
-            // Journal and literal backing share one measured pool. Encoded
-            // zeros/copies must not strand an unused fixed backing fraction.
-            usable
-        } else {
-            usable / 3
-        };
-        let journal_bytes = if allocation_bounded {
-            journal_share / 4096 * 4096
-        } else {
-            journal_share.min(n2r_win32::journal_file::MAX_EXPERIMENTAL_JOURNAL_BYTES) / 4096 * 4096
-        };
-        let literal_backing_bytes = allocation_bounded.then(|| {
-            (usable / 3).min(n2r_win32::reference_file::MAX_REFERENCE_FILE_BYTES) / 4096 * 4096
-        });
+        let journal_bytes = usable / 4096 * 4096;
         let id = new_run_id()?;
         let parent = working_directory(scratch, &os_root, &work_root)?;
         let run = parent.join(&id);
@@ -1666,17 +1521,12 @@ mod windows {
             // Before anything of this run touches the volume.
             super::listing::before(root, &run)?;
         }
-        let native_creation_admission = if thin_shadow {
-            None
-        } else {
-            let admitted =
-                n2r_win32::managed_shadow::admit_fresh_native_backing(&run.join("shadow.vhdx"))?;
-            save_new(
-                &run.join("native-shadow-creation-admission.json"),
-                &admitted.observe()?,
-            )?;
-            Some(admitted)
-        };
+        let native_creation_admission =
+            n2r_win32::managed_shadow::admit_fresh_native_backing(&run.join("shadow.vhdx"))?;
+        save_new(
+            &run.join("native-shadow-creation-admission.json"),
+            &native_creation_admission.observe()?,
+        )?;
         ensure!(
             boot_geometry.is_some(),
             "the partition's ReFS geometry was not decided"
@@ -1692,56 +1542,16 @@ mod windows {
             "Preparing temporary ReFS metadata storage. Recovery files: {}",
             run.display()
         );
-        let staged = if thin_shadow {
-            ensure!(
-                allocation_bounded,
-                "thin temporary storage requires the V4 route"
-            );
-            ensure!(
-                before.binding.identity.logical_sector_bytes == 512
-                    && before.binding.identity.physical_sector_bytes == 4096,
-                "thin temporary storage has not qualified this sector geometry"
-            );
-            let available = n2r_win32::resource_native::observe_available_resources(&run)?;
-            let planned_carrier = (usable - usable / 3).min(64u64 << 40);
-            let carrier_scratch = thin_backing_bytes
-                .unwrap_or(planned_carrier)
-                .min(planned_carrier)
-                / (2 << 20)
-                * (2 << 20);
-            let provider_bytes = converted_partition_bytes
-                .checked_add(64 << 20)
-                .context("thin provider geometry overflow")?;
-            let owner = n2r_win32::managed_shadow::thin_pool::create_bounded_with_carrier(
-                &run.join("thin-provider"),
-                &super::staging::windows_storage_subsystem()?,
-                provider_bytes,
-                n2r_win32::managed_shadow::thin_pool::Budget {
-                    rust_ram_bytes: available.available_physical_bytes / 16,
-                    powershell_ram_bytes: available.available_physical_bytes / 4,
-                    scratch_bytes: carrier_scratch,
-                    minimum_free_bytes: reserve,
-                },
-            )?;
-            super::staging::StageOwner::Thin(
-                owner.format(converted_partition_bytes, target_format)?,
-            )
-        } else {
-            native_creation_admission
-                .as_ref()
-                .context("native shadow creation capacity owner absent")?
-                .check()?;
+        native_creation_admission.check()?;
+        let staged =
             super::staging::StageOwner::Vhdx(n2r_win32::managed_shadow::create_with_profile(
                 &run.join("shadow.vhdx"),
                 converted_partition_bytes,
                 before.binding.identity.logical_sector_bytes,
                 before.binding.identity.physical_sector_bytes,
                 target_format,
-            )?)
-        };
-        if let Some(admitted) = &native_creation_admission {
-            admitted.check()?;
-        }
+            )?);
+        native_creation_admission.check()?;
         // The version is whatever this Windows formatted. One the lab never
         // converted is accepted, and the run says that it is the first.
         let refs_version = n2r_win32::target_refs_version::get();
@@ -1787,152 +1597,65 @@ mod windows {
                 "grants_source_or_replay_authority":false,
             }),
         )?;
-        let result = if allocation_bounded {
-            super::resource::convert_owned_with_provider_commitment(
-                n2r_win32::general_layout::GeneralSourceShadowBinding {
-                    source: before.binding.clone(),
-                    shadow: staged.binding().clone(),
-                },
-                n2r_win32::journal_file::GeneralJournalStorageBinding {
-                    disk: journal.binding.clone(),
-                    externally_enrolled_disk_unique_id: format!(
-                        "gpt-{}",
-                        journal.binding.identity.disk_guid.trim_matches(['{', '}'])
-                    ),
-                    allow_additional_partitions: true,
-                },
-                &run,
-                verification_policy,
-                if minimize_scratch {
-                    crate::selected_capacity::SelectedCapacityPolicy::SourceFreeActualBytesV1
-                } else {
-                    Default::default()
-                },
-                provider_commitment,
-                if thin_shadow { reserve } else { 0 },
-                staged.staging_allocation_meter(),
-                mode,
-            )
-        } else {
-            let authority = mode.source_change_authority("whole-image conversion")?;
+        let result = super::resource::convert_owned_with_provider_commitment(
+            n2r_win32::general_layout::GeneralSourceShadowBinding {
+                source: before.binding.clone(),
+                shadow: staged.binding().clone(),
+            },
+            n2r_win32::journal_file::GeneralJournalStorageBinding {
+                disk: journal.binding.clone(),
+                externally_enrolled_disk_unique_id: n2r_win32::journal_file::enrolled_disk_label(
+                    &journal.binding.identity.disk_guid,
+                ),
+                allow_additional_partitions: true,
+            },
+            &run,
+            verification_policy,
             if minimize_scratch {
-                println!("Preparing NTFS file placement to reduce recovery storage.");
-                let preparation = crate::ntfs_preparation::prepare(
-                    before.binding.clone(),
-                    staged.binding().clone(),
-                    resources,
-                    &run.join("ntfs-preparation"),
-                    crate::ntfs_preparation::Budget {
-                        metadata_bytes: 64 * 1024 * 1024,
-                        receipt_bytes: 64 * 1024 * 1024,
-                        maximum_moves: 32768,
-                        maximum_move_bytes: 64 * 1024 * 1024,
-                        maximum_payload_bytes: before.binding.identity.partition_bytes,
-                    },
-                )?;
-                save_new(&run.join("ntfs-preparation-result.json"), &preparation)?;
-            }
-            let request = crate::general_conversion::Request {
-                verification_policy,
-                selected_capacity_policy: if minimize_scratch {
-                    crate::selected_capacity::SelectedCapacityPolicy::SourceFreeActualBytesV1
-                } else {
-                    Default::default()
-                },
-                schema_version: if allocation_bounded { 3 } else { 2 },
-                source_resource_profile: Some(resources),
-                experiment_id: id,
-                pair: n2r_win32::general_layout::GeneralSourceShadowBinding {
-                    source: before.binding.clone(),
-                    shadow: staged.binding().clone(),
-                },
-                journal: n2r_win32::journal_file::GeneralJournalStorageBinding {
-                    disk: journal.binding.clone(),
-                    externally_enrolled_disk_unique_id: format!(
-                        "gpt-{}",
-                        journal.binding.identity.disk_guid.trim_matches(['{', '}'])
-                    ),
-                    allow_additional_partitions: true,
-                },
-                max_journal_bytes: journal_bytes,
-                max_literal_backing_bytes: literal_backing_bytes,
-                max_combined_scratch_bytes: allocation_bounded.then_some(usable),
-                verify_existing_shadow: false,
-            };
-            request.validate()?;
-            save_new(&run.join("devices.json"), &request)?;
-            let output = run.join("conversion");
-            let budget = crate::general_qualification::CompactConstructionBudget {
-                maximum_placement_bytes: request
-                    .pair
-                    .source
-                    .identity
-                    .partition_bytes
-                    .saturating_mul(4),
-                maximum_placement_submissions:
-                    n2r_win32::shadow_native::private_tree::MAX_PLACEMENT_SUBMISSIONS,
-                maximum_exception_bytes: 16 * 1024 * 1024,
-            };
-            // Keep the native attachment owner on this thread until the conversion
-            // worker has returned, including error/panic handling.
-            convert_with_progress(
-                request,
-                budget,
-                output.clone(),
-                allocation_bounded,
-                &authority,
-            )
-            .map(|()| super::resource::ConversionOutcome::Converted)
-        };
+                crate::selected_capacity::SelectedCapacityPolicy::SourceFreeActualBytesV1
+            } else {
+                Default::default()
+            },
+            provider_commitment,
+            0,
+            staged.staging_allocation_meter(),
+            mode,
+        );
         let output = run.join("conversion");
         match result {
             Ok(super::resource::ConversionOutcome::Diagnosed(outcome)) => {
                 // The shadow was built only to be examined; nothing was
                 // published from it, so it is detached and removed.
-                let shadow_removed = match staged.retire_after_diagnose() {
-                    Some(retirement) => {
-                        if !retirement.success() {
-                            eprintln!(
-                                "Diagnose finished, but its temporary shadow could not be removed (stopped at {}: {}). It remains in {}.",
-                                retirement.phase(),
-                                retirement.error().unwrap_or("cleanup incomplete"),
-                                run.display()
-                            );
-                        }
-                        if let Err(error) =
-                            save_new(&run.join("shadow-retirement.json"), &retirement)
-                        {
-                            eprintln!(
-                                "The temporary-shadow cleanup receipt could not be saved: {error}"
-                            );
-                        }
-                        retirement.success()
-                    }
-                    None => false,
-                };
-                report_diagnosis(&run, &outcome, shadow_removed)
+                let retirement = staged.retire_after_diagnose();
+                if !retirement.success() {
+                    eprintln!(
+                        "Diagnose finished, but its temporary shadow could not be removed (stopped at {}: {}). It remains in {}.",
+                        retirement.phase(),
+                        retirement.error().unwrap_or("cleanup incomplete"),
+                        run.display()
+                    );
+                }
+                if let Err(error) = save_new(&run.join("shadow-retirement.json"), &retirement) {
+                    eprintln!("The temporary-shadow cleanup receipt could not be saved: {error}");
+                }
+                report_diagnosis(&run, &outcome, retirement.success())
             }
             Ok(super::resource::ConversionOutcome::Converted) => {
-                if allocation_bounded {
-                    // This live Ok comes only after V4 HND/native finalization
-                    // returned and all construction/raw owners were released.
-                    // Its replay is self-contained; legacy compact recovery
-                    // still requires its original protected shadow backing.
-                    let retirement = staged.retire_after_successful_v4();
-                    if !retirement.success() {
-                        eprintln!(
-                            "Conversion completed; temporary shadow cleanup stopped at {}: {}. Preserve any remaining staging files. Raw rollback remains closed.",
-                            retirement.phase(),
-                            retirement.error().unwrap_or("cleanup incomplete")
-                        );
-                    }
-                    if let Err(error) = save_new(&run.join("shadow-retirement.json"), &retirement) {
-                        eprintln!(
-                            "Conversion completed; its temporary-shadow cleanup receipt could not be saved: {error}"
-                        );
-                    }
-                } else {
-                    drop(staged);
+                // This live Ok comes only after V4 HND/native finalization
+                // returned and all construction/raw owners were released.
+                // Its replay is self-contained.
+                let retirement = staged.retire_after_successful_v4();
+                if !retirement.success() {
+                    eprintln!(
+                        "Conversion completed; temporary shadow cleanup stopped at {}: {}. Preserve any remaining staging files. Raw rollback remains closed.",
+                        retirement.phase(),
+                        retirement.error().unwrap_or("cleanup incomplete")
+                    );
+                }
+                if let Err(error) = save_new(&run.join("shadow-retirement.json"), &retirement) {
+                    eprintln!(
+                        "Conversion completed; its temporary-shadow cleanup receipt could not be saved: {error}"
+                    );
                 }
                 // The source's actual post-handoff policy is independent of the
                 // temporary shadow's trust. Observation/report errors cannot
@@ -2025,9 +1748,6 @@ mod windows {
                         "Conversion stopped. Preserve all recovery files at {}",
                         run.display()
                     );
-                    if let Some(way_back) = frozen_source_way_back(&output) {
-                        eprintln!("{way_back}");
-                    }
                 }
                 Err(e)
             }
@@ -2040,44 +1760,6 @@ mod tests {
     use super::*;
     use crate::execution_mode::ExecutionMode;
 
-    #[cfg(windows)]
-    #[test]
-    fn a_run_that_left_its_source_frozen_is_told_how_to_return_it() {
-        use sha2::{Digest, Sha256};
-        let run = tempfile::tempdir().unwrap();
-        let conversion = run.path().join("conversion");
-        std::fs::create_dir_all(conversion.join("qualification")).unwrap();
-        // A run that froze nothing has nothing to return.
-        assert_eq!(windows::frozen_source_way_back(&conversion), None);
-        std::fs::write(conversion.join("conversion-intent.json"), b"intent").unwrap();
-        std::fs::write(
-            conversion.join("qualification/source-frozen.json"),
-            b"frozen",
-        )
-        .unwrap();
-        assert_eq!(windows::frozen_source_way_back(&conversion), None);
-        std::fs::write(
-            conversion.join("qualification/source-mount-paths.json"),
-            b"mounts",
-        )
-        .unwrap();
-        let said = windows::frozen_source_way_back(&conversion).unwrap();
-        assert!(said.contains("left offline and read-only"), "{said}");
-        assert!(said.contains("ntfs2refs cancel --run-directory"), "{said}");
-        for (flag, record) in [
-            ("--intent-sha256", &b"intent"[..]),
-            ("--frozen-source-sha256", b"frozen"),
-            ("--mount-paths-sha256", b"mounts"),
-        ] {
-            let pin = format!("{flag} {}", hex::encode(Sha256::digest(record)));
-            assert!(said.contains(&pin), "{said}");
-        }
-        let fresh = format!("--output \"{}\"", run.path().join("cancel").display());
-        assert!(said.contains(&fresh), "{said}");
-        // Once a recovery bundle is published, its recovery command is the way.
-        std::fs::write(conversion.join("compact-recovery-bundle.json"), b"{}").unwrap();
-        assert_eq!(windows::frozen_source_way_back(&conversion), None);
-    }
     #[cfg(windows)]
     #[test]
     fn a_run_names_the_partitions_that_go_offline_with_the_volume() {
@@ -2198,6 +1880,99 @@ mod tests {
     }
 
     #[test]
+    fn a_laboratory_failure_point_needs_the_restart_route_and_its_own_acknowledgement() {
+        const ACK: &str = "--acknowledge-lab-fail-stops-the-run";
+        const MEDIA: &[&str] = &["--restart-media", "E:\\"];
+        let with = |extra: &[&str]| {
+            let mut arguments = MEDIA.to_vec();
+            arguments.extend_from_slice(extra);
+            parse(&arguments)
+        };
+        // Neither half alone, and not without the route that restarts.
+        assert!(with(&["--lab-fail-at", "restart-after-protect"]).is_err());
+        assert!(with(&[ACK]).is_err());
+        assert!(parse(&["--lab-fail-at", "restart-after-protect", ACK]).is_err());
+        for &point in n2r_win32::lab_fail::POINTS {
+            let armed = with(&["--lab-fail-at", point, ACK]).unwrap();
+            assert_eq!(armed.lab_fail_at.as_deref(), Some(point));
+            assert!(armed.acknowledge_lab_fail_stops_the_run);
+            // Parsing arms nothing: only a run does, and it refuses a name
+            // it does not know before anything is opened.
+            assert_eq!(n2r_win32::lab_fail::armed(), None);
+        }
+        assert!(n2r_win32::lab_fail::known("restart-after-reboot").is_err());
+        // Not together with a hold, a check, a diagnose run or a recovery.
+        for refused in [
+            &[
+                "--lab-fail-at",
+                "restart-after-arm",
+                ACK,
+                "--lab-hold-at",
+                "handoff-sealed",
+                "--acknowledge-lab-hold-never-completes",
+            ][..],
+            &["--lab-fail-at", "restart-after-arm", ACK, "--check"],
+            &["--lab-fail-at", "restart-after-arm", ACK, "--diagnose"],
+        ] {
+            assert!(with(refused).is_err(), "{refused:?}");
+        }
+        assert!(
+            Cli::try_parse_from([
+                "ntfs2refs",
+                "--recover",
+                "S:\\run",
+                "--lab-fail-at",
+                "restart-after-arm",
+                ACK
+            ])
+            .is_err()
+        );
+        // The switches are hidden from --help.
+        let help = <Cli as clap::CommandFactory>::command()
+            .render_long_help()
+            .to_string();
+        assert!(!help.contains("lab-fail"), "{help}");
+    }
+
+    #[test]
+    fn a_recovery_is_parsed_with_its_folder_alone_and_with_its_checksum() {
+        // The folder of a run that restarts the machine takes no checksum;
+        // whether a folder is one is decided from its records, when it is
+        // read, and every other folder is then asked for its checksum.
+        let alone = Cli::try_parse_from(["ntfs2refs", "--recover", "S:\\run", "--rollback"])
+            .unwrap()
+            .drive;
+        assert!(alone.rollback && alone.recovery_sha256.is_none());
+        assert_eq!(
+            alone.recover.as_deref(),
+            Some(std::path::Path::new("S:\\run"))
+        );
+        let status = Cli::try_parse_from(["ntfs2refs", "--recover", "S:\\run"])
+            .unwrap()
+            .drive;
+        assert!(!status.rollback);
+        let pinned = Cli::try_parse_from([
+            "ntfs2refs",
+            "--recover",
+            "S:\\run",
+            "--recovery-sha256",
+            NONCE,
+        ])
+        .unwrap()
+        .drive;
+        assert_eq!(pinned.recovery_sha256.as_deref(), Some(NONCE));
+        // --yes answers the question of a recovery without a serial number.
+        let unattended =
+            Cli::try_parse_from(["ntfs2refs", "--recover", "S:\\run", "--rollback", "--yes"])
+                .unwrap()
+                .drive;
+        assert!(unattended.unattended().unwrap());
+        // A checksum or a rollback without a folder is still refused.
+        assert!(Cli::try_parse_from(["ntfs2refs", "--rollback"]).is_err());
+        assert!(Cli::try_parse_from(["ntfs2refs", "--recovery-sha256", NONCE]).is_err());
+    }
+
+    #[test]
     fn a_check_takes_nothing_that_would_change_a_volume() {
         let check = parse(&["--check"]).unwrap();
         assert!(check.check && !check.diagnose && !check.yes);
@@ -2216,8 +1991,6 @@ mod tests {
             &["--check", "--yes", "--volume-serial", "1A2B-3C4D"],
             &["--check", "--windows-boot-volume"],
             &["--check", "--minimize-scratch"],
-            &["--check", "--whole-image-verification"],
-            &["--check", "--experimental-thin-shadow"],
             &[
                 "--check",
                 "--lab-hold-at",
@@ -2287,29 +2060,18 @@ mod tests {
         );
         // Without --diagnose these are ordinary conversion requests.
         assert_eq!(mode(&["--minimize-scratch"]), ExecutionMode::Convert);
-        assert_eq!(
-            mode(&["--whole-image-verification"]),
-            ExecutionMode::Convert
-        );
     }
 
     #[test]
     fn the_parser_rejects_diagnose_with_every_option_it_cannot_honour() {
-        let cases: [&[&str]; 7] = [
+        let cases: [&[&str]; 4] = [
             &[
                 "--lab-hold-at",
                 "handoff-sealed",
                 "--acknowledge-lab-hold-never-completes",
             ],
-            &["--whole-image-verification"],
             &["--minimize-scratch"],
-            &["--offline-media", "E:\\"],
-            &["--experimental-thin-shadow"],
-            &[
-                "--experimental-thin-shadow",
-                "--experimental-thin-backing-bytes",
-                "1073741824",
-            ],
+            &["--restart-media", "E:\\"],
             &[
                 "--controlled-post-flush-pause-nonce",
                 NONCE,
@@ -2333,14 +2095,11 @@ mod tests {
     #[test]
     fn admission_refuses_each_combination_whatever_built_the_arguments() {
         type Set = fn(&mut DriveArgs);
-        let cases: [Set; 8] = [
-            |a| a.whole_image_verification = true,
+        let cases: [Set; 5] = [
             |a| a.minimize_scratch = true,
             |a| a.offline_recovery_media = Some(PathBuf::from("E:\\")),
             |a| a.controlled_post_flush_pause_nonce = Some(NONCE.to_owned()),
             |a| a.acknowledge_controlled_post_flush_pause = true,
-            |a| a.experimental_thin_shadow = true,
-            |a| a.experimental_thin_backing_bytes = Some(1 << 30),
             |a| a.lab_hold_at = Some("handoff-sealed".to_owned()),
         ];
         assert_eq!(cases.len(), DriveArgs::DIAGNOSE_REFUSES.len());

@@ -7,7 +7,8 @@ the source archive and the notes.
 A release is what this script makes from a clean checkout of a tagged commit:
 
   ntfs2refs-<version>-windows-x64.zip
-      ntfs2refs.exe, lab-volume-manifest.exe, capabilities.json (what this
+      ntfs2refs.exe, ntfs2refs-recovery.exe, lab-volume-manifest.exe,
+      capabilities.json (what this
       executable says it admits), README.md, the guide, the feature matrix,
       the recovery matrix, and RELEASE-NOTES.md
   ntfs2refs-<version>-windows-x64.zip.sha256
@@ -108,9 +109,13 @@ try {
     if (-not $tagged -and -not $AllowUntagged) { throw "commit $commit does not carry the tag '$version' (its tags: $($tags -join ', ')); tag it, or use -AllowUntagged for a rehearsal" }
 
     $tool = { param($name) $path = Join-Path $env:USERPROFILE ".cargo\bin\$name.exe"; if (Test-Path -LiteralPath $path) { $path } else { $name } }
-    & (& $tool 'cargo') build --locked --release --bin ntfs2refs --bin lab-volume-manifest
+    & (& $tool 'cargo') build --locked --release --bin ntfs2refs --bin ntfs2refs-recovery --bin lab-volume-manifest
     if ($LASTEXITCODE -ne 0) { throw "cargo build failed (exit $LASTEXITCODE)" }
-    $binaries = 'ntfs2refs.exe', 'lab-volume-manifest.exe' | ForEach-Object { Join-Path $workspace "target\release\$_" }
+    # Where cargo built them: CARGO_TARGET_DIR where it is set. The lab's
+    # build is compared with this one byte for byte, and an executable holds
+    # the path of its symbols, so the release is built where the lab's was.
+    $built = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $workspace 'target' }
+    $binaries = 'ntfs2refs.exe', 'ntfs2refs-recovery.exe', 'lab-volume-manifest.exe' | ForEach-Object { Join-Path $built "release\$_" }
     $reported = (& $binaries[0] --version).Trim()
     if ($reported -ne "ntfs2refs $version") { throw "the executable reports '$reported', not 'ntfs2refs $version'" }
     $capabilities = (& $binaries[0] capabilities) -join "`n"

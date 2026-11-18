@@ -29,7 +29,11 @@ identical) or rolled-back (recovered to NTFS, listing exactly as before).
 With -StopDuringPreparation: preparation-cancelled (the command the run
 printed for this case gave the NTFS volume back, listing exactly as before)
 or, with -AfterStop restart, restart-refused-then-cancelled (a new run was
-refused with that way back named, and it then worked).
+refused with that way back named, and it then worked). With
+-PowerOffDuringPreparation as well, the VM is turned off in that phase and
+started again instead of the converter's process being ended:
+preparation-cancelled-after-power-off (the source's virtual disk was attached
+again, the same command gave the NTFS volume back, listing exactly as before).
 Records land in .lab\hyperv\attempts\<Name>\.
 #>
 [CmdletBinding()]
@@ -97,6 +101,17 @@ param(
     # what someone does who did not see the run stop: it has to be refused
     # with words that name the way back, and the cancellation is run then.
     [ValidateSet('cancel', 'restart')][string]$AfterStop = 'cancel',
+    # With -StopDuringPreparation: the converter's process is not ended in
+    # the phase. The VM is turned off under it and started again, as a
+    # machine that lost power while a run prepared (the lab cannot cut power
+    # to the storage; it can turn the VM off). What the run had shown until
+    # then is kept, as the user would still have it on the screen. The
+    # control OS that comes up has lost the virtual disks it had attached:
+    # the source's is attached again, and the cancellation the run printed at
+    # its start is run then. For a source in the guest (not -SectorBytes
+    # 4096, whose disk the host attaches), without -Siblings, and with
+    # -AfterStop cancel.
+    [switch]$PowerOffDuringPreparation,
     # Run the converter with --diagnose: nothing is written, and the volume
     # must list exactly as before whatever it reports.
     [switch]$Diagnose,
@@ -167,6 +182,22 @@ param(
     # through the disk; W: and X: have to be back under their letters.
     # Anything else adds "-but-siblings-changed" to the outcome.
     [switch]$Siblings,
+    # The source disk is MBR instead of GPT: the volume is a primary
+    # partition of type 07. With -MbrBeside a second primary partition (W:,
+    # NTFS, one file) lies beside it, which makes the disk one the volume
+    # shares.
+    # Memory taken away from the converter while it runs: once it reports
+    # the phase -TakeMemoryAt, another process in the control OS allocates
+    # this many MiB, writes to all of it and holds it until the converter
+    # has ended. A run that fits itself to the machine has to go on, slower,
+    # and convert; it must not stop for memory.
+    [int]$TakeMemoryMB = 0,
+    [string]$TakeMemoryAt = 'payload_supply',
+    [switch]$SourceMbr,
+    [switch]$MbrBeside,
+    # The working directory is on an MBR disk of its own (M:\runs, a virtual
+    # disk made for the attempt) instead of on S:.
+    [switch]$WorkingMbr,
     # With -Siblings, something about W: for which a run has to refuse the
     # disk: 'busy' keeps a file on it open, 'snapshot' gives it a shadow
     # copy, 'dump' names it as the place Windows writes its crash dump to.
@@ -206,6 +237,12 @@ foreach ($file in $Binary, $ManifestBinary) { if (-not (Test-Path -LiteralPath $
 if ($ClusterBytes -lt 512 -or $ClusterBytes -gt 2097152 -or ($ClusterBytes -band ($ClusterBytes - 1))) { throw "-ClusterBytes $ClusterBytes is not a power of two from 512 to 2097152" }
 if ($ClusterBytes -lt $SectorBytes) { throw "-ClusterBytes $ClusterBytes is smaller than the $SectorBytes-byte sector" }
 if ($StopDuringPreparation -and ($InterruptAt -or $Diagnose)) { throw '-StopDuringPreparation is a run of its own: not with -InterruptAt or -Diagnose' }
+if ($PowerOffDuringPreparation) {
+    if (-not $StopDuringPreparation) { throw '-PowerOffDuringPreparation turns the VM off in a phase of preparation: name the phase with -StopDuringPreparation' }
+    if ($SectorBytes -eq 4096) { throw '-PowerOffDuringPreparation is for a source whose virtual disk the guest attaches: the 4Kn disk of -SectorBytes 4096 is attached by the host, and comes back another way' }
+    if ($AfterStop -ne 'cancel') { throw '-PowerOffDuringPreparation is followed by the cancellation: not with -AfterStop restart' }
+    if ($Siblings) { throw '-PowerOffDuringPreparation does not put the volumes of -Siblings back under their letters after the restart: not with -Siblings' }
+}
 
 $records = Join-Path $workspace ".lab\hyperv\attempts\$Name"
 if (Test-Path -LiteralPath $records) { throw "Attempt '$Name' already has records at $records; choose another -Name" }
@@ -292,8 +329,12 @@ try {
 
     # The source disk: a VHDX in the guest, or for 4Kn one the host attaches.
     if ($Siblings -and ($SectorBytes -eq 4096 -or $NativeRefsControl)) { throw '-Siblings is for a converted volume on a 512-byte-sector disk' }
+    if ($SourceMbr -and $Siblings) { throw '-Siblings makes a GPT disk; a partition beside an MBR source is -MbrBeside' }
+    if ($MbrBeside -and -not $SourceMbr) { throw '-MbrBeside is something about the disk -SourceMbr makes' }
     if ($SiblingState -and -not $Siblings) { throw '-SiblingState is something about the volume W: that -Siblings makes' }
     $sizeMB = $PartitionMB + 2048 + $(if ($Siblings) { 3840 } else { 0 })
+    $style = if ($SourceMbr) { 'mbr' } else { 'gpt' }
+    $working = if ($WorkingMbr) { 'M:\runs' } else { 'S:\datalab\runs' }
     if ($SectorBytes -eq 4096) {
         $hostDisk = Join-Path $records 'source-4kn.vhdx'
         $null = New-VHD -Path $hostDisk -SizeBytes ($sizeMB * 1MB) -Dynamic -LogicalSectorSizeBytes 4096 -PhysicalSectorSizeBytes 4096
@@ -305,8 +346,27 @@ try {
     $container = if ($ClusterBytes -lt 4096) { 'vhd' } else { 'vhdx' }
     if ($NativeRefsControl -and $TargetFormat -eq 'default') { throw '-NativeRefsControl formats the volume itself: name -TargetFormat dev-drive or standard' }
     if ($NativeRefsControl -and $Content -ne 'minimal') { throw '-NativeRefsControl takes -Content minimal: the mixed content uses what only NTFS has' }
-    $made = Invoke-Command -Session $session -ArgumentList $guestRoot, $Name, $sizeMB, $PartitionMB, $SectorBytes, $unit, ([bool]$LargeRecords), @($ready), $container, ([bool]$NativeRefsControl), $TargetFormat, ([bool]$Siblings) -ScriptBlock {
-        param($root, $name, $sizeMB, $partitionMB, $sectorBytes, $unit, $largeRecords, $known, $container, $native, $targetFormat, $siblings)
+    if ($WorkingMbr) {
+        # Working storage on an MBR disk: a virtual disk of its own, so that
+        # the disk a run keeps its shadow and its records on has a signature
+        # and no GUIDs.
+        $work = Invoke-Command -Session $session -ArgumentList $guestRoot, $Name, ($PartitionMB * 2 + 16384) -ScriptBlock {
+            param($root, $name, $sizeMB)
+            $file = "S:\datalab\$name-work.vhdx"
+            $script = "create vdisk file=`"$file`" maximum=$sizeMB type=expandable`r`nattach vdisk`r`nconvert mbr`r`ncreate partition primary`r`nformat fs=ntfs quick label=N2RWORK`r`nassign letter=M"
+            Set-Content -LiteralPath "$root\make-work.txt" -Value $script -Encoding ASCII
+            $diskpart = & diskpart.exe /s "$root\make-work.txt" 2>&1 | Out-String
+            if (-not (Get-Partition -DriveLetter M -ErrorAction SilentlyContinue)) { throw "diskpart made no volume M:`n$diskpart" }
+            $null = New-Item -ItemType Directory -Path 'M:\runs' -Force
+            $disk = Get-Disk -Number (Get-Partition -DriveLetter M).DiskNumber
+            [pscustomobject]@{ style = "$($disk.PartitionStyle)"; signature = ('{0:x8}' -f $disk.Signature); number = $disk.Number }
+        }
+        if ($work.style -ne 'MBR') { throw "the working disk is $($work.style), not MBR" }
+        Say "working storage: M:\runs on MBR disk $($work.number), signature $($work.signature)"
+        $verdict.working_disk = $work
+    }
+    $made = Invoke-Command -Session $session -ArgumentList $guestRoot, $Name, $sizeMB, $PartitionMB, $SectorBytes, $unit, ([bool]$LargeRecords), @($ready), $container, ([bool]$NativeRefsControl), $TargetFormat, ([bool]$Siblings), $style, ([bool]$MbrBeside) -ScriptBlock {
+        param($root, $name, $sizeMB, $partitionMB, $sectorBytes, $unit, $largeRecords, $known, $container, $native, $targetFormat, $siblings, $style, $mbrBeside)
         if ($sectorBytes -eq 4096) {
             $deadline = (Get-Date).AddSeconds(60)
             do { Start-Sleep -Milliseconds 500; $new = @(Get-Disk | Where-Object { $_.Number -notin $known -and $_.LogicalSectorSize -eq 4096 }) } until ($new.Count -eq 1 -or (Get-Date) -gt $deadline)
@@ -314,10 +374,12 @@ try {
             $number = $new[0].Number
             if ($new[0].IsOffline) { Set-Disk -Number $number -IsOffline $false }
             if ($new[0].IsReadOnly) { Set-Disk -Number $number -IsReadOnly $false }
-            $script = "select disk $number`r`nclean`r`nconvert gpt`r`ncreate partition primary size=$partitionMB`r`nassign letter=V"
+            $script = "select disk $number`r`nclean`r`nconvert $style`r`ncreate partition primary size=$partitionMB`r`nassign letter=V"
         } else {
             $file = "S:\datalab\$name.$container"
-            $script = "create vdisk file=`"$file`" maximum=$sizeMB type=expandable`r`nattach vdisk`r`nconvert gpt`r`ncreate partition primary size=$partitionMB`r`nassign letter=V"
+            $script = "create vdisk file=`"$file`" maximum=$sizeMB type=expandable`r`nattach vdisk`r`nconvert $style`r`ncreate partition primary size=$partitionMB`r`nassign letter=V"
+            # A second primary partition beside an MBR source.
+            if ($mbrBeside) { $script += "`r`ncreate partition primary size=1024`r`nformat fs=ntfs quick label=BESIDE`r`nassign letter=W" }
             if ($siblings) {
                 # An EFI system partition (FAT32, no letter), W:, the source,
                 # X:, and a partition of another operating system (no file
@@ -329,6 +391,7 @@ try {
         Set-Content -LiteralPath "$root\make.txt" -Value $script -Encoding ASCII
         $diskpart = & diskpart.exe /s "$root\make.txt" 2>&1 | Out-String
         if (-not (Get-Partition -DriveLetter V -ErrorAction SilentlyContinue)) { throw "diskpart made no volume V:`n$diskpart" }
+        if ($mbrBeside) { Set-Content -LiteralPath 'W:\kept.txt' -Value 'beside an MBR source' -Encoding ASCII }
         $arguments = @('V:', '/FS:NTFS', "/A:$unit", '/Q', '/Y', '/V:DATALAB'); if ($largeRecords) { $arguments += '/L' }
         if ($native) { $arguments = @('V:', '/FS:ReFS', '/Q', '/Y', '/V:DATALAB'); if ($targetFormat -eq 'dev-drive') { $arguments += '/DevDrv' } }
         $format = & "$env:SystemRoot\System32\format.com" $arguments 2>&1 | Out-String
@@ -717,18 +780,41 @@ public static class SiblingRaw {
     # time the wait below looks whether it has ended.
     $usage = @{ peak_working_set = 0L; private_bytes = 0L; working_bytes = 0L; samples = 0 }
     function Wait-Worker([string]$Root, [string]$HoldAt, [string]$StopInPhase) {
-        $deadline = (Get-Date).AddMinutes($TimeoutMinutes); $held = $false; $stopped = $false
+        $deadline = (Get-Date).AddMinutes($TimeoutMinutes); $held = $false; $stopped = $false; $poweredOff = $false; $backSeconds = $null
+        # With -PowerOffDuringPreparation the converter is not ended in the
+        # phase: the VM is turned off under it.
+        $turnOff = [bool]($StopInPhase -and $PowerOffDuringPreparation)
         do {
             if (-not $StopInPhase -or $stopped) { Start-Sleep -Seconds 2 }
-            $state = Invoke-Command -Session $session -ArgumentList $Root, ([bool]$HoldAt -and -not $held), $(if ($stopped) { '' } else { $StopInPhase }) -ScriptBlock {
-                param($root, $watchHold, $phase)
+            $state = Invoke-Command -Session $session -ArgumentList $Root, ([bool]$HoldAt -and -not $held), $(if ($stopped) { '' } else { $StopInPhase }), $turnOff, $TakeMemoryMB, $TakeMemoryAt -ScriptBlock {
+                param($root, $watchHold, $phase, $turnOff, $takeMB, $takeAt)
                 $ended = (Test-Path "$root\native-terminal.json") -or (Test-Path "$root\worker-error.txt")
-                $atHold = $false; $inPhase = $false
+                $atHold = $false; $inPhase = $false; $shown = ''; $taken = $null
+                if ($takeMB -gt 0 -and -not $ended -and -not (Test-Path "$root\memory-taken.txt") -and (Test-Path "$root\stdout.log") -and
+                    (Select-String -LiteralPath "$root\stdout.log" -SimpleMatch -Pattern "`"phase`":`"$takeAt`"" -Quiet)) {
+                    # Another process takes the memory and writes to all of
+                    # it, in pieces of 64 MiB, then holds it until the
+                    # converter has ended (or two hours have passed).
+                    $free = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory * 1KB
+                    $hog = "`$held = New-Object System.Collections.ArrayList; for (`$i = 0; `$i -lt $takeMB; `$i += 64) { `$b = New-Object byte[] (64MB); for (`$j = 0; `$j -lt `$b.Length; `$j += 4096) { `$b[`$j] = 1 }; [void]`$held.Add(`$b) }; " +
+                        "Set-Content -LiteralPath '$root\memory-held.txt' -Value (Get-Date -Format o); `$until = (Get-Date).AddHours(2); " +
+                        "while ((Get-Date) -lt `$until -and -not (Test-Path '$root\native-terminal.json') -and -not (Test-Path '$root\worker-error.txt')) { Start-Sleep -Seconds 2; for (`$k = 0; `$k -lt `$held.Count; `$k++) { `$held[`$k][0] = 2 } }"
+                    $process = Start-Process -FilePath powershell.exe -WindowStyle Hidden -PassThru -ArgumentList '-NoProfile', '-Command', $hog
+                    Set-Content -LiteralPath "$root\memory-taken.txt" -Value "$($process.Id)"
+                    $taken = [pscustomobject]@{ mib = $takeMB; at = $takeAt; free_before_bytes = $free; process = $process.Id }
+                }
                 if ($phase -and -not $ended) {
                     # Looked for ten times a second, so that the stop lands in the phase and not after it.
                     $until = (Get-Date).AddSeconds(2)
                     do {
                         if ((Test-Path "$root\stdout.log") -and (Select-String -LiteralPath "$root\stdout.log" -SimpleMatch -Pattern "`"phase`":`"$phase`"" -Quiet)) {
+                            if ($turnOff) {
+                                # What the user would still have: the output on their screen.
+                                # (Read, not copied: the worker holds the log open for writing.
+                                # The converter runs on until the VM is off.)
+                                $shown = [string](Get-Content -LiteralPath "$root\stdout.log" -Raw -Encoding UTF8)
+                                $inPhase = $true; break
+                            }
                             Get-Process -Name ntfs2refs -ErrorAction SilentlyContinue | Stop-Process -Force
                             $inPhase = $true; break
                         }
@@ -745,17 +831,60 @@ public static class SiblingRaw {
                 # the working files come and go, between the look and the reading.
                 $sample = { param($take) try { [long](& $take) } catch { 0L } }
                 $running = @(Get-Process -Name ntfs2refs -ErrorAction SilentlyContinue)
-                [pscustomobject]@{ ended = $ended; at_hold = $atHold; in_phase = $inPhase
+                [pscustomobject]@{ ended = $ended; at_hold = $atHold; in_phase = $inPhase; shown = $shown; taken = $taken
+                    free_memory_bytes = & $sample { (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory * 1KB }
                     peak_working_set = & $sample { ($running | Measure-Object PeakWorkingSet64 -Maximum).Maximum }
                     private_bytes = & $sample { ($running | Measure-Object PrivateMemorySize64 -Maximum).Maximum }
-                    working_bytes = & $sample { (Get-ChildItem -LiteralPath 'S:\datalab\runs' -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum } }
+                    working_bytes = & $sample { (Get-ChildItem -LiteralPath $(if (Test-Path -LiteralPath 'M:\runs') { 'M:\runs' } else { 'S:\datalab\runs' }) -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum } }
             }
             foreach ($measure in 'peak_working_set', 'private_bytes', 'working_bytes') { if ($state.$measure -gt $usage[$measure]) { $usage[$measure] = $state.$measure } }
             $usage.samples++
+            if ($state.taken) {
+                $verdict.memory_taken = $state.taken
+                Say ("the converter reported the phase '{0}': another process takes {1} MiB of memory ({2:N0} MiB were free)" -f $state.taken.at, $state.taken.mib, ($state.taken.free_before_bytes / 1MB))
+            }
+            if ($TakeMemoryMB -gt 0 -and $verdict.Contains('memory_taken') -and $state.free_memory_bytes -gt 0 -and
+                (-not $verdict.Contains('least_free_memory_bytes') -or $state.free_memory_bytes -lt $verdict.least_free_memory_bytes)) { $verdict.least_free_memory_bytes = $state.free_memory_bytes }
             if ($state.at_hold) { $held = $true; Say "the converter reported its hold at '$HoldAt' and was ended" }
-            if ($state.in_phase) { $stopped = $true; Say "the converter reported the phase '$StopInPhase' and was ended" }
+            if ($state.in_phase -and $turnOff) {
+                $stopped = $true
+                [IO.File]::WriteAllText((Join-Path $records 'stdout-before-vm-off.log'), "$($state.shown)", [Text.UTF8Encoding]::new($false))
+                Say "the converter reported the phase '$StopInPhase'; turning the VM off"
+                $clock = [Diagnostics.Stopwatch]::StartNew()
+                try {
+                    Stop-VM -VM (Get-VM -Id $VmId) -TurnOff -Force
+                    $poweredOff = $true
+                    Start-VM -VM (Get-VM -Id $VmId)
+                } catch { $verdict.outcome = 'control-os-did-not-return-after-power-off'; throw "the VM could not be turned off and started again: $($_.Exception.Message)" }
+                # Every session into the guest ended with it: the one the
+                # attempt works through is made anew, and an administrator
+                # run's worker session is gone.
+                if ($script:worker) { Remove-PSSession $script:worker -ErrorAction SilentlyContinue; $script:worker = $null }
+                $again = Wait-ControlOs 15
+                if (-not $again) { $verdict.outcome = 'control-os-did-not-return-after-power-off'; throw 'the control OS did not start again after the VM was turned off' }
+                Remove-PSSession $session -ErrorAction SilentlyContinue
+                $script:session = $again
+                $backSeconds = [Math]::Round($clock.Elapsed.TotalSeconds, 1)
+                Say "the control OS has started again ($backSeconds s after the VM was turned off)"
+                break
+            } elseif ($state.in_phase) { $stopped = $true; Say "the converter reported the phase '$StopInPhase' and was ended" }
         } until ($state.ended -or (Get-Date) -gt $deadline)
-        [pscustomobject]@{ ended = [bool]$state.ended; held = $held; stopped = $stopped }
+        [pscustomobject]@{ ended = [bool]$state.ended; held = $held; stopped = $stopped; powered_off = $poweredOff; back_seconds = $backSeconds }
+    }
+    # Waits until the control OS answers PowerShell Direct again after the VM
+    # was turned off and started, and answers a new session into it (nothing
+    # if it does not within the minutes given).
+    function Wait-ControlOs([int]$Minutes) {
+        $deadline = (Get-Date).AddMinutes($Minutes)
+        while ((Get-Date) -lt $deadline) {
+            $new = $null
+            try {
+                $new = New-PSSession -VMId $VmId -Credential $credential -ErrorAction Stop
+                $null = Invoke-Command -Session $new -ScriptBlock { $env:COMPUTERNAME } -ErrorAction Stop
+                return $new
+            } catch { if ($new) { Remove-PSSession $new -ErrorAction SilentlyContinue }; Start-Sleep -Seconds 10 }
+        }
+        return $null
     }
     if ($VssProvider) {
         $provider = Invoke-Command -Session $session -ArgumentList $guestRoot, $VssProvider -ScriptBlock {
@@ -787,7 +916,7 @@ public static class SiblingRaw {
         if (-not $provider.listed) { $verdict.outcome = 'provider-not-made'; throw "Windows does not list the shadow-copy provider '$($provider.name)'" }
         Say "shadow-copy provider for this attempt, one the converter does not know: '$($provider.name)' ($VssProvider)"
     }
-    $arguments = @('--drive', 'V', '--scratch-directory', 'S:\datalab\runs')
+    $arguments = @('--drive', 'V', '--scratch-directory', $working)
     if ($TargetFormat -ne 'default') { $arguments += @('--target-format', $TargetFormat) }
     if ($TargetClusterBytes) { $arguments += @('--target-cluster-bytes', "$TargetClusterBytes") }
     if ($InterruptAt) { $arguments += @('--lab-hold-at', $InterruptAt, '--acknowledge-lab-hold-never-completes') }
@@ -849,7 +978,7 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         Say "a program holds a file open that it has deleted; listing without it: $($holding.text)"
     }
     if ($Check -or $CheckOnly) {
-        $checkArguments = @('--drive', 'V', '--scratch-directory', 'S:\datalab\runs', '--check')
+        $checkArguments = @('--drive', 'V', '--scratch-directory', $working, '--check')
         if ($TargetFormat -ne 'default') { $checkArguments += @('--target-format', $TargetFormat) }
         if ($TargetClusterBytes) { $checkArguments += @('--target-cluster-bytes', "$TargetClusterBytes") }
         if ($DropShortNames) { $checkArguments += @('--short-names', 'drop') }
@@ -873,7 +1002,7 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
             $seconds = [Math]::Round($clock.Elapsed.TotalSeconds, 1)
             if ($writer) { Stop-Job $writer; Remove-Job $writer -Force; Remove-Item 'V:\load-*.bin' -Force -ErrorAction SilentlyContinue }
             [IO.File]::WriteAllLines("$root\check.txt", [string[]]$text, [Text.UTF8Encoding]::new($false))
-            $left = @(Get-ChildItem 'S:\datalab\runs' -Directory -Filter 'check-*' -ErrorAction SilentlyContinue).Count
+            $left = @(Get-ChildItem $(if (Test-Path -LiteralPath 'M:\runs') { 'M:\runs' } else { 'S:\datalab\runs' }) -Directory -Filter 'check-*' -ErrorAction SilentlyContinue).Count
             $partition = Get-Partition -DriveLetter V; $disk = Get-Disk -Number $partition.DiskNumber
             [pscustomobject]@{ exit = $exit; seconds = $seconds; text = $text; left = $left
                 bytes = $partition.Size; offline = [bool]$disk.IsOffline; read_only = [bool]$disk.IsReadOnly; filesystem = (Get-Volume -DriveLetter V).FileSystem }
@@ -968,13 +1097,100 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         # The converter was ended while it prepared: it had not printed a
         # recovery command and had not written to the volume. What is the
         # volume now, and does what the run offers for this case work?
-        foreach ($leaf in 'stdout.log', 'stderr.log') {
-            try { Copy-Item -FromSession $session -LiteralPath "$guestRoot\$leaf" -Destination (Join-Path $records "interrupted-$leaf") } catch { }
+        if ($waited.powered_off) {
+            # The VM was turned off under the converter (the lab cannot cut
+            # power to the storage; it can turn the VM off). What it had
+            # shown was read a moment before that, and is what the user
+            # still has; what of its output reached the disk is kept beside
+            # it, and may be shorter.
+            $verdict.interruption = 'vm turned off'; $verdict.control_os_back_after_seconds = $waited.back_seconds
+            Copy-Item -LiteralPath (Join-Path $records 'stdout-before-vm-off.log') -Destination (Join-Path $records 'interrupted-stdout.log')
+            foreach ($leaf in 'stdout.log', 'stderr.log') {
+                try { Copy-Item -FromSession $session -LiteralPath "$guestRoot\$leaf" -Destination (Join-Path $records "on-disk-after-vm-off-$leaf") } catch { }
+            }
+        } else {
+            foreach ($leaf in 'stdout.log', 'stderr.log') {
+                try { Copy-Item -FromSession $session -LiteralPath "$guestRoot\$leaf" -Destination (Join-Path $records "interrupted-$leaf") } catch { }
+            }
         }
         if (-not $waited.stopped) { $verdict.outcome = 'preparation-phase-not-reached'; throw "the converter ended without reporting the phase '$StopDuringPreparation'" }
         $shown = Join-Path $records 'interrupted-stdout.log'
         if (Select-String -LiteralPath $shown -Pattern '^To recover: ' -Quiet) {
             $verdict.outcome = 'stopped-after-preparation'; throw "the converter had printed its recovery command before it was ended in '$StopDuringPreparation': not a stop during preparation"
+        }
+        if ($waited.powered_off) {
+            # The converter ran on between the look at its output and the
+            # VM going off: a recovery command it printed in that time may
+            # have reached the disk.
+            $onDisk = Join-Path $records 'on-disk-after-vm-off-stdout.log'
+            if ((Test-Path -LiteralPath $onDisk) -and (Select-String -LiteralPath $onDisk -Pattern '^To recover: ' -Quiet)) {
+                $verdict.outcome = 'stopped-after-preparation'; throw "the converter printed its recovery command before the VM was off: not a turn-off during preparation (phase '$StopDuringPreparation')"
+            }
+            # The control OS that started again has none of the virtual disks
+            # it had attached: the source's (and the working disk of
+            # -WorkingMbr) are attached again, as someone plugs a disk back
+            # in. A disk the preparation left offline stays so: bringing it
+            # back is the cancellation's work. One that is online has to be
+            # at its letter again.
+            $again = Invoke-Command -Session $session -ArgumentList "C:\n2r\datalab\$Name", "S:\datalab\$Name.$container", $verdict.source.observed.partition_offset, $(if ($WorkingMbr) { "S:\datalab\$Name-work.vhdx" } else { '' }) -ScriptBlock {
+                param($root, $file, $offset, $work)
+                # (S: is a disk of the VM's own and comes back by itself, a little after the guest answers.)
+                $deadline = (Get-Date).AddSeconds(180)
+                while (-not (Test-Path -LiteralPath $file) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+                if (-not (Test-Path -LiteralPath $file)) { return [pscustomobject]@{ ok = $false; said = "the source's virtual disk file $file is not there after the restart" } }
+                $null = New-Item -ItemType Directory -Path $root -Force
+                $attach = {
+                    param($path)
+                    $text = ''
+                    if (-not (Get-Disk | Where-Object { $_.Location -eq $path })) {
+                        Set-Content -LiteralPath "$root\attach-again.txt" -Value ("select vdisk file=`"$path`"`r`nattach vdisk") -Encoding ASCII
+                        $text = & diskpart.exe /s "$root\attach-again.txt" 2>&1 | Out-String
+                    }
+                    $until = (Get-Date).AddSeconds(30); $disk = $null
+                    do { $disk = Get-Disk | Where-Object { $_.Location -eq $path } | Select-Object -First 1; if (-not $disk) { Start-Sleep -Milliseconds 500 } } until ($disk -or (Get-Date) -gt $until)
+                    [pscustomobject]@{ disk = $disk; diskpart = $text }
+                }
+                # Puts a partition of an online disk at its letter if Windows did not.
+                $letter = {
+                    param($number, $partitionNumber, $wanted)
+                    $until = (Get-Date).AddSeconds(10)
+                    do { $now = "$((Get-Partition -DiskNumber $number -PartitionNumber $partitionNumber).DriveLetter)"; if ($now -ne $wanted) { Start-Sleep -Milliseconds 500 } } until ($now -eq $wanted -or (Get-Date) -gt $until)
+                    if ($now -eq $wanted) { return 'Windows gave it back' }
+                    try { Set-Partition -DiskNumber $number -PartitionNumber $partitionNumber -NewDriveLetter $wanted -ErrorAction Stop; 'assigned again' } catch { "could not be assigned: $($_.Exception.Message)" }
+                }
+                $source = & $attach $file
+                if (-not $source.disk) { return [pscustomobject]@{ ok = $false; said = "the source's virtual disk could not be attached again: $($source.diskpart)" } }
+                $number = $source.disk.Number
+                $partition = Get-Partition -DiskNumber $number -ErrorAction SilentlyContinue | Where-Object { $_.Offset -eq $offset } | Select-Object -First 1
+                $sourceLetter = 'not looked for: the disk is offline'
+                if (-not $partition) { $sourceLetter = "no partition at offset $offset" }
+                elseif (-not $source.disk.IsOffline) { $sourceLetter = & $letter $number $partition.PartitionNumber 'V' }
+                $workLetter = $null; $workOk = $true
+                if ($work) {
+                    $workOk = $false
+                    if (Test-Path -LiteralPath $work) {
+                        $working = & $attach $work
+                        if ($working.disk) {
+                            if ($working.disk.IsOffline) { Set-Disk -Number $working.disk.Number -IsOffline $false }
+                            $first = Get-Partition -DiskNumber $working.disk.Number | Sort-Object Offset | Select-Object -First 1
+                            if ($first) { $workLetter = & $letter $working.disk.Number $first.PartitionNumber 'M' } else { $workLetter = 'no partition' }
+                            $workOk = [bool](Test-Path -LiteralPath 'M:\runs')
+                        } else { $workLetter = "could not be attached again: $($working.diskpart)" }
+                    } else { $workLetter = "$work is not there after the restart" }
+                }
+                $disk = Get-Disk -Number $number
+                $mounted = [bool](Get-Partition -DriveLetter V -ErrorAction SilentlyContinue)
+                [pscustomobject]@{ ok = [bool]($partition -and ($mounted -or $disk.IsOffline) -and $workOk); said = ''
+                    source_disk = $number; source_offline = [bool]$disk.IsOffline; source_read_only = [bool]$disk.IsReadOnly; v_mounted = $mounted; v_letter = $sourceLetter
+                    working_letter = $workLetter }
+            }
+            if ($again.said) { $verdict.after_power_off = [ordered]@{ reattached = $false; said = $again.said } }
+            else {
+                $verdict.after_power_off = [ordered]@{ reattached = [bool]$again.ok; source_disk = $again.source_disk; source_disk_offline = $again.source_offline; source_disk_read_only = $again.source_read_only
+                    v_mounted = $again.v_mounted; v_letter = $again.v_letter; working_letter = $again.working_letter }
+                Say "the source's virtual disk is attached again: disk $($again.source_disk), $(if ($again.source_offline) { 'offline' } else { 'online' })$(if ($again.source_read_only) { ', read-only' }); V: $(if ($again.v_mounted) { 'mounted' } else { 'not mounted' }) ($($again.v_letter))$(if ($WorkingMbr) { "; the working disk's M: $($again.working_letter)" })"
+            }
+            if (-not $again.ok) { $verdict.outcome = 'source-not-reattached-after-power-off'; throw "after the restart the source$(if ($WorkingMbr) { ' or the working disk' }) could not be put back as it was attached: $(if ($again.said) { $again.said } else { "V: $($again.v_letter); M: $($again.working_letter)" })" }
         }
         $left = Invoke-Command -Session $session -ScriptBlock {
             [pscustomobject]@{ mounted = [bool](Get-Partition -DriveLetter V -ErrorAction SilentlyContinue)
@@ -1138,7 +1354,12 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         Say "listing after the run: $($compared.listed)"
         Say "before/after comparison$(if (-not $converted) { ', exact' }): $listing ($($compared.stage) exit $($compared.exit)): $($compared.summary)"
     }
-    $verdict.outcome = if ($StopDuringPreparation -and $AfterStop -eq 'cancel') {
+    $verdict.outcome = if ($StopDuringPreparation -and $PowerOffDuringPreparation) {
+        # The same after the VM was turned off and started again: the NTFS volume must be back and list exactly as before.
+        if ($run.exit -eq 0 -and $returned -and $listing -eq 'identical') { 'preparation-cancelled-after-power-off' }
+        elseif ($run.exit -eq 0 -and $returned) { "preparation-cancelled-after-power-off-but-listing-$listing" }
+        else { 'preparation-cancel-failed-after-power-off' }
+    } elseif ($StopDuringPreparation -and $AfterStop -eq 'cancel') {
         # Nothing had been written: the NTFS volume must be back and list exactly as before.
         if ($run.exit -eq 0 -and $returned -and $listing -eq 'identical') { 'preparation-cancelled' }
         elseif ($run.exit -eq 0 -and $returned) { "preparation-cancelled-but-listing-$listing" }
@@ -1180,7 +1401,7 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
         $left = [string](Get-Content -LiteralPath $stdout -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_ -match '^The run that was cut off left its working files' } | Select-Object -Last 1)
         $verdict.cancellation_said_of_what_is_left = $left
         if ($left) { Say "the cancellation said: $left" }
-        elseif ($verdict.outcome -in 'preparation-cancelled', 'restart-refused-then-cancelled') { $verdict.outcome = "$($verdict.outcome)-without-naming-what-is-left" }
+        elseif ($verdict.outcome -in 'preparation-cancelled', 'preparation-cancelled-after-power-off', 'restart-refused-then-cancelled') { $verdict.outcome = "$($verdict.outcome)-without-naming-what-is-left" }
     }
     $lengthBefore = $verdict.source.observed.partition_bytes; $lengthAfter = $verdict.volume_after.partition_bytes
     if ($lengthBefore -and $lengthAfter -and $lengthAfter -ne $lengthBefore) {
@@ -1289,12 +1510,19 @@ while (-not (Test-Path -LiteralPath '$root\deleted-release.txt') -and (Get-Date)
                     }
                 }
                 # The run's working files: a shadow as large as the volume.
-                Get-ChildItem -LiteralPath 'S:\datalab\runs' -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+                Get-ChildItem -LiteralPath $(if (Test-Path -LiteralPath 'M:\runs') { 'M:\runs' } else { 'S:\datalab\runs' }) -Directory -ErrorAction SilentlyContinue | ForEach-Object {
                     Get-ChildItem -LiteralPath $_.FullName -Recurse -Filter '*.vhdx' -ErrorAction SilentlyContinue | ForEach-Object {
                         Set-Content -LiteralPath "$root\detach.txt" -Value ("select vdisk file=`"$($_.FullName)`"`r`ndetach vdisk") -Encoding ASCII
                         $null = & diskpart.exe /s "$root\detach.txt" 2>&1
                     }
                     Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+                }
+                # The MBR working disk of -WorkingMbr, after what it held.
+                $work = "S:\datalab\$name-work.vhdx"
+                if (Test-Path -LiteralPath $work) {
+                    Set-Content -LiteralPath "$root\detach.txt" -Value ("select vdisk file=`"$work`"`r`ndetach vdisk") -Encoding ASCII
+                    $null = & diskpart.exe /s "$root\detach.txt" 2>&1
+                    Remove-Item -LiteralPath $work -Force -ErrorAction SilentlyContinue
                 }
             }
             if ($hostDisk) {

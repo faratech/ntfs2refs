@@ -693,25 +693,39 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
                 continue;
             }
             let handle = held(handles, index)?;
+            // A listing is paid for by what it is
+            // (`namespace_layout::listing_memory`); the paths seen are paid
+            // once the names are known.
             let (enumeration_budget, _enumeration_memory) = if let Some(payer) = enumeration_payer {
                 let count = expected_children
                     .get(directory.components)
                     .map_or(0, BTreeSet::len);
-                let evidence = count
-                    .checked_add(2)
-                    .and_then(|n| n.checked_mul(4096))
-                    .and_then(|n| n.checked_add(namespace_layout::CAPACITY * 4))
+                let (evidence, memory) = namespace_layout::listing_memory(count)
                     .ok_or_else(|| invalid("owned resource directory enumeration overflow"))?;
-                let memory =
-                    payer.reserve((evidence as u64).checked_mul(2).ok_or_else(|| {
-                        invalid("owned resource directory enumeration RAM overflow")
-                    })?)?;
+                let memory = payer.reserve(memory)?;
                 (Some(evidence), Some(memory))
             } else {
                 (None, None)
             };
+            let entries = enumerate_with_resource_budget(handle, enumeration_budget)?;
+            let _seen_memory = enumeration_payer
+                .map(|payer| {
+                    // A path seen: the directory's components and the name,
+                    // each a String, in a Vec in a node of the set.
+                    let parent = directory
+                        .components
+                        .iter()
+                        .fold(64 * (directory.components.len() as u64 + 3), |n, part| {
+                            n + part.len() as u64
+                        });
+                    payer.reserve(entries.iter().fold(65536, |n: u64, entry| {
+                        n.saturating_add(parent)
+                            .saturating_add(3 * entry.name_utf16.len() as u64)
+                    }))
+                })
+                .transpose()?;
             let mut seen = BTreeSet::new();
-            for entry in enumerate_with_resource_budget(handle, enumeration_budget)? {
+            for entry in entries {
                 if entry.name_utf16 == [46] || entry.name_utf16 == [46, 46] {
                     continue;
                 }

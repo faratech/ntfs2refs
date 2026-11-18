@@ -102,6 +102,35 @@ Step 'servicing: enable and disable a feature' {
     if ($LASTEXITCODE -notin 0, 3010) { throw "disabling $Feature failed (exit $LASTEXITCODE): $($text.Substring([Math]::Max(0, $text.Length - 300)))" }
     "$Feature enabled and disabled by the servicing stack"
 }
+# What Windows' own recovery environment and Setup make of this Windows:
+# observed and recorded, whatever it is. Neither fails the test. (Microsoft
+# documents starting Windows from ReFS for some builds only, and says that
+# the recovery environment does not run from ReFS.)
+Step 'recovery environment (reagentc /info), observed' {
+    $text = (& reagentc.exe /info 2>&1 | Out-String) -replace '\s+', ' '
+    $status = if ($text -match 'Windows RE status:\s*(\w+)') { $Matches[1] } else { 'not said' }
+    $location = if ($text -match 'Windows RE location:\s*(\S*)') { $Matches[1] } else { '' }
+    "reagentc exit $LASTEXITCODE; Windows RE status: $status; location: $(if ($location) { $location } else { 'none' })"
+}
+Step 'Setup compatibility scan from installation media, observed' {
+    $media = Get-Volume | Where-Object { $_.DriveType -eq 'CD-ROM' -and $_.DriveLetter -and (Test-Path -LiteralPath "$($_.DriveLetter):\setup.exe") } | Select-Object -First 1
+    if (-not $media) { throw 'skipped: no installation media in a DVD drive' }
+    # Scans and changes nothing: what an in-place repair upgrade would stop at.
+    $setup = Start-Process -FilePath "$($media.DriveLetter):\setup.exe" -ArgumentList '/Auto', 'Upgrade', '/Quiet', '/NoReboot', '/DynamicUpdate', 'Disable', '/Compat', 'ScanOnly', '/Eula', 'Accept' -PassThru -Wait
+    $code = '0x{0:X8}' -f ([uint32]([int64]$setup.ExitCode -band 0xFFFFFFFFL))
+    $meaning = switch ($code) {
+        '0xC1900210' { 'no compatibility issue found' }
+        '0xC1900208' { 'a compatibility issue blocks the upgrade' }
+        '0xC1900204' { 'the installation choice (keep files and apps) is not available' }
+        '0xC1900200' { 'the machine does not meet the requirements' }
+        '0xC190020E' { 'not enough free disk space' }
+        default { 'see setup''s logs under $WINDOWS.~BT\Sources\Panther' }
+    }
+    $blocks = @(Get-ChildItem -LiteralPath "$system\`$WINDOWS.~BT\Sources\Panther" -Filter 'CompatData*.xml' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 1 | ForEach-Object {
+        ([regex]::Matches((Get-Content -LiteralPath $_.FullName -Raw), 'BlockingType="(\w+)"[^>]*?(?:Title|Name)="([^"]*)"') | ForEach-Object { "$($_.Groups[1].Value): $($_.Groups[2].Value)" })
+    }) | Where-Object { $_ -notmatch '^None' } | Select-Object -First 5
+    "setup.exe /Compat ScanOnly exit $code ($meaning)$(if ($blocks) { '; ' + ($blocks -join '; ') })"
+}
 Step 'ReFS events' {
     $events = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; StartTime = $started.AddMinutes(-30); Level = 1, 2 } -ErrorAction SilentlyContinue | Where-Object { $_.ProviderName -match 'ReFS' })
     if ($events) { throw "ReFS logged $($events.Count) error(s) since the boot: $($events[0].Id) $((($events[0].Message -split "`n")[0]).Trim())" }

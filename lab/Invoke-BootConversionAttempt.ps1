@@ -24,6 +24,8 @@ param(
     [string]$FixtureCheckpoint = 'N2R-Thinned-Fixture',
     [string]$Binary,
     [int]$MemoryGB = 24,
+    # How long an attempt waits for the host to have memory for its VM.
+    [int]$WaitForMemoryMinutes = 240,
     [int]$Processors = 8,
     [int]$ScratchGB = 120,
     [ValidateSet('ReFS', 'NTFS')][string]$ScratchFileSystem = 'ReFS',
@@ -434,6 +436,9 @@ function Start-Disk0Alone {
     Save-DetachedDisks $returnable
     $verdict.detached_for_boot = @($returnable | ForEach-Object { $_.Path })
     $others | Remove-VMHardDiskDrive
+    # The installation media goes too, and comes back for the use test,
+    # whose Setup scan reads it (#113).
+    $installationMedia = @(Get-VMDvdDrive -VM $vm | Where-Object Path | ForEach-Object Path) | Select-Object -First 1
     Get-VMDvdDrive -VM $vm | Remove-VMDvdDrive
     $disk0 = Get-VMHardDiskDrive -VM $vm
     if (@($disk0).Count -ne 1) { throw 'Expected exactly disk0 to remain attached' }
@@ -628,9 +633,27 @@ try {
     if ($hostFreeDisk -lt [long]$MinHostFreeGB * 1GB) {
         throw ("Host volume has {0:N1} GB free with checkpoint '{2}' restored, and that stopped growing {3} s ago; an attempt needs {1} GB. Free space first (old attempts' scratch.vhdx files, or the other lab VM's last attempt)." -f ($hostFreeDisk / 1GB), $MinHostFreeGB, $snapshots[0].Name, ($waited - $grownAt))
     }
-    $hostFree = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory * 1KB
-    $memory = [Math]::Min([long]$MemoryGB * 1GB, [long]($hostFree * 0.8 / 1GB) * 1GB)
-    if ($memory -lt 8GB) { throw "Host has too little free memory for the VM: $([Math]::Round($hostFree/1GB,1)) GB free" }
+    # The VM fits what the host has free, and the host keeps 8 GB of it.
+    # (It was given four fifths: with 23 GB free that left the host under
+    # 5 GB, a run's own growth took the rest, and the host stopped the round
+    # for lack of memory: 17 November, 2.6 GB free of 64, #165.)
+    # A VM is given less than 8 GB only when the caller asked for it (a run
+    # on a small machine, -MemoryGB 4), never because the host is short:
+    # where the host has too little, the attempt waits for it, for up to
+    # -WaitForMemoryMinutes, and only then gives up.
+    $least = [Math]::Min(8GB, [long]$MemoryGB * 1GB)
+    $waitedForMemory = 0
+    while ($true) {
+        $hostFree = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory * 1KB
+        $memory = [Math]::Min([long]$MemoryGB * 1GB, [long](($hostFree - 8GB) / 1GB) * 1GB)
+        if ($memory -ge $least) { break }
+        if ($waitedForMemory -ge $WaitForMemoryMinutes * 60) {
+            throw "Host has too little free memory for the VM: $([Math]::Round($hostFree/1GB,1)) GB free after waiting $WaitForMemoryMinutes minutes; the VM needs $([Math]::Round($least/1GB)) GB and the host keeps 8"
+        }
+        if ($waitedForMemory % 600 -eq 0) { Say ("waiting for host memory: {0:N1} GB free, the VM needs {1:N0} GB and the host keeps 8" -f ($hostFree / 1GB), ($least / 1GB)) }
+        Start-Sleep -Seconds 30; $waitedForMemory += 30
+    }
+    if ($waitedForMemory) { Say ("host memory is there after {0} s: the VM gets {1:N0} GB" -f $waitedForMemory, ($memory / 1GB)) }
     Set-VM -VM $vm -StaticMemory -MemoryStartupBytes $memory
     Set-VMProcessor -VM $vm -Count ([Math]::Min($Processors, [Environment]::ProcessorCount))
     # The boot step of an earlier attempt detached everything but disk0, and
@@ -1149,6 +1172,10 @@ try {
     Phase 'boot'
     if ($Acceptance -and $verdict.outcome -in 'BOOTED-ON-REFS', 'RESUMED-BOOTED-ON-REFS') {
         # Reaching the desktop is not the same as going on being used and serviced.
+        if ($installationMedia) {
+            try { Add-VMDvdDrive -VM (Get-LabVm) -Path $installationMedia; Say "installation media attached again for the use test: $installationMedia" }
+            catch { Say "the installation media could not be attached again: $($_.Exception.Message)" }
+        }
         $use = Invoke-WindowsUseTest 'ReFS' | Select-Object -Last 1
         $verdict.acceptance = $use
         if (-not $use.passed) { $verdict.result = $verdict.outcome; $verdict.outcome = "$($verdict.outcome)-BUT-USE-FAILED" }

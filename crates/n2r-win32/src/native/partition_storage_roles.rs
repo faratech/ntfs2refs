@@ -823,7 +823,13 @@ fn observe_partition_storage_roles_impl(
             *cached = Some(Session::new()?);
         }
         let session = cached.as_ref().unwrap();
-        let deadline = Instant::now() + Duration::from_secs(15);
+        // The storage service answers in a fraction of a second on a quiet
+        // machine. On a busy one it took more than the fifteen seconds all
+        // the queries below had between them, and a run was refused in
+        // preparation for it, and its cancellation after it (#163). The
+        // wait for a source that is still arriving stays ten seconds.
+        let arrival = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + Duration::from_secs(180);
         let mut before = query(session, &disks, maximum, deadline)?;
         let target_guid = layout::guid_bytes(&binding.storage.identity.partition_guid)?;
         let listed = |rows: &[StoragePartitionRole]| {
@@ -842,7 +848,7 @@ fn observe_partition_storage_roles_impl(
             let mut arriving = false;
             while selected.is_none()
                 && super::attributes(disk, &mut Vec::new())? & 1 == 0
-                && Instant::now() + Duration::from_secs(5) < deadline
+                && Instant::now() < arrival
             {
                 arriving = true;
                 std::thread::sleep(Duration::from_millis(250));
@@ -852,7 +858,7 @@ fn observe_partition_storage_roles_impl(
             // The catalog was caught while the disk arrived. It is read
             // until two readings in a row agree, so that everything below
             // is of one state of it.
-            while arriving && Instant::now() + Duration::from_secs(5) < deadline {
+            while arriving && Instant::now() < arrival {
                 std::thread::sleep(Duration::from_millis(250));
                 let again = query(session, &disks, maximum, deadline)?;
                 if again == before {

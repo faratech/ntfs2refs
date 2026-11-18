@@ -302,6 +302,8 @@ static LEDGER_HOLDERS: Mutex<(u64, String)> = Mutex::new((0, String::new()));
 /// sixty-fourth of the limit since that was last written down, so that a
 /// run pays for at most sixty-four descriptions a ledger.
 pub fn note_ledger(held: u64, needed: u64, limit: u64) -> bool {
+    LEDGER_NOW.0.store(held, Relaxed);
+    LEDGER_NOW.1.store(needed, Relaxed);
     if LEDGER_PEAK.fetch_max(held, Relaxed) < held {
         LEDGER_LIMIT.store(limit, Relaxed);
     }
@@ -323,6 +325,16 @@ fn holders_due(needed: u64, described: u64, limit: u64) -> bool {
         .is_some_and(|due| needed >= due)
 }
 
+/// How far a run that fits itself to the machine went beyond the memory it
+/// set aside when it started, at the most.
+static BEYOND_BUDGET: AtomicU64 = AtomicU64::new(0);
+
+/// The ledger let what the run cannot do without go this far beyond its
+/// budget (`ArtifactArena::go_beyond_budget`).
+pub fn note_beyond_budget(bytes: u64) {
+    BEYOND_BUDGET.fetch_max(bytes, Relaxed);
+}
+
 /// What held a ledger's memory when what the run could not do without stood
 /// at `needed`: printed with the totals, so that a run says what a volume's
 /// memory went to and not only how much it was.
@@ -338,6 +350,35 @@ pub fn note_ledger_holders(needed: u64, holders: String) {
     {
         *described = (needed, holders);
     }
+}
+
+/// What the ledger holds and needs at this moment.
+static LEDGER_NOW: (AtomicU64, AtomicU64) = (AtomicU64::new(0), AtomicU64::new(0));
+
+/// What holds the run's memory so far, for a run that is ended from
+/// outside and never reaches [`finish`]: written with the interim profile.
+pub fn interim_memory() {
+    let peak = LEDGER_PEAK.load(Relaxed);
+    if peak == 0 {
+        return;
+    }
+    let step = STEP_HOLDERS
+        .lock()
+        .map(|holders| format!("{} MiB: {}", holders.0 >> 20, holders.1))
+        .unwrap_or_default();
+    eprintln!(
+        "memory-so-far: reservations peaked at {} MiB of {} MiB; needed at most {} MiB; in this step {}; {} caches given up",
+        peak >> 20,
+        LEDGER_LIMIT.load(Relaxed) >> 20,
+        LEDGER_NEEDED_PEAK.load(Relaxed) >> 20,
+        step,
+        crate::evict::times_given_up()
+    );
+    eprintln!(
+        "memory-now: reservations hold {} MiB, of which {} MiB are needed",
+        LEDGER_NOW.0.load(Relaxed) >> 20,
+        LEDGER_NOW.1.load(Relaxed) >> 20
+    );
 }
 
 /// Prints the last phase and the totals. Safe to call more than once.
@@ -382,6 +423,13 @@ pub fn finish() {
                 LEDGER_LIMIT.load(Relaxed) >> 20,
                 LEDGER_NEEDED_PEAK.load(Relaxed) >> 20
             );
+            let beyond = BEYOND_BUDGET.load(Relaxed);
+            if beyond != 0 {
+                eprintln!(
+                    "memory-beyond: that was more than it may hold, and the run went on with {} MiB beyond it that Windows could still give",
+                    beyond >> 20
+                );
+            }
             if let Ok(holders) = LEDGER_HOLDERS.lock()
                 && !holders.1.is_empty()
             {

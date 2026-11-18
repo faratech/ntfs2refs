@@ -203,3 +203,83 @@ fn multi_extent_incomplete_mbr_overlap_alias_and_changed_native_routes_are_refus
         );
     }
 }
+
+fn mbr_fixture() -> StorageEvidence {
+    let mut e = fixture();
+    let g = &mut e.gpt_layout;
+    g.fill(0);
+    p32(g, 4, 2);
+    p32(g, 8, 0x9abc_def0);
+    for (index, number, start, size) in [(0, 1, 1 << 20, 15 << 20), (1, 2, OFFSET, SIZE)] {
+        let at = 48 + index * 144;
+        p64(g, at + 8, start);
+        p64(g, at + 16, size);
+        p32(g, at + 24, number);
+        g[at + 32] = 0x07;
+        g[at + 34] = 1;
+    }
+    e
+}
+
+#[test]
+fn working_storage_and_a_data_volume_may_lie_on_an_mbr_disk_identified_by_its_signature() {
+    let e = mbr_fixture();
+    let working = Role::Journal {
+        allow_additional_partitions: true,
+    };
+    let b = discovery::binding_from_evidence(VOLUME, &e, working, 0).unwrap();
+    assert_eq!(b.disk_number, 7);
+    assert_eq!(b.identity.partition_number, 2);
+    assert_eq!(b.identity.disk_guid, "9abcdef0-4d42-5220-6469-736b00000000");
+    assert!(n2r_win32::mbr_layout::is_mbr_disk(&b.identity.disk_guid));
+    assert_ne!(b.identity.partition_guid, b.identity.disk_guid);
+    assert_eq!(b.identity.partition_offset, OFFSET);
+    assert_eq!(b.identity.partition_bytes, SIZE);
+    // The same disk read again is the same binding: a recovery compares them.
+    assert_eq!(
+        b,
+        discovery::binding_from_evidence(VOLUME, &e, working, 0).unwrap()
+    );
+    assert_eq!(
+        n2r_win32::journal_file::enrolled_disk_label(&b.identity.disk_guid),
+        "mbr-9abcdef0"
+    );
+    assert_eq!(
+        n2r_win32::journal_file::enrolled_disk_label("{12345678-1111-2222-aaaa-123456789abc}"),
+        "gpt-12345678-1111-2222-aaaa-123456789abc"
+    );
+    // A data volume to convert is found the same way where it has the disk
+    // to itself; with a partition beside it, it is refused with what to do.
+    let refused = discovery::binding_from_evidence(VOLUME, &e, Role::Source, 0).unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains("is MBR and holds 1 other partition(s)"),
+        "{refused}"
+    );
+    let mut alone = mbr_fixture();
+    alone.gpt_layout[48..48 + 144].fill(0);
+    let alone = discovery::binding_from_evidence(VOLUME, &alone, Role::Source, 0).unwrap();
+    assert_eq!(alone.identity, b.identity);
+    assert_eq!(
+        alone.layout_profile,
+        n2r_win32::general_layout::GeneralDiskLayoutProfile::DedicatedData
+    );
+    // The Windows disk is no source, MBR or not.
+    let mut on_windows_disk = mbr_fixture();
+    on_windows_disk.gpt_layout[48..48 + 144].fill(0);
+    assert!(discovery::binding_from_evidence(VOLUME, &on_windows_disk, Role::Source, 7).is_err());
+    // An installed Windows to convert, the shadow, and working storage that
+    // must have a disk to itself stay with GPT.
+    for role in [
+        Role::OfflineWindowsSource,
+        Role::Shadow,
+        Role::ShadowReadOnly,
+        Role::Journal {
+            allow_additional_partitions: false,
+        },
+    ] {
+        let error = discovery::binding_from_evidence(VOLUME, &e, role, 0).unwrap_err();
+        assert!(error.to_string().contains("GPT disk required"), "{error}");
+    }
+}

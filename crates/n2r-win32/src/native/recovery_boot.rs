@@ -14,11 +14,17 @@ use std::{
     time::Duration,
 };
 mod bcd_device;
+mod cancel;
 mod cold;
 mod fat;
 mod metadata;
 mod native;
 mod offreg;
+pub use cancel::{
+    RecoveryBootCancellationReceipt, RecoveryBootSelectionState,
+    cancel_recovery_boot_in_recovery_environment, cancel_recovery_boot_in_windows,
+    observe_recovery_boot_in_windows, require_readable_boot_configuration,
+};
 pub use cold::{RecoveryBootGuard, RecoveryBootGuardFacts, RecoveryBootRestorationReceipt};
 use metadata::{EfiIdentity, StorePin};
 const BOOTMGR: &str = "{9dea862c-5cdd-4e70-acc1-f32b344d4795}";
@@ -375,13 +381,14 @@ impl OwnedRecoveryBoot {
             "native active/system EFI BCD stores differ",
         )?;
         let fw = tool.enum_object(None, FWBOOTMGR, directory)?;
+        // Nothing set for the next start alone. Which entry is first is not
+        // asked here: `native::firmware` above has read the firmware's own
+        // variables and holds the entry the running Windows was started
+        // through to be the first of the boot order, whether that entry is
+        // the Windows Boot Manager or the disk as a device.
         need(
-            !fw.contains_key("bootsequence")
-                && fw
-                    .get("displayorder")
-                    .and_then(|v| v.first())
-                    .is_some_and(|s| s == BOOTMGR),
-            "UEFI Windows Boot Manager must already be first with no one-shot sequence",
+            !fw.contains_key("bootsequence"),
+            "the firmware has a boot entry set for the next start alone (a one-time boot sequence): start Windows once more, or clear it, and run the conversion again",
         )?;
         native::flush_system_bcd_with_events(events)?;
         let original_store =

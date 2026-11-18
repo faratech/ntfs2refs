@@ -5,9 +5,12 @@ pub use source::{
 };
 mod source;
 pub(crate) use source::OfflineBootMetadataWitness;
+mod cancel;
 mod journal_bootstrap;
 use super::*;
 use crate::journal_file::GeneralJournalStorageBinding;
+pub(crate) use cancel::{available_disk_layout, current_ram, make_disk_available};
+pub use cancel::{give_back_prepared_source_offline, open_journal_volume_for_cancellation};
 pub use source::{
     OfflineFreshWitness, OfflineFrozenSource, OfflinePagedNtfsObservation,
     OfflinePreparedBootGuardRequirements, OfflinePreparedClosedQualification,

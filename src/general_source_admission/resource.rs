@@ -1161,6 +1161,14 @@ impl ResourceSourceContext {
                 raw.header().geometry == geometry,
                 "frozen source geometry differs from online capture"
             );
+            // A Windows volume was not read before it was frozen: what it
+            // needs in memory is known here first. (A data volume was asked
+            // the same while it was online.)
+            if binding.layout_profile
+                == n2r_win32::general_layout::GeneralDiskLayoutProfile::OfflineWindows
+            {
+                crate::run_memory::refuse_frozen_source(&raw, budget.ram_bytes)?;
+            }
             // A data volume's short names refuse it, unless the run was
             // asked to leave them behind: they are then listed below, in
             // the run's records, and no object gets one on the new volume.

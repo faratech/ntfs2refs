@@ -359,7 +359,7 @@ dependencies = [
 
 [[package]]
 name = "n2r-win32"
-version = "0.3.0-beta.1"
+version = "0.4.0"
 dependencies = [
  "hex",
  "serde",
@@ -401,7 +401,7 @@ dependencies = [
 
 [[package]]
 name = "ntfs2refs"
-version = "0.3.0-beta.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",

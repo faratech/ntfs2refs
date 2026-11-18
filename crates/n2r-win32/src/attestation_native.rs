@@ -569,14 +569,6 @@ pub fn collect_file_metadata_single_content_pass(request: &Request) -> io::Resul
     collect_file_metadata_with_passes(request, request, true, None)
 }
 
-pub(crate) fn collect_file_metadata_paged(
-    request: &Request,
-    path: &std::path::Path,
-    budget: crate::observation_pages::NativeObservationBudget,
-    single_content_pass: bool,
-) -> io::Result<crate::observation_pages::PagedNativeObservation> {
-    collect_file_metadata_paged_domain(request, path, budget, single_content_pass)
-}
 pub(crate) fn collect_file_metadata_paged_domain_with_memory(
     selectors: &impl NativeRequestDomain,
     path: &std::path::Path,

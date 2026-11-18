@@ -31,7 +31,7 @@ struct Cli {
     command: Option<Command>,
 }
 /// `capabilities` is the one subcommand. The research tools for raw images
-/// and the request-file commands of earlier designs were removed with 0.4.0;
+/// and the request-file commands of earlier designs were removed with 0.0.1;
 /// the tag `archive/hidden-routes` keeps them.
 #[derive(Subcommand)]
 enum Command {

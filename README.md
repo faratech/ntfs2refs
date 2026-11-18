@@ -1,167 +1,83 @@
-# ntfs2refs
+<h1 align="center">ntfs2refs</h1>
 
-> **WARNING: EXPERIMENTAL SOFTWARE. IT REWRITES A VOLUME'S FILE SYSTEM IN
-> PLACE AND HAS BEEN TESTED ONLY ON VIRTUAL DISKS IN A LABORATORY. BACK UP
-> EVERYTHING FIRST AND CHECK THAT THE BACKUP RESTORES. NO WARRANTY OF ANY
-> KIND: READ [DISCLAIMER.md](DISCLAIMER.md).**
+<p align="center">
+  <b>Convert an NTFS drive to ReFS in place, without reformatting.</b><br>
+  For Windows 11 and Windows Server 2025.
+</p>
 
-Converts an NTFS volume to ReFS in place, on the Windows machine that owns the
-disk. File data stays where it is on the disk wherever ReFS can use it there;
-only the file system around it is replaced.
+<p align="center">
+  <img alt="version 0.0.1" src="https://img.shields.io/badge/version-0.0.1-0078D6">
+  <img alt="status: experimental" src="https://img.shields.io/badge/status-experimental-orange">
+  <img alt="Windows 11 | Windows Server 2025" src="https://img.shields.io/badge/Windows-11%20%7C%20Server%202025-0078D6">
+  <img alt="licence: evaluation only" src="https://img.shields.io/badge/licence-evaluation%20only-red">
+</p>
 
-This is version 0.4.0. Everything it has converted was a
-virtual disk in a lab, the largest holding 23 GB. Keep a backup you have
-restored from before, and read [what the lab showed and did not
-show](#what-has-been-shown) before trusting it with a volume.
+> [!CAUTION]
+> **EXPERIMENTAL SOFTWARE, FOR EVALUATION AND TESTING ONLY. DO NOT USE IT IN PRODUCTION.**
+> It rewrites a drive's file system in place and has been tested only on
+> virtual disks in a lab. Back up everything first, and check that the backup
+> restores. No warranty: read [DISCLAIMER.md](DISCLAIMER.md) and [LICENSE](LICENSE).
+
+ntfs2refs turns an NTFS volume into a ReFS (Resilient File System) volume on
+the machine that owns the disk. Files, folders, streams, permissions, links
+and timestamps come across; file data stays where it is on the disk wherever
+ReFS can use it there, and only the file system around it is rebuilt. A run
+that is interrupted is resumed or rolled back with the command it prints.
 
 ## What it converts
 
-- **A data volume** on a disk other than the running Windows':
-  `ntfs2refs --drive E --scratch-directory S:\runs`. A GPT disk may hold
-  other partitions; their volumes go offline with it while the run lasts and
-  are not written to.
-- **A data partition on the disk of the running Windows**, through a
-  restart: `ntfs2refs --drive D --restart-media E:\ --scratch-directory S:\runs`,
-  with Windows installation media at `E:`. See the
-  [guide](docs/cli-workflow.md#a-partition-on-the-windows-disk).
-- **An installed Windows that is not running**, from a second Windows on
-  another disk: `--windows-boot-volume`. One Windows build has been converted
-  and booted this way; any other is refused. See the
-  [guide](docs/cli-workflow.md#convert-an-installed-windows).
+| | |
+|---|---|
+| **A data drive** on a disk of its own (GPT, or an MBR disk it has to itself) | `--drive E` |
+| **A data partition beside Windows** on the system disk, through a restart | `--drive D --restart-media E:\` |
+| **An installed Windows** that is not running, from a second Windows | `--drive D --windows-boot-volume` |
 
-It does not convert the Windows it is running on, or a volume that shares an
-MBR disk with other partitions (a volume that has an MBR disk to itself
-converts). `ntfs2refs --list` says for each NTFS partition whether it can be
-converted, how, and if not, why.
+The new volume is a Dev Drive or standard ReFS (`--target-format`).
 
-## What you need
+## Quick start
 
-- Windows 11 24H2, Windows Server 2025 or later (build 26100 or later), x64.
-  Conversions were run on builds 26100 (Windows Server 2025) and 26300
-  (Windows 11); on another build the run says before it starts that it is the
-  first.
-- An elevated terminal.
-- Free memory in proportion to the number of files: about 2 GB for 100,000
-  files and 8 GB for 500,000. `--check` gives the figure for a volume. With
-  less than that free a run still goes ahead: it takes the rest from the page
-  file and is slower, and says so before it starts.
-- Working storage on a different disk (`--scratch-directory`). The run builds
-  the new file system there and keeps there what it needs to undo its changes.
-  The lab's Windows volume, with 22.9 GB in use, needed about 30 GB; a volume
-  whose NTFS clusters are smaller than the ReFS clusters asked for needs room
-  for most of its data.
-- A backup. A beta that rewrites a file system is not a substitute for one.
-
-The result is a ReFS volume formatted as a Dev Drive, or on Windows Server as
-an ordinary ReFS volume; `--target-format dev-drive|standard` chooses, and
-standard works only where Windows itself formats ordinary ReFS volumes. See
-[the target](docs/cli-workflow.md#the-target).
-
-## Use
+From an elevated terminal, with working storage on another disk:
 
 ```powershell
-.\ntfs2refs.exe --list
-.\ntfs2refs.exe --drive E --scratch-directory S:\runs --check
-.\ntfs2refs.exe --drive E --scratch-directory S:\runs --diagnose
-.\ntfs2refs.exe --drive E --scratch-directory S:\runs
+ntfs2refs --list                                         # which drives convert, and why not
+ntfs2refs --drive E --scratch-directory S:\runs --check  # read-only: what it refuses and needs
+ntfs2refs --drive E --scratch-directory S:\runs          # convert
 ```
 
-`--check` reads the volume while it stays online and in use, and changes
-nothing: it says what would stop a conversion and what one would take in
-working storage, memory and time. `--diagnose` goes through the whole
-preparation, with the volume offline meanwhile, reports everything that would
-stop a conversion, and writes nothing to the volume. The conversion itself
-makes the check first, asks for confirmation, prints a recovery command before
-its first write to the volume, and ends with the volume online as ReFS under
-the same drive letter. With `--compare-listing` it also lists the volume
-before and after, every file read in full, and compares the two, as the lab
-does for every conversion it runs.
+## Requirements
 
-The [operating and recovery guide](docs/cli-workflow.md) has the details: the
-options, what each refusal means, and what to do if a run stops.
+- Windows 11 24H2 or Windows Server 2025 (build 26100 or later), x64, as administrator
+- Working storage on a second disk; `--check` says how much
+- A backup you have restored from
 
-## What changes on the volume
+## Documentation
 
-Files, directories, named streams, hard links, sparse files, security,
-timestamps, attributes, extended attributes, junctions and symbolic links are
-carried over. Four things are not, and the run says so:
+- [Guide](docs/cli-workflow.md): every option, what is refused and why, recovery
+- [Feature matrix](docs/feature-matrix.md) and [recovery matrix](docs/recovery-matrix.md): what the lab has shown
+- [Changelog](CHANGELOG.md) · [Performance](docs/performance.md) · [Disclaimer](DISCLAIMER.md)
 
-- **Object IDs.** Windows gives a file one when a shortcut to it is made. ReFS
-  has none. Each is checked against the volume's own index and kept in the
-  run's records. A shortcut still finds its target by its path.
-- **NTFS compression.** Compressed data becomes ordinary data and needs the
-  room for it.
-- **The change journal.** The converted volume starts a new one.
-- **The case-sensitive mark of a directory.** WSL and Git mark the
-  directories they make. Where no two names in the directory differ only by
-  case, every name stays reachable; the converter does not set the mark on
-  the new volume and lists the directories in the run's records.
+## FAQ
 
-A data volume is refused, before anything is written and with what to do about
-it, if it has 8.3 short names (unless you ask for them to be left behind with
-`--short-names drop`), is encrypted with BitLocker, has shadow copies,
-or holds EFS-encrypted files, cloud placeholders, `compact /exe` files, Data
-Deduplication, disk quotas in use or two names in one directory that differ
-only by case, or was not dismounted cleanly. The guide lists each with its remedy, and
-[the feature matrix](docs/feature-matrix.md) has one row per NTFS feature.
+**Can I convert NTFS to ReFS without formatting or losing data?**
+That is what ntfs2refs does. It is experimental: back up first.
 
-Backup software on the machine does not stand in the way unless its
-shadow-copy provider holds a shadow copy or does not answer Windows. The run
-names the provider; software that keeps track of what changed on a volume
-needs a full backup after the conversion.
+**Can it convert the drive Windows is running from?**
+No. Convert an installed Windows from a second Windows; a data partition
+beside the running Windows converts through a restart.
 
-On a converted Windows volume each 8.3 short name becomes a link beside the
-long name, so `C:\PROGRA~1` still leads to `C:\Program Files`. The links are
-visible in Explorer.
-
-## If a run stops
-
-A run prints a recovery command before its first write to the volume. If it
-stops after that, keep the working storage and run that command:
-
-```powershell
-.\ntfs2refs.exe --recover <printed-directory> --recovery-sha256 <printed-checksum>
-```
-
-That finishes the conversion. With `--rollback` it puts NTFS back instead,
-which is possible until the last new sector is on the disk.
-
-A run that stops earlier has written nothing. If it ended by itself, with a
-refusal or an error, the volume is back as NTFS: start again. If it was cut
-off, the volume is left offline, and the command the run printed at its start
-(`To get it back as NTFS: ...`) gives it back.
-
-[The guide](docs/cli-workflow.md#if-a-run-stops) has both cases, and how to
-find either command again when the screen is gone.
-
-## What has been shown
-
-- [The feature matrix](docs/feature-matrix.md): what a conversion does with
-  each NTFS feature, each row with the lab case that shows it.
-- [The recovery matrix](docs/recovery-matrix.md): every point at which a
-  conversion was stopped, how it was stopped, and how each recovery ended.
-  That includes the full Windows volume with the machine turned off half way
-  through the writes: resumed, it starts on ReFS; rolled back, on NTFS.
-- Converted volumes were then used: written to, filled, snapshotted, taken
-  offline and brought back. The converted Windows passed `sfc`, a DISM scan
-  and a servicing change, and started again twice.
-
-Not shown: a physical disk; a volume holding more than 23 GB or more than
-190,000 files; a power cut to the storage itself (the lab turns a virtual
-machine off, and its disks are files of the host); a Windows build other than
-26100 and 26300; a ReFS version other than 3.14.
-
-`ntfs2refs capabilities` prints what a given executable admits and refuses.
+**What does not come across?**
+What ReFS does not have: object IDs, NTFS compression and the change journal;
+on a data drive, 8.3 short names are refused or dropped. The guide lists each.
 
 ## Build
 
 ```powershell
-cargo test --locked --workspace --all-targets
-cargo build --locked --release --bin ntfs2refs --bin lab-volume-manifest
+cargo build --locked --release --bin ntfs2refs --bin ntfs2refs-recovery
 ```
 
-Rust 1.98.1, Windows x64 MSVC. `lab\New-Release.ps1` builds the release ZIP.
-[AGENTS.md](AGENTS.md) has the rules a change is held to, and
-[the lab guide](lab/README.md) how conversions are run and compared.
-[docs/history](docs/history/README.md) holds the documents of earlier designs
-and builds; they do not describe this one.
+Rust 1.98.1, Windows x64 (MSVC). Contributors: [AGENTS.md](AGENTS.md) and the [lab guide](lab/README.md).
+
+## Licence
+
+Version 0.0.1 · © 2026 Fara Technologies LLC · temporary evaluation licence,
+all rights reserved: see [LICENSE](LICENSE). Not affiliated with Microsoft.

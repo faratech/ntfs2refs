@@ -163,7 +163,7 @@ fn capabilities_report_what_the_executable_enforces() {
         assert_eq!(announced["refs_sys_sha256"], enforced.refs_sys_sha256);
     }
 
-    // No route keeps fixed limits: the one that did went with 0.4.0.
+    // No route keeps fixed limits: the one that did went with 0.0.1.
     let routes = capabilities["conversion_routes"].as_array().unwrap();
     assert!(routes.iter().all(|route| route["route"] != "whole-image"));
     for route in routes {

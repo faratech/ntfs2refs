@@ -308,6 +308,13 @@ try {
             # comparison let through is held to nothing below.
             $summary = & "$root\lab-volume-manifest.exe" compare --before "$root\manifest-before.jsonl" --after "$root\manifest-after.jsonl" --report "$root\manifest-report.json" 2>&1 | Out-String
             $compare = $LASTEXITCODE
+            if ($compare -ne 0) {
+                # The directory System Volume Information itself has new
+                # times once Windows has written into it: that alone is no
+                # difference of the volume's.
+                $other = @((Get-Content -LiteralPath "$root\manifest-report.json" -Raw | ConvertFrom-Json).differences | Where-Object { $_.path -ne '\System Volume Information' })
+                if (-not $other) { $compare = 0; $summary = "only the times of System Volume Information differ. $summary" }
+            }
             if ($compare -eq 0) {
                 $let = @(((Get-Content -LiteralPath "$root\manifest-report.json" -Raw | ConvertFrom-Json).allowed.PSObject.Properties | ForEach-Object Name) | Where-Object { $_ -ne 'System Volume Information content' })
                 if ($let) { $compare = 2; $summary = "let through besides Windows' own files: $($let -join ', '). $summary" }

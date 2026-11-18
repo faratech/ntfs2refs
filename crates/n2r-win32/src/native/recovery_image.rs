@@ -798,12 +798,10 @@ fn enrollment(
                 != layout::guid_bytes(&journal.disk.identity.disk_guid)?,
         "recovery image J must be different physical disk",
     )?;
-    need(
-        source.storage.identity.partition_bytes == 55834574848
-            && source.storage.identity.logical_sector_bytes == 512
-            && source.storage.identity.physical_sector_bytes == 4096,
-        "fixed shared52GiB source profile required",
-    )?;
+    // Any size: the partition was 52 GiB exactly in the one profile this
+    // route was first shown with, and that size was required here. What the
+    // route needs of the source is what `source.validate()` above holds it
+    // to.
     let os = full_windows(events)?;
     need(
         os == source.storage.disk_number,

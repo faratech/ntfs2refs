@@ -153,6 +153,20 @@ try {
         }
     }
     $verdict.made = $made
+    # Windows numbers a disk's partitions anew when it starts, by where they
+    # lie: a partition made a moment ago in a gap before another one has a
+    # number it will not keep (5 here, 4 after a start), and a run binds its
+    # volume by number as well as by GUID. The machine is started once more,
+    # as it would have been between someone making a partition and
+    # converting it. (The first run of this route to reach WinPE stopped
+    # there for the number: "source is not the exact nonrequired basic data
+    # partition".)
+    Invoke-Command -Session $session -ScriptBlock { Restart-Computer -Force }
+    Remove-PSSession $session -ErrorAction SilentlyContinue; $session = $null
+    Start-Sleep -Seconds 30
+    $session = Connect 600
+    $numbered = Invoke-Command -Session $session -ScriptBlock { $p = Get-Partition -DriveLetter P; "partition $($p.PartitionNumber) of disk $($p.DiskNumber)" }
+    Say "after a start of Windows, P: is $numbered (it was partition $($made.partition))"
     Say "P: is partition $($made.partition) of disk $($made.disk) ($($made.style)), the disk of the running Windows; media at $($made.media)"
 
     Copy-Item -ToSession $session -LiteralPath $Binary -Destination "$guestRoot\ntfs2refs.exe" -Force

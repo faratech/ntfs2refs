@@ -704,14 +704,38 @@ impl<'j, 'p> OfflinePreparedTerminalGuard<'j, 'p> {
                 windows_sys::Win32::Storage::FileSystem::SetVolumeLabelW(w.as_ptr(), label.as_ptr())
             } == 0
             {
-                return Err(io::Error::last_os_error());
+                let error = io::Error::last_os_error();
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!("giving the converted volume its label back: {error}"),
+                ));
             }
         }
         require(
             terminal_volume_info(&volume)?.label == self.label,
             "terminal native label restoration differs",
         )?;
-        restore_terminal_mounts(&self.mounts, &mounted_binding, &desired)?;
+        // The drive letter and mounted folders of the volume are Windows'
+        // own record, kept by the partition's GUID, which a conversion does
+        // not change: the Windows that starts next finds the volume under
+        // them without anything done here. Assigning them in this minimal
+        // Windows as well was the last step of the first run to get this
+        // far, and failed it ("The parameter is incorrect") with the
+        // conversion complete. It is still tried, and what it says is
+        // recorded; it no longer decides the outcome.
+        let mounts_restored = match restore_terminal_mounts(
+            &self.mounts,
+            &mounted_binding,
+            &desired,
+        ) {
+            Ok(()) => true,
+            Err(error) => {
+                eprintln!(
+                    "The volume's drive letter was not assigned here ({error}); Windows assigns it when it starts."
+                );
+                false
+            }
+        };
         checkpoint_terminal(
             observer,
             "offline-terminal-writable-label-mounts-complete",
@@ -725,7 +749,7 @@ impl<'j, 'p> OfflinePreparedTerminalGuard<'j, 'p> {
             native_before_writable_verified: true,
             original_attributes_name_type_restored: true,
             label_restored: true,
-            mounts_restored: true,
+            mounts_restored,
             raw_replay_performed: false,
             boot: boot_receipt,
         })

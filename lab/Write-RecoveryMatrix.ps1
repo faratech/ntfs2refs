@@ -30,6 +30,21 @@ if (-not $Attempts) { $Attempts = Join-Path $workspace '.lab\hyperv\attempts' }
 if (-not $Output) { $Output = Join-Path $workspace 'docs\recovery-matrix.md' }
 
 $Explained = @{
+    'v1-restart' = 'a fault of the harness: the reference VM''s own Windows is on ReFS, which cannot give up space for a partition beside it; the route is run on the Windows Server VM from v3-restart on'
+    'v2-restart' = 'the same fault of the harness'
+    'v3-restart' = 'working storage on ReFS, which this route does not take: "fresh ordinary unallocated external intent file required"; the route asks for NTFS working storage'
+    'v4-restart-ntfs' = 'before f25430b: the route took a source partition of exactly 52 GiB only; the partition was left read-only, which the ways back of 0af9466 undo'
+    'v5-restart' = 'before f25430b: a firmware boot entry that names the disk and not the boot manager file was refused'
+    'v6-restart' = 'before f25430b: the same assumption in what bcdedit shows of the firmware''s boot order'
+    'v7-restart' = 'a fault of the harness: Windows numbers a partition made a moment ago anew at its next start; the harness starts Windows once more after making it'
+    'v8-restart' = 'before f25430b: the conversion and the return of the boot selection were complete; assigning the drive letter in the minimal Windows failed the run'
+    'w1-restart-after-image' = 'a fault of the harness: the volume was given back whole; the comparison counted the file Windows itself writes into System Volume Information'
+    'w1-restart-after-arm' = 'the same fault of the harness'
+    'w1-restart-skip-reboot' = 'the same fault of the harness'
+    'wb2-restart-after-image' = 'a fault of the harness: the comparison counted the changed times of the directory System Volume Information'
+    'wb2-restart-after-arm' = 'the same fault of the harness'
+    'wb2-restart-skip-reboot' = 'the same fault of the harness'
+    'wb2-winpe-before-apply' = 'build 60fbe4d: the machine was put back and Windows started, but the volume was not given back (the search for its volume stopped at a volume that is on no disk); wb3-winpe-before-apply is the same row after the fix of 0af9466'
     'd5-shared-apply-resume' = 'a fault of the harness: the recovery finished and the volumes beside the source were back with identical bytes, but the harness looked for its earlier listing of one of them in the recovery''s working folder; d6-shared-apply-resume is the same row without it'
     'd5-shared-apply-rollback' = 'the same fault of the harness; d6-shared-apply-rollback is the same row without it'
     'd5-shared-handoff-resume' = 'the same fault of the harness; d6-shared-handoff-resume is the same row without it'
@@ -57,6 +72,7 @@ foreach ($line in $block -split "`r?`n") {
 
 $read = 0
 $stops = New-Object System.Collections.Generic.List[object]
+$restarts = New-Object System.Collections.Generic.List[object]
 $rows = foreach ($directory in Get-ChildItem -LiteralPath $Attempts -Directory) {
     $file = Join-Path $directory.FullName 'verdict.json'
     if (-not (Test-Path -LiteralPath $file)) { continue }
@@ -74,8 +90,17 @@ $rows = foreach ($directory in Get-ChildItem -LiteralPath $Attempts -Directory) 
     } elseif ($names -contains 'stopped_in_phase' -and $verdict.stopped_in_phase) {
         $left = if ($names -contains 'left_by_the_stop') { $verdict.left_by_the_stop } else { $null }
         $held = $left -and (@($left.offline_disks).Count -or @($left.read_only_disks).Count -or -not $left.v_mounted)
-        $stops.Add([pscustomobject]@{ phase = "$($verdict.stopped_in_phase)"; then = "$($verdict.after_stop)"; outcome = "$($verdict.outcome)"; name = "$($verdict.name)"
+        # An attempt that turned the VM off in the phase says so in its verdict.
+        $then = "$($verdict.after_stop)"
+        if ($names -contains 'interruption' -and "$($verdict.interruption)" -eq 'vm turned off') { $then = "the machine turned off and started again, then $then" }
+        $stops.Add([pscustomobject]@{ phase = "$($verdict.stopped_in_phase)"; then = $then; outcome = "$($verdict.outcome)"; name = "$($verdict.name)"
                 left = if (-not $left) { 'not recorded' } elseif ($held) { 'offline or read-only' } else { 'online and writable' }
+                started = (Get-Item -LiteralPath $file).LastWriteTimeUtc.ToString('o') })
+    } elseif ($names -contains 'recovery_sha256' -and $names -contains 'partition_mb' -and $names -contains 'arguments') {
+        # An attempt of the restart route (Invoke-RestartRouteAttempt.ps1).
+        $arguments = @($verdict.arguments | ForEach-Object { "$_" })
+        $at = [Array]::IndexOf($arguments, '--lab-fail-at')
+        $restarts.Add([pscustomobject]@{ point = if ($at -ge 0) { $arguments[$at + 1] } else { '' }; outcome = "$($verdict.outcome)"; name = "$($verdict.name)"
                 started = (Get-Item -LiteralPath $file).LastWriteTimeUtc.ToString('o') })
     } elseif ($names -contains 'interrupted_at' -and $verdict.interrupted_at) {
         # A volume that shares its disk is a row of its own: recovery returns
@@ -150,7 +175,7 @@ if ($stops.Count) {
     $text.Add('')
     $text.Add('| Phase | The stop left the volume | Then | Ended as | Attempts |')
     $text.Add('|---|---|---|---|---|')
-    $ended = { param($stop) $stop.outcome -in 'preparation-cancelled', 'restart-refused-then-cancelled' }
+    $ended = { param($stop) $stop.outcome -in 'preparation-cancelled', 'preparation-cancelled-after-power-off', 'restart-refused-then-cancelled' }
     foreach ($group in $stops | Where-Object { & $ended $_ } | Group-Object phase, then, outcome, left | Sort-Object Name) {
         $first = $group.Group[0]; $latest = ($group.Group | Sort-Object started | Select-Object -Last 1).name
         $text.Add(('| `{0}` | {1} | {2} | {3} | {4} (latest `{5}`) |' -f $first.phase, $first.left, $first.then, $first.outcome, $group.Count, $latest))
@@ -166,6 +191,48 @@ if ($stops.Count) {
     }
 } else {
     $text.Add('Not run. Until a run prints its recovery command it has written nothing to the source.')
+}
+$text.Add('')
+$text.Add('## A partition on the Windows disk, converted through a restart')
+$text.Add('')
+if ($restarts.Count) {
+    $text.Add('The run prepares in Windows, restarts into a minimal Windows made from installation media and')
+    $text.Add('converts there (`--restart-media`). Until the conversion itself starts nothing is written to the')
+    $text.Add('partition, and each of these attempts stops the run at a laboratory point before that')
+    $text.Add('(`--lab-fail-at`): the volume has to be back as writable NTFS listing as before, and Windows''')
+    $text.Add('boot selection its own. An attempt without a point converts.')
+    $text.Add('')
+    $text.Add('| Where the run was stopped | What has to follow | Ended as | Attempts |')
+    $text.Add('|---|---|---|---|')
+    $said = @{
+        '' = @('not stopped', 'the partition is ReFS when Windows is back')
+        'restart-after-protect' = @('in Windows, after the partition was marked read-only', 'the run gives the volume back by itself')
+        'restart-after-image' = @('in Windows, after the minimal Windows was made', 'the run gives the volume back by itself')
+        'restart-after-arm' = @('in Windows, after the minimal Windows was selected for the next start', '`--recover` says what state the run is in; `--recover --rollback` gives the volume and the boot selection back')
+        'restart-skip-reboot' = @('in Windows, with everything ready and the restart not requested', '`--recover` says what state the run is in; `--recover --rollback` gives the volume and the boot selection back')
+        'winpe-before-apply' = @('in the minimal Windows, before the conversion started', 'the machine is put back by itself and Windows starts with the volume as NTFS')
+    }
+    $good = { param($run) $run.outcome -in 'converted', 'cancelled-volume-as-before' }
+    foreach ($group in $restarts | Where-Object { & $good $_ } | Group-Object point, outcome | Sort-Object Name) {
+        $first = $group.Group[0]; $latest = ($group.Group | Sort-Object started | Select-Object -Last 1).name
+        $words = if ($said.ContainsKey($first.point)) { $said[$first.point] } else { @($first.point, '') }
+        $text.Add(('| {0} | {1} | {2} | {3} (latest `{4}`) |' -f $words[0], $words[1], $first.outcome, $group.Count, $latest))
+    }
+    $other = @($restarts | Where-Object { -not (& $good $_) } | Sort-Object started)
+    if ($other) {
+        $text.Add('')
+        $text.Add('Attempts that ended otherwise:')
+        $text.Add('')
+        $text.Add('| Attempt | Stopped | Outcome | Note |')
+        $text.Add('|---|---|---|---|')
+        foreach ($run in $other) { $text.Add(('| `{0}` | {1} | {2} | {3} |' -f $run.name, $(if ($run.point) { "``$($run.point)``" } else { 'not stopped' }), $run.outcome, $(if ($Explained.ContainsKey($run.name)) { $Explained[$run.name] } else { '' }))) }
+    }
+    $text.Add('')
+    $text.Add('Not shown: an interruption while the minimal Windows converts (it returns to the minimal Windows,')
+    $text.Add('which asks whether to go on or to put NTFS back), Windows 11, a physical machine, and BitLocker on')
+    $text.Add('the Windows volume.')
+} else {
+    $text.Add('Not run.')
 }
 $text.Add('')
 $text.Add('## Attempts that did not recover')

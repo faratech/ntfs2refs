@@ -248,14 +248,18 @@ fn working_storage_and_a_data_volume_may_lie_on_an_mbr_disk_identified_by_its_si
         n2r_win32::journal_file::enrolled_disk_label("{12345678-1111-2222-aaaa-123456789abc}"),
         "gpt-12345678-1111-2222-aaaa-123456789abc"
     );
-    // A data volume to convert is found the same way where it has the disk
-    // to itself; with a partition beside it, it is refused with what to do.
-    let refused = discovery::binding_from_evidence(VOLUME, &e, Role::Source, 0).unwrap_err();
-    assert!(
-        refused
-            .to_string()
-            .contains("is MBR and holds 1 other partition(s)"),
-        "{refused}"
+    // A data volume to convert is found the same way, with a partition
+    // beside it as where it has the disk to itself: the disk is a shared
+    // one, whose other volumes go offline with it, as on GPT.
+    let shared = discovery::binding_from_evidence(VOLUME, &e, Role::Source, 0).unwrap();
+    assert_eq!(shared.identity, b.identity);
+    assert_eq!(
+        shared.layout_profile,
+        n2r_win32::general_layout::GeneralDiskLayoutProfile::SharedData
+    );
+    assert_eq!(
+        shared,
+        discovery::binding_from_evidence(VOLUME, &e, Role::Source, 0).unwrap()
     );
     let mut alone = mbr_fixture();
     alone.gpt_layout[48..48 + 144].fill(0);

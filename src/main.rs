@@ -124,7 +124,7 @@ fn run() -> Result<u8> {
                     },
                     // What a data volume that has been in use meets.
                     "data_volume": {
-                        "disk_layout": "a disk other than the running Windows': a GPT disk, which may hold other partitions, or an MBR disk the volume has to itself; --list says for each NTFS partition whether it qualifies",
+                        "disk_layout": "a disk other than the running Windows': a GPT disk, or an MBR disk on which the volume is a primary partition; either may hold other partitions; --list says for each NTFS partition whether it qualifies",
                         "other_partitions_on_the_disk": {
                             "allowed": true,
                             "during_the_run": "the whole disk is offline: their volumes are dismounted first, are unavailable until the run ends, and are not written to",
@@ -132,7 +132,8 @@ fn run() -> Result<u8> {
                             "refused_when": ["the running Windows has a page file or its crash-dump file on the disk, or its boot or system partition",
                                              "a volume beside the source has shadow copies or stores those of another volume",
                                              "a program has a file open on a volume beside the source (found when the run locks it, not by --check)",
-                                             "the source holds an installed Windows and the disk has an EFI system partition: --windows-boot-volume is for that"],
+                                             "the source holds an installed Windows and the disk has an EFI system partition: --windows-boot-volume is for that",
+                                             "the source holds an installed Windows and the disk is MBR: it would no longer start, and --windows-boot-volume takes a GPT disk only"],
                         },
                         "requires": ["administrator rights, checked before a disk is opened",
                                      "the Windows build, checked before a disk is opened"],

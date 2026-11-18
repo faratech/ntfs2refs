@@ -174,11 +174,12 @@ $dataCases = @(
     'names|-Content minimal -Features names -Check'
     # MBR disks: the volume alone on one, the working directory on one, both
     # with a run interrupted half way through the writes and resumed; and a
-    # volume that shares an MBR disk, which is refused with what to do.
+    # volume that shares an MBR disk, which converts with the volume beside
+    # it offline for the run.
     'mbr-src|-SourceMbr -Check'
     'mbr-work|-WorkingMbr -Check'
     'mbr-apply-mid-resume|-SourceMbr -WorkingMbr -InterruptAt apply-mid-ranges'
-    'mbr-beside|-SourceMbr -MbrBeside -ExpectRefusal is.MBR.and.holds'
+    'mbr-beside|-SourceMbr -MbrBeside -Check'
     # The machine turned off while the converter prepares, then the
     # cancellation in the Windows that starts again.
     "power-off-supply-cancel|$lived -StopDuringPreparation payload_supply -PowerOffDuringPreparation"

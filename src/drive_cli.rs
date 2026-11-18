@@ -152,11 +152,13 @@ pub struct DriveArgs {
     /// are checked, not what.
     #[arg(long, requires = "drive", conflicts_with_all = ["list", "recover", "rollback"])]
     pub recheck_everything: bool,
-    /// The most memory the run may use, in MiB. Without it a run uses up
-    /// to two thirds of the memory that is free when it starts. With less it
-    /// holds less in memory and takes longer; --check says what a volume
-    /// needs at least, and a limit below that is refused before anything is
-    /// built. Give a recovery the limit too if it should keep to one.
+    /// A ceiling on the memory the run may use, in MiB. Without it a run
+    /// fits itself to the machine: it takes up to two thirds of the memory
+    /// that is free when it starts and, where a volume needs more, goes on
+    /// with the page file and is slower. With a limit it never goes beyond
+    /// it: --check says what a volume needs at least, and a limit below
+    /// that is refused before anything is built. Give a recovery the limit
+    /// too if it should keep to one.
     #[arg(long, value_name = "MIB", conflicts_with = "list", value_parser = clap::value_parser!(u64).range(256..=16_777_216))]
     pub memory_limit: Option<u64>,
     /// Laboratory: sample the worker's call stack a hundred times a second

@@ -91,9 +91,9 @@ These take the same paths as rows above, or are checked by tests only.
 - A physical disk, and a volume holding more than 23 GB of data: every lab
   disk is virtual.
 - A data volume of more than 500,000 files. One of 500,000 small files
-  converts in 45 minutes; a run needs about 15 KiB of free memory a file as
-  things are, and refuses a volume it has too little for before anything is
-  built (#129).
+  converts in 45 minutes; a run wants about 15 KiB of free memory a file as
+  things are, and with less takes the rest from the page file and is slower
+  (#129).
 - Index records other than 4 KiB, a ReFS later than 3.14, and a Windows build
   other than 26100 and 26300: nothing in the lab makes them. A run on such a
   build or ReFS version says that it is the first.

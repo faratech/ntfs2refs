@@ -341,23 +341,33 @@ the memory it may use, two thirds of what is free when it starts. What it
 holds there for every file and directory until the conversion is complete
 sets the limit: 400 MiB of free memory and about 15 KiB for every file
 (1.8 GiB for 100,000 files, 7.5 GiB for 500,000). `--check`, and the reading a run makes
-before it asks, give that figure and refuse a volume the free memory is not
-enough for before anything is built.
+before it asks, give that figure.
+
+**A run fits itself to the memory there is.** With less free than the figure,
+it goes ahead and says that it will be slower: what it cannot do without and
+cannot hold in its share of the free memory comes from the page file. The
+same happens when other programs take memory while it runs. It does not stop
+for that; it stops for memory only where Windows has no more to give, memory
+and page file together, and then with the volume unchanged or with the
+recovery command it printed. Closing other programs before a run makes it
+faster.
 
 What a run holds in memory only to go faster (stores it looks things up in,
 objects it has decoded) it gives back when the memory is needed for
 something it cannot do without, what it used longest ago first. It is
-slower for that, and its last lines say that this happened. A run that stops
-for memory all the same says which reservations were the largest, and every
-run prints how high its reservations went and, step by step, what held them
-(`memory-steps:`).
+slower for that, and its last lines say that this happened, and how far it
+went beyond the memory it set aside at its start (`memory-beyond:`). A run
+that stops for memory all the same says which reservations were the largest,
+and every run prints how high its reservations went and, step by step, what
+held them (`memory-steps:`).
 
 `--memory-limit <MiB>` sets the most memory a run may use, where it would
 otherwise use up to two thirds of what is free: for a machine that has to
 keep memory for something else, or to see how a volume does with little. A
-run with less memory holds less in memory and takes longer. A limit below
-what the volume needs is refused before anything is built, and the refusal
-says what the limit would have to be. A recovery takes the option too.
+run with less memory holds less in memory and takes longer. A limit is a
+ceiling: a run given one does not go beyond it, so a limit below what the
+volume needs is refused before anything is built, and the refusal says what
+the limit would have to be. A recovery takes the option too.
 
 ## Convert an installed Windows
 

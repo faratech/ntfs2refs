@@ -32,8 +32,9 @@ NTFS partition whether it can be converted and, if not, why.
   first.
 - An elevated terminal.
 - Free memory in proportion to the number of files: about 2 GB for 100,000
-  files and 8 GB for 500,000. `--check` gives the figure for a volume, and
-  a volume the memory is not enough for is refused before anything is built.
+  files and 8 GB for 500,000. `--check` gives the figure for a volume. With
+  less than that free a run still goes ahead: it takes the rest from the page
+  file and is slower, and says so before it starts.
 - Working storage on a different disk (`--scratch-directory`). The run builds
   the new file system there and keeps there what it needs to undo its changes.
   The lab's Windows volume, with 22.9 GB in use, needed about 30 GB; a volume

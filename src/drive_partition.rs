@@ -523,7 +523,7 @@ pub(super) fn convert(
 
 fn require_shared_conversion_backend() -> Result<()> {
     anyhow::bail!(
-        "Shared-disk conversion is unavailable while persistent source exclusion is being repaired: the legacy private partition allowed NTFS metadata changes after restart, and the read-only physical writer was rejected by Windows. No conversion was started."
+        "this volume is on the disk of the running Windows, which cannot be taken offline while Windows runs. It is converted through a restart: mount Windows installation media (an ISO of this Windows) and run again with --restart-media <its drive>, and with --scratch-directory on an NTFS volume of another disk. Nothing was changed."
     )
 }
 

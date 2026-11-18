@@ -86,7 +86,7 @@ These take the same paths as rows above, or are checked by tests only.
 | A dirty volume, an NTFS log that was not closed, an open transaction | The lab dismounts its volumes cleanly |
 | A program holding a file on the volume open | Not arranged in the lab; the lock is retried for 20 seconds and then refused by name |
 | A volume with no file on it | An empty volume is formatted, not converted |
-| A data volume on the running Windows disk | Refused from the disk's layout; `ntfs2refs --list` says so for each partition |
+| A data partition on the running Windows disk without `--restart-media` | Refused with what to do: it is converted through a restart (the guide, "A partition on the Windows disk"). Shown by hand on Windows Server 2025 (`w1-converts`, and the cancellations `w1-restart-after-protect`, `-after-image`, `-after-arm`, `-skip-reboot`, `w1-winpe-before-apply`); not a case of the gate round yet |
 | A page file of the running Windows on the volume's disk | Takes a restart with the lab's disk attached; it is refused by the check that refuses the crash-dump file (`shared-dump`) |
 | A volume beside the source that stores the shadow copies of another volume | Refused with the shadow copies of the volume itself; the words are covered by a test |
 
@@ -108,5 +108,6 @@ These take the same paths as rows above, or are checked by tests only.
 - A Windows boot volume of Windows Server, and Windows 11 on build 26100:
   the lab's Windows 11 is build 26300 and its Windows Server is the control
   OS of data-volume attempts only.
-- `--minimize-scratch`, and `--offline-media`, the route of an earlier design
-  that `--help` does not list.
+- `--minimize-scratch`.
+- The restart route (`--restart-media`) on Windows 11, on a physical machine,
+  with BitLocker on the Windows volume, and interrupted while it converts.

@@ -11,7 +11,7 @@ prepares everything in Windows, restarts the machine into a minimal Windows
 
 This script makes such a partition in the control OS of a lab VM (it shrinks
 C: and makes P: beside it), fills it, lists it, starts the converter with
-`--drive P --offline-media <the DVD>`, waits for the machine to go away and
+`--drive P --restart-media <the DVD>`, waits for the machine to go away and
 come back, lists the volume again and compares.
 
 The control OS must already be up from its checkpoint, with the scratch volume
@@ -57,7 +57,7 @@ param(
 $ErrorActionPreference = 'Stop'; Set-StrictMode -Version Latest
 $workspace = Split-Path -Parent $PSScriptRoot
 if (-not $Binary) { $Binary = Join-Path $workspace 'target\release\ntfs2refs.exe' }
-if (-not $RecoveryBinary) { $RecoveryBinary = Join-Path (Split-Path $Binary) 'lab-apply-prepared-offline.exe' }
+if (-not $RecoveryBinary) { $RecoveryBinary = Join-Path (Split-Path $Binary) 'ntfs2refs-recovery.exe' }
 if (-not $ManifestBinary) { $ManifestBinary = Join-Path (Split-Path $Binary) 'lab-volume-manifest.exe' }
 foreach ($file in $Binary, $RecoveryBinary, $ManifestBinary) { if (-not (Test-Path -LiteralPath $file)) { throw "Not found: $file" } }
 
@@ -198,7 +198,7 @@ try {
     Say "listed before: $($before.listing)"
     if (-not $before.serial) { $verdict.outcome = 'list-did-not-show-serial'; throw "--list shows no serial number for P:: $($before.row)" }
 
-    $arguments = @('--drive', 'P', '--offline-media', $made.media, '--scratch-directory', $work, '--yes', '--volume-serial', $before.serial) + $ConverterArgs
+    $arguments = @('--drive', 'P', '--restart-media', $made.media, '--scratch-directory', $work, '--yes', '--volume-serial', $before.serial) + $ConverterArgs
     if ($LabFailAt) { $arguments += @('--lab-fail-at', $LabFailAt, '--acknowledge-lab-fail-stops-the-run') }
     $staysInWindows = $LabFailAt -in 'restart-after-protect', 'restart-after-image', 'restart-after-arm', 'restart-skip-reboot'
     $verdict.arguments = $arguments

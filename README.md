@@ -11,19 +11,23 @@ show](#what-has-been-shown) before trusting it with a volume.
 
 ## What it converts
 
-- **A data volume** on a GPT disk other than the running Windows':
-  `ntfs2refs --drive E --scratch-directory S:\runs`. The disk may hold other
-  partitions; their volumes go offline with it while the run lasts and are
-  not written to.
+- **A data volume** on a disk other than the running Windows':
+  `ntfs2refs --drive E --scratch-directory S:\runs`. A GPT disk may hold
+  other partitions; their volumes go offline with it while the run lasts and
+  are not written to.
+- **A data partition on the disk of the running Windows**, through a
+  restart: `ntfs2refs --drive D --restart-media E:\ --scratch-directory S:\runs`,
+  with Windows installation media at `E:`. See the
+  [guide](docs/cli-workflow.md#a-partition-on-the-windows-disk).
 - **An installed Windows that is not running**, from a second Windows on
   another disk: `--windows-boot-volume`. One Windows build has been converted
   and booted this way; any other is refused. See the
   [guide](docs/cli-workflow.md#convert-an-installed-windows).
 
-It does not convert the Windows it is running on, a partition that shares its
-disk with it, or a volume that shares an MBR disk with other partitions (a
-volume that has an MBR disk to itself converts). `ntfs2refs --list` says for
-each NTFS partition whether it can be converted and, if not, why.
+It does not convert the Windows it is running on, or a volume that shares an
+MBR disk with other partitions (a volume that has an MBR disk to itself
+converts). `ntfs2refs --list` says for each NTFS partition whether it can be
+converted, how, and if not, why.
 
 ## What you need
 

@@ -365,7 +365,16 @@ pub fn conversion_note(disk: &DiskInventory, partition: &PartitionInventory) -> 
         return Some(format!("not convertible: {reason}"));
     }
     if disk.contains_running_windows == Some(true) {
-        return Some("not convertible: it shares its disk with the running Windows, and a conversion takes the whole disk offline".into());
+        // Not while Windows runs: the route that restarts the machine
+        // takes it, on a GPT disk.
+        return Some(if disk.partition_style.as_deref() == Some("GPT") {
+            format!(
+                "convertible through a restart (--restart-media): it shares its disk with the running Windows{unchecked}"
+            )
+        } else {
+            "not convertible: it shares its disk with the running Windows, and that disk is not GPT"
+                .into()
+        });
     }
     if disk.partition_style.as_deref() == Some("MBR") {
         // A primary partition of the type Windows gives NTFS, on a disk

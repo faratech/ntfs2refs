@@ -51,10 +51,20 @@ pub struct DriveArgs {
     /// conversion has finished.
     #[arg(long, requires = "drive")]
     pub scratch_directory: Option<PathBuf>,
-    /// Mounted Windows installation-media directory for offline shared-disk
-    /// conversion. An earlier design: it needs ntfs2refs-recovery.exe, which
-    /// no release ships, and is not listed by --help.
-    #[arg(long = "offline-media", requires = "drive", hide = true)]
+    /// For a data partition on the disk of the running Windows, which cannot
+    /// be converted while Windows runs: Windows installation media of this
+    /// Windows' language (a mounted ISO, a DVD, a USB stick; its drive or
+    /// directory). The run prepares everything in Windows, restarts the
+    /// machine into a minimal Windows made from that media, converts the
+    /// partition there and returns to Windows. --scratch-directory has to be
+    /// on an NTFS volume of another disk, which stays connected until
+    /// Windows is back. Needs ntfs2refs-recovery.exe beside ntfs2refs.exe.
+    #[arg(
+        long = "restart-media",
+        alias = "offline-media",
+        value_name = "DIR",
+        requires = "drive"
+    )]
     pub offline_recovery_media: Option<PathBuf>,
     /// The volume is an installed Windows that is not running; the Windows
     /// that runs the converter is on another disk and is never converted.
@@ -267,7 +277,7 @@ impl DriveArgs {
             "it moves files on the source before preparation starts",
         ),
         (
-            "--offline-media",
+            "--restart-media",
             "that route arms a restart into the conversion",
         ),
         (
@@ -662,7 +672,7 @@ mod windows {
             );
             ensure!(
                 args.offline_recovery_media.is_some(),
-                "laboratory failure points apply only to a run that restarts the machine (--offline-media)"
+                "laboratory failure points apply only to a run that restarts the machine (--restart-media)"
             );
             // An unknown point is refused here, before anything is opened.
             n2r_win32::lab_fail::arm(point)?;
@@ -1872,7 +1882,7 @@ mod tests {
     #[test]
     fn a_laboratory_failure_point_needs_the_restart_route_and_its_own_acknowledgement() {
         const ACK: &str = "--acknowledge-lab-fail-stops-the-run";
-        const MEDIA: &[&str] = &["--offline-media", "E:\\"];
+        const MEDIA: &[&str] = &["--restart-media", "E:\\"];
         let with = |extra: &[&str]| {
             let mut arguments = MEDIA.to_vec();
             arguments.extend_from_slice(extra);
@@ -2061,7 +2071,7 @@ mod tests {
                 "--acknowledge-lab-hold-never-completes",
             ],
             &["--minimize-scratch"],
-            &["--offline-media", "E:\\"],
+            &["--restart-media", "E:\\"],
             &[
                 "--controlled-post-flush-pause-nonce",
                 NONCE,

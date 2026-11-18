@@ -378,6 +378,66 @@ ceiling: a run given one does not go beyond it, so a limit below what the
 volume needs is refused before anything is built, and the refusal says what
 the limit would have to be. A recovery takes the option too.
 
+## A partition on the Windows disk
+
+A data partition that shares its disk with the running Windows (a `D:` beside
+`C:`) cannot be converted while Windows runs: a conversion takes the disk
+offline. It is converted through a restart. `--list` says "convertible
+through a restart" of such a partition.
+
+```
+ntfs2refs --drive D --restart-media E:\ --scratch-directory S:\runs
+```
+
+What it needs beside what every conversion needs:
+
+- **Windows installation media** at `--restart-media`: a mounted ISO, a DVD
+  or a USB stick of this Windows, in English (United States). The run makes a
+  minimal Windows from it that holds the converter, and starts the machine
+  from that once.
+- **`ntfs2refs-recovery.exe`** beside `ntfs2refs.exe`: it is what runs in the
+  minimal Windows. A release holds both.
+- **The working directory on an NTFS volume of another disk**, a USB disk
+  for example. It stays connected until Windows is back.
+- **A GPT disk, UEFI and Secure Boot on.** The run changes no firmware
+  setting; it adds its own entry to Windows' boot configuration and removes
+  the selection again.
+
+What happens:
+
+1. In Windows the run builds the new file system and its recovery records in
+   the working directory, marks the partition read-only so that nothing
+   changes it any more, makes the minimal Windows and selects it for the next
+   start. This is the long part: minutes for a small volume.
+2. It says so, prints how to cancel, and restarts the machine.
+3. The minimal Windows starts, converts the partition (under a minute for a
+   small volume in the lab), puts Windows' own boot selection back and
+   restarts.
+4. Windows starts with the partition as ReFS under its drive letter.
+
+**Ways back.** Until the conversion itself has started, nothing has been
+written to the partition, and it is given back as the NTFS volume it was:
+
+- A run that fails in Windows after it marked the partition read-only gives
+  it back by itself and says so with the error.
+- Before the restart, or if the machine was started into Windows some other
+  way: `ntfs2refs --recover "<the run's folder>" --rollback`, the line the
+  run printed. `--recover` without `--rollback` says what state the run is
+  in.
+- If the minimal Windows cannot start the conversion (the disk is not as it
+  was recorded, for example), it puts the machine back by itself and Windows
+  starts with the partition as NTFS.
+
+Once the conversion has started, the way is forward: if the machine is
+switched off or loses power meanwhile, it returns to the minimal Windows at
+the next start, which asks whether to go on (R) or to put NTFS back (B).
+
+The lab converted such a partition on Windows Server 2025, and cancelled runs
+at each of these points with the volume listing exactly as before. It has
+not run this route on Windows 11, on a physical machine, with BitLocker on
+the Windows volume, or interrupted while it converts; `ntfs2refs
+capabilities` says the same.
+
 ## Convert an installed Windows
 
 An installed Windows is converted while it is not running, from a second
@@ -545,6 +605,7 @@ differences it accepts.
 | `--target-format dev-drive\|standard` | How Windows formats the new file system; standard is the default on Windows Server, dev-drive elsewhere |
 | `--short-names refuse\|drop` | What to do with a data volume's 8.3 short names: refuse the volume (the default), or convert without them and keep a list |
 | `--windows-boot-volume` | The volume is an installed Windows that is not running |
+| `--restart-media <dir>` | Windows installation media, for a partition on the disk of the running Windows: it is converted through a restart |
 | `--recover <dir> --recovery-sha256 <sum>` `[--rollback]` | Finishes, or undoes, an interrupted run |
 | `--yes` `--volume-serial XXXX-XXXX` | Runs without asking; see below |
 | `--verify-full-content` | Reads and hashes the complete contents of every stream |
@@ -616,10 +677,7 @@ moves are not undone if the run stops; a rollback then restores files and
 metadata but not what unused space held. It is refused on a volume with shadow
 copies. The lab's matrices do not cover it.
 
-One earlier design of the converter is still in the executable and is not
-listed by `--help`: `--offline-media`, for a partition on the disk of the
-running Windows. `ntfs2refs capabilities` names it; nothing in this guide or
-in the matrices is about it. The other routes and commands of earlier designs
+The routes and commands of earlier designs
 were removed with 0.4.0: `--whole-image-verification`, the thin temporary
 storage of `--experimental-thin-shadow`, and the subcommands that worked from
 request files and raw images (`convert`, `resume`, `rollback`, `finalize`,

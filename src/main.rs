@@ -88,8 +88,8 @@ fn run() -> Result<u8> {
                          "status": "the default route; what the lab showed of it is in docs/feature-matrix.md and docs/recovery-matrix.md"},
                         {"route": "windows-boot-volume", "option": "--windows-boot-volume", "in_help": true,
                          "status": "admitted for the listed boot profiles only; converted, booted and used in the lab"},
-                        {"route": "shared-disk", "option": "--offline-media", "in_help": false,
-                         "status": "an earlier design; experimental; needs ntfs2refs-recovery.exe, which no release ships"},
+                        {"route": "restart", "option": "--restart-media", "in_help": true,
+                         "status": "a data partition on the GPT disk of the running Windows: prepared in Windows, converted after a restart into a minimal Windows made from installation media, by ntfs2refs-recovery.exe; working storage on NTFS on another disk; converted, and cancelled before the conversion started in Windows and in the minimal Windows, in the lab on Windows Server 2025"},
                     ],
                     // The rows the boot-volume admission gate enforces.
                     "qualified_boot_profiles": ntfs2refs::boot_profile::QUALIFIED,
@@ -263,7 +263,8 @@ fn run() -> Result<u8> {
                             "a power cut to the storage itself: the lab ends the converter's process or turns the virtual machine off",
                             "a Windows build other than those in windows_builds.confirmed_builds, and a ReFS version other than 3.14",
                             "a conversion to standard ReFS on Windows 11 (the lab's does not format one), a Windows boot volume of Windows Server, and Windows 11 on build 26100",
-                            "--minimize-scratch, and --offline-media, the route that --help does not list",
+                            "--minimize-scratch",
+                            "the restart route (--restart-media) on Windows 11, on a physical machine, with BitLocker on the Windows volume, and interrupted while it converts",
                         ],
                     },
                     // The registry of 2026-10-28 records builds before 0.2.0.

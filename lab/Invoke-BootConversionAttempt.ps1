@@ -436,6 +436,9 @@ function Start-Disk0Alone {
     Save-DetachedDisks $returnable
     $verdict.detached_for_boot = @($returnable | ForEach-Object { $_.Path })
     $others | Remove-VMHardDiskDrive
+    # The installation media goes too, and comes back for the use test,
+    # whose Setup scan reads it (#113).
+    $installationMedia = @(Get-VMDvdDrive -VM $vm | Where-Object Path | ForEach-Object Path) | Select-Object -First 1
     Get-VMDvdDrive -VM $vm | Remove-VMDvdDrive
     $disk0 = Get-VMHardDiskDrive -VM $vm
     if (@($disk0).Count -ne 1) { throw 'Expected exactly disk0 to remain attached' }
@@ -1169,6 +1172,10 @@ try {
     Phase 'boot'
     if ($Acceptance -and $verdict.outcome -in 'BOOTED-ON-REFS', 'RESUMED-BOOTED-ON-REFS') {
         # Reaching the desktop is not the same as going on being used and serviced.
+        if ($installationMedia) {
+            try { Add-VMDvdDrive -VM (Get-LabVm) -Path $installationMedia; Say "installation media attached again for the use test: $installationMedia" }
+            catch { Say "the installation media could not be attached again: $($_.Exception.Message)" }
+        }
         $use = Invoke-WindowsUseTest 'ReFS' | Select-Object -Last 1
         $verdict.acceptance = $use
         if (-not $use.passed) { $verdict.result = $verdict.outcome; $verdict.outcome = "$($verdict.outcome)-BUT-USE-FAILED" }

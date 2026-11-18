@@ -50,6 +50,11 @@ param(
     [string]$ReferenceVm = 'ntfs2refs-reference-isolated',
     [string[]]$DataVm = @('ntfs2refs-reference-b', 'ntfs2refs-reference-c'),
     [string]$ServerVm = 'ntfs2refs-server2025',
+    # The most memory a lab VM is given, in GB. 24 is what the full Windows
+    # volume is timed with; a host that shares its memory with other work
+    # runs the round with less (12), slower, so that the other work's swings
+    # do not end it (two rounds were lost to them on 17 and 18 November).
+    [ValidateRange(8, 64)][int]$MaxVmGB = 24,
     [string]$ServerCredentialPath
 )
 $ErrorActionPreference = 'Stop'
@@ -120,7 +125,7 @@ $fixtureRuns = @(
     @{ Name = 'apply-mid-rollback'; Arguments = $fixture40 + @{ InterruptAt = 'apply-mid-ranges'; RecoverMode = 'rollback' } }
     @{ Name = 'handoff-sealed-resume'; Arguments = $fixture40 + @{ InterruptAt = 'handoff-sealed' } }
 )
-$fullRun = @{ Name = 'full-system'; Arguments = @{} }
+$fullRun = @{ Name = 'full-system'; Arguments = @{ MemoryGB = $MaxVmGB } }
 
 $lived = '-Content lived-in -DirectoryEntries 4000'
 $dataCases = @(
@@ -250,11 +255,13 @@ try {
             # (A running VM costs the host a gigabyte or two beyond what it
             # is given.)
             $beside = 5 + 8 * $DataVm.Count
-            $referenceGB = [math]::Floor([math]::Min(24, $free - $beside))
+            $referenceGB = [math]::Floor([math]::Min($MaxVmGB, $free - $beside))
             # Too little for both at once: the reference VM takes what is
             # free less the host's 8 GB, and the data cases wait for it.
-            if ($referenceGB -lt 16) { $referenceGB = [math]::Floor([math]::Max(8, [math]::Min(24, $free - 8))) }
+            if ($referenceGB -lt [math]::Min(16, $MaxVmGB)) { $referenceGB = [math]::Floor([math]::Max(8, [math]::Min($MaxVmGB, $free - 8))) }
             foreach ($run in $fixtureRuns) { $run.Arguments = $run.Arguments + @{ MemoryGB = [int]$referenceGB } }
+        } else {
+            foreach ($run in $fixtureRuns) { $run.Arguments = $run.Arguments + @{ MemoryGB = $MaxVmGB } }
         }
         Say ('fixtures and interrupted runs on {0} ({1:N1} GB of host memory free)' -f $ReferenceVm, $free)
         $fixtureJob = Start-Job -ScriptBlock $bootChain -ArgumentList $boot, $fixtureRuns, $Prefix, $vms[$ReferenceVm].Id.Guid, $binary, $manifest, $logs

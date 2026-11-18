@@ -315,7 +315,7 @@ fn run_prepared_offline_mode(
     let arena = ArtifactArena::new(
         &output.join("arena"),
         resources,
-        &[request.source.storage.clone()],
+        std::slice::from_ref(&request.source.storage),
     )?;
     let budget = SourceMetadataBudget::from_resource_budget(resources)?;
     let group = arena.reserve_group(ArtifactGroup::RecoveryCopy, budget.scratch_bytes)?;

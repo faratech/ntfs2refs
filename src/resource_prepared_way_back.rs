@@ -177,6 +177,14 @@ impl CancelledRun {
             completed: false,
         }
     }
+    /// A cancellation that was begun and not finished is taken up again
+    /// under its own record: when it was decided, from which state and why
+    /// stay as they were written.
+    fn taken_up_again(mut self) -> Self {
+        self.unfinished.clear();
+        self.completed = false;
+        self
+    }
     /// What a later start is told instead of an apply.
     pub fn refusal(&self, run: &Path) -> String {
         if self.completed {
@@ -280,9 +288,14 @@ pub fn working_files_line(run: &Path, bytes: u64) -> String {
 
 /// The error of a run that failed after it had begun, with what the way
 /// back did about it.
+///
+/// `left` is the record a way back that failed left in the run folder: it
+/// says how far it got, so that a volume that was given back is not
+/// reported as lost because a later step failed.
 pub fn failure_with_way_back(
     cause: anyhow::Error,
     way_back: &Result<WayBackReport>,
+    left: Option<&CancelledRun>,
     run: &Path,
 ) -> anyhow::Error {
     match way_back {
@@ -298,10 +311,16 @@ pub fn failure_with_way_back(
                 cancel_command(run)
             ),
         },
-        Err(why) => anyhow::anyhow!(
-            "{cause:#}; AND the volume could not be given back: {why:#}. To try again: {}",
-            cancel_command(run)
-        ),
+        Err(why) => match left.map(|record| record.volume) {
+            Some(VolumeOutcome::GivenBack | VolumeOutcome::NeverProtected) => anyhow::anyhow!(
+                "{cause:#}; the volume is NTFS as it was, AND the cancellation could not be finished: {why:#}. To try again: {}",
+                cancel_command(run)
+            ),
+            _ => anyhow::anyhow!(
+                "{cause:#}; AND the volume could not be given back: {why:#}. To try again: {}",
+                cancel_command(run)
+            ),
+        },
     }
 }
 
@@ -363,14 +382,15 @@ struct Admission {
 /// the folder given, or the one above it when `prepared` was given.
 pub fn recognise_run(given: &Path) -> Result<Option<PathBuf>> {
     let mut candidates = vec![given.to_path_buf()];
-    if given
+    let named_prepared = given
         .file_name()
-        .is_some_and(|name| name.eq_ignore_ascii_case("prepared"))
-    {
-        if let Some(parent) = given.parent() {
-            candidates.push(parent.to_path_buf());
-        }
-    }
+        .is_some_and(|name| name.eq_ignore_ascii_case("prepared"));
+    candidates.extend(
+        given
+            .parent()
+            .filter(|_| named_prepared)
+            .map(Path::to_path_buf),
+    );
     for run in candidates {
         let Some(bytes) = read_record(&run.join(ADMISSION_RECORD))? else {
             continue;
@@ -857,17 +877,16 @@ pub fn cancel_unapplied_run_in_windows(run: &Path, cause: Option<&str>) -> Resul
         &run.join(BUNDLE_RECORD),
         pins.as_ref().map(|(sha, _)| sha.as_str()),
     )?;
-    if let Some(record) = read_cancelled(run)? {
-        if record.completed {
-            return Ok(WayBackReport {
-                run: run.to_owned(),
-                partition: view.source.storage,
-                record,
-                already_cancelled: true,
-                source: None,
-                boot: None,
-            });
-        }
+    let begun = read_cancelled(run)?;
+    if let Some(record) = begun.as_ref().filter(|record| record.completed) {
+        return Ok(WayBackReport {
+            run: run.to_owned(),
+            partition: view.source.storage,
+            record: record.clone(),
+            already_cancelled: true,
+            source: None,
+            boot: None,
+        });
     }
     let journal = working_volume(run, &view.source.storage)?;
     if let Some(core) = &view.bundle {
@@ -884,8 +903,10 @@ pub fn cancel_unapplied_run_in_windows(run: &Path, cause: Option<&str>) -> Resul
             run.display()
         );
     }
-    let mut record =
-        CancelledRun::begin(view.state, CancelEnvironment::Windows, cause, now_unix_ms());
+    let mut record = match begun {
+        Some(record) => record.taken_up_again(),
+        None => CancelledRun::begin(view.state, CancelEnvironment::Windows, cause, now_unix_ms()),
+    };
     write_cancelled(run, &record)?;
     let (folder, observer) = cancellation_folder(run, view.evidence_bytes)?;
     let mut events = Vec::new();
@@ -1025,7 +1046,11 @@ pub fn after_failure_in_windows(run: &Path, cause: anyhow::Error) -> anyhow::Err
     }
     let text = format!("{cause:#}");
     let way_back = cancel_unapplied_run_in_windows(run, Some(&text));
-    failure_with_way_back(cause, &way_back, run)
+    let left = match &way_back {
+        Ok(_) => None,
+        Err(_) => read_cancelled(run).ok().flatten(),
+    };
+    failure_with_way_back(cause, &way_back, left.as_ref(), run)
 }
 
 /// How the runner ended when it did not fail.
@@ -1155,10 +1180,7 @@ fn cold_way_back(
     let failed = ColdWayBack::Failed;
     let mut record = match read_cancelled(&run).map_err(failed)? {
         // A cancellation that was begun, here or in Windows, is finished.
-        Some(mut record) => {
-            record.completed = false;
-            record
-        }
+        Some(record) => record.taken_up_again(),
         None => CancelledRun::begin(
             view.state,
             CancelEnvironment::RecoveryEnvironment,
@@ -1357,6 +1379,16 @@ mod tests {
             "this run was cancelled on 2026-11-18 14:03:22 UTC; the volume is NTFS as it was. A conversion is started again with a new run."
         );
         assert!(!run.join("cancelled.json.new").exists());
+        // A cancellation that is taken up again keeps when and why it was
+        // decided, and is unfinished until it ends.
+        let mut stopped = read.clone();
+        stopped.unfinished.push("the volume is in use".into());
+        let again = stopped.taken_up_again();
+        assert!(!again.completed && again.unfinished.is_empty());
+        assert_eq!(
+            (again.cancelled_unix_ms, again.cause.as_deref()),
+            (now, Some("the recovery image could not be built"))
+        );
         // A record of another kind is not taken for one.
         fs::write(run.join(CANCELLED_RECORD), b"{\"schema_version\":1}").unwrap();
         assert!(read_cancelled(&run).is_err());
@@ -1455,24 +1487,41 @@ mod tests {
             })
         };
         assert_eq!(
-            failure_with_way_back(cause(), &report(VolumeOutcome::GivenBack), run).to_string(),
+            failure_with_way_back(cause(), &report(VolumeOutcome::GivenBack), None, run)
+                .to_string(),
             "building the recovery image: DISM ended with code 5; the volume was given back as NTFS"
         );
         assert_eq!(
-            failure_with_way_back(cause(), &report(VolumeOutcome::NeverProtected), run).to_string(),
+            failure_with_way_back(cause(), &report(VolumeOutcome::NeverProtected), None, run)
+                .to_string(),
             "building the recovery image: DISM ended with code 5; the volume had not been changed and is NTFS as it was"
         );
-        let failed = failure_with_way_back(
-            cause(),
-            &Err(anyhow::anyhow!(
+        let command =
+            "ntfs2refs --recover \"E:\\work\\partition-offline-conversion-0123\" --rollback";
+        let stopped = || {
+            Err(anyhow::anyhow!(
                 "the first sector of partition 4 of disk 0 differs"
-            )),
-            run,
-        )
-        .to_string();
+            ))
+        };
         assert_eq!(
-            failed,
-            "building the recovery image: DISM ended with code 5; AND the volume could not be given back: the first sector of partition 4 of disk 0 differs. To try again: ntfs2refs --recover \"E:\\work\\partition-offline-conversion-0123\" --rollback"
+            failure_with_way_back(cause(), &stopped(), None, run).to_string(),
+            format!(
+                "building the recovery image: DISM ended with code 5; AND the volume could not be given back: the first sector of partition 4 of disk 0 differs. To try again: {command}"
+            )
+        );
+        // A way back that gave the volume back and stopped at the boot
+        // selection does not report the volume as lost.
+        let at_boot = record(VolumeOutcome::GivenBack, BootOutcome::Unsettled);
+        let later = || {
+            Err(anyhow::anyhow!(
+                "putting the boot selection back: boot resources unavailable"
+            ))
+        };
+        assert_eq!(
+            failure_with_way_back(cause(), &later(), Some(&at_boot), run).to_string(),
+            format!(
+                "building the recovery image: DISM ended with code 5; the volume is NTFS as it was, AND the cancellation could not be finished: putting the boot selection back: boot resources unavailable. To try again: {command}"
+            )
         );
     }
 

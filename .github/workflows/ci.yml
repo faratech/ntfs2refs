@@ -1,0 +1,124 @@
+name: CI
+
+# Every push to main and every pull request: formatting and Clippy, all
+# tests, and the executables built in release mode, as three jobs side by
+# side on Windows Server 2025 (build 26100, a build the converter has been
+# shown on). The owner's decision of 18 November 2026, when the repository
+# became public: hosted runners are free for it, so these are the checks a
+# pull request is merged on (.github/CI.md).
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  checks:
+    name: formatting and Clippy
+    runs-on: windows-2025
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned toolchain
+        run: ./.github/scripts/Install-Toolchain.ps1 -Components rustfmt, clippy
+
+      - name: Cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: clippy
+
+      - name: Check formatting
+        run: |
+          cargo fmt --all -- --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # The repository's lint severities: warnings stay visible, an error
+      # fails the job (.github/CI.md).
+      - name: Run Clippy
+        run: |
+          cargo clippy --locked --workspace --all-targets
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  tests:
+    name: tests
+    runs-on: windows-2025
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned toolchain
+        run: ./.github/scripts/Install-Toolchain.ps1
+
+      - name: Cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: tests
+
+      - name: Run workspace tests
+        run: |
+          cargo test --locked --workspace --all-targets
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  release-build:
+    name: release build
+    runs-on: windows-2025
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned toolchain
+        run: ./.github/scripts/Install-Toolchain.ps1
+
+      - name: Cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: release
+
+      # Every executable of the workspace, the ones a release ships among
+      # them, and the converter started once.
+      - name: Build the release executables
+        run: |
+          cargo build --locked --release --workspace --bins
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & target\release\ntfs2refs.exe --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Keep the executables
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ntfs2refs-${{ github.sha }}
+          path: |
+            target/release/ntfs2refs.exe
+            target/release/ntfs2refs-recovery.exe
+            target/release/lab-volume-manifest.exe
+          retention-days: 14

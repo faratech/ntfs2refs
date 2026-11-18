@@ -22,8 +22,10 @@ them is typed by hand, so they cannot say more than the tree does.
 
 It refuses a tree with uncommitted changes, a version that is not the one the
 executable reports, and (unless -AllowUntagged) a commit without the tag of
-that version. It publishes nothing: pushing the tag and `gh release create`
-are the owner's steps, and the last lines it prints are those commands.
+that version. It publishes nothing. A pushed version tag has
+.github/workflows/release.yml build the executables, sign them, pack them
+with this script (-Binaries) and publish the release; by hand, the last lines
+it prints are the commands.
 
 -ComparedWith <dir> names the executables the lab's final pass ran. They were
 built from the same sources at another moment, so they differ from this build
@@ -38,7 +40,10 @@ param(
     [switch]$AllowUntagged,
     # A directory with the ntfs2refs.exe and lab-volume-manifest.exe that the
     # lab ran: this build has to equal them apart from the linker's stamps.
-    [string]$ComparedWith
+    [string]$ComparedWith,
+    # A directory with the three executables, built from this commit and
+    # signed (the release workflow's): packed as they are, not built again.
+    [string]$Binaries
 )
 $ErrorActionPreference = 'Stop'; Set-StrictMode -Version Latest
 $workspace = Split-Path -Parent $PSScriptRoot
@@ -109,13 +114,28 @@ try {
     if (-not $tagged -and -not $AllowUntagged) { throw "commit $commit does not carry the tag '$version' (its tags: $($tags -join ', ')); tag it, or use -AllowUntagged for a rehearsal" }
 
     $tool = { param($name) $path = Join-Path $env:USERPROFILE ".cargo\bin\$name.exe"; if (Test-Path -LiteralPath $path) { $path } else { $name } }
-    & (& $tool 'cargo') build --locked --release --bin ntfs2refs --bin ntfs2refs-recovery --bin lab-volume-manifest
-    if ($LASTEXITCODE -ne 0) { throw "cargo build failed (exit $LASTEXITCODE)" }
-    # Where cargo built them: CARGO_TARGET_DIR where it is set. The lab's
-    # build is compared with this one byte for byte, and an executable holds
-    # the path of its symbols, so the release is built where the lab's was.
-    $built = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $workspace 'target' }
-    $binaries = 'ntfs2refs.exe', 'ntfs2refs-recovery.exe', 'lab-volume-manifest.exe' | ForEach-Object { Join-Path $built "release\$_" }
+    $names = 'ntfs2refs.exe', 'ntfs2refs-recovery.exe', 'lab-volume-manifest.exe'
+    if ($Binaries) {
+        if ($ComparedWith) { throw '-ComparedWith compares a build of this script; signed executables differ from the lab''s by their signatures' }
+        $binaries = $names | ForEach-Object { Join-Path $Binaries $_ }
+        foreach ($binary in $binaries) { if (-not (Test-Path -LiteralPath $binary)) { throw "$binary does not exist" } }
+    } else {
+        & (& $tool 'cargo') build --locked --release --bin ntfs2refs --bin ntfs2refs-recovery --bin lab-volume-manifest
+        if ($LASTEXITCODE -ne 0) { throw "cargo build failed (exit $LASTEXITCODE)" }
+        # Where cargo built them: CARGO_TARGET_DIR where it is set. The lab's
+        # build is compared with this one byte for byte, and an executable holds
+        # the path of its symbols, so the release is built where the lab's was.
+        $built = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $workspace 'target' }
+        $binaries = $names | ForEach-Object { Join-Path $built "release\$_" }
+    }
+    # Who signed each executable, as Windows reads its first signature.
+    $signer = {
+        param($path)
+        $signature = Get-AuthenticodeSignature -LiteralPath $path
+        if ($signature.Status -eq 'NotSigned') { 'not signed' }
+        elseif ($signature.Status -ne 'Valid') { throw "$path has a signature that is $($signature.Status): $($signature.StatusMessage)" }
+        else { ($signature.SignerCertificate.GetNameInfo([Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)) }
+    }
     $reported = (& $binaries[0] --version).Trim()
     if ($reported -ne "ntfs2refs $version") { throw "the executable reports '$reported', not 'ntfs2refs $version'" }
     $capabilities = (& $binaries[0] capabilities) -join "`n"
@@ -153,9 +173,9 @@ try {
     $notes.Add('')
     $notes.Add("Built by ``lab\New-Release.ps1`` from commit ``$commit``$(if (-not $tagged) { ' (not tagged: a rehearsal)' }) with $((& (& $tool 'rustc') --version).Trim()).")
     $notes.Add('')
-    $notes.Add('| File | SHA-256 |')
-    $notes.Add('|---|---|')
-    foreach ($binary in $binaries) { $notes.Add("| ``$(Split-Path -Leaf $binary)`` | ``$(& $hash $binary)`` |") }
+    $notes.Add('| File | SHA-256 | Signed by |')
+    $notes.Add('|---|---|---|')
+    foreach ($binary in $binaries) { $notes.Add("| ``$(Split-Path -Leaf $binary)`` | ``$(& $hash $binary)`` | $(& $signer $binary) |") }
     $notes.Add('')
     if ($compared) {
         $notes.Add('The lab ran an earlier build of the same sources. Each executable here was compared with it byte for byte:')
@@ -200,7 +220,7 @@ try {
     "release $version of commit $commit written to $Output"
     Get-ChildItem -LiteralPath $Output | ForEach-Object { '  {0,12:N0}  {1}' -f $_.Length, $_.Name }
     ''
-    'To publish it (the owner''s step):'
+    'To publish it by hand (a pushed version tag has .github/workflows/release.yml build, sign and publish it):'
     "  git push origin $version"
     "  gh release create $version --prerelease --title `"ntfs2refs $version`" --notes-file `"$(Join-Path $Output 'RELEASE-NOTES.md')`" `"$zip`" `"$zip.sha256`""
 } finally { Pop-Location }

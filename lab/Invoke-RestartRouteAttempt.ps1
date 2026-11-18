@@ -94,9 +94,16 @@ try {
         $null = New-Item -ItemType Directory -Path $root, 'S:\restart' -Force
         $c = Get-Partition -DriveLetter C
         if (Get-Partition -DriveLetter P -ErrorAction SilentlyContinue) { throw 'The control OS already has a volume P:.' }
-        $bytes = [long]$partitionMB * 1MB
-        Resize-Partition -DriveLetter C -Size ($c.Size - $bytes - 64MB)
-        $partition = New-Partition -DiskNumber $c.DiskNumber -Size $bytes -DriveLetter P
+        # C: gives up what Windows says it can: files that cannot be moved
+        # (the page file, the end of the file table) bound it. The partition
+        # is the size asked for, or the largest multiple of 64 MiB that
+        # fits.
+        $supported = Get-PartitionSupportedSize -DriveLetter C
+        $room = $c.Size - $supported.SizeMin - 128MB
+        $bytes = [Math]::Min([long]$partitionMB * 1MB, [long]([Math]::Floor($room / 64MB)) * 64MB)
+        if ($bytes -lt 1024MB) { throw "C: can give up $([Math]::Round($room / 1MB)) MiB (it is $([Math]::Round($c.Size / 1GB, 1)) GiB and cannot be smaller than $([Math]::Round($supported.SizeMin / 1GB, 1)) GiB): too little for a partition beside it" }
+        try { Resize-Partition -DriveLetter C -Size ($c.Size - $bytes - 64MB) } catch { throw "shrinking C: by $([Math]::Round(($bytes + 64MB) / 1MB)) MiB: $($_.Exception.Message)" }
+        try { $partition = New-Partition -DiskNumber $c.DiskNumber -Size $bytes -DriveLetter P } catch { throw "making the partition beside C:: $($_.Exception.Message)" }
         $null = Format-Volume -Partition $partition -FileSystem NTFS -NewFileSystemLabel 'RESTART' -Confirm:$false
         # No 8.3 short names: a data volume that has them is refused.
         $null = & fsutil.exe 8dot3name set P: 1

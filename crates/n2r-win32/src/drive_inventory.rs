@@ -389,7 +389,7 @@ pub fn conversion_note(disk: &DiskInventory, partition: &PartitionInventory) -> 
             format!("convertible as a data volume{unchecked}")
         } else {
             format!(
-                "convertible as a data volume; the disk's {others} other partition(s) go offline with it for the length of the run{unchecked}"
+                "not convertible: the disk is MBR and holds {others} other partition(s); on an MBR disk the converter takes a volume that has the disk to itself"
             )
         });
     }
@@ -636,7 +636,7 @@ mod tests {
         assert!(
             note(&mbr, 1)
                 .unwrap()
-                .starts_with("convertible as a data volume; the disk's 1 other partition(s)")
+                .starts_with("not convertible: the disk is MBR and holds 1 other partition(s)")
         );
         mbr.partitions[1] = mbr_partition(2, 0x0c);
         assert!(note(&mbr, 2).unwrap().contains("type 07 only"));

@@ -248,23 +248,27 @@ fn working_storage_and_a_data_volume_may_lie_on_an_mbr_disk_identified_by_its_si
         n2r_win32::journal_file::enrolled_disk_label("{12345678-1111-2222-aaaa-123456789abc}"),
         "gpt-12345678-1111-2222-aaaa-123456789abc"
     );
-    // A data volume to convert is found the same way, and the partition
-    // beside it makes its disk one it shares.
-    let source = discovery::binding_from_evidence(VOLUME, &e, Role::Source, 0).unwrap();
-    assert_eq!(source.identity, b.identity);
-    assert_eq!(
-        source.layout_profile,
-        n2r_win32::general_layout::GeneralDiskLayoutProfile::SharedData
+    // A data volume to convert is found the same way where it has the disk
+    // to itself; with a partition beside it, it is refused with what to do.
+    let refused = discovery::binding_from_evidence(VOLUME, &e, Role::Source, 0).unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains("is MBR and holds 1 other partition(s)"),
+        "{refused}"
     );
     let mut alone = mbr_fixture();
     alone.gpt_layout[48..48 + 144].fill(0);
     let alone = discovery::binding_from_evidence(VOLUME, &alone, Role::Source, 0).unwrap();
+    assert_eq!(alone.identity, b.identity);
     assert_eq!(
         alone.layout_profile,
         n2r_win32::general_layout::GeneralDiskLayoutProfile::DedicatedData
     );
     // The Windows disk is no source, MBR or not.
-    assert!(discovery::binding_from_evidence(VOLUME, &e, Role::Source, 7).is_err());
+    let mut on_windows_disk = mbr_fixture();
+    on_windows_disk.gpt_layout[48..48 + 144].fill(0);
+    assert!(discovery::binding_from_evidence(VOLUME, &on_windows_disk, Role::Source, 7).is_err());
     // An installed Windows to convert, the shadow, and working storage that
     // must have a disk to itself stay with GPT.
     for role in [

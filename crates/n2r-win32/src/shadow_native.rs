@@ -1536,7 +1536,11 @@ fn attributes_allowed(i: &Input<'_>) -> bool {
                     || (i.logical_length() == 0
                         && i.named_streams.is_empty()
                         && i.sparse.is_none()))
-                && i.extended_attributes.is_none_or(|ea| ea.is_empty())
+                // Extended attributes beside a reparse point: what the
+                // Windows Subsystem for Linux keeps owner and mode in, and
+                // nothing else's.
+                && (crate::reparse_layout::is_wsl_tag(point.tag())
+                    || i.extended_attributes.is_none_or(|ea| ea.is_empty()))
         })
 }
 /// Exact source-basic metadata predicate shared by constructor preflight and

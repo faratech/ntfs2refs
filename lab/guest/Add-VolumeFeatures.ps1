@@ -461,8 +461,6 @@ public static class N2RLabWsl {
                 'a zero-width joiner' = "zero$([char]0x200D)width.txt"
                 'spaces and a leading dot' = '.  leading dot and  double spaces.txt'
                 'characters cmd treats specially' = 'percent%TEMP% caret^ amp& paren(1) bang! semi;comma,equals=.txt'
-                'a lone high surrogate' = "lone-$([char]0xD83C)-high.txt"
-                'a lone low surrogate' = "lone-$([char]0xDF89)-low.txt"
             }
             $done = [Collections.Generic.List[string]]::new(); $failed = [Collections.Generic.List[string]]::new()
             foreach ($what in $names.Keys) {
@@ -495,6 +493,16 @@ public static class N2RLabWsl {
                 $done.Add('a 255-unit Cyrillic name in Cyrillic and Greek directories')
             } catch { $failed.Add("a 255-unit Cyrillic name ($($_.Exception.GetBaseException().Message))") }
             $made[$feature] = "$($done.Count) names made: $($done -join '; ')$(if ($failed.Count) { ". NOT made: $($failed -join '; ')" })"
+        }
+        'lonesurrogates' {
+            # Names that are not valid UTF-16: half of a surrogate pair by
+            # itself. NTFS holds them; the lab's listing tool does not list
+            # them, so they are a case of their own.
+            $long = '\\?\' + $dir
+            $null = New-Item -ItemType Directory -Path $dir -Force
+            [IO.File]::WriteAllBytes("$long\lone-$([char]0xD83C)-high.txt", [byte[]](1, 2, 3))
+            [IO.File]::WriteAllBytes("$long\lone-$([char]0xDF89)-low.txt", [byte[]](4, 5, 6))
+            $made[$feature] = 'two names with a lone surrogate, high and low'
         }
         default { throw "unknown feature '$feature'" }
     }

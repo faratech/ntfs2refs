@@ -273,6 +273,18 @@ pub fn binding_from_evidence(
         && crate::mbr_layout::is_mbr_layout(raw)
     {
         let found = crate::mbr_layout::mbr_partition(raw, disk_bytes, offset, length)?;
+        // A volume to convert has an MBR disk to itself. With other
+        // partitions beside it the disk's other volumes go offline with it,
+        // and what a run asks Windows about them first (the storage
+        // catalog, page files, dump destinations) is asked by GPT identity
+        // (the lab: "WMI required property is NULL" for such a disk).
+        // Working storage shares an MBR disk with anything.
+        if role == Role::Source && found.beside != 0 {
+            return Err(crate::refusal::io_error(format!(
+                "the volume's disk is MBR and holds {} other partition(s): on an MBR disk the converter takes a volume that has the disk to itself. Convert the disk to GPT (`mbr2gpt`, or back up, `diskpart` `convert gpt` and restore), or move the other partitions off it",
+                found.beside
+            )));
+        }
         (
             found.partition_number,
             found.disk_guid,

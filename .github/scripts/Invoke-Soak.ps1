@@ -247,6 +247,30 @@ function Capture([string]$path) {
     if ($LASTEXITCODE -ne 0) { throw "lab-volume-manifest capture failed ($LASTEXITCODE): $said" }
 }
 
+# Windows writes its own files into System Volume Information when a volume
+# arrives (the storage service's WPSettings.dat; the mount manager's database
+# on a volume with junctions; the indexer's IndexerVolumeGuid where the search
+# service runs). A volume made a moment ago gets them when it next mounts,
+# which would be after it was converted, and the directory's times would show
+# as a difference. So, as lab\Invoke-DataVolumeAttempt.ps1 does, the volume is
+# mounted afresh and listed once those files are there and two listings in a
+# row agree. Taking the disk offline also closes what had the new files open.
+function Capture-Settled([string]$path, [int]$diskNumber) {
+    $indexer = [bool](Get-Service -Name WSearch -ErrorAction SilentlyContinue | Where-Object { "$($_.StartType)" -ne 'Disabled' })
+    $afresh = { Set-Disk -Number $diskNumber -IsOffline $true; Set-Disk -Number $diskNumber -IsOffline $false; $null = Wait-Volume 'NTFS' }
+    & $afresh; $remount = (Get-Date).AddSeconds(20); $deadline = (Get-Date).AddSeconds(150); $previous = -1
+    do {
+        Start-Sleep -Seconds 2
+        Capture $path
+        $own = @(Select-String -LiteralPath $path -Pattern 'System Volume Information' -SimpleMatch)
+        $has = { param($leaf) [bool]($own | Where-Object { $_.Line -like "*$leaf*" }) }
+        $settled = (& $has 'WPSettings.dat') -and (& $has 'MountPointManagerRemoteDatabase') -and (-not $indexer -or (& $has 'IndexerVolumeGuid')) -and $own.Count -eq $previous
+        $previous = $own.Count
+        if (-not $settled -and (Get-Date) -ge $remount) { & $afresh; $remount = (Get-Date).AddSeconds(20); $previous = -1 }
+    } until ($settled -or (Get-Date) -gt $deadline)
+    if (-not $settled) { Say "  (System Volume Information did not settle in 150 s: $($own.Count) entries)" }
+}
+
 function Wait-Volume([string]$fileSystem) {
     for ($i = 0; $i -lt 120; $i++) {
         $volume = Get-Volume -DriveLetter $letter -ErrorAction SilentlyContinue
@@ -254,7 +278,14 @@ function Wait-Volume([string]$fileSystem) {
         Start-Sleep -Milliseconds 500
     }
     $volume = Get-Volume -DriveLetter $letter -ErrorAction SilentlyContinue
-    throw "${letter}: is $(if ($volume) { "$($volume.FileSystem) $($volume.HealthStatus)" } else { 'not mounted' }), not $fileSystem"
+    # What there is instead: the virtual disk, its partitions and their volumes.
+    $state = @(Get-Disk | Where-Object { $_.BusType -eq 'File Backed Virtual' } | ForEach-Object {
+        $disk = $_
+        $parts = @(Get-Partition -DiskNumber $disk.Number -ErrorAction SilentlyContinue | ForEach-Object {
+            $v = $_ | Get-Volume -ErrorAction SilentlyContinue
+            "partition $($_.PartitionNumber) $($_.Type) letter '$($_.DriveLetter)' paths $(@($_.AccessPaths) -join ',') volume $(if ($v) { "$($v.FileSystem) $($v.HealthStatus)" } else { 'none' })" })
+        "disk $($disk.Number) offline=$($disk.IsOffline) read-only=$($disk.IsReadOnly) ($($disk.OfflineReason)): $($parts -join '; ')" })
+    throw "${letter}: is $(if ($volume) { "$($volume.FileSystem) $($volume.HealthStatus)" } else { 'not mounted' }), not $fileSystem. $($state -join ' | ')"
 }
 
 $started = Get-Date
@@ -283,10 +314,10 @@ for ($round = 1; ; $round++) {
         hold_at = $hold; end_after_seconds = $endAfter; content = ''; convert_seconds = $null; recovery = ''; outcome = ''; detail = '' }
     Say "round ${round}: $kind, seed $roundSeed, NTFS clusters of $ntfsCluster, ReFS clusters of $refsCluster, a $gib GiB disk$(if ($hold) { ", held at $hold" })$(if ($endAfter) { ", ended after $endAfter s" })"
     try {
-        $null = New-SoakDisk $vhd $gib $ntfsCluster
+        $diskNumber = New-SoakDisk $vhd $gib $ntfsCluster
         $result.content = New-SoakContent "${letter}:" $roundSeed $ntfsCluster ($kind -eq 'many') ([Math]::Min(1.5GB, [long]$gib * 1GB / 4))
         Say "  content: $($result.content)"
-        Capture (Join-Path $dir 'before.jsonl')
+        Capture-Settled (Join-Path $dir 'before.jsonl') $diskNumber
         $null = New-Item -ItemType Directory -Force -Path $work
         $arguments = @('--drive', $letter, '--scratch-directory', $work, '--target-cluster-bytes', "$refsCluster")
         if ($hold) { $arguments += @('--lab-hold-at', $hold, '--acknowledge-lab-hold-never-completes') }

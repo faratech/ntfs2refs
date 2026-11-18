@@ -186,6 +186,13 @@ param(
     # partition of type 07. With -MbrBeside a second primary partition (W:,
     # NTFS, one file) lies beside it, which makes the disk one the volume
     # shares.
+    # Memory taken away from the converter while it runs: once it reports
+    # the phase -TakeMemoryAt, another process in the control OS allocates
+    # this many MiB, writes to all of it and holds it until the converter
+    # has ended. A run that fits itself to the machine has to go on, slower,
+    # and convert; it must not stop for memory.
+    [int]$TakeMemoryMB = 0,
+    [string]$TakeMemoryAt = 'payload_supply',
     [switch]$SourceMbr,
     [switch]$MbrBeside,
     # The working directory is on an MBR disk of its own (M:\runs, a virtual
@@ -779,10 +786,23 @@ public static class SiblingRaw {
         $turnOff = [bool]($StopInPhase -and $PowerOffDuringPreparation)
         do {
             if (-not $StopInPhase -or $stopped) { Start-Sleep -Seconds 2 }
-            $state = Invoke-Command -Session $session -ArgumentList $Root, ([bool]$HoldAt -and -not $held), $(if ($stopped) { '' } else { $StopInPhase }), $turnOff -ScriptBlock {
-                param($root, $watchHold, $phase, $turnOff)
+            $state = Invoke-Command -Session $session -ArgumentList $Root, ([bool]$HoldAt -and -not $held), $(if ($stopped) { '' } else { $StopInPhase }), $turnOff, $TakeMemoryMB, $TakeMemoryAt -ScriptBlock {
+                param($root, $watchHold, $phase, $turnOff, $takeMB, $takeAt)
                 $ended = (Test-Path "$root\native-terminal.json") -or (Test-Path "$root\worker-error.txt")
-                $atHold = $false; $inPhase = $false; $shown = ''
+                $atHold = $false; $inPhase = $false; $shown = ''; $taken = $null
+                if ($takeMB -gt 0 -and -not $ended -and -not (Test-Path "$root\memory-taken.txt") -and (Test-Path "$root\stdout.log") -and
+                    (Select-String -LiteralPath "$root\stdout.log" -SimpleMatch -Pattern "`"phase`":`"$takeAt`"" -Quiet)) {
+                    # Another process takes the memory and writes to all of
+                    # it, in pieces of 64 MiB, then holds it until the
+                    # converter has ended (or two hours have passed).
+                    $free = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory * 1KB
+                    $hog = "`$held = New-Object System.Collections.ArrayList; for (`$i = 0; `$i -lt $takeMB; `$i += 64) { `$b = New-Object byte[] (64MB); for (`$j = 0; `$j -lt `$b.Length; `$j += 4096) { `$b[`$j] = 1 }; [void]`$held.Add(`$b) }; " +
+                        "Set-Content -LiteralPath '$root\memory-held.txt' -Value (Get-Date -Format o); `$until = (Get-Date).AddHours(2); " +
+                        "while ((Get-Date) -lt `$until -and -not (Test-Path '$root\native-terminal.json') -and -not (Test-Path '$root\worker-error.txt')) { Start-Sleep -Seconds 2; for (`$k = 0; `$k -lt `$held.Count; `$k++) { `$held[`$k][0] = 2 } }"
+                    $process = Start-Process -FilePath powershell.exe -WindowStyle Hidden -PassThru -ArgumentList '-NoProfile', '-Command', $hog
+                    Set-Content -LiteralPath "$root\memory-taken.txt" -Value "$($process.Id)"
+                    $taken = [pscustomobject]@{ mib = $takeMB; at = $takeAt; free_before_bytes = $free; process = $process.Id }
+                }
                 if ($phase -and -not $ended) {
                     # Looked for ten times a second, so that the stop lands in the phase and not after it.
                     $until = (Get-Date).AddSeconds(2)
@@ -811,13 +831,20 @@ public static class SiblingRaw {
                 # the working files come and go, between the look and the reading.
                 $sample = { param($take) try { [long](& $take) } catch { 0L } }
                 $running = @(Get-Process -Name ntfs2refs -ErrorAction SilentlyContinue)
-                [pscustomobject]@{ ended = $ended; at_hold = $atHold; in_phase = $inPhase; shown = $shown
+                [pscustomobject]@{ ended = $ended; at_hold = $atHold; in_phase = $inPhase; shown = $shown; taken = $taken
+                    free_memory_bytes = & $sample { (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory * 1KB }
                     peak_working_set = & $sample { ($running | Measure-Object PeakWorkingSet64 -Maximum).Maximum }
                     private_bytes = & $sample { ($running | Measure-Object PrivateMemorySize64 -Maximum).Maximum }
                     working_bytes = & $sample { (Get-ChildItem -LiteralPath $(if (Test-Path -LiteralPath 'M:\runs') { 'M:\runs' } else { 'S:\datalab\runs' }) -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum } }
             }
             foreach ($measure in 'peak_working_set', 'private_bytes', 'working_bytes') { if ($state.$measure -gt $usage[$measure]) { $usage[$measure] = $state.$measure } }
             $usage.samples++
+            if ($state.taken) {
+                $verdict.memory_taken = $state.taken
+                Say ("the converter reported the phase '{0}': another process takes {1} MiB of memory ({2:N0} MiB were free)" -f $state.taken.at, $state.taken.mib, ($state.taken.free_before_bytes / 1MB))
+            }
+            if ($TakeMemoryMB -gt 0 -and $verdict.Contains('memory_taken') -and $state.free_memory_bytes -gt 0 -and
+                (-not $verdict.Contains('least_free_memory_bytes') -or $state.free_memory_bytes -lt $verdict.least_free_memory_bytes)) { $verdict.least_free_memory_bytes = $state.free_memory_bytes }
             if ($state.at_hold) { $held = $true; Say "the converter reported its hold at '$HoldAt' and was ended" }
             if ($state.in_phase -and $turnOff) {
                 $stopped = $true

@@ -32,6 +32,7 @@ pub mod extended_attributes;
 pub mod extended_attributes_native;
 #[cfg(windows)]
 pub mod file_storage;
+pub mod file_version;
 pub mod general_layout;
 #[cfg(windows)]
 pub mod io_profile;

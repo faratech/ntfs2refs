@@ -45,7 +45,7 @@ const MARGIN: u64 = 64 << 20;
 const MAX_LAYOUT: usize = 48 + 128 * 144;
 
 mod recovery;
-pub use recovery::{ReattachedShadow, reattach_existing};
+pub use recovery::{ReattachedShadow, detach_left_behind, reattach_existing};
 mod backing_resources;
 mod retirement;
 pub use backing_resources::{BackingResourceGuard, BackingResourceObservation};

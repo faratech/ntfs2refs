@@ -349,3 +349,65 @@ pub fn reattach_existing(
         _backing: backing,
     })
 }
+
+/// Detaches the working volume a run built (`shadow.vhdx` in its working
+/// directory) when Windows still has it attached, which it does after the run
+/// was cut off: the run attached it for the lifetime of the machine, and
+/// nothing detached it. Called only after a recovery or a cancellation has
+/// completed, when nothing needs that volume any more; the file is not
+/// deleted. Returns whether a detach was done.
+pub fn detach_left_behind(path: &Path) -> io::Result<bool> {
+    if path.file_name().and_then(|name| name.to_str()) != Some("shadow.vhdx") || !path.is_absolute()
+    {
+        return Err(invalid("only a run's own shadow.vhdx is detached"));
+    }
+    let storage = VIRTUAL_STORAGE_TYPE {
+        DeviceId: VIRTUAL_STORAGE_TYPE_DEVICE_VHDX,
+        VendorId: VIRTUAL_STORAGE_TYPE_VENDOR_MICROSOFT,
+    };
+    let mut p = OPEN_VIRTUAL_DISK_PARAMETERS::default();
+    p.Version = OPEN_VIRTUAL_DISK_VERSION_2;
+    p.Anonymous = OPEN_VIRTUAL_DISK_PARAMETERS_0 {
+        Version2: OPEN_VIRTUAL_DISK_PARAMETERS_0_1 {
+            GetInfoOnly: 0,
+            ReadOnly: 1,
+            ..Default::default()
+        },
+    };
+    let name = wide(
+        path.to_str()
+            .ok_or_else(|| invalid("Unicode working-volume path required"))?,
+    )?;
+    let mut privileges = Privileges::enable_for(&["SeManageVolumePrivilege"])?;
+    let mut opened = ptr::null_mut();
+    // SAFETY: open-existing only, version2 READ_ONLY parameters with the
+    // required zero access mask; nothing is created or initialized.
+    win(unsafe {
+        OpenVirtualDisk(
+            &storage,
+            name.as_ptr(),
+            VIRTUAL_DISK_ACCESS_NONE,
+            OPEN_VIRTUAL_DISK_FLAG_NONE,
+            &p,
+            &mut opened,
+        )
+    })?;
+    if opened.is_null() || opened == INVALID_HANDLE_VALUE {
+        return Err(invalid("no working-volume provider handle"));
+    }
+    let handle = RecoveryHandle(VirtualHandle(opened));
+    // Not attached: nothing to do.
+    if handle.physical_number().is_err() {
+        privileges.restore()?;
+        return Ok(false);
+    }
+    // SAFETY: the live handle opened above for this exact file.
+    win(unsafe { DetachVirtualDisk(handle.0.0, DETACH_VIRTUAL_DISK_FLAG_NONE, 0) })?;
+    if handle.physical_number().is_ok() {
+        return Err(invalid(
+            "the working volume is still attached after the detach",
+        ));
+    }
+    privileges.restore()?;
+    Ok(true)
+}

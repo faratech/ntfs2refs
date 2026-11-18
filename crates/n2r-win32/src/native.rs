@@ -1448,6 +1448,20 @@ pub fn restore_drive_letter_general(
     requested: &str,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<DriveLetterRestore> {
+    restore_drive_letter_general_on(binding, requested, "ReFS", events)
+}
+
+/// The same for a volume of the given file system: "ReFS" for a converted
+/// volume, "NTFS" for a source given back by a rollback. Windows gives a disk
+/// that comes back online its letters again only where automatic mounting is
+/// on (`mountvol /E`); where it is off, the run gives the original letter back
+/// itself, under the same rules.
+pub fn restore_drive_letter_general_on(
+    binding: GeneralDiskBinding,
+    requested: &str,
+    expected_filesystem: &str,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<DriveLetterRestore> {
     let bytes = requested.as_bytes();
     if bytes.len() != 3 || !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' || bytes[2] != b'\\'
     {
@@ -1455,8 +1469,13 @@ pub fn restore_drive_letter_general(
     }
     let bound = rediscover_general_volume_wait(binding, events)?;
     let filesystem = mounted_filesystem_general(bound.clone(), events)?;
-    if filesystem != "ReFS" {
-        return Err(invalid("drive-letter restoration requires converted ReFS"));
+    if filesystem != expected_filesystem {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "drive-letter restoration expected a mounted {expected_filesystem} volume, found {filesystem}"
+            ),
+        ));
     }
     let before = capture_mount_paths_general(bound.clone(), events)?;
     if before
@@ -1476,9 +1495,7 @@ pub fn restore_drive_letter_general(
         let bytes = path.as_bytes();
         bytes.len() == 3 && bytes[1] == b':' && bytes[2] == b'\\'
     }) {
-        return Err(invalid(
-            "converted ReFS volume already has another drive letter",
-        ));
+        return Err(invalid("the volume already has another drive letter"));
     }
     let mut mount_wide: Vec<u16> = requested.encode_utf16().collect();
     mount_wide.push(0);

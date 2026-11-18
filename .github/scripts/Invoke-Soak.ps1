@@ -354,6 +354,9 @@ for ($round = 1; ; $round++) {
                 $again = Invoke-Converter $recovery (Join-Path $dir 'recover')
                 Say "  ntfs2refs $($result.recovery): exit $($again.exit) after $($again.seconds) s"
                 if ($again.exit -ne 0) { throw "the recovery ended with exit $($again.exit): $(($again.stderr -split "`n" | Where-Object { $_ -match '^error' } | Select-Object -Last 1))" }
+                # A run cut off before it wrote anything has nothing to resume:
+                # the recovery gives NTFS back, and says so (#177).
+                if ($again.said -match 'there is nothing\s+to resume, so the NTFS volume is given back') { $expect = 'NTFS'; Say '  (nothing had been written: the recovery gave NTFS back)' }
             } else {
                 $result.recovery = 'none printed: the volume has to be as it was'
                 Say "  the run had printed no recovery command; ${letter}: has to be NTFS as it was"
@@ -395,8 +398,8 @@ for ($round = 1; ; $round++) {
     } finally {
         # Virtual disks the run left attached in its working storage: a
         # finding, recorded; detached so that the storage can be freed.
-        $left = @(Get-Disk | Where-Object { $_.BusType -eq 'File Backed Virtual' } | ForEach-Object { try { $_ | Get-DiskImage -ErrorAction Stop } catch { } } |
-            Where-Object { $_.ImagePath -and $_.ImagePath.StartsWith($work, [StringComparison]::OrdinalIgnoreCase) })
+        $left = @(Get-ChildItem -LiteralPath $work -Recurse -Force -File -Filter *.vhdx -ErrorAction SilentlyContinue | ForEach-Object {
+            try { Get-DiskImage -ImagePath $_.FullName -ErrorAction Stop } catch { } } | Where-Object { $_.Attached })
         foreach ($image in $left) {
             $disk = $image | Get-Disk
             $result.findings += "the run left $($image.ImagePath) attached (disk $($disk.Number), offline=$($disk.IsOffline), read-only=$($disk.IsReadOnly))"
@@ -404,6 +407,9 @@ for ($round = 1; ; $round++) {
             try { Dismount-DiskImage -ImagePath $image.ImagePath | Out-Null } catch { Say "  could not detach it: $_" }
         }
         Remove-SoakDisk $vhd
+        # Any virtual disk still attached after the round, wherever it lies.
+        $stray = @(Get-Disk | Where-Object { $_.BusType -eq 'File Backed Virtual' })
+        if ($stray) { Say "  attached virtual disks after the round: $(@($stray | ForEach-Object { "disk $($_.Number) offline=$($_.IsOffline) $([Math]::Round($_.Size / 1GB, 1)) GiB" }) -join ', ')" }
         Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
         if (Test-Path -LiteralPath $work) { Say "  the working storage $work could not be removed entirely" }
         $results.Add([pscustomobject]$result)

@@ -635,11 +635,39 @@ pub(super) fn recover_preparation_in_workspace(
     // and nothing uses it any more.
     if let Some(run) = directory.parent() {
         let (files, bytes, disks) = left_behind(run);
+        let disks = detach_working_volumes(disks);
         for line in left_behind_lines(run, files, bytes, &disks) {
             println!("{line}");
         }
     }
     Ok(0)
+}
+
+/// Detaches the working volume of a run that was cut off, once a recovery or
+/// cancellation has completed and nothing needs it: Windows keeps it
+/// attached, offline and read-only, until it is detached, and the working
+/// directory cannot be deleted before. Returns the disks still to be
+/// detached by hand (those that could not be); each detach is said.
+pub(super) fn detach_working_volumes(disks: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut left = Vec::new();
+    for disk in disks {
+        if disk.file_name().and_then(|name| name.to_str()) != Some("shadow.vhdx") {
+            left.push(disk);
+            continue;
+        }
+        match n2r_win32::managed_shadow::detach_left_behind(&disk) {
+            Ok(true) => println!("Detached the volume the run built: {}", disk.display()),
+            Ok(false) => (),
+            Err(error) => {
+                eprintln!(
+                    "Note: the volume the run built could not be detached ({error}): {}",
+                    disk.display()
+                );
+                left.push(disk);
+            }
+        }
+    }
+    left
 }
 
 /// What a run left in its working directory: the number of its files, their
@@ -981,6 +1009,17 @@ pub(crate) fn recover(directory: &Path, sha: &str, rollback: bool) -> Result<u8>
                 .get("actual_mount_paths")
                 .unwrap_or(&serde_json::Value::Null)
         );
+    }
+    // The run's working volume is not needed by a completed recovery in
+    // either direction; it stays attached until it is detached.
+    if let Some(run) = directory.parent() {
+        let (_, _, disks) = left_behind(run);
+        for disk in detach_working_volumes(disks) {
+            println!(
+                "Windows may still have the volume the run built attached: in diskpart, `select vdisk file=\"{}\"` and `detach vdisk`.",
+                disk.display()
+            );
+        }
     }
     println!("Recovery completed. Records: {}", output.display());
     Ok(0)

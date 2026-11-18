@@ -71,15 +71,18 @@ pub(crate) fn reconcile_online_terminal<O: PreparationObserver>(
     let actual_before: BTreeSet<_> = first.paths.iter().map(|s| s.to_lowercase()).collect();
     let mut attempted = Vec::new();
     for missing in expected.difference(&actual_before) {
-        let bytes = missing.as_bytes();
-        let letter = bytes.len() == 3
-            && bytes[0].is_ascii_alphabetic()
-            && bytes[1] == b':'
-            && bytes[2] == b'\\';
-        if lifecycle == SelectedLifecycle::Handoff && letter {
+        // The converted volume's letter after a handoff, and the NTFS
+        // volume's after a rollback: Windows does not give them back where
+        // automatic mounting of volumes is off.
+        if is_drive_letter_root(missing) {
             events.checkpoint()?;
-            n2r_win32::restore_drive_letter_general(mounted.clone(), missing, events)
-                .context("terminal drive letter is unavailable or could not be safely restored")?;
+            n2r_win32::restore_drive_letter_general_on(
+                mounted.clone(),
+                missing,
+                filesystem,
+                events,
+            )
+            .context("terminal drive letter is unavailable or could not be safely restored")?;
             attempted.push(missing.clone());
         }
     }
@@ -452,4 +455,10 @@ pub(crate) fn finalize_resource_handoff_with_windows_aliases_observer<O: Prepara
         Ok(receipt)
     })();
     finish_online.map_err(|cause| CommittedFinalizationError { cause }.into())
+}
+
+/// Whether a mount path is a drive-letter root such as `v:\`.
+pub(crate) fn is_drive_letter_root(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() == 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\'
 }

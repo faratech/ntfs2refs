@@ -117,6 +117,36 @@ pub(crate) fn memory_refusal(needed: u64, free: u64, limit: Option<u64>) -> Stri
     }
 }
 
+/// What a volume that needs more memory than is free comes to.
+pub(crate) enum Short {
+    /// The run goes ahead, slower: said before it starts.
+    GoesOn(String),
+    /// It is refused, with the figures.
+    Refused(String),
+}
+
+/// A volume needs `needed` bytes of free memory and `free` are free.
+///
+/// A run whose user set a limit is held to it and refused. A run without
+/// one fits itself to the machine: it goes ahead and takes what is beyond
+/// its share of the free memory from the page file, as long as Windows can
+/// commit what the volume needs at all. It is told that it will be slower.
+pub(crate) fn short_of_memory(needed: u64, free: u64) -> Short {
+    let limit = n2r_win32::resource_native::memory_limit();
+    // What the run's ledger must hold is two thirds of the free memory the
+    // estimate asks; that much must be committable.
+    let committable = n2r_win32::resource_native::committable_bytes().unwrap_or(0);
+    if n2r_win32::resource_native::memory_fits_the_machine() && committable >= needed / 3 * 2 {
+        Short::GoesOn(format!(
+            "this volume wants about {} MiB of free memory, and {} MiB are free. The conversion goes ahead and takes the rest from the page file, which makes it slower; closing other programs first makes it faster.",
+            needed >> 20,
+            free >> 20
+        ))
+    } else {
+        Short::Refused(memory_refusal(needed, free, limit))
+    }
+}
+
 /// Refuse the frozen source of a run that may hold `ram_bytes`, where its
 /// volume needs more. Nothing was changed by then.
 pub(crate) fn refuse_frozen_source(raw: &PagedInspection, ram_bytes: u64) -> Result<()> {
@@ -135,14 +165,12 @@ pub(crate) fn refuse_frozen_source(raw: &PagedInspection, ram_bytes: u64) -> Res
     }
     let needed = ledger_needed(raw.file_count(), files, directories, streams);
     if needed > ram_bytes {
-        bail!(
-            "the volume has {files} file(s), {directories} directories and {streams} data stream(s): {}. Nothing on it was changed",
-            memory_refusal(
-                free_memory_for(needed),
-                free_memory_for(ram_bytes),
-                n2r_win32::resource_native::memory_limit(),
-            )
-        );
+        match short_of_memory(free_memory_for(needed), free_memory_for(ram_bytes)) {
+            Short::GoesOn(note) => println!("Note: {note}"),
+            Short::Refused(refusal) => bail!(
+                "the volume has {files} file(s), {directories} directories and {streams} data stream(s): {refusal}. Nothing on it was changed"
+            ),
+        }
     }
     Ok(())
 }

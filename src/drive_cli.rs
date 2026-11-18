@@ -617,6 +617,10 @@ mod windows {
         if let Some(mib) = args.memory_limit {
             // Before anything reads how much memory is free.
             n2r_win32::resource_native::limit_memory(mib << 20)?;
+        } else {
+            // Nobody asked for a ceiling: where memory comes short the run
+            // goes on with what Windows can give it, and does not stop.
+            n2r_win32::resource_native::fit_memory_to_the_machine();
         }
         if mode == crate::execution_mode::ExecutionMode::Diagnose {
             // A backstop beneath the routes: nothing in this process may now

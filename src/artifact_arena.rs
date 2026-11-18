@@ -84,6 +84,9 @@ struct State {
     overhead: u64,
     index_bytes: u64,
     leased_ram_bytes: u64,
+    // How far what the run cannot do without may go beyond the budget: 0
+    // until the budget came short in a run that fits itself to the machine.
+    beyond_budget_bytes: u64,
     // The same bytes by the place in the code that holds them.
     ram_by_site: BTreeMap<RamSite, u64>,
     // The part of `leased_ram_bytes` held by optional caches.
@@ -1009,6 +1012,7 @@ impl ArtifactArena {
                 overhead: 0,
                 index_bytes: config_registry_bytes,
                 leased_ram_bytes: 0,
+                beyond_budget_bytes: 0,
                 ram_by_site: BTreeMap::new(),
                 optional_ram_bytes: 0,
                 cache_ram_bytes: 0,
@@ -1470,7 +1474,73 @@ impl ArtifactArena {
                 Err(again) => refused = again,
             }
         }
+        // Nothing is left to give up. A run that fits itself to the machine
+        // goes on beyond its budget where Windows still has the memory.
+        if self.go_beyond_budget(bytes) {
+            return self.reserve_ram_at(bytes, site);
+        }
         Err(refused)
+    }
+    /// Let what the run cannot do without go `bytes` further than the
+    /// ledger has room for, if this run fits itself to the machine and
+    /// Windows can still commit that much and `COMMIT_KEPT_FREE` besides.
+    ///
+    /// The budget is a share of the memory that was free when the run
+    /// started. Other programs may have taken that memory since, or the
+    /// volume may need more than the share: in both cases the run used to
+    /// stop, minutes or an hour in, with the volume unchanged. It goes on
+    /// now and is slower, because what is beyond the free memory comes from
+    /// the page file. It still stops, with the same message, where Windows
+    /// has no more to give: a process that asks for memory Windows cannot
+    /// commit is ended by it.
+    fn go_beyond_budget(&self, bytes: u64) -> bool {
+        n2r_win32::resource_native::memory_fits_the_machine()
+            && self.go_beyond_budget_with(
+                bytes,
+                n2r_win32::resource_native::committable_bytes().unwrap_or(0),
+            )
+    }
+    /// As [`Self::go_beyond_budget`], given what Windows can still commit.
+    fn go_beyond_budget_with(&self, bytes: u64, committable: u64) -> bool {
+        /// Left to Windows and every other program of what can be committed.
+        const COMMIT_KEPT_FREE: u64 = 512 << 20;
+        /// The step the allowance grows by, so that it is not asked of
+        /// Windows for every row.
+        const STEP: u64 = 16 << 20;
+        let Ok(mut state) = self.0.state.lock() else {
+            return false;
+        };
+        if state.ram_poisoned {
+            return false;
+        }
+        let Some(short) = state
+            .leased_ram_bytes
+            .checked_add(state.index_bytes)
+            .and_then(|held| held.checked_add(bytes))
+            .map(|wanted| {
+                wanted.saturating_sub(
+                    self.0
+                        .budget
+                        .ram_bytes
+                        .saturating_add(state.beyond_budget_bytes),
+                )
+            })
+        else {
+            return false;
+        };
+        let more = short.div_ceil(STEP).saturating_mul(STEP);
+        if committable < more.saturating_add(COMMIT_KEPT_FREE) {
+            return false;
+        }
+        if state.beyond_budget_bytes == 0 {
+            eprintln!(
+                "Memory is short: the run needs more than the {} MiB it set aside when it started. It goes on with what Windows can still give it and will be slower. Closing other programs helps.",
+                self.0.budget.ram_bytes >> 20
+            );
+        }
+        state.beyond_budget_bytes = state.beyond_budget_bytes.saturating_add(more);
+        n2r_win32::perf::note_beyond_budget(state.beyond_budget_bytes);
+        true
     }
     /// Whether `bytes` more would be within `ceiling` if no cache held
     /// anything, in a ledger that is not poisoned.
@@ -1503,7 +1573,9 @@ impl ArtifactArena {
         let leased = add(state.leased_ram_bytes, bytes)?;
         state.spare.needed(bytes);
         ensure!(
-            !state.ram_poisoned && add(leased, state.index_bytes)? <= self.0.budget.ram_bytes,
+            !state.ram_poisoned
+                && add(leased, state.index_bytes)?
+                    <= add(self.0.budget.ram_bytes, state.beyond_budget_bytes)?,
             "aggregate artifact arena RAM exhausted or poisoned: leased={} (of which optional caches {}), registry={}, requested={} at {}:{}, limit={}, poisoned={}; the largest reservations: {}",
             state.leased_ram_bytes,
             state.optional_ram_bytes,
@@ -3069,6 +3141,35 @@ mod cache_tests {
         );
         assert!(second.is_held());
         drop((needed, more, still_more, second));
+        assert_eq!(held(&arena), (0, 0));
+    }
+
+    #[test]
+    fn a_run_that_fits_the_machine_goes_beyond_its_budget_while_windows_has_the_memory() {
+        const MIB: u64 = 1024 * 1024;
+        let (_directory, arena) = ledger();
+        let site = ("test", 1);
+        let held_already = arena.reserve_ram(LIMIT - MIB).unwrap();
+        // The ledger is full: a process that keeps to its budget (this one
+        // never asked to fit the machine) is refused, as ever.
+        assert!(arena.reserve_ram(8 * MIB).is_err());
+        assert!(!arena.go_beyond_budget(8 * MIB));
+        // Windows has too little left to commit: refused, nothing allowed.
+        assert!(!arena.go_beyond_budget_with(8 * MIB, 500 * MIB));
+        assert!(arena.reserve_ram_at(8 * MIB, site).is_err());
+        // It has enough: the allowance grows by whole steps, and what was
+        // refused is granted.
+        assert!(arena.go_beyond_budget_with(8 * MIB, 4096 * MIB));
+        let beyond = arena.reserve_ram_at(8 * MIB, site).unwrap();
+        assert_eq!(held(&arena), (LIMIT + 7 * MIB, 0));
+        assert_eq!(arena.0.state.lock().unwrap().beyond_budget_bytes, 16 * MIB);
+        // What fits the allowance asks for nothing more; what does not is
+        // refused again until Windows is asked again.
+        let within = arena.reserve_ram_at(8 * MIB, site).unwrap();
+        assert!(arena.reserve_ram_at(8 * MIB, site).is_err());
+        // A cache gets none of it: it is held only while the budget has room.
+        assert!(arena.reserve_cache_ram(MIB).is_err());
+        drop((held_already, beyond, within));
         assert_eq!(held(&arena), (0, 0));
     }
 

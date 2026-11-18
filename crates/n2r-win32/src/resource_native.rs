@@ -1,7 +1,7 @@
 //! Read-only hardware/scratch observations. These are sampled availability,
 //! not reservations, conversion authority or a promise that resources persist.
 use serde::Serialize;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::{io, os::windows::ffi::OsStrExt, path::Path};
 use windows_sys::Win32::{
     Storage::FileSystem::GetDiskFreeSpaceExW,
@@ -28,6 +28,38 @@ pub fn limit_memory(bytes: u64) -> io::Result<()> {
             "this process already works with another memory limit",
         )),
     }
+}
+
+/// Whether this process fits its memory to the machine (see
+/// [`fit_memory_to_the_machine`]).
+static FITS_THE_MACHINE: AtomicBool = AtomicBool::new(false);
+
+/// A run without `--memory-limit` fits itself to the machine: where what it
+/// cannot do without is more than its share of the free memory, it goes on
+/// with what Windows can still give it (the page file) and takes longer,
+/// instead of stopping. Its user did not ask for a ceiling. Called once,
+/// where a run starts; a process that never calls it (a test) keeps to its
+/// budget exactly.
+pub fn fit_memory_to_the_machine() {
+    FITS_THE_MACHINE.store(true, Ordering::SeqCst);
+}
+
+/// Whether memory the run cannot do without may go beyond its budget: it
+/// fits itself to the machine, and its user set no limit.
+pub fn memory_fits_the_machine() -> bool {
+    FITS_THE_MACHINE.load(Ordering::SeqCst) && memory_limit().is_none()
+}
+
+/// What Windows can still commit to this process: free memory and free
+/// page file together.
+pub fn committable_bytes() -> io::Result<u64> {
+    let mut memory: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
+    memory.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+    // SAFETY: the structure is initialized and its length is set.
+    if unsafe { GlobalMemoryStatusEx(&mut memory) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(memory.ullAvailPageFile)
 }
 
 /// The memory limit set for this process, if one was.

@@ -5,7 +5,7 @@
 //! shadow-copy catalog decide, and estimates what a conversion would take.
 //! It admits nothing: a conversion inspects the frozen source again, and
 //! what only the frozen source can show is listed as still to be decided.
-use crate::run_memory::{memory_needed, memory_refusal};
+use crate::run_memory::memory_needed;
 use crate::{
     artifact_arena::{ArtifactArena, ArtifactGroup},
     ntfs_admission,
@@ -711,11 +711,13 @@ fn read(
             .iter()
             .any(|text| text.contains("free memory"))
     {
-        report.refusals.push(memory_refusal(
+        match crate::run_memory::short_of_memory(
             estimate.memory_needed_bytes,
             estimate.memory_free_bytes,
-            n2r_win32::resource_native::memory_limit(),
-        ));
+        ) {
+            crate::run_memory::Short::GoesOn(note) => report.notes.push(note),
+            crate::run_memory::Short::Refused(refusal) => report.refusals.push(refusal),
+        }
     }
     report.estimate = Some(estimate);
     laps.end("the volume's conditions");
@@ -914,6 +916,7 @@ mod tests {
 
     #[test]
     fn a_volume_refused_for_memory_is_told_whether_the_limit_or_the_machine_is_short() {
+        use crate::run_memory::memory_refusal;
         const MIB: u64 = 1 << 20;
         // No limit: the machine.
         let said = memory_refusal(10_150 * MIB, 6_105 * MIB, None);

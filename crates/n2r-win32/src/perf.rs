@@ -325,6 +325,16 @@ fn holders_due(needed: u64, described: u64, limit: u64) -> bool {
         .is_some_and(|due| needed >= due)
 }
 
+/// How far a run that fits itself to the machine went beyond the memory it
+/// set aside when it started, at the most.
+static BEYOND_BUDGET: AtomicU64 = AtomicU64::new(0);
+
+/// The ledger let what the run cannot do without go this far beyond its
+/// budget (`ArtifactArena::go_beyond_budget`).
+pub fn note_beyond_budget(bytes: u64) {
+    BEYOND_BUDGET.fetch_max(bytes, Relaxed);
+}
+
 /// What held a ledger's memory when what the run could not do without stood
 /// at `needed`: printed with the totals, so that a run says what a volume's
 /// memory went to and not only how much it was.
@@ -413,6 +423,13 @@ pub fn finish() {
                 LEDGER_LIMIT.load(Relaxed) >> 20,
                 LEDGER_NEEDED_PEAK.load(Relaxed) >> 20
             );
+            let beyond = BEYOND_BUDGET.load(Relaxed);
+            if beyond != 0 {
+                eprintln!(
+                    "memory-beyond: that was more than it may hold, and the run went on with {} MiB beyond it that Windows could still give",
+                    beyond >> 20
+                );
+            }
             if let Ok(holders) = LEDGER_HOLDERS.lock()
                 && !holders.1.is_empty()
             {

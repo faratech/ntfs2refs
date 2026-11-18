@@ -68,6 +68,11 @@ $used = @(Get-Volume | Where-Object DriveLetter | ForEach-Object { [string]$_.Dr
 $letter = @('V', 'W', 'T', 'U', 'R', 'Q') | Where-Object { $_ -notin $used } | Select-Object -First 1
 if (-not $letter) { throw 'no free drive letter among V, W, T, U, R, Q' }
 if ($Seed -eq 0) { $Seed = Get-Random -Minimum 1 -Maximum 1000000000 }
+# Windows mounts new volumes by itself unless told not to (mountvol /N), and
+# the hosted runners are: a disk taken offline and back then comes back
+# without its letter. The soak runs with Windows' default.
+$automountWasOff = [bool]((& mountvol.exe) -match 'automatic mounting of new volumes disabled')
+if ($automountWasOff) { $null = & mountvol.exe /E; "automatic mounting of new volumes was off on this machine; turned on for the soak (mountvol /E)" }
 
 $holdPoints = @('apply-activated', 'apply-mid-ranges', 'apply-ranges-written', 'apply-before-boot-granule', 'apply-boot-granule-written',
     'apply-before-handoff', 'apply-handoff-durable', 'handoff-sealed', 'finalize-authenticated', 'finalize-source-readonly',
@@ -216,7 +221,11 @@ function New-SoakContent([string]$root, [int]$seed, [int]$cluster, [bool]$many, 
     $null = New-Item -ItemType Junction -Path "$root\links\junction" -Target "$root\sizes"
     $made.Add('symbolic links and a junction')
     # Attributes (not TEMPORARY or OFFLINE, which are refused), times, security, object IDs.
-    $all = @(Get-ChildItem -LiteralPath $root -Recurse -File -Force | Where-Object { -not $_.LinkType } | Select-Object -First 4000)
+    # "V:" alone is the current directory of V:, not its root.
+    # (System Volume Information is not the content's, and not readable.)
+    $all = @(Get-ChildItem -LiteralPath "$($root.TrimEnd('\'))\" -Directory -Force | Where-Object { $_.Name -ne 'System Volume Information' -and -not $_.LinkType } |
+        Get-ChildItem -Recurse -File -Force | Where-Object { -not $_.LinkType } | Select-Object -First 4000)
+    if ($all.Count -lt 50) { throw "the content listing found $($all.Count) files under $root" }
     $epoch = [DateTime]::SpecifyKind([DateTime]::new(1990, 1, 1), [DateTimeKind]::Utc)
     foreach ($file in $all | Get-Random -Count ([Math]::Min(300, $all.Count)) -SetSeed ($seed + 1)) {
         $when = $epoch.AddSeconds($random.NextDouble() * 1.2e9).AddTicks($random.Next(0, 10000000))
@@ -243,6 +252,39 @@ function Capture([string]$path) {
     if ($LASTEXITCODE -ne 0) { throw "lab-volume-manifest capture failed ($LASTEXITCODE): $said" }
 }
 
+# Windows writes its own files into System Volume Information when a volume
+# arrives (the storage service's WPSettings.dat; the mount manager's database
+# on a volume with junctions; the indexer's IndexerVolumeGuid where the search
+# service runs). A volume made a moment ago gets them when it next mounts,
+# which would be after it was converted, and the directory's times would show
+# as a difference. So, as lab\Invoke-DataVolumeAttempt.ps1 does, the volume is
+# mounted afresh and listed once those files are there and two listings in a
+# row agree. Taking the disk offline also closes what had the new files open.
+function Capture-Settled([string]$path, [int]$diskNumber) {
+    $indexer = [bool](Get-Service -Name WSearch -ErrorAction SilentlyContinue | Where-Object { "$($_.StartType)" -ne 'Disabled' })
+    $afresh = {
+        Set-Disk -Number $diskNumber -IsOffline $true; Set-Disk -Number $diskNumber -IsOffline $false
+        # The harness's own remount: if the letter did not come back, it is given back.
+        Start-Sleep -Seconds 2
+        if (-not (Get-Partition -DriveLetter $letter -ErrorAction SilentlyContinue)) {
+            Get-Partition -DiskNumber $diskNumber | Where-Object Type -eq 'Basic' | Select-Object -First 1 | Set-Partition -NewDriveLetter $letter
+            Say "  (the remount before the listing left the volume without ${letter}:; given back)"
+        }
+        $null = Wait-Volume 'NTFS'
+    }
+    & $afresh; $remount = (Get-Date).AddSeconds(20); $deadline = (Get-Date).AddSeconds(150); $previous = -1
+    do {
+        Start-Sleep -Seconds 2
+        Capture $path
+        $own = @(Select-String -LiteralPath $path -Pattern 'System Volume Information' -SimpleMatch)
+        $has = { param($leaf) [bool]($own | Where-Object { $_.Line -like "*$leaf*" }) }
+        $settled = (& $has 'WPSettings.dat') -and (& $has 'MountPointManagerRemoteDatabase') -and (-not $indexer -or (& $has 'IndexerVolumeGuid')) -and $own.Count -eq $previous
+        $previous = $own.Count
+        if (-not $settled -and (Get-Date) -ge $remount) { & $afresh; $remount = (Get-Date).AddSeconds(20); $previous = -1 }
+    } until ($settled -or (Get-Date) -gt $deadline)
+    if (-not $settled) { Say "  (System Volume Information did not settle in 150 s: $($own.Count) entries)" }
+}
+
 function Wait-Volume([string]$fileSystem) {
     for ($i = 0; $i -lt 120; $i++) {
         $volume = Get-Volume -DriveLetter $letter -ErrorAction SilentlyContinue
@@ -250,7 +292,14 @@ function Wait-Volume([string]$fileSystem) {
         Start-Sleep -Milliseconds 500
     }
     $volume = Get-Volume -DriveLetter $letter -ErrorAction SilentlyContinue
-    throw "${letter}: is $(if ($volume) { "$($volume.FileSystem) $($volume.HealthStatus)" } else { 'not mounted' }), not $fileSystem"
+    # What there is instead: the virtual disk, its partitions and their volumes.
+    $state = @(Get-Disk | Where-Object { $_.BusType -eq 'File Backed Virtual' } | ForEach-Object {
+        $disk = $_
+        $parts = @(Get-Partition -DiskNumber $disk.Number -ErrorAction SilentlyContinue | ForEach-Object {
+            $v = $_ | Get-Volume -ErrorAction SilentlyContinue
+            "partition $($_.PartitionNumber) $($_.Type) letter '$($_.DriveLetter)' paths $(@($_.AccessPaths) -join ',') volume $(if ($v) { "$($v.FileSystem) $($v.HealthStatus)" } else { 'none' })" })
+        "disk $($disk.Number) offline=$($disk.IsOffline) read-only=$($disk.IsReadOnly) ($($disk.OfflineReason)): $($parts -join '; ')" })
+    throw "${letter}: is $(if ($volume) { "$($volume.FileSystem) $($volume.HealthStatus)" } else { 'not mounted' }), not $fileSystem. $($state -join ' | ')"
 }
 
 $started = Get-Date
@@ -264,7 +313,8 @@ for ($round = 1; ; $round++) {
     $roundSeed = $Seed + $round - 1
     $draw = [Random]::new($roundSeed)
     $kind = $Profile[($round - 1) % $Profile.Count]
-    $ntfsCluster = @(512, 4096, 4096, 4096, 8192, 16384, 65536)[$draw.Next(0, 7)]
+    # (A VHDX made by diskpart has 4 KiB physical sectors: no 512-byte clusters.)
+    $ntfsCluster = @(4096, 4096, 4096, 8192, 16384, 32768, 65536)[$draw.Next(0, 7)]
     $refsCluster = @(4096, 65536)[$draw.Next(0, 2)]
     $gib = if ($kind -eq 'many') { 8 } else { $draw.Next(2, 7) }
     $hold = switch ($kind) { 'resume' { $holdPoints[$draw.Next(0, $holdPoints.Count)] } 'rollback' { $rollbackPoints[$draw.Next(0, $rollbackPoints.Count)] } default { '' } }
@@ -275,13 +325,13 @@ for ($round = 1; ; $round++) {
     $vhd = Join-Path $Disks "$name.vhdx"
     $work = Join-Path $Scratch $name
     $result = [ordered]@{ round = $round; profile = $kind; seed = $roundSeed; ntfs_cluster = $ntfsCluster; refs_cluster = $refsCluster; disk_gib = $gib
-        hold_at = $hold; end_after_seconds = $endAfter; content = ''; convert_seconds = $null; recovery = ''; outcome = ''; detail = '' }
+        hold_at = $hold; end_after_seconds = $endAfter; content = ''; convert_seconds = $null; recovery = ''; outcome = ''; detail = ''; findings = @() }
     Say "round ${round}: $kind, seed $roundSeed, NTFS clusters of $ntfsCluster, ReFS clusters of $refsCluster, a $gib GiB disk$(if ($hold) { ", held at $hold" })$(if ($endAfter) { ", ended after $endAfter s" })"
     try {
-        $null = New-SoakDisk $vhd $gib $ntfsCluster
+        $diskNumber = New-SoakDisk $vhd $gib $ntfsCluster
         $result.content = New-SoakContent "${letter}:" $roundSeed $ntfsCluster ($kind -eq 'many') ([Math]::Min(1.5GB, [long]$gib * 1GB / 4))
         Say "  content: $($result.content)"
-        Capture (Join-Path $dir 'before.jsonl')
+        Capture-Settled (Join-Path $dir 'before.jsonl') $diskNumber
         $null = New-Item -ItemType Directory -Force -Path $work
         $arguments = @('--drive', $letter, '--scratch-directory', $work, '--target-cluster-bytes', "$refsCluster")
         if ($hold) { $arguments += @('--lab-hold-at', $hold, '--acknowledge-lab-hold-never-completes') }
@@ -311,12 +361,29 @@ for ($round = 1; ; $round++) {
         } elseif ($run.exit -ne 0) {
             throw "the conversion ended with exit $($run.exit): $(($run.stderr -split "`n" | Where-Object { $_ -match '^error' } | Select-Object -Last 1))"
         }
+        # A source given back as NTFS without its letter: a finding, recorded;
+        # the letter is given back so that the listing can be compared.
+        if ($expect -eq 'NTFS' -and -not (Get-Partition -DriveLetter $letter -ErrorAction SilentlyContinue)) {
+            Start-Sleep -Seconds 5
+            if (-not (Get-Partition -DriveLetter $letter -ErrorAction SilentlyContinue)) {
+                $source = Get-DiskImage -ImagePath $vhd | Get-Disk | Get-Partition | Where-Object Type -eq 'Basic' | Select-Object -First 1
+                if ($source -and -not $source.DriveLetter) {
+                    $source | Set-Partition -NewDriveLetter $letter
+                    $result.findings += "the volume came back as NTFS without ${letter}: (given back by the soak)"
+                    Say "  FINDING: the volume came back as NTFS without ${letter}:; given back to compare it"
+                }
+            }
+        }
         $volume = Wait-Volume $expect
         Capture (Join-Path $dir 'after.jsonl')
         $compare = @('compare', '--before', (Join-Path $dir 'before.jsonl'), '--after', (Join-Path $dir 'after.jsonl'), '--report', (Join-Path $dir 'report.json'))
         if ($expect -eq 'NTFS') { $compare += '--exact' }
         $summary = & $manifest @compare 2>&1 | Out-String
-        if ($LASTEXITCODE -ne 0) { throw "the listings differ ($(if ($expect -eq 'NTFS') { 'exact' } else { 'with the allowances of a conversion' })): $($summary.Trim())" }
+        if ($LASTEXITCODE -ne 0) {
+            $first = try { (Get-Content -Raw -LiteralPath (Join-Path $dir 'report.json') | ConvertFrom-Json).differences | Select-Object -First 12 | ForEach-Object { "$($_.path): $($_.kind): $($_.what)" } } catch { @("(no report: $_)") }
+            foreach ($line in $first) { Say "    differs: $line" }
+            throw "the listings differ ($(if ($expect -eq 'NTFS') { 'exact' } else { 'with the allowances of a conversion' })): $($summary.Trim()); first: $($first -join ' | ')"
+        }
         $result.outcome = if ($expect -eq 'ReFS') { 'converted' } else { 'ntfs-as-before' }
         Say "  ${letter}: is $($volume.FileSystem) $($volume.HealthStatus); listings $(if ($expect -eq 'NTFS') { 'identical' } else { 'match' })"
         foreach ($leaf in 'before.jsonl', 'after.jsonl') { Remove-Item -LiteralPath (Join-Path $dir $leaf) -Force -ErrorAction SilentlyContinue }
@@ -326,8 +393,19 @@ for ($round = 1; ; $round++) {
         try { & $converter --list 2>&1 | Out-File -LiteralPath (Join-Path $dir 'list-after-failure.txt') -Encoding utf8 } catch { }
         $failed = $result
     } finally {
+        # Virtual disks the run left attached in its working storage: a
+        # finding, recorded; detached so that the storage can be freed.
+        $left = @(Get-Disk | Where-Object { $_.BusType -eq 'File Backed Virtual' } | ForEach-Object { try { $_ | Get-DiskImage -ErrorAction Stop } catch { } } |
+            Where-Object { $_.ImagePath -and $_.ImagePath.StartsWith($work, [StringComparison]::OrdinalIgnoreCase) })
+        foreach ($image in $left) {
+            $disk = $image | Get-Disk
+            $result.findings += "the run left $($image.ImagePath) attached (disk $($disk.Number), offline=$($disk.IsOffline), read-only=$($disk.IsReadOnly))"
+            Say "  FINDING: the run left $($image.ImagePath) attached (offline=$($disk.IsOffline), read-only=$($disk.IsReadOnly)); detached"
+            try { Dismount-DiskImage -ImagePath $image.ImagePath | Out-Null } catch { Say "  could not detach it: $_" }
+        }
         Remove-SoakDisk $vhd
         Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $work) { Say "  the working storage $work could not be removed entirely" }
         $results.Add([pscustomobject]$result)
         ([pscustomobject]$result | ConvertTo-Json -Compress) | Add-Content -LiteralPath (Join-Path $Records 'rounds.jsonl') -Encoding utf8
     }
@@ -335,8 +413,9 @@ for ($round = 1; ; $round++) {
 }
 
 $lines = @('| Round | Profile | Seed | NTFS / ReFS clusters | Hold or end | Seconds | Outcome |', '|---|---|---|---|---|---|---|')
-foreach ($r in $results) { $lines += "| $($r.round) | $($r.profile) | $($r.seed) | $($r.ntfs_cluster) / $($r.refs_cluster) | $(if ($r.hold_at) { $r.hold_at } elseif ($r.end_after_seconds) { "$($r.end_after_seconds) s" } else { '' }) | $($r.convert_seconds) | $($r.outcome)$(if ($r.detail) { ': ' + ($r.detail -replace '\|', '/') }) |" }
-$headline = "soak: $($results.Count) rounds in $([Math]::Round(((Get-Date) - $started).TotalMinutes)) minutes, $(@($results | Where-Object outcome -ne 'FAILED').Count) passed$(if ($failed) { "; round $($failed.round) failed (reproduce: -Profile $($failed.profile) -Seed $($failed.seed) -Rounds 1)" })"
+foreach ($r in $results) { $lines += "| $($r.round) | $($r.profile) | $($r.seed) | $($r.ntfs_cluster) / $($r.refs_cluster) | $(if ($r.hold_at) { $r.hold_at } elseif ($r.end_after_seconds) { "$($r.end_after_seconds) s" } else { '' }) | $($r.convert_seconds) | $($r.outcome)$(if ($r.detail) { ': ' + ($r.detail -replace '\|', '/') })$(if ($r.findings) { '; findings: ' + (($r.findings -join '; ') -replace '\|', '/') }) |" }
+$findings = @($results | Where-Object { $_.findings })
+$headline = "soak: $($results.Count) rounds in $([Math]::Round(((Get-Date) - $started).TotalMinutes)) minutes, $(@($results | Where-Object outcome -ne 'FAILED').Count) passed$(if ($findings) { ", $($findings.Count) with findings" })$(if ($failed) { "; round $($failed.round) failed (reproduce: -Profile $($failed.profile) -Seed $($failed.seed) -Rounds 1)" })"
 $headline
 $lines
 if ($env:GITHUB_STEP_SUMMARY) { (@("### $headline", '') + $lines) | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Encoding utf8 }

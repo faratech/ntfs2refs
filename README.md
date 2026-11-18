@@ -21,8 +21,9 @@ show](#what-has-been-shown) before trusting it with a volume.
   [guide](docs/cli-workflow.md#convert-an-installed-windows).
 
 It does not convert the Windows it is running on, a partition that shares its
-disk with it, or a volume on an MBR disk. `ntfs2refs --list` says for each
-NTFS partition whether it can be converted and, if not, why.
+disk with it, or a volume that shares an MBR disk with other partitions (a
+volume that has an MBR disk to itself converts). `ntfs2refs --list` says for
+each NTFS partition whether it can be converted and, if not, why.
 
 ## What you need
 

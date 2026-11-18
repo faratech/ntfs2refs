@@ -102,6 +102,7 @@ function Get-ExpectedBootOutcome([hashtable]$arguments) {
 }
 function Get-ExpectedDataOutcome([string]$arguments) {
     if ($arguments -match '-ExpectRefusal\b') { return 'refused-as-expected' }
+    if ($arguments -match '-PowerOffDuringPreparation\b') { return 'preparation-cancelled-after-power-off' }
     if ($arguments -match '-StopDuringPreparation\b') { return 'preparation-cancelled' }
     if ($arguments -match '-Diagnose\b') { return 'diagnose-clean' }
     if ($arguments -match '-InterruptAt\b') {
@@ -162,6 +163,23 @@ $dataCases = @(
     'links|-Content minimal -Features links -Check'
     'bigdir|-Content minimal -Features bigdir -Check'
     'casemark|-Content minimal -Features casemark -Check'
+    # What the Windows Subsystem for Linux leaves on a volume, and names
+    # that Win32 does not take and the file systems hold.
+    'wsl|-Content minimal -Features wsl -Check'
+    'names|-Content minimal -Features names -Check'
+    # MBR disks: the volume alone on one, the working directory on one, both
+    # with a run interrupted half way through the writes and resumed; and a
+    # volume that shares an MBR disk, which is refused with what to do.
+    'mbr-src|-SourceMbr -Check'
+    'mbr-work|-WorkingMbr -Check'
+    'mbr-apply-mid-resume|-SourceMbr -WorkingMbr -InterruptAt apply-mid-ranges'
+    'mbr-beside|-SourceMbr -MbrBeside -ExpectRefusal is.MBR.and.holds'
+    # The machine turned off while the converter prepares, then the
+    # cancellation in the Windows that starts again.
+    "power-off-supply-cancel|$lived -StopDuringPreparation payload_supply -PowerOffDuringPreparation"
+    # Memory taken away from a run that fits itself to the machine: it has
+    # to go on and convert.
+    'files-100k-memory-taken|-Content minimal -Features manyfiles -FileCount 100000 -TakeMemoryMB 3000 -TimeoutMinutes 25'
     'shortnames|-Content minimal -Features shortnames -Check -ExpectRefusal short-names.drop'
 )
 $serverCases = @(

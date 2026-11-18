@@ -24,12 +24,15 @@ converter prints.
 | Explicit and deny access entries, a protected directory, another owner, an audit entry | `security` |
 | Extended attributes, up to 30,000 bytes | `ea` |
 | Junctions and symbolic links: to a file, to a directory, relative, dangling | `links` |
+| What the Windows Subsystem for Linux leaves on a volume: owner and mode in extended attributes on files and directories, and its own kinds of file (symbolic link, socket, FIFO, character and block device) with their reparse tags. ReFS as Windows formats it takes them too (`wsl-control`) | `wsl` |
+| Names that Win32's path syntax does not take and both file systems hold: `con`, `aux.txt`, a directory `nul`, a trailing dot, a trailing space, a name of dots only; and names in Chinese, Japanese, Korean, Arabic and Hebrew, with a right-to-left override, surrogate pairs, combining marks, a zero-width joiner, and 255 Cyrillic letters | `names` |
 | A path of more than 260 characters | `longpath` |
 | A file under 40 nested directories | `deep` |
 | A directory of 20,000 entries | `bigdir` |
 | Program files copied with the security Windows gave them | `copy` |
 | All of these on one volume, to 4 KiB and to 64 KiB ReFS clusters, from 512-byte NTFS clusters, as an administrator, and interrupted and then resumed or rolled back | `lived-in` and its variants |
 | Every NTFS cluster size from 512 bytes to 2 MiB; 4Kn disks; 4096-byte file records | the geometry cases (`512-to-4k`, `4kn-4k`, ...) |
+| A volume that is the one partition of an MBR disk, and a working directory on an MBR disk; both together, interrupted half way through the writes and resumed | `mbr-src`, `mbr-work`, `mbr-apply-mid-resume` |
 | A volume that shares its GPT disk with other partitions: an EFI system partition, an NTFS volume, a write-protected NTFS volume and a partition of another operating system. The volume converts; the NTFS volume beside it lists exactly as before, and the bytes of the other three are the same. Also to 64 KiB clusters, as an administrator, with a partition that is shrunk first, interrupted and then resumed or rolled back, and on Windows Server 2025 to standard ReFS | `shared` and its variants (`-Siblings`) |
 | A Windows boot volume with its short names, 25 nested directories and 320 object IDs | `used-windows-fixture40` (boot harness, `-ShapeSource Add-UsedWindowsObjects.ps1`) |
 | On Windows Server 2025 (build 26100), to standard ReFS: the `mixed` set from 512-byte and 4 KiB clusters and on a 4Kn disk, to 4 KiB and 64 KiB ReFS clusters, as an administrator, unattended, and interrupted and then resumed or rolled back; a `lived-in` volume, then used. The `mixed` set there to a Dev Drive as well | the `s6-std-*` cases (`-TargetFormat standard`) and `s6-devdrive`, on the VM that `lab\New-ServerLabVm.ps1` makes |
@@ -57,6 +60,7 @@ check and the run have to give the same refusal.
 
 | Found | What the refusal says to do | Lab case |
 |---|---|---|
+| A volume that shares an MBR disk with other partitions | Convert the disk to GPT with `mbr2gpt`, or move the other partitions off it. (A volume that has an MBR disk to itself converts, and the working directory may be on any MBR disk) | `mbr-beside` |
 | 8.3 short names on a data volume | `fsutil 8dot3name strip /s /f <drive>:\`, then `fsutil 8dot3name set <drive>: 1` | `shortnames`; the remedy: `shortnames-stripped`, which converts |
 | A BitLocker-encrypted volume | `manage-bde -off <drive>` | `bitlocker` |
 | Shadow copies of the volume | `vssadmin delete shadows /for=<drive>:` | `snapshot` |
@@ -82,7 +86,7 @@ These take the same paths as rows above, or are checked by tests only.
 | A dirty volume, an NTFS log that was not closed, an open transaction | The lab dismounts its volumes cleanly |
 | A program holding a file on the volume open | Not arranged in the lab; the lock is retried for 20 seconds and then refused by name |
 | A volume with no file on it | An empty volume is formatted, not converted |
-| A data volume on an MBR disk or on the running Windows disk | Refused from the disk's layout; `ntfs2refs --list` says so for each partition |
+| A data volume on the running Windows disk | Refused from the disk's layout; `ntfs2refs --list` says so for each partition |
 | A page file of the running Windows on the volume's disk | Takes a restart with the lab's disk attached; it is refused by the check that refuses the crash-dump file (`shared-dump`) |
 | A volume beside the source that stores the shadow copies of another volume | Refused with the shadow copies of the volume itself; the words are covered by a test |
 

@@ -124,7 +124,7 @@ fn run() -> Result<u8> {
                     },
                     // What a data volume that has been in use meets.
                     "data_volume": {
-                        "disk_layout": "a GPT disk other than the running Windows'; --list says for each NTFS partition whether it qualifies",
+                        "disk_layout": "a disk other than the running Windows': a GPT disk, which may hold other partitions, or an MBR disk the volume has to itself; --list says for each NTFS partition whether it qualifies",
                         "other_partitions_on_the_disk": {
                             "allowed": true,
                             "during_the_run": "the whole disk is offline: their volumes are dismounted first, are unavailable until the run ends, and are not written to",

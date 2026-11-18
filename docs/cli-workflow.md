@@ -20,9 +20,11 @@ and the [recovery matrix](recovery-matrix.md).
    volume that takes only the space its contents need, and keeps there the
    old content of every sector it changes. Leave it alone until the
    conversion has finished and you have looked at the result.
-4. **The volume's layout.** A data volume has to be on a GPT disk that is not
-   the disk of the running Windows. The disk may hold other partitions; they
+4. **The volume's layout.** A data volume has to be on a disk that is not
+   the disk of the running Windows. A GPT disk may hold other partitions; they
    [go offline with it](#a-disk-with-other-partitions) while the run lasts.
+   On an MBR disk the volume has to be the disk's one partition. The working
+   directory may be on a GPT or an MBR disk.
 
 The lab's Windows volume, with 22.9 GB in use in 191,000 files and
 directories, took 28 minutes, about 30 GB of working storage and 2.1 GB of
@@ -37,8 +39,8 @@ bounds: see [how large a volume can be](#how-large-a-volume-can-be).
 
 It lists every disk and partition and says for each NTFS partition whether a
 conversion would take it and, if not, why: it is the running Windows, shares
-its disk with it, or is on a disk that is not GPT. For a volume on a disk
-with other partitions it says how many go offline with it. Each volume is
+its disk with it, or shares an MBR disk with other partitions. For a volume
+on a GPT disk with other partitions it says how many go offline with it. Each volume is
 shown with its serial number.
 
 Windows reports a volume encrypted with BitLocker as NTFS. From an elevated

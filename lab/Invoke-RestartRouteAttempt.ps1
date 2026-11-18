@@ -34,6 +34,11 @@ param(
     # and this route does not shrink a partition to one.
     [ValidateScript({ $_ % 64 -eq 0 -and $_ -ge 2048 })][int]$PartitionMB = 6144,
     [int]$Files = 400,
+    # Working storage on a disk of its own, made by the host for the attempt
+    # and attached to the VM: this many GB, GPT, formatted with the file
+    # system named, at J:. 0 uses the VM's scratch volume S:.
+    [int]$WorkingDiskGB = 0,
+    [ValidateSet('NTFS', 'ReFS')][string]$WorkingFileSystem = 'NTFS',
     # How long the machine may be away (restart, WinPE, conversion, return).
     [int]$AwayMinutes = 45,
     [string[]]$ConverterArgs = @()
@@ -82,16 +87,37 @@ function Screenshot([string]$Leaf) {
     } catch { }
 }
 
+$hostDisk = $null
+$work = if ($WorkingDiskGB -gt 0) { 'J:\restart' } else { 'S:\restart' }
 try {
     $session = Connect 60
+    if ($WorkingDiskGB -gt 0) {
+        $hostDisk = Join-Path $records 'working.vhdx'
+        $null = New-VHD -Path $hostDisk -SizeBytes ([long]$WorkingDiskGB * 1GB) -Dynamic
+        Add-VMHardDiskDrive -VM $vm -ControllerType SCSI -Path $hostDisk
+        $made = Invoke-Command -Session $session -ArgumentList ([long]$WorkingDiskGB * 1GB), $WorkingFileSystem -ScriptBlock {
+            param($bytes, $fileSystem)
+            $deadline = (Get-Date).AddSeconds(60)
+            do { Start-Sleep -Milliseconds 500; $new = @(Get-Disk | Where-Object { $_.PartitionStyle -eq 'RAW' -and $_.Size -eq $bytes }) } until ($new.Count -eq 1 -or (Get-Date) -gt $deadline)
+            if ($new.Count -ne 1) { throw "expected one new blank disk of $bytes bytes in the guest, found $($new.Count)" }
+            $number = $new[0].Number
+            if ($new[0].IsOffline) { Set-Disk -Number $number -IsOffline $false }
+            if ($new[0].IsReadOnly) { Set-Disk -Number $number -IsReadOnly $false }
+            Initialize-Disk -Number $number -PartitionStyle GPT
+            $partition = New-Partition -DiskNumber $number -UseMaximumSize -DriveLetter J
+            $null = Format-Volume -Partition $partition -FileSystem $fileSystem -NewFileSystemLabel 'N2RWORK' -Confirm:$false
+            "disk $number, $fileSystem"
+        }
+        Say "working storage: J: on a disk of its own ($made)"
+    }
     Say "attempt ${Name}: a $PartitionMB MiB partition beside C: on $($vm.Name), converted through a restart"
-    $made = Invoke-Command -Session $session -ArgumentList $guestRoot, $PartitionMB, $Files -ScriptBlock {
-        param($root, $partitionMB, $files)
+    $made = Invoke-Command -Session $session -ArgumentList $guestRoot, $PartitionMB, $Files, $work -ScriptBlock {
+        param($root, $partitionMB, $files, $work)
         $ErrorActionPreference = 'Stop'
-        if (-not (Test-Path -LiteralPath 'S:\')) { throw 'The control OS has no scratch volume S:. Prepare it with Invoke-BootConversionAttempt.ps1 -NoConvert -KeepScratch.' }
+        if (-not (Test-Path -LiteralPath (Split-Path -Qualifier $work))) { throw "The control OS has no volume $(Split-Path -Qualifier $work) for working storage." }
         $media = Get-Volume | Where-Object { $_.DriveType -eq 'CD-ROM' -and $_.DriveLetter -and (Test-Path -LiteralPath "$($_.DriveLetter):\sources\boot.wim") } | Select-Object -First 1
         if (-not $media) { throw 'No DVD drive with Windows installation media (sources\boot.wim) in the control OS.' }
-        $null = New-Item -ItemType Directory -Path $root, 'S:\restart' -Force
+        $null = New-Item -ItemType Directory -Path $root, $work -Force
         $c = Get-Partition -DriveLetter C
         if (Get-Partition -DriveLetter P -ErrorAction SilentlyContinue) { throw 'The control OS already has a volume P:.' }
         # C: gives up what Windows says it can: files that cannot be moved
@@ -147,7 +173,7 @@ try {
     Say "listed before: $($before.listing)"
     if (-not $before.serial) { $verdict.outcome = 'list-did-not-show-serial'; throw "--list shows no serial number for P:: $($before.row)" }
 
-    $arguments = @('--drive', 'P', '--offline-media', $made.media, '--scratch-directory', 'S:\restart', '--yes', '--volume-serial', $before.serial) + $ConverterArgs
+    $arguments = @('--drive', 'P', '--offline-media', $made.media, '--scratch-directory', $work, '--yes', '--volume-serial', $before.serial) + $ConverterArgs
     $verdict.arguments = $arguments
     Say "converter: ntfs2refs.exe $($arguments -join ' ')"
     # Started as SYSTEM by a task, with its output in files on C:, which is
@@ -205,8 +231,8 @@ try {
     $verdict.away_seconds = [Math]::Round(((Get-Date) - $away).TotalSeconds)
     Say "Windows is back after $($verdict.away_seconds) s away"
 
-    $after = Invoke-Command -Session $session -ArgumentList $guestRoot -ScriptBlock {
-        param($root)
+    $after = Invoke-Command -Session $session -ArgumentList $guestRoot, $work -ScriptBlock {
+        param($root, $work)
         $volume = Get-Volume -DriveLetter P -ErrorAction SilentlyContinue
         $listed = ''; $summary = ''; $compare = $null
         if ($volume) {
@@ -220,7 +246,7 @@ try {
             read_only = if ($partition) { [bool]$partition.IsReadOnly } else { $null }
             listed = $listed.Trim(); summary = $summary.Trim(); compare_exit = $compare
             boot_default = [string](& bcdedit.exe /enum '{bootmgr}' 2>&1 | Where-Object { $_ -match '^(default|displayorder|timeout)' } | Out-String).Trim()
-            runs = @(Get-ChildItem -LiteralPath 'S:\restart' -Directory -ErrorAction SilentlyContinue | ForEach-Object Name)
+            runs = @(Get-ChildItem -LiteralPath $work -Directory -ErrorAction SilentlyContinue | ForEach-Object Name)
         }
     }
     $verdict.after = $after
@@ -231,9 +257,9 @@ try {
     }
     # The run's small records, and what WinPE wrote beside them.
     try {
-        Invoke-Command -Session $session -ArgumentList $guestRoot -ScriptBlock {
-            param($root)
-            $files = Get-ChildItem -LiteralPath 'S:\restart' -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Length -lt 4MB -and $_.Extension -in '.json', '.log', '.txt' }
+        Invoke-Command -Session $session -ArgumentList $guestRoot, $work -ScriptBlock {
+            param($root, $work)
+            $files = Get-ChildItem -LiteralPath $work -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Length -lt 4MB -and $_.Extension -in '.json', '.log', '.txt' }
             if ($files) { Compress-Archive -LiteralPath $files.FullName -DestinationPath "$root\records.zip" -Force }
         }
         Copy-Item -FromSession $session -LiteralPath "$guestRoot\records.zip" -Destination $records -Force -ErrorAction Stop
@@ -247,10 +273,22 @@ catch {
     Say "ERROR: $($verdict.error)"
     if ($session) {
         foreach ($leaf in 'stdout.log', 'stderr.log', 'exit.txt') { try { Copy-Item -FromSession $session -LiteralPath "$guestRoot\$leaf" -Destination $records -Force -ErrorAction Stop } catch { } }
+        try {
+            Invoke-Command -Session $session -ArgumentList $guestRoot, $work -ErrorAction Stop -ScriptBlock {
+                param($root, $work)
+                $files = Get-ChildItem -LiteralPath $work -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Length -lt 4MB -and $_.Extension -in '.json', '.log', '.txt' }
+                if ($files) { Compress-Archive -LiteralPath $files.FullName -DestinationPath "$root\records.zip" -Force }
+                $partition = Get-Partition -DriveLetter P -ErrorAction SilentlyContinue
+                "P: after the failure: " + $(if ($partition) { "read-only $($partition.IsReadOnly), offline $($partition.IsOffline), GPT attributes 0x$('{0:x}' -f $partition.GptAttributes)" } else { 'no partition at P:' })
+            } | ForEach-Object { Say "$_" }
+            Copy-Item -FromSession $session -LiteralPath "$guestRoot\records.zip" -Destination $records -Force -ErrorAction Stop
+        } catch { }
     }
 }
 finally {
     if ($session) { Remove-PSSession $session -ErrorAction SilentlyContinue }
+    # The working disk stays attached: the caller turns the VM off and
+    # restores its checkpoint, and removes the file then.
     Save-Verdict
     Say "outcome: $($verdict.outcome). Records: $records"
 }

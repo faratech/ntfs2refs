@@ -1,6 +1,6 @@
 # Operating and recovery guide
 
-For ntfs2refs 0.4.0. **It is experimental software:** every run starts with
+For ntfs2refs 0.0.1. **It is experimental software:** every run starts with
 a warning saying so, on the error stream, and [DISCLAIMER.md](../DISCLAIMER.md)
 says what that means. [The README](../README.md) says what the tool is;
 this guide says how to run it, what it refuses and why, and what to do if a
@@ -473,7 +473,7 @@ What is different on a converted Windows volume:
   volume.
 
 What Windows' own recovery and repair tools made of the converted Windows in
-the lab (build 26300, release 0.4.0):
+the lab (build 26300, release 0.0.1):
 
 - **The recovery environment (WinRE)** stays where Windows put it, on the
   recovery partition, which is NTFS and which the conversion does not touch.
@@ -698,7 +698,7 @@ metadata but not what unused space held. It is refused on a volume with shadow
 copies. The lab's matrices do not cover it.
 
 The routes and commands of earlier designs
-were removed with 0.4.0: `--whole-image-verification`, the thin temporary
+were removed with 0.0.1: `--whole-image-verification`, the thin temporary
 storage of `--experimental-thin-shadow`, and the subcommands that worked from
 request files and raw images (`convert`, `resume`, `rollback`, `finalize`,
 `plan` and others). The tag `archive/hidden-routes` keeps them, and

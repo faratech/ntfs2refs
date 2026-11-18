@@ -3,7 +3,10 @@
 What changed for someone who runs the converter. The measurements behind each
 entry are in the pull request named beside it and in `docs/performance.md`.
 
-## 0.4.0
+## 0.0.1
+
+The first release. The builds before it, 0.0.1-alpha to 0.3.0-beta.1, were
+pre-releases; what changed since the last of them:
 
 ### What it converts
 

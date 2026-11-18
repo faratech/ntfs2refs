@@ -9,7 +9,7 @@ Converts an NTFS volume to ReFS in place, on the Windows machine that owns the
 disk. File data stays where it is on the disk wherever ReFS can use it there;
 only the file system around it is replaced.
 
-This is version 0.4.0. Everything it has converted was a
+This is version 0.0.1. Everything it has converted was a
 virtual disk in a lab, the largest holding 23 GB. Keep a backup you have
 restored from before, and read [what the lab showed and did not
 show](#what-has-been-shown) before trusting it with a volume.
@@ -157,7 +157,7 @@ machine off, and its disks are files of the host); a Windows build other than
 
 ```powershell
 cargo test --locked --workspace --all-targets
-cargo build --locked --release --bin ntfs2refs --bin lab-volume-manifest
+cargo build --locked --release --bin ntfs2refs --bin ntfs2refs-recovery --bin lab-volume-manifest
 ```
 
 Rust 1.98.1, Windows x64 MSVC. `lab\New-Release.ps1` builds the release ZIP.
@@ -165,3 +165,10 @@ Rust 1.98.1, Windows x64 MSVC. `lab\New-Release.ps1` builds the release ZIP.
 [the lab guide](lab/README.md) how conversions are run and compared.
 [docs/history](docs/history/README.md) holds the documents of earlier designs
 and builds; they do not describe this one.
+
+## Licence
+
+Copyright (c) 2026 Fara Technologies LLC. All rights reserved: no permission
+is granted to copy, modify, distribute or use this software without the
+copyright holder's prior written consent. See [LICENSE](LICENSE) and
+[DISCLAIMER.md](DISCLAIMER.md).

@@ -75,9 +75,9 @@ The run reads 127.5 GB and writes 13.2 GB to convert 22.9 GB. Its memory
 ledger peaked at 13,210 MiB of 14,091; 946,996 objects were worked on at
 once and 34,519 in turn.
 
-## 0.4.0: memory
+## 0.0.1: memory
 
-Release 0.4.0 changes how a run uses memory, and these runs show what that
+Release 0.0.1 changes how a run uses memory, and these runs show what that
 does. None of them had the host to itself: the host shares its memory with
 other work, the lab VMs were held to 10 or 12 GB for it, and the totals are
 not to be compared with the 24 GB rows above.

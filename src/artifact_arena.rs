@@ -1590,10 +1590,18 @@ impl ArtifactArena {
             .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
         let leased = add(state.leased_ram_bytes, bytes)?;
         state.spare.needed(bytes);
+        // What the run cannot do without is held to its budget and what was
+        // granted beyond it, or, for a run that fits itself to the machine,
+        // to what the machine has now where that is more. (Without this,
+        // work done at once grew into free memory, as it may, and the next
+        // thing the run needed was then "beyond its budget" and reported as
+        // a shortage of memory on a machine that had 8 GB free: the full
+        // Windows volume, round rc1.)
         ensure!(
             !state.ram_poisoned
                 && add(leased, state.index_bytes)?
-                    <= add(self.0.budget.ram_bytes, state.beyond_budget_bytes)?,
+                    <= add(self.0.budget.ram_bytes, state.beyond_budget_bytes)?
+                        .max(self.speed_budget()),
             "aggregate artifact arena RAM exhausted or poisoned: leased={} (of which optional caches {}), registry={}, requested={} at {}:{}, limit={}, poisoned={}; the largest reservations: {}",
             state.leased_ram_bytes,
             state.optional_ram_bytes,

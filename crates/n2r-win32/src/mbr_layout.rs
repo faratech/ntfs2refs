@@ -34,8 +34,29 @@ pub fn is_mbr_disk(disk_guid: &str) -> bool {
     text.len() == 36 && text.is_ascii() && text[8..].eq_ignore_ascii_case(DISK_SUFFIX)
 }
 
-/// The identity of a partition of that disk.
-fn partition_identity(signature: u32, number: u32, offset: u64, length: u64) -> String {
+/// The signature an MBR disk identity was made from, `None` for any other.
+pub fn disk_signature(disk_guid: &str) -> Option<u32> {
+    if !is_mbr_disk(disk_guid) {
+        return None;
+    }
+    u32::from_str_radix(&disk_guid.trim_matches(['{', '}'])[..8], 16).ok()
+}
+
+/// The signature of the disk whose layout this is (IOCTL_DISK_GET_DRIVE_LAYOUT_EX),
+/// when it is an MBR disk that has one.
+pub fn layout_signature(raw: &[u8]) -> Option<u32> {
+    if !is_mbr_layout(raw) {
+        return None;
+    }
+    u32_at(raw, 8).ok().filter(|signature| *signature != 0)
+}
+
+/// The identity of a partition of that disk: the one `mbr_partition` gives
+/// the partition with this number, offset and length on the disk with this
+/// signature. What Windows says of the disk's other partitions (the storage
+/// catalog has no GUID for an MBR partition) is named with it, so that the
+/// volume a run converts is known among them by the identity it was bound by.
+pub fn partition_identity(signature: u32, number: u32, offset: u64, length: u64) -> String {
     let mut hash = Sha256::new();
     hash.update(b"ntfs2refs MBR partition identity v1");
     hash.update(signature.to_le_bytes());
@@ -241,6 +262,23 @@ mod tests {
         let other = mbr_partition(&other, DISK, 501 * MIB, 20_000 * MIB).unwrap();
         assert_ne!(other.disk_guid, found.disk_guid);
         assert_ne!(other.partition_guid, found.partition_guid);
+        // The signature is read back from the identity and from the layout,
+        // and the partition's identity is made again from its place alone.
+        assert_eq!(disk_signature(&found.disk_guid), Some(0x1234_abcd));
+        assert_eq!(
+            disk_signature("{1234ABCD-4D42-5220-6469-736B00000000}"),
+            Some(0x1234_abcd)
+        );
+        assert_eq!(disk_signature("12345678-1111-2222-aaaa-123456789abc"), None);
+        assert_eq!(layout_signature(&raw), Some(0x1234_abcd));
+        assert_eq!(layout_signature(&layout(0, &[])), None);
+        let mut gpt = raw.clone();
+        gpt[0] = 1;
+        assert_eq!(layout_signature(&gpt), None);
+        assert_eq!(
+            partition_identity(0x1234_abcd, 2, 501 * MIB, 20_000 * MIB),
+            found.partition_guid
+        );
     }
 
     #[test]

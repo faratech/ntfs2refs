@@ -25,7 +25,7 @@ error fails the job. It is not a zero-warning gate.
 
 `scripts/Invoke-Soak.ps1` converts NTFS volumes on virtual disks (VHDX) of the
 runner itself, round after round, for the minutes it is given (240 at night).
-Each round draws everything from its seed: the NTFS cluster size (512 bytes
+Each round draws everything from its seed: the NTFS cluster size (4
 to 64 KiB), the ReFS cluster size (4 or 64 KiB), the disk's size, and the
 content (files of boundary sizes, a random tree or up to 100,000 small files,
 names outside ASCII, named streams, hard links, a sparse file, a compressed

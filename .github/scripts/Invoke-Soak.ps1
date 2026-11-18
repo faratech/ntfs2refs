@@ -217,7 +217,9 @@ function New-SoakContent([string]$root, [int]$seed, [int]$cluster, [bool]$many, 
     $made.Add('symbolic links and a junction')
     # Attributes (not TEMPORARY or OFFLINE, which are refused), times, security, object IDs.
     # "V:" alone is the current directory of V:, not its root.
-    $all = @(Get-ChildItem -LiteralPath "$($root.TrimEnd('\'))\" -Recurse -File -Force | Where-Object { -not $_.LinkType } | Select-Object -First 4000)
+    # (System Volume Information is not the content's, and not readable.)
+    $all = @(Get-ChildItem -LiteralPath "$($root.TrimEnd('\'))\" -Directory -Force | Where-Object { $_.Name -ne 'System Volume Information' -and -not $_.LinkType } |
+        Get-ChildItem -Recurse -File -Force | Where-Object { -not $_.LinkType } | Select-Object -First 4000)
     if ($all.Count -lt 50) { throw "the content listing found $($all.Count) files under $root" }
     $epoch = [DateTime]::SpecifyKind([DateTime]::new(1990, 1, 1), [DateTimeKind]::Utc)
     foreach ($file in $all | Get-Random -Count ([Math]::Min(300, $all.Count)) -SetSeed ($seed + 1)) {
@@ -266,7 +268,8 @@ for ($round = 1; ; $round++) {
     $roundSeed = $Seed + $round - 1
     $draw = [Random]::new($roundSeed)
     $kind = $Profile[($round - 1) % $Profile.Count]
-    $ntfsCluster = @(512, 4096, 4096, 4096, 8192, 16384, 65536)[$draw.Next(0, 7)]
+    # (A VHDX made by diskpart has 4 KiB physical sectors: no 512-byte clusters.)
+    $ntfsCluster = @(4096, 4096, 4096, 8192, 16384, 32768, 65536)[$draw.Next(0, 7)]
     $refsCluster = @(4096, 65536)[$draw.Next(0, 2)]
     $gib = if ($kind -eq 'many') { 8 } else { $draw.Next(2, 7) }
     $hold = switch ($kind) { 'resume' { $holdPoints[$draw.Next(0, $holdPoints.Count)] } 'rollback' { $rollbackPoints[$draw.Next(0, $rollbackPoints.Count)] } default { '' } }
@@ -318,7 +321,11 @@ for ($round = 1; ; $round++) {
         $compare = @('compare', '--before', (Join-Path $dir 'before.jsonl'), '--after', (Join-Path $dir 'after.jsonl'), '--report', (Join-Path $dir 'report.json'))
         if ($expect -eq 'NTFS') { $compare += '--exact' }
         $summary = & $manifest @compare 2>&1 | Out-String
-        if ($LASTEXITCODE -ne 0) { throw "the listings differ ($(if ($expect -eq 'NTFS') { 'exact' } else { 'with the allowances of a conversion' })): $($summary.Trim())" }
+        if ($LASTEXITCODE -ne 0) {
+            $first = try { (Get-Content -Raw -LiteralPath (Join-Path $dir 'report.json') | ConvertFrom-Json).differences | Select-Object -First 12 | ForEach-Object { "$($_.path): $($_.kind): $($_.what)" } } catch { @("(no report: $_)") }
+            foreach ($line in $first) { Say "    differs: $line" }
+            throw "the listings differ ($(if ($expect -eq 'NTFS') { 'exact' } else { 'with the allowances of a conversion' })): $($summary.Trim()); first: $($first -join ' | ')"
+        }
         $result.outcome = if ($expect -eq 'ReFS') { 'converted' } else { 'ntfs-as-before' }
         Say "  ${letter}: is $($volume.FileSystem) $($volume.HealthStatus); listings $(if ($expect -eq 'NTFS') { 'identical' } else { 'match' })"
         foreach ($leaf in 'before.jsonl', 'after.jsonl') { Remove-Item -LiteralPath (Join-Path $dir $leaf) -Force -ErrorAction SilentlyContinue }

@@ -367,7 +367,7 @@ pub fn interim_memory() {
         .map(|holders| format!("{} MiB: {}", holders.0 >> 20, holders.1))
         .unwrap_or_default();
     eprintln!(
-        "memory-so-far: reservations peaked at {} MiB of {} MiB; needed at most {} MiB; in this step {}; {} caches given up",
+        "memory-so-far: reservations peaked at {} MiB with {} MiB set aside at the start; needed at most {} MiB; in this step {}; {} caches given up",
         peak >> 20,
         LEDGER_LIMIT.load(Relaxed) >> 20,
         LEDGER_NEEDED_PEAK.load(Relaxed) >> 20,
@@ -379,6 +379,59 @@ pub fn interim_memory() {
         LEDGER_NOW.0.load(Relaxed) >> 20,
         LEDGER_NOW.1.load(Relaxed) >> 20
     );
+}
+
+/// The process's own peaks, as Windows counts them: working set and private
+/// (committed) memory, in bytes. What a user compares with their machine.
+fn process_peaks() -> Option<(u64, u64)> {
+    use windows_sys::Win32::System::{
+        ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS},
+        Threading::GetCurrentProcess,
+    };
+    let mut counters = PROCESS_MEMORY_COUNTERS {
+        cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: the pseudo-handle of this process and an initialized structure
+    // whose size is given in `cb`.
+    let ok = unsafe { GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb) };
+    (ok != 0).then_some((
+        counters.PeakWorkingSetSize as u64,
+        counters.PeakPagefileUsage as u64,
+    ))
+}
+
+/// The summary of a run's memory (#167). What the run set aside at its start
+/// is a ceiling only under `--memory-limit`; a run that fits itself to the
+/// machine may hold more while memory is free, so it is called a starting
+/// share there, and the caches (what the reservations held beyond what the
+/// run could not do without) are named as what it gives back.
+fn memory_line(
+    limit: u64,
+    peak: u64,
+    needed: u64,
+    fits_the_machine: bool,
+    process: Option<(u64, u64)>,
+) -> String {
+    let set_aside = if fits_the_machine {
+        "a starting share: the run fits itself to the machine and may hold more while memory is free"
+    } else {
+        "its ceiling"
+    };
+    let mut line = format!(
+        "memory: the run set aside {} MiB at its start ({set_aside}); its reservations peaked at {} MiB, of which {} MiB it could not do without and the rest caches it gives back when memory is short",
+        limit >> 20,
+        peak >> 20,
+        needed.min(peak) >> 20
+    );
+    if let Some((working_set, private)) = process {
+        line.push_str(&format!(
+            "; the process itself peaked at {} MiB of working set and {} MiB of private memory",
+            working_set >> 20,
+            private >> 20
+        ));
+    }
+    line
 }
 
 /// Prints the last phase and the totals. Safe to call more than once.
@@ -418,15 +471,19 @@ pub fn finish() {
         let peak = LEDGER_PEAK.load(Relaxed);
         if peak != 0 {
             eprintln!(
-                "memory: the run's reservations peaked at {} MiB of the {} MiB it may hold; what it could not do without peaked at {} MiB",
-                peak >> 20,
-                LEDGER_LIMIT.load(Relaxed) >> 20,
-                LEDGER_NEEDED_PEAK.load(Relaxed) >> 20
+                "{}",
+                memory_line(
+                    LEDGER_LIMIT.load(Relaxed),
+                    peak,
+                    LEDGER_NEEDED_PEAK.load(Relaxed),
+                    crate::resource_native::memory_fits_the_machine(),
+                    process_peaks()
+                )
             );
             let beyond = BEYOND_BUDGET.load(Relaxed);
             if beyond != 0 {
                 eprintln!(
-                    "memory-beyond: that was more than it may hold, and the run went on with {} MiB beyond it that Windows could still give",
+                    "memory-beyond: the run went on with {} MiB beyond what it set aside, which Windows could still give from the page file",
                     beyond >> 20
                 );
             }
@@ -452,6 +509,37 @@ pub fn finish() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fitted run's set-aside share is not called a ceiling, and the line
+    /// says what of the peak were caches and what the process took (#167).
+    #[test]
+    fn the_memory_line_does_not_read_as_an_overrun() {
+        let fitted = memory_line(
+            6148 << 20,
+            16589 << 20,
+            3149 << 20,
+            true,
+            Some((739 << 20, 900 << 20)),
+        );
+        assert!(
+            fitted.contains("set aside 6148 MiB at its start (a starting share"),
+            "{fitted}"
+        );
+        assert!(
+            fitted.contains("peaked at 16589 MiB, of which 3149 MiB it could not do without"),
+            "{fitted}"
+        );
+        assert!(
+            fitted.contains("739 MiB of working set and 900 MiB of private memory"),
+            "{fitted}"
+        );
+        assert!(!fitted.contains("may hold;"), "{fitted}");
+        let limited = memory_line(1240 << 20, 1000 << 20, 664 << 20, false, None);
+        assert!(
+            limited.contains("(its ceiling)") && !limited.contains("process itself"),
+            "{limited}"
+        );
+    }
 
     /// What holds a ledger's memory is written down as what the run needs
     /// grows, a sixty-fourth of the limit at a time, and not at every

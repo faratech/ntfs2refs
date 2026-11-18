@@ -33,6 +33,9 @@ const UNSEALED_JOURNAL: &str = "prepared/arena/selected.journal";
 const CANCELLED_KIND: &str = "ntfs2refs-restart-run-cancelled-v1";
 /// The lifecycle area of this route's journal: completion and intent granule.
 const LIFECYCLE_AREA_BYTES: u64 = 8192;
+/// How the record of a cancellation that the recovery environment could
+/// not finish begins its note of the command that finishes it.
+const FINISH_IN_WINDOWS: &str = "to finish the cancellation, run in Windows as administrator: ";
 /// Held, unshared, by the one way back that is running for a run.
 const LOCK_RECORD: &str = "cancellation-in-progress.lock";
 /// The first record of a boot installation, written before the boot
@@ -194,6 +197,8 @@ impl CancelledRun {
     /// stay as they were written.
     fn taken_up_again(mut self) -> Self {
         self.unfinished.clear();
+        self.notes
+            .retain(|note| !note.starts_with(FINISH_IN_WINDOWS));
         self.completed = false;
         self
     }
@@ -271,7 +276,10 @@ pub fn cancelled_lines(record: &CancelledRun, volume: &str, run: &Path) -> Vec<S
             "The conversion was cancelled before the volume was changed in any way. {volume} is NTFS as it was."
         ),
         VolumeOutcome::StillReadOnly => format!(
-            "The conversion was cancelled before anything was written to the volume, but {volume} is still marked read-only. To finish the cancellation: {}",
+            "The conversion was cancelled before anything was written to the volume, but {} is still marked read-only: nothing can be written to it. To finish the cancellation: {}",
+            volume
+                .strip_prefix("The ")
+                .map_or(volume.to_owned(), |rest| format!("the {rest}")),
             cancel_command(run)
         ),
         VolumeOutcome::NotVerified => format!(
@@ -1247,6 +1255,63 @@ fn volume_from_attributes(attributes: u64) -> VolumeOutcome {
     }
 }
 
+/// A cancellation that is finished in a second pass keeps what the first
+/// did: a boot selection the recovery environment put back is found normal
+/// by Windows afterwards, and is still one that was restored.
+fn merge_boot_outcome(before: BootOutcome, now: BootOutcome) -> BootOutcome {
+    match (before, now) {
+        (BootOutcome::Restored, BootOutcome::WasNotInstalled) => BootOutcome::Restored,
+        _ => now,
+    }
+}
+
+/// What `--recover` says of a run that has a cancellation record. One that
+/// is not complete says plainly what state the volume is in and the command
+/// that finishes it: after the recovery environment could only put the
+/// boot selection back, this is where its user learns that the volume is
+/// still read-only.
+pub fn cancelled_status_lines(record: &CancelledRun, run: &Path) -> Vec<String> {
+    if record.completed {
+        return vec![upper_first(&record.refusal(run))];
+    }
+    let mut lines = vec![format!(
+        "This run was cancelled on {} ({}), and its cancellation is not complete.",
+        record.cancelled_utc,
+        match record.environment {
+            CancelEnvironment::Windows => "in Windows",
+            CancelEnvironment::RecoveryEnvironment =>
+                "in the recovery environment, before its conversion started",
+        }
+    )];
+    match record.volume {
+        VolumeOutcome::StillReadOnly => lines.push(format!(
+            "The volume is still marked read-only: Windows shows it and its files, and nothing can be written to it. To make it the writable NTFS volume it was: {}",
+            cancel_command(run)
+        )),
+        VolumeOutcome::NotVerified => lines.push(format!(
+            "The volume is no longer marked read-only, but it was not verified as the NTFS volume it was. To check it and finish: {}",
+            cancel_command(run)
+        )),
+        VolumeOutcome::GivenBack | VolumeOutcome::NeverProtected => lines.push(format!(
+            "The volume is NTFS as it was. To finish the cancellation: {}",
+            cancel_command(run)
+        )),
+    }
+    if record.boot_selection == BootOutcome::Unsettled {
+        lines.push(
+            "The machine's boot selection was not put back yet; the same command does that."
+                .to_owned(),
+        );
+    }
+    lines.extend(
+        record
+            .unfinished
+            .iter()
+            .map(|why| format!("What stopped it: {why}")),
+    );
+    lines
+}
+
 fn boot_outcome(receipt: &RecoveryBootCancellationReceipt) -> BootOutcome {
     match receipt.found {
         RecoveryBootSelectionState::NotInstalled => BootOutcome::WasNotInstalled,
@@ -1377,7 +1442,7 @@ pub fn cancel_unapplied_run_in_windows(run: &Path, cause: Option<&str>) -> Resul
             return Err(error);
         }
     };
-    record.boot_selection = boot_outcome(&boot);
+    record.boot_selection = merge_boot_outcome(record.boot_selection, boot_outcome(&boot));
     record.notes.extend(boot.other_entries_not_compared.clone());
     record.unfinished.clear();
     record.completed = true;
@@ -1406,6 +1471,9 @@ pub fn cancel_unapplied_run_in_windows(run: &Path, cause: Option<&str>) -> Resul
 /// What `--recover` without `--rollback` says of a run of this route. It
 /// changes nothing but a folder of its own query records.
 pub fn describe_run_in_windows(run: &Path) -> Result<Vec<String>> {
+    if let Ok(Some(record)) = read_cancelled(run) {
+        return Ok(cancelled_status_lines(&record, run));
+    }
     if let Some(refusal) = apply_forbidden(run) {
         return Ok(vec![upper_first(&refusal)]);
     }
@@ -1744,6 +1812,16 @@ fn cold_way_back(
             record.volume,
             VolumeOutcome::GivenBack | VolumeOutcome::NeverProtected
         );
+    record
+        .notes
+        .retain(|note| !note.starts_with(FINISH_IN_WINDOWS));
+    if !record.completed {
+        // The record and the console (which prints the notes) both carry
+        // the exact command for the Windows that starts next.
+        record
+            .notes
+            .push(format!("{FINISH_IN_WINDOWS}{}", cancel_command(&run)));
+    }
     if record.completed {
         record.unfinished.clear();
     }
@@ -1956,7 +2034,7 @@ mod tests {
             run,
         );
         assert!(
-            unfinished[0].contains("The volume is still marked read-only")
+            unfinished[0].contains("but the volume is still marked read-only")
                 && unfinished[0].ends_with(command),
             "{unfinished:?}"
         );
@@ -2477,6 +2555,84 @@ mod tests {
         assert_eq!(
             told.notes.last().map(String::as_str),
             Some("keeping the native events failed: disk full")
+        );
+    }
+
+    #[test]
+    fn a_cancellation_the_recovery_environment_could_not_finish_is_said_and_finished_in_windows() {
+        let run = Path::new("E:\\work\\partition-offline-conversion-0123");
+        let command = cancel_command(run);
+        // As the recovery environment leaves it when it could only put the
+        // boot selection back.
+        let mut left = CancelledRun::begin(
+            UnappliedState::PreparedClear,
+            CancelEnvironment::RecoveryEnvironment,
+            Some("laboratory failure at winpe-before-apply"),
+            1_795_010_602_000,
+        );
+        left.boot_selection = BootOutcome::Restored;
+        left.unfinished
+            .push("giving partition 4 of disk 0 back as NTFS: Incorrect function.".into());
+        left.notes.push(format!("{FINISH_IN_WINDOWS}{command}"));
+        // The status says the volume is read-only, in plain words, with
+        // the command and what stopped the first attempt.
+        let status = cancelled_status_lines(&left, run);
+        assert_eq!(
+            status[0],
+            "This run was cancelled on 2026-11-18 14:03:22 UTC (in the recovery environment, before its conversion started), and its cancellation is not complete."
+        );
+        assert_eq!(
+            status[1],
+            format!(
+                "The volume is still marked read-only: Windows shows it and its files, and nothing can be written to it. To make it the writable NTFS volume it was: {command}"
+            )
+        );
+        assert_eq!(
+            status[2],
+            "What stopped it: giving partition 4 of disk 0 back as NTFS: Incorrect function."
+        );
+        assert_eq!(status.len(), 3, "{status:?}");
+        // The console of the recovery environment says the same command,
+        // once as the way on and once as the note for Windows.
+        let console = cancelled_lines(&left, "The volume", run);
+        assert!(
+            console[0].contains("but the volume is still marked read-only")
+                && console[0].ends_with(&command),
+            "{console:?}"
+        );
+        assert_eq!(
+            console.last().map(String::as_str),
+            Some(format!("Note: {FINISH_IN_WINDOWS}{command}").as_str())
+        );
+        // --rollback in Windows takes it up (it is not complete), under the
+        // same record, without the note that it has now followed; and the
+        // boot selection it finds normal stays "restored".
+        assert!(!left.completed);
+        let again = left.clone().taken_up_again();
+        assert!(again.notes.is_empty() && again.unfinished.is_empty() && !again.completed);
+        assert_eq!(again.cancelled_unix_ms, left.cancelled_unix_ms);
+        assert_eq!(again.environment, CancelEnvironment::RecoveryEnvironment);
+        assert_eq!(
+            merge_boot_outcome(BootOutcome::Restored, BootOutcome::WasNotInstalled),
+            BootOutcome::Restored
+        );
+        assert_eq!(
+            merge_boot_outcome(BootOutcome::Unsettled, BootOutcome::WasNotInstalled),
+            BootOutcome::WasNotInstalled
+        );
+        assert_eq!(
+            merge_boot_outcome(BootOutcome::Unsettled, BootOutcome::Restored),
+            BootOutcome::Restored
+        );
+        // A complete one says only that.
+        let mut done = left.clone();
+        done.volume = VolumeOutcome::GivenBack;
+        done.completed = true;
+        assert_eq!(
+            cancelled_status_lines(&done, run),
+            [
+                "This run was cancelled on 2026-11-18 14:03:22 UTC; the volume is NTFS as it was. A conversion is started again with a new run."
+            ]
         );
     }
 }

@@ -1821,6 +1821,146 @@ impl Read for TerminalRawReader {
     }
 }
 
+/// What a volume's answer to "which disk extents are you" says of it.
+#[derive(Debug, PartialEq, Eq)]
+enum CandidateExtent {
+    /// Not the partition's volume: it lies elsewhere, or it is not a volume
+    /// of one disk partition at all.
+    AnotherVolume,
+    /// The one extent of the partition that is looked for.
+    ThisPartition,
+}
+
+/// Decides, for one volume of an enumeration, whether it is the partition's.
+/// `answered` is the reply to IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS, or the
+/// native error it was refused with.
+///
+/// A volume that cannot answer because it is not on a disk partition is
+/// another volume, not a failed search: the RAM disk a recovery environment
+/// runs from and an optical drive refuse the question (invalid function,
+/// not supported), a drive without a medium is not ready, a volume that
+/// went away is not found, and one of several extents (more data) is not a
+/// single partition. Every volume of the machine is asked, so the search
+/// for one partition must not depend on what the others are. The partition
+/// itself is on a disk and does answer; that no volume matches stays what
+/// it was, "not published yet", and an error when it stays so. Any other
+/// refusal, and a reply that is not one whole extent, is an error.
+fn candidate_extent(
+    answered: Result<&[u8], Option<i32>>,
+    source: &PartitionSourceBinding,
+) -> io::Result<CandidateExtent> {
+    let extents = match answered {
+        Ok(bytes) => bytes,
+        // ERROR_FILE_NOT_FOUND, PATH_NOT_FOUND, NOT_READY, DEVICE_NOT_CONNECTED;
+        // INVALID_FUNCTION, NOT_SUPPORTED, MORE_DATA, MEDIA_CHANGED, NO_MEDIA_IN_DRIVE.
+        Err(Some(2 | 3 | 21 | 1167 | 1 | 50 | 234 | 1110 | 1112)) => {
+            return Ok(CandidateExtent::AnotherVolume);
+        }
+        Err(Some(code)) => {
+            return Err(bad(&format!(
+                "the volume refused with error {code}, which does not say that it is another kind of volume"
+            )));
+        }
+        Err(None) => return Err(bad("the question could not be put to the volume")),
+    };
+    need(
+        extents.len() == 32 && crate::layout::u32_at(extents, 0)? == 1,
+        "the reply is malformed or not one whole extent",
+    )?;
+    Ok(
+        if crate::layout::u32_at(extents, 8)? == source.storage.disk_number
+            && crate::layout::u64_at(extents, 16)? == source.storage.identity.partition_offset
+            && crate::layout::u64_at(extents, 24)? == source.storage.identity.partition_bytes
+        {
+            CandidateExtent::ThisPartition
+        } else {
+            CandidateExtent::AnotherVolume
+        },
+    )
+}
+
+#[cfg(test)]
+mod candidate_tests {
+    use super::*;
+
+    fn source() -> PartitionSourceBinding {
+        serde_json::from_value(serde_json::json!({"storage":{
+            "disk_number":0,"volume_guid":"11111111-2222-3333-4444-555555555555",
+            "identity":{"disk_guid":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                "partition_guid":"01234567-89ab-cdef-0123-456789abcdef",
+                "partition_number":4,"disk_bytes":136365211648u64,
+                "partition_offset":1048576u64,"partition_bytes":6442450944u64,
+                "logical_sector_bytes":512,"physical_sector_bytes":4096}}}))
+        .unwrap()
+    }
+    fn extent(disk: u32, offset: u64, bytes: u64) -> Vec<u8> {
+        let mut reply = vec![0u8; 32];
+        reply[..4].copy_from_slice(&1u32.to_le_bytes());
+        reply[8..12].copy_from_slice(&disk.to_le_bytes());
+        reply[16..24].copy_from_slice(&offset.to_le_bytes());
+        reply[24..32].copy_from_slice(&bytes.to_le_bytes());
+        reply
+    }
+    /// The search as `find_terminal_volume` makes it, over given answers.
+    fn search(volumes: &[Result<Vec<u8>, Option<i32>>]) -> io::Result<usize> {
+        for (index, answer) in volumes.iter().enumerate() {
+            let answer = answer.as_ref().map(Vec::as_slice).map_err(|code| *code);
+            if candidate_extent(answer, &source())? == CandidateExtent::ThisPartition {
+                return Ok(index);
+            }
+        }
+        Err(no_terminal_target_yet())
+    }
+
+    #[test]
+    fn a_volume_that_is_not_on_a_disk_partition_is_passed_over_and_the_partition_is_found() {
+        let partition = extent(0, 1048576, 6442450944);
+        // The recovery environment's RAM disk and an optical drive (invalid
+        // function, not supported), a drive without a medium, a volume of
+        // several extents, the Windows partition, and then the one.
+        let machine = [
+            Err(Some(1)),
+            Err(Some(50)),
+            Err(Some(21)),
+            Err(Some(1112)),
+            Err(Some(234)),
+            Ok(extent(0, 6443499520, 100 << 30)),
+            Ok(extent(1, 1048576, 6442450944)),
+            Ok(partition.clone()),
+        ];
+        assert_eq!(search(&machine).unwrap(), 7);
+        // In whatever order the volumes are listed.
+        let mut reversed = machine.to_vec();
+        reversed.reverse();
+        assert_eq!(search(&reversed).unwrap(), 0);
+    }
+
+    #[test]
+    fn no_matching_volume_is_not_found_and_an_unknown_refusal_is_an_error() {
+        // Nothing matches: the caller's "not published yet", an error when
+        // it stays so. Never a success.
+        let none = search(&[Err(Some(1)), Ok(extent(1, 1048576, 6442450944))]).unwrap_err();
+        assert!(terminal_publication_pending(&none), "{none}");
+        // A refusal that does not say "another kind of volume" stops the
+        // search: access denied, an I/O error.
+        for code in [5, 1117] {
+            let refusal =
+                search(&[Err(Some(code)), Ok(extent(0, 1048576, 6442450944))]).unwrap_err();
+            assert!(!terminal_publication_pending(&refusal));
+            assert!(
+                refusal.to_string().contains(&format!("error {code}")),
+                "{refusal}"
+            );
+        }
+        assert!(search(&[Err(None)]).is_err());
+        // So does a reply that is not one whole extent.
+        assert!(search(&[Ok(vec![0u8; 16])]).is_err());
+        let mut two = extent(0, 1048576, 6442450944);
+        two[..4].copy_from_slice(&2u32.to_le_bytes());
+        assert!(search(&[Ok(two)]).is_err());
+    }
+}
+
 fn candidate_volume(
     name: &str,
     source: &PartitionSourceBinding,
@@ -1834,37 +1974,47 @@ fn candidate_volume(
     let volume = match device_file(name.trim_end_matches('\\'), false, false) {
         Ok(file) => file,
         Err(error) if matches!(error.raw_os_error(), Some(2 | 3 | 21 | 1167)) => return Ok(None),
-        Err(error) => return Err(error),
+        Err(error) => {
+            return Err(io::Error::new(
+                error.kind(),
+                format!("opening the volume {name} while looking for the partition's: {error}"),
+            ));
+        }
     };
     let event_start = events.len();
-    let ext = match control(
+    let asked = control(
         &volume,
         "terminal-candidate-extents",
         VOLUME_EXTENTS,
         &[],
         32,
         events,
-    ) {
-        Ok(bytes) => bytes,
-        Err(_)
-            if events.get(event_start).is_some_and(|event| {
-                !event.succeeded && matches!(event.native_error, Some(2 | 3 | 21 | 1167))
-            }) =>
-        {
-            return Ok(None);
-        }
-        Err(error) => return Err(error),
+    );
+    let native_error = events
+        .get(event_start)
+        .filter(|event| !event.succeeded)
+        .and_then(|event| event.native_error);
+    let answered = match &asked {
+        Ok(bytes) => Ok(bytes.as_slice()),
+        Err(_) => Err(native_error),
     };
-    need(
-        ext.len() == 32 && crate::layout::u32_at(&ext, 0)? == 1,
-        "terminal candidate extent reply is malformed or not a complete single extent",
-    )?;
-    if crate::layout::u32_at(&ext, 8)? != source.storage.disk_number
-        || crate::layout::u64_at(&ext, 16)? != source.storage.identity.partition_offset
-        || crate::layout::u64_at(&ext, 24)? != source.storage.identity.partition_bytes
-    {
-        return Ok(None);
+    match candidate_extent(answered, source).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "asking the volume {name} for its disk extents (IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS) while looking for the partition's: {error}{}",
+                match &asked {
+                    Err(native) => format!(" ({native})"),
+                    Ok(_) => String::new(),
+                }
+            ),
+        )
+    })? {
+        CandidateExtent::AnotherVolume => return Ok(None),
+        CandidateExtent::ThisPartition => {}
     }
+    // From here on the volume is the partition's: what it cannot answer is
+    // an error, and names it.
     let info = control(
         &volume,
         "terminal-candidate-partition-info",
@@ -1872,10 +2022,18 @@ fn candidate_volume(
         &[],
         144,
         events,
-    )?;
+    )
+    .map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "asking the partition's volume {name} for its partition entry (IOCTL_DISK_GET_PARTITION_INFO_EX): {error}"
+            ),
+        )
+    })?;
     need(
         info == expected,
-        "matched terminal volume changed native target identity",
+        &format!("the partition's volume {name} does not report the expected partition entry"),
     )?;
     let mut binding = source.storage.clone();
     binding.volume_guid = name[11..name.len() - 2].to_owned();

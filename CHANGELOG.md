@@ -28,6 +28,9 @@ entry are in the pull request named beside it and in `docs/performance.md`.
   volume whose query fails by its drive letter (#147).
 - A machine turned off while a run prepares: the cancellation afterwards
   gives the volume back and names the working files left (#112).
+- A converted Windows meets Windows' own tools: its recovery environment
+  starts, and Windows Setup repairs it in place from the installation media
+  of its build (#113).
 
 ### Memory
 

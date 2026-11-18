@@ -470,6 +470,24 @@ What is different on a converted Windows volume:
 - **Object IDs, NTFS compression and the change journal**, as for a data
   volume.
 
+What Windows' own recovery and repair tools made of the converted Windows in
+the lab (build 26300, release 0.4.0):
+
+- **The recovery environment (WinRE)** stays where Windows put it, on the
+  recovery partition, which is NTFS and which the conversion does not touch.
+  `reagentc /info` reports it enabled, and the machine started into it
+  (`reagentc /boottore`) and showed its menu.
+- **Windows Setup** from the installation media of the same build found
+  nothing that blocks an upgrade (`setup.exe /Compat ScanOnly`), and an
+  in-place repair upgrade (`setup.exe /Auto Upgrade`) completed: Windows was
+  installed again over itself in a quarter of an hour, on ReFS, and afterwards
+  `sfc` found nothing, no ReFS error was logged, and the short-name links
+  still led where they did.
+
+Microsoft documents starting Windows from ReFS for some builds only, and the
+lab has shown this one build. Keep a backup before a repair upgrade as before
+any.
+
 ## If a run stops
 
 - **Before the recovery command is printed:** nothing has been written to the

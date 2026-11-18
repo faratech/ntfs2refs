@@ -82,7 +82,10 @@ pub struct DriveArgs {
     pub target_cluster_bytes: Option<String>,
     /// Finish an interrupted run from its conversion directory, as printed
     /// in its "To recover:" line. With --rollback, undo it instead.
-    #[arg(long, requires = "recovery_sha256", conflicts_with_all = ["list", "drive", "partition", "scratch_directory"])]
+    // (The checksum is asked for where the directory is read: the folder of
+    // a run that restarts the machine is recognised by its own records and
+    // takes none.)
+    #[arg(long, conflicts_with_all = ["list", "drive", "partition", "scratch_directory"])]
     pub recover: Option<PathBuf>,
     /// The checksum printed with that directory (the SHA-256 of its
     /// recovery-envelope.json), or the preparation SHA-256 printed at the
@@ -184,6 +187,15 @@ pub struct DriveArgs {
     /// Laboratory: separate acknowledgement that a held run never completes.
     #[arg(long, hide = true, requires = "lab_hold_at")]
     pub acknowledge_lab_hold_never_completes: bool,
+    /// Laboratory: make a run that restarts the machine fail at a named
+    /// point, so that each way back from there can be exercised.
+    #[arg(long, hide = true, value_name = "POINT",
+        requires_all = ["drive", "offline_recovery_media", "acknowledge_lab_fail_stops_the_run"],
+        conflicts_with_all = ["list", "recover", "recovery_sha256", "rollback", "diagnose", "check", "lab_hold_at"])]
+    pub lab_fail_at: Option<String>,
+    /// Laboratory: separate acknowledgement that such a run does not convert.
+    #[arg(long, hide = true, requires = "lab_fail_at")]
+    pub acknowledge_lab_fail_stops_the_run: bool,
 }
 fn parse_controlled_pause_nonce(value: &str) -> std::result::Result<String, String> {
     if value.len() == 64
@@ -643,12 +655,35 @@ mod windows {
             // An unknown point is refused here, before anything is opened.
             n2r_win32::lab_hold::arm(point)?;
         }
+        if let Some(point) = &args.lab_fail_at {
+            ensure!(
+                args.acknowledge_lab_fail_stops_the_run,
+                "a laboratory failure point needs --acknowledge-lab-fail-stops-the-run"
+            );
+            ensure!(
+                args.offline_recovery_media.is_some(),
+                "laboratory failure points apply only to a run that restarts the machine (--offline-media)"
+            );
+            // An unknown point is refused here, before anything is opened.
+            n2r_win32::lab_fail::arm(point)?;
+        }
         if let Some(directory) = args.recover {
             // (Not the build: a recovery must run wherever its conversion did.)
             require_elevation("recovery")?;
-            let checksum = args
-                .recovery_sha256
-                .context("original recovery checksum required")?;
+            // The folder of a run that restarts the machine, recognised by
+            // its admission record. Its ways back are bound to the run by
+            // the records in it, not by a checksum.
+            if let Some(run) = crate::resource_partition_alpha::recognise_run(&directory)? {
+                ensure!(
+                    args.recovery_sha256.is_none() && args.resume_workspace.is_none(),
+                    "the run in {} is recovered by its folder alone: give neither --recovery-sha256 nor --resume-workspace. Nothing was changed.",
+                    run.display()
+                );
+                return super::partition::recover_restart_run(&run, args.rollback);
+            }
+            let checksum = args.recovery_sha256.context(
+                "--recover needs --recovery-sha256, the checksum printed with the conversion directory. Nothing was changed.",
+            )?;
             let has_preparation = directory.join("preparation-intent.json").exists()
                 || directory.join("resume-intent.json").exists();
             // A matching external pin selects the early-cancellation protocol,
@@ -837,6 +872,10 @@ mod windows {
             args.controlled_post_flush_pause_nonce.is_none()
                 && !args.acknowledge_controlled_post_flush_pause,
             "controlled post-flush qualification flags apply only to a data partition sharing the current Windows disk; dedicated conversion does not accept them"
+        );
+        ensure!(
+            args.lab_fail_at.is_none(),
+            "laboratory failure points apply only to a run that restarts the machine: a partition on the running Windows disk"
         );
         let source_role = if args.windows_boot_volume {
             Role::OfflineWindowsSource
@@ -1822,6 +1861,99 @@ mod tests {
         .unwrap();
         assert_eq!(held.lab_hold_at.as_deref(), Some("handoff-sealed"));
         assert_eq!(held.execution_mode().unwrap(), ExecutionMode::Convert);
+    }
+
+    #[test]
+    fn a_laboratory_failure_point_needs_the_restart_route_and_its_own_acknowledgement() {
+        const ACK: &str = "--acknowledge-lab-fail-stops-the-run";
+        const MEDIA: &[&str] = &["--offline-media", "E:\\"];
+        let with = |extra: &[&str]| {
+            let mut arguments = MEDIA.to_vec();
+            arguments.extend_from_slice(extra);
+            parse(&arguments)
+        };
+        // Neither half alone, and not without the route that restarts.
+        assert!(with(&["--lab-fail-at", "restart-after-protect"]).is_err());
+        assert!(with(&[ACK]).is_err());
+        assert!(parse(&["--lab-fail-at", "restart-after-protect", ACK]).is_err());
+        for &point in n2r_win32::lab_fail::POINTS {
+            let armed = with(&["--lab-fail-at", point, ACK]).unwrap();
+            assert_eq!(armed.lab_fail_at.as_deref(), Some(point));
+            assert!(armed.acknowledge_lab_fail_stops_the_run);
+            // Parsing arms nothing: only a run does, and it refuses a name
+            // it does not know before anything is opened.
+            assert_eq!(n2r_win32::lab_fail::armed(), None);
+        }
+        assert!(n2r_win32::lab_fail::known("restart-after-reboot").is_err());
+        // Not together with a hold, a check, a diagnose run or a recovery.
+        for refused in [
+            &[
+                "--lab-fail-at",
+                "restart-after-arm",
+                ACK,
+                "--lab-hold-at",
+                "handoff-sealed",
+                "--acknowledge-lab-hold-never-completes",
+            ][..],
+            &["--lab-fail-at", "restart-after-arm", ACK, "--check"],
+            &["--lab-fail-at", "restart-after-arm", ACK, "--diagnose"],
+        ] {
+            assert!(with(refused).is_err(), "{refused:?}");
+        }
+        assert!(
+            Cli::try_parse_from([
+                "ntfs2refs",
+                "--recover",
+                "S:\\run",
+                "--lab-fail-at",
+                "restart-after-arm",
+                ACK
+            ])
+            .is_err()
+        );
+        // The switches are hidden from --help.
+        let help = <Cli as clap::CommandFactory>::command()
+            .render_long_help()
+            .to_string();
+        assert!(!help.contains("lab-fail"), "{help}");
+    }
+
+    #[test]
+    fn a_recovery_is_parsed_with_its_folder_alone_and_with_its_checksum() {
+        // The folder of a run that restarts the machine takes no checksum;
+        // whether a folder is one is decided from its records, when it is
+        // read, and every other folder is then asked for its checksum.
+        let alone = Cli::try_parse_from(["ntfs2refs", "--recover", "S:\\run", "--rollback"])
+            .unwrap()
+            .drive;
+        assert!(alone.rollback && alone.recovery_sha256.is_none());
+        assert_eq!(
+            alone.recover.as_deref(),
+            Some(std::path::Path::new("S:\\run"))
+        );
+        let status = Cli::try_parse_from(["ntfs2refs", "--recover", "S:\\run"])
+            .unwrap()
+            .drive;
+        assert!(!status.rollback);
+        let pinned = Cli::try_parse_from([
+            "ntfs2refs",
+            "--recover",
+            "S:\\run",
+            "--recovery-sha256",
+            NONCE,
+        ])
+        .unwrap()
+        .drive;
+        assert_eq!(pinned.recovery_sha256.as_deref(), Some(NONCE));
+        // --yes answers the question of a recovery without a serial number.
+        let unattended =
+            Cli::try_parse_from(["ntfs2refs", "--recover", "S:\\run", "--rollback", "--yes"])
+                .unwrap()
+                .drive;
+        assert!(unattended.unattended().unwrap());
+        // A checksum or a rollback without a folder is still refused.
+        assert!(Cli::try_parse_from(["ntfs2refs", "--rollback"]).is_err());
+        assert!(Cli::try_parse_from(["ntfs2refs", "--recovery-sha256", NONCE]).is_err());
     }
 
     #[test]

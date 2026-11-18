@@ -44,6 +44,8 @@ pub use prepared_runner::{
     PreparedOfflineAction, PreparedOfflineRequest, finalize_closed_boot_only,
     recover_current_interruption_only, run_prepared_offline,
 };
+#[path = "resource_prepared_way_back.rs"]
+mod way_back;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
@@ -51,6 +53,12 @@ use std::{
     os::windows::fs::{MetadataExt, OpenOptionsExt},
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
+};
+pub use way_back::{
+    CANCELLED_RECORD, CancelledRun, PreparedOfflineOutcome, WayBackReport,
+    after_failure_in_windows, before_restart_lines, cancel_command,
+    cancel_unapplied_run_in_windows, cancellation_of, cancelled_lines, describe_run_in_windows,
+    recognise_run, working_files_line,
 };
 
 /// Fixed reservation for the experimental owning-machine worker. This is a

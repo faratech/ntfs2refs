@@ -45,39 +45,88 @@ pub struct PreparedOfflineRequest {
     /// Qualification-only pause; normal public conversion leaves this absent.
     #[serde(default)]
     pub controlled_pause_nonce: Option<String>,
+    /// Laboratory only: the failure point the hidden switch of the
+    /// converter armed for the recovery environment. Absent from every
+    /// request a normal run writes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lab_fail_at: Option<String>,
 }
 
+/// Runs the request the machine was restarted with. A failure before the
+/// conversion started (the journal still prepared and clear) is not left on
+/// the recovery console: the machine is put back, and the outcome says that
+/// Windows starts next (`way_back`).
 pub fn run_prepared_offline(
     request: PreparedOfflineRequest,
     mut held_ram_bootstrap: File,
     acknowledge: bool,
-) -> Result<()> {
-    run_prepared_offline_mode(request, held_ram_bootstrap, acknowledge, false, false)
+) -> Result<PreparedOfflineOutcome> {
+    // An invocation that is not the acknowledged one changes nothing, in
+    // either direction.
+    ensure!(
+        acknowledge && request.schema_version == 1,
+        "explicit owning-machine offline execution required"
+    );
+    let mut seen = None;
+    match run_prepared_offline_mode(
+        &request,
+        &mut held_ram_bootstrap,
+        acknowledge,
+        false,
+        false,
+        &mut seen,
+    ) {
+        Ok(()) => Ok(PreparedOfflineOutcome::Finished),
+        Err(error) => way_back::after_failure_in_recovery_environment(
+            &request,
+            &mut held_ram_bootstrap,
+            seen,
+            error,
+        ),
+    }
 }
 /// Metadata-only continuation of an authenticated HND/ABT. This route cannot
 /// admit PreparedClear/AP/RB or obtain a source payload writer.
 pub fn finalize_closed_boot_only(
     request: PreparedOfflineRequest,
-    held_ram_bootstrap: File,
+    mut held_ram_bootstrap: File,
     acknowledge: bool,
 ) -> Result<()> {
-    run_prepared_offline_mode(request, held_ram_bootstrap, acknowledge, true, false)
+    run_prepared_offline_mode(
+        &request,
+        &mut held_ram_bootstrap,
+        acknowledge,
+        true,
+        false,
+        &mut None,
+    )
 }
 /// Updated helper for the CURRENT authenticated AP/RB only. The original
 /// kernel-bound request and nonce stay unchanged; no fresh apply is admitted.
 pub fn recover_current_interruption_only(
     request: PreparedOfflineRequest,
-    held_ram_bootstrap: File,
+    mut held_ram_bootstrap: File,
     acknowledge: bool,
 ) -> Result<()> {
-    run_prepared_offline_mode(request, held_ram_bootstrap, acknowledge, false, true)
+    run_prepared_offline_mode(
+        &request,
+        &mut held_ram_bootstrap,
+        acknowledge,
+        false,
+        true,
+        &mut None,
+    )
 }
+/// `seen` receives the journal's lifecycle as soon as it is read, so that a
+/// caller of a failed run knows whether the run got that far and what it
+/// found.
 fn run_prepared_offline_mode(
-    request: PreparedOfflineRequest,
-    mut held_ram_bootstrap: File,
+    request: &PreparedOfflineRequest,
+    held_ram_bootstrap: &mut File,
     acknowledge: bool,
     closed_only_boot_repair: bool,
     interrupted_recovery_boot_repair: bool,
+    seen: &mut Option<crate::selected_journal::SelectedLifecycle>,
 ) -> Result<()> {
     ensure!(
         !(closed_only_boot_repair && interrupted_recovery_boot_repair),
@@ -90,6 +139,17 @@ fn run_prepared_offline_mode(
     request.source.validate()?;
     request.journal.validate()?;
     request.observation_budget.validate()?;
+    if let Some(point) = &request.lab_fail_at {
+        // Carried here by the hidden switch of the converter and by nothing
+        // else. Only the one point that lies in this environment is taken.
+        ensure!(
+            point == n2r_win32::lab_fail::WINPE_BEFORE_APPLY,
+            "the boot request carries the laboratory failure point {point:?}, which is not one of the recovery environment"
+        );
+        if n2r_win32::lab_fail::armed() != Some(n2r_win32::lab_fail::WINPE_BEFORE_APPLY) {
+            n2r_win32::lab_fail::arm(point)?;
+        }
+    }
     let pause_ram = if let Some(nonce) = &request.controlled_pause_nonce {
         super::controlled_pause::require_nonce(nonce)?;
         512 * 1024
@@ -168,7 +228,7 @@ fn run_prepared_offline_mode(
     let mut bootstrap_observer = observer.clone();
     let volume = environment.open_independent_journal_for_recovery(
         &request.journal,
-        &mut held_ram_bootstrap,
+        held_ram_bootstrap,
         &mut bootstrap_observer,
         &mut events,
     )?;
@@ -196,6 +256,12 @@ fn run_prepared_offline_mode(
     // arena/index output is admitted. Sealed bundle/J/bootstrap paths stay GUID.
     let _ordinary_output_parents = ordinary_directory(&ordinary_output_parent)?;
     observer.checkpoint("offline-current-J-ordinary-output-route", &mut events)?;
+    // A run whose cancellation was decided is never applied, resumed or
+    // finalized again: the record is written before a way back changes
+    // anything, and only for a journal that was prepared and clear.
+    if let Some(cancelled) = way_back::cancellation_of(&request.output_parent)? {
+        anyhow::bail!("{}", cancelled.refusal(&request.output_parent));
+    }
     let available =
         n2r_win32::resource_native::observe_available_resources(&request.output_parent)?;
     let evidence_bytes = request
@@ -362,6 +428,7 @@ fn run_prepared_offline_mode(
         crate::selected_journal::classify(native, &bundle.core().ticket)?
     };
     use crate::selected_journal::SelectedLifecycle;
+    *seen = Some(lifecycle);
     if closed_only_boot_repair {
         ensure!(
             matches!(
@@ -387,6 +454,9 @@ fn run_prepared_offline_mode(
         observer.lock()?.record(&serde_json::json!({"kind":"current-interrupted-recovery-helper-authenticated-entry",
             "actual_AP_or_RB":true,"fresh_apply_allowed":false,
             "uses_original_boot_bound_request_and_nonce":true,"recovery_pause_hook_repeated":false}))?;
+    }
+    if lifecycle == SelectedLifecycle::PreparedClear {
+        n2r_win32::lab_fail::reached(n2r_win32::lab_fail::WINPE_BEFORE_APPLY)?;
     }
     let operation = match (lifecycle, request.action) {
         (SelectedLifecycle::PreparedClear, PreparedOfflineAction::AutoResume) => {

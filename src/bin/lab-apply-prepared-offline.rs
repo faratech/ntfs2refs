@@ -1,14 +1,29 @@
 //! Startup entry for the boot-bound RAM request; no path/flag is write authority.
 #[cfg(windows)]
-fn main() -> anyhow::Result<()> {
-    std::thread::Builder::new()
+fn main() -> std::process::ExitCode {
+    use ntfs2refs::resource_partition_alpha::PreparedOfflineOutcome;
+    let outcome = std::thread::Builder::new()
         .name("cold-prepared-conversion".into())
         .stack_size(ntfs2refs::resource_partition_alpha::WORKER_STACK_BYTES)
-        .spawn(run)?
-        .join()
-        .map_err(|_| {
-            anyhow::anyhow!("offline worker panicked; keep recovery boot and all artifacts")
-        })?
+        .spawn(run)
+        .map_err(anyhow::Error::from)
+        .and_then(|worker| {
+            worker.join().map_err(|_| {
+                anyhow::anyhow!("offline worker panicked; keep recovery boot and all artifacts")
+            })?
+        });
+    // The start script of the recovery image restarts the machine on these
+    // two codes and keeps its console open on every other.
+    match outcome {
+        Ok(PreparedOfflineOutcome::Finished) => std::process::ExitCode::SUCCESS,
+        Ok(PreparedOfflineOutcome::ReturnedToNtfs) => {
+            std::process::ExitCode::from(n2r_win32::recovery_image::RUNNER_EXIT_RETURNED_TO_NTFS)
+        }
+        Err(error) => {
+            eprintln!("Error: {error:?}");
+            std::process::ExitCode::FAILURE
+        }
+    }
 }
 #[cfg(not(windows))]
 fn main() {
@@ -16,9 +31,10 @@ fn main() {
     std::process::exit(1);
 }
 #[cfg(windows)]
-fn run() -> anyhow::Result<()> {
+fn run() -> anyhow::Result<ntfs2refs::resource_partition_alpha::PreparedOfflineOutcome> {
     use anyhow::{Context, ensure};
     use clap::Parser;
+    use ntfs2refs::resource_partition_alpha::PreparedOfflineOutcome;
     use sha2::{Digest, Sha256};
     use std::{
         fs::OpenOptions,
@@ -125,14 +141,16 @@ fn run() -> anyhow::Result<()> {
             request,
             file,
             args.acknowledge_offline_conversion,
-        );
+        )
+        .map(|()| PreparedOfflineOutcome::Finished);
     }
     if args.recover_current_interruption_only {
         return ntfs2refs::resource_partition_alpha::recover_current_interruption_only(
             request,
             file,
             args.acknowledge_offline_conversion,
-        );
+        )
+        .map(|()| PreparedOfflineOutcome::Finished);
     }
     ntfs2refs::resource_partition_alpha::run_prepared_offline(
         request,

@@ -576,10 +576,16 @@ pub fn give_back_prepared_source_in_windows(
     )?;
     let found = origin.classify(&info)?;
     let binding = origin.binding.clone();
+    // From the physical disk, as the terminal guard observes a basic
+    // partition: whether its volume is published at that moment is not part
+    // of what the partition table is.
     let mut observe = |events: &mut Vec<NativeEvent>| {
-        let reader =
-            partition_isolation::PartitionScopedReader::open(binding.clone(), budget, events)?;
-        Ok(reader.observation().gpt.clone())
+        let mut physical = device_file(
+            &format!("\\\\.\\PhysicalDrive{}", binding.storage.disk_number),
+            false,
+            false,
+        )?;
+        Ok(partition_isolation::observe_basic(&mut physical, &binding, budget, events)?.gpt)
     };
     let changed = match found {
         PreparedSourceProtection::Protected => {

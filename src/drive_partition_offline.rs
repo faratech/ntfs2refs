@@ -248,27 +248,60 @@ pub(super) fn convert(
         tool_timeout_milliseconds: 120_000,
     };
     println!("Conversion and recovery records: {}", output.display());
+    let run = output.clone();
     let worker = std::thread::Builder::new()
         .name("public-shared-offline-workflow".into())
         .stack_size(resource_partition_alpha::WORKER_STACK_BYTES)
         .spawn(move || prepare_and_arm_shared_conversion(request, &output, image, boot, true))?;
-    let receipt = worker.join().map_err(|_| {
-        anyhow::anyhow!("shared workflow panicked; preserve its artifacts and actual protection")
-    })??;
+    // A failure of the workflow has already been taken back by it, and its
+    // error says what became of the volume. A workflow that panicked is
+    // taken back here, from the records it left.
+    let receipt = match worker.join() {
+        Ok(result) => result?,
+        Err(_) => {
+            return Err(resource_partition_alpha::after_failure_in_windows(
+                &run,
+                anyhow::anyhow!("the conversion's preparation stopped unexpectedly (a panic)"),
+            ));
+        }
+    };
     println!(
         "Persistent recovery selected; intent SHA256: {}",
         hex::encode(receipt.intent_sha256)
     );
+    for line in resource_partition_alpha::before_restart_lines(&run) {
+        println!("{line}");
+    }
     use std::io::Write;
     std::io::stdout().flush()?;
-    let (windows_root, _) = native_windows_route()?;
-    let exit = std::process::Command::new(windows_root.join("Windows/System32/shutdown.exe"))
-        .args(["/r", "/t", "0"])
-        .creation_flags(0x0800_0000)
-        .status()?;
-    ensure!(
-        exit.success(),
-        "restart request failed; recovery selection remains installed; restart normally to continue"
-    );
+    if n2r_win32::lab_fail::is_armed(n2r_win32::lab_fail::RESTART_SKIP_REBOOT) {
+        // Laboratory only: everything is done and selected; the restart is
+        // left to the harness.
+        println!(
+            "{{\"kind\":\"lab-fail-v1\",\"point\":\"{}\",\"pid\":{}}}",
+            n2r_win32::lab_fail::RESTART_SKIP_REBOOT,
+            std::process::id()
+        );
+        println!(
+            "The restart was not requested (--lab-fail-at restart-skip-reboot). The conversion starts at the next restart."
+        );
+        return Ok(0);
+    }
+    let restart = (|| -> Result<()> {
+        let (windows_root, _) = native_windows_route()?;
+        let exit = std::process::Command::new(windows_root.join("Windows/System32/shutdown.exe"))
+            .args(["/r", "/t", "0"])
+            .creation_flags(0x0800_0000)
+            .status()?;
+        ensure!(
+            exit.success(),
+            "the restart request failed (shutdown.exe ended with {exit})"
+        );
+        Ok(())
+    })();
+    // A restart that was not issued leaves a run that would start at some
+    // later restart nobody asked for: it is taken back like any other
+    // failure before the restart.
+    restart.map_err(|cause| resource_partition_alpha::after_failure_in_windows(&run, cause))?;
     Ok(0)
 }

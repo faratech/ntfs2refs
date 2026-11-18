@@ -408,8 +408,16 @@ impl SortedRecordStore {
         self.data.revalidate()?;
         self.directory.revalidate()
     }
+    /// Gives up the copy of the records held in memory, for good. The
+    /// index of the records stays as it is: it is 32 bytes a record, and
+    /// every lookup of a record goes through it.
+    ///
+    /// It was given up for good with the records. Once the ledger had also
+    /// taken the index's own cache, each lookup decoded a chunk of the
+    /// index's file again: on the full Windows volume held to 1,800 MiB,
+    /// 200,000 decodings in twelve minutes of payload supply, a megabyte
+    /// of text each, and an hour that did not end the step.
     pub(crate) fn clear_resident_cache(&mut self) {
         self.data.clear_resident_cache();
-        self.directory.clear_resident_cache();
     }
 }

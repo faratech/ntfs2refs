@@ -302,6 +302,8 @@ static LEDGER_HOLDERS: Mutex<(u64, String)> = Mutex::new((0, String::new()));
 /// sixty-fourth of the limit since that was last written down, so that a
 /// run pays for at most sixty-four descriptions a ledger.
 pub fn note_ledger(held: u64, needed: u64, limit: u64) -> bool {
+    LEDGER_NOW.0.store(held, Relaxed);
+    LEDGER_NOW.1.store(needed, Relaxed);
     if LEDGER_PEAK.fetch_max(held, Relaxed) < held {
         LEDGER_LIMIT.store(limit, Relaxed);
     }
@@ -338,6 +340,35 @@ pub fn note_ledger_holders(needed: u64, holders: String) {
     {
         *described = (needed, holders);
     }
+}
+
+/// What the ledger holds and needs at this moment.
+static LEDGER_NOW: (AtomicU64, AtomicU64) = (AtomicU64::new(0), AtomicU64::new(0));
+
+/// What holds the run's memory so far, for a run that is ended from
+/// outside and never reaches [`finish`]: written with the interim profile.
+pub fn interim_memory() {
+    let peak = LEDGER_PEAK.load(Relaxed);
+    if peak == 0 {
+        return;
+    }
+    let step = STEP_HOLDERS
+        .lock()
+        .map(|holders| format!("{} MiB: {}", holders.0 >> 20, holders.1))
+        .unwrap_or_default();
+    eprintln!(
+        "memory-so-far: reservations peaked at {} MiB of {} MiB; needed at most {} MiB; in this step {}; {} caches given up",
+        peak >> 20,
+        LEDGER_LIMIT.load(Relaxed) >> 20,
+        LEDGER_NEEDED_PEAK.load(Relaxed) >> 20,
+        step,
+        crate::evict::times_given_up()
+    );
+    eprintln!(
+        "memory-now: reservations hold {} MiB, of which {} MiB are needed",
+        LEDGER_NOW.0.load(Relaxed) >> 20,
+        LEDGER_NOW.1.load(Relaxed) >> 20
+    );
 }
 
 /// Prints the last phase and the totals. Safe to call more than once.

@@ -1717,7 +1717,12 @@ fn validate_existing_content_domain_with_memory_and_windows_aliases(
             )
         })
         .transpose()?;
-    let mut identities = BTreeMap::new();
+    // A path twice is refused where it is entered under its parent's
+    // expected children; the root has no parent, and is counted. (A map
+    // from every object's path to its identity did both, and held every
+    // path of the volume for it: with what was charged for it, 538 MiB of
+    // the full Windows volume's walks.)
+    let mut roots = 0usize;
     let mut unique = BTreeSet::new();
     let mut directories = Vec::new();
     let mut expected_children: BTreeMap<Vec<String>, BTreeMap<Vec<u16>, (usize, u32)>> =
@@ -1835,8 +1840,11 @@ fn validate_existing_content_domain_with_memory_and_windows_aliases(
         }
         let id = query_bytes(&o.before, 18, 24)?[8..24].to_vec();
         if id == [0; 16]
-            || !unique.insert(id.clone())
-            || identities.insert(i.components.to_vec(), id).is_some()
+            || !unique.insert(id)
+            || (i.components.is_empty() && {
+                roots += 1;
+                roots > 1
+            })
         {
             return Err(invalid("duplicate existing shadow identity"));
         }

@@ -107,6 +107,7 @@ pub(crate) mod resource_prepared_offline_apply;
 #[cfg(windows)]
 pub(crate) mod resource_recovery;
 pub mod retained_compare;
+pub(crate) mod run_memory;
 pub(crate) mod selected_capacity;
 pub(crate) mod selected_journal;
 pub(crate) mod selected_ownership;

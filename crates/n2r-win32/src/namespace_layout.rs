@@ -3,6 +3,32 @@ use serde::{Deserialize, Serialize};
 use std::io;
 
 pub const CAPACITY: usize = 65_536;
+
+/// The most an entry of a directory listing takes as Windows returns it:
+/// 88 bytes, a name of at most 510, rounded up to eight.
+pub const LISTED_ENTRY_BYTES: usize = 600;
+
+/// What listing a directory of `children` entries takes: the bytes Windows
+/// may return for them, which bound the listing, and the memory to reserve
+/// for it, which is those bytes twice (as returned, and the names decoded)
+/// and the entries' structs in a Vec that doubles. `None` where it
+/// overflows.
+///
+/// A listing is paid for by what it is. Each expected child paid 8 KiB
+/// before the directory was read: 476 MiB for `Windows\WinSxS` with its
+/// short-name links, the most the lab's Windows volume needed of a ledger
+/// of 1,794 MiB.
+pub fn listing_memory(children: usize) -> Option<(usize, u64)> {
+    let entries = children.checked_add(2)?;
+    let evidence = entries
+        .checked_mul(LISTED_ENTRY_BYTES)?
+        .checked_add(CAPACITY * 4)?;
+    let decoded = entries.checked_mul(2 * std::mem::size_of::<Entry>())?;
+    let memory = (evidence as u64)
+        .checked_mul(2)?
+        .checked_add(decoded as u64)?;
+    Some((evidence, memory))
+}
 pub const MAX_ENTRIES: usize = 4096;
 pub const MAX_CALLS: usize = 64;
 pub const MAX_EVIDENCE: usize = 2 * 1024 * 1024;

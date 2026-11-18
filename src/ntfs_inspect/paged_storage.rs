@@ -1322,6 +1322,15 @@ impl PagedMetadataRange {
             .context("source reader construction memory overflow")?;
         let mut ram = scratch.lease_ram(initial_cache.max(constructor))?;
         let mut reader = Reader::open_held(file, &pin.file_sha256, pin.purpose, pin.page_budget)?;
+        // A store keeps what it has decoded: all of it while the ledger has
+        // room (`ResidentMetadataCache`), otherwise the chunks read last
+        // (`keep_decoded`). Its reader does not also hold the file's pages
+        // as they are on disk. With little memory the three were given up
+        // for one another in turns: the full Windows volume held to
+        // 1,800 MiB had 644 MiB of pages of the file store in memory, no
+        // room left for its decoded chunks, and spent nine tenths of "plan
+        // and supply payloads" decoding chunks and reading the file again.
+        reader.read_page_by_page();
         ensure!(
             reader.byte_len() == pin.wire_bytes
                 && reader.len() >= 2
@@ -1575,10 +1584,14 @@ impl SourceMetadataRange for PagedMetadataRange {
 }
 impl PagedMetadataRange {
     /// Keeps a copy of the chunk decoded last, where the ledger has room
-    /// for a cache (it gives up older ones for it). A store of one or two
-    /// chunks has them in its two decoded slots already.
+    /// for a cache (it gives up older ones for it). A store has its chunks
+    /// in its decoded slots already when it has no more chunks than slots:
+    /// one, or two for the stores that have the second slot. (Every store
+    /// of two chunks was taken to have both; one with a single slot
+    /// decoded a chunk again whenever a lookup crossed to the other.)
     fn keep_decoded(&self, ordinal: u64) {
-        if self.pin.logical_bytes <= u64::from(self.pin.chunk_bytes).saturating_mul(2) {
+        let slots = if self.second_chunk_cache { 2 } else { 1 };
+        if self.pin.logical_bytes <= u64::from(self.pin.chunk_bytes).saturating_mul(slots) {
             return;
         }
         let length = match self.decoded.borrow().recent.as_ref() {

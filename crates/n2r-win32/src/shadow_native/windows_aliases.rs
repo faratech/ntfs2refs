@@ -702,6 +702,15 @@ impl VerifiedWindowsAliases {
         }
         Ok(())
     }
+    /// What the validation of the shadow holds for these links beside the
+    /// links themselves: for each its identity in the set of identities
+    /// (16 bytes in a Vec), its name in UTF-16 with a pair of numbers under
+    /// its parent's expected children, and that parent's path as a key
+    /// where the parent had no other child. Twice its path covers the name
+    /// and the key; 512 bytes the two map nodes and the identity.
+    ///
+    /// It was sixteen times the path and 8 KiB a link: 1.5 GiB for the
+    /// 96,000 of the full Windows volume.
     pub(super) fn reserve_validation_memory(
         &self,
         payer: Option<&dyn report_memory::ReportMemoryAccountant>,
@@ -709,10 +718,10 @@ impl VerifiedWindowsAliases {
         let bytes = self.entries.iter().try_fold(0u64, |sum, row| {
             sum.checked_add(
                 path_memory(&row.components)?
-                    .checked_mul(16)
+                    .checked_mul(2)
                     .ok_or_else(|| invalid("alias validation RAM overflow"))?,
             )
-            .and_then(|n| n.checked_add(8192))
+            .and_then(|n| n.checked_add(512))
             .ok_or_else(|| invalid("alias validation RAM overflow"))
         })?;
         payer
@@ -798,13 +807,35 @@ fn path_memory(path: &[String]) -> io::Result<u64> {
         },
     )
 }
+/// What a short-name link takes while it is held: its path twice (the key
+/// it is found by and the entry), the path it stands for once, its reparse
+/// point (the name it stands for, twice, in UTF-16: no more than four times
+/// that name's UTF-8), and the entry itself with its three identities, its
+/// handle and its place in the map.
+///
+/// It was eight times the path, four times the other and 8 KiB: 15 KiB a
+/// link where it holds three. The full Windows volume has 96,000 of them,
+/// and asked 1,426 MiB in one reservation; held to 1,800 MiB the run
+/// stopped there after eleven minutes (`w7-full-limit-1800`).
 fn row_memory(row: &WindowsAliasInputRef<'_>) -> io::Result<u64> {
+    let point = row
+        .canonical_components
+        .last()
+        .map_or(0, |name| name.len() as u64)
+        .checked_mul(4);
     path_memory(row.components)?
-        .checked_mul(8)
-        .and_then(|n| n.checked_add(path_memory(row.canonical_components).ok()?.checked_mul(4)?))
-        .and_then(|n| n.checked_add(8192))
+        .checked_mul(2)
+        .and_then(|n| n.checked_add(path_memory(row.canonical_components).ok()?))
+        .and_then(|n| n.checked_add(point?))
+        .and_then(|n| n.checked_add(ROW_FIXED_BYTES))
         .ok_or_else(|| invalid("alias retained RAM overflow"))
 }
+/// `StagedAlias`, its node of the map and the reparse header, rounded up.
+const ROW_FIXED_BYTES: u64 = 768;
+const _: () = assert!(
+    (std::mem::size_of::<StagedAlias>() + std::mem::size_of::<Vec<String>>()) as u64 * 2
+        <= ROW_FIXED_BYTES
+);
 fn row_digest(hash: &mut Sha256, row: &WindowsAliasInputRef<'_>) {
     hash.update((row.canonical_object_index as u64).to_le_bytes());
     hash.update((row.parent_object_index as u64).to_le_bytes());

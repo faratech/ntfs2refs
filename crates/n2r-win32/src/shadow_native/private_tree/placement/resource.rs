@@ -102,8 +102,7 @@ impl Limits {
         // owned/eligible sweeps, deferred/final plans and their BTree nodes.
         // This is a RAM-derived capacity; allocations are separately prepaid
         // against actual counts before each phase, not this whole maximum.
-        let slots = usize::try_from(admission.budget.retained_index_bytes / 8192)
-            .map_err(io::Error::other)?;
+        let slots = admission.placement_slots()?;
         let byte_moves = usize::try_from(move_bytes / cluster()).map_err(io::Error::other)?;
         let moves = requested_moves.min(byte_moves);
         let bitmap = crate::bitmap_streaming::resource_source_limits(

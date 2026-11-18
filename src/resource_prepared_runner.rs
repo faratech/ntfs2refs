@@ -259,8 +259,9 @@ fn run_prepared_offline_mode(
     // A run whose cancellation was decided is never applied, resumed or
     // finalized again: the record is written before a way back changes
     // anything, and only for a journal that was prepared and clear.
-    if let Some(cancelled) = way_back::cancellation_of(&request.output_parent)? {
-        anyhow::bail!("{}", cancelled.refusal(&request.output_parent));
+    // (A record that is there and cannot be read forbids the run as well.)
+    if let Some(refusal) = way_back::apply_forbidden(&request.output_parent) {
+        anyhow::bail!("{refusal}");
     }
     let available =
         n2r_win32::resource_native::observe_available_resources(&request.output_parent)?;

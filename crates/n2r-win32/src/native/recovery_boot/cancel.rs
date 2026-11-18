@@ -47,8 +47,14 @@ pub struct RecoveryBootCancellationReceipt {
     pub display_order: Vec<String>,
     pub timeout: Option<String>,
     pub private_entries_left_in_store: Vec<String>,
+    /// Whether every other entry of the store was compared before and after
+    /// and found unchanged. False with nothing restored, and false with the
+    /// reason below where the store could not be listed whole.
     pub other_entries_compared_unchanged: bool,
-    pub records: PathBuf,
+    pub other_entries_not_compared: Option<String>,
+    /// The folder of this cancellation's own records; absent where the
+    /// store was not touched at all.
+    pub records: Option<PathBuf>,
     pub source_writer_authority: bool,
 }
 
@@ -157,6 +163,8 @@ fn plan_selection(
 struct BootRecords {
     intent: BootIntent,
     guard_sha256: Option<[u8; 32]>,
+    /// The record `intent` was read from.
+    path: PathBuf,
 }
 
 fn read_records(
@@ -178,37 +186,72 @@ fn read_records(
     if !exists(&original_path)? {
         need(
             !exists(&guard_path)?,
-            "the run has a boot guard record without the record written before it",
+            &format!(
+                "the run has the boot record {} without {}, which is written before it",
+                guard_path.display(),
+                original_path.display()
+            ),
         )?;
         return Ok(None);
     }
     let original_bytes =
-        metadata::read_external(&original_path, journal, budget.maximum_control_bytes)?;
-    let original: BootIntent = serde_json::from_slice(&original_bytes).map_err(io::Error::other)?;
-    let require_ours = |intent: &BootIntent| {
+        metadata::read_external(&original_path, journal, budget.maximum_control_bytes).map_err(
+            |error| {
+                io::Error::new(
+                    error.kind(),
+                    format!(
+                        "reading the boot record {}: {error}",
+                        original_path.display()
+                    ),
+                )
+            },
+        )?;
+    let decode = |bytes: &[u8], path: &Path| {
+        serde_json::from_slice::<BootIntent>(bytes).map_err(|error| {
+            bad(&format!(
+                "the boot record {} cannot be decoded: {error}",
+                path.display()
+            ))
+        })
+    };
+    let original = decode(&original_bytes, &original_path)?;
+    let require_ours = |intent: &BootIntent, path: &Path| {
         need(
             intent.version == 1
                 && intent.kind == "ntfs2refs-persistent-recovery-boot-intent-v1"
                 && !intent.serialized_intent_is_writer_authority
                 && intent.source == *source
                 && intent.journal == *journal,
-            "the boot record is not this run's: it names another source or working volume, or is of another kind",
+            &format!(
+                "the boot record {} is not this run's: it names another source or working volume, or is of another kind",
+                path.display()
+            ),
         )
     };
-    require_ours(&original)?;
+    require_ours(&original, &original_path)?;
     need(
         original.guarded_store_map.is_none() && original.parent_original_intent_sha256.is_none(),
-        "the first boot record is not the one written before the first change",
+        &format!(
+            "the boot record {} is not the one written before the first change of the boot configuration",
+            original_path.display()
+        ),
     )?;
     if !exists(&guard_path)? {
         return Ok(Some(BootRecords {
             intent: original,
             guard_sha256: None,
+            path: original_path,
         }));
     }
-    let guard_bytes = metadata::read_external(&guard_path, journal, budget.maximum_control_bytes)?;
-    let guard: BootIntent = serde_json::from_slice(&guard_bytes).map_err(io::Error::other)?;
-    require_ours(&guard)?;
+    let guard_bytes = metadata::read_external(&guard_path, journal, budget.maximum_control_bytes)
+        .map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("reading the boot record {}: {error}", guard_path.display()),
+        )
+    })?;
+    let guard = decode(&guard_bytes, &guard_path)?;
+    require_ours(&guard, &guard_path)?;
     let mut reconstructed = guard.clone();
     reconstructed.guarded_store_map = None;
     reconstructed.parent_original_intent_sha256 = None;
@@ -217,11 +260,16 @@ fn read_records(
         guard.parent_original_intent_sha256 == Some(digest(&original_bytes))
             && serde_json::to_vec(&original).map_err(io::Error::other)?
                 == serde_json::to_vec(&reconstructed).map_err(io::Error::other)?,
-        "the boot guard record does not carry the selection recorded before the first change",
+        &format!(
+            "the boot record {} does not carry the selection that {} recorded before the first change",
+            guard_path.display(),
+            original_path.display()
+        ),
     )?;
     Ok(Some(BootRecords {
         intent: guard,
         guard_sha256: Some(digest(&guard_bytes)),
+        path: guard_path,
     }))
 }
 
@@ -230,12 +278,14 @@ fn receipt(
     restored: Vec<String>,
     current: Option<&Fields>,
     private: Vec<String>,
-    compared: bool,
-    records: &Path,
+    not_compared: Option<String>,
+    records: Option<&Path>,
 ) -> RecoveryBootCancellationReceipt {
     RecoveryBootCancellationReceipt {
         kind: "unstarted-conversion-recovery-boot-selection-cancelled-v1",
         found,
+        other_entries_compared_unchanged: !restored.is_empty() && not_compared.is_none(),
+        other_entries_not_compared: not_compared,
         restored_elements: restored,
         default: current.and_then(|f| one(f, "default").ok().map(str::to_owned)),
         display_order: current
@@ -243,61 +293,56 @@ fn receipt(
             .unwrap_or_default(),
         timeout: current.and_then(|f| one(f, "timeout").ok().map(str::to_owned)),
         private_entries_left_in_store: private,
-        other_entries_compared_unchanged: compared,
-        records: records.to_owned(),
+        records: records.map(Path::to_owned),
         source_writer_authority: false,
     }
 }
 
-/// The description the installation gives its loader entry.
-const LOADER_DESCRIPTION: &str = "ntfs2refs sealed offline apply";
+/// How a store is named in an error: the system's, or the file it is.
+fn store_name(store: Option<&Path>) -> String {
+    match store {
+        Some(path) => format!("the boot configuration store {}", path.display()),
+        None => "the system's boot configuration store".to_owned(),
+    }
+}
+/// An error of a step on a store, naming both.
+fn at_store(error: io::Error, step: &str, store: Option<&Path>) -> io::Error {
+    io::Error::new(
+        error.kind(),
+        format!("{step} in {}: {error}", store_name(store)),
+    )
+}
 
 #[allow(clippy::too_many_arguments)]
 fn cancel_selection(
     tool: &native::Tool,
     store: Option<&Path>,
-    records: Option<&BootRecords>,
+    records: &BootRecords,
     recovery_environment: bool,
     directory: &Path,
     budget: RecoveryBootBudget,
     flush: &mut dyn FnMut(&mut Vec<NativeEvent>) -> io::Result<()>,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<RecoveryBootCancellationReceipt> {
-    let current = tool.enum_object(store, BOOTMGR, directory)?;
-    let Some(records) = records else {
-        // No record of an installation. That is believed only together with
-        // what the store itself says: its default is not an entry of this
-        // tool's making.
-        let default = one(&current, "default")?;
-        let entry = tool.enum_object(store, default, directory)?;
-        need(
-            entry
-                .get("description")
-                .and_then(|d| d.first())
-                .map(String::as_str)
-                != Some(LOADER_DESCRIPTION),
-            &format!(
-                "the boot manager's default {default} is a recovery entry of ntfs2refs, and this run has no record of installing one: it belongs to another run, whose folder cancels it"
-            ),
-        )?;
-        return Ok(receipt(
-            RecoveryBootSelectionState::NotInstalled,
-            Vec::new(),
-            Some(&current),
-            Vec::new(),
-            false,
-            directory,
-        ));
+    let read_bootmgr = || {
+        tool.enum_object(store, BOOTMGR, directory)
+            .map_err(|error| at_store(error, "reading the boot manager entry", store))
     };
+    let current = read_bootmgr()?;
     let intent = &records.intent;
-    let original = selection(intent.original.all_fields.clone())?;
+    let original = selection(intent.original.all_fields.clone())
+        .map_err(|error| at_store(error, "decoding the recorded original selection", store))?;
     need(
         original.default == intent.original.default
             && original.displayorder == intent.original.displayorder
             && original.timeout == intent.original.timeout,
-        "the recorded original boot selection is inconsistent with itself",
+        &format!(
+            "the original boot selection recorded in {} is inconsistent with itself",
+            records.path.display()
+        ),
     )?;
-    let plan = plan_selection(&current, &original, &intent.loader)?;
+    let plan = plan_selection(&current, &original, &intent.loader)
+        .map_err(|error| at_store(error, "comparing the boot manager entry", store))?;
     let private = vec![intent.loader.clone(), intent.ramdisk_options.clone()];
     if plan.restore.is_empty() {
         return Ok(receipt(
@@ -305,8 +350,8 @@ fn cancel_selection(
             Vec::new(),
             Some(&current),
             private,
-            false,
-            directory,
+            None,
+            Some(directory),
         ));
     }
     // Something selects the recovery entry: it has to be this run's, bound
@@ -318,24 +363,32 @@ fn cancel_selection(
     // are not compared: they are written with drive letters, which another
     // start of Windows may have changed, and nothing here depends on them.)
     let guard = records.guard_sha256.ok_or_else(|| {
-        bad("the boot manager selects a recovery entry, and this run's records end before the selection was changed")
+        bad(&format!(
+            "the boot manager of {} selects a recovery entry, and this run's records in {} end before the selection was changed",
+            store_name(store),
+            records.path.display()
+        ))
     })?;
     if !recovery_environment {
-        let loader = tool.enum_object(store, &intent.loader, directory)?;
+        let loader = tool
+            .enum_object(store, &intent.loader, directory)
+            .map_err(|error| at_store(error, "reading the run's recovery entry", store))?;
         need(
             one(&loader, "identifier")? == intent.loader
                 && one(&loader, "loadoptions")? == load_options(guard, bootstrap_pin(intent)?),
             &format!(
-                "the recovery entry {} of the boot configuration does not name this run's boot record in its load options: it is not this run's",
-                intent.loader
+                "the recovery entry {} of {} does not name this run's boot record {} in its load options: it is not this run's",
+                intent.loader,
+                store_name(store),
+                records.path.display()
             ),
         )?;
     }
-    let before_all = match store {
+    let list_all = || match store {
         Some(store) => tool.enum_all(store, directory),
         None => tool.enum_system_all(directory),
-    }
-    .ok();
+    };
+    let before_all = list_all();
     let intent_sha = native::persist(
         &directory.join("boot-selection-cancellation-intent.json"),
         &serde_json::json!({"kind":"unstarted-conversion-boot-selection-cancellation-intent-v1",
@@ -350,45 +403,65 @@ fn cancel_selection(
     for (field, values) in &plan.restore {
         let mut args = vec![format!("/{field}")];
         args.extend(values.iter().cloned());
-        tool.run(store, &args, directory)?;
-        flush(events)?;
-        let after = tool.enum_object(store, BOOTMGR, directory)?;
-        let remaining = plan_selection(&after, &original, &intent.loader)?;
+        tool.run(store, &args, directory).map_err(|error| {
+            at_store(
+                error,
+                &format!("setting the boot manager's {field} to {values:?}"),
+                store,
+            )
+        })?;
+        flush(events).map_err(|error| at_store(error, "flushing the change", store))?;
+        let after = read_bootmgr()?;
+        let remaining = plan_selection(&after, &original, &intent.loader)
+            .map_err(|error| at_store(error, "comparing the boot manager entry", store))?;
         need(
             !remaining.restore.iter().any(|(f, _)| f == field),
-            &format!("the boot manager's {field} does not read back as it was set"),
+            &format!(
+                "the boot manager's {field} in {} does not read back as {values:?}, which it was set to",
+                store_name(store)
+            ),
         )?;
         restored.push((*field).to_owned());
     }
-    let after = tool.enum_object(store, BOOTMGR, directory)?;
-    let done = plan_selection(&after, &original, &intent.loader)?;
+    let after = read_bootmgr()?;
+    let done = plan_selection(&after, &original, &intent.loader)
+        .map_err(|error| at_store(error, "comparing the boot manager entry", store))?;
     need(
         done.state == RecoveryBootSelectionState::Normal && done.restore.is_empty(),
-        "the boot manager does not select the recorded original after the restoration",
+        &format!(
+            "the boot manager of {} does not select the original recorded in {} after the restoration",
+            store_name(store),
+            records.path.display()
+        ),
     )?;
-    let after_all = match store {
-        Some(store) => tool.enum_all(store, directory),
-        None => tool.enum_system_all(directory),
-    }
-    .ok();
-    let compared = match (before_all, after_all) {
-        (Some(mut before), Some(mut after)) => {
+    // Every other entry, before and after. Where the store cannot be listed
+    // whole this is not checked, and the receipt says so and why: it is
+    // never passed over in silence.
+    let not_compared = match (before_all, list_all()) {
+        (Ok(mut before), Ok(mut after)) => {
             before.remove(BOOTMGR);
             after.remove(BOOTMGR);
             need(
                 before == after,
-                "another entry of the boot configuration changed while the selection was restored",
+                &format!(
+                    "another entry of {} changed while the boot manager's selection was restored",
+                    store_name(store)
+                ),
             )?;
-            true
+            None
         }
-        _ => false,
+        (Err(error), _) | (_, Err(error)) => Some(format!(
+            "the entries of {} could not be listed whole, so it was not checked that no other entry changed: {error}",
+            store_name(store)
+        )),
     };
     native::persist(
         &directory.join("boot-selection-cancellation-completed.json"),
         &serde_json::json!({"kind":"unstarted-conversion-boot-selection-cancelled-v1",
             "source":intent.source,"cancellation_intent_sha256":intent_sha,
             "restored_elements":restored,"restored_bootmgr":after,
-            "other_entries_compared_unchanged":compared,
+            "other_entries_compared_unchanged":not_compared.is_none(),
+            "other_entries_not_compared":not_compared,
             "private_entries_left_in_store":private,"backup_imports":0,
             "firmware_writes":0,"source_payload_write_calls":0,
             "saved_record_grants_authority":false}),
@@ -399,9 +472,44 @@ fn cancel_selection(
         restored,
         Some(&after),
         private,
-        compared,
-        directory,
+        not_compared,
+        Some(directory),
     ))
+}
+
+/// Before a run changes anything: the boot configuration can be read the
+/// way the run and its ways back will have to read it. `bcdedit` prints in
+/// the display language of Windows and only its English output is parsed;
+/// a run that found that out when it installed its boot selection had
+/// already made its source read-only. `directory` is a fresh folder for the
+/// queries' own records. Reads only.
+pub fn require_readable_boot_configuration(
+    directory: &Path,
+    budget: RecoveryBootBudget,
+) -> io::Result<()> {
+    budget.validate()?;
+    std::fs::create_dir(directory)?;
+    let tool = native::Tool::system(budget)?;
+    let wrap = |what: &str, error: io::Error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "the boot configuration cannot be read as this conversion needs it ({what}: {error}). `bcdedit` answers in the display language of Windows, and only its English output is understood: with another display language, switch to English (United States) for this account and start the conversion again. Nothing was changed."
+            ),
+        )
+    };
+    let bootmgr = tool
+        .enum_object(None, BOOTMGR, directory)
+        .map_err(|error| wrap("listing the boot manager entry", error))?;
+    selection(bootmgr).map_err(|error| wrap("reading the boot manager's selection", error))?;
+    let current = tool
+        .enum_object(None, "{current}", directory)
+        .map_err(|error| wrap("listing the entry of the running Windows", error))?;
+    one(&current, "identifier")
+        .map_err(|error| wrap("reading the entry of the running Windows", error))?;
+    tool.enum_object(None, FWBOOTMGR, directory)
+        .map_err(|error| wrap("listing the firmware boot manager entry", error))?;
+    Ok(())
 }
 
 /// In the running Windows: put the boot selection back for a run whose
@@ -418,13 +526,27 @@ pub fn cancel_recovery_boot_in_windows(
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<RecoveryBootCancellationReceipt> {
     budget.validate()?;
-    let found = read_records(selection, source, journal, budget)?;
+    let Some(found) = read_records(selection, source, journal, budget)? else {
+        // The installation writes its first record before it creates even a
+        // private entry. A run without that record has not touched the boot
+        // configuration, and the store is not read to say so: `bcdedit` may
+        // not be readable here at all (another display language), and a way
+        // back must not fail on a store it has nothing to do with.
+        return Ok(receipt(
+            RecoveryBootSelectionState::NotInstalled,
+            Vec::new(),
+            None,
+            Vec::new(),
+            None,
+            None,
+        ));
+    };
     metadata::fresh_external(records, source, journal, budget, events)?;
     let tool = native::Tool::system(budget)?;
     cancel_selection(
         &tool,
         None,
-        found.as_ref(),
+        &found,
         false,
         records,
         budget,
@@ -530,7 +652,7 @@ pub fn cancel_recovery_boot_in_recovery_environment(
     cancel_selection(
         &tool,
         Some(&efi.bcd_path),
-        Some(&found),
+        &found,
         true,
         records,
         budget,
@@ -570,6 +692,85 @@ mod tests {
     fn original() -> Selection {
         selection(fields(WINDOWS, &[WINDOWS, OTHER], "30")).unwrap()
     }
+    #[test]
+    fn a_run_without_boot_records_is_not_installed_and_the_store_is_not_read() {
+        let work = tempfile::tempdir().unwrap();
+        let disk = |number: u32, tag: &str| -> crate::general_layout::GeneralDiskBinding {
+            serde_json::from_value(serde_json::json!({
+                "disk_number":number,"volume_guid":format!("{tag}1111111-2222-3333-4444-555555555555"),
+                "identity":{"disk_guid":format!("{tag}aaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+                    "partition_guid":format!("{tag}1234567-89ab-cdef-0123-456789abcdef"),
+                    "partition_number":4,"disk_bytes":136365211648u64,
+                    "partition_offset":1048576u64,"partition_bytes":6442450944u64,
+                    "logical_sector_bytes":512,"physical_sector_bytes":4096}}))
+            .unwrap()
+        };
+        let source = PartitionSourceBinding {
+            storage: disk(0, "0"),
+        };
+        let journal = GeneralJournalStorageBinding {
+            disk: disk(1, "1"),
+            externally_enrolled_disk_unique_id: "partition-alpha-x".into(),
+            allow_additional_partitions: true,
+        };
+        let budget = RecoveryBootBudget {
+            ram_bytes: 64 << 20,
+            maximum_store_bytes: 1 << 20,
+            maximum_control_bytes: 1 << 20,
+            maximum_image_bytes: 1 << 20,
+            minimum_free_bytes: 1,
+            tool_timeout_milliseconds: 1000,
+        };
+        // No `boot\selection` folder at all, and one that is empty.
+        let records = work.path().join("cancel").join("boot");
+        for selection in [work.path().join("absent"), work.path().to_path_buf()] {
+            let mut events = Vec::new();
+            let receipt = cancel_recovery_boot_in_windows(
+                &selection,
+                &source,
+                &journal,
+                &records,
+                budget,
+                &mut events,
+            )
+            .unwrap();
+            assert_eq!(receipt.found, RecoveryBootSelectionState::NotInstalled);
+            assert!(receipt.restored_elements.is_empty() && receipt.records.is_none());
+            // Nothing was run and nothing was written: no native event, no
+            // folder of query records.
+            assert!(events.is_empty() && !records.exists());
+            assert_eq!(
+                observe_recovery_boot_in_windows(
+                    &selection,
+                    &source,
+                    &journal,
+                    &records,
+                    budget,
+                    &mut events
+                )
+                .unwrap(),
+                RecoveryBootSelectionState::NotInstalled
+            );
+        }
+        // A guard record without the one written before it is not "none".
+        std::fs::write(work.path().join("recovery-boot-guard-intent.json"), b"{}").unwrap();
+        let refusal = cancel_recovery_boot_in_windows(
+            work.path(),
+            &source,
+            &journal,
+            &records,
+            budget,
+            &mut Vec::new(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            refusal.contains("recovery-boot-guard-intent.json")
+                && refusal.contains("recovery-boot-original-intent.json"),
+            "{refusal}"
+        );
+    }
+
     fn elements(plan: &SelectionPlan) -> Vec<&'static str> {
         plan.restore.iter().map(|(field, _)| *field).collect()
     }

@@ -21,8 +21,8 @@ mod operational;
 pub use operational::{OperationalPartitionMetadata, PartitionOperationalTerminal};
 mod prepared_cancel;
 pub use prepared_cancel::{
-    PreparedSourceOrigin, PreparedSourceProtection, PreparedSourceReturn,
-    give_back_prepared_source_in_windows,
+    GPT_ATTRIBUTE_READ_ONLY, PreparedSourceOrigin, PreparedSourceProtection, PreparedSourceReturn,
+    give_back_prepared_source_in_windows, observe_partition_attributes,
 };
 pub(in crate::native) use prepared_cancel::{
     observe_returned_volume, require_returned_volume, restore_original_attributes,

@@ -33,8 +33,11 @@ const UNSEALED_JOURNAL: &str = "prepared/arena/selected.journal";
 const CANCELLED_KIND: &str = "ntfs2refs-restart-run-cancelled-v1";
 /// The lifecycle area of this route's journal: completion and intent granule.
 const LIFECYCLE_AREA_BYTES: u64 = 8192;
-/// A record of a run is read whole; none of them comes near this.
-const RECORD_LIMIT: u64 = 64 * 1024 * 1024;
+/// Held, unshared, by the one way back that is running for a run.
+const LOCK_RECORD: &str = "cancellation-in-progress.lock";
+/// The first record of a boot installation, written before the boot
+/// configuration is touched.
+const BOOT_FIRST_RECORD: &str = "boot/selection/recovery-boot-original-intent.json";
 
 /// What a run that can still be taken back is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -122,6 +125,9 @@ pub enum VolumeOutcome {
     NeverProtected,
     /// Still marked read-only: the cancellation is not complete.
     StillReadOnly,
+    /// No longer marked read-only, but not verified as the NTFS volume it
+    /// was: the give-back failed after it changed the partition's entry.
+    NotVerified,
 }
 /// What became of the boot selection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -154,6 +160,11 @@ pub struct CancelledRun {
     /// What could not be done, in the words it was refused with.
     #[serde(default)]
     pub unfinished: Vec<String>,
+    /// What the cancellation rests on beyond the ordinary, and what it
+    /// could not check or keep while it went on: nothing of that is left
+    /// unsaid.
+    #[serde(default)]
+    pub notes: Vec<String>,
     pub completed: bool,
 }
 impl CancelledRun {
@@ -174,6 +185,7 @@ impl CancelledRun {
             volume: VolumeOutcome::StillReadOnly,
             boot_selection: BootOutcome::Unsettled,
             unfinished: Vec::new(),
+            notes: Vec::new(),
             completed: false,
         }
     }
@@ -262,6 +274,10 @@ pub fn cancelled_lines(record: &CancelledRun, volume: &str, run: &Path) -> Vec<S
             "The conversion was cancelled before anything was written to the volume, but {volume} is still marked read-only. To finish the cancellation: {}",
             cancel_command(run)
         ),
+        VolumeOutcome::NotVerified => format!(
+            "The conversion was cancelled before anything was written to the volume. {volume} is no longer marked read-only, but it could not be verified as the NTFS volume it was. To check it and finish the cancellation: {}",
+            cancel_command(run)
+        ),
     };
     let mut lines = vec![first];
     match record.boot_selection {
@@ -274,6 +290,7 @@ pub fn cancelled_lines(record: &CancelledRun, volume: &str, run: &Path) -> Vec<S
             cancel_command(run)
         )),
     }
+    lines.extend(record.notes.iter().map(|note| format!("Note: {note}")));
     lines
 }
 
@@ -310,10 +327,18 @@ pub fn failure_with_way_back(
                 "{cause:#}; AND the volume could not be given back: it is still marked read-only. To try again: {}",
                 cancel_command(run)
             ),
+            VolumeOutcome::NotVerified => anyhow::anyhow!(
+                "{cause:#}; AND the volume is no longer marked read-only but could not be verified as the NTFS volume it was. To check it: {}",
+                cancel_command(run)
+            ),
         },
         Err(why) => match left.map(|record| record.volume) {
             Some(VolumeOutcome::GivenBack | VolumeOutcome::NeverProtected) => anyhow::anyhow!(
                 "{cause:#}; the volume is NTFS as it was, AND the cancellation could not be finished: {why:#}. To try again: {}",
+                cancel_command(run)
+            ),
+            Some(VolumeOutcome::NotVerified) => anyhow::anyhow!(
+                "{cause:#}; AND the volume is no longer marked read-only but could not be verified as the NTFS volume it was: {why:#}. To check it: {}",
                 cancel_command(run)
             ),
             _ => anyhow::anyhow!(
@@ -336,7 +361,18 @@ pub struct WayBackReport {
     pub boot: Option<RecoveryBootCancellationReceipt>,
 }
 
-fn read_record(path: &Path) -> Result<Option<Vec<u8>>> {
+/// How large a record of a run may be where nothing of the run has been
+/// read yet to say it: a sixty-fourth of the memory that is free. (The
+/// runner bounds the request it is started with the same way.) Records
+/// read after the admission are bounded by what the admission reserved.
+fn machine_record_limit(folder: &Path) -> Result<u64> {
+    Ok(
+        n2r_win32::resource_native::observe_available_resources(folder)?.available_physical_bytes
+            / 64,
+    )
+}
+
+fn read_record(path: &Path, limit: u64) -> Result<Option<Vec<u8>>> {
     let mut file = match OpenOptions::new().read(true).share_mode(1).open(path) {
         Ok(file) => file,
         Err(error) if matches!(error.raw_os_error(), Some(2 | 3)) => return Ok(None),
@@ -352,8 +388,8 @@ fn read_record(path: &Path) -> Result<Option<Vec<u8>>> {
         path.display()
     );
     ensure!(
-        metadata.len() <= RECORD_LIMIT,
-        "the run's record {} is {} bytes, more than any record of a run",
+        metadata.len() <= limit,
+        "the run's record {} is {} bytes, more than the {limit} bytes this run may hold of a record",
         path.display(),
         metadata.len()
     );
@@ -392,7 +428,11 @@ pub fn recognise_run(given: &Path) -> Result<Option<PathBuf>> {
             .map(Path::to_path_buf),
     );
     for run in candidates {
-        let Some(bytes) = read_record(&run.join(ADMISSION_RECORD))? else {
+        // A folder that is not there holds no record.
+        let Ok(limit) = machine_record_limit(&run) else {
+            continue;
+        };
+        let Some(bytes) = read_record(&run.join(ADMISSION_RECORD), limit)? else {
             continue;
         };
         let kind = serde_json::from_slice::<serde_json::Value>(&bytes)
@@ -411,7 +451,7 @@ pub fn recognise_run(given: &Path) -> Result<Option<PathBuf>> {
 
 fn read_admission(run: &Path) -> Result<Admission> {
     let path = run.join(ADMISSION_RECORD);
-    let bytes = read_record(&path)?
+    let bytes = read_record(&path, machine_record_limit(run)?)?
         .with_context(|| format!("the run folder {} has no admission record", run.display()))?;
     let admission: Admission = serde_json::from_slice(&bytes)
         .with_context(|| format!("decoding the run's admission record {}", path.display()))?;
@@ -469,15 +509,28 @@ impl BundleCore {
     }
 }
 
-/// The run's sealed preparation, if it has one. `pin` is the SHA-256 the
-/// boot request carries, where there is one.
+/// What is at the place of the run's sealed preparation.
+enum BundleRead {
+    /// No file.
+    Absent,
+    Sealed(Box<BundleCore>),
+    /// A file that is not a whole record: what its decoding said.
+    Undecodable(String),
+}
+
+/// Reads the run's sealed preparation. `pin` is the SHA-256 the boot
+/// request carries, where there is one. A file that is there and is another
+/// run's, another source's or says that something was written is an error;
+/// one that cannot be decoded at all is reported as such, for the caller to
+/// decide with what else the run left.
 fn read_bundle(
     path: &Path,
     pin: Option<&str>,
     source: &GeneralDiskBinding,
-) -> Result<Option<BundleCore>> {
-    let Some(bytes) = read_record(path)? else {
-        return Ok(None);
+    limit: u64,
+) -> Result<BundleRead> {
+    let Some(bytes) = read_record(path, limit)? else {
+        return Ok(BundleRead::Absent);
     };
     if let Some(pin) = pin {
         ensure!(
@@ -486,8 +539,10 @@ fn read_bundle(
             path.display()
         );
     }
-    let bundle: BundleFile = serde_json::from_slice(&bytes)
-        .with_context(|| format!("decoding the sealed preparation {}", path.display()))?;
+    let bundle: BundleFile = match serde_json::from_slice(&bytes) {
+        Ok(bundle) => bundle,
+        Err(error) => return Ok(BundleRead::Undecodable(error.to_string())),
+    };
     ensure!(
         bundle.schema_version == 1 && bundle.kind == BUNDLE_KIND,
         "the record {} is not a sealed preparation of this route",
@@ -503,7 +558,60 @@ fn read_bundle(
         "the sealed preparation {} does not say that nothing was written to the source",
         path.display()
     );
-    Ok(Some(bundle.core))
+    Ok(BundleRead::Sealed(Box::new(bundle.core)))
+}
+
+/// The record that shows a run got past its preparation, if it has one: its
+/// boot request (written from the sealed preparation) or the first record of
+/// its boot installation. Either exists only after the bundle was sealed.
+fn past_preparation(run: &Path) -> Result<Option<PathBuf>> {
+    for record in [REQUEST_RECORD, BOOT_FIRST_RECORD] {
+        let path = run.join(record);
+        match fs::symlink_metadata(&path) {
+            Ok(_) => return Ok(Some(path)),
+            Err(error) if matches!(error.raw_os_error(), Some(2 | 3)) => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("looking for the run's record {}", path.display()));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Decides what the place of the sealed preparation means. A missing file
+/// is never proof by itself: a run that got past its preparation must have
+/// its bundle, and without it nothing shows that the conversion never
+/// started. Only a run that left neither a boot request nor a boot record
+/// is taken as one whose preparation did not finish, and then an
+/// undecodable bundle (power lost while it was written) is that too, and
+/// said so in the note returned.
+fn admit_bundle(
+    read: BundleRead,
+    bundle: &Path,
+    past_preparation: Option<&Path>,
+) -> Result<(Option<BundleCore>, Option<String>)> {
+    match (read, past_preparation) {
+        (BundleRead::Sealed(core), _) => Ok((Some(*core), None)),
+        (BundleRead::Absent, None) => Ok((None, None)),
+        (BundleRead::Absent, Some(later)) => anyhow::bail!(
+            "the run's sealed preparation {} is missing, although {} shows that the run sealed one: without it, it cannot be shown that the conversion never started. Nothing was changed.",
+            bundle.display(),
+            later.display()
+        ),
+        (BundleRead::Undecodable(why), Some(later)) => anyhow::bail!(
+            "the run's sealed preparation {} cannot be decoded ({why}), although {} shows that the run sealed one: without it, it cannot be shown that the conversion never started. Nothing was changed.",
+            bundle.display(),
+            later.display()
+        ),
+        (BundleRead::Undecodable(why), None) => Ok((
+            None,
+            Some(format!(
+                "the sealed preparation {} cannot be decoded ({why}), as after a power loss while it was written; the run left neither a boot request nor a boot record, so it never got further, and it was taken back as a preparation that did not finish",
+                bundle.display()
+            )),
+        )),
+    }
 }
 
 /// What the journal shows, read with the sealed preparation where there is
@@ -561,7 +669,7 @@ fn journal_evidence(
 
 fn read_cancelled(run: &Path) -> Result<Option<CancelledRun>> {
     let path = run.join(CANCELLED_RECORD);
-    let Some(bytes) = read_record(&path)? else {
+    let Some(bytes) = read_record(&path, machine_record_limit(run)?)? else {
         return Ok(None);
     };
     let record: CancelledRun = serde_json::from_slice(&bytes)
@@ -574,44 +682,160 @@ fn read_cancelled(run: &Path) -> Result<Option<CancelledRun>> {
     Ok(Some(record))
 }
 
-/// The cancellation record of a run, if it has one. For the runner and for
-/// `--recover`: a run with this record is never applied.
+/// The cancellation record of a run, if it has one.
 pub fn cancellation_of(run: &Path) -> Result<Option<CancelledRun>> {
     read_cancelled(run)
 }
 
-/// Writes the record durably: a new file, synced, then put in place of the
-/// old one.
-fn write_cancelled(run: &Path, record: &CancelledRun) -> Result<()> {
-    let path = run.join(CANCELLED_RECORD);
-    let pending = run.join("cancelled.json.new");
-    let mut bytes = serde_json::to_vec_pretty(record)?;
-    bytes.push(b'\n');
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(&pending)
-        .with_context(|| format!("writing the cancellation record {}", pending.display()))?;
-    file.write_all(&bytes)?;
-    file.sync_all()?;
-    drop(file);
-    fs::rename(&pending, &path).with_context(|| {
-        format!(
-            "putting the cancellation record {} in place",
+/// Why a run must not be applied, resumed or finalized, if it must not: it
+/// has a cancellation record. A record that is there and cannot be read is
+/// a cancellation too: it is written only once a cancellation was decided,
+/// and what it would have said can only be less than "never apply".
+pub fn apply_forbidden(run: &Path) -> Option<String> {
+    match read_cancelled(run) {
+        Ok(None) => None,
+        Ok(Some(record)) => Some(record.refusal(run)),
+        Err(error) => Some(format!(
+            "this run has a cancellation record that cannot be read ({error:#}); a run whose cancellation was begun is never applied. To finish the cancellation: {}",
+            cancel_command(run)
+        )),
+    }
+}
+
+/// The record a cancellation was begun under, if one can be read. One that
+/// cannot is noted and begun anew: the way back goes on from the journal.
+fn begun_record(run: &Path, notes: &mut Vec<String>) -> Option<CancelledRun> {
+    match read_cancelled(run) {
+        Ok(record) => record,
+        Err(error) => {
+            notes.push(format!(
+                "an earlier cancellation record could not be read and was replaced: {error:#}"
+            ));
+            None
+        }
+    }
+}
+
+/// Held for the whole of a way back: one cancellation of a run at a time.
+/// The lock is a file in the run folder that its holder keeps open without
+/// sharing. A file left by a process that died can be opened, and is then
+/// taken over; one that cannot be opened is somebody's running way back.
+struct RunLock {
+    file: Option<File>,
+    path: PathBuf,
+}
+impl RunLock {
+    fn take(run: &Path) -> Result<Self> {
+        let path = run.join(LOCK_RECORD);
+        for _ in 0..2 {
+            match OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .share_mode(0)
+                .open(&path)
+            {
+                Ok(mut file) => {
+                    let _ = writeln!(file, "{} {}", std::process::id(), utc_text(now_unix_ms()));
+                    return Ok(Self {
+                        file: Some(file),
+                        path,
+                    });
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    match OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .share_mode(0)
+                        .open(&path)
+                    {
+                        // Nobody holds it: its holder is gone.
+                        Ok(stale) => {
+                            drop(stale);
+                            fs::remove_file(&path).with_context(|| {
+                                format!("removing the stale lock {}", path.display())
+                            })?;
+                        }
+                        Err(held) if held.raw_os_error() == Some(32) => anyhow::bail!(
+                            "a cancellation of this run is in progress (its lock {} is held): wait for it to end, then run the command again if the volume is not NTFS as it was. Nothing was changed.",
+                            path.display()
+                        ),
+                        Err(other) if matches!(other.raw_os_error(), Some(2 | 3)) => {}
+                        Err(other) => {
+                            return Err(other).with_context(|| {
+                                format!("opening the cancellation lock {}", path.display())
+                            });
+                        }
+                    }
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("creating the cancellation lock {}", path.display())
+                    });
+                }
+            }
+        }
+        anyhow::bail!(
+            "the cancellation lock {} could not be taken: it keeps reappearing. Nothing was changed.",
             path.display()
         )
-    })?;
-    // The folder's entry for it, too.
-    if let Ok(directory) = OpenOptions::new()
-        .access_mode(0x4000_0000)
-        .share_mode(3)
-        .custom_flags(0x0200_0000)
-        .open(run)
-    {
-        let _ = directory.sync_all();
     }
-    Ok(())
+}
+impl Drop for RunLock {
+    fn drop(&mut self) {
+        drop(self.file.take());
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+static PENDING_RECORD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Writes the record durably: a new file of its own name, synced, then put
+/// in place of the old one, and the folder's entry flushed. Every step's
+/// failure is an error: a record that may not be on the disk is not
+/// reported as written.
+fn write_cancelled(run: &Path, record: &CancelledRun) -> Result<()> {
+    let path = run.join(CANCELLED_RECORD);
+    let pending = run.join(format!(
+        "cancelled.json.{}-{}-{}.new",
+        std::process::id(),
+        now_unix_ms(),
+        PENDING_RECORD.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let mut bytes = serde_json::to_vec_pretty(record)?;
+    bytes.push(b'\n');
+    let written = (|| -> Result<()> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .share_mode(0)
+            .open(&pending)
+            .with_context(|| format!("creating {}", pending.display()))?;
+        file.write_all(&bytes)
+            .and_then(|()| file.sync_all())
+            .with_context(|| format!("writing {}", pending.display()))?;
+        drop(file);
+        fs::rename(&pending, &path).with_context(|| {
+            format!(
+                "putting {} in place of {}",
+                pending.display(),
+                path.display()
+            )
+        })?;
+        let directory = OpenOptions::new()
+            .access_mode(0x4000_0000)
+            .share_mode(3)
+            .custom_flags(0x0200_0000)
+            .open(run)
+            .with_context(|| format!("opening the folder {} to flush it", run.display()))?;
+        directory
+            .sync_all()
+            .with_context(|| format!("flushing the folder {}", run.display()))
+    })();
+    if written.is_err() {
+        let _ = fs::remove_file(&pending);
+    }
+    written.with_context(|| format!("writing the cancellation record {}", path.display()))
 }
 
 /// Checks the intent's own record of the source against what the sealed
@@ -648,9 +872,9 @@ fn require_pinned_origin(
 }
 
 /// The volume's label as the sealed preparation published it.
-fn published_label(core: &BundleCore) -> Result<VolumeLabel> {
+fn published_label(core: &BundleCore, limit: u64) -> Result<VolumeLabel> {
     let path = core.publication_route();
-    let bytes = read_record(&path)?.with_context(|| {
+    let bytes = read_record(&path, limit)?.with_context(|| {
         format!(
             "the sealed preparation's publication {} is absent",
             path.display()
@@ -661,7 +885,8 @@ fn published_label(core: &BundleCore) -> Result<VolumeLabel> {
         "the publication {} is not the one the sealed preparation names (its SHA-256 differs)",
         path.display()
     );
-    let publication: serde_json::Value = serde_json::from_slice(&bytes)?;
+    let publication: serde_json::Value = serde_json::from_slice(&bytes)
+        .with_context(|| format!("decoding the publication {}", path.display()))?;
     let label: VolumeLabel = serde_json::from_value(publication["expected_source_label"].clone())
         .with_context(|| {
         format!(
@@ -681,12 +906,23 @@ struct RunView {
     boot_budget: RecoveryBootBudget,
     bundle: Option<BundleCore>,
     state: UnappliedState,
+    /// What the decision rests on beyond the ordinary, for the record.
+    notes: Vec<String>,
 }
 
-fn view_run(run: &Path, bundle_path: &Path, bundle_pin: Option<&str>) -> Result<RunView> {
+/// `later` is the record that shows the run got past its preparation, if it
+/// left one: with it, the sealed preparation is required.
+fn view_run(
+    run: &Path,
+    bundle_path: &Path,
+    bundle_pin: Option<&str>,
+    later: Option<&Path>,
+) -> Result<RunView> {
     let admission = read_admission(run)?;
     let source = admission.preparation.expected_source.clone();
-    let bundle = read_bundle(bundle_path, bundle_pin, &source)?;
+    let evidence_bytes = admission.preparation.maximum_evidence_bytes;
+    let read = read_bundle(bundle_path, bundle_pin, &source, evidence_bytes)?;
+    let (bundle, note) = admit_bundle(read, bundle_path, later)?;
     let journal = journal_evidence(bundle.as_ref(), &run.join(UNSEALED_JOURNAL))?;
     let state = admit_cancellation(bundle.is_some(), journal).map_err(|refusal| {
         anyhow::anyhow!(
@@ -697,29 +933,53 @@ fn view_run(run: &Path, bundle_path: &Path, bundle_pin: Option<&str>) -> Result<
     Ok(RunView {
         source: PartitionSourceBinding { storage: source },
         observation: admission.preparation.observation_budget,
-        evidence_bytes: admission.preparation.maximum_evidence_bytes,
+        evidence_bytes,
         boot_budget: admission.boot_budget,
         bundle,
         state,
+        notes: note.into_iter().collect(),
     })
 }
 
-/// The SHA-256 of the sealed preparation that the run's boot request
-/// carries, and the working volume it names; absent before that request
-/// was written.
-fn request_pins(run: &Path) -> Result<Option<(String, GeneralJournalStorageBinding)>> {
+/// What the run's boot request pins: the SHA-256 of the sealed preparation,
+/// the working volume, and the folder the run was made in.
+struct RequestPins {
+    bundle_sha256: String,
+    journal: GeneralJournalStorageBinding,
+    output_parent: PathBuf,
+}
+
+/// Absent before the request was written. Read before the admission, so
+/// bounded by the machine.
+fn request_pins(run: &Path) -> Result<Option<RequestPins>> {
     let path = run.join(REQUEST_RECORD);
-    let Some(bytes) = read_record(&path)? else {
+    let Some(bytes) = read_record(&path, machine_record_limit(run)?)? else {
         return Ok(None);
     };
     let request: PreparedOfflineRequest = serde_json::from_slice(&bytes)
         .with_context(|| format!("decoding the run's boot request {}", path.display()))?;
-    Ok(Some((request.prepared_bundle_sha256, request.journal)))
+    Ok(Some(RequestPins {
+        bundle_sha256: request.prepared_bundle_sha256,
+        journal: request.journal,
+        output_parent: request.output_parent,
+    }))
+}
+
+/// Whether the folder at this volume route is the one a request records. A
+/// copy of a run's folder holds the same records and is not the run.
+fn same_folder(actual_route: &str, recorded: &Path) -> bool {
+    let recorded = recorded.to_string_lossy();
+    actual_route
+        .trim_end_matches('\\')
+        .eq_ignore_ascii_case(recorded.trim_end_matches('\\'))
 }
 
 /// The working volume a run folder lies on, bound as the preparation bound
-/// it.
-fn working_volume(run: &Path, source: &GeneralDiskBinding) -> Result<GeneralJournalStorageBinding> {
+/// it, and the folder's own route on it.
+fn working_volume(
+    run: &Path,
+    source: &GeneralDiskBinding,
+) -> Result<(GeneralJournalStorageBinding, String)> {
     let held = ordinary_directory(run)?;
     let guid = n2r_win32::file_storage::final_path_guid(
         held.first().context("the run folder could not be held")?,
@@ -750,6 +1010,37 @@ fn working_volume(run: &Path, source: &GeneralDiskBinding) -> Result<GeneralJour
         allow_additional_partitions: true,
     };
     journal.validate()?;
+    Ok((journal, guid))
+}
+
+/// In Windows: the run's folder is on the working volume its records name,
+/// and is the folder the run was made in.
+fn bind_run_folder(
+    run: &Path,
+    view: &RunView,
+    pins: Option<&RequestPins>,
+) -> Result<GeneralJournalStorageBinding> {
+    let (journal, route) = working_volume(run, &view.source.storage)?;
+    if let Some(core) = &view.bundle {
+        ensure!(
+            core.journal_binding == journal,
+            "the run folder {} is not on the working volume its preparation was sealed on. Nothing was changed.",
+            run.display()
+        );
+    }
+    if let Some(pins) = pins {
+        ensure!(
+            pins.journal == journal,
+            "the run folder {} is not on the working volume its boot request names. Nothing was changed.",
+            run.display()
+        );
+        ensure!(
+            same_folder(&route, &pins.output_parent),
+            "the folder {} is not the folder this run was made in ({}): a copy of a run's folder is not the run. Nothing was changed.",
+            run.display(),
+            pins.output_parent.display()
+        );
+    }
     Ok(journal)
 }
 
@@ -786,9 +1077,66 @@ fn before_change(observer: &Observer) -> impl FnMut(&[u8], &[u8]) -> io::Result<
     }
 }
 
+/// What is at the place of the run's intent file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IntentPresence {
+    Missing,
+    Empty,
+    Records,
+}
+
+/// Whether the intent file is to be read. A sealed run made its source
+/// read-only and recorded it: its intent file is required, and so it is in
+/// the recovery environment, which only a sealed run reaches. Only an
+/// unsealed run in Windows may be without one, and then the partition
+/// itself is asked (`require_not_read_only`).
+fn intent_is_read(
+    sealed: bool,
+    environment: CancelEnvironment,
+    presence: IntentPresence,
+    intent: &Path,
+) -> std::result::Result<bool, String> {
+    match presence {
+        IntentPresence::Records => Ok(true),
+        IntentPresence::Missing | IntentPresence::Empty
+            if sealed || environment == CancelEnvironment::RecoveryEnvironment =>
+        {
+            Err(format!(
+                "the run's intent file {} is {}, although its preparation was sealed after the partition was made read-only: the record of the partition's original state is gone, and the volume cannot be given back from this folder",
+                intent.display(),
+                if presence == IntentPresence::Missing {
+                    "missing"
+                } else {
+                    "empty"
+                }
+            ))
+        }
+        IntentPresence::Missing | IntentPresence::Empty => Ok(false),
+    }
+}
+
+/// A run without a record of having protected its partition is believed
+/// only together with the partition: it is not marked read-only.
+fn require_not_read_only(
+    attributes: u64,
+    partition: &GeneralDiskBinding,
+    intent: &Path,
+) -> std::result::Result<(), String> {
+    if attributes & n2r_win32::partition_restoration::GPT_ATTRIBUTE_READ_ONLY == 0 {
+        return Ok(());
+    }
+    Err(format!(
+        "partition {} of disk {} is marked read-only (its GPT attributes are {attributes:#x}), but the run's record of that ({}) is missing or empty: the folder does not say what the partition was before, so nothing was changed on it",
+        partition.identity.partition_number,
+        partition.disk_number,
+        intent.display()
+    ))
+}
+
 /// The source part of a way back, in either environment: the intent's
 /// records, checked against the sealed preparation where there is one, then
-/// the native give-back.
+/// the native give-back. `None` is a run that never protected its
+/// partition, which the partition itself confirmed.
 fn give_source_back(
     view: &RunView,
     intent: &Path,
@@ -796,25 +1144,42 @@ fn give_source_back(
     events: &mut Vec<NativeEvent>,
     environment: CancelEnvironment,
 ) -> Result<Option<PreparedSourceReturn>> {
-    let mut file = match OpenOptions::new().read(true).share_mode(1).open(intent) {
-        Ok(file) => file,
-        Err(error) if matches!(error.raw_os_error(), Some(2 | 3)) => return Ok(None),
+    let opened = match OpenOptions::new().read(true).share_mode(1).open(intent) {
+        Ok(file) => Some(file),
+        Err(error) if matches!(error.raw_os_error(), Some(2 | 3)) => None,
         Err(error) => {
             return Err(error)
                 .with_context(|| format!("opening the run's intent file {}", intent.display()));
         }
     };
-    if file.metadata()?.len() == 0 {
+    let presence = match &opened {
+        None => IntentPresence::Missing,
+        Some(file) if file.metadata()?.len() == 0 => IntentPresence::Empty,
+        Some(_) => IntentPresence::Records,
+    };
+    let read = intent_is_read(view.bundle.is_some(), environment, presence, intent)
+        .map_err(anyhow::Error::msg)?;
+    let Some(mut file) = opened.filter(|_| read) else {
         // The preparation writes its first record before it changes the
-        // partition: an empty file is a run that never did.
+        // partition. That the record is not there is not taken for it: the
+        // partition's entry is read, and must not be read-only.
+        let attributes = n2r_win32::partition_restoration::observe_partition_attributes(
+            &view.source,
+            view.observation,
+            events,
+        )?;
+        require_not_read_only(attributes, &view.source.storage, intent)
+            .map_err(anyhow::Error::msg)?;
         return Ok(None);
-    }
+    };
     let origin = PreparedSourceOrigin::read(&mut file, &view.source, view.observation.ram_bytes)
         .with_context(|| format!("reading the run's intent file {}", intent.display()))?;
     let label = match &view.bundle {
         Some(core) => {
             require_pinned_origin(&origin, core, intent)?;
-            Some(published_label(core)?)
+            // The publication is bounded as the runner bounds the bundle it
+            // belongs to: an eighth of the observation memory.
+            Some(published_label(core, view.observation.ram_bytes / 8)?)
         }
         None => None,
     };
@@ -851,6 +1216,37 @@ fn give_source_back(
     Ok(Some(returned))
 }
 
+/// What is true of the volume after its give-back failed: the partition's
+/// entry is read again. A give-back can fail after it changed the entry
+/// (the volume was not published in time, a check of it failed), and the
+/// record must not say "still read-only" of a partition that no longer is.
+fn volume_after_failure(
+    view: &RunView,
+    events: &mut Vec<NativeEvent>,
+) -> (VolumeOutcome, Option<String>) {
+    match n2r_win32::partition_restoration::observe_partition_attributes(
+        &view.source,
+        view.observation,
+        events,
+    ) {
+        Ok(attributes) => (volume_from_attributes(attributes), None),
+        Err(error) => (
+            VolumeOutcome::StillReadOnly,
+            Some(format!(
+                "whether partition {} of disk {} is still marked read-only could not be read after its give-back failed: {error}",
+                view.source.storage.identity.partition_number, view.source.storage.disk_number
+            )),
+        ),
+    }
+}
+fn volume_from_attributes(attributes: u64) -> VolumeOutcome {
+    if attributes & n2r_win32::partition_restoration::GPT_ATTRIBUTE_READ_ONLY == 0 {
+        VolumeOutcome::NotVerified
+    } else {
+        VolumeOutcome::StillReadOnly
+    }
+}
+
 fn boot_outcome(receipt: &RecoveryBootCancellationReceipt) -> BootOutcome {
     match receipt.found {
         RecoveryBootSelectionState::NotInstalled => BootOutcome::WasNotInstalled,
@@ -861,55 +1257,75 @@ fn boot_outcome(receipt: &RecoveryBootCancellationReceipt) -> BootOutcome {
     }
 }
 
+/// A step of a way back that keeps its records failed while the way back
+/// itself went on: said to the user and kept in the record, never dropped.
+fn note_failure<T, E: std::fmt::Display>(
+    record: &mut CancelledRun,
+    what: &str,
+    result: std::result::Result<T, E>,
+) {
+    if let Err(error) = result {
+        let note = format!("{what} failed: {error}");
+        eprintln!("Note: {note}");
+        record.notes.push(note);
+    }
+}
+
 /// In Windows: take a run back whose conversion never started. For a
 /// failure of the run itself (`cause`) and for `--recover --rollback`.
 ///
-/// In this order: the run's records decide that it can be taken back; the
+/// In this order: one cancellation at a time (the lock); the run's records
+/// decide that it can be taken back, and its folder is the run's; the
 /// decision is recorded; the partition gets its recorded GPT attributes
 /// back and is verified as the writable NTFS volume it was; the boot
 /// selection is put back from the run's records; the record is completed.
 /// A step that fails is recorded and ends the way back: nothing after it is
 /// changed.
 pub fn cancel_unapplied_run_in_windows(run: &Path, cause: Option<&str>) -> Result<WayBackReport> {
+    let _lock = RunLock::take(run)?;
     let pins = request_pins(run)?;
+    let later = past_preparation(run)?;
     let view = view_run(
         run,
         &run.join(BUNDLE_RECORD),
-        pins.as_ref().map(|(sha, _)| sha.as_str()),
+        pins.as_ref().map(|pins| pins.bundle_sha256.as_str()),
+        later.as_deref(),
     )?;
-    let begun = read_cancelled(run)?;
+    let journal = bind_run_folder(run, &view, pins.as_ref())?;
+    let mut notes = view.notes.clone();
+    let mut events = Vec::new();
+    let begun = begun_record(run, &mut notes);
     if let Some(record) = begun.as_ref().filter(|record| record.completed) {
-        return Ok(WayBackReport {
-            run: run.to_owned(),
-            partition: view.source.storage,
-            record: record.clone(),
-            already_cancelled: true,
-            source: None,
-            boot: None,
-        });
-    }
-    let journal = working_volume(run, &view.source.storage)?;
-    if let Some(core) = &view.bundle {
-        ensure!(
-            core.journal_binding == journal,
-            "the run folder {} is not on the working volume its preparation was sealed on",
-            run.display()
+        // A completed record is believed together with the partition: it is
+        // not marked read-only. One that is is taken up again.
+        let attributes = n2r_win32::partition_restoration::observe_partition_attributes(
+            &view.source,
+            view.observation,
+            &mut events,
         );
-    }
-    if let Some((_, requested)) = &pins {
-        ensure!(
-            *requested == journal,
-            "the run folder {} is not on the working volume its boot request names",
-            run.display()
-        );
+        if !matches!(attributes, Ok(attributes) if volume_from_attributes(attributes) == VolumeOutcome::StillReadOnly)
+        {
+            return Ok(WayBackReport {
+                run: run.to_owned(),
+                partition: view.source.storage,
+                record: record.clone(),
+                already_cancelled: true,
+                source: None,
+                boot: None,
+            });
+        }
+        notes.push(format!(
+            "the record said the cancellation was complete on {}, but the partition was found marked read-only, and the cancellation was taken up again",
+            record.cancelled_utc
+        ));
     }
     let mut record = match begun {
         Some(record) => record.taken_up_again(),
         None => CancelledRun::begin(view.state, CancelEnvironment::Windows, cause, now_unix_ms()),
     };
+    record.notes.extend(notes);
     write_cancelled(run, &record)?;
     let (folder, observer) = cancellation_folder(run, view.evidence_bytes)?;
-    let mut events = Vec::new();
     let source = give_source_back(
         &view,
         &run.join(INTENT_RECORD),
@@ -917,10 +1333,17 @@ pub fn cancel_unapplied_run_in_windows(run: &Path, cause: Option<&str>) -> Resul
         &mut events,
         CancelEnvironment::Windows,
     );
-    let _ = observer.checkpoint("way-back-source-closed", &mut events);
+    note_failure(
+        &mut record,
+        "keeping the native events of the volume's give-back",
+        observer.checkpoint("way-back-source-closed", &mut events),
+    );
     let source = match source {
         Ok(source) => source,
         Err(error) => {
+            let (volume, unread) = volume_after_failure(&view, &mut events);
+            record.volume = volume;
+            record.notes.extend(unread);
             record.unfinished.push(format!("{error:#}"));
             write_cancelled(run, &record)?;
             return Err(error);
@@ -941,7 +1364,11 @@ pub fn cancel_unapplied_run_in_windows(run: &Path, cause: Option<&str>) -> Resul
         &mut events,
     )
     .context("putting the boot selection back");
-    let _ = observer.checkpoint("way-back-boot-selection-closed", &mut events);
+    note_failure(
+        &mut record,
+        "keeping the native events of the boot selection's restoration",
+        observer.checkpoint("way-back-boot-selection-closed", &mut events),
+    );
     let boot = match boot {
         Ok(boot) => boot,
         Err(error) => {
@@ -951,15 +1378,21 @@ pub fn cancel_unapplied_run_in_windows(run: &Path, cause: Option<&str>) -> Resul
         }
     };
     record.boot_selection = boot_outcome(&boot);
+    record.notes.extend(boot.other_entries_not_compared.clone());
     record.unfinished.clear();
     record.completed = true;
-    write_cancelled(run, &record)?;
-    let _ = observer.lock().and_then(|mut ledger| {
+    let kept = observer.lock().and_then(|mut ledger| {
         ledger.record(
             &serde_json::json!({"kind":"restart-run-cancelled-in-windows-v1",
             "record":record,"source":source,"boot":boot}),
         )
     });
+    note_failure(
+        &mut record,
+        "keeping the cancellation's summary with its events",
+        kept,
+    );
+    write_cancelled(run, &record)?;
     Ok(WayBackReport {
         run: run.to_owned(),
         partition: view.source.storage,
@@ -973,14 +1406,16 @@ pub fn cancel_unapplied_run_in_windows(run: &Path, cause: Option<&str>) -> Resul
 /// What `--recover` without `--rollback` says of a run of this route. It
 /// changes nothing but a folder of its own query records.
 pub fn describe_run_in_windows(run: &Path) -> Result<Vec<String>> {
-    if let Some(record) = read_cancelled(run)? {
-        return Ok(vec![upper_first(&record.refusal(run))]);
+    if let Some(refusal) = apply_forbidden(run) {
+        return Ok(vec![upper_first(&refusal)]);
     }
     let pins = request_pins(run)?;
+    let later = past_preparation(run)?;
     let view = view_run(
         run,
         &run.join(BUNDLE_RECORD),
-        pins.as_ref().map(|(sha, _)| sha.as_str()),
+        pins.as_ref().map(|pins| pins.bundle_sha256.as_str()),
+        later.as_deref(),
     )?;
     let only_cancel = |what: &str| {
         vec![
@@ -993,9 +1428,10 @@ pub fn describe_run_in_windows(run: &Path) -> Result<Vec<String>> {
             "The preparation of this run did not finish, and its conversion cannot start.",
         ));
     }
-    let journal = working_volume(run, &view.source.storage)?;
+    let journal = bind_run_folder(run, &view, pins.as_ref())?;
     let folder = run.join(format!("status-{}-{}", now_unix_ms(), std::process::id()));
-    fs::create_dir(&folder)?;
+    fs::create_dir(&folder)
+        .with_context(|| format!("creating the folder {} for the query", folder.display()))?;
     let mut events = Vec::new();
     let state = n2r_win32::recovery_boot::observe_recovery_boot_in_windows(
         &run.join("boot").join("selection"),
@@ -1106,6 +1542,21 @@ enum ColdWayBack {
     Failed(anyhow::Error),
 }
 
+/// What the cold way back records of the volume. A record that was
+/// complete is never made less by a later pass that could not repeat a
+/// step: it keeps what it said, and the pass's failure is noted.
+fn merge_cold_volume(
+    was_complete: bool,
+    before: VolumeOutcome,
+    now: VolumeOutcome,
+) -> VolumeOutcome {
+    match (was_complete, now) {
+        (_, VolumeOutcome::GivenBack | VolumeOutcome::NeverProtected) => now,
+        (true, _) => before,
+        (false, _) => now,
+    }
+}
+
 fn cold_way_back(
     request: &PreparedOfflineRequest,
     held_ram_bootstrap: &mut File,
@@ -1113,7 +1564,7 @@ fn cold_way_back(
 ) -> std::result::Result<WayBackReport, ColdWayBack> {
     let mut events = Vec::new();
     // Until the working volume is reached, events are kept on the RAM disk.
-    let shown = (|| -> Result<(RunView, PathBuf, Observer, File)> {
+    let shown = (|| -> Result<(RunView, PathBuf, Observer, File, RunLock)> {
         let ram_directory = std::env::current_exe()?
             .parent()
             .context("the runner has no folder")?
@@ -1158,10 +1609,15 @@ fn cold_way_back(
             "the run folder {} is not on the working volume of the boot request",
             run.display()
         );
+        let lock = RunLock::take(&run)?;
+        // The request this Windows was started with was written from the
+        // sealed preparation: the bundle is required, whatever else is in
+        // the folder.
         let view = view_run(
             &run,
             &request.prepared_bundle,
             Some(&request.prepared_bundle_sha256),
+            Some(Path::new("the boot request this Windows was started with")),
         )?;
         ensure!(
             view.source == request.source
@@ -1173,14 +1629,22 @@ fn cold_way_back(
             run.display()
         );
         let (folder, observer) = cancellation_folder(&run, view.evidence_bytes)?;
-        Ok((view, folder, observer, volume))
+        Ok((view, folder, observer, volume, lock))
     })();
-    let (view, folder, observer, _volume) = shown.map_err(ColdWayBack::NotShown)?;
+    let (view, folder, observer, _volume, _lock) = shown.map_err(ColdWayBack::NotShown)?;
     let run = request.output_parent.clone();
     let failed = ColdWayBack::Failed;
-    let mut record = match read_cancelled(&run).map_err(failed)? {
-        // A cancellation that was begun, here or in Windows, is finished.
-        Some(record) => record.taken_up_again(),
+    let mut notes = view.notes.clone();
+    // A cancellation that was begun, here or in Windows, is finished under
+    // its own record; one that cannot be read is begun anew.
+    let begun = begun_record(&run, &mut notes);
+    let was_complete = begun.as_ref().is_some_and(|record| record.completed);
+    let volume_before = begun.as_ref().map(|record| record.volume);
+    let mut record = match begun {
+        Some(mut record) => {
+            record.unfinished.clear();
+            record
+        }
         None => CancelledRun::begin(
             view.state,
             CancelEnvironment::RecoveryEnvironment,
@@ -1188,6 +1652,7 @@ fn cold_way_back(
             now_unix_ms(),
         ),
     };
+    record.notes.extend(notes);
     write_cancelled(&run, &record).map_err(failed)?;
     let intent = view
         .bundle
@@ -1206,7 +1671,11 @@ fn cold_way_back(
         &mut events,
         CancelEnvironment::RecoveryEnvironment,
     );
-    let _ = observer.checkpoint("cold-way-back-source-closed", &mut events);
+    note_failure(
+        &mut record,
+        "keeping the native events of the volume's give-back",
+        observer.checkpoint("cold-way-back-source-closed", &mut events),
+    );
     let source = match source {
         Ok(source) => {
             record.volume = if source.is_some() {
@@ -1218,8 +1687,21 @@ fn cold_way_back(
         }
         Err(error) => {
             eprintln!("The volume could not be given back here: {error:#}");
-            record.volume = VolumeOutcome::StillReadOnly;
-            record.unfinished.push(format!("{error:#}"));
+            // What is true of the partition now, not what was attempted.
+            let (now, unread) = volume_after_failure(&view, &mut events);
+            record.volume = merge_cold_volume(
+                was_complete,
+                volume_before.unwrap_or(VolumeOutcome::StillReadOnly),
+                now,
+            );
+            record.notes.extend(unread);
+            if was_complete {
+                record.notes.push(format!(
+                    "a later pass could not repeat the volume's give-back: {error:#}"
+                ));
+            } else {
+                record.unfinished.push(format!("{error:#}"));
+            }
             None
         }
     };
@@ -1236,27 +1718,47 @@ fn cold_way_back(
         &mut events,
     )
     .context("putting the boot selection back");
-    let _ = observer.checkpoint("cold-way-back-boot-selection-closed", &mut events);
+    note_failure(
+        &mut record,
+        "keeping the native events of the boot selection's restoration",
+        observer.checkpoint("cold-way-back-boot-selection-closed", &mut events),
+    );
     let boot = match boot {
         Ok(boot) => boot,
         Err(error) => {
             record.unfinished.push(format!("{error:#}"));
-            let _ = write_cancelled(&run, &record);
-            return Err(ColdWayBack::Failed(error));
+            // The way back has failed either way; a record that could not
+            // be written as well is said with it.
+            return Err(ColdWayBack::Failed(match write_cancelled(&run, &record) {
+                Ok(()) => error,
+                Err(unwritten) => error.context(format!(
+                    "its record could not be written either: {unwritten:#}"
+                )),
+            }));
         }
     };
     record.boot_selection = BootOutcome::Restored;
-    record.completed = record.volume != VolumeOutcome::StillReadOnly;
+    record.notes.extend(boot.other_entries_not_compared.clone());
+    record.completed = was_complete
+        || matches!(
+            record.volume,
+            VolumeOutcome::GivenBack | VolumeOutcome::NeverProtected
+        );
     if record.completed {
         record.unfinished.clear();
     }
-    write_cancelled(&run, &record).map_err(failed)?;
-    let _ = observer.lock().and_then(|mut ledger| {
+    let kept = observer.lock().and_then(|mut ledger| {
         ledger.record(
             &serde_json::json!({"kind":"restart-run-cancelled-in-recovery-environment-v1",
             "record":record,"source":source,"boot":boot}),
         )
     });
+    note_failure(
+        &mut record,
+        "keeping the cancellation's summary with its events",
+        kept,
+    );
+    write_cancelled(&run, &record).map_err(failed)?;
     Ok(WayBackReport {
         run,
         partition: view.source.storage,
@@ -1378,7 +1880,13 @@ mod tests {
             read.refusal(&run),
             "this run was cancelled on 2026-11-18 14:03:22 UTC; the volume is NTFS as it was. A conversion is started again with a new run."
         );
-        assert!(!run.join("cancelled.json.new").exists());
+        assert!(fs::read_dir(&run).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".new")
+        }));
         // A cancellation that is taken up again keeps when and why it was
         // decided, and is unfinished until it ends.
         let mut stopped = read.clone();
@@ -1600,11 +2108,11 @@ mod tests {
     fn a_sealed_preparation_is_read_only_as_the_pinned_one_of_this_source() {
         let work = tempfile::tempdir().unwrap();
         let path = work.path().join("bundle.json");
-        assert!(read_bundle(&path, None, &source()).unwrap().is_none());
+        assert!(sealed(&path, None, &source()).unwrap().is_none());
         let bytes = bundle(work.path(), &source(), 16384);
         fs::write(&path, &bytes).unwrap();
         let pin = hex::encode(Sha256::digest(&bytes));
-        let core = read_bundle(&path, Some(&pin), &source()).unwrap().unwrap();
+        let core = sealed(&path, Some(&pin), &source()).unwrap().unwrap();
         assert_eq!(core.ticket.journal_length, 16384);
         // Its publication is found by its route on the working volume,
         // which does not depend on drive letters.
@@ -1617,10 +2125,7 @@ mod tests {
         // Another bundle than the boot request names, another source, a
         // bundle that says something was written: each is refused.
         let refused = |pin: Option<&str>, source: &GeneralDiskBinding| {
-            format!(
-                "{:#}",
-                read_bundle(&path, pin, source).err().expect("refused")
-            )
+            format!("{:#}", sealed(&path, pin, source).err().expect("refused"))
         };
         assert!(refused(Some(&"0".repeat(64)), &source()).contains("SHA-256 differs"));
         let mut other = source();
@@ -1640,7 +2145,7 @@ mod tests {
         let work = tempfile::tempdir().unwrap();
         let path = work.path().join("bundle.json");
         fs::write(&path, bundle(work.path(), &source(), 16384)).unwrap();
-        let core = read_bundle(&path, None, &source()).unwrap().unwrap();
+        let core = sealed(&path, None, &source()).unwrap().unwrap();
         let unsealed = work.path().join("unused.journal");
         // No journal where the sealed preparation says it is.
         assert_eq!(
@@ -1682,5 +2187,296 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(refusal.contains("12288 bytes"), "{refusal}");
+    }
+
+    fn sealed(
+        path: &Path,
+        pin: Option<&str>,
+        source: &GeneralDiskBinding,
+    ) -> Result<Option<BundleCore>> {
+        Ok(match read_bundle(path, pin, source, 1 << 20)? {
+            BundleRead::Absent => None,
+            BundleRead::Sealed(core) => Some(*core),
+            BundleRead::Undecodable(why) => panic!("undecodable: {why}"),
+        })
+    }
+
+    #[test]
+    fn a_missing_or_broken_bundle_is_never_proof_for_a_run_that_got_past_its_preparation() {
+        let work = tempfile::tempdir().unwrap();
+        let run = work.path();
+        let bundle_path = run.join("bundle.json");
+        // Nothing of the run but its folder: its preparation did not finish.
+        assert_eq!(past_preparation(run).unwrap(), None);
+        let (core, note) = admit_bundle(BundleRead::Absent, &bundle_path, None).unwrap();
+        assert!(core.is_none() && note.is_none());
+        // Its boot request, or the first record of its boot installation,
+        // shows that it sealed a preparation: then the bundle is required.
+        for later in [REQUEST_RECORD, BOOT_FIRST_RECORD] {
+            let record = run.join(later);
+            fs::create_dir_all(record.parent().unwrap()).unwrap();
+            fs::write(&record, b"{}").unwrap();
+            let shown = past_preparation(run)
+                .unwrap()
+                .expect("past its preparation");
+            assert_eq!(shown, record);
+            let refusal = admit_bundle(BundleRead::Absent, &bundle_path, Some(&shown))
+                .err()
+                .expect("refused")
+                .to_string();
+            assert!(
+                refusal.contains("bundle.json")
+                    && refusal.contains("is missing")
+                    && refusal.contains(&record.display().to_string())
+                    && refusal.contains("Nothing was changed"),
+                "{refusal}"
+            );
+            let refusal = admit_bundle(
+                BundleRead::Undecodable("EOF while parsing".into()),
+                &bundle_path,
+                Some(&shown),
+            )
+            .err()
+            .expect("refused")
+            .to_string();
+            assert!(
+                refusal.contains("cannot be decoded (EOF while parsing)")
+                    && refusal.contains("Nothing was changed"),
+                "{refusal}"
+            );
+            fs::remove_file(&record).unwrap();
+        }
+        // A bundle that was cut short while it was written, in a run that
+        // left nothing after it, is a preparation that did not finish, and
+        // the record is told why.
+        fs::write(&bundle_path, &bundle(run, &source(), 16384)[..200]).unwrap();
+        let read = read_bundle(&bundle_path, None, &source(), 1 << 20).unwrap();
+        assert!(matches!(read, BundleRead::Undecodable(_)));
+        let (core, note) = admit_bundle(read, &bundle_path, None).unwrap();
+        assert!(core.is_none());
+        let note = note.expect("noted");
+        assert!(
+            note.contains("bundle.json") && note.contains("power loss"),
+            "{note}"
+        );
+        // With the unsealed proof still to pass: the journal's lifecycle
+        // area. A cut-short bundle beside a marked journal is refused.
+        assert!(admit_cancellation(false, JournalEvidence::LifecycleAreaWritten).is_err());
+        // A record larger than this run may hold is not read at all.
+        let refusal = read_bundle(&bundle_path, None, &source(), 100)
+            .err()
+            .expect("refused")
+            .to_string();
+        assert!(refusal.contains("more than the 100 bytes"), "{refusal}");
+    }
+
+    #[test]
+    fn a_sealed_run_needs_its_intent_file_and_an_unsealed_one_a_partition_that_is_not_read_only() {
+        use CancelEnvironment::*;
+        use IntentPresence::*;
+        let intent = Path::new("E:\\run\\prepared\\control\\partition.intent");
+        assert_eq!(intent_is_read(true, Windows, Records, intent), Ok(true));
+        assert_eq!(intent_is_read(false, Windows, Records, intent), Ok(true));
+        // A sealed run protected its partition: without the record of what
+        // the partition was, it is refused, not taken for unprotected.
+        for (presence, word) in [(Missing, "is missing"), (Empty, "is empty")] {
+            for (sealed, environment) in [
+                (true, Windows),
+                (true, RecoveryEnvironment),
+                (false, RecoveryEnvironment),
+            ] {
+                let refusal = intent_is_read(sealed, environment, presence, intent).unwrap_err();
+                assert!(
+                    refusal.contains("partition.intent") && refusal.contains(word),
+                    "{refusal}"
+                );
+            }
+            // Only an unsealed run in Windows goes on, to ask the partition.
+            assert_eq!(intent_is_read(false, Windows, presence, intent), Ok(false));
+        }
+        let read_only = n2r_win32::partition_restoration::GPT_ATTRIBUTE_READ_ONLY;
+        assert_eq!(require_not_read_only(0, &source(), intent), Ok(()));
+        // Another attribute (no drive letter by default) is not this route's.
+        assert_eq!(
+            require_not_read_only(0x8000_0000_0000_0000, &source(), intent),
+            Ok(())
+        );
+        let refusal = require_not_read_only(read_only, &source(), intent).unwrap_err();
+        assert!(
+            refusal.contains("partition 4 of disk 0 is marked read-only")
+                && refusal.contains("0x1000000000000000")
+                && refusal.contains("partition.intent")
+                && refusal.contains("nothing was changed"),
+            "{refusal}"
+        );
+        // After a give-back that failed, the record says what the entry is.
+        assert_eq!(
+            volume_from_attributes(read_only),
+            VolumeOutcome::StillReadOnly
+        );
+        assert_eq!(volume_from_attributes(0), VolumeOutcome::NotVerified);
+    }
+
+    #[test]
+    fn a_copy_of_a_run_folder_is_not_the_run() {
+        let recorded = Path::new(
+            "\\\\?\\Volume{21111111-2222-3333-4444-555555555555}\\work\\partition-offline-conversion-0123",
+        );
+        assert!(same_folder(
+            "\\\\?\\Volume{21111111-2222-3333-4444-555555555555}\\work\\PARTITION-offline-conversion-0123\\",
+            recorded
+        ));
+        for other in [
+            "\\\\?\\Volume{21111111-2222-3333-4444-555555555555}\\copy\\partition-offline-conversion-0123",
+            "\\\\?\\Volume{31111111-2222-3333-4444-555555555555}\\work\\partition-offline-conversion-0123",
+            "\\\\?\\Volume{21111111-2222-3333-4444-555555555555}\\work",
+        ] {
+            assert!(!same_folder(other, recorded), "{other}");
+        }
+    }
+
+    #[test]
+    fn one_cancellation_of_a_run_at_a_time() {
+        let work = tempfile::tempdir().unwrap();
+        let run = work.path();
+        let held = RunLock::take(run).unwrap();
+        let refusal = RunLock::take(run).err().expect("refused").to_string();
+        assert!(
+            refusal.contains("a cancellation of this run is in progress")
+                && refusal.contains(LOCK_RECORD)
+                && refusal.contains("Nothing was changed"),
+            "{refusal}"
+        );
+        drop(held);
+        assert!(!run.join(LOCK_RECORD).exists());
+        // A lock left by a process that died is not held by anybody, and
+        // is taken over.
+        fs::write(run.join(LOCK_RECORD), b"4242 2026-11-18 14:03:22 UTC\n").unwrap();
+        let again = RunLock::take(run).unwrap();
+        assert!(RunLock::take(run).is_err());
+        drop(again);
+        // Two writers of the record never share a temporary file.
+        let mut record = CancelledRun::begin(
+            UnappliedState::PreparedClear,
+            CancelEnvironment::Windows,
+            None,
+            0,
+        );
+        std::thread::scope(|scope| {
+            for volume in [VolumeOutcome::GivenBack, VolumeOutcome::StillReadOnly] {
+                let mut record = record.clone();
+                scope.spawn(move || {
+                    for _ in 0..50 {
+                        record.volume = volume;
+                        // (Unlocked on purpose: either order may win a
+                        // rename, and one may be refused while the other
+                        // holds the file; what is in place always decodes.)
+                        let _ = write_cancelled(run, &record);
+                        if let Ok(Some(read)) = read_cancelled(run) {
+                            assert_eq!(read.kind, CANCELLED_KIND);
+                        }
+                    }
+                });
+            }
+        });
+        record.completed = true;
+        write_cancelled(run, &record).unwrap();
+        assert_eq!(read_cancelled(run).unwrap(), Some(record));
+        let left: Vec<_> = fs::read_dir(run)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".new"))
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
+    }
+
+    #[test]
+    fn a_cancellation_record_that_cannot_be_read_still_forbids_the_run() {
+        let work = tempfile::tempdir().unwrap();
+        let run = work.path();
+        // No record: nothing forbids the run.
+        assert_eq!(apply_forbidden(run), None);
+        let mut notes = Vec::new();
+        assert_eq!(begun_record(run, &mut notes), None);
+        assert!(notes.is_empty());
+        // A record cut short, or of another kind: the runner never applies,
+        // and is told how the cancellation is finished; the way back begins
+        // a record anew and notes that it did.
+        for broken in [
+            &b"{\"schema_version\":1,\"kind\":\"ntfs2refs-restart-ru"[..],
+            b"{}",
+            b"",
+        ] {
+            fs::write(run.join(CANCELLED_RECORD), broken).unwrap();
+            let refusal = apply_forbidden(run).expect("forbidden");
+            assert!(
+                refusal.contains("cannot be read")
+                    && refusal.contains("never applied")
+                    && refusal.contains("--rollback"),
+                "{refusal}"
+            );
+            let mut notes = Vec::new();
+            assert_eq!(begun_record(run, &mut notes), None);
+            assert_eq!(notes.len(), 1, "{notes:?}");
+            assert!(notes[0].contains("could not be read and was replaced"));
+        }
+        // A readable one forbids it in its own words.
+        let record = CancelledRun::begin(
+            UnappliedState::PreparedClear,
+            CancelEnvironment::Windows,
+            None,
+            0,
+        );
+        write_cancelled(run, &record).unwrap();
+        assert_eq!(apply_forbidden(run), Some(record.refusal(run)));
+    }
+
+    #[test]
+    fn a_record_that_was_complete_is_not_made_less_and_what_was_skipped_is_said() {
+        use VolumeOutcome::*;
+        // A later pass in the recovery environment that cannot repeat the
+        // give-back leaves a complete record's volume as it was written.
+        assert_eq!(merge_cold_volume(true, GivenBack, StillReadOnly), GivenBack);
+        assert_eq!(merge_cold_volume(true, GivenBack, NotVerified), GivenBack);
+        assert_eq!(merge_cold_volume(true, StillReadOnly, GivenBack), GivenBack);
+        // An unfinished one takes what is true now.
+        assert_eq!(
+            merge_cold_volume(false, StillReadOnly, NotVerified),
+            NotVerified
+        );
+        assert_eq!(
+            merge_cold_volume(false, NotVerified, StillReadOnly),
+            StillReadOnly
+        );
+        // What a way back could not check or keep is said with the outcome.
+        let run = Path::new("E:\\work\\partition-offline-conversion-0123");
+        let mut told = record(GivenBack, BootOutcome::Restored);
+        told.notes.push(
+            "the entries of the system's boot configuration store could not be listed whole, so it was not checked that no other entry changed: unsupported heading".into(),
+        );
+        let lines = cancelled_lines(&told, "D:", run);
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert!(
+            lines[2].starts_with("Note: ")
+                && lines[2].contains("not checked that no other entry changed"),
+            "{lines:?}"
+        );
+        // A partition that is no longer read-only but was not verified is
+        // not called read-only, and not called NTFS as it was either.
+        let unverified = cancelled_lines(&record(NotVerified, BootOutcome::Restored), "D:", run);
+        assert!(
+            unverified[0].contains("D: is no longer marked read-only")
+                && unverified[0].contains("could not be verified")
+                && unverified[0].contains("--rollback"),
+            "{unverified:?}"
+        );
+        // A record-keeping step that failed is a note; one that did not is
+        // nothing.
+        note_failure::<(), _>(&mut told, "keeping the native events", Err("disk full"));
+        note_failure(&mut told, "nothing", Ok::<_, String>(()));
+        assert_eq!(
+            told.notes.last().map(String::as_str),
+            Some("keeping the native events failed: disk full")
+        );
     }
 }

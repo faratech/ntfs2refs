@@ -240,7 +240,12 @@ pub fn open_journal_volume_for_cancellation(
             }
         }
     }
-    let volume = opened.ok_or_else(|| invalid("the working volume was not published"))?;
+    let volume = opened.ok_or_else(|| {
+        invalid(&format!(
+            "the working volume {path} (partition {} of disk {}) was not published after its disk came online",
+            journal.disk.identity.partition_number, journal.disk.disk_number
+        ))
+    })?;
     let device = control(
         &volume,
         "cancel-J-volume-native-device",
@@ -307,7 +312,10 @@ pub fn give_back_prepared_source_offline(
     let facts = source_facts(&mut physical, &binding, budget, events)?;
     require(
         facts.disk_attributes == 0,
-        "the source's disk is not online and writable",
+        &format!(
+            "disk {} (the source's) is not online and writable after it was made available: its attributes are {}",
+            binding.storage.disk_number, facts.disk_attributes
+        ),
     )?;
     let guid = layout::guid_bytes(&binding.storage.identity.partition_guid)?;
     let rows: Vec<_> = facts.gpt.native_layout[48..]
@@ -316,7 +324,12 @@ pub fn give_back_prepared_source_offline(
         .collect();
     require(
         rows.len() == 1,
-        "the source partition is not unique on its disk",
+        &format!(
+            "disk {} holds {} partitions with the identifier {} of the source partition, not one",
+            binding.storage.disk_number,
+            rows.len(),
+            binding.storage.identity.partition_guid
+        ),
     )?;
     let found = origin.classify(rows[0])?;
     drain(observer, "cancel-offline-source-classified", events)?;
@@ -353,15 +366,40 @@ pub fn give_back_prepared_source_offline(
                     Err(error) if error.kind() == io::ErrorKind::NotFound && attempt < 59 => {
                         std::thread::sleep(std::time::Duration::from_millis(250));
                     }
-                    Err(error) => return Err(error),
+                    Err(error) => {
+                        return Err(io::Error::new(
+                            error.kind(),
+                            format!(
+                                "looking for the read-only volume of partition {} of disk {}: {error}",
+                                binding.storage.identity.partition_number,
+                                binding.storage.disk_number
+                            ),
+                        ));
+                    }
                 }
             }
-            let (mounted_binding, volume) =
-                mounted.ok_or_else(|| invalid("the read-only source volume was not published"))?;
-            let before = observe_returned_volume(&volume, events)?;
+            let named = format!(
+                "partition {} of disk {}",
+                binding.storage.identity.partition_number, binding.storage.disk_number
+            );
+            let (mounted_binding, volume) = mounted.ok_or_else(|| {
+                invalid(&format!(
+                    "the read-only volume of {named} was not published after its disk came online"
+                ))
+            })?;
+            let before = observe_returned_volume(&volume, events).map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("reading the read-only volume of {named}: {error}"),
+                )
+            })?;
             require(
                 before.filesystem == "NTFS" && !before.writable,
-                "the read-only source does not mount as write-protected NTFS",
+                &format!(
+                    "the read-only volume of {named} mounts as {}{}, not as write-protected NTFS",
+                    before.filesystem,
+                    if before.writable { ", writable" } else { "" }
+                ),
             )?;
             drop(volume);
             // One handle on the selected volume for lock, dismount and the

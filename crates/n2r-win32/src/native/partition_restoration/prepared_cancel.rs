@@ -311,6 +311,42 @@ impl PreparedSourceOrigin {
     }
 }
 
+/// The GPT read-only attribute a run of the restart route sets.
+pub const GPT_ATTRIBUTE_READ_ONLY: u64 = RO;
+
+/// The GPT attributes the partition has now, read from the layout of its
+/// disk by its place and identifier. Reads only. For a way back that has no
+/// record of the partition's protection: it must not say "never protected"
+/// of a partition that is marked read-only.
+pub fn observe_partition_attributes(
+    binding: &PartitionSourceBinding,
+    budget: PartitionObservationBudget,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<u64> {
+    binding.validate()?;
+    budget.validate()?;
+    let named = format!(
+        "partition {} of disk {}",
+        binding.storage.identity.partition_number, binding.storage.disk_number
+    );
+    let (info, _) =
+        super::partition_storage_roles::selected_from_physical_layout(binding, budget, events)
+            .map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("reading the GPT entry of {named}: {error}"),
+                )
+            })?;
+    need(
+        info.len() == 144
+            && info[48..64] == crate::layout::guid_bytes(&binding.storage.identity.partition_guid)?
+            && crate::layout::u64_at(&info, 8)? == binding.storage.identity.partition_offset
+            && crate::layout::u64_at(&info, 16)? == binding.storage.identity.partition_bytes,
+        &format!("the GPT entry read for {named} is not the recorded partition's"),
+    )?;
+    crate::layout::u64_at(&info, 64)
+}
+
 /// The serial number in the recorded NTFS boot sector, read from the disk
 /// after its SHA-256 was found to be the recorded one.
 pub(in crate::native) fn read_ntfs_serial(origin: &PreparedSourceOrigin) -> io::Result<u64> {
@@ -374,7 +410,10 @@ pub(in crate::native) fn restore_original_attributes(
             144,
             events,
         )? == origin.protected_info,
-        "the handle for the change names another partition or state than the read-only one",
+        &format!(
+            "the handle opened to change partition {} of disk {} names another partition, or one that is not the recorded read-only entry",
+            origin.binding.storage.identity.partition_number, origin.binding.storage.disk_number
+        ),
     )?;
     before_change(&origin.protected_info, &origin.original_info)?;
     if retire_filesystem {
@@ -382,9 +421,23 @@ pub(in crate::native) fn restore_original_attributes(
             (LOCK, "prepared-cancel-readonly-filesystem-LOCK"),
             (DISMOUNT, "prepared-cancel-readonly-filesystem-DISMOUNT"),
         ] {
+            let reply = control(&management, phase, code, &[], 0, events).map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!(
+                        "{phase} on the read-only volume of partition {} of disk {}: {error}",
+                        origin.binding.storage.identity.partition_number,
+                        origin.binding.storage.disk_number
+                    ),
+                )
+            })?;
             need(
-                control(&management, phase, code, &[], 0, events)?.is_empty(),
-                "locking or dismounting the read-only file system returned unexpected data",
+                reply.is_empty(),
+                &format!(
+                    "{phase} on the read-only volume of partition {} of disk {} returned unexpected data",
+                    origin.binding.storage.identity.partition_number,
+                    origin.binding.storage.disk_number
+                ),
             )?;
         }
         need(
@@ -396,21 +449,35 @@ pub(in crate::native) fn restore_original_attributes(
                 144,
                 events,
             )? == origin.protected_info,
-            "the partition changed while its read-only file system was dismounted",
+            &format!(
+                "partition {} of disk {} changed while its read-only file system was dismounted",
+                origin.binding.storage.identity.partition_number,
+                origin.binding.storage.disk_number
+            ),
         )?;
     }
     let mut input = [0u8; 120];
     input[..4].copy_from_slice(&1u32.to_le_bytes());
     input[8..120].copy_from_slice(&origin.original_info[32..144]);
+    let named = format!(
+        "partition {} of disk {}",
+        origin.binding.storage.identity.partition_number, origin.binding.storage.disk_number
+    );
     let reply = control_set_gpt_partition(
         &management,
         "prepared-cancel-SET_PARTITION_INFO_EX-once",
         &input,
         events,
-    )?;
+    )
+    .map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("setting the recorded original GPT entry of {named}: {error}"),
+        )
+    })?;
     need(
         reply.is_empty(),
-        "the partition setter returned unexpected data",
+        &format!("setting the recorded original GPT entry of {named} returned unexpected data"),
     )?;
     need(
         control(
@@ -421,7 +488,7 @@ pub(in crate::native) fn restore_original_attributes(
             144,
             events,
         )? == origin.original_info,
-        "the partition does not read back as the recorded original after the change",
+        &format!("{named} does not read back as the recorded original after its GPT entry was set"),
     )?;
     drop(management);
     origin.require_gpt(PreparedSourceProtection::Original, &observe(events)?)?;

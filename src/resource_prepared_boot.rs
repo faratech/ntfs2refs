@@ -413,6 +413,15 @@ pub fn prepare_and_arm_shared_conversion(
         }),
         request.maximum_evidence_bytes,
     )?;
+    // Before anything is changed: the boot configuration can be read the
+    // way the installation of the boot selection, and every way back, will
+    // have to read it. (`bcdedit` answers in the display language of
+    // Windows; the installation found that out only after the long
+    // preparation, with the source already read-only.)
+    n2r_win32::recovery_boot::require_readable_boot_configuration(
+        &output.join("boot-readable"),
+        boot_budget,
+    )?;
     // From here on the run has a folder and its admission record, and a
     // failure is not left as it falls: whatever the run did to the source
     // and to the boot selection is taken back from its own records, and the

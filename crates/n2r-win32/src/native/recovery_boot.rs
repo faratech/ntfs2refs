@@ -23,7 +23,7 @@ mod offreg;
 pub use cancel::{
     RecoveryBootCancellationReceipt, RecoveryBootSelectionState,
     cancel_recovery_boot_in_recovery_environment, cancel_recovery_boot_in_windows,
-    observe_recovery_boot_in_windows,
+    observe_recovery_boot_in_windows, require_readable_boot_configuration,
 };
 pub use cold::{RecoveryBootGuard, RecoveryBootGuardFacts, RecoveryBootRestorationReceipt};
 use metadata::{EfiIdentity, StorePin};

@@ -44,6 +44,8 @@ pub use prepared_runner::{
     PreparedOfflineAction, PreparedOfflineRequest, finalize_closed_boot_only,
     recover_current_interruption_only, run_prepared_offline,
 };
+#[path = "resource_prepared_way_back.rs"]
+mod way_back;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
@@ -51,6 +53,12 @@ use std::{
     os::windows::fs::{MetadataExt, OpenOptionsExt},
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
+};
+pub use way_back::{
+    CANCELLED_RECORD, CancelledRun, PreparedOfflineOutcome, WayBackReport,
+    after_failure_in_windows, apply_forbidden, before_restart_lines, cancel_command,
+    cancel_unapplied_run_in_windows, cancellation_of, cancelled_lines, describe_run_in_windows,
+    recognise_run, working_files_line,
 };
 
 /// Fixed reservation for the experimental owning-machine worker. This is a
@@ -782,8 +790,11 @@ fn run_inner(
             Ok(owned) => owned,
             Err(failure) => {
                 if prepare_only {
-                    return Err(anyhow::anyhow!(format!("{:#}",failure.cause())).context(
-                    "Windows prepare-only refused; preserve actual source protection and all artifacts"));
+                    // The cause as it is. What becomes of the source is
+                    // not said here: the caller takes the run back and
+                    // says what it did (`way_back`).
+                    return Err(anyhow::anyhow!(format!("{:#}", failure.cause()))
+                        .context("the preparation of the conversion failed"));
                 }
                 let original = anyhow::anyhow!(format!("{:#}", failure.cause()));
                 let mut cancellation_observer = observer.clone();
@@ -937,8 +948,15 @@ fn run_inner(
             let message = format!("{error:#}");
             let _=observer.lock().and_then(|mut l|l.record(
             &serde_json::json!({"kind":"partition-alpha-actual-error","success":false,"error":message})));
-            Err(error
-                .context("conversion stopped; preserve this run and actual source/recovery state"))
+            if prepare_only {
+                // A preparation for a restart: its caller takes the run back
+                // and says what became of the volume after this cause.
+                Err(error)
+            } else {
+                Err(error.context(
+                    "conversion stopped; preserve this run and actual source/recovery state",
+                ))
+            }
         }
     }
 }

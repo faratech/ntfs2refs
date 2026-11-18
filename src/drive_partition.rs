@@ -270,6 +270,88 @@ fn automatic(
     })
 }
 
+/// How a volume is named to its user: its drive letter, or else the
+/// partition it is.
+fn volume_name(partition: &GeneralDiskBinding) -> String {
+    let named = n2r_win32::drive_inventory::inventory_drives_readonly()
+        .ok()
+        .and_then(|inventory| {
+            inventory
+                .disks
+                .into_iter()
+                .filter(|disk| disk.disk_number == partition.disk_number)
+                .flat_map(|disk| disk.partitions)
+                .find(|found| found.partition_number == partition.identity.partition_number)
+        })
+        .and_then(|found| {
+            found.mount_paths.into_iter().find(|path| {
+                path.len() == 3 && path.as_bytes()[0].is_ascii_alphabetic() && path.ends_with(":\\")
+            })
+        });
+    match named {
+        Some(letter) => letter[..2].to_owned(),
+        None => format!(
+            "Partition {} of disk {}",
+            partition.identity.partition_number, partition.disk_number
+        ),
+    }
+}
+
+/// What a cancelled run of the restart route says: what happened, and what
+/// it left in its folder.
+fn say_cancelled(report: &resource_partition_alpha::WayBackReport) {
+    let name = volume_name(&report.partition);
+    for line in resource_partition_alpha::cancelled_lines(&report.record, &name, &report.run) {
+        println!("{line}");
+    }
+    let (files, bytes, disks) = super::resource::left_behind(&report.run);
+    if files > 0 {
+        println!(
+            "{}",
+            resource_partition_alpha::working_files_line(&report.run, bytes)
+        );
+        // The volume the run built may still be attached; the existing
+        // words for that, where there is such a file.
+        if !disks.is_empty() {
+            for line in super::resource::left_behind_lines(&report.run, files, bytes, &disks)
+                .into_iter()
+                .skip(1)
+            {
+                println!("{line}");
+            }
+        }
+    }
+}
+
+/// `--recover <folder>` for a run that restarts the machine. Without
+/// `--rollback` it says where the run stands; with it, the run is cancelled
+/// if nothing of its conversion was written, and refused otherwise.
+pub(super) fn recover_restart_run(run: &Path, rollback: bool) -> Result<u8> {
+    if !rollback {
+        for line in resource_partition_alpha::describe_run_in_windows(run)? {
+            println!("{line}");
+        }
+        return Ok(0);
+    }
+    println!(
+        "This cancels the conversion that was prepared in {}: the volume is made writable NTFS again, as it was, and the machine's boot selection is put back. It is possible only while nothing of the conversion has been written to the volume, which is checked first.",
+        run.display()
+    );
+    if !windows::confirm("Cancel this conversion? [y/N]")? {
+        println!("Nothing was changed.");
+        return Ok(0);
+    }
+    let report = resource_partition_alpha::cancel_unapplied_run_in_windows(run, None)?;
+    if report.already_cancelled {
+        println!(
+            "This run was already cancelled on {}.",
+            report.record.cancelled_utc
+        );
+    }
+    say_cancelled(&report);
+    Ok(0)
+}
+
 pub(super) fn convert(
     args: &DriveArgs,
     selected: PartitionSelection,

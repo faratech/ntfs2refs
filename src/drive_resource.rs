@@ -646,7 +646,7 @@ pub(super) fn recover_preparation_in_workspace(
 /// size, and the virtual disks among them, which Windows may still have
 /// attached. Links and mount points are not followed, and what cannot be
 /// read is not counted: this is said to the user, not relied on.
-fn left_behind(run: &Path) -> (u64, u64, Vec<PathBuf>) {
+pub(super) fn left_behind(run: &Path) -> (u64, u64, Vec<PathBuf>) {
     let (mut files, mut bytes, mut disks) = (0u64, 0u64, Vec::new());
     let mut pending = vec![run.to_path_buf()];
     while let Some(directory) = pending.pop() {
@@ -680,7 +680,12 @@ fn left_behind(run: &Path) -> (u64, u64, Vec<PathBuf>) {
 }
 
 /// What a cancellation says of them.
-fn left_behind_lines(run: &Path, files: u64, bytes: u64, disks: &[PathBuf]) -> Vec<String> {
+pub(super) fn left_behind_lines(
+    run: &Path,
+    files: u64,
+    bytes: u64,
+    disks: &[PathBuf],
+) -> Vec<String> {
     if files == 0 {
         return Vec::new();
     }

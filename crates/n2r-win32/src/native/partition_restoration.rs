@@ -19,6 +19,15 @@ mod basic_ro;
 pub use basic_ro::PartitionBasicReadonlyTerminal;
 mod operational;
 pub use operational::{OperationalPartitionMetadata, PartitionOperationalTerminal};
+mod prepared_cancel;
+pub use prepared_cancel::{
+    GPT_ATTRIBUTE_READ_ONLY, PreparedSourceOrigin, PreparedSourceProtection, PreparedSourceReturn,
+    give_back_prepared_source_in_windows, observe_partition_attributes,
+};
+pub(in crate::native) use prepared_cancel::{
+    observe_returned_volume, require_returned_volume, restore_original_attributes,
+    wait_original_volume,
+};
 
 // Actual terminal metadata only: no private-owner/admission/loaded flags.
 struct TerminalMetadataBaseline {
@@ -2254,6 +2263,37 @@ fn validate_origin_layout(
     observed: &partition_isolation::PartitionIsolationObservation,
 ) -> io::Result<()> {
     let g = &origin.original_gpt;
+    need(
+        original_gpt_sha256(g)?
+            == digest(
+                &origin.scope["complete_preparation_guard"],
+                "original_gpt_sha256",
+            )?,
+        "original complete GPT pin differs",
+    )?;
+    require_gpt_from_original(g, binding, current_info, &observed.gpt)
+}
+
+/// The pin of a recorded original GPT: headers, entries and the native layout.
+fn original_gpt_sha256(g: &Value) -> io::Result<[u8; 32]> {
+    let mut full = Sha256::new();
+    full.update(json_bytes(&g["primary_header"])?);
+    full.update(json_bytes(&g["entries"])?);
+    full.update(json_bytes(&g["backup_header"])?);
+    full.update(json_bytes(&g["native_layout"])?);
+    Ok(full.finalize().into())
+}
+
+/// The disk's GPT is the recorded original one in everything but the
+/// target's type and attributes, which are those of `current_info`, and the
+/// checksums that follow from them: no sibling, unused entry or native row
+/// differs.
+fn require_gpt_from_original(
+    g: &Value,
+    binding: &PartitionSourceBinding,
+    current_info: &[u8],
+    actual: &partition_isolation::PartitionGptObservation,
+) -> io::Result<()> {
     let mut entries = json_bytes(&g["entries"])?;
     let width = num_field(g, "entry_bytes")? as usize;
     let slot = num_field(g, "target_slot")? as usize;
@@ -2265,23 +2305,13 @@ fn validate_origin_layout(
         width >= 128 && at.checked_add(width).is_some_and(|e| e <= entries.len()),
         "original target slot out of bounds",
     )?;
-    let original_entries = entries.clone();
+    need(
+        current_info.len() == 144,
+        "current native partition info width differs",
+    )?;
     let primary = json_bytes(&g["primary_header"])?;
     let backup = json_bytes(&g["backup_header"])?;
     let original_native = json_bytes(&g["native_layout"])?;
-    let mut full = Sha256::new();
-    full.update(&primary);
-    full.update(&original_entries);
-    full.update(&backup);
-    full.update(&original_native);
-    need(
-        <[u8; 32]>::from(full.finalize())
-            == digest(
-                &origin.scope["complete_preparation_guard"],
-                "original_gpt_sha256",
-            )?,
-        "original complete GPT pin differs",
-    )?;
     entries[at..at + 16].copy_from_slice(&current_info[32..48]);
     entries[at + 48..at + 56].copy_from_slice(&current_info[64..72]);
     let mut native = original_native;
@@ -2291,8 +2321,7 @@ fn validate_origin_layout(
         .filter(|a| *a + 144 <= native.len() && native[*a + 48..*a + 64] == guid)
         .collect();
     need(offsets.len() == 1, "original native target is not unique")?;
-    native[offsets[0]..offsets[0] + 144].copy_from_slice(&current_info);
-    let actual = &observed.gpt;
+    native[offsets[0]..offsets[0] + 144].copy_from_slice(current_info);
     need(
         actual.entries == entries
             && actual.primary_header == header(&primary, &entries)?

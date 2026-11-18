@@ -172,6 +172,8 @@ impl ResourceSourceContext {
         available.validate_budget(budget)?;
         ensure!(!output.exists(), "fresh partition source output required");
         guard.protect_basic_readonly(events)?;
+        // Laboratory only; a no-op unless the hidden switch armed it.
+        n2r_win32::lab_fail::reached(n2r_win32::lab_fail::RESTART_AFTER_PROTECT)?;
         let mut collected = None;
         let mut output_basis = None;
         let mut native_artifact = None;

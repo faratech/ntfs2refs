@@ -1061,7 +1061,7 @@ pub struct RecoveryBootRestorationReceipt {
     pub normal_boot_observed: bool,
     pub source_writer_authority: bool,
 }
-fn restore_checkpoint(
+pub(super) fn restore_checkpoint(
     observer: &mut impl crate::partition_restoration::PartitionRestorationObserver,
     phase: &'static str,
     events: &mut Vec<NativeEvent>,

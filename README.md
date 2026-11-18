@@ -1,5 +1,10 @@
 # ntfs2refs
 
+> **WARNING: EXPERIMENTAL SOFTWARE. IT REWRITES A VOLUME'S FILE SYSTEM IN
+> PLACE AND HAS BEEN TESTED ONLY ON VIRTUAL DISKS IN A LABORATORY. BACK UP
+> EVERYTHING FIRST AND CHECK THAT THE BACKUP RESTORES. NO WARRANTY OF ANY
+> KIND: READ [DISCLAIMER.md](DISCLAIMER.md).**
+
 Converts an NTFS volume to ReFS in place, on the Windows machine that owns the
 disk. File data stays where it is on the disk wherever ReFS can use it there;
 only the file system around it is replaced.

@@ -12,6 +12,7 @@ pub mod capability_evidence;
 #[cfg(windows)]
 pub(crate) mod compact_recovery_bundle;
 pub(crate) mod confirmation;
+pub mod disclaimer;
 pub mod drive_cli;
 pub(crate) mod drive_recovery;
 pub(crate) mod execution_mode;

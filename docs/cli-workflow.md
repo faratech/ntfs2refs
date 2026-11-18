@@ -1,6 +1,8 @@
 # Operating and recovery guide
 
-For ntfs2refs 0.4.0. [The README](../README.md) says what the tool is;
+For ntfs2refs 0.4.0. **It is experimental software:** every run starts with
+a warning saying so, on the error stream, and [DISCLAIMER.md](../DISCLAIMER.md)
+says what that means. [The README](../README.md) says what the tool is;
 this guide says how to run it, what it refuses and why, and what to do if a
 run stops. What the lab has shown is in the [feature matrix](feature-matrix.md)
 and the [recovery matrix](recovery-matrix.md).

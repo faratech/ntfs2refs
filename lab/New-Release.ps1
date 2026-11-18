@@ -139,13 +139,17 @@ try {
     $null = New-Item -ItemType Directory -Path $stage, (Join-Path $stage 'docs')
     Copy-Item -LiteralPath $binaries -Destination $stage
     [IO.File]::WriteAllText((Join-Path $stage 'capabilities.json'), $capabilities, [Text.UTF8Encoding]::new($false))
-    Copy-Item -LiteralPath 'README.md' -Destination $stage
+    Copy-Item -LiteralPath 'README.md', 'DISCLAIMER.md' -Destination $stage
     if (Test-Path -LiteralPath 'LICENSE') { Copy-Item -LiteralPath 'LICENSE' -Destination $stage }
     foreach ($document in 'cli-workflow.md', 'feature-matrix.md', 'recovery-matrix.md') { Copy-Item -LiteralPath (Join-Path 'docs' $document) -Destination (Join-Path $stage 'docs') }
 
     $hash = { param($path) (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() }
     $notes = New-Object System.Collections.Generic.List[string]
     $notes.Add("# ntfs2refs $version")
+    $notes.Add('')
+    # The warning every run prints, first (DISCLAIMER.md in the archive).
+    $warning = (Get-Content -Raw -LiteralPath 'DISCLAIMER.md') -split '```' | Select-Object -Index 1
+    $notes.Add('```'); foreach ($line in ($warning.Trim() -split "`r?`n")) { $notes.Add($line) }; $notes.Add('```')
     $notes.Add('')
     $notes.Add("Built by ``lab\New-Release.ps1`` from commit ``$commit``$(if (-not $tagged) { ' (not tagged: a rehearsal)' }) with $((& (& $tool 'rustc') --version).Trim()).")
     $notes.Add('')

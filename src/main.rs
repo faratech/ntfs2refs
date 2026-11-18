@@ -288,6 +288,8 @@ fn run() -> Result<u8> {
     Ok(0)
 }
 fn main() -> ExitCode {
+    // Before anything else, whatever was asked: see DISCLAIMER.md.
+    ntfs2refs::disclaimer::print();
     match run() {
         Ok(code) => ExitCode::from(code),
         Err(error) => {

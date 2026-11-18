@@ -2,6 +2,8 @@
 #[cfg(windows)]
 fn main() -> std::process::ExitCode {
     use ntfs2refs::resource_partition_alpha::PreparedOfflineOutcome;
+    // On the console of the minimal Windows, before anything else.
+    ntfs2refs::disclaimer::print();
     let outcome = std::thread::Builder::new()
         .name("cold-prepared-conversion".into())
         .stack_size(ntfs2refs::resource_partition_alpha::WORKER_STACK_BYTES)

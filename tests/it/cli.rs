@@ -314,3 +314,36 @@ fn diagnose_is_refused_at_parse_time_with_options_that_would_change_the_source()
         assert!(stderr.contains("cannot be used with"), "{stderr}");
     }
 }
+
+#[test]
+fn every_run_starts_with_the_warning_on_the_error_stream_and_leaves_the_output_alone() {
+    let banner = ntfs2refs::disclaimer::banner();
+    for args in [
+        &["--version"][..],
+        &["--help"],
+        &["capabilities"],
+        &["--drive"],
+    ] {
+        let result = cli(args);
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            stderr.starts_with(&banner),
+            "{args:?} did not start with the warning: {stderr}"
+        );
+        assert!(stderr.contains("WARNING: NTFS2REFS IS EXPERIMENTAL SOFTWARE."));
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        assert!(
+            !stdout.contains("EXPERIMENTAL SOFTWARE"),
+            "{args:?}: {stdout}"
+        );
+    }
+    // What a script reads from the output stream is as it was.
+    let version = String::from_utf8(cli(&["--version"]).stdout).unwrap();
+    assert_eq!(
+        version,
+        format!("ntfs2refs {}\n", env!("CARGO_PKG_VERSION"))
+    );
+    let capabilities: serde_json::Value =
+        serde_json::from_slice(&cli(&["capabilities"]).stdout).unwrap();
+    assert!(capabilities.is_object());
+}

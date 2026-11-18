@@ -102,6 +102,13 @@ struct State {
 struct Inner {
     // Two thirds of the memory that was free when the ledger was made.
     cache_basis_bytes: u64,
+    // For a run that fits itself to the machine: what the ledger may hold
+    // with things it holds only to go faster, as of the last look at what
+    // Windows has available (0 before the first), and when that look was,
+    // in milliseconds since the ledger was made.
+    made: std::time::Instant,
+    fitted_ceiling: std::sync::atomic::AtomicU64,
+    fitted_at_ms: std::sync::atomic::AtomicU64,
     root: PathBuf,
     root_guid: String,
     allocation_slack: u64,
@@ -1002,6 +1009,9 @@ impl ArtifactArena {
             cache_basis_bytes: (available.available_physical_bytes
                 - available.available_physical_bytes / 3)
                 .max(budget.ram_bytes.min(64 << 20)),
+            made: std::time::Instant::now(),
+            fitted_ceiling: std::sync::atomic::AtomicU64::new(0),
+            fitted_at_ms: std::sync::atomic::AtomicU64::new(0),
             root: fs::canonicalize(root)?,
             root_guid,
             allocation_slack,
@@ -1448,6 +1458,7 @@ impl ArtifactArena {
     pub fn reserve_ram(&self, bytes: u64) -> Result<ArenaRamLease> {
         let caller = std::panic::Location::caller();
         let site = (caller.file(), caller.line());
+        self.follow_the_machine();
         let mut refused = match self.reserve_ram_at(bytes, site) {
             Ok(granted) => return Ok(granted),
             Err(refused) => refused,
@@ -1625,7 +1636,7 @@ impl ArtifactArena {
             .lock()
             .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
         let held = add(state.leased_ram_bytes, state.index_bytes)?;
-        let granted = state.spare.asked(self.0.budget.ram_bytes, held, bytes);
+        let granted = state.spare.asked(self.speed_budget(), held, bytes);
         ensure!(!state.ram_poisoned && granted, "spare memory refused");
         let leased = add(state.leased_ram_bytes, bytes)?;
         state.leased_ram_bytes = leased;
@@ -1659,6 +1670,7 @@ impl ArtifactArena {
     pub fn reserve_cache_ram(&self, bytes: u64) -> Result<ArenaRamLease> {
         let caller = std::panic::Location::caller();
         let site = (caller.file(), caller.line());
+        self.follow_the_machine();
         let mut refused = match self.reserve_cache_ram_at(bytes, site) {
             Ok(granted) => return Ok(granted),
             Err(refused) => refused,
@@ -1695,8 +1707,91 @@ impl ArtifactArena {
     /// than that for the volume's sake is for what the run cannot do
     /// without; a cache held in the page file would make nothing faster.
     fn cache_ceiling(&self) -> u64 {
-        let basis = self.0.budget.ram_bytes.min(self.0.cache_basis_bytes);
-        basis - basis / 8
+        match self
+            .0
+            .fitted_ceiling
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            0 => {
+                let basis = self.0.budget.ram_bytes.min(self.0.cache_basis_bytes);
+                basis - basis / 8
+            }
+            fitted => fitted,
+        }
+    }
+    /// What the ledger may hold with memory for doing more at once: the
+    /// budget, or for a run that fits itself to the machine what the
+    /// machine has now.
+    fn speed_budget(&self) -> u64 {
+        match self
+            .0
+            .fitted_ceiling
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            0 => self.0.budget.ram_bytes,
+            fitted => fitted,
+        }
+    }
+    /// A run that fits itself to the machine looks, a few times a second,
+    /// at the memory Windows has available, and holds what it holds only to
+    /// go faster by that instead of by a share of what was free when it
+    /// started.
+    ///
+    /// More is free than at the start (another program ended): caches and
+    /// work done at once may take it. Less is free than the machine should
+    /// keep (`KEPT_FREE`: another program took memory): the caches used
+    /// longest ago are given up until that much is free again, before
+    /// Windows has to page for them. What the run cannot do without is not
+    /// touched by either.
+    fn follow_the_machine(&self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        /// How often the machine is looked at.
+        const EVERY_MS: u64 = 250;
+        if !n2r_win32::resource_native::memory_fits_the_machine() {
+            return;
+        }
+        let now = self.0.made.elapsed().as_millis() as u64;
+        let last = self.0.fitted_at_ms.load(Relaxed);
+        if (last != 0 && now.saturating_sub(last) < EVERY_MS)
+            || self
+                .0
+                .fitted_at_ms
+                .compare_exchange(last, now.max(1), Relaxed, Relaxed)
+                .is_err()
+        {
+            return;
+        }
+        let Ok((available, total)) = n2r_win32::resource_native::physical_memory_now() else {
+            return;
+        };
+        let kept_free = kept_free(total);
+        let (held, optional) = match self.0.state.lock() {
+            Ok(state) => (
+                state.leased_ram_bytes.saturating_add(state.index_bytes),
+                state.optional_ram_bytes,
+            ),
+            Err(_) => return,
+        };
+        self.0
+            .fitted_ceiling
+            .store(fitted_ceiling(held, available, kept_free).max(1), Relaxed);
+        // Too little is free: give back, the cache used longest ago first.
+        // The lock is not held while one goes; it returns its own
+        // reservation to this ledger.
+        let mut owed = kept_free.saturating_sub(available).min(optional);
+        while owed != 0 {
+            let before = self.optional_bytes();
+            if !n2r_win32::evict::evict_oldest() {
+                break;
+            }
+            owed = owed.saturating_sub(before.saturating_sub(self.optional_bytes()).max(1));
+        }
+    }
+    fn optional_bytes(&self) -> u64 {
+        self.0
+            .state
+            .lock()
+            .map_or(0, |state| state.optional_ram_bytes)
     }
     fn reserve_cache_ram_at(&self, bytes: u64, site: RamSite) -> Result<ArenaRamLease> {
         let mut state = self
@@ -2963,6 +3058,20 @@ impl SpareMemory {
 /// asks for once, elsewhere, does not count against its batches. (Counting
 /// every reservation of the run left the batches of a machine with 24 GB
 /// nothing: a decoding there reserves 1.8 GB, an earlier step far more.)
+/// What a run that fits itself to the machine leaves free for Windows and
+/// every other program: a tenth of the machine's memory, and no less than
+/// 1 GiB.
+fn kept_free(total_physical: u64) -> u64 {
+    (total_physical / 10).max(1 << 30)
+}
+
+/// What the ledger may hold with things held only to go faster, when it
+/// holds `held` and Windows has `available`: what it holds, and what is
+/// available beyond what is kept free.
+fn fitted_ceiling(held: u64, available: u64, kept_free: u64) -> u64 {
+    held.saturating_add(available.saturating_sub(kept_free))
+}
+
 fn spare_fits(budget: u64, held: u64, bytes: u64, largest_beside: u64) -> bool {
     let headroom = largest_beside.saturating_mul(2).max(budget / 16);
     held.checked_add(bytes)
@@ -3184,6 +3293,32 @@ mod cache_tests {
         assert!(arena.reserve_cache_ram(MIB).is_err());
         drop((held_already, beyond, within));
         assert_eq!(held(&arena), (0, 0));
+    }
+
+    #[test]
+    fn what_is_held_to_go_faster_follows_what_the_machine_has() {
+        const GIB: u64 = 1 << 30;
+        // A machine of 4 GiB keeps 1 GiB free, one of 64 GiB a tenth.
+        assert_eq!(kept_free(4 * GIB), GIB);
+        assert_eq!(kept_free(64 * GIB), 64 * GIB / 10);
+        // Holding 2 GiB with 10 GiB available on the large machine: caches
+        // may grow until 6.4 GiB are left.
+        assert_eq!(
+            fitted_ceiling(2 * GIB, 10 * GIB, kept_free(64 * GIB)),
+            2 * GIB + 10 * GIB - 64 * GIB / 10
+        );
+        // With less available than is kept free nothing more is granted:
+        // the ceiling is what is held, and caches are given back.
+        assert_eq!(
+            fitted_ceiling(2 * GIB, 3 * GIB, kept_free(64 * GIB)),
+            2 * GIB
+        );
+        // A ledger that never looked at the machine (this process does not
+        // fit itself to it) keeps to its budget.
+        let (_directory, arena) = ledger();
+        arena.follow_the_machine();
+        assert_eq!(arena.speed_budget(), LIMIT);
+        assert!(arena.cache_ceiling() <= LIMIT - LIMIT / 8);
     }
 
     #[test]

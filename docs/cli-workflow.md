@@ -352,6 +352,13 @@ and page file together, and then with the volume unchanged or with the
 recovery command it printed. Closing other programs before a run makes it
 faster.
 
+What a run holds only to go faster follows the machine while it runs. A few
+times a second it looks at the memory Windows has available: where more has
+become free it uses it, and where another program has taken memory it gives
+its caches back, those it used longest ago first, so that a tenth of the
+machine's memory (at least 1 GiB) stays free and Windows does not have to
+page for them. A run with `--memory-limit` keeps to its limit instead.
+
 What a run holds in memory only to go faster (stores it looks things up in,
 objects it has decoded) it gives back when the memory is needed for
 something it cannot do without, what it used longest ago first. It is

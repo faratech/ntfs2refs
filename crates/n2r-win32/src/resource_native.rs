@@ -83,6 +83,18 @@ pub fn memory_is_there(ram_bytes: u64, physical: u64) -> bool {
         || (memory_fits_the_machine() && committable_bytes().is_ok_and(|can| ram_bytes <= can))
 }
 
+/// The memory Windows has available now and the memory the machine has,
+/// as they are, whatever limit this process works with.
+pub fn physical_memory_now() -> io::Result<(u64, u64)> {
+    let mut memory: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
+    memory.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+    // SAFETY: the structure is initialized and its length is set.
+    if unsafe { GlobalMemoryStatusEx(&mut memory) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((memory.ullAvailPhys, memory.ullTotalPhys))
+}
+
 /// What Windows can still commit to this process: free memory and free
 /// page file together.
 pub fn committable_bytes() -> io::Result<u64> {

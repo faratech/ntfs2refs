@@ -37,6 +37,17 @@ param(
     # Working storage on a disk of its own, made by the host for the attempt
     # and attached to the VM: this many GB, GPT, formatted with the file
     # system named, at J:. 0 uses the VM's scratch volume S:.
+    # A laboratory failure point of the route (--lab-fail-at): the run is
+    # made to stop there, and what has to follow is checked. With
+    # restart-after-protect and restart-after-image the run gives the volume
+    # back by itself; with restart-after-arm and restart-skip-reboot it is
+    # left prepared, is asked what state it is in (--recover) and is then
+    # cancelled (--recover --rollback); with winpe-before-apply the machine
+    # restarts, cannot start the conversion there and has to come back to
+    # Windows by itself. Each ends "cancelled-volume-as-before" when the
+    # volume is writable NTFS listing exactly as before and Windows' boot
+    # selection is its own again.
+    [ValidateSet('', 'restart-after-protect', 'restart-after-image', 'restart-after-arm', 'restart-skip-reboot', 'winpe-before-apply')][string]$LabFailAt = '',
     [int]$WorkingDiskGB = 0,
     [ValidateSet('NTFS', 'ReFS')][string]$WorkingFileSystem = 'NTFS',
     # How long the machine may be away (restart, WinPE, conversion, return).
@@ -188,6 +199,8 @@ try {
     if (-not $before.serial) { $verdict.outcome = 'list-did-not-show-serial'; throw "--list shows no serial number for P:: $($before.row)" }
 
     $arguments = @('--drive', 'P', '--offline-media', $made.media, '--scratch-directory', $work, '--yes', '--volume-serial', $before.serial) + $ConverterArgs
+    if ($LabFailAt) { $arguments += @('--lab-fail-at', $LabFailAt, '--acknowledge-lab-fail-stops-the-run') }
+    $staysInWindows = $LabFailAt -in 'restart-after-protect', 'restart-after-image', 'restart-after-arm', 'restart-skip-reboot'
     $verdict.arguments = $arguments
     Say "converter: ntfs2refs.exe $($arguments -join ' ')"
     # Started as SYSTEM by a task, with its output in files on C:, which is
@@ -206,8 +219,8 @@ try {
     # The run prepares in Windows, then restarts the machine. Until then the
     # session answers; a converter that ends without a restart has refused
     # or failed.
-    $restarted = $false; $last = ''
-    while (-not $restarted) {
+    $restarted = $false; $last = ''; $endedInWindows = $false
+    while (-not $restarted -and -not $endedInWindows) {
         Start-Sleep -Seconds 10
         try {
             $state = Invoke-Command -Session $session -ArgumentList $guestRoot -ErrorAction Stop -ScriptBlock {
@@ -217,7 +230,11 @@ try {
                 [pscustomobject]@{ exit = $exit; tail = $tail }
             }
             if ($state.tail -and $state.tail -ne $last) { $last = $state.tail; Say ("[{0:N0} s] {1}" -f ((Get-Date) - $started).TotalSeconds, $last.Substring(0, [Math]::Min(180, $last.Length))) }
-            if ($null -ne $state.exit -and $state.exit -ne '0') {
+            if ($null -ne $state.exit -and $staysInWindows) {
+                # The laboratory point ends the run in Windows.
+                $verdict.exit = $state.exit; $endedInWindows = $true
+                Say "the converter ended in Windows with exit $($state.exit), as the laboratory point $LabFailAt has it"
+            } elseif ($null -ne $state.exit -and $state.exit -ne '0') {
                 $verdict.outcome = 'refused-or-failed-in-windows'; $verdict.exit = $state.exit
                 throw "the converter ended in Windows with exit $($state.exit) and did not restart"
             }
@@ -226,6 +243,39 @@ try {
         if (((Get-Date) - $started).TotalMinutes -gt $AwayMinutes) { $verdict.outcome = 'no-restart'; throw "no restart after $AwayMinutes minutes" }
     }
     $verdict.prepared_seconds = [Math]::Round(((Get-Date) - $started).TotalSeconds)
+    if ($endedInWindows) {
+        $said = Invoke-Command -Session $session -ArgumentList $guestRoot -ScriptBlock {
+            param($root)
+            $partition = Get-Partition -DriveLetter P -ErrorAction SilentlyContinue
+            [pscustomobject]@{
+                error = [string](Get-Content -LiteralPath "$root\stderr.log" -Tail 3 -ErrorAction SilentlyContinue | Out-String).Trim()
+                read_only = if ($partition) { [bool]$partition.IsReadOnly } else { $null }
+                boot = [string](& bcdedit.exe /enum '{bootmgr}' 2>&1 | Where-Object { $_ -match '^(default|timeout)' } | Out-String).Trim() -replace '\s+', ' '
+            }
+        }
+        Say "the run said: $($said.error -replace '\s+', ' ')"
+        Say "P: read-only: $($said.read_only); boot manager: $($said.boot)"
+        $verdict.after_the_point = $said
+        if ($LabFailAt -in 'restart-after-arm', 'restart-skip-reboot') {
+            # Left prepared: asked what it is, then cancelled.
+            $recovered = Invoke-Command -Session $session -ArgumentList $guestRoot, $work -ScriptBlock {
+                param($root, $work)
+                $run = @(Get-ChildItem -LiteralPath $work -Directory -Filter 'partition-offline-conversion-*')[0].FullName
+                $status = @(& "$root\ntfs2refs.exe" --recover $run 2>&1 | ForEach-Object { "$_" }); $statusExit = $LASTEXITCODE
+                $cancel = @(& "$root\ntfs2refs.exe" --recover $run --rollback --yes 2>&1 | ForEach-Object { "$_" }); $cancelExit = $LASTEXITCODE
+                $again = @(& "$root\ntfs2refs.exe" --recover $run 2>&1 | ForEach-Object { "$_" }); $againExit = $LASTEXITCODE
+                [pscustomobject]@{ run = $run; status = $status; status_exit = $statusExit; cancel = $cancel; cancel_exit = $cancelExit; again = $again; again_exit = $againExit }
+            }
+            [IO.File]::WriteAllLines((Join-Path $records 'recover-status.txt'), [string[]]$recovered.status)
+            [IO.File]::WriteAllLines((Join-Path $records 'recover-rollback.txt'), [string[]]$recovered.cancel)
+            [IO.File]::WriteAllLines((Join-Path $records 'recover-status-after.txt'), [string[]]$recovered.again)
+            $plain = { param($lines) @($lines | Where-Object { $_ -match '^[A-Z].* ' -and $_ -notmatch '^[a-z0-9-]+$' }) -join ' | ' }
+            Say "--recover (exit $($recovered.status_exit)): $(& $plain $recovered.status)"
+            Say "--recover --rollback (exit $($recovered.cancel_exit)): $(& $plain $recovered.cancel)"
+            Say "--recover afterwards (exit $($recovered.again_exit)): $(& $plain $recovered.again)"
+            $verdict.recover = [ordered]@{ status_exit = $recovered.status_exit; cancel_exit = $recovered.cancel_exit; again_exit = $recovered.again_exit }
+        }
+    } else {
     Say "the machine went away after $($verdict.prepared_seconds) s in Windows"
     Remove-PSSession $session -ErrorAction SilentlyContinue; $session = $null
 
@@ -244,6 +294,7 @@ try {
     }
     $verdict.away_seconds = [Math]::Round(((Get-Date) - $away).TotalSeconds)
     Say "Windows is back after $($verdict.away_seconds) s away"
+    }
 
     $after = Invoke-Command -Session $session -ArgumentList $guestRoot, $work -ScriptBlock {
         param($root, $work)
@@ -251,20 +302,36 @@ try {
         $listed = ''; $summary = ''; $compare = $null
         if ($volume) {
             $listed = & "$root\lab-volume-manifest.exe" capture --root 'P:\' --output "$root\manifest-after.jsonl" 2>&1 | Out-String
-            $summary = & "$root\lab-volume-manifest.exe" compare --exact --before "$root\manifest-before.jsonl" --after "$root\manifest-after.jsonl" --report "$root\manifest-report.json" 2>&1 | Out-String
+            # Not --exact: Windows writes its own file into System Volume
+            # Information as soon as a volume is writable again (a volume
+            # given back listed one file more for it). What else the
+            # comparison let through is held to nothing below.
+            $summary = & "$root\lab-volume-manifest.exe" compare --before "$root\manifest-before.jsonl" --after "$root\manifest-after.jsonl" --report "$root\manifest-report.json" 2>&1 | Out-String
             $compare = $LASTEXITCODE
+            if ($compare -eq 0) {
+                $let = @(((Get-Content -LiteralPath "$root\manifest-report.json" -Raw | ConvertFrom-Json).allowed.PSObject.Properties | ForEach-Object Name) | Where-Object { $_ -ne 'System Volume Information content' })
+                if ($let) { $compare = 2; $summary = "let through besides Windows' own files: $($let -join ', '). $summary" }
+            }
         }
         $partition = Get-Partition -DriveLetter P -ErrorAction SilentlyContinue
+        # A volume given back has to take a write and give it up again.
+        # (After the listing: a write changes the root directory's times.)
+        $writable = $null
+        try { [IO.File]::WriteAllText('P:\written-after.txt', 'x'); Remove-Item -LiteralPath 'P:\written-after.txt' -Force; $writable = $true } catch { $writable = $false }
         [pscustomobject]@{
             filesystem = if ($volume) { "$($volume.FileSystem)" } else { $null }; health = if ($volume) { "$($volume.HealthStatus)" } else { $null }
             read_only = if ($partition) { [bool]$partition.IsReadOnly } else { $null }
+            writable = $writable
+            cancelled = @(Get-ChildItem -LiteralPath $work -Recurse -Filter 'cancelled.json' -ErrorAction SilentlyContinue | ForEach-Object { (Get-Content -LiteralPath $_.FullName -Raw) -replace '\s+', ' ' })
             listed = $listed.Trim(); summary = $summary.Trim(); compare_exit = $compare
             boot_default = [string](& bcdedit.exe /enum '{bootmgr}' 2>&1 | Where-Object { $_ -match '^(default|displayorder|timeout)' } | Out-String).Trim()
             runs = @(Get-ChildItem -LiteralPath $work -Directory -ErrorAction SilentlyContinue | ForEach-Object Name)
         }
     }
     $verdict.after = $after
-    Say "P: is $($after.filesystem), $($after.health), read-only: $($after.read_only)"
+    Say "P: is $($after.filesystem), $($after.health), read-only: $($after.read_only), takes a write: $($after.writable)"
+    Say "boot manager: $($after.boot_default -replace '\s+', ' ')"
+    foreach ($record in $after.cancelled) { Say "cancelled.json: $($record.Substring(0, [Math]::Min(600, $record.Length)))" }
     Say "compare: $($after.summary)"
     foreach ($leaf in 'stdout.log', 'stderr.log', 'exit.txt', 'manifest-report.json') {
         try { Copy-Item -FromSession $session -LiteralPath "$guestRoot\$leaf" -Destination $records -Force -ErrorAction Stop } catch { }
@@ -278,7 +345,11 @@ try {
         }
         Copy-Item -FromSession $session -LiteralPath "$guestRoot\records.zip" -Destination $records -Force -ErrorAction Stop
     } catch { Say "the run's records could not be collected: $($_.Exception.Message)" }
-    $verdict.outcome = if ($after.filesystem -ne 'ReFS') { "returned-with-$($after.filesystem)" }
+    $verdict.outcome = if ($LabFailAt) {
+            if ($after.filesystem -eq 'NTFS' -and $after.compare_exit -eq 0 -and $after.read_only -eq $false -and $after.writable -and $after.boot_default -match 'default\s+\{current\}') { 'cancelled-volume-as-before' }
+            else { 'cancel-incomplete' }
+        }
+        elseif ($after.filesystem -ne 'ReFS') { "returned-with-$($after.filesystem)" }
         elseif ($after.compare_exit -ne 0) { 'converted-but-listing-differs' }
         else { 'converted' }
 }

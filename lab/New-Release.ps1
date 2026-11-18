@@ -43,7 +43,7 @@ param(
     [string]$ComparedWith,
     # A directory with the three executables, built from this commit and
     # signed (the release workflow's): packed as they are, not built again.
-    [string]$Binaries
+    [Alias('Binaries')][string]$SignedBinaries
 )
 $ErrorActionPreference = 'Stop'; Set-StrictMode -Version Latest
 $workspace = Split-Path -Parent $PSScriptRoot
@@ -115,9 +115,9 @@ try {
 
     $tool = { param($name) $path = Join-Path $env:USERPROFILE ".cargo\bin\$name.exe"; if (Test-Path -LiteralPath $path) { $path } else { $name } }
     $names = 'ntfs2refs.exe', 'ntfs2refs-recovery.exe', 'lab-volume-manifest.exe'
-    if ($Binaries) {
+    if ($SignedBinaries) {
         if ($ComparedWith) { throw '-ComparedWith compares a build of this script; signed executables differ from the lab''s by their signatures' }
-        $binaries = $names | ForEach-Object { Join-Path $Binaries $_ }
+        $binaries = $names | ForEach-Object { Join-Path $SignedBinaries $_ }
         foreach ($binary in $binaries) { if (-not (Test-Path -LiteralPath $binary)) { throw "$binary does not exist" } }
     } else {
         & (& $tool 'cargo') build --locked --release --bin ntfs2refs --bin ntfs2refs-recovery --bin lab-volume-manifest

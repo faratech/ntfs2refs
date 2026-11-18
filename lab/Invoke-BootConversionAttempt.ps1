@@ -24,6 +24,8 @@ param(
     [string]$FixtureCheckpoint = 'N2R-Thinned-Fixture',
     [string]$Binary,
     [int]$MemoryGB = 24,
+    # How long an attempt waits for the host to have memory for its VM.
+    [int]$WaitForMemoryMinutes = 240,
     [int]$Processors = 8,
     [int]$ScratchGB = 120,
     [ValidateSet('ReFS', 'NTFS')][string]$ScratchFileSystem = 'ReFS',
@@ -628,15 +630,27 @@ try {
     if ($hostFreeDisk -lt [long]$MinHostFreeGB * 1GB) {
         throw ("Host volume has {0:N1} GB free with checkpoint '{2}' restored, and that stopped growing {3} s ago; an attempt needs {1} GB. Free space first (old attempts' scratch.vhdx files, or the other lab VM's last attempt)." -f ($hostFreeDisk / 1GB), $MinHostFreeGB, $snapshots[0].Name, ($waited - $grownAt))
     }
-    $hostFree = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory * 1KB
-    # The host keeps 8 GB of what is free. The VM was given four fifths of
-    # it: with 23 GB free that left the host under 5 GB, a run's own
-    # growth took the rest, and the host stopped the round for lack of
-    # memory (17 November, 2.6 GB free of 64).
-    $memory = [Math]::Min([long]$MemoryGB * 1GB, [long](($hostFree - 8GB) / 1GB) * 1GB)
+    # The VM fits what the host has free, and the host keeps 8 GB of it.
+    # (It was given four fifths: with 23 GB free that left the host under
+    # 5 GB, a run's own growth took the rest, and the host stopped the round
+    # for lack of memory: 17 November, 2.6 GB free of 64, #165.)
     # A VM is given less than 8 GB only when the caller asked for it (a run
-    # on a small machine, -MemoryGB 4), never because the host is short.
-    if ($memory -lt [Math]::Min(8GB, [long]$MemoryGB * 1GB)) { throw "Host has too little free memory for the VM: $([Math]::Round($hostFree/1GB,1)) GB free" }
+    # on a small machine, -MemoryGB 4), never because the host is short:
+    # where the host has too little, the attempt waits for it, for up to
+    # -WaitForMemoryMinutes, and only then gives up.
+    $least = [Math]::Min(8GB, [long]$MemoryGB * 1GB)
+    $waitedForMemory = 0
+    while ($true) {
+        $hostFree = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory * 1KB
+        $memory = [Math]::Min([long]$MemoryGB * 1GB, [long](($hostFree - 8GB) / 1GB) * 1GB)
+        if ($memory -ge $least) { break }
+        if ($waitedForMemory -ge $WaitForMemoryMinutes * 60) {
+            throw "Host has too little free memory for the VM: $([Math]::Round($hostFree/1GB,1)) GB free after waiting $WaitForMemoryMinutes minutes; the VM needs $([Math]::Round($least/1GB)) GB and the host keeps 8"
+        }
+        if ($waitedForMemory % 600 -eq 0) { Say ("waiting for host memory: {0:N1} GB free, the VM needs {1:N0} GB and the host keeps 8" -f ($hostFree / 1GB), ($least / 1GB)) }
+        Start-Sleep -Seconds 30; $waitedForMemory += 30
+    }
+    if ($waitedForMemory) { Say ("host memory is there after {0} s: the VM gets {1:N0} GB" -f $waitedForMemory, ($memory / 1GB)) }
     Set-VM -VM $vm -StaticMemory -MemoryStartupBytes $memory
     Set-VMProcessor -VM $vm -Count ([Math]::Min($Processors, [Environment]::ProcessorCount))
     # The boot step of an earlier attempt detached everything but disk0, and

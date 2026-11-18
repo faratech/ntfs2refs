@@ -232,7 +232,9 @@ try {
             # is given.)
             $beside = 5 + 8 * $DataVm.Count
             $referenceGB = [math]::Floor([math]::Min(24, $free - $beside))
-            if ($referenceGB -lt 16) { $referenceGB = [math]::Floor([math]::Min(24, $free * 0.8)) }
+            # Too little for both at once: the reference VM takes what is
+            # free less the host's 8 GB, and the data cases wait for it.
+            if ($referenceGB -lt 16) { $referenceGB = [math]::Floor([math]::Max(8, [math]::Min(24, $free - 8))) }
             foreach ($run in $fixtureRuns) { $run.Arguments = $run.Arguments + @{ MemoryGB = [int]$referenceGB } }
         }
         Say ('fixtures and interrupted runs on {0} ({1:N1} GB of host memory free)' -f $ReferenceVm, $free)
@@ -254,7 +256,13 @@ try {
             Stop-RoundVm $ReferenceVm
             $count = Get-DataVmCount (Get-FreeGB)
         }
-        if ($count -eq 0) { throw ('{0:N1} GB of host memory are free: a data VM needs 10' -f (Get-FreeGB)) }
+        # Too little memory is no failure of the round: it waits for it.
+        for ($waited = 0; $count -eq 0 -and $waited -lt 240 * 60; $waited += 30) {
+            if ($waited % 600 -eq 0) { Say ('{0:N1} GB of host memory are free and a data VM needs 10: waiting' -f (Get-FreeGB)) }
+            Start-Sleep -Seconds 30
+            $count = Get-DataVmCount (Get-FreeGB)
+        }
+        if ($count -eq 0) { throw ('{0:N1} GB of host memory are free after four hours of waiting: a data VM needs 10' -f (Get-FreeGB)) }
         $used = @($DataVm | Select-Object -First $count)
         $number = 0
         foreach ($name in $used) {
@@ -262,7 +270,7 @@ try {
             # 8 GB is enough for every data-volume case; a VM that has the
             # memory to itself gets up to 12.
             $free = Get-FreeGB
-            $give = if ($count -eq 1) { [math]::Floor([math]::Max(8, [math]::Min(12, $free * 0.8))) } else { 8 }
+            $give = if ($count -eq 1) { [math]::Floor([math]::Max(8, [math]::Min(12, $free - 8))) } else { 8 }
             Say ('control OS up on {0} with {1} GB ({2:N1} GB free)' -f $name, $give, $free)
             $control = "$Prefix-control-$number"
             & $boot -Name $control -NoConvert -KeepScratch -MemoryGB $give -VmId $vms[$name].Id.Guid -Binary $binary -ManifestBinary $manifest *> (Join-Path $logs "$control.log")

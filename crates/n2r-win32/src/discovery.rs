@@ -258,14 +258,17 @@ pub fn binding_from_evidence(
     )?;
     let disk_bytes = u64_at(&e.disk_length, 0)?;
     let raw = &e.gpt_layout;
-    // Working storage may lie on an MBR disk, which has no GUIDs: its
-    // identity is made of the disk's signature and the partition's place
-    // (`mbr_layout`). Every other role takes a GPT disk only.
+    // Working storage and a data volume to convert may lie on an MBR disk,
+    // which has no GUIDs: its identity is made of the disk's signature and
+    // the partition's place (`mbr_layout`). An installed Windows, the
+    // shadow, and working storage that must have a disk to itself take a
+    // GPT disk only.
     let (partition_number, disk_guid, partition_guid, beside) = if matches!(
         role,
-        Role::Journal {
-            allow_additional_partitions: true
-        }
+        Role::Source
+            | Role::Journal {
+                allow_additional_partitions: true
+            }
     )
         && crate::mbr_layout::is_mbr_layout(raw)
     {
@@ -274,7 +277,7 @@ pub fn binding_from_evidence(
             found.partition_number,
             found.disk_guid,
             found.partition_guid,
-            0,
+            found.beside,
         )
     } else {
         let (partition_number, partition_guid, beside) =

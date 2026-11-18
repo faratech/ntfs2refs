@@ -8,7 +8,10 @@
 //! and a pair so made says that it is one (`is_mbr_disk`), so that no route
 //! that needs a real GPT disk takes it for one.
 //!
-//! Only working storage is taken from an MBR disk. A source is not.
+//! Working storage and a data volume to convert may lie on an MBR disk. An
+//! installed Windows to convert, and the shadow, may not: the first starts
+//! from firmware this converter does not handle, the second the converter
+//! makes itself, as GPT.
 use crate::layout::{invalid, u32_at, u64_at};
 use sha2::{Digest, Sha256};
 use std::io;
@@ -57,6 +60,8 @@ pub struct MbrPartition {
     pub partition_number: u32,
     pub disk_guid: String,
     pub partition_guid: String,
+    /// The disk's other partitions, an extended one counted as one.
+    pub beside: usize,
 }
 
 /// Whether the layout is an MBR disk's.
@@ -151,6 +156,15 @@ pub fn mbr_partition(
         partition_number,
         disk_guid: disk_identity(signature),
         partition_guid: partition_identity(signature, partition_number, offset, length),
+        // Logical drives lie inside the extended partition that is counted.
+        beside: containers.len()
+            + seen
+                .iter()
+                .filter(|(number, lo, hi)| {
+                    *number != partition_number
+                        && !containers.iter().any(|(from, to)| lo < to && from < hi)
+                })
+                .count(),
     })
 }
 
@@ -186,6 +200,27 @@ mod tests {
         );
         let found = mbr_partition(&raw, DISK, 501 * MIB, 20_000 * MIB).unwrap();
         assert_eq!(found.partition_number, 2);
+        assert_eq!(found.beside, 1);
+        // An extended partition with its logical drives is one beside it.
+        let with_logical = layout(
+            0x1234_abcd,
+            &[
+                (1, MIB, 500 * MIB, 0x07),
+                (0, 501 * MIB, 1_000 * MIB, 0x0f),
+                (5, 502 * MIB, 400 * MIB, 0x07),
+            ],
+        );
+        assert_eq!(
+            mbr_partition(&with_logical, DISK, MIB, 500 * MIB)
+                .unwrap()
+                .beside,
+            1
+        );
+        let alone = layout(0x1234_abcd, &[(1, MIB, 500 * MIB, 0x07)]);
+        assert_eq!(
+            mbr_partition(&alone, DISK, MIB, 500 * MIB).unwrap().beside,
+            0
+        );
         assert_eq!(found.disk_guid, "1234abcd-4d42-5220-6469-736b00000000");
         assert!(is_mbr_disk(&found.disk_guid));
         assert!(is_mbr_disk("{1234ABCD-4D42-5220-6469-736B00000000}"));

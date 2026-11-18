@@ -203,6 +203,31 @@ impl GeneralDiskBinding {
     }
 
     fn validate_layout_identity(&self, bytes: &[u8]) -> io::Result<()> {
+        // A data volume on an MBR disk: the identity made of the disk's
+        // signature and the partition's place is made again from what the
+        // disk says now, and must be the one this binding holds. What lies
+        // beside the volume decides, as on GPT, whether the disk is one it
+        // has to itself.
+        if crate::mbr_layout::is_mbr_disk(&self.identity.disk_guid) {
+            let p = &self.identity;
+            let found = crate::mbr_layout::mbr_partition(
+                bytes,
+                p.disk_bytes,
+                p.partition_offset,
+                p.partition_bytes,
+            )?;
+            return require(
+                found.partition_number == p.partition_number
+                    && guid_bytes(&found.disk_guid)? == guid_bytes(&p.disk_guid)?
+                    && guid_bytes(&found.partition_guid)? == guid_bytes(&p.partition_guid)?
+                    && match self.layout_profile {
+                        GeneralDiskLayoutProfile::SharedData => found.beside >= 1,
+                        GeneralDiskLayoutProfile::OfflineWindows => false,
+                        _ => found.beside == 0,
+                    },
+                "MBR disk, partition identity or partition set differs",
+            );
+        }
         require(
             (48..=65536).contains(&bytes.len())
                 && layout::u32_at(bytes, 0)? == 1

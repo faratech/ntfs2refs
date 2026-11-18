@@ -151,7 +151,7 @@ function New-SoakContent([string]$root, [int]$seed, [int]$cluster, [bool]$many, 
         $count = $random.Next(20000, 100001)
         $per = $random.Next(200, 2001)
         for ($i = 0; $i -lt $count; $i++) {
-            $dir = "$root\many\d{0:d4}" -f [Math]::Floor($i / $per)
+            $dir = "$root\many\d{0:d4}" -f [int][Math]::Floor($i / $per)
             if ($i % $per -eq 0) { $null = New-Item -ItemType Directory -Path $dir }
             $n = $random.Next(0, 2500)
             [IO.File]::WriteAllBytes("$dir\f$i.dat", (& $bytes $n)); $written += $n
@@ -217,7 +217,7 @@ function New-SoakContent([string]$root, [int]$seed, [int]$cluster, [bool]$many, 
     $made.Add('symbolic links and a junction')
     # Attributes (not TEMPORARY or OFFLINE, which are refused), times, security, object IDs.
     $all = @(Get-ChildItem -LiteralPath $root -Recurse -File -Force | Where-Object { -not $_.LinkType } | Select-Object -First 4000)
-    $epoch = [DateTime]::new(1990, 1, 1, 0, 0, 0, 'Utc')
+    $epoch = [DateTime]::SpecifyKind([DateTime]::new(1990, 1, 1), [DateTimeKind]::Utc)
     foreach ($file in $all | Get-Random -Count ([Math]::Min(300, $all.Count)) -SetSeed ($seed + 1)) {
         $when = $epoch.AddSeconds($random.NextDouble() * 1.2e9).AddTicks($random.Next(0, 10000000))
         [IO.File]::SetCreationTimeUtc($file.FullName, $when); [IO.File]::SetLastWriteTimeUtc($file.FullName, $when.AddDays($random.Next(0, 3000)))

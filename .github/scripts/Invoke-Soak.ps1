@@ -325,7 +325,7 @@ for ($round = 1; ; $round++) {
     $vhd = Join-Path $Disks "$name.vhdx"
     $work = Join-Path $Scratch $name
     $result = [ordered]@{ round = $round; profile = $kind; seed = $roundSeed; ntfs_cluster = $ntfsCluster; refs_cluster = $refsCluster; disk_gib = $gib
-        hold_at = $hold; end_after_seconds = $endAfter; content = ''; convert_seconds = $null; recovery = ''; outcome = ''; detail = '' }
+        hold_at = $hold; end_after_seconds = $endAfter; content = ''; convert_seconds = $null; recovery = ''; outcome = ''; detail = ''; findings = @() }
     Say "round ${round}: $kind, seed $roundSeed, NTFS clusters of $ntfsCluster, ReFS clusters of $refsCluster, a $gib GiB disk$(if ($hold) { ", held at $hold" })$(if ($endAfter) { ", ended after $endAfter s" })"
     try {
         $diskNumber = New-SoakDisk $vhd $gib $ntfsCluster
@@ -361,6 +361,19 @@ for ($round = 1; ; $round++) {
         } elseif ($run.exit -ne 0) {
             throw "the conversion ended with exit $($run.exit): $(($run.stderr -split "`n" | Where-Object { $_ -match '^error' } | Select-Object -Last 1))"
         }
+        # A source given back as NTFS without its letter: a finding, recorded;
+        # the letter is given back so that the listing can be compared.
+        if ($expect -eq 'NTFS' -and -not (Get-Partition -DriveLetter $letter -ErrorAction SilentlyContinue)) {
+            Start-Sleep -Seconds 5
+            if (-not (Get-Partition -DriveLetter $letter -ErrorAction SilentlyContinue)) {
+                $source = Get-DiskImage -ImagePath $vhd | Get-Disk | Get-Partition | Where-Object Type -eq 'Basic' | Select-Object -First 1
+                if ($source -and -not $source.DriveLetter) {
+                    $source | Set-Partition -NewDriveLetter $letter
+                    $result.findings += "the volume came back as NTFS without ${letter}: (given back by the soak)"
+                    Say "  FINDING: the volume came back as NTFS without ${letter}:; given back to compare it"
+                }
+            }
+        }
         $volume = Wait-Volume $expect
         Capture (Join-Path $dir 'after.jsonl')
         $compare = @('compare', '--before', (Join-Path $dir 'before.jsonl'), '--after', (Join-Path $dir 'after.jsonl'), '--report', (Join-Path $dir 'report.json'))
@@ -380,8 +393,19 @@ for ($round = 1; ; $round++) {
         try { & $converter --list 2>&1 | Out-File -LiteralPath (Join-Path $dir 'list-after-failure.txt') -Encoding utf8 } catch { }
         $failed = $result
     } finally {
+        # Virtual disks the run left attached in its working storage: a
+        # finding, recorded; detached so that the storage can be freed.
+        $left = @(Get-Disk | Where-Object { $_.BusType -eq 'File Backed Virtual' } | ForEach-Object { try { $_ | Get-DiskImage -ErrorAction Stop } catch { } } |
+            Where-Object { $_.ImagePath -and $_.ImagePath.StartsWith($work, [StringComparison]::OrdinalIgnoreCase) })
+        foreach ($image in $left) {
+            $disk = $image | Get-Disk
+            $result.findings += "the run left $($image.ImagePath) attached (disk $($disk.Number), offline=$($disk.IsOffline), read-only=$($disk.IsReadOnly))"
+            Say "  FINDING: the run left $($image.ImagePath) attached (offline=$($disk.IsOffline), read-only=$($disk.IsReadOnly)); detached"
+            try { Dismount-DiskImage -ImagePath $image.ImagePath | Out-Null } catch { Say "  could not detach it: $_" }
+        }
         Remove-SoakDisk $vhd
         Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $work) { Say "  the working storage $work could not be removed entirely" }
         $results.Add([pscustomobject]$result)
         ([pscustomobject]$result | ConvertTo-Json -Compress) | Add-Content -LiteralPath (Join-Path $Records 'rounds.jsonl') -Encoding utf8
     }
@@ -389,8 +413,9 @@ for ($round = 1; ; $round++) {
 }
 
 $lines = @('| Round | Profile | Seed | NTFS / ReFS clusters | Hold or end | Seconds | Outcome |', '|---|---|---|---|---|---|---|')
-foreach ($r in $results) { $lines += "| $($r.round) | $($r.profile) | $($r.seed) | $($r.ntfs_cluster) / $($r.refs_cluster) | $(if ($r.hold_at) { $r.hold_at } elseif ($r.end_after_seconds) { "$($r.end_after_seconds) s" } else { '' }) | $($r.convert_seconds) | $($r.outcome)$(if ($r.detail) { ': ' + ($r.detail -replace '\|', '/') }) |" }
-$headline = "soak: $($results.Count) rounds in $([Math]::Round(((Get-Date) - $started).TotalMinutes)) minutes, $(@($results | Where-Object outcome -ne 'FAILED').Count) passed$(if ($failed) { "; round $($failed.round) failed (reproduce: -Profile $($failed.profile) -Seed $($failed.seed) -Rounds 1)" })"
+foreach ($r in $results) { $lines += "| $($r.round) | $($r.profile) | $($r.seed) | $($r.ntfs_cluster) / $($r.refs_cluster) | $(if ($r.hold_at) { $r.hold_at } elseif ($r.end_after_seconds) { "$($r.end_after_seconds) s" } else { '' }) | $($r.convert_seconds) | $($r.outcome)$(if ($r.detail) { ': ' + ($r.detail -replace '\|', '/') })$(if ($r.findings) { '; findings: ' + (($r.findings -join '; ') -replace '\|', '/') }) |" }
+$findings = @($results | Where-Object { $_.findings })
+$headline = "soak: $($results.Count) rounds in $([Math]::Round(((Get-Date) - $started).TotalMinutes)) minutes, $(@($results | Where-Object outcome -ne 'FAILED').Count) passed$(if ($findings) { ", $($findings.Count) with findings" })$(if ($failed) { "; round $($failed.round) failed (reproduce: -Profile $($failed.profile) -Seed $($failed.seed) -Rounds 1)" })"
 $headline
 $lines
 if ($env:GITHUB_STEP_SUMMARY) { (@("### $headline", '') + $lines) | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Encoding utf8 }

@@ -106,7 +106,8 @@ pub(crate) fn memory_refusal(needed: u64, free: u64, limit: Option<u64>) -> Stri
         // thirds of the free memory it needs.
         Some(limit) if free_memory_for(limit) <= free => format!(
             "a conversion of this volume needs a memory limit of about {} MiB, and --memory-limit gives it {} MiB. Give it more, or leave the limit out",
-            (needed / 3 * 2) >> 20,
+            // Rounded up: a limit of the figure given has to be enough.
+            (needed / 3 * 2).div_ceil(1 << 20),
             limit >> 20
         ),
         _ => format!(
@@ -163,8 +164,15 @@ pub(crate) fn refuse_frozen_source(raw: &PagedInspection, ram_bytes: u64) -> Res
         }
     }
     let needed = ledger_needed(raw.file_count(), files, directories, streams);
-    if needed > ram_bytes {
-        match short_of_memory(free_memory_for(needed), free_memory_for(ram_bytes)) {
+    // A run held to a limit is measured against the limit, which is what
+    // the estimate asks for: the ledger's own budget is the limit less what
+    // the run's records take, and a run given exactly the limit it was
+    // told to have was refused for that difference (1,517 MiB of a limit
+    // of 1,619, the lab's Windows volume).
+    let have =
+        n2r_win32::resource_native::memory_limit().map_or(ram_bytes, |limit| limit.max(ram_bytes));
+    if needed > have {
+        match short_of_memory(free_memory_for(needed), free_memory_for(have)) {
             Short::GoesOn(note) => println!("Note: {note}"),
             Short::Refused(refusal) => bail!(
                 "the volume has {files} file(s), {directories} directories and {streams} data stream(s): {refusal}. Nothing on it was changed"

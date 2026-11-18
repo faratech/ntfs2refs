@@ -944,7 +944,7 @@ mod tests {
         let said = memory_refusal(10_150 * MIB, 3_072 * MIB, Some(2_048 * MIB));
         assert!(
             said.contains(
-                "needs a memory limit of about 6766 MiB, and --memory-limit gives it 2048 MiB"
+                "needs a memory limit of about 6767 MiB, and --memory-limit gives it 2048 MiB"
             ),
             "{said}"
         );

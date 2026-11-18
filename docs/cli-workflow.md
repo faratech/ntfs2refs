@@ -326,6 +326,20 @@ Refused before anything is written, each with what was found and what to do:
 
 `--diagnose` reports the same without converting.
 
+### Windows' drive optimization
+
+Windows optimizes drives on a schedule (the `ScheduledDefrag` task), ReFS
+volumes too. When it ran on the volumes a conversion was reading and writing,
+a pass stalled for a quarter of an hour in the lab (#132). A run that sees
+`defrag.exe` running says so once and goes on; the optimization stops by
+itself. To keep it from starting during a conversion, disable the task first
+and enable it afterwards:
+
+```powershell
+schtasks /Change /TN "\Microsoft\Windows\Defrag\ScheduledDefrag" /Disable
+schtasks /Change /TN "\Microsoft\Windows\Defrag\ScheduledDefrag" /Enable
+```
+
 ### How large a volume can be
 
 There is no fixed limit. Memory and working storage decide how many files,

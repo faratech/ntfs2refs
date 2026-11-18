@@ -237,7 +237,8 @@ function Stop-RoundVm([string]$name) {
 # gigabyte to spare for what changes meanwhile, and each one before it
 # takes its 8 GB and half a gigabyte more.
 function Get-FreeGB { (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB }
-function Get-DataVmCount([double]$freeGB) { [math]::Max(0, [math]::Min($DataVm.Count, [math]::Floor(($freeGB - 2.5) / 8.5))) }
+# (The host keeps 8 GB, as the attempts themselves hold it to: counting 2.5 GB had a second data VM start its attempt and wait for memory the fixtures held.)
+function Get-DataVmCount([double]$freeGB) { [math]::Max(0, [math]::Min($DataVm.Count, [math]::Floor(($freeGB - 8) / 8.5))) }
 
 $fixtureJob = $null
 try {

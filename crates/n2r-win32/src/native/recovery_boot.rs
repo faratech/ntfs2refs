@@ -14,11 +14,17 @@ use std::{
     time::Duration,
 };
 mod bcd_device;
+mod cancel;
 mod cold;
 mod fat;
 mod metadata;
 mod native;
 mod offreg;
+pub use cancel::{
+    RecoveryBootCancellationReceipt, RecoveryBootSelectionState,
+    cancel_recovery_boot_in_recovery_environment, cancel_recovery_boot_in_windows,
+    observe_recovery_boot_in_windows,
+};
 pub use cold::{RecoveryBootGuard, RecoveryBootGuardFacts, RecoveryBootRestorationReceipt};
 use metadata::{EfiIdentity, StorePin};
 const BOOTMGR: &str = "{9dea862c-5cdd-4e70-acc1-f32b344d4795}";

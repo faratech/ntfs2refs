@@ -1011,7 +1011,7 @@ pub(super) fn verify_cold_options(
     )?;
     require_j_route(one(options, "ramdisksdidevice")?, &intent.journal)
 }
-fn verify_cold_loader(
+pub(super) fn verify_cold_loader(
     fields: &BTreeMap<String, Vec<String>>,
     intent: &BootIntent,
     sha: [u8; 32],
@@ -1061,7 +1061,7 @@ pub struct RecoveryBootRestorationReceipt {
     pub normal_boot_observed: bool,
     pub source_writer_authority: bool,
 }
-fn restore_checkpoint(
+pub(super) fn restore_checkpoint(
     observer: &mut impl crate::partition_restoration::PartitionRestorationObserver,
     phase: &'static str,
     events: &mut Vec<NativeEvent>,

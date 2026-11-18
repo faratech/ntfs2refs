@@ -37,6 +37,7 @@ pub mod general_layout;
 pub mod io_profile;
 #[cfg(windows)]
 pub mod journal_file;
+pub mod lab_fail;
 pub mod lab_hold;
 pub mod layout;
 #[cfg(windows)]

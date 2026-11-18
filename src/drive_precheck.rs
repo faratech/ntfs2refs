@@ -605,6 +605,20 @@ fn read(
         .try_into()
         .ok()
         .context("the inspection's checksum is not 32 bytes")?;
+    // A run that fits itself to the machine is sized by this volume from
+    // here on: its budget, and the admission below, are no smaller than
+    // what the volume wants.
+    let resources = if n2r_win32::resource_native::memory_fits_the_machine() {
+        n2r_win32::resource_native::want_memory(crate::run_memory::ledger_needed(
+            raw.file_count(),
+            files,
+            directories,
+            streams,
+        ));
+        super::resource::budget(available, resources.scratch_bytes, 0)?
+    } else {
+        resources
+    };
     match SourceResourceAdmission::new(
         sha,
         header.mft_record_count,

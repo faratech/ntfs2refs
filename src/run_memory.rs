@@ -128,15 +128,14 @@ pub(crate) enum Short {
 /// A volume needs `needed` bytes of free memory and `free` are free.
 ///
 /// A run whose user set a limit is held to it and refused. A run without
-/// one fits itself to the machine: it goes ahead and takes what is beyond
-/// its share of the free memory from the page file, as long as Windows can
-/// commit what the volume needs at all. It is told that it will be slower.
+/// one fits itself to the machine: the figure is advice. It goes ahead,
+/// takes what is beyond its share of the free memory from the page file,
+/// and is told that it will be slower. It stops for memory only where
+/// Windows has none left to commit, which the ledger finds out when it
+/// asks, not this estimate beforehand.
 pub(crate) fn short_of_memory(needed: u64, free: u64) -> Short {
     let limit = n2r_win32::resource_native::memory_limit();
-    // What the run's ledger must hold is two thirds of the free memory the
-    // estimate asks; that much must be committable.
-    let committable = n2r_win32::resource_native::committable_bytes().unwrap_or(0);
-    if n2r_win32::resource_native::memory_fits_the_machine() && committable >= needed / 3 * 2 {
+    if n2r_win32::resource_native::memory_fits_the_machine() {
         Short::GoesOn(format!(
             "this volume wants about {} MiB of free memory, and {} MiB are free. The conversion goes ahead and takes the rest from the page file, which makes it slower; closing other programs first makes it faster.",
             needed >> 20,

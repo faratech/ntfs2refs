@@ -51,6 +51,10 @@ pub(super) fn budget(
                 evidence_ram >> 20
             )
         })?;
+    // A run that fits itself to the machine is sized by its volume where
+    // that is known: no smaller than what the volume wants, whatever is
+    // free. What is beyond the free memory comes from the page file.
+    let ram = ram.max(n2r_win32::resource_native::memory_wanted());
     let page = (ram / 512).clamp(256, n2r_win32::tree_resources::METADATA_PAGE_BYTES as u64) as u32;
     let result = ResourceBudget {
         schema_version: 1,

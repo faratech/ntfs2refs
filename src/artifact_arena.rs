@@ -100,6 +100,8 @@ struct State {
     prepared_closed: bool,
 }
 struct Inner {
+    // Two thirds of the memory that was free when the ledger was made.
+    cache_basis_bytes: u64,
     root: PathBuf,
     root_guid: String,
     allocation_slack: u64,
@@ -967,8 +969,10 @@ impl ArtifactArena {
         let available = n2r_win32::resource_native::observe_available_resources(root)?;
         if resuming {
             ensure!(
-                budget.ram_bytes <= available.available_physical_bytes
-                    && budget.scratch_bytes <= available.scratch_total_bytes,
+                n2r_win32::resource_native::memory_is_there(
+                    budget.ram_bytes,
+                    available.available_physical_bytes
+                ) && budget.scratch_bytes <= available.scratch_total_bytes,
                 "resume arena exceeds actual RAM or total working-volume capacity"
             );
         } else {
@@ -995,6 +999,9 @@ impl ArtifactArena {
             "arena retained configuration exceeds RAM budget"
         );
         let arena = Self(Arc::new(Inner {
+            cache_basis_bytes: (available.available_physical_bytes
+                - available.available_physical_bytes / 3)
+                .max(budget.ram_bytes.min(64 << 20)),
             root: fs::canonicalize(root)?,
             root_guid,
             allocation_slack,
@@ -1682,8 +1689,14 @@ impl ArtifactArena {
                 <= self.0.budget.ram_bytes / 2
         })
     }
+    /// The most the ledger may hold with a cache in it: seven eighths of
+    /// the budget, and no more than seven eighths of two thirds of the
+    /// memory that was free when the ledger was made. A budget made larger
+    /// than that for the volume's sake is for what the run cannot do
+    /// without; a cache held in the page file would make nothing faster.
     fn cache_ceiling(&self) -> u64 {
-        self.0.budget.ram_bytes - self.0.budget.ram_bytes / 8
+        let basis = self.0.budget.ram_bytes.min(self.0.cache_basis_bytes);
+        basis - basis / 8
     }
     fn reserve_cache_ram_at(&self, bytes: u64, site: RamSite) -> Result<ArenaRamLease> {
         let mut state = self

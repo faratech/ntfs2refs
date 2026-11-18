@@ -50,6 +50,39 @@ pub fn memory_fits_the_machine() -> bool {
     FITS_THE_MACHINE.load(Ordering::SeqCst) && memory_limit().is_none()
 }
 
+/// What the volume of this run wants its ledger to hold, where that is
+/// known before the run's budget is made; 0 where it is not.
+static MEMORY_WANTED: AtomicU64 = AtomicU64::new(0);
+
+/// A run that fits itself to the machine is told what its volume wants.
+/// Its budget is then made no smaller than that (`memory_wanted`), so that
+/// the shares of the budget that bound a volume's size (its indexes, its
+/// open handles, its longest row) are sized by the volume and not by what
+/// happened to be free. Only ever raised.
+pub fn want_memory(bytes: u64) {
+    MEMORY_WANTED.fetch_max(bytes, Ordering::SeqCst);
+}
+
+/// What `want_memory` was told, for a run that fits itself to the machine;
+/// 0 for one that keeps to its budget or to a limit.
+pub fn memory_wanted() -> u64 {
+    if memory_fits_the_machine() {
+        MEMORY_WANTED.load(Ordering::SeqCst)
+    } else {
+        0
+    }
+}
+
+/// Whether a budget of `ram_bytes` can be had with `physical` bytes of
+/// memory free. A run that keeps to its budget or to a limit needs the
+/// memory to be free. One that fits itself to the machine needs Windows to
+/// be able to commit it, from memory and page file together: it is slower
+/// with less free, and is not refused for that.
+pub fn memory_is_there(ram_bytes: u64, physical: u64) -> bool {
+    ram_bytes <= physical
+        || (memory_fits_the_machine() && committable_bytes().is_ok_and(|can| ram_bytes <= can))
+}
+
 /// What Windows can still commit to this process: free memory and free
 /// page file together.
 pub fn committable_bytes() -> io::Result<u64> {
@@ -138,7 +171,7 @@ impl AvailableResources {
     /// Ongoing allocation/IO failures still fail closed; sampling reserves none.
     pub fn validate_budget(self, budget: crate::tree_resources::ResourceBudget) -> io::Result<()> {
         budget.validate()?;
-        if budget.ram_bytes > self.available_physical_bytes
+        if !memory_is_there(budget.ram_bytes, self.available_physical_bytes)
             || budget.scratch_bytes > self.scratch_available_bytes
         {
             return Err(io::Error::other(format!(

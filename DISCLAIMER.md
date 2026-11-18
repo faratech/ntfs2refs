@@ -5,6 +5,7 @@ this warning:
 
 ```
 WARNING: NTFS2REFS IS EXPERIMENTAL SOFTWARE.
+FOR EVALUATION AND TESTING ONLY. DO NOT USE IT IN PRODUCTION.
 
 IT REWRITES THE FILE SYSTEM OF A VOLUME IN PLACE, FROM NTFS TO REFS.
 IT HAS BEEN TESTED ONLY ON VIRTUAL DISKS IN A LABORATORY. A FAULT IN
@@ -14,6 +15,14 @@ BACK UP EVERYTHING ON THE VOLUME, AND CHECK THAT YOU CAN RESTORE THE
 BACKUP, BEFORE YOU CONVERT. YOU USE THIS SOFTWARE ENTIRELY AT YOUR OWN
 RISK. IT COMES WITH NO WARRANTY OF ANY KIND. READ DISCLAIMER.md.
 ```
+
+## For evaluation and testing only
+
+The [LICENSE](LICENSE) is a temporary evaluation licence: it lets you run the
+software to evaluate and test it, on computers, disks and data that are not
+in production use and that you are prepared to lose. It does not permit
+production use, modification or redistribution, and Fara Technologies LLC may
+withdraw it at any time.
 
 ## What "experimental" means here
 

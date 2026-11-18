@@ -1,9 +1,10 @@
 # ntfs2refs
 
-> **WARNING: EXPERIMENTAL SOFTWARE. IT REWRITES A VOLUME'S FILE SYSTEM IN
-> PLACE AND HAS BEEN TESTED ONLY ON VIRTUAL DISKS IN A LABORATORY. BACK UP
-> EVERYTHING FIRST AND CHECK THAT THE BACKUP RESTORES. NO WARRANTY OF ANY
-> KIND: READ [DISCLAIMER.md](DISCLAIMER.md).**
+> **WARNING: EXPERIMENTAL SOFTWARE, FOR EVALUATION AND TESTING ONLY. DO NOT
+> USE IT IN PRODUCTION. IT REWRITES A VOLUME'S FILE SYSTEM IN PLACE AND HAS
+> BEEN TESTED ONLY ON VIRTUAL DISKS IN A LABORATORY. BACK UP EVERYTHING FIRST
+> AND CHECK THAT THE BACKUP RESTORES. NO WARRANTY OF ANY KIND: READ
+> [DISCLAIMER.md](DISCLAIMER.md) AND [LICENSE](LICENSE).**
 
 Converts an NTFS volume to ReFS in place, on the Windows machine that owns the
 disk. File data stays where it is on the disk wherever ReFS can use it there;
@@ -168,7 +169,9 @@ and builds; they do not describe this one.
 
 ## Licence
 
-Copyright (c) 2026 Fara Technologies LLC. All rights reserved: no permission
-is granted to copy, modify, distribute or use this software without the
-copyright holder's prior written consent. See [LICENSE](LICENSE) and
+A temporary evaluation licence, copyright (c) 2026 Fara Technologies LLC, all
+rights reserved: the software may be run to evaluate and test it, on systems
+and data that are not in production use, and for nothing else; it may not be
+modified or redistributed; the licence can be withdrawn at any time. **Do not
+use it in production.** See [LICENSE](LICENSE) and
 [DISCLAIMER.md](DISCLAIMER.md).

@@ -146,7 +146,7 @@ try {
 $deadline = (Get-Date).AddMinutes($AwayMinutes)
 Start-Sleep -Seconds 45
 if ($HoldAt) {
-    Say "hold at $HoldAt: the VM is turned off $CutAfterMinutes minutes after the restart"
+    Say "hold at ${HoldAt}: the VM is turned off $CutAfterMinutes minutes after the restart"
     Start-Sleep -Seconds ($CutAfterMinutes * 60)
     $shot = Join-Path $records 'at-cut.png'
     Stop-VM -VM (Get-LabVm) -TurnOff -Force

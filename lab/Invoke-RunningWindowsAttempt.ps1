@@ -143,6 +143,14 @@ try {
         (& C:\n2r\ntfs2refs.exe @arguments 2>&1 | Out-String)
     }
     [IO.File]::WriteAllText((Join-Path $records 'windows-side.txt'), $said, [Text.UTF8Encoding]::new($false))
+    # A refusal in Windows changes nothing and restarts nothing: say it and stop.
+    if ($said -notmatch 'Restarting in') {
+        $refusal = ($said -split "`n" | Where-Object { $_ -match '^error:' } | Select-Object -First 1)
+        $verdict.outcome = 'REFUSED-IN-WINDOWS'; $verdict.refusal = "$refusal".Trim()
+        [IO.File]::WriteAllText((Join-Path $records 'verdict.json'), ($verdict | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
+        Say "refused in Windows, nothing restarted: $($verdict.refusal)"
+        return
+    }
     if ($Hold) { $null = Invoke-Command -Session $session -ArgumentList "$runs\n2r-running\hold.flag" -ScriptBlock { param($f) Set-Content -LiteralPath $f -Value hold }; Say 'hold: the recovery environment stops at a command prompt'; return }
     Say 'the run staged the recovery environment and restarted the machine'
 } finally { Remove-PSSession $session -ErrorAction SilentlyContinue }

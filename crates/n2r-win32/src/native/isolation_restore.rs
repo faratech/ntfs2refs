@@ -255,11 +255,14 @@ impl GeneralFrozenPartition {
             set_attributes(&management, OFFLINE | READ_ONLY, events)?;
             let frozen = general_disk_state(&management, &binding, events)?;
             if frozen.disk_attributes != OFFLINE | READ_ONLY || !same_layout(&frozen, &pre_lock) {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, format!(
-                    "general disk exclusion or identity changed on disk {}: {}",
-                    binding.disk_number,
-                    frozen.difference_from(&pre_lock, OFFLINE | READ_ONLY)
-                )));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "general disk exclusion or identity changed on disk {}: {}",
+                        binding.disk_number,
+                        frozen.difference_from(&pre_lock, OFFLINE | READ_ONLY)
+                    ),
+                ));
             }
             let readonly = device_file(
                 &format!("\\\\.\\PhysicalDrive{}", binding.disk_number),

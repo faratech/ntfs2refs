@@ -673,8 +673,7 @@ mod windows {
         // capture with 39.8 (runc-cut-midranges) and 13 (runc-convert2). So:
         // twice what is in use, plus that reserve, checked here before the
         // restart instead of found out 15 minutes after it.
-        let windows_space =
-            n2r_win32::discovery::observe_volume_space(&format!("{letter}:\\"))?;
+        let windows_space = n2r_win32::discovery::observe_volume_space(&format!("{letter}:\\"))?;
         let in_use = windows_space
             .total_bytes_available_to_caller
             .saturating_sub(windows_space.total_free_bytes);
@@ -732,11 +731,14 @@ mod windows {
                 })
             })
             .map(|disk| disk.disk_number)
-            .with_context(|| format!("the disk of {scratch_root} could not be found. Nothing was changed."))?;
+            .with_context(|| {
+                format!("the disk of {scratch_root} could not be found. Nothing was changed.")
+            })?;
         let scratch_disk_id = identity_of(scratch_disk)
             .with_context(|| format!("disk {scratch_disk} has neither a GPT GUID nor an MBR signature. Nothing was changed."))?;
-        let windows_disk_id = identity_of(selected.disk_number)
-            .context("the Windows disk has neither a GPT GUID nor an MBR signature. Nothing was changed.")?;
+        let windows_disk_id = identity_of(selected.disk_number).context(
+            "the Windows disk has neither a GPT GUID nor an MBR signature. Nothing was changed.",
+        )?;
         ensure!(
             boot_disk != selected.disk_number,
             "--boot-partition {boot}: is on disk {boot_disk}, the Windows disk; it has to be on another disk, which can stay online while the Windows disk is offline. Nothing was changed."

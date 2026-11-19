@@ -126,12 +126,11 @@ pub use attestation_native::collect_file_metadata;
 mod native;
 #[cfg(windows)]
 pub use native::BootStorageHintNormalization;
-pub use native::bring_disk_online_for_admission;
-pub use native::restore_writer_state_in_recovery_environment;
 #[cfg(windows)]
 pub use native::PartitionMixedReplayGate;
 #[cfg(windows)]
 pub use native::PartitionTerminalNativeObservation;
+pub use native::bring_disk_online_for_admission;
 #[cfg(windows)]
 pub use native::forbid_disk_state_changes;
 pub use native::forbid_raw_write_activation;
@@ -143,6 +142,7 @@ pub use native::partition_isolation;
 pub use native::partition_lifecycle;
 #[cfg(windows)]
 pub use native::partition_restoration;
+pub use native::restore_writer_state_in_recovery_environment;
 #[cfg(windows)]
 pub use native::{
     BorrowedPagedWriter, DriveLetterRestore, GeneralAllocationPhase, GeneralAllocationSnapshot,

@@ -166,7 +166,11 @@ impl GeneralDiskState {
             ("partition layout", &self.gpt_layout, &before.gpt_layout),
         ] {
             if now != was {
-                parts.push(format!("{name} changed ({} bytes, were {})", now.len(), was.len()));
+                parts.push(format!(
+                    "{name} changed ({} bytes, were {})",
+                    now.len(),
+                    was.len()
+                ));
             }
         }
         parts.join("; ")
@@ -908,9 +912,12 @@ pub fn restore_writer_state_in_recovery_environment(disk_number: u32) -> io::Res
     let mut events = Vec::new();
     let before = attributes(&file, &mut events)?;
     if before != OFFLINE | READ_ONLY {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, format!(
-            "disk {disk_number} has attributes {before:#x}, not the offline and read-only state the environment starts it in"
-        )));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "disk {disk_number} has attributes {before:#x}, not the offline and read-only state the environment starts it in"
+            ),
+        ));
     }
     set_attributes(&file, OFFLINE, &mut events)?;
     Ok(())
@@ -927,7 +934,10 @@ pub fn bring_disk_online_for_admission(disk_number: u32) -> io::Result<u64> {
         .map_err(|e| io::Error::new(e.kind(), format!("opening disk {disk_number}: {e}")))?;
     let mut events = Vec::new();
     set_attributes(&file, 0, &mut events).map_err(|e| {
-        io::Error::new(e.kind(), format!("bringing disk {disk_number} online and writable: {e}"))
+        io::Error::new(
+            e.kind(),
+            format!("bringing disk {disk_number} online and writable: {e}"),
+        )
     })?;
     attributes(&file, &mut events)
 }
@@ -2625,11 +2635,14 @@ impl GeneralFrozenPartition {
             || frozen.alignment != pre_lock.alignment
             || frozen.gpt_layout != pre_lock.gpt_layout
         {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, format!(
-                "general disk exclusion or identity changed on disk {}: {}",
-                binding.disk_number,
-                frozen.difference_from(&pre_lock, OFFLINE | READ_ONLY)
-            )));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "general disk exclusion or identity changed on disk {}: {}",
+                    binding.disk_number,
+                    frozen.difference_from(&pre_lock, OFFLINE | READ_ONLY)
+                ),
+            ));
         }
         close_file(management, "close-general-management", events)?;
         let file = device_file(

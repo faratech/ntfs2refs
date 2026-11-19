@@ -284,8 +284,9 @@ pub fn stage_and_restart(request: &Request<'_>) -> Result<()> {
         scratch_letter != windows,
         "the working directory is on the Windows volume that is converted; give one on another disk"
     );
-    let boot_fs = file_system_of(boot)
-        .with_context(|| format!("the file system of the boot partition {boot}: could not be read"))?;
+    let boot_fs = file_system_of(boot).with_context(|| {
+        format!("the file system of the boot partition {boot}: could not be read")
+    })?;
     ensure!(
         boot_fs == "FAT32",
         "the boot partition {boot}: is {boot_fs}; the firmware starts only from FAT32. Format a partition of another disk (a USB stick will do, 100 MB or more) as FAT32 and give its drive letter. Nothing was changed."
@@ -341,11 +342,21 @@ pub fn stage_and_restart(request: &Request<'_>) -> Result<()> {
     let pointed = (|| -> Result<()> {
         tool(
             "bcdedit.exe",
-            &["/set", &firmware_entry, "device", &format!("partition={boot}:")],
+            &[
+                "/set",
+                &firmware_entry,
+                "device",
+                &format!("partition={boot}:"),
+            ],
         )?;
         tool(
             "bcdedit.exe",
-            &["/set", &firmware_entry, "path", r"\EFI\Microsoft\Boot\bootmgfw.efi"],
+            &[
+                "/set",
+                &firmware_entry,
+                "path",
+                r"\EFI\Microsoft\Boot\bootmgfw.efi",
+            ],
         )?;
         Ok(())
     })();
@@ -440,8 +451,7 @@ pub fn stage_and_restart(request: &Request<'_>) -> Result<()> {
         edited.context("adding the start script to the recovery image")?;
         unmounted?;
         let _ = fs::remove_dir(&mount);
-        let system_root =
-            std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_owned());
+        let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_owned());
         fs::copy(
             Path::new(&system_root).join(r"Boot\DVD\EFI\boot.sdi"),
             directory.join("boot.sdi"),
@@ -493,15 +503,20 @@ pub fn stage_and_restart(request: &Request<'_>) -> Result<()> {
         // Last: the boot partition becomes the firmware's first choice.
         tool(
             "bcdedit.exe",
-            &["/set", "{fwbootmgr}", "displayorder", &firmware_entry, "/addfirst"],
+            &[
+                "/set",
+                "{fwbootmgr}",
+                "displayorder",
+                &firmware_entry,
+                "/addfirst",
+            ],
         )?;
         Ok(())
     })();
     if let Err(error) = armed {
         remove_firmware_entry(&firmware_entry);
-        return Err(error.context(
-            "staging the recovery environment; the firmware's boot order is as it was",
-        ));
+        return Err(error
+            .context("staging the recovery environment; the firmware's boot order is as it was"));
     }
     // Staged here, in Windows, before anything is converted: the report opens
     // at the first logon afterwards, from the working disk.
@@ -621,10 +636,12 @@ fn run_converter(
         .arg(scratch.join("conversion"))
         .args(&session.converter_args)
         .stdout(Stdio::piped())
-        .stderr(match fs::File::create(directory.join("converter-errors.txt")) {
-            Ok(file) => Stdio::from(file),
-            Err(_) => Stdio::inherit(),
-        })
+        .stderr(
+            match fs::File::create(directory.join("converter-errors.txt")) {
+                Ok(file) => Stdio::from(file),
+                Err(_) => Stdio::inherit(),
+            },
+        )
         .spawn();
     let mut child = match child {
         Ok(child) => child,
@@ -887,8 +904,14 @@ fn run_or_recover(
 pub fn disk_identity(disk: &n2r_win32::drive_inventory::DiskInventory) -> Option<String> {
     disk.disk_guid
         .as_deref()
-        .map(|guid| guid.trim_matches(|c| c == '{' || c == '}').to_ascii_uppercase())
-        .or_else(|| disk.mbr_signature.map(|signature| format!("{signature:08X}")))
+        .map(|guid| {
+            guid.trim_matches(|c| c == '{' || c == '}')
+                .to_ascii_uppercase()
+        })
+        .or_else(|| {
+            disk.mbr_signature
+                .map(|signature| format!("{signature:08X}"))
+        })
 }
 
 /// Brings the disk with this identity online and writable (`diskpart`).
@@ -958,8 +981,7 @@ pub fn run_session(session_path: &Path) -> Result<u8> {
 fn run_session_inner(session_path: &Path) -> Result<u8> {
     let session: Session = serde_json::from_slice(&fs::read(session_path)?)
         .with_context(|| format!("reading {}", session_path.display()))?;
-    online_disk(&session.scratch_disk_id)
-        .context("bringing the working disk online")?;
+    online_disk(&session.scratch_disk_id).context("bringing the working disk online")?;
     // The disks there at the start stay as the image's policy left them
     // (the Windows disk offline); a disk that arrives from now on, the run's
     // own virtual disk, comes online (runc-cut-apply-8: "The media is write
@@ -1086,7 +1108,9 @@ mod tests {
     #[test]
     fn the_start_script_runs_the_converter_inside_the_image() {
         let text = script("{00000000-0000-0000-0000-000000000000}");
-        assert!(text.contains(r"X:\n2r\ntfs2refs.exe --running-windows-session X:\n2r\session.json"));
+        assert!(
+            text.contains(r"X:\n2r\ntfs2refs.exe --running-windows-session X:\n2r\session.json")
+        );
         assert!(text.contains(
             "bcdedit /set {fwbootmgr} displayorder {00000000-0000-0000-0000-000000000000} /remove"
         ));

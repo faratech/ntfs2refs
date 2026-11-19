@@ -1096,7 +1096,8 @@ mod capture {
                     let mut ordinary = 0usize;
                     for entry in &set.entries {
                         let name = entry.name.to_ascii_uppercase();
-                        if name.starts_with(b"$KERNEL.PURGE.") || name == b"$KERNEL.CFDONOTCONVERT" {
+                        if name.starts_with(b"$KERNEL.PURGE.") || name == b"$KERNEL.CFDONOTCONVERT"
+                        {
                             record.kernel_cache_attributes += 1;
                             continue;
                         }

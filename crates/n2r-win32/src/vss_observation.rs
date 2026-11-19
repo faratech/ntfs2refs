@@ -748,8 +748,7 @@ impl Observation {
                 return self.source_volume_guid == other.source_volume_guid
                     && a.directory_present == b.directory_present
                     && a.diff_area_files.len() == b.diff_area_files.len()
-                    && a
-                        .diff_area_files
+                    && a.diff_area_files
                         .iter()
                         .zip(&b.diff_area_files)
                         .all(|(x, y)| x.name == y.name && x.bytes == y.bytes);
@@ -1108,9 +1107,8 @@ fn observe_offline(source: String) -> io::Result<Observation> {
     let present = match std::fs::read_dir(&directory) {
         Ok(entries) => {
             for entry in entries {
-                let entry = entry.map_err(|e| {
-                    io::Error::new(e.kind(), format!("listing {directory}: {e}"))
-                })?;
+                let entry = entry
+                    .map_err(|e| io::Error::new(e.kind(), format!("listing {directory}: {e}")))?;
                 let name = entry.file_name().to_string_lossy().into_owned();
                 if name.to_ascii_lowercase().ends_with(DIFF_AREA_SUFFIX) {
                     let bytes = entry
@@ -1126,7 +1124,9 @@ fn observe_offline(source: String) -> io::Result<Observation> {
         Err(e) => {
             return Err(io::Error::new(
                 e.kind(),
-                format!("the shadow-copy storage of the volume could not be read from {directory}: {e}"),
+                format!(
+                    "the shadow-copy storage of the volume could not be read from {directory}: {e}"
+                ),
             ));
         }
     };

@@ -666,11 +666,13 @@ mod windows {
             .volume_serial
             .map(crate::confirmation::format_volume_serial)
             .context("the volume's serial number could not be read")?;
-        // Working storage, measured in the lab: a run keeps about as much as
-        // the volume holds (runc-convert3: 19.7 GB for 19.6 GB in use) and one
-        // stopped 15 minutes in with 13 GB free for that volume
-        // (runc-convert2). Half as much again as the volume holds is asked
-        // for here, before the restart, instead of finding out after it.
+        // Working storage, measured in the lab on a volume with 19.6 GiB in
+        // use: the shadow and its capture take about twice that, and the run
+        // keeps a quarter of what is free (at most 16 GiB) untouched besides.
+        // It converted with 59.5 GiB free (runc-convert3) and stopped in its
+        // capture with 39.8 (runc-cut-midranges) and 13 (runc-convert2). So:
+        // twice what is in use, plus that reserve, checked here before the
+        // restart instead of found out 15 minutes after it.
         let windows_space =
             n2r_win32::discovery::observe_volume_space(&format!("{letter}:\\"))?;
         let in_use = windows_space
@@ -683,7 +685,8 @@ mod windows {
         };
         let scratch_space = n2r_win32::discovery::observe_volume_space(&scratch_root)
             .with_context(|| format!("the free space of {scratch_root} could not be read"))?;
-        let wanted = in_use.saturating_add(in_use / 2);
+        let twice = in_use.saturating_mul(2);
+        let wanted = twice.saturating_add((twice / 3).min(16 << 30));
         let gib = |bytes: u64| bytes as f64 / (1u64 << 30) as f64;
         ensure!(
             scratch_space.available_bytes_to_caller >= wanted,

@@ -166,16 +166,21 @@ if ($HoldAt) {
     $parkDeadline = (Get-Date).AddMinutes($CutAfterMinutes)
     $quiet = 0
     Start-Sleep -Seconds 300
+    $windowsBack = $false
     while ((Get-Date) -lt $parkDeadline -and $quiet -lt 4) {
         Start-Sleep -Seconds 30
+        # The environment has no integration services: a heartbeat means the
+        # run ended early and Windows is back; there is nothing to cut.
+        if ((Get-VMIntegrationService -VM (Get-LabVm) -Name 'Heartbeat').PrimaryStatusDescription -eq 'OK') { $windowsBack = $true; break }
         if ((Get-LabVm).CPUUsage -le 1) { $quiet++ } else { $quiet = 0 }
     }
-    Say $(if ($quiet -ge 4) { 'the converter is parked at the hold' } else { 'the deadline came first' })
-    $shot = Join-Path $records 'at-cut.png'
+    Say $(if ($windowsBack) { 'Windows is back before the hold: the run ended early' } elseif ($quiet -ge 4) { 'the converter is parked at the hold' } else { 'the deadline came first' })
+    if (-not $windowsBack) {
     Stop-VM -VM (Get-LabVm) -TurnOff -Force
     Say "turned off (power cut); starting again, the run has to recover by itself"
     Start-VM -VM (Get-LabVm)
     $verdict.cut = @{ hold_at = $HoldAt; minutes = $CutAfterMinutes }
+    }
 }
 $back = $null
 $report = $null

@@ -62,11 +62,13 @@ ntfs2refs --drive E --scratch-directory S:\runs          # convert
 That is what ntfs2refs does. It is experimental: back up first.
 
 **Can it convert the drive Windows is running from?**
-Yes, through a restart: `ntfs2refs --drive C --scratch-directory E:\runs`
-(`E:` on another disk) stages the machine's own Windows Recovery Environment,
-restarts into it, converts the volume there and starts Windows again on ReFS.
-Needs the recovery environment turned on (`reagentc /info`), no BitLocker, and
-the working disk connected until Windows is back. Experimental: back up first.
+Yes, through a restart:
+`ntfs2refs --drive C --scratch-directory E:\runs --boot-partition B`.
+`E:` and `B:` are on another disk (a USB drive will do): `B:` is a FAT32
+partition the machine starts its own Windows Recovery Environment from, and
+the volume is converted there; Windows then starts again on ReFS. Needs the
+recovery environment turned on (`reagentc /info`) and no BitLocker. Experimental:
+back up first.
 
 **What does not come across?**
 What ReFS does not have: object IDs, NTFS compression and the change journal;

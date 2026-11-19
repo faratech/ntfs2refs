@@ -467,18 +467,41 @@ another machine).
 Environment (WinRE), with one command and a restart:
 
 ```powershell
-.\ntfs2refs.exe --drive C --scratch-directory E:\runs
+.\ntfs2refs.exe --drive C --scratch-directory E:\runs --boot-partition B
 ```
 
-`E:` is a volume of another disk that stays connected until Windows is back.
+Both live on another disk than Windows', which stays connected until Windows is
+back (one USB drive will do):
+
+- `E:` is an NTFS volume for the working files.
+- `B:` is a FAT32 partition of 100 MB or more. The machine starts the recovery
+  environment from it, because the disk a machine starts from cannot be taken
+  offline, and the conversion takes the Windows disk offline.
+
 The run stages the machine's `winre.wim` (found by `reagentc /info`) with a
-start script under `E:\runs\n2r-running`, makes its boot entry the default
-(the old default is written down) and restarts. In the environment the
-converter runs as it does for an installed Windows that is not running (below);
-it then puts the boot menu back and restarts into the converted Windows. Its
-report is `E:\runs\n2r-running\session-result.txt`. `--diagnose` works the
-same way and leaves the volume NTFS. Refused: Windows Recovery Environment
-turned off, a BitLocker volume, a working directory on the Windows volume.
+start script under `E:\runs\n2r-running`, writes boot files and a boot store of
+their own to `B:` (`bcdboot`), and puts a firmware entry for `B:` first in the
+firmware's boot order. Windows' own boot files and store are not changed. It
+then restarts. In the environment the converter runs as it does for an
+installed Windows that is not running (below). When it ends, the firmware entry
+leaves the boot order and the machine starts the converted Windows.
+
+- **Report:** `E:\runs\n2r-running\session-result.txt`, opened at the first
+  logon afterwards.
+- **If the conversion fails:** the run recovers at once from its own records,
+  forward or back to NTFS.
+- **If the machine loses power:** the next start goes back into the
+  environment, which recovers the same way.
+- **If the volume needs a person:** the environment keeps its entry first and
+  stops at a command prompt that says so.
+- **`--diagnose`:** works the same way and leaves the volume NTFS.
+- **Refused:** a Windows Recovery Environment that is turned off, a BitLocker
+  volume, a working directory on the Windows volume, and a boot partition that
+  is not FAT32 or that is on the Windows disk.
+
+Shown in the lab on a Windows 11 build 26300 VM (`runc-convert3`: C: ReFS and
+healthy afterwards, `sfc` and DISM clean; `runc-convert1`: power cut during
+preparation, recovered back to NTFS).
 
 ```powershell
 .\ntfs2refs.exe --list

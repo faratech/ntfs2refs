@@ -450,7 +450,7 @@ mod windows {
                 let conversion = drive_inventory::conversion_note(disk, part);
                 if part.contains_running_windows == Some(true) && conversion.is_none() {
                     notes.push(
-                        "running Windows: converts through a restart into its recovery environment (--drive, --scratch-directory)"
+                        "running Windows: converts through a restart into its recovery environment (--drive, --scratch-directory, --boot-partition)"
                             .into(),
                     );
                 }

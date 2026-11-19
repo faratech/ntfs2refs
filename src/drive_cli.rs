@@ -270,7 +270,10 @@ fn confirmation_prompt(mode: crate::execution_mode::ExecutionMode) -> &'static s
 
 impl DriveArgs {
     pub fn requested(&self) -> bool {
-        self.list || self.drive.is_some() || self.recover.is_some()
+        self.list
+            || self.drive.is_some()
+            || self.recover.is_some()
+            || self.running_windows_session.is_some()
     }
 
     /// What `--diagnose` cannot be combined with, and why. Diagnose never

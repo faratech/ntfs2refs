@@ -647,11 +647,14 @@ fn recover_from(
     note: &mut dyn FnMut(String),
 ) -> Recovered {
     let saved = directory.join(RECOVER_FILE);
+    // The working volume may have another letter on this start than on the
+    // one that printed the command: the directory is taken on this start's.
+    let recovery_directory = rebased(&command.directory, directory);
     let recover = |rollback: bool| -> bool {
         let mut process = Command::new(directory.join("ntfs2refs.exe"));
         process.args([
             "--recover",
-            &command.directory,
+            &recovery_directory,
             "--recovery-sha256",
             &command.sha256,
             "--yes",
@@ -678,6 +681,18 @@ fn recover_from(
         let _ = fs::rename(&saved, directory.join("recover-command.done.json"));
     }
     outcome
+}
+
+/// `recorded` (`D:\\runs\\...`) on the drive `here` is on, when the two
+/// differ only by their drive letter.
+fn rebased(recorded: &str, here: &Path) -> String {
+    let here = here.to_string_lossy();
+    match (recorded.as_bytes(), here.as_bytes()) {
+        ([_, b':', b'\\', ..], [h, b':', b'\\', ..]) if h.is_ascii_alphabetic() => {
+            format!("{}{}", *h as char, &recorded[1..])
+        }
+        _ => recorded.to_owned(),
+    }
 }
 
 /// The file system of a volume, from `fsutil`.
@@ -860,6 +875,18 @@ mod tests {
         let manager = "Windows Boot Manager\n--------\nidentifier              {bootmgr}\ndefault                 {current}\ntimeout                 30\n";
         assert_eq!(bcd_value(manager, "default").as_deref(), Some("{current}"));
         assert_eq!(bcd_value(manager, "displayorder"), None);
+    }
+
+    #[test]
+    fn a_recovery_directory_follows_the_working_volume_to_its_letter_on_this_start() {
+        assert_eq!(
+            rebased(r"D:\runs\conversion\x", Path::new(r"E:\runs\n2r-running")),
+            r"E:\runs\conversion\x"
+        );
+        assert_eq!(
+            rebased(r"\\?\Volume{1}\x", Path::new(r"E:\runs")),
+            r"\\?\Volume{1}\x"
+        );
     }
 
     #[test]

@@ -790,19 +790,26 @@ pub fn run_session(session_path: &Path) -> Result<u8> {
             .is_some_and(|serial| serial.eq_ignore_ascii_case(&session.volume_serial))
             && Path::new(&format!("{letter}:\\Windows\\System32\\ntoskrnl.exe")).exists()
     });
-    let code = match windows {
-        None => {
+    let scratch = directory
+        .parent()
+        .context("the staging directory has no parent")?;
+    // A run cut off while it wrote the volume leaves its disk offline and the
+    // volume half converted: it has no drive letter and no Windows to find.
+    // Its recovery command is what it is recovered from, never the letter
+    // (runc-cut-midranges-3 found no volume and restarted into a Windows that
+    // could not start).
+    let pending = directory.join(RECOVER_FILE).exists();
+    let code = match (windows, pending) {
+        (Some(letter), _) => run_or_recover(&directory, scratch, letter, &session, &mut note),
+        // The letter is used only to convert, which a pending recovery
+        // never does.
+        (None, true) => run_or_recover(&directory, scratch, '?', &session, &mut note),
+        (None, false) => {
             note(format!(
                 "No volume with serial {} and a Windows on it was found here; nothing was converted.",
                 session.volume_serial
             ));
             2
-        }
-        Some(letter) => {
-            let scratch = directory
-                .parent()
-                .context("the staging directory has no parent")?;
-            run_or_recover(&directory, scratch, letter, &session, &mut note)
         }
     };
     if code == NEEDS_ATTENTION {

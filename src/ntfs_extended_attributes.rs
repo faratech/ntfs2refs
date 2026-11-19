@@ -296,6 +296,13 @@ pub(crate) fn windows_target_projection(
 ) -> Result<(Set, Option<WindowsKernelPurgeEaNormalization>)> {
     const KERNEL: &[u8] = b"$Kernel";
     const PURGE: &[u8] = b"$Kernel.Purge.";
+    // The configuration manager marks the registry hives it loads so that
+    // cloud files never turn them into placeholders, and marks them again
+    // each time it loads them (seen on Windows 11 build 26300 on
+    // System32\config\COMPONENTS, value "CM"; absent after a restore,
+    // present after the next starts). Like the purge caches it is kernel
+    // state, not set from user mode, and comes back by itself.
+    const CF_DO_NOT_CONVERT: &[u8] = b"$Kernel.CFDoNotConvert";
     let raw = file_set(file)?;
     let mut omitted_count = 0usize;
     for entry in &raw.entries {
@@ -304,15 +311,18 @@ pub(crate) fn windows_target_projection(
             .get(..KERNEL.len())
             .is_some_and(|prefix| prefix.eq_ignore_ascii_case(KERNEL))
         {
+            let purge_cache = entry.name.len() > PURGE.len()
+                && entry
+                    .name
+                    .get(..PURGE.len())
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case(PURGE));
+            let hive_mark = entry.name.eq_ignore_ascii_case(CF_DO_NOT_CONVERT);
             ensure!(
-                entry.flags == 0
-                    && entry.name.len() > PURGE.len()
-                    && entry
-                        .name
-                        .get(..PURGE.len())
-                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(PURGE)),
-                "Windows target EA projection refuses an unsupported $Kernel name or flags at FILE {}",
-                file.record_number
+                entry.flags == 0 && (purge_cache || hive_mark),
+                "Windows target EA projection refuses an unsupported $Kernel name or flags at FILE {}: {:?} (flags {:#x})",
+                file.record_number,
+                String::from_utf8_lossy(&entry.name),
+                entry.flags
             );
             omitted_count += 1;
         }

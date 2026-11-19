@@ -31,6 +31,15 @@ param(
     # Laboratory: boot this image instead of the VM's WinRE: 'media' for the
     # installation media's boot.wim (index 2), kept in the DVD drive.
     [string]$Image,
+    # Laboratory: stop the converter in the environment at this hold point
+    # (crates/n2r-win32/src/lab_hold.rs), turn the VM off CutAfterMinutes after
+    # the restart, as if the power went, and start it again: the run must
+    # recover by itself.
+    [string]$HoldAt,
+    [int]$CutAfterMinutes = 40,
+    # The working disk to attach when the VM has none (after a checkpoint was
+    # restored).
+    [string]$ScratchVhdx = (Join-Path (Split-Path -Parent $PSScriptRoot) '.lab\hyperv\attempts\envprobe-c-up\scratch.vhdx'),
     [string[]]$ConverterArgs = @()
 )
 $ErrorActionPreference = 'Stop'
@@ -62,6 +71,11 @@ Set-VMMemory -VM $vm -DynamicMemoryEnabled $false -StartupBytes ($MemoryGB * 1GB
 $drives = @(Get-VMHardDiskDrive -VM $vm)
 $disk0 = $drives | Where-Object { $_.ControllerNumber -eq 0 -and $_.ControllerLocation -eq 0 }
 $scratch = $drives | Where-Object { $_.Path -like '*\scratch.vhdx' } | Select-Object -First 1
+if (-not $scratch -and (Test-Path -LiteralPath $ScratchVhdx)) {
+    Add-VMHardDiskDrive -VM $vm -ControllerType SCSI -Path $ScratchVhdx
+    $drives = @(Get-VMHardDiskDrive -VM $vm)
+    $scratch = $drives | Where-Object { $_.Path -eq $ScratchVhdx }
+}
 if (-not $disk0 -or -not $scratch) { throw 'the VM needs its disk0 and a scratch.vhdx attached' }
 # The boot partition's disk: a 1 GB VHDX beside the working disk, made once
 # and kept (FAT32 inside, made in the guest below).
@@ -109,9 +123,10 @@ try {
     $arguments = @('--drive', 'C', '--scratch-directory', $runs, '--boot-partition', $bootLetter, '--yes', '--volume-serial', $before.serial) + $ConverterArgs
     if ($Diagnose) { $arguments += '--diagnose' }
     Say "running: ntfs2refs $($arguments -join ' ')"
-    $said = Invoke-Command -Session $session -ArgumentList (, $arguments), $SanPolicy, [bool]$Hold, $Image -ScriptBlock {
-        param($arguments, $san, $hold, $image)
+    $said = Invoke-Command -Session $session -ArgumentList (, $arguments), $SanPolicy, [bool]$Hold, $Image, $HoldAt -ScriptBlock {
+        param($arguments, $san, $hold, $image, $holdAt)
         if ($san) { $env:N2R_LAB_SAN_POLICY = $san }
+        if ($holdAt) { $env:N2R_LAB_HOLD_AT = $holdAt }
         if ($hold -eq $true) { $env:N2R_LAB_HOLD_IN_IMAGE = '1' } else { Remove-Item Env:N2R_LAB_HOLD_IN_IMAGE -ErrorAction SilentlyContinue }
         if ($image -eq 'media') {
             $dvd = Get-Volume | Where-Object { $_.DriveType -eq 'CD-ROM' -and $_.DriveLetter } | Select-Object -First 1
@@ -130,6 +145,15 @@ try {
 # Away: the recovery environment (the conversion), then Windows again.
 $deadline = (Get-Date).AddMinutes($AwayMinutes)
 Start-Sleep -Seconds 45
+if ($HoldAt) {
+    Say "hold at $HoldAt: the VM is turned off $CutAfterMinutes minutes after the restart"
+    Start-Sleep -Seconds ($CutAfterMinutes * 60)
+    $shot = Join-Path $records 'at-cut.png'
+    Stop-VM -VM (Get-LabVm) -TurnOff -Force
+    Say "turned off (power cut); starting again, the run has to recover by itself"
+    Start-VM -VM (Get-LabVm)
+    $verdict.cut = @{ hold_at = $HoldAt; minutes = $CutAfterMinutes }
+}
 $back = $null
 $report = $null
 do {

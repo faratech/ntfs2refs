@@ -503,6 +503,13 @@ fn converter_args(request: &Request<'_>) -> Vec<String> {
     if request.verify_full_content {
         args.push("--verify-full-content".to_owned());
     }
+    // Laboratory: a hold point for the converter in the environment, to cut
+    // the power there and exercise the recovery after it.
+    if let Ok(point) = std::env::var("N2R_LAB_HOLD_AT") {
+        args.push("--lab-hold-at".to_owned());
+        args.push(point);
+        args.push("--acknowledge-lab-hold-never-completes".to_owned());
+    }
     args
 }
 

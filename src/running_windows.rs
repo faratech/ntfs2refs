@@ -707,20 +707,33 @@ fn recover_from(
         if rollback {
             process.arg("--rollback");
         }
-        process.status().is_ok_and(|status| status.success())
+        // What the recovery says is kept beside the run's records, as the
+        // converter's is (runc-cut-apply-10's first error was lost).
+        let kept = directory.join(if rollback {
+            "recover-rollback-output.txt"
+        } else {
+            "recover-forward-output.txt"
+        });
+        tee(process, &kept)
     };
-    let forward = !command.rollback_only;
-    let outcome = if forward && recover(false) {
-        Recovered::Forward
-    } else {
-        if forward {
-            note("Recovering forward did not finish; putting the NTFS volume back.".to_owned());
-        }
+    // Back to NTFS only where the command allows nothing else (a run cut off
+    // while it prepared). A forward recovery that fails leaves the volume as
+    // it found it for a person, who sees why; a roll-back run on top of a
+    // misread state is not attempted.
+    let outcome = if command.rollback_only {
         if recover(true) {
             Recovered::BackToNtfs
         } else {
             Recovered::Failed
         }
+    } else if recover(false) {
+        Recovered::Forward
+    } else {
+        note(format!(
+            "Recovering forward did not finish; its output is in {}. Nothing else was tried.",
+            directory.join("recover-forward-output.txt").display()
+        ));
+        Recovered::Failed
     };
     if outcome != Recovered::Failed {
         let _ = fs::rename(&saved, directory.join("recover-command.done.json"));
@@ -738,6 +751,46 @@ fn rebased(recorded: &str, here: &Path) -> String {
         }
         _ => recorded.to_owned(),
     }
+}
+
+/// Runs a process, shows what it prints and keeps it in `kept`; whether it
+/// succeeded.
+fn tee(mut process: Command, kept: &Path) -> bool {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::Stdio;
+    let Ok(mut child) = process
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    else {
+        return false;
+    };
+    let mut file = fs::File::create(kept).ok();
+    let errors = child.stderr.take().map(|stderr| {
+        std::thread::spawn(move || {
+            BufReader::new(stderr)
+                .lines()
+                .map_while(|l| l.ok())
+                .collect::<Vec<_>>()
+        })
+    });
+    if let Some(stdout) = child.stdout.take() {
+        for line in BufReader::new(stdout).lines().map_while(|l| l.ok()) {
+            println!("{line}");
+            if let Some(file) = file.as_mut() {
+                let _ = writeln!(file, "{line}");
+            }
+        }
+    }
+    if let Some(lines) = errors.and_then(|handle| handle.join().ok()) {
+        for line in lines {
+            eprintln!("{line}");
+            if let Some(file) = file.as_mut() {
+                let _ = writeln!(file, "{line}");
+            }
+        }
+    }
+    child.wait().is_ok_and(|status| status.success())
 }
 
 /// The file system of a volume, from `fsutil`.
@@ -887,6 +940,22 @@ fn find_windows(serial: &str) -> Option<char> {
 /// the session names, then puts the boot menu back. Returns the converter's
 /// exit code.
 pub fn run_session(session_path: &Path) -> Result<u8> {
+    match run_session_inner(session_path) {
+        Ok(code) => Ok(code),
+        // Before the run's records are read nothing says whether the Windows
+        // volume was being written: a failure here never starts Windows,
+        // which may be half converted (the firmware entry stays first).
+        Err(error) => {
+            println!("ntfs2refs: {error:#}");
+            println!(
+                "Whether the Windows volume was being converted is not known here, so Windows is not started. Bring the working disk back (or fix the cause above) and restart into this environment; or, if no conversion was started, take the boot partition out of the firmware's boot order."
+            );
+            Ok(NEEDS_ATTENTION)
+        }
+    }
+}
+
+fn run_session_inner(session_path: &Path) -> Result<u8> {
     let session: Session = serde_json::from_slice(&fs::read(session_path)?)
         .with_context(|| format!("reading {}", session_path.display()))?;
     online_disk(&session.scratch_disk_id)

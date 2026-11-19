@@ -511,6 +511,36 @@ fn run_or_recover(
     }
 }
 
+/// Writes the report into the Windows that was converted
+/// (`C:\ProgramData\ntfs2refs\last-conversion.txt`) and has its first logon
+/// open it: a RunOnce value of its offline registry.
+fn leave_report(letter: char, report: &str) -> Result<()> {
+    let folder = PathBuf::from(format!("{letter}:\\ProgramData\\ntfs2refs"));
+    fs::create_dir_all(&folder).with_context(|| format!("creating {}", folder.display()))?;
+    let file = folder.join("last-conversion.txt");
+    fs::write(&file, report).with_context(|| format!("writing {}", file.display()))?;
+    let hive = format!("{letter}:\\Windows\\System32\\config\\SOFTWARE");
+    tool("reg.exe", &["load", r"HKLM\N2R_SOFTWARE", &hive])?;
+    let added = tool(
+        "reg.exe",
+        &[
+            "add",
+            r"HKLM\N2R_SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce",
+            "/v",
+            "ntfs2refs",
+            "/t",
+            "REG_SZ",
+            "/d",
+            r#"cmd.exe /c start notepad.exe "%ProgramData%\ntfs2refs\last-conversion.txt""#,
+            "/f",
+        ],
+    );
+    let unloaded = tool("reg.exe", &["unload", r"HKLM\N2R_SOFTWARE"]);
+    added?;
+    unloaded?;
+    Ok(())
+}
+
 /// In the recovery environment: runs the conversion of the Windows volume
 /// the session names, then puts the boot menu back. Returns the converter's
 /// exit code.
@@ -574,7 +604,14 @@ pub fn run_session(session_path: &Path) -> Result<u8> {
             session.original_default
         )),
     }
-    let _ = fs::write(directory.join(RESULT_FILE), report);
+    let _ = fs::write(directory.join(RESULT_FILE), &report);
+    if let Some(letter) = windows {
+        // Whatever the volume is now, the person who started this finds the
+        // report when Windows starts.
+        if let Err(error) = leave_report(letter, &report) {
+            println!("The report could not be left in Windows: {error:#}");
+        }
+    }
     Ok(if !restored_ok && code == 0 { 1 } else { code })
 }
 

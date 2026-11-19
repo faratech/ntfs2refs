@@ -229,6 +229,10 @@ pub const CHECK_DECIDED_WHEN_FROZEN: &str = "that the NTFS log closes cleanly, t
 const EFI_SYSTEM_PARTITION: &str = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b";
 #[cfg_attr(not(windows), allow(dead_code))]
 const RESERVED_PARTITION: &str = "e3c9e316-0b5c-4db8-817d-f92df00215ae";
+/// Why a volume that holds an installed Windows on an MBR disk it shares
+/// with other partitions is not converted as a data volume.
+#[cfg_attr(not(windows), allow(dead_code))]
+const MBR_INSTALLED_WINDOWS: &str = "holds an installed Windows (Windows\\System32\\ntoskrnl.exe) on an MBR disk it shares with other partitions. Converted as a data volume it would no longer start, and the converter starts an installed Windows only from a GPT disk (--windows-boot-volume)";
 /// Exit code of `--check` when it found something a conversion would refuse.
 pub const EXIT_CHECK_REFUSALS: u8 = 3;
 /// Exit code of `--check` when the volume changed during every reading:
@@ -955,6 +959,12 @@ mod windows {
                 !(efi && installed),
                 "this volume holds an installed Windows (Windows\\System32\\ntoskrnl.exe) on a disk with an EFI system partition. Converted as a data volume it would no longer start. Convert it with --windows-boot-volume, which is admitted for the boot profiles `ntfs2refs capabilities` lists. Nothing was changed."
             );
+            // An MBR disk has no EFI system partition: the Windows it holds
+            // starts from the disk itself, and no route converts it.
+            ensure!(
+                !(installed && disk.partition_style.as_deref() == Some("MBR")),
+                "this volume {MBR_INSTALLED_WINDOWS}. Nothing was changed."
+            );
             Some(shared_disk_lines(selected.disk_number, &others))
         } else {
             None
@@ -1427,6 +1437,9 @@ mod windows {
                 return stopped(
                     "it holds an installed Windows (Windows\\System32\\ntoskrnl.exe) on a disk with an EFI system partition; converted as a data volume it would no longer start. Such a volume is converted with --windows-boot-volume",
                 );
+            }
+            if installed && disk.partition_style.as_deref() == Some("MBR") {
+                return stopped(&format!("it {MBR_INSTALLED_WINDOWS}"));
             }
             for line in shared_disk_lines(selected.disk_number, &others) {
                 println!("{line}");

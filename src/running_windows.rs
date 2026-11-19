@@ -31,6 +31,13 @@ pub struct Session {
     pub firmware_entry: String,
     /// Options handed on to the converter.
     pub converter_args: Vec<String>,
+    /// The working disk and the Windows disk by their identity (a GPT disk
+    /// GUID or an MBR signature, as `diskpart` prints it), and the working
+    /// directory on its volume without the drive. The environment starts
+    /// with every disk offline and brings these online itself.
+    pub scratch_disk_id: String,
+    pub windows_disk_id: String,
+    pub scratch_relative: String,
 }
 
 /// What the user asked for that the converter in the recovery environment is
@@ -43,6 +50,8 @@ pub struct Request<'a> {
     /// starts the recovery environment: the disk a machine starts from cannot
     /// be taken offline, and the conversion takes the Windows disk offline.
     pub boot_volume: char,
+    pub scratch_disk_id: String,
+    pub windows_disk_id: String,
     pub diagnose: bool,
     pub target_format: Option<&'a str>,
     pub verify_full_content: bool,
@@ -128,21 +137,12 @@ fn prefix(relative: &str) -> String {
     }
 }
 
-fn script(relative: &str, firmware_entry: &str) -> String {
-    let letters: String = ('C'..='Z').map(|c| format!("{c} ")).collect();
-    let relative = prefix(relative);
+fn script(firmware_entry: &str) -> String {
     [
         "@echo off".to_owned(),
         "wpeinit".to_owned(),
         r"if exist X:\n2r-hold.flag cmd /k".to_owned(),
-        "set S=".to_owned(),
-        format!(
-            r"for %%d in ({letters}) do if exist %%d:\{relative}{STAGING_DIRECTORY}\{SESSION_FILE} set S=%%d:"
-        ),
-        r#"if "%S%"=="" goto :lost"#.to_owned(),
-        format!(r"set D=%S%\{relative}{STAGING_DIRECTORY}"),
-        r"if exist %D%\hold.flag cmd /k".to_owned(),
-        format!(r"%D%\ntfs2refs.exe --running-windows-session %D%\{SESSION_FILE}"),
+        r"X:\n2r\ntfs2refs.exe --running-windows-session X:\n2r\session.json".to_owned(),
         "if errorlevel 3 goto :hold".to_owned(),
         "if errorlevel 1 goto :failed".to_owned(),
         "wpeutil reboot".to_owned(),
@@ -152,8 +152,6 @@ fn script(relative: &str, firmware_entry: &str) -> String {
         "cmd /k".to_owned(),
         "wpeutil reboot".to_owned(),
         "exit /b".to_owned(),
-        ":lost".to_owned(),
-        "echo ntfs2refs: the working directory of the run was not found on any volume.".to_owned(),
         ":failed".to_owned(),
         "rem Whatever went wrong, the next start is Windows' own.".to_owned(),
         format!("bcdedit /set {{fwbootmgr}} displayorder {firmware_entry} /remove"),
@@ -163,6 +161,46 @@ fn script(relative: &str, firmware_entry: &str) -> String {
     ]
     .join("\r\n")
         + "\r\n"
+}
+
+/// Writes a SAN policy into every control set of the mounted image's SYSTEM
+/// hive: 4 brings every disk up offline.
+fn set_san_policy(mount: &Path, policy: &str) -> Result<()> {
+    let hive = mount.join(r"Windows\System32\config\SYSTEM");
+    tool(
+        "reg.exe",
+        &["load", r"HKLM\N2R_IMAGE", &hive.to_string_lossy()],
+    )?;
+    let set = (|| -> Result<()> {
+        let mut written = 0;
+        for n in 1..=3 {
+            let set = format!(r"HKLM\N2R_IMAGE\ControlSet{n:03}");
+            if tool("reg.exe", &["query", &set]).is_err() {
+                continue;
+            }
+            tool(
+                "reg.exe",
+                &[
+                    "add",
+                    &format!(r"{set}\Services\partmgr\Parameters"),
+                    "/v",
+                    "SanPolicy",
+                    "/t",
+                    "REG_DWORD",
+                    "/d",
+                    policy,
+                    "/f",
+                ],
+            )?;
+            written += 1;
+        }
+        ensure!(written > 0, "the image's SYSTEM hive has no control set");
+        Ok(())
+    })();
+    let unloaded = tool("reg.exe", &["unload", r"HKLM\N2R_IMAGE"]);
+    set?;
+    unloaded?;
+    Ok(())
 }
 
 /// The description of the firmware entry this program makes.
@@ -355,15 +393,31 @@ pub fn stage_and_restart(request: &Request<'_>) -> Result<()> {
                 "/Quiet",
             ],
         )?;
+        let session = Session {
+            volume_serial: request.volume_serial.clone(),
+            firmware_entry: firmware_entry.clone(),
+            converter_args: converter_args(request),
+            scratch_disk_id: request.scratch_disk_id.clone(),
+            windows_disk_id: request.windows_disk_id.clone(),
+            scratch_relative: prefix(&relative),
+        };
+        let session_json = serde_json::to_vec_pretty(&session)?;
+        fs::write(directory.join(SESSION_FILE), &session_json)?;
         let edited = (|| -> Result<()> {
+            // Every disk arrives offline in the environment: nothing mounts
+            // the Windows volume, half converted or not, before the run
+            // decides; the run brings online what it needs (runc-cut-apply-5:
+            // after a power cut the disk came back online and its recovery
+            // refused it).
+            set_san_policy(&mount, "4")?;
+            fs::create_dir_all(mount.join("n2r"))?;
+            fs::copy(std::env::current_exe()?, mount.join(r"n2r\ntfs2refs.exe"))?;
+            fs::write(mount.join(r"n2r\session.json"), &session_json)?;
             // Laboratory: stop at a command prompt before any disk is looked at.
             if std::env::var_os("N2R_LAB_HOLD_IN_IMAGE").is_some() {
                 fs::write(mount.join("n2r-hold.flag"), "hold")?;
             }
-            fs::write(
-                mount.join("n2r-start.cmd"),
-                script(&relative, &firmware_entry),
-            )?;
+            fs::write(mount.join("n2r-start.cmd"), script(&firmware_entry))?;
             fs::write(
                 mount.join(r"Windows\System32\winpeshl.ini"),
                 "[LaunchApps]\r\n%SYSTEMROOT%\\System32\\cmd.exe, /c X:\\n2r-start.cmd",
@@ -436,15 +490,6 @@ pub fn stage_and_restart(request: &Request<'_>) -> Result<()> {
         bcd(&["/set", &firmware_entry, "default", &loader])?;
         bcd(&["/set", &firmware_entry, "displayorder", &loader])?;
         bcd(&["/set", &firmware_entry, "timeout", "0"])?;
-        let session = Session {
-            volume_serial: request.volume_serial.clone(),
-            firmware_entry: firmware_entry.clone(),
-            converter_args: converter_args(request),
-        };
-        fs::write(
-            directory.join(SESSION_FILE),
-            serde_json::to_vec_pretty(&session)?,
-        )?;
         // Last: the boot partition becomes the firmware's first choice.
         tool(
             "bcdedit.exe",
@@ -784,27 +829,79 @@ fn run_or_recover(
     }
 }
 
+/// A disk's identity as `diskpart` prints it: its GPT GUID without braces,
+/// or its MBR signature in hexadecimal.
+pub fn disk_identity(disk: &n2r_win32::drive_inventory::DiskInventory) -> Option<String> {
+    disk.disk_guid
+        .as_deref()
+        .map(|guid| guid.trim_matches(|c| c == '{' || c == '}').to_ascii_uppercase())
+        .or_else(|| disk.mbr_signature.map(|signature| format!("{signature:08X}")))
+}
+
+/// Brings the disk with this identity online and writable (`diskpart`).
+fn online_disk(identity: &str) -> Result<u32> {
+    let inventory = n2r_win32::drive_inventory::inventory_drives_readonly()?;
+    let disk = inventory
+        .disks
+        .iter()
+        .find(|disk| disk_identity(disk).is_some_and(|id| id.eq_ignore_ascii_case(identity)))
+        .with_context(|| format!("no disk with identity {identity} is attached"))?;
+    let script = std::env::temp_dir().join(format!("n2r-online-{}.txt", disk.disk_number));
+    fs::write(
+        &script,
+        format!(
+            "select disk {}\r\nonline disk noerr\r\nattributes disk clear readonly noerr\r\n",
+            disk.disk_number
+        ),
+    )?;
+    tool("diskpart.exe", &["/s", &script.to_string_lossy()])?;
+    Ok(disk.disk_number)
+}
+
+/// The staging directory on the working volume, once its letter is there.
+fn find_staging(relative: &str) -> Result<PathBuf> {
+    for _ in 0..30 {
+        if let Some(found) = ('C'..='Z')
+            .map(|letter| PathBuf::from(format!("{letter}:\\{relative}{STAGING_DIRECTORY}")))
+            .find(|dir| dir.join(SESSION_FILE).exists())
+        {
+            return Ok(found);
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    bail!("the working directory \\{relative}{STAGING_DIRECTORY} was not found on any volume")
+}
+
+/// The Windows volume by its serial number, once its letter is there.
+fn find_windows(serial: &str) -> Option<char> {
+    for _ in 0..30 {
+        if let Some(letter) = ('C'..='Z').find(|letter| {
+            volume_serial_of(*letter).is_some_and(|found| found.eq_ignore_ascii_case(serial))
+                && Path::new(&format!("{letter}:\\Windows\\System32\\ntoskrnl.exe")).exists()
+        }) {
+            return Some(letter);
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    None
+}
+
 /// In the recovery environment: runs the conversion of the Windows volume
 /// the session names, then puts the boot menu back. Returns the converter's
 /// exit code.
 pub fn run_session(session_path: &Path) -> Result<u8> {
-    let directory = session_path
-        .parent()
-        .context("the session file has no directory")?
-        .to_path_buf();
     let session: Session = serde_json::from_slice(&fs::read(session_path)?)
         .with_context(|| format!("reading {}", session_path.display()))?;
+    online_disk(&session.scratch_disk_id)
+        .context("bringing the working disk online")?;
+    let directory = find_staging(&session.scratch_relative)?;
     let mut report = String::new();
     let mut note = |line: String| {
         println!("{line}");
         report.push_str(&line);
         report.push('\n');
     };
-    let windows = ('A'..='Z').find(|letter| {
-        volume_serial_of(*letter)
-            .is_some_and(|serial| serial.eq_ignore_ascii_case(&session.volume_serial))
-            && Path::new(&format!("{letter}:\\Windows\\System32\\ntoskrnl.exe")).exists()
-    });
+    let windows: Option<char> = None;
     let scratch = directory
         .parent()
         .context("the staging directory has no parent")?;
@@ -814,6 +911,14 @@ pub fn run_session(session_path: &Path) -> Result<u8> {
     // (runc-cut-midranges-3 found no volume and restarted into a Windows that
     // could not start).
     let pending = directory.join(RECOVER_FILE).exists();
+    let windows = if pending {
+        // A recovery takes the Windows disk as it found it: offline.
+        windows
+    } else {
+        online_disk(&session.windows_disk_id)
+            .context("bringing the Windows disk online for the conversion")?;
+        find_windows(&session.volume_serial)
+    };
     let code = match (windows, pending) {
         (Some(letter), _) => run_or_recover(&directory, scratch, letter, &session, &mut note),
         // The letter is used only to convert, which a pending recovery
@@ -905,20 +1010,14 @@ mod tests {
     }
 
     #[test]
-    fn the_start_script_finds_the_working_directory_by_its_session_file() {
-        let text = script("runs\\", "{00000000-0000-0000-0000-000000000000}");
-        assert!(text.contains(r"if exist %%d:\runs\n2r-running\session.json set S=%%d:"));
-        assert!(text.contains("--running-windows-session"));
-        assert!(text.contains("wpeutil reboot"));
+    fn the_start_script_runs_the_converter_inside_the_image() {
+        let text = script("{00000000-0000-0000-0000-000000000000}");
+        assert!(text.contains(r"X:\n2r\ntfs2refs.exe --running-windows-session X:\n2r\session.json"));
         assert!(text.contains(
             "bcdedit /set {fwbootmgr} displayorder {00000000-0000-0000-0000-000000000000} /remove"
         ));
-        // A found session runs; only a missing one is "lost", and a person is
-        // asked for only on exit 3.
         let run = text.find("--running-windows-session").unwrap();
-        let hold = text.find(":hold").unwrap();
-        assert!(text.find(r#"if "%S%"=="" goto :lost"#).unwrap() < run);
-        assert!(run < hold);
+        assert!(run < text.find(":hold").unwrap());
         assert!(text.contains("if errorlevel 3 goto :hold"));
     }
 }

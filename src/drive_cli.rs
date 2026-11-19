@@ -711,6 +711,32 @@ mod windows {
             })
             .map(|disk| disk.disk_number)
             .with_context(|| format!("--boot-partition {boot}: is not a partition of a disk this machine lists. Nothing was changed."))?;
+        // The working disk and the Windows disk by their identity: the
+        // environment starts with every disk offline and brings these online.
+        let identity_of = |number: u32| {
+            inventory
+                .disks
+                .iter()
+                .find(|disk| disk.disk_number == number)
+                .and_then(crate::running_windows::disk_identity)
+        };
+        let scratch_letter_root = scratch_root.to_ascii_uppercase();
+        let scratch_disk = inventory
+            .disks
+            .iter()
+            .find(|disk| {
+                disk.partitions.iter().any(|part| {
+                    part.mount_paths
+                        .iter()
+                        .any(|path| path.eq_ignore_ascii_case(&scratch_letter_root))
+                })
+            })
+            .map(|disk| disk.disk_number)
+            .with_context(|| format!("the disk of {scratch_root} could not be found. Nothing was changed."))?;
+        let scratch_disk_id = identity_of(scratch_disk)
+            .with_context(|| format!("disk {scratch_disk} has neither a GPT GUID nor an MBR signature. Nothing was changed."))?;
+        let windows_disk_id = identity_of(selected.disk_number)
+            .context("the Windows disk has neither a GPT GUID nor an MBR signature. Nothing was changed.")?;
         ensure!(
             boot_disk != selected.disk_number,
             "--boot-partition {boot}: is on disk {boot_disk}, the Windows disk; it has to be on another disk, which can stay online while the Windows disk is offline. Nothing was changed."
@@ -738,6 +764,8 @@ The machine restarts, possibly more than once. Do not switch it off while the co
             target_format: args.target_format.as_deref(),
             verify_full_content: args.verify_full_content,
             boot_volume: boot,
+            scratch_disk_id,
+            windows_disk_id,
         })?;
         Ok(0)
     }

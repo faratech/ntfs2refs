@@ -126,7 +126,7 @@ fn prefix(relative: &str) -> String {
     }
 }
 
-fn script(relative: &str) -> String {
+fn script(relative: &str, original_default: &str) -> String {
     let letters: String = ('C'..='Z').map(|c| format!("{c} ")).collect();
     format!(
         "@echo off\r\n\
@@ -136,12 +136,15 @@ for %%d in ({letters}) do if exist %%d:\\{relative}{STAGING_DIRECTORY}\\{SESSION
 if \"%S%\"==\"\" goto :lost\r\n\
 set D=%S%\\{relative}{STAGING_DIRECTORY}\r\n\
 %D%\\ntfs2refs.exe --running-windows-session %D%\\{SESSION_FILE}\r\n\
-if errorlevel 1 ping -n 31 127.0.0.1 >nul\r\n\
+if errorlevel 1 goto :failed\r\n\
 wpeutil reboot\r\n\
 exit /b\r\n\
 :lost\r\n\
 echo ntfs2refs: the working directory of the run was not found on any volume.\r\n\
-echo Restarting Windows in 30 seconds; the boot menu still lists this environment.\r\n\
+:failed\r\n\
+rem Whatever went wrong, the next start is the Windows that was the default.\r\n\
+bcdedit /default {original_default}\r\n\
+echo Restarting Windows in 30 seconds.\r\n\
 ping -n 31 127.0.0.1 >nul\r\n\
 wpeutil reboot\r\n",
         relative = prefix(relative),
@@ -170,6 +173,13 @@ pub fn stage_and_restart(request: &Request<'_>) -> Result<()> {
         scratch_letter != request.windows_drive.to_ascii_uppercase(),
         "the working directory is on the Windows volume that is converted; give one on another disk"
     );
+    // The old default is written down, before anything is made.
+    let manager = tool("bcdedit.exe", &["/enum", "{bootmgr}", "/v"])?;
+    // `/v` prints the identifier itself, not an alias such as {current}, which
+    // names another entry in the recovery environment.
+    let original_default = bcd_value(&manager, "default")
+        .filter(|id| id.len() == 38 && id.starts_with('{'))
+        .context("the boot manager names no default entry by its identifier; the boot menu is not touched")?;
     let image = winre_image()?;
     let directory = absolute.join(STAGING_DIRECTORY);
     if directory.exists() {
@@ -208,7 +218,7 @@ pub fn stage_and_restart(request: &Request<'_>) -> Result<()> {
         ],
     )?;
     let edited = (|| -> Result<()> {
-        fs::write(mount.join("n2r-start.cmd"), script(&relative))?;
+        fs::write(mount.join("n2r-start.cmd"), script(&relative, &original_default))?;
         fs::write(
             mount.join(r"Windows\System32\winpeshl.ini"),
             "[LaunchApps]\r\n%SYSTEMROOT%\\System32\\cmd.exe, /c X:\\n2r-start.cmd",
@@ -242,13 +252,7 @@ pub fn stage_and_restart(request: &Request<'_>) -> Result<()> {
         .with_context(|| format!("copying {}", exe.display()))?;
 
     // The boot menu: a ramdisk entry and a loader for the image, first in
-    // the menu and the default. The old default is written down.
-    let manager = tool("bcdedit.exe", &["/enum", "{bootmgr}", "/v"])?;
-    // `/v` prints the identifier itself, not an alias such as {current}, which
-    // names another entry in the recovery environment.
-    let original_default = bcd_value(&manager, "default")
-        .filter(|id| id.len() == 38 && id.starts_with('{'))
-        .context("the boot manager names no default entry by its identifier; the boot menu is not touched")?;
+    // the menu and the default.
     let drive = format!("partition={scratch_letter}:");
     let sdi_path = format!("\\{}{STAGING_DIRECTORY}\\boot.sdi", prefix(&relative));
     let wim_path = format!("\\{}{STAGING_DIRECTORY}\\winre.wim", prefix(&relative));
@@ -461,9 +465,10 @@ mod tests {
 
     #[test]
     fn the_start_script_finds_the_working_directory_by_its_session_file() {
-        let text = script("runs\\");
+        let text = script("runs\\", "{00000000-0000-0000-0000-000000000000}");
         assert!(text.contains(r"if exist %%d:\runs\n2r-running\session.json set S=%%d:"));
         assert!(text.contains("--running-windows-session"));
         assert!(text.contains("wpeutil reboot"));
+        assert!(text.contains("bcdedit /default {00000000-0000-0000-0000-000000000000}"));
     }
 }

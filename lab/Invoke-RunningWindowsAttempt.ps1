@@ -151,8 +151,18 @@ try {
 $deadline = (Get-Date).AddMinutes($AwayMinutes)
 Start-Sleep -Seconds 45
 if ($HoldAt) {
-    Say "hold at ${HoldAt}: the VM is turned off $CutAfterMinutes minutes after the restart"
-    Start-Sleep -Seconds ($CutAfterMinutes * 60)
+    # A held converter parks for ever: the VM's processors go quiet. The power
+    # is cut once they have been quiet for two minutes, or CutAfterMinutes
+    # after the restart at the latest.
+    Say "hold at ${HoldAt}: the VM is turned off when the converter parks there (at most $CutAfterMinutes minutes)"
+    $deadline = (Get-Date).AddMinutes($CutAfterMinutes)
+    $quiet = 0
+    Start-Sleep -Seconds 300
+    while ((Get-Date) -lt $deadline -and $quiet -lt 4) {
+        Start-Sleep -Seconds 30
+        if ((Get-LabVm).CPUUsage -le 1) { $quiet++ } else { $quiet = 0 }
+    }
+    Say $(if ($quiet -ge 4) { 'the converter is parked at the hold' } else { 'the deadline came first' })
     $shot = Join-Path $records 'at-cut.png'
     Stop-VM -VM (Get-LabVm) -TurnOff -Force
     Say "turned off (power cut); starting again, the run has to recover by itself"

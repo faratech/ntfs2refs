@@ -28,6 +28,9 @@ param(
     # Laboratory: write this SAN policy (3: offline internal) into the recovery
     # image before it boots, as the media route's image does.
     [string]$SanPolicy,
+    # Laboratory: boot this image instead of the VM's WinRE: 'media' for the
+    # installation media's boot.wim (index 2), kept in the DVD drive.
+    [string]$Image,
     [string[]]$ConverterArgs = @()
 )
 $ErrorActionPreference = 'Stop'
@@ -65,7 +68,8 @@ $detached = @($others | ForEach-Object { $_.Path })
 Set-Content -LiteralPath (Join-Path $records 'detached-disks.json') -Value ($detached | ConvertTo-Json) -Encoding utf8
 $others | Remove-VMHardDiskDrive
 $dvd = @(Get-VMDvdDrive -VM $vm | Where-Object Path | ForEach-Object Path) | Select-Object -First 1
-Get-VMDvdDrive -VM $vm | Remove-VMDvdDrive
+if ($Image -ne 'media') { Get-VMDvdDrive -VM $vm | Remove-VMDvdDrive }
+elseif (-not $dvd) { Add-VMDvdDrive -VM $vm -Path 'C:\Users\mfara\Downloads\Windows11_Client_x64_en-us_26300_9457.iso' }
 Set-VMFirmware -VM $vm -FirstBootDevice $disk0
 Say "starting the VM's own Windows (disk0), working disk $($scratch.Path)"
 Start-VM -VM $vm
@@ -89,10 +93,16 @@ try {
     $arguments = @('--drive', 'C', '--scratch-directory', $runs, '--yes', '--volume-serial', $before.serial) + $ConverterArgs
     if ($Diagnose) { $arguments += '--diagnose' }
     Say "running: ntfs2refs $($arguments -join ' ')"
-    $said = Invoke-Command -Session $session -ArgumentList (, $arguments), $SanPolicy, [bool]$Hold -ScriptBlock {
-        param($arguments, $san, $hold)
+    $said = Invoke-Command -Session $session -ArgumentList (, $arguments), $SanPolicy, [bool]$Hold, $Image -ScriptBlock {
+        param($arguments, $san, $hold, $image)
         if ($san) { $env:N2R_LAB_SAN_POLICY = $san }
         if ($hold) { $env:N2R_LAB_HOLD_IN_IMAGE = '1' }
+        if ($image -eq 'media') {
+            $dvd = Get-Volume | Where-Object { $_.DriveType -eq 'CD-ROM' -and $_.DriveLetter } | Select-Object -First 1
+            Copy-Item "$($dvd.DriveLetter):\sources\boot.wim" "$env:TEMP\n2r-boot.wim" -Force
+            Set-ItemProperty "$env:TEMP\n2r-boot.wim" -Name IsReadOnly -Value $false
+            $env:N2R_LAB_IMAGE = "$env:TEMP\n2r-boot.wim|2"
+        }
         $ErrorActionPreference = 'Continue'
         (& C:\n2r\ntfs2refs.exe @arguments 2>&1 | Out-String)
     }

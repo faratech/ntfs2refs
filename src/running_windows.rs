@@ -251,7 +251,15 @@ pub fn stage_and_restart(request: &Request<'_>) -> Result<()> {
     let original_default = bcd_value(&manager, "default")
         .filter(|id| id.len() == 38 && id.starts_with('{'))
         .context("the boot manager names no default entry by its identifier; the boot menu is not touched")?;
-    let image = winre_image()?;
+    // Laboratory: another boot image and its index ("path|index"), such as
+    // installation media's boot.wim, in place of the machine's WinRE.
+    let (image, index) = match std::env::var("N2R_LAB_IMAGE") {
+        Ok(spec) => {
+            let (path, index) = spec.split_once('|').unwrap_or((spec.as_str(), "1"));
+            (PathBuf::from(path), index.to_owned())
+        }
+        Err(_) => (winre_image()?, "1".to_owned()),
+    };
     let directory = absolute.join(STAGING_DIRECTORY);
     if directory.exists() {
         let _ = Command::new("dism.exe")
@@ -283,7 +291,7 @@ pub fn stage_and_restart(request: &Request<'_>) -> Result<()> {
         &[
             "/Mount-Image",
             &format!("/ImageFile:{wim_text}"),
-            "/Index:1",
+            &format!("/Index:{index}"),
             &format!("/MountDir:{mount_text}"),
             "/Quiet",
         ],

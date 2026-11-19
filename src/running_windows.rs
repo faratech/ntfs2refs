@@ -288,6 +288,21 @@ pub fn stage_and_restart(request: &Request<'_>) -> Result<()> {
         remove_firmware_entry(&firmware_entry);
         return Err(error.context("making the firmware entry of the boot partition"));
     }
+    // The boot manager the firmware starts looks itself up by the entry's
+    // identifier in the store beside it, so that store is an export of the
+    // system store, which holds the entry; the recovery environment is added
+    // to it below.
+    let store = format!(r"{boot}:\EFI\Microsoft\Boot\BCD");
+    let exported = (|| -> Result<()> {
+        let _ = fs::remove_file(&store);
+        let _ = fs::remove_file(format!("{store}.LOG"));
+        tool("bcdedit.exe", &["/export", &store])?;
+        Ok(())
+    })();
+    if let Err(error) = exported {
+        remove_firmware_entry(&firmware_entry);
+        return Err(error.context("writing the boot partition's store"));
+    }
     let armed = (|| -> Result<()> {
         println!(
             "Staging the Windows Recovery Environment ({}) on {}",
@@ -357,7 +372,6 @@ pub fn stage_and_restart(request: &Request<'_>) -> Result<()> {
 
         // The boot partition's own store: the recovery environment first and
         // the default, Windows second.
-        let store = format!(r"{boot}:\EFI\Microsoft\Boot\BCD");
         let bcd = |args: &[&str]| -> Result<String> {
             let mut all = vec!["/store", store.as_str()];
             all.extend_from_slice(args);
@@ -392,9 +406,9 @@ pub fn stage_and_restart(request: &Request<'_>) -> Result<()> {
         ] {
             bcd(&["/set", &loader, name, value])?;
         }
-        bcd(&["/displayorder", &loader, "/addfirst"])?;
-        bcd(&["/default", &loader])?;
-        bcd(&["/timeout", "5"])?;
+        bcd(&["/set", &firmware_entry, "default", &loader])?;
+        bcd(&["/set", &firmware_entry, "displayorder", &loader])?;
+        bcd(&["/set", &firmware_entry, "timeout", "0"])?;
         let session = Session {
             volume_serial: request.volume_serial.clone(),
             firmware_entry: firmware_entry.clone(),

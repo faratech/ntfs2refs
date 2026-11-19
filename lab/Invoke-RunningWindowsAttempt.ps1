@@ -63,7 +63,12 @@ $drives = @(Get-VMHardDiskDrive -VM $vm)
 $disk0 = $drives | Where-Object { $_.ControllerNumber -eq 0 -and $_.ControllerLocation -eq 0 }
 $scratch = $drives | Where-Object { $_.Path -like '*\scratch.vhdx' } | Select-Object -First 1
 if (-not $disk0 -or -not $scratch) { throw 'the VM needs its disk0 and a scratch.vhdx attached' }
-$others = @($drives | Where-Object { $_.Path -ne $disk0.Path -and $_.Path -ne $scratch.Path })
+# The boot partition's disk: a 1 GB VHDX beside the working disk, made once
+# and kept (FAT32 inside, made in the guest below).
+$bootVhdx = Join-Path (Split-Path -Parent $scratch.Path) 'boot.vhdx'
+if (-not (Test-Path -LiteralPath $bootVhdx)) { $null = New-VHD -Path $bootVhdx -SizeBytes 1GB -Dynamic }
+if (-not ($drives | Where-Object Path -eq $bootVhdx)) { Add-VMHardDiskDrive -VM $vm -ControllerType SCSI -Path $bootVhdx; $drives = @(Get-VMHardDiskDrive -VM $vm) }
+$others = @($drives | Where-Object { $_.Path -ne $disk0.Path -and $_.Path -ne $scratch.Path -and $_.Path -ne $bootVhdx })
 $detached = @($others | ForEach-Object { $_.Path })
 Set-Content -LiteralPath (Join-Path $records 'detached-disks.json') -Value ($detached | ConvertTo-Json) -Encoding utf8
 $others | Remove-VMHardDiskDrive
@@ -88,9 +93,20 @@ try {
     Say "running Windows: C: is $($before.filesystem), serial $($before.serial), build $($before.build); working disk $($before.scratch); RAM free $($before.free_gb) GB"
     if ($before.filesystem -ne 'NTFS') { throw "C: is $($before.filesystem), not NTFS" }
     $runs = "$($before.scratch)\runs-$Name"
+    # The boot partition: FAT32, letter B, on the 1 GB disk.
+    $bootLetter = Invoke-Command -Session $session -ScriptBlock {
+        $disk = Get-Disk | Where-Object { $_.Size -eq 1GB } | Select-Object -First 1
+        if (-not $disk) { throw 'no 1 GB boot disk in the guest' }
+        if ($disk.PartitionStyle -eq 'RAW') { $null = Initialize-Disk -Number $disk.Number -PartitionStyle GPT }
+        $part = Get-Partition -DiskNumber $disk.Number | Where-Object { $_.Type -eq 'Basic' -or $_.GptType -eq '{ebd0a0a2-b9e5-4433-87c0-68b6b72699c7}' } | Select-Object -First 1
+        if (-not $part) { $part = New-Partition -DiskNumber $disk.Number -UseMaximumSize; $null = Format-Volume -Partition $part -FileSystem FAT32 -NewFileSystemLabel N2R_BOOT -Confirm:$false }
+        if (-not $part.DriveLetter -or $part.DriveLetter -eq [char]0) { $part | Set-Partition -NewDriveLetter B; $part = Get-Partition -DiskNumber $disk.Number -PartitionNumber $part.PartitionNumber }
+        [string]$part.DriveLetter
+    }
+    Say "boot partition: $($bootLetter): (FAT32, 1 GB disk)"
     Invoke-Command -Session $session -ScriptBlock { $null = New-Item -ItemType Directory -Force -Path 'C:\n2r' }
     Copy-Item -ToSession $session -LiteralPath $Binary -Destination 'C:\n2r\ntfs2refs.exe'
-    $arguments = @('--drive', 'C', '--scratch-directory', $runs, '--yes', '--volume-serial', $before.serial) + $ConverterArgs
+    $arguments = @('--drive', 'C', '--scratch-directory', $runs, '--boot-partition', $bootLetter, '--yes', '--volume-serial', $before.serial) + $ConverterArgs
     if ($Diagnose) { $arguments += '--diagnose' }
     Say "running: ntfs2refs $($arguments -join ' ')"
     $said = Invoke-Command -Session $session -ArgumentList (, $arguments), $SanPolicy, [bool]$Hold, $Image -ScriptBlock {

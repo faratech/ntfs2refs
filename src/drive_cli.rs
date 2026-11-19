@@ -66,6 +66,13 @@ pub struct DriveArgs {
         requires = "drive"
     )]
     pub offline_recovery_media: Option<PathBuf>,
+    /// For the Windows this machine runs (--drive C): the drive letter of a
+    /// FAT32 partition on another disk (a USB stick will do, 100 MB or more)
+    /// that the machine starts its recovery environment from. The disk a
+    /// machine starts from cannot be taken offline, and the conversion takes
+    /// the Windows disk offline. Keep it connected until Windows is back.
+    #[arg(long, requires = "drive", value_name = "LETTER", value_parser = n2r_win32::drive_inventory::parse_drive_letter)]
+    pub boot_partition: Option<char>,
     /// The volume is an installed Windows that is not running; the Windows
     /// that runs the converter is on another disk and is never converted.
     /// Admitted for the boot profiles `ntfs2refs capabilities` lists.
@@ -629,6 +636,7 @@ mod windows {
     /// recovery environment after a restart.
     fn running_windows_route(
         args: &DriveArgs,
+        inventory: &drive_inventory::DriveInventory,
         selected: &drive_inventory::PartitionSelection,
         mode: crate::execution_mode::ExecutionMode,
     ) -> Result<u8> {
@@ -658,6 +666,26 @@ mod windows {
             .volume_serial
             .map(crate::confirmation::format_volume_serial)
             .context("the volume's serial number could not be read")?;
+        let boot = args.boot_partition.context(
+            "the running Windows converts through its recovery environment, which the machine starts from a FAT32 partition on another disk: format one (a USB stick will do, 100 MB or more) and give its letter with --boot-partition. Nothing was changed.",
+        )?;
+        let root = format!("{}:\\", boot.to_ascii_uppercase());
+        let boot_disk = inventory
+            .disks
+            .iter()
+            .find(|disk| {
+                disk.partitions.iter().any(|part| {
+                    part.mount_paths
+                        .iter()
+                        .any(|path| path.eq_ignore_ascii_case(&root))
+                })
+            })
+            .map(|disk| disk.disk_number)
+            .with_context(|| format!("--boot-partition {boot}: is not a partition of a disk this machine lists. Nothing was changed."))?;
+        ensure!(
+            boot_disk != selected.disk_number,
+            "--boot-partition {boot}: is on disk {boot_disk}, the Windows disk; it has to be on another disk, which can stay online while the Windows disk is offline. Nothing was changed."
+        );
         let diagnose = matches!(mode, crate::execution_mode::ExecutionMode::Diagnose);
         println!(
             "{letter}: is the Windows this machine runs. It is converted in its own Windows Recovery Environment: this run stages that environment, restarts the machine into it, converts the volume there and starts Windows again from it.
@@ -680,6 +708,7 @@ The machine restarts, possibly more than once. Do not switch it off while the co
             diagnose,
             target_format: args.target_format.as_deref(),
             verify_full_content: args.verify_full_content,
+            boot_volume: boot,
         })?;
         Ok(0)
     }
@@ -927,7 +956,7 @@ The machine restarts, possibly more than once. Do not switch it off while the co
             None
         };
         if selected.partition.contains_running_windows == Some(true) {
-            return running_windows_route(&args, &selected, mode);
+            return running_windows_route(&args, &inventory, &selected, mode);
         }
         // Inventory is routing only. The partition path independently probes
         // actual source/GPT/current-Windows roles before any write admission.

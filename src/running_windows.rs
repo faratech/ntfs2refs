@@ -891,6 +891,14 @@ pub fn run_session(session_path: &Path) -> Result<u8> {
         .with_context(|| format!("reading {}", session_path.display()))?;
     online_disk(&session.scratch_disk_id)
         .context("bringing the working disk online")?;
+    // The disks there at the start stay as the image's policy left them
+    // (the Windows disk offline); a disk that arrives from now on, the run's
+    // own virtual disk, comes online (runc-cut-apply-8: "The media is write
+    // protected" when the run made its working disk).
+    let policy = std::env::temp_dir().join("n2r-san.txt");
+    fs::write(&policy, "san policy=OnlineAll\r\n")?;
+    tool("diskpart.exe", &["/s", &policy.to_string_lossy()])
+        .context("letting the run's own virtual disk come online")?;
     let directory = find_staging(&session.scratch_relative)?;
     let mut report = String::new();
     let mut note = |line: String| {

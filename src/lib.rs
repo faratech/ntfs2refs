@@ -109,6 +109,7 @@ pub(crate) mod resource_prepared_offline_apply;
 pub(crate) mod resource_recovery;
 pub mod retained_compare;
 pub(crate) mod run_memory;
+pub mod running_windows;
 pub(crate) mod selected_capacity;
 pub(crate) mod selected_journal;
 pub(crate) mod selected_ownership;

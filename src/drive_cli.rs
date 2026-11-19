@@ -97,6 +97,10 @@ pub struct DriveArgs {
     // takes none.)
     #[arg(long, conflicts_with_all = ["list", "drive", "partition", "scratch_directory"])]
     pub recover: Option<PathBuf>,
+    /// Used by the recovery environment that converting the running Windows
+    /// restarts into: runs that conversion from its session file.
+    #[arg(long, hide = true, conflicts_with_all = ["list", "drive", "recover"])]
+    pub running_windows_session: Option<PathBuf>,
     /// The checksum printed with that directory (the SHA-256 of its
     /// recovery-envelope.json), or the preparation SHA-256 printed at the
     /// start of a run that had not yet written to the volume.
@@ -607,6 +611,64 @@ mod windows {
         print!("> ");
         Ok(crate::confirmation::answer()?)
     }
+    /// The Windows this machine runs: prepared here, converted in its own
+    /// recovery environment after a restart.
+    fn running_windows_route(
+        args: &DriveArgs,
+        selected: &drive_inventory::PartitionSelection,
+        mode: crate::execution_mode::ExecutionMode,
+    ) -> Result<u8> {
+        ensure!(
+            !args.check,
+            "--check reads a volume that stays online; the running Windows is checked in its recovery environment, with --diagnose. Nothing was changed."
+        );
+        ensure!(
+            !args.windows_boot_volume && args.offline_recovery_media.is_none(),
+            "the running Windows converts through its own recovery environment: drop --windows-boot-volume and --restart-media. Nothing was changed."
+        );
+        let scratch = args.scratch_directory.as_deref().context(
+            "the running Windows converts through a restart, and the run needs --scratch-directory on a volume of another disk that stays connected until Windows is back. Nothing was changed.",
+        )?;
+        let letter = selected
+            .partition
+            .mount_paths
+            .iter()
+            .find_map(|path| path.chars().next().filter(|c| c.is_ascii_alphabetic()))
+            .context("the running Windows volume has no drive letter")?;
+        ensure!(
+            selected.partition.bitlocker != Some(true),
+            "this Windows is on a BitLocker volume, which the recovery environment cannot read without its key: it is not converted. Nothing was changed."
+        );
+        let serial = selected
+            .partition
+            .volume_serial
+            .map(crate::confirmation::format_volume_serial)
+            .context("the volume's serial number could not be read")?;
+        let diagnose = matches!(mode, crate::execution_mode::ExecutionMode::Diagnose);
+        println!(
+            "{letter}: is the Windows this machine runs. It is converted in its own Windows Recovery Environment: this run stages that environment, restarts the machine into it, converts the volume there and starts Windows again from it.
+The machine restarts, possibly more than once. Do not switch it off while the conversion runs; keep {} connected.",
+            scratch.display()
+        );
+        let prompt = if diagnose {
+            "Restart now to diagnose this Windows without converting it? [y/N]"
+        } else {
+            "Restart now to convert this Windows? [y/N]"
+        };
+        if !confirm(prompt)? {
+            println!("Nothing was changed.");
+            return Ok(0);
+        }
+        crate::running_windows::stage_and_restart(&crate::running_windows::Request {
+            windows_drive: letter,
+            volume_serial: serial,
+            scratch_directory: scratch,
+            diagnose,
+            target_format: args.target_format.as_deref(),
+            verify_full_content: args.verify_full_content,
+        })?;
+        Ok(0)
+    }
     /// Administrator rights, asked before a disk is opened. Without them the
     /// first device open failed, with an OS error and no advice.
     fn require_elevation(action: &str) -> Result<()> {
@@ -630,6 +692,9 @@ mod windows {
         Ok(version)
     }
     pub(super) fn run(args: DriveArgs) -> Result<u8> {
+        if let Some(session) = &args.running_windows_session {
+            return crate::running_windows::run_session(session);
+        }
         let mode = args.execution_mode()?;
         if args.unattended()? {
             crate::confirmation::assume_yes();
@@ -847,10 +912,9 @@ mod windows {
         } else {
             None
         };
-        ensure!(
-            selected.partition.contains_running_windows != Some(true),
-            "the running Windows partition is not supported for conversion"
-        );
+        if selected.partition.contains_running_windows == Some(true) {
+            return running_windows_route(&args, &selected, mode);
+        }
         // Inventory is routing only. The partition path independently probes
         // actual source/GPT/current-Windows roles before any write admission.
         if !args.windows_boot_volume

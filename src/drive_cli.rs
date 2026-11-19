@@ -431,7 +431,10 @@ mod windows {
                 // run would otherwise say only after it had started.
                 let conversion = drive_inventory::conversion_note(disk, part);
                 if part.contains_running_windows == Some(true) && conversion.is_none() {
-                    notes.push("running Windows".into());
+                    notes.push(
+                        "running Windows: converts through a restart into its recovery environment (--drive, --scratch-directory)"
+                            .into(),
+                    );
                 }
                 if part.offline == Some(true) {
                     notes.push("offline".into());

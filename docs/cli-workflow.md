@@ -444,7 +444,29 @@ capabilities` says the same.
 
 An installed Windows is converted while it is not running, from a second
 Windows on another disk (a second installation, or the same disk attached to
-another machine). `C:` of the running Windows is never converted.
+another machine).
+
+### The Windows this machine runs
+
+`C:` of the running Windows converts through its own Windows Recovery
+Environment (WinRE), with one command and a restart:
+
+```powershell
+.
+tfs2refs.exe --drive C --scratch-directory E:uns
+```
+
+`E:` is a volume of another disk that stays connected until Windows is back.
+The run stages the machine's `winre.wim` (found by `reagentc /info`) with a
+start script under `E:uns
+2r-running`, makes its boot entry the default
+(the old default is written down) and restarts. In the environment the
+converter runs as it does for an installed Windows that is not running (below);
+it then puts the boot menu back and restarts into the converted Windows. Its
+report is `E:uns
+2r-running\session-result.txt`. `--diagnose` works the
+same way and leaves the volume NTFS. Refused: Windows Recovery Environment
+turned off, a BitLocker volume, a working directory on the Windows volume.
 
 ```powershell
 .\ntfs2refs.exe --list

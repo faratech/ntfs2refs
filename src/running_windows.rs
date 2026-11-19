@@ -135,6 +135,7 @@ set S=\r\n\
 for %%d in ({letters}) do if exist %%d:\\{relative}{STAGING_DIRECTORY}\\{SESSION_FILE} set S=%%d:\r\n\
 if \"%S%\"==\"\" goto :lost\r\n\
 set D=%S%\\{relative}{STAGING_DIRECTORY}\r\n\
+if exist %D%\\hold.flag cmd /k\r\n\
 %D%\\ntfs2refs.exe --running-windows-session %D%\\{SESSION_FILE}\r\n\
 if errorlevel 1 goto :failed\r\n\
 wpeutil reboot\r\n\

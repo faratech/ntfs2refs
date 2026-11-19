@@ -22,6 +22,9 @@ param(
     [int]$MemoryGB = 8,
     [int]$AwayMinutes = 120,
     [switch]$Diagnose,
+    # Stop at a command prompt in the recovery environment (type into it with
+    # Send-VmKeys.ps1) instead of running the session there.
+    [switch]$Hold,
     [string[]]$ConverterArgs = @()
 )
 $ErrorActionPreference = 'Stop'
@@ -89,6 +92,7 @@ try {
         (& C:\n2r\ntfs2refs.exe @arguments 2>&1 | Out-String)
     }
     [IO.File]::WriteAllText((Join-Path $records 'windows-side.txt'), $said, [Text.UTF8Encoding]::new($false))
+    if ($Hold) { $null = Invoke-Command -Session $session -ArgumentList "$runs\n2r-running\hold.flag" -ScriptBlock { param($f) Set-Content -LiteralPath $f -Value hold }; Say 'hold: the recovery environment stops at a command prompt'; return }
     Say 'the run staged the recovery environment and restarted the machine'
 } finally { Remove-PSSession $session -ErrorAction SilentlyContinue }
 

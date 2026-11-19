@@ -666,6 +666,32 @@ mod windows {
             .volume_serial
             .map(crate::confirmation::format_volume_serial)
             .context("the volume's serial number could not be read")?;
+        // Working storage, measured in the lab: a run keeps about as much as
+        // the volume holds (runc-convert3: 19.7 GB for 19.6 GB in use) and one
+        // stopped 15 minutes in with 13 GB free for that volume
+        // (runc-convert2). Half as much again as the volume holds is asked
+        // for here, before the restart, instead of finding out after it.
+        let windows_space =
+            n2r_win32::discovery::observe_volume_space(&format!("{letter}:\\"))?;
+        let in_use = windows_space
+            .total_bytes_available_to_caller
+            .saturating_sub(windows_space.total_free_bytes);
+        let scratch_text = scratch.to_string_lossy();
+        let scratch_root = match scratch_text.as_bytes() {
+            [l, b':', ..] if l.is_ascii_alphabetic() => format!("{}:\\", *l as char),
+            _ => scratch_text.to_string(),
+        };
+        let scratch_space = n2r_win32::discovery::observe_volume_space(&scratch_root)
+            .with_context(|| format!("the free space of {scratch_root} could not be read"))?;
+        let wanted = in_use.saturating_add(in_use / 2);
+        let gib = |bytes: u64| bytes as f64 / (1u64 << 30) as f64;
+        ensure!(
+            scratch_space.available_bytes_to_caller >= wanted,
+            "{scratch_root} has {:.1} GiB free; converting this Windows ({:.1} GiB in use) takes about {:.1} GiB of working storage there. Free space on it or give another volume with --scratch-directory. Nothing was changed.",
+            gib(scratch_space.available_bytes_to_caller),
+            gib(in_use),
+            gib(wanted)
+        );
         let boot = args.boot_partition.context(
             "the running Windows converts through its recovery environment, which the machine starts from a FAT32 partition on another disk: format one (a USB stick will do, 100 MB or more) and give its letter with --boot-partition. Nothing was changed.",
         )?;

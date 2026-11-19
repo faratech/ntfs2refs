@@ -218,7 +218,10 @@ pub fn stage_and_restart(request: &Request<'_>) -> Result<()> {
         ],
     )?;
     let edited = (|| -> Result<()> {
-        fs::write(mount.join("n2r-start.cmd"), script(&relative, &original_default))?;
+        fs::write(
+            mount.join("n2r-start.cmd"),
+            script(&relative, &original_default),
+        )?;
         fs::write(
             mount.join(r"Windows\System32\winpeshl.ini"),
             "[LaunchApps]\r\n%SYSTEMROOT%\\System32\\cmd.exe, /c X:\\n2r-start.cmd",
@@ -357,6 +360,157 @@ fn volume_serial_of(letter: char) -> Option<String> {
         .and_then(|line| line.split_whitespace().last().map(str::to_owned))
 }
 
+const RECOVER_FILE: &str = "recover-command.json";
+
+/// The recovery command the converter printed last: the directory and the
+/// checksum its `--recover` line names, and whether that line undoes the
+/// conversion (a preparation can only be rolled back).
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecoverCommand {
+    pub directory: String,
+    pub sha256: String,
+    pub rollback_only: bool,
+}
+
+/// The `--recover "<dir>" --recovery-sha256 <hex> [--rollback]` of a line
+/// the converter printed.
+fn recover_command_in(line: &str) -> Option<RecoverCommand> {
+    let after = line.split_once("--recover \"")?.1;
+    let (directory, rest) = after.split_once('"')?;
+    let sha256 = rest
+        .split_once("--recovery-sha256 ")?
+        .1
+        .split_whitespace()
+        .next()?
+        .to_owned();
+    (!directory.is_empty() && sha256.len() == 64).then(|| RecoverCommand {
+        directory: directory.to_owned(),
+        sha256,
+        rollback_only: rest.contains("--rollback"),
+    })
+}
+
+fn run_converter(
+    directory: &Path,
+    scratch: &Path,
+    letter: char,
+    session: &Session,
+    note: &mut dyn FnMut(String),
+) -> u8 {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+    let child = Command::new(directory.join("ntfs2refs.exe"))
+        .args([
+            "--drive",
+            &letter.to_string(),
+            "--windows-boot-volume",
+            "--yes",
+            "--volume-serial",
+            &session.volume_serial,
+            "--scratch-directory",
+        ])
+        .arg(scratch.join("conversion"))
+        .args(&session.converter_args)
+        .stdout(Stdio::piped())
+        .spawn();
+    let mut child = match child {
+        Ok(child) => child,
+        Err(error) => {
+            note(format!("The converter did not start: {error}"));
+            return 1;
+        }
+    };
+    // What it prints is shown as it comes; the line that says how to recover
+    // is kept on the working disk, for a run cut off before it ends.
+    if let Some(stdout) = child.stdout.take() {
+        for line in BufReader::new(stdout).lines().map_while(|l| l.ok()) {
+            println!("{line}");
+            if let Some(command) = recover_command_in(&line) {
+                if let Ok(bytes) = serde_json::to_vec_pretty(&command) {
+                    let _ = fs::write(directory.join(RECOVER_FILE), bytes);
+                }
+            }
+        }
+    }
+    match child.wait() {
+        Ok(status) => {
+            note(format!("The converter ended with {status}."));
+            status.code().unwrap_or(1).clamp(0, 255) as u8
+        }
+        Err(error) => {
+            note(format!("The converter could not be waited for: {error}"));
+            1
+        }
+    }
+}
+
+/// A first start runs the conversion. A start where an earlier one printed a
+/// recovery command and did not end (the power went, the machine was reset)
+/// recovers instead: forward where the command allows it, and back to NTFS
+/// where that fails.
+fn run_or_recover(
+    directory: &Path,
+    scratch: &Path,
+    letter: char,
+    session: &Session,
+    note: &mut dyn FnMut(String),
+) -> u8 {
+    let saved = directory.join(RECOVER_FILE);
+    let Some(command) = fs::read(&saved)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<RecoverCommand>(&bytes).ok())
+    else {
+        note(format!(
+            "Converting the Windows on {letter}: (serial {}), working in {}",
+            session.volume_serial,
+            scratch.display()
+        ));
+        let code = run_converter(directory, scratch, letter, session, note);
+        // It ended on its own: nothing is left to recover from a cut.
+        let _ = fs::rename(&saved, directory.join("recover-command.done.json"));
+        return code;
+    };
+    note(format!(
+        "An earlier start of this run was cut off. Recovering from {}",
+        command.directory
+    ));
+    let recover = |rollback: bool| -> Option<bool> {
+        let mut process = Command::new(directory.join("ntfs2refs.exe"));
+        process.args([
+            "--recover",
+            &command.directory,
+            "--recovery-sha256",
+            &command.sha256,
+        ]);
+        if rollback {
+            process.arg("--rollback");
+        }
+        process.status().ok().map(|status| status.success())
+    };
+    let forward = !command.rollback_only;
+    let mut done = if forward { recover(false) } else { None };
+    if done != Some(true) {
+        if forward {
+            note("Recovering forward did not finish; putting the NTFS volume back.".to_owned());
+        }
+        done = recover(true);
+    }
+    let _ = fs::rename(&saved, directory.join("recover-command.done.json"));
+    match done {
+        Some(true) => {
+            note("The recovery finished.".to_owned());
+            0
+        }
+        _ => {
+            note(format!(
+                "The recovery did not finish. Run `ntfs2refs --recover \"{}\" --recovery-sha256 {} --rollback` from a command prompt in the recovery environment or Windows.",
+                command.directory, command.sha256
+            ));
+            1
+        }
+    }
+}
+
 /// In the recovery environment: runs the conversion of the Windows volume
 /// the session names, then puts the boot menu back. Returns the converter's
 /// exit code.
@@ -395,29 +549,7 @@ pub fn run_session(session_path: &Path) -> Result<u8> {
                 session.volume_serial,
                 scratch.display()
             ));
-            let status = Command::new(directory.join("ntfs2refs.exe"))
-                .args([
-                    "--drive",
-                    &letter.to_string(),
-                    "--windows-boot-volume",
-                    "--yes",
-                    "--volume-serial",
-                    &session.volume_serial,
-                    "--scratch-directory",
-                ])
-                .arg(scratch.join("conversion"))
-                .args(&session.converter_args)
-                .status();
-            match status {
-                Ok(status) => {
-                    note(format!("The converter ended with {status}."));
-                    status.code().unwrap_or(1).clamp(0, 255) as u8
-                }
-                Err(error) => {
-                    note(format!("The converter did not start: {error}"));
-                    1
-                }
-            }
+            run_or_recover(&directory, scratch, letter, &session, &mut note)
         }
     };
     // The boot menu as it was, whatever happened.
@@ -461,6 +593,21 @@ mod tests {
         let manager = "Windows Boot Manager\n--------\nidentifier              {bootmgr}\ndefault                 {current}\ntimeout                 30\n";
         assert_eq!(bcd_value(manager, "default").as_deref(), Some("{current}"));
         assert_eq!(bcd_value(manager, "displayorder"), None);
+    }
+
+    #[test]
+    fn the_recovery_command_is_found_in_what_the_converter_prints() {
+        let sha = "8df4f61a6b299dd8113dbdaa88827f27a05bd516f61725ba19effe65815a5180";
+        let line = format!(
+            "If this run is cut off while it prepares: ntfs2refs --recover \"E:\\runs\\conversion\" --recovery-sha256 {sha} --rollback"
+        );
+        let found = recover_command_in(&line).unwrap();
+        assert_eq!(found.directory, "E:\\runs\\conversion");
+        assert_eq!(found.sha256, sha);
+        assert!(found.rollback_only);
+        let forward = format!("To recover: ntfs2refs --recover \"E:\\x\" --recovery-sha256 {sha}");
+        assert!(!recover_command_in(&forward).unwrap().rollback_only);
+        assert_eq!(recover_command_in("Verifying ReFS metadata"), None);
     }
 
     #[test]

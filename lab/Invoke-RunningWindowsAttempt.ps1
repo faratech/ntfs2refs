@@ -163,10 +163,10 @@ if ($HoldAt) {
     # is cut once they have been quiet for two minutes, or CutAfterMinutes
     # after the restart at the latest.
     Say "hold at ${HoldAt}: the VM is turned off when the converter parks there (at most $CutAfterMinutes minutes)"
-    $deadline = (Get-Date).AddMinutes($CutAfterMinutes)
+    $parkDeadline = (Get-Date).AddMinutes($CutAfterMinutes)
     $quiet = 0
     Start-Sleep -Seconds 300
-    while ((Get-Date) -lt $deadline -and $quiet -lt 4) {
+    while ((Get-Date) -lt $parkDeadline -and $quiet -lt 4) {
         Start-Sleep -Seconds 30
         if ((Get-LabVm).CPUUsage -le 1) { $quiet++ } else { $quiet = 0 }
     }

@@ -39,11 +39,12 @@ param(
     [int]$CutAfterMinutes = 40,
     # The working disk to attach when the VM has none (after a checkpoint was
     # restored).
-    [string]$ScratchVhdx = (Join-Path (Split-Path -Parent $PSScriptRoot) '.lab\hyperv\attempts\envprobe-c-up\scratch.vhdx'),
+    [string]$ScratchVhdx,
     [string[]]$ConverterArgs = @()
 )
 $ErrorActionPreference = 'Stop'
 $workspace = Split-Path -Parent $PSScriptRoot
+if (-not $ScratchVhdx) { $ScratchVhdx = Join-Path $workspace '.lab\hyperv\attempts\envprobe-c-up\scratch.vhdx' }
 $records = Join-Path $workspace ".lab\hyperv\attempts\$Name"
 if (Test-Path -LiteralPath $records) { throw "attempt $Name already has records; use a new name" }
 $null = New-Item -ItemType Directory -Path $records

@@ -412,6 +412,10 @@ fn run_converter(
         .arg(scratch.join("conversion"))
         .args(&session.converter_args)
         .stdout(Stdio::piped())
+        .stderr(match fs::File::create(directory.join("converter-errors.txt")) {
+            Ok(file) => Stdio::from(file),
+            Err(_) => Stdio::inherit(),
+        })
         .spawn();
     let mut child = match child {
         Ok(child) => child,
@@ -422,9 +426,14 @@ fn run_converter(
     };
     // What it prints is shown as it comes; the line that says how to recover
     // is kept on the working disk, for a run cut off before it ends.
+    let mut transcript = fs::File::create(directory.join("converter-output.txt")).ok();
     if let Some(stdout) = child.stdout.take() {
         for line in BufReader::new(stdout).lines().map_while(|l| l.ok()) {
             println!("{line}");
+            if let Some(file) = transcript.as_mut() {
+                use std::io::Write;
+                let _ = writeln!(file, "{line}");
+            }
             if let Some(command) = recover_command_in(&line) {
                 if let Ok(bytes) = serde_json::to_vec_pretty(&command) {
                     let _ = fs::write(directory.join(RECOVER_FILE), bytes);
@@ -435,6 +444,13 @@ fn run_converter(
     match child.wait() {
         Ok(status) => {
             note(format!("The converter ended with {status}."));
+            if !status.success() {
+                if let Ok(errors) = fs::read_to_string(directory.join("converter-errors.txt")) {
+                    for line in errors.lines().filter(|l| !l.trim().is_empty()) {
+                        note(format!("  {line}"));
+                    }
+                }
+            }
             status.code().unwrap_or(1).clamp(0, 255) as u8
         }
         Err(error) => {

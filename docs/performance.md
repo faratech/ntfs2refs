@@ -9,8 +9,9 @@ will do.
 
 Every run prints, to its error stream, a `timing:` line for each phase and a
 `timing-steps:` line with the wall clock of each step, then the totals and
-`memory: the run's reservations peaked at … of the … it may hold; what it
-could not do without peaked at …`. Two counters in those lines say how much
+`memory: the run set aside … MiB at its start (…); its reservations peaked at
+… MiB, of which … MiB it could not do without …; the process itself peaked at
+… MiB of working set and … MiB of private memory`. Two counters in those lines say how much
 of the per-object work ran on several threads: `objects at once (thread
 time)` and `objects in turn`.
 
@@ -92,11 +93,14 @@ not to be compared with the 24 GB rows above.
 | 100,000 files, 5,000 MiB taken in the middle (`v2-takemem-100k`) and not (`v2-plain-100k`) | VM with 10 GB, no limit | 425 and 438 | the run gave up 67 caches and went 2,512 MiB beyond its budget on the page file, and was not slower for it |
 | 20,000 files (`rc3-files-20k-limit`) | VM with 8 GB, `--memory-limit 480` | 105 | needed 279 MiB; the process peaked at 349 MiB |
 
-Without `--memory-limit` the `memory:` line compares what the run held with
-the share of free memory it set aside when it started; a run that fits itself
-to the machine may hold more than that while the machine has it, so the
-first figure can exceed the second (16,589 of 6,148 MiB in `rc3-full-system`).
-What the process took is the figure the lab's attempts sample.
+The `memory:` line says what the run set aside at its start (its ceiling
+under `--memory-limit`; without it, a starting share, since a run that fits
+itself to the machine may hold more while memory is free), the peak of its
+reservations and how much of that it could not do without (the rest are
+caches it gives back when memory is short), and the process's own peak
+working set and private memory, which is what to compare with a machine
+(#167). Before 0.1.0 it read "peaked at 16,589 MiB of the 6,148 MiB it may
+hold" for `rc3-full-system`, which looked like an overrun and was not.
 
 ## A partition on the Windows disk, through a restart
 

@@ -344,6 +344,10 @@ pub fn run(args: DriveArgs) -> Result<u8> {
             n2r_win32::stack_sampler::start(output.clone());
         }
         crate::panic_report::install();
+        // Says once if Windows' drive optimization runs during a conversion (#132).
+        if args.drive.is_some() || args.recover.is_some() {
+            n2r_win32::maintenance_watch::start();
+        }
         std::thread::Builder::new()
             .name("ntfs2refs-drive".to_owned())
             .stack_size(16 * 1024 * 1024)

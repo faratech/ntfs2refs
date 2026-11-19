@@ -889,6 +889,22 @@ pub(crate) fn device_file(path: &str, writable: bool, unbuffered: bool) -> io::R
     options.open(path)
 }
 
+/// The recovery environment of the running-Windows route starts with every
+/// disk offline (its SAN policy). This brings one disk online and writable,
+/// as `diskpart online disk` and `attributes disk clear readonly` would, so
+/// that a fresh conversion can admit it with every check of its own; it
+/// answers the disk's attributes afterwards. Never used for a recovery, which
+/// takes the disk offline as it found it.
+pub fn bring_disk_online_for_admission(disk_number: u32) -> io::Result<u64> {
+    let file = device_file(&format!("\\\\.\\PhysicalDrive{disk_number}"), true, true)
+        .map_err(|e| io::Error::new(e.kind(), format!("opening disk {disk_number}: {e}")))?;
+    let mut events = Vec::new();
+    set_attributes(&file, 0, &mut events).map_err(|e| {
+        io::Error::new(e.kind(), format!("bringing disk {disk_number} online and writable: {e}"))
+    })?;
+    attributes(&file, &mut events)
+}
+
 fn attributes(file: &File, events: &mut Vec<NativeEvent>) -> io::Result<u64> {
     let bytes = control(file, "get-disk-attributes", GET_ATTRIBUTES, &[], 16, events)?;
     if bytes.len() != 16 || layout::u32_at(&bytes, 0)? != 16 {

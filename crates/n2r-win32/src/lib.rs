@@ -126,6 +126,7 @@ pub use attestation_native::collect_file_metadata;
 mod native;
 #[cfg(windows)]
 pub use native::BootStorageHintNormalization;
+pub use native::bring_disk_online_for_admission;
 #[cfg(windows)]
 pub use native::PartitionMixedReplayGate;
 #[cfg(windows)]

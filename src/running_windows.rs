@@ -846,15 +846,12 @@ fn online_disk(identity: &str) -> Result<u32> {
         .iter()
         .find(|disk| disk_identity(disk).is_some_and(|id| id.eq_ignore_ascii_case(identity)))
         .with_context(|| format!("no disk with identity {identity} is attached"))?;
-    let script = std::env::temp_dir().join(format!("n2r-online-{}.txt", disk.disk_number));
-    fs::write(
-        &script,
-        format!(
-            "select disk {}\r\nonline disk noerr\r\nattributes disk clear readonly noerr\r\n",
-            disk.disk_number
-        ),
-    )?;
-    tool("diskpart.exe", &["/s", &script.to_string_lossy()])?;
+    let left = n2r_win32::bring_disk_online_for_admission(disk.disk_number)?;
+    ensure!(
+        left == 0,
+        "disk {} still has attributes {left:#x} after it was brought online",
+        disk.disk_number
+    );
     Ok(disk.disk_number)
 }
 

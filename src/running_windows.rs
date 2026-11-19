@@ -765,11 +765,6 @@ pub fn run_session(session_path: &Path) -> Result<u8> {
             let scratch = directory
                 .parent()
                 .context("the staging directory has no parent")?;
-            note(format!(
-                "Converting the Windows on {letter}: (serial {}), working in {}",
-                session.volume_serial,
-                scratch.display()
-            ));
             run_or_recover(&directory, scratch, letter, &session, &mut note)
         }
     };

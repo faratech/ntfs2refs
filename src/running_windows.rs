@@ -165,18 +165,20 @@ fn script(relative: &str, firmware_entry: &str) -> String {
         + "\r\n"
 }
 
-/// The firmware boot entries whose device is the partition of `letter`.
-fn firmware_entries_on(letter: char) -> Result<Vec<String>> {
+/// The description of the firmware entry this program makes.
+const FIRMWARE_DESCRIPTION: &str = "ntfs2refs boot partition";
+
+/// The firmware boot entries this program made, found by their description.
+fn own_firmware_entries() -> Result<Vec<String>> {
     let text = tool("bcdedit.exe", &["/enum", "firmware", "/v"])?;
-    let wanted = format!("partition={letter}:");
     let mut found = Vec::new();
     let mut identifier: Option<String> = None;
     for line in text.lines() {
         let line = line.trim();
         if let Some(rest) = line.strip_prefix("identifier") {
             identifier = Some(rest.trim().to_owned());
-        } else if let Some(rest) = line.strip_prefix("device") {
-            if rest.trim().eq_ignore_ascii_case(&wanted) {
+        } else if let Some(rest) = line.strip_prefix("description") {
+            if rest.trim() == FIRMWARE_DESCRIPTION {
                 found.extend(identifier.clone());
             }
         }
@@ -249,7 +251,7 @@ pub fn stage_and_restart(request: &Request<'_>) -> Result<()> {
     // The boot files first: their firmware entry gives the start script the
     // identifier it takes out of the boot order when anything fails. Entries
     // an earlier run left on this partition go.
-    for stale in firmware_entries_on(boot)? {
+    for stale in own_firmware_entries()? {
         remove_firmware_entry(&stale);
     }
     println!("Writing boot files to {boot}: (bcdboot); Windows' own boot files are not touched");
@@ -264,13 +266,28 @@ pub fn stage_and_restart(request: &Request<'_>) -> Result<()> {
             "/addlast",
         ],
     )?;
-    let firmware_entry = match firmware_entries_on(boot)?.as_slice() {
-        [one] => one.clone(),
-        other => bail!(
-            "bcdboot left {} firmware entries for {boot}: instead of one; nothing else was changed",
-            other.len()
-        ),
-    };
+    // A firmware entry of its own: a copy of the Windows Boot Manager entry
+    // that starts the boot manager on the boot partition, which reads the
+    // store beside it.
+    let firmware_entry = identifier(&tool(
+        "bcdedit.exe",
+        &["/copy", "{bootmgr}", "/d", FIRMWARE_DESCRIPTION],
+    )?)?;
+    let pointed = (|| -> Result<()> {
+        tool(
+            "bcdedit.exe",
+            &["/set", &firmware_entry, "device", &format!("partition={boot}:")],
+        )?;
+        tool(
+            "bcdedit.exe",
+            &["/set", &firmware_entry, "path", r"\EFI\Microsoft\Boot\bootmgfw.efi"],
+        )?;
+        Ok(())
+    })();
+    if let Err(error) = pointed {
+        remove_firmware_entry(&firmware_entry);
+        return Err(error.context("making the firmware entry of the boot partition"));
+    }
     let armed = (|| -> Result<()> {
         println!(
             "Staging the Windows Recovery Environment ({}) on {}",

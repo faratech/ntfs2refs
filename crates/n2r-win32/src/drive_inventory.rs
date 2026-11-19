@@ -394,11 +394,13 @@ pub fn conversion_note(disk: &DiskInventory, partition: &PartitionInventory) -> 
             .iter()
             .filter(|other| other.partition_number != partition.partition_number)
             .count();
+        // With other partitions beside it the whole disk still goes
+        // offline, and the volumes beside this one with it, as on GPT.
         return Some(if others == 0 {
             format!("convertible as a data volume{unchecked}")
         } else {
             format!(
-                "not convertible: the disk is MBR and holds {others} other partition(s); on an MBR disk the converter takes a volume that has the disk to itself"
+                "convertible as a data volume; the disk's {others} other partition(s) go offline with it for the length of the run{unchecked}"
             )
         });
     }
@@ -642,10 +644,9 @@ mod tests {
         mbr.mbr_signature = Some(0x1234_abcd);
         assert_eq!(note(&mbr, 1).unwrap(), "convertible as a data volume");
         mbr.partitions.push(mbr_partition(2, 0x07));
-        assert!(
-            note(&mbr, 1)
-                .unwrap()
-                .starts_with("not convertible: the disk is MBR and holds 1 other partition(s)")
+        assert_eq!(
+            note(&mbr, 1).unwrap(),
+            "convertible as a data volume; the disk's 1 other partition(s) go offline with it for the length of the run"
         );
         mbr.partitions[1] = mbr_partition(2, 0x0c);
         assert!(note(&mbr, 2).unwrap().contains("type 07 only"));

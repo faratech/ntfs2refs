@@ -23,10 +23,10 @@ and the [recovery matrix](recovery-matrix.md).
    old content of every sector it changes. Leave it alone until the
    conversion has finished and you have looked at the result.
 4. **The volume's layout.** A data volume has to be on a disk that is not
-   the disk of the running Windows. A GPT disk may hold other partitions; they
+   the disk of the running Windows. The disk may be GPT or MBR (on MBR, a
+   primary partition) and may hold other partitions; they
    [go offline with it](#a-disk-with-other-partitions) while the run lasts.
-   On an MBR disk the volume has to be the disk's one partition. The working
-   directory may be on a GPT or an MBR disk.
+   The working directory may be on a GPT or an MBR disk.
 
 The lab's Windows volume, with 22.9 GB in use in 191,000 files and
 directories, took 28 minutes, about 30 GB of working storage and 2.1 GB of
@@ -40,10 +40,9 @@ bounds: see [how large a volume can be](#how-large-a-volume-can-be).
 ```
 
 It lists every disk and partition and says for each NTFS partition whether a
-conversion would take it and, if not, why: it is the running Windows, shares
-its disk with it, or shares an MBR disk with other partitions. For a volume
-on a GPT disk with other partitions it says how many go offline with it. Each volume is
-shown with its serial number.
+conversion would take it and, if not, why: it is the running Windows, or
+shares its disk with it. For a volume on a disk with other partitions it says
+how many go offline with it. Each volume is shown with its serial number.
 
 Windows reports a volume encrypted with BitLocker as NTFS. From an elevated
 terminal `--list` reads each partition's first sector and says where that is
@@ -208,7 +207,7 @@ stops later.
 
 ### A disk with other partitions
 
-A data volume may share its GPT disk with other partitions: more data
+A data volume may share its GPT or MBR disk with other partitions: more data
 volumes, an EFI system partition and a recovery partition left from the time
 the disk was a computer's own, a partition of another operating system. The
 run still takes the **whole disk** offline, because that is the only way
@@ -254,7 +253,9 @@ when:
   again. This is the one thing `--check` cannot see;
 - the volume to convert holds an **installed Windows** and the disk has an EFI
   system partition: as a data volume it would no longer start. That is what
-  [`--windows-boot-volume`](#convert-an-installed-windows) is for.
+  [`--windows-boot-volume`](#convert-an-installed-windows) is for. On an MBR
+  disk such a volume is refused: that Windows starts from the disk itself,
+  and the converter starts an installed Windows only from a GPT disk.
 
 ### The target
 
@@ -325,6 +326,20 @@ Refused before anything is written, each with what was found and what to do:
 | No file at all on the volume | Format it as ReFS |
 
 `--diagnose` reports the same without converting.
+
+### Windows' drive optimization
+
+Windows optimizes drives on a schedule (the `ScheduledDefrag` task), ReFS
+volumes too. When it ran on the volumes a conversion was reading and writing,
+a pass stalled for a quarter of an hour in the lab (#132). A run that sees
+`defrag.exe` running says so once and goes on; the optimization stops by
+itself. To keep it from starting during a conversion, disable the task first
+and enable it afterwards:
+
+```powershell
+schtasks /Change /TN "\Microsoft\Windows\Defrag\ScheduledDefrag" /Disable
+schtasks /Change /TN "\Microsoft\Windows\Defrag\ScheduledDefrag" /Enable
+```
 
 ### How large a volume can be
 

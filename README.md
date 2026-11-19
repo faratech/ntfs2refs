@@ -28,7 +28,7 @@ that is interrupted is resumed or rolled back with the command it prints.
 
 | | |
 |---|---|
-| **A data drive** on a disk of its own (GPT, or an MBR disk it has to itself) | `--drive E` |
+| **A data drive** on a disk other than Windows' (GPT or MBR; partitions beside it go offline with it for the run) | `--drive E` |
 | **A data partition beside Windows** on the system disk, through a restart | `--drive D --restart-media E:\` |
 | **An installed Windows** that is not running, from a second Windows | `--drive D --windows-boot-volume` |
 

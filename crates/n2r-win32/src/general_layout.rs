@@ -21,7 +21,7 @@ pub enum GeneralDiskLayoutProfile {
     #[default]
     DedicatedData,
     OfflineWindows,
-    /// A data volume on a GPT disk that it shares with other partitions,
+    /// A data volume on a GPT or MBR disk that it shares with other partitions,
     /// and that is not the disk of the running Windows. The whole disk is
     /// excluded as for a dedicated data disk; every other volume on it is
     /// locked and dismounted first, and the disk has to be outside the

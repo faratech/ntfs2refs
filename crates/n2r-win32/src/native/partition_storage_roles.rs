@@ -300,6 +300,12 @@ impl Session {
     }
 }
 thread_local! {static CONNECTION:RefCell<Option<Session>>=const{RefCell::new(None)};}
+/// A partition as the storage catalog lists it. On a GPT disk `guid` and
+/// `gpt_type` are what Windows says. An MBR partition has neither (the
+/// catalog gives NULL for both): its `guid` is the identity `mbr_layout`
+/// makes of the disk's signature and the partition's number, offset and
+/// length, the one a binding made at discovery holds; `gpt_type` is zero
+/// and `mbr_type` is its type.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(super) struct StoragePartitionRole {
     pub disk_number: u32,
@@ -310,6 +316,124 @@ pub(super) struct StoragePartitionRole {
     pub size: u64,
     pub is_boot: bool,
     pub is_system: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mbr_type: Option<u8>,
+}
+impl StoragePartitionRole {
+    /// Whether the partition's native information
+    /// (IOCTL_DISK_GET_PARTITION_INFO_EX) is this row's: its number and
+    /// place, and on GPT its GUID and type, on MBR its type. The style the
+    /// information is in has to be the row's.
+    fn matches_native(&self, info: &[u8]) -> io::Result<bool> {
+        Ok(info.len() == 144
+            && match self.mbr_type {
+                None => layout::u32_at(info, 0)? == 1,
+                Some(_) => layout::u32_at(info, 0)? == 0,
+            }
+            && layout::u32_at(info, 24)? == self.partition_number
+            && layout::u64_at(info, 8)? == self.offset
+            && layout::u64_at(info, 16)? == self.size
+            && match self.mbr_type {
+                None => info[48..64] == self.guid && info[32..48] == self.gpt_type,
+                Some(kind) => info[32] == kind,
+            })
+    }
+
+    /// Whether the selected partition's native row has this row's type.
+    fn same_type_as(&self, native: &[u8]) -> bool {
+        match self.mbr_type {
+            None => native[0] == 1 && self.gpt_type.as_slice() == &native[32..48],
+            Some(kind) => native[0] == 0 && native[32] == kind,
+        }
+    }
+}
+
+/// The identity of an MBR partition the catalog lists without a GUID: the
+/// one `mbr_layout` makes, from the signature of its disk as the disk's
+/// native layout has it. A row without a GUID on a disk that is not MBR, or
+/// with a GPT type, or without an MBR type, is refused as a NULL property.
+fn mbr_row_identity(
+    signature: Option<u32>,
+    disk_number: u32,
+    partition_number: u32,
+    offset: u64,
+    size: u64,
+    gpt_type_listed: bool,
+    mbr_type: Option<u32>,
+) -> io::Result<([u8; 16], u8)> {
+    let null = |what: &str| {
+        invalid(&format!(
+            "WMI required property is NULL/unknown or has another CIM type: MSFT_Partition.Guid of disk {disk_number} partition {partition_number} is NULL, and {what}"
+        ))
+    };
+    let signature = signature.ok_or_else(|| {
+        null("the disk's native layout is not that of an MBR disk with a signature")
+    })?;
+    if gpt_type_listed {
+        return Err(null("its GptType is not"));
+    }
+    let kind = mbr_type
+        .and_then(|kind| u8::try_from(kind).ok())
+        .filter(|kind| *kind != 0)
+        .ok_or_else(|| null("it has no MbrType"))?;
+    let guid = layout::guid_bytes(&crate::mbr_layout::partition_identity(
+        signature,
+        partition_number,
+        offset,
+        size,
+    ))?;
+    Ok((guid, kind))
+}
+
+/// The signatures of the MBR disks the catalog lists partitions of, each
+/// read from the disk's native layout the first time a row needs it. The
+/// source's own comes from its binding, which the selected disk's layout is
+/// checked against below. A GPT disk's rows never ask.
+struct MbrSignatures {
+    known: Vec<(u32, Option<u32>)>,
+    layout_bytes: usize,
+}
+impl MbrSignatures {
+    fn new(binding: &PartitionSourceBinding, layout_bytes: usize) -> Self {
+        let storage = &binding.storage;
+        Self {
+            known: crate::mbr_layout::disk_signature(&storage.identity.disk_guid)
+                .map(|signature| (storage.disk_number, Some(signature)))
+                .into_iter()
+                .collect(),
+            layout_bytes,
+        }
+    }
+
+    fn of(&mut self, disk: u32, events: &mut Vec<NativeEvent>) -> io::Result<Option<u32>> {
+        if let Some((_, signature)) = self.known.iter().find(|(number, _)| *number == disk) {
+            return Ok(*signature);
+        }
+        let file = metadata_file(
+            &format!(r"\\.\PhysicalDrive{disk}"),
+            "catalog-mbr-disk-layout",
+            events,
+        )?;
+        let native = control(
+            &file,
+            "storage-role-catalog-disk-layout",
+            super::LAYOUT,
+            &[],
+            self.layout_bytes,
+            events,
+        )
+        .map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "storage-role catalog: reading the layout of disk {disk}, whose partitions the catalog lists without a GUID: {error}"
+                ),
+            )
+        })?;
+        let signature = crate::mbr_layout::layout_signature(&native);
+        self.known.push((disk, signature));
+        Ok(signature)
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(super) struct NativeStoragePartitionRole {
@@ -416,16 +540,59 @@ fn bool_property(object: &Com<Object>, name: &str) -> io::Result<bool> {
 }
 fn guid_property(object: &Com<Object>, name: &str) -> io::Result<[u8; 16]> {
     let v = get(object, name, 8)?;
-    let s = string(&v)?;
+    guid_value(&v)
+}
+fn guid_value(v: &Variant) -> io::Result<[u8; 16]> {
+    let s = string(v)?;
     let result = layout::guid_bytes(s.trim_matches(['{', '}']))?;
     need(result != [0; 16], "WMI GPT GUID is zero")?;
     Ok(result)
+}
+/// A property that is NULL for some rows (an MBR partition has no GUID or
+/// GPT type, a GPT partition no MBR type): `None` where it is NULL, else the
+/// value, of exactly the CIM type asked for.
+fn optional(object: &Com<Object>, name: &str, cim: i32) -> io::Result<Option<Variant>> {
+    let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+    let mut value = Variant {
+        vt: 0,
+        reserved: [0; 3],
+        data: [0; 2],
+    };
+    let mut actual = 0;
+    exact("IWbemClassObject::Get", unsafe {
+        ((*(*object.0).vtable).get)(
+            object.0,
+            wide.as_ptr(),
+            0,
+            &mut value,
+            &mut actual,
+            ptr::null_mut(),
+        )
+    })?;
+    if actual == cim && value.vt == 1 {
+        return Ok(None);
+    }
+    need(
+        actual == cim && value.vt != 0,
+        "WMI required property is NULL/unknown or has another CIM type",
+    )?;
+    Ok(Some(value))
+}
+/// A CIM uint16 (18), as WMI hands it over: VT_I4, VT_I2 or VT_UI2.
+fn u16_value(v: &Variant) -> io::Result<u32> {
+    need(matches!(v.vt, 2 | 3 | 18), "WMI uint16 encoding differs")?;
+    let value = v.data[0] as u32;
+    let value = if v.vt == 3 { value } else { value & 0xffff };
+    need(value <= 0xffff, "WMI uint16 value exceeds its type")?;
+    Ok(value)
 }
 fn query(
     session: &Session,
     disks: &[u32],
     maximum: usize,
     deadline: Instant,
+    signatures: &mut MbrSignatures,
+    events: &mut Vec<NativeEvent>,
 ) -> io::Result<Vec<StoragePartitionRole>> {
     let filter = disks
         .iter()
@@ -433,7 +600,7 @@ fn query(
         .collect::<Vec<_>>()
         .join(" OR ");
     let text = format!(
-        "SELECT DiskNumber,PartitionNumber,Guid,GptType,Offset,Size,IsBoot,IsSystem FROM MSFT_Partition WHERE {filter}"
+        "SELECT DiskNumber,PartitionNumber,Guid,GptType,MbrType,Offset,Size,IsBoot,IsSystem FROM MSFT_Partition WHERE {filter}"
     );
     let language = Bstr::new("WQL")?;
     let text = Bstr::new(&text)?;
@@ -493,15 +660,55 @@ fn query(
             rows.len() < maximum,
             "WMI partition row count exceeds admitted metadata budget",
         )?;
+        let disk_number = u32_property(&object, "DiskNumber")?;
+        let partition_number = u32_property(&object, "PartitionNumber")?;
+        // A GPT partition is known by the GUID Windows gives it. An MBR
+        // partition has none (NULL), and is known by its place on the disk.
+        let guid = optional(&object, "Guid", 8)?
+            .map(|value| guid_value(&value))
+            .transpose()?;
+        let (guid, gpt_type, offset, size, mbr_type) = match guid {
+            Some(guid) => (
+                guid,
+                guid_property(&object, "GptType")?,
+                u64_property(&object, "Offset")?,
+                u64_property(&object, "Size")?,
+                None,
+            ),
+            None => {
+                // Only a disk the catalog was asked about is opened.
+                need(
+                    disks.contains(&disk_number),
+                    "WMI partition identity/extent invalid",
+                )?;
+                let gpt_type_listed = optional(&object, "GptType", 8)?.is_some();
+                let mbr_type = optional(&object, "MbrType", 18)?
+                    .map(|value| u16_value(&value))
+                    .transpose()?;
+                let offset = u64_property(&object, "Offset")?;
+                let size = u64_property(&object, "Size")?;
+                let (guid, kind) = mbr_row_identity(
+                    signatures.of(disk_number, events)?,
+                    disk_number,
+                    partition_number,
+                    offset,
+                    size,
+                    gpt_type_listed,
+                    mbr_type,
+                )?;
+                (guid, [0; 16], offset, size, Some(kind))
+            }
+        };
         let row = StoragePartitionRole {
-            disk_number: u32_property(&object, "DiskNumber")?,
-            partition_number: u32_property(&object, "PartitionNumber")?,
-            guid: guid_property(&object, "Guid")?,
-            gpt_type: guid_property(&object, "GptType")?,
-            offset: u64_property(&object, "Offset")?,
-            size: u64_property(&object, "Size")?,
+            disk_number,
+            partition_number,
+            guid,
+            gpt_type,
+            offset,
+            size,
             is_boot: bool_property(&object, "IsBoot")?,
             is_system: bool_property(&object, "IsSystem")?,
+            mbr_type,
         };
         need(
             disks.contains(&row.disk_number)
@@ -556,13 +763,7 @@ fn native(
         events,
     )?;
     need(
-        info.len() == 144
-            && layout::u32_at(&info, 0)? == 1
-            && layout::u32_at(&info, 24)? == row.partition_number
-            && layout::u64_at(&info, 8)? == row.offset
-            && layout::u64_at(&info, 16)? == row.size
-            && info[48..64] == row.guid
-            && info[32..48] == row.gpt_type
+        row.matches_native(&info)?
             && device.len() == 12
             && layout::u32_at(&device, 0)? == 7
             && layout::u32_at(&device, 4)? == row.disk_number
@@ -661,6 +862,10 @@ pub(in crate::native) fn selected_from_held_physical_layout(
         capacity,
         events,
     )?;
+    if crate::mbr_layout::is_mbr_disk(&id.disk_guid) {
+        let row = selected_mbr_row(&native, id)?;
+        return Ok((row, native));
+    }
     need(
         native.len() >= 48
             && layout::u32_at(&native, 0)? == 1
@@ -715,6 +920,46 @@ pub(in crate::native) fn selected_from_held_physical_layout(
             .ok_or_else(|| invalid("Storage-role selected GUID absent from complete native GPT"))?,
         native,
     ))
+}
+/// The selected partition's row of an MBR disk's native layout. The disk's
+/// signature and the partition's number, offset and length make again the
+/// identity the binding holds (`mbr_layout`), and exactly one row has the
+/// partition's number, at its place.
+fn selected_mbr_row(native: &[u8], id: &layout::PartitionIdentity) -> io::Result<Vec<u8>> {
+    let found = crate::mbr_layout::mbr_partition(
+        native,
+        id.disk_bytes,
+        id.partition_offset,
+        id.partition_bytes,
+    )
+    .map_err(|error| {
+        invalid(&format!(
+            "Storage-role physical MBR layout of partition {} differs: {error}",
+            id.partition_number
+        ))
+    })?;
+    need(
+        found.partition_number == id.partition_number
+            && layout::guid_bytes(&found.disk_guid)? == layout::guid_bytes(&id.disk_guid)?
+            && layout::guid_bytes(&found.partition_guid)?
+                == layout::guid_bytes(&id.partition_guid)?,
+        "Storage-role physical MBR signature/partition identity differs",
+    )?;
+    let mut selected = None;
+    for row in native[48..].chunks_exact(144) {
+        if layout::u32_at(row, 24)? != id.partition_number {
+            continue;
+        }
+        need(
+            selected.is_none()
+                && layout::u32_at(row, 0)? == 0
+                && layout::u64_at(row, 8)? == id.partition_offset
+                && layout::u64_at(row, 16)? == id.partition_bytes,
+            "Storage-role native selected MBR row style/extent differs or repeats",
+        )?;
+        selected = Some(row.to_vec());
+    }
+    selected.ok_or_else(|| invalid("Storage-role selected number absent from complete native MBR"))
 }
 fn windows_extent(events: &mut Vec<NativeEvent>) -> io::Result<PartitionVolumeExtent> {
     let mut name = [0u16; 512];
@@ -852,7 +1097,12 @@ fn observe_partition_storage_roles_impl(
         // wait for a source that is still arriving stays ten seconds.
         let arrival = Instant::now() + Duration::from_secs(10);
         let deadline = Instant::now() + Duration::from_secs(180);
-        let mut before = query(session, &disks, maximum, deadline)?;
+        let mbr = crate::mbr_layout::is_mbr_disk(&binding.storage.identity.disk_guid);
+        let mut signatures = MbrSignatures::new(
+            binding,
+            usize::try_from(budget.native_layout_bytes).map_err(io::Error::other)?,
+        );
+        let mut before = query(session, &disks, maximum, deadline, &mut signatures, events)?;
         let target_guid = layout::guid_bytes(&binding.storage.identity.partition_guid)?;
         let listed = |rows: &[StoragePartitionRole]| {
             rows.iter()
@@ -874,7 +1124,7 @@ fn observe_partition_storage_roles_impl(
             {
                 arriving = true;
                 std::thread::sleep(Duration::from_millis(250));
-                before = query(session, &disks, maximum, deadline)?;
+                before = query(session, &disks, maximum, deadline, &mut signatures, events)?;
                 selected = listed(&before);
             }
             // The catalog was caught while the disk arrived. It is read
@@ -882,7 +1132,7 @@ fn observe_partition_storage_roles_impl(
             // is of one state of it.
             while arriving && Instant::now() < arrival {
                 std::thread::sleep(Duration::from_millis(250));
-                let again = query(session, &disks, maximum, deadline)?;
+                let again = query(session, &disks, maximum, deadline, &mut signatures, events)?;
                 if again == before {
                     break;
                 }
@@ -902,13 +1152,15 @@ fn observe_partition_storage_roles_impl(
             Some(file) => selected_from_held_physical_layout(binding, budget, file, events)?,
             None => selected_from_physical_layout(binding, budget, events)?,
         };
+        // On MBR the row has no GUID: its identity was made again from the
+        // disk's signature and the partition's place when it was read.
         need(
             target.len() == 144
-                && layout::u32_at(&target, 0)? == 1
+                && layout::u32_at(&target, 0)? == if mbr { 0 } else { 1 }
                 && layout::u32_at(&target, 24)? == binding.storage.identity.partition_number
                 && layout::u64_at(&target, 8)? == binding.storage.identity.partition_offset
                 && layout::u64_at(&target, 16)? == binding.storage.identity.partition_bytes
-                && target[48..64] == target_guid,
+                && (mbr || target[48..64] == target_guid),
             "Storage-role selected native binding differs",
         )?;
         if let Some(row) = &selected {
@@ -920,7 +1172,7 @@ fn observe_partition_storage_roles_impl(
                 row.partition_number == binding.storage.identity.partition_number
                     && row.offset == binding.storage.identity.partition_offset
                     && row.size == binding.storage.identity.partition_bytes
-                    && row.gpt_type.as_slice() == &target[32..48],
+                    && row.same_type_as(&target),
                 "Selected CIM/native partition differs",
             )?;
         } else {
@@ -932,12 +1184,20 @@ fn observe_partition_storage_roles_impl(
             } else {
                 false
             };
+            // An MBR data partition (type 07) is missing from the catalog
+            // only while its disk is offline, as a GPT basic one is.
             need(
-                target[32..48] == layout::guid_bytes("b627aadb-a893-48b6-aa0b-71e5f30ee370")?
-                    || detached_offline
+                if mbr {
+                    detached_offline
                         && binding.storage.layout_profile.has_sibling_volumes()
-                        && target[32..48]
-                            == layout::guid_bytes("ebd0a0a2-b9e5-4433-87c0-68b6b72699c7")?,
+                        && target[32] == 0x07
+                } else {
+                    target[32..48] == layout::guid_bytes("b627aadb-a893-48b6-aa0b-71e5f30ee370")?
+                        || detached_offline
+                            && binding.storage.layout_profile.has_sibling_volumes()
+                            && target[32..48]
+                                == layout::guid_bytes("ebd0a0a2-b9e5-4433-87c0-68b6b72699c7")?
+                },
                 "Selected Basic partition missing from complete live catalog",
             )?;
         }
@@ -974,7 +1234,7 @@ fn observe_partition_storage_roles_impl(
                 _ => native(row, events)?,
             });
         }
-        let after = query(session, &disks, maximum, deadline)?;
+        let after = query(session, &disks, maximum, deadline, &mut signatures, events)?;
         let windows_after = match &windows {
             Some(_) => Some(windows_extent(events)?),
             None => None,
@@ -1021,4 +1281,211 @@ fn observe_partition_storage_roles_impl(
         });
         Ok(result)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MIB: u64 = 1 << 20;
+    const DISK: u64 = 64 << 30;
+    const SIGNATURE: u32 = 0x9abc_def0;
+
+    /// A native layout of an MBR disk (DRIVE_LAYOUT_INFORMATION_EX): four
+    /// PARTITION_INFORMATION_EX rows, style 0, type at 32, recognized at 34.
+    fn mbr_layout(entries: &[(u32, u64, u64, u8)]) -> Vec<u8> {
+        let mut raw = vec![0u8; 48 + 4 * 144];
+        raw[4..8].copy_from_slice(&4u32.to_le_bytes());
+        raw[8..12].copy_from_slice(&SIGNATURE.to_le_bytes());
+        for (index, (number, offset, length, kind)) in entries.iter().enumerate() {
+            let at = 48 + index * 144;
+            raw[at + 8..at + 16].copy_from_slice(&offset.to_le_bytes());
+            raw[at + 16..at + 24].copy_from_slice(&length.to_le_bytes());
+            raw[at + 24..at + 28].copy_from_slice(&number.to_le_bytes());
+            raw[at + 32] = *kind;
+            raw[at + 34] = 1;
+        }
+        raw
+    }
+
+    fn identity(raw: &[u8], offset: u64, length: u64) -> layout::PartitionIdentity {
+        let found = crate::mbr_layout::mbr_partition(raw, DISK, offset, length).unwrap();
+        layout::PartitionIdentity {
+            disk_guid: found.disk_guid,
+            partition_guid: found.partition_guid,
+            partition_number: found.partition_number,
+            disk_bytes: DISK,
+            partition_offset: offset,
+            partition_bytes: length,
+            logical_sector_bytes: 512,
+            physical_sector_bytes: 512,
+        }
+    }
+
+    fn gpt_row() -> StoragePartitionRole {
+        StoragePartitionRole {
+            disk_number: 3,
+            partition_number: 2,
+            guid: layout::guid_bytes("6b1f4f2e-1c1d-4b8e-9d3a-0a1b2c3d4e5f").unwrap(),
+            gpt_type: layout::guid_bytes("ebd0a0a2-b9e5-4433-87c0-68b6b72699c7").unwrap(),
+            offset: 16 * MIB,
+            size: 2048 * MIB,
+            is_boot: false,
+            is_system: false,
+            mbr_type: None,
+        }
+    }
+
+    /// PARTITION_INFORMATION_EX of a GPT partition as Windows answers it.
+    fn gpt_info(row: &StoragePartitionRole) -> Vec<u8> {
+        let mut info = vec![0u8; 144];
+        info[0..4].copy_from_slice(&1u32.to_le_bytes());
+        info[8..16].copy_from_slice(&row.offset.to_le_bytes());
+        info[16..24].copy_from_slice(&row.size.to_le_bytes());
+        info[24..28].copy_from_slice(&row.partition_number.to_le_bytes());
+        info[32..48].copy_from_slice(&row.gpt_type);
+        info[48..64].copy_from_slice(&row.guid);
+        info
+    }
+
+    #[test]
+    fn an_mbr_row_of_the_catalog_is_known_by_the_identity_its_binding_holds() {
+        let raw = mbr_layout(&[(1, MIB, 500 * MIB, 0x07), (2, 501 * MIB, 2000 * MIB, 0x07)]);
+        let bound = identity(&raw, 501 * MIB, 2000 * MIB);
+        let (guid, kind) =
+            mbr_row_identity(Some(SIGNATURE), 3, 2, 501 * MIB, 2000 * MIB, false, Some(7)).unwrap();
+        assert_eq!(guid, layout::guid_bytes(&bound.partition_guid).unwrap());
+        assert_eq!(kind, 0x07);
+        // The partition beside it is another identity, and so is the same
+        // place on a disk with another signature.
+        let (beside, _) =
+            mbr_row_identity(Some(SIGNATURE), 3, 1, MIB, 500 * MIB, false, Some(7)).unwrap();
+        assert_ne!(beside, guid);
+        let (elsewhere, _) = mbr_row_identity(
+            Some(SIGNATURE + 1),
+            3,
+            2,
+            501 * MIB,
+            2000 * MIB,
+            false,
+            Some(7),
+        )
+        .unwrap();
+        assert_ne!(elsewhere, guid);
+        // A row without a GUID is refused, as a NULL property, where its
+        // disk is not MBR, where it has a GPT type, or no MBR type.
+        for (signature, gpt_type, mbr_type, said) in [
+            (
+                None,
+                false,
+                Some(7),
+                "native layout is not that of an MBR disk",
+            ),
+            (Some(SIGNATURE), true, Some(7), "its GptType is not"),
+            (Some(SIGNATURE), false, None, "no MbrType"),
+            (Some(SIGNATURE), false, Some(0), "no MbrType"),
+            (Some(SIGNATURE), false, Some(0x107), "no MbrType"),
+        ] {
+            let error =
+                mbr_row_identity(signature, 3, 2, MIB, MIB, gpt_type, mbr_type).unwrap_err();
+            let text = error.to_string();
+            assert!(
+                text.starts_with("WMI required property is NULL/unknown or has another CIM type")
+                    && text.contains("disk 3 partition 2")
+                    && text.contains(said),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_mbr_partitions_native_information_is_read_as_mbr() {
+        let raw = mbr_layout(&[(1, MIB, 500 * MIB, 0x07), (2, 501 * MIB, 2000 * MIB, 0x07)]);
+        let bound = identity(&raw, 501 * MIB, 2000 * MIB);
+        let row = selected_mbr_row(&raw, &bound).unwrap();
+        assert_eq!(row, raw[48 + 144..48 + 2 * 144]);
+        let (guid, kind) =
+            mbr_row_identity(Some(SIGNATURE), 3, 2, 501 * MIB, 2000 * MIB, false, Some(7)).unwrap();
+        let catalog = StoragePartitionRole {
+            disk_number: 3,
+            partition_number: 2,
+            guid,
+            gpt_type: [0; 16],
+            offset: 501 * MIB,
+            size: 2000 * MIB,
+            is_boot: false,
+            is_system: false,
+            mbr_type: Some(kind),
+        };
+        assert!(catalog.matches_native(&row).unwrap());
+        assert!(catalog.same_type_as(&row));
+        // Another type, place or number, or the row read as GPT, is not it.
+        let mut other = row.clone();
+        other[32] = 0x0c;
+        assert!(!catalog.matches_native(&other).unwrap());
+        assert!(!catalog.same_type_as(&other));
+        let mut moved = row.clone();
+        moved[8..16].copy_from_slice(&(502 * MIB).to_le_bytes());
+        assert!(!catalog.matches_native(&moved).unwrap());
+        let mut renumbered = row.clone();
+        renumbered[24..28].copy_from_slice(&3u32.to_le_bytes());
+        assert!(!catalog.matches_native(&renumbered).unwrap());
+        let mut as_gpt = row.clone();
+        as_gpt[0] = 1;
+        assert!(!catalog.matches_native(&as_gpt).unwrap());
+        assert!(!catalog.same_type_as(&as_gpt));
+        assert!(!catalog.matches_native(&row[..143]).unwrap());
+        // The selected row is refused where the disk's signature, or the
+        // partition's place, no longer makes the identity bound.
+        let mut resigned = raw.clone();
+        resigned[8..12].copy_from_slice(&(SIGNATURE + 1).to_le_bytes());
+        let error = selected_mbr_row(&resigned, &bound).unwrap_err();
+        assert!(error.to_string().contains("identity differs"), "{error}");
+        let mut renumbered = bound.clone();
+        renumbered.partition_number = 1;
+        assert!(selected_mbr_row(&raw, &renumbered).is_err());
+        let gone = mbr_layout(&[(1, MIB, 500 * MIB, 0x07)]);
+        let error = selected_mbr_row(&gone, &bound).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("MBR layout of partition 2 differs"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_gpt_partitions_native_information_is_read_as_before() {
+        let row = gpt_row();
+        let info = gpt_info(&row);
+        assert!(row.matches_native(&info).unwrap());
+        assert!(row.same_type_as(&info));
+        // Each field the GPT check compared still decides it.
+        for (at, value) in [(0usize, 0u8), (8, 1), (16, 1), (24, 9), (32, 0), (48, 0)] {
+            let mut changed = info.clone();
+            changed[at] = value;
+            assert!(!row.matches_native(&changed).unwrap(), "byte {at}");
+        }
+        let mut retyped = info.clone();
+        retyped[40] ^= 1;
+        assert!(!row.same_type_as(&retyped));
+        // Attributes and the name are not part of it.
+        let mut named = info.clone();
+        named[64] = 1;
+        named[72] = b'D';
+        assert!(row.matches_native(&named).unwrap());
+        assert!(!row.matches_native(&info[..143]).unwrap());
+        // A GPT row is written out as before: no MBR type in its evidence.
+        let text = serde_json::to_string(&row).unwrap();
+        assert!(!text.contains("mbr_type"), "{text}");
+        let mbr = StoragePartitionRole {
+            mbr_type: Some(7),
+            ..gpt_row()
+        };
+        assert!(
+            serde_json::to_string(&mbr)
+                .unwrap()
+                .contains("\"mbr_type\":7")
+        );
+    }
 }

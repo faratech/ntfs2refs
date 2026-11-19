@@ -32,7 +32,7 @@ converter prints.
 | Program files copied with the security Windows gave them | `copy` |
 | All of these on one volume, to 4 KiB and to 64 KiB ReFS clusters, from 512-byte NTFS clusters, as an administrator, and interrupted and then resumed or rolled back | `lived-in` and its variants |
 | Every NTFS cluster size from 512 bytes to 2 MiB; 4Kn disks; 4096-byte file records | the geometry cases (`512-to-4k`, `4kn-4k`, ...) |
-| A volume that is the one partition of an MBR disk, and a working directory on an MBR disk; both together, interrupted half way through the writes and resumed | `mbr-src`, `mbr-work`, `mbr-apply-mid-resume` |
+| A volume that is the one partition of an MBR disk, and a working directory on an MBR disk; both together, interrupted half way through the writes and resumed; a volume that shares its MBR disk with another NTFS volume, which goes offline with it | `mbr-src`, `mbr-work`, `mbr-apply-mid-resume`, `mbr-beside` |
 | A volume that shares its GPT disk with other partitions: an EFI system partition, an NTFS volume, a write-protected NTFS volume and a partition of another operating system. The volume converts; the NTFS volume beside it lists exactly as before, and the bytes of the other three are the same. Also to 64 KiB clusters, as an administrator, with a partition that is shrunk first, interrupted and then resumed or rolled back, and on Windows Server 2025 to standard ReFS | `shared` and its variants (`-Siblings`) |
 | A Windows boot volume with its short names, 25 nested directories and 320 object IDs | `used-windows-fixture40` (boot harness, `-ShapeSource Add-UsedWindowsObjects.ps1`) |
 | The converted Windows afterwards: used and serviced (`sfc`, DISM, a feature), its recovery environment started, and repaired in place by Windows Setup from the installation media of its build | `rc3-use-1013` (boot harness, `-Acceptance`, then `setup.exe /Auto Upgrade`) |
@@ -61,7 +61,6 @@ check and the run have to give the same refusal.
 
 | Found | What the refusal says to do | Lab case |
 |---|---|---|
-| A volume that shares an MBR disk with other partitions | Convert the disk to GPT with `mbr2gpt`, or move the other partitions off it. (A volume that has an MBR disk to itself converts, and the working directory may be on any MBR disk) | `mbr-beside` |
 | 8.3 short names on a data volume | `fsutil 8dot3name strip /s /f <drive>:\`, then `fsutil 8dot3name set <drive>: 1` | `shortnames`; the remedy: `shortnames-stripped`, which converts |
 | A BitLocker-encrypted volume | `manage-bde -off <drive>` | `bitlocker` |
 | Shadow copies of the volume | `vssadmin delete shadows /for=<drive>:` | `snapshot` |

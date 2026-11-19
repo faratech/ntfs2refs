@@ -38,12 +38,14 @@ fn capabilities_report_what_the_executable_enforces() {
             .unwrap()
             .contains("not written to")
     );
-    assert_eq!(beside["refused_when"].as_array().unwrap().len(), 4);
+    assert_eq!(beside["refused_when"].as_array().unwrap().len(), 5);
+    // On an MBR disk too: the volume need not have the disk to itself.
+    let layout = data_volume["disk_layout"].as_str().unwrap();
+    assert!(!layout.contains("only partition"), "{layout}");
+    assert!(!layout.contains("to itself"), "{layout}");
     assert!(
-        !data_volume["disk_layout"]
-            .as_str()
-            .unwrap()
-            .contains("only partition")
+        layout.contains("either may hold other partitions"),
+        "{layout}"
     );
     assert!(
         data_volume["not_carried_over"][0]["what"]

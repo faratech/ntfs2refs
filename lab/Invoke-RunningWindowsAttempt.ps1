@@ -25,6 +25,9 @@ param(
     # Stop at a command prompt in the recovery environment (type into it with
     # Send-VmKeys.ps1) instead of running the session there.
     [switch]$Hold,
+    # Laboratory: write this SAN policy (3: offline internal) into the recovery
+    # image before it boots, as the media route's image does.
+    [string]$SanPolicy,
     [string[]]$ConverterArgs = @()
 )
 $ErrorActionPreference = 'Stop'
@@ -86,8 +89,10 @@ try {
     $arguments = @('--drive', 'C', '--scratch-directory', $runs, '--yes', '--volume-serial', $before.serial) + $ConverterArgs
     if ($Diagnose) { $arguments += '--diagnose' }
     Say "running: ntfs2refs $($arguments -join ' ')"
-    $said = Invoke-Command -Session $session -ArgumentList (, $arguments) -ScriptBlock {
-        param($arguments)
+    $said = Invoke-Command -Session $session -ArgumentList (, $arguments), $SanPolicy, [bool]$Hold -ScriptBlock {
+        param($arguments, $san, $hold)
+        if ($san) { $env:N2R_LAB_SAN_POLICY = $san }
+        if ($hold) { $env:N2R_LAB_HOLD_IN_IMAGE = '1' }
         $ErrorActionPreference = 'Continue'
         (& C:\n2r\ntfs2refs.exe @arguments 2>&1 | Out-String)
     }

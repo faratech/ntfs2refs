@@ -131,12 +131,19 @@ fn script(relative: &str, original_default: &str) -> String {
     format!(
         "@echo off\r\n\
 wpeinit\r\n\
+if exist X:\\n2r-hold.flag cmd /k\r\n\
 set S=\r\n\
 for %%d in ({letters}) do if exist %%d:\\{relative}{STAGING_DIRECTORY}\\{SESSION_FILE} set S=%%d:\r\n\
-if \"%S%\"==\"\" goto :lost\r\n\
+if \"%S%\"==\"\" goto :hold\r\n\
+echo ntfs2refs: this machine needs a person; see above. Type exit to restart.\r\n\
+cmd /k\r\n\
+wpeutil reboot\r\n\
+exit /b\r\n\
+:lost\r\n\
 set D=%S%\\{relative}{STAGING_DIRECTORY}\r\n\
 if exist %D%\\hold.flag cmd /k\r\n\
 %D%\\ntfs2refs.exe --running-windows-session %D%\\{SESSION_FILE}\r\n\
+if errorlevel 3 goto :hold\r\n\
 if errorlevel 1 goto :failed\r\n\
 wpeutil reboot\r\n\
 exit /b\r\n\
@@ -150,6 +157,67 @@ ping -n 31 127.0.0.1 >nul\r\n\
 wpeutil reboot\r\n",
         relative = prefix(relative),
     )
+}
+
+/// Writes a SAN policy into every control set of the mounted image.
+fn set_san_policy(mount: &Path, policy: &str) -> Result<()> {
+    let hive = mount.join(r"Windows\System32\config\SYSTEM");
+    tool(
+        "reg.exe",
+        &["load", r"HKLM\N2R_IMAGE", &hive.to_string_lossy()],
+    )?;
+    let set = (|| -> Result<()> {
+        for n in 1..=3 {
+            let set = format!(r"HKLM\N2R_IMAGE\ControlSet{n:03}");
+            if tool("reg.exe", &["query", &set]).is_err() {
+                continue;
+            }
+            tool(
+                "reg.exe",
+                &[
+                    "add",
+                    &format!(r"{set}\Services\partmgr\Parameters"),
+                    "/v",
+                    "SanPolicy",
+                    "/t",
+                    "REG_DWORD",
+                    "/d",
+                    policy,
+                    "/f",
+                ],
+            )?;
+        }
+        Ok(())
+    })();
+    let unloaded = tool("reg.exe", &["unload", r"HKLM\N2R_IMAGE"]);
+    set?;
+    unloaded?;
+    Ok(())
+}
+
+/// Removes the boot entries earlier runs of this program left: a ramdisk
+/// options entry and a loader, found by their descriptions.
+fn remove_stale_entries() -> Result<()> {
+    let text = tool("bcdedit.exe", &["/enum", "all", "/v"])?;
+    let mut identifier_of_block: Option<String> = None;
+    let mut stale = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("identifier") {
+            identifier_of_block = Some(rest.trim().to_owned());
+        } else if let Some(rest) = line.strip_prefix("description") {
+            let description = rest.trim();
+            if description == "ntfs2refs recovery ramdisk" || description == "ntfs2refs conversion"
+            {
+                stale.extend(identifier_of_block.clone());
+            }
+        }
+    }
+    for id in stale {
+        let _ = tool("bcdedit.exe", &["/displayorder", &id, "/remove"]);
+        let _ = tool("bcdedit.exe", &["/delete", &id, "/f"]);
+    }
+    Ok(())
 }
 
 /// In Windows: stages the recovery environment and the boot entry, and
@@ -174,6 +242,8 @@ pub fn stage_and_restart(request: &Request<'_>) -> Result<()> {
         scratch_letter != request.windows_drive.to_ascii_uppercase(),
         "the working directory is on the Windows volume that is converted; give one on another disk"
     );
+    // Entries of earlier runs go first, so the default written down is Windows'.
+    remove_stale_entries()?;
     // The old default is written down, before anything is made.
     let manager = tool("bcdedit.exe", &["/enum", "{bootmgr}", "/v"])?;
     // `/v` prints the identifier itself, not an alias such as {current}, which
@@ -219,6 +289,15 @@ pub fn stage_and_restart(request: &Request<'_>) -> Result<()> {
         ],
     )?;
     let edited = (|| -> Result<()> {
+        // Laboratory: the image's SAN policy, set as the media route's image
+        // does, to see whether the disk of the booted ESP can be excluded.
+        if let Ok(policy) = std::env::var("N2R_LAB_SAN_POLICY") {
+            set_san_policy(&mount, &policy)?;
+        }
+        // Laboratory: stop at a command prompt before any disk is looked at.
+        if std::env::var_os("N2R_LAB_HOLD_IN_IMAGE").is_some() {
+            fs::write(mount.join("n2r-hold.flag"), "hold")?;
+        }
         fs::write(
             mount.join("n2r-start.cmd"),
             script(&relative, &original_default),
@@ -323,6 +402,26 @@ pub fn stage_and_restart(request: &Request<'_>) -> Result<()> {
             return Err(error.context("arming the boot entry; the boot menu was put back"));
         }
     };
+    // Staged here, in Windows, before anything is converted: the report opens
+    // at the first logon afterwards, from the working disk.
+    let report = absolute.join(STAGING_DIRECTORY).join(RESULT_FILE);
+    let opened = tool(
+        "reg.exe",
+        &[
+            "add",
+            r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce",
+            "/v",
+            "ntfs2refs",
+            "/t",
+            "REG_SZ",
+            "/d",
+            &format!("cmd.exe /c start \"\" notepad.exe \"{}\"", report.display()),
+            "/f",
+        ],
+    );
+    if let Err(error) = opened {
+        println!("Note: the report will not open by itself at the next logon ({error:#}).");
+    }
     println!(
         "The next start is the recovery environment ({loader}); the conversion runs there and Windows starts again on ReFS. The original boot entry {original_default} is restored when it ends, whatever its result is; its report is {}.",
         directory.join(RESULT_FILE).display()
@@ -461,37 +560,30 @@ fn run_converter(
     }
 }
 
-/// A first start runs the conversion. A start where an earlier one printed a
-/// recovery command and did not end (the power went, the machine was reset)
-/// recovers instead: forward where the command allows it, and back to NTFS
-/// where that fails.
-fn run_or_recover(
+/// How a recovery ended.
+#[derive(Debug, PartialEq, Eq)]
+enum Recovered {
+    /// Finished forward: the volume is ReFS.
+    Forward,
+    /// Put back: the volume is NTFS again.
+    BackToNtfs,
+    /// Neither: the volume may be half converted.
+    Failed,
+}
+
+/// The exit code that says the machine needs a person: the boot entry of the
+/// recovery environment stays the default and its console stays open.
+pub const NEEDS_ATTENTION: u8 = 3;
+
+/// Runs the recovery command the converter printed: forward where the command
+/// allows it, and back to NTFS where that fails.
+fn recover_from(
     directory: &Path,
-    scratch: &Path,
-    letter: char,
-    session: &Session,
+    command: &RecoverCommand,
     note: &mut dyn FnMut(String),
-) -> u8 {
+) -> Recovered {
     let saved = directory.join(RECOVER_FILE);
-    let Some(command) = fs::read(&saved)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<RecoverCommand>(&bytes).ok())
-    else {
-        note(format!(
-            "Converting the Windows on {letter}: (serial {}), working in {}",
-            session.volume_serial,
-            scratch.display()
-        ));
-        let code = run_converter(directory, scratch, letter, session, note);
-        // It ended on its own: nothing is left to recover from a cut.
-        let _ = fs::rename(&saved, directory.join("recover-command.done.json"));
-        return code;
-    };
-    note(format!(
-        "An earlier start of this run was cut off. Recovering from {}",
-        command.directory
-    ));
-    let recover = |rollback: bool| -> Option<bool> {
+    let recover = |rollback: bool| -> bool {
         let mut process = Command::new(directory.join("ntfs2refs.exe"));
         process.args([
             "--recover",
@@ -502,60 +594,112 @@ fn run_or_recover(
         if rollback {
             process.arg("--rollback");
         }
-        process.status().ok().map(|status| status.success())
+        process.status().is_ok_and(|status| status.success())
     };
     let forward = !command.rollback_only;
-    let mut done = if forward { recover(false) } else { None };
-    if done != Some(true) {
+    let outcome = if forward && recover(false) {
+        Recovered::Forward
+    } else {
         if forward {
             note("Recovering forward did not finish; putting the NTFS volume back.".to_owned());
         }
-        done = recover(true);
-    }
-    let _ = fs::rename(&saved, directory.join("recover-command.done.json"));
-    match done {
-        Some(true) => {
-            note("The recovery finished.".to_owned());
-            0
+        if recover(true) {
+            Recovered::BackToNtfs
+        } else {
+            Recovered::Failed
         }
-        _ => {
-            note(format!(
-                "The recovery did not finish. Run `ntfs2refs --recover \"{}\" --recovery-sha256 {} --rollback` from a command prompt in the recovery environment or Windows.",
-                command.directory, command.sha256
-            ));
-            1
-        }
+    };
+    if outcome != Recovered::Failed {
+        let _ = fs::rename(&saved, directory.join("recover-command.done.json"));
     }
+    outcome
 }
 
-/// Writes the report into the Windows that was converted
-/// (`C:\ProgramData\ntfs2refs\last-conversion.txt`) and has its first logon
-/// open it: a RunOnce value of its offline registry.
-fn leave_report(letter: char, report: &str) -> Result<()> {
-    let folder = PathBuf::from(format!("{letter}:\\ProgramData\\ntfs2refs"));
-    fs::create_dir_all(&folder).with_context(|| format!("creating {}", folder.display()))?;
-    let file = folder.join("last-conversion.txt");
-    fs::write(&file, report).with_context(|| format!("writing {}", file.display()))?;
-    let hive = format!("{letter}:\\Windows\\System32\\config\\SOFTWARE");
-    tool("reg.exe", &["load", r"HKLM\N2R_SOFTWARE", &hive])?;
-    let added = tool(
-        "reg.exe",
-        &[
-            "add",
-            r"HKLM\N2R_SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce",
-            "/v",
-            "ntfs2refs",
-            "/t",
-            "REG_SZ",
-            "/d",
-            r#"cmd.exe /c start notepad.exe "%ProgramData%\ntfs2refs\last-conversion.txt""#,
-            "/f",
-        ],
-    );
-    let unloaded = tool("reg.exe", &["unload", r"HKLM\N2R_SOFTWARE"]);
-    added?;
-    unloaded?;
-    Ok(())
+/// The file system of a volume, from `fsutil`.
+fn file_system_of(letter: char) -> Option<String> {
+    let text = tool(
+        "fsutil.exe",
+        &["fsinfo", "volumeinfo", &format!("{letter}:")],
+    )
+    .ok()?;
+    text.lines().find_map(|line| {
+        line.split_once(':')
+            .filter(|(key, _)| key.trim() == "File System Name")
+            .map(|(_, value)| value.trim().to_owned())
+    })
+}
+
+/// A first start runs the conversion. A start where an earlier one printed a
+/// recovery command and did not end (the power went, the machine was reset)
+/// recovers instead. A conversion that fails is recovered at once, from the
+/// command it printed last. 0: converted; 1: it did not convert and the
+/// volume is NTFS as it was; `NEEDS_ATTENTION`: a person has to look.
+fn run_or_recover(
+    directory: &Path,
+    scratch: &Path,
+    letter: char,
+    session: &Session,
+    note: &mut dyn FnMut(String),
+) -> u8 {
+    let saved = directory.join(RECOVER_FILE);
+    let pending = || {
+        fs::read(&saved)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<RecoverCommand>(&bytes).ok())
+    };
+    let mut code = 0;
+    if let Some(command) = pending() {
+        note(format!(
+            "An earlier start of this run was cut off. Recovering from {}",
+            command.directory
+        ));
+    } else {
+        note(format!(
+            "Converting the Windows on {letter}: (serial {}), working in {}",
+            session.volume_serial,
+            scratch.display()
+        ));
+        code = run_converter(directory, scratch, letter, session, note);
+        if code == 0 {
+            // It ended on its own: nothing is left to recover from a cut.
+            let _ = fs::rename(&saved, directory.join("recover-command.done.json"));
+            return 0;
+        }
+    }
+    match pending() {
+        Some(command) => {
+            note(format!("Recovering from {}", command.directory));
+            match recover_from(directory, &command, note) {
+                Recovered::Forward => {
+                    note("The recovery finished: the volume is converted.".to_owned());
+                    0
+                }
+                Recovered::BackToNtfs => {
+                    note("The recovery put the NTFS volume back.".to_owned());
+                    code.max(1)
+                }
+                Recovered::Failed => {
+                    note(format!(
+                        "The recovery did not finish. Run `ntfs2refs --recover \"{}\" --recovery-sha256 {} --rollback` from a command prompt in this environment.",
+                        command.directory, command.sha256
+                    ));
+                    NEEDS_ATTENTION
+                }
+            }
+        }
+        // Nothing was printed to recover from: the converter stopped before
+        // it touched the volume, or it is not what the volume is now.
+        None => match file_system_of(letter).as_deref() {
+            Some("NTFS") => code.max(1),
+            other => {
+                note(format!(
+                    "The converter failed and the volume is {}: it needs a person.",
+                    other.unwrap_or("unreadable")
+                ));
+                NEEDS_ATTENTION
+            }
+        },
+    }
 }
 
 /// In the recovery environment: runs the conversion of the Windows volume
@@ -599,7 +743,15 @@ pub fn run_session(session_path: &Path) -> Result<u8> {
             run_or_recover(&directory, scratch, letter, &session, &mut note)
         }
     };
-    // The boot menu as it was, whatever happened.
+    if code == NEEDS_ATTENTION {
+        note(format!(
+            "The boot entry of this environment stays the default, so the next start is this environment again. When the volume is dealt with: `bcdedit /default {}` and `wpeutil reboot`.",
+            session.original_default
+        ));
+        let _ = fs::write(directory.join(RESULT_FILE), &report);
+        return Ok(code);
+    }
+    // The boot menu as it was.
     let restored = (|| -> Result<()> {
         tool("bcdedit.exe", &["/default", &session.original_default])?;
         let _ = tool(
@@ -622,13 +774,6 @@ pub fn run_session(session_path: &Path) -> Result<u8> {
         )),
     }
     let _ = fs::write(directory.join(RESULT_FILE), &report);
-    if let Some(letter) = windows {
-        // Whatever the volume is now, the person who started this finds the
-        // report when Windows starts.
-        if let Err(error) = leave_report(letter, &report) {
-            println!("The report could not be left in Windows: {error:#}");
-        }
-    }
     Ok(if !restored_ok && code == 0 { 1 } else { code })
 }
 

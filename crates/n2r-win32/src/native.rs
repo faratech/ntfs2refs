@@ -148,6 +148,30 @@ pub struct GeneralDiskState {
     pub gpt_layout: Vec<u8>,
     pub disk_attributes: u64,
 }
+impl GeneralDiskState {
+    /// What differs between a disk as it was and as it is, in words: the
+    /// attributes it should have, and each part of its identity that moved.
+    pub fn difference_from(&self, before: &Self, wanted_attributes: u64) -> String {
+        let mut parts = Vec::new();
+        if self.disk_attributes != wanted_attributes {
+            parts.push(format!(
+                "disk attributes are {:#x}, expected {wanted_attributes:#x}",
+                self.disk_attributes
+            ));
+        }
+        for (name, now, was) in [
+            ("device descriptor", &self.device, &before.device),
+            ("length", &self.disk_length, &before.disk_length),
+            ("alignment", &self.alignment, &before.alignment),
+            ("partition layout", &self.gpt_layout, &before.gpt_layout),
+        ] {
+            if now != was {
+                parts.push(format!("{name} changed ({} bytes, were {})", now.len(), was.len()));
+            }
+        }
+        parts.join("; ")
+    }
+}
 /// Created only by a physically read-only native observation bracketed by
 /// actual excluded-device snapshots. Exporting it cannot recreate a lease.
 #[derive(Debug, Serialize)]
@@ -2558,7 +2582,11 @@ impl GeneralFrozenPartition {
             || frozen.alignment != pre_lock.alignment
             || frozen.gpt_layout != pre_lock.gpt_layout
         {
-            return Err(invalid("general disk exclusion or identity changed"));
+            return Err(io::Error::new(io::ErrorKind::InvalidData, format!(
+                "general disk exclusion or identity changed on disk {}: {}",
+                binding.disk_number,
+                frozen.difference_from(&pre_lock, OFFLINE | READ_ONLY)
+            )));
         }
         close_file(management, "close-general-management", events)?;
         let file = device_file(

@@ -62,7 +62,7 @@ ntfs2refs --drive E --scratch-directory S:\runs          # convert
 That is what ntfs2refs does. It is experimental: back up first.
 
 **Can it convert the drive Windows is running from?**
-Yes, through a restart: `ntfs2refs --drive C --scratch-directory E:uns`
+Yes, through a restart: `ntfs2refs --drive C --scratch-directory E:\runs`
 (`E:` on another disk) stages the machine's own Windows Recovery Environment,
 restarts into it, converts the volume there and starts Windows again on ReFS.
 Needs the recovery environment turned on (`reagentc /info`), no BitLocker, and

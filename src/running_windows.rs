@@ -194,6 +194,32 @@ fn remove_firmware_entry(id: &str) {
     let _ = tool("bcdedit.exe", &["/delete", id]);
 }
 
+/// Removes the loader and ramdisk entries an earlier version of this route
+/// put into Windows' own store, found by their descriptions; this version
+/// does not touch that store otherwise.
+fn remove_stale_system_entries() -> Result<()> {
+    let text = tool("bcdedit.exe", &["/enum", "all", "/v"])?;
+    let mut identifier_of_block: Option<String> = None;
+    let mut stale = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("identifier") {
+            identifier_of_block = Some(rest.trim().to_owned());
+        } else if let Some(rest) = line.strip_prefix("description") {
+            let description = rest.trim();
+            if description == "ntfs2refs recovery ramdisk" || description == "ntfs2refs conversion"
+            {
+                stale.extend(identifier_of_block.clone());
+            }
+        }
+    }
+    for id in stale {
+        let _ = tool("bcdedit.exe", &["/displayorder", &id, "/remove"]);
+        let _ = tool("bcdedit.exe", &["/delete", &id, "/f"]);
+    }
+    Ok(())
+}
+
 /// In Windows: stages the recovery environment on the working disk and its
 /// boot files on the boot partition, puts that partition first in the
 /// firmware's boot order and restarts. Nothing on the Windows volume, and
@@ -254,6 +280,7 @@ pub fn stage_and_restart(request: &Request<'_>) -> Result<()> {
     for stale in own_firmware_entries()? {
         remove_firmware_entry(&stale);
     }
+    remove_stale_system_entries()?;
     println!("Writing boot files to {boot}: (bcdboot); Windows' own boot files are not touched");
     tool(
         "bcdboot.exe",
@@ -620,6 +647,7 @@ fn recover_from(
             &command.directory,
             "--recovery-sha256",
             &command.sha256,
+            "--yes",
         ]);
         if rollback {
             process.arg("--rollback");
@@ -698,7 +726,9 @@ fn run_or_recover(
     }
     match pending() {
         Some(command) => {
-            note(format!("Recovering from {}", command.directory));
+            if code != 0 {
+                note(format!("Recovering from {}", command.directory));
+            }
             match recover_from(directory, &command, note) {
                 Recovered::Forward => {
                     note("The recovery finished: the volume is converted.".to_owned());

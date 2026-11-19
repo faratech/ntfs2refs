@@ -112,7 +112,7 @@ try {
     $said = Invoke-Command -Session $session -ArgumentList (, $arguments), $SanPolicy, [bool]$Hold, $Image -ScriptBlock {
         param($arguments, $san, $hold, $image)
         if ($san) { $env:N2R_LAB_SAN_POLICY = $san }
-        if ($hold) { $env:N2R_LAB_HOLD_IN_IMAGE = '1' }
+        if ($hold -eq $true) { $env:N2R_LAB_HOLD_IN_IMAGE = '1' } else { Remove-Item Env:N2R_LAB_HOLD_IN_IMAGE -ErrorAction SilentlyContinue }
         if ($image -eq 'media') {
             $dvd = Get-Volume | Where-Object { $_.DriveType -eq 'CD-ROM' -and $_.DriveLetter } | Select-Object -First 1
             Copy-Item "$($dvd.DriveLetter):\sources\boot.wim" "$env:TEMP\n2r-boot.wim" -Force

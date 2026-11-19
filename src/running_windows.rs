@@ -243,9 +243,12 @@ pub fn stage_and_restart(request: &Request<'_>) -> Result<()> {
 
     // The boot menu: a ramdisk entry and a loader for the image, first in
     // the menu and the default. The old default is written down.
-    let manager = tool("bcdedit.exe", &["/enum", "{bootmgr}"])?;
+    let manager = tool("bcdedit.exe", &["/enum", "{bootmgr}", "/v"])?;
+    // `/v` prints the identifier itself, not an alias such as {current}, which
+    // names another entry in the recovery environment.
     let original_default = bcd_value(&manager, "default")
-        .context("the boot manager names no default entry; the boot menu is not touched")?;
+        .filter(|id| id.len() == 38 && id.starts_with('{'))
+        .context("the boot manager names no default entry by its identifier; the boot menu is not touched")?;
     let drive = format!("partition={scratch_letter}:");
     let sdi_path = format!("\\{}{STAGING_DIRECTORY}\\boot.sdi", prefix(&relative));
     let wim_path = format!("\\{}{STAGING_DIRECTORY}\\winre.wim", prefix(&relative));

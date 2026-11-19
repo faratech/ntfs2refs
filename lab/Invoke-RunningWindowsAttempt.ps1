@@ -1,0 +1,135 @@
+<#
+.SYNOPSIS
+  Converts the Windows a lab VM runs from, with one command in that Windows.
+
+.DESCRIPTION
+  Boots the VM's own Windows (the disk at controller 0, location 0) with its
+  working disk attached, runs `ntfs2refs --drive C --scratch-directory ...`
+  in it, waits through the restarts the run makes (its Windows Recovery
+  Environment, then Windows again), and records what came back: the file
+  system of C:, the run's own report, and the boot menu.
+
+  The working disk is an NTFS disk left by a control-OS attempt
+  (Invoke-BootConversionAttempt.ps1 -NoConvert -KeepScratch); its VHDX is
+  named with -ScratchVhdx and is attached by that attempt's configuration.
+  Nothing under .lab is deleted here.
+#>
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory)][string]$Name,
+    [Parameter(Mandatory)][string]$VmId,
+    [Parameter(Mandatory)][string]$Binary,
+    [int]$MemoryGB = 8,
+    [int]$AwayMinutes = 120,
+    [switch]$Diagnose,
+    [string[]]$ConverterArgs = @()
+)
+$ErrorActionPreference = 'Stop'
+$workspace = Split-Path -Parent $PSScriptRoot
+$records = Join-Path $workspace ".lab\hyperv\attempts\$Name"
+if (Test-Path -LiteralPath $records) { throw "attempt $Name already has records; use a new name" }
+$null = New-Item -ItemType Directory -Path $records
+function Say([string]$Text) { $line = '{0:HH:mm:ss} {1}' -f (Get-Date), $Text; Add-Content -LiteralPath (Join-Path $records 'progress.log') -Value $line -Encoding utf8; Write-Host $line }
+$saved = Import-Clixml -LiteralPath (Join-Path $workspace '.lab\hyperv\win11\secrets\guest-credential.xml')
+$credential = [pscredential]::new('LabAdmin', $saved.Password)
+function Get-LabVm { Get-VM -Id $VmId }
+function Wait-Guest([int]$Minutes) {
+    $deadline = (Get-Date).AddMinutes($Minutes)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $session = New-PSSession -VMId $VmId -Credential $credential -ErrorAction Stop
+            $null = Invoke-Command -Session $session -ScriptBlock { $env:COMPUTERNAME } -ErrorAction Stop
+            return $session
+        } catch { Start-Sleep -Seconds 15 }
+    }
+    return $null
+}
+
+# The VM boots its own Windows: disk0 first, the control OS's disks and the
+# installation media detached (not deleted), the working disk kept.
+$vm = Get-LabVm
+if ($vm.State -ne 'Off') { Stop-VM -VM $vm -TurnOff -Force }
+Set-VMMemory -VM $vm -DynamicMemoryEnabled $false -StartupBytes ($MemoryGB * 1GB)
+$drives = @(Get-VMHardDiskDrive -VM $vm)
+$disk0 = $drives | Where-Object { $_.ControllerNumber -eq 0 -and $_.ControllerLocation -eq 0 }
+$scratch = $drives | Where-Object { $_.Path -like '*\scratch.vhdx' } | Select-Object -First 1
+if (-not $disk0 -or -not $scratch) { throw 'the VM needs its disk0 and a scratch.vhdx attached' }
+$others = @($drives | Where-Object { $_.Path -ne $disk0.Path -and $_.Path -ne $scratch.Path })
+$detached = @($others | ForEach-Object { $_.Path })
+Set-Content -LiteralPath (Join-Path $records 'detached-disks.json') -Value ($detached | ConvertTo-Json) -Encoding utf8
+$others | Remove-VMHardDiskDrive
+$dvd = @(Get-VMDvdDrive -VM $vm | Where-Object Path | ForEach-Object Path) | Select-Object -First 1
+Get-VMDvdDrive -VM $vm | Remove-VMDvdDrive
+Set-VMFirmware -VM $vm -FirstBootDevice $disk0
+Say "starting the VM's own Windows (disk0), working disk $($scratch.Path)"
+Start-VM -VM $vm
+$session = Wait-Guest 15
+if (-not $session) { throw 'the VM'' own Windows did not answer' }
+$verdict = [ordered]@{ name = $Name; started = (Get-Date).ToString('o'); outcome = 'unknown' }
+try {
+    $before = Invoke-Command -Session $session -ScriptBlock {
+        $c = Get-Volume -DriveLetter C
+        $scratch = Get-Volume | Where-Object FileSystemLabel -eq 'N2R_SCRATCH' | Select-Object -First 1
+        $serial = ((cmd /c 'vol C:') | Select-String 'Serial Number').ToString().Split(' ')[-1]
+        [pscustomobject]@{ filesystem = [string]$c.FileSystem; serial = $serial; scratch = "$($scratch.DriveLetter):"; scratch_fs = [string]$scratch.FileSystem
+            build = (Get-CimInstance Win32_OperatingSystem).BuildNumber; free_gb = [Math]::Round((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB, 1) }
+    }
+    $verdict.before = $before
+    Say "running Windows: C: is $($before.filesystem), serial $($before.serial), build $($before.build); working disk $($before.scratch); RAM free $($before.free_gb) GB"
+    if ($before.filesystem -ne 'NTFS') { throw "C: is $($before.filesystem), not NTFS" }
+    $runs = "$($before.scratch)\runs-$Name"
+    Invoke-Command -Session $session -ScriptBlock { $null = New-Item -ItemType Directory -Force -Path 'C:\n2r' }
+    Copy-Item -ToSession $session -LiteralPath $Binary -Destination 'C:\n2r\ntfs2refs.exe'
+    $arguments = @('--drive', 'C', '--scratch-directory', $runs, '--yes', '--volume-serial', $before.serial) + $ConverterArgs
+    if ($Diagnose) { $arguments += '--diagnose' }
+    Say "running: ntfs2refs $($arguments -join ' ')"
+    $said = Invoke-Command -Session $session -ArgumentList (, $arguments) -ScriptBlock {
+        param($arguments)
+        $ErrorActionPreference = 'Continue'
+        (& C:\n2r\ntfs2refs.exe @arguments 2>&1 | Out-String)
+    }
+    [IO.File]::WriteAllText((Join-Path $records 'windows-side.txt'), $said, [Text.UTF8Encoding]::new($false))
+    Say 'the run staged the recovery environment and restarted the machine'
+} finally { Remove-PSSession $session -ErrorAction SilentlyContinue }
+
+# Away: the recovery environment (the conversion), then Windows again.
+$deadline = (Get-Date).AddMinutes($AwayMinutes)
+Start-Sleep -Seconds 45
+$back = $null
+$report = $null
+do {
+    Start-Sleep -Seconds 20
+    try {
+        $back = New-PSSession -VMId $VmId -Credential $credential -ErrorAction Stop
+        $report = Invoke-Command -Session $back -ArgumentList $before.scratch, $Name -ScriptBlock {
+            param($scratch, $name)
+            $p = "$scratch\runs-$name\n2r-running\session-result.txt"
+            if (Test-Path -LiteralPath $p) { Get-Content -LiteralPath $p -Raw }
+        }
+        if (-not $report) { Remove-PSSession $back; $back = $null }
+    } catch { $back = $null }
+    if ($back) { break }
+} while ((Get-Date) -lt $deadline)
+if (-not $back) { $verdict.outcome = 'no-return'; Say "Windows did not come back with the run's report within $AwayMinutes minutes" }
+else {
+    try {
+        [IO.File]::WriteAllText((Join-Path $records 'session-result.txt'), $report, [Text.UTF8Encoding]::new($false))
+        $after = Invoke-Command -Session $back -ScriptBlock {
+            $c = Get-Volume -DriveLetter C
+            $bcd = (& bcdedit.exe /enum '{bootmgr}' 2>&1 | Out-String)
+            $refs = (& "$env:SystemRoot\System32\fsutil.exe" fsinfo refsinfo C: 2>&1 | Out-String)
+            [pscustomobject]@{ filesystem = [string]$c.FileSystem; health = [string]$c.HealthStatus; cluster_bytes = $c.AllocationUnitSize; bootmgr = $bcd; refsinfo = $refs
+                boot_utc = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o') }
+        }
+        $verdict.after = $after
+        Say "back in Windows: C: is $($after.filesystem), health $($after.health)"
+        $expected = if ($Diagnose) { 'NTFS' } else { 'ReFS' }
+        $converterEnded = if ($report -match 'The converter ended with exit code: (\d+)') { [int]$Matches[1] } else { -1 }
+        $verdict.converter_exit = $converterEnded
+        $verdict.outcome = if ($after.filesystem -eq $expected -and $converterEnded -eq 0) { 'PASSED' } elseif ($converterEnded -ne 0) { "CONVERTER-EXIT-$converterEnded" } else { "C-IS-$($after.filesystem)" }
+    } finally { Remove-PSSession $back -ErrorAction SilentlyContinue }
+}
+$verdict.finished = (Get-Date).ToString('o')
+[IO.File]::WriteAllText((Join-Path $records 'verdict.json'), ($verdict | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
+Say "outcome: $($verdict.outcome)"
+Say "the detached disks (control OS and others) are listed in detached-disks.json; reattach them to use the control OS again"

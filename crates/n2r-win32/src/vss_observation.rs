@@ -740,6 +740,23 @@ impl Observation {
     }
 
     pub fn same_source_and_provider_inventory(&self, other: &Self) -> bool {
+        // Read off the volume, the catalog is the same where the same files
+        // of the same sizes were found; it is never the same as one asked of
+        // the shadow-copy service.
+        match (&self.offline_evidence, &other.offline_evidence) {
+            (Some(a), Some(b)) => {
+                return self.source_volume_guid == other.source_volume_guid
+                    && a.directory_present == b.directory_present
+                    && a.diff_area_files.len() == b.diff_area_files.len()
+                    && a
+                        .diff_area_files
+                        .iter()
+                        .zip(&b.diff_area_files)
+                        .all(|(x, y)| x.name == y.name && x.bytes == y.bytes);
+            }
+            (None, None) => {}
+            _ => return false,
+        }
         self.source_volume_guid == other.source_volume_guid
             && self.provider_inventory_completed
             && other.provider_inventory_completed

@@ -127,6 +127,7 @@ mod native;
 #[cfg(windows)]
 pub use native::BootStorageHintNormalization;
 pub use native::bring_disk_online_for_admission;
+pub use native::restore_writer_state_in_recovery_environment;
 #[cfg(windows)]
 pub use native::PartitionMixedReplayGate;
 #[cfg(windows)]

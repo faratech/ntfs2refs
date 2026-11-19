@@ -889,6 +889,33 @@ pub(crate) fn device_file(path: &str, writable: bool, unbuffered: bool) -> io::R
     options.open(path)
 }
 
+/// In a recovery environment the disk attributes a run set do not survive a
+/// restart: its registry is in RAM, and its SAN policy brings every disk up
+/// offline and read-only (3). A recovery there takes the journal as the
+/// record of how far the run got: where the journal says writing may have
+/// begun, the disk is put back offline and writable (1), the state the writer
+/// held it in, so that recovery reopens it as an exclusive recovery target,
+/// whose every span is checked against both the original and the new bytes.
+/// Refused outside a recovery environment, and for any other starting state.
+pub fn restore_writer_state_in_recovery_environment(disk_number: u32) -> io::Result<()> {
+    if !offline_environment::in_recovery_environment() {
+        return Err(invalid(
+            "disk attributes are restored from the journal only in a recovery environment",
+        ));
+    }
+    let file = device_file(&format!("\\\\.\\PhysicalDrive{disk_number}"), true, true)
+        .map_err(|e| io::Error::new(e.kind(), format!("opening disk {disk_number}: {e}")))?;
+    let mut events = Vec::new();
+    let before = attributes(&file, &mut events)?;
+    if before != OFFLINE | READ_ONLY {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, format!(
+            "disk {disk_number} has attributes {before:#x}, not the offline and read-only state the environment starts it in"
+        )));
+    }
+    set_attributes(&file, OFFLINE, &mut events)?;
+    Ok(())
+}
+
 /// The recovery environment of the running-Windows route starts with every
 /// disk offline (its SAN policy). This brings one disk online and writable,
 /// as `diskpart online disk` and `attributes disk clear readonly` would, so

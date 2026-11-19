@@ -45,6 +45,10 @@ param(
 $ErrorActionPreference = 'Stop'
 $workspace = Split-Path -Parent $PSScriptRoot
 if (-not $ScratchVhdx) { $ScratchVhdx = Join-Path $workspace '.lab\hyperv\attempts\envprobe-c-up\scratch.vhdx' }
+# One attempt per VM at a time: an earlier attempt still waiting to cut the
+# power would cut this one (runc-cut-midranges-2).
+$others = @(Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*Invoke-RunningWindowsAttempt*' -and $_.CommandLine -like "*$VmId*" })
+if ($others) { throw "another running-Windows attempt drives this VM (process $($others.ProcessId -join ', ')); stop it first" }
 $records = Join-Path $workspace ".lab\hyperv\attempts\$Name"
 if (Test-Path -LiteralPath $records) { throw "attempt $Name already has records; use a new name" }
 $null = New-Item -ItemType Directory -Path $records

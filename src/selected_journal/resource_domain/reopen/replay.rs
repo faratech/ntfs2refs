@@ -443,7 +443,7 @@ impl BoundJournalObservation<'_> {
         Ok(digest)
     }
 
-    pub(super) fn verify_aborted_data<R: OrderedSource>(
+    pub(super) fn verify_aborted_data<R: Read + Seek>(
         &mut self,
         target: &mut R,
         target_length: u64,
@@ -456,7 +456,7 @@ impl BoundJournalObservation<'_> {
         let mut intent = [0u8; GRANULE as usize];
         at(self.observation.journal, GRANULE, &mut intent)?;
         let digest = if intent.iter().all(|&b| b == 0) {
-            self.observation.check_target_ahead(
+            self.observation.check_target_reader(
                 target,
                 target_length,
                 Some(self.observation.ticket.old_selected_sha256),
@@ -464,7 +464,7 @@ impl BoundJournalObservation<'_> {
             )?
         } else {
             self.observation
-                .check_restored_ahead(target, target_length)?
+                .check_restored_reader(target, target_length)?
         };
         ensure!(
             self.observation.lifecycle()? == SelectedLifecycle::Aborted,

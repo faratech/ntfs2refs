@@ -757,8 +757,7 @@ Where two checks prove the same thing, a fast run makes one of them;
   contents. It is not read again immediately before it is written.
 
 A partition on the disk of the running Windows, a conversion with
-`--restart-media`, and a run whose interrupted preparation is resumed (its
-`--recover` command without `--rollback`, or with `--resume-workspace`) still
+`--restart-media`, and a run whose interrupted preparation is resumed still
 commit before the verification, as `--verify thorough` does: from their
 handoff on a rollback is closed. A resumed preparation says so before it
 writes to the volume.

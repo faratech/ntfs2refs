@@ -913,10 +913,33 @@ fn run_or_recover(
                 note(format!("Recovering from {}", command.directory));
             }
             match recover_from(directory, &command, note) {
-                Recovered::Forward => {
-                    note("The recovery finished: the volume is converted.".to_owned());
-                    0
-                }
+                // A recovery without --rollback finishes a run that had
+                // started writing, and cancels one cut off before that
+                // (runc-cut-apply-11: cut before apply, back to NTFS). What
+                // the volume is now says which.
+                Recovered::Forward => match find_windows(&session.volume_serial)
+                    .and_then(file_system_of)
+                    .as_deref()
+                {
+                    Some("ReFS") => {
+                        note("The recovery finished: the volume is converted.".to_owned());
+                        0
+                    }
+                    Some("NTFS") => {
+                        note(
+                            "The recovery finished: the run had not started writing, and the volume is NTFS as it was."
+                                .to_owned(),
+                        );
+                        1
+                    }
+                    other => {
+                        note(format!(
+                            "The recovery finished, but the Windows volume is {}: it needs a person.",
+                            other.unwrap_or("not found")
+                        ));
+                        NEEDS_ATTENTION
+                    }
+                },
                 Recovered::BackToNtfs => {
                     note("The recovery put the NTFS volume back.".to_owned());
                     code.max(1)

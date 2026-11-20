@@ -132,9 +132,9 @@ impl std::error::Error for CommittedFinalizationError {
 }
 
 /// The verification of a run whose handoff follows it (#148) did not pass,
-/// or could not be made: the handoff is not written, the source is offline
-/// and rollback is open. Nothing is rolled back here; the message names the
-/// two ways on.
+/// or could not be made: the handoff is not written, the converted volume
+/// was never mounted writable and rollback is open. Nothing is rolled back
+/// here; the message names the two ways on.
 #[derive(Debug)]
 pub(crate) struct UncommittedVerificationError {
     directory: std::path::PathBuf,
@@ -213,9 +213,11 @@ pub(crate) fn finalize_resource_handoff_with_windows_aliases_observer<O: Prepara
         std::sync::Arc<n2r_win32::shadow_native::windows_aliases::VerifiedWindowsAliases>,
     >,
 ) -> Result<serde_json::Value> {
-    // Set once the records are reopened: whether the run is still before
-    // its handoff. Cleared when the handoff is written.
-    let before_handoff = std::cell::Cell::new(false);
+    // Whether the run is still before its handoff: from the start for the
+    // conversion of this process if it chose the handoff after the
+    // verification (its apply step wrote no handoff), else once the records
+    // are reopened. Cleared just before the handoff is written.
+    let before_handoff = std::cell::Cell::new(crate::verify_first::chosen());
     let finalized = finalize_reopened(
         pair,
         journal,
@@ -481,6 +483,11 @@ fn finalize_reopened<O: PreparationObserver>(
         n2r_win32::lab_hold::reached("verify-passed");
         n2r_win32::perf::step("write handoff marker");
         println!("Converted volume verified; recording handoff.");
+        // A failure from here on may come after the marker is durable, so it
+        // is no longer reported as one that leaves rollback open; the
+        // recovery command reads the journal and goes the way it allows.
+        before_handoff.set(false);
+        n2r_win32::lab_hold::verifying_before_handoff(false);
         protected
             .write_handoff_after_verified_observation(
                 &native,
@@ -490,9 +497,12 @@ fn finalize_reopened<O: PreparationObserver>(
                 budget.scratch_bytes,
                 &mut events,
             )
-            .context("finalization: writing the handoff after the verification")?;
-        before_handoff.set(false);
-        n2r_win32::lab_hold::verifying_before_handoff(false);
+            .context(
+                "finalization: writing the handoff after the converted volume passed its \
+                 verification; the handoff may or may not be durable. Run the recovery command \
+                 this run printed: it finishes the conversion, and while no handoff is written \
+                 the same command with --rollback still puts NTFS back",
+            )?;
         events.checkpoint()?;
         // The same state as a handoff written in the apply step and sealed.
         n2r_win32::lab_hold::reached("handoff-sealed");

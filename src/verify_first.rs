@@ -252,9 +252,10 @@ pub(crate) fn check_restored_source(
 /// two ways on. It goes to the error stream with the failure.
 pub(crate) fn failed_before_handoff(directory: &Path, sha256: &str) -> String {
     format!(
-        "the converted volume did not pass its verification, and nothing is committed: the \
-         handoff is not written, the volume is sealed (its disk offline and read-only), and the \
-         NTFS volume can still be put back. Nothing was rolled back.\n  \
+        "the converted volume did not pass its verification, or the verification could not be \
+         completed, and nothing is committed: the handoff is not written and the converted \
+         volume was never mounted writable, so the NTFS volume can still be put back. Nothing \
+         was rolled back.\n  \
          To verify again and finish: ntfs2refs --recover \"{dir}\" --recovery-sha256 {sha256}\n  \
          To put NTFS back:           ntfs2refs --recover \"{dir}\" --recovery-sha256 {sha256} --rollback",
         dir = directory.display()

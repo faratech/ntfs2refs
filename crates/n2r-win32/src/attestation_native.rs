@@ -1566,6 +1566,7 @@ mod helper_observation_tests {
             single_content_pass: false,
             paged_security_limit: Some(1 << 20),
             limits: request.limits(),
+            per_need_only: false,
         };
         let unbounded = || {
             crate::logical_hash::Budget::with_limits(u64::MAX, i64::MAX as u64, u64::MAX).unwrap()

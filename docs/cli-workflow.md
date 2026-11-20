@@ -731,8 +731,9 @@ it to its run.
 - **`--verify thorough`** changes *what* is checked: every stream's complete
   contents are read and hashed, and every check a fast run leaves out is made:
   Windows' view of every object is compared with the raw volume in full, and
-  the new volume is read back before the changes are captured. Not with `--minimize-scratch`. The earlier
-  spelling `--verify-full-content` is still accepted and means the same.
+  the new volume is read back before the changes are captured. Not with
+  `--minimize-scratch`. The earlier spelling `--verify-full-content` is still
+  accepted and means the same.
 - **`--recheck-everything`** changes *how often*, not what: the full re-reads
   happen at every checkpoint instead of once at the gate, and a fast run
   leaves nothing out. Much slower.

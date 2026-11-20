@@ -604,10 +604,15 @@ fn compare_domain_with_header(
             && usize::from(file.hard_link_count) != file.names.len()
         {
             metadata.detail = format!(
-                "raw FILE header link-counter hint preserved: raw={}, FILE_NAME={}, canonical={}; native before/after canonical counts match; complete native namespace coverage remains required",
+                "raw FILE header link-counter hint preserved: raw={}, FILE_NAME={}, canonical={}; native before/after canonical counts match; {}",
                 file.hard_link_count,
                 file.names.len(),
-                file.names.iter().filter(|name| name.namespace != 2).count()
+                file.names.iter().filter(|name| name.namespace != 2).count(),
+                if per_need_only {
+                    "the names are taken from the raw volume (--verify fast does not list directories through Windows)"
+                } else {
+                    "complete native namespace coverage remains required"
+                }
             );
         }
         let streams = if per_need_only {

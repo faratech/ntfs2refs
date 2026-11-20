@@ -363,9 +363,15 @@ static NEXT_JOURNAL_BODY_HOLD: std::sync::atomic::AtomicU64 = std::sync::atomic:
 /// matched *while this hold lasted* is not read again until the hold ends.
 /// What was read before the hold began, through another owner of the journal
 /// or by the conversion being recovered, does not count; and when the owner
-/// of the journal is dropped, so is this, and a journal that is opened again
-/// is read in full again. Whoever opens the journal keeps this beside it and
-/// drops it no later.
+/// of the journal is dropped, so is this, and nothing it verified stands for
+/// an owner that opens the journal again. Whoever opens the journal keeps
+/// this beside it and drops it no later.
+///
+/// The hold decides only while the process does not check once. From where
+/// a resumed recovery selects `check_once`, for its finalizer, that policy's
+/// own rule decides, as it did before there were holds: a body that matched
+/// in this process is not read again outside a gate, by the finalizer's
+/// reopening of the journal either.
 pub struct JournalBodyHold(u64);
 
 impl JournalBodyHold {
@@ -450,8 +456,9 @@ pub(crate) fn journal_body_read_is_left_out(
 /// In a recovery, which has no gate and does not check once until its replay
 /// is over (`verify_policy::repeat_once`): this process read it in full, and
 /// it matched, while it held the journal, and it has held the journal since
-/// ([`JournalBodyHold`]). The first read of a journal a recovery opens is
-/// therefore always complete.
+/// ([`JournalBodyHold`]). The first read of the journal by the recovery that
+/// opens it is therefore always complete. (Its finalizer checks once and is
+/// decided by the rule above, as before.)
 ///
 /// Otherwise (`--recheck-everything`, and every route with neither switch)
 /// it is read every time.

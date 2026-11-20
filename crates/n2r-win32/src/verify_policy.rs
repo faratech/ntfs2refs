@@ -89,9 +89,11 @@ static REPEAT_ONCE: AtomicBool = AtomicBool::new(false);
 /// - the complete read of the journal's body, at the scan that follows the
 ///   reopening of the journal. Every later step still holds the journal to
 ///   its identity, its lifecycle markers, its index and the refusal of a
-///   second writer, and rebuilds its index from the record descriptors; the
-///   body is read again only by an owner that opens the journal again
-///   ([`crate::bulk_digest::JournalBodyHold`]);
+///   second writer, and rebuilds its index from the record descriptors.
+///   What one owner of the journal read never stands for another that opens
+///   it again under this switch ([`crate::bulk_digest::JournalBodyHold`]);
+///   the finalizer of a resumed recovery, which does open it again, checks
+///   once by then and is decided by that policy's rule, as before;
 /// - the complete read of each recovery file (the publication, the expected
 ///   pages and their binding, the maps, the alias records), when it is
 ///   reopened read-only, denying writers. Every later step still holds the

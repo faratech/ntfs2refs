@@ -441,9 +441,10 @@ impl<'a> JournalObservation<'a> {
         // A body that was already read in full and matched its ticket in this
         // process does not change. Rebuilding the index then needs only the
         // record descriptors, not another pass over every payload byte. On a
-        // route that checks once that is so outside its gate; in a recovery,
-        // for the journal this process has held since it read it, so that
-        // the first scan of a journal a recovery opens reads every byte
+        // route that checks once that is so outside its gate; in a recovery
+        // before its finalizer, for the journal this process has held since
+        // it read it, so that the first scan by the recovery that opens a
+        // journal reads every byte
         // (`bulk_digest::journal_body_already_verified`).
         let algorithm = ticket.digest_algorithm();
         let descriptors_only = n2r_win32::bulk_digest::journal_body_already_verified(

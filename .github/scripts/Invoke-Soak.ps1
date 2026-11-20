@@ -376,6 +376,20 @@ for ($round = 1; ; $round++) {
                 $result.recovery = $recovery -join ' '
                 $again = Invoke-Converter $recovery (Join-Path $dir 'recover')
                 Say "  ntfs2refs $($result.recovery): exit $($again.exit) after $($again.seconds) s"
+                # A run ended between publishing its recovery records and
+                # printing its "To recover:" line has only the cancellation
+                # command of its start, which then says which command puts
+                # NTFS back now. That is followed, as a person would.
+                if ($again.exit -ne 0 -and $cancel.Success -and -not $recover.Success) {
+                    $published = [regex]::Match("$($again.stderr)", 'To put NTFS back: ntfs2refs --recover "(.+?)" --recovery-sha256 ([0-9a-f]{64}) --rollback')
+                    if ($published.Success) {
+                        Say '  the run had published its recovery records: following the command its cancellation gave'
+                        $recovery = @('--recover', $published.Groups[1].Value, '--recovery-sha256', $published.Groups[2].Value, '--rollback')
+                        $result.recovery = $recovery -join ' '
+                        $again = Invoke-Converter $recovery (Join-Path $dir 'recover-published')
+                        Say "  ntfs2refs $($result.recovery): exit $($again.exit) after $($again.seconds) s"
+                    }
+                }
                 if ($again.exit -ne 0) { throw "the recovery ended with exit $($again.exit): $(($again.stderr -split "`n" | Where-Object { $_ -match '^error' } | Select-Object -Last 1))" }
                 # A run cut off before it wrote anything has nothing to resume:
                 # the recovery gives NTFS back, and says so (#177).
@@ -419,10 +433,24 @@ for ($round = 1; ; $round++) {
         try { & $converter --list 2>&1 | Out-File -LiteralPath (Join-Path $dir 'list-after-failure.txt') -Encoding utf8 } catch { }
         $failed = $result
     } finally {
-        # Virtual disks the run left attached in its working storage: a
-        # finding, recorded; detached so that the storage can be freed.
-        $left = @(Get-ChildItem -LiteralPath $work -Recurse -Force -File -Filter *.vhdx -ErrorAction SilentlyContinue | ForEach-Object {
-            try { Get-DiskImage -ImagePath $_.FullName -ErrorAction Stop } catch { } } | Where-Object { $_.Attached })
+        # A run that is killed before it records anything to recover from
+        # leaves its working volume attached: no code runs at the kill. The
+        # next run, or --list, detaches it (#201), and only for a run that
+        # has ended and recorded nothing; a run with something to recover
+        # from is left to its own --recover. So --list is run here, as the
+        # next thing a person would run, and what it detached is recorded.
+        $attached = { @(Get-ChildItem -LiteralPath $work -Recurse -Force -File -Filter *.vhdx -ErrorAction SilentlyContinue | ForEach-Object {
+            try { Get-DiskImage -ImagePath $_.FullName -ErrorAction Stop } catch { } } | Where-Object { $_.Attached }) }
+        $before = & $attached
+        if ($before) {
+            $listed = try { & $converter --list 2>&1 | Out-String } catch { "$_" }
+            $listed | Out-File -LiteralPath (Join-Path $dir 'list-after-run.txt') -Encoding utf8
+            $settled = @($before | Where-Object { $image = $_; -not (& $attached | Where-Object ImagePath -EQ $image.ImagePath) })
+            foreach ($image in $settled) { Say "  --list detached $($image.ImagePath), the working volume of a run that ended before it recorded anything" }
+        }
+        # Virtual disks still attached in the run's working storage after
+        # that: a finding, recorded; detached so that the storage can be freed.
+        $left = & $attached
         foreach ($image in $left) {
             $disk = $image | Get-Disk
             $result.findings += "the run left $($image.ImagePath) attached (disk $($disk.Number), offline=$($disk.IsOffline), read-only=$($disk.IsReadOnly))"

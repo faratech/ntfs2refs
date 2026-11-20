@@ -701,7 +701,10 @@ impl DurableRecoveryLocator {
                 self.snapshot.file_bytes
             )? == self.snapshot
                 && self.file.metadata()?.modified()? == self.modified
-                && n2r_win32::metadata_pages::pinning_digest(&mut self.file, self.snapshot.file_bytes)? == self.external_sha256
+                && n2r_win32::metadata_pages::pinning_digest(
+                    &mut self.file,
+                    self.snapshot.file_bytes
+                )? == self.external_sha256
                 && n2r_win32::reference_file::observe_reference_file_handle_with_limit(
                     &self.file,
                     self.snapshot.file_bytes

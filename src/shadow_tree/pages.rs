@@ -1484,7 +1484,10 @@ impl PagedExpectedTree {
         ensure!(
             binding_snapshot.file_bytes == pin.bytes
                 && binding_snapshot.number_of_links == 1
-                && hex::encode(n2r_win32::metadata_pages::pinning_digest(&mut binding_file, pin.bytes)?) == pin.sha256,
+                && hex::encode(n2r_win32::metadata_pages::pinning_digest(
+                    &mut binding_file,
+                    pin.bytes
+                )?) == pin.sha256,
             "rebound expected sidecar actual identity/complete hash differs"
         );
         tree._reopened_binding = Some((binding_file, binding_snapshot, modified));
@@ -2322,7 +2325,10 @@ impl PagedExpectedTree {
             );
             let mut duplicate = file.try_clone()?;
             ensure!(
-                hex::encode(n2r_win32::metadata_pages::pinning_digest(&mut duplicate, pin.bytes)?) == pin.sha256,
+                hex::encode(n2r_win32::metadata_pages::pinning_digest(
+                    &mut duplicate,
+                    pin.bytes
+                )?) == pin.sha256,
                 "reopened expected binding complete hash changed"
             );
         }

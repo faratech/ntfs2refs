@@ -87,8 +87,8 @@ fn the_sha_a_writer_reports_is_the_sha_of_the_file() {
     let sha = write(&path);
     let bytes = std::fs::read(&path).unwrap();
     // A store this build writes is pinned by BLAKE3 (`bulk_digest`).
-    let actual = n2r_win32::bulk_digest::digest(n2r_win32::bulk_digest::Algorithm::Blake3, &bytes)
-        .unwrap();
+    let actual =
+        n2r_win32::bulk_digest::digest(n2r_win32::bulk_digest::Algorithm::Blake3, &bytes).unwrap();
     assert_eq!(sha, hex::encode(actual));
 }
 

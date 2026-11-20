@@ -274,7 +274,10 @@ impl HeldInput {
                 && self.file.metadata()?.modified()? == self.modified,
             "held compact recovery input identity or metadata changed"
         );
-        let hash = hex::encode(n2r_win32::metadata_pages::pinning_digest(&mut self.file, self.snapshot.file_bytes)?);
+        let hash = hex::encode(n2r_win32::metadata_pages::pinning_digest(
+            &mut self.file,
+            self.snapshot.file_bytes,
+        )?);
         ensure!(
             hash == self.sha256
                 && reference_file::observe_reference_file_handle(&self.file)? == self.snapshot

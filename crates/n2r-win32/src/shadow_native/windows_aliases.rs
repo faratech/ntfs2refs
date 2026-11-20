@@ -1630,21 +1630,17 @@ impl StagedWindowsAliases {
                 })
                 .collect();
             // As many of the batch's links as their workspace can be paid
-            // for are restored on the available cores; the rest one after
-            // another, under this owner's own workspace. The workspaces
-            // are spare memory, which leaves the ledger room.
-            let mut workspaces = Vec::new();
-            for _ in &links {
-                match payer.reserve_spare(workspace_of_one) {
-                    Ok(workspace) => workspaces.push(workspace),
-                    Err(_) => break,
-                }
-            }
-            let (at_once, in_turn) = links.split_at(workspaces.len());
-            let mut restored: Vec<io::Result<Snapshot>> =
-                super::observe_in_parallel(at_once, |link| Ok(restore_one(link)))?;
-            drop(workspaces);
-            restored.extend(super::observe_in_turn(in_turn, &restore_one));
+            // for are restored on the available cores, a run of
+            // neighbouring links to a thread: the links of one directory
+            // are installed through the one handle held on it. The rest are
+            // restored one after another, under this owner's own workspace.
+            // The workspaces are spare memory, which leaves the ledger room.
+            let restored: Vec<io::Result<Snapshot>> = super::each_at_once(
+                Some(&*payer),
+                &links,
+                |_| Some(workspace_of_one),
+                &restore_one,
+            );
             for (link, restored) in links.iter().zip(restored) {
                 let entry = &link.staged.entry;
                 restored

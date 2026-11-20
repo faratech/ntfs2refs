@@ -1400,26 +1400,16 @@ fn complete_owned_metadata_scoped_windows_aliases_domain_inner(
             .collect();
         // Each object's query workspace is paid for before it is read
         // beside others. As many of the batch as can be paid for are read
-        // at once; the rest, and all of them where no payer is held, are
-        // read one after another as before. The workspaces are spare
-        // memory, which leaves the ledger room.
-        let mut workspaces = Vec::new();
-        if let Some((payer, limit)) = enumeration_payer.zip(read_back_limit) {
-            for (_, item) in &items {
-                let paid = report_memory::row_peak(item, limit)
-                    .ok()
-                    .and_then(|peak| payer.reserve_spare(peak).ok());
-                match paid {
-                    Some(workspace) => workspaces.push(workspace),
-                    None => break,
-                }
-            }
-        }
-        let (at_once, in_turn) = items.split_at(workspaces.len());
-        let mut read: Vec<io::Result<(Snapshot, io::Result<()>)>> =
-            super::observe_in_parallel(at_once, |item| Ok(read_one(item)))?;
-        drop(workspaces);
-        read.extend(super::observe_in_turn(in_turn, &read_one));
+        // at once, a run of neighbouring objects to a thread; the rest,
+        // and all of them where no payer is held, are read one after
+        // another as before. The workspaces are spare memory, which leaves
+        // the ledger room.
+        let read: Vec<io::Result<(Snapshot, io::Result<()>)>> = super::each_at_once(
+            enumeration_payer,
+            &items,
+            |(_, item)| read_back_limit.and_then(|limit| report_memory::row_peak(item, limit).ok()),
+            &read_one,
+        );
         for ((index, item), read) in items.iter().zip(read) {
             read.and_then(|(actual, rest)| {
                 compare(item, *index, &actual)?;

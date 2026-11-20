@@ -2,8 +2,11 @@
 //! No path constructor, raw handle, writer, online transition or serialized
 //! capability is exposed. Full critical-role checks bracket the entire scope;
 //! every inner state check still reads exact geometry/GPT/exclusion natively.
+//! The one thing handed out is a read lane of the frozen source itself: a
+//! read-only handle for aligned reads, held to the frozen route when opened.
 use super::{
-    GeneralDiskState, GeneralFrozenPartition, NativeEvent, general_disk_state_held_geometry,
+    GeneralDiskState, GeneralFrozenLane, GeneralFrozenPartition, NativeEvent,
+    general_disk_state_held_geometry,
 };
 use crate::{
     general_layout::GeneralDiskBinding, shadow_native::report_memory::ReportMemoryAccountant,
@@ -62,6 +65,37 @@ impl GeneralFrozenSourceReadScope<'_> {
             }
             Ok(actual)
         });
+        if result.is_err() {
+            self.poisoned.set(true);
+        }
+        result
+    }
+    /// The storage transfer profile Windows reports for the frozen disk: the
+    /// size of a request and how many reads may be outstanding at once.
+    pub fn io_profile(&self) -> crate::io_profile::IoProfile {
+        self.source.io_profile()
+    }
+    /// Opens `count` read lanes on the frozen source, as
+    /// [`GeneralFrozenPartition::read_lanes`] does for its owner, so that
+    /// several reads can be outstanding at once within the scope. Each is a
+    /// fresh read-only handle whose route equalled the frozen state when it
+    /// was opened; it reads aligned bytes and can change nothing.
+    ///
+    /// A lane owns its handle and is not tied to the scope's lifetime. The
+    /// checks that bracket the scope cover what is read between them: every
+    /// lane is to be dropped before the closure returns, and a lane's failed
+    /// read is the closure's to return, since it does not poison the scope.
+    pub fn read_lanes(
+        &self,
+        count: usize,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<Vec<GeneralFrozenLane>> {
+        if self.poisoned.get() {
+            return Err(io::Error::other(
+                "failed frozen source read scope cannot open read lanes",
+            ));
+        }
+        let result = native_step(events, |batch| self.source.read_lanes(count, batch));
         if result.is_err() {
             self.poisoned.set(true);
         }

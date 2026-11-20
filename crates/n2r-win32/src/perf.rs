@@ -1,7 +1,8 @@
 //! Where a conversion spends its time.
 //!
 //! A fixed table of process-wide counters, one per choke point. A [`Scope`]
-//! adds one call and its elapsed time; [`add_bytes`] adds data volume.
+//! adds one call and its elapsed time; [`add_bytes`] adds data volume and
+//! [`add_call`] a call that is not timed.
 //! [`phase`] prints what the phase that just ended cost, and [`finish`] prints
 //! the totals. Points nest (a freeze check contains disk-state queries), so
 //! their times overlap and do not sum to the phase time.
@@ -55,6 +56,15 @@ points! {
     // up, not wall clock.
     AtOnce => "objects at once (thread time)",
     InTurn => "objects in turn",
+    // Calls only: one row of a sorted record store decoded from its text.
+    // The rows of every store pass there, down to a few dozen bytes each,
+    // and reading the clock at both ends of each would weigh on those: the
+    // rows are counted and not timed.
+    SourceRowDecode => "source row decode",
+    // A device read through an extra read lane of the frozen source, beside
+    // the owner's own "device read". Lanes read on their own threads: the
+    // time is theirs added up, not wall clock.
+    LaneRead => "lane read",
 }
 const COUNT: usize = LABELS.len();
 
@@ -93,6 +103,13 @@ pub fn scope(point: Point) -> Scope {
 
 pub fn add_bytes(point: Point, bytes: u64) {
     BYTES[point as usize].fetch_add(bytes, Relaxed);
+}
+
+/// Adds one call to `point` without its time: for something done so often,
+/// and each time so briefly, that a [`Scope`] around it would weigh on what
+/// it measures.
+pub fn add_call(point: Point) {
+    CALLS[point as usize].fetch_add(1, Relaxed);
 }
 
 /// Adds time to `point` without a call: the part of a pass that serves many

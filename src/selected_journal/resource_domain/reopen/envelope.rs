@@ -2990,6 +2990,7 @@ impl ReopenedResourceRecovery {
         after_resume: F,
         events: &mut Vec<NativeEvent>,
     ) -> Result<ResourceReplayResult> {
+        n2r_win32::perf::step("replay: revalidate records");
         self.revalidate(events)?;
         ensure!(
             match direction {
@@ -3022,6 +3023,7 @@ impl ReopenedResourceRecovery {
         }
         let volume = self.locator.journal_binding().disk.volume_path()?;
         let _index_parent = hold_index_parent(index_path, &volume)?;
+        n2r_win32::perf::step("replay: scan journal");
         let observation = BoundJournalObservation::open(
             &mut self.journal,
             self.locator.ticket(),
@@ -3291,6 +3293,7 @@ impl ReopenedResourceRecovery {
             matches!(before.disk_attributes, 1 | 3),
             "rollback source is not offline"
         );
+        n2r_win32::perf::step("rollback: verify restored ranges");
         match &mut *target {
             ObservedTarget::Activated(source) => {
                 let length = source.byte_len();
@@ -3323,6 +3326,7 @@ impl ReopenedResourceRecovery {
         };
         let policy = observation.index.clone();
         let target = self.target.take().context("rollback target was consumed")?;
+        n2r_win32::perf::step("rollback: bring online");
         let transition = {
             let journal = observation.journal.markerless_recovery_file()?;
             match target {

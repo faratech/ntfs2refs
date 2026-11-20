@@ -1738,22 +1738,29 @@ const VOLUME_PUBLICATION_SECONDS: u64 = 15;
 /// volume that takes seconds is looked for about as often as before (six
 /// more times), so a caller that records each look in a bounded batch of
 /// events records hardly more of them.
-struct PublicationWait {
+pub(crate) struct PublicationWait {
     paused: std::time::Duration,
     pause: std::time::Duration,
+    allowed: std::time::Duration,
 }
 impl PublicationWait {
-    fn begin() -> Self {
+    pub(crate) fn begin() -> Self {
+        Self::begin_for(VOLUME_PUBLICATION_SECONDS)
+    }
+    /// The same pauses, 10 ms and then twice as long each time up to a
+    /// quarter second, until `seconds` have been spent pausing: for a wait
+    /// that is allowed another total than a volume's publication.
+    pub(crate) fn begin_for(seconds: u64) -> Self {
         Self {
             paused: std::time::Duration::ZERO,
             pause: std::time::Duration::from_millis(10),
+            allowed: std::time::Duration::from_secs(seconds),
         }
     }
     /// Sleeps before the next look; false when the time allowed has been
     /// spent and the look just made was the last.
-    fn pause(&mut self) -> bool {
-        let left =
-            std::time::Duration::from_secs(VOLUME_PUBLICATION_SECONDS).saturating_sub(self.paused);
+    pub(crate) fn pause(&mut self) -> bool {
+        let left = self.allowed.saturating_sub(self.paused);
         if left.is_zero() {
             return false;
         }
@@ -4752,6 +4759,11 @@ impl Read for GeneralFrozenLane {
         if aligned + count as u64 > length {
             return Err(invalid("aligned frozen lane read escapes partition"));
         }
+        // What the device is asked for, whole granules, as "device read"
+        // counts the owner's reads. A lane reads on its own thread, so the
+        // time is that thread's.
+        let _timed = crate::perf::scope(crate::perf::Point::LaneRead);
+        crate::perf::add_bytes(crate::perf::Point::LaneRead, count as u64);
         self.file.seek(SeekFrom::Start(
             self.binding.identity.partition_offset + aligned,
         ))?;

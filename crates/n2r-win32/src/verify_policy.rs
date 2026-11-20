@@ -10,6 +10,10 @@
 //! does so once inside each gate, and otherwise confirms only identity, size
 //! and timestamps. A route that never calls `check_once` (and any run started
 //! with `--recheck-everything`) keeps re-reading on every check.
+//!
+//! A recovery has no such gate: it writes to the source from the journal. It
+//! does not call `check_once` when it starts, and it has two switches of its
+//! own, [`repeat_once`] and [`repeat_once_as_verified`].
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
 
@@ -57,6 +61,60 @@ pub fn verify_once() {
 
 pub fn verifies_once() -> bool {
     VERIFY_ONCE.load(SeqCst)
+}
+
+static REPEAT_ONCE: AtomicBool = AtomicBool::new(false);
+
+/// Selects "an identical check is made once" for the rest of the process:
+/// the process recovers a conversion, to resume it or to roll it back (the
+/// cancellation a conversion makes of itself before its apply intent is one
+/// too), and was not started with `--recheck-everything`.
+///
+/// A check may be left out under this switch only where all of this holds:
+///
+/// - this process has already made the same check: the same bytes of the
+///   same object, held to the same expectation;
+/// - this process has held the object without a break since (the journal
+///   and the recovery files it reopened, the source it keeps offline), so
+///   that nothing else can have written to it;
+/// - this process has not itself written to those bytes since.
+///
+/// What another process checked, the conversion being recovered among them,
+/// never stands for a check here: a recovery reads what it finds.
+///
+/// It is not [`check_once`], and a recovery never calls that when it starts.
+/// `check_once` leaves every full re-read to the [`Gate`] in front of the
+/// first write to the source; a recovery has no such gate and would make
+/// none of them. A resumed recovery calls it where its replay is over and
+/// the finalizer takes the volume, as before.
+pub fn repeat_once() {
+    REPEAT_ONCE.store(true, SeqCst);
+}
+
+pub fn repeats_once() -> bool {
+    REPEAT_ONCE.load(SeqCst)
+}
+
+static REPEAT_ONCE_AS_VERIFIED: AtomicBool = AtomicBool::new(false);
+
+/// Selects, for the rest of a recovery, what [`verify_once`] selects for a
+/// conversion: the run being recovered was published with `--verify fast`,
+/// which the recovery reads from the authenticated publication once it has
+/// reopened it, and the process was not started with
+/// `--recheck-everything`. A pass that the conversion itself leaves out
+/// under [`verify_once`] may then be left out of its recovery, on the same
+/// condition: another pass of this recovery checks the same thing.
+///
+/// The recovery of a run published with `--verify thorough` never selects
+/// this and keeps every such pass. A `--recover` process never selects
+/// [`verify_once`] itself: what it leaves out as a conversion would is
+/// decided by this switch alone.
+pub fn repeat_once_as_verified() {
+    REPEAT_ONCE_AS_VERIFIED.store(true, SeqCst);
+}
+
+pub fn repeats_once_as_verified() -> bool {
+    REPEAT_ONCE_AS_VERIFIED.load(SeqCst)
 }
 
 /// The full verification that precedes the first write to the source. While

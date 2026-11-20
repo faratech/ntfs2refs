@@ -177,6 +177,9 @@ pub(crate) struct JournalObservation<'a> {
     index_lease: ArtifactLease,
     format: JournalFormat,
     index_length: u64,
+    // Whether this observation has walked its whole index against the
+    // journal's descriptors (`revalidate_index`).
+    index_walked: bool,
     _memory: SourceRamLease,
 }
 
@@ -647,6 +650,7 @@ impl<'a> JournalObservation<'a> {
             index_lease,
             format: fmt,
             index_length: bytes,
+            index_walked: false,
             _memory: memory,
         };
         result.revalidate_index()?;
@@ -708,6 +712,24 @@ impl<'a> JournalObservation<'a> {
                 && facts.journal_immutable_sha256 == self.ticket.immutable_sha256,
             "recovery index journal binding differs"
         );
+        // The walk below holds every row of the index to its descriptor in
+        // the journal. It reads the same bytes every time: the index is the
+        // file this observation wrote and holds, checked above, and the
+        // descriptors lie in the journal's body, which this observation's
+        // owner holds share-zero for as long as it lives and to which this
+        // process writes nothing (its markers lie in front of the body). A
+        // recovery makes it once for each observation
+        // (`verify_policy::repeat_once`), not again at every reading of the
+        // lifecycle; `record` still holds each row a step uses to its
+        // descriptor. Only for the markerless journal, as the journal's
+        // body (`envelope::hold_journal_body`); anything else walks every
+        // time, as before.
+        if self.index_walked
+            && self.ticket.marker_profile.is_none()
+            && n2r_win32::verify_policy::repeats_once()
+        {
+            return Ok(());
+        }
         let mut previous_end = 0u64;
         let mut expected_descriptor = add(self.format.body, HEADER as u64)?;
         for ordinal in 0..self.ticket.range_count {
@@ -736,6 +758,7 @@ impl<'a> JournalObservation<'a> {
             add(expected_descriptor, FOOTER as u64)? == self.ticket.journal_length,
             "recovery index does not reach the journal footer"
         );
+        self.index_walked = true;
         Ok(())
     }
 
@@ -872,6 +895,7 @@ impl<'a> BoundJournalObservation<'a> {
             index_lease: index.lease.clone(),
             format,
             index_length,
+            index_walked: false,
             _memory: memory,
         };
         observation.revalidate_index()?;

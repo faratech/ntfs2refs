@@ -99,7 +99,11 @@ static REPEAT_ONCE: AtomicBool = AtomicBool::new(false);
 ///   finalizer of a resumed recovery reopens the same files: the recovery's
 ///   handles stay open until the finalizer's own are, so that the files are
 ///   at no moment unheld, and the finalizer compares the digest of that one
-///   read with the pin it was given.
+///   read with the pin it was given;
+/// - the walk of the journal's index against the record descriptors in the
+///   journal's body, once for each scan of the journal and not again at
+///   every reading of the lifecycle. Each row a step uses is still held to
+///   its descriptor when it is read.
 ///
 /// It is not [`check_once`], and a recovery never calls that when it starts.
 /// `check_once` leaves every full re-read to the [`Gate`] in front of the

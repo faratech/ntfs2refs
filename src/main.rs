@@ -223,9 +223,10 @@ fn run() -> Result<u8> {
                         "failure_limit": {"option": "--diagnose-limit", "default": 500, "zero_means": "no limit"},
                     },
                     "verification_modes": [
-                        {"option": null, "name": "extent identity (default)",
+                        {"option": "--verify fast", "name": "fast, extent identity (default)",
                          "changes": "data that stays in place is proven by the identity of its extents; everything else is read and checksummed"},
-                        {"option": "--verify-full-content", "name": "full content",
+                        {"option": "--verify thorough", "name": "thorough, full content",
+                         "also_accepted": "--verify-full-content",
                          "changes": "what is checked: every stream's complete contents are read and hashed"},
                         {"option": "--recheck-everything", "name": "repeated re-reads",
                          "changes": "how often, not what: full re-reads at every checkpoint instead of once before the first source write"},

@@ -275,11 +275,7 @@ pub(super) fn convert(
         maximum_staging_allocation_bytes: plan.stage,
         maximum_evidence_bytes: plan.evidence,
         minimum_free_bytes: plan.keep,
-        verification_policy: if args.verify_full_content {
-            VerificationPolicy::FullContent
-        } else {
-            VerificationPolicy::ExtentIdentityV1
-        },
+        verification_policy: args.verification_policy()?,
         target_format: format,
         selected_capacity_policy: if args.minimize_scratch {
             SelectedCapacityPolicy::SourceFreeActualBytesV1

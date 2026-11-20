@@ -851,7 +851,7 @@ impl PagedSourceFingerprint {
         let mut extent_streams = 0u64;
         let final_granule = (partition_bytes - GRANULE) / GRANULE * GRANULE;
         for index in 0..source.file_count() {
-            let file = source.file(index)?;
+            let file = source.file_shared(index)?;
             for stream in &file.streams {
                 extent_streams = extent_streams
                     .checked_add(u64::from(

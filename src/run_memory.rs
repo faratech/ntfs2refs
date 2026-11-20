@@ -152,7 +152,7 @@ pub(crate) fn short_of_memory(needed: u64, free: u64) -> Short {
 pub(crate) fn refuse_frozen_source(raw: &PagedInspection, ram_bytes: u64) -> Result<()> {
     let (mut files, mut directories, mut streams) = (0u64, 0u64, 0u64);
     for ordinal in 0..raw.file_count() {
-        let file = raw.file(ordinal)?;
+        let file = raw.file_shared(ordinal)?;
         if ntfs_admission::paged::internal_role(raw, &file)?.is_some() {
             continue;
         }

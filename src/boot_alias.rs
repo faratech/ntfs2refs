@@ -327,7 +327,7 @@ impl WindowsAliasDomain {
         )?;
         let mut writer = SortedRecordWriter::new(base, PURPOSE, scratch)?;
         for ordinal in 0..source.file_count() {
-            let file = source.file(ordinal)?;
+            let file = source.file_shared(ordinal)?;
             if !file.names.iter().any(|name| name.namespace == 2) {
                 continue;
             }

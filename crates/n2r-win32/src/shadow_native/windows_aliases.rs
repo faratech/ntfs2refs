@@ -1080,38 +1080,36 @@ impl StagedWindowsAliases {
             0,
             Some(aliases.len() as u64),
         ));
-        for index in 0..aliases.len() {
-            let owner = aliases.alias(index)?;
-            let row = owner.input();
-            (|| -> io::Result<()> {
-                let directory = validate_row(input, &row, &root)?;
-                charged = charged
-                    .checked_add(row_memory(&row)?)
-                    .ok_or_else(|| invalid("alias creation RAM overflow"))?;
-                if charged > bytes {
-                    return Err(invalid("alias rows changed after prepaid validation"));
-                }
-                row_digest(&mut actual, &row);
-                if !handles.contains_key(&row.parent_object_index)
-                    || !handles.contains_key(&row.canonical_object_index)
-                {
-                    return Err(invalid(
-                        "derived alias lacks constructor-owned parent/target",
-                    ));
-                }
-                let point = crate::reparse_layout::Point::relative_component_alias(
-                    &row.canonical_components
-                        .last()
-                        .unwrap()
-                        .encode_utf16()
-                        .collect::<Vec<_>>(),
-                )?;
+        // A link is made by creating an empty object and opening it; its
+        // identity and those of its target and its parent are then read. One
+        // thread made those calls for one link after another (30 s for the
+        // 112,609 links of the full Windows volume). The links of a batch
+        // are now made on the available cores (`each_at_once`), which takes
+        // neighbouring links, mostly of one directory, on one thread. This
+        // thread keeps, in the links' order: decoding and validating a row,
+        // its charge against what was prepaid, the digest of the rows, the
+        // capacity check before each creation, and taking each link into the
+        // ledger. A recovery, which takes over links that are held, makes
+        // one link at a time as before.
+        struct Pending {
+            path: String,
+            // Without the identities, which are read once the link is made.
+            entry: VerifiedAlias,
+            // The link an interrupted run left, taken over.
+            held: Option<File>,
+        }
+        type Made = (Option<File>, [u8; 24], [u8; 24], [u8; 24]);
+        let make = |pending: &Pending| -> io::Result<Made> {
+            let entry = &pending.entry;
+            let created = if pending.held.is_some() {
+                None
+            } else {
                 let initial = Input {
-                    components: row.components,
+                    components: &entry.components,
                     additional_names: &[],
-                    directory,
+                    directory: entry.directory,
                     times: [1; 4],
-                    attributes: if directory { 16 } else { 128 },
+                    attributes: if entry.directory { 16 } else { 128 },
                     security: &private,
                     expected_api_security: None,
                     extended_attributes: None,
@@ -1125,64 +1123,154 @@ impl StagedWindowsAliases {
                     named_streams: Vec::new(),
                     sparse: None,
                 };
-                let path = format!("{root}{}", row.components.join("\\"));
-                let file = if let Some(file) = existing
-                    .as_mut()
-                    .and_then(|held| held.remove(row.components))
-                {
-                    if !crate::file_storage::held_at_guid_path(&file, &path)?
-                        || crate::reparse_native::capture(&file)?
-                            .as_ref()
-                            .is_some_and(|actual| actual != &point)
-                    {
-                        return Err(invalid("held recovery alias path or reparse point differs"));
+                super::create(&pending.path, &initial, 0, None)?;
+                Some(super::open(&pending.path, entry.directory, true)?)
+            };
+            let file = created
+                .as_ref()
+                .or(pending.held.as_ref())
+                .ok_or_else(|| invalid("derived alias was neither made nor held"))?;
+            let id: [u8; 24] = super::info(file, 18, 24)?
+                .try_into()
+                .map_err(|_| invalid("alias native ID width differs"))?;
+            let canonical: [u8; 24] = super::info(
+                held(handles, entry.canonical_object_index, "canonical object")?,
+                18,
+                24,
+            )?
+            .try_into()
+            .map_err(|_| invalid("canonical native ID width differs"))?;
+            let parent: [u8; 24] = super::info(
+                held(handles, entry.parent_object_index, "parent directory")?,
+                18,
+                24,
+            )?
+            .try_into()
+            .map_err(|_| invalid("parent native ID width differs"))?;
+            Ok((created, id, canonical, parent))
+        };
+        let batch_rows = if recovering { 1 } else { super::PARALLEL_BATCH };
+        let helper_payer = (!recovering).then_some(&**payer);
+        let mut index = 0usize;
+        while index < aliases.len() {
+            let mut batch: Vec<Pending> = Vec::with_capacity(batch_rows);
+            // What ends the batch, to be reported after the links before it.
+            let mut stopped = None;
+            while batch.len() < batch_rows && index + batch.len() < aliases.len() {
+                let owner = match aliases.alias(index + batch.len()) {
+                    Ok(owner) => owner,
+                    Err(error) => {
+                        stopped = Some(error);
+                        break;
                     }
-                    file
-                } else {
-                    input.before_mutation(0)?;
-                    super::create(&path, &initial, 0, None)?;
-                    super::open(&path, directory, true)?
                 };
-                let id: [u8; 24] = super::info(&file, 18, 24)?
-                    .try_into()
-                    .map_err(|_| invalid("alias native ID width differs"))?;
-                let entry = VerifiedAlias {
-                    components: row.components.to_vec(),
-                    canonical_components: row.canonical_components.to_vec(),
-                    canonical_object_index: row.canonical_object_index,
-                    parent_object_index: row.parent_object_index,
-                    directory,
-                    attributes: 0,
-                    file_id_info: id,
-                    canonical_file_id_info: super::info(
-                        held(handles, row.canonical_object_index, "canonical object")?,
-                        18,
-                        24,
-                    )?
-                    .try_into()
-                    .map_err(|_| invalid("canonical native ID width differs"))?,
-                    parent_file_id_info: super::info(
-                        held(handles, row.parent_object_index, "parent directory")?,
-                        18,
-                        24,
-                    )?
-                    .try_into()
-                    .map_err(|_| invalid("parent native ID width differs"))?,
-                    point,
-                };
-                if rows
-                    .insert(row.components.to_vec(), StagedAlias { entry, file })
-                    .is_some()
-                {
-                    return Err(invalid("duplicate derived alias path"));
+                let row = owner.input();
+                let prepared = (|| -> io::Result<Pending> {
+                    let directory = validate_row(input, &row, &root)?;
+                    charged = charged
+                        .checked_add(row_memory(&row)?)
+                        .ok_or_else(|| invalid("alias creation RAM overflow"))?;
+                    if charged > bytes {
+                        return Err(invalid("alias rows changed after prepaid validation"));
+                    }
+                    row_digest(&mut actual, &row);
+                    if !handles.contains_key(&row.parent_object_index)
+                        || !handles.contains_key(&row.canonical_object_index)
+                    {
+                        return Err(invalid(
+                            "derived alias lacks constructor-owned parent/target",
+                        ));
+                    }
+                    let point = crate::reparse_layout::Point::relative_component_alias(
+                        &row.canonical_components
+                            .last()
+                            .ok_or_else(|| invalid("derived alias names no object"))?
+                            .encode_utf16()
+                            .collect::<Vec<_>>(),
+                    )?;
+                    let path = format!("{root}{}", row.components.join("\\"));
+                    let held = if let Some(file) = existing
+                        .as_mut()
+                        .and_then(|held| held.remove(row.components))
+                    {
+                        if !crate::file_storage::held_at_guid_path(&file, &path)?
+                            || crate::reparse_native::capture(&file)?
+                                .as_ref()
+                                .is_some_and(|actual| actual != &point)
+                        {
+                            return Err(invalid(
+                                "held recovery alias path or reparse point differs",
+                            ));
+                        }
+                        Some(file)
+                    } else {
+                        input.before_mutation(0)?;
+                        None
+                    };
+                    Ok(Pending {
+                        path,
+                        entry: VerifiedAlias {
+                            components: row.components.to_vec(),
+                            canonical_components: row.canonical_components.to_vec(),
+                            canonical_object_index: row.canonical_object_index,
+                            parent_object_index: row.parent_object_index,
+                            directory,
+                            attributes: 0,
+                            file_id_info: [0; 24],
+                            canonical_file_id_info: [0; 24],
+                            parent_file_id_info: [0; 24],
+                            point,
+                        },
+                        held,
+                    })
+                })();
+                match prepared {
+                    Ok(pending) => batch.push(pending),
+                    Err(error) => {
+                        stopped = Some(at_alias("alias creation", row.components, error));
+                        break;
+                    }
                 }
-                Ok(())
-            })()
-            .map_err(|error| at_alias("alias creation", row.components, error))?;
+            }
+            // The path, the descriptor the link is created with and the
+            // identities read.
+            let made = super::each_at_once(helper_payer, &batch, |_| Some(65536), make);
+            index += batch.len();
+            for (pending, made) in batch.into_iter().zip(made) {
+                let Pending {
+                    mut entry, held, ..
+                } = pending;
+                let taken = made.and_then(|(created, id, canonical, parent)| {
+                    created
+                        .or(held)
+                        .map(|file| (file, id, canonical, parent))
+                        .ok_or_else(|| invalid("derived alias was neither made nor held"))
+                });
+                let (file, id, canonical, parent) = match taken {
+                    Ok(taken) => taken,
+                    Err(error) => {
+                        return Err(at_alias("alias creation", &entry.components, error));
+                    }
+                };
+                entry.file_id_info = id;
+                entry.canonical_file_id_info = canonical;
+                entry.parent_file_id_info = parent;
+                if rows.contains_key(&entry.components) {
+                    return Err(at_alias(
+                        "alias creation",
+                        &entry.components,
+                        invalid("duplicate derived alias path"),
+                    ));
+                }
+                rows.insert(entry.components.clone(), StagedAlias { entry, file });
+            }
+            if let Some(error) = stopped {
+                return Err(error);
+            }
             input.progress(Update::new(
                 Phase::AliasCreation,
                 Unit::Aliases,
-                index as u64 + 1,
+                index as u64,
                 Some(aliases.len() as u64),
             ));
         }

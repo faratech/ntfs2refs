@@ -106,6 +106,10 @@ struct Publication {
     /// 3.14 every earlier run had.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     target_refs_version: Option<(u32, u32)>,
+    /// A run that stops for a review before its handoff (#110), written only
+    /// for such a run. Nothing else may be recorded here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    review_before_handoff: Option<bool>,
     serialized_publication_grants_authority: bool,
 }
 
@@ -121,6 +125,19 @@ fn adopt_target_refs_version(recorded: Option<(u32, u32)>) -> Result<()> {
     let (major, minor) = recorded.unwrap_or(n2r_win32::target_refs_version::DEFAULT);
     n2r_win32::target_refs_version::choose(major, minor)
         .context("the recovery publication's ReFS version")
+}
+
+/// Whether the publication records a review before the handoff (#110). Only
+/// `true` may be recorded, and only by a whole-disk run: the partition
+/// route has no review.
+fn adopt_review(recorded: Option<bool>, route_has_review: bool) -> Result<bool> {
+    match recorded {
+        None => Ok(false),
+        Some(true) if route_has_review => Ok(true),
+        Some(_) => anyhow::bail!(
+            "the recovery publication records a review this recovery route does not have"
+        ),
+    }
 }
 
 fn digest(text: &str) -> Result<[u8; 32]> {
@@ -553,6 +570,70 @@ fn reseal_after_interrupted_verification(
     Ok(changed)
 }
 
+/// Seals a review run's stop (#110) again before recovery reopens it: the
+/// converted volume online and read-only under the apply intent alone,
+/// recorded in the run's `review-stop.json`. A run without a review, and
+/// every other state, is left to the reopen below exactly as before. A disk
+/// that is online and writable is refused: the volume may have been written.
+fn reseal_review_stop(
+    publication_path: &Path,
+    publication_sha256: [u8; 32],
+    review: bool,
+    source: &GeneralDiskBinding,
+    new_selected_sha256: [u8; 32],
+    lifecycle: SelectedLifecycle,
+    events: &mut Vec<NativeEvent>,
+) -> Result<()> {
+    if !review || lifecycle != SelectedLifecycle::ApplyIntent {
+        return Ok(());
+    }
+    let state = n2r_win32::observe_general_disk_state_readonly(source.clone(), events)
+        .context("recovery of a review: observing the converted source disk")?;
+    let record_path = crate::review::record_path(publication_path)?;
+    let recorded = crate::review::read_record(
+        &record_path,
+        publication_sha256,
+        source,
+        new_selected_sha256,
+    )?
+    .is_some();
+    match crate::review::review_open(review, lifecycle, state.disk_attributes, recorded) {
+        crate::review::ReviewOpen::AsToday => Ok(()),
+        crate::review::ReviewOpen::RefuseWritable => anyhow::bail!(
+            "disk {} holds a conversion stopped for review, and it is online and writable: the \
+             converted volume may have been written to. Neither committing nor rolling back is \
+             safe, and neither is done. Copy what you need from the volume and restore the NTFS \
+             volume from a backup",
+            source.disk_number
+        ),
+        crate::review::ReviewOpen::RefuseUnrecordedOnline => anyhow::bail!(
+            "disk {} is online and read-only under the apply intent of a review run, but the run \
+             never recorded its review stop ({} is absent); a run does not leave its disk so. \
+             Nothing is done",
+            source.disk_number,
+            record_path.display()
+        ),
+        crate::review::ReviewOpen::ResealStop => {
+            let (sealed, _) = GeneralFrozenPartition::restore_exclusion(source.clone(), events)
+                .with_context(|| {
+                    format!(
+                        "disk {} holds the converted volume of a review; dismounting it and \
+                         sealing the disk offline and read-only failed (close anything that has \
+                         the volume open, Explorer windows included, and retry)",
+                        source.disk_number
+                    )
+                })?;
+            drop(sealed);
+            println!(
+                "The reviewed volume on disk {} is dismounted and sealed offline and read-only \
+                 again.",
+                source.disk_number
+            );
+            Ok(())
+        }
+    }
+}
+
 /// The state of the source disk in which the whole-disk resource route
 /// writes each lifecycle marker. The apply intent is written while the disk
 /// is still offline and read-only (3), before it is made writable; the
@@ -565,6 +646,21 @@ fn marker_source_attributes(marker: crate::interrupted_marker::Marker) -> &'stat
         Marker::ApplyIntent => &[3],
         Marker::RollbackIntent | Marker::Handoff | Marker::AbortAfterRollback => &[1],
         Marker::AbortAfterAbandon => &[1, 3],
+    }
+}
+
+#[cfg(test)]
+mod review_publication_tests {
+    use super::adopt_review;
+
+    #[test]
+    fn only_a_whole_disk_publication_may_record_a_review_and_only_as_true() {
+        assert!(!adopt_review(None, true).unwrap());
+        assert!(!adopt_review(None, false).unwrap());
+        assert!(adopt_review(Some(true), true).unwrap());
+        assert!(adopt_review(Some(true), false).is_err());
+        assert!(adopt_review(Some(false), true).is_err());
+        assert!(adopt_review(Some(false), false).is_err());
     }
 }
 
@@ -851,6 +947,7 @@ impl ReopenedPartitionResourceRecovery {
         let publication: Publication = serde_json::from_reader(&mut publication_file.file)?;
         adopt_target_cluster(publication.target_cluster_bytes)?;
         adopt_target_refs_version(publication.target_refs_version)?;
+        adopt_review(publication.review_before_handoff, false)?;
         let mut canonical = HashSink {
             bytes: 0,
             maximum: size,
@@ -1183,6 +1280,7 @@ impl ReopenedPartitionResourceRecovery {
         let publication: Publication = serde_json::from_reader(&mut publication_file.file)?;
         adopt_target_cluster(publication.target_cluster_bytes)?;
         adopt_target_refs_version(publication.target_refs_version)?;
+        adopt_review(publication.review_before_handoff, false)?;
         let mut canonical = HashSink {
             bytes: 0,
             maximum: size,
@@ -2068,6 +2166,7 @@ impl ReopenedResourceRecovery {
         let publication: Publication = serde_json::from_reader(&mut publication_file.file)?;
         adopt_target_cluster(publication.target_cluster_bytes)?;
         adopt_target_refs_version(publication.target_refs_version)?;
+        adopt_review(publication.review_before_handoff, true)?;
         let mut canonical = HashSink {
             bytes: 0,
             maximum: size,
@@ -2313,6 +2412,19 @@ impl ReopenedResourceRecovery {
                     initial_lifecycle,
                     events,
                 )?;
+                if allow_online_terminal {
+                    // Set by the recovery command alone: a review run's stop
+                    // (#110) is online and read-only under its apply intent.
+                    reseal_review_stop(
+                        path,
+                        independently_supplied_sha256,
+                        publication.review_before_handoff == Some(true),
+                        &publication.source,
+                        locator.ticket().new_selected_sha256,
+                        initial_lifecycle,
+                        events,
+                    )?;
+                }
                 reseal_after_interrupted_verification(
                     &publication.source,
                     initial_lifecycle,
@@ -2577,6 +2689,7 @@ impl ReopenedResourceRecovery {
             "actual recovery lifecycle refuses requested replay"
         );
         self.require_preparation_guard_delegated(events)?;
+        let review = self.review_before_handoff();
         let volume = self.locator.journal_binding().disk.volume_path()?;
         let _index_parent = hold_index_parent(index_path, &volume)?;
         let observation = BoundJournalObservation::open(
@@ -2594,6 +2707,11 @@ impl ReopenedResourceRecovery {
         {
             ObservedTarget::Activated(target) => {
                 super::replay::MarkerlessRecoveryTarget::Activated(target)
+            }
+            // Only a run whose authenticated publication records a review
+            // may find its frozen source exactly new under the apply intent.
+            ObservedTarget::Frozen(source) if review => {
+                super::replay::MarkerlessRecoveryTarget::FrozenReview(source)
             }
             ObservedTarget::Frozen(source) => {
                 super::replay::MarkerlessRecoveryTarget::Frozen(source)
@@ -2893,6 +3011,210 @@ impl ReopenedResourceRecovery {
             super::sj::classify(journal, self.locator.ticket())? == SelectedLifecycle::Aborted,
             "ABT journal changed after restoring NTFS"
         );
+        Ok(mounted)
+    }
+
+    /// Whether the authenticated publication records that the run stops for
+    /// a review before its handoff (#110).
+    pub(crate) fn review_before_handoff(&self) -> bool {
+        self.publication.review_before_handoff == Some(true)
+    }
+
+    /// The review stop (#110): re-authenticate the apply intent alone and
+    /// every selected byte exactly NEW through the held source, which must
+    /// be sealed offline and read-only. Nothing is written or mounted.
+    pub(crate) fn verify_review_stop(
+        &mut self,
+        group: &ArtifactGroupPermit,
+        index_path: &Path,
+        maximum_index_bytes: u64,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<[u8; 32]> {
+        self.revalidate(events)?;
+        ensure!(
+            self.review_before_handoff()
+                && self.initial_lifecycle == SelectedLifecycle::ApplyIntent,
+            "a review stop requires a review run under its apply intent alone"
+        );
+        let volume = self.locator.journal_binding().disk.volume_path()?;
+        let _index_parent = hold_index_parent(index_path, &volume)?;
+        let mut observation = BoundJournalObservation::open(
+            &mut self.journal,
+            self.locator.ticket(),
+            group,
+            &self.scratch,
+            index_path,
+            maximum_index_bytes,
+        )?;
+        let Some(ObservedTarget::Frozen(target)) = self.target.as_mut() else {
+            anyhow::bail!("a review stop requires its source sealed offline and read-only");
+        };
+        let before = target.state(events)?;
+        ensure!(
+            before.disk_attributes == 3 && target.binding() == self.locator.source(),
+            "review source is not the sealed source of this run"
+        );
+        let length = target.byte_len();
+        let digest = observation.verify_review_data(target, length)?;
+        ensure!(
+            target.state(events)? == before,
+            "review source identity or exclusion changed"
+        );
+        observation.retire()?;
+        self.revalidate(events)?;
+        Ok(digest)
+    }
+
+    /// The fingerprint of the whole held offline source partition (see
+    /// `crate::review::volume_fingerprint`). Read-only.
+    pub(crate) fn whole_source_fingerprint(
+        &mut self,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<String> {
+        let target = self
+            .target
+            .as_mut()
+            .context("recovery target was consumed")?;
+        let before = target.state(events)?;
+        ensure!(
+            matches!(before.disk_attributes, 1 | 3),
+            "the source is not offline for its fingerprint"
+        );
+        let fingerprint = match &mut *target {
+            ObservedTarget::Frozen(source) => {
+                let length = source.byte_len();
+                crate::review::volume_fingerprint(source, length, &self.scratch)?
+            }
+            ObservedTarget::Activated(source) => {
+                let length = source.byte_len();
+                crate::review::volume_fingerprint(source, length, &self.scratch)?
+            }
+        };
+        ensure!(
+            target.state(events)? == before,
+            "the source changed while its fingerprint was taken"
+        );
+        Ok(fingerprint)
+    }
+
+    /// Whether the held offline source matches the fingerprint of the run's
+    /// frozen NTFS source that its publication pins (`source_sha256`): what
+    /// a rollback of a review run is held to before NTFS is put online.
+    pub(crate) fn source_matches_frozen_fingerprint(
+        &mut self,
+        fingerprint: &crate::source_fingerprint::resource::PagedSourceFingerprint,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<bool> {
+        let target = self
+            .target
+            .as_mut()
+            .context("recovery target was consumed")?;
+        let before = target.state(events)?;
+        ensure!(
+            matches!(before.disk_attributes, 1 | 3),
+            "the restored source is not offline for its check"
+        );
+        let actual = match &mut *target {
+            ObservedTarget::Frozen(source) => {
+                let length = source.byte_len();
+                fingerprint.hash_partition_reader(source, length)?
+            }
+            ObservedTarget::Activated(source) => {
+                let length = source.byte_len();
+                fingerprint.hash_partition_reader(source, length)?
+            }
+        };
+        ensure!(
+            target.state(events)? == before,
+            "the restored source changed during its check"
+        );
+        Ok(actual == self.publication.source_sha256)
+    }
+
+    /// Put a verified review stop online read-only (#110): the source disk
+    /// stays READ_ONLY after this process ends and Windows mounts the
+    /// converted volume write-protected. The apply intent alone and every
+    /// selected byte exactly NEW are checked again at the transition. The
+    /// handoff is not written; this owner cannot be used afterwards.
+    pub(crate) fn present_review_readonly(
+        &mut self,
+        group: &ArtifactGroupPermit,
+        index_path: &Path,
+        maximum_index_bytes: u64,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<GeneralDiskBinding> {
+        self.revalidate(events)?;
+        ensure!(
+            self.review_before_handoff()
+                && self.initial_lifecycle == SelectedLifecycle::ApplyIntent,
+            "a review is presented only by a review run under its apply intent alone"
+        );
+        let volume = self.locator.journal_binding().disk.volume_path()?;
+        let _index_parent = hold_index_parent(index_path, &volume)?;
+        let mut bound = BoundJournalObservation::open(
+            &mut self.journal,
+            self.locator.ticket(),
+            group,
+            &self.scratch,
+            index_path,
+            maximum_index_bytes,
+        )?;
+        ensure!(
+            bound.lifecycle()? == SelectedLifecycle::ApplyIntent,
+            "actual held journal no longer holds the apply intent alone"
+        );
+        let BoundJournalObservation {
+            mut observation,
+            facts,
+        } = bound;
+        let ticket = observation.ticket;
+        let pins = n2r_win32::PagedRecoveryPins {
+            journal_binding: facts.binding,
+            journal_identity: facts.identity,
+            journal_path: facts.path,
+            journal_profile: facts.profile,
+            immutable_sha256: ticket.immutable_sha256,
+            old_selected_sha256: ticket.old_selected_sha256,
+            old_restored_selected_sha256: ticket.old_restored_selected_sha256,
+            new_selected_sha256: ticket.new_selected_sha256,
+        };
+        let policy = observation.index.clone();
+        let target = self
+            .target
+            .take()
+            .context("review source was already consumed")?;
+        let transition = {
+            let journal = observation.journal.markerless_recovery_file()?;
+            match target {
+                ObservedTarget::Frozen(target) => {
+                    target.present_paged_review_readonly(&policy, journal, &pins, events)
+                }
+                ObservedTarget::Activated(_) => {
+                    anyhow::bail!("review source is not sealed offline and read-only")
+                }
+            }
+        };
+        drop(policy);
+        let index_retirement = observation.retire();
+        let state = transition.context(
+            "putting the review online read-only stopped; the disk may already be online and \
+             read-only, which `--recover` seals again",
+        )?;
+        let mounted =
+            n2r_win32::rediscover_general_volume_wait(self.publication.source.clone(), events)
+                .context("the review is online read-only but its volume could not be found")?;
+        n2r_win32::volume_label::validate_original_partition(&self.publication.source, &mounted)?;
+        ensure!(
+            n2r_win32::mounted_filesystem_general(mounted.clone(), events)? == "ReFS",
+            "the reviewed volume did not mount as ReFS"
+        );
+        ensure!(
+            n2r_win32::observe_general_disk_state_readonly(mounted.clone(), events)? == state,
+            "the reviewed disk changed while its volume was found"
+        );
+        self.initial_state = state;
+        self.mounted = Some(mounted.clone());
+        index_retirement.context("the review is online read-only but index retirement failed")?;
         Ok(mounted)
     }
 

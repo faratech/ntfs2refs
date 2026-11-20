@@ -80,6 +80,33 @@ pub(crate) fn recover_resource_allocation_with_observer<O: PreparationObserver>(
             "reconciliation":reconciliation
         }));
     }
+    // A run that stopped for review (#110): before either direction, the
+    // whole partition must still be what it was at the stop. Nothing else
+    // of the recovery differs for it until its rollback is checked below.
+    let review = recovery.review_before_handoff();
+    if review {
+        let record_path = crate::review::record_path(publication)?;
+        let record = crate::review::read_record(
+            &record_path,
+            publication_sha256,
+            recovery.source(),
+            recovery.ticket().new_selected_sha256,
+        )?;
+        if let Some(record) = record
+            .as_ref()
+            .filter(|_| crate::review::compare_before_direction(review, initial, true))
+        {
+            events.phase("resource-review-fingerprint-check");
+            println!("Checking that the reviewed volume was not changed since the review stop.");
+            let actual = recovery
+                .whole_source_fingerprint(&mut events)
+                .context("recovery of a review: fingerprinting the converted partition")?;
+            if actual != record.volume_fingerprint {
+                return Err(crate::review::changed_since_stop(&record_path));
+            }
+            events.checkpoint()?;
+        }
+    }
     let mut replayed = None;
     // A run cut off after it printed its "To recover:" line but before its
     // apply intent was durable wrote nothing to the source: the only way it
@@ -140,6 +167,30 @@ pub(crate) fn recover_resource_allocation_with_observer<O: PreparationObserver>(
         ),
     }
     if rollback {
+        if crate::review::check_restored_source(review, recovery.observed_lifecycle()) {
+            // Today nothing checks the bytes outside the journaled ranges
+            // after a rollback; for a review run, whose converted volume was
+            // mounted, the restored NTFS volume is held to the fingerprint
+            // of the frozen source before it is put online.
+            events.phase("resource-review-restored-source-check");
+            println!("Checking the restored NTFS volume against the source as it was frozen.");
+            let fingerprint = crate::review::reopen_source_fingerprint(
+                publication
+                    .parent()
+                    .context("the recovery publication has no directory")?,
+                recovery.source_sha256(),
+                recovery.source_inspection_sha256(),
+                recovery.runtime_scratch(),
+            )?;
+            ensure!(
+                recovery.source_matches_frozen_fingerprint(&fingerprint, &mut events)?,
+                "rollback of a review: the restored NTFS volume differs from the fingerprint of \
+                 its source as it was frozen before the conversion. It is left offline; the \
+                 journal records the rollback. Nothing more is done: restore the volume from a \
+                 backup"
+            );
+            events.checkpoint()?;
+        }
         events.phase("resource-rollback-finalization");
         let mounted = recovery.restore_aborted(
             &group,
@@ -193,6 +244,7 @@ pub(crate) fn recover_resource_allocation_with_observer<O: PreparationObserver>(
             "source":mounted, "selected_replay":replayed,
             "restore_required_selected_bytes_verified":true,
             "free_space_restored_byte_for_byte":false,
+            "source_fingerprint_verified":review,
             "mount_paths_preserved": expected == actual,
             "expected_mount_paths": expected, "actual_mount_paths": actual,
             "restored_drive_letters": restored_letters,

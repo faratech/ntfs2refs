@@ -88,12 +88,15 @@ pub(super) struct MarkerlessReplayResult {
 
 pub(super) enum MarkerlessRecoveryTarget {
     Frozen(GeneralFrozenPartition),
+    /// The frozen source of a run whose authenticated publication records
+    /// that it stops for a review (#110): exactly old or exactly new.
+    FrozenReview(GeneralFrozenPartition),
     Activated(GeneralExclusiveRecoveryTarget),
 }
 impl MarkerlessRecoveryTarget {
     fn binding(&self) -> &n2r_win32::general_layout::GeneralDiskBinding {
         match self {
-            Self::Frozen(target) => target.binding(),
+            Self::Frozen(target) | Self::FrozenReview(target) => target.binding(),
             Self::Activated(target) => target.binding(),
         }
     }
@@ -233,6 +236,14 @@ impl BoundJournalObservation<'_> {
                         direction,
                         events,
                     )?,
+                MarkerlessRecoveryTarget::FrozenReview(source) => source
+                    .into_paged_recovery_target_from_frozen_for_review(
+                        &policy,
+                        held_journal,
+                        &pins,
+                        direction,
+                        events,
+                    )?,
                 MarkerlessRecoveryTarget::Activated(target) => target,
             };
             target.arm_paged_recovery(policy, held_journal, &pins, direction, events)?
@@ -298,6 +309,45 @@ impl BoundJournalObservation<'_> {
         self.observation
             .journal
             .require_native_mount_barriers(self.observation.ticket)?;
+        n2r_win32::note_selected_new_bytes_verified(
+            &self.observation.ticket.immutable_sha256,
+            &expected,
+        );
+        Ok(digest)
+    }
+
+    /// The review stop's verification (#110): the apply intent alone, and
+    /// every selected byte exactly NEW, through the same held offline target.
+    /// Like the handoff's above, it is read-only and claims nothing about the
+    /// converted namespace.
+    pub(super) fn verify_review_data<R: Read + Seek>(
+        &mut self,
+        target: &mut R,
+        target_length: u64,
+    ) -> Result<[u8; 32]> {
+        self.observation.revalidate_index()?;
+        ensure!(
+            self.observation.lifecycle()? == SelectedLifecycle::ApplyIntent,
+            "a review stop requires the apply intent alone"
+        );
+        let expected = self.observation.ticket.new_selected_sha256;
+        let digest = if n2r_win32::selected_new_bytes_verified(
+            &self.observation.ticket.immutable_sha256,
+            &expected,
+        ) {
+            ensure!(
+                target_length == self.observation.ticket.image_length,
+                "review target length differs"
+            );
+            expected
+        } else {
+            self.observation
+                .check_target_reader(target, target_length, Some(expected), false)?
+        };
+        ensure!(
+            self.observation.lifecycle()? == SelectedLifecycle::ApplyIntent,
+            "review lifecycle changed during target verification"
+        );
         n2r_win32::note_selected_new_bytes_verified(
             &self.observation.ticket.immutable_sha256,
             &expected,

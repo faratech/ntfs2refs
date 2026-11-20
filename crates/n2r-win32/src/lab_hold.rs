@@ -57,11 +57,11 @@ pub const POINTS: &[&str] = &[
     // with --verify thorough before finalization, with --verify fast after
     // the verification passed, before the volume is online.
     "handoff-sealed",
-    // Finalization has authenticated the handoff; the source is still sealed
-    // (with --verify fast only in the recovery of a run past its handoff).
+    // --verify thorough only: finalization has authenticated the handoff; the
+    // source is still sealed.
     "finalize-authenticated",
-    // The converted source is mounted read-only for its verification beside
-    // the handoff (with --verify fast only in such a recovery).
+    // --verify thorough only: the converted source is mounted read-only for
+    // its verification, beside the handoff.
     "finalize-source-readonly",
     // Verification passed and the source is sealed again; not yet online.
     "finalize-before-online",

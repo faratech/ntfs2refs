@@ -387,16 +387,61 @@ fn complete_domain_body(
         }
     }
     crate::perf::step("metadata: take metadata handles");
+    // Taking a stream's metadata handle is two reopens and a few queries,
+    // each through a handle of that stream alone, which one thread made for
+    // one stream after another. On a tree this run built, with a payer for
+    // the helpers, the streams of a batch are taken on the available cores
+    // (`each_at_once`): a helper is handed handles, never the tree. What
+    // was taken is entered into the tree's maps on this thread, in the
+    // streams' order, so a failure is reported for the same stream as
+    // before. A recovered tree, and one without a payer, takes one stream
+    // after another as before (a batch of one, on this thread).
+    let helper_payer = if tree.recovery_origin.is_none() {
+        tree.memory.as_ref().map(|memory| memory.payer())
+    } else {
+        None
+    };
+    let handle_batch = if helper_payer.is_some() {
+        super::super::PARALLEL_BATCH
+    } else {
+        1
+    };
+    // What a helper holds for one stream beside its query buffer: a file
+    // identity and the handle.
+    const HANDLE_WORKSPACE: u64 = 65536;
     let mut guards = BTreeMap::new();
-    for (ordinal, (key, file)) in tree.files.iter().enumerate() {
-        stream_progress(1, ordinal as u64, tree.files.len() as u64);
-        // Exclusive placeholders cannot be reopened for metadata rights while
-        // their read/write handle lives. First hold a zero-access identity
-        // guard, which blocks delete/rename continuously across the transfer.
-        let guard = reopen(file.metadata_handle(), 0)?;
-        guards.insert(key.clone(), (info(file.metadata_handle(), 18, 24)?, guard));
+    {
+        let total = tree.files.len() as u64;
+        let mut files = tree.files.iter().enumerate().peekable();
+        let mut batch: Vec<(&StreamKey, &File)> = Vec::with_capacity(handle_batch);
+        while let Some(&(ordinal, _)) = files.peek() {
+            stream_progress(1, ordinal as u64, total);
+            batch.clear();
+            batch.extend(
+                files
+                    .by_ref()
+                    .take(handle_batch)
+                    .map(|(_, (key, file))| (key, file.metadata_handle())),
+            );
+            let guarded = super::super::each_at_once(
+                helper_payer.as_deref(),
+                &batch,
+                |_| Some(HANDLE_WORKSPACE),
+                |(_, file)| -> io::Result<(Vec<u8>, File)> {
+                    // Exclusive placeholders cannot be reopened for metadata
+                    // rights while their read/write handle lives. First hold
+                    // a zero-access identity guard, which blocks delete and
+                    // rename continuously across the transfer.
+                    let guard = reopen(file, 0)?;
+                    Ok((info(file, 18, 24)?, guard))
+                },
+            );
+            for ((key, _), guarded) in batch.iter().zip(guarded) {
+                guards.insert((*key).clone(), guarded?);
+            }
+        }
+        stream_progress(1, total, total);
     }
-    stream_progress(1, tree.files.len() as u64, tree.files.len() as u64);
     let sparse_count = sparse_files.len() as u64;
     for (ordinal, (key, file)) in sparse_files.into_iter().enumerate() {
         stream_progress(2, ordinal as u64, sparse_count);
@@ -408,24 +453,89 @@ fn complete_domain_body(
     tree.files.clear();
     let mut named_guards = BTreeMap::new();
     let guard_count = guards.len() as u64;
-    for (ordinal, (key, (identity, guard))) in guards.into_iter().enumerate() {
-        stream_progress(3, ordinal as u64, guard_count);
-        let handle = reopen(&guard, crate::shadow_native::METADATA_WRITE_ACCESS)?;
-        suppress_access(&handle)?;
-        validate_open_type(&handle, false)?;
-        if info(&handle, 18, 24)? != identity {
-            return Err(invalid("private metadata transfer identity differs"));
-        }
-        if key.name_utf16.is_empty() {
-            if tree
-                .metadata_targets
-                .insert(key.object_index, handle)
-                .is_some()
-            {
-                return Err(invalid("duplicate canonical metadata handle"));
+    {
+        let mut guards = guards.into_iter().enumerate().peekable();
+        // The streams of a batch with their guards, and where each object's
+        // streams lie among them. An object's streams are one item: a
+        // helper takes them one after another, in their order, and no two
+        // helpers work on the same file.
+        let mut batch: Vec<(StreamKey, Vec<u8>, File)> = Vec::new();
+        let mut objects: Vec<std::ops::Range<usize>> = Vec::with_capacity(handle_batch);
+        while let Some(ordinal) = guards.peek().map(|(ordinal, _)| *ordinal) {
+            stream_progress(3, ordinal as u64, guard_count);
+            objects.clear();
+            while objects.len() < handle_batch {
+                let Some(object) = guards.peek().map(|(_, (key, _))| key.object_index) else {
+                    break;
+                };
+                let start = batch.len();
+                while let Some((_, (key, (identity, guard)))) =
+                    guards.next_if(|(_, (key, _))| key.object_index == object)
+                {
+                    batch.push((key, identity, guard));
+                }
+                objects.push(start..batch.len());
             }
-        } else {
-            named_guards.insert(key, handle);
+            let units: Vec<&[(StreamKey, Vec<u8>, File)]> = objects
+                .iter()
+                .map(|streams| &batch[streams.clone()])
+                .collect();
+            // One result for each stream of the object, up to and with the
+            // first that fails: the streams after it are not asked.
+            let opened = super::super::each_at_once(
+                helper_payer.as_deref(),
+                &units,
+                |_| Some(HANDLE_WORKSPACE),
+                |streams| -> Vec<io::Result<File>> {
+                    let mut opened = Vec::with_capacity(streams.len());
+                    for (_, identity, guard) in streams.iter() {
+                        let handle = (|| -> io::Result<File> {
+                            let handle =
+                                reopen(guard, crate::shadow_native::METADATA_WRITE_ACCESS)?;
+                            suppress_access(&handle)?;
+                            validate_open_type(&handle, false)?;
+                            if info(&handle, 18, 24)? != *identity {
+                                return Err(invalid("private metadata transfer identity differs"));
+                            }
+                            Ok(handle)
+                        })();
+                        let failed = handle.is_err();
+                        opened.push(handle);
+                        if failed {
+                            break;
+                        }
+                    }
+                    opened
+                },
+            );
+            drop(units);
+            // In the streams' order: a stream's guard goes once its handle
+            // is held, and the first failure ends the pass, so that no
+            // result is taken for a stream after it.
+            let mut streams = batch.drain(..);
+            for handle in opened.into_iter().flatten() {
+                let (key, _identity, _guard) = streams.next().ok_or_else(|| {
+                    invalid("metadata handles: a handle was taken for a stream outside its batch")
+                })?;
+                let handle = handle?;
+                if key.name_utf16.is_empty() {
+                    if tree
+                        .metadata_targets
+                        .insert(key.object_index, handle)
+                        .is_some()
+                    {
+                        return Err(invalid("duplicate canonical metadata handle"));
+                    }
+                } else {
+                    named_guards.insert(key, handle);
+                }
+            }
+            if let Some((key, _, _)) = streams.next() {
+                return Err(invalid(&format!(
+                    "metadata handles: no handle was taken for a stream of object {}",
+                    key.object_index
+                )));
+            }
         }
     }
     stream_progress(3, guard_count, guard_count);

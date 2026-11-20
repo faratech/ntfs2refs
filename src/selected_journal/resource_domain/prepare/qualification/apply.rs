@@ -331,13 +331,61 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
     /// The callback can only observe a real flushed first write and request an
     /// error. It never supplies a journal marker or native write authority.
     pub(crate) fn apply_and_handoff_with_first_write_fault(
+        self,
+        events: &mut Vec<n2r_win32::NativeEvent>,
+        checkpoint_events: impl FnMut(&mut Vec<n2r_win32::NativeEvent>) -> Result<()>,
+        after_apply: impl FnOnce(&SelectedResult) -> Result<()>,
+        first_write_fault: Option<&mut dyn FnMut(&FirstFlushedWrite) -> Result<()>>,
+    ) -> Result<ResourceAppliedConversion<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>>
+    {
+        match self.apply_until(
+            events,
+            checkpoint_events,
+            after_apply,
+            first_write_fault,
+            ApplyEnd::Handoff,
+        )? {
+            Applied::Handoff(applied) => Ok(applied),
+            Applied::Review(_) => anyhow::bail!("apply stopped for a review it was not asked for"),
+        }
+    }
+
+    /// The same apply for a run that stops for a review (#110): every new
+    /// byte is written, flushed and read back, and every check before the
+    /// handoff is made, but the handoff marker is not written. Rollback
+    /// stays open. Only a process that chose a review, and so published a
+    /// recovery envelope that records it, may stop here.
+    pub(crate) fn apply_for_review(
+        self,
+        events: &mut Vec<n2r_win32::NativeEvent>,
+        checkpoint_events: impl FnMut(&mut Vec<n2r_win32::NativeEvent>) -> Result<()>,
+        after_apply: impl FnOnce(&SelectedResult) -> Result<()>,
+    ) -> Result<ResourceReviewedConversion<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>>
+    {
+        ensure!(
+            crate::review::chosen(),
+            "apply: a review stop requires a run that chose --review"
+        );
+        match self.apply_until(
+            events,
+            checkpoint_events,
+            after_apply,
+            None,
+            ApplyEnd::Review,
+        )? {
+            Applied::Review(reviewed) => Ok(reviewed),
+            Applied::Handoff(_) => anyhow::bail!("apply wrote a handoff for a review run"),
+        }
+    }
+
+    fn apply_until(
         mut self,
         events: &mut Vec<n2r_win32::NativeEvent>,
         mut checkpoint_events: impl FnMut(&mut Vec<n2r_win32::NativeEvent>) -> Result<()>,
         after_apply: impl FnOnce(&SelectedResult) -> Result<()>,
         mut first_write_fault: Option<&mut dyn FnMut(&FirstFlushedWrite) -> Result<()>>,
-    ) -> Result<ResourceAppliedConversion<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>>
-    {
+        end: ApplyEnd,
+    ) -> Result<Applied<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>> {
         checkpoint_native_events(events, &mut checkpoint_events)?;
         n2r_win32::perf::step("revalidate before apply");
         self.prepared.revalidate(events)?;
@@ -520,6 +568,14 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
             sj::classify(prepared.inner._journal, ticket)? == sj::SelectedLifecycle::ApplyIntent,
             "fresh journal intent changed before HND"
         );
+        if end == ApplyEnd::Review {
+            // Everything a handoff is written after has been checked; the
+            // handoff itself is what a review leaves to `--recover`.
+            n2r_win32::lab_hold::reached("apply-before-handoff");
+            drop(target);
+            drop(buffers);
+            return Ok(Applied::Review(ResourceReviewedConversion { owner: self }));
+        }
         n2r_win32::perf::step("write handoff marker");
         n2r_win32::lab_hold::reached("apply-before-handoff");
         sj::write_lifecycle_marker(prepared.inner._journal, ticket, MarkerKind::Handoff)?;
@@ -551,12 +607,97 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
         let native_bytes_written = target.native_bytes_written();
         drop(target);
         drop(buffers);
-        Ok(ResourceAppliedConversion {
+        Ok(Applied::Handoff(ResourceAppliedConversion {
             owner: self,
             applied,
             handoff,
             native_bytes_written,
-        })
+        }))
+    }
+}
+
+/// Where an apply ends: at the handoff, as every run did before, or at the
+/// review stop before it (#110).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ApplyEnd {
+    Handoff,
+    Review,
+}
+
+enum Applied<'journal, 'domain, 'capture, 'proof, 'scope, 'expected> {
+    Handoff(ResourceAppliedConversion<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>),
+    Review(ResourceReviewedConversion<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>),
+}
+
+/// Every new byte written, flushed and read back, under the apply intent
+/// alone: the review stop (#110). It keeps every preparation owner alive
+/// until its source is sealed read-only again.
+pub(crate) struct ResourceReviewedConversion<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
+{
+    owner: ResourceFreshApply<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>,
+}
+
+impl ResourceReviewedConversion<'_, '_, '_, '_, '_, '_> {
+    /// Re-authenticate the apply intent alone and the selected postimage,
+    /// then reseal the same physical owner offline and read-only. Like the
+    /// handoff's reseal, this neither mounts the volume nor revives its old
+    /// NTFS admission; unlike it, no handoff is required or written.
+    pub(crate) fn seal_review_readonly(
+        &mut self,
+        events: &mut Vec<n2r_win32::NativeEvent>,
+        mut checkpoint_events: impl FnMut(&mut Vec<n2r_win32::NativeEvent>) -> Result<()>,
+    ) -> Result<()> {
+        checkpoint_native_events(events, &mut checkpoint_events)?;
+        self.owner.prepared.closure.revalidate()?;
+        self.owner.prepared.publication.revalidate()?;
+        self.owner.prepared.checksum.revalidate()?;
+        let _memory = self
+            .owner
+            .prepared
+            .closure
+            .arena()
+            .reserve_ram(16 * 1024 * 1024)?;
+        let prepared = &mut self.owner.prepared.prepared;
+        let ticket = &prepared.inner.ticket;
+        ensure!(
+            sj::classify(prepared.inner._journal, ticket)? == sj::SelectedLifecycle::ApplyIntent,
+            "review stop: the journal no longer holds the apply intent alone"
+        );
+        let index = self
+            .owner
+            .prepared
+            .write_index
+            .as_ref()
+            .context("prepared native write index absent")?;
+        index.require_ticket(ticket)?;
+        let facts = &prepared.inner._facts;
+        let pins = n2r_win32::PagedRecoveryPins {
+            journal_binding: facts.binding,
+            journal_identity: facts.identity,
+            journal_path: facts.path,
+            journal_profile: facts.profile,
+            immutable_sha256: ticket.immutable_sha256,
+            old_selected_sha256: ticket.old_selected_sha256,
+            old_restored_selected_sha256: ticket.old_restored_selected_sha256,
+            new_selected_sha256: ticket.new_selected_sha256,
+        };
+        let (source, _) = prepared.context.source_and_inspection()?;
+        n2r_win32::perf::step("seal review stop");
+        prepared.inner._journal.seal_sealed_review_for_observation(
+            source,
+            &index.policy(),
+            &pins,
+            events,
+        )?;
+        ensure!(
+            source.binding() == facts.source && source.state(events)?.disk_attributes == 3,
+            "review stop: the source did not keep its exact read-only exclusion"
+        );
+        checkpoint_native_events(events, &mut checkpoint_events)
+    }
+
+    pub(crate) fn source(&self) -> &n2r_win32::general_layout::GeneralDiskBinding {
+        self.owner.prepared.prepared.inner._facts.source
     }
 }
 

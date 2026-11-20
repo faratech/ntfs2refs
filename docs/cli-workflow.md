@@ -686,6 +686,7 @@ differences it accepts.
 | `--windows-boot-volume` | The volume is an installed Windows that is not running |
 | `--restart-media <dir>` | Windows installation media, for a partition on the disk of the running Windows: it is converted through a restart |
 | `--recover <dir> --recovery-sha256 <sum>` `[--rollback]` | Finishes, or undoes, an interrupted run |
+| `--review` | Stops before the conversion is committed, with the volume mounted read-only as ReFS; see below |
 | `--yes` `--volume-serial XXXX-XXXX` | Runs without asking; see below |
 | `--verify fast\|thorough` | What is verified: `fast` (the default) proves data that stays in place by its extents; `thorough` reads and hashes every stream in full |
 | `--recheck-everything` | Repeats the full re-reads at every checkpoint |
@@ -717,6 +718,44 @@ it to its run.
   spelling `--verify-full-content` is still accepted and means the same.
 - **`--recheck-everything`** changes *how often*, not what: the full re-reads
   happen at every checkpoint instead of once at the gate. Much slower.
+
+### Look before you commit: `--review`
+
+```powershell
+.\ntfs2refs.exe --drive E --scratch-directory S:\runs --review
+```
+
+A run with `--review` converts as any run does, up to the handoff: every new
+sector is written, flushed and read back. Then it does not write the handoff.
+It seals the disk offline and read-only again, takes a fingerprint of the
+whole converted partition, records it in `review-stop.json` beside the
+recovery envelope, puts the disk online read-only and ends. Windows mounts the
+converted volume write-protected as ReFS under its letter (its label is the
+working one until you commit). Look at it, then run one of the two commands
+the run printed:
+
+- `--recover <dir> --recovery-sha256 <sum>` commits: the volume is dismounted
+  and sealed again, checked against the fingerprint, the handoff is written
+  and the conversion is finished as any other (verification, label, letter,
+  online).
+- The same with `--rollback` puts NTFS back. The restored volume is then also
+  checked against the fingerprint of the source taken before the conversion,
+  before it is put online.
+
+Do not make the volume or its disk writable. If it was ever writable, its
+fingerprint no longer matches (or the disk is found online and writable) and
+ntfs2refs refuses both directions: neither the journal's old content nor its
+handoff fits a volume that was written to. Close Explorer windows on the
+volume before you run the command: it has to be dismounted.
+
+`--review` is for a data volume on a disk of its own. It is refused with
+`--windows-boot-volume`, `--restart-media`, for a partition on the disk of the
+running Windows, and with `--check`, `--diagnose` and `--compare-listing`. A
+review run whose preparation is cut off is cancelled with `--rollback` and
+started again; it is not resumed without its review. The fingerprint costs a
+full read of the volume at the stop and another at the decision. The
+converted volume's files are verified when you commit, as without a review;
+what the review stop itself checks is every new sector.
 
 ### Your own before-and-after comparison
 

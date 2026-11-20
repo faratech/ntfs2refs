@@ -102,6 +102,13 @@ fn save(path: &Path, value: &impl Serialize) -> Result<()> {
 /// How a confirmed run on the default route ended.
 pub(crate) enum ConversionOutcome {
     Converted,
+    /// `--review` (#110): converted and mounted read-only, no handoff.
+    Reviewed {
+        directory: PathBuf,
+        sha256: String,
+        mount_paths: Vec<String>,
+        record: PathBuf,
+    },
     /// A diagnose run: the shadow was built and examined; nothing was applied.
     Diagnosed(crate::resource_preparation::DiagnoseOutcome),
 }
@@ -343,6 +350,36 @@ pub(crate) fn convert_owned_with_provider_commitment(
                 let fresh = prepared.into_fresh_apply(events, |batch| {
                     observer.native_events("source-activation", batch)
                 })?;
+                if crate::review::chosen() {
+                    // --review (#110): every new byte written, flushed and
+                    // read back; no handoff. The source is sealed read-only
+                    // again under the apply intent alone.
+                    n2r_win32::perf::phase("source-apply-for-review");
+                    let mut reviewed = fresh.apply_for_review(
+                        events,
+                        |batch| observer.native_events("source-apply-for-review", batch),
+                        |_| {
+                            println!(
+                                "Source changes verified; stopping for review before the handoff."
+                            );
+                            io::stdout().flush()?;
+                            Ok(())
+                        },
+                    )?;
+                    drop(gate);
+                    reviewed.seal_review_readonly(events, |batch| {
+                        observer.native_events("source-review-readonly", batch)
+                    })?;
+                    ensure!(
+                        reviewed.source() == &pair.source,
+                        "applied review source identity differs"
+                    );
+                    // As before the finalizer: nothing of the preparation may
+                    // outlive this point; the review stop reopens the records.
+                    drop(reviewed);
+                    n2r_win32::lab_hold::reached("review-sealed");
+                    return Ok((path, sha));
+                }
                 n2r_win32::perf::phase("source-apply-and-handoff");
                 let mut applied = fresh.apply_and_handoff(
                     events,
@@ -382,6 +419,36 @@ pub(crate) fn convert_owned_with_provider_commitment(
             .and_then(|n| n.checked_sub(observer.remaining_reservation_bytes()))
             .context("finalization cannot preserve evidence and free-space reserves")?;
         let final_resources = budget(current, aligned(remaining / 2), observer.ram_bytes())?;
+        if crate::review::chosen() {
+            let presented = crate::resource_review::present_review_stop(
+                pair,
+                journal,
+                &publication,
+                sha,
+                final_resources,
+                &run.join("review"),
+                &mut observer,
+            )
+            .context(
+                "stopping for review (the source holds the ReFS image; the handoff is not \
+                 written and rollback is open)",
+            )?;
+            if let Err(error) = observer.note(&presented.receipt) {
+                eprintln!("Review stop reached; the evidence log could not be updated: {error}");
+            }
+            if let Err(error) = save(&run.join("review-stop-receipt.json"), &presented.receipt) {
+                eprintln!("Review stop reached; its receipt could not be saved: {error}");
+            }
+            return Ok(ConversionOutcome::Reviewed {
+                directory: publication
+                    .parent()
+                    .context("recovery publication directory absent")?
+                    .to_path_buf(),
+                sha256: hex::encode(sha),
+                mount_paths: presented.mount_paths,
+                record: presented.record,
+            });
+        }
         let finalized =
             crate::resource_finalize::finalize_resource_handoff_with_windows_aliases_observer(
                 pair,

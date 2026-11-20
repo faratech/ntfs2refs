@@ -107,6 +107,8 @@ pub(crate) mod resource_prepared_bundle;
 pub(crate) mod resource_prepared_offline_apply;
 #[cfg(windows)]
 pub(crate) mod resource_recovery;
+#[cfg(windows)]
+pub(crate) mod resource_review;
 pub mod retained_compare;
 #[cfg(windows)]
 pub(crate) mod review;

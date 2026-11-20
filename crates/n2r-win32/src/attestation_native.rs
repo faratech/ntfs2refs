@@ -856,6 +856,8 @@ struct Taken<'s> {
     read_budget: crate::logical_hash::Budget,
     stream_bytes: usize,
     security_bytes: usize,
+    /// What the helper threads hold for themselves; none once given up.
+    helper_workspaces: Vec<Box<dyn crate::shadow_native::report_memory::ReportMemoryLease>>,
 }
 /// An object ready to be observed: its selector, the stream evidence it may
 /// hold if taken after the objects gathered before it, whether a helper
@@ -1078,6 +1080,7 @@ pub(crate) fn collect_file_metadata_with_routes(
         read_budget,
         stream_bytes,
         security_bytes: 0,
+        helper_workspaces,
     };
     crate::ordered_observation::in_order(
         selectors.len(),
@@ -1093,7 +1096,10 @@ pub(crate) fn collect_file_metadata_with_routes(
             // Where the run's total bounds it instead, every object taken
             // changes it, and an object observed ahead would be observed
             // again: it waits for its turn.
-            let ahead = row_payer.filter(|_| Some(row_stream_budget) == paged_security_limit);
+            let ahead = row_payer.filter(|_| {
+                !taken.helper_workspaces.is_empty()
+                    && Some(row_stream_budget) == paged_security_limit
+            });
             let mut paid = None;
             if let (Some(payer), Cow::Owned(owned)) = (ahead, &row) {
                 match payer.reserve_spare(request_row_bytes(owned)) {
@@ -1168,8 +1174,10 @@ pub(crate) fn collect_file_metadata_with_routes(
             })()
             .map_err(|error| at_source_record(identity, error))
         },
+        // An object that could not be gathered beside the helpers' memory is
+        // gathered without it, and the rest of the pass runs in turn.
+        |taken| taken.helper_workspaces.clear(),
     )?;
-    drop(helper_workspaces);
     let Taken {
         sink: returned,
         files,
@@ -1531,6 +1539,7 @@ mod helper_observation_tests {
                     seen.push(one.to_string());
                     Ok(())
                 },
+                |_| {},
             )
             .unwrap();
             let audit = state.0.audit();

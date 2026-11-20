@@ -41,7 +41,11 @@ pub(crate) const RUN: usize = 16;
 /// is gathered again as the first of the next batch, where it must be
 /// gathered. An error ends the batch the same way, and is the pass's error
 /// only for the first object of a batch: an object gathered after others may
-/// have failed for what those others held.
+/// have failed for what those others held. While helpers run, a first object
+/// that fails is not yet the pass's error either: `release(state)` gives up
+/// what the helpers hold, the rest of the pass runs without them, and the
+/// object is gathered once more, as a pass that never had helpers gathers
+/// it. Only what it fails with then is the pass's error.
 ///
 /// `observe` runs on up to `helpers` threads, each object at most once; with
 /// fewer than two helpers no thread is started and every object is taken
@@ -52,6 +56,7 @@ pub(crate) const RUN: usize = 16;
 /// `point` is charged as one call per object taken, with the calling thread's
 /// time: the time to gather and observe a batch is added to it as well, so
 /// that its total is the pass's wall time whether helpers ran or not.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn in_order<S, R: Sync, O: Send>(
     count: usize,
     helpers: usize,
@@ -60,15 +65,17 @@ pub(crate) fn in_order<S, R: Sync, O: Send>(
     mut gather: impl FnMut(&mut S, usize, bool) -> io::Result<Option<R>>,
     observe: impl Fn(&R) -> Option<O> + Sync,
     mut take: impl FnMut(&mut S, usize, R, Option<O>) -> io::Result<()>,
+    mut release: impl FnMut(&mut S),
 ) -> io::Result<()> {
-    let helpers = if helpers >= 2 { helpers } else { 0 };
-    let batch = helpers.saturating_mul(OBJECTS_PER_HELPER).max(1);
+    let mut helpers = if helpers >= 2 { helpers } else { 0 };
     let mut next = 0;
     while next < count {
         let started = Instant::now();
-        let end = next.saturating_add(batch).min(count);
+        let batch = helpers.saturating_mul(OBJECTS_PER_HELPER).max(1);
+        let mut end = next.saturating_add(batch).min(count);
         let mut objects = Vec::with_capacity(end - next);
-        for index in next..end {
+        let mut index = next;
+        while index < end {
             let first = objects.is_empty();
             match gather(state, index, first) {
                 Ok(Some(object)) => objects.push(object),
@@ -79,8 +86,16 @@ pub(crate) fn in_order<S, R: Sync, O: Send>(
                     )));
                 }
                 Err(_) if !first => break,
+                Err(_) if helpers > 0 => {
+                    // Gathered again alone, as without helpers.
+                    release(state);
+                    helpers = 0;
+                    end = index + 1;
+                    continue;
+                }
                 Err(error) => return Err(error),
             }
+            index += 1;
         }
         let observed = if helpers >= 2 && objects.len() >= 2 {
             observe_batch(&objects, helpers, &observe)
@@ -196,6 +211,7 @@ mod tests {
                 pass.taken.push((index, value));
                 Ok(())
             },
+            |_| {},
         )
         .unwrap();
         pass
@@ -234,6 +250,7 @@ mod tests {
                 taken.push(index);
                 Ok(())
             },
+            |_| {},
         )
         .unwrap();
         assert_eq!(observed.load(Ordering::Relaxed), 0);
@@ -262,6 +279,7 @@ mod tests {
                 taken.push(index);
                 Ok(())
             },
+            |_| {},
         )
         .unwrap();
         let (gathered, taken) = state;
@@ -271,6 +289,53 @@ mod tests {
             assert!(gathered.contains(&(index, false)), "object {index}");
             assert!(gathered.contains(&(index, true)), "object {index}");
         }
+    }
+
+    /// An object that fails to be gathered while the helpers hold memory is
+    /// gathered again once they have given it up, and the pass goes on
+    /// without them: as a pass that never had helpers would have.
+    #[test]
+    fn a_first_object_that_fails_beside_the_helpers_is_gathered_again_without_them() {
+        #[derive(Default)]
+        struct State {
+            held: bool,
+            released: usize,
+            taken: Vec<(usize, bool)>,
+        }
+        let mut state = State {
+            held: true,
+            ..State::default()
+        };
+        in_order(
+            1000,
+            4,
+            Point::InTurn,
+            &mut state,
+            |state, index, _| {
+                // Object 300 needs what the helpers hold.
+                if index == 300 && state.held {
+                    return Err(io::Error::other("no room to decode row 300"));
+                }
+                Ok(Some(index))
+            },
+            |&index| Some(index),
+            |state, index, object, observed| {
+                assert_eq!(object, index);
+                state.taken.push((index, observed.is_some()));
+                Ok(())
+            },
+            |state| {
+                state.held = false;
+                state.released += 1;
+            },
+        )
+        .unwrap();
+        assert_eq!(state.released, 1);
+        let indexes: Vec<usize> = state.taken.iter().map(|(index, _)| *index).collect();
+        assert_eq!(indexes, (0..1000).collect::<Vec<_>>());
+        // Observed ahead before, in turn from then on.
+        assert!(state.taken[..256].iter().all(|(_, ahead)| *ahead));
+        assert!(state.taken[300..].iter().all(|(_, ahead)| !*ahead));
     }
 
     /// An object that cannot be gathered fails the pass where a pass on one
@@ -298,6 +363,7 @@ mod tests {
                     taken.push(index);
                     Ok(())
                 },
+                |_| {},
             )
             .unwrap_err();
             assert_eq!(error.to_string(), "row 70 unreadable");
@@ -326,6 +392,7 @@ mod tests {
                     taken.push(index);
                     Ok(())
                 },
+                |_| {},
             )
             .unwrap_err();
             assert_eq!(error.to_string(), "object 133 over budget");

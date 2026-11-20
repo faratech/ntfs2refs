@@ -88,6 +88,68 @@ fn ordered_key(first: u64, second: u64) -> [u8; 16] {
     key[8..].copy_from_slice(&second.to_be_bytes());
     key
 }
+/// What a projected object's key and the root's place are made of, read
+/// from its row under [`Object`]'s own field names. Every other field is
+/// passed over, and the path's components are counted, not kept.
+#[derive(serde::Deserialize)]
+struct ObjectHead {
+    record_number: u64,
+    path: PathDepth,
+    directory: bool,
+}
+/// How many components a path has: a sequence of strings, none of them
+/// kept.
+struct PathDepth(u64);
+impl<'de> serde::Deserialize<'de> for PathDepth {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        struct Component;
+        impl<'de> serde::Deserialize<'de> for Component {
+            fn deserialize<D: serde::Deserializer<'de>>(
+                deserializer: D,
+            ) -> std::result::Result<Self, D::Error> {
+                struct Text;
+                impl serde::de::Visitor<'_> for Text {
+                    type Value = Component;
+                    fn expecting(
+                        &self,
+                        formatter: &mut std::fmt::Formatter<'_>,
+                    ) -> std::fmt::Result {
+                        formatter.write_str("a path component")
+                    }
+                    fn visit_str<E: serde::de::Error>(
+                        self,
+                        _: &str,
+                    ) -> std::result::Result<Component, E> {
+                        Ok(Component)
+                    }
+                }
+                deserializer.deserialize_str(Text)
+            }
+        }
+        struct Components;
+        impl<'de> serde::de::Visitor<'de> for Components {
+            type Value = PathDepth;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("the components of a path")
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut sequence: A,
+            ) -> std::result::Result<PathDepth, A::Error> {
+                let mut depth = 0u64;
+                while sequence.next_element::<Component>()?.is_some() {
+                    depth = depth
+                        .checked_add(1)
+                        .ok_or_else(|| serde::de::Error::custom("path depth overflow"))?;
+                }
+                Ok(PathDepth(depth))
+            }
+        }
+        deserializer.deserialize_seq(Components)
+    }
+}
 fn add_role(
     roles: &mut Vec<String>,
     leases: &mut Vec<SourceRamLease>,
@@ -925,16 +987,31 @@ impl SourceExpectedDomain {
             );
         }
         let mut roots = 0u64;
+        // Each row is held to its key and the root to its place. Under the
+        // check-once policy, outside its gate, the three fields that takes
+        // are read from the row and nothing of it is allocated: this pass
+        // wrote every row from a typed object, and each is decoded in full
+        // when the expected pages are made of them. Otherwise the whole
+        // object is decoded here, as it always was.
+        let heads_only = !n2r_win32::verify_policy::full_unremembered();
         for ordinal in 0..objects.len() {
-            let object: Object = objects.get(ordinal)?;
+            let head = if heads_only {
+                objects.get::<ObjectHead>(ordinal)?
+            } else {
+                let object: Object = objects.get(ordinal)?;
+                ObjectHead {
+                    record_number: object.record_number,
+                    path: PathDepth(u64::try_from(object.path.len())?),
+                    directory: object.directory,
+                }
+            };
             ensure!(
-                objects.key(ordinal)?
-                    == ordered_key(u64::try_from(object.path.len())?, object.record_number),
+                objects.key(ordinal)? == ordered_key(head.path.0, head.record_number),
                 "projected object key or ordering differs"
             );
-            if object.path.is_empty() {
+            if head.path.0 == 0 {
                 ensure!(
-                    object.directory && object.record_number == 5,
+                    head.directory && head.record_number == 5,
                     "invalid projected root"
                 );
                 roots += 1;

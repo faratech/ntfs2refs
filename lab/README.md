@@ -20,17 +20,40 @@ Copy-Item target\release\ntfs2refs.exe, target\release\ntfs2refs.pdb, target\rel
 
 The build is a copy, so the tree can be built again while the round runs; the
 gates count for a commit only if its Rust sources are the ones the copy was
-built from. The round runs four sets, the first two at the same time: the
+built from. The round runs five sets, the first two at the same time: the
 fixtures and interrupted runs on the reference VM; the data-volume cases on
-the other Windows 11 VMs; then the full Windows volume, converted and booted,
-with the host to itself; then the Windows Server cases. `-Sets` picks among
-`fixtures`, `data`, `full` and `server`. It starts with the lab VMs off and
-leaves them off with its scratch disks deleted, prints one row a case (what it
-was to end as, what it ended as, whether the listing is identical, the
-converter's seconds) and exits 1 if a case ended otherwise. Its own output is
-in `<Build>\gate-<Prefix>`; each case keeps its records under
+the other Windows 11 VMs, the runs that stop for review among them; then the
+full Windows volume, converted and booted, with the host to itself; then the
+Windows Server cases; then the Windows each of the other Windows 11 VMs runs
+from, converted through its own recovery environment (below), again with the
+host to itself. `-Sets` picks among `fixtures`, `data`, `full`, `server` and
+`running`; all five are the default. It starts with the lab VMs off and
+leaves them off with its scratch disks deleted (and the boot-partition disks
+of the running set), prints one row a case (what it was to end as, what it
+ended as, whether the listing is identical, the converter's seconds) and
+exits 1 if a case ended otherwise. Its own output is in
+`<Build>\gate-<Prefix>`; each case keeps its records under
 `.lab\hyperv\attempts\<Prefix>-<case>` like any attempt. About 45 minutes for
-the first two sets, half an hour each for the other two.
+the first two sets as they were measured, before the eight review cases were
+added to the second; half an hour each for the full volume and the server
+cases. The running set has not been timed as a set: its four cases each
+convert a whole Windows (22 minutes in the full run) and wait through its
+restarts, on two VMs side by side.
+
+The running set uses `-RunningVm` (the data VMs unless others are named), as
+many of them as the host has memory and disk space for (8 GB and 65 GB a VM
+beside the host's 8 GB). Each VM first gets a working disk of its own, an
+NTFS volume made by a control-OS attempt (`<Prefix>-c-work-<n>`), and then
+takes its share of the cases one after another:
+
+| Case | How it is run | It has to end as |
+|---|---|---|
+| `c-diagnose` | `-Diagnose` | `PASSED`: C: is NTFS and healthy, the converter ended with 0 |
+| `c-convert` | `-Acceptance` | `PASSED`: C: is ReFS and healthy, the converter ended with 0, and the use test and two more starts passed |
+| `c-cut-preparation` | `-HoldAt none -CutAfterMinutes 3` | `CUT-BACK-TO-NTFS`: the start after the cut cancelled the run, C: is NTFS and healthy |
+| `c-cut-apply-mid` | `-HoldAt apply-mid-ranges` | `CUT-RECOVERED-TO-REFS`: the converter had reported the hold, the start after the cut finished the conversion, C: is ReFS and healthy |
+
+Every one of them is run with `-Restore -Reattach`.
 
 The sections below describe the attempts the round is made of; run one by
 itself to look into a failure.
@@ -189,38 +212,64 @@ as before (`diagnose-clean`, `diagnose-found-failures`).
 
 A review run stops before its handoff with the volume mounted read-only as
 ReFS and exits 0; `--recover` commits it and `--recover --rollback` undoes it.
-The harness does not have a `-Review` switch yet. It needs one that passes
-`--review` through `-ConverterArgs`, expects exit 0 with the line `Stopped for
-review`, checks that `V:` is mounted read-only as ReFS (a write to it fails),
-lists it (the listing must match the one before, as a conversion's does),
-then runs the printed command with or without `--rollback` and judges the
-result as `-InterruptAt` does (`resumed` / `rolled-back`). A `-Tamper` switch
-clears the disk's read-only attribute (`Set-Disk -IsReadOnly $false`), writes
-one file to `V:`, sets read-only back, and expects both recovery commands to be
-refused with `not what it was when the run stopped for review`, the volume
-left offline and read-only. The cases, each on the 1-in-40 fixture or a
-`-Content lived-in` data volume:
 
-| Case | Expected |
-|---|---|
-| `-Review` then commit | `resumed`, identical listing |
-| `-Review` then `--rollback` | `rolled-back`, `compare --exact`; recovery reports `source_fingerprint_verified` |
-| `-Review -Tamper`, commit | refused, nothing written, disk offline read-only |
-| `-Review -Tamper`, `--rollback` | refused, nothing written, disk offline read-only |
-| `-Review`, disk set writable without a write, commit | refused at open (`online and writable`) |
-| `-Review -InterruptAt apply-mid-ranges`, resume / rollback | as today: `resumed` / `rolled-back` |
-| `-Review -InterruptAt apply-before-handoff`, resume / rollback | as today |
-| `-Review -InterruptAt review-sealed`, resume / rollback | frozen source exactly NEW under the apply marker is accepted: `resumed` / `rolled-back` |
-| `-Review -InterruptAt review-recorded`, resume / rollback | the same, and the stop's fingerprint is compared |
-| `-Review -InterruptAt review-sealed -InterruptKind vm`, resume / rollback | as the process case |
-| `-Review` with Explorer open on `V:`, commit | refused with the dismount message; closed, it commits |
-| `-Review`, the control OS restarted at the stop, then commit / rollback | the disk comes back online read-only by itself; `resumed` / `rolled-back` |
-| `-Review`, the recovery ended after it sealed the disk again, then recovery again (both directions) | the second recovery compares the fingerprint and finishes |
-| `-Review`, the recovery ended after it made the disk writable (offline), then recovery again | as above, from offline writable |
-| `-Review -Content lived-in`, `--rollback` | `rolled-back`, `compare --exact` |
-| `-Review -Siblings` | refused before anything is opened (a disk of its own only) |
-| `-Review` with `--minimize-scratch` | refused by the parser |
-| a default run at `apply-activated`, `handoff-sealed` | unchanged from today |
+`-Review` runs the converter with `--review`. A run that ends with exit 0 has
+to say `Stopped for review` and print its two commands (`review-run-did-not-stop`,
+`review-stop-without-its-commands` otherwise). The harness then holds the
+stop to what it promises: the disk online and read-only, `V:` mounted as
+ReFS, a write to it refused (`review-stop-not-mounted-read-only-as-refs`),
+and the volume listing as it did before the run, compared as a conversion's
+listing is (`review-stop-listing-differs`; the listing is kept as
+`manifest-review.jsonl`). Then it runs the command the stop printed, the one
+that keeps the conversion or, with `-RecoverMode rollback`, the one that puts
+NTFS back, and judges the result as `-InterruptAt` does: `resumed` (ReFS,
+identical listing) or `rolled-back` (NTFS, `compare --exact`). The rollback
+of a review run, after a stop or after a hold, also has to have recorded
+`source_fingerprint_verified` in the `result.json` of the folder it names
+(`rolled-back-without-the-fingerprint-check`; the file is kept as
+`recovery-result.json`). `-Review -InterruptAt <point>` ends the run at the
+hold instead, before it stops, and recovers it as any interrupted run;
+`review-sealed` and `review-recorded` are holds of a review run alone. A
+review run that is refused is judged as any refusal.
+
+`-Tamper`, with `-Review`, writes to the volume after the stop: the disk's
+read-only attribute is cleared (`Set-Disk -IsReadOnly $false`), a file is
+written to `V:` (the disk is taken offline and brought back first where the
+volume stays write-protected), the volume is written out and read-only is set
+again (`review-tamper-not-made` if that cannot be done). Both commands are
+then run, the one `-RecoverMode` names first. Each has to end with another
+exit code than 0 (`review-tampered-<commit|rollback>-was-not-refused`), with
+`not what it was when the run stopped for review` in its error
+(`-refused-otherwise`) and with the disk offline and read-only and `V:` not
+mounted (`-left-the-disk-unsealed`). The partition's bytes are hashed through
+the disk before the first command and after the second and have to be the
+same (`review-tampered-refused-but-partition-changed`): `nothing is done` is
+read back, not taken from the message. All of that gives
+`review-tampered-both-refused`. The two hashes read the whole partition, so
+the round's tamper cases use `-PartitionMB 8192`.
+
+The cases for the test round, and how each is run today:
+
+| Case | Expected | Run by |
+|---|---|---|
+| `-Review` then commit | `resumed`, identical listing | the round: `review-commit` (lived-in, `-Acceptance`) |
+| `-Review` then `--rollback` | `rolled-back`, `compare --exact`; recovery reports `source_fingerprint_verified` | the round: `review-rollback` (lived-in) |
+| `-Review -Tamper`, commit | refused, nothing written, disk offline read-only | the round: `review-tamper-commit` |
+| `-Review -Tamper`, `--rollback` | refused, nothing written, disk offline read-only | the round: `review-tamper-rollback` |
+| `-Review`, disk set writable without a write, commit | refused at open (`online and writable`) | not by the harness yet |
+| `-Review -InterruptAt apply-mid-ranges`, resume / rollback | as without a review: `resumed` / `rolled-back` | the switches; not a case of the round |
+| `-Review -InterruptAt apply-before-handoff`, resume / rollback | as without a review | the switches; not a case of the round |
+| `-Review -InterruptAt review-sealed`, resume / rollback | frozen source exactly NEW under the apply marker is accepted: `resumed` / `rolled-back` | the round: `review-sealed-resume`, `review-sealed-rollback` |
+| `-Review -InterruptAt review-recorded`, resume / rollback | the same, and the stop's fingerprint is compared | the round: `review-recorded-resume`, `review-recorded-rollback` |
+| `-Review -InterruptAt review-sealed`, the VM turned off, resume / rollback | as the process case | not by the harness yet (it ends the process; only the boot harness has `-InterruptKind vm`) |
+| `-Review` with Explorer open on `V:`, commit | refused with the dismount message; closed, it commits | not by the harness yet |
+| `-Review`, the control OS restarted at the stop, then commit / rollback | the disk comes back online read-only by itself; `resumed` / `rolled-back` | not by the harness yet |
+| `-Review`, the recovery ended after it sealed the disk again, then recovery again (both directions) | the second recovery compares the fingerprint and finishes | not by the harness yet |
+| `-Review`, the recovery ended after it made the disk writable (offline), then recovery again | as above, from offline writable | not by the harness yet |
+| `-Review -Content lived-in`, `--rollback` | `rolled-back`, `compare --exact` | the round: `review-rollback` |
+| `-Review -Siblings` | refused before anything is opened (a disk of its own only) | the switches, with `-ExpectRefusal`; not a case of the round |
+| `-Review` with `--minimize-scratch` | refused by the parser | `-ConverterArgs --minimize-scratch`; not a case of the round |
+| a default run at `apply-activated`, `handoff-sealed` | unchanged | `handoff-sealed` by the round; `apply-activated` by the switch |
 
 `-StopDuringPreparation <phase>` ends the converter as soon as its progress
 names that phase of preparation (`payload_supply`, `recovery_journal`, ...):
@@ -400,6 +449,80 @@ evidence is `incomplete-evidence`.
 A missing before-listing is `converted-not-compared`, not a successful independent
 comparison. A run is complete only when its verdict and the applicable native
 checks agree. Do not widen the manifest allow-list to make it pass.
+
+## The Windows a VM runs from
+
+`Invoke-RunningWindowsAttempt.ps1` converts `C:` of the Windows a lab VM
+starts from, with the one command a user gives in that Windows
+(`ntfs2refs --drive C --scratch-directory <working volume>\runs-<Name>
+--boot-partition <letter>`), and waits through the restarts: the VM's own
+recovery environment, where the conversion runs and no remote session
+exists, then Windows again.
+
+```powershell
+lab\Invoke-BootConversionAttempt.ps1 -Name c-work -NoConvert -KeepScratch -ScratchFileSystem NTFS -VmId <vm>
+Stop-VM -Id <vm>
+lab\Invoke-RunningWindowsAttempt.ps1 -Name c-01 -VmId <vm> -Binary <frozen>\ntfs2refs.exe `
+    -ScratchVhdx .lab\hyperv\attempts\c-work\scratch.vhdx -Restore -Acceptance -Reattach
+```
+
+The working disk is the NTFS scratch disk of a control-OS attempt, named
+with `-ScratchVhdx`; a 1 GB disk for the boot partition is made beside it
+once and kept. The attempt detaches the VM's other disks and its
+installation media for the run (they are listed in `detached-disks.json`,
+and with their places in `.lab\hyperv\detached-disks-<vm>.json`, the record
+the boot harness keeps too).
+
+- `-Restore` restores the VM's `N2R-Qualification-NTFS-*` checkpoint first
+  (`-Checkpoint` names another), after putting back the differencing disks an
+  earlier attempt detached, so that Hyper-V discards them with that attempt's
+  state. Without it the attempt starts from whatever the VM is.
+- Before the run, the folders earlier attempts left on the working volume
+  are removed: `runs-*`, `ntfs2refs-preparation-cancel-*` and
+  `ntfs2refs-recovery-*`, a virtual disk under one detached first. They are
+  the attempts' own scratch; the verdict's `working_volume` says what went
+  and what could not be removed.
+- `-Diagnose` runs with `--diagnose`: `C:` has to come back as NTFS.
+- `-HoldAt <point>` arms that hold (`crates/n2r-win32/src/lab_hold.rs`) for
+  the converter in the environment and turns the VM off when the converter
+  is parked there, as if the power had gone; the VM is started again and the
+  run has to recover by itself. The hold is seen from outside: the VM's
+  screen (the picture Hyper-V gives of it, as `Send-VmKeys.ps1` takes it) has
+  not changed for two minutes, apart from the few pixels of a blinking
+  cursor, and `-HoldAfterMinutes` (5) have passed since the restart.
+  `-CutAfterMinutes` (40) after the restart the power is cut whatever the
+  screen shows. `screen-at-cut.png` is what it showed. Once Windows is back,
+  the converter's own output (`converter-output.txt` on the working disk,
+  copied to the records with what its recovery said) has to have the hold's
+  line, or the outcome is `CUT-NOT-AT-THE-HOLD`.
+- `-HoldAt none` arms no hold: the power is cut `-CutAfterMinutes` after the
+  restart, wherever the run is then.
+- `-Acceptance`, when `C:` came back as ReFS, runs
+  `guest\Test-ConvertedWindowsUse.ps1` in that Windows with the installation
+  media attached again, then shuts it down and starts it twice more, as the
+  boot harness does after its boot. `acceptance.json` and the verdict have
+  every step; a step that failed adds `-BUT-USE-FAILED` to the outcome.
+- `-Reattach`, when the attempt ends, however it ends, shuts the VM down and
+  gives it back the disks and the media, each in its place, and the device
+  it started from.
+- `-Hold` stops at a command prompt in the environment instead
+  (`held-in-the-environment`), to be typed into with `Send-VmKeys.ps1`.
+
+Outcomes: `PASSED` (`C:` is the file system the run was to leave, ReFS, or
+NTFS with `-Diagnose`, it is healthy, and the converter ended with 0),
+`CONVERTER-EXIT-<n>`, `C-IS-<file system>` and `C-IS-<file system>-<health>`,
+`REFUSED-IN-WINDOWS` (nothing restarted), `no-return` (Windows did not come
+back with the run's report within `-AwayMinutes`; `screen-no-return.png` is
+what the VM showed). After a cut, what the start after it reported has to
+agree with what `C:` is: `CUT-RECOVERED-TO-REFS` (it finished the
+conversion; ReFS, healthy), `CUT-BACK-TO-NTFS` (it cancelled a run that had
+not started writing, or put NTFS back; NTFS, healthy),
+`CUT-RECOVERY-UNCLEAR-C-IS-<file system>` (anything else),
+`CUT-BEFORE-THE-RUN-BEGAN` (that start found nothing to recover from: the
+cut came before the converter had printed a way back, and the run simply
+began again) and `RUN-ENDED-BEFORE-THE-CUT` (Windows was back before the
+power was to go). A verdict is written however the attempt ends; an error of
+the harness leaves `harness-error` with the error.
 
 ## Storage and preservation
 

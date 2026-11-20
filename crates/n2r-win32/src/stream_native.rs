@@ -631,6 +631,9 @@ fn hash_stream(
             "data stream identity or length changed during read",
         ));
         out.outcome.bytes_read = consumed;
+        // Only a skipped read carries the valid-data answer; this row is
+        // refused, and the comparison names it for this object.
+        out.valid_data = None;
     }
     out
 }

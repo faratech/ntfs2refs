@@ -419,10 +419,24 @@ for ($round = 1; ; $round++) {
         try { & $converter --list 2>&1 | Out-File -LiteralPath (Join-Path $dir 'list-after-failure.txt') -Encoding utf8 } catch { }
         $failed = $result
     } finally {
-        # Virtual disks the run left attached in its working storage: a
-        # finding, recorded; detached so that the storage can be freed.
-        $left = @(Get-ChildItem -LiteralPath $work -Recurse -Force -File -Filter *.vhdx -ErrorAction SilentlyContinue | ForEach-Object {
-            try { Get-DiskImage -ImagePath $_.FullName -ErrorAction Stop } catch { } } | Where-Object { $_.Attached })
+        # A run that is killed before it records anything to recover from
+        # leaves its working volume attached: no code runs at the kill. The
+        # next run, or --list, detaches it (#201), and only for a run that
+        # has ended and recorded nothing; a run with something to recover
+        # from is left to its own --recover. So --list is run here, as the
+        # next thing a person would run, and what it detached is recorded.
+        $attached = { @(Get-ChildItem -LiteralPath $work -Recurse -Force -File -Filter *.vhdx -ErrorAction SilentlyContinue | ForEach-Object {
+            try { Get-DiskImage -ImagePath $_.FullName -ErrorAction Stop } catch { } } | Where-Object { $_.Attached }) }
+        $before = & $attached
+        if ($before) {
+            $listed = try { & $converter --list 2>&1 | Out-String } catch { "$_" }
+            $listed | Out-File -LiteralPath (Join-Path $dir 'list-after-run.txt') -Encoding utf8
+            $settled = @($before | Where-Object { $image = $_; -not (& $attached | Where-Object ImagePath -EQ $image.ImagePath) })
+            foreach ($image in $settled) { Say "  --list detached $($image.ImagePath), the working volume of a run that ended before it recorded anything" }
+        }
+        # Virtual disks still attached in the run's working storage after
+        # that: a finding, recorded; detached so that the storage can be freed.
+        $left = & $attached
         foreach ($image in $left) {
             $disk = $image | Get-Disk
             $result.findings += "the run left $($image.ImagePath) attached (disk $($disk.Number), offline=$($disk.IsOffline), read-only=$($disk.IsReadOnly))"

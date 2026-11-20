@@ -74,6 +74,24 @@ fn eligible_prefix(stream: StreamRef<'_>) -> Result<Option<u64>> {
     Ok(Some(prefix))
 }
 
+/// Holds a stream to what its run's verification rests on. A thorough run
+/// (`--verify thorough`) rests on the digest of every stream's complete
+/// contents: the source inspection then recorded one for each stream and
+/// proved none by its extents, so [`eligible_prefix`] routes nothing, every
+/// whole cluster that moves is written to the shadow and read back, and the
+/// verification reads and hashes every stream. A stream that carries only
+/// its extents there is refused before anything is materialized, never
+/// supplied the way a fast run's would be.
+fn require_policy_evidence(policy: VerificationPolicy, stream: StreamRef<'_>) -> Result<()> {
+    ensure!(
+        policy.is_fast() || stream.sha256.is_some(),
+        "--verify thorough rests on the digest of every stream's complete contents; stream {:?} ({} bytes) carries only the identity of its extents",
+        String::from_utf16_lossy(stream.name_utf16),
+        stream.length
+    );
+    Ok(())
+}
+
 /// Split a routed logical interval at actual source run boundaries. The
 /// caller separately rechecks each resulting VCN/physical pair and source VDL.
 fn source_pieces(
@@ -537,6 +555,7 @@ fn scan_plan(
     expected: &PagedExpectedTree,
     template: &PrivateTree,
     row_window: u64,
+    policy: VerificationPolicy,
     progress: &Reporter,
 ) -> Result<RoutedPlan> {
     let mut hash = Sha256::new();
@@ -561,6 +580,7 @@ fn scan_plan(
                 continue;
             }
             for stream in object.data_streams() {
+                require_policy_evidence(policy, stream)?;
                 let id = identity(&object, stream);
                 bytes.check_stream(&id)?;
                 let mut observed =
@@ -677,10 +697,13 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
     policy: VerificationPolicy,
     progress: &Reporter,
 ) -> Result<RoutedSupplyOwner<'a, 'source, 'scope>> {
-    ensure!(
-        policy.is_fast(),
-        "routed-prefix supply requires explicit extent-identity verification"
-    );
+    // Both verifications are supplied here: the conversion routes have no
+    // other supply. What is routed follows each stream's evidence, not the
+    // policy. A stream proven by its extents (a fast run's) has the whole
+    // clusters that move routed. A thorough run has no such stream
+    // (`require_policy_evidence`): its moved clusters are written to the
+    // shadow and read back, as those of every hashed stream are. Data that
+    // stays where it is is referenced in place in both.
     preflight_source_references(bytes, expected)?;
     let admission = phase(bytes, expected, template)?;
     let row_window = admission
@@ -693,17 +716,22 @@ pub(crate) fn prepare<'a, 'source, 'scope>(
             .checked_add(2 * WINDOW as u64)
             .context("routed supply RAM overflow")?,
     )?;
-    let plan = scan_plan(bytes, expected, template, row_window, progress)?;
+    let plan = scan_plan(bytes, expected, template, row_window, policy, progress)?;
     ensure!(
         plan.materialized <= maximum_materialized_bytes,
-        "necessary routed-plan materialization exceeds explicit payload budget: logical_bytes={}, materialize_bytes={}, same_coordinate_reference_bytes={}, routed_prefix_bytes={}, hole_bytes={}, maximum_materialized_bytes={}, supply_plan_sha256={}",
+        "necessary routed-plan materialization exceeds explicit payload budget: logical_bytes={}, materialize_bytes={}, same_coordinate_reference_bytes={}, routed_prefix_bytes={}, hole_bytes={}, maximum_materialized_bytes={}, supply_plan_sha256={}; the data that does not stay where it is needs more working storage than this run has: use a working volume with more free space{}",
         plan.logical,
         plan.materialized,
         plan.referenced,
         plan.routed,
         plan.holes,
         maximum_materialized_bytes,
-        plan.sha256
+        plan.sha256,
+        if policy.is_fast() {
+            ""
+        } else {
+            ", or --verify fast, which does not copy the whole clusters of a stream it proves by its extents"
+        }
     );
     let mut buffer = vec![0u8; WINDOW];
     let mut written = 0u64;
@@ -841,6 +869,10 @@ pub(crate) fn prepare_recovered<'a, 'source, 'scope>(
     prior_plan_sha256: &str,
     progress: &Reporter,
 ) -> Result<RoutedSupplyOwner<'a, 'source, 'scope>> {
+    // Only a fast run's preparation is resumed: its checkpoints are written
+    // for that policy alone and a saved session of another is refused
+    // (`resource_preparation`, `resume_session_inputs`, `resume_origin`). A
+    // thorough run therefore never comes here.
     ensure!(
         policy.is_fast(),
         "recovered routed supply requires extent identity policy"
@@ -857,7 +889,7 @@ pub(crate) fn prepare_recovered<'a, 'source, 'scope>(
             .checked_add(2 * WINDOW as u64)
             .context("recovered routed supply RAM overflow")?,
     )?;
-    let plan = scan_plan(bytes, expected, template, row_window, progress)?;
+    let plan = scan_plan(bytes, expected, template, row_window, policy, progress)?;
     ensure!(
         plan.materialized <= maximum_materialized_bytes && plan.sha256 == prior_plan_sha256,
         "recovered payload plan differs from the authenticated completed supply"
@@ -1111,5 +1143,49 @@ impl RoutedSupplyOwner<'_, '_, '_> {
                 "read-back at materialization; complete digests on the converted volume".into();
         }
         Ok(receipt)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stream<'a>(
+        sha256: Option<&'a str>,
+        source_evidence: Option<SourceStreamEvidence>,
+    ) -> StreamRef<'a> {
+        StreamRef {
+            name_utf16: &[],
+            source_offset: Some(1 << 20),
+            source_extents: &[],
+            length: 8192,
+            sha256,
+            source_evidence,
+            sparse: None,
+        }
+    }
+
+    /// #212: the supply refused `--verify thorough` outright, so no thorough
+    /// run converted. A thorough run's streams all carry a digest and are
+    /// supplied; none of them is routed by its extents.
+    #[test]
+    fn a_thorough_run_is_supplied_and_routes_nothing_by_its_extents() {
+        let digest = "00".repeat(32);
+        let hashed = stream(Some(&digest), None);
+        let by_extents = stream(None, Some(SourceStreamEvidence::ExtentIdentityV1));
+        for policy in [
+            VerificationPolicy::FullContent,
+            VerificationPolicy::ExtentIdentityV1,
+        ] {
+            require_policy_evidence(policy, hashed).unwrap();
+            assert_eq!(eligible_prefix(hashed).unwrap(), None);
+        }
+        // Only a fast run has a stream proven by its extents, and routes it.
+        require_policy_evidence(VerificationPolicy::ExtentIdentityV1, by_extents).unwrap();
+        assert_eq!(eligible_prefix(by_extents).unwrap(), Some(8192));
+        let refusal = require_policy_evidence(VerificationPolicy::FullContent, by_extents)
+            .unwrap_err()
+            .to_string();
+        assert!(refusal.contains("--verify thorough"), "{refusal}");
     }
 }
